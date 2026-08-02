@@ -420,6 +420,59 @@ fn type_is_ground(t: Type) -> Bool {
   }
 }
 
+/// #1340 (ADR-0071): ground modulo a set of rigid names — a generic effect's
+/// declared op return type is usable as the perform's value type when its
+/// only non-ground parts are the effect's OWN type params (which the caller
+/// substitutes with fresh inference vars before use). Any other CtNamed /
+/// CtVar / CtForAll keeps the conservative fresh-var fallback, exactly like
+/// type_is_ground does for non-generic effects.
+fn type_is_ground_except(t: Type, allowed: Array[String]) -> Bool {
+  match t {
+    CtNamed(nm, targs) => if Array::length(targs) == 0 {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(allowed) {
+        if Array::get(allowed, i) == nm {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    } else {
+      false
+    },
+    CtVar(_) => false,
+    CtForAll(_, _, _) => false,
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_is_ground_except(Array::get(items, i), allowed) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_is_ground_except(e, allowed),
+    CtOption(e) => type_is_ground_except(e, allowed),
+    CtFn(ps, r, _) => {
+      let mut ok = type_is_ground_except(r, allowed)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_is_ground_except(Array::get(ps, i), allowed) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
+
 /// #1081 step 3: does a FULLY-ZONKED type contain a `CtNamed` with exactly
 /// this name anywhere in its structure? Used to detect a region skolem
 /// (`"#region_<n>"`, unforgeable by parsed source) escaping its
@@ -648,12 +701,28 @@ fn row_labels(row: Option[String]) -> Array[String] {
   }
 }
 
+/// #1340 (ADR-0071): base effect name of a row label — `State[Int]` strips
+/// to `State`, a bracketless label is its own base. (Local copy: the
+/// same-named helpers in checker_effects.vibe / core stay file-private.)
+fn ck_row_label_base(label: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi > 0 {
+    label[0:bi]
+  } else {
+    label
+  }
+}
+
 fn row_contains_label(row: Option[String], lbl: String) -> Bool {
   let labels = row_labels(row)
   let mut i = 0
   let mut found = false
+  // #1340 (ADR-0071): compare by base name so a generic instantiation label
+  // (`State[Int]`) and the bare effect (`State`) count as the same label in
+  // the dropped-row walk — bracketless labels degenerate to exact equality.
+  let wanted = ck_row_label_base(lbl)
   while i < Array::length(labels) && !found {
-    if Array::get(labels, i) == lbl {
+    if ck_row_label_base(Array::get(labels, i)) == wanted {
       found = true
     } else {
       i = i + 1
@@ -1184,7 +1253,7 @@ fn effect_op_sig(defs: Array[TypeDef], qname: String) -> Option[(Array[Type], Ty
     let op = String::substring(qname, ci + 2, String::length(qname))
     match find_typedef(defs, eff) {
       Some(td) => match td {
-        TDEffect(_, ops) => {
+        TDEffect(_, ops, _) => {
           let mut oi = 0
           let mut found = None
           while oi < Array::length(ops) {
@@ -1205,13 +1274,43 @@ fn effect_op_sig(defs: Array[TypeDef], qname: String) -> Option[(Array[Type], Ty
   }
 }
 
+/// #1340 (ADR-0071): a declared effect's type params (empty for non-generic
+/// effects and for anything absent from the registry). The op signatures
+/// returned by effect_op_sig mention these as rigid `CtNamed(param, [])`
+/// names — every consumer must substitute them (fresh inference vars per
+/// use site) before checking against them.
+fn effect_tparams(defs: Array[TypeDef], eff: String) -> Array[String] {
+  match find_typedef(defs, eff) {
+    Some(td) => match td {
+      TDEffect(_, _, etps) => etps,
+      _ => array_empty()
+    },
+    None => array_empty()
+  }
+}
+
+/// #1340: instantiate a generic effect's declared type params with fresh
+/// inference vars. Returns (fresh args, next counter).
+fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
+  let out = array_empty()
+  let mut c1 = c
+  let mut i = 0
+  while i < Array::length(etps) {
+    let (tv, nc) = fresh_var(c1)
+    Array::push(out, tv)
+    c1 = nc
+    i = i + 1
+  }
+  (out, c1)
+}
+
 /// #813: is `eff` a DECLARED effect (TDEffect) in this module? Distinguishes
 /// "unknown op of a declared effect" (reportable) from builtin/imported
 /// effects the registry cannot see (skip).
 fn effect_is_declared(defs: Array[TypeDef], eff: String) -> Bool {
   match find_typedef(defs, eff) {
     Some(td) => match td {
-      TDEffect(_, _) => true,
+      TDEffect(_, _, _) => true,
       _ => false
     },
     None => false
@@ -3415,24 +3514,44 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                   match op_callee {
                     EIdent(op_qname, op_off) => match effect_op_sig(defs, op_qname) {
                       Some(sig) => {
-                        let (sig_params, sig_ret) = sig
+                        let (sig_params_decl, sig_ret_decl) = sig
+                        // #1340 (ADR-0071): a GENERIC effect's signature
+                        // mentions its declared type params as rigid CtNamed
+                        // names — instantiate them with fresh inference vars
+                        // per perform site, so arity AND argument types are
+                        // genuinely checked (`perform State::Get(1,2,3)`
+                        // against a 0-arity op used to pass silently).
+                        let etps = effect_tparams(defs, String::substring(op_qname, 0, String::index_of(op_qname, "::")))
+                        let mut c1b = c1
+                        let (sig_params, sig_ret, ret_usable) = if Array::length(etps) > 0 {
+                          let (ftargs, nc) = effect_fresh_targs(etps, c1b)
+                          c1b = nc
+                          let ip = for p in sig_params_decl {
+                            subst_type_params(p, etps, ftargs)
+                          }
+                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps))
+                        } else {
+                          (sig_params_decl, sig_ret_decl, type_is_ground(sig_ret_decl))
+                        }
                         if Array::length(sig_params) != oalen {
                           Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(sig_params)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
                         } else {
                           let mut vi = 0
                           while vi < oalen {
-                            s1 = check_assignable(Array::get(sig_params, vi), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, String::concat("perform argument type mismatch for ", op_qname), op_off)
+                            s1 = check_assignable(subst_apply(s1, Array::get(sig_params, vi)), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, String::concat("perform argument type mismatch for ", op_qname), op_off)
                             vi = vi + 1
                           }
                         }
                         // The perform's value is the op's declared return type —
                         // typing it (instead of a fresh var) also lets resume/arm
                         // consumers see the concrete type. Non-ground returns keep
-                        // the fresh var (generic inference untouched).
-                        if type_is_ground(sig_ret) {
-                          (sig_ret, s1, c1)
+                        // the fresh var (generic inference untouched); a generic
+                        // effect's params-only return counts as usable after the
+                        // fresh-var substitution above (#1340).
+                        if ret_usable {
+                          (sig_ret, s1, c1b)
                         } else {
-                          let (tv, c2) = fresh_var(c1)
+                          let (tv, c2) = fresh_var(c1b)
                           (tv, s1, c2)
                         }
                       },
@@ -3456,9 +3575,43 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                   }
                 }
               },
-              EIdent(_, _) => {
-                let (tv, c2) = fresh_var(c)
-                (tv, s, c2)
+              EIdent(bare_qname, bare_off) => {
+                // #1157: a zero-arg operation performed WITHOUT parens
+                // (`perform State::Get`) parses as a bare EIdent, not an
+                // ECall. #1340: validate it against the registry too — an
+                // op that declares parameters cannot be performed bare, and
+                // a usable return type flows out just like the ECall path
+                // (generic effects instantiate their type params with fresh
+                // vars first).
+                match effect_op_sig(defs, bare_qname) {
+                  Some(bare_sig) => {
+                    let (bare_params_decl, bare_ret_decl) = bare_sig
+                    let betps = effect_tparams(defs, String::substring(bare_qname, 0, String::index_of(bare_qname, "::")))
+                    let mut bc1 = c
+                    let (bare_ret, bare_ret_usable) = if Array::length(betps) > 0 {
+                      let (bftargs, bnc) = effect_fresh_targs(betps, bc1)
+                      bc1 = bnc
+                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps))
+                    } else {
+                      (bare_ret_decl, type_is_ground(bare_ret_decl))
+                    }
+                    if Array::length(bare_params_decl) != 0 {
+                      Array::push(errors, String::concat("perform ", String::concat(bare_qname, String::concat(" expects ", String::concat(__to_string(Array::length(bare_params_decl)), String::concat(" argument(s), got 0", off_marker(bare_off)))))))
+                    } else {
+                      ()
+                    }
+                    if bare_ret_usable {
+                      (bare_ret, s, bc1)
+                    } else {
+                      let (tv, c2) = fresh_var(bc1)
+                      (tv, s, c2)
+                    }
+                  },
+                  None => {
+                    let (tv, c2) = fresh_var(c)
+                    (tv, s, c2)
+                  }
+                }
               },
               other => check_expr(other, env, defs, s, c, errors, tytab)
             }
@@ -5196,6 +5349,13 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       // `let n: Int = handle { throw("x") } with Error { Throw(_) => "s" }`
       // sailed through and did Int arithmetic on a String.
       let mut hres: Type = hty
+      // #1340 (ADR-0071): ONE instantiation of each generic effect per
+      // handle expression, shared by every arm — the S that
+      // `Get => resume(0)` binds to Int must be the same S the `Put(v)`
+      // payload binder sees, or cross-arm state typing falls apart.
+      // (find-or-create keyed by effect name; non-generic effects skip.)
+      let hinst_effs = array_empty()
+      let hinst_targs = array_empty()
       let mut hai = 0
       while hai < Array::length(harms) {
         let (hpat, hbody) = Array::get(harms, hai)
@@ -5205,7 +5365,35 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
             if hci > 0 && effect_is_declared(defs, String::substring(hqname, 0, hci)) {
               match effect_op_sig(defs, hqname) {
                 Some(hsig) => {
-                  let (hparams, hret) = hsig
+                  let (hparams_decl, hret_decl) = hsig
+                  let heff_name = String::substring(hqname, 0, hci)
+                  let hetps = effect_tparams(defs, heff_name)
+                  let (hparams, hret) = if Array::length(hetps) > 0 {
+                    let mut hfi = 0
+                    let mut hfound = 0 - 1
+                    while hfi < Array::length(hinst_effs) {
+                      if Array::get(hinst_effs, hfi) == heff_name {
+                        hfound = hfi
+                      } else {
+                        ()
+                      }
+                      hfi = hfi + 1
+                    }
+                    let htargs = if hfound >= 0 {
+                      Array::get(hinst_targs, hfound)
+                    } else {
+                      let (created, hnc) = effect_fresh_targs(hetps, hc1)
+                      hc1 = hnc
+                      Array::push(hinst_effs, heff_name)
+                      Array::push(hinst_targs, created)
+                      created
+                    }
+                    (for p in hparams_decl {
+                      subst_type_params(p, hetps, htargs)
+                    }, subst_type_params(hret_decl, hetps, htargs))
+                  } else {
+                    (hparams_decl, hret_decl)
+                  }
                   let hplen = Array::length(hparams)
                   let hblen = Array::length(hbinds)
                   // The op's declared arity, plus optionally one trailing
@@ -5359,7 +5547,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       }
       if Array::length(hx_eff) > 0 {
         match find_typedef(defs, Array::get(hx_eff, 0)) {
-          Some(TDEffect(_, hx_decl_ops)) => {
+          Some(TDEffect(_, hx_decl_ops, _)) => {
             let mut hoi = 0
             while hoi < Array::length(hx_decl_ops) {
               let (hx_op_name, _, _) = Array::get(hx_decl_ops, hoi)

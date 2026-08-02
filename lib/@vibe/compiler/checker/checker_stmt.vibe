@@ -1197,28 +1197,26 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
       SEffectDef(_, ename, eparams, ops) => {
         // #813: register the effect's operation signatures (resolved to
         // checker Types) so perform arguments, handler arm names/arity/
-        // payload binds, and resume values can be validated. Generic effects
-        // (type params) are not registered — every consumer ground-gates on
-        // the registry, so an absent entry means "no signature checking",
-        // exactly the pre-#813 behavior.
-        if Array::length(eparams) == 0 {
-          let resolved_ops = array_empty()
-          let mut oi = 0
-          while oi < Array::length(ops) {
-            let (opname, opparams, opret) = Array::get(ops, oi)
-            let rp = array_empty()
-            let mut pi = 0
-            while pi < Array::length(opparams) {
-              Array::push(rp, resolve_type_expr(Array::get(opparams, pi), defs))
-              pi = pi + 1
-            }
-            Array::push(resolved_ops, (opname, rp, resolve_type_expr(opret, defs)))
-            oi = oi + 1
+        // payload binds, and resume values can be validated. #1340
+        // (ADR-0071): generic effects register too — a declared type param
+        // has no typedef/builtin, so resolve_type_expr turns it into a rigid
+        // `CtNamed(param, [])` inside the signatures (the same convention
+        // TDStruct uses, #829), and the perform/handle consumers substitute
+        // those names with fresh inference vars per use site.
+        let resolved_ops = array_empty()
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (opname, opparams, opret) = Array::get(ops, oi)
+          let rp = array_empty()
+          let mut pi = 0
+          while pi < Array::length(opparams) {
+            Array::push(rp, resolve_type_expr(Array::get(opparams, pi), defs))
+            pi = pi + 1
           }
-          Array::push(defs, TDEffect(ename, resolved_ops))
-        } else {
-          ()
+          Array::push(resolved_ops, (opname, rp, resolve_type_expr(opret, defs)))
+          oi = oi + 1
         }
+        Array::push(defs, TDEffect(ename, resolved_ops, eparams))
         (env, s, c)
       },
       SEffectSet(_, esname, _) => {
@@ -1315,6 +1313,158 @@ fn check_program_bounds_impl(env: TypeEnv, s: Subst, defs: Array[TypeDef], error
   }
 }
 
+/// #1340 (ADR-0071): validate a generic-instantiation row item
+/// (`State[Int]`) against the module's effect declarations. The base must
+/// not be an effectset, and when it names a DECLARED effect it must have
+/// exactly one type parameter matched by exactly one bracket argument
+/// (multi-param instantiations are rejected at parse; empty brackets are
+/// rejected here). Unknown bases are skipped — imported effects are
+/// invisible here, the same permissive stance the containment checker
+/// takes.
+fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+  match row {
+    None => (),
+    Some(r) => {
+      let raw = String::split(r, ",")
+      let mut i = 0
+      while i < Array::length(raw) {
+        let label = String::trim(Array::get(raw, i))
+        let bi = String::index_of(label, "[")
+        if bi > 0 {
+          let base = label[0:bi]
+          let inner = String::trim(label[bi + 1:String::length(label) - 1])
+          let mut is_es = false
+          let mut esi = 0
+          while esi < Array::length(es_names) {
+            if Array::get(es_names, esi) == base {
+              is_es = true
+            } else {
+              ()
+            }
+            esi = esi + 1
+          }
+          if is_es {
+            Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: `", String::concat(base, "` is an effectset — effectset instantiation in a row is not supported yet (ADR-0071)")))))
+          } else if String::length(inner) == 0 {
+            Array::push(errors, String::concat("effect row item `", String::concat(label, "` needs a type argument between the brackets")))
+          } else {
+            let mut edi = 0
+            let mut tpc = 0 - 1
+            while edi < Array::length(ed_names) {
+              if Array::get(ed_names, edi) == base {
+                tpc = Array::get(ed_tpcounts, edi)
+              } else {
+                ()
+              }
+              edi = edi + 1
+            }
+            if tpc == 0 {
+              Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, " declares no type parameters")))))
+            } else if tpc > 1 {
+              Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" declares ", String::concat(__to_string(tpc), " type parameters; a row item supports exactly one type argument for now")))))))
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
+/// #1340: walk the same row slots es_expand_stmts_effect_rows covers — a
+/// top-level binding's declared TyFn rows (including nested function types
+/// in parameter/return position) and an EFn value's inline row + parameter
+/// annotations. Nested closure literals inside bodies are not walked (same
+/// coverage boundary as the effectset expansion pass).
+fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+  match te {
+    TyFn(params, ret, eff) => {
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, es_names, errors)
+      let mut i = 0
+      while i < Array::length(params) {
+        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, es_names, errors)
+        i = i + 1
+      }
+      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, es_names, errors)
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, es_names, errors)
+        i = i + 1
+      }
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, es_names, errors)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+  match te {
+    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, es_names, errors),
+    None => ()
+  }
+}
+
+fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+  match e {
+    EFn(_, _, params, ret, eff, _) => {
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, es_names, errors)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, pty) = Array::get(params, i)
+        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, es_names, errors)
+        i = i + 1
+      }
+      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, es_names, errors)
+    },
+    _ => ()
+  }
+}
+
+fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let ed_names = array_empty()
+  let ed_tpcounts = array_empty()
+  let es_names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, ename, eparams, _) => {
+        Array::push(ed_names, ename)
+        Array::push(ed_tpcounts, Array::length(eparams))
+      },
+      SEffectSet(_, esname, _) => Array::push(es_names, esname),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(stmts) {
+    match Array::get(stmts, j) {
+      SLet(_, _, _, ty, body) => {
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, es_names, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, es_names, errors)
+      },
+      SLetMut(_, ty, body) => {
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, es_names, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, es_names, errors)
+      },
+      _ => ()
+    }
+    j = j + 1
+  }
+}
+
 /// Append `Async`-escape diagnostics (an async primitive used outside an
 /// `{Async}` context) to the type-error list, but only when type checking is
 /// otherwise clean so we surface the real error first.
@@ -1325,6 +1475,12 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: 
     while i < Array::length(eff_errs) {
       Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
       i = i + 1
+    }
+    if Array::length(frozen_errors) == 0 {
+      // #1340 (ADR-0071): generic-instantiation row items are validated
+      // against the effect declarations before the containment pass sees
+      // them (which compares instantiation-insensitively by base name).
+      geff_validate_row_targs(stmts, frozen_errors)
     }
     if Array::length(frozen_errors) == 0 {
       // ADR-0071 step 3 (#755): expand any effectset-name token in a
@@ -2655,29 +2811,3 @@ export fn detect_unbound_nonunit_returns(stmts: Array[Stmt], tytab: Array[(Int, 
   out
 }
 
-/// #1218 (ADR-0084/ADR-0071 gap): a GENERIC effect declaration (`effect
-/// State[S] { ... }`) compiles and runs under both handler classes, but its
-/// operation signatures are never registered (see the SEffectDef arm above:
-/// only zero-param effects enter the TDEffect registry), so every consumer
-/// ground-gates to "no signature checking" -- `perform State::Get(1,2,3)`
-/// against a 0-arity op passes silently, handler arm names/arity/payloads
-/// are not validated, and `with { State[Int] }` is a parse error so the row
-/// can only name the bare effect. Until ADR-0071 generic-instantiation
-/// normalization gives these real signatures, surface the hole as a
-/// warning at the declaration site instead of letting it read as checked.
-export fn detect_generic_effect_decls(stmts: Array[Stmt]) -> Array[String] {
-  let out = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEffectDef(_, ename, eparams, _) => if Array::length(eparams) > 0 {
-        Array::push(out, String::concat("generic effect '", String::concat(ename, "' declares type parameters: its operation signatures are not registered, so perform arguments and handler arms for it are unchecked (pending ADR-0071 generic-instantiation normalization)")))
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  out
-}

@@ -330,10 +330,51 @@ fn label_is_effect_var(name: String) -> Bool {
   String::length(name) == 1 && String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
 }
 
+/// #1340 (ADR-0071): the base effect name of a row label — `State[Int]` and
+/// `State[String]` both have base `State`; a bracketless label is its own
+/// base. Row CONTAINMENT is instantiation-insensitive for now: a bare
+/// `State` authorizes any instantiation and vice versa (for bracketless
+/// rows base equality degenerates to exact equality, so existing programs
+/// are unchanged). Distinguishing instantiations inside containment is the
+/// remaining ADR-0071 OperationRef-normalization work.
+fn row_label_base(label: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi > 0 {
+    label[0:bi]
+  } else {
+    label
+  }
+}
+
+/// #1340: base-aware membership — true when some declared label and the
+/// required name share a base AND at least one side actually carries a
+/// bracket (so this never fires for pre-#1340 rows, where the exact check
+/// above already decided).
+fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
+  let eb = row_label_base(eff_name)
+  let ehas = String::length(eb) < String::length(eff_name)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    let lb = row_label_base(l)
+    let lhas = String::length(lb) < String::length(l)
+    if (ehas || lhas) && lb == eb {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   // All concrete label checks, including Async above, go through this same
   // exact-membership primitive rather than substring matching.
   if effect_row_has_label(Some(labels), eff_name) {
+    true
+  } else if row_base_membership(labels, eff_name) {
     true
   } else if is_exception_effect_name(eff_name) {
     let mut alias_found = false

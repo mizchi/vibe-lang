@@ -16,7 +16,6 @@ import @vibe/compiler/checker {
   check_program,
   check_program_type_table,
   check_program_with_env,
-  detect_generic_effect_decls,
   detect_unbound_nonunit_returns,
   detect_unused_imports
 }
@@ -664,48 +663,6 @@ fn extract_quoted_after(msg: String, marker: String) -> String {
     } else {
       String::substring(rest, 0, rel_end)
     }
-  }
-}
-
-/// #1302 review: detect_generic_effect_decls' messages carry no [@off=]
-/// marker (SEffectDef stores no source offset), so they fell through every
-/// locate_type_error heuristic and surfaced unlocated -- the LSP pinned
-/// them to line 1, and multiple declarations were indistinguishable.
-/// Anchor each warning at its declaration: extract the effect name from
-/// the message's `generic effect '<name>'` head, find the `effect <name>`
-/// declaration header in the source (word-boundary-checked on both sides,
-/// so `effect State` neither matches inside `my_effect State` nor claims
-/// `effect StateMachine`), and append a real [@off=start:end] range marker
-/// over the name token so the standard marker decode path emits an exact
-/// line:col range. Distinct declarations carry distinct names (a duplicate
-/// declaration is its own error), so each warning anchors to its own site.
-fn mark_generic_effect_warning(source: String, msg: String) -> String {
-  let name = extract_quoted_after(msg, "generic effect '")
-  let header = String::concat("effect ", name)
-  let src_len = String::length(source)
-  let name_len = String::length(name)
-  let mut noff = 0 - 1
-  let mut from = 0
-  while name_len > 0 && noff < 0 && from < src_len {
-    let at = index_of_after(source, header, from)
-    if at < 0 {
-      from = src_len
-    } else {
-      let cand = at + 7
-      let after = cand + name_len
-      let start_ok = at == 0 || typecheck_ident_run(source, at - 1) == at - 1
-      let end_ok = after >= src_len || typecheck_ident_run(source, after) == after
-      if start_ok && end_ok {
-        noff = cand
-      } else {
-        from = at + 1
-      }
-    }
-  }
-  if noff < 0 {
-    msg
-  } else {
-    String::concat(msg, String::concat(" [@off=", String::concat(__to_string(noff), String::concat(":", String::concat(__to_string(noff + name_len), "]")))))
   }
 }
 
@@ -2177,15 +2134,11 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with { Error 
               Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
               wi = wi + 1
             }
-            let geff_warns = detect_generic_effect_decls(stmts)
-            let mut gi = 0
-            while gi < Array::length(geff_warns) {
-              // #1302 review: anchor at the declaration before locating --
-              // the raw message carries no offset and would fall through
-              // every heuristic (see mark_generic_effect_warning).
-              Array::push(extra, locate_type_error(source, String::concat("warning: ", mark_generic_effect_warning(source, Array::get(geff_warns, gi)))))
-              gi = gi + 1
-            }
+            // #1340 (ADR-0071): the #1302 "generic effect declarations are
+            // unchecked" declaration-site warning is retired — generic
+            // effects now register their operation signatures (instantiated
+            // per perform/handle site), so the hole it flagged no longer
+            // exists.
             let (warn_tytab, warn_subst) = check_program_type_table(stmts)
             let return_warns = detect_unbound_nonunit_returns(stmts, warn_tytab, warn_subst)
             let mut ri = 0

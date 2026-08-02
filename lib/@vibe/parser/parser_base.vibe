@@ -827,15 +827,40 @@ fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) {
   }
 }
 
+/// #1340 (ADR-0071): capture a generic row item's bracketed type-argument
+/// group (`State[Int]`, `Exception[MyErr]`, nested `State[Array[Int]]`)
+/// back into the row string. COMMAS ARE REJECTED: the whole row pipeline
+/// (checker/core splitters, effectset expansion) splits row strings on ","
+/// -- a comma inside a label would silently shear it apart -- so a row item
+/// takes exactly ONE type argument for now (single-param generic effects:
+/// `State[S]`, `Exception[E]`). Only type names and nested brackets are
+/// accepted inside the group. Entered just after the opening '[' with
+/// depth 1 and `acc` already holding `name[`.
+fn collect_row_item_targs(tokens: Array[Token], pos: Int, depth: Int, acc: String) -> (String, Int) with { Error } {
+  match peek(tokens, pos) {
+    TIdent(nm) => collect_row_item_targs(tokens, pos + 1, depth, String::concat(acc, nm)),
+    TComma => throw("a generic effect row item takes exactly one type argument for now (multi-argument instantiations in `with { ... }` are not yet supported)"),
+    TLBracket => collect_row_item_targs(tokens, pos + 1, depth + 1, String::concat(acc, "[")),
+    TRBracket => if depth == 1 {
+      (String::concat(acc, "]"), pos + 1)
+    } else {
+      collect_row_item_targs(tokens, pos + 1, depth - 1, String::concat(acc, "]"))
+    },
+    _ => throw("expected a type name or ']' in the effect row item's type arguments")
+  }
+}
+
 /// ADR-0071 (effectset): a row item is either a bare effect/effectset/row-var
-/// identifier (`Env`) or a qualified single operation (`Env::get`) -- same
+/// identifier (`Env`), a qualified single operation (`Env::get`) -- same
 /// `Ident (:: Ident)?` qualification already used by parse_import_item and
-/// parse_binding_name. The row itself stays a plain comma-joined `String`
-/// (see TyFn/EFn's `Option[String]` field) so a qualified item round-trips
-/// through the printer for free -- it just splices the text back verbatim,
-/// no re-parsing. Checker-side recognition of `Effect::op` items (expanding
-/// them to a single-operation row instead of rejecting as an unknown effect
-/// name) is a separate, larger change (ADR-0071 step 3), not attempted here.
+/// parse_binding_name -- or (#1340) a generic effect instantiation
+/// (`State[Int]`, via collect_row_item_targs above). The row itself stays a
+/// plain comma-joined `String` (see TyFn/EFn's `Option[String]` field) so a
+/// qualified item round-trips through the printer for free -- it just
+/// splices the text back verbatim, no re-parsing. Checker-side recognition
+/// of `Effect::op` items (expanding them to a single-operation row instead
+/// of rejecting as an unknown effect name) is a separate, larger change
+/// (ADR-0071 step 3), not attempted here.
 fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with { Error } {
   match peek(tokens, pos) {
     TRBrace => (acc, pos + 1),
@@ -845,6 +870,7 @@ fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String,
           TIdent(member) => (String::concat(name, String::concat("::", member)), pos + 3),
           _ => throw("expected qualified operation name after '::' in effect list")
         },
+        TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(name, "[")),
         _ => (name, pos + 1)
       }
       let new_acc = if String::length(acc) == 0 {
