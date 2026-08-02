@@ -44,10 +44,14 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
    `with { Frobnicate }` は素通りする (module-local な `TDEffect` しか見えず、
    import された user effect と builtin を区別できないため、素朴な
    「既知ラベル検査」は false positive を生む)。
-6. **`wit_gen` の分類は反転している**。「entry file 内に `effect X {...}` 宣言が
-   あれば interface を生成、無ければ host capability のコメント」という規則で、
-   ADR-0084 の分類 (宣言された algebraic effect こそ境界に出てはいけない) と
-   逆になっている。これが #1143 の「ねじれ」の実体。
+6. **`wit_gen` の分類は反転しており、かつ checker とは独立している**。
+   `wit_collect_effect_defs` は **AST の `SEffectDef` 文だけ**を走査する
+   (entry file + export 対象)。checker の `TDEffect` レジストリも
+   `effect_is_declared` も参照しない。規則は「`effect X {...}` 宣言が見つかれば
+   interface を生成、無ければ host capability のコメント」であり、ADR-0084 の
+   分類 (宣言された algebraic effect こそ境界に出てはいけない) と逆。これが
+   #1143 の「ねじれ」の実体で、**checker 側の表現を変えても自動的には直らない**
+   (wit_gen 自身の規則を差し替える必要がある)。
 7. **ADR-0075 Phase 2 (`resource X : Kind = ...` 宣言) は未実装**。
    parser / AST / `TypeDef` のいずれにも resource 宣言は無い
    (`@vibex/wasm_wit_parser` の `TDResource` は WIT IDL 用の別物)。
@@ -84,12 +88,25 @@ effect Stdout[_: Process::Root] {
 ### 2. 内部表現: `TDEffect` に**第4スロットを追加**、`CtFn` は不変
 
 ```
-TDEffect(name, ops, tparams, rparams)
-                              ^^^^^^^ Array[(String, String)] = (param name, kind path)
+TDEffect(name, ops, params, param_kinds)
+                    ^^^^^^  ^^^^^^^^^^^ Array[String]、params と同じ長さの
+                    |                   parallel 配列。"" = 通常の型パラメータ、
+                    |                   それ以外 = resource kind の path
+                    既存の Array[String] (#1340) のまま。宣言順を保持する
 ```
 
+- **宣言順を保持するため、resource パラメータを別配列に分離しない**。
+  採用した構文は両者を1つの位置リストに書くので、`effect E[R: K, T]` と
+  `effect E[T, R: K]` を分離配列で表すと区別できなくなり、後続の明示
+  instantiation `E[X, Y]` でどちらが resource 引数か決まらない。既存の
+  `params: Array[String]` を**全パラメータの順序付きリストのまま**にし、
+  同じ添字で引く `param_kinds` を並置する (`""` が通常の型パラメータ)。
+  これにより #1340 の `tparams` 消費側 (`effect_tparams` /
+  `effect_fresh_targs` / `subst_type_params`) は**形も意味も変わらない**。
 - 追加は**末尾**とする (`TDStruct` の #829、`TDEffect` の #1340 と同じ規約 —
   既存の positional match を壊さない)。
+- 宣言順に制約は課さない (「resource パラメータは先頭にまとめる」等の規則は
+  採らない) — 順序が表現に保存されるので不要。
 - **`CtFn` の `Option[String]` は広げない**。row を構造化データにする変更は
   コンパイラ全域の `CtFn` パターンマッチ数百箇所に波及し、ADR-0071 の
   OperationRef 正規化と一体で行うべき別作業である。resource 引数は
@@ -98,10 +115,23 @@ TDEffect(name, ops, tparams, rparams)
 
 ### 3. builtin は registry のメタデータ列で分類する (`TDEffect` を作らない)
 
-builtin effect に `TDEffect` を合成する案は**採らない**。合成すると
-`effect_is_declared` が builtin に対して `true` を返すようになり、
-`wit_gen` が全 host effect に対して WIT interface を生成し始める
-(上記「現状の実測 6」の反転が、意図せぬ形で一気に発火する)。
+builtin effect に `TDEffect` を合成する案は**採らない**。理由は
+**checker 側の副作用**である — `effect_is_declared` が builtin に対して
+`true` を返すようになると、#813/#828 の handler arm 検証と perform 検証が
+host effect にも一斉に効き始める: `handle body with Fs { ... }` の arm 名 /
+payload arity / **網羅性**が検査対象になり、部分的な `with Fs` handler は
+`non-exhaustive handler` で reject される。しかし ADR-0088 が記録したとおり
+**builtin operation は host import 直呼びに lower され、その handler arm は
+そもそも実行されない** (vacuous-handle elimination)。実行されないコードを
+新たに型検査して既存プログラムを弾くことになるため、これは retrofit の
+Phase 1 (「表面無変更・既存プログラム無破壊」) と両立しない。
+
+> **訂正 (Codex review on PR #1355)**: 初稿はここで「合成すると `wit_gen` が
+> 全 host effect に WIT interface を生成し始める」と書いていたが、これは
+> 誤りだった。`wit_gen` は `SEffectDef` (AST) だけを見ており `TDEffect` も
+> `effect_is_declared` も参照しない (上記「現状の実測 6」)。両者は結合して
+> いないので、`TDEffect` を合成しても `wit_gen` の挙動は変わらない。逆に
+> **#1143 のねじれは wit_gen 自身の規則を差し替えないと直らない** (実装順 4)。
 
 代わりに `registry_typed_rows` に **effect class + 既定 resource kind** の列を
 足し、`builtins_*.vibe` の if-chain 側は既存の `Some("Fs")` のままとする
@@ -142,7 +172,7 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**
 2. ADR-0075 Phase 2: `resource X : Kind = <literal>` 宣言と `Process::Root`
    singleton kind。
 3. parser: `parse_type_params_list` に bound と `_` を追加。`TDEffect` の
-   `rparams` スロット追加と registration。
+   `param_kinds` スロット追加と registration。
 4. `wit_gen` を `effect_class` 起点に切り替える (#1143 のねじれ解消)。
 5. main の closed row 検査 (ADR-0084 Phase 3、warning から)。ADR-0088
    Decision 5 の段階ゲートに接続。
