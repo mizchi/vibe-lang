@@ -59,7 +59,33 @@ CI persists the cache per shard in the `vibecache-v2-*` actions/cache
 entry, keyed on the codegen fingerprint like the module-level compile
 cache, so a compiler change rotates the CI entry too.
 
-## Mechanism 2: weight-balanced shards (scale-out knob)
+## Mechanism 2: batch precompile (resident stage2 daemon pool)
+
+The cold path itself is batched: before the fan-out, `unit_test_runner.sh`
+runs `scripts/unit_batch_compile.mjs`, which compiles every out-cache-missing
+file through a pool of RESIDENT compiler daemons
+(`wasm_vibe_host_runner.js --daemon`, JSON-line requests) and stores the
+results into the out-cache above. This removes the ~0.4-0.5s fixed one-shot
+overhead (node boot + stage2 instantiate + V8 tier-up from scratch) per
+file — a warm daemon compiles a light test in ~10-70ms — and it removes the
+tier-up tax on every heavy compile after the first. Mechanics:
+
+- outputs are byte-identical to one-shot compiles (verified); import-closure
+  deps come from the plan daemon (`VIBE_MODULE_PLAN`) and are stored with
+  the exact same keying as `unit_out_store`, so batch entries and one-shot
+  entries are indistinguishable at hit time;
+- the guest bump allocator never frees, so each daemon reports its heap
+  high-water per response and is recycled past `VIBE_BATCH_HEAP_LIMIT`
+  (default 1.5GB; the heaviest single compile allocates ~1GB);
+- while daemon 0 compiles the single heaviest file (populating the shared
+  on-disk module cache with the big closures), the other daemons drain the
+  light tail — instead of N daemons cold-compiling the compiler closure in
+  parallel;
+- failures are never verdicts: a file that fails batch (error, timeout,
+  daemon crash) is left to `run_one`'s one-shot fallback, which retries and
+  reports the real diagnostic. `VIBE_UNIT_BATCH_COMPILE=0` opts out.
+
+## Mechanism 3: weight-balanced shards (scale-out knob)
 
 `VIBE_UNIT_TEST_SHARD=i/N` LPT-partitions the battery by recorded weights
 (`scripts/unit_test_weights.tsv`); ci.yml's matrix is the only place N is

@@ -376,6 +376,37 @@ total=0; fails=0; skips=0
 hw_jobs="$(nproc 2>/dev/null || echo 1)"
 [ "$hw_jobs" -gt 4 ] && hw_jobs=4
 JOBS="${VIBE_UNIT_TEST_JOBS:-$hw_jobs}"
+
+# --- batch precompile ---------------------------------------------------------
+# A resident stage2 daemon pool (scripts/unit_batch_compile.mjs) compiles
+# every out-cache-missing file of this battery up front and stores the
+# results into the out-cache above, so the fan-out below runs almost entirely
+# on cache hits. A one-shot compile pays ~0.4-0.5s of fixed process overhead
+# (node boot + stage2 instantiate + V8 tier-up) per file; a warm daemon
+# compiles a light test in tens of ms. Files that fail in the batch phase are
+# simply not stored -- run_one's one-shot path recompiles them with retries
+# and reports the real diagnostic, so batch failures can never change a
+# test's verdict. VIBE_UNIT_BATCH_COMPILE=0 opts out; disabling the out-cache
+# also disables it (the batch phase's only output IS the cache), which keeps
+# the VIBE_UNIT_OUT_CACHE=0 weights-regeneration procedure accurate.
+if [ "$unit_out_cache_enabled" != "0" ] && [ "${VIBE_UNIT_BATCH_COMPILE:-1}" != "0" ]; then
+  batch_list="$effective_entries"
+  if [ "$have_wasmtime" -eq 0 ]; then
+    # Files the fan-out will skip (need the wasmtime CLI) must not be
+    # batch-compiled either -- same content-based detection as unit_worker.
+    batch_list="$(mktemp -t vibe-unit-batch-XXXXXX)"
+    while IFS= read -r f; do
+      case "$f" in ''|\#*) continue ;; esac
+      [ -f "$f" ] && grep -q '"wasmtime run' "$f" && continue
+      printf '%s\n' "$f"
+    done < "$effective_entries" > "$batch_list"
+  fi
+  ROOT_DIR="$ROOT_DIR" VIBE_UNIT_BATCH_JOBS="$JOBS" \
+    node "$ROOT_DIR/scripts/unit_batch_compile.mjs" "$S2" "$batch_list" \
+    || echo "[unit-test-runner] WARN: batch precompile failed; per-file fallback covers everything" >&2
+  [ "$batch_list" != "$effective_entries" ] && rm -f "$batch_list"
+fi
+
 if [ "$JOBS" -le 1 ]; then
   while IFS= read -r f; do
     case "$f" in ''|\#*) continue ;; esac
