@@ -261,3 +261,80 @@ test "call-site mismatch aggregates, sorts, and blames the caller" {
   assert(String::contains(msg, "effect row mismatch for 'wrap': missing { Env, Fs }"))
   assert(String::contains(msg, "hint: declare 'fn wrap(...) -> T with { Env, Fs }'"))
 }
+
+// #1361: a LOCAL closure's declared row leaks at its CALL site, exactly like a
+// top-level function's (#626) or a callback parameter's (#885). Before this the
+// closure was checked against its OWN row (so it always satisfied itself) and
+// the call site consulted only the top-level call-graph map, where a local name
+// never appears -- so the row escaped silently, and the doctest / `vibe test`
+// caches (file_entry_cacheable / file_tests_cacheable, which reuse this walk)
+// judged such an entry deterministic.
+
+test "calling a local closure leaks its declared row" {
+  let closure = fn_with(Some("Env"), EInt(1))
+  let body = ELet("f", closure, ECall(EIdent("f", -1), array_empty(), -1), -1)
+  let errors = check_perform_effects_expr(body, [
+    "Stdout"
+  ], false)
+  assert(Array::length(errors) > 0)
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  assert(String::contains(msg, "missing { Env }"))
+}
+
+test "a caller declaring the local closure's row is OK" {
+  let closure = fn_with(Some("Env"), EInt(1))
+  let body = ELet("f", closure, ECall(EIdent("f", -1), array_empty(), -1), -1)
+  let errors = check_perform_effects_expr(body, [
+    "Stdout",
+    "Env"
+  ], false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a pure local closure leaks nothing" {
+  let closure = fn_with(None, EInt(1))
+  let body = ELet("f", closure, ECall(EIdent("f", -1), array_empty(), -1), -1)
+  let errors = check_perform_effects_expr(body, no_labels(), false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "defining an effectful local closure without calling it leaks nothing" {
+  // Defining a closure performs nothing; only invoking it does.
+  let closure = fn_with(Some("Env"), EInt(1))
+  let body = ELet("f", closure, EInt(0), -1)
+  let errors = check_perform_effects_expr(body, no_labels(), false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a later pure binding shadows an effectful local closure" {
+  let effectful = fn_with(Some("Env"), EInt(1))
+  let pure = fn_with(None, EInt(2))
+  let inner = ELet("f", pure, ECall(EIdent("f", -1), array_empty(), -1), -1)
+  let body = ELet("f", effectful, inner, -1)
+  let errors = check_perform_effects_expr(body, no_labels(), false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a handle around the call discharges the local closure's row" {
+  let closure = fn_with(Some("Env"), EInt(1))
+  let call = ECall(EIdent("f", -1), array_empty(), -1)
+  let body = ELet("f", closure, EHandle(call, [
+    (PBind("k"), EInt(0))
+  ]), -1)
+  let errors = check_perform_effects_expr(body, no_labels(), false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "calling a recursive local closure leaks its declared row" {
+  let closure = fn_with(Some("Fs"), EInt(1))
+  let body = ELetRec("go", closure, ECall(EIdent("go", -1), array_empty(), -1))
+  let errors = check_perform_effects_expr(body, no_labels(), false)
+  assert(Array::length(errors) > 0)
+}
+
+test "calling a local closure bound with let mut leaks its declared row" {
+  let closure = fn_with(Some("Fs"), EInt(1))
+  let body = ELetMut("f", closure, ECall(EIdent("f", -1), array_empty(), -1), -1)
+  let errors = check_perform_effects_expr(body, no_labels(), false)
+  assert(Array::length(errors) > 0)
+}

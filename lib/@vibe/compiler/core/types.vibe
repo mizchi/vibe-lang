@@ -411,6 +411,52 @@ export fn type_name_has_iterator_impl(env: TypeEnv, type_name: String) -> Bool {
   type_name_iterator_impl_scan(env, env, type_name)
 }
 
+/// #1358: is this trait's `next` the ASYNC one (`-> Future[..]`) rather than the
+/// sync `-> Option[..]`? That return head is the single bit the dict-passing
+/// desugar switches on when it decides to wrap each loop step in `await(..)`
+/// (`fn_return_is_future` in desugar_trait_dict.vibe), so the checker reads the
+/// same bit from the trait declaration to decide whether the loop needs `Async`.
+fn trait_next_returns_future(env: TypeEnv, trait_name: String) -> Bool {
+  match trait_method_sig(env, trait_name, "next") {
+    Some(sig) => {
+      let (_, ret) = sig
+      match ret {
+        TyApp(n, _) => n == "Future",
+        TyName(n) => n == "Future",
+        _ => false
+      }
+    },
+    None => false
+  }
+}
+
+fn type_name_async_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: String) -> Bool {
+  match scan {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
+    EnvTraitDef(_, _, _, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
+    EnvTraitImpl(tname, target, rest) => {
+      let hit = trait_target_head_name(target) == type_name && trait_next_returns_future(full, tname)
+      if hit {
+        true
+      } else type_name_async_iterator_impl_scan(rest, full, type_name)
+    },
+    EnvTraitImplGen(_, _, _, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
+    EnvFlat(_) => false,
+    EnvCached(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name)
+  }
+}
+
+/// #1358: the ASYNC half of type_name_has_iterator_impl — true iff `type_name`
+/// implements an iterator trait whose `next` yields a `Future`, i.e. driving it
+/// with `for x in it` awaits every step. The `await(..)` is injected AFTER the
+/// checker (desugar_trait_dicts), so the effect pass cannot see an async
+/// primitive in the program text and has to recognise the loop by its iterand's
+/// type instead — see check_async_effects_expr's EForIn arm.
+export fn type_name_has_async_iterator_impl(env: TypeEnv, type_name: String) -> Bool {
+  type_name_async_iterator_impl_scan(env, env, type_name)
+}
+
 /// Like `trait_method_sig` but follows supertraits transitively, so a method
 /// inherited from a supertrait (`trait B: A` calling an `A` method on `[T: B]`)
 /// resolves. Trait hierarchies are acyclic, so the recursion terminates.

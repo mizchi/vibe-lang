@@ -11,7 +11,8 @@ import @vibe/compiler/core {
   env_lookup,
   exception_effect_labels_equal,
   expr_children,
-  is_exception_effect_name
+  is_exception_effect_name,
+  type_name_has_async_iterator_impl
 }
 
 import @vibe/core {
@@ -170,7 +171,152 @@ fn append_eff_errs(dst: Array[EffectError], src: Array[EffectError]) -> Unit {
   }
 }
 
+//# #1358: `for` over an ASYNC iterator also needs `Async`
+//
+// `for x in it`, where `it`'s iterator `next` yields a `Future`, is lowered to
+// an AWAIT loop by the dict-passing desugar (build_await_iter_for), which runs
+// AFTER the checker -- so at check time the program text holds no async
+// primitive and the pass above finds nothing to require. The loop could
+// therefore suspend from a context that neither declares nor handles `Async`.
+// This hole is not #1350's doing: the retired `for await` marker was unwrapped
+// by the checker without requiring anything either. #1350 only widened the
+// exposure, since now every plain `for` over a Future-returning iterator takes
+// the await lowering.
+//
+// Recognising the loop needs the ITERAND's type, so this mirrors the desugar's
+// own resolution (infer_arg_type_name over var_types/fn_returns). Those tables
+// are built in codegen, so here the head type name comes from the type
+// environment plus a small locals table threaded down the walk. Both sides are
+// best-effort by construction -- an unresolvable iterand requires nothing,
+// exactly as the desugar leaves an unclassifiable loop as a sync EForIn -- so
+// this can MISS a requirement, but never invent one.
+
+fn afe_no_locals() -> Array[(String, String)] {
+  array_empty()
+}
+
+/// Head name of an inferred checker type (`AsyncIter[Int]` -> "AsyncIter").
+fn afe_type_head_name(t: Type) -> Option[String] {
+  match t {
+    CtNamed(n, _) => Some(n),
+    CtStruct(n) => Some(n),
+    _ => None
+  }
+}
+
+/// Head name of a source annotation (`s: AsyncIter[Int]` -> "AsyncIter").
+fn afe_texpr_head_name(t: TypeExpr) -> Option[String] {
+  match t {
+    TyName(n) => Some(n),
+    TyApp(n, _) => Some(n),
+    _ => None
+  }
+}
+
+fn afe_lookup_local(locals: Array[(String, String)], name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(locals) {
+    let entry = Array::get(locals, i)
+    match found {
+      None => if entry.0 == name {
+        found = Some(entry.1)
+      } else {
+        ()
+      },
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Bind `name` to a head type for the scope below, REMOVING any outer entry of
+/// the same name first. Dropping the shadow would let an outer async-iterator
+/// binding be resolved through an inner, unrelated one of the same name — a
+/// false positive (a rejected valid program), which this pass must never
+/// produce. `None` therefore still shadows; it just adds nothing.
+fn afe_bind_local(locals: Array[(String, String)], name: String, head: Option[String]) -> Array[(String, String)] {
+  let out = array_empty()
+  match head {
+    Some(h) => Array::push(out, (name, h)),
+    None => ()
+  }
+  let mut i = 0
+  while i < Array::length(locals) {
+    let entry = Array::get(locals, i)
+    if entry.0 != name {
+      Array::push(out, entry)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn afe_bind_params(locals: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
+  let mut cur = locals
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ptype) = Array::get(params, i)
+    let head = match ptype {
+      Some(te) => afe_texpr_head_name(te),
+      None => None
+    }
+    cur = afe_bind_local(cur, pname, head)
+    i = i + 1
+  }
+  cur
+}
+
+/// Best-effort head type name of an expression used as a `for` iterand (or as a
+/// `let` value feeding one).
+fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match e {
+    EIdent(n, _) => match afe_lookup_local(locals, n) {
+      Some(h) => Some(h),
+      None => match env_lookup(env, n) {
+        Some(t) => afe_type_head_name(t),
+        None => None
+      }
+    },
+    // `Counter::{ .. }` -- the struct literal names its own type.
+    ERecord(n, _, _) => if String::length(n) > 0 {
+      Some(n)
+    } else {
+      None
+    },
+    // `for x in async_iter_arr(xs)` -- the callee's declared return head.
+    ECall(EIdent(f, _), _, _) => match env_lookup(env, f) {
+      Some(CtFn(_, ret, _)) => afe_type_head_name(ret),
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// The iterand's type name when driving it with `for` awaits each step,
+/// otherwise None. Named so the diagnostic can point at `<T>::next`.
+fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match afe_expr_head_name(iter, env, locals) {
+    Some(tn) => if type_name_has_async_iterator_impl(env, tn) {
+      Some(tn)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
+  check_async_effects_expr_lo(expr, env, in_async, afe_no_locals())
+}
+
+/// #1358: the same walk with a `name -> head type name` table for the bindings
+/// in scope, so an async `for` can be recognised through an ordinary local
+/// (`let it = async_iter_arr(xs); for x in it`) and through a typed parameter.
+fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals: Array[(String, String)]) -> Array[EffectError] {
   let errors = array_empty()
   // Preserve the legacy preorder diagnostic order: inspect a call before its
   // structural children, then delegate their enumeration to expr_children.
@@ -180,29 +326,63 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
     } else {
       ()
     },
+    EForIn(_, _, iter, _) => match afe_async_iterand(iter, env, locals) {
+      Some(tn) => if !in_async {
+        Array::push(errors, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with { Async }` or wrap the loop in a handler for it)")))
+      } else {
+        ()
+      },
+      None => ()
+    },
     _ => ()
   }
   match expr {
     // Scope boundary: a lambda's explicit row replaces its enclosing Async
     // context. All other expression forms retain the context unchanged.
-    EFn(_, _, _, _, effect, body) => {
-      append_eff_errs(errors, check_async_effects_expr(body, env, effect_opt_is_async(effect)))
+    EFn(_, _, params, _, effect, body) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params)))
     },
     EHandle(body, arms) => {
       let discharges_async = handle_arms_handle_async(arms)
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async || discharges_async))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async || discharges_async, locals))
       let mut ai = 0
       while ai < Array::length(arms) {
         let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
+        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, locals))
         ai = ai + 1
       }
+    },
+    // ELet/ELetMut are non-recursive: the value is resolved in the OUTER scope,
+    // and only the body sees the new binding. ELetRec's value may reference
+    // itself, so both sides see it.
+    ELet(name, val, body, _) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))))
+    },
+    ELetMut(name, val, body, _) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))))
+    },
+    ELetRec(name, val, body) => {
+      let rec_locals = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, rec_locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, rec_locals))
+    },
+    EForIn(name, index_name, iter, body) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(iter, env, in_async, locals))
+      // The loop variables are ELEMENTS, never the iterator itself: bind them
+      // to nothing so they shadow any same-named outer entry.
+      let body_locals = match index_name {
+        Some(idx) => afe_bind_local(afe_bind_local(locals, name, None), idx, None),
+        None => afe_bind_local(locals, name, None)
+      }
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, body_locals))
     },
     _ => {
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        append_eff_errs(errors, check_async_effects_expr(Array::get(children, i), env, in_async))
+        append_eff_errs(errors, check_async_effects_expr_lo(Array::get(children, i), env, in_async, locals))
         i = i + 1
       }
     }
@@ -222,7 +402,10 @@ fn sig_type_is_async(topt: Option[TypeExpr]) -> Bool {
 fn check_async_effects_binding(ty: Option[TypeExpr], body: Expr, env: TypeEnv) -> Array[EffectError] {
   let sig_async = sig_type_is_async(ty)
   match body {
-    EFn(_, _, _, _, eff, fbody) => check_async_effects_expr(fbody, env, sig_async || effect_opt_is_async(eff)),
+    // #1358: descending straight into `fbody` skips the EFn arm, so bind this
+    // binding's own parameters here — otherwise `fn drain(s: AsyncIter[Int])`
+    // would not resolve `s` when its body loops over it.
+    EFn(_, _, params, _, eff, fbody) => check_async_effects_expr_lo(fbody, env, sig_async || effect_opt_is_async(eff), afe_bind_params(afe_no_locals(), merge_param_types_with_sig(ty, params))),
     _ => check_async_effects_expr(body, env, sig_async)
   }
 }
@@ -780,6 +963,59 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
 /// parameter's `with { e }` and the enclosing function's own `with { e }` are
 /// the identical token by construction — no cross-call-site instantiation is
 /// involved), so a literal-name check here is sound, not a naive shortcut.
+/// #1361: a LOCAL `let f = () -> T with { E } { .. }` is a call-graph leaf just
+/// like a top-level function or a callback PARAMETER (#885), but NEITHER table
+/// knew about it: `fn_names`/`fn_effs` is built only from top-level SLet/SLetMut
+/// bindings, and `build_param_overlay` only from function-typed parameters. So
+/// `f()` leaked nothing into the enclosing body, while the closure's own body
+/// satisfied its own declared row (the EFn arm's `effect_row_inherit`) — a
+/// function declaring `with { Stdout }` could reach `Env` through a local
+/// closure with no diagnostic at all, and file_entry_cacheable /
+/// file_tests_cacheable consequently judged such an entry cacheable (its stdout
+/// varies with the environment, so the doctest cache replayed a stale run).
+/// Registering the binding in the SAME overlay the callback case uses closes
+/// both at once, with the same semantics: the row leaks at the call site unless
+/// the caller declares it or a `handle` discharges it.
+///
+/// Only a literal `EFn` value is registered. An ANNOTATED local binding
+/// (`let f: () -> T with { E } = ..`) is desugared to an ascription call
+/// (`((__asc: T) -> __asc)(e)`, ascribe_wrap) before this walk runs, so its row
+/// is not visible here — that shape keeps the old, permissive behavior rather
+/// than being half-checked.
+fn local_fn_overlay_labels(val: Expr) -> Array[String] {
+  match val {
+    EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
+    _ => no_str_labels()
+  }
+}
+
+/// Shadow `name` out of the inherited overlay (a local binding always hides an
+/// outer entry of the same name), then re-register it when its value is a
+/// row-declaring closure. The new entry goes FIRST so `lookup_fn_effs`'s
+/// first-match scan finds it.
+fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr) -> (Array[String], Array[Array[String]]) {
+  let shadowed = shadow_overlay(names, effs, name)
+  let labels = local_fn_overlay_labels(val)
+  if Array::length(labels) == 0 {
+    shadowed
+  } else {
+    let out_names = [
+      name
+    ]
+    let out_effs = [
+      labels
+    ]
+    let (sn, se) = shadowed
+    let mut i = 0
+    while i < Array::length(sn) {
+      Array::push(out_names, Array::get(sn, i))
+      Array::push(out_effs, Array::get(se, i))
+      i = i + 1
+    }
+    (out_names, out_effs)
+  }
+}
+
 fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
   let names = array_empty()
   let effs = array_empty()
@@ -1108,22 +1344,24 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
       ELet(name, val, body, _) => {
         // #885 review (Codex): `val` is evaluated in the OUTER scope (ELet is
         // non-recursive), so only the body's overlay needs the new binding
-        // shadowed out.
-        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        // shadowed out. #1361: the same place registers a local closure's own
+        // declared row, so calling it from the body leaks that row.
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
         Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
         Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
       ELetRec(name, val, body) => {
         // #885 review (Codex): unlike ELet, `let rec` allows `val` itself to
         // reference `name` (self-recursion), so both val and body need the
-        // shadow applied.
-        let (rec_ov_names, rec_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        // shadow applied -- and, since #1361, the local closure's own row, so a
+        // recursive effectful closure is checked against it on both sides.
+        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
         Array::push(stack, (val, declared, in_handle, rec_ov_names, rec_ov_effs))
         Array::push(stack, (body, declared, in_handle, rec_ov_names, rec_ov_effs))
       },
       ELetMut(name, val, body, _) => {
         // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
-        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
         Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
         Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
