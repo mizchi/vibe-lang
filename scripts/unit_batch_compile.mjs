@@ -358,9 +358,6 @@ async function main() {
   await Promise.all(daemons.map((d, i) => worker(d, i === 0)));
   for (const d of daemons) d.kill();
   planDaemon.kill();
-  for (const f of failed) {
-    console.error(`[unit-batch] fallback to one-shot: ${f}`);
-  }
   console.error(
     `[unit-batch] compiled ${nOk}/${misses.length} (${nFail} left to the one-shot fallback) in ${Date.now() - t0}ms`,
   );
