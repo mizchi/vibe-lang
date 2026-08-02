@@ -571,8 +571,9 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   合成しない。実装順の前提として ADR-0075 Phase 2 が先。
   なお表面構文のうち **row の分割(`with {A} allows {C}` 糖衣)・Optional
   grade(`?`)・`perform?`/`Attempt`・解決ラダー(build/apply/instantiate
-  preflight)は [ADR-0088](capability-authorization-surface.md) で決着済み**
-  であり、未決として残るのはこの resource kind パラメータの宣言側構文のみ。
+  preflight)は [ADR-0088](capability-authorization-surface.md) で決着済み**。
+  これで capability 表面の未決項目はすべて解消し、**残るのは実装のみ**
+  (#1343 の Phase 0〜5)。
 
 ## 参照した実装箇所
 
