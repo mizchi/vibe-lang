@@ -561,9 +561,14 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
 - **`main` の row 規則を破壊的変更として導入するタイミング**: Phase 1
   の retrofit が完了していれば既存 `.vibex` は無風のはずだが、実際の
   fixture コーパスで検証が必要。
-- **resource kind の型パラメータ構文の詳細**: `effect Fs[R: Fs::Root]`
+- ~~**resource kind の型パラメータ構文の詳細**: `effect Fs[R: Fs::Root]`
   という記法は本文書内の便宜的な表記であり、既存の generic effect
-  (`State[T]`)の型パラメータ構文とどう統一するかは未検討。
+  (`State[T]`)の型パラメータ構文とどう統一するかは未検討。~~
+  → **決着済み ([ADR-0094](resource-kind-parameters.md)、2026-08-02)**:
+  既存の型パラメータリストに bound を書く形 (`effect Fs[R: Fs::Root]` /
+  `effect Stdout[_: Process::Root]`) を採用し、内部は `TDEffect` の第4
+  スロットへ。`CtFn` の row スロットは広げず、builtin には `TDEffect` を
+  合成しない。実装順の前提として ADR-0075 Phase 2 が先。
   なお表面構文のうち **row の分割(`with {A} allows {C}` 糖衣)・Optional
   grade(`?`)・`perform?`/`Attempt`・解決ラダー(build/apply/instantiate
   preflight)は [ADR-0088](capability-authorization-surface.md) で決着済み**
