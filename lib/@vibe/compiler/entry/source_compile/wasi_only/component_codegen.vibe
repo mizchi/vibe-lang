@@ -3203,7 +3203,25 @@ fn comp_hs_value_base() -> Int {
   12288
 }
 
-/// Largest handle the two bands above can address. A component-model handle
+/// ADR-0089 Decision 3 follow-up (#1218): the per-handle stream CLOSED-flag
+/// band. The end of a stream arrives in TWO measured shapes (wasmtime 47,
+/// 2026-08-02, both pinned by the probe gate's delayed run): a separate
+/// zero-transfer read (`amount 0 / code 1`) from a buffering producer, or
+/// INLINE with the final byte (`amount 1 / code 1`) from a per-item
+/// producer -- and a further `stream.read` after either notification traps
+/// host-side ("cannot read after being notified that the writable end
+/// dropped"). `host_stream_next` returns one byte per call, so the inline
+/// shape must hand its byte back NOW and remember the end for the next
+/// call; this band is that memory. The flag is set INSTEAD of dropping the
+/// readable end (the handle index stays occupied, so it cannot be recycled
+/// into a new stream while the flag is up -- the aliasing Codex flagged on
+/// the first cut of this fix), and the NEXT read clears it, drops the end
+/// and returns -1 in one step, after which the guest cell latches closed.
+fn comp_hs_closed_base() -> Int {
+  16384
+}
+
+/// Largest handle the bands above can address. A component-model handle
 /// is a small instance-table index, so this is a generous ceiling; exceeding
 /// it traps rather than silently aliasing another future's slot.
 fn comp_hf_max_handles() -> Int {
@@ -3658,7 +3676,18 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_if_void(sget_body)
     bytebuf_push(sget_body, 0)
     emit_end(sget_body)
-    // return the handle, tagged
+    // clear the CLOSED flag for this handle (belt-and-braces: the latch is
+    // cleared when the readable end is dropped, so a fresh handle should
+    // never see a stale one -- but the handle-table reuse discipline is the
+    // runtime's, not ours, and a stale latch would silently truncate the
+    // new stream to zero bytes), then return the handle, tagged.
+    emit_local_get(sget_body, 1)
+    emit_i32_const(sget_body, 2)
+    emit_i32_shl(sget_body)
+    emit_i32_const(sget_body, comp_hs_closed_base())
+    emit_i32_add(sget_body)
+    emit_i32_const(sget_body, 0)
+    emit_i32_store(sget_body, 2, 0)
     emit_local_get(sget_body, 1)
     bytebuf_push(sget_body, 173)
     emit_i64_const(sget_body, 1)
@@ -3669,11 +3698,16 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     sget_i = sget_i + 1
   }
   // host_stream_read: one byte per call. param 0 = tagged handle (i64);
-  // locals (i32): 1=str, 2=st, 3=ws, 4=ev, 5=addr. Issue the read; when it
-  // BLOCKS, park in waitable-set.wait (the canonical ABI suspends the whole
-  // task) and take the completion status from the payload. A zero-transfer
-  // status must carry the measured CLOSED code (1, spec §3.17) -- then the
-  // readable end is dropped and -1 goes back; anything else traps loudly.
+  // locals (i32): 1=str, 2=st, 3=ws, 4=ev, 5=addr. Settle a pending CLOSED
+  // latch first; else issue the read; when it BLOCKS, park in
+  // waitable-set.wait (the canonical ABI suspends the whole task), unjoin,
+  // and take the completion status from the payload. The end of the stream
+  // has TWO measured shapes (spec §3.17): a zero-transfer status carrying
+  // the CLOSED code (1) -- drop the readable end and return -1 -- or the
+  // final byte arriving WITH the CLOSED code, which latches
+  // comp_hs_closed_base so the NEXT call settles to -1 without touching
+  // the (already notified) stream. Any other zero-transfer code traps
+  // loudly.
   if nstreams > 0 {
     let sread_body = bytebuf_new()
     leb128_encode_u32(sread_body, 1)
@@ -3699,6 +3733,32 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(sread_body, comp_hs_value_base())
     emit_i32_add(sread_body)
     emit_local_set(sread_body, 5)
+    // CLOSED latch set (the previous read consumed the final byte with the
+    // inline CLOSED code, see comp_hs_closed_base): clear it, drop the
+    // readable end NOW -- the handle index stayed occupied until this
+    // moment, which is what makes the latch un-aliasable -- and return -1.
+    // A read against the canonical handle here would trap host-side.
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hs_closed_base())
+    emit_i32_add(sread_body)
+    emit_i32_load(sread_body, 2, 0)
+    emit_if_void(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hs_closed_base())
+    emit_i32_add(sread_body)
+    emit_i32_const(sread_body, 0)
+    emit_i32_store(sread_body, 2, 0)
+    emit_local_get(sread_body, 1)
+    emit_call(sread_body, sdrop_idx)
+    emit_i64_const(sread_body, 0 - 1)
+    emit_i64_const(sread_body, 1)
+    emit_i64_shl(sread_body)
+    emit_return(sread_body)
+    emit_end(sread_body)
     // st = stream.read(str, addr, 1)
     emit_local_get(sread_body, 1)
     emit_local_get(sread_body, 5)
@@ -3707,8 +3767,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_set(sread_body, 2)
     // BLOCKED (0xffffffff): park as a waitable, completion status is
     // payload[1] (mem[20]); the only waitable in the set, so the event
-    // must be STREAM_READ (2). Set dropped before the event check, the
-    // probe's order.
+    // must be STREAM_READ (2). After the wake the stream is UNJOINED
+    // (`waitable.join(str, 0)` -- set 0 means remove) before the set is
+    // dropped: a set deleted while it still has members traps with
+    // "resource has children". MEASURED (wasmtime 47, 2026-08-02) the
+    // moment a per-byte-delay producer made this branch run at all; the
+    // buffered Vec producer never blocks a read, so the original probe
+    // order (drop with the stream still joined) sat latent here and in the
+    // probe itself.
     emit_local_get(sread_body, 2)
     emit_i32_const(sread_body, -1)
     emit_i32_eq(sread_body)
@@ -3722,6 +3788,9 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(sread_body, 16)
     emit_call(sread_body, ws_wait_idx)
     emit_local_set(sread_body, 4)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 0)
+    emit_call(sread_body, join_idx)
     emit_local_get(sread_body, 3)
     emit_call(sread_body, ws_drop_idx)
     emit_local_get(sread_body, 4)
@@ -3755,7 +3824,25 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i64_shl(sread_body)
     emit_return(sread_body)
     emit_end(sread_body)
-    // a byte landed at THIS handle's slot -- return it, tagged
+    // a byte landed at THIS handle's slot. If it arrived with the CLOSED
+    // code (the INLINE terminal shape -- a per-item producer hands over its
+    // last byte and drops in one completion), latch the closed flag but do
+    // NOT drop the readable end yet: the next read settles the latch (see
+    // comp_hs_closed_base). Then return the byte, tagged.
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, 15)
+    emit_i32_and(sread_body)
+    emit_i32_const(sread_body, 1)
+    emit_i32_eq(sread_body)
+    emit_if_void(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hs_closed_base())
+    emit_i32_add(sread_body)
+    emit_i32_const(sread_body, 1)
+    emit_i32_store(sread_body, 2, 0)
+    emit_end(sread_body)
     emit_local_get(sread_body, 5)
     emit_i32_load8_u(sread_body, 0, 0)
     bytebuf_push(sread_body, 173)

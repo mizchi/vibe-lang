@@ -420,6 +420,11 @@ fn print_help() {
                                      name=value:delay_ms list; each entry links a\n\
                                      `name: func() -> future<u32>` host import\n\
                                      resolving to `value` after `delay_ms`\n\
+           VIBE_ASYNC_STREAMS        async component path: comma-separated\n\
+                                     name=b1|b2|b3[@delay_ms] list; each entry\n\
+                                     links a `name: func() -> stream<u8>` host\n\
+                                     import producing those bytes then EOS,\n\
+                                     one byte per `delay_ms` when given\n\
          "
     );
 }
@@ -647,6 +652,68 @@ const ASYNC_COMPONENT_GET_VALUE: u32 = 42;
 /// blocking `std::thread::sleep`, which would defeat the point. As the
 /// emitter grows real `wasi:clocks`/`wasi:http` imports, this linker grows
 /// with it; the driving machinery above does not change.
+/// ADR-0089 Decision 3 (#1218): a `stream<u8>` producer that delivers ONE
+/// byte per `delay` tick. wasmtime's own `Vec<u8>` producer hands the whole
+/// buffer to the pipe on its first poll, after which every guest read
+/// completes inline -- correct, but it never exercises the reader's
+/// BLOCKED -> waitable-park path and gives a gate nothing to measure. This
+/// producer returns `Poll::Pending` from a real `tokio::time::Sleep` before
+/// each byte, so each `stream.read` genuinely blocks and the wall clock of
+/// a full drain is bounded below by `bytes * delay` -- the same
+/// "concurrency must be observable" discipline as VIBE_ASYNC_FUTURES'
+/// per-entry delays.
+struct DelayedByteStreamProducer {
+    bytes: Vec<u8>,
+    idx: usize,
+    delay: std::time::Duration,
+    sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<D> wasmtime::component::StreamProducer<D> for DelayedByteStreamProducer {
+    type Item = u8;
+    type Buffer = wasmtime::component::VecBuffer<u8>;
+
+    fn poll_produce<'a>(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        _store: wasmtime::StoreContextMut<'a, D>,
+        mut dst: wasmtime::component::Destination<'a, Self::Item, Self::Buffer>,
+        finish: bool,
+    ) -> std::task::Poll<Result<wasmtime::component::StreamResult>> {
+        use std::future::Future;
+        use std::task::Poll;
+        use wasmtime::component::StreamResult;
+        let this = self.get_mut();
+        if this.idx >= this.bytes.len() {
+            return Poll::Ready(Ok(StreamResult::Dropped));
+        }
+        let sleep = this
+            .sleep
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(this.delay)));
+        match sleep.as_mut().poll(cx) {
+            Poll::Pending => {
+                if finish {
+                    // Asked to wrap up early: complete the pending read with
+                    // nothing written; the stream itself stays open.
+                    return Poll::Ready(Ok(StreamResult::Cancelled));
+                }
+                Poll::Pending
+            }
+            Poll::Ready(()) => {
+                this.sleep = None;
+                let b = this.bytes[this.idx];
+                this.idx += 1;
+                dst.set_buffer(vec![b].into());
+                Poll::Ready(Ok(if this.idx >= this.bytes.len() {
+                    StreamResult::Dropped
+                } else {
+                    StreamResult::Completed
+                }))
+            }
+        }
+    }
+}
+
 fn run_async_component(path: &str) -> Result<i32> {
     use wasmtime::component::{Accessor, Component, Linker as ComponentLinker};
 
@@ -838,25 +905,31 @@ fn run_async_component(path: &str) -> Result<i32> {
                 .map_err(|e| format_err!("link {name}: {e}"))?;
         }
     }
-    // ADR-0089 Decision 3 (#1218) PROBE: host-supplied `stream<u8>`. Every
-    // entry in VIBE_ASYNC_STREAMS="name=b1|b2|b3" links a root import
+    // ADR-0089 Decision 3 (#1218): host-supplied `stream<u8>`. Every entry
+    // in VIBE_ASYNC_STREAMS="name=b1|b2|b3[@delay_ms]" links a root import
     // `name: func() -> stream<u8>` whose producer is exactly those bytes,
-    // then end-of-stream. This is the stream analogue of VIBE_ASYNC_FUTURES
-    // above and exists to settle the one thing the Decision 3 emitter cannot
-    // be written without: what `stream.read` actually reports at EOS under
-    // wasmtime 47 (status encoding + event code). `Vec<u8>` is wasmtime's
-    // own StreamProducer impl, so the probe measures the runtime's behavior
-    // rather than a hand-rolled producer's.
+    // then end-of-stream. Born as the D3 terminal probe's host half (what
+    // does `stream.read` report at EOS under wasmtime 47? -- measured:
+    // amount 0 / code 1, inline) and now also the host side of the
+    // `host_stream_named` guest surface.
+    //
+    // Without `@delay_ms` the producer is wasmtime's own `Vec<u8>`
+    // StreamProducer impl (everything delivered on the first poll -- the
+    // probe deliberately measures the RUNTIME's behavior, so keep it
+    // unhosted). With `@delay_ms` each byte is preceded by that delay via
+    // the custom producer below, which is what makes PARKING observable: a
+    // reader that never suspends would still get the right sum, but the
+    // wall clock could not reach bytes*delay. The delay is scaled like
+    // every other suspend here (VIBE_ASYNC_DELAY_SCALE_PCT).
     if let Ok(spec) = std::env::var("VIBE_ASYNC_STREAMS") {
         for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
-            let (name, bytes_s) = ent.split_once('=').ok_or_else(|| {
-                format_err!("VIBE_ASYNC_STREAMS entry '{ent}': expected name=b1|b2|b3")
+            let (name, rest) = ent.split_once('=').ok_or_else(|| {
+                format_err!("VIBE_ASYNC_STREAMS entry '{ent}': expected name=b1|b2|b3[@delay_ms]")
             })?;
             let name = name.trim().to_string();
-            // Same reserved-name rule as VIBE_ASYNC_FUTURES above (#1337
-            // Codex review): these root imports are registered
-            // unconditionally and the linker rejects redefinition before
-            // instantiation.
+            // Same reserved set as VIBE_ASYNC_FUTURES: these root imports are
+            // registered unconditionally above and the linker rejects
+            // shadowing (measured on the future side, #1337 Codex review).
             if matches!(name.as_str(), "get-future" | "get-async" | "get-after") {
                 bail!(
                     "VIBE_ASYNC_STREAMS '{name}': that name is one of the runner's \
@@ -864,6 +937,10 @@ fn run_async_component(path: &str) -> Result<i32> {
                      redefined -- rename the host stream"
                 );
             }
+            let (bytes_s, delay_s) = match rest.split_once('@') {
+                Some((b, d)) => (b, Some(d)),
+                None => (rest, None),
+            };
             let mut bytes: Vec<u8> = Vec::new();
             for b in bytes_s.split('|').filter(|s| !s.trim().is_empty()) {
                 bytes.push(
@@ -872,8 +949,16 @@ fn run_async_component(path: &str) -> Result<i32> {
                         .map_err(|e| format_err!("VIBE_ASYNC_STREAMS '{name}': bad byte: {e}"))?,
                 );
             }
+            let per_byte_delay: u64 = match delay_s {
+                Some(d) => d
+                    .trim()
+                    .parse()
+                    .map_err(|e| format_err!("VIBE_ASYNC_STREAMS '{name}': bad delay: {e}"))?,
+                None => 0,
+            };
             // Leaked for the same reason as the named-future link above.
             let link_name: &'static str = Box::leak(name.clone().into_boxed_str());
+            let scaled_delay = scale(per_byte_delay);
             linker
                 .root()
                 .func_wrap_concurrent(
@@ -882,7 +967,19 @@ fn run_async_component(path: &str) -> Result<i32> {
                         let items = bytes.clone();
                         Box::pin(async move {
                             let reader = acc.with(|mut access| {
-                                wasmtime::component::StreamReader::<u8>::new(&mut access, items)
+                                if scaled_delay > 0 {
+                                    wasmtime::component::StreamReader::<u8>::new(
+                                        &mut access,
+                                        DelayedByteStreamProducer {
+                                            bytes: items,
+                                            idx: 0,
+                                            delay: std::time::Duration::from_millis(scaled_delay),
+                                            sleep: None,
+                                        },
+                                    )
+                                } else {
+                                    wasmtime::component::StreamReader::<u8>::new(&mut access, items)
+                                }
                             })?;
                             Ok((reader,))
                         })
