@@ -94,6 +94,23 @@ test "a body and arm agreeing on the instantiation still type-check" {
   assert(eq(Array::length(diags), 0))
 }
 
+// Codex P1 on #1354: an arm body runs OUTSIDE the handled computation ("an
+// Async handler arm's own body is NOT an async context",
+// checker_async_effects_test), so an operation RE-performed inside an arm is
+// handled by the ENCLOSING handler, not by the handle that owns the arm. The
+// arm env therefore must NOT carry this handle's instantiation.
+//
+// Below, the inner handle instantiates Box at Int, and its arm re-performs
+// Box::Get() at String -- legal precisely because that re-perform belongs to
+// the OUTER handle (which resumes with a String). Reusing the inner
+// instantiation for arm bodies would make this a conflicting second pin of the
+// inner T, i.e. a false rejection of a valid program.
+test "a re-perform inside an arm belongs to the OUTER handler" {
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    handle {\n      let n: Int = perform Box::Get()\n      n\n    } with Box {\n      Get => {\n        let m: String = perform Box::Get()\n        resume(String::length(m))\n      }\n    }\n  } with Box {\n    Get => resume(\"s\")\n  }\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
+
 test "two performs of one generic effect at conflicting types are rejected" {
   // One handler cannot return both a String and an Int, so the two performs
   // must resolve to the SAME instantiation and collide.

@@ -5485,10 +5485,20 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                   }
                   // Bind payload names to the op's param types and check the
                   // arm body (the trailing k binder stays CtUnknown).
-                  // henv_shared, not `env`: a nested perform of the same generic
-                  // effect inside this arm's body must resolve the handle's
-                  // instantiation too (#1340, Codex P1 on #1352).
-                  let mut henv = henv_shared
+                  // `env`, NOT henv_shared (Codex P1 on #1354): an arm body runs
+                  // OUTSIDE the handled computation ("an Async handler arm's own
+                  // body is NOT an async context", checker_async_effects_test),
+                  // so an operation RE-performed here is handled by the ENCLOSING
+                  // handler, not by this one. Starting from the pre-handle env
+                  // makes such a re-perform resolve against the outer handle's
+                  // instantiation (or a fresh one when there is no outer handle);
+                  // publishing this handle's instantiation here would instead let
+                  // an inner arm re-perform at the INNER type while the outer
+                  // handler supplies a different one to that continuation. The
+                  // arm's own payload/return types still come from THIS handle's
+                  // instantiation (hparams/hret above) -- that part is what the
+                  // arm actually handles.
+                  let mut henv = env
                   let mut hbi = 0
                   let mut hbinds_shadow_resume = false
                   while hbi < hblen {
