@@ -2627,7 +2627,24 @@ let consume = (s) -> Int {
 }
 export let _start: () -> Int = () -> { consume(Stream::once(42)) }
 EOF
-for fa_case in ok_annot ok_unannot; do
+# #1350 (Codex P1): the pull-closure loop must fire only when the source
+# POSITIVELY returns a function. A call to a function whose return annotation
+# was merely OMITTED records the same empty head as a closure-returning one
+# did before the fix, and its array was then called as a closure
+# (call_indirect trap). Reproduced on the pre-fix stage2; 42 = 40 + 2.
+cat > "$fadir/ok_unannot_factory.vibe" <<'EOF'
+let values = () -> {
+  [40, 2]
+}
+export let _start: () -> Int = () -> {
+  let mut sum = 0
+  for x in values() {
+    sum = sum + x
+  }
+  sum
+}
+EOF
+for fa_case in ok_annot ok_unannot ok_unannot_factory; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$fadir/$fa_case.vibe" "$fadir/$fa_case.wasm" _start >/dev/null 2>&1 || true

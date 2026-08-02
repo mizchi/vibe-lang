@@ -2003,6 +2003,16 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             Some(te) => match te {
               TyName(n) => n,
               TyApp(n, _) => n,
+              // #1350 (Codex P1): a FUNCTION-typed return gets its own head
+              // sentinel instead of collapsing into the empty "unknown" head.
+              // `for x in f()` classifies as a pull-closure loop only when `f`
+              // positively returns a function; before this, an unannotated
+              // `let values = () -> { [40, 2] }` was indistinguishable from
+              // `stdin_stream : (Int) -> (() -> Option[String])` and the array
+              // was called as a closure (call_indirect trap). fn_return_type
+              // keeps mapping the sentinel to None, so every OTHER consumer
+              // sees exactly what it saw before.
+              TyFn(_, _, _) => fn_type_return_head(),
               _ => ""
             },
             None => ""
@@ -2022,6 +2032,8 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             Some(te) => match te {
               TyName(n) => n,
               TyApp(n, _) => n,
+              // #1350 (Codex P1): see the SLet arm above.
+              TyFn(_, _, _) => fn_type_return_head(),
               _ => ""
             },
             None => ""
@@ -2097,17 +2109,39 @@ fn fn_exists(fn_returns: Array[(String, String)], fname: String) -> Bool {
   fn_returns_find(fn_returns, fname) >= 0
 }
 
+/// #1350 (Codex P1): the recorded return-type head for a FUNCTION-typed
+/// return. Not a legal type name, so it can never collide with a real head.
+/// Only fn_return_is_fn_type reads it; fn_return_type maps it to None so the
+/// type-name consumers (infer_arg_type_name and everything downstream of it)
+/// behave exactly as they did when function returns had an empty head.
+fn fn_type_return_head() -> String {
+  "->"
+}
+
 fn fn_return_type(fn_returns: Array[(String, String)], fname: String) -> Option[String] {
   let idx = fn_returns_find(fn_returns, fname)
   if idx < 0 {
     None
   } else {
     let (_, rt) = Array::get(fn_returns, idx)
-    if String::length(rt) == 0 {
+    if String::length(rt) == 0 || rt == fn_type_return_head() {
       None
     } else {
       Some(rt)
     }
+  }
+}
+
+/// Does `fname` positively RETURN A FUNCTION (an annotated function type)?
+/// This is the pull-closure classification's real question -- distinct from
+/// "the return annotation was omitted", which records an empty head.
+fn fn_return_is_fn_type(fn_returns: Array[(String, String)], fname: String) -> Bool {
+  let idx = fn_returns_find(fn_returns, fname)
+  if idx < 0 {
+    false
+  } else {
+    let (_, rt) = Array::get(fn_returns, idx)
+    rt == fn_type_return_head()
   }
 }
 
@@ -2247,15 +2281,24 @@ fn fn_return_is_future(fn_returns: Array[(String, String)], fname: String) -> Bo
 /// iteratee as `__pull_next` and CALLS it, so lowering anything that is not a
 /// function value that way is a call_indirect on a non-function pointer — an
 /// out-of-bounds table trap at runtime. Only two shapes are accepted: a lambda
-/// literal, and a call to a known top-level function whose recorded return-type
-/// head is empty (a non-named return — the closure-returning sources like
-/// `stdin_stream: (Int) -> (() -> Option[String])`; a named head would have
-/// classified in the Some branch instead).
+/// literal, and a call to a known function that positively RETURNS A FUNCTION
+/// (the closure-returning sources like
+/// `stdin_stream: (Int) -> (() -> Option[String])`).
+///
+/// #1350 (Codex P1) tightened the second shape. It used to accept any known
+/// function reaching this point, on the reasoning that a named return head
+/// would have classified in the Some branch instead -- true while only
+/// `for await` could get here, but wrong once plain `for` shares the path: an
+/// UNANNOTATED `let values = () -> { [40, 2] }` also has no head, and its
+/// array was then called as a closure. Requiring the recorded head to be the
+/// function-type sentinel separates "returns a function" from "return
+/// annotation omitted"; the latter falls back to the array loop, as it did
+/// before this classification was shared.
 fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) -> Bool {
   match inner {
     EFn(_, _, _, _, _, _) => true,
     ECall(callee, _, _) => match callee {
-      EIdent(fname, _) => fn_exists(fn_returns, fname),
+      EIdent(fname, _) => fn_return_is_fn_type(fn_returns, fname),
       _ => false
     },
     _ => false
