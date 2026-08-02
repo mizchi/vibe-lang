@@ -3109,6 +3109,31 @@ fn comp_is_host_stream_get_import(nm: String) -> Bool {
   String::starts_with(nm, "host_stream_get$")
 }
 
+/// ADR-0089 Decision 3 follow-up (#1218): does the module import the shared
+/// CLOSE half? linked_compile reserves `vibe.host_stream_close` only when
+/// the source actually called `host_stream_close`, so this byte sniff is
+/// exactly "this program drops readable ends early". The adapter appends
+/// its close func only then, which is what keeps every already-pinned
+/// stream composition byte-identical.
+fn comp_core_imports_host_stream_close(core_wasm: Bytes) -> Bool {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut i = 0
+  let mut found = false
+  while i < import_count {
+    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == "host_stream_close" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// ADR-0089 Decision 3 (#1218): every host-stream GET core import name the
 /// module declares, in DECLARATION ORDER (linked_compile emits them
 /// sorted). Same single-source-of-truth role as
@@ -3278,7 +3303,7 @@ fn comp_hostfuture_import_label(core_name: String) -> String {
 /// handle with no started read, non-FUTURE_READ wake) trap with
 /// `unreachable`: the adapter runs inside the lifted task, so the
 /// fixed-shape's task.return diagnostic bands are not available here.
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String]) -> Bytes {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool) -> Bytes {
   // ADR-0089 Decision 3 (#1218): generalized again -- K host futures AND L
   // host streams (K + L >= 1, either may be 0). The future half is
   // byte-identical for L = 0 (every stream-specific type/import/func is
@@ -3474,6 +3499,17 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(fn_types, 6)
     Array::push(export_names, "host_stream_read")
     Array::push(export_indices, s_local_base + nstreams)
+  } else {
+    ()
+  }
+  // ADR-0089 Decision 3 follow-up (#1218): the shared DROP half, appended
+  // LAST so its presence cannot shift any existing index -- a stream
+  // composition whose guest never closes is byte-identical to one built
+  // before this func existed.
+  if nstreams > 0 && want_stream_close {
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_close")
+    Array::push(export_indices, s_local_base + nstreams + 1)
   } else {
     ()
   }
@@ -3854,6 +3890,53 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  // ADR-0089 Decision 3 follow-up (#1218): host_stream_close -- release the
+  // readable end of a stream the guest stopped reading. param 0 = tagged
+  // handle (i64); locals (i32): 1 = str. Clear this handle's CLOSED latch
+  // (an inline-terminal read may have set it, and the drop below is exactly
+  // the settle that latch was waiting for) and drop the readable end.
+  //
+  // No `stream.read` and no park: dropping is synchronous. The guest cell's
+  // state word gates the ONE call -- `__hs_close` drops only from state 3
+  // and closes the cell in the same step -- so this func is never reached
+  // twice for one handle, which matters because a second
+  // `stream.drop-readable` on a dropped end traps host-side.
+  //
+  // Returns tagged 0: the surface is `-> Unit`, but the raw ABI is
+  // uniformly `(i64) -> i64` (the same shape as host_stream_read), so the
+  // adapter hands back a value the injected wrapper discards.
+  if nstreams > 0 && want_stream_close {
+    let sclose_body = bytebuf_new()
+    leb128_encode_u32(sclose_body, 1)
+    leb128_encode_u32(sclose_body, 1)
+    bytebuf_push(sclose_body, 127)
+    emit_local_get(sclose_body, 0)
+    emit_i64_const(sclose_body, 1)
+    emit_i64_shr_s(sclose_body)
+    emit_i32_wrap_i64(sclose_body)
+    emit_local_set(sclose_body, 1)
+    emit_local_get(sclose_body, 1)
+    emit_i32_const(sclose_body, comp_hf_max_handles())
+    emit_i32_gt_u(sclose_body)
+    emit_if_void(sclose_body)
+    bytebuf_push(sclose_body, 0)
+    emit_end(sclose_body)
+    emit_local_get(sclose_body, 1)
+    emit_i32_const(sclose_body, 2)
+    emit_i32_shl(sclose_body)
+    emit_i32_const(sclose_body, comp_hs_closed_base())
+    emit_i32_add(sclose_body)
+    emit_i32_const(sclose_body, 0)
+    emit_i32_store(sclose_body, 2, 0)
+    emit_local_get(sclose_body, 1)
+    emit_call(sclose_body, sdrop_idx)
+    emit_i64_const(sclose_body, 0)
+    bytebuf_push(sclose_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sclose_body))
+    bytebuf_push_buf(code_sec, sclose_body)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 10, code_sec)
   bytebuf_to_bytes(out)
 }
@@ -3981,7 +4064,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read") {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close") {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write and the host-future/host-stream imports are satisfiable in this composition)")
@@ -3996,6 +4079,10 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // (spec §3.18). Either kind alone keys the wrap; the future-only shape
   // is byte-identical to the pre-stream composer.
   let hs_names = comp_core_host_stream_names(main_core_wasm)
+  // ADR-0089 Decision 3 follow-up (#1218): only a program that calls
+  // `host_stream_close` gets the adapter's drop func, so every stream
+  // composition that predates this surface keeps its exact bytes.
+  let hs_wants_close = comp_core_imports_host_stream_close(main_core_wasm)
   let nhs = Array::length(hs_names)
   let nt = nhf + nhs
   if nt == 0 {
@@ -4048,7 +4135,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   let memhost_inst = 0

@@ -4,6 +4,10 @@ import ./ast.vibe {
   TypeExpr
 }
 
+import ./exception_effect.vibe {
+  exception_label_kind, is_exception_label
+}
+
 import ./sorted_index.vibe {
   apply_perm_strings, bsearch_leftmost, sort_perm_by_names
 }
@@ -1303,12 +1307,32 @@ fn effect_label_list(eff: Option[String]) -> Array[String] {
 /// unification. For bracketless labels this is exact equality, so
 /// pre-#1340 rows are unchanged. Instantiation-precise row identity is the
 /// remaining ADR-0071 OperationRef-normalization work.
+///
+/// ADR-0085 (#1344): the exception effect is the one generic effect that does
+/// NOT collapse to its base — `Exception[IoError]` and `Exception[ParseError]`
+/// must stay distinct here or the two rows unify and check_assignable never
+/// reaches its dropped-label report. The ERASED spellings (`Error`,
+/// `Exception`, and either one's `::Throw`) all normalize to `Error`, which is
+/// what keeps `with { Error }` and `with { Exception }` interchangeable exactly
+/// as the #1279 bridge made them. An erased row and a kinded row do differ
+/// here, but that only routes them into check_assignable's structural retry,
+/// where effect_row_dropped tolerates them (an erased label is kind-compatible
+/// with every kind) — so no pre-#1344 program changes verdict.
 fn effect_label_base_name(label: String) -> String {
-  let bi = String::index_of(label, "[")
-  if bi > 0 {
-    String::substring(label, 0, bi)
+  if is_exception_label(label) {
+    let kind = exception_label_kind(label)
+    if String::length(kind) == 0 {
+      "Error"
+    } else {
+      String::concat("Exception[", String::concat(kind, "]"))
+    }
   } else {
-    label
+    let bi = String::index_of(label, "[")
+    if bi > 0 {
+      String::substring(label, 0, bi)
+    } else {
+      label
+    }
   }
 }
 

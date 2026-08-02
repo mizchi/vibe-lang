@@ -1,0 +1,175 @@
+//# Imports
+
+// ADR-0085 Phase 3 (#1344): `throw(v)` requires `Exception[typeof(v)]` in the
+// enclosing row, and `Exception[E1]` neither authorizes nor discharges
+// `Exception[E2]`. `Error` / `Exception` stay the ERASED spelling, compatible
+// with every kind in both directions -- which is what keeps every pre-#1344
+// row and diagnostic unchanged. End-to-end locks through
+// collect_all_diagnostics.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+import @vibe/compiler/core {
+  canonical_exception_effect_name,
+  exception_effect_kind,
+  exception_effect_labels_equal,
+  exception_kinds_compatible,
+  exception_label_kind,
+  exception_throw_label_for_kind,
+  is_exception_effect_name,
+  is_exception_label,
+  is_exception_throw_operation
+}
+
+//# Misc
+
+/// The checked-`Error` row discipline is a process-wide switch that
+/// `cli_main` turns on (#944, ADR-0073 stage B). This harness calls the
+/// checker directly, so without flipping it here every `throw` site is exempt
+/// from the row check and each assertion below would pass vacuously.
+fn checked_diags(src: String) -> Array[String] with { Error } {
+  set_error_row_checked(true)
+  collect_all_diagnostics(src)
+}
+
+// --- label grammar (core/exception_effect.vibe)
+
+test "exception_effect_kind reads the bracketed kind, and only for Exception" {
+  assert(eq(exception_effect_kind("Exception[IoError]"), "IoError"))
+  assert(eq(exception_effect_kind("Exception[Array[Int]]"), "Array[Int]"))
+  assert(eq(exception_effect_kind("Exception"), ""))
+  assert(eq(exception_effect_kind("Error"), ""))
+  // `Error` stays the bracketless erased spelling: a bracket on it is not a
+  // kinded exception label at all.
+  assert(eq(exception_effect_kind("Error[IoError]"), ""))
+  assert(eq(exception_effect_kind("State[Int]"), ""))
+  // An unterminated bracket group is not a label.
+  assert(eq(exception_effect_kind("Exception[IoError"), ""))
+  // An EMPTY kind is not a kind.
+  assert(eq(exception_effect_kind("Exception[]"), ""))
+}
+
+test "is_exception_effect_name accepts both erased spellings and kinded ones" {
+  assert(is_exception_effect_name("Error"))
+  assert(is_exception_effect_name("Exception"))
+  assert(is_exception_effect_name("Exception[IoError]"))
+  assert(!is_exception_effect_name("Fs"))
+  assert(!is_exception_effect_name("State[Int]"))
+}
+
+test "canonical_exception_effect_name collapses erased spellings but never a kind" {
+  assert(eq(canonical_exception_effect_name("Exception"), "Error"))
+  assert(eq(canonical_exception_effect_name("Error"), "Error"))
+  // Collapsing this would erase exactly what the row check compares.
+  assert(eq(canonical_exception_effect_name("Exception[IoError]"), "Exception[IoError]"))
+  assert(eq(canonical_exception_effect_name("Fs"), "Fs"))
+}
+
+test "throw operations are recognized in every spelling (one Wasm tag)" {
+  assert(is_exception_throw_operation("Error::Throw"))
+  assert(is_exception_throw_operation("Exception::Throw"))
+  assert(is_exception_throw_operation("Exception[IoError]::Throw"))
+  assert(!is_exception_throw_operation("Error::Other"))
+  assert(!is_exception_throw_operation("Fs::Throw"))
+}
+
+test "exception_label_kind works on both the effect and operation forms" {
+  assert(eq(exception_label_kind("Exception[IoError]"), "IoError"))
+  assert(eq(exception_label_kind("Exception[IoError]::Throw"), "IoError"))
+  assert(eq(exception_label_kind("Error::Throw"), ""))
+  assert(is_exception_label("Error::Throw"))
+  assert(is_exception_label("Exception[IoError]"))
+  assert(!is_exception_label("Fs::read_file"))
+}
+
+test "erased kinds are compatible in both directions, distinct kinds are not" {
+  assert(exception_kinds_compatible("", "IoError"))
+  assert(exception_kinds_compatible("IoError", ""))
+  assert(exception_kinds_compatible("IoError", "IoError"))
+  assert(!exception_kinds_compatible("IoError", "ParseError"))
+  assert(exception_effect_labels_equal("Error", "Exception[IoError]"))
+  assert(!exception_effect_labels_equal("Exception[IoError]", "Exception[ParseError]"))
+}
+
+test "the throw label for a kind is the bare, writable row spelling" {
+  // Not `Exception[IoError]::Throw`: the row grammar accepts `Eff::Op` and
+  // `Eff[T]` but not `Eff[T]::Op`, so the fix-it must name the effect.
+  assert(eq(exception_throw_label_for_kind("IoError"), "Exception[IoError]"))
+  assert(eq(exception_throw_label_for_kind(""), "Error::Throw"))
+}
+
+// --- rows end to end
+
+test "a matching Exception[E] row authorizes the throw" {
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with { Exception[IoError] } {\n  throw(NotFound(\"x\"))\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(src)), 0))
+}
+
+test "a DIFFERENT Exception[E] row rejects the throw" {
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with { Exception[ParseError] } {\n  throw(NotFound(\"x\"))\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  let diags = checked_diags(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[IoError] }"))
+}
+
+test "the payload kind of a string literal is String" {
+  let ok = "let boom = () -> Int with { Exception[String] } {\n  throw(\"plain\")\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(ok)), 0))
+  let bad = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with { Exception[IoError] } {\n  throw(\"plain\")\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  let diags = checked_diags(bad)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[String] }"))
+}
+
+test "the erased Error row still authorizes a suberror throw (#786 unchanged)" {
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with { Error } {\n  throw(NotFound(\"x\"))\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(src)), 0))
+}
+
+test "a row naming no exception label keeps the pinned Error::Throw diagnostic" {
+  let src = "let boom = () -> Int with { Stdout } {\n  throw(\"x\")\n}\n\nlet main = () -> Int with { Stdout } {\n  handle {\n    boom()\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  let diags = checked_diags(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Error::Throw }"))
+}
+
+test "an effectset union of exception kinds authorizes both" {
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\neffectset ConfigExc = {\n  Exception[IoError],\n  Exception[ParseError]\n}\n\nlet boom = (b: Bool) -> Int with { ConfigExc } {\n  if b {\n    throw(NotFound(\"x\"))\n  } else {\n    throw(Eof)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(true)\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(src)), 0))
+}
+
+test "handle with Exception[E] discharges that kind only" {
+  let ok = "enum IoError {\n  NotFound(String)\n}\n\nlet main = () -> Int {\n  handle {\n    throw(NotFound(\"x\"))\n  } with Exception[IoError] {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(ok)), 0))
+  let bad = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int {\n  handle {\n    throw(NotFound(\"x\"))\n  } with Exception[ParseError] {\n    Throw(_e) => 42\n  }\n}\n\nlet main = () -> Int {\n  boom()\n}\n"
+  let diags = checked_diags(bad)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[IoError] }"))
+}
+
+test "a kinded exception row cannot be laundered through a mismatched fn slot" {
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with { Exception[IoError] } {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with { Exception[ParseError] }) -> Int with { Exception[ParseError] } {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  let diags = checked_diags(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "effect would be dropped"))
+}
+
+test "an erased slot still accepts a kinded value (and the reverse)" {
+  let into_erased = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with { Exception[IoError] } {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with { Error }) -> Int with { Error } {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(into_erased)), 0))
+  let into_kinded = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with { Error } {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with { Exception[IoError] }) -> Int with { Exception[IoError] } {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(into_kinded)), 0))
+}
+
+test "an unresolved payload kind is authorized by any exception row (gradual)" {
+  // The v1 limit: this walk reads the module env, so a LOCAL binding's type is
+  // invisible and the payload has no kind. Compatible with every declared
+  // exception label rather than an invented error.
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = (e: IoError) -> Int with { Exception[IoError] } {\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom(NotFound(\"x\"))\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
+  assert(eq(Array::length(checked_diags(src)), 0))
+}

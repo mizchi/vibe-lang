@@ -1,33 +1,75 @@
-//# Core Exception alias predicates (#1279)
+//# Core exception effect labels (#1279 alias bridge, #1344 typed kinds)
 //
-// `Exception` is the source-level alias of the legacy `Error` effect during
-// the #1279 bridge. Both names deliberately lower to the same abortive Wasm
-// exception tag. Keep every spelling check here so the later ADR-0085 typed
-// `Exception[E]` migration has one replacement boundary.
+// ADR-0085 (docs/exception-effect.md). Every spelling check for the core
+// exception effect lives here so the migration has ONE replacement boundary.
+//
+// The label grammar this module recognizes:
+//
+//   Error                      erased alias (any kind)      -- legacy spelling
+//   Exception                  erased alias (any kind)      -- #1279 bridge
+//   Exception[IoError]         KINDED (#1344, ADR-0085 Phase 3)
+//   <any of the above>::Throw  the operation label of that effect
+//
+// The KIND is the static type of the thrown payload. Two kinded labels with
+// different kinds are different row elements: `Exception[IoError]` neither
+// authorizes nor discharges `Exception[ParseError]`.
+//
+// **`Error` is the ERASED exception row, not `Exception[String]`.** ADR-0085's
+// migration section calls `Error` a compatibility alias *of* `Exception[String]`;
+// that reading cannot hold while #786 (`throw(KeyInvalid("x"))` under a plain
+// `with { Error }`) is live, because a String-kinded row would reject every
+// suberror throw in the existing codebase. So the implementation reads the
+// alias as kind-erased -- strictly WEAKER than any kinded label, compatible
+// with all of them. See docs/exception-effect.md ("`Error` の意味").
+//
+// Runtime identity is deliberately NOT split by kind: every spelling lowers to
+// the same abortive Wasm exception tag (ADR-0085 defers the per-kind tag / type
+// id ABI choice). The kind lives entirely in the checker's row.
 
-/// True for either spelling of the interim abortive exception effect.
-export fn is_exception_effect_name(name: String) -> Bool {
-  name == "Error" || name == "Exception"
+/// The bracketed KIND argument of an exception EFFECT label, or "" when the
+/// label is an erased spelling (or not an exception label at all).
+/// `Exception[IoError]` -> "IoError"; `Error` / `Exception` -> "".
+export fn exception_effect_kind(name: String) -> String {
+  // (`open` is a reserved word in vibe, hence the suffixed name.)
+  let open_at = String::index_of(name, "[")
+  if open_at > 0 && String::substring(name, 0, open_at) == "Exception" && String::length(name) > open_at + 2 && String::substring(name, String::length(name) - 1, String::length(name)) == "]" {
+    String::substring(name, open_at + 1, String::length(name) - 1)
+  } else {
+    ""
+  }
 }
 
-/// Canonical checker/codegen row label for either alias spelling.
+/// True for either erased spelling or a kinded `Exception[K]` of the interim
+/// abortive exception effect.
+export fn is_exception_effect_name(name: String) -> Bool {
+  name == "Error" || name == "Exception" || String::length(exception_effect_kind(name)) > 0
+}
+
+/// Canonical checker/codegen row label. The two ERASED spellings collapse to
+/// `Error` (the pinned label every existing row and diagnostic uses); a KINDED
+/// label is already canonical and must survive verbatim -- collapsing it would
+/// erase exactly the information the row check exists to compare.
 export fn canonical_exception_effect_name(name: String) -> String {
-  if is_exception_effect_name(name) {
+  if name == "Error" || name == "Exception" {
     "Error"
   } else {
     name
   }
 }
 
-/// True for any qualified operation of the interim exception alias.
+/// True for any qualified operation of the exception effect.
 export fn is_exception_operation_name(name: String) -> Bool {
   let split = String::index_of(name, "::")
   split > 0 && is_exception_effect_name(String::substring(name, 0, split))
 }
 
 /// True for an operation name that lowers to the shared abortive exception tag.
+/// Kind-insensitive on purpose: `Exception[IoError]::Throw` and `Error::Throw`
+/// are the same runtime transfer, so every codegen/analysis caller of this
+/// predicate keeps treating them as one operation.
 export fn is_exception_throw_operation(name: String) -> Bool {
-  name == "Error::Throw" || name == "Exception::Throw"
+  let split = String::index_of(name, "::")
+  split > 0 && String::substring(name, split + 2, String::length(name)) == "Throw" && is_exception_effect_name(String::substring(name, 0, split))
 }
 
 /// True for the constructor name used by an abortive exception handler arm.
@@ -36,7 +78,66 @@ export fn is_exception_throw_handler_name(name: String) -> Bool {
   name == "Throw" || is_exception_throw_operation(name)
 }
 
-/// Alias-aware equality for effect-row labels and qualified Throw operations.
+/// True for a row label naming the exception effect, in either the bare-effect
+/// (`Error`, `Exception[E]`) or the qualified-operation (`Error::Throw`) form.
+export fn is_exception_label(label: String) -> Bool {
+  is_exception_effect_name(label) || is_exception_operation_name(label)
+}
+
+/// The exception kind of a row label in EITHER form -- "" for an erased label,
+/// and also "" for a label this module does not recognize (callers gate on
+/// is_exception_label first).
+export fn exception_label_kind(label: String) -> String {
+  let split = String::index_of(label, "::")
+  if split > 0 {
+    exception_effect_kind(String::substring(label, 0, split))
+  } else {
+    exception_effect_kind(label)
+  }
+}
+
+/// Does a row element of kind `declared_kind` cover a requirement of kind
+/// `required_kind`? "" (erased) is compatible with everything in BOTH
+/// directions:
+///
+/// - declared erased: `with { Error }` keeps authorizing every throw, which is
+///   what makes this whole change purely additive for existing code.
+/// - required erased: the throw site could not resolve its payload's static
+///   type (see throw_payload_kind, checker_effects.vibe), so demanding an exact
+///   match would invent errors from an inference gap rather than from the
+///   program. Gradual, like the ground-gating the rest of the checker uses.
+export fn exception_kinds_compatible(declared_kind: String, required_kind: String) -> Bool {
+  String::length(declared_kind) == 0 || String::length(required_kind) == 0 || declared_kind == required_kind
+}
+
+/// Alias- and kind-aware equality for effect-row labels and qualified Throw
+/// operations. Two exception labels match when their kinds are compatible.
 export fn exception_effect_labels_equal(left: String, right: String) -> Bool {
-  left == right || (is_exception_effect_name(left) && is_exception_effect_name(right)) || (is_exception_throw_operation(left) && is_exception_throw_operation(right))
+  if left == right {
+    true
+  } else if is_exception_label(left) && is_exception_label(right) {
+    exception_kinds_compatible(exception_label_kind(left), exception_label_kind(right))
+  } else {
+    false
+  }
+}
+
+/// The row label a `throw` of payload kind `kind` requires.
+///
+/// An empty (unresolved) kind keeps the erased `Error::Throw` spelling, so the
+/// pinned diagnostic text for the pervasive un-annotated throw sites is
+/// unchanged. A resolved kind produces the BARE effect label `Exception[K]`
+/// rather than an operation label: ADR-0071's operation granularity exists so
+/// a fix-it grants one operation instead of a whole effect, and `Exception[E]`
+/// declares exactly one operation, so there is nothing to narrow. It also has
+/// to be a spelling the user can actually paste into a row -- the row grammar
+/// (collect_row_item_targs, parser_base.vibe) accepts `Eff::Op` and `Eff[T]`
+/// but not `Eff[T]::Op`, so a `Exception[IoError]::Throw` hint would name a
+/// label that does not parse.
+export fn exception_throw_label_for_kind(kind: String) -> String {
+  if String::length(kind) == 0 {
+    "Error::Throw"
+  } else {
+    String::concat("Exception[", String::concat(kind, "]"))
+  }
 }

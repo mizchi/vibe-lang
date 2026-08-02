@@ -1048,79 +1048,85 @@ fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
   }
 }
 
-/// ADR-0089 Decision 3 (#1218): rewrite calls to the surface
-/// `host_stream_next` into calls to the injected `__hs_next` (the stream
-/// sibling of lc_rename_sleep_calls, same shadow discipline: `active` goes
-/// false under any binder that shadows the name). The fresh name sidesteps
-/// the nominal-row double-classification hazard documented on
+/// ADR-0089 Decision 3 (#1218): rewrite calls to a host-stream SURFACE name
+/// into calls to the injected fn that implements it (the stream sibling of
+/// lc_rename_sleep_calls, same shadow discipline: `active` goes false under
+/// any binder that shadows the name). The fresh name sidesteps the
+/// nominal-row double-classification hazard documented on
 /// lc_rename_sleep_calls. Only the program-wide form exists -- the stream
 /// machinery is entry-row-keyed, so the boundary is always installed when
 /// this walk runs.
-fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
+///
+/// Parameterized over (surface, injected) so the two retargets share one
+/// TOTAL walk: `host_stream_next` -> `__hs_next` (the read, which performs)
+/// and `host_stream_close` -> `__hs_close` (the drop, which does not). A
+/// second copy of a 150-line total walk is exactly the kind of thing that
+/// drifts and silently stops covering a container.
+fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) -> Expr {
   match e {
     ECall(callee, args, off) => {
       let new_args = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(new_args, lc_rename_hs_next_calls(Array::get(args, i), active))
+        Array::push(new_args, lc_rename_hs_call(Array::get(args, i), active, from_name, to_name))
         i = i + 1
       }
       let new_callee = match callee {
-        EIdent(nm, coff) => if active && nm == "host_stream_next" {
-          EIdent("__hs_next", coff)
+        EIdent(nm, coff) => if active && nm == from_name {
+          EIdent(to_name, coff)
         } else {
           callee
         },
-        _ => lc_rename_hs_next_calls(callee, active)
+        _ => lc_rename_hs_call(callee, active, from_name, to_name)
       }
       ECall(new_callee, new_args, off)
     },
-    ELet(x, v, b, off) => ELet(x, lc_rename_hs_next_calls(v, active), lc_rename_hs_next_calls(b, active && x != "host_stream_next"), off),
-    ELetMut(x, v, b, off) => ELetMut(x, lc_rename_hs_next_calls(v, active), lc_rename_hs_next_calls(b, active && x != "host_stream_next"), off),
+    ELet(x, v, b, off) => ELet(x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active && x != from_name, from_name, to_name), off),
+    ELetMut(x, v, b, off) => ELetMut(x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active && x != from_name, from_name, to_name), off),
     ELetRec(x, v, b) => {
-      let inner = active && x != "host_stream_next"
-      ELetRec(x, lc_rename_hs_next_calls(v, inner), lc_rename_hs_next_calls(b, inner))
+      let inner = active && x != from_name
+      ELetRec(x, lc_rename_hs_call(v, inner, from_name, to_name), lc_rename_hs_call(b, inner, from_name, to_name))
     },
-    ESeq(a, b) => ESeq(lc_rename_hs_next_calls(a, active), lc_rename_hs_next_calls(b, active)),
-    EIf(c, t, el) => EIf(lc_rename_hs_next_calls(c, active), lc_rename_hs_next_calls(t, active), lc_rename_hs_next_calls(el, active)),
+    ESeq(a, b) => ESeq(lc_rename_hs_call(a, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
+    EIf(c, t, el) => EIf(lc_rename_hs_call(c, active, from_name, to_name), lc_rename_hs_call(t, active, from_name, to_name), lc_rename_hs_call(el, active, from_name, to_name)),
     EMatch(s, arms) => {
       let out: Array[(Pat, Expr)] = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
         let (mp, mb) = Array::get(arms, i)
-        Array::push(out, (mp, lc_rename_hs_next_calls(mb, active && !lc_pat_binds_name(mp, "host_stream_next"))))
+        Array::push(out, (mp, lc_rename_hs_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name)))
         i = i + 1
       }
-      EMatch(lc_rename_hs_next_calls(s, active), out)
+      EMatch(lc_rename_hs_call(s, active, from_name, to_name), out)
     },
     EHandle(b, arms) => {
       let out: Array[(Pat, Expr)] = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
         let (mp, mb) = Array::get(arms, i)
-        Array::push(out, (mp, lc_rename_hs_next_calls(mb, active && !lc_pat_binds_name(mp, "host_stream_next"))))
+        Array::push(out, (mp, lc_rename_hs_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name)))
         i = i + 1
       }
-      EHandle(lc_rename_hs_next_calls(b, active), out)
+      EHandle(lc_rename_hs_call(b, active, from_name, to_name), out)
     },
     EFn(tps, tbs, params, ret, eff, b) => {
       let mut shadowed = false
       let mut i = 0
       while i < Array::length(params) {
         let (pn, _) = Array::get(params, i)
-        if pn == "host_stream_next" {
+        if pn == from_name {
           shadowed = true
         } else {
           ()
         }
         i = i + 1
       }
-      EFn(tps, tbs, params, ret, eff, lc_rename_hs_next_calls(b, active && !shadowed))
+      EFn(tps, tbs, params, ret, eff, lc_rename_hs_call(b, active && !shadowed, from_name, to_name))
     },
-    EWhile(c, b) => EWhile(lc_rename_hs_next_calls(c, active), lc_rename_hs_next_calls(b, active)),
+    EWhile(c, b) => EWhile(lc_rename_hs_call(c, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
     EForIn(x, ix, it, b) => {
-      let inner = active && x != "host_stream_next"
-      EForIn(x, ix, lc_rename_hs_next_calls(it, active), lc_rename_hs_next_calls(b, inner))
+      let inner = active && x != from_name
+      EForIn(x, ix, lc_rename_hs_call(it, active, from_name, to_name), lc_rename_hs_call(b, inner, from_name, to_name))
     },
     ELoop(pairs, b) => {
       let out: Array[(String, Expr)] = array_empty()
@@ -1128,32 +1134,32 @@ fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
       let mut i = 0
       while i < Array::length(pairs) {
         let (pn, pv) = Array::get(pairs, i)
-        if pn == "host_stream_next" {
+        if pn == from_name {
           inner = false
         } else {
           ()
         }
-        Array::push(out, (pn, lc_rename_hs_next_calls(pv, active)))
+        Array::push(out, (pn, lc_rename_hs_call(pv, active, from_name, to_name)))
         i = i + 1
       }
-      ELoop(out, lc_rename_hs_next_calls(b, inner))
+      ELoop(out, lc_rename_hs_call(b, inner, from_name, to_name))
     },
-    EBinOp(op, l, r) => EBinOp(op, lc_rename_hs_next_calls(l, active), lc_rename_hs_next_calls(r, active)),
-    EUnaryOp(op, a) => EUnaryOp(op, lc_rename_hs_next_calls(a, active)),
-    EAssign(x, v, b) => EAssign(x, lc_rename_hs_next_calls(v, active), lc_rename_hs_next_calls(b, active)),
-    EAssignOp(op, x, v, b) => EAssignOp(op, x, lc_rename_hs_next_calls(v, active), lc_rename_hs_next_calls(b, active)),
-    EReturn(a) => EReturn(lc_rename_hs_next_calls(a, active)),
-    EDot(o, f, m, off) => EDot(lc_rename_hs_next_calls(o, active), f, m, off),
-    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_hs_next_calls(v, active)),
+    EBinOp(op, l, r) => EBinOp(op, lc_rename_hs_call(l, active, from_name, to_name), lc_rename_hs_call(r, active, from_name, to_name)),
+    EUnaryOp(op, a) => EUnaryOp(op, lc_rename_hs_call(a, active, from_name, to_name)),
+    EAssign(x, v, b) => EAssign(x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
+    EAssignOp(op, x, v, b) => EAssignOp(op, x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
+    EReturn(a) => EReturn(lc_rename_hs_call(a, active, from_name, to_name)),
+    EDot(o, f, m, off) => EDot(lc_rename_hs_call(o, active, from_name, to_name), f, m, off),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_hs_call(v, active, from_name, to_name)),
     EBreak(opt) => match opt {
-      Some(a) => EBreak(Some(lc_rename_hs_next_calls(a, active))),
+      Some(a) => EBreak(Some(lc_rename_hs_call(a, active, from_name, to_name))),
       None => e
     },
     EContinue(args) => {
       let out = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(out, lc_rename_hs_next_calls(Array::get(args, i), active))
+        Array::push(out, lc_rename_hs_call(Array::get(args, i), active, from_name, to_name))
         i = i + 1
       }
       EContinue(out)
@@ -1162,7 +1168,7 @@ fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
       let out = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(out, lc_rename_hs_next_calls(Array::get(items, i), active))
+        Array::push(out, lc_rename_hs_call(Array::get(items, i), active, from_name, to_name))
         i = i + 1
       }
       ETuple(out)
@@ -1171,7 +1177,7 @@ fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
       let out = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(out, lc_rename_hs_next_calls(Array::get(items, i), active))
+        Array::push(out, lc_rename_hs_call(Array::get(items, i), active, from_name, to_name))
         i = i + 1
       }
       EArray(out)
@@ -1181,7 +1187,7 @@ fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
       let mut i = 0
       while i < Array::length(fields) {
         let (fn2, fv) = Array::get(fields, i)
-        Array::push(out, (fn2, lc_rename_hs_next_calls(fv, active)))
+        Array::push(out, (fn2, lc_rename_hs_call(fv, active, from_name, to_name)))
         i = i + 1
       }
       ERecord(nm, out, off)
@@ -1191,13 +1197,37 @@ fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
       let mut i = 0
       while i < Array::length(fields) {
         let (fk, fv) = Array::get(fields, i)
-        Array::push(out, (fk, lc_rename_hs_next_calls(fv, active)))
+        Array::push(out, (fk, lc_rename_hs_call(fv, active, from_name, to_name)))
         i = i + 1
       }
       EMap(out)
     },
-    ESpread(a) => ESpread(lc_rename_hs_next_calls(a, active)),
+    ESpread(a) => ESpread(lc_rename_hs_call(a, active, from_name, to_name)),
     _ => e
+  }
+}
+
+fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
+  lc_rename_hs_call(e, active, "host_stream_next", "__hs_next")
+}
+
+/// ADR-0089 Decision 3 follow-up (#1218): the CLOSE retarget, run as its own
+/// pass right after the read one. Separate passes rather than one walk with
+/// two name tests because shadowing is per-name: `let host_stream_next = ..`
+/// must not disable the close rewrite, and vice versa.
+fn lc_rename_hs_close_calls(e: Expr, active: Bool) -> Expr {
+  lc_rename_hs_call(e, active, "host_stream_close", "__hs_close")
+}
+
+/// The close retarget, skipped entirely when the program never closes. The
+/// skip is not an optimisation: `__hs_close` is only injected under the same
+/// condition, so rewriting a call to it when it does not exist would produce
+/// an unresolved name instead of the precise compile_call diagnostic.
+fn lc_rename_hs_maybe_close(enabled: Bool, e: Expr, active: Bool) -> Expr {
+  if enabled {
+    lc_rename_hs_close_calls(e, active)
+  } else {
+    e
   }
 }
 
@@ -1728,11 +1758,12 @@ fn lc_hs_req_base() -> Int {
 }
 
 /// ADR-0089 Decision 3 (#1218): enablement key for the host-stream boundary
-/// machinery -- does the program call `host_stream_named` (create) or
-/// `host_stream_next` (read) anywhere? Either one implies the boundary's
-/// stream settle arm and the shared `vibe.host_stream_read` import.
+/// machinery -- does the program call `host_stream_named` (create),
+/// `host_stream_next` (read) or `host_stream_close` (drop) anywhere? Any of
+/// them implies the boundary's stream settle arm and the shared
+/// `vibe.host_stream_read` import.
 fn lc_expr_calls_host_stream(e: Expr) -> Bool {
-  lc_expr_calls_name(e, "host_stream_named") || lc_expr_calls_name(e, "host_stream_next")
+  lc_expr_calls_name(e, "host_stream_named") || lc_expr_calls_name(e, "host_stream_next") || lc_expr_calls_name(e, "host_stream_close")
 }
 
 /// ADR-0089 Decision 3 (#1218): every component import name a
@@ -2190,6 +2221,12 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   let mut calls_host_future = false
   let mut user_defines_host_future = false
   let mut calls_host_stream = false
+  // ADR-0089 Decision 3 follow-up (#1218): tracked SEPARATELY from
+  // calls_host_stream, because the injected `__hs_close` is what references
+  // `vibe_hs_close_raw` -- injecting it for every stream program would
+  // reserve the close import in programs that only ever drain, which is
+  // exactly the byte-compat property this surface is supposed to keep.
+  let mut calls_host_stream_close = false
   let mut user_defines_host_stream = false
   let mut has_spawn_suspend = false
   let mut has_aw_poll = false
@@ -2232,13 +2269,18 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if name == "host_stream_named" || name == "host_stream_next" {
+        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" {
           user_defines_host_stream = true
         } else {
           ()
         }
         if lc_expr_calls_host_stream(fbody) {
           calls_host_stream = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_name(fbody, "host_stream_close") {
+          calls_host_stream_close = true
         } else {
           ()
         }
@@ -2259,7 +2301,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if name == "host_stream_named" || name == "host_stream_next" {
+        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" {
           user_defines_host_stream = true
         } else {
           ()
@@ -2281,6 +2323,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         }
         if lc_expr_calls_host_stream(sv) {
           calls_host_stream = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_name(sv, "host_stream_close") {
+          calls_host_stream_close = true
         } else {
           ()
         }
@@ -2306,6 +2353,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
+        if lc_expr_calls_name(mv, "host_stream_close") {
+          calls_host_stream_close = true
+        } else {
+          ()
+        }
       },
       SExpr(se) => {
         if lc_expr_has_async_handle(se) {
@@ -2325,6 +2377,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         }
         if lc_expr_calls_host_stream(se) {
           calls_host_stream = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_name(se, "host_stream_close") {
+          calls_host_stream_close = true
         } else {
           ()
         }
@@ -2350,6 +2407,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
+        if lc_expr_calls_name(te, "host_stream_close") {
+          calls_host_stream_close = true
+        } else {
+          ()
+        }
       },
       SBench(_, be) => {
         if lc_expr_has_async_handle(be) {
@@ -2369,6 +2431,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         }
         if lc_expr_calls_host_stream(be) {
           calls_host_stream = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_name(be, "host_stream_close") {
+          calls_host_stream_close = true
         } else {
           ()
         }
@@ -2551,29 +2618,79 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         ("__hsf_v", None)
       ]
       Array::push(stmts, SLet(false, false, "__hs_fin", None, EFn(lc_fresh_string_array(), array_empty(), hsf_params, Some(TyName("Int")), None, hsf_body)))
+      // ADR-0089 Decision 3 follow-up (#1218): the DROP half. The read half
+      // releases the readable end only once it reaches end of stream, so a
+      // guest that stops reading early (`take the first 4 bytes`) used to
+      // pin that handle for the component instance's whole lifetime -- the
+      // limitation recorded at the end of spec §3.18.
+      //
+      // `host_stream_close(s)` retargets to this injected `__hs_close`,
+      // which is ROW-FREE: dropping a readable end is a canon call that
+      // never blocks, so unlike the read there is no perform, no reserved
+      // band and no boundary settle arm -- it calls the adapter directly.
+      //
+      // The cell's state word is what makes it idempotent and safe: the
+      // drop happens only for state 3 (open host stream), and the same
+      // write that closes the cell (3 -> 0) is what stops a second close --
+      // or a later read, which returns -1 through `__hs_next`'s state test
+      // -- from reaching the adapter again. A double `stream.drop-readable`
+      // on one handle would trap host-side, so this is load-bearing, not
+      // just tidy.
+      let hsc_s = EIdent("__hsc_s", -1)
+      let hsc_state = ECall(EIdent("Array::get", -1), [
+        hsc_s,
+        EInt(0)
+      ], -1)
+      let hsc_hnd = ECall(EIdent("Array::get", -1), [
+        hsc_s,
+        EInt(1)
+      ], -1)
+      let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [
+        hsc_hnd
+      ], -1)
+      let hsc_mark = ECall(EIdent("Array::set", -1), [
+        hsc_s,
+        EInt(0),
+        EInt(0)
+      ], -1)
+      let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3)), ELet("__hsc_r", hsc_drop, hsc_mark, -1), EUnit)
+      let hsc_params: Array[(String, Option[TypeExpr])] = [
+        ("__hsc_s", None)
+      ]
+      // Injected ONLY when the source actually closes. `__hs_close`'s body is
+      // the sole reference to `vibe_hs_close_raw`, and the import is gated on
+      // that name being used -- so injecting it unconditionally would hand
+      // the close import (and the adapter's drop func) to every draining
+      // program too, silently changing bytes that are pinned elsewhere.
+      if calls_host_stream_close {
+        Array::push(stmts, SLet(false, false, "__hs_close", None, EFn(lc_fresh_string_array(), array_empty(), hsc_params, Some(TyName("Unit")), None, hsc_body)))
+      } else {
+        ()
+      }
       // Program-wide retarget (shadow-aware): the machinery is
       // entry-row-keyed, so the boundary catches every otherwise-unhandled
       // perform -- the same soundness argument as the sleep rewrite's
-      // entry_has_async arm.
+      // entry_has_async arm. Both surfaces are rewritten here, each by its
+      // own pass (shadowing is per-name, see lc_rename_hs_close_calls).
       let mut hsr = 0
       while hsr < Array::length(stmts) {
         match Array::get(stmts, hsr) {
-          SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_fin" {
+          SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_fin" || hrname == "__hs_close" {
             ()
           } else {
-            Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_next_calls(hrexpr, true)))
+            Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hrexpr, true), true)))
           },
           SLetMut(hmname, hmty, hmexpr) => {
-            Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_next_calls(hmexpr, true)))
+            Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hmexpr, true), true)))
           },
           STest(htname, htexpr) => {
-            Array::set(stmts, hsr, STest(htname, lc_rename_hs_next_calls(htexpr, true)))
+            Array::set(stmts, hsr, STest(htname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(htexpr, true), true)))
           },
           SBench(hbname, hbexpr) => {
-            Array::set(stmts, hsr, SBench(hbname, lc_rename_hs_next_calls(hbexpr, true)))
+            Array::set(stmts, hsr, SBench(hbname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hbexpr, true), true)))
           },
           SExpr(hsexpr) => {
-            Array::set(stmts, hsr, SExpr(lc_rename_hs_next_calls(hsexpr, true)))
+            Array::set(stmts, hsr, SExpr(lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hsexpr, true), true)))
           },
           _ => ()
         }
@@ -3371,6 +3488,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // used-name collect, so the raw name also lands in used_builtin_names.
   let hs_named_names = lc_collect_host_stream_names(stmts)
   let need_host_stream_read_builtin = Map::has_key(used_builtin_names, "vibe_hs_read_raw") || Array::length(hs_named_names) > 0
+  // ADR-0089 Decision 3 follow-up (#1218): the shared CLOSE half. Gated on
+  // ACTUAL use (unlike the read half, which every named stream implies) so
+  // a program that always drains to EOS reserves no extra import and its
+  // module bytes are unchanged -- the injected `__hs_close` is the only
+  // caller, and it only exists when the source called `host_stream_close`.
+  let need_host_stream_close_builtin = Map::has_key(used_builtin_names, "vibe_hs_close_raw")
   // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
   // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
   // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
@@ -3606,6 +3729,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // fixed -- reserved right after the host-future imports; the emission
   // below walks the same order.
   let hs_read_import_idx = if need_host_stream_read_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hs_close_import_idx = if need_host_stream_close_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -4097,6 +4227,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     fs_read_file_stub_idx
   }
+  // ADR-0089 Decision 3 follow-up: the shared host-stream CLOSE half, same
+  // stub discipline (`(i64) -> i64`; the injected `__hs_close` call site
+  // only exists when the import is reserved).
+  let hs_close_idx = if hs_close_import_idx >= 0 {
+    hs_close_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   // sh / sh_lines call targets: the import when reserved, else the fs_read_file
   // stub (a `(i64)->i64` never-called placeholder) — the real call site only
   // exists when the import is reserved (i.e. when the program uses sh/sh_lines).
@@ -4400,6 +4538,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "vibe_hf_wait_raw" => hf_wait_idx,
         // ADR-0089 Decision 3: shared read half of the named host streams.
         "vibe_hs_read_raw" => hs_read_idx,
+        // ADR-0089 Decision 3 follow-up: shared drop half of the named host
+        // streams (`host_stream_close` -> injected `__hs_close`).
+        "vibe_hs_close_raw" => hs_close_idx,
         "simd_skip_ws" => simd_skip_ws_idx,
         "simd_scan_alnum" => simd_scan_alnum_idx,
         "simd_scan_alnum_str" => simd_scan_alnum_str_idx,
@@ -6255,6 +6396,18 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if hs_read_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "host_stream_read")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // ADR-0089 Decision 3 follow-up (#1218): `vibe.host_stream_close
+  // (i64) -> i64` (type 3), reserved right after the read half and emitted
+  // in that order. Present only when the program actually closes a stream,
+  // so draining programs stay byte-identical.
+  if hs_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_close")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   } else {

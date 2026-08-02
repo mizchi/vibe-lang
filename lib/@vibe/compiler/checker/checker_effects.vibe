@@ -10,8 +10,13 @@ import @vibe/compiler/core {
   canonical_exception_effect_name,
   env_lookup,
   exception_effect_labels_equal,
+  exception_kinds_compatible,
+  exception_label_kind,
+  exception_throw_label_for_kind,
   expr_children,
   is_exception_effect_name,
+  is_exception_label,
+  is_exception_throw_operation,
   type_name_has_async_iterator_impl
 }
 
@@ -551,22 +556,35 @@ fn row_label_base(label: String) -> String {
 /// bracket (so this never fires for pre-#1340 rows, where the exact check
 /// above already decided).
 fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
-  let eb = row_label_base(eff_name)
-  let ehas = String::length(eb) < String::length(eff_name)
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(labels) {
-    let l = Array::get(labels, i)
-    let lb = row_label_base(l)
-    let lhas = String::length(lb) < String::length(l)
-    if (ehas || lhas) && lb == eb {
-      found = true
-    } else {
-      ()
+  // ADR-0085 (#1344): the exception effect opts OUT of base-name equivalence.
+  // Every other generic effect treats `E[A]` and `E[B]` as interchangeable
+  // (#1340 v1), but `Exception[E]`'s whole point is that they are not, and
+  // this predicate would otherwise re-admit exactly what decl_authorizes_
+  // effect's kind check just rejected -- via the OPERATION spelling
+  // (`Exception[IoError]::Throw` strips to base `Exception`), which the
+  // bare-effect arm above never sees. Bracketless exception labels were
+  // already outside this rule (it fires only when one side has a bracket), so
+  // pre-#1344 rows are unchanged.
+  if is_exception_label(eff_name) {
+    false
+  } else {
+    let eb = row_label_base(eff_name)
+    let ehas = String::length(eb) < String::length(eff_name)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(labels) {
+      let l = Array::get(labels, i)
+      let lb = row_label_base(l)
+      let lhas = String::length(lb) < String::length(l)
+      if (ehas || lhas) && lb == eb && !is_exception_label(l) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
     }
-    i = i + 1
+    found
   }
-  found
 }
 
 fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
@@ -574,18 +592,30 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   // exact-membership primitive rather than substring matching.
   if effect_row_has_label(Some(labels), eff_name) {
     true
-  } else if row_base_membership(labels, eff_name) {
-    true
   } else if is_exception_effect_name(eff_name) {
+    // ADR-0085 Phase 3 (#1344): the exception effect is authorized by KIND.
+    // This arm now runs BEFORE row_base_membership below, because that rule
+    // compares generic row items by their base name (the
+    // instantiation-insensitive #1340 v1, where `State[Int]` and
+    // `State[String]` are interchangeable) -- reaching it would let
+    // `with { Exception[ParseError] }` authorize an `IoError` throw and erase
+    // the one guarantee typed exceptions exist to give. For BRACKETLESS rows
+    // the reorder is inert: the old order could only have matched here when
+    // some declared label already shared the base `Error`, which the exact
+    // check above decided.
+    let required_kind = exception_label_kind(eff_name)
     let mut alias_found = false
     let mut alias_i = 0
     while alias_i < Array::length(labels) {
-      if is_exception_effect_name(Array::get(labels, alias_i)) {
+      let declared_label = Array::get(labels, alias_i)
+      if is_exception_label(declared_label) && exception_kinds_compatible(exception_label_kind(declared_label), required_kind) {
         alias_found = true
       }
       alias_i = alias_i + 1
     }
     alias_found
+  } else if row_base_membership(labels, eff_name) {
+    true
   } else {
     let mut i = 0
     let mut has_effect_var = false
@@ -630,6 +660,204 @@ fn effect_name_of_op(op_name: String) -> String {
     canonical_exception_effect_name(op_name[0: idx])
   } else {
     canonical_exception_effect_name(op_name)
+  }
+}
+
+// ADR-0085 Phase 3 (#1344): the exception KIND of a `throw` payload.
+//
+// `throw(v)` requires `Exception[typeof(v)]`. This pass runs AFTER type
+// checking but is itself untyped -- it walks the AST with the module's row
+// table, not a Subst -- so the payload's static type is recovered from the
+// checked top-level ENV instead of re-inferring it, via a flat table built
+// once per module (throw_kind_cell below).
+//
+// What that resolves, and what it does not:
+//
+//   throw("boom")                 -> String       literal
+//   throw(NotFound("cfg"))        -> IoError      constructor application
+//   throw(Eof)                    -> ParseError   nullary constructor
+//   throw(make_err(x))            -> whatever `make_err` returns
+//   throw(e)  // e a LOCAL        -> ""           unresolved
+//
+// An unresolved payload yields kind "", which exception_kinds_compatible
+// treats as compatible with every declared exception label -- so this can
+// never invent an error out of the gap, only miss one. Threading local binder
+// types through this walk (the remaining case) is the follow-up recorded in
+// docs/exception-effect.md.
+//
+// The whole refinement is provably additive for existing code: a declared row
+// either carries an ERASED exception label (`Error` / `Exception`), which is
+// kind-compatible with everything, or carries no exception label at all, in
+// which case the throw was already rejected with the identical message. Only a
+// row that opts into `Exception[K]` -- a spelling nothing in the codebase uses
+// -- can newly fail.
+
+/// The exception-kind name of a checked type: the head name of a nominal type,
+/// and "" for anything structural or still-unresolved (a type variable, a
+/// function, a tuple). Kinds are compared by NAME because the row label is a
+/// string; a structural payload therefore has no kind and stays gradual.
+fn type_kind_name(t: Type) -> String {
+  match t {
+    CtString => "String",
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtChar => "Char",
+    CtBytes => "Bytes",
+    CtEnum(n) => n,
+    CtStruct(n) => n,
+    CtNamed(n, _) => n,
+    _ => ""
+  }
+}
+
+/// (name, kind-as-a-value, kind-of-its-result) for every top-level binding.
+/// Both columns are needed because a `throw` payload names a binding in two
+/// different positions: `throw(Eof)` wants the binding's own type, while
+/// `throw(NotFound("x"))` wants the RESULT type of the constructor it applies.
+let throw_kind_cell: Array[(String, String, String)] = array_empty()
+
+fn throw_kind_push(name: String, ty: Type) -> Unit {
+  let fnty = match ty {
+    CtForAll(_, _, body) => body,
+    _ => ty
+  }
+  let value_kind = type_kind_name(fnty)
+  let result_kind = match fnty {
+    CtFn(_, ret, _) => type_kind_name(ret),
+    _ => ""
+  }
+  if String::length(value_kind) > 0 || String::length(result_kind) > 0 {
+    Array::push(throw_kind_cell, (name, value_kind, result_kind))
+  } else {
+    ()
+  }
+}
+
+/// Rebuild the payload-kind table from the checked top-level env. Called at
+/// every public entry of this pass -- including the ones with no env, which
+/// therefore CLEAR it -- so a table can never survive into the next module and
+/// misclassify a same-named binding there.
+fn set_throw_kind_table(env: TypeEnv) -> Unit {
+  Array::truncate(throw_kind_cell, 0)
+  let mut cur = env
+  let mut looping = true
+  while looping {
+    match cur {
+      EnvBind(name, ty, rest) => {
+        throw_kind_push(name, ty)
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvCached(cnames, ctypes, rest) => {
+        // Unlike seed_env_fn_effs above, the cached parallel arrays must be
+        // READ, not skipped: `collect_all_diagnostics` (the `vibe diagnostics`
+        // / LSP lane) hands this pass an env whose bindings have all been
+        // folded into one EnvCached, so skipping it left every payload kind
+        // unresolved on exactly that lane while the file-compile lane
+        // resolved them -- the same program diagnosed differently depending
+        // on which entry point asked.
+        let mut ci = 0
+        while ci < Array::length(cnames) && ci < Array::length(ctypes) {
+          throw_kind_push(Array::get(cnames, ci), Array::get(ctypes, ci))
+          ci = ci + 1
+        }
+        cur = rest
+      },
+      EnvFlat(entries) => {
+        let mut ei = 0
+        while ei < Array::length(entries) {
+          let (ename, ety) = Array::get(entries, ei)
+          throw_kind_push(ename, ety)
+          ei = ei + 1
+        }
+        looping = false
+      },
+      EnvEmpty => {
+        looping = false
+      }
+    }
+  }
+}
+
+/// `want_result`: look up the binding's RESULT kind (it is being applied)
+/// rather than its own. First match wins, matching the env's own innermost-
+/// first order.
+fn throw_kind_lookup(name: String, want_result: Bool) -> String {
+  let mut i = 0
+  let mut out = ""
+  let mut found = false
+  while i < Array::length(throw_kind_cell) && !found {
+    let (n, value_kind, result_kind) = Array::get(throw_kind_cell, i)
+    if n == name {
+      out = if want_result {
+        result_kind
+      } else {
+        value_kind
+      }
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The exception kind of a `throw` payload expression, or "" when this pass
+/// cannot resolve it (see the header comment above for the exact coverage).
+fn throw_payload_kind(payload: Expr) -> String {
+  match payload {
+    EString(_) => "String",
+    EStringInterp(_) => "String",
+    EInt(_) => "Int",
+    EBool(_) => "Bool",
+    EIdent(n, _) => throw_kind_lookup(n, false),
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => throw_kind_lookup(f, true),
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// The row label a `throw` requires: the typed `Exception[K]::Throw` when the
+/// payload's kind is resolvable, and the pinned erased `Error::Throw`
+/// otherwise. Non-exception operations pass through untouched.
+fn throw_required_label(op_name: String, opargs: Array[Expr]) -> String {
+  if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
+    exception_throw_label_for_kind(throw_payload_kind(Array::get(opargs, 0)))
+  } else {
+    op_name
+  }
+}
+
+/// Which spelling of the missing label to REPORT. A row that names no
+/// exception label at all is the pre-#1344 "this function cannot throw" case,
+/// and its diagnostic stays byte-identical (`missing { Error::Throw }`); the
+/// typed spelling is surfaced only once the row is already speaking in kinds,
+/// where it is the actionable fix-it.
+fn throw_report_label(op_name: String, required: String, declared: Array[String]) -> String {
+  let mut i = 0
+  let mut typed_row = false
+  while i < Array::length(declared) {
+    if is_exception_label(Array::get(declared, i)) {
+      typed_row = true
+    }
+    i = i + 1
+  }
+  if typed_row {
+    required
+  } else {
+    op_name
   }
 }
 
@@ -1127,9 +1355,14 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           EIdent(name, _) => {
             if name == "perform" && Array::length(args) == 1 {
               match Array::get(args, 0) {
-                ECall(op_callee, _, _) => match op_callee {
+                ECall(op_callee, opargs, _) => match op_callee {
                   EIdent(op_name, _) => {
                     let eff = effect_name_of_op(op_name)
+                    // ADR-0085 Phase 3 (#1344): for `throw(v)` the required
+                    // label carries the payload's exception KIND
+                    // (`Exception[IoError]::Throw`); every other operation
+                    // keeps its own name verbatim.
+                    let required_op = throw_required_label(op_name, opargs)
                     // #640 Stage 2: `Error` is exempt from the DIRECT
                     // discipline, exactly like the transitive slice below
                     // (`teff != "Error"`) and builtin_call_effect's Error
@@ -1147,9 +1380,9 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // sibling operation of the same effect is already
                     // authorized at operation granularity, e.g. `with {
                     // Ask::Other }` + a bare `perform Ask::Get`).
-                    if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
+                    if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
                       Array::push(errors, make_row_mismatch(fn_name, declared, [
-                        op_name
+                        throw_report_label(op_name, required_op, declared)
                       ]))
                     } else {
                       ()
@@ -1506,6 +1739,9 @@ fn no_ov_effs() -> Array[Array[String]] {
 /// Public 3-arg entry: the direct-only check (no call-graph map), preserving the
 /// pre-transitive behavior for unit tests and any non-stmts caller.
 export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], root_in_handle: Bool) -> Array[EffectError] {
+  // Same clearing rule as check_perform_effects_stmt (#1344): no env here, so
+  // no payload kinds are resolvable and none must be carried over.
+  set_throw_kind_table(EnvEmpty)
   check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
 
@@ -1637,6 +1873,9 @@ fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: A
 
 /// Public 1-arg entry: direct-only (empty map). Kept for unit tests.
 export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
+  // No env to resolve payload kinds from: clear the table rather than let a
+  // previous module's bindings decide this one's throw kinds (#1344).
+  set_throw_kind_table(EnvEmpty)
   check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs())
 }
 
@@ -1737,6 +1976,10 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
   let fn_effs = array_empty()
   build_perform_fn_effs(stmts, fn_names, fn_effs)
   seed_env_fn_effs(env, fn_names, fn_effs)
+  // ADR-0085 Phase 3 (#1344): rebuild the `throw` payload-kind table from the
+  // same checked env, so a typed `Exception[K]` row can be compared against
+  // what each throw site actually throws.
+  set_throw_kind_table(env)
   let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {

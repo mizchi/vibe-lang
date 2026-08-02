@@ -8574,4 +8574,111 @@ fi
 rm -rf "$hodir"
 echo "[compiler-gate] higher-order effect diagnostic ok"
 
+# 85/85. ADR-0085 typed exceptions (#1344): `throw(v)` requires
+# `Exception[typeof(v)]` in the enclosing row, `Exception[E1]` neither
+# authorizes nor discharges `Exception[E2]`, and the ERASED spellings
+# (`Error` / `Exception`) stay compatible with every kind -- which is what
+# makes the feature additive for the codebase's ~970 un-annotated throw sites.
+# Positive: the typed-row fixture compiles and runs to 42 (so every spelling
+# still lowers to the one abortive Wasm tag). Negatives: a kind mismatch is
+# rejected and NAMES the missing kind with a spelling that actually parses in a
+# row, and a kinded `handle` does not catch a foreign kind.
+echo "[compiler-gate] 85/85 typed Exception[E] rows (ADR-0085/#1344)"
+excdir="_build/_gate_1344"
+rm -rf "$excdir"; mkdir -p "$excdir"
+sed '/^__DATA__$/,$d' fixtures/exception_typed_row.vibe > "$excdir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$excdir/pos.vibe" "$excdir/pos.wasm" main >/dev/null 2>&1
+if [ ! -s "$excdir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: exception_typed_row.vibe did not compile (Exception[E] rows / kinded handle / erased alias regressed)" >&2
+  cat "$excdir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+exc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$excdir/pos.wasm" 2>&1 | tail -1)"
+if [ "$exc_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: exception_typed_row got '$exc_out' (want 42) -- kinded exceptions must share one Wasm tag" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_exception_kind_mismatch.vibe > "$excdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$excdir/neg.vibe" "$excdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$excdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: with { Exception[ParseError] } authorized an IoError throw -- exact-kind rows are not enforced (#1344)" >&2
+  exit 1
+fi
+if ! grep -q "missing { Exception\[IoError\] }" "$excdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the diagnostic must name the missing KIND (#1344)" >&2
+  cat "$excdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The fix-it must be pasteable: the row grammar takes `Eff::Op` and `Eff[T]`
+# but NOT `Eff[T]::Op`, so a `Exception[IoError]::Throw` hint would name a
+# label that does not parse. Feed the hint's row back through the compiler.
+cat > "$excdir/fixit.vibe" <<'EOF'
+enum IoError {
+  NotFound(String)
+}
+
+enum ParseError {
+  Eof
+}
+
+let boom = () -> Int with { Exception[IoError], Exception[ParseError] } {
+  throw(NotFound("cfg"))
+}
+
+let main = () -> Int {
+  handle {
+    boom()
+  } with Error {
+    Throw(_e) => 42
+  }
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$excdir/fixit.vibe" "$excdir/fixit.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$excdir/fixit.wasm" ]; then
+  echo "[compiler-gate] FAIL: the row the kind-mismatch hint suggests does not itself compile (#1344)" >&2
+  cat "$excdir/fixit.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$excdir/handle.vibe" <<'EOF'
+enum IoError {
+  NotFound(String)
+}
+
+enum ParseError {
+  Eof
+}
+
+let boom = () -> Int {
+  handle {
+    throw(NotFound("cfg"))
+  } with Exception[ParseError] {
+    Throw(_e) => 42
+  }
+}
+
+let main = () -> Int {
+  boom()
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$excdir/handle.vibe" "$excdir/handle.wasm" main >/dev/null 2>&1 || true
+if [ -s "$excdir/handle.wasm" ]; then
+  echo "[compiler-gate] FAIL: handle with Exception[ParseError] discharged an IoError throw (#1344)" >&2
+  exit 1
+fi
+if ! grep -q "missing { Exception\[IoError\] }" "$excdir/handle.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a kinded handle must leave the foreign kind in the row (#1344)" >&2
+  cat "$excdir/handle.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$excdir"
+echo "[compiler-gate] typed Exception[E] rows ok"
+
 echo "[compiler-gate] ok"

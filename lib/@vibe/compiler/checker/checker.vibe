@@ -10,11 +10,14 @@ import @vibe/compiler/core {
   TypeExpr,
   env_bind,
   env_lookup,
+  exception_effect_kind,
+  exception_effect_labels_equal,
   find_typedef,
   fresh_var,
   generalize,
   instantiate,
   is_exception_effect_name,
+  is_exception_label,
   is_exception_throw_handler_name,
   is_exception_throw_operation,
   resolve_builtin,
@@ -669,7 +672,13 @@ fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
 /// `$N` fresh vars — not decidable without call-site row unification, #885).
 fn effect_label_is_exempt(lbl: String) -> Bool {
   let len = String::length(lbl)
-  if is_exception_effect_name(lbl) || lbl == "Async" {
+  // ADR-0085 (#1344): only the ERASED exception spellings keep the #640
+  // exemption. It exists because `Error` is pervasive and un-annotated, so
+  // laundering it away is not evidence of a bug; a KINDED `Exception[E]` is
+  // opt-in and carries real information, so dropping it through a pure-typed
+  // slot is exactly the #939 hole this check exists to catch. Nothing in the
+  // codebase writes a kinded label, so no existing program changes verdict.
+  if (is_exception_effect_name(lbl) && String::length(exception_effect_kind(lbl)) == 0) || lbl == "Async" {
     true
   } else if len == 1 {
     String::char_code_at(lbl, 0) >= 97 && String::char_code_at(lbl, 0) <= 122
@@ -720,9 +729,22 @@ fn row_contains_label(row: Option[String], lbl: String) -> Bool {
   // #1340 (ADR-0071): compare by base name so a generic instantiation label
   // (`State[Int]`) and the bare effect (`State`) count as the same label in
   // the dropped-row walk — bracketless labels degenerate to exact equality.
+  // ADR-0085 (#1344): the exception effect opts out of that base-name
+  // equivalence and compares by KIND instead, so assigning a
+  // `with { Exception[IoError] }` value into a `with { Exception[ParseError] }`
+  // slot is a dropped row, not a match. Erased labels (`Error`, `Exception`)
+  // stay compatible with every kind in both directions, which is what keeps
+  // every pre-#1344 row behaving exactly as before.
   let wanted = ck_row_label_base(lbl)
+  let exc_wanted = is_exception_label(lbl)
   while i < Array::length(labels) && !found {
-    if ck_row_label_base(Array::get(labels, i)) == wanted {
+    let have = Array::get(labels, i)
+    let hit = if exc_wanted || is_exception_label(have) {
+      exception_effect_labels_equal(have, lbl)
+    } else {
+      ck_row_label_base(have) == wanted
+    }
+    if hit {
       found = true
     } else {
       i = i + 1
