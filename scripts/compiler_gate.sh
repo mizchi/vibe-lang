@@ -8022,4 +8022,80 @@ fi
 rm -rf "$asb89dir"
 echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
 
+# 78/78. ADR-0089 (c) (#1218/#1337): the named-host-future NAME COLLECTOR must
+# be total over expression containers and shadow-aware.
+#
+# compile_call lowers `host_future_named("price")` to `vibe_hf_get_raw$price`
+# wherever it appears, so a container linked_compile's collector fails to walk
+# reserves no import and no func-table entry -- the program then fails to
+# compile with `undefined variable (local): vibe_hf_get_raw$price` (measured on
+# the record-literal form before the fix). The mirror hazard is the same walk
+# being shadow-BLIND: a local named `host_future_named` is an ordinary closure
+# call compile_call leaves alone, so collecting its argument would demand a
+# component import the program never uses.
+#
+# These are compile-level properties, so they belong here rather than only in
+# the viberun-driven test_named_hostfutures_component_gate.sh (which also
+# covers them, at runtime).
+echo "[compiler-gate] 78/78 named host future collector: total + shadow-aware (#1337)"
+nhf37dir="_build/_gate_1337"
+rm -rf "$nhf37dir"; mkdir -p "$nhf37dir"
+# The record literal lives in a row-free NAMED fn, not in the handled body:
+# ADR-0076's evidence-migration eligibility independently rejects a container
+# literal on the handled spine, and that rejection (a clear diagnostic) is not
+# what this section is about. What it IS about is that the collector must walk
+# INTO the record at all -- pre-fix this exact file failed with
+# `undefined variable (local): vibe_hf_get_raw$price`.
+cat > "$nhf37dir/nested.vibe" <<'EOF'
+fn make_cell() -> Future[Int] {
+  let r = record {
+    p: host_future_named("price")
+  }
+  r.p
+}
+
+let run: () -> Int with { Async } = () -> {
+  await(make_cell())
+}
+EOF
+rm -f "$nhf37dir/nested.wasm" "$nhf37dir/nested.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$nhf37dir/nested.vibe" "$nhf37dir/nested.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$nhf37dir/nested.wasm" ]; then
+  echo "[compiler-gate] FAIL: host_future_named nested in a record literal did not compile (#1337)" >&2
+  cat "$nhf37dir/nested.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -q "price" "$nhf37dir/nested.wasm"; then
+  echo "[compiler-gate] FAIL: record-nested host_future_named compiled without a 'price' import (#1337)" >&2
+  exit 1
+fi
+# A SHADOWED builtin must reserve nothing.
+cat > "$nhf37dir/shadowed.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let host_future_named = (s: String) -> Int {
+    41
+  }
+  host_future_named("price") + 1
+}
+EOF
+rm -f "$nhf37dir/shadowed.wasm" "$nhf37dir/shadowed.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$nhf37dir/shadowed.vibe" "$nhf37dir/shadowed.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$nhf37dir/shadowed.wasm" ]; then
+  echo "[compiler-gate] FAIL: a shadowed host_future_named did not compile (#1337)" >&2
+  cat "$nhf37dir/shadowed.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if grep -q 'host_future_get\$price' "$nhf37dir/shadowed.wasm"; then
+  echo "[compiler-gate] FAIL: a SHADOWED host_future_named still reserved the 'price' host import (#1337)" >&2
+  exit 1
+fi
+nhf37_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$nhf37dir/shadowed.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$nhf37_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: shadowed host_future_named output '$nhf37_out' (want 42, #1337)" >&2
+  exit 1
+fi
+rm -rf "$nhf37dir"
+echo "[compiler-gate] named host future collector ok"
+
 echo "[compiler-gate] ok"
