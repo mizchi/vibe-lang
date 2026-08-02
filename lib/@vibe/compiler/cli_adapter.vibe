@@ -22,11 +22,15 @@ import @vibe/compiler/runtime {
   build_module_source_from_source,
   collect_all_diagnostics,
   doc_at_source,
+  incremental_invalidation_trace_json,
+  incremental_typecheck_telemetry_json,
   module_plan_manifest_fs,
   run_module_job_dir,
   run_publish_env_cache_dir,
   set_collect_module_diagnostics,
   set_dep_order_seed,
+  set_incremental_interface_trace_enabled,
+  set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
   symbol_spans,
   type_at_source
@@ -46,6 +50,7 @@ import @vibe/compiler/loader {
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode,
   compile_file_fs_mode_break,
+  compile_file_fs_mode_cached_artifact_input_trace,
   compile_file_fs_mode_coverage,
   compile_file_fs_mode_rc,
   compile_file_fs_mode_rc_shadow,
@@ -419,6 +424,27 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
   } else {
     set_scheduler_trace_path(scheduler_trace)
   }
+  // Validate an artifact-input trace request before ANY CLI-mode return. This
+  // must precede LSP and every one-shot special/check path so none can leave a
+  // stale sidecar or silently ignore a request intended for the one exact
+  // cached bump/WASI lane below.
+  let artifact_input_trace_out = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT")
+  if artifact_input_trace_out != "" {
+    if Fs::exists(artifact_input_trace_out) {
+      Fs::remove(artifact_input_trace_out)
+    } else {
+      ()
+    }
+    if Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE") == "" {
+      throw("VIBE_ARTIFACT_INPUT_TRACE_OUT requires VIBE_ARTIFACT_INPUT_TRACE_NONCE")
+    } else if Env::get("VIBE_FS_COMPILE") != "1" || Env::get("VIBE_RC") != "0" || Env::get("VIBE_LSP") == "1" || Env::get("VIBE_CHECK_ONLY") == "1" || Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_DEBUG_BREAK") == "1" || Env::get("VIBE_DEBUG") == "1" || Env::get("VIBE_TESTMETA_OUT") != "" || Env::get("VIBE_HASH") == "1" || Env::get("VIBE_HASH_WRITE") == "1" || Env::get("VIBE_MISSING_VPKG_SCAN") == "1" || Env::get("VIBE_DEPS_MISSING_SCAN") == "1" || Env::get("VIBE_FILL_PINS") == "1" || Env::get("VIBE_PUBLISH_CHECK") == "1" || Env::get("VIBE_MODULE_JOB_DIR") == "1" || Env::get("VIBE_PUBLISH_ENV_CACHE") == "1" || Env::get("VIBE_LIST_DEPS") == "1" || Env::get("VIBE_MODULE_PLAN") == "1" {
+      throw("artifact-input trace requires the exact uninstrumented VIBE_FS_COMPILE=1, VIBE_RC=0 file_compile cached bump lane")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
   // `vibe lsp` (self-hosted, #lsp-selfhost): takes over stdin/stdout
   // directly as a long-running JSON-RPC server -- unlike every other mode
   // below, it never reads VIBE_INPUT/VIBE_OUTPUT or writes to output_path.
@@ -671,7 +697,59 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
   } else ()
   if Env::get("VIBE_CHECK_ONLY") == "1" {
     return handle {
+      // The sidecar is opt-in so ordinary `vibe check` remains output- and
+      // work-compatible. The counters cover only the db_typecheck_fs walk
+      // inside check_linked_file; the second linked inline-wasm validation is
+      // intentionally outside this incremental-cache telemetry boundary.
+      let telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+      let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+      let invalidation_trace_nonce = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+      if telemetry_out != "" {
+        // Never leave a previous successful run looking like telemetry for a
+        // failed check. The sidecar is published only after check_linked_file.
+        if Fs::exists(telemetry_out) {
+          Fs::remove(telemetry_out)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if invalidation_trace_out != "" {
+        // A nonce prevents a caller from mistaking a stale successful sidecar
+        // for this check. Do this before the check and publish only afterwards.
+        if Fs::exists(invalidation_trace_out) {
+          Fs::remove(invalidation_trace_out)
+        } else {
+          ()
+        }
+        if invalidation_trace_nonce == "" {
+          throw("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT requires VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if telemetry_out != "" || invalidation_trace_out != "" {
+        set_incremental_typecheck_telemetry_enabled(true)
+      } else {
+        ()
+      }
+      // This has no cache behavior: it only makes the successful walk carry
+      // a canonical public-interface observation into the requested sidecar.
+      set_incremental_interface_trace_enabled(invalidation_trace_out != "")
       let _ = check_linked_file(input_path)
+      if telemetry_out != "" {
+        Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
+      } else {
+        ()
+      }
+      if invalidation_trace_out != "" {
+        Fs::write_file(invalidation_trace_out, incremental_invalidation_trace_json(input_path, invalidation_trace_nonce))
+      } else {
+        ()
+      }
       Fs::write_file(output_path, "ok\n")
       0
     } with Error {
@@ -684,6 +762,10 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
     // its imports) is compiled with function/branch hit instrumentation; running
     // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
     return handle {
+      // Request validation and stale-sidecar deletion happened before every
+      // CLI early return above. This branch now only consumes the validated
+      // request while preserving the ordinary compile-path selection below.
+      let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
       // debugger trace (DAP P1 groundwork): `vibe run --trace` sets VIBE_DEBUG=1
       // so the user file (and its imports) is compiled with function-call
       // execution-trace instrumentation; running the produced wasm fills the
@@ -693,24 +775,24 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       // are unaffected by the RC cutover. The normal compile then defaults to
       // the Perceus RC backend (#493 cutover, #705 parity) unless VIBE_RC=0
       // selects the legacy bump path (which carries the #634 testmeta variant).
-      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-        compile_file_fs_mode_coverage(input_path, entry_name)
+      let (bytes, artifact_input_trace) = if Env::get("VIBE_COVERAGE") == "1" {
+        (compile_file_fs_mode_coverage(input_path, entry_name), "")
       } else if Env::get("VIBE_DEBUG_BREAK") == "1" {
         // debugger breakpoint (DAP P1): `vibe run --break` sets VIBE_DEBUG_BREAK=1
         // so the user file is compiled with `vibe::dbg_break` host-hook calls at
         // each user function entry; the runner pauses on the named breakpoints.
-        compile_file_fs_mode_break(input_path, entry_name)
+        (compile_file_fs_mode_break(input_path, entry_name), "")
       } else if Env::get("VIBE_DEBUG") == "1" {
-        compile_file_fs_mode_trace(input_path, entry_name)
+        (compile_file_fs_mode_trace(input_path, entry_name), "")
       } else if Env::get("VIBE_RC") == "shadow" {
         // #715/#768: shadow-liveness double-free traps for import-resolving
         // builds (previously only the single-source path honored "shadow";
         // this path silently compiled plain RC).
-        compile_file_fs_mode_rc_shadow(input_path, entry_name)
+        (compile_file_fs_mode_rc_shadow(input_path, entry_name), "")
       } else if Env::get("VIBE_RC") != "0" {
         // ADR-0055 #493 cutover DEFAULT: RC reclaims memory each iteration; the
         // legacy bump path leaks until exit. Opt back into bump with VIBE_RC=0.
-        compile_file_fs_mode_rc(input_path, entry_name)
+        (compile_file_fs_mode_rc(input_path, entry_name), "")
       } else {
         // Legacy bump path (VIBE_RC=0). #634 (ADR-0026): only when `vibe test`
         // requests the pure-test cache verdict (VIBE_TESTMETA_OUT set) do we
@@ -719,10 +801,12 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
         // parse). Env is read here (this layer has it), keeping the file_compile
         // layer Env-free.
         let testmeta_out = Env::get("VIBE_TESTMETA_OUT")
-        if testmeta_out != "" {
-          compile_file_fs_mode_testmeta(input_path, entry_name, "no-dce", testmeta_out)
+        if artifact_input_trace_out != "" {
+          compile_file_fs_mode_cached_artifact_input_trace(input_path, entry_name, "no-dce", artifact_input_trace_nonce)
+        } else if testmeta_out != "" {
+          (compile_file_fs_mode_testmeta(input_path, entry_name, "no-dce", testmeta_out), "")
         } else {
-          compile_file_fs_mode(input_path, entry_name, "no-dce")
+          (compile_file_fs_mode(input_path, entry_name, "no-dce"), "")
         }
       }
       // Binary-size (#1100): release executables ship without the name
@@ -767,6 +851,13 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
         }
       } else {
         0
+      }
+      // The compiler artifact is committed first; this requested observation
+      // sidecar is deliberately the final publication operation.
+      if artifact_input_trace_out != "" {
+        Fs::write_file(artifact_input_trace_out, artifact_input_trace)
+      } else {
+        ()
       }
       0
     } with Error {

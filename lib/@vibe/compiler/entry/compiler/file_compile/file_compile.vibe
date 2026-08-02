@@ -691,15 +691,19 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
   }
 }
 
-fn compile_file_fs_mode_cached_slow(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb) with { Error, Fs } {
+/// The unprofiled cached path's slow-branch persistent-artifact lookup. Its
+/// observation fields are derived at the lookup that returns bytes (or proceeds
+/// to compile them), so the trace lane cannot preflight then delegate to a
+/// second production lookup.
+fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, String, String, String) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups, entry_path, entry_name, mode)
+  let source_groups_fingerprint = build_source_groups_fingerprint(source_groups)
+  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)
   match load_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint) {
-    Some(bytes) => (bytes, db),
+    Some(bytes) => (bytes, db, source_groups_fingerprint, persistent_artifact_fingerprint, "hit"),
     None => {
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
-      let merge_fingerprint = build_source_groups_fingerprint(source_groups)
-      let artifact_fingerprint = merge_fingerprint
+      let artifact_fingerprint = source_groups_fingerprint
       let artifact_kind = if mode == "mvp" {
         "wasi-mvp"
       } else if mode == "no-dce" {
@@ -708,7 +712,7 @@ fn compile_file_fs_mode_cached_slow(db: TypeDb, entry_path: String, entry_name: 
         throw(String::concat("unsupported compile mode: ", mode))
       }
       match db_load_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
-        Some(bytes) => (bytes, next_db),
+        Some(bytes) => (bytes, next_db, source_groups_fingerprint, persistent_artifact_fingerprint, "miss"),
         None => {
           let merged_stmts = build_grouped_merged_stmts(source_groups)
           let bytes = if mode == "mvp" {
@@ -720,14 +724,14 @@ fn compile_file_fs_mode_cached_slow(db: TypeDb, entry_path: String, entry_name: 
             compile_wasi_module(merged_stmts, entry_name)
           }
           store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
-          (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
+          (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), source_groups_fingerprint, persistent_artifact_fingerprint, "miss")
         }
       }
     }
   }
 }
 
-export fn compile_file_fs_mode_cached(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error, Fs } {
+fn compile_file_fs_mode_cached_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb, String, String, String) with { Error, Fs } {
   let persistent_artifact_kind = if mode == "mvp" {
     "file-compile-wasi-mvp"
   } else if mode == "no-dce" {
@@ -736,17 +740,96 @@ export fn compile_file_fs_mode_cached(db: TypeDb, entry_path: String, entry_name
     throw(String::concat("unsupported compile mode: ", mode))
   }
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
-    Some(source_groups_fingerprint) =>
-    match load_persistent_artifact(persistent_artifact_kind, entry_name, build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)) {
-      Some(bytes) => (bytes, db),
-      None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
+    Some(source_groups_fingerprint) => {
+      let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)
+      match load_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint) {
+        Some(bytes) => (bytes, db, source_groups_fingerprint, persistent_artifact_fingerprint, "hit"),
+        // Preserve the ordinary cached path's validation/slow-path sequence;
+        // the observation comes from this lookup, not an additional probe.
+        None => compile_file_fs_mode_cached_slow_observed(db, entry_path, entry_name, mode, persistent_artifact_kind)
+      }
     },
-    None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
+    None => compile_file_fs_mode_cached_slow_observed(db, entry_path, entry_name, mode, persistent_artifact_kind)
   }
+}
+
+export fn compile_file_fs_mode_cached(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error, Fs } {
+  let (bytes, next_db, _, _, _) = compile_file_fs_mode_cached_observed(db, entry_path, entry_name, mode)
+  (bytes, next_db)
 }
 
 export fn compile_file_fs_cached(db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
   compile_file_fs_mode_cached(db, entry_path, entry_name, "no-dce")
+}
+
+/// JSON string escaping for the bounded artifact-input observation sidecar.
+/// Keep this local: it is not a general JSON API and must stay exact about
+/// control characters so an arbitrary entry path or nonce cannot corrupt it.
+fn artifact_input_trace_json_string(text: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "\"")
+  let mut i = 0
+  while i < String::length(text) {
+    let c = String::char_code_at(text, i)
+    if c == '"' {
+      StringBuilder::push(out, "\\\"")
+    } else if c == '\\' {
+      StringBuilder::push(out, "\\\\")
+    } else if c == '\n' {
+      StringBuilder::push(out, "\\n")
+    } else if c == '\r' {
+      StringBuilder::push(out, "\\r")
+    } else if c == '\t' {
+      StringBuilder::push(out, "\\t")
+    } else if c < 32 {
+      let hex = "0123456789abcdef"
+      StringBuilder::push(out, "\\u00")
+      StringBuilder::push(out, String::substring(hex, c / 16, c / 16 + 1))
+      StringBuilder::push(out, String::substring(hex, c % 16, c % 16 + 1))
+    } else {
+      StringBuilder::push(out, String::from_char_code(c))
+    }
+    i = i + 1
+  }
+  StringBuilder::push(out, "\"")
+  StringBuilder::freeze(out)
+}
+
+/// Observation-only wrapper for the file_compile persistent pre-strip WASI
+/// bump lane. It receives metadata from the cached compile's own persistent
+/// lookup; it neither alters keys/formats nor chooses reuse.
+/// Callers must select this only for `mode == "no-dce"` and VIBE_RC=0.
+export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, entry_name: String, mode: String, run_nonce: String) -> (Bytes, String) with { Error, Fs } {
+  if mode != "no-dce" {
+    throw("artifact-input trace only supports file_compile WASI no-dce")
+  } else if run_nonce == "" {
+    throw("artifact-input trace requires a non-empty run nonce")
+  } else {
+    let persistent_artifact_kind = "file-compile-wasi"
+    // This is the same unprofiled cached production path used by ordinary
+    // compilation. Its one lookup that returns bytes (or reaches compilation)
+    // supplies all observation fields, avoiding trace-only reads or lookups.
+    let (bytes, _, source_groups_fingerprint, artifact_input_fingerprint, persistent_lookup) = compile_file_fs_mode_cached_observed(db_new(), entry_path, entry_name, mode)
+    let out = StringBuilder::new()
+    StringBuilder::push(out, "{\"schema\":1,\"run_nonce\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(run_nonce))
+    StringBuilder::push(out, ",\"scope_disclaimer\":\"observation-only file_compile persistent pre-strip WASI bump lane; not a production cache key, format, or reuse decision\",\"compile_lane\":\"file_compile.persistent_pre_strip_wasi_cached_bump\",\"persistent_artifact_kind\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(persistent_artifact_kind))
+    StringBuilder::push(out, ",\"entry\":{\"path\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(entry_path))
+    StringBuilder::push(out, ",\"name\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(entry_name))
+    StringBuilder::push(out, ",\"mode\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(mode))
+    StringBuilder::push(out, "},\"source_groups_fingerprint\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(source_groups_fingerprint))
+    StringBuilder::push(out, ",\"source_groups_fingerprint_kind\":\"build_source_groups_fingerprint(source_groups)\",\"artifact_input_fingerprint\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(artifact_input_fingerprint))
+    StringBuilder::push(out, ",\"artifact_input_fingerprint_kind\":\"build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)\",\"persistent_lookup\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(persistent_lookup))
+    StringBuilder::push(out, "}")
+    (bytes, StringBuilder::freeze(out))
+  }
 }
 
 export fn compile_file_fs(entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {

@@ -33,6 +33,31 @@ bash scripts/selfcompile_kpi.sh /tmp/kpi_gen/stage2.wasm
 Commit the new number with the compiler change and note old -> new (and
 why) in the PR.
 
+## User edit-cycle baseline
+
+Design and KPI contract: [`docs/incremental-build.md`](../../docs/incremental-build.md).
+The first baseline measures the current one-shot `vibe check` path with an
+isolated cache and temporary copy of a two-file project:
+
+```bash
+cargo build --release --manifest-path runtime/viberun/Cargo.toml
+VIBE_EDIT_CYCLE_RUNS=5 pkf run kpi-edit-cycle -- \
+  _build/selfhost/generations/<tag>/stage2.wasm \
+  _build/edit-cycle-kpi.jsonl
+```
+
+Cases are cold, exact no-op with a preserved cache, comment-only edit, private
+body edit, and public interface edit. Output is one JSON object per case/run;
+median summaries go to stderr. Each successful check includes validated,
+disabled-by-default `db_typecheck_fs` counters for planned, rechecked,
+reused-without-a-body-parse, and failed/blocked modules plus parse operations.
+Reuse can come from in-memory or persistent state; it is not a per-cache-class
+hit counter. This initial probe does not yet measure a
+resident LSP/runnable artifact or complete invalidation/codegen work. It is a
+read-only baseline for deciding whether the existing persistent cache has a
+user-visible effect before changing the artifact model. Shared-runner wall time
+is advisory, not a blocking gate.
+
 ## Compiler output size ratchet (`scripts/size_ratchet.sh`, #1109-4)
 
 The second blocking gate. It compiles every `bench/binary_size/*.vibe`
