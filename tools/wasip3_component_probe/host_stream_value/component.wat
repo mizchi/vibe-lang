@@ -100,11 +100,18 @@
           )
           (local.set $st (call $sread (local.get $str) (i32.const 0) (i32.const 1)))
           ;; BLOCKED -> park as a waitable until the producer delivers.
+          ;; After the wake, UNJOIN (waitable.join with set 0 = remove)
+          ;; before dropping the set: dropping a set that still has members
+          ;; traps with "resource has children" -- MEASURED (wasmtime 47,
+          ;; 2026-08-02) the moment a delayed producer made this branch run
+          ;; at all; the original probe run (no delay) never blocked, so the
+          ;; missing unjoin sat latent here.
           (if (i32.eq (local.get $st) (i32.const 0xffffffff))
             (then
               (local.set $ws (call $ws_new))
               (call $waitable_join (local.get $str) (local.get $ws))
               (local.set $ev (call $ws_wait (local.get $ws) (i32.const 16)))
+              (call $waitable_join (local.get $str) (i32.const 0))
               (call $ws_drop (local.get $ws))
               (if (i32.ne (local.get $ev) (i32.const 2))
                 (then
@@ -137,6 +144,16 @@
           )
           (local.set $sum
             (i32.add (local.get $sum) (i32.load8_u (i32.const 0))))
+          ;; The end can ALSO arrive INLINE with the final byte: a producer
+          ;; that hands over its last item and drops in the same completion
+          ;; yields amount 1 / code 1 -- and a further read after that
+          ;; notification traps ("cannot read after being notified that the
+          ;; writable end dropped"). MEASURED (wasmtime 47, 2026-08-02) with
+          ;; the per-byte-delay producer; the buffered Vec<u8> producer
+          ;; surfaces the separate zero-amount close instead, so both
+          ;; terminal shapes are real and a reader must handle both.
+          (br_if $done
+            (i32.eq (i32.and (local.get $st) (i32.const 0xf)) (i32.const 1)))
           (br $again)
         )
       )

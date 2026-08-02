@@ -164,6 +164,34 @@ GOT="$(cat "$RESULT_LOG")"
   || { echo "named hoststreams component gate FAILED: expected 42 (10+15+17 to end of stream), got: $GOT" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream path: 42 (all bytes delivered, end of stream recognized)"
 
+# --- delayed lane: reads genuinely PARK + the INLINE terminal shape ----------
+# The buffered Vec producer above hands every byte to the pipe on its first
+# poll, so no read ever blocks and the end arrives as a separate zero-amount
+# CLOSED read. With a per-byte delay (`@delay_ms`, viberun's delayed
+# producer) every read comes back BLOCKED first -- exercising the
+# park/unjoin/drop sequence ("resource has children" if the unjoin is lost)
+# -- and the final byte arrives WITH the CLOSED code (the inline terminal
+# shape), exercising the adapter's closed latch (a raw re-read after that
+# notification traps host-side). 42 + a wall clock of at least
+# 0.8 * 3 * DELAY_MS pins both.
+DELAY_MS="${VIBE_NAMED_HOSTSTREAMS_GATE_DELAY_MS:-60}"
+DELAYED_LOG="$OUT_DIR/run.stream.delayed.log"
+START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_STREAMS="body=10|15|17@${DELAY_MS}" timeout 60 "$RUNNER" "$COMPONENT" >"$DELAYED_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: delayed run did not exit 0 (park/unjoin or inline-close path)" >&2
+  cat "$DELAYED_LOG" >&2
+  exit 1
+fi
+ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
+[ "$(cat "$DELAYED_LOG")" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: delayed run expected 42, got: $(cat "$DELAYED_LOG")" >&2; exit 1; }
+MIN_MS=$(( 3 * DELAY_MS * 8 / 10 ))
+if [ "$ELAPSED_MS" -lt "$MIN_MS" ]; then
+  echo "named hoststreams component gate FAILED: returned in ${ELAPSED_MS}ms with a ${DELAY_MS}ms per-byte delay -- the reads cannot have genuinely parked" >&2
+  exit 1
+fi
+echo "[named-hoststreams-component-gate] delayed path: 42 in ${ELAPSED_MS}ms (>= ${MIN_MS}: reads parked; inline close latched)"
+
 # --- the mixed future + stream fixture ---------------------------------------
 MIXED_SRC="$OUT_DIR/mixed.vibe"
 cat >"$MIXED_SRC" <<'EOF'

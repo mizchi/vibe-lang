@@ -314,7 +314,21 @@ trampoline を将来 `wasi:http/service` の
    `test_named_hoststreams_component_gate.sh`)。残り (D3 の続き):
    AsyncIter / `for await` への接続 (host_stream_next は直接 scalar
    read — 一般 `Stream[T]` protocol への統一は Decision 4 の boundary
-   規則と合わせて別スライス)。
+   規則と合わせて別スライス)。ただし `for await` 側は、iteration の
+   suspend 可能性を effect row が既に語っている以上、構文レベルの
+   `await` マーカーは二重表現 — 接続せず deprecation する方向で検討中
+   (#1350、現状の消費形は素の `while` + row 伝播)。
+   **D3 follow-up: park 経路の実測2件を adapter/probe に反映 (spec §3.17
+   追加実測)**: viberun の `VIBE_ASYNC_STREAMS` に `@delay_ms`
+   (per-byte 遅延の custom StreamProducer) を足して BLOCKED → park 経路を
+   初実走させたところ、(1) waitable-set は **unjoin してから drop**
+   (さもないと `resource has children` trap — probe と adapter の両方に
+   latent)、(2) 終端には**最終バイト同梱の CLOSED**
+   (`amount 1 / code 1`) という第2形状があり、通知後の再 read は host
+   trap する — adapter は per-handle closed latch (drop を次 read まで
+   遅延して handle 再利用の aliasing 窓を塞ぐ形) で吸収。gate に
+   delayed lane (42 + wall ≥ 0.8×3×delay = park の実在) を追加。
+   既知の制限: 部分消費した stream の明示 close surface は未提供。
 
 ## Non-goals
 

@@ -85,4 +85,35 @@ if [ "$GOT" != "42" ]; then
 fi
 
 echo "[host-stream-value-probe-gate] 42: bytes delivered one at a time, end-of-stream = amount 0 / code 1"
+
+# --- Delayed run: pin the BLOCKED -> waitable-park path ------------------
+# Without a per-byte delay the Vec<u8> producer hands everything to the pipe
+# on its first poll and every read completes inline -- the branch above never
+# runs (measured: adding the delay is what exposed the probe's own missing
+# unjoin as "resource has children"). With @delay each read must first come
+# back BLOCKED and park; the sum still being 42 plus a wall clock of at least
+# 0.8 * 3 * DELAY_MS pins that the parks genuinely suspended and resumed.
+DELAY_MS=60
+LOG2="$OUT_DIR/run_delayed.log"
+t0=$(date +%s%3N)
+if ! VIBE_ASYNC_STREAMS="body=10|15|17@${DELAY_MS}" timeout 60 "$RUNNER" "$COMPONENT" >"$LOG2" 2>&1; then
+  echo "host stream value probe gate FAILED: delayed run did not exit 0 (BLOCKED/park path)" >&2
+  cat "$LOG2" >&2
+  exit 1
+fi
+t1=$(date +%s%3N)
+GOT2="$(cat "$LOG2")"
+WALL=$(( t1 - t0 ))
+MIN_MS=$(( 3 * DELAY_MS * 8 / 10 ))
+if [ "$GOT2" != "42" ]; then
+  echo "host stream value probe gate FAILED: delayed run expected 42, got: $GOT2" >&2
+  echo "  (3000 + ev = a non-STREAM_READ wake while parked; see the probe's header)" >&2
+  exit 1
+fi
+if [ "$WALL" -lt "$MIN_MS" ]; then
+  echo "host stream value probe gate FAILED: delayed run finished in ${WALL}ms < ${MIN_MS}ms" >&2
+  echo "  (three ${DELAY_MS}ms-delayed reads cannot legitimately finish that fast -- the reads did not park)" >&2
+  exit 1
+fi
+echo "[host-stream-value-probe-gate] delayed 42 in ${WALL}ms (>= ${MIN_MS}ms): each read parked and resumed"
 echo "host stream value probe gate OK"

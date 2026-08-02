@@ -1227,7 +1227,32 @@ per-name `stream<u8>` component import を出す composer、AsyncIter/`for await
 への接続。設計は §3.16 の named host futures と同型で、park が「future 1本
 ごと」から「read 1回ごと」に変わる点だけが違う。
 → **guest surface / stream 帯 / composer は §3.18 で landed**。残るは
-AsyncIter/`for await` への接続のみ。
+AsyncIter/`for await` への接続のみ — ただし iteration の suspend 可能性は
+effect row（`with { Async }`）が既に語っており、構文レベルの `await`
+マーカーは二重表現になるため、**接続しない方向で deprecation を検討中**
+（#1350。現状の消費形は素の `while` + row 伝播）。
+
+**追加実測（2026-08-02、per-byte delay producer 追加後）** — viberun の
+`VIBE_ASYNC_STREAMS="body=10|15|17@60"`（`@delay_ms` = 1バイトごとに遅延
+する custom StreamProducer）で BLOCKED → park 経路を初めて実走させたところ、
+runtime 事実が2つ増えた:
+
+1. **park 後の set 解体は unjoin が先**。join したままの waitable-set を
+   `waitable-set.drop` すると `resource has children` で trap する。
+   `waitable.join(handle, 0)`（set 0 = remove）で外してから drop する。
+   Vec producer では read が一度も BLOCK しないため、probe 自身の
+   「join したまま drop」がこの日まで latent だった。
+2. **終端は最終バイトと INLINE でも届く**。1 item ずつ渡して drop する
+   producer では最後の read が `amount 1 / code 1`(バイト + CLOSED 同時)
+   を返し、その後にもう一度 read すると
+   `cannot read after being notified that the writable end dropped` で
+   trap する。つまり終端は「別 read の `amount 0 / code 1`」(buffered
+   producer)と「最終バイト同梱の `code 1`」(per-item producer)の
+   **2形状**あり、reader は両方を扱わなければならない。
+
+probe gate は no-delay run(分離終端)+ delayed run(inline 終端 + wall
+clock 下限 = park の実在)の両方を pin する。adapter 側の反映は §3.18 の
+5 を参照。
 
 ### 3.18 ADR-0089 Decision 3 — named host stream（実ソースの stream 読み、#1218）
 
@@ -1279,11 +1304,19 @@ lowering は §3.16 の named host futures と同型で、park が「future 1本
    deadlock trap、§3.13）。
 5. **adapter**: 共有 `host_stream_read (i64) -> i64` — `stream.read(h,
    slot, 1)` を発行し、BLOCKED なら waitable-set.wait で park
-   （STREAM_READ = 2 のみ受理）、zero-transfer status は §3.17 の実測どおり
-   code 1 = CLOSED のみ受理して `stream.drop-readable` 後に -1、それ以外は
-   loud trap。**future の eager read はしない** — park が read 単位なので、
-   呼び出し間に pending read を残すと次の read と衝突する（double-read）。
-   per-name getter は pair 生成 + handle 返しだけ。
+   （STREAM_READ = 2 のみ受理）、**wake 後は unjoin
+   （`waitable.join(h, 0)`）してから set を drop**（さもないと
+   `resource has children` trap — §3.17 追加実測 1）。終端は2形状
+   （§3.17 追加実測 2）: zero-transfer status は code 1 = CLOSED のみ
+   受理して `stream.drop-readable` 後に -1、**最終バイト同梱の CLOSED**
+   （`amount 1 / code 1`）は per-handle closed latch
+   （`comp_hs_closed_base()`、handle*4）を立ててバイトを返し、次の read が
+   「latch クリア + drop-readable + -1」を一括で行う — drop まで handle
+   index は再利用されないので latch が別 stream に aliasing する窓は
+   構造的に無い。それ以外の zero-transfer code は loud trap。**future の
+   eager read はしない** — park が read 単位なので、呼び出し間に pending
+   read を残すと次の read と衝突する（double-read）。per-name getter は
+   pair 生成 + handle 返し（+ latch の防御的クリア）だけ。
 6. **composer**: `vibe.host_stream_get$<name>` sniff で wrap を key
    （future と OR）。per-name component import `<name>: func() ->
    stream<u8>` + 共有 `stream.read`/`stream.drop-readable` canon pair。
@@ -1293,11 +1326,18 @@ lowering は §3.16 の named host futures と同型で、park が「future 1本
 
 gate = `scripts/test_named_hoststreams_component_gate.sh`（pkf task
 `test-named-hoststreams-component`）: stream lane（上の while program が
-42 = 10+15+17、WIT に `body: ... stream<u8>`、`get-future` 無し）+ mixed
+42 = 10+15+17、WIT に `body: ... stream<u8>`、`get-future` 無し）+
+**delayed lane**（`body=10|15|17@60` — 各 read が BLOCKED → park する経路と
+inline 終端を実走、42 + wall ≥ 0.8×3×delay で park の実在を pin）+ mixed
 lane（future 30 + stream 5+7 = 42、両 import が WIT に出る）。byte level は
 `component_codegen_test.vibe` の stream-only / mixed composition テスト。
 検証済みの consume 形: 直列 let 読み、while ループ、自己再帰、EOS 後の
 再読（latch で -1）。
+
+既知の制限（follow-up）: 途中で読むのをやめた stream の readable end を
+明示的に解放する surface が無い（`host_stream_close` 相当）。EOS まで
+読み切った stream は adapter が drop するが、部分消費して破棄した handle は
+component instance の寿命まで残る。
 
 ## 4. WASI 0.3 境界マッピング
 
