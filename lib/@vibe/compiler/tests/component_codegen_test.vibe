@@ -9,6 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_core_host_future_names,
   comp_core_imports_host_future,
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
@@ -1258,6 +1259,111 @@ test "component async hostfuture: adapter-backed composition of a real-shaped co
   assert(component_bytes_contains(comp, "future-write") == 0)
   assert(component_bytes_contains(comp, "future-drop-writable") == 0)
   assert(component_bytes_contains(comp, "[subtask-drop]") == 0)
+}
+
+// ADR-0089 (c) (#1218): a stand-in for a compiled core whose program calls
+// `host_future_named("price")` and `host_future_named("qty")` and nothing
+// anonymous -- so the import set is fd_write + the shared wait half + one
+// `vibe.host_future_get$<name>` per name, in linked_compile's sorted order.
+fn build_main_i64_core_hostfuture_named() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 3)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 4)
+  emit_name(ic, "wasi_snapshot_preview1")
+  emit_name(ic, "fd_write")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_future_wait")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_future_get$price")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_future_get$qty")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    1
+  ])
+  emit_export_section(out, "run", 4)
+  let body = bytebuf_new()
+  emit_i64_const(body, 42)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+// ADR-0089 (c) (#1218): two NAMED host futures compose into two component
+// imports and two adapter getters, sharing one wait half and one pair of
+// future.read / future.drop-readable canon defs (every host future here is
+// the same `future<u32>` type). Runtime proof -- both in flight at once,
+// total wall = max(delay) not sum(delay) -- lives in
+// scripts/test_named_hostfutures_component_gate.sh.
+test "component async hostfuture: two named host futures become two component imports (#1218 (c))" {
+  let core = build_main_i64_core_hostfuture_named()
+  assert(comp_core_imports_host_future(core) == true)
+  let names = comp_core_host_future_names(core)
+  assert(Array::length(names) == 2)
+  assert(Array::get(names, 0) == "host_future_get$price")
+  assert(Array::get(names, 1) == "host_future_get$qty")
+  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // No anonymous `get-future`: this program never asked for one, and an
+  // unused import is still an import the host must satisfy.
+  assert(component_bytes_contains(comp, "get-future") == 0)
+  // one lowered import per name...
+  assert(component_bytes_contains(comp, "[async-lower]price") == 1)
+  assert(component_bytes_contains(comp, "[async-lower]qty") == 1)
+  // ...but ONE shared read/drop pair, spelled after the first name
+  assert(component_bytes_contains(comp, "[async-lower][future-read-0]price") == 1)
+  assert(component_bytes_contains(comp, "[future-drop-readable-0]price") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-0]qty") == 0)
+  assert(component_bytes_contains(comp, "[future-drop-readable-0]qty") == 0)
+  // the adapter exports one getter per name under the CORE import spelling
+  // the guest calls, plus the single shared wait
+  assert(component_bytes_contains(comp, "host_future_get$price") == 1)
+  assert(component_bytes_contains(comp, "host_future_get$qty") == 1)
+  assert(component_bytes_contains(comp, "host_future_wait") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  // still the host-owned-writer shape: no write side anywhere
+  assert(component_bytes_contains(comp, "future-new") == 0)
+  assert(component_bytes_contains(comp, "future-write") == 0)
+  assert(component_bytes_contains(comp, "future-drop-writable") == 0)
+}
+
+// The anonymous surface still sniffs as exactly one name, so the step-4
+// composition is unchanged by the generalization.
+test "component async hostfuture: the anonymous host future is a one-name list (#1218 (c))" {
+  let names = comp_core_host_future_names(build_main_i64_core_hostfuture(true, false))
+  assert(Array::length(names) == 1)
+  assert(Array::get(names, 0) == "host_future_get")
+  assert(Array::length(comp_core_host_future_names(build_main_i64_core_p1())) == 0)
 }
 
 test "component async hostfuture: rejects a core without a run export" {

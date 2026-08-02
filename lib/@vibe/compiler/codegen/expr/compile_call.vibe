@@ -1004,6 +1004,48 @@ fn future_ready_expr(payload: Expr) -> Expr {
   ])
 }
 
+/// ADR-0089 (c) (#1218): the raw-builtin name that carries a NAMED host
+/// future's component import name. One name = one core import
+/// (`vibe.host_future_get$<name>`) = one component import, so the suffix is
+/// part of the callee name rather than a runtime argument. Shared with
+/// linked_compile (import reservation + registration) and component_codegen
+/// (import-name recovery) through this one spelling.
+export fn cc_host_future_named_raw_prefix() -> String {
+  "vibe_hf_get_raw$"
+}
+
+/// A component import name must be a lower kebab-case identifier
+/// (`[a-z][a-z0-9-]*`) -- the component-model's own `label` shape, and what
+/// keeps the derived core import name unambiguous when component_codegen
+/// splits it back off at the `$`.
+fn cc_is_valid_host_future_name(s: String) -> Bool {
+  let n = String::length(s)
+  if n == 0 {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < n {
+      let c = String::char_code_at(s, i)
+      let is_lower = c >= 97 && c <= 122
+      let is_digit = c >= 48 && c <= 57
+      let is_dash = c == 45
+      let allowed = if i == 0 {
+        is_lower
+      } else {
+        is_lower || is_digit || is_dash
+      }
+      if !allowed {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
 fn uninterned_string_expr(s: String, i: Int) -> Expr {
   let ch = ECall(EIdent("String::from_char_code", -1), [
     EInt(String::char_code_at(s, i))
@@ -1441,6 +1483,36 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ce(buf, EArray([
         EInt(2),
         ECall(EIdent("vibe_hf_get_raw", -1), no_args, -1)
+      ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "host_future_named" {
+      // ADR-0089 (c) (#1218): the SAME cell shape as host_future_get -- state
+      // 2 (waitable), payload = the host future handle -- but the handle
+      // comes from a per-NAME raw builtin, so a program can hold several
+      // distinct host futures at once. `vibe_hf_get_raw$<name>` lowers to
+      // the `vibe.host_future_get$<name>` core import, which the component
+      // adapter satisfies from the component-level `<name>: func() ->
+      // future<u32>` import (spec §3.16).
+      //
+      // The name must be a STRING LITERAL: it is an import name, decided at
+      // compile time, not a value. Anything else is a hard error here rather
+      // than a mysterious missing import later.
+      let name_arg = Array::get(args, 0)
+      let hf_name = match name_arg {
+        EString(s) => s,
+        _ => throw("host_future_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
+      }
+      if !cc_is_valid_host_future_name(hf_name) {
+        throw("host_future_named: invalid import name '\{hf_name}' -- must be lower kebab-case ([a-z][a-z0-9-]*), the component-model label shape")
+      } else {
+        ()
+      }
+      let named_no_args = Array::slice([
+        EInt(0)
+      ], 0, 0)
+      ce(buf, EArray([
+        EInt(2),
+        ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), hf_name), -1), named_no_args, -1)
       ]), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Future::resolve" {

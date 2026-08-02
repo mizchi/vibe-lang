@@ -269,6 +269,24 @@ trampoline を将来 `wasi:http/service` の
    suspension effect)、`Future[T]` → `future<T'>`、nominal `ByteStream` →
    `stream<u8>`。一般 `Stream[T]`/guest 産 AsyncIter は Decision 4 の
    boundary 規則どおり hard error のまま (docs/effect-wit-mapping.md)。
+   **host import async の一般化 (c) も landed (spec §3.16)**: 匿名1本
+   固定だった host future が `host_future_named("price")` で名前つき N 本に
+   なる — 名前ごとに core import `vibe.host_future_get$price` →
+   component import `price: func() -> future<u32>` + adapter getter を
+   1組ずつ生成し、wait 半分と `future.read`/`drop-readable` canon は共有。
+   名前は compile time に決まる import 名なので **string literal 必須**
+   (component label 形 `[a-z][a-z0-9-]*` を検証)。1名 (匿名) のときの
+   index 配置は step 4 と同一。並行性は adapter の **eager read** で
+   成立する — getter が pair 生成直後に `future.read` を発行し
+   (handle ごとの landing slot と read 状態を記録)、wait は park と回収
+   だけを行う。wasmtime は read が pending になってからしか
+   `FutureReader` producer を polling しないので、read を await 時まで
+   遅らせると2本目が逐次化する (実測 422ms → ~300ms)。実測: `price` (40, 300ms) と `qty`
+   (2, 100ms) を await 前に両方作る program が 42 を ~300ms で返す —
+   逐次なら 400ms なので **2本が重なって in-flight** であることが wall
+   clock で示される (gate =
+   `test_named_hostfutures_component_gate.sh`、host 側は viberun の
+   `VIBE_ASYNC_FUTURES`)。
    残り: component 内 sleep (adapter は vibe.sleep を
    提供しない — composer が明確な診断で reject)、TaskGroup 併用
    (mixing guard reject のまま)。
