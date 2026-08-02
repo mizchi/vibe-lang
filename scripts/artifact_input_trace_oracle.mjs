@@ -64,9 +64,8 @@ function stableIdentity(trace) {
 }
 
 function run(stage2) {
-  const runner = resolve(process.env.VIBE_RUNNER || join(root, "runtime/viberun/target/release/viberun"));
   const invoke = join(root, "scripts/run_wasm_vibe_host_runner.sh");
-  if (![stage2, runner, invoke].every(existsSync)) fail("missing stage2 compiler, runner, or host runner");
+  if (![stage2, invoke].every(existsSync)) fail("missing stage2 compiler or host runner");
   const work = mkdtempSync(join(root, "_build/artifact-input-trace-"));
   const rel = (path) => relative(root, path);
   const project = join(work, "project");
@@ -85,7 +84,6 @@ function run(stage2) {
         encoding: "utf8",
         env: {
           ...process.env,
-          VIBE_RUNNER: runner,
           VIBE_PREOPEN_DIR: root,
           VIBE_BUILD_CACHE_DIR: cache,
           VIBE_FS_COMPILE: "1",
@@ -118,7 +116,6 @@ function run(stage2) {
         encoding: "utf8",
         env: {
           ...process.env,
-          VIBE_RUNNER: runner,
           VIBE_PREOPEN_DIR: root,
           VIBE_BUILD_CACHE_DIR: cache,
           VIBE_FS_COMPILE: "1",
