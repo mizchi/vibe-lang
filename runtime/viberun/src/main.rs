@@ -853,6 +853,17 @@ fn run_async_component(path: &str) -> Result<i32> {
                 format_err!("VIBE_ASYNC_STREAMS entry '{ent}': expected name=b1|b2|b3")
             })?;
             let name = name.trim().to_string();
+            // Same reserved-name rule as VIBE_ASYNC_FUTURES above (#1337
+            // Codex review): these root imports are registered
+            // unconditionally and the linker rejects redefinition before
+            // instantiation.
+            if matches!(name.as_str(), "get-future" | "get-async" | "get-after") {
+                bail!(
+                    "VIBE_ASYNC_STREAMS '{name}': that name is one of the runner's \
+                     built-in imports (get-future, get-async, get-after) and cannot be \
+                     redefined -- rename the host stream"
+                );
+            }
             let mut bytes: Vec<u8> = Vec::new();
             for b in bytes_s.split('|').filter(|s| !s.trim().is_empty()) {
                 bytes.push(

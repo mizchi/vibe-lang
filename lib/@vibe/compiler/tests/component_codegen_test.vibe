@@ -10,7 +10,9 @@ import @vibe/core {
 
 import @vibe/compiler/entry/source_compile/wasi_only {
   comp_core_host_future_names,
+  comp_core_host_stream_names,
   comp_core_imports_host_future,
+  comp_core_imports_host_stream,
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
   comp_emit_component_wasm_async_concurrent_awaits,
@@ -1364,6 +1366,159 @@ test "component async hostfuture: the anonymous host future is a one-name list (
   assert(Array::length(names) == 1)
   assert(Array::get(names, 0) == "host_future_get")
   assert(Array::length(comp_core_host_future_names(build_main_i64_core_p1())) == 0)
+}
+
+fn build_main_i64_core_hoststream_named(with_future: Bool) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 3)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, if with_future {
+    5
+  } else {
+    3
+  })
+  emit_name(ic, "wasi_snapshot_preview1")
+  emit_name(ic, "fd_write")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  if with_future {
+    emit_name(ic, "vibe")
+    emit_name(ic, "host_future_wait")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+    emit_name(ic, "vibe")
+    emit_name(ic, "host_future_get$price")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_stream_read")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_stream_get$body")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    1
+  ])
+  emit_export_section(out, "run", if with_future {
+    5
+  } else {
+    3
+  })
+  let body = bytebuf_new()
+  emit_i64_const(body, 42)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+// ADR-0089 Decision 3 (#1218): a named host STREAM composes into a
+// `stream<u8>` component import, a per-name adapter getter and the shared
+// `host_stream_read` half (stream.read + waitable-set.wait per READ, EOS =
+// the measured amount-0/code-1 status -> -1). Runtime proof (42 = summed
+// bytes to end of stream through a real compiled program) lives in
+// scripts/test_named_hoststreams_component_gate.sh.
+test "component async hoststream: named host stream becomes a stream<u8> component import (#1218 D3)" {
+  let core = build_main_i64_core_hoststream_named(false)
+  assert(comp_core_imports_host_stream(core) == true)
+  assert(comp_core_imports_host_future(core) == false)
+  assert(comp_core_imports_host_stream(build_main_i64_core_p1()) == false)
+  let names = comp_core_host_stream_names(core)
+  assert(Array::length(names) == 1)
+  assert(Array::get(names, 0) == "host_stream_get$body")
+  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // component type (stream u8): 07 04 01 66 01 7d
+  assert(bytes_contains_seq(comp, [
+    7,
+    4,
+    1,
+    102,
+    1,
+    125
+  ]) == 1)
+  // the stream canon set, spelled after the (only) name
+  assert(component_bytes_contains(comp, "[async-lower]body") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][stream-read-0]body") == 1)
+  assert(component_bytes_contains(comp, "[stream-drop-readable-0]body") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  // the adapter exports the getter under the CORE import spelling plus the
+  // shared read half
+  assert(component_bytes_contains(comp, "host_stream_get$body") == 1)
+  assert(component_bytes_contains(comp, "host_stream_read") == 1)
+  // a stream-only program drags in NO future machinery and no anonymous
+  // get-future
+  assert(component_bytes_contains(comp, "get-future") == 0)
+  assert(component_bytes_contains(comp, "future-read") == 0)
+  assert(component_bytes_contains(comp, "host_future_wait") == 0)
+  // reader-only shape: no write side anywhere
+  assert(component_bytes_contains(comp, "stream-new") == 0)
+  assert(component_bytes_contains(comp, "stream-write") == 0)
+  assert(component_bytes_contains(comp, "stream-drop-writable") == 0)
+}
+
+// Mixed program: one named future + one named stream share the adapter,
+// the waitable quartet, and the composition -- and keep their own canon
+// families (future<u32> for `price`, stream<u8> for `body`).
+test "component async hoststream: future + stream share one composition (#1218 D3)" {
+  let core = build_main_i64_core_hoststream_named(true)
+  assert(comp_core_imports_host_future(core) == true)
+  assert(comp_core_imports_host_stream(core) == true)
+  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // both value types: (future u32) 07 04 01 65 01 79 and (stream u8)
+  // 07 04 01 66 01 7d
+  assert(bytes_contains_seq(comp, [
+    7,
+    4,
+    1,
+    101,
+    1,
+    121
+  ]) == 1)
+  assert(bytes_contains_seq(comp, [
+    7,
+    4,
+    1,
+    102,
+    1,
+    125
+  ]) == 1)
+  assert(component_bytes_contains(comp, "[async-lower]price") == 1)
+  assert(component_bytes_contains(comp, "[async-lower]body") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-0]price") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][stream-read-0]body") == 1)
+  assert(component_bytes_contains(comp, "host_future_get$price") == 1)
+  assert(component_bytes_contains(comp, "host_future_wait") == 1)
+  assert(component_bytes_contains(comp, "host_stream_get$body") == 1)
+  assert(component_bytes_contains(comp, "host_stream_read") == 1)
 }
 
 test "component async hostfuture: rejects a core without a run export" {

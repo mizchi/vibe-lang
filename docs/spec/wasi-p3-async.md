@@ -1226,6 +1226,78 @@ with { Async }`）、`Suspend` の stream 帯と entry boundary の settle arm�
 per-name `stream<u8>` component import を出す composer、AsyncIter/`for await`
 への接続。設計は §3.16 の named host futures と同型で、park が「future 1本
 ごと」から「read 1回ごと」に変わる点だけが違う。
+→ **guest surface / stream 帯 / composer は §3.18 で landed**。残るは
+AsyncIter/`for await` への接続のみ。
+
+### 3.18 ADR-0089 Decision 3 — named host stream（実ソースの stream 読み、#1218）
+
+§3.17 の終端実測を受けた本体スライス。次の実ソースが single-source lane
+（entry 名 `run`）でコンパイルされ、自動で adapter-backed async component に
+wrap され、viberun（`VIBE_ASYNC_STREAMS="body=10|15|17"`）上で **42** を
+返す:
+
+```vibe
+let run: () -> Int with { Async } = () -> {
+  let s = host_stream_named("body")
+  let mut sum = 0
+  let mut b = host_stream_next(s)
+  while 0 <= b {
+    sum = sum + b
+    b = host_stream_next(s)
+  }
+  sum
+}
+```
+
+lowering は §3.16 の named host futures と同型で、park が「future 1本ごと」
+から「read 1回ごと」に変わる:
+
+1. **surface**: `host_stream_named: (String) -> Stream[Int]`（pure。名前は
+   §3.16 と同じ string-literal + component-label 検証）と
+   `host_stream_next: (Stream[Int]) -> Int with { Async }`（次の byte
+   0-255、writer が居なくなったら -1。以後の read は cell 側で latch されて
+   -1 のまま）。§3.17 の予告した `ByteStream::next` ではなく
+   `host_stream_next` の綴りにしたのは、eager な `Stream[Int]`
+   （`String::to_bytes` 等）と表現が異なるため — AsyncIter への統一は
+   Decision 4 の boundary 規則と合わせて別スライス。
+2. **cell**: `[state 3, handle]`（state 3 = host stream。future cell の
+   0/1/2 と不交なので取り違えは構造的に起きない）。生成は
+   `vibe_hs_get_raw$<name>` → core import `vibe.host_stream_get$<name>`。
+3. **read = Suspend の stream 帯**: `host_stream_next(..)` 呼び出しは
+   boundary machinery が注入 fn `__hs_next` に retarget する
+   （sleep→`__slp_perform` と同じ shadow-aware rename）。`__hs_next` は
+   state 3 のとき `perform Async::Suspend(handle + 2048)` — **予約 stream
+   帯 [2048, 3071]**（future 帯は handle + 2 = [2, 1025]、adapter が
+   handle ≤ 1023 を enforce するので帯は構成的に不交）。resume 値を
+   row-free `__hs_fin` が処理する: v < 0 なら cell を閉じて（state 3 → 0）
+   -1、それ以外は byte をそのまま返す。
+4. **boundary**: `__entry_settle` に stream arm が増える
+   （`2047 < q → vibe_hs_read_raw(q - 2048)`、hs machinery が発火した
+   program のみ — future-only / sleep-only の boundary はバイト不変）。
+   machinery keying は hf と同じ entry-row-keyed（user の
+   `handle ... with Async` 下では in-guest scheduler の poller 縮退 =
+   deadlock trap、§3.13）。
+5. **adapter**: 共有 `host_stream_read (i64) -> i64` — `stream.read(h,
+   slot, 1)` を発行し、BLOCKED なら waitable-set.wait で park
+   （STREAM_READ = 2 のみ受理）、zero-transfer status は §3.17 の実測どおり
+   code 1 = CLOSED のみ受理して `stream.drop-readable` 後に -1、それ以外は
+   loud trap。**future の eager read はしない** — park が read 単位なので、
+   呼び出し間に pending read を残すと次の read と衝突する（double-read）。
+   per-name getter は pair 生成 + handle 返しだけ。
+6. **composer**: `vibe.host_stream_get$<name>` sniff で wrap を key
+   （future と OR）。per-name component import `<name>: func() ->
+   stream<u8>` + 共有 `stream.read`/`stream.drop-readable` canon pair。
+   future と stream の混在 program は 1 つの adapter / composition を共有し
+   （`price: future<u32>` と `body: stream<u8>` が同じ WIT に並ぶ）、
+   **hf-only の component 出力はバイト不変**。
+
+gate = `scripts/test_named_hoststreams_component_gate.sh`（pkf task
+`test-named-hoststreams-component`）: stream lane（上の while program が
+42 = 10+15+17、WIT に `body: ... stream<u8>`、`get-future` 無し）+ mixed
+lane（future 30 + stream 5+7 = 42、両 import が WIT に出る）。byte level は
+`component_codegen_test.vibe` の stream-only / mixed composition テスト。
+検証済みの consume 形: 直列 let 読み、while ループ、自己再帰、EOS 後の
+再読（latch で -1）。
 
 ## 4. WASI 0.3 境界マッピング
 
@@ -1368,7 +1440,8 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **ADR-0089 Decision 5 (wit_gen async)** | `with { Async }` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
 | **ADR-0089 (c) (named host futures)** | host import async の一般化（§3.16）: `host_future_named("x") -> Future[Int]`（string literal 必須、label 検証）→ 名前ごとの core import `vibe.host_future_get$x` → 名前ごとの component import `x: func() -> future<u32>` + adapter getter。wait 半分と `future.read`/`drop-readable` canon は共有、1名（匿名）のときの index 配置は step 4 と同一。並行性は adapter の **eager read**（getter が `future.read` を発行、wait は park と回収のみ）で成立する。viberun は `VIBE_ASYNC_FUTURES` で任意名を link。gate = `test_named_hostfutures_component_gate.sh`（42 = 40+2、wall が `[0.8×P, 0.9×(P+Q))` で overlap 実証、単一名 control） | done（#1218） |
 | **ADR-0089 D3 (終端 probe)** | host 供給 `stream<u8>` を1バイトずつ読む probe（§3.17）で「終端は `amount 0 / code 1` を read が inline に返す」を wasmtime 47 実測、viberun に `VIBE_ASYNC_STREAMS` の host stream import を追加。gate = `test_host_stream_value_probe_gate.sh`（42 = 10+15+17 を pin） | done（#1218） |
-| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit は ADR-0089 step 2 で landed = §3.12、終端 encoding は D3 probe で確定 = §3.17。残りは guest surface + Suspend の stream 帯 + per-name `stream<u8>` import を出す composer） |
+| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | guest surface + Suspend stream 帯 + composer は done（§3.18: `host_stream_named`/`host_stream_next` の実ソースが `stream.read` + `waitable-set.wait` で終端まで読む、gate = `test_named_hoststreams_component_gate.sh`）。残りは `for await`/`Stream::next`（AsyncIter protocol）をこの read へ lower する接続のみ |
+| **ADR-0089 D3 (named host streams)** | 実ソースの host stream 読み（§3.18）: `host_stream_named("body") -> Stream[Int]`（string literal 必須、cell `[3, handle]`）+ `host_stream_next -> Int with { Async }`（1 byte / -1 = EOS、EOS 後は latch）→ `Suspend(handle + 2048)`（予約 stream 帯）→ boundary の `vibe_hs_read_raw` settle → adapter の per-read `stream.read` + park（eager read はしない — per-read park と衝突する）→ per-name component import `<name>: func() -> stream<u8>`。future との混在は 1 composition を共有、hf-only 出力はバイト不変 | done（#1218） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 

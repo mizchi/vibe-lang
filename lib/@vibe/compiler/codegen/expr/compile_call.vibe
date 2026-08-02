@@ -1014,6 +1014,16 @@ export fn cc_host_future_named_raw_prefix() -> String {
   "vibe_hf_get_raw$"
 }
 
+/// ADR-0089 Decision 3 (#1218): the stream sibling of
+/// cc_host_future_named_raw_prefix -- the raw-builtin name that carries a
+/// NAMED host stream's component import name. One name = one core import
+/// (`vibe.host_stream_get$<name>`) = one component import. Shared with
+/// linked_compile (import reservation + registration) and component_codegen
+/// (import-name recovery) through this one spelling.
+export fn cc_host_stream_named_raw_prefix() -> String {
+  "vibe_hs_get_raw$"
+}
+
 /// A component import name must be a lower kebab-case identifier
 /// (`[a-z][a-z0-9-]*`) -- the component-model's own `label` shape, and what
 /// keeps the derived core import name unambiguous when component_codegen
@@ -1514,6 +1524,43 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         EInt(2),
         ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), hf_name), -1), named_no_args, -1)
       ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "host_stream_named" {
+      // ADR-0089 Decision 3 (#1218): a NAMED host stream -- state 3 (the
+      // host-stream state, distinct from every future cell state so a
+      // future cell can never be read as a stream or vice versa), payload =
+      // the readable end's handle. `vibe_hs_get_raw$<name>` lowers to the
+      // `vibe.host_stream_get$<name>` core import, which the component
+      // adapter satisfies from the component-level `<name>: func() ->
+      // stream<u8>` import (spec §3.18). Same literal/label rules as
+      // host_future_named: the name is an import name, fixed at compile
+      // time.
+      let hs_name_arg = Array::get(args, 0)
+      let hs_name = match hs_name_arg {
+        EString(s) => s,
+        _ => throw("host_stream_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
+      }
+      if !cc_is_valid_host_future_name(hs_name) {
+        throw("host_stream_named: invalid import name '\{hs_name}' -- must be lower kebab-case ([a-z][a-z0-9-]*), the component-model label shape")
+      } else {
+        ()
+      }
+      let hs_no_args = Array::slice([
+        EInt(0)
+      ], 0, 0)
+      ce(buf, EArray([
+        EInt(3),
+        ECall(EIdent(String::concat(cc_host_stream_named_raw_prefix(), hs_name), -1), hs_no_args, -1)
+      ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "host_stream_next" {
+      // ADR-0089 Decision 3 (#1218): reads are retargeted to the injected
+      // `__hs_next` by linked_compile's boundary machinery (Async-row
+      // entry). A call that still spells the surface name here means the
+      // machinery did not fire -- there is no read source without the entry
+      // boundary + component adapter, so fail with the reason instead of an
+      // "undefined variable" later.
+      throw("host_stream_next: requires an Async-row entry (the entry boundary performs the stream read via the component adapter, spec §3.18); a row-free or library-mode program has no read source")
     }
     else if !prefer_bound_call && fname == "Future::resolve" {
       // #1230: complete a pending future IN PLACE -- payload first, then clear
