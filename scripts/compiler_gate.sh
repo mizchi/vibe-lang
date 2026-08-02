@@ -49,6 +49,14 @@ if s2 != s3:
 print(f"[compiler-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
+# 3a. Bounded artifact-input identity observation: use this just-built stage2
+# against an isolated cache. The trace wrapper is VIBE_RC=0-only and verifies a
+# cold miss/warm hit, dependency invalidation, and stale-sidecar fail-closed
+# behavior without changing any production cache key or format.
+stage2_wasm="${latest_gen}stage2.wasm"
+echo "[compiler-gate] 3a/3 artifact-input trace oracle"
+VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that
