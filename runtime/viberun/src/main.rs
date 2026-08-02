@@ -824,6 +824,48 @@ fn run_async_component(path: &str) -> Result<i32> {
                 .map_err(|e| format_err!("link {name}: {e}"))?;
         }
     }
+    // ADR-0089 Decision 3 (#1218) PROBE: host-supplied `stream<u8>`. Every
+    // entry in VIBE_ASYNC_STREAMS="name=b1|b2|b3" links a root import
+    // `name: func() -> stream<u8>` whose producer is exactly those bytes,
+    // then end-of-stream. This is the stream analogue of VIBE_ASYNC_FUTURES
+    // above and exists to settle the one thing the Decision 3 emitter cannot
+    // be written without: what `stream.read` actually reports at EOS under
+    // wasmtime 47 (status encoding + event code). `Vec<u8>` is wasmtime's
+    // own StreamProducer impl, so the probe measures the runtime's behavior
+    // rather than a hand-rolled producer's.
+    if let Ok(spec) = std::env::var("VIBE_ASYNC_STREAMS") {
+        for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            let (name, bytes_s) = ent.split_once('=').ok_or_else(|| {
+                format_err!("VIBE_ASYNC_STREAMS entry '{ent}': expected name=b1|b2|b3")
+            })?;
+            let name = name.trim().to_string();
+            let mut bytes: Vec<u8> = Vec::new();
+            for b in bytes_s.split('|').filter(|s| !s.trim().is_empty()) {
+                bytes.push(
+                    b.trim()
+                        .parse()
+                        .map_err(|e| format_err!("VIBE_ASYNC_STREAMS '{name}': bad byte: {e}"))?,
+                );
+            }
+            // Leaked for the same reason as the named-future link above.
+            let link_name: &'static str = Box::leak(name.clone().into_boxed_str());
+            linker
+                .root()
+                .func_wrap_concurrent(
+                    link_name,
+                    move |acc: &Accessor<StoreLimits>, _params: ()| {
+                        let items = bytes.clone();
+                        Box::pin(async move {
+                            let reader = acc.with(|mut access| {
+                                wasmtime::component::StreamReader::<u8>::new(&mut access, items)
+                            })?;
+                            Ok((reader,))
+                        })
+                    },
+                )
+                .map_err(|e| format_err!("link {name}: {e}"))?;
+        }
+    }
 
     // A current-thread runtime is enough (and keeps this off the thread pool):
     // the only await points are this timer and wasmtime's own event loop.

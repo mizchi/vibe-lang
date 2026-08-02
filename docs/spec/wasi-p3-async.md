@@ -1188,6 +1188,45 @@ settle）、wall が `0.8×P` 以上かつ `0.9×(P+Q)` 未満（park してい�
 名前を import しない control。byte level は `component_codegen_test.vibe` の
 2-name composition テスト。
 
+### 3.17 ADR-0089 Decision 3 — host 供給 `stream<u8>` の終端 probe（#1218）
+
+Decision 3（AsyncIter/ByteStream の p3 接続）の emitter を書く前に、
+**推測できない runtime の事実**が1つある: guest が host 供給の
+`stream<u8>` を1バイトずつ読んでいったとき、**stream の終わりがどう
+報告されるか**。`stream.read` は `(amount << 4) | code` を packed status
+で返すが、どの code が「writer は居なくなった、もう来ない」を意味するかは
+仕様書からではなく実測で決めるべきもの（§3.12/§3.13 の probe → byte-exact
+移植という手順と同じ）。
+
+**probe**: `tools/wasip3_component_probe/host_stream_value/component.wat`。
+`body: func() -> stream<u8>` を import し（host 側は viberun の
+`VIBE_ASYNC_STREAMS="body=10|15|17"`、producer は wasmtime 自身の
+`Vec<u8>` StreamProducer なので**runtime の挙動**を測っている）、1バイト
+ずつ読んで合計を返す。
+
+**実測（wasmtime 47.0.2、2026-08-02）**:
+
+- 3回の1バイト read はいずれも 1 item を転送する
+- **4回目の read が `amount = 0` / `code = 1` を返す** = 終端。
+  待つべき別の「closed」イベントは無く、**writer が居なくなったことを
+  見つけた read がその場で inline に報告する**
+- 合計 42（= 10 + 15 + 17）が返るので、終端の前にバイトが本当に届いて
+  いることも同時に確認できている
+
+つまり reader 側の終端判定は `(status >> 4) == 0 && (status & 0xf) == 1`。
+gate = `scripts/test_host_stream_value_probe_gate.sh`（pkf task
+`test-host-stream-value-probe`）が 42 を pin しているので、wasmtime の
+bump で encoding が変わったら「終わらない reader」ではなく gate failure に
+なる。
+
+**このスライスで landed したのはここまで**（probe + viberun の host stream
+import + gate）。残りの Decision 3 = guest surface
+（`host_stream_named(name) -> ByteStream` / `ByteStream::next(s) -> Int
+with { Async }`）、`Suspend` の stream 帯と entry boundary の settle arm、
+per-name `stream<u8>` component import を出す composer、AsyncIter/`for await`
+への接続。設計は §3.16 の named host futures と同型で、park が「future 1本
+ごと」から「read 1回ごと」に変わる点だけが違う。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -1328,7 +1367,8 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **ADR-0089 resolve→direct wake** | in-guest poll モデルの O(rounds×awaiters) 最適化（§3.15、意味論不変）: waiter list + `direct_wait` skip + 完了 notify（library）、`__aw_wait`/`__aw_notify_resolve` hooks の auto-link（compiler）、once-per-progress の fallback valve で notify 漏れは poll に縮退・deadlock trap は保存 | done（#1218） |
 | **ADR-0089 Decision 5 (wit_gen async)** | `with { Async }` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
 | **ADR-0089 (c) (named host futures)** | host import async の一般化（§3.16）: `host_future_named("x") -> Future[Int]`（string literal 必須、label 検証）→ 名前ごとの core import `vibe.host_future_get$x` → 名前ごとの component import `x: func() -> future<u32>` + adapter getter。wait 半分と `future.read`/`drop-readable` canon は共有、1名（匿名）のときの index 配置は step 4 と同一。並行性は adapter の **eager read**（getter が `future.read` を発行、wait は park と回収のみ）で成立する。viberun は `VIBE_ASYNC_FUTURES` で任意名を link。gate = `test_named_hostfutures_component_gate.sh`（42 = 40+2、wall が `[0.8×P, 0.9×(P+Q))` で overlap 実証、単一名 control） | done（#1218） |
-| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit 自体は ADR-0089 step 2 で landed — §3.12。残りは host 供給 stream への接続と surface lowering） |
+| **ADR-0089 D3 (終端 probe)** | host 供給 `stream<u8>` を1バイトずつ読む probe（§3.17）で「終端は `amount 0 / code 1` を read が inline に返す」を wasmtime 47 実測、viberun に `VIBE_ASYNC_STREAMS` の host stream import を追加。gate = `test_host_stream_value_probe_gate.sh`（42 = 10+15+17 を pin） | done（#1218） |
+| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit は ADR-0089 step 2 で landed = §3.12、終端 encoding は D3 probe で確定 = §3.17。残りは guest surface + Suspend の stream 帯 + per-name `stream<u8>` import を出す composer） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 
