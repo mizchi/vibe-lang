@@ -433,6 +433,29 @@ fn effect_name_of_op(op_name: String) -> String {
   }
 }
 
+/// #1343 (ADR-0071 operation-level rows, builtin slice): the OPERATION-level
+/// label a builtin call can be authorized by, in addition to its bare effect.
+/// For a QUALIFIED builtin the canonical name IS the operation id
+/// (`Fs::read_file`), so a row may grant just that one operation instead of the
+/// whole effect. An UNQUALIFIED effectful builtin (`sh`, the `vibe_*_raw`
+/// dunders) has no operation spelling a user could write, so it falls back to
+/// its effect and behaves exactly as before.
+///
+/// Without this, host capabilities had NO granularity below the whole effect:
+/// `with { Fs::read_file }` was rejected with `missing { Fs }` because the
+/// builtin path only ever compared the bare label, even though ADR-0071 made
+/// the operation the row's minimal unit and `perform Eff::Op` already honored
+/// it. That is what forced coarse rows like `with { Http }` (serve + outbound
+/// request + request-field reads in one grant).
+fn builtin_call_op_label(name: String, eff: String) -> String {
+  let normalized = canonical_builtin_name(name)
+  if String::index_of(normalized, "::") > 0 {
+    normalized
+  } else {
+    eff
+  }
+}
+
 /// #626 criterion 3 (call-site propagation, builtin slice): calling an effectful
 /// BUILTIN (e.g. `Fs::read_file`, `Env::args_len`) requires the enclosing
 /// function to declare that effect, exactly like `perform`. Returns the required
@@ -899,12 +922,26 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
               }
             } else {
               match builtin_call_effect(name) {
-                Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
-                  Array::push(errors, make_row_mismatch(fn_name, declared, [
-                    eff
-                  ]))
-                } else {
-                  ()
+                Some(eff) => {
+                  // #1343: authorize at OPERATION granularity as well as by the
+                  // bare effect. `with { Fs }` keeps working unchanged (the
+                  // effect check is tried first and is what every existing row
+                  // relies on); `with { Fs::read_file }` now also authorizes,
+                  // giving host capabilities the minimal-permission granularity
+                  // ADR-0071 defined and `perform Eff::Op` already had. Strictly
+                  // a widening -- nothing that compiled before can start failing.
+                  let op_label = builtin_call_op_label(name, eff)
+                  if !in_handle && !decl_authorizes_effect(declared, eff) && !decl_authorizes_effect(declared, op_label) {
+                    // Report the OPERATION, per ADR-0071's diagnostic contract:
+                    // the fix-it should grant the one operation actually needed,
+                    // not widen the row to the whole effect (same rule the
+                    // perform path follows since Codex review on PR #1161).
+                    Array::push(errors, make_row_mismatch(fn_name, declared, [
+                      op_label
+                    ]))
+                  } else {
+                    ()
+                  }
                 },
                 None => ()
               }

@@ -8154,4 +8154,75 @@ fi
 rm -rf "$g1340dir"
 echo "[compiler-gate] generic effect instantiation ok"
 
+# 80/80. ADR-0071 operation-level rows, BUILTIN slice (#1343): host capabilities
+# can be granted one operation at a time. Before this the builtin call path
+# compared only the bare effect label (builtin_call_effect -> decl_authorizes_
+# effect), so `with { Fs::read_file }` was rejected with `missing { Fs }` and the
+# only expressible grant for a host capability was the whole effect -- which is
+# what forced coarse rows like `with { Http }` (serve + outbound request in one
+# grant). The row is the CONSUMER axis (minimal permission); the effect name
+# stays the PROVIDER axis (which host provider implements it), so this needs no
+# splitting of provider labels.
+#
+# Three directions, all required: the operation grant ADMITS its own operation,
+# RESTRICTS a sibling operation (naming the missing OPERATION, not the effect),
+# and the bare effect keeps granting everything (every existing row).
+echo "[compiler-gate] 80/80 operation-level rows authorize builtin calls (ADR-0071/#1343)"
+opb="_build/_gate_1343_op_rows"
+rm -rf "$opb"; mkdir -p "$opb"
+sed '/^__DATA__$/,$d' fixtures/effect_builtin_operation_row.vibe > "$opb/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$opb/pos.vibe" "$opb/pos.wasm" main >/dev/null 2>&1
+if [ ! -s "$opb/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: with { Fs::read_file } no longer authorizes the Fs::read_file builtin (#1343)" >&2
+  cat "$opb/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+op_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$opb/pos.wasm" 2>&1 | tail -1)"
+if [ "$op_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_builtin_operation_row got '$op_out' (want 42)" >&2
+  exit 1
+fi
+cat > "$opb/neg.vibe" <<'EOF'
+fn only_read(p: String) -> Unit with { Fs::read_file } {
+  Fs::write_file(p, "x")
+}
+
+let main = () -> Int {
+  0
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$opb/neg.vibe" "$opb/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$opb/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: with { Fs::read_file } authorized Fs::write_file -- operation grants are not minimal (#1343)" >&2
+  exit 1
+fi
+if ! grep -q "missing { Fs::write_file }" "$opb/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the diagnostic must name the missing OPERATION, not the whole effect (ADR-0071/#1343)" >&2
+  cat "$opb/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$opb/bare.vibe" <<'EOF'
+fn both(p: String) -> Unit with { Fs } {
+  Fs::write_file(p, Fs::read_file(p))
+}
+
+let main = () -> Int {
+  0
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$opb/bare.vibe" "$opb/bare.wasm" main >/dev/null 2>&1
+if [ ! -s "$opb/bare.wasm" ]; then
+  echo "[compiler-gate] FAIL: the bare effect row stopped granting all of its operations (#1343 must be a pure widening)" >&2
+  cat "$opb/bare.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$opb"
+echo "[compiler-gate] operation-level builtin rows ok"
+
 echo "[compiler-gate] ok"
