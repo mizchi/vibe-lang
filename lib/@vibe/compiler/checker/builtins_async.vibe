@@ -133,12 +133,19 @@ fn lookup_stream(name: String) -> Option[Type] {
     // at compile time). Creating the readable end is pure -- the
     // async-lowered import call completes eagerly (pair creation never
     // suspends) -- and only READING it (`host_stream_next`) carries `Async`.
-    // Elements are u8 on the wire, so Stream[Int] (the ByteStream shape).
+    //
+    // #1341: the result is `HostStream`, NOT `Stream[Int]`. They had the same
+    // static type and two INCOMPATIBLE runtime representations: an eager
+    // `Stream[Int]` is a plain array of elements, while a host stream is the
+    // 2-word cell `[state, handle]`. Nothing rejected `for b in host_stream_
+    // named("body")` -- it took the array path and summed the CELL, returning
+    // a plausible small number (measured: 4 = state 3 + handle 1) instead of
+    // the body's bytes. A distinct nominal type is what lets the desugar route
+    // the loop to the host read and makes every other Stream combinator a type
+    // error on a host stream instead of silent garbage.
     Some(CtFn([
       CtString
-    ], CtNamed("Stream", [
-      CtInt
-    ]), None))
+    ], CtNamed("HostStream", array_empty()), None))
   } else if name == "host_stream_next" {
     // host_stream_next: (Stream[Int]) -> Int with { Async }
     //
@@ -151,12 +158,11 @@ fn lookup_stream(name: String) -> Option[Type] {
     // when the read blocks) in the component adapter.
     //
     // Distinct from the generic `Stream::next` (Future[Option[T]] protocol):
-    // this is the direct scalar read the p3 lowering supports today; the
-    // AsyncIter unification is recorded as follow-up in spec §3.18.
+    // this is the direct scalar read the p3 lowering supports today. #1341
+    // connects `for b in s` to it via the desugar; the full AsyncIter
+    // unification stays follow-up (spec §3.18).
     Some(CtFn([
-      CtNamed("Stream", [
-        CtInt
-      ])
+      CtNamed("HostStream", array_empty())
     ], CtInt, Some("Async")))
   } else if name == "host_stream_close" {
     // host_stream_close: (Stream[Int]) -> Unit   (pure)
@@ -174,9 +180,7 @@ fn lookup_stream(name: String) -> Option[Type] {
     // also IDEMPOTENT: closing an already-closed (or fully drained) stream
     // is a no-op, because the cell's state word is what gates the drop.
     Some(CtFn([
-      CtNamed("Stream", [
-        CtInt
-      ])
+      CtNamed("HostStream", array_empty())
     ], CtUnit, None))
   } else if name == "Stream::map" {
     // Stream::map: (Stream[T], (T) -> U) -> Stream[U]   (lazy)

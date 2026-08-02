@@ -1132,6 +1132,10 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       // String-returning builtins (not in fn_returns): lets a
       // `String::concat(a, b) + c` / `__to_string(n) + s` operand type as
       // String for the concat rewrite.
+      // #1341: the p3 host stream. Not in fn_returns (it is a builtin), and
+      // its nominal type is what routes `for b in s` to the host read below
+      // instead of to the array loop -- which used to iterate the 2-word cell.
+      EIdent("host_stream_named", _) => Some("HostStream"),
       EIdent("String::concat", _) => Some("String"),
       EIdent("String::join", _) => Some("String"),
       EIdent("String::substring", _) => Some("String"),
@@ -2254,6 +2258,39 @@ fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter
 /// sync loop but each step `await`s the next-future. `await` is the M1a builtin
 /// (`await(Future[T]) -> T`); on the synchronous ready-future codegen it unwraps
 /// in place, so this also runs on the linear backend today.
+/// #1341 (ADR-0089 D3): `for b in <host stream>`. The p3 host stream has no
+/// `next` returning `Future[Option[T]]` -- its read primitive is the scalar
+/// `host_stream_next(s) -> Int with { Async }`, which yields the next byte or
+/// -1 once the writer is gone (spec §3.18). So this loop is built directly on
+/// that read rather than on the AsyncIter protocol:
+///
+///   let __hs_src = <iter>
+///   let mut __hs_b = host_stream_next(__hs_src)
+///   while 0 <= __hs_b {
+///     let <name> = __hs_b
+///     <body>
+///     __hs_b = host_stream_next(__hs_src)
+///   }
+///
+/// which is exactly the hand-written while loop the named-hoststreams gate has
+/// been running since #1339 -- so this introduces no new codegen, only the
+/// surface. Each read parks and resumes on its own (`Suspend(handle + 2048)`),
+/// which is why the enclosing row must carry `Async`; the checker requires
+/// that separately (checker_effects, #1358/#1341).
+///
+/// No index binding: `for b, i in s` over a host stream would have to count
+/// reads, and a byte offset is not the same thing as a position in a
+/// re-iterable collection. Left unsupported rather than given a plausible
+/// wrong meaning.
+fn build_host_stream_for(name: String, iter: Expr, body: Expr) -> Expr {
+  let read_call = ECall(EIdent("host_stream_next", -1), [
+    EIdent("__hs_src", -1)
+  ], -1)
+  let advance = EAssign("__hs_b", read_call, EUnit)
+  let loop_body = ELet(name, EIdent("__hs_b", -1), ESeq(body, advance), -1)
+  ELet("__hs_src", iter, ELetMut("__hs_b", read_call, EWhile(EBinOp("<=", EInt(0), EIdent("__hs_b", -1)), loop_body), -1), -1)
+}
+
 fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
   let awaited = ECall(EIdent("await", -1), [
     next_call_for(ctype)
@@ -2339,7 +2376,9 @@ fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) ->
 /// function-shaped classification.
 fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
-    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) && fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
+    Some(tn) => if tn == "HostStream" {
+      build_host_stream_for(name, riter, rbody)
+    } else if fn_exists(fn_returns, String::concat(tn, "::next")) && fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
       build_await_iter_for(name, tn, riter, rbody)
     } else {
       classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
@@ -2391,7 +2430,9 @@ fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, rite
 /// reasoning, now applied to the single surface).
 fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
-    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
+    Some(tn) => if tn == "HostStream" {
+      build_host_stream_for(name, riter, rbody)
+    } else if fn_exists(fn_returns, String::concat(tn, "::next")) {
       if fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
         build_await_iter_for(name, tn, riter, rbody)
       } else {

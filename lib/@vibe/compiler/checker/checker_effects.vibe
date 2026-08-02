@@ -310,9 +310,15 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
       None
     },
     // `for x in async_iter_arr(xs)` -- the callee's declared return head.
+    // #1341: a BUILTIN callee (`host_stream_named("body")`) is absent from the
+    // type env -- builtins resolve through lookup_builtin -- so the env lookup
+    // alone left every direct-call iterand unclassified.
     ECall(EIdent(f, _), _, _) => match env_lookup(env, f) {
       Some(CtFn(_, ret, _)) => afe_type_head_name(ret),
-      _ => None
+      _ => match lookup_builtin(f) {
+        Some(CtFn(_, bret, _)) => afe_type_head_name(bret),
+        _ => None
+      }
     },
     _ => None
   }
@@ -322,7 +328,13 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
 /// otherwise None. Named so the diagnostic can point at `<T>::next`.
 fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
   match afe_expr_head_name(iter, env, locals) {
-    Some(tn) => if type_name_has_async_iterator_impl(env, tn) {
+    // #1341: the p3 host stream is async by construction and has no
+    // AsyncIterator impl to find -- its read primitive is the scalar
+    // `host_stream_next(s) -> Int with { Async }`, and the desugar builds the
+    // loop on that read directly (build_host_stream_for). The loop therefore
+    // parks once per byte, so the enclosing row must carry `Async` for exactly
+    // the reason #1358 gave for trait-based async iterators.
+    Some(tn) => if tn == "HostStream" || type_name_has_async_iterator_impl(env, tn) {
       Some(tn)
     } else {
       None

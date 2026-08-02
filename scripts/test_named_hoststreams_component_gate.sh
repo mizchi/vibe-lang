@@ -164,6 +164,66 @@ GOT="$(cat "$RESULT_LOG")"
   || { echo "named hoststreams component gate FAILED: expected 42 (10+15+17 to end of stream), got: $GOT" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream path: 42 (all bytes delivered, end of stream recognized)"
 
+# --- the `for` surface (#1341) ------------------------------------------------
+# ADR-0089 D3's first connection item: `for b in <host stream>` instead of the
+# hand-written read loop above. Before this the host stream shared the static
+# type `Stream[Int]` with the EAGER array-backed stream, so `for` took the
+# array path and silently iterated the 2-word `[state, handle]` cell -- a
+# plausible small number (measured: 4), never a diagnostic. The host stream now
+# has its own nominal type and the desugar builds the loop on host_stream_next,
+# so this must produce the same 42 as the while loop and go through the same
+# imports.
+FOR_SRC="$OUT_DIR/stream_for.vibe"
+cat >"$FOR_SRC" <<'EOF'
+let run: () -> Int with { Async } = () -> {
+  let mut sum = 0
+  for b in host_stream_named("body") {
+    sum = sum + b
+  }
+  sum
+}
+EOF
+FOR_COMPONENT="$OUT_DIR/stream_for.component.wasm"
+compile_fixture "$FOR_SRC" "$FOR_COMPONENT"
+check_component_header "$FOR_COMPONENT"
+FOR_LOG="$OUT_DIR/run.for.log"
+if ! VIBE_ASYNC_STREAMS="body=10|15|17" timeout 60 "$RUNNER" "$FOR_COMPONENT" >"$FOR_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: the `for` form did not exit 0" >&2
+  cat "$FOR_LOG" >&2
+  exit 1
+fi
+FOR_GOT="$(cat "$FOR_LOG")"
+[ "$FOR_GOT" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: for-over-host-stream expected 42, got: $FOR_GOT" >&2; exit 1; }
+
+# The row requirement is the other half: each read parks, so a `for` over a
+# host stream outside an { Async } context must be REJECTED, not silently
+# compiled. (Before the nominal type it was accepted and iterated the cell.)
+FOR_NEG="$OUT_DIR/stream_for_norow.vibe"
+cat >"$FOR_NEG" <<'EOF'
+let drain = (s: HostStream) -> Int {
+  let mut sum = 0
+  for b in s {
+    sum = sum + b
+  }
+  sum
+}
+
+let run: () -> Int with { Async } = () -> {
+  drain(host_stream_named("body"))
+}
+EOF
+FOR_NEG_OUT="$OUT_DIR/stream_for_norow.wasm"
+rm -f "$FOR_NEG_OUT" "$FOR_NEG_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" "$FOR_NEG" "$FOR_NEG_OUT" run >/dev/null 2>&1 || true
+if [ -s "$FOR_NEG_OUT" ]; then
+  echo "named hoststreams component gate FAILED: a for-over-host-stream without { Async } compiled (#1341)" >&2
+  exit 1
+fi
+echo "[named-hoststreams-component-gate] for path: 42 (same bytes as the while loop; an Async-free row is rejected)"
+
 # --- delayed lane: reads genuinely PARK + the INLINE terminal shape ----------
 # The buffered Vec producer above hands every byte to the pipe on its first
 # poll, so no read ever blocks and the end arrives as a separate zero-amount
