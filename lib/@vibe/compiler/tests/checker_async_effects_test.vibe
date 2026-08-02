@@ -306,3 +306,67 @@ test "an unresolvable iterand requires nothing" {
   let errors = check_async_effects_expr(for_over(EIdent("mystery", -1)), async_iter_env(), false)
   assert(eq(Array::length(errors), 0))
 }
+
+// #1364 Codex review (P1 x2): two shapes that reached the await lowering but
+// slipped past the row requirement. Both were verified against repros that
+// actually RAN the await loop (a sync EForIn over the value would have
+// trapped), so each was a real hole, not a hypothetical one.
+
+fn generic_async_iter_env() -> TypeEnv {
+  // `impl [T] AIter for Iter[T]` is recorded as EnvTraitImplGen, which the
+  // scan used to skip unconditionally.
+  let methods = [
+    ("next", [
+      TyName("Self")
+    ], TyApp("Future", [
+      TyApp("Option", [
+        TyName("Int")
+      ])
+    ]))
+  ]
+  EnvTraitImplGen("It", [
+    "T"
+  ], array_empty(), CtStruct("Iter"), EnvTraitDef("It", array_empty(), false, methods, EnvEmpty))
+}
+
+test "for over a GENERICALLY implemented async iterator requires Async" {
+  let iterand = ERecord("Iter", array_empty(), array_empty())
+  let errors = check_async_effects_expr(for_over(iterand), generic_async_iter_env(), false)
+  assert(Array::length(errors) > 0)
+}
+
+test "a generic async iterator inside an Async context is OK" {
+  let iterand = ERecord("Iter", array_empty(), array_empty())
+  let errors = check_async_effects_expr(for_over(iterand), generic_async_iter_env(), true)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "an ENUM async iterand keeps its head name" {
+  // `enum Chan { Chan(Int) }` + `for x in Chan(3)`: the constructor's return
+  // type is CtEnum, which the head-name helper used to discard.
+  let env = env_bind(iter_env(TyApp("Future", [
+    TyApp("Option", [
+      TyName("Int")
+    ])
+  ]), "Chan"), "Chan", CtFn([
+    CtInt
+  ], CtEnum("Chan"), None))
+  let call = ECall(EIdent("Chan", -1), [
+    EInt(3)
+  ], -1)
+  let errors = check_async_effects_expr(for_over(call), env, false)
+  assert(Array::length(errors) > 0)
+}
+
+test "a SYNC enum iterator still requires nothing" {
+  let env = env_bind(iter_env(TyApp("Option", [
+    TyName("Int")
+  ]), "Chan"), "Chan", CtFn([
+    CtInt
+  ], CtEnum("Chan"), None))
+  let call = ECall(EIdent("Chan", -1), [
+    EInt(3)
+  ], -1)
+  let errors = check_async_effects_expr(for_over(call), env, false)
+  assert(eq(Array::length(errors), 0))
+}

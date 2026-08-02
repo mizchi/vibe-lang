@@ -8314,6 +8314,87 @@ if ! grep -q "Countdown::next" "$afdir/neg.wasm.diag" 2>/dev/null; then
   cat "$afdir/neg.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# Codex review on PR #1364 (P1 x2): two iterand shapes reached the await
+# lowering but slipped past the row requirement -- a GENERIC impl (recorded as
+# EnvTraitImplGen, skipped by the scan) and an ENUM iterand (CtEnum, dropped by
+# the head-name helper). Both were verified against repros that actually RAN
+# the await loop (a sync EForIn over the value would have trapped), so each was
+# a real hole. Locked here because neither is reachable through the struct-
+# literal fixture above.
+cat > "$afdir/generic.vibe" <<'EOF'
+trait AIter[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+struct Iter[T] {
+  n: Int
+}
+
+impl [T] AIter for Iter[T] {
+  next(self) -> Future[Option[(Int, Iter[T])]] {
+    Future::ready(if self.n > 0 {
+      Some((self.n, Iter::{
+        n: self.n - 1
+      }))
+    } else {
+      None
+    })
+  }
+}
+
+let main = () -> Int {
+  let mut acc = 0
+  for x in Iter::{
+    n: 3
+  } {
+    acc = acc + x
+  }
+  acc
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$afdir/generic.vibe" "$afdir/generic.wasm" main >/dev/null 2>&1 || true
+if [ -s "$afdir/generic.wasm" ]; then
+  echo "[compiler-gate] FAIL: a GENERICALLY implemented async iterator escaped the Async requirement -- EnvTraitImplGen must be matched like EnvTraitImpl (#1358, Codex P1 on #1364)" >&2
+  exit 1
+fi
+cat > "$afdir/enum.vibe" <<'EOF'
+trait AIter[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+enum Chan {
+  Chan(Int)
+}
+
+impl AIter for Chan {
+  next(self) -> Future[Option[(Int, Chan)]] {
+    Future::ready(match self {
+      Chan(n) => if n > 0 {
+        Some((n, Chan(n - 1)))
+      } else {
+        None
+      }
+    })
+  }
+}
+
+let main = () -> Int {
+  let mut acc = 0
+  for x in Chan(3) {
+    acc = acc + x
+  }
+  acc
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$afdir/enum.vibe" "$afdir/enum.wasm" main >/dev/null 2>&1 || true
+if [ -s "$afdir/enum.wasm" ]; then
+  echo "[compiler-gate] FAIL: an ENUM async iterand escaped the Async requirement -- CtEnum must keep its head name (#1358, Codex P1 on #1364)" >&2
+  exit 1
+fi
 rm -rf "$afdir"
 echo "[compiler-gate] async for-loop Async requirement ok"
 

@@ -445,7 +445,25 @@ fn type_name_async_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: S
         true
       } else type_name_async_iterator_impl_scan(rest, full, type_name)
     },
-    EnvTraitImplGen(_, _, _, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
+    // #1347/#1358 (Codex P1 on PR #1364): a GENERIC impl (`impl [T] AIter for
+    // Iter[T]`) is recorded as EnvTraitImplGen, and skipping it here let the
+    // async loop through unchecked -- the desugar has no such distinction (it
+    // sees the lowered `Iter::next` and injects `await` on a Future return),
+    // so a generically-implemented async iterator suspended from a row-free
+    // function with no diagnostic. Verified against a repro that RAN the await
+    // loop (a sync EForIn over the struct would have trapped). Impl targets
+    // store their type arguments erased, so head-name matching is exact here
+    // just as it is in the non-generic arm.
+    //
+    // The SYNC sibling scan above deliberately keeps skipping this case: it
+    // feeds element-type inference, where widening the match would change
+    // inferred types across the codebase rather than close a soundness hole.
+    EnvTraitImplGen(tname, _, _, target, rest) => {
+      let hit = trait_target_head_name(target) == type_name && trait_next_returns_future(full, tname)
+      if hit {
+        true
+      } else type_name_async_iterator_impl_scan(rest, full, type_name)
+    },
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name)
   }
