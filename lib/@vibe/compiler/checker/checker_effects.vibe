@@ -967,7 +967,17 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let mut ti = 0
                 while ti < Array::length(callee_effs) {
                   let teff = Array::get(callee_effs, ti)
-                  if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked()) && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
+                  // #1343 (Codex P1 on PR #1359): `decl_authorizes_op`, not
+                  // `decl_authorizes_effect` -- once a callee can declare an
+                  // OPERATION row (`with { Fs::read_file }`), a caller holding
+                  // the WHOLE effect (`with { Fs }`) must authorize it. The
+                  // effect-only check compared labels literally, so the bare
+                  // `Fs` failed to cover `Fs::read_file` and calling such a
+                  // callee was rejected. decl_authorizes_op tries the base
+                  // effect name first, then the exact operation, so both
+                  // spellings of the caller's row work and nothing that
+                  // authorized before stops authorizing.
+                  if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked()) && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_op(declared, teff) {
                     Array::push(missing, teff)
                   } else {
                     ()
@@ -998,7 +1008,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let mut pi = 0
                 while pi < Array::length(param_effs) {
                   let peff = Array::get(param_effs, pi)
-                  if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked()) && peff != "Async" && !in_handle && !decl_authorizes_effect(declared, peff) {
+                  // #1343: same operation-awareness as the named-callee case
+                  // above -- a callback parameter whose row names an operation
+                  // is covered by a caller holding the whole effect.
+                  if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked()) && peff != "Async" && !in_handle && !decl_authorizes_op(declared, peff) {
                     Array::push(missing, peff)
                   } else {
                     ()
