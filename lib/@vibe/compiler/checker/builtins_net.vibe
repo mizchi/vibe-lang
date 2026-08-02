@@ -10,6 +10,28 @@ import @vibe/core {
 
 //# Functions
 
+//# #1343 (ADR-0094 の provider / consumer 軸): `Http::*` builtin の effect
+//# ラベルは provider 識別子 `Http` に統一している。以前は同じ関数群が
+//# `HttpServer` / `HttpClient` / `HttpIncoming` の3ラベルに分かれていたが、
+//# これは consumer 側の関心 (serve か egress か) を **provider 軸**で表そうと
+//# したもので、1つの host HTTP provider に対する実装契約を3つに断片化して
+//# いた。実際 raw import 層 (`vibe_http_*_raw`、builtin_registry.vibe) と
+//# ラッパーライブラリ (`lib/@vibe/http`、`with { Http }`) は一貫して `Http`
+//# を使っており、層ごとにラベルが食い違う状態だった。
+//#
+//# 細粒度は **consumer 軸** = operation-level row で表す (#1359 で builtin
+//# 呼び出し経路に導通済み):
+//#   with { Http::listen }   -- serve だけ
+//#   with { Http::request }  -- outbound request (egress) だけ
+//#   with { Http }           -- 全 operation の shorthand (従来どおり)
+//# 束ねた名前が要る場合は ADR-0071 の `effectset` を使う (透明な
+//# compile-time alias なので provider 契約を汚さない)。
+//#
+//# なお `lib/@vibe/http/http_effect.vibe` の `effect HttpServer` /
+//# `HttpClient` / `HttpIncoming` は**別物**で、in-process の mock/DI 用に
+//# 宣言されたユーザー algebraic effect として残る (ADR-0084 の分類でも
+//# 宣言された effect は algebraic 側)。
+
 fn net_no_params() -> Array[Type] {
   array_empty()
 }
@@ -37,49 +59,49 @@ fn net_three_params(a: Type, b: Type, c: Type) -> Array[Type] {
 
 fn lookup_http_close(name: String) -> Option[Type] {
   if name == "Http::close" {
-    Some(CtFn(net_one_param(CtUnknown), CtUnit, Some("HttpServer")))
+    Some(CtFn(net_one_param(CtUnknown), CtUnit, Some("Http")))
   }
   else None
 }
 
 fn lookup_http_accept(name: String) -> Option[Type] {
   if name == "Http::accept" {
-    Some(CtFn(net_one_param(CtUnknown), CtUnknown, Some("HttpServer")))
+    Some(CtFn(net_one_param(CtUnknown), CtUnknown, Some("Http")))
   }
   else None
 }
 
 fn lookup_http_listen(name: String) -> Option[Type] {
   if name == "Http::listen" {
-    Some(CtFn(net_two_params(CtString, CtInt), CtUnknown, Some("HttpServer")))
+    Some(CtFn(net_two_params(CtString, CtInt), CtUnknown, Some("Http")))
   }
   else None
 }
 
 fn lookup_http_request(name: String) -> Option[Type] {
   if name == "Http::request" {
-    Some(CtFn(net_two_params(CtString, CtString), CtUnknown, Some("HttpClient")))
+    Some(CtFn(net_two_params(CtString, CtString), CtUnknown, Some("Http")))
   }
   else None
 }
 
 fn lookup_http_respond(name: String) -> Option[Type] {
   if name == "Http::respond" {
-    Some(CtFn(net_three_params(CtUnknown, CtInt, CtString), CtUnit, Some("HttpServer")))
+    Some(CtFn(net_three_params(CtUnknown, CtInt, CtString), CtUnit, Some("Http")))
   }
   else None
 }
 
 fn lookup_http_response_body(name: String) -> Option[Type] {
   if name == "Http::response_body" {
-    Some(CtFn(net_one_param(CtUnknown), CtString, Some("HttpClient")))
+    Some(CtFn(net_one_param(CtUnknown), CtString, Some("Http")))
   }
   else None
 }
 
 fn lookup_http_request_header(name: String) -> Option[Type] {
   if name == "Http::request_header" {
-    Some(CtFn(net_two_params(CtUnknown, CtString), CtString, Some("HttpIncoming")))
+    Some(CtFn(net_two_params(CtUnknown, CtString), CtString, Some("Http")))
   }
   else None
 }
@@ -93,7 +115,7 @@ fn lookup_net_group_d(name: String) -> Option[Type] {
 
 fn lookup_http_request_method(name: String) -> Option[Type] {
   if name == "Http::request_method" {
-    Some(CtFn(net_one_param(CtUnknown), CtString, Some("HttpIncoming")))
+    Some(CtFn(net_one_param(CtUnknown), CtString, Some("Http")))
   }
   else None
 }
@@ -113,14 +135,14 @@ fn lookup_net_group_c(name: String) -> Option[Type] {
 
 fn lookup_http_response_header(name: String) -> Option[Type] {
   if name == "Http::response_header" {
-    Some(CtFn(net_two_params(CtUnknown, CtString), CtString, Some("HttpClient")))
+    Some(CtFn(net_two_params(CtUnknown, CtString), CtString, Some("Http")))
   }
   else None
 }
 
 fn lookup_http_response_status(name: String) -> Option[Type] {
   if name == "Http::response_status" {
-    Some(CtFn(net_one_param(CtUnknown), CtInt, Some("HttpClient")))
+    Some(CtFn(net_one_param(CtUnknown), CtInt, Some("Http")))
   }
   else None
 }

@@ -1329,9 +1329,31 @@ fn test_bench_ambient_effects() -> Array[String] {
     // boundary, exactly ADR-0073's entry-boundary-A shape). Requiring
     // every test block to spell `with { Error }` would annotate the
     // mechanism the runner already owns.
+    // #1343: この集合を operation 粒度へ絞れるか実測した (#1359 で builtin
+    // 経路に operation 認可が通ったので技術的には可能)。結果、**Fs と Env は
+    // 絞る余地が無い** — test/bench コーパスが実際に使っている operation は
+    // Fs::write_bytes(218) / mkdir_p(70) / exists(45) / read_file(37) /
+    // read_bytes(31) / write_file(23) / stat_token(13) / remove(13) /
+    // readdir(10) / mkdir(2)、Env は get / args_len / args_get の全3種で、
+    // 列挙しても権限は狭まらず row が長くなるだけ。よって bare のまま残す。
+    //
+    // "Stdin" は削除した: test/bench コーパスでの使用は **0 件**で、ホストが
+    // 提供できるからという理由だけで全 test ブロックに標準入力の読み取りを
+    // 与える必要が無い (Stdin を使うテストが現れたら、その時に足す方が
+    // 「何が ambient か」の記録として正確)。
+    //
+    // "Process" (= `sh` / `sh_lines` = 任意コマンド実行) は本来ここで最も
+    // 絞りたいもので、実使用も 7 ファイルしかない。ただし外すには受け皿が
+    // 要る: `sh` は非修飾 builtin なので operation 綴りが無く (row に
+    // `Process::sh` とは書けない)、残る退避手段は `handle { .. } with
+    // Process { Run(_) => resume(0) }` という **意味を持たない** vacuous
+    // handler (Process に effect 宣言が無いので arm 名は一切検査されず、
+    // codegen で消える) だけ。7 ファイルに無意味な構文を撒くことになるので
+    // 見送った。正しい機構は test ブロック自身が row を宣言できるようにする
+    // こと (`test "name" with { Process } { .. }`) だが、STest への row 追加は
+    // 97 箇所・約20ファイルに波及するため別スライスとする。
     "Fs",
     "Env",
-    "Stdin",
     "Stdout",
     "Stderr",
     "Process",
@@ -1631,11 +1653,22 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
 /// conservatively authorizes anything), this is used to conservatively
 /// REJECT: an unrecognized label (including a row-variable letter, which a
 /// real top-level `main` should never carry) is NOT treated as safe.
+///
+/// #1343: each row label is reduced to its EFFECT name before the lookup.
+/// Once operation-level rows became expressible for host capabilities
+/// (#1359), an entry declaring the STRICTLY NARROWER
+/// `with { Stdout::write_stream }` would otherwise fail this exact-string
+/// test and be judged un-cacheable, while the broader `with { Stdout }`
+/// passed -- i.e. tightening a row would lose the #819/#1214 doctest cache.
+/// `effect_name_of_op` only strips a `::` suffix (and canonicalizes the
+/// exception aliases), so a row variable stays a row variable and an
+/// unrelated effect stays unrelated: the conservative rejection above is
+/// unchanged.
 fn array_is_subset_of_str(row: Array[String], safe: Array[String]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(row) {
-    let eff = Array::get(row, i)
+    let eff = effect_name_of_op(Array::get(row, i))
     let mut j = 0
     let mut found = false
     while j < Array::length(safe) {
