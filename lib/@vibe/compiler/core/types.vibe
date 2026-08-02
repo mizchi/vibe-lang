@@ -1248,20 +1248,49 @@ fn effect_label_base_name(label: String) -> String {
   }
 }
 
+/// #1340 (Codex P1 on #1352): reduce a label list to its BASE names, deduped.
+/// effect_label_list dedupes by EXACT label, which is what made "same length +
+/// one-way membership" a sound set-equality test. Comparing by base name
+/// breaks that invariant on its own -- `{ State[Int], State[String] }` is two
+/// exact labels but ONE base -- so `{ State[Int], State[String] }` vs
+/// `{ State, Fs }` would match on length AND find every left base on the
+/// right, silently accepting a row that drops `Fs`. Deduping by base first
+/// restores the invariant: both sides become genuine base-name sets.
+fn effect_label_base_set(labels: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let base = effect_label_base_name(Array::get(labels, i))
+    let mut seen = false
+    let mut j = 0
+    while j < Array::length(out) {
+      if Array::get(out, j) == base {
+        seen = true
+      }
+      j = j + 1
+    }
+    if !seen {
+      Array::push(out, base)
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool {
-  let ls = effect_label_list(left)
-  let rs = effect_label_list(right)
+  let ls = effect_label_base_set(effect_label_list(left))
+  let rs = effect_label_base_set(effect_label_list(right))
   if Array::length(ls) != Array::length(rs) {
     false
   } else {
     let mut i = 0
     let mut ok = true
     while i < Array::length(ls) {
-      let label = effect_label_base_name(Array::get(ls, i))
+      let label = Array::get(ls, i)
       let mut found = false
       let mut j = 0
       while j < Array::length(rs) {
-        if effect_label_base_name(Array::get(rs, j)) == label {
+        if Array::get(rs, j) == label {
           found = true
         }
         j = j + 1

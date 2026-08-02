@@ -68,3 +68,48 @@ test "handler arms share one instantiation per handle" {
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
 }
+
+// Codex P1 on #1352: the handled BODY must share the handle's instantiation
+// with the arms. The two findings in that review turned out to be COUPLED --
+// on the merged compiler these cases were caught only because the row-label
+// set comparison was too loose (it accepted rows it should have rejected, and
+// that spurious acceptance is what linked the body's type variable to the
+// arm's). Tightening effect_label_sets_equal alone made the diagnostic below
+// vanish, i.e. it turned the reviewer's scenario into a live hole; the fix is
+// the explicit per-handle instantiation published through the type env
+// (effect_instantiate). These three tests pin both halves.
+
+test "the handled body shares the handle's instantiation with the arms" {
+  // The body pins T = String (`let s: String`); `resume(123)` therefore
+  // resumes a String-expecting continuation with an Int and must be rejected.
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    String::length(s)\n  } with Box {\n    Get => resume(123)\n  }\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "resume value type mismatch"))
+}
+
+test "a body and arm agreeing on the instantiation still type-check" {
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    String::length(s)\n  } with Box {\n    Get => resume(\"abcd\")\n  }\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
+
+test "two performs of one generic effect at conflicting types are rejected" {
+  // One handler cannot return both a String and an Int, so the two performs
+  // must resolve to the SAME instantiation and collide.
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    let n: Int = perform Box::Get()\n    String::length(s) + n\n  } with Box {\n    Get => resume(\"abcd\")\n  }\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+}
+
+// Codex P1 on #1352: effect_label_list dedupes by EXACT label, which is what
+// made "equal length + one-way membership" a sound set-equality test. Base-name
+// comparison alone breaks it: `{ State[Int], State[String] }` is two exact
+// labels but one base, so it would match `{ State, Fs }` on both counts and
+// accept a fn value whose row drops `Fs` entirely.
+
+test "a row instantiated twice does not match a row carrying an extra effect" {
+  let src = "effect State[S] {\n  Get() -> S\n}\n\nfn needs_two(f: () -> Int with { State[Int], State[String] }) -> Int {\n  f()\n}\n\nfn both() -> Int with { State, Fs } {\n  42\n}\n\nlet main = () -> Int {\n  needs_two(both)\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+}
