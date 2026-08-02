@@ -16,7 +16,7 @@
 #   roundtrip  Stream::to_string(String::to_bytes(...))
 #   control    non-async entry stays a core module (magic layer 0x01)
 #
-# forawait: the `for await x in stream` entry regressed while this gate was
+# forawait: the `for x in stream` entry regressed while this gate was
 # missing (#822 — the pull-classification called the Stream value as a
 # closure); fixed by classifying builtin Streams to the eager array loop, and
 # promoted into the always-on set.
@@ -106,7 +106,7 @@ EOF
 let run: () -> Int with { Async } = () -> {
   let s = Stream::once(42)
   let mut sum = 0
-  for await x in s {
+  for x in s {
     sum = sum + x
   }
   sum

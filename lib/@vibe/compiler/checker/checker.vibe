@@ -4119,7 +4119,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
             Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), off_marker_len(callee_off, String::length(name)))))
           } else if is_stream_named_type(subst_apply(s3, obj_ty)) {
             // #827: Stream is CtNamed (head 0 = tolerated) but is NOT an Array.
-            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a Stream, not an Array (use `for await` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
+            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a Stream, not an Array (iterate it with `for` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
           } else {
             ()
           }
@@ -4160,7 +4160,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
             Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), off_marker_len(callee_off, String::length(name)))))
           } else if is_stream_named_type(subst_apply(s2, obj_ty)) {
             // #827: Stream is CtNamed (head 0 = tolerated) but is NOT an Array.
-            Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), String::concat(" is a Stream, not an Array (use `for await` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
+            Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), String::concat(" is a Stream, not an Array (iterate it with `for` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
           } else {
             ()
           }
@@ -4548,7 +4548,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                     // #827: Stream is CtNamed (head 0 = tolerated), so the eager
                     // Array-backed representation leaked through every Array
                     // builtin (`Array::length(stream)` compiled and ran).
-                    Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), String::concat(" is a Stream, not an Array (use `for await` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
+                    Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), String::concat(" is a Stream, not an Array (iterate it with `for` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
                   } else {
                     ()
                   }
@@ -5688,23 +5688,15 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      // `for await x in s` reaches the checker as `for x in __await_iter(s)`
-      // (the parser's marker; the dict-passing desugar strips it for codegen).
-      // The marker is not a real function, so check the inner iterable directly.
-      let real_iterable = match iterable {
-        ECall(callee, args, _) => match callee {
-          EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
-            Array::get(args, 0)
-          } else iterable,
-          _ => iterable
-        },
-        _ => iterable
-      }
-      let (it, s1, c1) = check_expr(real_iterable, env, defs, s, c, errors, tytab)
+      // #1350: `for await x in s` was retired, so there is no longer a
+      // `__await_iter(s)` marker to unwrap here -- the iterable is checked
+      // directly, and whether the loop awaits each step is decided from the
+      // iterand's type in the dict-passing desugar.
+      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors, tytab)
       // Element type bound by `for x in it`:
       //   - `Array[T]`                       -> T
       //   - a parameterized iterator type
-      //     `C[T, ..]` (`LazyIter[T]`, async `Stream[T]`, `for await`'s
+      //     `C[T, ..]` (`LazyIter[T]`, async `Stream[T]`, the async-iterator
       //     desugared iterator, …) -> its FIRST type argument `T`. By the
       //     iterator convention `next(Self) -> Option[(T, Self)]` the element is
       //     the struct's first type parameter, so it is recoverable from the

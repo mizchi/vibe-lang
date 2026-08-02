@@ -931,12 +931,17 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
   (fold_block_steps(ArrayBuilder::freeze(steps)), end_pos)
 }
 
-// `for await x in s { body }` is parsed to `EForIn(x, _, __await_iter(s), body)`
-// — the iterable wrapped in a `__await_iter` marker call. The marker carries the
-// `await` intent past the parser (which has no type information) to the
-// dict-passing desugar (`desugar_trait_dict.vibe`), which picks the iterator vs
-// pull-closure loop by `s`'s type and strips the marker. The checker unwraps the
-// marker so it never sees `__await_iter` as a real function (docs/spec §M2c-3).
+// #1350: `for await x in s` was RETIRED. It parsed to
+// `EForIn(x, _, __await_iter(s), body)` -- the iterable wrapped in a marker
+// carrying the `await` intent past the parser to the dict-passing desugar.
+// The marker was never load-bearing: the desugar's choice between the sync
+// and the await-wrapped loop is made from `C::next`'s return type (Future or
+// not), which is type information the marker does not add. A syntactic
+// `await` on the loop was therefore a second spelling of what the effect row
+// (`with { Async }`) already states -- the same function-coloring duplication
+// ADR-0089 D1 removed from `sleep`. Plain `for x in s` now drives both kinds
+// (see classify_sync_for_loop in desugar_trait_dict.vibe), and `await` in
+// that position is an ordinary binding name again.
 
 export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   if mode == 20 {
@@ -1037,28 +1042,11 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
       }
     }
   } else if mode == 25 {
-    // `for await x in stream { ... }`: `await` is not a keyword (it is the
-    // builtin call `await(...)`), so detect the async-iterator marker as an
-    // `await` identifier immediately followed by the binding name. When present,
-    // the iterable is wrapped in a `__await_iter(..)` marker so the desugar can
-    // pick the iterator vs pull-closure loop by type (docs/spec §M2c-3). Without
-    // the marker, `for x in arr` iterates an eager Array[T] via EForIn. A loop
-    // variable literally named `await` (`for await in e`) is still parsed as a
-    // binding because `await` is then followed by `in`, so `is_await` stays
-    // false.
-    let mut start = pos
-    let mut is_await = false
-    match peek(tokens, pos) {
-      TIdent(marker) => if marker == "await" {
-        match peek(tokens, pos + 1) {
-          TIdent(_) => {
-            start = pos + 1; is_await = true
-          },
-          _ => ()
-        }
-      } else (),
-      _ => ()
-    }
+    // `for x in e { ... }` / `for k, v in e { ... }`. #1350 retired the
+    // `for await` spelling (see this file's header comment): the loop kind is
+    // decided from the iterand's TYPE in desugar_trait_dict.vibe, never from
+    // syntax, so `await` here is again just a binding name.
+    let start = pos
     match peek(tokens, start) {
       TIdent(first_name) => match peek(tokens, start + 1) {
         TComma => match peek(tokens, start + 2) {
@@ -1068,14 +1056,7 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
               (iterable, after_iter) => {
                 let bb = expect_tk(tokens, after_iter, "{")
                 let (body, end) = parse_recur(tokens, bb, 20)
-                let loop_expr = if is_await {
-                  EForIn(second_name, Some(first_name), ECall(EIdent("__await_iter", -1), [
-                    iterable
-                  ], -1), body)
-                } else {
-                  EForIn(second_name, Some(first_name), iterable, body)
-                }
-                (loop_expr, end)
+                (EForIn(second_name, Some(first_name), iterable, body), end)
               },
               _ => throw("unreachable: parse_recur for for-in")
             }
@@ -1088,14 +1069,7 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
             (iterable, after_iter) => {
               let bb = expect_tk(tokens, after_iter, "{")
               let (body, end) = parse_recur(tokens, bb, 20)
-              let loop_expr = if is_await {
-                EForIn(first_name, None, ECall(EIdent("__await_iter", -1), [
-                  iterable
-                ], -1), body)
-              } else {
-                EForIn(first_name, None, iterable, body)
-              }
-              (loop_expr, end)
+              (EForIn(first_name, None, iterable, body), end)
             },
             _ => throw("unreachable: parse_recur for for-in")
           }
