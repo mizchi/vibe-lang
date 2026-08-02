@@ -488,11 +488,14 @@ let incremental_typecheck_telemetry_counters = array_empty()
 let incremental_typecheck_telemetry_decisions: Array[(String, String)] = [
 ]
 
-// This intentionally lives only for the successful check that requested the
-// sidecar. It is never read by a cache lookup and is never persisted: changing
-// the observation must not change a production cache key or cache format.
+// These intentionally live only for the successful check that requested the
+// sidecar. They are never read by a cache lookup, incorporated into a cache
+// key, or persisted in a cache format. The ordinary generated compiler-source
+// fingerprint still changes whenever this compiler source changes.
 let incremental_interface_trace_enabled_cell = array_empty()
 let incremental_interface_trace_observations: Array[(String, String)] = [
+]
+let incremental_checked_env_trace_observations: Array[(String, String)] = [
 ]
 
 fn incremental_typecheck_telemetry_enabled() -> Bool {
@@ -521,6 +524,7 @@ export fn set_incremental_interface_trace_enabled(enabled: Bool) -> Unit {
   Array::truncate(incremental_interface_trace_enabled_cell, 0)
   Array::push(incremental_interface_trace_enabled_cell, enabled)
   Array::truncate(incremental_interface_trace_observations, 0)
+  Array::truncate(incremental_checked_env_trace_observations, 0)
 }
 
 fn incremental_interface_trace_enabled() -> Bool {
@@ -547,9 +551,10 @@ fn incremental_typecheck_telemetry_decide(path: String, decision: String) -> Uni
   }
 }
 
-fn incremental_interface_trace_observe(path: String, identity: String) -> Unit {
+fn incremental_interface_trace_observe(path: String, interface_identity: String, checked_env_identity: String) -> Unit {
   if incremental_interface_trace_enabled() {
-    upsert_string_pair(incremental_interface_trace_observations, path, identity)
+    upsert_string_pair(incremental_interface_trace_observations, path, interface_identity)
+    upsert_string_pair(incremental_checked_env_trace_observations, path, checked_env_identity)
     ()
   } else {
     ()
@@ -558,6 +563,10 @@ fn incremental_interface_trace_observe(path: String, identity: String) -> Unit {
 
 fn incremental_interface_trace_observation_of(path: String) -> Option[String] {
   lookup_string_pair(incremental_interface_trace_observations, path)
+}
+
+fn incremental_checked_env_trace_observation_of(path: String) -> Option[String] {
+  lookup_string_pair(incremental_checked_env_trace_observations, path)
 }
 
 fn incremental_typecheck_telemetry_decision_of(path: String) -> Option[String] {
@@ -1055,6 +1064,53 @@ fn incremental_interface_identity(source: String, env: TypeEnv) -> String with {
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
+/// A trace-only canonical identity for the checked effective value environment.
+/// `env_flat_bindings` deliberately excludes trait/impl/type/effect declarations;
+/// duplicate names resolve through the same first-binding lookup used by the
+/// checker. The existing canonical Type serializer alpha-normalizes quantified
+/// variables and sorts/deduplicates bounds and effects. This is not the
+/// persistent TypeEnv codec and is never read by a cache lookup.
+fn incremental_checked_env_identity(env: TypeEnv) -> String with { Error } {
+  let bindings = env_flat_bindings(env)
+  let raw_names = array_empty()
+  let mut b = 0
+  while b < Array::length(bindings) {
+    let (name, _) = Array::get(bindings, b)
+    // The checker records each declared function's return annotation under
+    // this private bookkeeping name. It is not a user value binding (and can
+    // retain source spelling such as a generic parameter), so including it
+    // would violate the observation's alpha-normal value-env contract.
+    if !String::starts_with(name, "__fn_ret__:") {
+      Array::push(raw_names, name)
+    } else {
+      ()
+    }
+    b = b + 1
+  }
+  let names = interface_sorted_unique(raw_names)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-module-checked-env:v1\n")
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    match env_lookup_flat(bindings, name) {
+      Some(ty) => {
+        StringBuilder::push(out, "value:")
+        StringBuilder::push(out, interface_segment(name))
+        StringBuilder::push(out, interface_segment(interface_canonical_type(ty, array_empty(), array_empty())))
+        StringBuilder::push(out, "\n")
+      },
+      None => throw(String::concat("incremental checked environment observation: effective value missing from flattened environment: ", name))
+    }
+    i = i + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(out))
+}
+
+fn incremental_trace_observe_checked_env(path: String, source: String, env: TypeEnv) -> Unit with { Error } {
+  incremental_interface_trace_observe(path, incremental_interface_identity(source, env), incremental_checked_env_identity(env))
+}
+
 fn incremental_trace_hex_digit(value: Int) -> String {
   if value < 10 {
     String::from_char_code('0' + value)
@@ -1094,10 +1150,11 @@ fn incremental_trace_json_string(text: String) -> String {
 /// Versioned observation bridge for the bounded Incremental.lean model.
 ///
 /// `source_fingerprint` is `compact_string_fingerprint` of the loader's
-/// ingested source. `implementation_fingerprint` is a provisional canonical
-/// token-stream identity, not normalized typed IR. Neither is a production
-/// cache key. `decision` records what this current TypeDb walk did (`rechecked`
-/// or `reused`), not a formal invalidation verdict.
+/// ingested source. `implementation_fingerprint` remains the schema-v3
+/// provisional canonical token-stream identity, not normalized typed IR.
+/// `checked_env_fingerprint` is a complete value-environment observation.
+/// None is incorporated into a production cache key. `decision` records what this current TypeDb
+/// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
 /// observation throws rather than emitting a partial or stale sidecar.
 export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: String) -> String with { Error, Fs } {
@@ -1108,9 +1165,9 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
   }
   let (paths, _ranks, deps_by_module, sources) = module_plan_data_fs(entry_path)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "{\"schema\":3,\"run_nonce\":")
+  StringBuilder::push(out, "{\"schema\":4,\"run_nonce\":")
   StringBuilder::push(out, incremental_trace_json_string(run_nonce))
-  StringBuilder::push(out, ",\"fingerprint_note\":\"source_fingerprint is ingestion telemetry; implementation_fingerprint is provisional canonical token-stream identity and interface_fingerprint is observation only; neither is a production cache key\",\"modules\":[")
+  StringBuilder::push(out, ",\"fingerprint_note\":\"source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint and checked_env_fingerprint are observation only; none is a production cache key\",\"modules\":[")
   let mut i = 0
   while i < Array::length(paths) {
     if i > 0 {
@@ -1148,7 +1205,13 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete interface observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(interface_fingerprint))
-    StringBuilder::push(out, ",\"interface_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)\",\"decision\":")
+    StringBuilder::push(out, ",\"interface_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)\",\"checked_env_fingerprint\":")
+    let checked_env_fingerprint = match incremental_checked_env_trace_observation_of(path) {
+      Some(value) => value,
+      None => throw(String::concat("incremental invalidation trace: missing complete checked environment observation for ", path))
+    }
+    StringBuilder::push(out, incremental_trace_json_string(checked_env_fingerprint))
+    StringBuilder::push(out, ",\"checked_env_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1
@@ -1578,10 +1641,11 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// rather than being an opaque handle; record literals and field access
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
-  // The final string is the trace-only module-interface identity. It is
-  // computed from this successful check's typed environment, never used as a
-  // cache input, and is empty unless the invalidation trace is enabled.
-  Checked(String, String, TypeEnv, String);
+  // The final strings are trace-only interface and complete checked-value-env
+  // identities. They are computed from this successful check's typed
+  // environment, never used as cache inputs, and are empty unless the
+  // invalidation trace is enabled.
+  Checked(String, String, TypeEnv, String, String);
   Diagnosed(String, Array[String])
 }
 /// Pure module check. No Fs: the dependency environments it needs are
@@ -1610,7 +1674,12 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with { Error } {
     } else {
       ""
     }
-    Checked(job.path, fingerprint, checked_env, interface_identity)
+    let checked_env_identity = if incremental_interface_trace_enabled() {
+      incremental_checked_env_identity(checked_env)
+    } else {
+      ""
+    }
+    Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity)
   } with Error {
     Throw(msg) => Diagnosed(job.path, [
       String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
@@ -1630,13 +1699,13 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     } else {
       throw(String::concat(job.path, ": type error"))
     },
-    Checked(path, fingerprint, checked_env, interface_identity) => {
+    Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity) => {
       store_persistent_type_env(fingerprint, checked_env)
       if incremental_interface_trace_enabled() {
-        if String::length(interface_identity) == 0 {
-          throw(String::concat("incremental interface observation: missing checked identity for ", path))
+        if String::length(interface_identity) == 0 || String::length(checked_env_identity) == 0 {
+          throw(String::concat("incremental trace observation: missing checked identity for ", path))
         } else {
-          incremental_interface_trace_observe(path, interface_identity)
+          incremental_interface_trace_observe(path, interface_identity, checked_env_identity)
         }
       } else {
         ()
@@ -1800,7 +1869,7 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   // so a worker killed mid-write leaves an obviously unfinished job dir
   // rather than a plausible-looking wrong answer.
   match outcome {
-    Checked(_, fingerprint, env, _) => {
+    Checked(_, fingerprint, env, _, _) => {
       Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
       // The module's own identity, as check_module computed it -- an
       // OUTPUT of this job, needed by the coordinator to build the NEXT
@@ -1876,8 +1945,8 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     if incremental_interface_trace_enabled() {
       match load_persistent_type_env(fingerprint) {
-        Some(cached_env) => incremental_interface_trace_observe(path, incremental_interface_identity(source, cached_env)),
-        None => throw(String::concat("incremental interface observation: unreadable reused environment for ", path))
+        Some(cached_env) => incremental_trace_observe_checked_env(path, source, cached_env),
+        None => throw(String::concat("incremental trace observation: unreadable reused environment for ", path))
       }
     } else {
       ()
@@ -2080,8 +2149,8 @@ fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Opt
 fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   if incremental_interface_trace_enabled() {
     match load_persistent_type_env(leaf_fingerprint) {
-      Some(cached_env) => incremental_interface_trace_observe(path, incremental_interface_identity(source, cached_env)),
-      None => throw(String::concat("incremental interface observation: unreadable reused leaf environment for ", path))
+      Some(cached_env) => incremental_trace_observe_checked_env(path, source, cached_env),
+      None => throw(String::concat("incremental trace observation: unreadable reused leaf environment for ", path))
     }
   } else {
     ()
@@ -2163,10 +2232,10 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
               Some(value) => value,
               None => match load_persistent_type_env(cached_fingerprint) {
                 Some(value) => value,
-                None => throw(String::concat("incremental interface observation: unreadable in-memory reused environment for ", path))
+                None => throw(String::concat("incremental trace observation: unreadable in-memory reused environment for ", path))
               }
             }
-            incremental_interface_trace_observe(path, incremental_interface_identity(source, observed_env))
+            incremental_trace_observe_checked_env(path, source, observed_env)
           } else {
             ()
           }

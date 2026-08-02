@@ -8,7 +8,9 @@
 // it does not assert that production cache invalidation conforms to the Lean
 // relation. The compiler sidecar has source ingestion telemetry plus
 // observation-only canonical token-stream implementation and typed
-// exported-interface fingerprints; no production cache key is read or changed here.
+// exported-interface fingerprints; none is read by or incorporated into a
+// production cache key here. The normal compiler-source fingerprint still
+// invalidates compiler artifacts after any compiler source change.
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -24,6 +26,12 @@ const telemetryKeys = [
   "parse_operations",
   "modules_failed_or_blocked",
 ];
+const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint and checked_env_fingerprint are observation only; none is a production cache key";
+const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
+const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
+const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)";
+const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)";
+
 const expectedCorpus = new Map([
   ["no_op", { sourceChanged: [], implementationChanged: [], invalidated: [] }],
   ["comment_only_edit", { sourceChanged: ["library"], implementationChanged: [], invalidated: [] }],
@@ -36,6 +44,16 @@ function fail(message) {
   throw new Error(`incremental-invalidation-oracle: ${message}`);
 }
 
+function exactKeys(value, keys, label) {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  const missing = expected.find((key) => !Object.hasOwn(value, key));
+  if (missing) fail(`missing ${label} ${missing}`);
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    fail(`unexpected ${label} keys`);
+  }
+}
+
 /// Parse the versioned successful-check-only observation sidecar.
 export function parseIncrementalInvalidationTrace(text, expectedNonce = undefined) {
   let trace;
@@ -45,31 +63,34 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
     fail(`invalid JSON (${error.message})`);
   }
   if (!trace || typeof trace !== "object" || Array.isArray(trace)) fail("expected object");
-  if (trace.schema !== 3) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
+  exactKeys(trace, ["schema", "run_nonce", "fingerprint_note", "modules", "aggregate_telemetry"], "trace");
+  if (trace.schema !== 4) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
   if (typeof trace.run_nonce !== "string" || trace.run_nonce.length === 0) fail("missing run_nonce");
   if (expectedNonce !== undefined && trace.run_nonce !== expectedNonce) fail("run_nonce mismatch (stale sidecar)");
-  if (typeof trace.fingerprint_note !== "string" ||
-      !trace.fingerprint_note.includes("source_fingerprint is ingestion telemetry") ||
-      !trace.fingerprint_note.includes("implementation_fingerprint is provisional canonical token-stream identity") ||
-      !trace.fingerprint_note.includes("interface_fingerprint is observation only")) {
-    fail("missing observation-only fingerprint declaration");
-  }
+  if (trace.fingerprint_note !== fingerprintNote) fail("dishonest fingerprint_note");
   if (!Array.isArray(trace.modules) || trace.modules.length === 0) fail("missing modules");
   const paths = new Set();
   const decisions = new Map();
   for (const module of trace.modules) {
     if (!module || typeof module !== "object" || Array.isArray(module)) fail("invalid module row");
+    exactKeys(module, [
+      "path", "direct_dependencies", "source_fingerprint", "source_fingerprint_kind",
+      "implementation_fingerprint", "implementation_fingerprint_kind", "interface_fingerprint",
+      "interface_fingerprint_kind", "checked_env_fingerprint", "checked_env_fingerprint_kind", "decision",
+    ], `module row`);
     if (typeof module.path !== "string" || module.path.length === 0 || paths.has(module.path)) fail("invalid or duplicate module path");
     paths.add(module.path);
     if (!Array.isArray(module.direct_dependencies) || !module.direct_dependencies.every((path) => typeof path === "string" && path.length > 0)) {
       fail(`invalid direct dependencies for ${module.path}`);
     }
     if (typeof module.source_fingerprint !== "string" || module.source_fingerprint.length === 0) fail(`missing source fingerprint for ${module.path}`);
-    if (module.source_fingerprint_kind !== "compact_string_fingerprint(ingested_source)") fail(`dishonest source fingerprint kind for ${module.path}`);
+    if (module.source_fingerprint_kind !== sourceFingerprintKind) fail(`dishonest source fingerprint kind for ${module.path}`);
     if (typeof module.implementation_fingerprint !== "string" || module.implementation_fingerprint.length === 0) fail(`missing implementation fingerprint for ${module.path}`);
-    if (module.implementation_fingerprint_kind !== "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))") fail(`dishonest implementation fingerprint kind for ${module.path}`);
+    if (module.implementation_fingerprint_kind !== implementationFingerprintKind) fail(`dishonest implementation fingerprint kind for ${module.path}`);
     if (typeof module.interface_fingerprint !== "string" || module.interface_fingerprint.length === 0) fail(`missing interface fingerprint for ${module.path}`);
-    if (module.interface_fingerprint_kind !== "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)") fail(`dishonest interface fingerprint kind for ${module.path}`);
+    if (module.interface_fingerprint_kind !== interfaceFingerprintKind) fail(`dishonest interface fingerprint kind for ${module.path}`);
+    if (typeof module.checked_env_fingerprint !== "string" || module.checked_env_fingerprint.length === 0) fail(`missing checked environment fingerprint for ${module.path}`);
+    if (module.checked_env_fingerprint_kind !== checkedEnvFingerprintKind) fail(`dishonest checked environment fingerprint kind for ${module.path}`);
     if (module.decision !== "rechecked" && module.decision !== "reused") fail(`invalid current decision for ${module.path}`);
     decisions.set(module.path, module.decision);
   }
@@ -81,7 +102,9 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
     }
   }
   const telemetry = trace.aggregate_telemetry;
-  if (!telemetry || typeof telemetry !== "object" || Array.isArray(telemetry) || telemetry.schema !== 1) fail("invalid aggregate telemetry");
+  if (!telemetry || typeof telemetry !== "object" || Array.isArray(telemetry)) fail("invalid aggregate telemetry");
+  exactKeys(telemetry, ["schema", ...telemetryKeys], "aggregate telemetry");
+  if (telemetry.schema !== 1) fail("invalid aggregate telemetry");
   for (const key of telemetryKeys) {
     if (!Number.isSafeInteger(telemetry[key]) || telemetry[key] < 0) fail(`invalid aggregate telemetry ${key}`);
   }
@@ -118,6 +141,26 @@ function implementationOwnersChanged(before, after) {
 function interfaceOwnersChanged(before, after) {
   const prior = new Map(before.modules.map((module) => [module.path, module.interface_fingerprint]));
   return after.modules.filter((module) => prior.get(module.path) !== module.interface_fingerprint).map((module) => basename(module.path).replace(/\.vibe$/, ""));
+}
+
+function checkedEnvOwnersChanged(before, after) {
+  const prior = new Map(before.modules.map((module) => [module.path, module.checked_env_fingerprint]));
+  return after.modules.filter((module) => prior.get(module.path) !== module.checked_env_fingerprint).map((module) => basename(module.path).replace(/\.vibe$/, ""));
+}
+
+/// Clean snapshots must reproduce every semantic observation for the same
+/// sources. Decisions intentionally remain excluded: clean runs necessarily
+/// recheck while a warm TypeDb may reuse.
+function compareCleanSnapshotObservations(name, warm, clean) {
+  const cleanByPath = new Map(clean.modules.map((module) => [module.path, module]));
+  if (warm.modules.length !== clean.modules.length) fail(`${name} clean/warm module count mismatch`);
+  for (const warmModule of warm.modules) {
+    const cleanModule = cleanByPath.get(warmModule.path);
+    if (!cleanModule) fail(`${name} clean snapshot missing module ${warmModule.path}`);
+    for (const field of ["source_fingerprint", "implementation_fingerprint", "interface_fingerprint", "checked_env_fingerprint"]) {
+      if (warmModule[field] !== cleanModule[field]) fail(`${name} clean/warm ${field} mismatch for ${warmModule.path}`);
+    }
+  }
 }
 
 /// Executable observation-side shadow planner for the bounded Lean relation.
@@ -224,9 +267,8 @@ function checkOracleCorpus(path) {
 }
 
 function run(stage2) {
-  const runner = resolve(process.env.VIBE_RUNNER || join(root, "runtime/viberun/target/release/viberun"));
-  const launcher = join(root, "runtime/vibe");
-  if (![stage2, runner, launcher].every(existsSync)) fail("missing stage2 compiler, runner, or launcher");
+  const invoke = join(root, "scripts/run_wasm_vibe_host_runner.sh");
+  if (![stage2, invoke].every(existsSync)) fail("missing stage2 compiler or node host runner");
   const work = mkdtempSync(join(tmpdir(), "vibe-incremental-invalidation-"));
   const project = join(work, "project");
   const cache = join(work, "cache");
@@ -238,27 +280,38 @@ function run(stage2) {
     writeFileSync(join(project, "base.vibe"), "export fn base_value(x: Int) -> Int { x + 1 }\n");
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 1 }\n");
     writeFileSync(join(project, "app.vibe"), "import ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\n0 }\n");
-    const check = (name, { entry = "app.vibe", nonce = `scenario-${name}` } = {}) => {
-      const tracePath = join(project, `${name}.trace.json`);
-      const result = spawnSync(launcher, ["check", entry], {
+    const runSnapshot = (name, { entry, nonce, cacheDir, suffix }) => {
+      const traceName = `${name}.${suffix}.trace.json`;
+      const tracePath = join(project, traceName);
+      const checkOut = `${name}.${suffix}.check.out`;
+      const result = spawnSync("bash", [invoke, "--invoke", "cli_main", stage2, entry, checkOut], {
         cwd: project,
         encoding: "utf8",
         env: {
           ...process.env,
-          VIBE_BUILD_CACHE_DIR: cache,
-          VIBE_CLI_CWASM: "",
-          VIBE_CLI_WASM: stage2,
-          VIBE_HOME: join(work, "home"),
-          VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: tracePath,
+          VIBE_BUILD_CACHE_DIR: cacheDir,
+          VIBE_CHECK_ONLY: "1",
+          VIBE_IMPORT_ABI: "raw",
+          VIBE_HOME: join(work, `home-${suffix}`),
+          VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: traceName,
           VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: nonce,
           VIBE_PREOPEN_DIR: project,
-          VIBE_RUNNER: runner,
         },
       });
-      if (result.status !== 0) fail(`${name} check failed: ${(result.stderr || result.stdout).trim()}`);
-      if (!existsSync(tracePath)) fail(`${name} sidecar missing after successful check`);
-      const trace = parseIncrementalInvalidationTrace(readFileSync(tracePath, "utf8"), nonce);
+      if (result.status !== 0 || !existsSync(join(project, checkOut))) fail(`${name} ${suffix} check failed: ${(result.stderr || result.stdout).trim()}`);
+      if (!existsSync(tracePath)) fail(`${name} ${suffix} sidecar missing after successful check`);
+      return parseIncrementalInvalidationTrace(readFileSync(tracePath, "utf8"), nonce);
+    };
+    const check = (name, { entry = "app.vibe", nonce = `scenario-${name}` } = {}) => {
+      const trace = runSnapshot(name, { entry, nonce, cacheDir: cache, suffix: "warm" });
+      const clean = runSnapshot(name, {
+        entry,
+        nonce: `clean-${nonce}`,
+        cacheDir: join(work, `clean-cache-${name}`),
+        suffix: "clean",
+      });
       if (trace.modules.length !== 3) fail(`${name} did not report exactly three modules`);
+      compareCleanSnapshotObservations(name, trace, clean);
       traces.set(name, trace);
       return trace;
     };
@@ -284,6 +337,9 @@ function run(stage2) {
     if (sourceOwnersChanged(commentEdit, privateEdit).join(",") !== "library") fail("private edit source delta drift");
     if (implementationOwnersChanged(commentEdit, privateEdit).join(",") !== "library") fail("private edit implementation delta drift");
     if (interfaceOwnersChanged(commentEdit, privateEdit).length !== 0) fail("private edit changed an interface identity");
+    if (moduleByName(commentEdit, "library").checked_env_fingerprint !== moduleByName(privateEdit, "library").checked_env_fingerprint) {
+      fail("private body token identity changed the checked environment identity");
+    }
     if (JSON.stringify(decisionsByName(privateEdit)) !== JSON.stringify({ base: "reused", library: "rechecked", app: "rechecked" })) {
       fail("private edit current decision drift");
     }
@@ -305,6 +361,13 @@ function run(stage2) {
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct PublicShape { value: String }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const publicTypeLayout = check("public_type_layout_edit");
     if (interfaceOwnersChanged(publicTypeAdd, publicTypeLayout).join(",") !== "library") fail("exported type layout edit did not change the interface identity");
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport fn generic_identity[T](value: T) -> T { value }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const genericValueT = check("generic_value_t");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport fn generic_identity[U](value: U) -> U { value }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const genericValueU = check("generic_value_u");
+    if (implementationOwnersChanged(genericValueT, genericValueU).join(",") !== "library") fail("generic value alpha rename did not change token-stream implementation identity");
+    if (checkedEnvOwnersChanged(genericValueT, genericValueU).length !== 0) fail("alpha-equivalent generic value rename changed checked environment identity");
 
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[T](T) -> T }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitGenericT = check("trait_generic_t");
@@ -352,7 +415,7 @@ function run(stage2) {
     // rechecks. This is the intended conservative-over-invalidation record.
     const currentPrivateRechecks = privateEdit.modules.filter((module) => module.decision === "rechecked").map((module) => module.path.replace(/\.vibe$/, ""));
     console.log(JSON.stringify({
-      schema: 3,
+      schema: 4,
       scenario: "three-module-incremental-invalidation",
       model_private_body_typing_invalidated: ["library"],
       current_private_body_rechecked: currentPrivateRechecks,

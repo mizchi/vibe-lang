@@ -269,12 +269,12 @@ VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT=<sidecar.json>
 VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE=<unique-non-empty-run-id>
 ```
 
-The sidecar is schema version 3 and is written **only after a successful
+The sidecar is schema version 4 and is written **only after a successful
 check**. It includes the nonce, canonical module path, direct dependencies,
 `compact_string_fingerprint` of each module's **ingested source**, distinct
-version-tagged `implementation_fingerprint` and `interface_fingerprint`, the
-observed current TypeDb decision (`rechecked` or `reused`), and aggregate work
-telemetry. The interface identity hashes a canonical
+version-tagged `implementation_fingerprint`, `interface_fingerprint`, and
+`checked_env_fingerprint`, the observed current TypeDb decision (`rechecked`
+or `reused`), and aggregate work telemetry. The interface identity hashes a canonical
 `vibe-module-interface:v1` serialization of exported inferred value/function
 types (including effects), exported public type/trait/effect/effectset
 declarations, and re-exports. Quantified variables are alpha-normalized;
@@ -286,31 +286,47 @@ trace when an observation is missing. Callers must reject a missing sidecar or
 a nonce mismatch as stale/failed rather than reusing old data.
 
 `source_fingerprint` remains explicitly **not an interface or implementation
-fingerprint**; it is ingestion telemetry only. `implementation_fingerprint` is
-an observation-only `vibe-module-token-stream:v1` hash over a length-delimited
-sequence of each lexer's token kind and exact source lexeme. It preserves every
-parser-visible syntax distinction, including fields that today's unlocated AST
-or printer erases, while excluding comments and whitespace between tokens,
-spans, and the module filesystem path. Literal/interpolation lexemes remain
-exact, so formatting inside one lexical token may conservatively change this
-identity. It is intentionally **not normalized typed IR** and makes no
-optimization or artifact-freshness claim. `interface_fingerprint` is likewise
-observation-only:
-it is computed from the successful typed environment for rechecked modules and
-reconstructed from the existing cached environment plus current source surface
-for reused modules. The token-stream and interface reconstructions are not
-charged to the existing TypeDb `parse_operations` counter, so the
-`rechecked`/`reused` report remains the current conservative cache-path
-observation rather than a claim about total sidecar work. None of these fields
-is read by a production cache lookup, changes a reuse decision, or changes a
-persistent cache format. Consequently current decisions remain measurements of
-conservative behavior, not formal conformance assertions.
+fingerprint**; it is ingestion telemetry only. `implementation_fingerprint`
+remains the schema-v3 observation-only `vibe-module-token-stream:v1` hash over
+a length-delimited sequence of each lexer's token kind and exact source lexeme.
+It preserves every parser-visible syntax distinction, including fields that
+today's unlocated AST or printer erases, while excluding comments and whitespace
+between tokens, spans, and the module filesystem path. Literal/interpolation
+lexemes remain exact, so formatting inside one lexical token may conservatively
+change this identity. It is intentionally **not normalized typed IR** and makes
+no optimization or artifact-freshness claim. `interface_fingerprint` is likewise
+observation-only: it is computed from the successful typed environment for
+rechecked modules and reconstructed from the existing cached environment plus
+current source surface for reused modules. Schema 4 additionally observes
+`checked_env_fingerprint`: a canonical, length-delimited
+`vibe-module-checked-env:v1` serialization of the effective `TypeEnv` value
+bindings. It uses the existing canonical type serializer's alpha-normalized
+variables and sorted/deduplicated bounds/effects, with `str_lt` value-name
+ordering and first-effective-binding deduplication. Traits, impls, type
+definitions, effect declarations, and bodies are out of scope. It is a
+trace-only format, explicitly not the production persistent TypeEnv codec. The
+token-stream, interface, and checked-environment reconstructions are not charged
+to the existing TypeDb `parse_operations` counter, so the `rechecked`/`reused`
+report remains the current conservative cache-path observation rather than a
+claim about total sidecar work. None of these fields is read by a production
+cache lookup, incorporated into a cache key, changes a reuse decision, or
+changes a persistent cache format. As with every compiler-source edit, the
+regenerated whole-compiler `codegen_fingerprint.vibe` still invalidates existing
+compiler artifacts; that ordinary versioning is not evidence that any observed
+field became a cache-key input. Consequently current decisions remain
+measurements of conservative behavior, not formal conformance assertions.
 
 `formal/IncrementalOracleMain.lean` renders the committed deterministic corpus
 at `formal/oracle/incremental-invalidation.tsv`; `formal/check-incremental-oracle.sh`
 rejects corpus drift. `scripts/incremental_invalidation_oracle.mjs` runs an
 isolated-cache, temporary three-module chain through no-op, comment-only,
-private-body, public-interface, and dependency-plan edits. An external
+private-body, public-interface, and dependency-plan edits. For every warm or
+incremental snapshot it also runs an isolated clean-cache counterpart and
+compares source, token-stream implementation, interface, and checked-value-env
+identities module by module; TypeDb decisions are deliberately excluded from
+that parity comparison. A private-body regression proves that a private body can
+change token-stream identity while leaving checked-value-env identity unchanged.
+An external
 executable shadow planner treats source changes as ingestion telemetry, derives
 owner typing invalidation from canonical token-stream implementation changes
 and dependency-plan changes, and reverse-closes interface changes over the union of
