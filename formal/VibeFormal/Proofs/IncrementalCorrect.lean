@@ -74,6 +74,11 @@ def dependencies : DemoModule → List DemoModule
   | .library => [.base]
   | .app => [.library]
 
+def initialSource : DemoModule → Nat
+  | .base => 1001
+  | .library => 1010
+  | .app => 1020
+
 def initialInterface : DemoModule → Nat
   | .base => 1
   | .library => 10
@@ -85,13 +90,27 @@ def initialImplementation : DemoModule → Nat
   | .app => 120
 
 def before : IncrementalSnapshot DemoModule Nat where
+  sourceIdentity := initialSource
   interfaceIdentity := initialInterface
   implementationIdentity := initialImplementation
   dependencies := dependencies
 
 def noOp : IncrementalSnapshot DemoModule Nat := before
 
+def commentOnlyEdit : IncrementalSnapshot DemoModule Nat where
+  sourceIdentity
+    | .base => 1001
+    | .library => 1011
+    | .app => 1020
+  interfaceIdentity := initialInterface
+  implementationIdentity := initialImplementation
+  dependencies := dependencies
+
 def privateBodyEdit : IncrementalSnapshot DemoModule Nat where
+  sourceIdentity
+    | .base => 1001
+    | .library => 1012
+    | .app => 1020
   interfaceIdentity := initialInterface
   implementationIdentity
     | .base => 101
@@ -100,6 +119,10 @@ def privateBodyEdit : IncrementalSnapshot DemoModule Nat where
   dependencies := dependencies
 
 def publicInterfaceEdit : IncrementalSnapshot DemoModule Nat where
+  sourceIdentity
+    | .base => 1001
+    | .library => 1013
+    | .app => 1020
   interfaceIdentity
     | .base => 1
     | .library => 11
@@ -111,6 +134,10 @@ def publicInterfaceEdit : IncrementalSnapshot DemoModule Nat where
   dependencies := dependencies
 
 def transitiveBaseInterfaceEdit : IncrementalSnapshot DemoModule Nat where
+  sourceIdentity
+    | .base => 1002
+    | .library => 1010
+    | .app => 1020
   interfaceIdentity
     | .base => 2
     | .library => 10
@@ -122,6 +149,10 @@ def transitiveBaseInterfaceEdit : IncrementalSnapshot DemoModule Nat where
   dependencies := dependencies
 
 def appAddsBaseImport : IncrementalSnapshot DemoModule Nat where
+  sourceIdentity
+    | .base => 1001
+    | .library => 1010
+    | .app => 1021
   interfaceIdentity := initialInterface
   implementationIdentity
     | .base => 101
@@ -150,6 +181,15 @@ example : ArtifactFresh noOp linkedArtifact := by
   intro moduleId fingerprint recorded
   simp [linkedArtifact] at recorded
   simpa [noOp, before] using recorded
+
+/-- A comment-only source edit is ingestion telemetry, not typing invalidation. -/
+example : SourceChanged before commentOnlyEdit .library := by
+  simp [SourceChanged, before, commentOnlyEdit, initialSource]
+
+example : ¬ TypingInvalidated before commentOnlyEdit .library := by
+  simp [TypingInvalidated, InterfaceInvalidated, InterfaceChanged,
+    ImplementationOnlyChanged, DependencyPlanChanged, before, commentOnlyEdit,
+    initialImplementation, initialInterface]
 
 /-- A private implementation edit invalidates only its owner for typing. -/
 example : TypingInvalidated before privateBodyEdit .library := by

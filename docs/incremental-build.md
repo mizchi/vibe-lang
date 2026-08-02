@@ -237,9 +237,11 @@ content-addressed artifact.
 The bounded Lean invalidation model lives in
 `formal/VibeFormal/Compiler/Incremental.lean`, with proofs and executable
 examples in `formal/VibeFormal/Proofs/IncrementalCorrect.lean`. It models
-snapshots with separate interface and implementation identities, direct imports,
-reverse-closure interface invalidation, and owner-only typing invalidation for
-implementation-only edits and owner invalidation for dependency-plan changes.
+snapshots with distinct source ingestion, interface, and implementation
+identities, direct imports, reverse-closure interface invalidation, and
+owner-only typing invalidation for implementation-only edits and owner
+invalidation for dependency-plan changes. Source-only edits are telemetry and
+model no typing invalidation.
 It also distinguishes matching consumer typing-cache assumptions from linked
 artifact freshness: an unchanged imported interface may keep a consumer cache
 key eligible while a changed dependency implementation still makes any artifact
@@ -248,8 +250,9 @@ typing derivations, so language-level typecheck reuse safety remains a separate
 proof obligation. This is a relational model-level contract, not yet an
 executable invalidation planner; the model itself does not alter production
 cache keys. The bounded observation bridge below compares its observation-only
-exported-interface identities, source identities, and telemetry, but cannot
-compare production cache-key interface identities or normalized implementation
+exported-interface identities, source ingestion identities, provisional
+canonical token-stream implementation identities, and telemetry, but cannot
+compare production cache-key interface identities or normalized typed-IR implementation
 identities because those do not yet exist.
 
 A later conformance bridge must add production interface identities and
@@ -266,50 +269,62 @@ VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT=<sidecar.json>
 VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE=<unique-non-empty-run-id>
 ```
 
-The sidecar is schema version 2 and is written **only after a successful
+The sidecar is schema version 3 and is written **only after a successful
 check**. It includes the nonce, canonical module path, direct dependencies,
-`compact_string_fingerprint` of each module's **ingested source**, a distinct
-version-tagged `interface_fingerprint`, the observed current TypeDb decision
-(`rechecked` or `reused`), and aggregate work telemetry. The interface identity
-hashes a canonical `vibe-module-interface:v1` serialization of exported
-inferred value/function types (including effects), exported public type/trait/
-effect/effectset declarations, and re-exports. Quantified variables are
-alpha-normalized; effect rows, bounds, derives, and effectset members are
-lexically sorted/deduplicated. Bodies, comments, private declarations, and
-ordinary imports are excluded. The compiler removes a pre-existing requested
-sidecar before the check, rejects a missing nonce, and refuses to publish a
-partial trace when an observation is missing. Callers must reject a missing
-sidecar or a nonce mismatch as stale/failed rather than reusing old data.
+`compact_string_fingerprint` of each module's **ingested source**, distinct
+version-tagged `implementation_fingerprint` and `interface_fingerprint`, the
+observed current TypeDb decision (`rechecked` or `reused`), and aggregate work
+telemetry. The interface identity hashes a canonical
+`vibe-module-interface:v1` serialization of exported inferred value/function
+types (including effects), exported public type/trait/effect/effectset
+declarations, and re-exports. Quantified variables are alpha-normalized;
+effect rows, bounds, derives, and effectset members are lexically
+sorted/deduplicated. Bodies, comments, private declarations, and ordinary
+imports are excluded. The compiler removes a pre-existing requested sidecar
+before the check, rejects a missing nonce, and refuses to publish a partial
+trace when an observation is missing. Callers must reject a missing sidecar or
+a nonce mismatch as stale/failed rather than reusing old data.
 
-`source_fingerprint` remains explicitly **not an interface fingerprint**.
-`interface_fingerprint` is an observation-only identity: it is computed from
-the successful typed environment for rechecked modules and reconstructed from
-the existing cached environment plus current source surface for reused modules.
-That trace-only reconstruction is not charged to the existing TypeDb
-`parse_operations` counter, so the `rechecked`/`reused` report remains the
-current conservative cache-path observation rather than a claim about total
-sidecar work. Neither field is read by a production cache lookup, changes a reuse decision,
-or changes a persistent cache format. Consequently current decisions remain
-measurements of conservative behavior, not formal conformance assertions.
+`source_fingerprint` remains explicitly **not an interface or implementation
+fingerprint**; it is ingestion telemetry only. `implementation_fingerprint` is
+an observation-only `vibe-module-token-stream:v1` hash over a length-delimited
+sequence of each lexer's token kind and exact source lexeme. It preserves every
+parser-visible syntax distinction, including fields that today's unlocated AST
+or printer erases, while excluding comments and whitespace between tokens,
+spans, and the module filesystem path. Literal/interpolation lexemes remain
+exact, so formatting inside one lexical token may conservatively change this
+identity. It is intentionally **not normalized typed IR** and makes no
+optimization or artifact-freshness claim. `interface_fingerprint` is likewise
+observation-only:
+it is computed from the successful typed environment for rechecked modules and
+reconstructed from the existing cached environment plus current source surface
+for reused modules. The token-stream and interface reconstructions are not
+charged to the existing TypeDb `parse_operations` counter, so the
+`rechecked`/`reused` report remains the current conservative cache-path
+observation rather than a claim about total sidecar work. None of these fields
+is read by a production cache lookup, changes a reuse decision, or changes a
+persistent cache format. Consequently current decisions remain measurements of
+conservative behavior, not formal conformance assertions.
 
 `formal/IncrementalOracleMain.lean` renders the committed deterministic corpus
 at `formal/oracle/incremental-invalidation.tsv`; `formal/check-incremental-oracle.sh`
 rejects corpus drift. `scripts/incremental_invalidation_oracle.mjs` runs an
-isolated-cache, temporary three-module chain through no-op, private-body,
-public-interface, and dependency-plan edits. An external executable shadow
-planner derives required typing invalidation from interface changes, owner
-source changes, dependency-plan changes, and reverse closure over the union of
+isolated-cache, temporary three-module chain through no-op, comment-only,
+private-body, public-interface, and dependency-plan edits. An external
+executable shadow planner treats source changes as ingestion telemetry, derives
+owner typing invalidation from canonical token-stream implementation changes
+and dependency-plan changes, and reverse-closes interface changes over the union of
 the before/after dependency graphs. For the bounded corpus it compares that
 plan with the relational model rows, requires every planned module to appear as
 `rechecked`, and reports additional rechecks as conservative over-invalidation.
 A missing required recheck fails the oracle.
 
-For this comparison only, `source_fingerprint` is a conservative owner-change
-trigger. It is not the model's normalized implementation identity. The shadow
-planner is independently implemented bridge code, not a proved extraction of
-the Lean relation or a production planner. It rejects module-universe changes
-and dependencies outside the observed universe rather than silently assigning
-them semantics.
+For this comparison, `source_fingerprint` is ingestion telemetry only;
+`implementation_fingerprint` is the provisional owner-change trigger. It is
+not normalized typed IR. The shadow planner is independently implemented bridge
+code, not a proved extraction of the Lean relation or a production planner. It
+rejects module-universe changes and dependencies outside the observed universe
+rather than silently assigning them semantics.
 
 Required properties are:
 
@@ -328,11 +343,12 @@ Required properties are:
    observationally equivalent to normalizing the corresponding specialization.
 
 These remain conditional obligations. The current selfhost bridge observes
-dependencies, source fingerprints, reuse decisions, and a versioned canonical
+dependencies, source ingestion fingerprints, provisional canonical token-stream
+implementation fingerprints, reuse decisions, and a versioned canonical
 exported-interface fingerprint, and the bounded shadow planner performs the
-comparison described above. It does not provide artifact-input identities,
-canonical-diagnostic trace equivalence, a compiler-to-Lean proof, or production
-planner conformance.
+comparison described above. It does not provide normalized typed-IR or
+artifact-input identities, canonical-diagnostic trace equivalence, a
+compiler-to-Lean proof, or production planner conformance.
 
 ### Bounded artifact-input compile trace
 
@@ -374,8 +390,13 @@ failed/no-nonce plus LSP/check-only conflicting runs removing stale sidecars.
 ## Delivery order
 
 1. Record the current edit-cycle baseline and add cache/invalidation telemetry.
-2. Separate interface and implementation fingerprints; prove invalidation-plan
-   properties in Lean and compare real traces with the oracle.
+2. Observe source, canonical token-stream implementation, and interface
+   identities; prove invalidation-plan properties in Lean and compare real traces
+   with the oracle. **Promotion gate:** replace the provisional token-stream
+   identity only after a
+   normalized typed-IR serializer has deterministic round-trip/differential
+   coverage and clean-build artifact parity; only then propose cache-key or
+   reuse-policy changes.
 3. Cache a minimal typed module/SCC artifact and require clean-build parity.
 4. Add generic-template and specialization caches only after their assumptions
    are explicit.

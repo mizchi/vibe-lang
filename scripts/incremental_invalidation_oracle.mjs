@@ -6,9 +6,9 @@
 //
 // This driver deliberately records the current conservative TypeDb behavior;
 // it does not assert that production cache invalidation conforms to the Lean
-// relation. The compiler sidecar has source identities plus an observation-
-// only typed exported-interface fingerprint; no production cache key is read
-// or changed here.
+// relation. The compiler sidecar has source ingestion telemetry plus
+// observation-only canonical token-stream implementation and typed
+// exported-interface fingerprints; no production cache key is read or changed here.
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -25,10 +25,11 @@ const telemetryKeys = [
   "modules_failed_or_blocked",
 ];
 const expectedCorpus = new Map([
-  ["no_op", { changed: [], invalidated: [] }],
-  ["private_body_edit", { changed: ["library"], invalidated: ["library"] }],
-  ["public_interface_edit", { changed: ["library"], invalidated: ["library", "app"] }],
-  ["dependency_plan_edit", { changed: ["app"], invalidated: ["app"] }],
+  ["no_op", { sourceChanged: [], implementationChanged: [], invalidated: [] }],
+  ["comment_only_edit", { sourceChanged: ["library"], implementationChanged: [], invalidated: [] }],
+  ["private_body_edit", { sourceChanged: ["library"], implementationChanged: ["library"], invalidated: ["library"] }],
+  ["public_interface_edit", { sourceChanged: ["library"], implementationChanged: ["library"], invalidated: ["library", "app"] }],
+  ["dependency_plan_edit", { sourceChanged: ["app"], implementationChanged: ["app"], invalidated: ["app"] }],
 ]);
 
 function fail(message) {
@@ -44,11 +45,14 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
     fail(`invalid JSON (${error.message})`);
   }
   if (!trace || typeof trace !== "object" || Array.isArray(trace)) fail("expected object");
-  if (trace.schema !== 2) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
+  if (trace.schema !== 3) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
   if (typeof trace.run_nonce !== "string" || trace.run_nonce.length === 0) fail("missing run_nonce");
   if (expectedNonce !== undefined && trace.run_nonce !== expectedNonce) fail("run_nonce mismatch (stale sidecar)");
-  if (typeof trace.fingerprint_note !== "string" || !trace.fingerprint_note.includes("interface_fingerprint is an observation only")) {
-    fail("missing observation-only interface-fingerprint declaration");
+  if (typeof trace.fingerprint_note !== "string" ||
+      !trace.fingerprint_note.includes("source_fingerprint is ingestion telemetry") ||
+      !trace.fingerprint_note.includes("implementation_fingerprint is provisional canonical token-stream identity") ||
+      !trace.fingerprint_note.includes("interface_fingerprint is observation only")) {
+    fail("missing observation-only fingerprint declaration");
   }
   if (!Array.isArray(trace.modules) || trace.modules.length === 0) fail("missing modules");
   const paths = new Set();
@@ -61,11 +65,20 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
       fail(`invalid direct dependencies for ${module.path}`);
     }
     if (typeof module.source_fingerprint !== "string" || module.source_fingerprint.length === 0) fail(`missing source fingerprint for ${module.path}`);
-    if (module.source_fingerprint_kind !== "compact_string_fingerprint(ingested_source)") fail(`dishonest fingerprint kind for ${module.path}`);
+    if (module.source_fingerprint_kind !== "compact_string_fingerprint(ingested_source)") fail(`dishonest source fingerprint kind for ${module.path}`);
+    if (typeof module.implementation_fingerprint !== "string" || module.implementation_fingerprint.length === 0) fail(`missing implementation fingerprint for ${module.path}`);
+    if (module.implementation_fingerprint_kind !== "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))") fail(`dishonest implementation fingerprint kind for ${module.path}`);
     if (typeof module.interface_fingerprint !== "string" || module.interface_fingerprint.length === 0) fail(`missing interface fingerprint for ${module.path}`);
     if (module.interface_fingerprint_kind !== "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)") fail(`dishonest interface fingerprint kind for ${module.path}`);
     if (module.decision !== "rechecked" && module.decision !== "reused") fail(`invalid current decision for ${module.path}`);
     decisions.set(module.path, module.decision);
+  }
+  // Paths must be collected before validating edges: validating in the row
+  // loop would incorrectly reject a dependency declared later in trace order.
+  for (const module of trace.modules) {
+    for (const dependency of module.direct_dependencies) {
+      if (!paths.has(dependency)) fail(`direct dependency outside trace module universe for ${module.path}: ${dependency}`);
+    }
   }
   const telemetry = trace.aggregate_telemetry;
   if (!telemetry || typeof telemetry !== "object" || Array.isArray(telemetry) || telemetry.schema !== 1) fail("invalid aggregate telemetry");
@@ -97,14 +110,19 @@ function sourceOwnersChanged(before, after) {
   return after.modules.filter((module) => prior.get(module.path) !== module.source_fingerprint).map((module) => basename(module.path).replace(/\.vibe$/, ""));
 }
 
+function implementationOwnersChanged(before, after) {
+  const prior = new Map(before.modules.map((module) => [module.path, module.implementation_fingerprint]));
+  return after.modules.filter((module) => prior.get(module.path) !== module.implementation_fingerprint).map((module) => basename(module.path).replace(/\.vibe$/, ""));
+}
+
 function interfaceOwnersChanged(before, after) {
   const prior = new Map(before.modules.map((module) => [module.path, module.interface_fingerprint]));
   return after.modules.filter((module) => prior.get(module.path) !== module.interface_fingerprint).map((module) => basename(module.path).replace(/\.vibe$/, ""));
 }
 
 /// Executable observation-side shadow planner for the bounded Lean relation.
-/// `source_fingerprint` is only an owner-change proxy here, not a normalized
-/// implementation identity and not an artifact-input identity.
+/// Source identity is ingestion telemetry only. Canonical token-stream
+/// implementation identity invalidates the owner, while interface changes reverse-close.
 export function planObservedTypingInvalidation(before, after) {
   const beforeByPath = new Map(before.modules.map((module) => [module.path, module]));
   const afterByPath = new Map(after.modules.map((module) => [module.path, module]));
@@ -130,7 +148,7 @@ export function planObservedTypingInvalidation(before, after) {
     if (prior.interface_fingerprint !== next.interface_fingerprint) {
       interfaceChanged.add(path);
       invalidated.add(path);
-    } else if (prior.source_fingerprint !== next.source_fingerprint) {
+    } else if (prior.implementation_fingerprint !== next.implementation_fingerprint) {
       invalidated.add(path);
     }
     if (JSON.stringify(prior.direct_dependencies) !== JSON.stringify(next.direct_dependencies)) invalidated.add(path);
@@ -187,16 +205,21 @@ function checkPlannerCase(name, before, after) {
   };
 }
 
+function corpusOwners(cell) {
+  return !cell || cell === "-" ? [] : cell.split(",");
+}
+
 function checkOracleCorpus(path) {
   const lines = readFileSync(path, "utf8").trimEnd().split("\n");
-  if (lines.shift() !== "case\tchanged_source_owners\tmodel_typing_invalidated") fail("unexpected corpus header");
+  if (lines.shift() !== "case\tchanged_source_owners\tchanged_implementation_owners\tmodel_typing_invalidated") fail("unexpected corpus header");
   if (lines.length !== expectedCorpus.size) fail("unexpected corpus row count");
   for (const line of lines) {
-    const [name, changed, invalidated] = line.split("\t");
+    const [name, sourceChanged, implementationChanged, invalidated] = line.split("\t");
     const expected = expectedCorpus.get(name);
     if (!expected) fail(`unknown corpus case ${name}`);
-    if ((changed ? changed.split(",") : []).join(",") !== expected.changed.join(",")) fail(`changed-owner drift for ${name}`);
-    if ((invalidated ? invalidated.split(",") : []).join(",") !== expected.invalidated.join(",")) fail(`invalidation drift for ${name}`);
+    if (corpusOwners(sourceChanged).join(",") !== expected.sourceChanged.join(",")) fail(`source-owner drift for ${name}`);
+    if (corpusOwners(implementationChanged).join(",") !== expected.implementationChanged.join(",")) fail(`implementation-owner drift for ${name}`);
+    if (corpusOwners(invalidated).join(",") !== expected.invalidated.join(",")) fail(`invalidation drift for ${name}`);
   }
 }
 
@@ -244,6 +267,7 @@ function run(stage2) {
     if (baseline.aggregate_telemetry.modules_rechecked !== 3) fail("cold run did not recheck all modules");
     const noOp = check("no_op");
     if (sourceOwnersChanged(baseline, noOp).length !== 0) fail("no-op changed a source identity");
+    if (implementationOwnersChanged(baseline, noOp).length !== 0) fail("no-op changed an implementation identity");
     if (interfaceOwnersChanged(baseline, noOp).length !== 0) fail("no-op changed an interface identity");
     if (noOp.aggregate_telemetry.modules_rechecked !== 0) fail("no-op was not reused by the current cache");
     plannerCases.no_op = checkPlannerCase("no_op", baseline, noOp);
@@ -251,11 +275,14 @@ function run(stage2) {
     writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 1 }\n");
     const commentEdit = check("comment_edit");
     if (sourceOwnersChanged(noOp, commentEdit).join(",") !== "library") fail("comment edit source delta drift");
+    if (implementationOwnersChanged(noOp, commentEdit).length !== 0) fail("comment edit changed token-stream implementation identity");
     if (interfaceOwnersChanged(noOp, commentEdit).length !== 0) fail("comment edit changed an interface identity");
+    plannerCases.comment_only_edit = checkPlannerCase("comment_only_edit", noOp, commentEdit);
 
     writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 2 }\n");
     const privateEdit = check("private_body_edit");
     if (sourceOwnersChanged(commentEdit, privateEdit).join(",") !== "library") fail("private edit source delta drift");
+    if (implementationOwnersChanged(commentEdit, privateEdit).join(",") !== "library") fail("private edit implementation delta drift");
     if (interfaceOwnersChanged(commentEdit, privateEdit).length !== 0) fail("private edit changed an interface identity");
     if (JSON.stringify(decisionsByName(privateEdit)) !== JSON.stringify({ base: "reused", library: "rechecked", app: "rechecked" })) {
       fail("private edit current decision drift");
@@ -265,6 +292,7 @@ function run(stage2) {
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const publicEdit = check("public_interface_edit");
     if (sourceOwnersChanged(privateEdit, publicEdit).join(",") !== "library") fail("public edit source delta drift");
+    if (implementationOwnersChanged(privateEdit, publicEdit).join(",") !== "library") fail("public edit implementation delta drift");
     if (interfaceOwnersChanged(privateEdit, publicEdit).join(",") !== "library") fail("public inferred type edit did not change the exported interface identity");
     if (JSON.stringify(decisionsByName(publicEdit)) !== JSON.stringify({ base: "reused", library: "rechecked", app: "rechecked" })) {
       fail("public edit current decision drift");
@@ -289,16 +317,27 @@ function run(stage2) {
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitBoundEq = check("trait_bound_eq");
     if (interfaceOwnersChanged(traitBoundShow, traitBoundEq).join(",") !== "library") fail("trait method generic bound edit did not change interface identity");
+    if (implementationOwnersChanged(traitBoundShow, traitBoundEq).join(",") !== "library") fail("trait method generic bound edit did not change token-stream implementation identity");
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Eq] Eq for Option[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const implBoundEq = check("impl_bound_eq");
+    if (implementationOwnersChanged(traitBoundEq, implBoundEq).join(",") !== "library") fail("impl generic bound addition did not change token-stream implementation identity");
+    if (interfaceOwnersChanged(traitBoundEq, implBoundEq).length !== 0) fail("non-exported impl addition changed the exported interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Show] Eq for Option[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const implBoundShow = check("impl_bound_show");
+    if (implementationOwnersChanged(implBoundEq, implBoundShow).join(",") !== "library") fail("impl generic bound edit did not change token-stream implementation identity");
+    if (interfaceOwnersChanged(implBoundEq, implBoundShow).length !== 0) fail("non-exported impl bound edit changed the exported interface identity");
 
     writeFileSync(join(project, "app.vibe"), "import ./base.vibe { base_value }\nimport ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\nbase_value(0) }\n");
     const planEdit = check("dependency_plan_edit");
-    if (sourceOwnersChanged(traitBoundEq, planEdit).join(",") !== "app") fail("dependency-plan edit source delta drift");
+    if (sourceOwnersChanged(implBoundShow, planEdit).join(",") !== "app") fail("dependency-plan edit source delta drift");
+    if (implementationOwnersChanged(implBoundShow, planEdit).join(",") !== "app") fail("dependency-plan edit implementation delta drift");
     if (JSON.stringify(decisionsByName(planEdit)) !== JSON.stringify({ base: "reused", library: "reused", app: "rechecked" })) {
       fail("dependency-plan edit current decision drift");
     }
     const appDependencies = moduleByName(planEdit, "app").direct_dependencies.map((path) => basename(path));
     if (appDependencies.join(",") !== "base.vibe,library.vibe") fail("dependency-plan trace did not record the added base import in declaration order");
-    plannerCases.dependency_plan_edit = checkPlannerCase("dependency_plan_edit", traitBoundEq, planEdit);
+    plannerCases.dependency_plan_edit = checkPlannerCase("dependency_plan_edit", implBoundShow, planEdit);
 
     // Integration regressions for the renderer: JSON requires every U+0000–
     // U+001F control character to be escaped, and POSIX paths may contain TAB.
@@ -313,7 +352,7 @@ function run(stage2) {
     // rechecks. This is the intended conservative-over-invalidation record.
     const currentPrivateRechecks = privateEdit.modules.filter((module) => module.decision === "rechecked").map((module) => module.path.replace(/\.vibe$/, ""));
     console.log(JSON.stringify({
-      schema: 2,
+      schema: 3,
       scenario: "three-module-incremental-invalidation",
       model_private_body_typing_invalidated: ["library"],
       current_private_body_rechecked: currentPrivateRechecks,

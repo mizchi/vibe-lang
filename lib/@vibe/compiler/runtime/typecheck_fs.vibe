@@ -45,7 +45,7 @@ import @vibe/graph {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, lex_with_offsets_recovering, offset_to_line_col, parse_program_located, parse_program_recovering
+  lex_with_offsets, lex_with_offsets_recovering, offset_to_line_col, parse_program_located, parse_program_recovering, token_to_string
 }
 
 import @vibe/compiler/runtime/eval_loader {
@@ -1007,6 +1007,29 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
   interface_sorted_unique(lines)
 }
 
+/// A trace-only canonical token-stream identity. It length-delimits each token's
+/// kind and exact source lexeme, retaining every parser-visible distinction even
+/// where today's unlocated AST or printer is lossy. Whitespace and comments
+/// between tokens, spans, and the module filesystem path are omitted. The
+/// successful parse is repeated here only for the opt-in observation path so a
+/// malformed or incomplete stream fails closed. This is deliberately
+/// provisional syntax identity, not normalized typed IR.
+fn incremental_implementation_identity(source: String) -> String with { Error } {
+  let (tokens, starts, ends) = lex_with_offsets(source)
+  let _ = parse_program_located(tokens, starts, source)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-module-token-stream:v1\n")
+  let mut i = 0
+  while i < Array::length(tokens) {
+    StringBuilder::push(out, interface_segment(token_to_string(Array::get(tokens, i))))
+    let start = Array::get(starts, i)
+    let end = Array::get(ends, i)
+    StringBuilder::push(out, interface_segment(source[start: end]))
+    i = i + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(out))
+}
+
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with { Error } {
   let stmts = parse_program_with_path("<incremental-interface-observation>", source)
   let out = StringBuilder::new()
@@ -1071,9 +1094,10 @@ fn incremental_trace_json_string(text: String) -> String {
 /// Versioned observation bridge for the bounded Incremental.lean model.
 ///
 /// `source_fingerprint` is `compact_string_fingerprint` of the loader's
-/// ingested source. It is deliberately NOT an interface fingerprint: the
-/// current compiler does not expose one. `decision` records what this current
-/// TypeDb walk did (`rechecked` or `reused`), not a formal invalidation verdict.
+/// ingested source. `implementation_fingerprint` is a provisional canonical
+/// token-stream identity, not normalized typed IR. Neither is a production
+/// cache key. `decision` records what this current TypeDb walk did (`rechecked`
+/// or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
 /// observation throws rather than emitting a partial or stale sidecar.
 export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: String) -> String with { Error, Fs } {
@@ -1084,9 +1108,9 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
   }
   let (paths, _ranks, deps_by_module, sources) = module_plan_data_fs(entry_path)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "{\"schema\":2,\"run_nonce\":")
+  StringBuilder::push(out, "{\"schema\":3,\"run_nonce\":")
   StringBuilder::push(out, incremental_trace_json_string(run_nonce))
-  StringBuilder::push(out, ",\"fingerprint_note\":\"source_fingerprint is an ingested-source identity; interface_fingerprint is an observation only, never a production cache key\",\"modules\":[")
+  StringBuilder::push(out, ",\"fingerprint_note\":\"source_fingerprint is ingestion telemetry; implementation_fingerprint is provisional canonical token-stream identity and interface_fingerprint is observation only; neither is a production cache key\",\"modules\":[")
   let mut i = 0
   while i < Array::length(paths) {
     if i > 0 {
@@ -1114,8 +1138,11 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       d = d + 1
     }
     StringBuilder::push(out, "],\"source_fingerprint\":")
-    StringBuilder::push(out, incremental_trace_json_string(compact_string_fingerprint(Array::get(sources, i))))
-    StringBuilder::push(out, ",\"source_fingerprint_kind\":\"compact_string_fingerprint(ingested_source)\",\"interface_fingerprint\":")
+    let source = Array::get(sources, i)
+    StringBuilder::push(out, incremental_trace_json_string(compact_string_fingerprint(source)))
+    StringBuilder::push(out, ",\"source_fingerprint_kind\":\"compact_string_fingerprint(ingested_source)\",\"implementation_fingerprint\":")
+    StringBuilder::push(out, incremental_trace_json_string(incremental_implementation_identity(source)))
+    StringBuilder::push(out, ",\"implementation_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))\",\"interface_fingerprint\":")
     let interface_fingerprint = match incremental_interface_trace_observation_of(path) {
       Some(value) => value,
       None => throw(String::concat("incremental invalidation trace: missing complete interface observation for ", path))

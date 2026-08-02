@@ -32,6 +32,40 @@ fn join(arr: Array[String], sep: String) -> String {
   }
 }
 
+/// Render a parser generic binder in parameter declaration order. Bounds are
+/// keyed by parameter name in the AST; scan them in AST order so the printer is
+/// deterministic without making an unrelated semantic ordering decision.
+fn print_bounded_type_params(params: Array[String], bounds: Array[(String, Array[String])]) -> String {
+  if Array::length(params) == 0 {
+    ""
+  } else {
+    let parts = for param in params {
+      let labels = ArrayBuilder::new()
+      let mut i = 0
+      while i < Array::length(bounds) {
+        let (bound_param, bound_labels) = Array::get(bounds, i)
+        if bound_param == param {
+          let mut j = 0
+          while j < Array::length(bound_labels) {
+            ArrayBuilder::push(labels, Array::get(bound_labels, j))
+            j = j + 1
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      let labels = ArrayBuilder::freeze(labels)
+      if Array::length(labels) == 0 {
+        param
+      } else {
+        String::concat(param, String::concat(": ", join(labels, " + ")))
+      }
+    }
+    String::concat("[", String::concat(join(parts, ", "), "]"))
+  }
+}
+
 /// #741: `r#loop`-style raw identifiers lex to a bare TIdent — the r# prefix
 /// is not kept in the AST — so a binding named after a keyword must be
 /// re-escaped on print or the emitted program fails to re-parse (the merge
@@ -660,7 +694,7 @@ export fn print_stmt(s: Stmt) -> String {
       }
       String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(tp, String::concat(" = ", print_type_expr(ty))))))
     },
-    STrait(exported, name, supers, methods, _) => {
+    STrait(exported, name, supers, methods, method_gens) => {
       let base = String::concat(prefix(exported), String::concat("trait ", name))
       let head = if Array::length(supers) == 0 {
         base
@@ -671,21 +705,47 @@ export fn print_stmt(s: Stmt) -> String {
       } else {
         let method_parts = for m in methods {
           let (method_name, params, ret) = m
+          // Method generic metadata is stored separately from signatures.
+          // Pair it by method name and retain both binder order and bound
+          // order so print_program does not collapse semantic bound changes.
+          let type_params = ArrayBuilder::new()
+          let bounds = ArrayBuilder::new()
+          let mut g = 0
+          while g < Array::length(method_gens) {
+            let (generic_method, generic_params, generic_bounds) = Array::get(method_gens, g)
+            if generic_method == method_name {
+              let mut p = 0
+              while p < Array::length(generic_params) {
+                ArrayBuilder::push(type_params, Array::get(generic_params, p))
+                p = p + 1
+              }
+              let mut b = 0
+              while b < Array::length(generic_bounds) {
+                ArrayBuilder::push(bounds, Array::get(generic_bounds, b))
+                b = b + 1
+              }
+            } else {
+              ()
+            }
+            g = g + 1
+          }
+          let generic_header = print_bounded_type_params(ArrayBuilder::freeze(type_params), ArrayBuilder::freeze(bounds))
           let params_str = if Array::length(params) > 0 {
             String::concat("(", String::concat(join(for pt in params {
               print_type_expr(pt)
             }, ", "), ")"))
           } else ""
-          String::concat("  ", String::concat(method_name, String::concat(params_str, String::concat(" -> ", print_type_expr(ret)))))
+          String::concat("  ", String::concat(method_name, String::concat(generic_header, String::concat(params_str, String::concat(" -> ", print_type_expr(ret))))))
         }
         String::concat(head, String::concat(" {\n", String::concat(join(method_parts, ";\n"), "\n}")))
       }
     },
-    SImpl(tparams, _, trait_name, type_name) => {
-      let head = if Array::length(tparams) == 0 {
+    SImpl(tparams, tbounds, trait_name, type_name) => {
+      let generic_header = print_bounded_type_params(tparams, tbounds)
+      let head = if generic_header == "" {
         "impl "
       } else {
-        String::concat("impl [", String::concat(join(tparams, ", "), "] "))
+        String::concat("impl ", String::concat(generic_header, " "))
       }
       String::concat(head, String::concat(trait_name, String::concat(" for ", type_name)))
     },

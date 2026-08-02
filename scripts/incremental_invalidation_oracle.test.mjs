@@ -8,15 +8,17 @@ import {
 } from "./incremental_invalidation_oracle.mjs";
 
 const validTrace = {
-  schema: 2,
+  schema: 3,
   run_nonce: "unit-nonce",
-  fingerprint_note: "source_fingerprint is an ingested-source identity; interface_fingerprint is an observation only, never a production cache key", 
+  fingerprint_note: "source_fingerprint is ingestion telemetry; implementation_fingerprint is provisional canonical token-stream identity and interface_fingerprint is observation only; neither is a production cache key",
   modules: [
     {
       path: "base.vibe",
       direct_dependencies: [],
       source_fingerprint: "20:1:2",
       source_fingerprint_kind: "compact_string_fingerprint(ingested_source)",
+      implementation_fingerprint: "30:1:2",
+      implementation_fingerprint_kind: "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))",
       interface_fingerprint: "31:1:2",
       interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)",
       decision: "reused",
@@ -32,24 +34,36 @@ const validTrace = {
   },
 };
 
-test("incremental invalidation trace accepts its versioned successful schema", () => {
+test("incremental invalidation trace accepts schema 3 successful observations", () => {
   assert.deepEqual(parseIncrementalInvalidationTrace(JSON.stringify(validTrace), "unit-nonce"), validTrace);
 });
 
-test("incremental invalidation trace rejects stale, dishonest, and incomplete sidecars", () => {
+test("incremental invalidation trace rejects stale, missing, and dishonest identities", () => {
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(validTrace), "other"), /run_nonce mismatch/);
-  const dishonest = structuredClone(validTrace);
-  dishonest.modules[0].source_fingerprint_kind = "interface_fingerprint";
-  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonest)), /dishonest fingerprint kind/);
+  const dishonestSource = structuredClone(validTrace);
+  dishonestSource.modules[0].source_fingerprint_kind = "interface_fingerprint";
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonestSource)), /dishonest source fingerprint kind/);
+  const dishonestImplementation = structuredClone(validTrace);
+  dishonestImplementation.modules[0].implementation_fingerprint_kind = "typed-ir";
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonestImplementation)), /dishonest implementation fingerprint kind/);
   const incomplete = structuredClone(validTrace);
-  delete incomplete.modules[0].interface_fingerprint;
-  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(incomplete)), /missing interface fingerprint/);
+  delete incomplete.modules[0].implementation_fingerprint;
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(incomplete)), /missing implementation fingerprint/);
   const stale = structuredClone(validTrace);
   stale.modules[0].decision = "rechecked";
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(stale)), /rechecked decision count mismatch/);
 });
 
-function plannerTrace({ source = {}, iface = {}, deps = {}, rechecked = [] } = {}) {
+test("incremental invalidation trace rejects dependencies outside its complete module universe", () => {
+  const outsideUniverse = structuredClone(validTrace);
+  outsideUniverse.modules[0].direct_dependencies = ["missing.vibe"];
+  assert.throws(
+    () => parseIncrementalInvalidationTrace(JSON.stringify(outsideUniverse)),
+    /direct dependency outside trace module universe/,
+  );
+});
+
+function plannerTrace({ source = {}, implementation = {}, iface = {}, deps = {}, rechecked = [] } = {}) {
   const paths = ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"];
   const defaultDeps = {
     "/p/base.vibe": [],
@@ -61,16 +75,32 @@ function plannerTrace({ source = {}, iface = {}, deps = {}, rechecked = [] } = {
       path,
       direct_dependencies: deps[path] ?? defaultDeps[path],
       source_fingerprint: source[path] ?? `source:${path}`,
+      implementation_fingerprint: implementation[path] ?? `implementation:${path}`,
       interface_fingerprint: iface[path] ?? `interface:${path}`,
       decision: rechecked.includes(path) ? "rechecked" : "reused",
     })),
   };
 }
 
-test("shadow planner keeps source-only edits local and propagates interface edits transitively", () => {
+test("shadow planner treats source-only changes as ingestion telemetry", () => {
+  const before = plannerTrace();
+  const commentAfter = plannerTrace({
+    source: { "/p/library.vibe": "source:library:comment-edit" },
+    rechecked: ["/p/library.vibe", "/p/app.vibe"],
+  });
+  assert.deepEqual(planObservedTypingInvalidation(before, commentAfter), []);
+  assert.deepEqual(compareObservedInvalidation(before, commentAfter), {
+    planned: [],
+    observed: ["/p/library.vibe", "/p/app.vibe"],
+    conservative_over_invalidation: ["/p/library.vibe", "/p/app.vibe"],
+  });
+});
+
+test("shadow planner keeps implementation edits local and propagates interface edits transitively", () => {
   const before = plannerTrace();
   const privateAfter = plannerTrace({
     source: { "/p/library.vibe": "source:library:private-edit" },
+    implementation: { "/p/library.vibe": "implementation:library:private-edit" },
     rechecked: ["/p/library.vibe", "/p/app.vibe"],
   });
   assert.deepEqual(planObservedTypingInvalidation(before, privateAfter), ["/p/library.vibe"]);
@@ -82,16 +112,17 @@ test("shadow planner keeps source-only edits local and propagates interface edit
 
   const publicAfter = plannerTrace({
     source: { "/p/library.vibe": "source:library:public-edit" },
+    implementation: { "/p/library.vibe": "implementation:library:public-edit" },
     iface: { "/p/library.vibe": "interface:library:changed" },
     rechecked: ["/p/library.vibe", "/p/app.vibe"],
   });
   assert.deepEqual(planObservedTypingInvalidation(before, publicAfter), ["/p/library.vibe", "/p/app.vibe"]);
 
-  // The base interface change must cross the before-only base -> library edge,
-  // then reach app. A dependency-plan owner invalidation alone must not
-  // propagate, so app protects the union-graph reverse-closure requirement.
+  // The base interface change crosses the before-only base -> library edge,
+  // then reaches app. This guards union-graph reverse closure.
   const removedEdgeAfter = plannerTrace({
     source: { "/p/base.vibe": "source:base:public-edit", "/p/library.vibe": "source:library:removed-import" },
+    implementation: { "/p/base.vibe": "implementation:base:public-edit", "/p/library.vibe": "implementation:library:removed-import" },
     iface: { "/p/base.vibe": "interface:base:changed" },
     deps: { "/p/library.vibe": [] },
     rechecked: ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"],
@@ -99,17 +130,18 @@ test("shadow planner keeps source-only edits local and propagates interface edit
   assert.deepEqual(planObservedTypingInvalidation(before, removedEdgeAfter), ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"]);
 });
 
-test("shadow planner covers dependency-plan edits and rejects under-invalidation", () => {
+test("shadow planner retains dependency-plan owner semantics and rejects under-invalidation", () => {
   const before = plannerTrace();
   const planAfter = plannerTrace({
     source: { "/p/app.vibe": "source:app:added-import" },
+    implementation: { "/p/app.vibe": "implementation:app:added-import" },
     deps: { "/p/app.vibe": ["/p/base.vibe", "/p/library.vibe"] },
     rechecked: ["/p/app.vibe"],
   });
   assert.deepEqual(planObservedTypingInvalidation(before, planAfter), ["/p/app.vibe"]);
 
   const underInvalidated = plannerTrace({
-    source: { "/p/library.vibe": "source:library:public-edit" },
+    implementation: { "/p/library.vibe": "implementation:library:public-edit" },
     iface: { "/p/library.vibe": "interface:library:changed" },
     rechecked: ["/p/library.vibe"],
   });
