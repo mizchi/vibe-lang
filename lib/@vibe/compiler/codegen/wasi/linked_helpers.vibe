@@ -13,7 +13,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, collect_free_vars_indexed
+  collect_free_vars, collect_free_vars_used_builtins
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -60,7 +60,12 @@ export fn stmts_use_builtin(stmts: Array[Stmt], fn_names: Array[String], target:
 /// only where it is FREE (not a user fn, not locally bound), and the flag
 /// reads compare canonical names exactly like expr_uses_builtin did.
 fn push_free_canonical(expr: Expr, fn_name_index: Array[String], sink: Array[(String, Bool)]) -> Unit {
-  let fvs = collect_free_vars_indexed(expr, array_empty(), fn_name_index)
+  // #1348: collect_free_vars_USED_BUILTINS, not ..._indexed. The capture
+  // variant drops inlined-builtin call callees, which is right for closure
+  // capture and exactly wrong here -- the dropped name is the only evidence
+  // that the builtin's host import must be reserved. See the doc comment on
+  // collect_free_vars_used_builtins (codegen/common_analysis).
+  let fvs = collect_free_vars_used_builtins(expr, array_empty(), fn_name_index)
   let mut j = 0
   while j < Array::length(fvs) {
     Array::push(sink, (canonical_builtin_name(Array::get(fvs, j)), true))
