@@ -188,6 +188,60 @@ if [ "$ELAPSED_MS" -ge "$MAX_MS" ]; then
 fi
 echo "[named-hostfutures-component-gate] concurrent path: 42 in ${ELAPSED_MS}ms (>= ${MIN_MS}, < ${MAX_MS}: both futures in flight)"
 
+# --- regression: the call NESTED in a record literal (#1337 Codex P2) ---------
+# The name collector must be TOTAL over expression containers: compile_call
+# lowers a nested `host_future_named` to its raw getter regardless of where it
+# sits, so a container the collector skips reserves no import and the program
+# fails to compile ("undefined variable (local): vibe_hf_get_raw$price").
+# The record literal sits in a row-free NAMED fn rather than on the handled
+# spine: ADR-0076's migration eligibility independently rejects a container
+# literal there, and that (clearly diagnosed) rejection is a separate concern.
+NEST_SRC="$OUT_DIR/nested_named_await.vibe"
+cat >"$NEST_SRC" <<'EOF'
+fn make_cell() -> Future[Int] {
+  let r = record {
+    p: host_future_named("price")
+  }
+  r.p
+}
+
+let run: () -> Int with { Async } = () -> {
+  await(make_cell())
+}
+EOF
+NEST_OUT="$OUT_DIR/nested_named_await.component.wasm"
+compile_fixture "$NEST_SRC" "$NEST_OUT"
+NEST_LOG="$OUT_DIR/nested.log"
+if ! VIBE_ASYNC_FUTURES="price=40:1" timeout 60 "$RUNNER" "$NEST_OUT" >"$NEST_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: record-nested run did not exit 0" >&2
+  cat "$NEST_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$NEST_LOG")" = "40" ] \
+  || { echo "named hostfutures component gate FAILED: record-nested expected 40, got: $(cat "$NEST_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] record-nested call: 40 (collector is total over containers)"
+
+# --- regression: a SHADOWED builtin reserves nothing (#1337 Codex P2) ---------
+# A local named `host_future_named` makes the call an ordinary closure call
+# that compile_call does not lower, so collecting its argument would demand a
+# `price` import the program never uses.
+SHADOW_SRC="$OUT_DIR/shadowed_named.vibe"
+cat >"$SHADOW_SRC" <<'EOF'
+let run: () -> Int = () -> {
+  let host_future_named = (s: String) -> Int {
+    41
+  }
+  host_future_named("price") + 1
+}
+EOF
+SHADOW_OUT="$OUT_DIR/shadowed_named.wasm"
+compile_fixture "$SHADOW_SRC" "$SHADOW_OUT"
+if grep -q "host_future_get\$price" "$SHADOW_OUT"; then
+  echo "named hostfutures component gate FAILED: a SHADOWED host_future_named still reserved the 'price' import" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] shadowed builtin: no 'price' import reserved"
+
 # --- control: one name imports only that name --------------------------------
 CTRL_SRC="$OUT_DIR/single_named_await.vibe"
 cat >"$CTRL_SRC" <<'EOF'

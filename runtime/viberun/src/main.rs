@@ -783,6 +783,20 @@ fn run_async_component(path: &str) -> Result<i32> {
                 format_err!("VIBE_ASYNC_FUTURES entry '{ent}': expected name=value:delay_ms")
             })?;
             let name = name.trim().to_string();
+            // #1337 Codex review: `get-future` / `get-async` / `get-after` are
+            // already registered unconditionally above, and the component
+            // linker has shadowing disabled -- registering one of them here
+            // fails with "map entry `get-future` defined twice" before the
+            // component is even instantiated (measured). They are valid
+            // component labels, so `host_future_named("get-future")` can ask
+            // for one; say so plainly instead of surfacing a linker error.
+            if matches!(name.as_str(), "get-future" | "get-async" | "get-after") {
+                bail!(
+                    "VIBE_ASYNC_FUTURES '{name}': that name is one of the runner's \
+                     built-in imports (get-future, get-async, get-after) and cannot be \
+                     redefined -- rename the host future"
+                );
+            }
             let value: u32 = val_s
                 .trim()
                 .parse()
@@ -839,6 +853,17 @@ fn run_async_component(path: &str) -> Result<i32> {
                 format_err!("VIBE_ASYNC_STREAMS entry '{ent}': expected name=b1|b2|b3")
             })?;
             let name = name.trim().to_string();
+            // Same reserved-name rule as VIBE_ASYNC_FUTURES above (#1337
+            // Codex review): these root imports are registered
+            // unconditionally and the linker rejects redefinition before
+            // instantiation.
+            if matches!(name.as_str(), "get-future" | "get-async" | "get-after") {
+                bail!(
+                    "VIBE_ASYNC_STREAMS '{name}': that name is one of the runner's \
+                     built-in imports (get-future, get-async, get-after) and cannot be \
+                     redefined -- rename the host stream"
+                );
+            }
             let mut bytes: Vec<u8> = Vec::new();
             for b in bytes_s.split('|').filter(|s| !s.trim().is_empty()) {
                 bytes.push(
