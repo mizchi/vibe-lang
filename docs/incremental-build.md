@@ -334,12 +334,42 @@ comparison described above. It does not provide artifact-input identities,
 canonical-diagnostic trace equivalence, a compiler-to-Lean proof, or production
 planner conformance.
 
-Artifact-input tracing remains a separate compile-path slice: `vibe check`
-reaches the check-only path and does not exercise persistent runnable-artifact
-lookup/store. Artifact identities must be observed later at the cached compile
-boundaries in `entry/compiler/file_compile/file_compile.vibe` and
-`entry/compiler/fs_compile/fs_compile.vibe`; they must not be inferred from this
-check-side source fingerprint.
+### Bounded artifact-input compile trace
+
+Artifact-input tracing is a separate compile-path slice: `vibe check` reaches
+the check-only path and does not exercise persistent runnable-artifact
+lookup/store. The current bounded implementation opts in only to the
+`file_compile` persistent **pre-strip WASI bump** lane:
+
+```text
+VIBE_FS_COMPILE=1
+VIBE_RC=0
+VIBE_ARTIFACT_INPUT_TRACE_OUT=<sidecar.json>
+VIBE_ARTIFACT_INPUT_TRACE_NONCE=<unique-non-empty-run-id>
+```
+
+It rejects a missing nonce and every incompatible early/special,
+LSP/check-only, instrumented/RC/testmeta lane, deletes a requested old sidecar
+before any CLI-mode return or validation, writes the wasm first, then writes the
+trace as the final sidecar operation. A failed compile or validation therefore
+leaves no trace to be mistaken for this run. Ordinary compile dispatch remains
+unchanged when `VIBE_ARTIFACT_INPUT_TRACE_OUT` is empty; this wrapper does not
+alter a production cache key, on-disk format, or reuse decision, and it does not
+instrument `fs_compile`, module, or profiled lanes.
+
+Schema version 1 records the nonce and scope disclaimer, exact `compile_lane`,
+persistent artifact kind, entry path/name/mode,
+`source_groups_fingerprint` with its exact builder kind, derived
+`artifact_input_fingerprint` with its exact builder kind, and the hit/miss from
+the cached compile's own persistent lookup that returns bytes or proceeds to
+compile them. It deliberately does not claim a normalized implementation
+identity or a new safe artifact boundary.
+
+`pkf run test-artifact-input-trace` runs strict Node parser/schema tests.
+`scripts/artifact_input_trace_oracle.mjs <stage2.wasm>` is the isolated
+fresh-stage2 oracle used by `scripts/compiler_gate.sh`: it requires cold miss /
+warm hit stable identities, a dependency edit changing both identities, and
+failed/no-nonce plus LSP/check-only conflicting runs removing stale sidecars.
 
 ## Delivery order
 
