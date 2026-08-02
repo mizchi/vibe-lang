@@ -783,6 +783,20 @@ fn run_async_component(path: &str) -> Result<i32> {
                 format_err!("VIBE_ASYNC_FUTURES entry '{ent}': expected name=value:delay_ms")
             })?;
             let name = name.trim().to_string();
+            // #1337 Codex review: `get-future` / `get-async` / `get-after` are
+            // already registered unconditionally above, and the component
+            // linker has shadowing disabled -- registering one of them here
+            // fails with "map entry `get-future` defined twice" before the
+            // component is even instantiated (measured). They are valid
+            // component labels, so `host_future_named("get-future")` can ask
+            // for one; say so plainly instead of surfacing a linker error.
+            if matches!(name.as_str(), "get-future" | "get-async" | "get-after") {
+                bail!(
+                    "VIBE_ASYNC_FUTURES '{name}': that name is one of the runner's \
+                     built-in imports (get-future, get-async, get-after) and cannot be \
+                     redefined -- rename the host future"
+                );
+            }
             let value: u32 = val_s
                 .trim()
                 .parse()
