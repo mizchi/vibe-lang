@@ -1,7 +1,7 @@
 //# Imports
 
 import ./codegen_test_support.vibe {
-  compile_wasi, compile_wasi_rc
+  compile_wasi, compile_wasi_gc, compile_wasi_rc
 }
 
 //# Functions
@@ -40,6 +40,15 @@ fn assert_result(src: String, entry: String, label: String, expected: String) ->
   0
 }
 
+/// `assert_result` plus the wasm-gc lane. Used where the property under test
+/// IS backend agreement (#1285), so a divergence fails here instead of
+/// surviving as prose in the cheatsheet.
+fn assert_result_all_backends(src: String, entry: String, label: String, expected: String) -> Int with { Error, Fs, Process } {
+  assert_result(src, entry, label, expected)
+  run_one(compile_wasi_gc(src, entry), entry, label + "_gc", expected)
+  0
+}
+
 //# Misc
 
 test "heap e2e: tuple field access" {
@@ -67,6 +76,15 @@ test "heap e2e: Int64Array make/set/get/length round-trip" {
 test "heap e2e: parenthesized call after a binding (no newline glue)" {
   let src = "let main: () -> Int = () -> {\n  let a = [(7, 8)]\n  (Array::get(a, 0)).0\n}"
   assert_result(src, "main", "paren_call_after_binding", "7")
+}
+
+/// #1318/#1319: the binding must stay visible to the parenthesized statement
+/// that follows it. When the interpolated string did not count as an
+/// expression-ending token, this line was absorbed as its call arguments —
+/// the block then inferred as `()` (#1319) or lost the binding (#1318).
+test "heap e2e: parenthesized statement after an interpolated-string binding" {
+  let src = "let main: () -> Int = () -> {\n  let s = \"p\\{1}q\"\n  (String::length(s) + 39)\n}"
+  assert_result(src, "main", "paren_after_interp_binding", "42")
 }
 
 test "heap e2e: parenthesized call after a loop" {
@@ -719,4 +737,106 @@ test "heap e2e: Double::to_int(-Infinity) does not trap, saturates to 0 (#997)" 
 test "heap e2e: Double::to_int ordinary values still truncate toward zero (#997)" {
   let src = "let main: () -> Int = () -> {\n  Double::to_int(3.7) * 100 + (0 - Double::to_int(0.0 - 2.9))\n}"
   assert_result(src, "main", "double_to_int_ordinary", "302")
+}
+
+//# #1272 — a borrow that escapes its local owner
+
+/// #1272: `mk` builds a LOCAL container and returns one of its elements, so
+/// the element outlives the owner the callee drops on the way out. Calling
+/// `mk` twice used to hand back a dangling pointer that the second call's
+/// allocation reused (45 -> 12) — a use-after-free that only showed up on the
+/// second call. Fixed by the per-use-paired planner accounting (#1282);
+/// pinned here on both the plain and RC lanes so it stays fixed.
+test "heap e2e: element of a local array survives the owner, called twice (#1272)" {
+  let src = "fn mk(v: Int) -> Array[Int] {\n  let f = [[7], [v]]\n  Array::get(f, 1)\n}\nlet main: () -> Int = () -> {\n  let a = mk(40)\n  let b = mk(5)\n  Array::get(a, 0) + Array::get(b, 0)\n}"
+  assert_result(src, "main", "local_elem_escape_twice", "45")
+}
+
+/// Same shape with an `Option` payload (the second form on #1272): the
+/// enum value returned from the local table must stay live in the caller.
+test "heap e2e: Option element of a local array survives the owner (#1272)" {
+  let src = "fn mk(v: Int) -> Option[Int] {\n  let f = [None, Some(v)]\n  Array::get(f, 1)\n}\nlet main: () -> Int = () -> {\n  let a = mk(40)\n  let b = mk(5)\n  match a {\n    Some(x) => match b {\n      Some(y) => x + y,\n      None => 0 - 1\n    },\n    None => 0 - 2\n  }\n}"
+  assert_result(src, "main", "local_elem_escape_option", "45")
+}
+
+/// The bare-identifier-tail spelling from the #1272 investigation comment:
+/// `let r = Array::get(f, 1)` + `r` is NOT classified as borrow-returning, so
+/// this pins the callee-side accounting rather than the caller-side
+/// retain-elision it disables.
+test "heap e2e: local-array element escape through a bare-identifier tail (#1272)" {
+  let src = "fn mk(v: Int) -> Array[Int] {\n  let f = [[7], [v]]\n  let r = Array::get(f, 1)\n  r\n}\nlet main: () -> Int = () -> {\n  let a = mk(40)\n  let b = mk(5)\n  Array::get(a, 0) + Array::get(b, 0)\n}"
+  assert_result(src, "main", "local_elem_escape_bare_tail", "45")
+}
+
+//# #1285 — `Array::push` on a plain `Array`: the contract
+
+/// #1285: `Array::push(a, v)` appends IN PLACE and every reference to `a`
+/// observes the growth — on the linear, RC and wasm-gc lanes alike. The
+/// cheatsheet used to call this an anti-pattern whose "semantics differ
+/// per-backend"; these five shapes are the contract that claim was about, so
+/// any future divergence fails here rather than being rediscovered in prose.
+/// (`ArrayBuilder` stays the recommended accumulator for the separate reason
+/// that it freezes to an `Array` once, not because `push` is unsafe.)
+test "heap e2e: Array::push grows through the same binding, across a realloc (#1285)" {
+  let src = "let main: () -> Int = () -> {\n  let a = []\n  let mut i = 0\n  while i < 40 {\n    Array::push(a, i)\n    i = i + 1\n  }\n  Array::length(a) * 100 + Array::get(a, 39)\n}"
+  assert_result_all_backends(src, "main", "push_grow_realloc", "4039")
+}
+
+test "heap e2e: Array::push growth is visible through an alias binding (#1285)" {
+  let src = "let main: () -> Int = () -> {\n  let a = [1]\n  let b = a\n  Array::push(a, 2)\n  Array::length(b) * 10 + Array::length(a)\n}"
+  assert_result_all_backends(src, "main", "push_alias_visible", "22")
+}
+
+test "heap e2e: Array::push inside a callee is visible to the caller (#1285)" {
+  let src = "fn grow(xs: Array[Int]) -> Int {\n  Array::push(xs, 9)\n  Array::length(xs)\n}\nlet main: () -> Int = () -> {\n  let a = [1]\n  let inner = grow(a)\n  inner * 10 + Array::length(a)\n}"
+  assert_result_all_backends(src, "main", "push_param_visible", "22")
+}
+
+test "heap e2e: Array::push on a struct field array (#1285)" {
+  let src = "struct Box { xs: Array[Int] }\nlet main: () -> Int = () -> {\n  let b = Box::{ xs: [1] }\n  Array::push(b.xs, 2)\n  Array::length(b.xs)\n}"
+  assert_result_all_backends(src, "main", "push_struct_field", "2")
+}
+
+test "heap e2e: Array::push through a closure capture (#1285)" {
+  let src = "let main: () -> Int = () -> {\n  let a = [1]\n  let f = () -> { Array::push(a, 2) }\n  f()\n  Array::length(a)\n}"
+  assert_result_all_backends(src, "main", "push_closure_capture", "2")
+}
+
+//# #1281 — top-level irrefutable pattern `let`
+
+/// #1281: `let (a, b) = e` at top level binds both names from ONE evaluation
+/// of `e`. The parser expands it to a hidden binding plus one projection each
+/// (codegen still has no top-level `SLetPat` case), so these pin the runtime
+/// result of that expansion rather than just its acceptance.
+test "heap e2e: top-level tuple destructure binds both names (#1281)" {
+  let src = "let (a, b) = (1, 2)\nlet main: () -> Int = () -> { a * 10 + b }"
+  assert_result(src, "main", "toplevel_destr_tuple", "12")
+}
+
+/// The value must be evaluated exactly once no matter how many names the
+/// pattern binds: `mk` appends to a log, so a re-evaluated RHS shows up as a
+/// second entry (207 instead of 107).
+test "heap e2e: top-level tuple destructure evaluates its value once (#1281)" {
+  let src = "let log = []\nfn mk() -> (Int, Int) {\n  Array::push(log, 1)\n  (3, 4)\n}\nlet (a, b) = mk()\nlet main: () -> Int = () -> { a + b + Array::length(log) * 100 }"
+  assert_result(src, "main", "toplevel_destr_once", "107")
+}
+
+test "heap e2e: top-level nested tuple destructure (#1281)" {
+  let src = "let (a, (b, c)) = (1, (2, 3))\nlet main: () -> Int = () -> { a * 100 + b * 10 + c }"
+  assert_result(src, "main", "toplevel_destr_nested", "123")
+}
+
+test "heap e2e: top-level struct destructure (#1281)" {
+  let src = "struct P { x: Int; y: Int }\nlet P::{ x, y } = P::{ x: 3, y: 4 }\nlet main: () -> Int = () -> { x * 10 + y }"
+  assert_result(src, "main", "toplevel_destr_struct", "34")
+}
+
+test "heap e2e: top-level anonymous-record destructure (#1281)" {
+  let src = "let record { a, b } = record { a: 5, b: 6 }\nlet main: () -> Int = () -> { a * 10 + b }"
+  assert_result(src, "main", "toplevel_destr_record", "56")
+}
+
+test "heap e2e: top-level destructure skips a wildcard element (#1281)" {
+  let src = "let (a, _) = (7, 8)\nlet main: () -> Int = () -> { a }"
+  assert_result(src, "main", "toplevel_destr_wildcard", "7")
 }

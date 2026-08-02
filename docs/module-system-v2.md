@@ -1,5 +1,9 @@
 # vibe Module System v2 — 契約ファースト・パッケージシステム設計
 
+> **現行の規則の正本は [module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)** (#1269)。
+> 本ドキュメントは設計記録であり、`index.vibei` を契約ファイルの主役として
+> 説明する箇所は現行の綴り (`index.vpkg`) より前の世代の記述である。
+>
 > Status: **implemented (A–G core, 2026-07-04; owner policy updated
 > 2026-07-16)** (ADR-0063 / ADR-0064 / ADR-0070)。
 > 全フェーズの中核が landing 済み: fn / module{} 削除 / .vibei 契約照合 +

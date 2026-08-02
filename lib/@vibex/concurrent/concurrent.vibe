@@ -101,7 +101,22 @@ export struct TaskCell {
   // (Codex review on #1110 — a lone task yielding 3+ times must not trap).
   mut wait_poll: Bool;
   // Milliseconds still owed to a `sleep_wait` (#1227). 0 = not sleeping.
-  mut sleep_left: Int
+  mut sleep_left: Int;
+  // ADR-0089 (#1218) direct-wake waiter lists: a poller that registered
+  // itself with the condition it waits on (result_wait's target cell,
+  // send_wait/recv_wait's channel) parks with `direct_wait` set, and the
+  // pump SKIPS it until the completion site clears the flag — turning the
+  // O(rounds x awaiters) re-poll churn into one wake per completion.
+  // Semantics are unchanged by construction: clearing the flag only makes
+  // the task RESUMABLE again (it re-checks its condition like any poll
+  // round), a spurious clear is just an extra poll, and a MISSED clear is
+  // rescued by the pump's once-per-progress fallback valve
+  // (conc_clear_direct_waits) before the deadlock rules apply.
+  mut direct_wait: Bool;
+  // Tasks parked waiting for THIS cell to reach a terminal status
+  // (TaskHandle::result_wait). Every terminal transition clears their
+  // direct_wait via conc_notify_waiters.
+  mut waiters: Array[TaskCell]
 }
 
 /// Task-group phase codes: 0 open, 1 cancelling (fail-fast in progress),
@@ -143,6 +158,12 @@ export struct TaskGroup[rg, e] {
   // to detect a full no-progress sweep of parked tasks (= deadlock trap
   // instead of livelock, mirroring drive_one's conc_require rule).
   mut progress: Int;
+  // The direct-wake fallback valve (see TaskCell.direct_wait) has been
+  // opened since the last progress event. Once per progress epoch the
+  // pump may clear ALL direct_wait flags instead of concluding deadlock —
+  // a missed notify then degrades to ordinary polling instead of a
+  // spurious trap. Reset by conc_progress.
+  mut direct_valve_used: Bool;
   _region_witness: (rg) -> rg
 }
 
@@ -191,7 +212,12 @@ export struct Channel[rg, e, T] {
   buf: Ring[T];
   pend: Ring[T];
   mut pend_seq: Int;
-  mut pend_consumed: Int
+  mut pend_consumed: Int;
+  // Suspendable tasks parked in send_wait/recv_wait on this channel
+  // (direct-wake waiter list; see TaskCell.direct_wait). Every
+  // linearization event (push/take/close) clears their flags via
+  // conc_chan_notify.
+  mut waiters: Array[TaskCell]
 }
 
 export struct Sender[rg, e, T] {
@@ -201,6 +227,36 @@ export struct Sender[rg, e, T] {
 export struct Receiver[rg, e, T] {
   ch: Channel[rg, e, T]
 }
+
+//# Direct-wake globals (ADR-0089 #1218)
+
+// The task currently running on the (single-threaded) scheduler stack —
+// top of stack; nested groups / nested resumes push and pop. This is how
+// a blocking helper called from inside a task body identifies ITS OWN
+// cell for waiter registration: the suspend payload is a bare Int and
+// cannot carry it. Empty outside any task leg (entry-level blocking
+// helpers then skip registration and fall back to plain polling). A
+// module GLOBAL rather than a TaskGroup field so the compiler-facing
+// await hooks below (__aw_wait — called from the synthesized __aw_poll
+// with only the future cell in hand) can reach it too.
+let conc_running_stack: Array[TaskCell] = [
+]
+
+// Waiter registry for BUILTIN futures (`await` on a `Future::pending`
+// cell): parallel arrays of (future id, parked cell). The future's [state,
+// payload] array cannot hold TaskCells in typed library code, so the
+// registration assigns the cell an id in slot 2 (Array::push — awaits
+// only ever read slots 0/1) and keys this registry with it. Entries are
+// dropped on notify; terminal waiters are swept opportunistically.
+let conc_fut_waiter_ids: Array[Int] = [
+]
+
+let conc_fut_waiter_cells: Array[TaskCell] = [
+]
+
+let conc_fut_id_ctr: Array[Int] = [
+  0
+]
 
 //# Internal helpers
 
@@ -215,8 +271,110 @@ fn conc_require(ok: Bool) -> Unit where {
 /// Bump the group's progress counter (channel push/take, task settle).
 /// Kept row-free and trivially eligible so suspend-lowered clone bodies
 /// may call it (ADR-0076 追記31: concrete Async-free row callees are safe).
+/// Progress also re-arms the direct-wake fallback valve (see
+/// TaskGroup.direct_valve_used): each real state change earns the pump one
+/// fresh clear-all-flags rescue before the deadlock rules fire.
 fn conc_progress[rg, e](n: TaskGroup[rg, e]) -> Unit {
   n.progress = n.progress + 1
+  n.direct_valve_used = false
+}
+
+/// Direct-wake notify (ADR-0089 #1218): a terminal transition of `c` makes
+/// every task parked in result_wait on `c` resumable again. Clearing the
+/// flag is the whole wake — the pump's ordinary round-robin then resumes
+/// the task and its poll re-check observes the terminal status. The list
+/// may hold duplicates (a valve-rescued waiter re-registers) and stale
+/// entries (a waiter that moved on to a different wait); both are safe —
+/// a cleared flag is never more than an extra poll round.
+fn conc_notify_waiters(c: TaskCell) -> Unit {
+  let mut i = 0
+  while i < Array::length(c.waiters) {
+    let w = Array::get(c.waiters, i)
+    w.direct_wait = false
+    i = i + 1
+  }
+  c.waiters = empty_cells()
+}
+
+/// Direct-wake notify for a channel linearization event (push/take/close):
+/// same contract as conc_notify_waiters.
+fn conc_chan_notify[rg, e, T](c: Channel[rg, e, T]) -> Unit {
+  let mut i = 0
+  while i < Array::length(c.waiters) {
+    let w = Array::get(c.waiters, i)
+    w.direct_wait = false
+    i = i + 1
+  }
+  c.waiters = empty_cells()
+}
+
+/// Push/pop the currently running task (see conc_running_stack). Every
+/// task leg — the initial spawn_suspend run and every resumed leg through
+/// park_kind's wrapper — brackets itself with these; the Error boundaries
+/// at both sites catch throws before the pop, so the bracket balances.
+fn conc_running_push(c: TaskCell) -> Unit {
+  Array::push(conc_running_stack, c)
+}
+
+fn conc_running_pop() -> Unit {
+  let n = Array::length(conc_running_stack)
+  if n > 0 {
+    Array::truncate(conc_running_stack, n - 1)
+  } else {
+    ()
+  }
+}
+
+/// Register the CURRENTLY RUNNING task as a direct-wake waiter on channel
+/// `c`, immediately before it parks (send_wait/recv_wait's retry perform).
+/// Outside any task leg (stack empty — e.g. an entry-level call) this is
+/// a no-op and the caller parks as a plain poller, unchanged.
+fn conc_chan_register[rg, e, T](c: Channel[rg, e, T]) -> Unit {
+  let depth = Array::length(conc_running_stack)
+  if depth > 0 {
+    let me = Array::get(conc_running_stack, depth - 1)
+    Array::push(c.waiters, me)
+    me.direct_wait = true
+  } else {
+    ()
+  }
+}
+
+/// Register the CURRENTLY RUNNING task as a direct-wake waiter on the
+/// target cell of a result_wait, immediately before it parks. The global
+/// running stack identifies the awaiter regardless of which group the
+/// TARGET handle belongs to (cross-group awaits register the true
+/// awaiter; its own group's pump then honors the flag).
+fn conc_result_register[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
+  let depth = Array::length(conc_running_stack)
+  if depth > 0 {
+    let me = Array::get(conc_running_stack, depth - 1)
+    Array::push(h.cell.waiters, me)
+    me.direct_wait = true
+  } else {
+    ()
+  }
+}
+
+/// The direct-wake fallback valve: make every direct-parked task resumable
+/// again. Returns false when there was nothing to clear (the caller's
+/// deadlock evidence stands). Semantics-preserving by construction — a
+/// cleared task just re-checks its condition like any poll round, and
+/// re-registers if still blocked.
+fn conc_clear_direct_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 && c.direct_wait {
+      c.direct_wait = false
+      any = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  any
 }
 
 /// Fail-fast entry for the SUSPENDABLE lane (mirrors spawn's runner-side
@@ -232,6 +390,7 @@ fn conc_fail_cell[rg, e](n: TaskGroup[rg, e], cell: TaskCell, msg: String) -> Un
   cell.status = 3
   cell.fail_msg = msg
   cell.cont = None
+  conc_notify_waiters(cell)
   if !n.failing {
     n.failing = true
     n.fail_msg = msg
@@ -257,6 +416,8 @@ fn conc_cancel_parked[rg, e](n: TaskGroup[rg, e]) -> Unit {
       c.status = 4
       c.cont = None
       c.wait_poll = false
+      c.direct_wait = false
+      conc_notify_waiters(c)
     } else {
       ()
     }
@@ -350,6 +511,7 @@ fn drive_one[rg, e](n: TaskGroup[rg, e]) -> Bool with { e } {
       // dispatch, or a failing task group (fail-fast sibling cancel),
       // resolves the task as Cancelled without running its body.
       c.status = 4
+      conc_notify_waiters(c)
     } else {
       c.status = 1
       let r = Array::get(n.runners, idx)
@@ -387,6 +549,7 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with { e }) -> 
     adopted: empty_cells(),
     pump_next: 0,
     progress: 0,
+    direct_valve_used: false,
     _region_witness: (x) -> x
   }
   let v = body(n)
@@ -433,17 +596,19 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
     value: None
   }
   let cell = TaskCell::{
-    status: 0, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false, sleep_left: 0
+    status: 0, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false, sleep_left: 0, direct_wait: false, waiters: empty_cells()
   }
   let runner: () -> Unit with { e } = () -> {
     handle {
       let v = f()
       rc.value = Some(v)
       cell.status = 2
+      conc_notify_waiters(cell)
     } with Error {
       Throw(msg) => {
         cell.status = 3
         cell.fail_msg = msg
+        conc_notify_waiters(cell)
         if !n.failing {
           n.failing = true
           n.fail_msg = msg
@@ -548,6 +713,8 @@ export fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
   if c.status == 5 {
     c.status = 4
     c.cont = None
+    c.direct_wait = false
+    conc_notify_waiters(c)
   } else {
     ()
   }
@@ -576,7 +743,8 @@ export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -
       buf: ring_new(),
       pend: ring_new(),
       pend_seq: 0,
-      pend_consumed: 0
+      pend_consumed: 0,
+      waiters: empty_cells()
     }
     Ok((Sender::{
       ch: core
@@ -600,6 +768,7 @@ export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, Send
   if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
     ring_push(c.buf, v)
     conc_progress(c.group)
+    conc_chan_notify(c)
     return Ok(())
   }
   if c.waiting_recv > 0 {
@@ -608,13 +777,16 @@ export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, Send
     ring_push(c.pend, v)
     c.pend_seq = c.pend_seq + 1
     conc_progress(c.group)
+    conc_chan_notify(c)
     return Ok(())
   }
   // Block: register the message and drive other tasks until a receiver
-  // consumes it (FIFO by pend_seq).
+  // consumes it (FIFO by pend_seq). The deposit itself can satisfy a
+  // direct-parked recv_wait, so notify before blocking.
   ring_push(c.pend, v)
   let myseq = c.pend_seq
   c.pend_seq = c.pend_seq + 1
+  conc_chan_notify(c)
   loop (d = 0) {
     if c.pend_consumed > myseq {
       break Ok(())
@@ -646,6 +818,9 @@ export fn Sender::release[rg, e, T](s: Sender[rg, e, T]) -> Unit {
     c.senders = c.senders - 1
     if c.senders == 0 {
       c.closed = true
+      // Close is a wake condition: direct-parked recv_wait tasks must
+      // observe drain-then-None, parked send_wait tasks Err(Closed).
+      conc_chan_notify(c)
     }
   }
 }
@@ -714,6 +889,7 @@ export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with { e
         c.pend_consumed = c.pend_consumed + 1
       }
       conc_progress(c.group)
+      conc_chan_notify(c)
       break Some(v)
     }
     if c.pend.len > 0 {
@@ -721,6 +897,7 @@ export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with { e
       let v = ring_take(c.pend)
       c.pend_consumed = c.pend_consumed + 1
       conc_progress(c.group)
+      conc_chan_notify(c)
       break Some(v)
     }
     if chan_closed(c) {
@@ -795,6 +972,12 @@ effect Async {
 /// the exact shape 3c could not express lexically.
 export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with { Async, Error }) -> TaskHandle[rg, e, T] {
   let h = TaskGroup::adopt(n)
+  // Running-task tracking (direct-wake waiter registration, ADR-0089
+  // #1218): the initial leg runs on this stack — blocking helpers called
+  // from the body read the global running stack to identify their own
+  // cell. A push/pop bracket (not set/clear) because task bodies may
+  // spawn nested suspendable tasks.
+  conc_running_push(h.cell)
   let step = handle {
     handle {
       let v = f()
@@ -828,6 +1011,7 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
       SParked
     }
   }
+  conc_running_pop()
   TaskHandle::settle(h, step)
   h
 }
@@ -841,7 +1025,7 @@ export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg
     value: None
   }
   let cell = TaskCell::{
-    status: 1, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false, sleep_left: 0
+    status: 1, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false, sleep_left: 0, direct_wait: false, waiters: empty_cells()
   }
   Array::push(n.adopted, cell)
   TaskHandle::{
@@ -858,6 +1042,7 @@ export fn TaskHandle::settle[rg, e, T](h: TaskHandle[rg, e, T], step: TaskStep[T
     SDone(v) => {
       h.result.value = Some(v)
       h.cell.status = 2
+      conc_notify_waiters(h.cell)
       conc_progress(h.group)
       ()
     },
@@ -896,6 +1081,15 @@ export fn TaskHandle::park_kind[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> T
   cell.sleep_left = sleep_ms
   cell.cont = Some((rv: Int) -> {
     cell.status = 1
+    // Resuming consumes any direct-wake registration: the flag is only
+    // meaningful while parked (a registration helper re-sets it right
+    // before the next park). Leaving it set would strand an unrelated
+    // later park (e.g. a cooperative yield) behind the fallback valve.
+    cell.direct_wait = false
+    // Running-task tracking for direct-wake registration (see
+    // conc_running_stack): every resumed leg flows through this wrapper,
+    // so this one push/pop bracket covers pump, pump_all, and wake.
+    conc_running_push(cell)
     // Each resumed leg gets its own Error boundary: a throw AFTER a
     // suspend runs on the pump's stack, outside spawn_suspend's own
     // handler — without this it would unwind straight out of pump_all.
@@ -907,10 +1101,12 @@ export fn TaskHandle::park_kind[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> T
         SParked
       }
     }
+    conc_running_pop()
     match step {
       SDone(v) => {
         rc.value = Some(v)
         cell.status = 2
+        conc_notify_waiters(cell)
         conc_progress(grp)
         ()
       },
@@ -974,6 +1170,13 @@ fn conc_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Unit {
         } else {
           ()
         }
+      } else if c.direct_wait {
+        // A direct-parked waiter cannot progress for free (the pump skips
+        // it until its completion notify) — it must not hold back the
+        // virtual clock the way a resumable poller does, or a sleeper it
+        // depends on would never settle (previously that case needed the
+        // pump_all stall counter to reach the FORCE settle).
+        ()
       } else {
         other_parked = other_parked + 1
       }
@@ -1073,16 +1276,20 @@ export fn sleep_wait(ms: Int) -> Unit with { Async } {
   }
 }
 
-export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
+/// One round-robin dispatch attempt: resume the next RESUMABLE parked task
+/// (not sleeping, not direct-parked). Direct-parked tasks are woken by
+/// their completion notify (or the fallback valve in TaskGroup::pump), so
+/// skipping them here is what turns per-round re-polls into one wake per
+/// completion.
+fn conc_pump_once[rg, e](n: TaskGroup[rg, e]) -> Bool {
   let total = Array::length(n.adopted)
-  conc_settle_sleep_debt(n)
   loop (step = 0) {
     if step >= total {
       break false
     }
     let i = (n.pump_next + step) % total
     let c = Array::get(n.adopted, i)
-    if c.status == 5 && c.sleep_left == 0 {
+    if c.status == 5 && c.sleep_left == 0 && !c.direct_wait {
       n.pump_next = (i + 1) % total
       match c.cont {
         Some(k) => {
@@ -1097,6 +1304,23 @@ export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
     } else {
       continue (step + 1)
     }
+  }
+}
+
+export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  conc_settle_sleep_debt(n)
+  if conc_pump_once(n) {
+    true
+  } else if !n.direct_valve_used && conc_clear_direct_waits(n) {
+    // Nothing resumable but direct-parked waiters exist: open the
+    // fallback valve (once per progress epoch) and retry, so a missed
+    // completion notify degrades to ordinary polling instead of a
+    // deadlock verdict. If the rescued tasks are genuinely blocked they
+    // re-register and the NEXT false return stands as deadlock evidence.
+    n.direct_valve_used = true
+    conc_pump_once(n)
+  } else {
+    false
   }
 }
 
@@ -1133,15 +1357,38 @@ export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
       // resolves after its nap, recv_wait on a sleeping producer) spins
       // without progress exactly like a real deadlock. Advance virtual
       // time and retry; only a stalled sweep with NO sleeper traps.
+      //
+      // Second exception (direct-wake fallback valve): free pollers can
+      // stall while a DIRECT-parked waiter is stranded by a missed
+      // notify whose wake would unblock everything. Before concluding
+      // deadlock, clear the direct flags once per progress epoch and
+      // retry — genuinely blocked waiters re-register, so the next
+      // stalled sweep traps as before.
       if stall > Array::length(n.adopted) {
-        conc_require(conc_force_settle_sleep_debt(n))
-        stall = 0
+        if conc_force_settle_sleep_debt(n) {
+          stall = 0
+        } else if !n.direct_valve_used && conc_clear_direct_waits(n) {
+          n.direct_valve_used = true
+          stall = 0
+        } else {
+          conc_require(false)
+        }
       } else {
         ()
       }
     } else {
       ()
     }
+  }
+  // The loop only exits when nothing is resumable. Pre-direct-wake that
+  // implied nothing was parked at all; now it can also mean only
+  // direct-parked waiters remain (their valve already spent) — nothing in
+  // this deterministic scheduler can ever wake them, so trap here exactly
+  // like the stalled-poller rule instead of returning with live tasks.
+  let mut di = 0
+  while di < Array::length(n.adopted) {
+    conc_require(Array::get(n.adopted, di).status != 5)
+    di = di + 1
   }
 }
 
@@ -1191,11 +1438,15 @@ export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit,
   } else if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
     ring_push(c.buf, v)
     conc_progress(c.group)
+    conc_chan_notify(c)
     Ok(())
   } else {
+    // The deposit itself can satisfy a direct-parked recv_wait, so
+    // notify before suspending on our own consumption.
     ring_push(c.pend, v)
     let myseq = c.pend_seq
     c.pend_seq = c.pend_seq + 1
+    conc_chan_notify(c)
     conc_send_wait_consumed(c, myseq)
   }
 }
@@ -1209,6 +1460,7 @@ fn conc_send_wait_consumed[rg, e, T](c: Channel[rg, e, T], myseq: Int) -> Result
   } else if chan_closed(c) {
     Err(Closed)
   } else {
+    conc_chan_register(c)
     let _w = perform Async::Suspend(1)
     conc_send_wait_consumed(c, myseq)
   }
@@ -1232,15 +1484,18 @@ export fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] wit
       ()
     }
     conc_progress(c.group)
+    conc_chan_notify(c)
     Some(v)
   } else if c.pend.len > 0 {
     let v = ring_take(c.pend)
     c.pend_consumed = c.pend_consumed + 1
     conc_progress(c.group)
+    conc_chan_notify(c)
     Some(v)
   } else if chan_closed(c) {
     None
   } else {
+    conc_chan_register(c)
     let _w = perform Async::Suspend(1)
     Receiver::recv_wait(rh)
   }
@@ -1274,7 +1529,88 @@ export fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T
   } else if s == 4 {
     Err(Cancelled)
   } else {
+    conc_result_register(h)
     let _w = perform Async::Suspend(1)
     TaskHandle::result_wait(h)
+  }
+}
+
+//# Builtin-future await hooks (ADR-0089 #1218 — resolve -> direct wake)
+
+// `await(f)` on a builtin `Future[T]` is compiler-lowered (the synthesized
+// `__aw_poll` loop, inline_direct_perform.vibe). When a program links this
+// library, the compiler routes each poll round through `__aw_wait` below
+// instead of a bare `perform Async::Suspend(1)`, and appends an
+// `__aw_notify_resolve` call to every `Future::resolve` lowering — so an
+// in-task awaiter of a pending future parks direct-wake (skipped by the
+// pump) and the resolve wakes it, instead of the O(rounds x awaiters)
+// re-poll churn. Both hooks are auto-linked by the linked-compile lane
+// whenever a program imports ANYTHING from a file exporting them (the
+// user never imports these magic names by hand).
+
+/// One poll round of an `await` on a pending future cell: register the
+/// currently running task (if any) as a direct-wake waiter of `f`, then
+/// suspend with the ordinary poll-wait reason. Outside any task leg the
+/// registration is a no-op and this IS the old bare perform — entry-level
+/// awaits keep their boundary behavior (deadlock trap on a never-resolved
+/// cell) unchanged.
+export fn __aw_wait(f: Array[Int]) -> Int with { Async } {
+  conc_await_register(f)
+  perform Async::Suspend(1)
+}
+
+/// A `Future::resolve(f, v)` ran (the lowering calls this AFTER writing
+/// payload+state): make every waiter registered on `f` resumable again.
+/// Missing registrations (resolve compiled in a unit without the hooks)
+/// are covered by the pump's fallback valve, so this is an optimization
+/// channel, never a correctness dependency.
+export fn __aw_notify_resolve(f: Array[Int]) -> Unit {
+  if Array::length(f) >= 3 {
+    let id = Array::get(f, 2)
+    let n = Array::length(conc_fut_waiter_ids)
+    let mut w = 0
+    let mut i = 0
+    while i < n {
+      let wid = Array::get(conc_fut_waiter_ids, i)
+      let c = Array::get(conc_fut_waiter_cells, i)
+      if wid == id {
+        // Woken: clear the flag, drop the entry.
+        c.direct_wait = false
+      } else if c.status == 2 || c.status == 3 || c.status == 4 {
+        // Terminal waiter (completed/cancelled elsewhere): sweep the
+        // stale entry so a never-resolved future cannot pin it forever.
+        ()
+      } else {
+        Array::set(conc_fut_waiter_ids, w, wid)
+        Array::set(conc_fut_waiter_cells, w, c)
+        w = w + 1
+      }
+      i = i + 1
+    }
+    Array::truncate(conc_fut_waiter_ids, w)
+    Array::truncate(conc_fut_waiter_cells, w)
+  } else {
+    ()
+  }
+}
+
+/// Registration half of __aw_wait: assign the cell a registry id in slot 2
+/// (awaits only read slots 0/1; Future::resolve only writes them) and file
+/// (id, running task) into the parallel-array registry.
+fn conc_await_register(f: Array[Int]) -> Unit {
+  let depth = Array::length(conc_running_stack)
+  if depth > 0 {
+    let me = Array::get(conc_running_stack, depth - 1)
+    if Array::length(f) < 3 {
+      Array::set(conc_fut_id_ctr, 0, Array::get(conc_fut_id_ctr, 0) + 1)
+      Array::push(f, Array::get(conc_fut_id_ctr, 0))
+    } else {
+      ()
+    }
+    Array::push(conc_fut_waiter_ids, Array::get(f, 2))
+    Array::push(conc_fut_waiter_cells, me)
+    me.direct_wait = true
+  } else {
+    ()
   }
 }

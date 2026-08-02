@@ -5545,36 +5545,36 @@ fi
 rm -rf "$a69dir"
 echo "[compiler-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
 
-# 42. #830 regression: `let record { .. } = <expr>` (record-pattern
-# destructuring, #760) parsed fine as a *local* `let` but hit a confusing raw
-# "expected = but got {" parse error at the top level (the top-level `let`
-# parser only special-cased `Name::{ .. }` struct-destructure and plain
-# bindings, not the `record { .. }` sugar). Top-level statements don't go
-# through the block-step desugar that makes the local form work (each
-# top-level `let` is its own independent global binding, not one big
-# continuation to expand into), so accepting the grammar there needs a real
-# multi-statement expansion -- not a local change. Fixed by rejecting it at
-# parse time with a clear, LOCATED, actionable error instead (docs/adr.md
-# option (b) fallback) while leaving the working function-body form alone.
-echo "[compiler-gate] 42/42 top-level record-pattern let rejection (#830)"
+# 42. #830 / #1281: `let record { .. } = <expr>` (record-pattern
+# destructuring, #760) worked as a *local* `let` but used to hit a raw
+# "expected = but got {" at the top level, and was then rejected with a
+# located error. #1281 implements the multi-statement expansion it was
+# waiting for, so the top-level form now COMPILES and RUNS: the record value
+# lands in a hidden binding and each field name becomes its own positional
+# `__rec_field` projection. Field patterns are positional (that is how the
+# block-level desugar reads them too), so `record { name: n, ver: v }` binds
+# slot 0 to `n` and slot 1 to `v`.
+echo "[compiler-gate] 42/42 top-level record-pattern let (#830 / #1281)"
 g830dir="_build/_gate_830"
 rm -rf "$g830dir"; mkdir -p "$g830dir"
 cat > "$g830dir/toplevel_record_destr.vibe" <<'EOF'
-let r = record { name: "vibe", ver: 1 }
+let r = record { name: "vibe", ver: 7 }
 let record { name: n, ver: v } = r
-export let _start: () -> Int = () -> { n; v; 0 }
+export let _start: () -> Int = () -> { String::length(n) * 100 + v }
 EOF
 rm -f "$g830dir/toplevel_record_destr.wasm"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g830dir/toplevel_record_destr.vibe" "$g830dir/toplevel_record_destr.wasm" _start >/dev/null 2>&1 || true
-if [ -s "$g830dir/toplevel_record_destr.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level 'let record { .. } = ..' compiled (should be rejected, #830)" >&2
+if [ ! -s "$g830dir/toplevel_record_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let record { .. } = ..' did not compile (#1281)" >&2
+  cat "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-if ! grep -q "top-level 'let record" "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: top-level record-pattern let diag missing the clear #830 message (still the raw 'expected = but got {' error?)" >&2
-  cat "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null >&2 || true
+g830_top_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g830dir/toplevel_record_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g830_top_out" != "407" ]; then
+  echo "[compiler-gate] FAIL: top-level record-pattern destructure output '$g830_top_out' (want 407, #1281)" >&2
   exit 1
 fi
 # The function-body form (the one #830 says already worked) must keep
@@ -5606,7 +5606,7 @@ if [ "$g830_out" != "407" ]; then
   exit 1
 fi
 rm -rf "$g830dir"
-echo "[compiler-gate] top-level record-pattern let rejection (#830) ok"
+echo "[compiler-gate] top-level record-pattern let (#830 / #1281) ok"
 
 # 43. #844 regression: a `let`-style annotation used to be able to LAUNDER a
 #     generic struct's real type arguments. `resolve_type_expr` types a bare
@@ -5716,16 +5716,13 @@ fi
 rm -rf "$g844dir"
 echo "[compiler-gate] generic-struct annotation re-narrowing regression (#844) ok"
 
-# 44. #859 regression: top-level pattern `let` (tuple destructure
-#     `let (a, b) = pair`, named-struct destructure `let Name::{ x, y } = v`)
-#     parsed AND type-checked cleanly but codegen had no case for a
-#     top-level `SLetPat` at all -- ANY pattern shape crashed with a raw
-#     "undefined variable" instead of either working or producing a proper
-#     diagnostic (pattern-let lowering only exists as a block-level
-#     mechanism with an enclosing expression continuation to desugar into;
-#     top-level statements have no such continuation). Same treatment #830
-#     already gave the `record { .. }` form: reject with a clear, LOCATED
-#     error instead of the misleading internal crash.
+# 44. #1281 (was #859): top-level irrefutable pattern `let` -- tuple
+#     `let (a, b) = pair`, named-struct `let Name::{ x, y } = v`, and
+#     anonymous-record `let record { a, b } = r`. These used to parse and
+#     type-check but had no codegen case (a raw "undefined variable" crash),
+#     so they were rejected outright; they are now expanded by the parser
+#     into a hidden binding for the value plus one projection binding per
+#     name. Refutable patterns stay rejected with a clear, LOCATED error.
 # 43b. #1078: two enums declaring a same-named variant in one compiled unit
 #      is a hard, descriptive error naming both enums -- previously the
 #      flat name-keyed env silently resolved every bare construction to the
@@ -5770,9 +5767,14 @@ fi
 rm -rf "$g1078dir"
 echo "[compiler-gate] enum constructor name collision rejection ok (#1078)"
 
-echo "[compiler-gate] 44/44 top-level pattern let rejection (#859)"
+echo "[compiler-gate] 44/44 top-level irrefutable pattern let (#1281)"
 g859dir="_build/_gate_859"
 rm -rf "$g859dir"; mkdir -p "$g859dir"
+# #1281 (was #859): a top-level irrefutable pattern `let` now compiles and
+# runs. The parser expands it into a hidden binding holding the value plus one
+# projection binding per name, so codegen still needs no top-level `SLetPat`
+# case -- and the value is evaluated exactly ONCE (pinned below), which is the
+# property a naive "repeat the RHS per name" expansion would break.
 cat > "$g859dir/toplevel_tuple_destr.vibe" <<'EOF'
 let (a, b) = (10, 32)
 export let _start: () -> Int = () -> { a + b }
@@ -5781,13 +5783,15 @@ rm -f "$g859dir/toplevel_tuple_destr.wasm"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g859dir/toplevel_tuple_destr.vibe" "$g859dir/toplevel_tuple_destr.wasm" _start >/dev/null 2>&1 || true
-if [ -s "$g859dir/toplevel_tuple_destr.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level 'let (a, b) = ..' compiled (should be rejected, #859)" >&2
+if [ ! -s "$g859dir/toplevel_tuple_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let (a, b) = ..' did not compile (#1281)" >&2
+  cat "$g859dir/toplevel_tuple_destr.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-if ! grep -q "top-level 'let (\.\.)" "$g859dir/toplevel_tuple_destr.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: top-level tuple-pattern let diag missing the clear #859 message (still the raw 'undefined variable' crash?)" >&2
-  cat "$g859dir/toplevel_tuple_destr.wasm.diag" 2>/dev/null >&2 || true
+g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g859dir/toplevel_tuple_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g859_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: top-level tuple-pattern destructure output '$g859_out' (want 42, #1281)" >&2
   exit 1
 fi
 cat > "$g859dir/toplevel_struct_destr.vibe" <<'EOF'
@@ -5799,13 +5803,82 @@ rm -f "$g859dir/toplevel_struct_destr.wasm"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g859dir/toplevel_struct_destr.vibe" "$g859dir/toplevel_struct_destr.wasm" _start >/dev/null 2>&1 || true
-if [ -s "$g859dir/toplevel_struct_destr.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level 'let Name::{ .. } = ..' compiled (should be rejected, #859)" >&2
+if [ ! -s "$g859dir/toplevel_struct_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let Name::{ .. } = ..' did not compile (#1281)" >&2
+  cat "$g859dir/toplevel_struct_destr.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-if ! grep -q "top-level 'let Name::{ \.\. }" "$g859dir/toplevel_struct_destr.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: top-level struct-pattern let diag missing the clear #859 message (still the raw 'undefined variable' crash?)" >&2
-  cat "$g859dir/toplevel_struct_destr.wasm.diag" 2>/dev/null >&2 || true
+g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g859dir/toplevel_struct_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g859_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: top-level struct-pattern destructure output '$g859_out' (want 42, #1281)" >&2
+  exit 1
+fi
+cat > "$g859dir/toplevel_record_destr.vibe" <<'EOF'
+let record { a, b } = record { a: 10, b: 32 }
+export let _start: () -> Int = () -> { a + b }
+EOF
+rm -f "$g859dir/toplevel_record_destr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g859dir/toplevel_record_destr.vibe" "$g859dir/toplevel_record_destr.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$g859dir/toplevel_record_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let record { .. } = ..' did not compile (#1281)" >&2
+  cat "$g859dir/toplevel_record_destr.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g859dir/toplevel_record_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g859_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: top-level record-pattern destructure output '$g859_out' (want 42, #1281)" >&2
+  exit 1
+fi
+# The value is evaluated ONCE, however many names the pattern binds: `mk`
+# appends to a log, so a re-evaluated RHS shows up as a second entry (242).
+cat > "$g859dir/toplevel_destr_once.vibe" <<'EOF'
+let log = []
+
+fn mk() -> (Int, Int) {
+  Array::push(log, 1)
+  (10, 32)
+}
+
+let (a, b) = mk()
+
+export let _start: () -> Int = () -> { a + b + Array::length(log) * 100 }
+EOF
+rm -f "$g859dir/toplevel_destr_once.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g859dir/toplevel_destr_once.vibe" "$g859dir/toplevel_destr_once.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$g859dir/toplevel_destr_once.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level destructure of a call did not compile (#1281)" >&2
+  cat "$g859dir/toplevel_destr_once.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g859dir/toplevel_destr_once.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g859_out" != "142" ]; then
+  echo "[compiler-gate] FAIL: top-level pattern let evaluated its value $((g859_out / 100)) times (want 1, output '$g859_out' vs 142, #1281)" >&2
+  exit 1
+fi
+# A REFUTABLE pattern is still rejected -- it can fail to match, and a
+# top-level binding has nowhere to fail to.
+cat > "$g859dir/toplevel_refutable_destr.vibe" <<'EOF'
+let Some(a) = Some(42)
+export let _start: () -> Int = () -> { a }
+EOF
+rm -f "$g859dir/toplevel_refutable_destr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g859dir/toplevel_refutable_destr.vibe" "$g859dir/toplevel_refutable_destr.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$g859dir/toplevel_refutable_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let Some(a) = ..' compiled (refutable, should be rejected, #1281)" >&2
+  exit 1
+fi
+if ! grep -q "requires an irrefutable pattern" "$g859dir/toplevel_refutable_destr.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: refutable top-level pattern let diag missing the clear #1281 message" >&2
+  cat "$g859dir/toplevel_refutable_destr.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 # The function-body forms (which already worked, per the #859 writeup) must
@@ -5836,7 +5909,7 @@ if [ "$g859_out" != "42" ]; then
   exit 1
 fi
 rm -rf "$g859dir"
-echo "[compiler-gate] top-level pattern let rejection (#859) ok"
+echo "[compiler-gate] top-level irrefutable pattern let (#1281) ok"
 
 # 45/45 (#897 Phase 4, ADR-0070): every directory in the repo must have
 # migrated off the old index.vibei/bare-index.vibe facade to a proper

@@ -85,14 +85,21 @@ covers your scope:
 |---|---|---|
 | Local counter, accumulator | `let mut x = ...` | block-scoped; cannot escape the function via async/spawn (ADR-0017) |
 | Growable buffer (bytes / chars) | `Bytes` / `String` | immutable binding, mutable interior |
-| Growable array | `ArrayBuilder` → `Array::from_array_builder` | preferred over `Array::push` on `Array` |
+| Growable array | `ArrayBuilder` → `Array::from_array_builder` | build-then-freeze; `Array::push` also works for growing an existing `Array` in place (#1285) |
 | Mutable cursor in a struct | `struct S { mut field: T }` + `r.field = v` | ADR-0052; same responsibility model as `Array[T]` field |
 | Cross-call / handler-mediated state | `effect Mut { ... } + handle ... with Mut` | ADR-0021; tail-resumptive is zero-cost |
 
+`Array::push(arr, v)` appends **in place**, and every reference to `arr`
+(alias, parameter, struct field, closure capture) observes the growth — the
+same on the linear, RC and wasm-gc backends. That contract is pinned by the
+`heap e2e: Array::push ..` tests in
+`lib/@vibe/compiler/tests/codegen_heap_e2e_test.vibe`, which run all three
+lanes (#1285). Earlier revisions of this page called it backend-dependent;
+that is no longer true. Prefer `ArrayBuilder` when you build a collection
+once and then only read it, `Array::push` when you grow an array you already
+hold.
+
 Anti-patterns:
-- `Array::push(arr, ...)` on a plain `Array` — semantics differ
-  per-backend (wasm-gc local-rebinds via best-effort, linear mutates
-  in-place); prefer `ArrayBuilder` for any non-trivial accumulation
 - `Ref[T]` — historically abandoned (ADR-0017), use the table above
 
 ### Collection naming convention (#1140, ADR-0082)
@@ -116,10 +123,10 @@ specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
 
 `Array`/`Bytes` themselves are NOT renamed under this convention — they
-predate it and a rename would be too disruptive. They remain low-level,
-backend-divergent mutable primitives (see the anti-pattern note above);
-route through `ArrayBuilder` (mutable accumulation) or `FrozenArray`
-(persistent + `Send`) instead of mutating a plain `Array` directly.
+predate it and a rename would be too disruptive. They remain low-level
+mutable primitives with backend-identical semantics (see the `Array::push`
+note above); reach for `ArrayBuilder` (build-then-freeze accumulation) or
+`FrozenArray` (persistent + `Send`) when you want those stronger contracts.
 
 ## Functions
 
@@ -338,14 +345,22 @@ x if x > 0          // guard (match arm only)
 
 パターン `let` (tuple destructure `let (a, b) = ..`、named-struct destructure
 `let Name::{ .. } = ..`、record destructure `let record { .. } = ..`) は
-すべて関数 / block body 内でのみ使う。top-level では現状すべて拒否される
-(`let record { ... } = r` は parse error、#760。`let (a, b) = ..` /
-`let Name::{ .. } = ..` は #830 の対応でこれらと同じ located error になった。
-根本原因は #859 参照 — 実装できれば top-level 対応も検討)。
+関数 / block body でも **top-level でも** 使える (#1281)。top-level では
+右辺は**ちょうど1回**評価され、各名前はそこからの射影として個別の global
+binding になる。
+
+top-level の制約 (いずれも明示的な located error):
+
+- **irrefutable なパターンのみ**。enum variant (`let Some(x) = ..`)、リテラル、
+  `|` は失敗しうるので拒否 — 関数内で `match` を使う
+- **型注釈を書けない** (`let (a, b): (Int, Int) = ..`)。注釈すべき単一の
+  binding が無いため
+- **`export let <pattern> = ..` は書けない**。`let <pattern> = ..` と
+  `export { a, b }` に分ける
 
 ```vibe
 let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
-  let (a, b) = (1, 2)              // tuple destructure (function/block body only)
+  let (a, b) = (1, 2)              // tuple destructure
   let r = record { x: 10, y: 20 }
   let record { x, y } = r          // any field names bind
   let Some((px, py)) = pt          // ctor pattern (partial: traps on mismatch)
@@ -934,6 +949,10 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 | `*_test.vibe` | Explicitly-run test companion; excluded from normal build/hash and cannot be imported |
 | `*_bench.vibe` | Explicitly-run benchmark companion; same exclusion rules as tests |
 | `_*.vibe` / `*.draft.vibe` | Explicit-only source; excluded from discovery, but inherits nearest package shared imports and is hashed when reached by relative import |
+
+> 境界・可視性・pin/update の正本は
+> [docs/module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
+> 以下はその要約。
 
 `index.vpkg` と同じ directory の通常 `*.vibe` だけが暗黙 build root。
 subdirectory source は direct root からの relative import/export で到達させる。

@@ -1074,6 +1074,62 @@ let run: () -> Int with { Async } = () -> {
 pump backend では Suspend(handle+2) は poller 扱い → 完了源が無く
 deadlock trap（§3.13 の縮退規則）。
 
+### 3.15 ADR-0089 — resolve → direct wake の waiter list（in-guest poll モデルの最適化、#1218）
+
+§3.13/§3.14 の残件だった「poll モデルの O(rounds×awaiters) 最適化」が
+landed。**意味論は不変** — 変わるのは「pump が待ち条件の変わりようがない
+poller を毎ラウンド resume して再検査させる」無駄だけで、観測可能な結果・
+決定性・deadlock trap はすべて保存される。設計は「wake = 再開可能化」:
+
+1. **データ**（`lib/@vibex/concurrent`）: `TaskCell` に `direct_wait` flag
+   と `waiters: Array[TaskCell]`、`Channel` に `waiters`。待つ側
+   （`TaskHandle::result_wait` / `Sender::send_wait` / `Receiver::recv_wait`）
+   は park 直前に**待ち先へ自分を登録**して `direct_wait` を立て、pump は
+   立っている task を skip する。完了側（terminal 遷移 / channel の
+   push・take・close）が flag を下ろす = wake。下りた task は通常の
+   round-robin で resume され**従来どおり条件を再検査する**ので、spurious
+   wake は単なる 1 poll と等価（`TaskHandle::wake` の手動 wake も同じ理由で
+   安全なまま）。
+2. **自己識別**: suspend payload は Int で cell を運べないため、module
+   global `conc_running_stack`（push/pop bracket: spawn_suspend の初回 leg
+   と park_kind wrapper の resumed leg）の top が「今走っている task」。
+   task 外（entry-level の blocking helper）は stack が空 → 登録 no-op →
+   従来の plain poll に自然に縮退する。
+3. **builtin future**（resolve → direct wake の本体): compiler hooks
+   `__aw_wait(f)` / `__aw_notify_resolve(f)` を library が export し、
+   linked lane が「entry が import している dep がこの2名を export して
+   いれば **auto-link**」する（ユーザは magic 名を import しない）。
+   `await_poll_pass` は両 hook が呼べるとき `__aw_poll` の 1 round を
+   `perform Async::Suspend(1)` から `let __aw_w = __aw_wait(fut)`
+   （登録 + 同じ Suspend(1)）へ差し替え — **imported concrete-Async-row
+   named fn の spine call は recv_wait と同型**なので suspend CPS /
+   evidence migration の実証済み機構にそのまま乗る（配線前に手書き mimic
+   fixture で実測してから配線）。`Future::resolve` の lowering は
+   func_table に notify が居るとき payload/state 書き込みの**後**に
+   `__aw_notify_resolve(f)` を追記。future cell の同定は登録時に slot 2 へ
+   採番した id（await は slot 0/1 しか読まない）+ parallel-array registry。
+   `host_future_get` を使う program は従来の waitable 形が優先
+   （hooks 形と排他、boundary 駆動なので in-guest direct wake の出番なし）。
+4. **安全弁**（意味論不変の要）: notify 漏れ（resolve が hook 無し unit で
+   コンパイルされた等）があっても、pump は「resume できる task が無い」
+   とき・pump_all は stall 検出時に、**progress epoch ごとに1回だけ**
+   全 `direct_wait` を一括クリアして poll に縮退する
+   （`conc_clear_direct_waits` + `TaskGroup.direct_valve_used`、
+   `conc_progress` が re-arm）。本当に blocked な task は再登録するので、
+   次の stall はこれまでどおり deadlock trap（`conc_require`）。pump_all は
+   ループ脱出時に parked task が残っていれば同じく trap — 「pump_all が
+   parked を残して静かに return する」新経路は作らない。
+5. **sleep との相互作用**: `conc_settle_sleep_debt` は direct-parked task を
+   `other_parked` に数えない — 「sleeper が resolve する future を待つ
+   awaiter」が仮想時計を堰き止めて force-settle 待ちになる従来の遠回り
+   （§3.13 の stall counter 経路）が、直ちに settle される形に改善。
+
+検証: `suspend_test.vibe` に direct-wake 意味論の pin を追加（複数 awaiter
+の一斉 wake / 手動 wake の spurious-poll 安全性 / direct-parked consumer +
+sleeping producer の clock 非阻塞 / builtin future の複数 awaiter direct
+wake）。既存の D2 fixture 群（cross-task resolve、result_wait、channel）は
+hooks mode で異なる schedule を通るが観測結果は不変。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -1211,6 +1267,8 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M2c-3 (producer 調査)** | producer を intra-wasm subtask で用意する案を検証 → cross-component reentrance（`cannot enter component instance`）で行き止まり。producer は **host**（HTTP body の readable `stream<u8>`）とする pivot を確定（§3.3.1） | done |
 | **ADR-0089 step 2 (future.*/stream.*)** | `future.new/read/write/drop-*` と `stream.new/read/write/drop-*` の canon emitter + `(future u32)`/`(stream u8)` 型 section + 固定シェイプ `comp_emit_component_wasm_future_value`/`comp_emit_component_wasm_stream_value`（self-contained 単一 task の read/write rendezvous、§3.12）。probe（`future_value/component.wat`・`stream_value/component.wat`、wasmtime 47 実測 42）→ byte-exact 移植。gate = `test_future_value_component_gate.sh`/`test_stream_value_component_gate.sh`（wasmtime CLI 直駆動、`more-async-builtins` flag） | done（#1218） |
 | **ADR-0089 step 4 (実ソース await → waitable)** | 実 `.vibe` ソースの `await` を component 経路へ配線（§3.14）: `host_future_get() -> Future[Int]`（cell state 2 = waitable）→ 拡張 `__aw_poll` の `Suspend(handle + 2)` → entry boundary `__entry_settle` → adapter の `future.read`/`waitable-set.wait`。`comp_emit_component_wasm_async_hostfuture`（memhost + 値渡し i64 adapter、u32 lift、wrap は core import sniff で自動 route）。gate = `test_hostfuture_source_component_gate.sh`（viberun 駆動、42 + wall >= 0.8×delay + p1 routing control） | done（#1218） |
+| **ADR-0089 resolve→direct wake** | in-guest poll モデルの O(rounds×awaiters) 最適化（§3.15、意味論不変）: waiter list + `direct_wait` skip + 完了 notify（library）、`__aw_wait`/`__aw_notify_resolve` hooks の auto-link（compiler）、once-per-progress の fallback valve で notify 漏れは poll に縮退・deadlock trap は保存 | done（#1218） |
+| **ADR-0089 Decision 5 (wit_gen async)** | `with { Async }` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
 | **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit 自体は ADR-0089 step 2 で landed — §3.12。残りは host 供給 stream への接続と surface lowering） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |

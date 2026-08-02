@@ -136,24 +136,32 @@ classify(99) = big
 
 ## 分配束縛と is 式
 
-### トップレベルの irrefutable pattern（目標）
+### トップレベルの irrefutable pattern
 
-**目標の言語**では、必ず一致する pattern はトップレベルでも束縛できる。
-[#1281](https://github.com/mizchi/vibe-lang/issues/1281) で追跡中であり、現在の
-コンパイラでは実行しない。RHS は top-level-pure で一度だけ評価される。enum variant・
-literal・guard・or-pattern のような refutable pattern は許可しない。
+必ず一致する pattern はトップレベルでも束縛できる ([#1281](https://github.com/mizchi/vibe-lang/issues/1281))。
+右辺は名前がいくつあっても**ちょうど1回**評価され、各名前はそこからの射影に
+なる。enum variant・literal・or-pattern のような refutable pattern は
+「失敗しうる」ので拒否される (関数の中で `match` を使う)。型注釈と
+`export let <pattern>` も書けない — 前者は注釈すべき単一の binding が無く、
+後者は `export { .. }` に分ける。
 
-```vibe skip
-// target (#1281): tuple / record / struct の irrefutable pattern を許可する。
+```vibe run
+import @vibe/prelude {
+  stdout_write
+}
+
 struct Version {
   major: Int; minor: Int
 }
+
 let (left, right) = (20, 22)
+
 let record {
   name
 } = record {
   name: "vibe"
 }
+
 let Version::{
   major, minor
 } = Version::{
@@ -165,9 +173,13 @@ fn main with { Stdout } {
 }
 ```
 
-### 現行互換: 関数本体で束縛
+```output
+sum = 42, vibe 0.3
+```
 
-現在は同じ束縛を関数本体に置く。次は現行コンパイラで runnable な fallback である。
+### 関数本体での束縛
+
+同じ形は関数本体でも使える (`is` 式による絞り込みと組み合わせられる)。
 
 ```vibe run
 import @vibe/prelude {
@@ -195,8 +207,13 @@ opt is Some(_) = true
 
 ## 蓄積は ArrayBuilder
 
-現行では `Array::push` を生 Array に使わず `ArrayBuilder` を使う（backend 依存の
-挙動を解消する API 方針は [#1285](https://github.com/mizchi/vibe-lang/issues/1285) で追跡中）。
+`ArrayBuilder` は「積んでから凍らせる」蓄積用の型で、まとめて作る場面の既定。
+`Array::push` も使える — 生 `Array` をその場で伸ばす in-place 操作で、その
+`Array` を指すすべての参照 (別名・引数・struct field・キャプチャ) から
+伸びた結果が見える。linear / RC / wasm-gc のどのバックエンドでも同じ挙動で、
+[#1285](https://github.com/mizchi/vibe-lang/issues/1285) の contract として
+compiler test に固定してある。使い分けは「1回作って以後読むだけなら
+`ArrayBuilder`、既にある `Array` を伸ばすなら `Array::push`」。
 
 ```vibe run
 import @vibe/prelude {

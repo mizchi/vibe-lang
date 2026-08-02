@@ -81,6 +81,10 @@ hex_encode("hi") = 6869
 
 ## Advanced: 契約 (`index.vpkg`) と version
 
+> 境界・可視性・pin の規則の正本は
+> [docs/module-system-oracle.md の「現行モデル」節](../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
+> 以下はチュートリアル向けの要約。
+
 パッケージの境界は `index.vpkg` — 公開 API を bodyless 宣言で列挙した
 **契約**で、実装との一致はコンパイラが照合する。#1128 以降は構造化ヘッダー
 (`name =` / `version =` / `description =` / `deps = { ... }`) が標準形:

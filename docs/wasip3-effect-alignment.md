@@ -256,9 +256,20 @@ trampoline を将来 `wasi:http/service` の
    compiled core の `vibe.host_future_get` import sniff で自動 route。
    実測: `let run: () -> Int with { Async } = () -> { let f =
    host_future_get(); await(f) }` が 300ms producer delay で 42 を
-   ~313ms (gate = `test_hostfuture_source_component_gate.sh`)。残り:
-   resolve→直接 wake の waiter list (poll モデルの O(rounds×awaiters)
-   最適化、意味論不変)、component 内 sleep (adapter は vibe.sleep を
+   ~313ms (gate = `test_hostfuture_source_component_gate.sh`)。
+   **resolve→直接 wake の waiter list も landed (spec §3.15、意味論不変)**:
+   TaskCell/Channel の waiter list + `direct_wait` skip + 完了 notify
+   (result_wait / send_wait / recv_wait)、builtin future は library hooks
+   `__aw_wait`/`__aw_notify_resolve` の auto-link 経由で `await` の
+   poll round が登録付きになり `Future::resolve` が直接 wake する。
+   notify 漏れは once-per-progress の fallback valve で poll に縮退し、
+   deadlock trap は保存 (安全弁が意味論不変を構成的に保証)。
+   **Decision 5 (wit_gen async) も landed**: `with { Async }` export →
+   `async func` (Async は import に出さない — async lift で実現される
+   suspension effect)、`Future[T]` → `future<T'>`、nominal `ByteStream` →
+   `stream<u8>`。一般 `Stream[T]`/guest 産 AsyncIter は Decision 4 の
+   boundary 規則どおり hard error のまま (docs/effect-wit-mapping.md)。
+   残り: component 内 sleep (adapter は vibe.sleep を
    提供しない — composer が明確な診断で reject)、TaskGroup 併用
    (mixing guard reject のまま)。
 

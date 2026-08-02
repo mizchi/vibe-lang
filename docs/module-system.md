@@ -1,5 +1,11 @@
-# vibe Module System (現行仕様)
+# vibe Module System (歴史的記述 — v1)
 
+> **現行の規則はここではない** (#1269): パッケージ境界・可視性・pin/update の
+> 正本は [module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)。
+> 本ドキュメントは v1 の設計経緯として残しており、以下に出てくる
+> `module {}` ブロック・`vibe.deps`/`vibe.lock` を唯一の依存モデルとする記述・
+> `index.vibe(i)` を境界とする記述は現行ではない。
+>
 > **v2 設計が確定しています** (ADR-0063/0064/0070, 2026-07-16):
 > [module-system-v2.md](module-system-v2.md)。契約・唯一の境界 `index.vpkg` /
 > nearest-owner 規則 / content-addressed `require` / `fn` 構文 / `module {}`

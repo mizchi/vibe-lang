@@ -26,9 +26,10 @@ fn main with { Stdout } {
   let c = 'A'
   // char リテラルは文字コード (Int)。'A' == 65
   stdout_write("x = \{x}\n")
-  // NOTE: Double の \{expr} 補間 / to_string は現状 checker/codegen gap
-  // (#1153 で追跡)。Double::to_int で丸めて確認するのが安全な代替。
+  stdout_write("d = \{d}, to_string = \{Double::to_string(d)}\n")
+  // Double も \{expr} 補間 / Double::to_string で出せる
   stdout_write("d*100 as int = \{Double::to_int(d * 100.0)}\n")
+  // 整数に丸めたいときは Double::to_int
   stdout_write("b = \{b}\n")
   stdout_write("s = \{s}\n")
   stdout_write("c = \{c}\n")
@@ -37,6 +38,7 @@ fn main with { Stdout } {
 
 ```output
 x = 42
+d = 3.14, to_string = 3.14
 d*100 as int = 314
 b = true
 s = answer 42

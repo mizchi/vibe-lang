@@ -20,14 +20,22 @@ import @vibe/core {
 //     import: `import <kebab-E>: interface { <kebab-op>: func(...) -> ...; }`.
 //   - `Error` never surfaces (it is vibe-internal control flow: an escaping
 //     throw is a component trap, not a capability).
+//   - `Async` never surfaces as an import either (ADR-0089 Decision 5,
+//     #1218): it is THE builtin suspension effect (Decision 1), realized as
+//     the export's `async func` lifting mode — an exported signature whose
+//     row carries Async is emitted as `export <name>: async func(...)`, the
+//     shape step 4's composition actually produces.
 //   - Effect names WITHOUT a matching `effect` declaration (host capabilities
-//     such as Fs / Env / Async) get a comment marker: they are provided by the
+//     such as Fs / Env) get a comment marker: they are provided by the
 //     vibe runtime's host imports and have no WIT mapping yet.
 //
 // Type mapping (vibe -> WIT): Int -> s64, Double -> f64, Bool -> bool,
 // String -> string, Char -> char, Unit -> (no result), Bytes -> list<u8>,
 // Array[T] -> list<T>, Option[T] -> option<T>, Result[T, E] -> result<T, E>,
-// Map[K, V] -> list<tuple<K, V>>, tuples -> tuple<...>. Anything else
+// Map[K, V] -> list<tuple<K, V>>, tuples -> tuple<...>,
+// Future[T] -> future<T'>, ByteStream -> stream<u8> (ADR-0089 Decision 5;
+// the eager `Stream[T]` builtin deliberately has NO mapping — only nominal
+// host-owned boundary streams may cross, spec §3.3). Anything else
 // (named user types, function types) is rejected with a clear error — the
 // golden output never silently mis-declares a boundary type.
 //
@@ -99,8 +107,14 @@ export fn wit_type_text(ty: TypeExpr) -> String with { Error } {
         "char"
       } else if name == "Bytes" {
         "list<u8>"
+      } else if name == "ByteStream" {
+        // ADR-0089 Decision 5 (#1218): the one NOMINAL boundary-stream
+        // handle -- a byte stream whose producer end the host owns
+        // (docs/spec/wasi-p3-async.md §2.4/§3.3; Decision 3's AsyncIter
+        // unification keeps general guest streams out of the boundary).
+        "stream<u8>"
       } else {
-        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, tuples)")
+        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, tuples, Future[T], ByteStream)")
       }
     },
     TyApp(head, args) => {
@@ -112,6 +126,20 @@ export fn wit_type_text(ty: TypeExpr) -> String with { Error } {
         "result<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>"
       } else if head == "Map" && Array::length(args) == 2 {
         "list<tuple<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>>"
+      } else if head == "Future" && Array::length(args) == 1 {
+        // ADR-0089 Decision 5 (#1218): `Future[T]` projects to the P3
+        // `future<T'>` payload type. Backed by a real lowering since step
+        // 4 (spec §3.13/§3.14: host-supplied future<u32> -> Future[Int]
+        // cell -> waitable-set.wait park), so this is a projection of an
+        // implemented boundary, not an aspiration.
+        //
+        // Deliberately NOT mapped: the eager `Stream[T]` builtin. Decision
+        // 5 restricts `stream<T'>` to NOMINAL boundary-stream handles whose
+        // producer end the host owns (`ByteStream` below) -- advertising a
+        // guest-produced stream value would declare an ABI the lowering
+        // cannot implement (spec §3.3: a producer cannot enter the
+        // component instance), so it stays a hard error here.
+        "future<\{wit_type_text(Array::get(args, 0))}>"
       } else {
         throw("wit: no WIT mapping for type '\{head}[..]'")
       }
@@ -136,8 +164,15 @@ export fn wit_type_text(ty: TypeExpr) -> String with { Error } {
 }
 
 /// `func(name: ty, ...) -> ret` text for a signature. Unit return omits `->`.
-fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr) -> String with { Error } {
+/// `is_async` (ADR-0089 Decision 5, #1218) prefixes `async` -- the P3
+/// async-lifted function type an `with { Async }` export projects to.
+fn wit_func_text_of(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr, is_async: Bool) -> String with { Error } {
   let sb = StringBuilder::new()
+  if is_async {
+    StringBuilder::push(sb, "async ")
+  } else {
+    ()
+  }
   StringBuilder::push(sb, "func(")
   let mut i = 0
   while i < Array::length(param_types) {
@@ -160,6 +195,10 @@ fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: 
     StringBuilder::push(sb, wit_type_text(ret))
   }
   StringBuilder::freeze(sb)
+}
+
+fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr) -> String with { Error } {
+  wit_func_text_of(param_names, param_types, ret, false)
 }
 
 /// Split a parsed effect row ("A, B") into names. The parser joins the
@@ -529,8 +568,16 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
         let mut ri = 0
         while ri < Array::length(resolved) {
           let rname = Array::get(resolved, ri)
-          if !is_exception_effect_name(rname) && !wit_array_contains(used_effects, rname) {
+          // ADR-0089 Decision 5 (#1218): `Async` is THE builtin suspension
+          // effect (D1) -- it surfaces as the export's `async func` lifting
+          // mode, never as a world import (even when the program carries a
+          // transparent local `effect Async { .. }` declaration, #752).
+          if rname == "Async" {
+            ()
+          } else if !is_exception_effect_name(rname) && !wit_array_contains(used_effects, rname) {
             Array::push(used_effects, rname)
+          } else {
+            ()
           }
           ri = ri + 1
         }
@@ -583,11 +630,28 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
   }
   let mut xo = 0
   while xo < Array::length(exports) {
-    let (ex_name, ex_param_names, ex_param_types, ex_ret, _ex_effects) = Array::get(exports, xo)
+    let (ex_name, ex_param_names, ex_param_types, ex_ret, ex_effects) = Array::get(exports, xo)
+    // ADR-0089 Decision 5 (#1218): an `with { Async }` export projects to
+    // an `async func` (the async-lifted export shape step 4's composition
+    // actually emits); resolve row labels first so `Async` reached via an
+    // effectset is seen too.
+    let mut is_async = false
+    let mut ai = 0
+    while ai < Array::length(ex_effects) {
+      let alabel = Array::get(ex_effects, ai)
+      let aresolved = array_empty()
+      wit_resolve_effect_names_into(alabel, wit_es_names, wit_es_members_list, aresolved)
+      if wit_array_contains(aresolved, "Async") {
+        is_async = true
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
     StringBuilder::push(sb, "  export ")
     StringBuilder::push(sb, wit_kebab_ident(ex_name))
     StringBuilder::push(sb, ": ")
-    StringBuilder::push(sb, wit_func_text(ex_param_names, ex_param_types, ex_ret))
+    StringBuilder::push(sb, wit_func_text_of(ex_param_names, ex_param_types, ex_ret, is_async))
     StringBuilder::push(sb, ";\n")
     xo = xo + 1
   }

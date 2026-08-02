@@ -10329,7 +10329,7 @@ fn scps_stmt_has_trigger(s: Stmt) -> Bool {
 /// `await(Future::ready(x))` collapses to `x` outright: the ready-future fast
 /// path the spec calls for, and it keeps the common case free of both the
 /// array and the loop.
-export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool) -> Unit {
+export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: Bool) -> Unit {
   // A user-defined top-level `await` shadows the builtin; leave those calls
   // alone (compile_call applies the same rule via `prefer_bound_call`).
   //
@@ -10338,6 +10338,17 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool) -> Unit {
   // awp_poll_fn_def). Passed in rather than scanned here so the deep
   // call-scan lives once, next to the boundary machinery's other keys
   // (linked_compile's lc_expr_calls_host_future).
+  //
+  // `waiter_hooks` (ADR-0089 #1218, resolve -> direct wake): the program
+  // can call `__aw_wait` / `__aw_notify_resolve` (@vibex/concurrent's
+  // direct-wake hooks -- linked imports or local defs). __aw_poll then
+  // routes each poll round through `__aw_wait` (register as waiter +
+  // suspend) instead of a bare perform, and compile_call appends the
+  // notify to every Future::resolve lowering, so in-task awaiters of a
+  // pending future are woken by the resolve instead of re-polled every
+  // pump round. host_future takes precedence: the waitable form needs its
+  // own payload protocol, and host-future programs are entry-boundary
+  // driven (no in-guest scheduler to direct-wake).
   if awp_program_defines_await(stmts) {
     ()
   } else {
@@ -10371,7 +10382,7 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool) -> Unit {
     // expanded (ctr counts expansions; the ready-future fast path leaves it
     // untouched). See awp_wrap for why the call-shape matters.
     if Array::get(ctr, 0) > 0 {
-      Array::push(stmts, awp_poll_fn_def(host_future))
+      Array::push(stmts, awp_poll_fn_def(host_future, waiter_hooks))
       if host_future {
         Array::push(stmts, awp_pay_fn_def())
         Array::push(stmts, awp_settle_fn_def())
@@ -10413,7 +10424,21 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool) -> Unit {
 /// effect-free-fn calls around the perform -- the shape the suspend CPS
 /// split accepts. The non-host-future form is kept byte-identical for
 /// every program that never touches `host_future_get`.
-fn awp_poll_fn_def(host_future: Bool) -> Stmt {
+///
+/// `waiter_hooks` (resolve -> direct wake, ADR-0089 #1218): route the
+/// round through the library's `__aw_wait(fut)` -- an IMPORTED (or local)
+/// concrete-Async-row named fn, the same callee shape as recv_wait, so
+/// both the suspend CPS split and the evidence migration accept it
+/// (measured via a hand-written mimic before wiring):
+///
+/// ```text
+/// while 0 < Array::get(fut, 0) {
+///   let __aw_w = __aw_wait(fut)     // register as waiter + Suspend(1)
+///   ()
+/// }
+/// Array::get(fut, 1)
+/// ```
+fn awp_poll_fn_def(host_future: Bool, waiter_hooks: Bool) -> Stmt {
   let fut = EIdent("__aw_fut", -1)
   let state = ECall(EIdent("Array::get", -1), [
     fut,
@@ -10443,6 +10468,11 @@ fn awp_poll_fn_def(host_future: Bool) -> Stmt {
       EIdent("__aw_w", -1)
     ], -1)
     ELet("__aw_p", pay, ELet("__aw_w", suspend, ELet("__aw_s", settle, EUnit, -1), -1), -1)
+  } else if waiter_hooks {
+    let wait_call = ECall(EIdent("__aw_wait", -1), [
+      fut
+    ], -1)
+    ELet("__aw_w", wait_call, EUnit, -1)
   } else {
     let suspend = ECall(EIdent("perform", -1), [
       ECall(EIdent("Async::Suspend", -1), [

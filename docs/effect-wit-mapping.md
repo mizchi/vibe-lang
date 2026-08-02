@@ -7,12 +7,15 @@
 > migration lands, host-capability comments and Error-as-trap below are known
 > implementation/spec correspondence debt, not the target executable contract.
 >
-> **Async / future / stream (2026-07-31):** the `Async` comment-marker fallback
-> below is likewise debt, not policy. The target mapping is decided by
-> [ADR-0089](wasip3-effect-alignment.md) Decision 5: `Future[T]` →
-> `future<T'>`, an export `with { Async }` → `async func`, and `stream<T'>`
-> only for nominal host-owned boundary-stream handles (`ByteStream` etc.) —
-> a guest-produced AsyncIter in a component signature stays a hard error.
+> **Async / future / stream (2026-08-01, implemented):** the
+> [ADR-0089](wasip3-effect-alignment.md) Decision 5 mapping is now the
+> implementation: `Future[T]` → `future<T'>`, an export `with { Async }` →
+> `async func` (with `Async` never surfacing as an import — it is the
+> suspension effect, realized by the async lift the step-4 composition
+> emits), and `stream<u8>` only for the nominal host-owned boundary-stream
+> handle `ByteStream` — a guest-produced eager `Stream[T]`/AsyncIter in a
+> component signature stays a hard error (spec §3.3: the producer end
+> cannot enter the component instance).
 
 `vibe compile --wit` (launcher) / `VIBE_EMIT_WIT=1` (compiler wasm) render a
 vibe file's **effect surface** as a WIT world. `vibe serve` writes the same
@@ -28,8 +31,9 @@ The world surface is defined by the **entry file's exported functions**:
 |---|---|
 | `export let f: (A) -> B [with { E, .. }] = ...` | `export <kebab f>: func(...)` |
 | effect `E` named in an exported signature's `with` row, declared via `effect E { Op(Args) -> Ret; ... }` | `import <kebab E>: interface { <kebab Op>: func(...) -> ...; }` |
-| effect named in a `with` row **without** a declaration (host capability: `Fs`, `Env`, `Async`, ...) | comment marker `// host capability effect 'E' (provided by the vibe runtime; no WIT mapping yet)` |
+| effect named in a `with` row **without** a declaration (host capability: `Fs`, `Env`, ...) | comment marker `// host capability effect 'E' (provided by the vibe runtime; no WIT mapping yet)` |
 | `Error` | never surfaces (vibe-internal control flow; an escaping throw is a component trap, not a capability) |
+| `Async` in an exported signature's row (declared or not) | the export becomes `async func(...)`; `Async` never surfaces as an import (ADR-0089 Decision 5 — it is the builtin suspension effect, realized by the async lift) |
 
 Notes:
 
@@ -68,10 +72,15 @@ uppercase letters split per letter (`URL` → `u-r-l`) — keep to CamelCase.
 | `Result[T, E]` | `result<T, E>` |
 | `Map[K, V]` | `list<tuple<K, V>>` |
 | `(A, B, ...)` | `tuple<A, B, ...>` |
+| `Future[T]` | `future<T'>` (ADR-0089 Decision 5; backed by the step-4 lowering, spec §3.13/§3.14) |
+| `ByteStream` | `stream<u8>` (nominal host-owned boundary stream only) |
 
-Anything else (named user types, function types) is **rejected with an
-error** — the generated WIT never silently mis-declares a boundary type.
-User enum/struct → WIT `variant`/`record` is a follow-up.
+Anything else (named user types, function types, the eager `Stream[T]`
+builtin) is **rejected with an error** — the generated WIT never silently
+mis-declares a boundary type. User enum/struct → WIT `variant`/`record` is
+a follow-up; general `stream<T'>` stays restricted to nominal host-owned
+handles by ADR-0089 Decision 4/5 (a guest-side producer cannot enter the
+component instance, spec §3.3).
 
 ## Example
 

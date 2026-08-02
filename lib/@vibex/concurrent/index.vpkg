@@ -112,4 +112,17 @@ fn sleep_wait(ms: Int) -> Unit with { Async }
 fn TaskHandle::wake[rg, e, T](h: TaskHandle[rg, e, T], v: Int) -> Bool
 // ADR-0089 D2 (#1218): suspendable-lane join -- a task handle IS a future;
 // polls the sibling's terminal status, parking with Suspend(1) otherwise.
+// Since the direct-wake slice the awaiter parks REGISTERED on the target
+// cell and the pump skips it until the completion notify (semantics
+// unchanged -- see concurrent.vibe's TaskCell.direct_wait).
 fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T, TaskError] with { Async }
+
+// --- builtin-future await hooks (ADR-0089 #1218, resolve -> direct wake).
+// COMPILER-FACING, not user API: the linked-compile lane auto-links these
+// whenever a program imports anything from a file exporting them, routes
+// each `await` poll round through __aw_wait, and appends
+// __aw_notify_resolve to every `Future::resolve` lowering. The `f`
+// parameter is the builtin future's [state, payload] cell (typed here as
+// its runtime shape, Array[Int]).
+fn __aw_wait(f: Array[Int]) -> Int with { Async }
+fn __aw_notify_resolve(f: Array[Int]) -> Unit
