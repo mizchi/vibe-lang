@@ -158,6 +158,26 @@ fn lookup_stream(name: String) -> Option[Type] {
         CtInt
       ])
     ], CtInt, Some("Async")))
+  } else if name == "host_stream_close" {
+    // host_stream_close: (Stream[Int]) -> Unit   (pure)
+    //
+    // ADR-0089 Decision 3 follow-up (#1218): release the readable end of a
+    // host stream the guest is done with BEFORE end of stream. The read
+    // half drops the end only when it reaches EOS, so a partially consumed
+    // stream (`take the first 4 bytes, then stop`) otherwise pins its
+    // handle for the component instance's whole lifetime -- the limitation
+    // recorded at the end of spec §3.18.
+    //
+    // Not `Async`, unlike `host_stream_next`: dropping a readable end is a
+    // canon call that never blocks, so it needs no park and no boundary
+    // settle -- the injected `__hs_close` calls the adapter directly. It is
+    // also IDEMPOTENT: closing an already-closed (or fully drained) stream
+    // is a no-op, because the cell's state word is what gates the drop.
+    Some(CtFn([
+      CtNamed("Stream", [
+        CtInt
+      ])
+    ], CtUnit, None))
   } else if name == "Stream::map" {
     // Stream::map: (Stream[T], (T) -> U) -> Stream[U]   (lazy)
     Some(CtFn([
