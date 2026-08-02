@@ -59,6 +59,41 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
 
 ## Decision
 
+### 0. 粒度には**2つの独立した軸**がある (provider 軸 / consumer 軸)
+
+以降の決定はすべてこの分離を前提にする。混同すると、片方の都合でもう片方の
+表現を壊すことになる。
+
+| 軸 | 単位 | 誰のための粒度か | 具体物 |
+|---|---|---|---|
+| **provider 軸** | effect 名 (`Fs` / `Http` / `Socket`) | **実装契約**。どの WASI/host provider が実装するか | host import 束、WIT interface、binding、resource kind |
+| **consumer 軸** | operation (`Http::request`) | **最小権限**。呼ぶ側が `with` に何を宣言するか | `with { ... }` row、`effectset`、ADR-0088 の `allows` |
+
+- provider 軸を consumer の都合で割ってはならない。`Http` を
+  `HttpServer`/`HttpClient`/`HttpIncoming` という**別 effect** に分割すると、
+  1つの host HTTP provider に対する実装契約が3つに断片化する
+  (raw import 層は `Http` のまま残るので、層ごとにラベルが食い違う —
+  実際 `builtins_net.vibe` が現にその状態にある)。
+- consumer 軸の細粒度は **ADR-0071 が既に定めた operation-level row** で表す。
+  `with { Http::request }` (egress) と `with { Http::listen }` (serve) は
+  別々に書ける。束ねた名前が欲しければ
+  `effectset Http::Client = { Http::request, Http::response_status, ... }` —
+  effectset は透明な compile-time alias で runtime identity を持たないので、
+  provider 契約を汚さない。
+- resource kind パラメータ (本 ADR の主題) は**第3の軸**であり、provider 軸の
+  「どのインスタンスか」を指す (`Fs[SrcTree]` の `SrcTree`)。operation 軸とは
+  直交する。ADR-0071 が `NormalizedEffectArguments` を型引数 / region 引数 /
+  logical resource 引数の**別 kind**として保持すると決めているのはこのため。
+
+> **実装状況 (#1343)**: consumer 軸は `perform Eff::Op` の経路でしか効いて
+> いなかった。builtin 呼び出しの経路は `builtin_call_effect` が裸の effect
+> ラベルを返し `decl_authorizes_effect(declared, "Fs")` で照合していたため、
+> `with { Fs::read_file }` は `missing { Fs }` で reject され、**host
+> capability には effect 全体以外の粒度が存在しなかった**。`with { Http }`
+> のような粗い row が強制されていたのはこれが原因。builtin 経路を
+> operation ラベルでも認可するよう修正した (裸の effect も従来どおり通るので
+> 純粋な緩和)。
+
 ### 1. 宣言側構文: 型パラメータリスト内の **bound 付きパラメータ**
 
 ```vibe skip
@@ -174,6 +209,12 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**
 `Fs::Root` のような kind 名を書けるようになるのは先である。したがって
 **最初に実装できるのは構文ではなく分類 metadata** である。
 
+0. **(着地済み、#1343)** builtin 呼び出し経路に consumer 軸を通す —
+   `with { Fs::read_file }` / `with { Http::request }` が builtin を認可する。
+   これで `Http` が広すぎる問題は provider 軸を割らずに解ける。後続として
+   `builtins_net.vibe` の `HttpServer`/`HttpClient`/`HttpIncoming` は
+   **provider ラベルではなく `Http::*` operation 上の effectset** へ寄せる
+   (provider 軸は `Http` に統一)。
 1. **(構文不要・最小)** registry のメタデータ列 + `effect_class` の導入。
    散在する host-effect リテラル列
    (`test_bench_ambient_effects`、`cache_safe_row`、`wit_gen` の暗黙規則) を

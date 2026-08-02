@@ -374,6 +374,31 @@ err_generic_effect_perform_arity.vibe / err_generic_effect_row_targ.vibe +
 compiler_gate.sh 79、unit tests
 lib/@vibe/compiler/tests/checker_generic_effect_test.vibe。
 
+**進捗 (2026-08-02, #1343)**: 項目 3 の **builtin slice** が着地した。
+それまで operation-level row が効くのは `perform Eff::Op` の経路だけで、
+**host capability には effect 全体以外の粒度が存在しなかった** —
+builtin 呼び出しの経路 (`checker_effects.vibe` の `builtin_call_effect`) は
+裸の effect ラベルを返し `decl_authorizes_effect(declared, "Fs")` で照合して
+いたため、`with { Fs::read_file }` は `missing { Fs }` で reject されていた
+(実測)。これが `with { Http }` のような粗い row を強制していた原因で、
+1つのラベルに「ポートを bind して serve する権限」と「任意 URL への
+outbound request」が同居していた。
+
+builtin 経路を operation ラベルでも認可するよう修正した
+(`builtin_call_op_label`: 修飾 builtin は canonical 名がそのまま operation id、
+非修飾の `sh` 等は従来どおり effect のみ)。**裸の effect を先に試すので純粋な
+緩和**であり、既存の `with { Fs }` / `with { Http }` は一切変わらない。
+診断も ADR-0071 の契約どおり不足 operation を名指しする
+(`missing { Fs::write_file }`) — effect 全体への widening を勧めない。
+
+ここで確認された設計上の軸の分離を記録しておく: **effect 名は provider 軸**
+(どの WASI/host provider が実装するか — host import 束・WIT interface・
+binding の単位) であり、**row は consumer 軸** (呼ぶ側の最小権限)。
+consumer 側の細粒度が欲しいからといって provider ラベルを分割
+(`Http` → `HttpServer`/`HttpClient`/`HttpIncoming`) すると実装契約が断片化
+するので、細粒度は operation-level row と effectset で表す。
+回帰ロック: fixtures/effect_builtin_operation_row.vibe + compiler_gate.sh 80。
+
 **未着手のまま残っている範囲**: ADR-0076 evidence vector への正規化 row
 の接続 (項目 6)、および row 包含での instantiation 区別 (上記 v1 の
 base-name 比較を OperationRef 単位へ精密化する作業)。
