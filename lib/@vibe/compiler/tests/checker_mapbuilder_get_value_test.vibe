@@ -1,0 +1,30 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err, check_source_ok
+}
+
+//# Misc
+
+// #1310 (Codex review): mirrors checker_map_value_test.vibe's #983 coverage
+// for Map::get -- MapBuilder::get's direct-call fast path
+// (direct_builtin_return) types every call `Option[CtUnknown]`, which
+// unifies with anything. Without a dedicated refinement branch (like
+// Map::get's), an annotated `MapBuilder[K, V]` receiver's value type never
+// reaches the consumer, so a wrongly-typed `match`/`let` on the Some payload
+// went uncaught.
+
+test "1310 repro: MapBuilder::get result reaches a wrong consume" {
+  assert(check_source_err("fn main() -> Int {\n  let b = MapBuilder::new()\n  MapBuilder::set(b, \"a\", 1)\n  let f: (MapBuilder[String, Int]) -> String = (bb) -> {\n    match MapBuilder::get(bb, \"a\") {\n      Some(v) => v,\n      None => \"none\"\n    }\n  }\n  0\n}"))
+}
+
+test "1310: annotated MapBuilder receiver types the Some payload correctly" {
+  assert(check_source_ok("fn use_it(b: MapBuilder[String, Int]) -> Int {\n  match MapBuilder::get(b, \"a\") {\n    Some(v) => v + 1,\n    None => 0\n  }\n}\nfn main() -> Int {\n  let b = MapBuilder::new()\n  MapBuilder::set(b, \"a\", 41)\n  use_it(b)\n}"))
+}
+
+test "1310: untyped MapBuilder receiver stays tolerated" {
+  // A lambda parameter with no annotation gives the receiver no builder
+  // shape -- the refinement must not fire (tolerate discipline, same as
+  // Map::get's untyped-receiver case).
+  assert(check_source_ok("fn main() -> Int {\n  let use_untyped = (b) -> {\n    match MapBuilder::get(b, \"k\") {\n      Some(v) => v,\n      None => 0\n    }\n  }\n  0\n}"))
+}

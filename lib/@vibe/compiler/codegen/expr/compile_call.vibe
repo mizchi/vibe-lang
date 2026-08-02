@@ -628,7 +628,7 @@ export fn cc_builtin_call_ret_kind(e: Expr, local_names: Array[String], ctx: Com
     let bcallee = get_ecall_callee(e)
     if is_eident(bcallee) {
       let bn = canonical_builtin_name(get_eident_name(bcallee))
-      let kind = if bn == "eq" || bn == "not" || bn == "String::equals" || bn == "String::contains" || bn == "String::starts_with" || bn == "String::ends_with" || bn == "Array::contains" || bn == "Array::any" || bn == "Array::all" || bn == "Map::has_key" || bn == "Map::has" || bn == "map_has" || bn == "Path::is_absolute" || bn == "Fs::exists" || bn == "Fs::is_dir" || bn == "Fs::is_file" {
+      let kind = if bn == "eq" || bn == "not" || bn == "String::equals" || bn == "String::contains" || bn == "String::starts_with" || bn == "String::ends_with" || bn == "Array::contains" || bn == "Array::any" || bn == "Array::all" || bn == "Map::has_key" || bn == "Map::has" || bn == "map_has" || bn == "MapBuilder::has_key" || bn == "Path::is_absolute" || bn == "Fs::exists" || bn == "Fs::is_dir" || bn == "Fs::is_file" {
         1
       } else if bn == "__to_string" || bn == "Int::to_string" || bn == "Double::to_string" || bn == "Float::to_string" || bn == "String::concat" || bn == "String::substring" || bn == "String::trim" || bn == "String::from_char_code" || bn == "String::join" || bn == "Env::get" || bn == "Env::args_get" || bn == "Fs::read_file" || bn == "Fs::getcwd" || bn == "sh" {
         2
@@ -910,7 +910,7 @@ export fn cc_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
 /// arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
 /// drops it, so the dup would leak; #704). Other argument positions are owning.
 fn cc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
 /// #745: retain a borrowed argument that a STORING inline builtin (Map::set /
@@ -4296,6 +4296,181 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       emit_local_get(buf, fm_l)
       nl + 3
+    }
+    else if fname == "MapBuilder::has_key" {
+      // #1310: O(n) scan over the handle-indirect storage (same layout
+      // MapBuilder::set's search loop walks above), mirroring
+      // cc_map_has_linear_scan's block-i64 shape.
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let (mhk_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+      let mb_l = nl
+      let mk_l = nl + 1
+      let mc_l = nl + 2
+      let st_l = nl + 3
+      let mi_l = nl + 4
+      Array::push(local_names, "__mhk_map")
+      Array::push(local_names, "__mhk_key")
+      Array::push(local_names, "__mhk_cnt")
+      Array::push(local_names, "__mhk_st")
+      Array::push(local_names, "__mhk_i")
+      emit_local_set(buf, mk_l)
+      emit_local_set(buf, mb_l)
+      emit_local_get(buf, mb_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_local_set(buf, mb_l)
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, mc_l)
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_set(buf, st_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, mi_l)
+      emit_block_i64(buf)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, mi_l)
+      emit_local_get(buf, mc_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_local_get(buf, mk_l)
+      emit_call(buf, mhk_eq_fi)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_i64_const(buf, 1)
+      emit_br(buf, 3)
+      emit_end(buf)
+      emit_local_get(buf, mi_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, mi_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      emit_end(buf)
+      // Under RC a Bool is a TAGGED scalar (n << 1); see Map::has_key above.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
+      nl + 5
+    }
+    else if fname == "MapBuilder::get" {
+      // #1310: same scan as MapBuilder::has_key, but on a hit the found
+      // value is wrapped via a synthesized `Some(..)` call (same technique
+      // as int_parse_expr / Array::find's Option construction above) —
+      // unlike Map::get, this does NOT use the "0 on miss" raw-value
+      // convention.
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let (mbg_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+      let mb_l = nl
+      let mk_l = nl + 1
+      let mc_l = nl + 2
+      let st_l = nl + 3
+      let mi_l = nl + 4
+      let mv_l = nl + 5
+      let res_l = nl + 6
+      Array::push(local_names, "__mbg_map")
+      Array::push(local_names, "__mbg_key")
+      Array::push(local_names, "__mbg_cnt")
+      Array::push(local_names, "__mbg_st")
+      Array::push(local_names, "__mbg_i")
+      Array::push(local_names, "__mbg_val")
+      Array::push(local_names, "__mbg_res")
+      let mut nl2 = nl + 7
+      emit_local_set(buf, mk_l)
+      emit_local_set(buf, mb_l)
+      emit_local_get(buf, mb_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_local_set(buf, mb_l)
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, mc_l)
+      emit_local_get(buf, mb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_set(buf, st_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, mi_l)
+      nl2 = ce(buf, EIdent("None", -1), local_names, nl2, ctx, ld)
+      emit_local_set(buf, res_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, mi_l)
+      emit_local_get(buf, mc_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_local_get(buf, mk_l)
+      emit_call(buf, mbg_eq_fi)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_set(buf, mv_l)
+      // The builder's storage array still owns this reference (retained by
+      // MapBuilder::set's cc_retain_stored_arg when it was stored) -- the
+      // `Some(..)` box below is a SECOND, independent owner, and ctor
+      // construction's arg-retention only dups a projection / borrow-
+      // returning-call / loop-borrowed shape (see the `ce`-mixed comment on
+      // that `if` in the ctor branch above), not a bare synthesized EIdent
+      // like `__mbg_val`. Without this dup a heap-valued V is freed once for
+      // two owners (double-free): the frozen builder and the returned
+      // Option both eventually drop it. Mirrors MapBuilder::set's own
+      // cc_retain_stored_arg dup on the way IN.
+      if ctx.enable_rc {
+        emit_rc_dup_guarded(buf, mv_l, ctx.rc_shadow)
+      } else {
+        ()
+      }
+      nl2 = ce(buf, ECall(EIdent("Some", -1), [
+        EIdent("__mbg_val", -1)
+      ], -1), local_names, nl2, ctx, ld)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, mi_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, mi_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl2
     }
     else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char") {
       // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values
