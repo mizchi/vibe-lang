@@ -135,6 +135,26 @@ let shape6 = (k) -> {
   acc
 }
 
+// Shape 7 (#1310 review): `MapBuilder::get` reads a heap-valued entry the
+// builder's storage still owns and wraps it in a fresh `Some(..)` -- a
+// SECOND independent owner of the same string. Without a dup at the read
+// site, the frozen `Map` (which copies the SAME owned pointer out of the
+// builder's storage) and the returned `Option` both eventually drop it,
+// double-freeing. Deliberately keeps both the `Option` and the frozen `Map`
+// alive and reads the string out of each.
+let shape7 = () -> {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, "a", String::concat("hello", "-world"))
+  let got = MapBuilder::get(b, "a")
+  let m = MapBuilder::freeze(b)
+  let mut acc = 0
+  match got {
+    Some(s) => { acc = acc + String::length(s) },
+    None => ()
+  }
+  acc + String::length(Map::get(m, "a"))
+}
+
 let main = () -> Int {
   let names = ["a", "b", "c"]
   let effs = [[TInt], [TFn([TInt], TInt)], [TInt]]
@@ -159,6 +179,7 @@ let main = () -> Int {
     acc = acc + shape4(tys)
     acc = acc + shape5(tys)
     acc = acc + shape6(k)
+    acc = acc + shape7()
     k = k + 1
   }
   acc

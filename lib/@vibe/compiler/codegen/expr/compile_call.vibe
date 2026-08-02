@@ -4441,6 +4441,21 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 8)
       emit_local_set(buf, mv_l)
+      // The builder's storage array still owns this reference (retained by
+      // MapBuilder::set's cc_retain_stored_arg when it was stored) -- the
+      // `Some(..)` box below is a SECOND, independent owner, and ctor
+      // construction's arg-retention only dups a projection / borrow-
+      // returning-call / loop-borrowed shape (see the `ce`-mixed comment on
+      // that `if` in the ctor branch above), not a bare synthesized EIdent
+      // like `__mbg_val`. Without this dup a heap-valued V is freed once for
+      // two owners (double-free): the frozen builder and the returned
+      // Option both eventually drop it. Mirrors MapBuilder::set's own
+      // cc_retain_stored_arg dup on the way IN.
+      if ctx.enable_rc {
+        emit_rc_dup_guarded(buf, mv_l, ctx.rc_shadow)
+      } else {
+        ()
+      }
       nl2 = ce(buf, ECall(EIdent("Some", -1), [
         EIdent("__mbg_val", -1)
       ], -1), local_names, nl2, ctx, ld)

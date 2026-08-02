@@ -1598,7 +1598,7 @@ fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "Array::slice" || name == "Array::concat" || name == "Array::filter" || name == "Array::reverse" || name == "Array::sort" || name == "FixedArray::make" {
     Some(CtArray(CtUnknown))
   }
-  else if name == "Some" || name == "Array::find" || name == "MapBuilder::get" {
+  else if name == "Some" || name == "Array::find" {
     Some(CtOption(CtUnknown))
   }
   else {
@@ -3836,6 +3836,27 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result), s3, c2)
+        } else if name == "MapBuilder::get" && Array::length(args) == 2 {
+          // #1310 (Codex review): mirror Map::get's #983 refinement just
+          // above -- an annotated/parameter receiver `MapBuilder[K, V]`
+          // should refine the direct-call fast path's bare
+          // `Option[CtUnknown]` (direct_builtin_return) to `Option[V]`, so a
+          // wrongly-typed consumer of the looked-up value is caught by the
+          // ordinary unify instead of silently passing (CtUnknown unifies
+          // with anything). Untyped receivers keep the conservative
+          // Option[CtUnknown].
+          let (mb_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (mbk_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let s3 = check_assignable(CtString, subst_apply(s2, mbk_ty), s2, errors, "argument type mismatch for MapBuilder::get", call_off)
+          let mbresult = match subst_apply(s3, mb_ty) {
+            CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
+              CtOption(subst_apply(s3, Array::get(margs, 1)))
+            } else {
+              CtOption(CtUnknown)
+            },
+            _ => CtOption(CtUnknown)
+          }
+          (tab_call_ty(tytab, call_off, mbresult), s3, c2)
         } else if name == "Map::values" && Array::length(args) == 1 {
           // #983: values() of a value-slotted map is `Array[v]`, not
           // `Array[CtUnknown]`.
