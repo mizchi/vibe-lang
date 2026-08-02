@@ -1148,8 +1148,8 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       EIdent("Map::delete", _) => Some("Map"),
       EIdent("MapBuilder::freeze", _) => Some("Map"),
       // Stream-returning builtins (ADR-0012 eager Array-backed model): lets
-      // `for await x in Stream::once(v)` — or a let-bound stream via
-      // extend_var_types — classify as "Stream" so classify_for_await_loop
+      // `for x in Stream::once(v)` — or a let-bound stream via
+      // extend_var_types — classify as "Stream" so the for-loop classification
       // lowers it to the plain array loop instead of the pull-closure loop
       // (#822: the pull desugar called the stream value as a closure —
       // call_indirect on an array pointer = table OOB trap).
@@ -1998,7 +1998,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
           // Record the head name of the return type: `TyName(n)` -> n,
           // `TyApp(n, _)` -> n (so a generic `iter() -> LazyIter[T]` resolves to
           // `LazyIter`, and an async `next() -> Future[Option[..]]` resolves to
-          // `Future` so the `for await` desugar can tell async from sync).
+          // `Future` so the for-loop desugar can tell async from sync).
           let rn = match ret {
             Some(te) => match te {
               TyName(n) => n,
@@ -2129,7 +2129,7 @@ fn fn_return_type(fn_returns: Array[(String, String)], fname: String) -> Option[
 /// `nextcall` is the expression yielding `Option[(T, Self)]` for the current
 /// cursor `__iter_cur`: a bare `C::next(__iter_cur)` for a sync iterator, or
 /// `await(C::next(__iter_cur))` (a `Future[Option[(T, Self)]]` unwrapped) for an
-/// async iterator under `for await`.
+/// async iterator under `for`.
 fn build_iter_for_with(name: String, nextcall: Expr, iter: Expr, body: Expr) -> Expr {
   let some_arm = (PCtor("Some", [
     PTuple([
@@ -2197,7 +2197,7 @@ fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter
   ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body), -1), -1), -1)
 }
 
-/// `for await` over an async iterator type `C` whose
+/// `for` over an async iterator type `C` whose
 /// `C::next(self) -> Future[Option[(T, Self)]] with { Async }`: identical to the
 /// sync loop but each step `await`s the next-future. `await` is the M1a builtin
 /// (`await(Future[T]) -> T`); on the synchronous ready-future codegen it unwraps
@@ -2209,9 +2209,9 @@ fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> 
   build_iter_for_with(name, awaited, iter, body)
 }
 
-/// `for await x in pull { body }` over a pull closure `pull : () -> Option[T]`
+/// `for x in pull { body }` over a pull closure `pull : () -> Option[T]`
 /// (host-state async iterator, e.g. `stdin_stream`): drive `pull()` to `None`.
-/// This is the M2c-3 pull model, moved here from the parser so `for await` shares
+/// This is the M2c-3 pull model, moved here from the parser so `for` shares
 /// one type-directed desugar with the trait iterators (a struct `C` with a
 /// `C::next` drives the iterator loop above; anything else — a pull closure or a
 /// call whose return type is unknown — falls back to this).
@@ -2232,24 +2232,6 @@ fn build_pull_for_in(value_name: String, index_name: Option[String], iterable: E
     None => core_loop
   }
   ELet("__pull_next", iterable, with_index, -1)
-}
-
-/// Unwrap a `for await` marker: the parser wraps the iterable of a `for await`
-/// loop in `__await_iter(<iterable>)` (a non-builtin sentinel call) so this pass
-/// — which has type information the parser lacks — picks the iterator vs pull
-/// desugar. Returns the inner iterable when `iter` is the marker.
-fn for_await_inner(iter: Expr) -> Option[Expr] {
-  match iter {
-    ECall(callee, args, _) => match callee {
-      EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
-        Some(Array::get(args, 0))
-      } else {
-        None
-      },
-      _ => None
-    },
-    _ => None
-  }
 }
 
 /// Does `fname`'s recorded return-type head indicate an async iterator
@@ -2280,57 +2262,31 @@ fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) ->
   }
 }
 
-/// #827: located "cannot classify this `for await`" error. The desugar has no
-/// source text, so the position rides the checker's `[@off=N]` marker format
-/// (decoded to line:col by the located-diagnostics layer where available;
-/// harmless plain text otherwise). String::concat only (NUL hazard for `+`).
-fn for_await_classify_error(inner: Expr) -> String {
-  let off = match inner {
-    EIdent(_, o) => o,
-    ECall(_, _, o) => o,
-    _ => -1
-  }
-  let base = "for await: cannot infer the type of the loop source; annotate it (e.g. `s: Stream[Int]`) or iterate a Stream/Array expression directly"
-  if off >= 0 {
-    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
-  } else {
-    base
-  }
-}
-
-/// `for await x in inner { body }`: classify `inner` and build the loop.
-/// `rinner` / `rbody` are the already-rewritten iterable / body. A struct type
-/// with a `::next` drives the iterator loop (`await`-wrapped when async); a
-/// Stream/Array head drives the plain array loop (#822); a positively
-/// pull-shaped source (see for_await_is_pull_source) drives the pull-closure
-/// loop. Anything else — most commonly an UNannotated lambda param whose type
-/// this syntactic pass cannot see — is a compile error (#827): the old silent
-/// pull fallback compiled fine and then trapped at runtime (call_indirect on
-/// the stream's array pointer).
-fn classify_for_await_loop(name: String, idx: Option[String], inner: Expr, rinner: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
-  match infer_arg_type_name(inner, struct_sets, var_types, fn_returns) {
-    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
-      if fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
-        build_await_iter_for(name, tn, rinner, rbody)
-      } else {
-        build_iter_for(name, tn, rinner, rbody)
-      }
+/// #1350: the trait-free arm of the for-loop classification. Without a
+/// declared trait there are no `impl ::next` methods to dispatch, so a plain
+/// `for x in e` keeps its EForIn (array) lowering -- but the two ASYNC shapes
+/// still classify here, because they never needed the trait machinery and
+/// their consumers are trait-free files (the prelude's AsyncIter terminals,
+/// @vibe/console's pull streams). This is the `for await` path's old
+/// "runs regardless of whether a trait is declared" property, kept after the
+/// syntax went away.
+///
+/// #827's hazard is gone by construction rather than by diagnostic: the
+/// UNCLASSIFIED fallback is now the array loop (correct for the eager
+/// Array-backed `Stream`, ADR-0012), not the pull loop that used to
+/// call_indirect an array pointer. The pull loop fires only on a POSITIVE
+/// function-shaped classification.
+fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) && fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
+      build_await_iter_for(name, tn, riter, rbody)
     } else {
-      if tn == "Stream" || tn == "Array" {
-        // #822: the builtin Stream is eager Array-backed (ADR-0012), so
-        // `for await x in <stream>` (and over a plain Array) iterates with
-        // the plain array loop. The pull lowering would bind the VALUE as
-        // `__pull_next` and call it — call_indirect on an array pointer,
-        // i.e. an out-of-bounds table trap at runtime.
-        EForIn(name, idx, rinner, rbody)
-      } else {
-        throw(for_await_classify_error(inner))
-      }
+      classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
     },
-    None => if for_await_is_pull_source(inner, fn_returns) {
-      build_pull_for_in(name, idx, rinner, rbody)
+    None => if for_await_is_pull_source(iter, fn_returns) {
+      build_pull_for_in(name, idx, riter, rbody)
     } else {
-      throw(for_await_classify_error(inner))
+      EForIn(name, idx, riter, rbody)
     }
   }
 }
@@ -2355,10 +2311,31 @@ fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, rite
   }
 }
 
+/// `for x in iter { body }` -- the ONE for-loop classification (#1350 folded
+/// the `for await` variant in here).
+///
+/// The async/sync choice is made from the iterand's type, exactly as the old
+/// `for await` path made it: a `C::next` returning `Future[..]` drives the
+/// await-wrapped loop, a plain `C::next` the sync one. That is why the
+/// syntactic marker could go -- it never carried information this pass did
+/// not already have, it only duplicated what the effect row states.
+///
+/// One shape is admitted here that the old sync path rejected: a PULL CLOSURE
+/// (`() -> Option[T]`, e.g. `stdin_stream(4)`), which the `for await` path
+/// classified via for_await_is_pull_source. The classification is positive
+/// (lambda literal, or a call to a known top-level fn with a non-named return
+/// head) and it only fires where the sync path used to emit `EForIn` over a
+/// function value -- a call_indirect on a non-array pointer, i.e. a runtime
+/// trap. So this strictly turns a trap into a working loop (#827's own
+/// reasoning, now applied to the single surface).
 fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
-      build_iter_for(name, tn, riter, rbody)
+      if fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
+        build_await_iter_for(name, tn, riter, rbody)
+      } else {
+        build_iter_for(name, tn, riter, rbody)
+      }
     } else {
       match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
         Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
@@ -2367,7 +2344,11 @@ fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: 
         None => classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
       }
     },
-    None => EForIn(name, idx, riter, rbody)
+    None => if for_await_is_pull_source(iter, fn_returns) {
+      build_pull_for_in(name, idx, riter, rbody)
+    } else {
+      EForIn(name, idx, riter, rbody)
+    }
   }
 }
 
@@ -3069,29 +3050,19 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EForIn(name, idx, iter, body) => {
       let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      // `for await x in s` (#636 unification): the parser wraps `s` in an
-      // `__await_iter` marker; classify_for_await_loop picks iterator vs pull
-      // loop by type. It runs regardless of whether a trait is declared, since
-      // `for await` predates the trait machinery. A plain `for x in e` is
+      // #1350: one surface, one classification. A plain `for x in e` is
       // iterator/iterable/array-classified only when a method-bearing trait is
-      // present (without one there are no `impl ::next` methods to dispatch), so
-      // trait-free programs' `for` loops are untouched.
-      match for_await_inner(iter) {
-        Some(inner) => {
-          let rinner = rewrite_expr(inner, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-          classify_for_await_loop(name, idx, inner, rinner, rbody, struct_sets, var_types, fn_returns)
-        },
-        None => {
-          let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-          if Array::length(traits) == 0 {
-            // No declared trait: next/iter classification stays off (no
-            // `impl ::next` to dispatch), but the #736 indexed protocol is
-            // plain named functions, so it classifies regardless.
-            classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
-          } else {
-            classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
-          }
-        }
+      // present (without one there are no `impl ::next` methods to dispatch),
+      // so trait-free programs' `for` loops keep their EForIn lowering -- with
+      // the two ASYNC shapes as the exception, exactly as `for await` was the
+      // exception before: they are plain named functions / closures, need no
+      // trait machinery, and their consumers (the prelude's AsyncIter
+      // terminals, @vibe/console's pull streams) are trait-free files.
+      let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      if Array::length(traits) == 0 {
+        classify_trait_free_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+      } else {
+        classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
       }
     },
     EBinOp(op, l, r) => {
@@ -7525,8 +7496,8 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with { Error } {
   // dispatches both B's and A's methods through one witness dictionary. When the
   // program declares no method-bearing trait `traits` is empty, the dict-passing
   // rewrites are all no-ops (`gens` empty, sync-`for` classification gated off),
-  // and the rewrite pass only strips `for await` markers — so it must still run
-  // unconditionally (`for await` predates the trait machinery).
+  // and the rewrite pass only classifies the ASYNC for-loop shapes — so it must
+  // still run unconditionally (those shapes need no trait machinery, #1350).
   let traits_raw = collect_method_traits(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)

@@ -1786,17 +1786,18 @@ fi
 rm -rf "$xidir"
 echo "[compiler-gate] cross-import trait-iterator regression ok"
 
-# 19. `for await` unification regression (#636): `for await x in s` shares one
-#     type-directed desugar with sync `for`. The parser wraps the iterable in a
-#     `__await_iter` marker (the checker unwraps it; the desugar strips it) so
-#     the desugar — which has type info the parser lacks — picks the loop shape:
+# 19. async for-loop unification regression (#636 / #1350): `for x in s` is ONE
+#     type-directed desugar covering the sync and async shapes. #1350 removed
+#     the `for await` spelling and its `__await_iter` marker; the loop shape is
+#     picked from the iterand's TYPE alone:
 #       - a struct `C` with `C::next -> Future[Option[..]]` (an AsyncIterator /
 #         `Stream[T]`) drives an `await`-wrapped next loop (`await` unwraps the
 #         ready future on the synchronous backend), and
 #       - any other iterable (a pull closure `() -> Option[T]`, the pre-existing
 #         M2c-3 model) drives the pull-to-`None` loop.
-#     Guards the parser marker + checker unwrap + always-run desugar pass.
-echo "[compiler-gate] 19/19 for-await unification regression"
+#     Guards that the async shapes still classify with no syntax marker and with
+#     no declared trait (the always-run desugar pass).
+echo "[compiler-gate] 19/19 async for-loop unification regression"
 fadir="_build/_gate_forawait"
 rm -rf "$fadir"; mkdir -p "$fadir"
 cat > "$fadir/fa.vibe" <<'EOF'
@@ -1819,8 +1820,8 @@ let counter_stream = () -> (() -> Option[Int]) {
 }
 export let _start: () -> Int with { Async } = () -> {
   let mut t = 0
-  for await x in mkstream([10, 20, 30]) { t = t + x }
-  for await y in counter_stream() { t = t + y }
+  for x in mkstream([10, 20, 30]) { t = t + x }
+  for y in counter_stream() { t = t + y }
   t
 }
 EOF
@@ -1829,17 +1830,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fadir/fa.vibe" "$fadir/fa.wasm" _start >/dev/null 2>&1
 if [ ! -s "$fadir/fa.wasm" ]; then
-  echo "[compiler-gate] FAIL: for-await program did not compile" >&2
+  echo "[compiler-gate] FAIL: async for-loop program did not compile" >&2
   cat "$fadir/fa.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 fa_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$fadir/fa.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$fa_out" != "70" ]; then
-  echo "[compiler-gate] FAIL: for-await unification mismatch (got '$fa_out', want 70 -> #636 regressed)" >&2
+  echo "[compiler-gate] FAIL: async for-loop unification mismatch (got '$fa_out', want 70 -> #636/#1350 regressed)" >&2
   exit 1
 fi
 rm -rf "$fadir"
-echo "[compiler-gate] for-await unification regression ok"
+echo "[compiler-gate] async for-loop unification regression ok"
 
 # 20. cross-import trait-iterator ELEMENT-TYPE inference: `for x in <C[T]>` binds
 #     `x` to the iterator's element type `T`, recovered from the iterable's type
@@ -1924,7 +1925,7 @@ echo "[compiler-gate] cross-import trait-iterator element-type regression ok"
 #     (each `assert` traps on failure, so a clean `_start` run == all passed).
 #     Covers the sync `lazy_iter` and async `async_iter` combinator libraries
 #     (take / drop / take_while / enumerate / zip / flat_map / find / any / all,
-#     and the async `for await`-driven terminals) — these prelude tests are not
+#     and the async `for`-driven terminals) — these prelude tests are not
 #     otherwise exercised by the gate.
 echo "[compiler-gate] 21/21 prelude iterator combinator suites"
 for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_test.vibe; do
@@ -2594,53 +2595,52 @@ done
 rm -rf "$bdir"
 echo "[compiler-gate] index bounds checks ok"
 
-# 27d. `for await` classification (#827): a stream iterated through an
-#      UNannotated lambda param gives the type-directed desugar no type head; it
-#      used to fall back SILENTLY to the pull-closure lowering, which compiled
-#      fine and then trapped at runtime (call_indirect on the stream's array
-#      pointer). It must now be REJECTED at compile time; the annotated-param
-#      equivalent (#822) must still compile and run to 42.
-echo "[compiler-gate] 27d/27 for-await classification (#827)"
+# 27d. async for-loop classification (#827 / #1350): the pull-closure lowering
+#      must fire only on a POSITIVELY function-shaped source. It used to be
+#      reachable by a silent fallback, which compiled fine and then trapped at
+#      runtime (call_indirect on the stream's array pointer). #1350 removed the
+#      `for await` syntax and made the UNCLASSIFIED fallback the plain array
+#      loop -- which is the correct lowering for the eager Array-backed
+#      `Stream` (ADR-0012) -- so the hazard is now structural rather than
+#      diagnostic: BOTH the annotated and the unannotated param must compile
+#      and run to 42.
+echo "[compiler-gate] 27d/27 async for-loop classification (#827/#1350)"
 fadir="_build/_gate_forawait"
 rm -rf "$fadir"; mkdir -p "$fadir"
 cat > "$fadir/ok_annot.vibe" <<'EOF'
 let consume: (Stream[Int]) -> Int = (s) -> {
   let mut sum = 0
-  for await x in s {
+  for x in s {
     sum = sum + x
   }
   sum
 }
 export let _start: () -> Int = () -> { consume(Stream::once(42)) }
 EOF
-cat > "$fadir/bad_unannot.vibe" <<'EOF'
+cat > "$fadir/ok_unannot.vibe" <<'EOF'
 let consume = (s) -> Int {
   let mut sum = 0
-  for await x in s {
+  for x in s {
     sum = sum + x
   }
   sum
 }
 export let _start: () -> Int = () -> { consume(Stream::once(42)) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fadir/ok_annot.vibe" "$fadir/ok_annot.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$fadir/ok_annot.wasm" ]; then
-  echo "[compiler-gate] FAIL: annotated-param for-await did not compile (#827 over-rejects)" >&2; exit 1
-fi
-fa_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fadir/ok_annot.wasm" 2>/dev/null | tail -n 1)"
-if [ "$fa_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: annotated-param for-await returned '$fa_out' (expected 42; #822 regressed)" >&2; exit 1
-fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fadir/bad_unannot.vibe" "$fadir/bad_unannot.wasm" _start >/dev/null 2>&1 || true
-if [ -s "$fadir/bad_unannot.wasm" ]; then
-  echo "[compiler-gate] FAIL: unannotated-param for-await compiled (#827 regressed: pull-closure fallback trap)" >&2; exit 1
-fi
+for fa_case in ok_annot ok_unannot; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$fadir/$fa_case.vibe" "$fadir/$fa_case.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$fadir/$fa_case.wasm" ]; then
+    echo "[compiler-gate] FAIL: $fa_case for-loop over a Stream did not compile" >&2; exit 1
+  fi
+  fa_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fadir/$fa_case.wasm" 2>/dev/null | tail -n 1)"
+  if [ "$fa_out" != "42" ]; then
+    echo "[compiler-gate] FAIL: $fa_case returned '$fa_out' (expected 42 -- the array loop is the right lowering for an eager Stream; a pull-closure fallback would trap)" >&2; exit 1
+  fi
+done
 rm -rf "$fadir"
-echo "[compiler-gate] for-await classification ok"
+echo "[compiler-gate] async for-loop classification ok"
 
 # 27e. Error-as-perform equivalence (#640 Stage 1): `perform Error::Throw(x)`
 #      must be indistinguishable from `throw(x)` — both emit the EThrow wasm

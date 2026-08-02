@@ -66,8 +66,10 @@ vibe には `fn` キーワードが無く、関数は `let f: (A) -> B with { E 
   `await(f)` は `Future[T]` を待って `T` を得る。
 - `Async` を持つ計算を非 `Async` 文脈で使うと、既存の effect-escape チェック
   (`checker_effects.vibe` の `EEEffectfulCallOutsideEffect`) がエラーにする。
-- `for await x in s { ... }`（`Stream[T]` の逐次 pull、`s.next()` を `await`
-  するループへ desugar）は M2 で導入予定の糖衣。
+- `for x in s { ... }`（`Stream[T]` の逐次 pull、`s.next()` を `await`
+  するループへ desugar）。`for await` という別綴りは #1350 で廃止 —
+  iteration が suspend しうることは effect row が既に語っており、構文側の
+  `await` マーカーは二重表現だったため。
 
 実体（状態機械 lowering）は §3 が担い、replay effect handler の上には載せない。
 
@@ -109,8 +111,8 @@ WASI 0.3 の `stream<T>` を、vibe の `Iterator`（ADR-0044）と**同じコ�
 - `Stream::filter : (Stream[T], (T)->Bool) -> Stream[T]`（lazy, pure）
 - `Stream::fold : (Stream[T], A, (A,T)->A) -> Future[A] with { Async }`
 - `ByteStream = Stream[Int]` が WASI `stream<u8>` / HTTP body に直結。
-- 将来構文 `for await x in s { ... }`（`s.next()` を `await` するループへ desugar）
-  は M1a の `await` と同じく後続（front-end は builtin 呼び出しで先行）。
+- `for x in s { ... }`（`s.next()` を `await` するループへ desugar）は M1a の
+  `await` と同じく後続（front-end は builtin 呼び出しで先行）。
 
 **狙い**: sync collection と async stream を**同じ pipeline コード**で書ける
 （effect row が `{}` か `{ Async }` かの差だけ）。`Iterator` の async 兄弟。
@@ -221,16 +223,19 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   entry を追加（body → map → `to_string` → 再度 `to_bytes` → fold → 42）。これで
   handler が request body を ByteStream で消費し、response body を ByteStream から
   生成できる（両方向そろった）。
-- **`for await` サーフェス構文（async iterator surface, landed）**: `for await x
-  in stream { ... }` で Stream を要素ごとに消費できる。`await` は keyword では
-  なく builtin call `await(...)` なので、parser（mode 25）は `for` の直後の
-  `await` ident に binding 名が続く場合にマーカーとして skip する（loop 変数名が
-  `await` の `for await in e` は `await` の後が `in` なので従来通り binding 扱い）。
-  eager Stream model では `Stream[T]` は実行時 `Array[T]` なので、`EForIn`（tag
-  18 = `Array::length`/`Array::get` ループ）へそのまま lower される（新 AST node
-  なし）。checker の `EForIn` を `Stream[T]` でも iterate できるよう拡張（`CtArray`
-  に加え `CtNamed("Stream", [elem])` を受理し elem を bind）。gate に `for await`
-  entry を追加（`String::to_bytes("ABC")` を for-await で sum → 198 − 156 → 42）。
+- **async iterator サーフェス構文（landed → #1350 で `for` に一本化）**:
+  `for x in stream { ... }` で Stream を要素ごとに消費できる。当初は
+  `for await x in stream` という別綴りで導入したが、**同期/非同期の選択は
+  iterand の型（`C::next` の戻りが `Future` か）だけで決まっており構文
+  マーカーは情報を足していなかった**ため、#1350 で `for await` と
+  `__await_iter` マーカーを撤去し `for` に統合した（iteration が suspend
+  しうることは effect row `with { Async }` が既に語る — ADR-0089 D1 が
+  `sleep` から関数色付けを外したのと同じ理由）。eager Stream model では
+  `Stream[T]` は実行時 `Array[T]` なので `EForIn`（tag 18 =
+  `Array::length`/`Array::get` ループ）へそのまま lower される。checker の
+  `EForIn` は `Stream[T]` でも iterate できる（`CtArray` に加え
+  `CtNamed("Stream", [elem])` を受理し elem を bind）。gate は
+  `String::to_bytes("ABC")` を `for` で sum → 198 − 156 → 42。
 - **streaming ベンチ & `String::join` の O(n) 化（perf, landed）**:
   `scripts/bench_streaming.sh`（`pkf run bench-streaming`）が stage1 経由で
   streaming ops を wasm 化し wasmtime で計測する。初回計測（4 KB × 300 iters）で
@@ -254,7 +259,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   readable `stream<u8>`）とする pivot を記録（§3.3.1）。
 - 後続: `component_codegen` に `stream.read` canon emit、host 供給の readable
   `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループ
-  で消費し `for await` / `Stream::next` をそこへ lower。真の subtask spawn
+  で消費し `for` / `Stream::next` をそこへ lower。真の subtask spawn
   （waitable-set / `future.cancel-*` による実並行・キャンセル）（§3.3 / §3.6 / §3.7）。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
@@ -276,12 +281,12 @@ form では `-W component-model-async-stackful=y`）:
 
 lowering 概要:
 
-1. `async fn` を、suspend point（各 `await` / `for await` の `stream.read`）で
+1. `async fn` を、suspend point（各 `await` / async `for` の `stream.read`）で
    分割した状態機械関数へ変換。ローカルは線形メモリ上の frame に退避。
 2. `await f` は `future.read` を発行し、`BLOCKED` なら `waitable-set.wait` に
    登録して制御を返す。完了時に状態機械を resume。
 3. `Stream[T]::next()` は `stream.read`（1 要素ぶん）を `future` 化して返す。
-   `for await` はこれを繰り返し、`None`（EOF）で終了。
+   async `for` はこれを繰り返し、`None`（EOF）で終了。
 4. async export（HTTP handler 等）は `task.return` で結果を返し、
    `async-lift` 規約で wasmtime に lift される。
 
@@ -332,7 +337,7 @@ proposal（非 x86_64 で未サポート）とは別物のため、エンジン�
 ### 3.3 M2c-3 feasibility spike: 真の `stream<u8>` canonical built-ins（landed）
 
 M2c までの `Stream[T]` は eager Array backing（`String::to_bytes` /
-`Stream::to_string` / `for await` が body を先頭で materialize）。M2c-3 は WASI
+`Stream::to_string` / `for` が body を先頭で materialize）。M2c-3 は WASI
 0.3 `stream<u8>` の **`stream.read` ベース**へ置き換え、handler が request body
 を逐次読み body 全体を保持しない形にする。codegen 着手前に §3.1 と同様、
 wasmtime 45 が受理する最小形を手書き probe で確定した
@@ -390,7 +395,7 @@ codegen は「self stream を作って書いて読む」ではなく、「**impo
   async import の lower を追加。
 - (b) host 供給の readable stream（まずは `wasi:http/types` の incoming-body、
   または最小の host test harness が供給する `stream<u8>`）を `stream.read` ループ
-  で Array に読み込み、`for await` / `Stream::next` をそのループへ lower。
+  で Array に読み込み、`for` / `Stream::next` をそのループへ lower。
 - (c) gate / probe は host 提供 stream を使う（`--invoke` だけでは host stream を
   供給できないため、wasi:http world での e2e、もしくは host harness を用意する）。
 
@@ -574,7 +579,7 @@ future を作る側は `Future::ready` / `Stream::next` / `Stream::fold` の3つ
 `await_poll_pass`** へ移した（#1230）。`compile_call` は wasm を直接吐く位置で、
 `suspend_cps_pass` / `evidence_dict_pass` が走り終わった後なので、pending future
 が要る `perform Async::Suspend(..)` を出しても discharge できる相手がいない。
-新パスは `desugar_trait_dicts` の直後（= `for await` が `await(..)` を生成した
+新パスは `desugar_trait_dicts` の直後（= async `for` が `await(..)` を生成した
 直後）かつ全 effect パスの**前**に走り、`@vibex/concurrent` の `Receiver::recv_wait`
 と同じ suspend-and-retry 形へ **spine に持ち上げて**展開する:
 
@@ -1227,10 +1232,11 @@ per-name `stream<u8>` component import を出す composer、AsyncIter/`for await
 への接続。設計は §3.16 の named host futures と同型で、park が「future 1本
 ごと」から「read 1回ごと」に変わる点だけが違う。
 → **guest surface / stream 帯 / composer は §3.18 で landed**。残るは
-AsyncIter/`for await` への接続のみ — ただし iteration の suspend 可能性は
-effect row（`with { Async }`）が既に語っており、構文レベルの `await`
-マーカーは二重表現になるため、**接続しない方向で deprecation を検討中**
-（#1350。現状の消費形は素の `while` + row 伝播）。
+AsyncIter への接続のみ。`for await` という別綴りは **#1350 で削除済み** —
+iteration の suspend 可能性は effect row（`with { Async }`）が既に語って
+おり、構文レベルの `await` マーカーは二重表現だったため、素の `for` に
+一本化した（同期/非同期の選択は iterand の型だけで決まる）。host stream の
+現状の消費形は素の `while` + `host_stream_next`。
 
 **追加実測（2026-08-02、per-byte delay producer 追加後）** — viberun の
 `VIBE_ASYNC_STREAMS="body=10|15|17@60"`（`@delay_ms` = 1バイトごとに遅延

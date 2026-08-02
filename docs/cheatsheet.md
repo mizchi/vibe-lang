@@ -307,7 +307,8 @@ while cond { body }
 // for-in (collects into array)
 for x in arr { x * 2 }         // -> Array
 for i, x in arr { i + x }      // with index
-for await b in pull { b }      // async iterator (struct: next() -> Future[Option[(T,Self)]], await-driven) or a () -> Option[T] pull closure (-> None)
+for b in pull { b }            // async iterator (struct: next() -> Future[Option[(T,Self)]], await-driven) or a () -> Option[T] pull closure (-> None).
+                               // 同期/非同期の選択は iterand の型だけで決まる — `for await` は #1350 で廃止 (suspend は effect row が語る)
 
 // loop (parameterized tail-recursion)
 let result = loop (i = 0, sum = 0) {
