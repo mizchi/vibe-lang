@@ -2644,7 +2644,32 @@ export let _start: () -> Int = () -> {
   sum
 }
 EOF
-for fa_case in ok_annot ok_unannot ok_unannot_factory; do
+# #1350 (Codex P1, second round): the same ambiguity in the OTHER direction --
+# an unannotated factory that really DOES return a pull closure must keep its
+# pull loop. Tightening the annotated case alone moved the trap here (the
+# closure was iterated as an array). The head is inferred from the body's tail
+# expression, so both unannotated shapes classify correctly. 42 = 14 * 3.
+cat > "$fadir/ok_unannot_closure_factory.vibe" <<'EOF'
+let make_pull = () -> {
+  let mut n = 0
+  () -> {
+    if n >= 3 {
+      None
+    } else {
+      n = n + 1
+      Some(14)
+    }
+  }
+}
+export let _start: () -> Int = () -> {
+  let mut sum = 0
+  for x in make_pull() {
+    sum = sum + x
+  }
+  sum
+}
+EOF
+for fa_case in ok_annot ok_unannot ok_unannot_factory ok_unannot_closure_factory; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$fadir/$fa_case.vibe" "$fadir/$fa_case.wasm" _start >/dev/null 2>&1 || true

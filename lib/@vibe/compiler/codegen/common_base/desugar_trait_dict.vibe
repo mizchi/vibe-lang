@@ -1988,36 +1988,64 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
 /// Collect the return-type name of every top-level `let f = (..) -> R { .. }`
 /// (R only when it is a bare type name), so the `for` desugar can tell an
 /// iterator (`C::next` exists) from an iterable (`C::iter` returns an iterator).
+/// The tail expression a function body evaluates to, walking the binding
+/// spine (`let` / `let mut` / `letrec` / sequencing) to its final position.
+/// Used to infer a return head when the annotation is omitted.
+fn fn_body_tail_expr(e: Expr) -> Expr {
+  match e {
+    ELet(_, _, rest, _) => fn_body_tail_expr(rest),
+    ELetMut(_, _, rest, _) => fn_body_tail_expr(rest),
+    ELetRec(_, _, rest) => fn_body_tail_expr(rest),
+    ESeq(_, rest) => fn_body_tail_expr(rest),
+    other => other
+  }
+}
+
+/// Record the head name of a function's return type: `TyName(n)` -> n,
+/// `TyApp(n, _)` -> n (so a generic `iter() -> LazyIter[T]` resolves to
+/// `LazyIter`, and an async `next() -> Future[Option[..]]` resolves to
+/// `Future` so the for-loop desugar can tell async from sync).
+///
+/// #1350 (Codex P1, twice): a FUNCTION-typed return gets its own head
+/// sentinel instead of collapsing into the empty "unknown" head, because
+/// `for x in f()` may only classify as a pull-closure loop when `f`
+/// positively returns a function -- otherwise an unannotated
+/// `let values = () -> { [40, 2] }` is indistinguishable from
+/// `stdin_stream : (Int) -> (() -> Option[String])` and the array gets
+/// called as a closure (call_indirect trap).
+///
+/// When the annotation is OMITTED the head is inferred from the body's tail
+/// expression: a body that evaluates to a lambda is a closure factory, so it
+/// gets the same sentinel. Without this, tightening the annotated case alone
+/// just moved the trap to the other side -- an unannotated
+/// `let make_pull = () -> { () -> { .. } }` lost its pull loop and iterated a
+/// function value as an array. Only the lambda shape is inferred; every other
+/// tail keeps the empty head, so nothing that used to classify by NAME
+/// changes. fn_return_type maps the sentinel to None, so every consumer that
+/// reads type NAMES sees exactly what it saw before.
+fn fn_return_head_of(ret: Option[TypeExpr], body: Expr) -> String {
+  match ret {
+    Some(te) => match te {
+      TyName(n) => n,
+      TyApp(n, _) => n,
+      TyFn(_, _, _) => fn_type_return_head(),
+      _ => ""
+    },
+    None => match fn_body_tail_expr(body) {
+      EFn(_, _, _, _, _, _) => fn_type_return_head(),
+      _ => ""
+    }
+  }
+}
+
 fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, _, _, ret, _, _) => {
-          // Record the head name of the return type: `TyName(n)` -> n,
-          // `TyApp(n, _)` -> n (so a generic `iter() -> LazyIter[T]` resolves to
-          // `LazyIter`, and an async `next() -> Future[Option[..]]` resolves to
-          // `Future` so the for-loop desugar can tell async from sync).
-          let rn = match ret {
-            Some(te) => match te {
-              TyName(n) => n,
-              TyApp(n, _) => n,
-              // #1350 (Codex P1): a FUNCTION-typed return gets its own head
-              // sentinel instead of collapsing into the empty "unknown" head.
-              // `for x in f()` classifies as a pull-closure loop only when `f`
-              // positively returns a function; before this, an unannotated
-              // `let values = () -> { [40, 2] }` was indistinguishable from
-              // `stdin_stream : (Int) -> (() -> Option[String])` and the array
-              // was called as a closure (call_indirect trap). fn_return_type
-              // keeps mapping the sentinel to None, so every OTHER consumer
-              // sees exactly what it saw before.
-              TyFn(_, _, _) => fn_type_return_head(),
-              _ => ""
-            },
-            None => ""
-          }
-          Array::push(out, (fname, rn))
+        EFn(_, _, _, ret, _, fbody) => {
+          Array::push(out, (fname, fn_return_head_of(ret, fbody)))
         },
         _ => ()
       },
@@ -2027,18 +2055,8 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       // missing from the `for`/async-vs-sync desugar and other fn_returns
       // consumers below.
       SFnDecl(_, fname, body, _, _) => match body {
-        EFn(_, _, _, ret, _, _) => {
-          let rn = match ret {
-            Some(te) => match te {
-              TyName(n) => n,
-              TyApp(n, _) => n,
-              // #1350 (Codex P1): see the SLet arm above.
-              TyFn(_, _, _) => fn_type_return_head(),
-              _ => ""
-            },
-            None => ""
-          }
-          Array::push(out, (fname, rn))
+        EFn(_, _, _, ret, _, fbody) => {
+          Array::push(out, (fname, fn_return_head_of(ret, fbody)))
         },
         _ => ()
       },
