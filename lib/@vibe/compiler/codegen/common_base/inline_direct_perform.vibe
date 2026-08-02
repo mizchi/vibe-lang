@@ -340,23 +340,41 @@ fn idp_pure_builtin_names() -> Array[String] {
     // symmetry/safety).
     "host_future_get",
     "vibe_hf_get_raw",
-    "vibe_hf_wait_raw"
+    "vibe_hf_wait_raw",
+    // ADR-0089 (c) (#1218): the NAMED sibling of host_future_get. Its raw
+    // half is per-name (`vibe_hf_get_raw$<name>`), matched by prefix in
+    // idp_is_pure_builtin_call below -- same audit, same shapes (a
+    // `() -> Int` opaque host call).
+    "host_future_named"
   ]
 }
 
+/// ADR-0089 (c) (#1218): the per-name raw halves of `host_future_named`.
+/// compile_call mints one callee name per import name, so the exact-match
+/// list above cannot enumerate them; the prefix is the whole criterion (the
+/// suffix is a validated component label, and every such callee is the same
+/// `() -> Int` adapter import).
+fn idp_is_host_future_named_raw(nm: String) -> Bool {
+  String::starts_with(nm, "vibe_hf_get_raw$")
+}
+
 fn idp_is_pure_builtin_call(nm: String) -> Bool {
-  let names = idp_pure_builtin_names()
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(names) {
-    if Array::get(names, i) == nm {
-      found = true
-    } else {
-      ()
+  if idp_is_host_future_named_raw(nm) {
+    true
+  } else {
+    let names = idp_pure_builtin_names()
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(names) {
+      if Array::get(names, i) == nm {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
     }
-    i = i + 1
+    found
   }
-  found
 }
 
 /// `operand` is `perform`'s single argument -- the operation application
@@ -3653,12 +3671,15 @@ fn edp_pure_builtin_names() -> Array[String] {
     // idp_pure_builtin_names' entry (same audit, see that list's comment).
     "host_future_get",
     "vibe_hf_get_raw",
-    "vibe_hf_wait_raw"
+    "vibe_hf_wait_raw",
+    // ADR-0089 (c) (#1218): the NAMED sibling; its per-name raw halves are
+    // matched by prefix below (see idp_is_host_future_named_raw's comment).
+    "host_future_named"
   ]
 }
 
 fn edp_is_pure_builtin_call(nm: String) -> Bool {
-  edp_str_array_contains(edp_pure_builtin_names(), nm)
+  idp_is_host_future_named_raw(nm) || edp_str_array_contains(edp_pure_builtin_names(), nm)
 }
 
 /// Every top-level function name whose declared effect row is

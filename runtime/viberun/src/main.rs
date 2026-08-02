@@ -416,6 +416,10 @@ fn print_help() {
            MOONRUN_WT_MEMORY_MB      soft cap on linear memory (default 8192)\n\
            VIBE_ASYNC_GET_DELAY_MS   async component path: suspend applied by the\n\
                                      `get-async` host import (default 300)\n\
+           VIBE_ASYNC_FUTURES        async component path: comma-separated\n\
+                                     name=value:delay_ms list; each entry links a\n\
+                                     `name: func() -> future<u32>` host import\n\
+                                     resolving to `value` after `delay_ms`\n\
          "
     );
 }
@@ -760,6 +764,108 @@ fn run_async_component(path: &str) -> Result<i32> {
             },
         )
         .map_err(|e| format_err!("link get-future: {e}"))?;
+    // ADR-0089 (c) (#1218): GENERALIZED named host futures. Every entry in
+    // VIBE_ASYNC_FUTURES="name=value:delay_ms,name2=value2:delay_ms2" links an
+    // additional root import `name: func() -> future<u32>` with its own
+    // producer value and delay -- the WIT-derived-import generalization of the
+    // fixed `get-future` above, which stays as the unnamed default. Per-entry
+    // values and delays are what make concurrency OBSERVABLE: two futures
+    // fetched before either is awaited must finish in delay order, not in
+    // call order, and the total wall clock must be the max of the two delays
+    // rather than their sum. The delay is scaled like every other suspend
+    // here, so VIBE_ASYNC_DELAY_SCALE_PCT keeps working.
+    if let Ok(spec) = std::env::var("VIBE_ASYNC_FUTURES") {
+        for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            let (name, rest) = ent.split_once('=').ok_or_else(|| {
+                format_err!("VIBE_ASYNC_FUTURES entry '{ent}': expected name=value:delay_ms")
+            })?;
+            let (val_s, delay_s) = rest.split_once(':').ok_or_else(|| {
+                format_err!("VIBE_ASYNC_FUTURES entry '{ent}': expected name=value:delay_ms")
+            })?;
+            let name = name.trim().to_string();
+            let value: u32 = val_s
+                .trim()
+                .parse()
+                .map_err(|e| format_err!("VIBE_ASYNC_FUTURES '{name}': bad value: {e}"))?;
+            let entry_delay: u64 = delay_s
+                .trim()
+                .parse()
+                .map_err(|e| format_err!("VIBE_ASYNC_FUTURES '{name}': bad delay: {e}"))?;
+            // `func_wrap_concurrent` takes a `&'static str`; the spec is read
+            // once at startup and every linked name lives as long as the
+            // process, so leaking these few strings is the cheap way to get
+            // there (they are bounded by the component's import count).
+            let link_name: &'static str = Box::leak(name.clone().into_boxed_str());
+            linker
+                .root()
+                .func_wrap_concurrent(
+                    link_name,
+                    move |acc: &Accessor<StoreLimits>, _params: ()| {
+                        let ms = scale(entry_delay);
+                        Box::pin(async move {
+                            let reader = acc.with(|mut access| {
+                                wasmtime::component::FutureReader::<u32>::new(
+                                    &mut access,
+                                    async move {
+                                        if ms > 0 {
+                                            tokio::time::sleep(
+                                                std::time::Duration::from_millis(ms),
+                                            )
+                                            .await;
+                                        }
+                                        Ok::<u32, wasmtime::Error>(value)
+                                    },
+                                )
+                            })?;
+                            Ok((reader,))
+                        })
+                    },
+                )
+                .map_err(|e| format_err!("link {name}: {e}"))?;
+        }
+    }
+    // ADR-0089 Decision 3 (#1218) PROBE: host-supplied `stream<u8>`. Every
+    // entry in VIBE_ASYNC_STREAMS="name=b1|b2|b3" links a root import
+    // `name: func() -> stream<u8>` whose producer is exactly those bytes,
+    // then end-of-stream. This is the stream analogue of VIBE_ASYNC_FUTURES
+    // above and exists to settle the one thing the Decision 3 emitter cannot
+    // be written without: what `stream.read` actually reports at EOS under
+    // wasmtime 47 (status encoding + event code). `Vec<u8>` is wasmtime's
+    // own StreamProducer impl, so the probe measures the runtime's behavior
+    // rather than a hand-rolled producer's.
+    if let Ok(spec) = std::env::var("VIBE_ASYNC_STREAMS") {
+        for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            let (name, bytes_s) = ent.split_once('=').ok_or_else(|| {
+                format_err!("VIBE_ASYNC_STREAMS entry '{ent}': expected name=b1|b2|b3")
+            })?;
+            let name = name.trim().to_string();
+            let mut bytes: Vec<u8> = Vec::new();
+            for b in bytes_s.split('|').filter(|s| !s.trim().is_empty()) {
+                bytes.push(
+                    b.trim()
+                        .parse()
+                        .map_err(|e| format_err!("VIBE_ASYNC_STREAMS '{name}': bad byte: {e}"))?,
+                );
+            }
+            // Leaked for the same reason as the named-future link above.
+            let link_name: &'static str = Box::leak(name.clone().into_boxed_str());
+            linker
+                .root()
+                .func_wrap_concurrent(
+                    link_name,
+                    move |acc: &Accessor<StoreLimits>, _params: ()| {
+                        let items = bytes.clone();
+                        Box::pin(async move {
+                            let reader = acc.with(|mut access| {
+                                wasmtime::component::StreamReader::<u8>::new(&mut access, items)
+                            })?;
+                            Ok((reader,))
+                        })
+                    },
+                )
+                .map_err(|e| format_err!("link {name}: {e}"))?;
+        }
+    }
 
     // A current-thread runtime is enough (and keeps this off the thread pool):
     // the only await points are this timer and wasmtime's own event loop.

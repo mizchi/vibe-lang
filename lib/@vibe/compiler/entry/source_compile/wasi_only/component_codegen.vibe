@@ -37,6 +37,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_load,
   emit_i32_load8_u,
   emit_i32_ne,
+  emit_i32_shl,
   emit_i32_shr_u,
   emit_i32_store,
   emit_i32_store8,
@@ -3090,22 +3091,74 @@ export fn comp_emit_component_wasm_host_future_value(export_name: String, comp_r
 /// sniffing the BYTES is exact where an AST scan could be fooled by
 /// shadowing.
 export fn comp_core_imports_host_future(core_wasm: Bytes) -> Bool {
+  Array::length(comp_core_host_future_names(core_wasm)) > 0
+}
+
+/// ADR-0089 (c) (#1218): is `nm` a host-future GET core import -- the
+/// anonymous `host_future_get` or a named `host_future_get$<label>`?
+fn comp_is_host_future_get_import(nm: String) -> Bool {
+  nm == "host_future_get" || String::starts_with(nm, "host_future_get$")
+}
+
+/// ADR-0089 (c) (#1218): every host-future GET core import name the module
+/// declares, in DECLARATION ORDER (which linked_compile fixed: the anonymous
+/// one first, then the named ones sorted). The adapter's func layout and the
+/// component's import/lower order are both derived from this list, so both
+/// sides agree without a second source of truth.
+///
+/// The list is the generalization of the old single `host_future_get` sniff:
+/// a one-element `["host_future_get"]` result reproduces the step-4 shape.
+export fn comp_core_host_future_names(core_wasm: Bytes) -> Array[String] {
   let imp_modules = array_empty()
   let imp_names = array_empty()
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
   let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
-  let mut found = false
+  let out = array_empty()
   let mut i = 0
   while i < import_count {
-    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == "host_future_get" {
-      found = true
+    let nm = Array::get(imp_names, i)
+    if Array::get(imp_modules, i) == "vibe" && comp_is_host_future_get_import(nm) {
+      Array::push(out, nm)
     } else {
       ()
     }
     i = i + 1
   }
-  found
+  out
+}
+
+/// ADR-0089 (c) (#1218): the COMPONENT-level import name a host-future GET
+/// core import asks the host for. The anonymous half keeps its historical
+/// `get-future` spelling (spec §3.13); a named one is exactly its suffix,
+/// which compile_call already validated as a component label.
+/// ADR-0089 (c) (#1218): per-handle scratch in the memhost memory. Reads are
+/// STARTED by the getter and settled later by the wait, so several can be in
+/// flight at once -- each needs its own landing slot (`HF_VALUE_BASE +
+/// handle*4`) and its own recorded read state (`HF_STATE_BASE + handle*4`:
+/// 0 = none, 1 = blocked, 2 = completed eagerly). Both bands sit past the
+/// fixed 0/8/16 scratch words and inside the single 64 KiB memhost page.
+fn comp_hf_value_base() -> Int {
+  4096
+}
+
+fn comp_hf_state_base() -> Int {
+  8192
+}
+
+/// Largest handle the two bands above can address. A component-model handle
+/// is a small instance-table index, so this is a generous ceiling; exceeding
+/// it traps rather than silently aliasing another future's slot.
+fn comp_hf_max_handles() -> Int {
+  1023
+}
+
+fn comp_hostfuture_import_label(core_name: String) -> String {
+  if core_name == "host_future_get" {
+    "get-future"
+  } else {
+    String::substring(core_name, String::length("host_future_get$"), String::length(core_name))
+  }
 }
 
 /// ADR-0089 step 4 (#1218): the ADAPTER core module that implements the
@@ -3121,14 +3174,44 @@ export fn comp_core_imports_host_future(core_wasm: Bytes) -> Bool {
 /// (buffers live in the memhost memory, never the guest's; the vfs
 /// shim/fixup dance is not needed).
 ///
-/// Import func indices 0-6 + env.memory (memhost); local funcs
-/// 7 = host_future_get () -> i64, 8 = host_future_wait (i64) -> i64.
-/// Scratch layout in memhost memory: 0 = future.read landing slot,
-/// 8 = async-lower results slot, 16 = waitable-set.wait payload area.
-/// Contract violations (non-eager get-future, non-FUTURE_READ wake) trap
-/// with `unreachable`: the adapter runs inside the lifted task, so the
+/// ADR-0089 (c) (#1218): generalized to N host futures. `core_names` is
+/// comp_core_host_future_names' list; with K = its length, import func
+/// indices are 0..K-1 (one `[async-lower]<label>` per name), then K = future
+/// .read, K+1 = future.drop-readable, K+2 = waitable-set.new,
+/// K+3 = waitable.join, K+4 = waitable-set.wait, K+5 = waitable-set.drop,
+/// plus env.memory (memhost). Local funcs K+6 .. K+6+K-1 are the per-name
+/// getters (exported under their CORE import names, so the guest's
+/// `vibe.host_future_get$<name>` resolves), and K+6+K is the single shared
+/// `host_future_wait (i64) -> i64` -- parking is per-HANDLE, so one wait
+/// serves every name. K=1 with the anonymous name reproduces the step-4
+/// module's index layout exactly (imports 0-6, funcs 7/8); only the eager
+/// read below changed the bodies.
+///
+/// The read/drop canon defs are shared across names: every host future here
+/// is a `future<u32>`, i.e. the same component type, so one pair of canon
+/// definitions covers them all. Their $root export names are the composer's
+/// choice; keeping the first name's spelling is what makes the single-name
+/// case identical to step 4's import list.
+///
+/// Scratch layout in memhost memory: 8 = async-lower results slot,
+/// 16 = waitable-set.wait payload area, then the per-handle bands
+/// (comp_hf_value_base / comp_hf_state_base). The results slot is reused
+/// across names: an async-lowered call runs to completion (eagerly, by
+/// contract) before the next one starts. The per-handle bands are NOT
+/// shared, because several reads are in flight at once.
+/// Contract violations (non-eager get, out-of-band handle, awaiting a
+/// handle with no started read, non-FUTURE_READ wake) trap with
+/// `unreachable`: the adapter runs inside the lifted task, so the
 /// fixed-shape's task.return diagnostic bands are not available here.
-fn comp_generate_hostfuture_adapter_core_module() -> Bytes {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String]) -> Bytes {
+  let nnames = Array::length(core_names)
+  let read_idx = nnames
+  let drop_idx = nnames + 1
+  let ws_new_idx = nnames + 2
+  let join_idx = nnames + 3
+  let ws_wait_idx = nnames + 4
+  let ws_drop_idx = nnames + 5
+  let first_label = comp_hostfuture_import_label(Array::get(core_names, 0))
   let out = bytebuf_new()
   emit_header(out)
   // types: 0 (i32)->(i32) async-lowered get-future; 1 (i32,i32)->(i32)
@@ -3167,19 +3250,23 @@ fn comp_generate_hostfuture_adapter_core_module() -> Bytes {
     126
   ])
   bytebuf_push_section(out, 1, tc)
-  // imports: 7 core funcs (indices 0-6) + the memhost memory.
+  // imports: K + 6 core funcs (indices 0..K+5) + the memhost memory.
   let ic = bytebuf_new()
-  bytebuf_push_vec_header(ic, 8)
+  bytebuf_push_vec_header(ic, nnames + 7)
+  let mut imp_i = 0
+  while imp_i < nnames {
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[async-lower]", comp_hostfuture_import_label(Array::get(core_names, imp_i))))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 0)
+    imp_i = imp_i + 1
+  }
   emit_name(ic, "$root")
-  emit_name(ic, "[async-lower]get-future")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 0)
-  emit_name(ic, "$root")
-  emit_name(ic, "[async-lower][future-read-0]get-future")
+  emit_name(ic, String::concat("[async-lower][future-read-0]", first_label))
   bytebuf_push(ic, 0)
   bytebuf_push(ic, 1)
   emit_name(ic, "$root")
-  emit_name(ic, "[future-drop-readable-0]get-future")
+  emit_name(ic, String::concat("[future-drop-readable-0]", first_label))
   bytebuf_push(ic, 0)
   bytebuf_push(ic, 2)
   emit_name(ic, "$root")
@@ -3204,81 +3291,145 @@ fn comp_generate_hostfuture_adapter_core_module() -> Bytes {
   bytebuf_push(ic, 0)
   leb128_encode_u32(ic, 1)
   bytebuf_push_section(out, 2, ic)
-  emit_function_section(out, [
-    5,
-    6
-  ])
-  emit_export_section_multi(out, [
-    "host_future_get",
-    "host_future_wait"
-  ], [
-    7,
-    8
-  ])
+  // K getters (type 5, `() -> i64`) then one shared wait (type 6).
+  let fn_types = new_int_array()
+  let export_names = array_empty()
+  let export_indices = new_int_array()
+  let mut fs_i = 0
+  while fs_i < nnames {
+    Array::push(fn_types, 5)
+    Array::push(export_names, Array::get(core_names, fs_i))
+    Array::push(export_indices, nnames + 6 + fs_i)
+    fs_i = fs_i + 1
+  }
+  Array::push(fn_types, 6)
+  Array::push(export_names, "host_future_wait")
+  Array::push(export_indices, nnames + 6 + nnames)
+  emit_function_section(out, fn_types)
+  emit_export_section_multi(out, export_names, export_indices)
   let code_sec = bytebuf_new()
-  leb128_encode_u32(code_sec, 2)
-  // func 7: host_future_get. locals (i32): 0=packed, 1=code.
-  let get_body = bytebuf_new()
-  leb128_encode_u32(get_body, 1)
-  leb128_encode_u32(get_body, 2)
-  bytebuf_push(get_body, 127)
-  // packed = get-future(results at 8); code = packed & 0xf
-  emit_i32_const(get_body, 8)
-  emit_call(get_body, 0)
-  emit_local_set(get_body, 0)
-  emit_local_get(get_body, 0)
-  emit_i32_const(get_body, 15)
-  emit_i32_and(get_body)
-  emit_local_set(get_body, 1)
-  // pair creation is synchronous by contract: code must be RETURNED (2)
-  emit_local_get(get_body, 1)
-  emit_i32_const(get_body, 2)
-  emit_i32_ne(get_body)
-  emit_if_void(get_body)
-  bytebuf_push(get_body, 0)
-  emit_end(get_body)
-  // return the handle from mem[8], tagged (i64.extend_i32_u = 0xad, << 1)
-  emit_i32_const(get_body, 8)
-  emit_i32_load(get_body, 2, 0)
-  bytebuf_push(get_body, 173)
-  emit_i64_const(get_body, 1)
-  emit_i64_shl(get_body)
-  bytebuf_push(get_body, 11)
-  leb128_encode_u32(code_sec, Bytes::length(get_body))
-  bytebuf_push_buf(code_sec, get_body)
-  // func 8: host_future_wait. param 0 = tagged handle (i64); locals (i32):
-  // 1=fut, 2=st, 3=ws, 4=ev.
+  leb128_encode_u32(code_sec, nnames + 1)
+  // funcs K+6 .. K+6+K-1: the per-name getters. locals (i32): 0=packed,
+  // 1=fut, 2=addr. Identical bodies apart from the lowered import they call.
+  //
+  // The getter STARTS the read (`future.read` into this handle's own landing
+  // slot) instead of leaving it to the wait. That is what makes two host
+  // futures overlap: wasmtime only polls a `FutureReader` producer once a
+  // read is pending on it, so a lazily-read second future would not begin
+  // until the first await returned -- sequential, not concurrent (measured:
+  // 300ms + 100ms took 422ms before this change, ~300ms after).
+  let mut get_i = 0
+  while get_i < nnames {
+    let get_body = bytebuf_new()
+    leb128_encode_u32(get_body, 1)
+    leb128_encode_u32(get_body, 3)
+    bytebuf_push(get_body, 127)
+    // packed = <name>(results at 8); pair creation is synchronous by
+    // contract, so the low nibble must be RETURNED (2)
+    emit_i32_const(get_body, 8)
+    emit_call(get_body, get_i)
+    emit_local_set(get_body, 0)
+    emit_local_get(get_body, 0)
+    emit_i32_const(get_body, 15)
+    emit_i32_and(get_body)
+    emit_i32_const(get_body, 2)
+    emit_i32_ne(get_body)
+    emit_if_void(get_body)
+    bytebuf_push(get_body, 0)
+    emit_end(get_body)
+    // fut = mem[8] (the readable end's handle)
+    emit_i32_const(get_body, 8)
+    emit_i32_load(get_body, 2, 0)
+    emit_local_set(get_body, 1)
+    // Per-handle scratch lives at HF_VALUE_BASE/HF_STATE_BASE + fut * 4, so
+    // concurrent reads never share a landing slot. Handles are small
+    // instance-table indices; anything past the reserved band is a contract
+    // violation this adapter cannot represent, so trap.
+    emit_local_get(get_body, 1)
+    emit_i32_const(get_body, comp_hf_max_handles())
+    emit_i32_gt_u(get_body)
+    emit_if_void(get_body)
+    bytebuf_push(get_body, 0)
+    emit_end(get_body)
+    // addr = HF_VALUE_BASE + fut * 4
+    emit_local_get(get_body, 1)
+    emit_i32_const(get_body, 2)
+    emit_i32_shl(get_body)
+    emit_i32_const(get_body, comp_hf_value_base())
+    emit_i32_add(get_body)
+    emit_local_set(get_body, 2)
+    // mem[HF_STATE_BASE + fut*4] = (future.read(fut, addr) == BLOCKED) ? 1 : 2
+    emit_local_get(get_body, 2)
+    emit_i32_const(get_body, comp_hf_state_base() - comp_hf_value_base())
+    emit_i32_add(get_body)
+    emit_local_get(get_body, 1)
+    emit_local_get(get_body, 2)
+    emit_call(get_body, read_idx)
+    emit_i32_const(get_body, -1)
+    emit_i32_ne(get_body)
+    emit_i32_const(get_body, 1)
+    emit_i32_add(get_body)
+    emit_i32_store(get_body, 2, 0)
+    // return the handle, tagged (i64.extend_i32_u = 0xad, << 1)
+    emit_local_get(get_body, 1)
+    bytebuf_push(get_body, 173)
+    emit_i64_const(get_body, 1)
+    emit_i64_shl(get_body)
+    bytebuf_push(get_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(get_body))
+    bytebuf_push_buf(code_sec, get_body)
+    get_i = get_i + 1
+  }
+  // func K+6+K: host_future_wait. param 0 = tagged handle (i64); locals
+  // (i32): 1=fut, 2=st, 3=ws, 4=ev, 5=addr.
+  //
+  // The read is already in flight (the getter issued it), so this only
+  // settles: read the recorded state, park if it was BLOCKED, then take the
+  // value out of THIS handle's landing slot. Re-reading here would be a
+  // second read on a future that already has one pending.
   let wait_body = bytebuf_new()
   leb128_encode_u32(wait_body, 1)
-  leb128_encode_u32(wait_body, 4)
+  leb128_encode_u32(wait_body, 5)
   bytebuf_push(wait_body, 127)
-  // fut = wrap(param >> 1)
+  // fut = wrap(param >> 1); addr = HF_VALUE_BASE + fut * 4
   emit_local_get(wait_body, 0)
   emit_i64_const(wait_body, 1)
   emit_i64_shr_s(wait_body)
   emit_i32_wrap_i64(wait_body)
   emit_local_set(wait_body, 1)
-  // st = future.read(fut, 0)
   emit_local_get(wait_body, 1)
-  emit_i32_const(wait_body, 0)
-  emit_call(wait_body, 1)
+  emit_i32_const(wait_body, 2)
+  emit_i32_shl(wait_body)
+  emit_i32_const(wait_body, comp_hf_value_base())
+  emit_i32_add(wait_body)
+  emit_local_set(wait_body, 5)
+  // st = mem[HF_STATE_BASE + fut*4]  (1 = read blocked, 2 = read completed
+  // eagerly). Anything else means this handle never went through a getter.
+  emit_local_get(wait_body, 5)
+  emit_i32_const(wait_body, comp_hf_state_base() - comp_hf_value_base())
+  emit_i32_add(wait_body)
+  emit_i32_load(wait_body, 2, 0)
   emit_local_set(wait_body, 2)
-  // BLOCKED (-1): park as a waitable -- ws = ws_new(); join(fut, ws);
-  // ev = wait(ws, 16); the only waitable in the set, so the event must be
-  // FUTURE_READ (4). Any other status means the read completed eagerly
-  // (host resolved before we read) and the value is already at mem[0].
   emit_local_get(wait_body, 2)
-  emit_i32_const(wait_body, -1)
+  emit_i32_eqz(wait_body)
+  emit_if_void(wait_body)
+  bytebuf_push(wait_body, 0)
+  emit_end(wait_body)
+  // BLOCKED (1): park as a waitable -- ws = ws_new(); join(fut, ws);
+  // ev = wait(ws, 16); the only waitable in the set, so the event must be
+  // FUTURE_READ (4).
+  emit_local_get(wait_body, 2)
+  emit_i32_const(wait_body, 1)
   emit_i32_eq(wait_body)
   emit_if_void(wait_body)
-  emit_call(wait_body, 3)
+  emit_call(wait_body, ws_new_idx)
   emit_local_set(wait_body, 3)
   emit_local_get(wait_body, 1)
   emit_local_get(wait_body, 3)
-  emit_call(wait_body, 4)
+  emit_call(wait_body, join_idx)
   emit_local_get(wait_body, 3)
   emit_i32_const(wait_body, 16)
-  emit_call(wait_body, 5)
+  emit_call(wait_body, ws_wait_idx)
   emit_local_set(wait_body, 4)
   emit_local_get(wait_body, 4)
   emit_i32_const(wait_body, 4)
@@ -3288,18 +3439,25 @@ fn comp_generate_hostfuture_adapter_core_module() -> Bytes {
   emit_end(wait_body)
   emit_end(wait_body)
   // teardown: drop the READABLE end (ours; the writable end is host-owned),
-  // then the set if one was created (ends before sets, the children rule)
+  // then the set if one was created (ends before sets, the children rule).
+  // The state slot is cleared so a stale handle value cannot be awaited
+  // twice against a freed end.
   emit_local_get(wait_body, 1)
-  emit_call(wait_body, 2)
+  emit_call(wait_body, drop_idx)
   emit_local_get(wait_body, 2)
-  emit_i32_const(wait_body, -1)
+  emit_i32_const(wait_body, 1)
   emit_i32_eq(wait_body)
   emit_if_void(wait_body)
   emit_local_get(wait_body, 3)
-  emit_call(wait_body, 6)
+  emit_call(wait_body, ws_drop_idx)
   emit_end(wait_body)
-  // return the value that landed in the read buffer, tagged
+  emit_local_get(wait_body, 5)
+  emit_i32_const(wait_body, comp_hf_state_base() - comp_hf_value_base())
+  emit_i32_add(wait_body)
   emit_i32_const(wait_body, 0)
+  emit_i32_store(wait_body, 2, 0)
+  // return the value that landed in THIS handle's read buffer, tagged
+  emit_local_get(wait_body, 5)
   emit_i32_load(wait_body, 2, 0)
   bytebuf_push(wait_body, 173)
   emit_i64_const(wait_body, 1)
@@ -3376,13 +3534,20 @@ fn comp_generate_async_trampoline_hostfuture() -> Bytes {
 /// -> fd_write stub -> main(wasi=stub, vibe=adapter) -> trampoline(main,
 /// cm) -> async lift (u32) -> export.
 ///
+/// ADR-0089 (c) (#1218): generalized to K host futures, K = the number of
+/// `vibe.host_future_get[$name]` core imports (spec §3.16). Each becomes its
+/// own component import `<label>: func() -> future<u32>` -- the shape a
+/// WIT-derived async import has -- so a program can hold several host
+/// futures in flight at once. K=1 with the anonymous name is exactly the
+/// step-4 component's shape.
+///
 /// Component type indices: 0=(future u32), 1=import functype (async,
 /// result = type 0), 2=export functype (async, result u32). Component
-/// func indices: 0=the import, 1=the lifted run. Core func indices:
-/// 0=lowered get-future, 1=future.read, 2=future.drop-readable,
-/// 3=task-return, 4=waitable-set.new, 5=waitable.join,
-/// 6=waitable-set.wait, 7=waitable-set.drop, 8=alias(main, "run"),
-/// 9=alias(trampoline, "run"). Core instances: 0=memhost, 1=$root,
+/// func indices: 0..K-1 = the imports, K = the lifted run. Core func
+/// indices: 0..K-1=lowered imports, K=future.read, K+1=future.drop-readable,
+/// K+2=task-return, K+3=waitable-set.new, K+4=waitable.join,
+/// K+5=waitable-set.wait, K+6=waitable-set.drop, K+7=alias(main, "run"),
+/// K+8=alias(trampoline, "run"). Core instances: 0=memhost, 1=$root,
 /// 2=env(memory), 3=adapter, 4=wasi-stub, 5=main, 6=main-arg, 7=cm-arg,
 /// 8=trampoline.
 export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, export_name: String) -> Bytes with { Error } {
@@ -3427,22 +3592,36 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (ifn == "host_future_get" || ifn == "host_future_wait") {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait") {
       ()
     } else {
-      throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write and the host-future pair are satisfiable in this composition)")
+      throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write and the host-future imports are satisfiable in this composition)")
     }
     ii = ii + 1
+  }
+  let hf_names = comp_core_host_future_names(main_core_wasm)
+  let nhf = Array::length(hf_names)
+  if nhf == 0 {
+    throw("component(async-hostfuture): core module imports no vibe.host_future_get[$name] (this wrap is keyed on that import)")
+  } else {
+    ()
   }
   let buf = bytebuf_new()
   emit_component_header(buf)
   let future_type_idx = 0
   emit_comp_future_type_section(buf, comp_valtype_u32)
   emit_comp_async_functype_section_result_type(buf, future_type_idx)
-  emit_comp_import_section_typed(buf, "get-future", 1)
+  // One component import per host future, in the core module's declaration
+  // order, so component func index i is the import the adapter's lowered
+  // core func i belongs to.
+  let mut himp_i = 0
+  while himp_i < nhf {
+    emit_comp_import_section_typed(buf, comp_hostfuture_import_label(Array::get(hf_names, himp_i)), 1)
+    himp_i = himp_i + 1
+  }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module())
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   let memhost_inst = 0
@@ -3453,7 +3632,13 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   ], [
     core_sort_mem
   ])
-  emit_canon_lower_async_section(buf, 0, mem_alias_idx)
+  // Core func indices 0..K-1: the lowered imports, emitted in the same order
+  // (the adapter calls them by that index).
+  let mut hlow_i = 0
+  while hlow_i < nhf {
+    emit_canon_lower_async_section(buf, hlow_i, mem_alias_idx)
+    hlow_i = hlow_i + 1
+  }
   emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
   emit_canon_future_drop_readable(buf, future_type_idx)
   emit_canon_task_return(buf, comp_valtype_u32)
@@ -3462,25 +3647,35 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   emit_canon_waitable_set_wait(buf, mem_alias_idx)
   emit_canon_waitable_set_drop(buf)
   let root_inst = 1
+  // $root's exports: the K lowered imports under the adapter's
+  // `[async-lower]<label>` spellings, then the shared read/drop (named after
+  // the FIRST label -- one canon def covers every future<u32>) and the
+  // waitable-set quartet. task-return (core func K+2) is not here: it goes
+  // to the trampoline through cm-arg below.
+  let root_export_names = array_empty()
+  let root_export_indices = new_int_array()
+  let mut rex_i = 0
+  while rex_i < nhf {
+    Array::push(root_export_names, String::concat("[async-lower]", comp_hostfuture_import_label(Array::get(hf_names, rex_i))))
+    Array::push(root_export_indices, rex_i)
+    rex_i = rex_i + 1
+  }
+  let hf_first_label = comp_hostfuture_import_label(Array::get(hf_names, 0))
+  Array::push(root_export_names, String::concat("[async-lower][future-read-0]", hf_first_label))
+  Array::push(root_export_indices, nhf)
+  Array::push(root_export_names, String::concat("[future-drop-readable-0]", hf_first_label))
+  Array::push(root_export_indices, nhf + 1)
+  Array::push(root_export_names, "[waitable-set-new]")
+  Array::push(root_export_indices, nhf + 3)
+  Array::push(root_export_names, "[waitable-join]")
+  Array::push(root_export_indices, nhf + 4)
+  Array::push(root_export_names, "[waitable-set-wait]")
+  Array::push(root_export_indices, nhf + 5)
+  Array::push(root_export_names, "[waitable-set-drop]")
+  Array::push(root_export_indices, nhf + 6)
   emit_core_instance_from_exports(buf, 1, [
-    7
-  ], [
-    "[async-lower]get-future",
-    "[async-lower][future-read-0]get-future",
-    "[future-drop-readable-0]get-future",
-    "[waitable-set-new]",
-    "[waitable-join]",
-    "[waitable-set-wait]",
-    "[waitable-set-drop]"
-  ], [
-    0,
-    1,
-    2,
-    4,
-    5,
-    6,
-    7
-  ])
+    Array::length(root_export_names)
+  ], root_export_names, root_export_indices)
   let env_inst = 2
   emit_core_instance_from_exports_sorted(buf, [
     "memory"
@@ -3507,7 +3702,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     stub_inst,
     adapter_inst
   ])
-  let main_run_func_idx = 8
+  let main_run_func_idx = nhf + 7
   emit_alias_section(buf, main_inst, [
     "run"
   ], [
@@ -3527,7 +3722,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   ], [
     "task-return"
   ], [
-    3
+    nhf + 2
   ])
   let tramp_inst = 8
   emit_core_instance_instantiate_args(buf, 3, [
@@ -3538,14 +3733,14 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     cm_arg_inst
   ])
   emit_comp_async_functype_section(buf, comp_valtype_u32)
-  let tramp_run_func_idx = 9
+  let tramp_run_func_idx = nhf + 8
   emit_alias_section(buf, tramp_inst, [
     "run"
   ], [
     core_sort_func
   ])
   emit_canon_lift_async_section(buf, tramp_run_func_idx, 2)
-  emit_comp_export_section(buf, export_name, 1)
+  emit_comp_export_section(buf, export_name, nhf)
   bytebuf_to_bytes(buf)
 }
 

@@ -1130,6 +1130,103 @@ sleeping producer の clock 非阻塞 / builtin future の複数 awaiter direct
 wake）。既存の D2 fixture 群（cross-task resolve、result_wait、channel）は
 hooks mode で異なる schedule を通るが観測結果は不変。
 
+### 3.16 ADR-0089 (c) — named host future（host import async の一般化、#1218）
+
+§3.13/§3.14 の host future は**匿名の1本**（component import
+`get-future: func() -> future<u32>`）に固定されていた。(c) はこれを
+**名前つき N 本**へ一般化する — WIT 由来の async import が「1 import =
+1 名前」であることに合わせた形。
+
+```vibe
+let run: () -> Int with { Async } = () -> {
+  let a = host_future_named("price")
+  let b = host_future_named("qty")
+  await(a) + await(b)      // 2本が同時に in-flight
+}
+```
+
+1. **surface**: `host_future_named: (String) -> Future[Int]`（pure。await
+   だけが `Async` を運ぶのは `host_future_get` / `Future::pending` と同じ）。
+   引数は **string literal 必須** — component import 名は compile time に
+   決まるものであり値ではない。名前は component-model の label 形
+   `[a-z][a-z0-9-]*` に制限し、違反は codegen 時の明示エラー
+   （`compile_call.vibe`）。
+2. **cell**: lowering は `host_future_get` と同一の `[state=2, handle]`
+   （waitable cell）。違うのは handle の出どころだけで、`__aw_poll` の
+   `Suspend(handle + 2)` 経路・entry boundary の `__entry_settle`・
+   `vibe.host_future_wait` はそのまま共有される（park は handle 単位なので
+   wait 半分は 1 本で足りる）。
+3. **core import**: 名前ごとに `vibe.host_future_get$<name> () -> i64`。
+   採番順は「匿名（あれば）→ 名前をソートした順」で、**プログラム内の
+   出現順に依存しない**（同じ名前集合なら同じバイト列）。名前付きだけを
+   使うプログラムは匿名 `host_future_get` import を持たない。
+4. **composer**: `comp_core_host_future_names` が core import 名の列を
+   読み、`comp_emit_component_wasm_async_hostfuture` が名前ごとに
+   component import `<name>: func() -> future<u32>` + canon lower-async +
+   adapter の getter を1組ずつ生成する。`future.read` /
+   `future.drop-readable` の canon 定義は**共有**（すべて同じ
+   `future<u32>` 型）。名前が1本のときの構造（import 0-6 / func 7,8）は
+   step 4 のものと同一で、変わったのは下の eager read だけ。
+5. **eager read（並行性の要）**: adapter の getter は pair を作った直後に
+   `future.read` を**発行**し、handle ごとの landing slot
+   (`HF_VALUE_BASE + handle*4`) と read 状態 (`HF_STATE_BASE + handle*4`:
+   1 = blocked / 2 = 即完了) に記録する。`host_future_wait` は再 read せず
+   park と回収だけを行う。wasmtime は `FutureReader` の producer を
+   「read が pending になってから」しか polling しないため、read を await
+   時まで遅らせると2本目の timer が1本目の完了後にしか始まらない —
+   実測で 300ms + 100ms が 422ms（逐次）だったものが eager read で
+   ~300ms（重畳）になる。
+6. **host**: viberun は `VIBE_ASYNC_FUTURES="price=40:300,qty=2:100"` の
+   各エントリを root import として link する（値と遅延が名前ごとに違うので
+   完了順が観測できる）。
+
+gate = `scripts/test_named_hostfutures_component_gate.sh`（pkf task
+`test-named-hostfutures-component`）: WIT に `price` / `qty` が現れ匿名
+`get-future` が現れないこと、値 42 = 40 + 2（各 await が自分の future に
+settle）、wall が `0.8×P` 以上かつ `0.9×(P+Q)` 未満（park している かつ
+2本が**重なっている** = 逐次実行ではない）、および単一名 program が他方の
+名前を import しない control。byte level は `component_codegen_test.vibe` の
+2-name composition テスト。
+
+### 3.17 ADR-0089 Decision 3 — host 供給 `stream<u8>` の終端 probe（#1218）
+
+Decision 3（AsyncIter/ByteStream の p3 接続）の emitter を書く前に、
+**推測できない runtime の事実**が1つある: guest が host 供給の
+`stream<u8>` を1バイトずつ読んでいったとき、**stream の終わりがどう
+報告されるか**。`stream.read` は `(amount << 4) | code` を packed status
+で返すが、どの code が「writer は居なくなった、もう来ない」を意味するかは
+仕様書からではなく実測で決めるべきもの（§3.12/§3.13 の probe → byte-exact
+移植という手順と同じ）。
+
+**probe**: `tools/wasip3_component_probe/host_stream_value/component.wat`。
+`body: func() -> stream<u8>` を import し（host 側は viberun の
+`VIBE_ASYNC_STREAMS="body=10|15|17"`、producer は wasmtime 自身の
+`Vec<u8>` StreamProducer なので**runtime の挙動**を測っている）、1バイト
+ずつ読んで合計を返す。
+
+**実測（wasmtime 47.0.2、2026-08-02）**:
+
+- 3回の1バイト read はいずれも 1 item を転送する
+- **4回目の read が `amount = 0` / `code = 1` を返す** = 終端。
+  待つべき別の「closed」イベントは無く、**writer が居なくなったことを
+  見つけた read がその場で inline に報告する**
+- 合計 42（= 10 + 15 + 17）が返るので、終端の前にバイトが本当に届いて
+  いることも同時に確認できている
+
+つまり reader 側の終端判定は `(status >> 4) == 0 && (status & 0xf) == 1`。
+gate = `scripts/test_host_stream_value_probe_gate.sh`（pkf task
+`test-host-stream-value-probe`）が 42 を pin しているので、wasmtime の
+bump で encoding が変わったら「終わらない reader」ではなく gate failure に
+なる。
+
+**このスライスで landed したのはここまで**（probe + viberun の host stream
+import + gate）。残りの Decision 3 = guest surface
+（`host_stream_named(name) -> ByteStream` / `ByteStream::next(s) -> Int
+with { Async }`）、`Suspend` の stream 帯と entry boundary の settle arm、
+per-name `stream<u8>` component import を出す composer、AsyncIter/`for await`
+への接続。設計は §3.16 の named host futures と同型で、park が「future 1本
+ごと」から「read 1回ごと」に変わる点だけが違う。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -1269,7 +1366,9 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **ADR-0089 step 4 (実ソース await → waitable)** | 実 `.vibe` ソースの `await` を component 経路へ配線（§3.14）: `host_future_get() -> Future[Int]`（cell state 2 = waitable）→ 拡張 `__aw_poll` の `Suspend(handle + 2)` → entry boundary `__entry_settle` → adapter の `future.read`/`waitable-set.wait`。`comp_emit_component_wasm_async_hostfuture`（memhost + 値渡し i64 adapter、u32 lift、wrap は core import sniff で自動 route）。gate = `test_hostfuture_source_component_gate.sh`（viberun 駆動、42 + wall >= 0.8×delay + p1 routing control） | done（#1218） |
 | **ADR-0089 resolve→direct wake** | in-guest poll モデルの O(rounds×awaiters) 最適化（§3.15、意味論不変）: waiter list + `direct_wait` skip + 完了 notify（library）、`__aw_wait`/`__aw_notify_resolve` hooks の auto-link（compiler）、once-per-progress の fallback valve で notify 漏れは poll に縮退・deadlock trap は保存 | done（#1218） |
 | **ADR-0089 Decision 5 (wit_gen async)** | `with { Async }` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
-| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit 自体は ADR-0089 step 2 で landed — §3.12。残りは host 供給 stream への接続と surface lowering） |
+| **ADR-0089 (c) (named host futures)** | host import async の一般化（§3.16）: `host_future_named("x") -> Future[Int]`（string literal 必須、label 検証）→ 名前ごとの core import `vibe.host_future_get$x` → 名前ごとの component import `x: func() -> future<u32>` + adapter getter。wait 半分と `future.read`/`drop-readable` canon は共有、1名（匿名）のときの index 配置は step 4 と同一。並行性は adapter の **eager read**（getter が `future.read` を発行、wait は park と回収のみ）で成立する。viberun は `VIBE_ASYNC_FUTURES` で任意名を link。gate = `test_named_hostfutures_component_gate.sh`（42 = 40+2、wall が `[0.8×P, 0.9×(P+Q))` で overlap 実証、単一名 control） | done（#1218） |
+| **ADR-0089 D3 (終端 probe)** | host 供給 `stream<u8>` を1バイトずつ読む probe（§3.17）で「終端は `amount 0 / code 1` を read が inline に返す」を wasmtime 47 実測、viberun に `VIBE_ASYNC_STREAMS` の host stream import を追加。gate = `test_host_stream_value_probe_gate.sh`（42 = 10+15+17 を pin） | done（#1218） |
+| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit は ADR-0089 step 2 で landed = §3.12、終端 encoding は D3 probe で確定 = §3.17。残りは guest surface + Suspend の stream 帯 + per-name `stream<u8>` import を出す composer） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 
