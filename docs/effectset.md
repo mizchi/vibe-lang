@@ -350,8 +350,33 @@ effectset 展開 + qualified→effect 名解決してから照合するよう修
 effectset alias と bare qualified item の両方をカバーする新規 golden
 fixtures/wit_gen_effectset.vibe + compiler_gate.sh 40t で回帰を固定。
 
+**進捗 (2026-08-02, #1340)**: generic effect の instantiation 検査が着地
+した。(a) `SEffectDef` は型パラメータ付きでも registry に登録される
+(`TDEffect` に tparams slot を末尾追加 — TDStruct の #829 と同じ規約。
+型パラメータは op signature 内で rigid `CtNamed(param, [])` として resolve
+される)。(b) perform site (括弧付き/括弧なしの両形) は使用箇所ごとに
+fresh inference vars で instantiate した signature に対して arity と引数型
+を検査する — `perform State::Get(1, 2, 3)` が 0-arity 宣言に通る #1218 の
+横断発見の穴はここで閉じた。(c) handle site は **handle 式ごとに 1 回**
+instantiate して全 arm で共有する (`Get => resume(0)` が束縛した S=Int を
+`Put(v)` の payload binder も見る)。(d) `with { State[Int] }` row item が
+parse する (parser_base.vibe collect_row_item_targs)。row 文字列表現の
+"," 区切りと衝突するため **型引数は1個のみ** (multi-arg instantiation は
+parse error)。containment/unification/dropped-row 比較は base 名
+(`[` 以前) で行う instantiation-insensitive な v1 — `State[Int]` と
+`State[String]` を row 包含で区別する完全な OperationRef 正規化は残タスク。
+row item の bracket は geff_validate_row_targs (checker_stmt.vibe) が宣言
+と照合する (非 generic effect への bracket、effectset への bracket、空
+bracket は reject)。#1302 の暫定宣言サイト warning
+(`detect_generic_effect_decls`) は削除した。回帰ロック:
+fixtures/effect_generic_row_instantiation.vibe /
+err_generic_effect_perform_arity.vibe / err_generic_effect_row_targ.vibe +
+compiler_gate.sh 79、unit tests
+lib/@vibe/compiler/tests/checker_generic_effect_test.vibe。
+
 **未着手のまま残っている範囲**: ADR-0076 evidence vector への正規化 row
-の接続 (項目 6) のみ。
+の接続 (項目 6)、および row 包含での instantiation 区別 (上記 v1 の
+base-name 比較を OperationRef 単位へ精密化する作業)。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
 別ファイルからその関数を import で参照する」変更を同一コミットに含めると、

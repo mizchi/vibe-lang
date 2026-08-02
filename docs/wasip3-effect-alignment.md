@@ -47,16 +47,18 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
 
 ### 横断ギャップ(実測で確定)
 
-1. **generic effect は「動くが完全無検査」**。`effect State[S]` は checker に
-   TDEffect 登録されず(`checker_stmt.vibe` の zero-param 分岐)、tail-resume /
-   first-class resume の**どちらの handler class もコンパイル・実行はできる**
-   一方、perform の arity/型/arm 網羅性検査がすべて素通りする(実測:
-   `perform State::Get(1, 2, 3)` が 0-arity 宣言に対して通る。非 generic なら
-   `expects 0 argument(s), got 3` で reject)。さらに row に `State[Int]` とは
-   書けず(parse error)、`State[Int]`/`State[String]` の instantiation 区別も
-   無い。**資料の型付きパターン(`State<S>`/`Coroutine<A,B>`/`Exc<E>`)と
-   ADR-0085 `Exception[E]` に共通の最大ブロッカー**であり、ADR-0071 の
-   `OperationRef = (OperationId, NormalizedEffectArguments)` 正規化がその解。
+1. **generic effect の無検査ギャップは #1340 で解消済み**(この項の当初の
+   実測は歴史的記録として残す)。当初: `effect State[S]` は checker に
+   TDEffect 登録されず、perform の arity/型/arm 網羅性検査がすべて素通り
+   (`perform State::Get(1, 2, 3)` が 0-arity 宣言に対して通る)、row に
+   `State[Int]` とは書けなかった(parse error)。**現在**: generic effect
+   も registry に登録され、perform/handle site が使用箇所ごとに fresh
+   inference vars で instantiate した signature に対して検査する(handle
+   は式ごとに 1 instantiation を全 arm で共有)。`with { State[Int] }` も
+   parse する(型引数1個のみ、containment は base 名比較の v1)。残るのは
+   row 包含での `State[Int]`/`State[String]` の区別(ADR-0071 の
+   `OperationRef = (OperationId, NormalizedEffectArguments)` 正規化の完全形)
+   のみ。詳細は docs/effectset.md の 2026-08-02 進捗を参照。
 2. **non-resume arm の意味論不整合**: `Error` arm と suspend-class arm は
    継続破棄(abort)だが、通常の tail-resumptive arm で `resume` を書かないと
    **暗黙の `resume(arm 値)`** になる(#1087、fixture で 99 になることを pin)。
@@ -120,8 +122,9 @@ p3 に接続できる形になっている。
 dead end(spec §3.3: `cannot enter component instance`、producer は host 側)
 なので、**「guest 内 = coroutine/scheduler、コンポーネント境界 = host が
 所有する `stream<T>`」の二層**とし、境界を越える stream を coroutine で
-直接実装しようとしない。generic effect が無検査の間、公開 API はこのパターンを
-非 generic 特殊化(`ByteStream` 等)で提供する。
+直接実装しようとしない。(generic effect の検査は #1340 で着地したが、
+公開 API を非 generic 特殊化(`ByteStream` 等)で提供する方針自体は
+boundary handle が nominal であるべきという理由で変わらない。)
 
 ### 5. WIT 生成のマッピング
 
@@ -334,9 +337,11 @@ trampoline を将来 `wasi:http/service` の
 - handler switch の silent no-op(Part A)は、coroutine を stream producer に
   使う際の誤用経路になる — 「格納された継続を別 handle で包んだ」ことを
   検出する診断を先行して足すべき。
-- generic effect の「無検査で通る」現状は、資料パターンの写経がそのまま
+- ~~generic effect の「無検査で通る」現状は、資料パターンの写経がそのまま
   型穴になる(検査されていると誤認する)。ADR-0071 実装までの間、
-  generic effect 宣言に warning を出す案を検討する。
+  generic effect 宣言に warning を出す案を検討する。~~ → warning は
+  #1302 で導入後、#1340 の instantiation 検査着地に伴い削除済み(型穴
+  そのものが閉じた)。
 
 ## 検証
 

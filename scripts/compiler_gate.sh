@@ -8098,4 +8098,60 @@ fi
 rm -rf "$nhf37dir"
 echo "[compiler-gate] named host future collector ok"
 
+# 79/79. ADR-0071 generic-effect instantiation (#1340): generic effect
+# declarations now REGISTER their operation signatures (checker_stmt.vibe's
+# SEffectDef arm keeps the type params; perform/handle sites instantiate
+# them with fresh inference vars — one shared instantiation per handle),
+# and `with { State[Int] }` row items parse (collect_row_item_targs,
+# parser_base.vibe) with base-name-aware containment. Positive: the
+# instantiated-row fixture compiles and runs to 42. Negatives: the #1218
+# hole (a 3-argument perform against a 0-arity generic op used to pass
+# silently) is rejected with an arity diagnostic, and a bracketed row item
+# naming a NON-generic effect is rejected by geff_validate_row_targs.
+echo "[compiler-gate] 79/79 generic effect instantiation registration + rows (ADR-0071/#1340)"
+g1340dir="_build/_gate_1340"
+rm -rf "$g1340dir"; mkdir -p "$g1340dir"
+sed '/^__DATA__$/,$d' fixtures/effect_generic_row_instantiation.vibe > "$g1340dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g1340dir/pos.vibe" "$g1340dir/pos.wasm" main >/dev/null 2>&1
+if [ ! -s "$g1340dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_generic_row_instantiation.vibe did not compile (with { State[Int] } row grammar or generic registration regressed)" >&2
+  cat "$g1340dir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g1340_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g1340dir/pos.wasm" 2>&1 | tail -1)"
+if [ "$g1340_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_generic_row_instantiation got '$g1340_out' (want 42)" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_generic_effect_perform_arity.vibe > "$g1340dir/arity.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g1340dir/arity.vibe" "$g1340dir/arity.wasm" main >/dev/null 2>&1 || true
+if [ -s "$g1340dir/arity.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_generic_effect_perform_arity.vibe compiled -- the #1218 generic-effect arity hole is back" >&2
+  exit 1
+fi
+if ! grep -q "perform State::Get expects 0 argument(s), got 3" "$g1340dir/arity.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_generic_effect_perform_arity.vibe did not produce the arity diagnostic" >&2
+  cat "$g1340dir/arity.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_generic_effect_row_targ.vibe > "$g1340dir/rowtarg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g1340dir/rowtarg.vibe" "$g1340dir/rowtarg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$g1340dir/rowtarg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_generic_effect_row_targ.vibe compiled -- a bracketed row item on a non-generic effect must be rejected" >&2
+  exit 1
+fi
+if ! grep -q "effect Log declares no type parameters" "$g1340dir/rowtarg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_generic_effect_row_targ.vibe did not produce the row-instantiation diagnostic" >&2
+  cat "$g1340dir/rowtarg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$g1340dir"
+echo "[compiler-gate] generic effect instantiation ok"
+
 echo "[compiler-gate] ok"

@@ -42,9 +42,12 @@ export enum TypeDef {
   TDAlias(String, Array[String], Type);
   // #813: a declared effect's operation signatures — (op name, param types,
   // return type) — so perform arguments, handler arm names/arity/payloads,
-  // and resume values can be validated. Generic effects are not registered
-  // (ground gate).
-  TDEffect(String, Array[(String, Array[Type], Type)])
+  // and resume values can be validated. #1340 (ADR-0071): the declared type
+  // params are APPENDED (same convention as TDStruct's #829 slot) so generic
+  // effects register too — a type param resolves to a rigid `CtNamed(param,
+  // [])` inside the op signatures, and use sites instantiate it per
+  // perform/handle via subst_type_params + fresh inference vars.
+  TDEffect(String, Array[(String, Array[Type], Type)], Array[String])
 }
 
 export enum TypeEnv {
@@ -270,7 +273,7 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
         TDEnum(n, _, _) => n,
         TDStruct(n, _, _, _) => n,
         TDAlias(n, _, _) => n,
-        TDEffect(n, _) => n
+        TDEffect(n, _, _) => n
       }
       if dname == name {
         result = Some(d)
@@ -1230,6 +1233,21 @@ fn effect_label_list(eff: Option[String]) -> Array[String] {
   }
 }
 
+/// #1340 (ADR-0071): a generic instantiation label (`State[Int]`) compares
+/// by its base effect name in row set-equality — mixing spellings
+/// (`with { State }` vs `with { State[Int] }`) must not fail fn-type
+/// unification. For bracketless labels this is exact equality, so
+/// pre-#1340 rows are unchanged. Instantiation-precise row identity is the
+/// remaining ADR-0071 OperationRef-normalization work.
+fn effect_label_base_name(label: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi > 0 {
+    String::substring(label, 0, bi)
+  } else {
+    label
+  }
+}
+
 fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool {
   let ls = effect_label_list(left)
   let rs = effect_label_list(right)
@@ -1239,11 +1257,11 @@ fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool 
     let mut i = 0
     let mut ok = true
     while i < Array::length(ls) {
-      let label = Array::get(ls, i)
+      let label = effect_label_base_name(Array::get(ls, i))
       let mut found = false
       let mut j = 0
       while j < Array::length(rs) {
-        if Array::get(rs, j) == label {
+        if effect_label_base_name(Array::get(rs, j)) == label {
           found = true
         }
         j = j + 1
