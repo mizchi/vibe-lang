@@ -2836,6 +2836,18 @@ async function main() {
     );
   };
 
+  // Daemon responses report the bump-allocator high-water (same source as
+  // emitWasmMemoryStats) so a batch driver can recycle the process before the
+  // never-freed heap approaches the wasm32 4GB memory ceiling.
+  const readHeapPtr = () => {
+    const heapGlobal = instance.exports.__heap_ptr;
+    const heapRaw = heapGlobal instanceof WebAssembly.Global ? heapGlobal.value : null;
+    if (typeof heapRaw === "bigint") {
+      return Number(BigInt.asUintN(64, heapRaw));
+    }
+    return typeof heapRaw === "number" ? heapRaw >>> 0 : 0;
+  };
+
   const runDaemon = async () => {
     if (benchCount !== null) {
       throw new Error("--daemon cannot be combined with --bench-count");
@@ -2874,6 +2886,7 @@ async function main() {
           exit_code: resultToExitCode(result, isSelfhost),
           elapsed_us: Math.max(1, Math.round(elapsedUs)),
           stdout: capturedStdout,
+          heap_ptr: readHeapPtr(),
         };
       } catch (err) {
         response = {
