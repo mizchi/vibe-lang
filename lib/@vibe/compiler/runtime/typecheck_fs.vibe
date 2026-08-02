@@ -459,6 +459,678 @@ fn collect_module_diagnostics() -> Bool {
   }
 }
 
+/// --- Incremental typecheck telemetry --------------------------------------
+///
+/// A check invocation may opt into these deterministic work counters through
+/// the CLI's `VIBE_INCREMENTAL_TELEMETRY_OUT` sidecar. They deliberately count
+/// only this fs TypeDb walk: loader/source-group work and the later linked
+/// inline-wasm validation are outside the cache boundary this telemetry is
+/// meant to characterize. With telemetry disabled (the default), no sidecar is
+/// written and the counter updates below are inert.
+///
+/// Counter order:
+///   0 modules planned
+///   1 modules rechecked
+///   2 modules reused
+///   3 parse operations
+///   4 modules failed or blocked (nonzero only in collected-diagnostics walks)
+///
+/// `parse_operations` is parser work, not a unique-module count: a cold
+/// module can need one header parse during planning and one full parse for its
+/// typecheck. This is the same parse-count unit the TypeDb already exposes.
+let incremental_typecheck_telemetry_enabled_cell = array_empty()
+
+let incremental_typecheck_telemetry_counters = array_empty()
+
+// Per-module decisions accompany the aggregate counters only when the
+// invalidation trace sidecar is requested. They are observations of the
+// current TypeDb walk, not a proposed cache-key policy.
+let incremental_typecheck_telemetry_decisions: Array[(String, String)] = [
+]
+
+// This intentionally lives only for the successful check that requested the
+// sidecar. It is never read by a cache lookup and is never persisted: changing
+// the observation must not change a production cache key or cache format.
+let incremental_interface_trace_enabled_cell = array_empty()
+let incremental_interface_trace_observations: Array[(String, String)] = [
+]
+
+fn incremental_typecheck_telemetry_enabled() -> Bool {
+  if Array::length(incremental_typecheck_telemetry_enabled_cell) > 0 {
+    Array::get(incremental_typecheck_telemetry_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+
+export fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
+  Array::truncate(incremental_typecheck_telemetry_enabled_cell, 0)
+  Array::push(incremental_typecheck_telemetry_enabled_cell, enabled)
+  Array::truncate(incremental_typecheck_telemetry_counters, 0)
+  Array::truncate(incremental_typecheck_telemetry_decisions, 0)
+  let mut i = 0
+  while i < 5 {
+    Array::push(incremental_typecheck_telemetry_counters, 0)
+    i = i + 1
+  }
+}
+
+/// Enable the observation-only interface identity for one check invocation.
+/// The CLI calls this only for VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT.
+export fn set_incremental_interface_trace_enabled(enabled: Bool) -> Unit {
+  Array::truncate(incremental_interface_trace_enabled_cell, 0)
+  Array::push(incremental_interface_trace_enabled_cell, enabled)
+  Array::truncate(incremental_interface_trace_observations, 0)
+}
+
+fn incremental_interface_trace_enabled() -> Bool {
+  if Array::length(incremental_interface_trace_enabled_cell) > 0 {
+    Array::get(incremental_interface_trace_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+
+fn incremental_typecheck_telemetry_add(index: Int, amount: Int) -> Unit {
+  if incremental_typecheck_telemetry_enabled() {
+    Array::set(incremental_typecheck_telemetry_counters, index, Array::get(incremental_typecheck_telemetry_counters, index) + amount)
+  } else {
+    ()
+  }
+}
+
+fn incremental_typecheck_telemetry_decide(path: String, decision: String) -> Unit {
+  if incremental_typecheck_telemetry_enabled() {
+    Array::push(incremental_typecheck_telemetry_decisions, (path, decision))
+  } else {
+    ()
+  }
+}
+
+fn incremental_interface_trace_observe(path: String, identity: String) -> Unit {
+  if incremental_interface_trace_enabled() {
+    upsert_string_pair(incremental_interface_trace_observations, path, identity)
+    ()
+  } else {
+    ()
+  }
+}
+
+fn incremental_interface_trace_observation_of(path: String) -> Option[String] {
+  lookup_string_pair(incremental_interface_trace_observations, path)
+}
+
+fn incremental_typecheck_telemetry_decision_of(path: String) -> Option[String] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(incremental_typecheck_telemetry_decisions) {
+    let (candidate, decision) = Array::get(incremental_typecheck_telemetry_decisions, i)
+    if candidate == path {
+      result = Some(decision)
+      i = Array::length(incremental_typecheck_telemetry_decisions)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn incremental_typecheck_telemetry_counter(index: Int) -> Int {
+  if incremental_typecheck_telemetry_enabled() {
+    Array::get(incremental_typecheck_telemetry_counters, index)
+  } else {
+    0
+  }
+}
+
+/// Stable sidecar payload. Keep this manual rendering rather than depending on
+/// a JSON library in the hot compiler package: all values are non-negative
+/// integers and the fixed key order makes the result byte-for-byte
+/// deterministic for an identical walk.
+export fn incremental_typecheck_telemetry_json() -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "{\"schema\":1,\"modules_planned\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
+  StringBuilder::push(out, ",\"modules_rechecked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(1)))
+  StringBuilder::push(out, ",\"modules_reused\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(2)))
+  StringBuilder::push(out, ",\"parse_operations\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(3)))
+  StringBuilder::push(out, ",\"modules_failed_or_blocked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(4)))
+  StringBuilder::push(out, "}")
+  StringBuilder::freeze(out)
+}
+
+// The wire spelling below is deliberately independent of the persistent
+// TypeEnv codec. It is a versioned *observation* format, and its length
+// prefixes make names/types unambiguous without depending on source printing.
+fn interface_segment(text: String) -> String {
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
+}
+
+fn interface_sorted_unique(items: Array[String]) -> Array[String] {
+  let out = Array::slice(items, 0, Array::length(items))
+  let mut i = 1
+  while i < Array::length(out) {
+    let key = Array::get(out, i)
+    let mut j = i
+    while j > 0 && str_lt(key, Array::get(out, j - 1)) {
+      Array::set(out, j, Array::get(out, j - 1))
+      j = j - 1
+    }
+    Array::set(out, j, key)
+    i = i + 1
+  }
+  let unique = array_empty()
+  let mut k = 0
+  while k < Array::length(out) {
+    if k == 0 || Array::get(out, k) != Array::get(out, k - 1) {
+      Array::push(unique, Array::get(out, k))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  unique
+}
+
+fn interface_effect_set(effect_name: Option[String]) -> String {
+  match effect_name {
+    None => "[]",
+    Some(raw) => {
+      let labels = array_empty()
+      let pieces = String::split(raw, ",")
+      let mut i = 0
+      while i < Array::length(pieces) {
+        let label = String::trim(Array::get(pieces, i))
+        if String::length(label) > 0 {
+          Array::push(labels, label)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      String::concat("[", String::concat(String::join(interface_sorted_unique(labels), ","), "]"))
+    }
+  }
+}
+
+fn interface_lookup_var(ids: Array[Int], names: Array[String], id: Int) -> String {
+  let mut i = 0
+  let mut result = String::concat("free", __to_string(id))
+  let mut found = false
+  while i < Array::length(ids) && !found {
+    if Array::get(ids, i) == id {
+      result = Array::get(names, i)
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn interface_canonical_type(ty: Type, ids: Array[Int], names: Array[String]) -> String {
+  let rec types: (Array[Type], Array[Int], Array[String]) -> String = (items, vars, labels) -> {
+    let out = StringBuilder::new()
+    StringBuilder::push(out, "[")
+    let mut i = 0
+    while i < Array::length(items) {
+      StringBuilder::push(out, interface_segment(interface_canonical_type(Array::get(items, i), vars, labels)))
+      i = i + 1
+    }
+    StringBuilder::push(out, "]")
+    StringBuilder::freeze(out)
+  }
+  match ty {
+    CtInt => "int",
+    CtDouble => "double",
+    CtBool => "bool",
+    CtString => "string",
+    CtChar => "char",
+    CtUnit => "unit",
+    CtBytes => "bytes",
+    CtUnknown => "unknown",
+    CtVar(id) => String::concat("var:", interface_lookup_var(ids, names, id)),
+    CtEnum(name) => String::concat("enum:", interface_segment(name)),
+    CtStruct(name) => String::concat("struct:", interface_segment(name)),
+    CtArray(elem) => String::concat("array:", interface_segment(interface_canonical_type(elem, ids, names))),
+    CtOption(elem) => String::concat("option:", interface_segment(interface_canonical_type(elem, ids, names))),
+    CtTuple(items) => String::concat("tuple:", types(items, ids, names)),
+    CtNamed(name, args) => String::concat("named:", String::concat(interface_segment(name), types(args, ids, names))),
+    CtFn(params, ret, effects) => String::concat("fn:", String::concat(types(params, ids, names), String::concat(interface_segment(interface_canonical_type(ret, ids, names)), interface_effect_set(effects)))),
+    CtForAll(vars, bounds, body) => {
+      let all_ids = Array::slice(ids, 0, Array::length(ids))
+      let all_names = Array::slice(names, 0, Array::length(names))
+      let mut i = 0
+      while i < Array::length(vars) {
+        Array::push(all_ids, Array::get(vars, i))
+        Array::push(all_names, String::concat("q", __to_string(Array::length(all_names))))
+        i = i + 1
+      }
+      let bound_rows = array_empty()
+      let mut b = 0
+      while b < Array::length(vars) {
+        let id = Array::get(vars, b)
+        let labels = array_empty()
+        let mut j = 0
+        while j < Array::length(bounds) {
+          let (bound_id, raw_labels) = Array::get(bounds, j)
+          if bound_id == id {
+            let mut k = 0
+            while k < Array::length(raw_labels) {
+              Array::push(labels, Array::get(raw_labels, k))
+              k = k + 1
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        Array::push(bound_rows, String::concat(interface_lookup_var(all_ids, all_names, id), String::concat("=", String::join(interface_sorted_unique(labels), ","))))
+        b = b + 1
+      }
+      String::concat("forall:", String::concat("[", String::concat(String::join(bound_rows, ";"), String::concat("]", interface_segment(interface_canonical_type(body, all_ids, all_names))))))
+    }
+  }
+}
+
+fn interface_lookup_type_param(params: Array[String], name: String) -> String {
+  let mut i = 0
+  let mut result = name
+  let mut found = false
+  while i < Array::length(params) && !found {
+    if Array::get(params, i) == name {
+      result = String::concat("p", __to_string(i))
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn interface_canonical_type_expr(ty: TypeExpr, params: Array[String]) -> String {
+  let rec exprs: (Array[TypeExpr], Array[String]) -> String = (items, type_params) -> {
+    let out = StringBuilder::new()
+    StringBuilder::push(out, "[")
+    let mut i = 0
+    while i < Array::length(items) {
+      StringBuilder::push(out, interface_segment(interface_canonical_type_expr(Array::get(items, i), type_params)))
+      i = i + 1
+    }
+    StringBuilder::push(out, "]")
+    StringBuilder::freeze(out)
+  }
+  match ty {
+    TyName(name) => String::concat("name:", interface_segment(interface_lookup_type_param(params, name))),
+    TyApp(name, args) => String::concat("app:", String::concat(interface_segment(interface_lookup_type_param(params, name)), exprs(args, params))),
+    TyFn(args, ret, effects) => String::concat("fn:", String::concat(exprs(args, params), String::concat(interface_segment(interface_canonical_type_expr(ret, params)), interface_effect_set(effects)))),
+    TyTuple(items) => String::concat("tuple:", exprs(items, params)),
+    TyUnit => "unit"
+  }
+}
+
+fn interface_public_value_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, _) => if exported {
+        Array::push(names, name)
+      } else {
+        ()
+      },
+      SFnDecl(exported, name, _, _, _) => if exported {
+        Array::push(names, name)
+      } else {
+        ()
+      },
+      SExport(exported_names) => {
+        let mut j = 0
+        while j < Array::length(exported_names) {
+          Array::push(names, Array::get(exported_names, j))
+          j = j + 1
+        }
+      },
+      SReExport(_, reexports) => {
+        let mut j = 0
+        while j < Array::length(reexports) {
+          let (name, alias) = Array::get(reexports, j)
+          Array::push(names, match alias {
+            Some(value) => value,
+            None => name
+          })
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  interface_sorted_unique(names)
+}
+
+fn interface_decl_line(prefix: String, name: String, body: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, prefix)
+  StringBuilder::push(out, interface_segment(name))
+  StringBuilder::push(out, body)
+  StringBuilder::freeze(out)
+}
+
+fn interface_bracketed(items: Array[String], separator: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "[")
+  StringBuilder::push(out, String::join(items, separator))
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
+  let lines = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(exported, name, params, variants, derives) => if exported {
+        let vs = array_empty()
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (vname, fields) = Array::get(variants, j)
+          let fs = array_empty()
+          let mut k = 0
+          while k < Array::length(fields) {
+            Array::push(fs, interface_canonical_type_expr(Array::get(fields, k), params))
+            k = k + 1
+          }
+          Array::push(vs, String::concat(interface_segment(vname), String::concat("[", String::concat(String::join(fs, ";"), "]"))))
+          j = j + 1
+        }
+        let enum_body = StringBuilder::new()
+        StringBuilder::push(enum_body, interface_bracketed(vs, ";"))
+        StringBuilder::push(enum_body, "derive")
+        StringBuilder::push(enum_body, interface_bracketed(interface_sorted_unique(derives), ","))
+        Array::push(lines, interface_decl_line("enum:", name, StringBuilder::freeze(enum_body)))
+      } else {
+        ()
+      },
+      SSuberror(exported, name, variants) => if exported {
+        let vs = array_empty()
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (vname, fields) = Array::get(variants, j)
+          let fs = array_empty()
+          let mut k = 0
+          while k < Array::length(fields) {
+            Array::push(fs, interface_canonical_type_expr(Array::get(fields, k), array_empty()))
+            k = k + 1
+          }
+          Array::push(vs, String::concat(interface_segment(vname), String::concat("[", String::concat(String::join(fs, ";"), "]"))))
+          j = j + 1
+        }
+        Array::push(lines, interface_decl_line("suberror:", name, interface_bracketed(vs, ";")))
+      } else {
+        ()
+      },
+      SStruct(exported, name, fields, derives, mut_fields, params) => if exported {
+        let fs = array_empty()
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, ftype) = Array::get(fields, j)
+          let field_mutability = if contains_str(mut_fields, fname) {
+            "mut"
+          } else {
+            "imm"
+          }
+          Array::push(fs, String::concat(interface_segment(fname), String::concat(":", String::concat(field_mutability, String::concat(":", interface_canonical_type_expr(ftype, params))))))
+          j = j + 1
+        }
+        let struct_body = StringBuilder::new()
+        StringBuilder::push(struct_body, interface_bracketed(fs, ";"))
+        StringBuilder::push(struct_body, "derive")
+        StringBuilder::push(struct_body, interface_bracketed(interface_sorted_unique(derives), ","))
+        Array::push(lines, interface_decl_line("struct:", name, StringBuilder::freeze(struct_body)))
+      } else {
+        ()
+      },
+      STypeAlias(exported, name, params, body) => if exported {
+        Array::push(lines, String::concat("alias:", String::concat(interface_segment(name), interface_canonical_type_expr(body, params))))
+      } else {
+        ()
+      },
+      STrait(exported, name, supers, methods, method_gens) => if exported {
+        let ms = array_empty()
+        let mut j = 0
+        while j < Array::length(methods) {
+          let (mname, args, ret) = Array::get(methods, j)
+          // Method generics are stored separately from method signatures.
+          // Pair them by method name, then use their positional parameters to
+          // alpha-normalize TypeExpr names and serialize every bound.
+          let type_params = array_empty()
+          let generic_bounds: Array[(String, Array[String])] = [
+          ]
+          let mut g = 0
+          while g < Array::length(method_gens) {
+            let (generic_method, params, bounds) = Array::get(method_gens, g)
+            if generic_method == mname {
+              let mut p = 0
+              while p < Array::length(params) {
+                Array::push(type_params, Array::get(params, p))
+                p = p + 1
+              }
+              let mut b = 0
+              while b < Array::length(bounds) {
+                Array::push(generic_bounds, Array::get(bounds, b))
+                b = b + 1
+              }
+            } else {
+              ()
+            }
+            g = g + 1
+          }
+          let bound_rows = array_empty()
+          let mut p = 0
+          while p < Array::length(type_params) {
+            let param_name = Array::get(type_params, p)
+            let labels = array_empty()
+            let mut b = 0
+            while b < Array::length(generic_bounds) {
+              let (bound_name, bound_labels) = Array::get(generic_bounds, b)
+              if bound_name == param_name {
+                let mut q = 0
+                while q < Array::length(bound_labels) {
+                  Array::push(labels, Array::get(bound_labels, q))
+                  q = q + 1
+                }
+              } else {
+                ()
+              }
+              b = b + 1
+            }
+            Array::push(bound_rows, String::concat(String::concat("p", __to_string(p)), String::concat("=", String::join(interface_sorted_unique(labels), ","))))
+            p = p + 1
+          }
+          let arg_lines = array_empty()
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(arg_lines, interface_canonical_type_expr(Array::get(args, k), type_params))
+            k = k + 1
+          }
+          let method_body = StringBuilder::new()
+          StringBuilder::push(method_body, "gens")
+          StringBuilder::push(method_body, interface_bracketed(bound_rows, ";"))
+          StringBuilder::push(method_body, "args")
+          StringBuilder::push(method_body, interface_bracketed(arg_lines, ";"))
+          StringBuilder::push(method_body, "ret")
+          StringBuilder::push(method_body, interface_segment(interface_canonical_type_expr(ret, type_params)))
+          Array::push(ms, String::concat(interface_segment(mname), StringBuilder::freeze(method_body)))
+          j = j + 1
+        }
+        let trait_body = StringBuilder::new()
+        StringBuilder::push(trait_body, "super")
+        StringBuilder::push(trait_body, interface_bracketed(interface_sorted_unique(supers), ","))
+        StringBuilder::push(trait_body, "methods")
+        StringBuilder::push(trait_body, interface_bracketed(ms, ";"))
+        Array::push(lines, interface_decl_line("trait:", name, StringBuilder::freeze(trait_body)))
+      } else {
+        ()
+      },
+      SEffectDef(exported, name, params, ops) => if exported {
+        let os = array_empty()
+        let mut j = 0
+        while j < Array::length(ops) {
+          let (opname, args, ret) = Array::get(ops, j)
+          let arg_lines = array_empty()
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(arg_lines, interface_canonical_type_expr(Array::get(args, k), params))
+            k = k + 1
+          }
+          Array::push(os, String::concat(interface_segment(opname), String::concat("[", String::concat(String::join(arg_lines, ";"), String::concat("]", interface_canonical_type_expr(ret, params))))))
+          j = j + 1
+        }
+        Array::push(lines, interface_decl_line("effect:", name, interface_bracketed(os, ";")))
+      } else {
+        ()
+      },
+      SEffectSet(exported, name, members) => if exported {
+        Array::push(lines, interface_decl_line("effectset:", name, interface_bracketed(interface_sorted_unique(members), ",")))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  interface_sorted_unique(lines)
+}
+
+fn incremental_interface_identity(source: String, env: TypeEnv) -> String with { Error } {
+  let stmts = parse_program_with_path("<incremental-interface-observation>", source)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-module-interface:v1\n")
+  let names = interface_public_value_names(stmts)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    match env_lookup_flat(env_flat_bindings(env), name) {
+      Some(ty) => StringBuilder::push(out, String::concat("value:", String::concat(interface_segment(name), String::concat(":", interface_canonical_type(ty, array_empty(), array_empty()))))),
+      None => throw(String::concat("incremental interface observation: exported name missing from checked environment: ", name))
+    }
+    StringBuilder::push(out, "\n")
+    i = i + 1
+  }
+  let decls = interface_public_decl_lines(stmts)
+  let mut d = 0
+  while d < Array::length(decls) {
+    StringBuilder::push(out, Array::get(decls, d))
+    StringBuilder::push(out, "\n")
+    d = d + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(out))
+}
+
+fn incremental_trace_hex_digit(value: Int) -> String {
+  if value < 10 {
+    String::from_char_code('0' + value)
+  } else {
+    String::from_char_code('a' + value - 10)
+  }
+}
+
+fn incremental_trace_json_string(text: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "\"")
+  let mut i = 0
+  while i < String::length(text) {
+    let c = String::char_code_at(text, i)
+    if c == '"' {
+      StringBuilder::push(out, "\\\"")
+    } else if c == '\\' {
+      StringBuilder::push(out, "\\\\")
+    } else if c == '\n' {
+      StringBuilder::push(out, "\\n")
+    } else if c == '\r' {
+      StringBuilder::push(out, "\\r")
+    } else if c == '\t' {
+      StringBuilder::push(out, "\\t")
+    } else if c < 32 {
+      StringBuilder::push(out, "\\u00")
+      StringBuilder::push(out, incremental_trace_hex_digit(c / 16))
+      StringBuilder::push(out, incremental_trace_hex_digit(c % 16))
+    } else {
+      StringBuilder::push(out, String::from_char_code(c))
+    }
+    i = i + 1
+  }
+  StringBuilder::push(out, "\"")
+  StringBuilder::freeze(out)
+}
+/// Versioned observation bridge for the bounded Incremental.lean model.
+///
+/// `source_fingerprint` is `compact_string_fingerprint` of the loader's
+/// ingested source. It is deliberately NOT an interface fingerprint: the
+/// current compiler does not expose one. `decision` records what this current
+/// TypeDb walk did (`rechecked` or `reused`), not a formal invalidation verdict.
+/// This function is called only after a successful check; a missing per-module
+/// observation throws rather than emitting a partial or stale sidecar.
+export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: String) -> String with { Error, Fs } {
+  if String::length(run_nonce) == 0 {
+    throw("incremental invalidation trace requires a non-empty run nonce")
+  } else {
+    ()
+  }
+  let (paths, _ranks, deps_by_module, sources) = module_plan_data_fs(entry_path)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "{\"schema\":2,\"run_nonce\":")
+  StringBuilder::push(out, incremental_trace_json_string(run_nonce))
+  StringBuilder::push(out, ",\"fingerprint_note\":\"source_fingerprint is an ingested-source identity; interface_fingerprint is an observation only, never a production cache key\",\"modules\":[")
+  let mut i = 0
+  while i < Array::length(paths) {
+    if i > 0 {
+      StringBuilder::push(out, ",")
+    } else {
+      ()
+    }
+    let path = Array::get(paths, i)
+    let decision = match incremental_typecheck_telemetry_decision_of(path) {
+      Some(value) => value,
+      None => throw(String::concat("incremental invalidation trace: missing decision for ", path))
+    }
+    StringBuilder::push(out, "{\"path\":")
+    StringBuilder::push(out, incremental_trace_json_string(path))
+    StringBuilder::push(out, ",\"direct_dependencies\":[")
+    let deps = Array::get(deps_by_module, i)
+    let mut d = 0
+    while d < Array::length(deps) {
+      if d > 0 {
+        StringBuilder::push(out, ",")
+      } else {
+        ()
+      }
+      StringBuilder::push(out, incremental_trace_json_string(Array::get(deps, d)))
+      d = d + 1
+    }
+    StringBuilder::push(out, "],\"source_fingerprint\":")
+    StringBuilder::push(out, incremental_trace_json_string(compact_string_fingerprint(Array::get(sources, i))))
+    StringBuilder::push(out, ",\"source_fingerprint_kind\":\"compact_string_fingerprint(ingested_source)\",\"interface_fingerprint\":")
+    let interface_fingerprint = match incremental_interface_trace_observation_of(path) {
+      Some(value) => value,
+      None => throw(String::concat("incremental invalidation trace: missing complete interface observation for ", path))
+    }
+    StringBuilder::push(out, incremental_trace_json_string(interface_fingerprint))
+    StringBuilder::push(out, ",\"interface_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)\",\"decision\":")
+    StringBuilder::push(out, incremental_trace_json_string(decision))
+    StringBuilder::push(out, "}")
+    i = i + 1
+  }
+  StringBuilder::push(out, "],\"aggregate_telemetry\":")
+  StringBuilder::push(out, incremental_typecheck_telemetry_json())
+  StringBuilder::push(out, "}")
+  StringBuilder::freeze(out)
+}
 /// A permutation of [0, n) as a visit order. Identity when no seed is set.
 /// Otherwise a seeded Fisher-Yates using a small LCG -- deterministic for a
 /// given (seed, n), so a failing oracle run is exactly reproducible.
@@ -488,7 +1160,6 @@ fn dep_visit_order(n: Int) -> Array[Int] {
     order
   }
 }
-
 /// #1100: process-local parse memo. A cold fs-mode compile parses the SAME
 /// source text TWICE -- once here for the typecheck walk (only on a
 /// persistent type-env cache MISS, see finish_typecheck_fs_impl) and once
@@ -518,15 +1189,9 @@ fn dep_visit_order(n: Int) -> Array[Int] {
 /// A throwing parse is NOT memoized: the cells stay untouched, so a second
 /// caller re-parses and re-throws identically.
 let parse_memo_paths: Array[String] = [
-]
-
-let parse_memo_sources: Array[String] = [
-]
-
-let parse_memo_stmts: Array[Array[Stmt]] = [
-]
-
-export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error } {
+] let parse_memo_sources: Array[String] = [
+] let parse_memo_stmts: Array[Array[Stmt]] = [
+] export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error } {
   let n = Array::length(parse_memo_paths)
   let mut i = 0
   let mut hit = -1
@@ -580,13 +1245,9 @@ export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] w
     Array::push(parse_memo_stmts, parsed)
     Array::slice(parsed, 0, Array::length(parsed))
   }
-}
-
-fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
+} fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
   Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
-}
-
-fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with { Fs } {
+} fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with { Fs } {
   let dep_cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
   if !(Fs::exists(dep_cache_path)) {
     Fs::write_file(dep_cache_path, persistent_dep_list_text(deps))
@@ -594,7 +1255,6 @@ fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Arra
     ()
   }
 }
-
 /// Span of an identifier run starting at `start` (returns the end offset).
 fn typecheck_ident_run(s: String, start: Int) -> Int {
   let len = String::length(s)
@@ -611,7 +1271,6 @@ fn typecheck_ident_run(s: String, start: Int) -> Int {
   }
   e
 }
-
 /// Best-effort `line:col` for a type error: pull the symbol out of
 /// `unknown name: X` and locate its first occurrence in the source. Real
 /// expression-level spans (AST node positions) remain future work; this gives
@@ -641,7 +1300,6 @@ fn locate_by_marker(source: String, msg: String, marker: String) -> String {
     }
   }
 }
-
 /// The exact text between `marker` and the NEXT `'` in `msg` -- unlike
 /// `locate_by_marker`'s `typecheck_ident_run` (which only captures plain
 /// identifier chars), this captures the quoted substring verbatim, so a
@@ -661,7 +1319,6 @@ fn extract_quoted_after(msg: String, marker: String) -> String {
     }
   }
 }
-
 /// First occurrence of `sym` in `source` at or after char offset `from`
 /// (clamped into range), or -1.
 fn index_of_after(source: String, sym: String, from: Int) -> Int {
@@ -683,7 +1340,6 @@ fn index_of_after(source: String, sym: String, from: Int) -> Int {
     }
   }
 }
-
 /// #1205 Codex review: a plain first-occurrence search for the bare
 /// name/alias (the #1204 approach) can land on an EARLIER, unrelated
 /// occurrence of the same spelling -- a comment or string mentioning the
@@ -736,7 +1392,6 @@ fn locate_unused_import_msg(source: String, msg: String) -> String {
     }
   }
 }
-
 /// First-occurrence heuristic locator (the original behavior). Kept separate so
 /// the offset-marker path can fall through to it on the marker-stripped message.
 fn locate_type_error_heuristic(source: String, msg: String) -> String {
@@ -780,7 +1435,6 @@ fn locate_type_error_heuristic(source: String, msg: String) -> String {
     }
   }
 }
-
 /// Build the `line L:col C: ` prefix for a source char offset (same format as
 /// locate_by_marker). String::concat only — the `+`/interpolation NUL
 /// hazard applies here too.
@@ -788,7 +1442,6 @@ fn offset_line_col_prefix(source: String, off: Int) -> String {
   let (line, col) = offset_to_line_col(source, off)
   String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
 }
-
 /// Build a `line L:colC-E: ` RANGE prefix from a (start, end) char-offset span.
 /// When start and end fall on the same source line this carries the exact end
 /// column so the LSP can highlight the precise token (incl. qualified names);
@@ -804,7 +1457,6 @@ fn offset_line_col_range_prefix(source: String, start: Int, endo: Int) -> String
     offset_line_col_prefix(source, start)
   }
 }
-
 /// Parse a non-negative decimal integer from msg[start..end). Returns -1 if the
 /// span is empty or contains a non-digit (callers then fall through to the text
 /// heuristic).
@@ -831,7 +1483,6 @@ fn parse_offset_digits(msg: String, start: Int, end: Int) -> Int {
     }
   }
 }
-
 /// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
 /// appended. If N is a valid in-range offset, prefix the stripped message with
 /// its exact `line:col`. Otherwise strip the marker and fall through to the
@@ -878,7 +1529,6 @@ export fn locate_type_error(source: String, msg: String) -> String {
     }
   }
 }
-
 /// --- #906 Phase 1: module job / outcome seam ----------------------------
 ///
 /// Phase 2 hands one module at a time to a worker that cannot touch the
@@ -901,10 +1551,12 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// rather than being an opaque handle; record literals and field access
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
-  Checked(String, String, TypeEnv);
+  // The final string is the trace-only module-interface identity. It is
+  // computed from this successful check's typed environment, never used as a
+  // cache input, and is empty unless the invalidation trace is enabled.
+  Checked(String, String, TypeEnv, String);
   Diagnosed(String, Array[String])
 }
-
 /// Pure module check. No Fs: the dependency environments it needs are
 /// already values inside the job.
 export fn check_module(job: ModuleJob) -> ModuleOutcome with { Error } {
@@ -926,14 +1578,18 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with { Error } {
       EnvEmpty => check_program(stmts),
       _ => check_program_with_env(stmts, import_env)
     }
-    Checked(job.path, fingerprint, checked_env)
+    let interface_identity = if incremental_interface_trace_enabled() {
+      incremental_interface_identity(job.source, checked_env)
+    } else {
+      ""
+    }
+    Checked(job.path, fingerprint, checked_env, interface_identity)
   } with Error {
     Throw(msg) => Diagnosed(job.path, [
       String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
     ])
   }
 }
-
 /// Coordinator-owned commit. Every filesystem and accumulator write for a
 /// module happens here and nowhere else.
 fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
@@ -947,8 +1603,17 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     } else {
       throw(String::concat(job.path, ": type error"))
     },
-    Checked(path, fingerprint, checked_env) => {
+    Checked(path, fingerprint, checked_env, interface_identity) => {
       store_persistent_type_env(fingerprint, checked_env)
+      if incremental_interface_trace_enabled() {
+        if String::length(interface_identity) == 0 {
+          throw(String::concat("incremental interface observation: missing checked identity for ", path))
+        } else {
+          incremental_interface_trace_observe(path, interface_identity)
+        }
+      } else {
+        ()
+      }
       if Array::length(job.deps) == 0 {
         Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(job.source)), persistent_leaf_fingerprint_text(fingerprint))
       } else {
@@ -960,7 +1625,6 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     }
   }
 }
-
 /// --- #906 Phase 2: worker entry ------------------------------------------
 ///
 /// The transport boundary. A worker is handed a JOB DIRECTORY and may touch
@@ -988,7 +1652,6 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
 fn job_dir_path(dir: String, name: String) -> String {
   String::concat(String::concat(dir, "/"), name)
 }
-
 /// `dep` rows carry the dependency's path AND its already-computed
 /// fingerprint (`dep\t<path>\t<fingerprint>`) -- three columns, unlike every
 /// other row. There is deliberately no `fingerprint` row for the job's OWN
@@ -1058,9 +1721,7 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   } else {
     (path, deps, dep_fps)
   }
-}
-
-export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
+} export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
   let (path, deps, dep_fps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
   let source = Fs::read_file(job_dir_path(dir, "source.vibe"))
   let dep_envs = array_empty()
@@ -1112,7 +1773,7 @@ export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
   // so a worker killed mid-write leaves an obviously unfinished job dir
   // rather than a plausible-looking wrong answer.
   match outcome {
-    Checked(_, fingerprint, env) => {
+    Checked(_, fingerprint, env, _) => {
       Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
       // The module's own identity, as check_module computed it -- an
       // OUTPUT of this job, needed by the coordinator to build the NEXT
@@ -1128,7 +1789,6 @@ export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
     }
   }
 }
-
 /// #906 Phase 2 (real-build wiring): the batch publish counterpart to
 /// run_module_job_dir. `manifest.txt` holds one `<fingerprint>\t<envfile>`
 /// row per module a host driver wants published; `<envfile>` is read
@@ -1166,9 +1826,7 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with { E
     i = i + 1
   }
   rows
-}
-
-export fn run_publish_env_cache_dir(dir: String) -> Unit with { Error, Fs } {
+} export fn run_publish_env_cache_dir(dir: String) -> Unit with { Error, Fs } {
   let rows = parse_publish_manifest_rows(Fs::read_file(job_dir_path(dir, "manifest.txt")))
   let mut i = 0
   let len = Array::length(rows)
@@ -1179,7 +1837,6 @@ export fn run_publish_env_cache_dir(dir: String) -> Unit with { Error, Fs } {
     i = i + 1
   }
 }
-
 /// `fingerprint` is the already-folded build_fingerprint(source, dep_fps)
 /// every call site computed to decide whether to call this function at all
 /// (the Fs::exists / ripple_record_eval fast path below needs that folded
@@ -1190,6 +1847,14 @@ export fn run_publish_env_cache_dir(dir: String) -> Unit with { Error, Fs } {
 /// would -- one canonical computation, not a value trusted from the caller.
 fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
+    if incremental_interface_trace_enabled() {
+      match load_persistent_type_env(fingerprint) {
+        Some(cached_env) => incremental_interface_trace_observe(path, incremental_interface_identity(source, cached_env)),
+        None => throw(String::concat("incremental interface observation: unreadable reused environment for ", path))
+      }
+    } else {
+      ()
+    }
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
   } else {
@@ -1204,9 +1869,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     let outcome = check_module(job)
     commit_module_outcome(rdb, import_env_cache, dep_source_cache, parse_count + 1, job, outcome)
   }
-}
-
-fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array[String] {
+} fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array[String] {
   // Iterative push: previously the recursive `Array::concat(acc, [x])`
   // copied the full prefix on each new dep — O(N^2) for files with
   // many imports.
@@ -1232,9 +1895,7 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array
     i = i + 1
   }
   out
-}
-
-fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
+} fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
   match load_persistent_dep_list(path, source) {
     Some(deps) => (deps, upsert_string_pair(dep_source_cache, path, source), parse_count),
     None => {
@@ -1242,9 +1903,7 @@ fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], p
       (deps, upsert_string_pair(dep_source_cache, path, source), next_parse_count)
     }
   }
-}
-
-fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
+} fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
     if cached_source == source {
@@ -1258,7 +1917,6 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
     None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
   }
 }
-
 /// #1239 step 4(A), on the real fs path: the coordinator-side upfront pass.
 ///
 /// Walks the import graph from `root` ONCE and records, per reachable module,
@@ -1372,7 +2030,6 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
   }
   (leaf_fps, edges, pc, plan_diags)
 }
-
 /// The dep list `plan_import_graph_fs` recorded for `path`, or None when it
 /// recorded none. Returns a copy for the same reason graph.vibe's mo_deps_of
 /// does: the caller takes ownership of the list it folds fingerprints over.
@@ -1391,16 +2048,22 @@ fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Opt
   }
   found
 }
-
 /// The leaf-fingerprint arm: a module whose persistent leaf cache is valid is
 /// recorded with no deps at all and needs no checking.
 fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  if incremental_interface_trace_enabled() {
+    match load_persistent_type_env(leaf_fingerprint) {
+      Some(cached_env) => incremental_interface_trace_observe(path, incremental_interface_identity(source, cached_env)),
+      None => throw(String::concat("incremental interface observation: unreadable reused leaf environment for ", path))
+    }
+  } else {
+    ()
+  }
   write_persistent_dep_list_if_missing(path, source, empty_stack())
   let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
   let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
   (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
 }
-
 /// One module's step, once its dependency list is known and every dependency
 /// already has a fingerprint. Folds the dependency fingerprints in
 /// DECLARATION order (build_fingerprint folds them as a sequence, not a set),
@@ -1433,7 +2096,6 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
   }
 }
-
 /// True when `path`'s entry in the ripple db can be reused as-is: the source
 /// the dep cache was built from still matches the source in the db. The three
 /// arms of the old nested match collapsed to this one predicate because two
@@ -1444,7 +2106,6 @@ fn dep_source_cache_is_current(dep_source_cache: Array[(String, String)], path: 
     None => false
   }
 }
-
 /// One module of the schedule. The same three short-circuits the plan applied
 /// (no source in the db, a reusable cached fingerprint, a persistent leaf
 /// fingerprint), in the same order, then the dep fold.
@@ -1469,7 +2130,21 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
         // Loading the env here caused shared leaf modules to re-read their
         // persistent leaf cache every time they were reached before a parent
         // needed their bindings.
-        Some(cached_fingerprint) => (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count),
+        Some(cached_fingerprint) => {
+          if incremental_interface_trace_enabled() {
+            let observed_env = match lookup_env_cache(env_cache, path) {
+              Some(value) => value,
+              None => match load_persistent_type_env(cached_fingerprint) {
+                Some(value) => value,
+                None => throw(String::concat("incremental interface observation: unreadable in-memory reused environment for ", path))
+              }
+            }
+            incremental_interface_trace_observe(path, incremental_interface_identity(source, observed_env))
+          } else {
+            ()
+          }
+          (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count)
+        }
         None =>
         match lookup_string_pair(plan_leaf_fps, path) {
           Some(leaf_fingerprint) =>
@@ -1491,7 +2166,6 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
     }
   }
 }
-
 /// Index of `p` in `items`, or -1. Plain linear scan: the caller runs it once
 /// per module over a list of the same length, and a project the size of this
 /// compiler's own manifest is ~209 modules.
@@ -1508,7 +2182,6 @@ fn module_plan_index_of(items: Array[String], p: String) -> Int {
   }
   found
 }
-
 /// #1239 step 4(D) groundwork: discover a project's WHOLE import graph, and
 /// its canonical schedule, inside one compiler process.
 ///
@@ -1532,7 +2205,7 @@ fn module_plan_index_of(items: Array[String], p: String) -> Int {
 /// and check_module parses that text -- never the raw bytes. Deriving deps
 /// from one and handing back the other is #1168's exact bug, so both come
 /// off the same `ingested` string here.
-export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with { Error, Fs } {
+fn module_plan_data_fs(entry_path: String) -> (Array[String], Array[Int], Array[Array[String]], Array[String]) with { Error, Fs } {
   // `paths` doubles as the BFS queue: discovery pushes to it, `qi` walks it.
   let paths: Array[String] = [
   ]
@@ -1574,15 +2247,26 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
     e = e + 1
   }
   let (order, ranks) = plan_module_order(edges, entry_path)
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, "version\t1\n")
+  let ordered_deps: Array[Array[String]] = [
+  ]
   let ordered_sources: Array[String] = [
   ]
+  let mut k = 0
+  while k < Array::length(order) {
+    let src_index = module_plan_index_of(paths, Array::get(order, k))
+    Array::push(ordered_deps, Array::get(deps_of, src_index))
+    Array::push(ordered_sources, Array::get(sources, src_index))
+    k = k + 1
+  }
+  (order, ranks, ordered_deps, ordered_sources)
+} export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with { Error, Fs } {
+  let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs(entry_path)
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, "version\t1\n")
   let n = Array::length(order)
   let mut k = 0
   while k < n {
     let p = Array::get(order, k)
-    let src_index = module_plan_index_of(paths, p)
     let index_text = __to_string(k)
     StringBuilder::push(buf, "module\t")
     StringBuilder::push(buf, index_text)
@@ -1591,11 +2275,10 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
     StringBuilder::push(buf, "\t")
     StringBuilder::push(buf, p)
     StringBuilder::push(buf, "\n")
-    Array::push(ordered_sources, Array::get(sources, src_index))
     // Declaration order, duplicates KEPT: the driver derives both its
     // deduped dependency set and its dependencyOccurrences list from this,
     // exactly as it does from VIBE_LIST_DEPS's output today.
-    let deps = Array::get(deps_of, src_index)
+    let deps = Array::get(ordered_deps, k)
     let dlen = Array::length(deps)
     let mut i = 0
     while i < dlen {
@@ -1610,7 +2293,6 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
   }
   (StringBuilder::freeze(buf), ordered_sources)
 }
-
 /// True when one of `path`'s planned dependencies is in `failed` -- i.e. was
 /// itself diagnosed, or was blocked by this same rule.
 ///
@@ -1648,7 +2330,6 @@ fn module_is_blocked(plan_edges: Array[(String, Array[String])], failed: Array[S
     }
   }
 }
-
 /// Canonical order for two collected diagnostics: normalized module path
 /// first, then the message.
 ///
@@ -1672,7 +2353,6 @@ fn module_diag_lt(a: (String, String), b: (String, String)) -> Bool {
     str_lt(a.0, b.0)
   }
 }
-
 /// Insertion sort into canonical order. One diagnostic per failing module, and
 /// a build with enough failing modules for O(N^2) to matter has bigger
 /// problems than the sort.
@@ -1694,7 +2374,6 @@ fn sort_module_diagnostics(diags: Array[(String, String)]) -> Array[(String, Str
   }
   out
 }
-
 /// The collected set as one error string: canonical order, exact duplicates
 /// dropped, one diagnostic per line. A single collected diagnostic is
 /// therefore byte-identical to what the fail-fast walk would have thrown --
@@ -1733,9 +2412,7 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
     StringBuilder::push(buf, "\n")
     i = i + 1
   }
-}
-
-fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
+} fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
   let sorted = sort_module_diagnostics(diags)
   let msgs = array_empty()
   let n = Array::length(sorted)
@@ -1747,7 +2424,6 @@ fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
   }
   String::join(dedupe_diagnostics(msgs), "\n")
 }
-
 /// The import-DAG walk, as the wave loop a coordinator dispatches from
 /// (#1239 step 4(D)).
 ///
@@ -1785,6 +2461,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   // instead of incidentally, partway through the walk, on whichever module a
   // DFS happened to re-enter first.
   let (order, ranks) = plan_module_order(plan_edges, path)
+  incremental_typecheck_telemetry_add(0, Array::length(order))
   let fps = empty_dep_fps()
   let mut db = rdb
   let mut envc = env_cache
@@ -1837,6 +2514,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
       // already in `failed` and has no edge entry, so module_is_blocked alone
       // would let it through to a step that cannot succeed.
       if contains_str(failed, m) || module_is_blocked(plan_edges, failed, m) {
+        incremental_typecheck_telemetry_add(4, 1)
         Array::push(failed, m)
       } else {
         // Snapshots of the accumulators as of ENTRY to this module's step.
@@ -1871,10 +2549,24 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
           if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
             throw(msg)
           } else {
+            incremental_typecheck_telemetry_add(4, 1)
             Array::push(failed, m)
             Array::push(diags, (m, msg))
           }
         } else {
+          // A successful recheck commits exactly one full-module parse;
+          // any successful no-body-parse path leaves `pc` unchanged. This
+          // includes in-memory and persistent reuse; it is intentionally not
+          // a per-cache-class hit count. Count the classification here, at the
+          // same publish point used by scheduler tracing, so every planned
+          // module belongs to rechecked, reused, or failed/blocked.
+          if next_pc > cur_pc {
+            incremental_typecheck_telemetry_add(1, 1)
+            incremental_typecheck_telemetry_decide(m, "rechecked")
+          } else {
+            incremental_typecheck_telemetry_add(2, 1)
+            incremental_typecheck_telemetry_decide(m, "reused")
+          }
           db = next_db
           envc = next_envc
           dsc = next_dsc
@@ -1942,9 +2634,9 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
     None => String::concat("missing:", path)
   }
   let final_env_cache = ensure_env_cache_for_path(db, envc, path)
+  incremental_typecheck_telemetry_add(3, pc - parse_count)
   (root_fingerprint, db, final_env_cache, dsc, pc)
 }
-
 /// #946: drop exact duplicates from a diagnostics list, preserving first-seen
 /// order. Each entry already embeds its location ("line L:C: msg"), so string
 /// equality IS (position, message) identity. O(N^2) — diagnostic lists are tiny.
@@ -1962,7 +2654,6 @@ fn dedupe_diagnostics(diags: Array[String]) -> Array[String] {
   }
   out
 }
-
 /// #946(4): find every top-level `fn f(..) -> Int = wasm "<WAT>"` definition
 /// (parsed as `SLet(_, _, name, _, EFn(_, _, params, _, _, ECall(EIdent("%wasm",
 /// _), [EString(wat)], _)))` — see lc_extract_inline_wasm in
@@ -2007,7 +2698,6 @@ fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[S
   }
   out
 }
-
 /// #946(4): validate every inline-wasm fn body (compile_inline_wat — the same
 /// assembler codegen uses) and return the FIRST located error, or None when
 /// every inline-wasm fn assembles cleanly. `compile` surfaced these (e.g. a bad
@@ -2045,7 +2735,6 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
   }
   result
 }
-
 /// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
 /// Lexer errors come first (#946): the recovering lexer records every offending
 /// position instead of throwing, so a lex-broken file reports located lexer

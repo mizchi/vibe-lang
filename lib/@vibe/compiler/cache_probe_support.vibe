@@ -16,6 +16,10 @@ import @vibe/compiler/entry/compiler/fs_compile {
   compile_with_modules_cached, prepare_modules_cached
 }
 
+import @vibe/compiler/runtime {
+  incremental_typecheck_telemetry_json, set_incremental_typecheck_telemetry_enabled
+}
+
 import ./type_db.vibe {
   db_codegen_count,
   db_grouped_merged_source,
@@ -137,6 +141,40 @@ export fn selfbuild_probe_type_db_fs_parse_counts() -> Int with { Error, Fs } {
   let db2 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
   let count2 = db_parse_count(db2)
   count1 * 1000 + count2
+}
+
+/// A cold two-module fs walk has two planning parses and two full check
+/// parses. A fresh-db warm walk then reuses both persistent environments and
+/// performs no parser work. Return both fixed-order JSON payloads separated by
+/// a newline so the regression pins both counter classifications independently
+/// from timing-based KPI measurements.
+export fn selfbuild_probe_incremental_typecheck_telemetry() -> String with { Error, Fs } {
+  let helper_path = "_build/incremental_telemetry_probe_helper.vibe"
+  let main_path = "_build/incremental_telemetry_probe_main.vibe"
+  let helper_source = "export let add: () -> Int = () -> { 1 }"
+  let main_source = "import ./incremental_telemetry_probe_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
+  let helper_fp = build_type_db_fingerprint(helper_source, array_empty())
+  let main_fp = build_type_db_fingerprint(main_source, [
+    (helper_path, helper_fp)
+  ])
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(main_fp))
+  set_incremental_typecheck_telemetry_enabled(true)
+  let _ = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let cold = incremental_typecheck_telemetry_json()
+  set_incremental_typecheck_telemetry_enabled(true)
+  let _ = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let warm = incremental_typecheck_telemetry_json()
+  set_incremental_typecheck_telemetry_enabled(false)
+  String::concat(cold, String::concat("\n", warm))
 }
 
 export fn selfbuild_probe_type_db_group_merge_counts() -> Int with { Error } {

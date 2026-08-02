@@ -74,11 +74,57 @@ local formalCheck = new Task {
   }
 }
 
+local formalIncrementalCheck = new Task {
+  name = "formal-incremental-check"
+  description = "prove the bounded Lean incremental invalidation model"
+  cmd = "cd formal && lake build --wfail VibeFormal.Proofs.IncrementalCorrect"
+  inputs {
+    "formal/VibeFormal/Compiler/Incremental.lean"
+    "formal/VibeFormal/Proofs/IncrementalCorrect.lean"
+    "formal/lakefile.toml"
+    "formal/lake-manifest.json"
+    "formal/lean-toolchain"
+  }
+}
+
+local testIncrementalInvalidationOracle = new Task {
+  name = "test-incremental-invalidation-oracle"
+  description = "regenerate and validate the bounded Lean incremental invalidation corpus"
+  cmd = "formal/check-incremental-oracle.sh"
+  inputs {
+    "formal/IncrementalOracleMain.lean"
+    "formal/VibeFormal/Compiler/Incremental.lean"
+    "formal/VibeFormal/Proofs/IncrementalCorrect.lean"
+    "formal/oracle/incremental-invalidation.tsv"
+    "formal/check-incremental-oracle.sh"
+    "scripts/incremental_invalidation_oracle.mjs"
+  }
+}
+
+local testIncrementalInvalidationTrace = new Task {
+  name = "test-incremental-invalidation-trace"
+  description = "parser/schema unit tests for the incremental invalidation trace sidecar"
+  cmd = "node --test scripts/incremental_invalidation_oracle.test.mjs"
+  inputs {
+    "scripts/incremental_invalidation_oracle.mjs"
+    "scripts/incremental_invalidation_oracle.test.mjs"
+  }
+}
+
 local formalSelfhostOracle = new Task {
   name = "formal-selfhost-oracle"
   description =
     "compare the Lean call-typing Oracle with the current selfhost checker (manual, non-gating)"
   cmd = "formal/check-oracle.sh && formal/examples/selfhost-call-oracle.sh \"$@\""
+  acceptsArgs = true
+  cache = false
+}
+
+local formalSelfhostIncrementalOracle = new Task {
+  name = "formal-selfhost-incremental-oracle"
+  description =
+    "observe current selfhost invalidation against the bounded Lean corpus (pass stage2.wasm)"
+  cmd = "formal/check-incremental-oracle.sh && node scripts/incremental_invalidation_oracle.mjs \"$@\""
   acceptsArgs = true
   cache = false
 }
@@ -541,6 +587,22 @@ local selfcompileKpi = new Task {
   cache = false
 }
 
+local editCycleKpi = new Task {
+  name = "kpi-edit-cycle"
+  description =
+    "user edit-cycle check KPI: cold/no-op/comment/private/public edits as JSONL"
+  cmd = "node scripts/edit_cycle_kpi.mjs $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local testEditCycleKpi = new Task {
+  name = "test-edit-cycle-kpi"
+  description = "validate edit-cycle KPI telemetry sidecar parsing"
+  cmd = "node --test scripts/edit_cycle_kpi.test.mjs"
+  cache = false
+}
+
 local selfhostGenerationGate = new Task {
   name = "generation-gate"
   description = "selfhost operation gate: seed -> stage1 -> stage2 -> stage3 build"
@@ -870,7 +932,11 @@ tasks {
   fmt
   preCommit
   formalCheck
+  formalIncrementalCheck
+  testIncrementalInvalidationOracle
+  testIncrementalInvalidationTrace
   formalSelfhostOracle
+  formalSelfhostIncrementalOracle
   testParallelSchedulerPrototype
   testParallelSelfhostScheduler
   testParallelFrontendWarm
@@ -954,6 +1020,8 @@ tasks {
   benchSelfhostCompileHotspots
   selfhostGenerationGate
   selfcompileKpi
+  editCycleKpi
+  testEditCycleKpi
   selfhostPostGenerationGate
   testSelfhostRcBootstrap
   testGcSelfbuild

@@ -22,11 +22,15 @@ import @vibe/compiler/runtime {
   build_module_source_from_source,
   collect_all_diagnostics,
   doc_at_source,
+  incremental_invalidation_trace_json,
+  incremental_typecheck_telemetry_json,
   module_plan_manifest_fs,
   run_module_job_dir,
   run_publish_env_cache_dir,
   set_collect_module_diagnostics,
   set_dep_order_seed,
+  set_incremental_interface_trace_enabled,
+  set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
   symbol_spans,
   type_at_source
@@ -671,7 +675,59 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
   } else ()
   if Env::get("VIBE_CHECK_ONLY") == "1" {
     return handle {
+      // The sidecar is opt-in so ordinary `vibe check` remains output- and
+      // work-compatible. The counters cover only the db_typecheck_fs walk
+      // inside check_linked_file; the second linked inline-wasm validation is
+      // intentionally outside this incremental-cache telemetry boundary.
+      let telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+      let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+      let invalidation_trace_nonce = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+      if telemetry_out != "" {
+        // Never leave a previous successful run looking like telemetry for a
+        // failed check. The sidecar is published only after check_linked_file.
+        if Fs::exists(telemetry_out) {
+          Fs::remove(telemetry_out)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if invalidation_trace_out != "" {
+        // A nonce prevents a caller from mistaking a stale successful sidecar
+        // for this check. Do this before the check and publish only afterwards.
+        if Fs::exists(invalidation_trace_out) {
+          Fs::remove(invalidation_trace_out)
+        } else {
+          ()
+        }
+        if invalidation_trace_nonce == "" {
+          throw("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT requires VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if telemetry_out != "" || invalidation_trace_out != "" {
+        set_incremental_typecheck_telemetry_enabled(true)
+      } else {
+        ()
+      }
+      // This has no cache behavior: it only makes the successful walk carry
+      // a canonical public-interface observation into the requested sidecar.
+      set_incremental_interface_trace_enabled(invalidation_trace_out != "")
       let _ = check_linked_file(input_path)
+      if telemetry_out != "" {
+        Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
+      } else {
+        ()
+      }
+      if invalidation_trace_out != "" {
+        Fs::write_file(invalidation_trace_out, incremental_invalidation_trace_json(input_path, invalidation_trace_nonce))
+      } else {
+        ()
+      }
       Fs::write_file(output_path, "ok\n")
       0
     } with Error {
