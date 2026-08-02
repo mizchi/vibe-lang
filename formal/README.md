@@ -180,36 +180,39 @@ separate transition/conformance models and implementation differential tests.
 ## Verified incremental invalidation properties
 
 `Compiler/Incremental.lean` is a bounded snapshot model, separate from the
-production compiler cache. A snapshot has independent interface and
-implementation identities plus direct consumer-to-import dependencies. It
-specifies that every changed interface's reverse closure is invalidated and that
-owner import-plan changes are invalidated. It also proves that a cache entry's
+production compiler cache. A snapshot has independent source-ingestion,
+interface, and implementation identities plus direct consumer-to-import
+dependencies. It specifies that every changed interface's reverse closure is
+invalidated, implementation changes invalidate their owner, source-only changes
+are ingestion telemetry with no modeled typing invalidation, and owner
+import-plan changes are invalidated. It also proves that a cache entry's
 recorded interface/import fingerprint assumptions continue to match when those
 identities and the dependency plan are unchanged. The model contains no typing
 derivation, so this is cache-key eligibility rather than a language-level typing
 soundness proof.
 
-The examples cover an exact no-op, a private body edit, a public interface edit,
-an added import, and a transitive consumer. A private implementation edit
+The examples cover an exact no-op, a comment-only source edit, a private body
+edit, a public interface edit, an added import, and a transitive consumer. A private implementation edit
 invalidates the owner for typing but leaves the consumer's recorded typing-cache
 assumptions matched; it nevertheless makes a linked artifact stale when that
 artifact recorded the changed implementation. Unrelated implementations are not
 part of an artifact entry and do not affect its freshness.
 
 `TypingInvalidated` and `ReverseClosure` remain relational specifications, not
-an extracted executable planner or a completeness proof for one. The bounded
-selfhost observation bridge emits direct dependencies, ingested-source and
-observation-only exported-interface identities, current `rechecked`/`reused`
-decisions, and aggregate telemetry. `IncrementalOracleMain.lean` renders the
+an extracted executable planner or a completeness proof for one. The bounded selfhost observation bridge emits direct dependencies,
+ingested-source telemetry, observation-only canonical token-stream implementation and
+exported-interface identities, current `rechecked`/`reused` decisions, and
+aggregate telemetry. `IncrementalOracleMain.lean` renders the
 model corpus. An independently implemented JavaScript shadow planner derives a
 bounded plan from before/after observations, compares it with those corpus rows,
 requires planned modules to be observed as rechecked, and reports surplus
 rechecks as conservative over-invalidation.
 
-The source identity is only a conservative owner-change proxy, not a normalized
-implementation or artifact identity. The bridge therefore does not establish a
-compiler-to-Lean proof, artifact freshness, or production planner conformance,
-and changes no production cache key. Artifact inputs and canonical diagnostic
+Source identity is ingestion telemetry only. The canonical token-stream implementation
+identity is a provisional observation, not normalized typed IR or an artifact
+identity. The bridge therefore does not establish a compiler-to-Lean proof,
+artifact freshness, or production planner conformance, and changes no
+production cache key. Artifact inputs and canonical diagnostic
 trace equivalence remain future refinements.
 
 ## Verified async execution properties

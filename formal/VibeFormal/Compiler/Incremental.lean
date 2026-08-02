@@ -10,14 +10,23 @@ variable {ModuleId : Type u}
 variable {Fingerprint : Type v}
 
 /--
-An abstract compiler snapshot with independent public-interface and
-implementation identities. Dependencies point from a consumer to its direct
-imports. Fingerprint soundness is an assumption of this model, not proved here.
+An abstract compiler snapshot with independent source, public-interface, and
+implementation identities. Source identity models exact ingestion telemetry;
+implementation identity models semantic bodies. Dependencies point from a
+consumer to its direct imports. Fingerprint soundness is an assumption of this
+model, not proved here.
 -/
 structure IncrementalSnapshot (ModuleId : Type u) (Fingerprint : Type v) where
+  sourceIdentity : ModuleId → Fingerprint
   interfaceIdentity : ModuleId → Fingerprint
   implementationIdentity : ModuleId → Fingerprint
   dependencies : ModuleId → List ModuleId
+
+/-- Exact ingested source changed; this is telemetry, not a typing invalidator. -/
+def SourceChanged
+    (before after : IncrementalSnapshot ModuleId Fingerprint)
+    (moduleId : ModuleId) : Prop :=
+  before.sourceIdentity moduleId ≠ after.sourceIdentity moduleId
 
 /-- A public contract changed between two snapshots. -/
 def InterfaceChanged
@@ -81,7 +90,8 @@ def TypingAssumptionChanged
 /--
 Relational specification for typing invalidation. Interface changes propagate
 through the complete reverse closure; implementation-only and import-plan
-changes invalidate their owner. This is not yet an executable planner.
+changes invalidate their owner. A source-only change is ingestion telemetry and
+is deliberately not a typing invalidator. This is not yet an executable planner.
 -/
 def TypingInvalidated
     (before after : IncrementalSnapshot ModuleId Fingerprint)
