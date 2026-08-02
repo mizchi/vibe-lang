@@ -1,0 +1,48 @@
+// #1347 (ADR-0089 Part A, 資料 p76 "handler switch"): a continuation captured
+// by handler H carries H with it -- the suspend lowering bakes H's driver into
+// the closure handed to the arm -- so invoking the stored continuation later
+// re-enters H no matter what handles enclose the invocation. Wrapping the call
+// in a NEW `handle .. with Yield { .. }` switches nothing; the new arms are
+// simply dead.
+//
+// That was SILENT until #1347: measured on this exact program, the second
+// yield still dispatched to the ORIGINAL arm and the wrapping handler's log
+// stayed empty. The suspend lowering already rejected the same shape when the
+// WRAPPING arm was itself suspend-class ("the handle body calls something this
+// suspend lowering cannot see through"); only the tail-resumptive spelling
+// slipped through. This fixture pins the restored symmetry.
+effect Yield {
+  Yield(Int) -> Unit
+}
+
+enum CoStatus {
+  Done(Int);
+  Yielded(Int, (Unit) -> CoStatus)
+}
+
+let main = () -> Int {
+  let status1 = handle {
+    let _ = perform Yield::Yield(1)
+    let _ = perform Yield::Yield(2)
+    Done(0)
+  } with Yield {
+    Yield(x) => Yielded(x, resume)
+  }
+  match status1 {
+    Done(v) => v,
+    Yielded(_, k) => {
+      let s2 = handle {
+        k(())
+      } with Yield {
+        Yield(x) => resume(())
+      }
+      match s2 {
+        Done(v) => v,
+        Yielded(y, _) => y
+      }
+    }
+  }
+}
+
+__DATA__
+{"error_contains": "can never fire"}

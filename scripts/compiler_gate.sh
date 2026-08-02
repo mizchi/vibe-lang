@@ -8327,4 +8327,120 @@ fi
 rm -rf "$lcdir"
 echo "[compiler-gate] local closure row leak ok"
 
+# 83/83. #1347 (ADR-0089 Part A): a `handle ... with E` that can never fire. A
+# continuation captured by handler H carries H with it (the suspend lowering
+# bakes H's driver into the closure handed to the arm), so re-driving a stored
+# continuation under a NEW handle switches nothing -- the new arms are dead.
+# Measured before the fix on this exact program: the wrapping handler's arm
+# never ran and the second yield still went to the ORIGINAL arm, silently. The
+# suspend lowering already rejected the same shape when the WRAPPING arm was
+# itself suspend-class; this restores the symmetry for the tail-resumptive one.
+#
+# Three shapes are locked: the dead handle is REJECTED, a handle whose body
+# performs the effect directly still compiles, and -- the false-positive
+# direction that actually bit during implementation -- a body whose only callee
+# is a row-carrying PARAMETER or annotated local still compiles.
+echo "[compiler-gate] 83/83 a handle that can never fire is rejected (#1347)"
+hsdir="_build/_gate_1347_switch"
+rm -rf "$hsdir"; mkdir -p "$hsdir"
+sed '/^__DATA__$/,$d' fixtures/err_handler_switch_dead_handle.vibe > "$hsdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/neg.vibe" "$hsdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$hsdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_handler_switch_dead_handle.vibe compiled -- the handler-switch no-op is silent again (#1347)" >&2
+  exit 1
+fi
+if ! grep -q "can never fire" "$hsdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the dead-handle diagnostic is missing (#1347)" >&2
+  cat "$hsdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$hsdir/live.vibe" <<'EOF'
+effect Yield {
+  Yield(Int) -> Unit
+}
+
+fn gen() -> Unit with { Yield } {
+  perform Yield::Yield(1)
+}
+
+let main = () -> Int {
+  handle {
+    gen()
+    41
+  } with Yield {
+    Yield(x) => resume(())
+  } + 1
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/live.vibe" "$hsdir/live.wasm" main >/dev/null 2>&1
+if [ ! -s "$hsdir/live.wasm" ]; then
+  echo "[compiler-gate] FAIL: a handle whose body DOES reach the effect must still compile (#1347 must not over-reject)" >&2
+  cat "$hsdir/live.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$hsdir/param.vibe" <<'EOF'
+effect Yield {
+  Yield(Int) -> Unit
+}
+
+fn gen() -> Unit with { Yield } {
+  perform Yield::Yield(1)
+}
+
+fn run(f: () -> Int with { Yield }) -> Int {
+  handle {
+    f()
+  } with Yield {
+    Yield(x) => resume(())
+  }
+}
+
+let main = () -> Int {
+  let body: () -> Int with { Yield } = () -> {
+    gen()
+    42
+  }
+  run(body)
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/param.vibe" "$hsdir/param.wasm" main >/dev/null 2>&1
+if [ ! -s "$hsdir/param.wasm" ]; then
+  echo "[compiler-gate] FAIL: a handled body whose only callee is a row-carrying PARAMETER (or annotated local) must compile -- #1347 must consult the #885/#1361 overlay, not just top-level bindings" >&2
+  cat "$hsdir/param.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$hsdir"
+echo "[compiler-gate] dead-handle rejection ok"
+
+# 84/84. #1347: the higher-order-effect message. An operation parameterised by
+# an EFFECTFUL block was already rejected, but the generic migration error
+# blamed the handle and told the reader to restructure ITS body -- unactionable,
+# since the gap is in the operation's signature one level away. The diagnostic
+# now names the operation. The PURE-block form must keep working (that is the
+# supported half, pinned by fixtures/effect_talk_tracing_span_test.vibe).
+echo "[compiler-gate] 84/84 higher-order effectful block names the operation (#1347)"
+hodir="_build/_gate_1347_ho"
+rm -rf "$hodir"; mkdir -p "$hodir"
+sed '/^__DATA__$/,$d' fixtures/err_higher_order_effectful_block.vibe > "$hodir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hodir/neg.vibe" "$hodir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$hodir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: an operation taking an EFFECTFUL block must still be rejected (#1347)" >&2
+  exit 1
+fi
+if ! grep -q "Higher-order effects" "$hodir/neg.wasm.diag" 2>/dev/null || ! grep -q "Tracing::Span" "$hodir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the diagnostic must name the higher-order OPERATION and the limitation (#1347)" >&2
+  cat "$hodir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$hodir"
+echo "[compiler-gate] higher-order effect diagnostic ok"
+
 echo "[compiler-gate] ok"

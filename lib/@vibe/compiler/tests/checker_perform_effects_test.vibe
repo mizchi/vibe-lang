@@ -338,3 +338,107 @@ test "calling a local closure bound with let mut leaks its declared row" {
   let errors = check_perform_effects_expr(body, no_labels(), false)
   assert(Array::length(errors) > 0)
 }
+
+// #1347: a `handle ... with E` that can never fire. A continuation captured by
+// handler H carries H with it, so re-driving it under a NEW handle switches
+// nothing — the new arms are dead. That was silent; it is now rejected, with
+// the same strictness the suspend lowering already applied to the other
+// spelling of the same program.
+//
+// Three conditions must ALL hold, and each is exercised below: the effect is
+// performed somewhere, this body cannot statically reach a perform of it, and
+// this body calls an opaque value.
+
+fn yield_effect_def() -> Stmt {
+  SEffectDef(false, "Yield", array_empty(), [
+    ("Yield", [
+      TyName("Int")
+    ], TyUnit)
+  ])
+}
+
+fn yield_producer() -> Stmt {
+  SLet(false, false, "gen", None, fn_with(Some("Yield"), perform_op("Yield::Yield", EInt(1))))
+}
+
+fn yield_handle_over(body: Expr) -> Stmt {
+  SLet(false, false, "drive", None, fn_with(None, EHandle(body, [
+    (PCtor("Yield::Yield", [
+      PBind("x")
+    ]), EInt(0))
+  ])))
+}
+
+fn opaque_call() -> Expr {
+  ECall(EIdent("k", -1), array_empty(), -1)
+}
+
+fn is_dead_handle_err(e: EffectError) -> Bool {
+  match e {
+    EEHandleNeverFires(_) => true,
+    _ => false
+  }
+}
+
+test "a handle over an opaque call cannot fire and is rejected" {
+  let errors = check_perform_effects_stmts([
+    yield_effect_def(),
+    yield_producer(),
+    yield_handle_over(opaque_call())
+  ])
+  assert(Array::length(errors) > 0)
+  assert(is_dead_handle_err(Array::get(errors, 0)))
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  assert(String::contains(msg, "handle of effect 'Yield' can never fire"))
+}
+
+test "an effect nobody performs is a label pun, not a dead handler" {
+  // entry.vibe's Profiler handle and cache_underlying.vibe's module-private
+  // `effect Env` are exactly this: nothing performs the label, the handle
+  // wraps an opaque call, and vacuous-handle elimination erases it on purpose.
+  let errors = check_perform_effects_stmts([
+    yield_effect_def(),
+    yield_handle_over(opaque_call())
+  ])
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a handle whose body performs the effect directly is untouched" {
+  let errors = check_perform_effects_stmts([
+    yield_effect_def(),
+    yield_producer(),
+    yield_handle_over(perform_op("Yield::Yield", EInt(2)))
+  ])
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a handle over a named callee that declares the effect is untouched" {
+  let errors = check_perform_effects_stmts([
+    yield_effect_def(),
+    yield_producer(),
+    yield_handle_over(ECall(EIdent("gen", -1), array_empty(), -1))
+  ])
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a handle with no opaque call is untouched even when it cannot fire" {
+  // Dead, but not the handler-switch shape: nothing here could be a stored
+  // continuation, so this stays a (harmless) no-op rather than an error.
+  let errors = check_perform_effects_stmts([
+    yield_effect_def(),
+    yield_producer(),
+    yield_handle_over(EInt(7))
+  ])
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a row-carrying closure literal in the body counts as reachable" {
+  let literal = fn_with(Some("Yield"), EInt(1))
+  let body = ELet("f", literal, opaque_call(), -1)
+  let errors = check_perform_effects_stmts([
+    yield_effect_def(),
+    yield_producer(),
+    yield_handle_over(body)
+  ])
+  assert(eq(Array::length(errors), 0))
+}
