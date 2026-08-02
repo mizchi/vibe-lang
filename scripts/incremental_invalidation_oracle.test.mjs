@@ -8,9 +8,9 @@ import {
 } from "./incremental_invalidation_oracle.mjs";
 
 const validTrace = {
-  schema: 3,
+  schema: 4,
   run_nonce: "unit-nonce",
-  fingerprint_note: "source_fingerprint is ingestion telemetry; implementation_fingerprint is provisional canonical token-stream identity and interface_fingerprint is observation only; neither is a production cache key",
+  fingerprint_note: "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint and checked_env_fingerprint are observation only; none is a production cache key",
   modules: [
     {
       path: "base.vibe",
@@ -21,6 +21,8 @@ const validTrace = {
       implementation_fingerprint_kind: "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))",
       interface_fingerprint: "31:1:2",
       interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)",
+      checked_env_fingerprint: "32:1:2",
+      checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)",
       decision: "reused",
     },
   ],
@@ -34,7 +36,7 @@ const validTrace = {
   },
 };
 
-test("incremental invalidation trace accepts schema 3 successful observations", () => {
+test("incremental invalidation trace accepts schema 4 successful observations", () => {
   assert.deepEqual(parseIncrementalInvalidationTrace(JSON.stringify(validTrace), "unit-nonce"), validTrace);
 });
 
@@ -48,7 +50,22 @@ test("incremental invalidation trace rejects stale, missing, and dishonest ident
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonestImplementation)), /dishonest implementation fingerprint kind/);
   const incomplete = structuredClone(validTrace);
   delete incomplete.modules[0].implementation_fingerprint;
-  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(incomplete)), /missing implementation fingerprint/);
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(incomplete)), /missing module row implementation_fingerprint/);
+  const schema3 = structuredClone(validTrace);
+  schema3.schema = 3;
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(schema3)), /unsupported schema 3/);
+  const dishonestCheckedEnv = structuredClone(validTrace);
+  dishonestCheckedEnv.modules[0].checked_env_fingerprint_kind = "persistent-env-codec";
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonestCheckedEnv)), /dishonest checked environment fingerprint kind/);
+  const missingCheckedEnv = structuredClone(validTrace);
+  delete missingCheckedEnv.modules[0].checked_env_fingerprint;
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(missingCheckedEnv)), /missing module row checked_env_fingerprint/);
+  const dishonestNote = structuredClone(validTrace);
+  dishonestNote.fingerprint_note = "observation only";
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonestNote)), /dishonest fingerprint_note/);
+  const unexpectedField = structuredClone(validTrace);
+  unexpectedField.modules[0].extra = "unexpected";
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(unexpectedField)), /unexpected module row keys/);
   const stale = structuredClone(validTrace);
   stale.modules[0].decision = "rechecked";
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(stale)), /rechecked decision count mismatch/);

@@ -210,10 +210,18 @@ rechecks as conservative over-invalidation.
 
 Source identity is ingestion telemetry only. The canonical token-stream implementation
 identity is a provisional observation, not normalized typed IR or an artifact
-identity. The bridge therefore does not establish a compiler-to-Lean proof,
-artifact freshness, or production planner conformance, and changes no
-production cache key. Artifact inputs and canonical diagnostic
-trace equivalence remain future refinements.
+identity. Schema-4's canonical checked-value-environment fingerprint is likewise
+an observation of the existing effective `TypeEnv`, not a new model identity or
+planner input. The Lean model and corpus therefore remain unchanged: they already
+model the source/interface/implementation relation, while this slice only adds
+clean-vs-warm observation parity and no production cache-key/reuse semantics.
+The bridge therefore does not establish a compiler-to-Lean proof, artifact
+freshness, or production planner conformance. The new observation is not
+incorporated into a production cache key, persistent format, or reuse decision;
+as with any compiler-source change, regenerated `codegen_fingerprint.vibe`
+still performs the existing whole-compiler artifact-cache invalidation.
+Artifact inputs and canonical diagnostic trace equivalence remain future
+refinements.
 
 ## Verified async execution properties
 

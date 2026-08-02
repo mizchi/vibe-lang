@@ -57,6 +57,13 @@ stage2_wasm="${latest_gen}stage2.wasm"
 echo "[compiler-gate] 3a/3 artifact-input trace oracle"
 VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 
+# 3aa. Schema-4 incremental observations: this isolated clean-vs-warm bridge
+# checks source/token-stream/interface/checked-env parity without incorporating
+# the new observation into a production cache key, cache format, or reuse
+# decision. Ordinary compiler-source fingerprint invalidation still applies.
+echo "[compiler-gate] 3aa/3 incremental invalidation observation oracle"
+VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that
