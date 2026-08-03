@@ -1,17 +1,26 @@
-// #1392: string interpolation renders a derive(Show) value structurally
-// instead of the raw pointer decimal `__to_string` produced for every
-// aggregate (measured before the fix: `"\{p}"` -> "208").
+// #1392: string interpolation renders a value structurally instead of the raw
+// pointer decimal `__to_string` produced for every aggregate (measured before
+// slice 1: `"\{p}"` -> "208", `"\{Some(1)}"` -> "404").
 //
-// The result is an ENCODED int so one expectation pins every case and a
-// failure names itself by which digit is missing:
+// The result is one decimal per case, `1` = ok, so a partial regression names
+// itself by which DIGIT went to zero (least significant first):
 //
-//   10000  scalars unchanged (Int / Bool / String)
-//    1000  struct via a `let` binding
-//     200  enum via a `let` binding
-//      30  bare nullary constructor
-//       4  annotated parameter
+//    1  scalars unchanged (Int / Bool / String)
+//   1e1 struct via a `let` binding                   (slice 1)
+//   1e2 enum via a `let` binding                     (slice 1)
+//   1e3 bare nullary constructor                     (slice 1)
+//   1e4 annotated parameter                          (slice 1)
+//   1e5 `Some(<literal>)`                            (slice 2)
+//   1e6 bare `None`                                  (slice 2)
+//   1e7 `Some(<struct>)` -- slice 2 recurses into slice 1
+//   1e8 an Option held in a variable (head-only fallback)
+//   1e9 `Ok(<literal>)`
+//  1e10 `Err(<string>)` -- payload verbatim, matching show_for_typed
+//  1e11 tuple literal
+//  1e12 array literal
+//  1e13 `Some(Some(..))` -- slice 2 recurses into itself
 //
-// Want 11234.
+// Want 11111111111111.
 struct P {
   x: Int;
   y: Int
@@ -26,37 +35,21 @@ fn show_param(v: E2) -> String {
   "\{v}"
 }
 
+fn bit(ok: Bool, weight: Int) -> Int {
+  if ok {
+    weight
+  } else {
+    0
+  }
+}
+
 let _start = () -> Int {
-  let scalars = if "\{1}" == "1" && "\{true}" == "true" && "\{"s"}" == "s" {
-    10000
-  } else {
-    0
-  }
   let p = P::{ x: 1, y: 2 }
-  let st = if "\{p}" == "P { x: 1, y: 2 }" {
-    1000
-  } else {
-    0
-  }
   let e = B(3)
-  let en = if "\{e}" == "B(3)" {
-    200
-  } else {
-    0
-  }
-  let ct = if "\{A}" == "A" {
-    30
-  } else {
-    0
-  }
-  let pm = if show_param(B(9)) == "B(9)" {
-    4
-  } else {
-    0
-  }
-  scalars + st + en + ct + pm
+  let o = Some(7)
+  bit("\{1}" == "1" && "\{true}" == "true" && "\{"s"}" == "s", 1) + bit("\{p}" == "P { x: 1, y: 2 }", 10) + bit("\{e}" == "B(3)", 100) + bit("\{A}" == "A", 1000) + bit(show_param(B(9)) == "B(9)", 10000) + bit("\{Some(1)}" == "Some(1)", 100000) + bit("\{None}" == "None", 1000000) + bit("\{Some(P::{ x: 1, y: 2 })}" == "Some(P { x: 1, y: 2 })", 10000000) + bit("\{o}" == "Some(7)", 100000000) + bit("\{Ok(3)}" == "Ok(3)", 1000000000) + bit("\{Err("bad")}" == "Err(bad)", 10000000000) + bit("\{(1, "a", true)}" == "(1, a, true)", 100000000000) + bit("\{[1, 2, 3]}" == "[1, 2, 3]", 1000000000000) + bit("\{Some(Some(5))}" == "Some(Some(5))", 10000000000000)
 }
 _start()
 
 __DATA__
-{"last":"11234"}
+{"last":"11111111111111"}
