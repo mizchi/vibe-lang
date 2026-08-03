@@ -32,6 +32,14 @@ import ./concurrent.vibe {
   TaskHandle::wake
 }
 
+//# Test types
+
+/// #1374: a payload type of this file's own, so the kind the throw site records
+/// is unambiguously not `String`.
+enum SettleBoom {
+  SettleBang(Int)
+}
+
 //# Test helpers
 
 /// #1324: `TaskHandle::join` / `TaskGroup::run` now THROW their `TaskError`
@@ -342,6 +350,41 @@ test "spawn_suspend Error on the settle leg fails fast and cancels the parked si
     Some(TaskError::Failed(m)) => m == "boom",
     _ => false
   })
+}
+
+/// #1374: the SUSPEND lane's two Error boundaries (the settle leg and each
+/// resumed leg) funnel their payload into `fail_msg: String` through
+/// `conc_fail_cell`, exactly like spawn's runner does -- so they had the same
+/// erased-arm hazard, and #1375 fixed only the runner. A typed payload here
+/// used to be stored as a raw pointer.
+///
+/// The payload is a ctor CALL rather than a bare nullary ctor: #1081's
+/// Spawnable check reads a bare `Closed` inside a spawned closure as a captured
+/// value and rejects it, which has nothing to do with what this test measures.
+/// The kind the throw site records is the payload's declared TYPE, so the arm
+/// reports `<SettleBoom>`; the String case directly above is unchanged, which
+/// is the pair that matters -- the fix must be invisible to existing throws.
+test "a typed throw on the settle leg is reported by kind, not as a pointer" {
+  let out = handle {
+    TaskGroup::run((g) -> {
+      let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+        throw(SettleBang(3))
+      })
+      TaskGroup::pump_all(g)
+      match caught_join(hb) {
+        Some(TaskError::Failed(m)) => assert_eq(m, "<SettleBoom>"),
+        _ => assert(false)
+      }
+      1
+    })
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
+  match out {
+    Some(TaskError::Failed(m)) => assert_eq(m, "<SettleBoom>"),
+    _ => assert(false)
+  }
 }
 
 /// Case 2: the throw happens on a RESUMED leg (after a suspend) — it runs

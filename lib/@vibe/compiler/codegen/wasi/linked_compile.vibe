@@ -157,7 +157,9 @@ import @vibe/compiler/codegen/common_base {
   emit_rc_dup_guarded,
   emit_str_ref,
   empty_dbg_prov,
+  ensure_exn_kind_cell,
   evidence_dict_pass,
+  exn_kind_read_expr,
   expr_tag,
   fn_type_param_types,
   get_arm_body,
@@ -770,6 +772,7 @@ fn lc_row_has_error(eff: Option[String]) -> Bool {
 /// runner depends on) is untouched.
 fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit {
   let mut i = 0
+  let mut wrapped_any = false
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name && lc_row_has_error(eff) {
@@ -779,33 +782,73 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
         // `Exception[E]` -- including the `TaskError` that #1324's
         // `TaskGroup::run` throws. Writing that enum pointer straight to
         // `Stderr::write_stream` decoded it as a packed `(ptr<<32)|len`
-        // string and dumped the whole data segment. Route it through
-        // `__to_string`, whose ADR-0058 int/string discrimination
-        // (`64 <= ptr && ptr + len <= memory_size`) is the identity on real
-        // strings and renders anything else as a bounded decimal instead of
-        // reading arbitrary memory. Printing the real payload of a non-String
-        // kind needs a runtime kind tag -- see #1374.
-        let diag = ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+        // string and dumped the whole data segment.
+        //
+        // #1374: the throw site now records the payload's static type name in
+        // the exception-kind cell, so this arm can tell the cases apart:
+        //
+        //   String / Int   `__to_string` is FAITHFUL -- ADR-0058's int/string
+        //                  discrimination (`64 <= ptr && ptr + len <=
+        //                  memory_size`) is the identity on a real string and
+        //                  renders an int as its decimal. Unchanged output.
+        //   ""             the throw site could not resolve a type name, so
+        //                  the payload might be either. Keep #1375's
+        //                  conservative `__to_string`: bounded, never a read
+        //                  of arbitrary memory.
+        //   anything else  a value whose bytes are NOT text (an enum, a
+        //                  struct). Print the KIND, not a decimal that reads
+        //                  like a message. Printing the value itself needs
+        //                  per-kind formatting, which this side channel does
+        //                  not provide -- see #1374.
+        let kind_ident = EIdent("__entry_err_kind", -1)
+        let printable = EBinOp("||", ECall(EIdent("String::equals", -1), [
+          kind_ident,
+          EString("")
+        ], -1), EBinOp("||", ECall(EIdent("String::equals", -1), [
+          kind_ident,
+          EString("String")
+        ], -1), ECall(EIdent("String::equals", -1), [
+          kind_ident,
+          EString("Int")
+        ], -1)))
+        let text = EIf(printable, ECall(EIdent("__to_string", -1), [
+          EIdent("__entry_err_msg", -1)
+        ], -1), ECall(EIdent("String::concat", -1), [
+          EString("<"),
+          ECall(EIdent("String::concat", -1), [
+            kind_ident,
+            EString(">")
+          ], -1)
+        ], -1))
+        let diag = ELet("__entry_err_kind", exn_kind_read_expr(), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
           EString("vibe: uncaught error: ")
         ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
-          ECall(EIdent("__to_string", -1), [
-            EIdent("__entry_err_msg", -1)
-          ], -1)
+          text
         ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
           EString("\n")
-        ], -1), EInt(1))))
+        ], -1), EInt(1)))), -1)
         let wrapped = EHandle(body, [
           (PCtor("Error::Throw", [
             PBind("__entry_err_msg")
           ]), diag)
         ])
         Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+        wrapped_any = true
       } else {
         ()
       },
       _ => ()
     }
     i = i + 1
+  }
+  // #1374: this pass runs AFTER desugar_trait_dicts, so the cell it just
+  // synthesized a reader for is only guaranteed to exist for a program that
+  // itself throws. An entry whose `Error` row comes from an imported module's
+  // throw is exactly the case where it would not.
+  if wrapped_any {
+    ensure_exn_kind_cell(stmts)
+  } else {
+    ()
   }
 }
 

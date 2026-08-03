@@ -1,0 +1,151 @@
+// #1374: the runtime exception-kind side channel.
+//
+// ADR-0085 lowers every exception spelling to ONE abortive Wasm tag with no
+// kind discriminator, and the erased `Error` spelling is deliberately
+// compatible with every kind (that is what kept #1344 additive over #786's
+// suberror throws). So an erased `handle { .. } with Error { Throw(m) => .. }`
+// arm also catches a typed `Exception[E]` throw, and `m`'s static type there is
+// `CtUnknown` -- using it as a String type-checks and then reads an enum
+// pointer as a packed `(ptr<<32)|len` string. Measured on the #1372 review: a
+// whole data segment written to stderr, and `String::length` == 2129 on a
+// `Closed` payload.
+//
+// `__exn_kind()` closes that: `desugar_trait_dicts` records the payload's
+// statically resolved type name at every throw site and lowers the read to a
+// one-slot module cell. The payload's own representation is untouched, so this
+// is purely additive -- every pre-existing handler behaves exactly as before.
+
+enum Boom {
+  Bang(Int)
+}
+
+enum Other {
+  Second(String)
+}
+
+struct Wrapped {
+  n: Int;
+}
+
+test "an erased arm sees the typed kind of an enum payload" {
+  let k = handle {
+    throw(Bang(7))
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(k, "Boom")
+}
+
+test "a String payload reports String, so the sinks keep printing it verbatim" {
+  let k = handle {
+    throw("boom")
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(k, "String")
+}
+
+test "an Int payload reports Int" {
+  let k = handle {
+    throw(42)
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(k, "Int")
+}
+
+test "a struct-literal payload reports its struct name" {
+  let k = handle {
+    throw(Wrapped::{
+      n: 1
+    })
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(k, "Wrapped")
+}
+
+// The slot is a single global, so the ORDER in which it is written and read is
+// the whole correctness argument. `Error` is non-resumable (#640): a throw
+// never returns to its site, so between the write and its handler's read no
+// other guest code runs. A throw nested inside a handler arm therefore writes
+// first and is read first -- innermost wins -- and the outer arm still sees its
+// OWN throw's kind, because that throw's write happens after the inner one
+// completed.
+test "a nested throw does not leak its kind to the outer arm" {
+  let k = handle {
+    let inner = handle {
+      throw(Bang(1))
+      ""
+    } with Error {
+      Throw(_) => __exn_kind()
+    }
+    assert_eq(inner, "Boom")
+    throw("outer")
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(k, "String")
+}
+
+test "two throws in sequence each report their own kind" {
+  let first = handle {
+    throw(Second("x"))
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  let second = handle {
+    throw(Bang(2))
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(first, "Other")
+  assert_eq(second, "Boom")
+}
+
+// A payload whose type the throw site cannot resolve syntactically reports ""
+// rather than a wrong name. Both sinks treat "" as "might be a String" and keep
+// #1375's conservative `__to_string`, which is bounded either way. Applying a
+// LOCAL binding is one such shape: the resolver tracks a local's own type, never
+// the type of its result, and a local is not in the top-level return table.
+test "an unresolvable payload reports the empty kind, never a guess" {
+  let f = (x: Int) -> {
+    x + 1
+  }
+  let k = handle {
+    throw(f(1))
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(k, "")
+}
+
+// A resolvable payload right next to an unresolvable one: the "" must be the
+// resolver declining, not the cell being stale from the previous throw.
+test "an unresolved throw clears the previous throw's kind" {
+  let first = handle {
+    throw(Bang(3))
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(first, "Boom")
+  let g = (x: Int) -> {
+    x + 1
+  }
+  let second = handle {
+    throw(g(1))
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(second, "")
+}

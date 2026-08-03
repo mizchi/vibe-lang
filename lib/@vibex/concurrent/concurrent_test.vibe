@@ -632,11 +632,14 @@ test "spawned task may perform Fs and Process alongside Error" {
 /// `fail_msg: String` reinterpreted the pointer as a packed `(ptr<<32)|len`
 /// string: this scenario (a child sending on an already-released channel, so
 /// `Sender::send` throws `Closed`) produced a `Failed(..)` whose
-/// `String::length` was 2129. The runner now renders the payload through
-/// `__to_string` (ADR-0058's int/string discrimination), which is the
-/// identity on real strings and a bounded decimal otherwise. Recovering the
-/// real payload needs a runtime kind tag (#1374).
-test "a typed child throw yields a bounded fail message, not a reinterpreted pointer" {
+/// `String::length` was 2129.
+///
+/// #1374 gave the throw site a kind side channel, so the arm can now NAME what
+/// it caught: `Failed("<SendError>")`. That is the exact-value assertion below.
+/// The kind is the payload's declared type (`Closed` is a variant of
+/// `SendError`), not the variant -- a variant tag needs per-kind formatting,
+/// which the side channel does not carry.
+test "a typed child throw is reported by kind, not as a reinterpreted pointer" {
   let caught = handle {
     let _v = TaskGroup::run((g) -> {
       let (tx, rx) = Channel::bounded(g, 1)
@@ -655,10 +658,10 @@ test "a typed child throw yields a bounded fail message, not a reinterpreted poi
   }
   match caught {
     Some(Failed(m)) => {
-      // A reinterpreted enum pointer measured 2129 characters here; the
-      // decimal rendering is single-digit-to-a-few characters.
-      assert(String::length(m) > 0)
-      assert(String::length(m) < 24)
+      // A reinterpreted enum pointer measured 2129 characters here, and
+      // #1375's blind `__to_string` produced a bare decimal that read like a
+      // message. Both fail this exact comparison.
+      assert_eq(m, "<SendError>")
     },
     _ => assert(false)
   }
