@@ -313,7 +313,7 @@ ADR-0058 の int/string 判定 (`64 <= ptr && ptr + len <= memory_size`) は
 | --- | --- |
 | 書き込み | `desugar_trait_dicts` が `perform <Exception>::Throw(v)` の直前に `Array::set(__exn_kind_cell, 0, "<Kind>")` を挿入する。kind は codegen 側の `infer_arg_type_name` で解決し、解決できなければ `""` を**必ず**書く (前の throw の kind が残らないように) |
 | 読み出し | `__exn_kind() -> String` は checker-only intrinsic (`checker/builtins_misc.vibe` の `lookup_exn_kind`)。desugar が cell 読み出しへ lower するので、どちらの backend にも新しい emission はない |
-| cell | `let __exn_kind_cell = [""]` を必要な program にだけ append する。module-level let の「一度だけ初期化・同一 identity・mutation が見える」性質は `fixtures/module_let_memo_test.vibe` が既に pin している |
+| cell | `let __exn_kind_cell = ["", ""]` を必要な program にだけ append する (slot 0 = kind、slot 1 = #1392 slice 3 の rendered message)。module-level let の「一度だけ初期化・同一 identity・mutation が見える」性質は `fixtures/module_let_memo_test.vibe` が既に pin している |
 
 **なぜ wasm global や新しい builtin ではないか**: cell を普通の vibe AST にして
 おけば、linear / wasm-gc の2つの backend で実装が分岐しない。新しい global の
@@ -338,11 +338,7 @@ payload を保存して**後で** kind を見る handler はこの区間の外�
 | --- | --- | --- |
 | `String` / `Int` | `__to_string` の結果 (#1374 以前と同一) | ADR-0058 の判定が忠実 |
 | `""` (解決不能) | `__to_string` の結果 | String かもしれない。#1375 の保守的な挙動を維持 |
-| その他 | `<Kind>` | bytes がテキストではない。メッセージに見える10進数を出さない |
-
-**まだ残っている限界**: 非 String payload の**値**は依然として出せない。それには
-kind ごとの formatting (derive された `to_string` への dispatch) が要る。kind
-名までが side channel の守備範囲。
+| その他 | rendered message、無ければ `<Kind>` | 下の #1392 slice 3 参照 |
 
 regression lock:
 
@@ -351,8 +347,51 @@ regression lock:
 - `fixtures/err_entry_boundary_typed_payload.vibe` (`<Boom>`) と
   `fixtures/err_entry_boundary_string_payload.vibe` (verbatim) の対 +
   compiler_gate 44c
-- `@vibex/concurrent` の "a typed child throw is reported by kind"
-  (`Failed("<SendError>")`) と suspend lane の settle leg 版
+
+### message side channel (#1392 slice 3、2026-08-03)
+
+kind side channel の残りの限界は「非 String payload の**値**が出せない」ことだった。
+これには「kind ごとの formatting」が要ると書いていたが、**その dispatch を
+handler 側で解くことは原理的にできない**: erased な `with Error { Throw(m) => .. }`
+の `m` は静的に `CtUnknown` なので、`T::to_string` も `[T: Show]` の witness も
+そこでは解決しようがない。trait dispatch (`Show` をメソッド持ちにする) を入れても
+この地点は救われない。
+
+**型が分かっている唯一の場所は throw site**。なので rendering も throw site で
+やり、結果の String を kind と同じ cell の slot 1 に載せる。
+
+| 層 | 実装 |
+| --- | --- |
+| 書き込み | kind の書き込みと同じ場所。payload temp に対して #1392 slice 1/2 の補間 renderer を走らせる (`interp_show_target` → `T::to_string`、無ければ `interp_expand` の `Option`/`Result` 展開) |
+| 読み出し | `__exn_message() -> String`。`__exn_kind()` と同じ checker-only intrinsic |
+
+**構造的な renderer が見つかったときだけ書く**。見つからなければ `""` を書いて
+slot をクリアする。これが要点で、reader 側は「空でなければ信用する」という単純な
+判定しかできない — `__to_string` のポインタ10進数はごく普通の非空文字列なので、
+それを書いてしまうと `derive(Show)` の無い enum が `<NoShow>` ではなく `192` に
+なる (#1374 より悪化する)。忠実かどうかは throw site の**静的**な性質なので、
+判断もそこでやる。
+
+sink の実測:
+
+| payload | #1374 | #1392 slice 3 |
+| --- | --- | --- |
+| `Failed("io")` (`derive(Show)` enum) | `<AppError>` | `Failed(io)` |
+| `"plain message"` | verbatim | verbatim (不変) |
+| `Bang(5)` (renderer 無し) | `<NoShow>` | `<NoShow>` (不変) |
+| `Some(7)` | `<Option>` | `Some(7)` |
+| `TaskGroup` の子の `Failed("child blew up")` | `<TaskError>` | `Failed(Failed(child blew up))` |
+
+最後の行の二重 `Failed` は正しい: 外側が `TaskHandle::join` の wrapper、内側が
+子自身の payload。#1374 ではこの内側が丸ごと失われていた。
+
+regression lock:
+
+- compiler_gate 87 — `derive(Show)` enum / String / renderer 無しの3本。3本目が
+  「悪化していないこと」の pin
+- `@vibex/concurrent` の "a typed child throw is reported by kind" は
+  `Failed("<SendError>")` から `Failed("Closed")` へ更新した (caller が switch
+  したいのは変種名の方)
 
 ## #1324 (Result 削除) との統合順序
 
