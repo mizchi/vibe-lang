@@ -36,6 +36,10 @@ import @vibe/compiler/runtime {
   type_at_source
 }
 
+import @vibe/compiler/cache {
+  ingestion_fingerprint_telemetry_json, set_ingestion_fingerprint_telemetry_enabled
+}
+
 import @vibe/compiler/loader {
   contract_package_hashes_fs,
   fill_require_pins_fs_mode,
@@ -236,6 +240,21 @@ fn read_arg_or_env(index: Int, env_name: String) -> String with { Env } {
 
 fn own_host_string(value: String) -> String {
   String::concat("", value)
+}
+
+fn has_control_character(value: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < String::length(value) {
+    let c = String::char_code_at(value, i)
+    if (c >= 0 && c <= 31) || (c >= 127 && c <= 159) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn profile_memory_mark(enabled: Bool) -> Unit with { Env } {
@@ -439,6 +458,28 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       throw("VIBE_ARTIFACT_INPUT_TRACE_OUT requires VIBE_ARTIFACT_INPUT_TRACE_NONCE")
     } else if Env::get("VIBE_FS_COMPILE") != "1" || Env::get("VIBE_RC") != "0" || Env::get("VIBE_LSP") == "1" || Env::get("VIBE_CHECK_ONLY") == "1" || Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_DEBUG_BREAK") == "1" || Env::get("VIBE_DEBUG") == "1" || Env::get("VIBE_TESTMETA_OUT") != "" || Env::get("VIBE_HASH") == "1" || Env::get("VIBE_HASH_WRITE") == "1" || Env::get("VIBE_MISSING_VPKG_SCAN") == "1" || Env::get("VIBE_DEPS_MISSING_SCAN") == "1" || Env::get("VIBE_FILL_PINS") == "1" || Env::get("VIBE_PUBLISH_CHECK") == "1" || Env::get("VIBE_MODULE_JOB_DIR") == "1" || Env::get("VIBE_PUBLISH_ENV_CACHE") == "1" || Env::get("VIBE_LIST_DEPS") == "1" || Env::get("VIBE_MODULE_PLAN") == "1" {
       throw("artifact-input trace requires the exact uninstrumented VIBE_FS_COMPILE=1, VIBE_RC=0 file_compile cached bump lane")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  // #1379: this compiler-owned sidecar measures only fingerprint_file_fs.
+  // Remove a requested output before EVERY early return, then accept it only
+  // on check-only runs with a non-empty control-free nonce. It is separate
+  // from runner-owned host_fs_scope, whose units remain aggregate raw bytes.
+  let ingestion_telemetry_out = Env::get("VIBE_INGESTION_TELEMETRY_OUT")
+  let ingestion_telemetry_nonce = Env::get("VIBE_INGESTION_TELEMETRY_NONCE")
+  if ingestion_telemetry_out != "" {
+    if Fs::exists(ingestion_telemetry_out) {
+      Fs::remove(ingestion_telemetry_out)
+    } else {
+      ()
+    }
+    if Env::get("VIBE_CHECK_ONLY") != "1" {
+      throw("VIBE_INGESTION_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
+    } else if ingestion_telemetry_nonce == "" || has_control_character(ingestion_telemetry_nonce) {
+      throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
     } else {
       ()
     }
@@ -736,6 +777,9 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       } else {
         ()
       }
+      // Reset before the check even when not requested: a long-lived direct
+      // caller cannot leak observations into a later requested check.
+      set_ingestion_fingerprint_telemetry_enabled(ingestion_telemetry_out != "")
       // This has no cache behavior: it only makes the successful walk carry
       // a canonical public-interface observation into the requested sidecar.
       set_incremental_interface_trace_enabled(invalidation_trace_out != "")
@@ -747,6 +791,14 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       }
       if invalidation_trace_out != "" {
         Fs::write_file(invalidation_trace_out, incremental_invalidation_trace_json(input_path, invalidation_trace_nonce))
+      } else {
+        ()
+      }
+      // Publish after successful checker work and before the final success
+      // marker. A sidecar write failure therefore fails this check, never
+      // leaves a stale/partial success observation.
+      if ingestion_telemetry_out != "" {
+        Fs::write_file(ingestion_telemetry_out, ingestion_fingerprint_telemetry_json(ingestion_telemetry_nonce))
       } else {
         ()
       }
