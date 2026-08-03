@@ -57,7 +57,9 @@ export enum TypeDef {
 export enum TypeEnv {
   EnvEmpty;
   EnvBind(String, Type, TypeEnv);
-  EnvTraitDef(String, Array[String], Bool, Array[(String, Array[TypeExpr], TypeExpr)], TypeEnv);
+  // Header params are sixth so every older positional slot, including rest,
+  // retains its meaning. They are in-memory provenance only.
+  EnvTraitDef(String, Array[String], Bool, Array[(String, Array[TypeExpr], TypeExpr)], TypeEnv, Array[String]);
   EnvTraitImpl(String, Type, TypeEnv);
   EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv);
   EnvFlat(Array[(String, Type)]);
@@ -114,7 +116,7 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           ArrayBuilder::push(types, ty)
           cur = rest
         },
-        EnvTraitDef(_, _, _, _, rest) => {
+        EnvTraitDef(_, _, _, _, rest, _) => {
           cur = rest
         },
         EnvTraitImpl(_, _, rest) => {
@@ -213,7 +215,7 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
       } else {
         cur = rest
       },
-      EnvTraitDef(_, _, _, _, rest) => {
+      EnvTraitDef(_, _, _, _, rest, _) => {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
@@ -330,7 +332,7 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
   match env {
     EnvEmpty => empty,
     EnvBind(_, _, rest) => trait_supers(rest, name),
-    EnvTraitDef(tname, supers, _, _, rest) => if tname == name {
+    EnvTraitDef(tname, supers, _, _, rest, _) => if tname == name {
       supers
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
@@ -347,7 +349,7 @@ export fn trait_method_sig(env: TypeEnv, trait_name: String, method_name: String
   match env {
     EnvEmpty => None,
     EnvBind(_, _, rest) => trait_method_sig(rest, trait_name, method_name),
-    EnvTraitDef(tname, _, _, methods, rest) => if tname == trait_name {
+    EnvTraitDef(tname, _, _, methods, rest, _) => if tname == trait_name {
       let mlen = Array::length(methods)
       let mut i = 0
       let mut found = None
@@ -389,7 +391,7 @@ fn type_name_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: String)
   match scan {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
-    EnvTraitDef(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTraitDef(_, _, _, _, rest, _) => type_name_iterator_impl_scan(rest, full, type_name),
     EnvTraitImpl(tname, target, rest) => {
       let hit = trait_target_head_name(target) == type_name && (match trait_method_sig(full, tname, "next") {
         Some(_) => true,
@@ -438,7 +440,7 @@ fn type_name_async_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: S
   match scan {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
-    EnvTraitDef(_, _, _, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
+    EnvTraitDef(_, _, _, _, rest, _) => type_name_async_iterator_impl_scan(rest, full, type_name),
     EnvTraitImpl(tname, target, rest) => {
       let hit = trait_target_head_name(target) == type_name && trait_next_returns_future(full, tname)
       if hit {
@@ -735,7 +737,7 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_defined(rest, name),
-    EnvTraitDef(tname, _, _, _, rest) => if tname == name {
+    EnvTraitDef(tname, _, _, _, rest, _) => if tname == name {
       true
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
@@ -1209,7 +1211,7 @@ export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
             Array::push(out, (name, ty))
             cur = rest
           },
-          EnvTraitDef(_, _, _, _, rest) => {
+          EnvTraitDef(_, _, _, _, rest, _) => {
             cur = rest
           },
           EnvTraitImpl(_, _, rest) => {
@@ -1941,7 +1943,7 @@ export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) 
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
-    EnvTraitDef(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target),
+    EnvTraitDef(_, _, _, _, rest, _) => impls_overlap_for(rest, trait_name, new_target),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
       if types_equal(target, new_target) {
         true
@@ -1978,7 +1980,7 @@ fn type_implements_check_env(e: TypeEnv, trait_name: String, resolved: Type) -> 
   match e {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
-    EnvTraitDef(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest, _) => type_implements_check_env(rest, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
       if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) {
         true
@@ -2043,7 +2045,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, trait_name: Strin
   match e2 {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitDef(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest, _) => type_implements_check_super(rest, full_env, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
@@ -2083,7 +2085,7 @@ fn trait_is_method_bearing(env: TypeEnv, trait_name: String) -> Bool {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_is_method_bearing(rest, trait_name),
-    EnvTraitDef(tname, _, _, methods, rest) => if tname == trait_name {
+    EnvTraitDef(tname, _, _, methods, rest, _) => if tname == trait_name {
       Array::length(methods) > 0
     } else trait_is_method_bearing(rest, trait_name),
     EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
@@ -2127,7 +2129,7 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
   match scan {
     EnvEmpty => false,
     EnvBind(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
-    EnvTraitDef(_, _, _, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest, _) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvTraitImplGen(itrait, _tparams, bounds, target, rest) => {
       let head = type_constructor_name(resolved)

@@ -149,6 +149,14 @@ traces (apart from the freshness nonce) and equal check output bytes/text. It
 retains malformed and content-token fallback checks. This does not remove the
 trusted stat-token limitation, and it does not prove artifact equivalence.
 
+## Trait header provenance (bounded Phase 3)
+
+The in-memory parser and checker retain bare trait-header parameter names for
+provenance. This appends a sixth field to the transparent `STrait` AST variant,
+which is an explicit source migration for positional consumers. Persistent warm
+cache state still drops trait definitions, however, so a complete clean/warm
+trait artifact remains blocked; this is not a claim that artifacts are lossless.
+
 ## Artifact boundaries
 
 A physical file is a useful ingestion/cache shard, but is not always an

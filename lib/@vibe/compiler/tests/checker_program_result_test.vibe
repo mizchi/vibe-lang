@@ -44,6 +44,22 @@ fn array_length_expr() -> Expr {
   ], 10)
 }
 
+fn trait_header_params(env: TypeEnv, wanted: String) -> Array[String] {
+  match env {
+    EnvEmpty => array_empty(),
+    EnvBind(_, _, rest) => trait_header_params(rest, wanted),
+    EnvTraitDef(name, _, _, _, rest, params) => if name == wanted {
+      params
+    } else {
+      trait_header_params(rest, wanted)
+    },
+    EnvTraitImpl(_, _, rest) => trait_header_params(rest, wanted),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_header_params(rest, wanted),
+    EnvFlat(_) => array_empty(),
+    EnvCached(_, _, rest) => trait_header_params(rest, wanted)
+  }
+}
+
 //# Successful production-check boundary
 
 test "check_program_result retains production outputs" {
@@ -71,6 +87,19 @@ test "check_program_result retains production outputs" {
   }
   assert(Array::length(checked.typed_occurrences) > 0)
   assert(occurrences_apply_final_subst(checked.typed_occurrences, checked.final_subst))
+}
+
+test "checker final env retains ordered trait header params" {
+  let checked = check_program_result([
+    STrait(false, "Iterator", array_empty(), array_empty(), array_empty(), [
+      "T",
+      "U"
+    ])
+  ])
+  let params = trait_header_params(checked.final_env, "Iterator")
+  assert(Array::length(params) == 2)
+  assert(Array::get(params, 0) == "T")
+  assert(Array::get(params, 1) == "U")
 }
 
 test "production result retains every typedef form and enum binder provenance" {
