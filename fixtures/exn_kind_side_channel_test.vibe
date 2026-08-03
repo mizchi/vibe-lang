@@ -149,3 +149,49 @@ test "an unresolved throw clears the previous throw's kind" {
   }
   assert_eq(second, "")
 }
+
+// #1384 review (Codex P2): the write has to happen AFTER the payload is
+// evaluated. There is only ONE slot, so a payload expression that itself
+// reaches a throw -- even one it catches and recovers from -- overwrites the
+// kind the outer site just recorded. With the write emitted first, the arm
+// below saw `Boom` (the INNER, already-handled throw) instead of `String`.
+//
+// Two things make the ordering observable here. The inner throw is fully
+// handled, so the only exception reaching the outer arm is the outer one --
+// were it to escape, `Boom` would be the RIGHT answer and the bug invisible.
+// And the payload is a top-level fn with a declared return type, so the
+// resolver actually produces `String`: through a local closure it declines to
+// `""`, which no longer reads as a stale kind but also pins nothing.
+fn exn_kind_recovering_payload() -> String {
+  handle {
+    throw(Bang(1))
+    "unreachable"
+  } with Error {
+    Throw(_) => "outer"
+  }
+}
+
+test "a payload that internally handles a throw does not lose its own kind" {
+  let k = handle {
+    throw(exn_kind_recovering_payload())
+    ""
+  } with Error {
+    Throw(_) => __exn_kind()
+  }
+  assert_eq(k, "String")
+}
+
+// The same ordering seen through the payload rather than the kind: the value
+// the outer arm receives must be the OUTER payload. This one already passed
+// before the reorder -- the payload was always evaluated correctly, it was only
+// the kind slot that got clobbered -- so it is here to pin that the fix did not
+// move the payload while repairing the kind.
+test "the outer payload survives an inner handled throw" {
+  let m = handle {
+    throw(exn_kind_recovering_payload())
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert_eq(m, "outer")
+}

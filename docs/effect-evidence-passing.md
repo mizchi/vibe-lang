@@ -2588,6 +2588,55 @@ unit battery 477/477。
 検査は必須ではなくなったが、リテラルの row 分類を checker と codegen で
 揃えること自体は別途の設計判断として残る。
 
+### 追記38 (2026-08-03): 分割済み literal の二重 Done 包み (#1371、#1382 で修正済み)
+
+**修正そのものは #1382 (`d0207493`) で landed 済み**。ここに残すのは、その
+landed 分に含まれていない (a) ライブラリ非依存の最小 repro と (b) 隣接する
+未修正ホールの記録。
+
+body が**ちょうど needing 関数への tail call** である suspend-class closure
+literal が壊れていた。`scps_split_tail` の `tail_needing` 分岐は「clone が
+既に step を返すのでそのまま通す」ので、分割結果が clone 呼び出しそのものに
+なる:
+
+```text
+() -> Int with { Yield } { callee(1) }
+  ==> () -> { __scps_cps_Yield_callee(1) }
+```
+
+この body は `__ScpsDone_Yield` も `__ScpsY_Yield_*` ctor も
+`__scps_bubble_Yield` も含まない。ところが `scps_literal_is_step_for` が見て
+いたのは**その3つの名前だけ**だったので未分割と誤判定され、
+`scps_prepass_expr` の arg-position fixup が分割済みの literal をもう一度
+`Done` 包みしていた。driver は即 `Done` にマッチし、**中の step オブジェクト
+(heap pointer) を計算結果として返す** — 継続は一度も走らない。
+
+#1371 はこれを「CPS 分割された callee 内の `throw` が伝播しない」と報告して
+いたが、**`throw` は症状であって原因ではない**。継続が走らないのでその中の
+throw も起きないだけで、suspend の後が `x + 4` だけの callee も同じ壊れ方を
+し、同種の garbage (実測 699 / 730 / 1152、data layout 依存) を返していた。
+let 束縛の綴り (`let v = callee(1); v`) は `__scps_bubble_E` 合成に分割される
+ため最初から無事で、これが「throw 特有」に見えた原因でもある。
+
+#1382 の修正は `scps_literal_is_step_for` に clone namespace
+(`__scps_cps_<eff>_*`) も分割済みの証拠として数えさせるもので、同じ判定を使う
+もう一方の呼び出し元 (let 束縛を cps-local として登録する規則) の同じ盲点も
+同時に塞いでいる。
+
+**regression lock の分担**: landed 分の
+`lib/@vibex/concurrent/suspend_test.vibe` "CPS-split callee results" 4本は
+`spawn_suspend` 経由の library-level。`fixtures/scps_tail_needing_literal_test.vibe`
+の7本はそれと独立で、hand-written な suspend-class handle だけの最小形
+(tail / let / 先行 let / capture あり / needing 連鎖 / perform しない needing /
+handle site 版) — concurrent library の変更が壊れても、lowering 側の回帰は
+こちらで切り分けられる。
+
+**残る隣接ホール**: `scps_split_tail` の `tail_cps` 分岐 (step 型 closure
+binding への tail call) も、同じく生成 namespace の名前を含まない形を返す。
+literal の body がちょうど `f()` (f は自身の E-row param) なら原理的に同じ
+二重包みになるはずだが、その形は callee の arity と噛み合わないため
+**再現できていない**。実例が出たら同じ場所を直す。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
