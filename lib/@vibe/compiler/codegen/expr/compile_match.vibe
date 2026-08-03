@@ -24,7 +24,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   md_consume_count_pre,
-  md_shadow_filtered_bfns
+  md_shadow_zeroed_bmasks
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -310,7 +310,7 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
         let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
         if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity {
           let mut shape_ok = true
-          let mr_bfns = md_shadow_filtered_bfns(body, ctx.borrow_arg0_user)
+          let mr_bmasks = md_shadow_zeroed_bmasks(body, ctx.borrow_param_user, ctx.borrow_param_mask)
           let mut fj = 0
           while fj < arity {
             let pa = Array::get(pargs, fj)
@@ -322,7 +322,7 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
             if ctor_field_is_float(ctx, ci, fj) || ctor_field_is_float(ctx, src_ci, fj) {
               shape_ok = false
             } else if is_pbind(pa) {
-              if md_consume_count_pre(body, get_pbind_name(pa), mr_bfns) != 1 {
+              if md_consume_count_pre(body, get_pbind_name(pa), ctx.borrow_param_user, mr_bmasks) != 1 {
                 shape_ok = false
               } else {
                 ()
@@ -596,7 +596,7 @@ fn emit_rc_dup_guarded_n(buf: Bytes, local_idx: Int, n: Int, rc_shadow: Bool) ->
   }
 }
 
-fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layout: Bool, local_names: Array[String], ctx: CompileCtx, body: Expr, md_bfns: Array[String]) -> Unit with { Error } {
+fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layout: Bool, local_names: Array[String], ctx: CompileCtx, body: Expr, md_bmasks: Array[Int]) -> Unit with { Error } {
   let elems = if is_ctor_layout {
     get_pctor_args(container_pat)
   } else {
@@ -661,7 +661,7 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       // Vertical A) moved that +1 into compile_lambda's creation-site dup,
       // so only the owning-consume compensation remains here.
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, md_bfns), ctx.rc_shadow)
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, ctx.borrow_param_user, md_bmasks), ctx.rc_shadow)
       } else {
         ()
       }
@@ -679,7 +679,7 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, ep, false, local_names, ctx, body, md_bfns)
+      bind_match_pat(buf, sl, ep, false, local_names, ctx, body, md_bmasks)
     } else if is_pctor(ep) {
       let sl = Array::length(local_names)
       emit_local_get(buf, base_local)
@@ -693,7 +693,7 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, ep, true, local_names, ctx, body, md_bfns)
+      bind_match_pat(buf, sl, ep, true, local_names, ctx, body, md_bmasks)
     } else {
       ()
     }
@@ -776,7 +776,7 @@ fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with
 /// the positional `bind_match_pat`; a nested struct recurses here. Literal /
 /// wildcard sub-patterns bind nothing (a struct pattern with a literal field is
 /// refutable and is not routed here — see `is_catchall_pat`).
-fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(String, Pat)], local_names: Array[String], ctx: CompileCtx, body: Expr, md_bfns: Array[String]) -> Unit with { Error } {
+fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(String, Pat)], local_names: Array[String], ctx: CompileCtx, body: Expr, md_bmasks: Array[Int]) -> Unit with { Error } {
   let mut i = 0
   while i < Array::length(fields) {
     let (fname, subpat) = Array::get(fields, i)
@@ -794,7 +794,7 @@ fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(St
       // irrefutable struct-pattern field. The former #1097 capturing-literal
       // term moved to compile_lambda's creation-site dup (owned-captures).
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, md_bfns), ctx.rc_shadow)
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, ctx.borrow_param_user, md_bmasks), ctx.rc_shadow)
       } else {
         ()
       }
@@ -808,7 +808,7 @@ fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(St
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, subpat, false, local_names, ctx, body, md_bfns)
+      bind_match_pat(buf, sl, subpat, false, local_names, ctx, body, md_bmasks)
     } else if is_pctor(subpat) {
       let sl = Array::length(local_names)
       emit_local_get(buf, base_local)
@@ -818,7 +818,7 @@ fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(St
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, subpat, true, local_names, ctx, body, md_bfns)
+      bind_match_pat(buf, sl, subpat, true, local_names, ctx, body, md_bmasks)
     } else {
       match subpat {
         PStruct(__sname, sfields) => {
@@ -830,7 +830,7 @@ fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(St
           emit_i64_load(buf, 3, off)
           emit_local_set(buf, sl)
           Array::push(local_names, "__bind_sub")
-          bind_struct_pat(buf, sl, __sname, sfields, local_names, ctx, body, md_bfns)
+          bind_struct_pat(buf, sl, __sname, sfields, local_names, ctx, body, md_bmasks)
         },
         _ => ()
       }
@@ -1349,7 +1349,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
         let __mr_flag = Array::get(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
         mr_compile_reuse_arm(buf, __arm_body, __cond_p, scrut_local, __mr_flag, Array::length(get_pctor_args(__cond_p)), __mr_ci, local_names, ctx, ld_arm, ce)
       } else {
-        bind_match_pat(buf, scrut_local, __cond_p, true, local_names, ctx, __arm_body, md_shadow_filtered_bfns(__arm_body, ctx.borrow_arg0_user))
+        bind_match_pat(buf, scrut_local, __cond_p, true, local_names, ctx, __arm_body, md_shadow_zeroed_bmasks(__arm_body, ctx.borrow_param_user, ctx.borrow_param_mask))
         ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
       }
     } else if is_ptuple(__cond_p) {
@@ -1361,7 +1361,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       emit_local_get(buf, scrut_local)
       emit_local_set(buf, tup_ptr)
       Array::push(local_names, "__cond_tup")
-      bind_match_pat(buf, tup_ptr, __cond_p, false, local_names, ctx, __arm_body, md_shadow_filtered_bfns(__arm_body, ctx.borrow_arg0_user))
+      bind_match_pat(buf, tup_ptr, __cond_p, false, local_names, ctx, __arm_body, md_shadow_zeroed_bmasks(__arm_body, ctx.borrow_param_user, ctx.borrow_param_mask))
       ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
     } else {
       ce(buf, __arm_body, local_names, nl1, ctx, ld_arm)
@@ -1407,7 +1407,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       if is_pctor(__catch_p) {
         // #705 dup note as above; recursive bind_match_pat replaces the
         // depth-1 inline loop (same depth-3 gap as the cond arms).
-        bind_match_pat(buf, scrut_local, __catch_p, true, local_names, ctx, __catch_body, md_shadow_filtered_bfns(__catch_body, ctx.borrow_arg0_user))
+        bind_match_pat(buf, scrut_local, __catch_p, true, local_names, ctx, __catch_body, md_shadow_zeroed_bmasks(__catch_body, ctx.borrow_param_user, ctx.borrow_param_mask))
         ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
       } else {
         if is_ptuple(__catch_p) {
@@ -1417,7 +1417,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           Array::push(local_names, "__tup_ptr2")
           // Recursive bind (was a depth-2 inline loop; nested ctor elements
           // inside the tuple were never bound).
-          bind_match_pat(buf, ptr_local2, __catch_p, false, local_names, ctx, __catch_body, md_shadow_filtered_bfns(__catch_body, ctx.borrow_arg0_user))
+          bind_match_pat(buf, ptr_local2, __catch_p, false, local_names, ctx, __catch_body, md_shadow_zeroed_bmasks(__catch_body, ctx.borrow_param_user, ctx.borrow_param_mask))
           ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
         } else {
           match __catch_p {
@@ -1428,7 +1428,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
               emit_local_get(buf, scrut_local)
               emit_local_set(buf, __sp_ptr)
               Array::push(local_names, "__struct_ptr")
-              bind_struct_pat(buf, __sp_ptr, __sname, __sfields, local_names, ctx, __catch_body, md_shadow_filtered_bfns(__catch_body, ctx.borrow_arg0_user))
+              bind_struct_pat(buf, __sp_ptr, __sname, __sfields, local_names, ctx, __catch_body, md_shadow_zeroed_bmasks(__catch_body, ctx.borrow_param_user, ctx.borrow_param_mask))
               ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
             },
             _ => ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)

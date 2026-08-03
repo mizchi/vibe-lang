@@ -913,6 +913,29 @@ fn cc_is_borrow_arg0_call(f: String) -> Bool {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
+/// The borrowed-parameter mask for a call to top-level fn `fname`: the
+/// builtin arg0 list unioned with the user set's per-position mask. Kept in
+/// sync with pe_borrow_mask in perceus/perceus.vibe and md_borrow_mask_of in
+/// codegen/common_analysis. Lexical shadowing is handled by the caller (the
+/// #875 local_idx_hint guard already routes a shadowed name elsewhere).
+fn cc_borrow_mask(ctx: CompileCtx, fname: String) -> Int {
+  let bi = bsearch_leftmost(ctx.borrow_param_user, fname)
+  let user = if bi >= 0 && bi < Array::length(ctx.borrow_param_mask) {
+    Array::get(ctx.borrow_param_mask, bi)
+  } else {
+    0
+  }
+  if cc_is_borrow_arg0_call(fname) {
+    user|1
+  } else {
+    user
+  }
+}
+
+fn cc_bmask_has(mask: Int, i: Int) -> Bool {
+  i >= 0 && i < 32 && ((mask>>i)&1) == 1
+}
+
 /// #745: retain a borrowed argument that a STORING inline builtin (Map::set /
 /// MapBuilder::set key+value) keeps a reference to. The generic owning-call
 /// path already dups projection / borrow-returning-call / loop-borrowed args
@@ -5161,6 +5184,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
         let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
         let mut nl = next_local
+        // Hoisted: one bsearch per CALL instead of one per argument.
+        let cc_bmask = cc_borrow_mask(ctx, fname)
         let mut ci = 0
         while ci < Array::length(args) {
           let carg = Array::get(args, ci)
@@ -5170,9 +5195,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
           // length / push / set, etc.): it does NOT drop that argument, so a dup
           // there would never be matched and would leak one reference per call
           // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
-          // ADR-0092 borrow-inference slice 1: user fns with a borrowed
-          // arg0 ABI get the same call-site treatment as the builtin list.
-          let borrows_this = ci == 0 && (cc_is_borrow_arg0_call(fname) || bsearch_leftmost(ctx.borrow_arg0_user, fname) >= 0)
+          // ADR-0092 borrow-inference: a user fn's borrowed parameter gets
+          // the same call-site treatment as the builtin arg0 list, at ANY
+          // position -- the callee does not drop that argument, so the
+          // caller must not dup it.
+          let borrows_this = cc_bmask_has(cc_bmask, ci)
           let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
           if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
             // #706 leak follow-up: this dup's matching consume is INSIDE the loop

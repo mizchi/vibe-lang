@@ -33,7 +33,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   md_consume_count_pre,
-  md_shadow_filtered_bfns,
+  md_shadow_zeroed_bmasks,
   scope_tail_proj_root
 }
 
@@ -278,7 +278,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_ref_cells = array_empty()
   let mut ci3 = 0
   let mut lam_nl = lam_nl_start
-  let cl_md_bfns = md_shadow_filtered_bfns(fn_body, ctx.borrow_arg0_user)
+  let cl_md_bmasks = md_shadow_zeroed_bmasks(fn_body, ctx.borrow_param_user, ctx.borrow_param_mask)
   while ci3 < num_captures {
     let cap_local = lam_nl
     let cap_name = Array::get(captures, ci3)
@@ -311,7 +311,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // still drops it exactly once). Ref-cell captures (#699) own their cell via
     // the env store and are reclaimed by the closure's class-7 drop; skip them.
     if ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, cap_name) {
-      let cap_consumes = md_consume_count_pre(fn_body, cap_name, cl_md_bfns)
+      let cap_consumes = md_consume_count_pre(fn_body, cap_name, ctx.borrow_param_user, cl_md_bmasks)
       let mut cdup = 0
       while cdup < cap_consumes {
         emit_rc_dup_guarded(lam_buf, cap_local, ctx.rc_shadow)
@@ -346,7 +346,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_dups = array_empty()
   let lam_heap_params = array_empty()
   if ctx.enable_rc {
-    let lam_plan = build_perceus_plan_with_params(norm_params, fn_body, ctx.borrow_ret_names, ctx.borrow_arg0_user, ctx.borrow_view_ret)
+    let lam_plan = build_perceus_plan_with_params(norm_params, fn_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
     let mut ldi = 0
     while ldi < Array::length(lam_plan) {
       let lpa = Array::get(lam_plan, ldi)
@@ -445,7 +445,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     reuse_scrutinee_names: array_empty(),
     reuse_flag_locals: array_empty(),
     borrow_ret_names: ctx.borrow_ret_names,
-    borrow_arg0_user: ctx.borrow_arg0_user,
+    borrow_param_user: ctx.borrow_param_user,
+    borrow_param_mask: ctx.borrow_param_mask,
     borrow_view_ret: ctx.borrow_view_ret,
     scalar_ret_names: ctx.scalar_ret_names,
     // #875 fix 2: a nested `let rec` inside THIS lambda's own body must not
