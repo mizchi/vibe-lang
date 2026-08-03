@@ -36,6 +36,18 @@ let anything = () -> Int with { Error } {
   load(true)
 }
 
+// #1344 follow-up: a LOCAL binder's payload kind comes from its initializer, so
+// this row has to be as exact as read_cfg's -- and an annotated PARAMETER's
+// comes from its annotation. These are the shapes #1324's migration produces.
+let read_cfg_local = () -> Int with { Exception[IoError] } {
+  let e = NotFound("cfg")
+  throw(e)
+}
+
+let rethrow = (e: IoError) -> Int with { Exception[IoError] } {
+  throw(e)
+}
+
 export let main = () -> Int {
   // Exact-kind handler.
   let a = handle {
@@ -52,9 +64,19 @@ export let main = () -> Int {
   let c = handle {
     anything()
   } with Exception {
-    Throw(_e) => 2
+    Throw(_e) => 1
   }
-  a + b + c
+  let d = handle {
+    read_cfg_local()
+  } with Exception[IoError] {
+    Throw(_e) => 1
+  }
+  let e = handle {
+    rethrow(NotFound("cfg"))
+  } with Exception[IoError] {
+    Throw(_x) => 0
+  }
+  a + b + c + d + e
 }
 
 __DATA__

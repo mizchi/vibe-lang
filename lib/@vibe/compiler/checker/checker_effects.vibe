@@ -770,13 +770,31 @@ fn effect_name_of_op(op_name: String) -> String {
 //   throw(NotFound("cfg"))        -> IoError      constructor application
 //   throw(Eof)                    -> ParseError   nullary constructor
 //   throw(make_err(x))            -> whatever `make_err` returns
-//   throw(e)  // e a LOCAL        -> ""           unresolved
+//   throw(Wrapped { .. })         -> Wrapped      struct literal
+//   throw(e)  // e: IoError       -> IoError      annotated parameter
+//   throw(e)  // let e = Eof      -> ParseError   local binder (see below)
+//   throw(r.cause)                -> ""           unresolved
 //
 // An unresolved payload yields kind "", which exception_kinds_compatible
 // treats as compatible with every declared exception label -- so this can
-// never invent an error out of the gap, only miss one. Threading local binder
-// types through this walk (the remaining case) is the follow-up recorded in
-// docs/exception-effect.md.
+// never invent an error out of the gap, only miss one.
+//
+// LOCAL binders (the #1344 follow-up, and the shape #1324's migration mostly
+// produces -- `let e = ...; Err(e)` becoming `let e = ...; throw(e)`) are
+// resolved by threading a scope of `(name, kind)` pairs through the walk,
+// exactly the way ov_names/ov_effs already ride it. The scope is built from
+// binder syntax alone: a `let` takes its initializer's kind (recursively, so
+// `let e = make_err(x)` resolves through the module table), and every other
+// binder form -- patterns, `for`, `loop`, un-annotated parameters, `let rec`
+// -- binds the name with kind "".
+//
+// Binding the unresolvable ones EXPLICITLY, rather than leaving them out, is
+// what keeps the "never invents an error" property: lookup falls back to the
+// module table when a name is absent, so an omitted local would let a
+// same-named TOP-LEVEL binding answer for it. (That was a real, if narrow,
+// pre-existing hole: before this scope existed, a local `let e = "boom"` in a
+// module that also defines a top-level `e: IoError` reported the top-level
+// kind.)
 //
 // The whole refinement is provably additive for existing code: a declared row
 // either carries an ERASED exception label (`Error` / `Exception`), which is
@@ -905,17 +923,90 @@ fn throw_kind_lookup(name: String, want_result: Bool) -> String {
   out
 }
 
+/// The LOCAL exception-kind scope: `(name, kind)` innermost-first, first match
+/// wins, threaded through the perform walk like ov_names/ov_effs. An empty
+/// `kind` is a real entry meaning "in scope, unresolvable" -- see the header
+/// comment for why that must shadow the module table rather than fall through
+/// to it.
+fn no_kind_binds() -> Array[(String, String)] {
+  array_empty()
+}
+
+fn throw_kind_bind(binds: Array[(String, String)], name: String, kind: String) -> Array[(String, String)] {
+  let out = Array::slice([
+    (name, kind)
+  ], 0, 1)
+  let mut i = 0
+  while i < Array::length(binds) {
+    Array::push(out, Array::get(binds, i))
+    i = i + 1
+  }
+  out
+}
+
+/// Every name a pattern binds enters scope unresolvable: this pass is untyped,
+/// so it cannot tell what `Err(e)` destructures `e` to.
+fn throw_kind_bind_pat(binds: Array[(String, String)], pat: Pat) -> Array[(String, String)] {
+  let names = no_str_labels()
+  collect_pat_binds_into(pat, names)
+  let mut cur = binds
+  let mut i = 0
+  while i < Array::length(names) {
+    cur = throw_kind_bind(cur, Array::get(names, i), "")
+    i = i + 1
+  }
+  cur
+}
+
+/// A parameter's kind comes from its ANNOTATION's head name (`e: IoError`).
+/// Un-annotated parameters bind unresolvable -- their type exists only in the
+/// inference substitution this pass does not carry.
+fn throw_kind_bind_params(binds: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
+  let mut cur = binds
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ptype) = Array::get(params, i)
+    let kind = match ptype {
+      Some(te) => match afe_texpr_head_name(te) {
+        Some(h) => h,
+        None => ""
+      },
+      None => ""
+    }
+    cur = throw_kind_bind(cur, pname, kind)
+    i = i + 1
+  }
+  cur
+}
+
 /// The exception kind of a `throw` payload expression, or "" when this pass
 /// cannot resolve it (see the header comment above for the exact coverage).
-fn throw_payload_kind(payload: Expr) -> String {
+fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
   match payload {
     EString(_) => "String",
     EStringInterp(_) => "String",
     EInt(_) => "Int",
+    EFloat(_) => "Double",
     EBool(_) => "Bool",
-    EIdent(n, _) => throw_kind_lookup(n, false),
+    // A struct literal names its own type. Anonymous records carry "" here and
+    // stay gradual.
+    ERecord(sname, _, _) => sname,
+    // afe_lookup_local is a plain first-match lookup over the same
+    // `Array[(String, String)]` shape; only its afe_ SPELLING is
+    // async-pass-specific.
+    EIdent(n, _) => match afe_lookup_local(binds, n) {
+      Some(k) => k,
+      None => throw_kind_lookup(n, false)
+    },
     ECall(callee, _, _) => match callee {
-      EIdent(f, _) => throw_kind_lookup(f, true),
+      // A LOCAL of this name is being APPLIED. The scope tracks a local's VALUE
+      // kind, never the kind of its RESULT, so the call is unresolvable -- and
+      // it must not fall through to the module table, whose same-named
+      // top-level function this local shadows.
+      EIdent(f, _) => match afe_lookup_local(binds, f) {
+        Some(_) => "",
+        None => throw_kind_lookup(f, true)
+      },
       _ => ""
     },
     _ => ""
@@ -925,9 +1016,9 @@ fn throw_payload_kind(payload: Expr) -> String {
 /// The row label a `throw` requires: the typed `Exception[K]::Throw` when the
 /// payload's kind is resolvable, and the pinned erased `Error::Throw`
 /// otherwise. Non-exception operations pass through untouched.
-fn throw_required_label(op_name: String, opargs: Array[Expr]) -> String {
+fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)]) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
-    exception_throw_label_for_kind(throw_payload_kind(Array::get(opargs, 0)))
+    exception_throw_label_for_kind(throw_payload_kind(Array::get(opargs, 0), binds))
   } else {
     op_name
   }
@@ -1426,21 +1517,21 @@ fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Optio
 /// program's top level and at any call site with no enclosing function-typed
 /// parameters in scope).
 export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
-  check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, root_ov_names, root_ov_effs)
+  check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, root_ov_names, root_ov_effs, no_kind_binds())
 }
 
 /// #639: the same walk with the enclosing top-level binding's NAME threaded in
 /// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
 /// hint. The name is constant per walk (lambdas are anonymous), so it rides as
 /// a plain parameter, not on the work stack.
-fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
+fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: Array[(String, String)]) -> Array[EffectError] {
   let errors = array_empty()
   let stack = Array::slice([
-    (root, root_declared, root_in_handle, root_ov_names, root_ov_effs)
+    (root, root_declared, root_in_handle, root_ov_names, root_ov_effs, root_kinds)
   ], 0, 1)
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let (expr, declared, in_handle, ov_names, ov_effs) = Array::get(stack, n - 1)
+    let (expr, declared, in_handle, ov_names, ov_effs, kinds) = Array::get(stack, n - 1)
     Array::truncate(stack, n - 1)
     match expr {
       ECall(callee, args, _) => {
@@ -1455,7 +1546,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // label carries the payload's exception KIND
                     // (`Exception[IoError]::Throw`); every other operation
                     // keeps its own name verbatim.
-                    let required_op = throw_required_label(op_name, opargs)
+                    let required_op = throw_required_label(op_name, opargs, kinds)
                     // #640 Stage 2: `Error` is exempt from the DIRECT
                     // discipline, exactly like the transitive slice below
                     // (`teff != "Error"`) and builtin_call_effect's Error
@@ -1608,10 +1699,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           },
           _ => ()
         }
-        Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
         let mut ai = 0
         while ai < Array::length(args) {
-          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs))
+          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs, kinds))
           ai = ai + 1
         }
       },
@@ -1666,7 +1757,9 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           }
           merged
         }
-        Array::push(stack, (body, body_declared, in_handle, body_ov_names, body_ov_effs))
+        // #1344 follow-up: a lambda's parameters enter the payload-kind scope
+        // from their annotations, exactly like a top-level function's.
+        Array::push(stack, (body, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
       },
       EHandle(body, arms) => {
         let discharged = collect_handle_effects(arms)
@@ -1676,11 +1769,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         } else {
           in_handle
         }
-        Array::push(stack, (body, body_declared, body_in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, body_declared, body_in_handle, ov_names, ov_effs, kinds))
         let mut ai = 0
         while ai < Array::length(arms) {
-          let (_, arm_body) = Array::get(arms, ai)
-          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs))
+          let (arm_pat, arm_body) = Array::get(arms, ai)
+          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
       },
@@ -1690,8 +1783,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // shadowed out. #1361: the same place registers a local closure's own
         // declared row, so calling it from the body leaks that row.
         let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
+        // #1344 follow-up: the local's payload kind is its initializer's, read
+        // in the OUTER scope for the same non-recursive reason.
+        let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       ELetRec(name, val, body) => {
         // #885 review (Codex): unlike ELet, `let rec` allows `val` itself to
@@ -1699,76 +1795,96 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // shadow applied -- and, since #1361, the local closure's own row, so a
         // recursive effectful closure is checked against it on both sides.
         let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
-        Array::push(stack, (val, declared, in_handle, rec_ov_names, rec_ov_effs))
-        Array::push(stack, (body, declared, in_handle, rec_ov_names, rec_ov_effs))
+        // A `let rec` value is a function; there is no payload kind to read off
+        // it, so the name binds unresolvable on both sides (which is also what
+        // stops it resolving through a same-named top-level binding).
+        let rec_kinds = throw_kind_bind(kinds, name, "")
+        Array::push(stack, (val, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
+        Array::push(stack, (body, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
       },
       ELetMut(name, val, body, _) => {
         // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
         let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
+        // A `mut` binding keeps one type for its whole life (an assignment of a
+        // different type is a type error), so its initializer's kind holds for
+        // the body just as ELet's does.
+        let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       ESeq(a, b) => {
-        Array::push(stack, (a, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (b, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (a, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (b, declared, in_handle, ov_names, ov_effs, kinds))
       },
       EIf(cond, then_e, else_e) => {
-        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (then_e, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (else_e, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (then_e, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (else_e, declared, in_handle, ov_names, ov_effs, kinds))
       },
       EMatch(scrutinee, arms) => {
-        Array::push(stack, (scrutinee, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (scrutinee, declared, in_handle, ov_names, ov_effs, kinds))
         let mut ai = 0
         while ai < Array::length(arms) {
-          let (_, arm_body) = Array::get(arms, ai)
-          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs))
+          let (arm_pat, arm_body) = Array::get(arms, ai)
+          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
       },
       EWhile(cond, body) => {
-        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs, kinds))
       },
       ELoop(params, body) => {
+        // A loop parameter is re-bound by every `continue`, so its initializer's
+        // kind does not describe it for the whole body: it binds unresolvable.
+        let mut body_kinds = kinds
         let mut i = 0
         while i < Array::length(params) {
-          let (_, init) = Array::get(params, i)
-          Array::push(stack, (init, declared, in_handle, ov_names, ov_effs))
+          let (pname, init) = Array::get(params, i)
+          Array::push(stack, (init, declared, in_handle, ov_names, ov_effs, kinds))
+          body_kinds = throw_kind_bind(body_kinds, pname, "")
           i = i + 1
         }
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs, body_kinds))
       },
-      EForIn(_, _, iter, body) => {
-        Array::push(stack, (iter, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
+      EForIn(value_name, index_name, iter, body) => {
+        // The element (and optional index) binder has no syntactic kind here --
+        // it comes from the iterand's element type, which this untyped pass
+        // cannot see. Binding them unresolvable is what stops a same-named
+        // top-level binding answering for a loop variable.
+        let for_kinds = match index_name {
+          Some(iname) => throw_kind_bind(throw_kind_bind(kinds, value_name, ""), iname, ""),
+          None => throw_kind_bind(kinds, value_name, "")
+        }
+        Array::push(stack, (iter, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs, for_kinds))
       },
       EBinOp(_, left, right) => {
-        Array::push(stack, (left, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (right, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (left, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (right, declared, in_handle, ov_names, ov_effs, kinds))
       },
-      EReturn(e) => Array::push(stack, (e, declared, in_handle, ov_names, ov_effs)),
-      EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle, ov_names, ov_effs)),
+      EReturn(e) => Array::push(stack, (e, declared, in_handle, ov_names, ov_effs, kinds)),
+      EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle, ov_names, ov_effs, kinds)),
       EAssign(_, val, cont) => {
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs, kinds))
       },
       EAssignOp(_, _, val, cont) => {
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
+        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs, kinds))
       },
-      EDot(obj, _, _, _) => Array::push(stack, (obj, declared, in_handle, ov_names, ov_effs)),
+      EDot(obj, _, _, _) => Array::push(stack, (obj, declared, in_handle, ov_names, ov_effs, kinds)),
       ETuple(elems) => {
         let mut ei = 0
         while ei < Array::length(elems) {
-          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs))
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs, kinds))
           ei = ei + 1
         }
       },
       EArray(elems) => {
         let mut ei = 0
         while ei < Array::length(elems) {
-          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs))
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs, kinds))
           ei = ei + 1
         }
       },
@@ -1776,7 +1892,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut fi = 0
         while fi < Array::length(fields) {
           let (_, fval) = Array::get(fields, fi)
-          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs))
+          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs, kinds))
           fi = fi + 1
         }
       },
@@ -1784,18 +1900,18 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut fi = 0
         while fi < Array::length(fields) {
           let (_, fval) = Array::get(fields, fi)
-          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs))
+          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs, kinds))
           fi = fi + 1
         }
       },
-      ELabeledArg(_, _, value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs)),
-      ESpread(value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs)),
-      EBreak(Some(value)) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs)),
+      ELabeledArg(_, _, value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs, kinds)),
+      ESpread(value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs, kinds)),
+      EBreak(Some(value)) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs, kinds)),
       EBreak(None) => (),
       EContinue(args) => {
         let mut ai = 0
         while ai < Array::length(args) {
-          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs))
+          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs, kinds))
           ai = ai + 1
         }
       },
@@ -1805,7 +1921,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let children = expr_children(expr)
         let mut i = 0
         while i < Array::length(children) {
-          Array::push(stack, (Array::get(children, i), declared, in_handle, ov_names, ov_effs))
+          Array::push(stack, (Array::get(children, i), declared, in_handle, ov_names, ov_effs, kinds))
           i = i + 1
         }
       }
@@ -1847,10 +1963,15 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
     // from the very first stack frame — not just once the walk happens to
     // redescend through a nested `EFn` node.
     EFn(_, _, params, _, eff, fbody) => {
-      let (ov_names, ov_effs) = build_param_overlay(merge_param_types_with_sig(ty, params))
-      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, effect_row_labels(effect_row_parse(eff))), false, fn_names, fn_effs, ov_names, ov_effs)
+      // #1344 follow-up: the same merged parameter list seeds the payload-kind
+      // scope, so `fn f(e: IoError) { throw(e) }` resolves from the very first
+      // frame -- the walk never re-descends through this EFn to pick the
+      // parameters up on its own.
+      let merged_params = merge_param_types_with_sig(ty, params)
+      let (ov_names, ov_effs) = build_param_overlay(merged_params)
+      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, effect_row_labels(effect_row_parse(eff))), false, fn_names, fn_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
     },
-    _ => check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
+    _ => check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
   }
 }
 
