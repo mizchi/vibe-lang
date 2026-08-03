@@ -1,0 +1,122 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Stmt, Subst, Type, TypeEnv, TypeExpr, env_bind, env_lookup, subst_apply, types_equal
+}
+
+import @vibe/compiler/checker {
+  check_program, check_program_result, check_program_with_env, check_program_with_env_result
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Helpers
+
+fn occurrences_apply_final_subst(occurrences: Array[(Int, Type)], subst: Subst) -> Bool {
+  let mut i = 0
+  while i < Array::length(occurrences) {
+    let (_, ty) = Array::get(occurrences, i)
+    let _ = subst_apply(subst, ty)
+    i = i + 1
+  }
+  true
+}
+
+fn assert_int_binding(env: TypeEnv, name: String) -> Unit {
+  match env_lookup(env, name) {
+    Some(ty) => assert(types_equal(ty, CtInt)),
+    None => assert(false)
+  }
+}
+
+fn array_length_expr() -> Expr {
+  ECall(EIdent("Array::length", 1), [
+    EArray([
+      EInt(1)
+    ])
+  ], 10)
+}
+
+//# Successful production-check boundary
+
+test "check_program_result retains production outputs" {
+  let stmts = [
+    SStruct(false, "Point", [
+      ("x", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    SLet(false, false, "value", None, array_length_expr())
+  ]
+  let checked = check_program_result(stmts)
+  // The retained statements are the production checker's post-desugar input.
+  assert(Array::length(checked.checked_stmts) == 2)
+  match Array::get(checked.checked_stmts, 0) {
+    SStruct(_, "Point", _, _, _, _) => assert(true),
+    _ => assert(false)
+  }
+  assert_int_binding(checked.final_env, "value")
+  match Array::get(checked.type_defs, 0) {
+    TDStruct("Point", fields, _, _) => assert(Array::length(fields) == 1),
+    _ => assert(false)
+  }
+  match checked.final_subst {
+    SubstEmpty => assert(true),
+    _ => assert(false)
+  }
+  assert(Array::length(checked.typed_occurrences) > 0)
+  assert(occurrences_apply_final_subst(checked.typed_occurrences, checked.final_subst))
+}
+
+test "check_program_with_env_result retains production outputs" {
+  let initial_env = env_bind(EnvEmpty, "seed", CtInt)
+  let stmts = [
+    SStruct(false, "Local", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    SLet(false, false, "copied", None, array_length_expr())
+  ]
+  let checked = check_program_with_env_result(stmts, initial_env)
+  assert(Array::length(checked.checked_stmts) == 2)
+  match Array::get(checked.checked_stmts, 0) {
+    SStruct(_, "Local", _, _, _, _) => assert(true),
+    _ => assert(false)
+  }
+  assert_int_binding(checked.final_env, "seed")
+  assert_int_binding(checked.final_env, "copied")
+  match Array::get(checked.type_defs, 0) {
+    TDStruct("Local", fields, _, _) => assert(Array::length(fields) == 1),
+    _ => assert(false)
+  }
+  match checked.final_subst {
+    SubstEmpty => assert(true),
+    _ => assert(false)
+  }
+  assert(Array::length(checked.typed_occurrences) > 0)
+  assert(occurrences_apply_final_subst(checked.typed_occurrences, checked.final_subst))
+}
+
+//# Compatibility wrappers
+
+test "check_program remains compatible with check_program_result" {
+  let result_env = check_program_result([
+    SLet(false, false, "value", None, EInt(1))
+  ]).final_env
+  let legacy_env = check_program([
+    SLet(false, false, "value", None, EInt(1))
+  ])
+  assert_int_binding(result_env, "value")
+  assert_int_binding(legacy_env, "value")
+}
+
+test "check_program_with_env remains compatible with its result variant" {
+  let initial_env = env_bind(EnvEmpty, "seed", CtInt)
+  let result_env = check_program_with_env_result([
+    SLet(false, false, "copied", None, EIdent("seed", -1))
+  ], initial_env).final_env
+  let legacy_env = check_program_with_env([
+    SLet(false, false, "copied", None, EIdent("seed", -1))
+  ], initial_env)
+  assert_int_binding(result_env, "copied")
+  assert_int_binding(legacy_env, "copied")
+}
