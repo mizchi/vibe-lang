@@ -98,10 +98,15 @@ fn make_int_array(n: Int, fill: Int) -> Array[Int] {
   a
 }
 
+/// #1324 slice 3: `json_as_arr` throws instead of returning `Result`, so the
+/// default-to-empty shape is a `handle`. This is the direction of the
+/// migration that gets LONGER -- call sites that deliberately ignore the
+/// failure pay for it, while the ones that propagated get shorter.
 fn json_arr_or_empty(j: Json) -> Array[Json] {
-  match json_as_arr(j) {
-    Result::Ok(a) => a,
-    Result::Err(_) => [
+  handle {
+    json_as_arr(j)
+  } with Error {
+    Throw(_) => [
     ]
   }
 }
@@ -262,11 +267,7 @@ fn load_acc(acc_path: String) -> (Json, Array[Json], Map[String, Int], Array[Int
   let acc = Json::parse(Fs::read_file(acc_path))
   let fnC = json_str_array(Json::field(acc, "fn_names"))
   let owC = json_int_array(Json::field(acc, "br_owners"))
-  let br_arr = match json_as_arr(Json::field(acc, "br")) {
-    Result::Ok(a) => a,
-    Result::Err(_) => [
-    ]
-  }
+  let br_arr = json_arr_or_empty(Json::field(acc, "br"))
   let idx = build_index(fnC, owC)
   let (name_to_fid, gid_for, occ_stride) = idx
   (acc, br_arr, name_to_fid, gid_for, occ_stride)

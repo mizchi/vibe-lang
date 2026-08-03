@@ -8,10 +8,6 @@ import @vibe/core {
   array_empty
 }
 
-import @vibe/prelude {
-  Result
-}
-
 import @vibe/module {
   dir_of, resolve_path
 }
@@ -177,45 +173,16 @@ fn import_ref_name(raw_path: String, prefix: String) -> Option[String] {
   } else None
 }
 
-fn json_expect_bool(json: Json) -> Bool with { Error } {
-  match json_as_bool(json) {
-    Result::Ok(value) => value,
-    Result::Err(msg) => throw(msg)
-  }
-}
-
-fn json_expect_obj(json: Json) -> Map[String, Json] with { Error } {
-  match json_as_obj(json) {
-    Result::Ok(value) => value,
-    Result::Err(msg) => throw(msg)
-  }
-}
-
-fn json_expect_str(json: Json) -> String with { Error } {
-  match json_as_str(json) {
-    Result::Ok(value) => value,
-    Result::Err(msg) => throw(msg)
-  }
-}
-
-fn json_expect_arr(json: Json) -> Array[Json] with { Error } {
-  match json_as_arr(json) {
-    Result::Ok(value) => value,
-    Result::Err(msg) => throw(msg)
-  }
-}
-
-fn parse_json_root(source: String) -> Json with { Error } {
-  match parse(source) {
-    Result::Ok((root, _)) => root,
-    Result::Err(msg) => throw(msg)
-  }
-}
+// #1324 slice 3: the five `json_expect_*` / `parse_json_root` wrappers that
+// used to live here were each exactly
+// `match json_as_X(j) { Ok(v) => v, Err(m) => throw(m) }` -- hand-rolled
+// re-throws of a failure @vibe/json now throws itself. Call sites use
+// `json_as_*` / `parse` directly.
 
 fn json_bool_field(obj: Map[String, Json], key: String) -> Bool with { Error } {
   match json_get(obj, key) {
     Some(JNull) => false,
-    Some(json) => json_expect_bool(json),
+    Some(json) => json_as_bool(json),
     None => false
   }
 }
@@ -228,7 +195,7 @@ fn empty_string_map() -> Map[String, String] {
 fn json_string_field(obj: Map[String, Json], key: String, _path: String) -> Option[String] with { Error } {
   match json_get(obj, key) {
     Some(JNull) => None,
-    Some(json) => Some(json_expect_str(json)),
+    Some(json) => Some(json_as_str(json)),
     None => None
   }
 }
@@ -260,13 +227,13 @@ fn json_string_map_field(obj: Map[String, Json], key: String) -> Map[String, Str
   match json_get(obj, key) {
     Some(JNull) => empty_string_map(),
     Some(json) => {
-      let raw = json_expect_obj(json)
+      let raw = json_as_obj(json)
       let out = MapBuilder::new()
       let keys = Map::keys(raw)
       let mut i = 0
       while i < Array::length(keys) {
         let name = Array::get(keys, i)
-        MapBuilder::set(out, name, json_expect_str(Map::get(raw, name)))
+        MapBuilder::set(out, name, json_as_str(Map::get(raw, name)))
         i = i + 1
       }
       MapBuilder::freeze(out)
@@ -330,11 +297,11 @@ fn json_string_array_field(obj: Map[String, Json], key: String) -> Option[Array[
   match json_get(obj, key) {
     Some(JNull) => None,
     Some(json) => {
-      let items = json_expect_arr(json)
+      let items = json_as_arr(json)
       let out = ArrayBuilder::new()
       let mut i = 0
       while i < Array::length(items) {
-        ArrayBuilder::push(out, json_expect_str(Array::get(items, i)))
+        ArrayBuilder::push(out, json_as_str(Array::get(items, i)))
         i = i + 1
       }
       Some(ArrayBuilder::freeze(out))
@@ -344,8 +311,8 @@ fn json_string_array_field(obj: Map[String, Json], key: String) -> Option[Array[
 }
 
 export fn parse_fixture_spec(data: String, path: String) -> FixtureSpec with { Error } {
-  let root = parse_json_root(data)
-  let obj = json_expect_obj(root)
+  let (root, _) = parse(data)
+  let obj = json_as_obj(root)
   let error_contains = match json_string_field(obj, "error_contains", path) {
     Some(value) => Some(value),
     None => json_string_field(obj, "compile_error", path)

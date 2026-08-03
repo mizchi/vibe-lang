@@ -439,6 +439,44 @@ regression lock:
 3. Phase 4 (stdlib/compiler を `Exception[E]` へ移行) は #1324 と同じ
    コードに触るので、別々に2回書き換えないよう #1324 と一体で行う。
 
+### 移行の進捗と、bundle 由来の制約 (2026-08-03)
+
+| slice | 対象 | row |
+| --- | --- | --- |
+| 1 (#1372) | `@vibex/concurrent` の stack-driving 5本 | `Exception[TaskError]` ほか |
+| 2 (#1401) | `@vibex/concurrent` の suspend lane 3本 | `Exception[SendError]` / `Exception[TaskError]` |
+| 3 | `@vibe/json` (accessor 11 + `parse` + `parse_message` + `RpcMessage::parse`) | **erased `Error`** |
+
+**slice 3 だけ erased `Error` なのは bootstrap の制約による**。`@vibe/json` の
+7ファイルは `compiler_sources_manifest.tsv` に載っていて compiler の merged
+bundle に同梱される。`scripts/generate_bundle.sh` の
+`validate_module_source_compiles` (#979 sticky-failure guard) は候補 module
+source を **pin された seed compiler** でコンパイル検査するが、現在の seed
+(`vpkg-structured-header-2026-07-27`、source commit `08c4c58`) は ADR-0085 の
+`Exception[E]` より古く、**bracketed label を parse できない**:
+
+```
+vibe: uncaught error: expected ',' or '}' in effect list
+```
+
+`fn` 宣言・closure literal どちらの位置でも再現する (現在の stage2 では
+どちらも通る)。これは CLAUDE.md / docs/bootstrap.md が書いている
+「新しい syntax を compiler source 自体で使う場合は先に bootstrap bump」
+そのもの。
+
+payload が `String` である以上、erased `Error` でも**情報は落ちない** —
+ADR-0085 の migration section が `Error` を `Exception[String]` の
+compatibility alias と呼んでいるとおりで、ADR-0058 の判定は本物の文字列に
+対して恒等なので `handle .. with Error { Throw(msg) => msg }` は実際の
+メッセージを受け取る。失われるのは**静的な精度**だけ (binder が
+`CtUnknown` になるので、その handler の中で `msg` を String 以外として
+使っても検査が止めない)。
+
+**follow-up**: bootstrap bump 後に `@vibe/json` の row を
+`Exception[String]` へ締め直す。#1324 の残り (`@vibe/compiler` 本体、
+prelude `result.vibe` 削除) も全部 bundle 経由なので、**bump はそれらの
+前提でもある**。
+
 ## Formal contract
 
 typed identity の実行可能な正本:
