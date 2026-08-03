@@ -118,6 +118,45 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
   return trace;
 }
 
+/// Compare two successful, already-parsed observations while deliberately
+/// excluding the per-run freshness nonce. This is intentionally stricter than
+/// clean-snapshot parity: decisions and every versioned observation field are
+/// semantic evidence for the same check, so any drift is a failure.
+export function compareSuccessfulIncrementalInvalidationTraces(expected, actual) {
+  const mismatch = (context, expectedValue, actualValue) => {
+    fail(`semantic trace mismatch at ${context}: expected ${JSON.stringify(expectedValue)}, got ${JSON.stringify(actualValue)}`);
+  };
+  const compareField = (context, left, right) => {
+    if (left !== right) mismatch(context, left, right);
+  };
+  const compareArray = (context, left, right) => {
+    if (left.length !== right.length) mismatch(`${context}.length`, left.length, right.length);
+    for (let index = 0; index < left.length; index += 1) compareField(`${context}[${index}]`, left[index], right[index]);
+  };
+
+  compareField("schema", expected.schema, actual.schema);
+  compareField("fingerprint_note", expected.fingerprint_note, actual.fingerprint_note);
+  if (expected.modules.length !== actual.modules.length) mismatch("modules.length", expected.modules.length, actual.modules.length);
+  const moduleFields = [
+    "path", "source_fingerprint", "source_fingerprint_kind",
+    "implementation_fingerprint", "implementation_fingerprint_kind", "interface_fingerprint",
+    "interface_fingerprint_kind", "checked_env_fingerprint", "checked_env_fingerprint_kind", "decision",
+  ];
+  for (let index = 0; index < expected.modules.length; index += 1) {
+    const left = expected.modules[index];
+    const right = actual.modules[index];
+    // Compare positional paths first, so a module-order drift has stable,
+    // useful context rather than being misreported as a later field drift.
+    compareField(`modules[${index}].path`, left.path, right.path);
+    const context = `modules[${index}](${left.path})`;
+    compareArray(`${context}.direct_dependencies`, left.direct_dependencies, right.direct_dependencies);
+    for (const field of moduleFields.slice(1)) compareField(`${context}.${field}`, left[field], right[field]);
+  }
+  for (const key of ["schema", ...telemetryKeys]) {
+    compareField(`aggregate_telemetry.${key}`, expected.aggregate_telemetry[key], actual.aggregate_telemetry[key]);
+  }
+}
+
 function moduleByName(trace, name) {
   const module = trace.modules.find((row) => basename(row.path) === `${name}.vibe`);
   if (!module) fail(`missing ${name}.vibe module row`);

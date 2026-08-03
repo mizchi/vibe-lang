@@ -142,6 +142,13 @@ or a control-character nonce, or has the wrong nonce. It records the result as
 `incremental_typecheck` telemetry. The feature is disabled by default and does
 not change compiler source loading, persistent formats, cache keys, or reuse.
 
+The opt-in persistent ingestion-stamp oracle similarly uses isolated gate-off
+and gate-on cache histories for a copied package. It proves only that unchanged
+and metadata-token-miss successful checks have equal observed invalidation
+traces (apart from the freshness nonce) and equal check output bytes/text. It
+retains malformed and content-token fallback checks. This does not remove the
+trusted stat-token limitation, and it does not prove artifact equivalence.
+
 ## Artifact boundaries
 
 A physical file is a useful ingestion/cache shard, but is not always an
