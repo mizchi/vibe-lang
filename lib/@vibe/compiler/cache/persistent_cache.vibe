@@ -16,7 +16,13 @@
 // cache_persistent_artifact_cache_path @call"). See cache_underlying.vibe.
 import ./cache_underlying.vibe {
   cache_fingerprint_file_fs,
+  cache_fingerprint_file_fs_with_ingestion_stamp,
+  cache_ingestion_compact_fingerprint_is_valid,
+  cache_ingestion_fingerprint_telemetry_json,
+  cache_ingestion_stamp_enabled,
+  cache_ingestion_stamp_v1_text,
   cache_load_persistent_artifact,
+  cache_parse_ingestion_stamp_v1_text,
   cache_persistent_artifact_cache_path,
   cache_persistent_dep_list_cache_path,
   cache_persistent_leaf_fingerprint_cache_path,
@@ -25,6 +31,7 @@ import ./cache_underlying.vibe {
   cache_persistent_source_group_cache_path,
   cache_persistent_source_list_cache_path,
   cache_persistent_type_env_cache_path,
+  cache_set_ingestion_fingerprint_telemetry_enabled,
   cache_stable_text_cache_path,
   cache_store_persistent_artifact
 }
@@ -151,12 +158,48 @@ export fn persistent_leaf_fingerprint_cache_path(path: String, source_fingerprin
   cache_persistent_leaf_fingerprint_cache_path(persistent_cache_version_tag(), path, source_fingerprint)
 }
 
-/// #1308: stat-token-validated memo over `compact_string_fingerprint(
-/// Fs::read_file(path))` — see cache_underlying.vibe for the memo's identity
-/// argument. No version-tag adaptation: a file content fingerprint has no
-/// cache-format or codegen component.
+/// #1379: a dedicated metadata-only stamp namespace. The cache key includes
+/// the compiler persistent version and resolution seed, plus length-delimited
+/// seed components so distinct POSIX logical paths (including TAB/newline/
+/// control characters) cannot collide before stable_cache_path hashes them.
+/// VIBE_BUILD_CACHE_DIR rebasing remains in cache_stable_text_cache_path.
+export fn persistent_ingestion_stamp_cache_path(path: String) -> String {
+  let resolution_seed = resolution_env_seed()
+  let logical_path_seed = String::concat("res:", String::concat(__to_string(String::length(resolution_seed)), String::concat(":", String::concat(resolution_seed, String::concat("|path:", String::concat(__to_string(String::length(path)), String::concat(":", path)))))))
+  cache_stable_text_cache_path(persistent_cache_version_tag(), "selfhost_ingestion_stamp_v1", logical_path_seed)
+}
+
+/// #1308 + #1379: stat-token-validated process memo. With the experimental
+/// gate off this remains the original read/hash behavior and never probes or
+/// writes a stamp. With it on, only a v1 metadata stamp may avoid that helper
+/// read/hash on an exact stat-token text match; source is never persisted or
+/// replayed.
 export fn fingerprint_file_fs(path: String) -> String with { Fs } {
-  cache_fingerprint_file_fs(path)
+  if cache_ingestion_stamp_enabled() {
+    cache_fingerprint_file_fs_with_ingestion_stamp(path, persistent_ingestion_stamp_cache_path(path))
+  } else {
+    cache_fingerprint_file_fs(path)
+  }
+}
+
+export fn set_ingestion_fingerprint_telemetry_enabled(enabled: Bool) -> Unit {
+  cache_set_ingestion_fingerprint_telemetry_enabled(enabled)
+}
+
+export fn ingestion_fingerprint_telemetry_json(nonce: String) -> String {
+  cache_ingestion_fingerprint_telemetry_json(nonce)
+}
+
+export fn ingestion_stamp_v1_text_for_test(stat_token_text: String, fingerprint: String) -> String {
+  cache_ingestion_stamp_v1_text(stat_token_text, fingerprint)
+}
+
+export fn parse_ingestion_stamp_v1_text_for_test(text: String) -> Option[(String, String)] {
+  cache_parse_ingestion_stamp_v1_text(text)
+}
+
+export fn ingestion_compact_fingerprint_is_valid_for_test(fingerprint: String) -> Bool {
+  cache_ingestion_compact_fingerprint_is_valid(fingerprint)
 }
 
 /// #1100 (selfcompile-heap): the loader's two contract-parse memo classes.

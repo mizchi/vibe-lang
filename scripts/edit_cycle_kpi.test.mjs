@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseHostFsScopeTelemetry, parseIncrementalTelemetry } from "./edit_cycle_kpi.mjs";
+import {
+  parseHostFsScopeTelemetry,
+  parseIncrementalTelemetry,
+  parseIngestionFingerprintTelemetry,
+} from "./edit_cycle_kpi.mjs";
 
 const validSidecar = JSON.stringify({
   schema: 1,
@@ -11,6 +15,22 @@ const validSidecar = JSON.stringify({
   parse_operations: 3,
   modules_failed_or_blocked: 0,
 });
+
+const validIngestionFingerprint = {
+  schema: "ingestion_fingerprint",
+  version: 1,
+  nonce: "run-123",
+  source_read_calls: 2,
+  source_read_string_units: 7,
+  hash_calls: 2,
+  hash_input_string_units: 7,
+  stamp_probes: 3,
+  stamp_hits: 1,
+  stamp_misses: 1,
+  stamp_malformed: 1,
+  stamp_text_units_read: 11,
+  stamp_publications: 2,
+};
 
 const validHostFsScope = {
   schema: "host_fs_scope",
@@ -43,6 +63,28 @@ test("edit-cycle KPI rejects malformed or internally inconsistent telemetry", ()
       modules_failed_or_blocked: 0,
     })),
     /must equal modules_planned/,
+  );
+});
+
+test("edit-cycle KPI accepts a complete ingestion fingerprint sidecar", () => {
+  assert.deepEqual(
+    parseIngestionFingerprintTelemetry(JSON.stringify(validIngestionFingerprint), "run-123"),
+    validIngestionFingerprint,
+  );
+});
+
+test("edit-cycle KPI fails closed on invalid ingestion fingerprint sidecars", () => {
+  assert.throws(
+    () => parseIngestionFingerprintTelemetry(JSON.stringify({ ...validIngestionFingerprint, nonce: "other" }), "run-123"),
+    /nonce mismatch/,
+  );
+  assert.throws(
+    () => parseIngestionFingerprintTelemetry(JSON.stringify({ ...validIngestionFingerprint, stamp_probes: 2 }), "run-123"),
+    /stamp_probes must equal/,
+  );
+  assert.throws(
+    () => parseIngestionFingerprintTelemetry(JSON.stringify({ ...validIngestionFingerprint, extra: 1 }), "run-123"),
+    /exactly the ingestion_fingerprint v1 fields/,
   );
 });
 

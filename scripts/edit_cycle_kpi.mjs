@@ -43,6 +43,22 @@ const hostFsScopeKeys = [
   "exists_calls",
 ];
 const hostFsScopeCounterKeys = hostFsScopeKeys.slice(3);
+const ingestionFingerprintKeys = [
+  "schema",
+  "version",
+  "nonce",
+  "source_read_calls",
+  "source_read_string_units",
+  "hash_calls",
+  "hash_input_string_units",
+  "stamp_probes",
+  "stamp_hits",
+  "stamp_misses",
+  "stamp_malformed",
+  "stamp_text_units_read",
+  "stamp_publications",
+];
+const ingestionFingerprintCounterKeys = ingestionFingerprintKeys.slice(3);
 
 /// Parse and validate the compiler-owned incremental typecheck sidecar.
 /// Kept exported so the structural contract has a focused Node regression test
@@ -74,6 +90,45 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
     throw new Error(
       `${source}: modules_rechecked + modules_reused + modules_failed_or_blocked must equal modules_planned`,
     );
+  }
+  return telemetry;
+}
+
+/// Parse compiler-owned fingerprint-helper telemetry. This is intentionally
+/// not host_fs_scope: its source/hash unit fields are String::length units,
+/// while host_fs_scope remains aggregate runner-observed raw bytes.
+export function parseIngestionFingerprintTelemetry(text, expectedNonce, source = "ingestion fingerprint telemetry") {
+  let telemetry;
+  try {
+    telemetry = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${source}: invalid JSON (${error.message})`);
+  }
+  if (telemetry === null || typeof telemetry !== "object" || Array.isArray(telemetry)) {
+    throw new Error(`${source}: expected a JSON object`);
+  }
+  const actualKeys = Object.keys(telemetry).sort();
+  const expectedKeys = [...ingestionFingerprintKeys].sort();
+  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error(`${source}: expected exactly the ingestion_fingerprint v1 fields`);
+  }
+  if (telemetry.schema !== "ingestion_fingerprint" || telemetry.version !== 1) {
+    throw new Error(`${source}: unsupported ingestion_fingerprint schema/version`);
+  }
+  if (typeof telemetry.nonce !== "string" || telemetry.nonce.length === 0 || /\p{Cc}/u.test(telemetry.nonce)) {
+    throw new Error(`${source}: nonce must be non-empty and contain no control characters`);
+  }
+  if (telemetry.nonce !== expectedNonce) throw new Error(`${source}: nonce mismatch`);
+  for (const key of ingestionFingerprintCounterKeys) {
+    if (!Number.isSafeInteger(telemetry[key]) || telemetry[key] < 0) {
+      throw new Error(`${source}: ${key} must be a non-negative safe integer`);
+    }
+  }
+  if (telemetry.stamp_probes !== telemetry.stamp_hits + telemetry.stamp_misses + telemetry.stamp_malformed) {
+    throw new Error(`${source}: stamp_probes must equal stamp_hits + stamp_misses + stamp_malformed`);
+  }
+  if (telemetry.hash_calls !== telemetry.source_read_calls) {
+    throw new Error(`${source}: hash_calls must equal source_read_calls`);
   }
   return telemetry;
 }
@@ -157,7 +212,10 @@ function main() {
     const telemetryPath = join(project, ".vibe-incremental-telemetry.json");
     const hostFsScopePath = join(project, ".vibe-host-fs-scope.json");
     const hostFsScopeNonce = randomUUID();
+    const ingestionTelemetryPath = join(project, ".vibe-ingestion-telemetry.json");
+    const ingestionTelemetryNonce = randomUUID();
     rmSync(telemetryPath, { force: true });
+    rmSync(ingestionTelemetryPath, { force: true });
     // The runner also removes this before guest execution; do it here too so
     // a runner regression cannot turn a stale sidecar into a benchmark result.
     rmSync(hostFsScopePath, { force: true });
@@ -172,6 +230,8 @@ function main() {
         VIBE_CLI_WASM: stage2,
         VIBE_HOME: join(work, "home"),
         VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryPath,
+        VIBE_INGESTION_TELEMETRY_OUT: ingestionTelemetryPath,
+        VIBE_INGESTION_TELEMETRY_NONCE: ingestionTelemetryNonce,
         VIBE_HOST_FS_SCOPE_OUT: hostFsScopePath,
         VIBE_HOST_FS_SCOPE_NONCE: hostFsScopeNonce,
         VIBE_PREOPEN_DIR: project,
@@ -195,6 +255,14 @@ function main() {
     if (telemetry.modules_planned < 1) {
       throw new Error(`edit-cycle-kpi: ${caseName} telemetry planned no modules`);
     }
+    if (!existsSync(ingestionTelemetryPath)) {
+      throw new Error(`edit-cycle-kpi: ${caseName} omitted ingestion fingerprint telemetry sidecar`);
+    }
+    const ingestionFingerprint = parseIngestionFingerprintTelemetry(
+      readFileSync(ingestionTelemetryPath, "utf8"),
+      ingestionTelemetryNonce,
+      `edit-cycle-kpi: ${caseName} ingestion fingerprint telemetry`,
+    );
     if (!existsSync(hostFsScopePath)) {
       throw new Error(`edit-cycle-kpi: ${caseName} omitted host filesystem telemetry sidecar`);
     }
@@ -204,7 +272,7 @@ function main() {
       `edit-cycle-kpi: ${caseName} host filesystem telemetry`,
     );
     records.push({
-      schema: 3,
+      schema: 4,
       benchmark: "user-edit-cycle-check",
       compiler_sha256: compilerSha,
       compiler_file: basename(stage2),
@@ -217,6 +285,7 @@ function main() {
       process_mode: "one-shot",
       endpoint: "check-command-complete",
       incremental_typecheck: telemetry,
+      ingestion_fingerprint: ingestionFingerprint,
       host_fs_scope: hostFsScope,
       wall_ms: Number(wallMs.toFixed(3)),
       success: true,
