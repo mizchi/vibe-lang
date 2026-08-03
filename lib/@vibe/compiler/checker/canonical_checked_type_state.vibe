@@ -2,8 +2,9 @@
 //
 // The value-environment API below deliberately observes only CheckedProgram.final_env
 // and final_subst. The separate typedef API at the end observes retained type
-// definitions plus their declaration-time binder provenance. Neither serializes
-// checked statements, traits/impls, typed occurrences, runtime sidecars, or cache state.
+// definitions plus their declaration-time binder provenance. The trait-impl API
+// observes only retained implementation entries. None serializes checked
+// statements, trait definitions, typed occurrences, runtime sidecars, or cache state.
 
 import @vibe/compiler/core {
   Subst, Type, TypeDef, TypeEnv, __to_string, canonical_exception_effect_name, str_lt, subst_lookup
@@ -475,6 +476,177 @@ export fn canonical_effective_value_env_snapshot(env: TypeEnv, s: Subst) -> Stri
 /// CheckedProgram wrapper: observes only final_env and final_subst.
 export fn canonical_checked_value_env_snapshot(checked: CheckedProgram) -> String {
   canonical_effective_value_env_snapshot(checked.final_env, checked.final_subst)
+}
+
+//# Retained trait-implementation observation
+
+// A non-negative result is the declared parameter position. -1 is unbound;
+// -2 is ambiguous because a malformed declaration repeats the name. Both are
+// represented explicitly rather than silently associating a bound with a
+// different parameter.
+fn canonical_trait_impl_param_position(params: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut position = -1
+  let mut matches = 0
+  while i < Array::length(params) {
+    if Array::get(params, i) == name {
+      position = i
+      matches = matches + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if matches == 0 {
+    -1
+  } else if matches == 1 {
+    position
+  } else {
+    -2
+  }
+}
+
+// Trait bounds are semantic sets. Valid rows are therefore aggregated by
+// declared parameter position, and labels are sorted and deduplicated exactly
+// as quantified bounds are in canonical_bounds_for. Malformed references keep
+// their raw name in explicit failure nodes so they cannot collide with valid
+// entries.
+fn canonical_trait_impl_bounds(params: Array[String], bounds: Array[(String, Array[String])]) -> String {
+  let rows = array_empty()
+  let mut position = 0
+  while position < Array::length(params) {
+    let labels = array_empty()
+    let mut i = 0
+    while i < Array::length(bounds) {
+      let (name, row_labels) = Array::get(bounds, i)
+      if canonical_trait_impl_param_position(params, name) == position {
+        let mut j = 0
+        while j < Array::length(row_labels) {
+          Array::push(labels, Array::get(row_labels, j))
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    let label_set = sorted_unique_strings(labels)
+    let label_encoding = canonical_node("L", label_set)
+    let row = canonical_node("R", [
+      __to_string(position),
+      label_encoding
+    ])
+    Array::push(rows, row)
+    position = position + 1
+  }
+  let malformed = array_empty()
+  let mut i = 0
+  while i < Array::length(bounds) {
+    let (name, labels) = Array::get(bounds, i)
+    let position = canonical_trait_impl_param_position(params, name)
+    if position == -1 {
+      let label_set = sorted_unique_strings(labels)
+      let label_encoding = canonical_node("L", label_set)
+      let marker = canonical_node("M", [
+        "reason",
+        "unbound_bound_parameter",
+        "name",
+        name,
+        "labels",
+        label_encoding
+      ])
+      Array::push(malformed, marker)
+    } else if position == -2 {
+      let label_set = sorted_unique_strings(labels)
+      let label_encoding = canonical_node("L", label_set)
+      let marker = canonical_node("M", [
+        "reason",
+        "ambiguous_bound_parameter",
+        "name",
+        name,
+        "labels",
+        label_encoding
+      ])
+      Array::push(malformed, marker)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let normalized_malformed = sorted_unique_strings(malformed)
+  let mut j = 0
+  while j < Array::length(normalized_malformed) {
+    Array::push(rows, Array::get(normalized_malformed, j))
+    j = j + 1
+  }
+  canonical_node("B", rows)
+}
+
+fn canonical_trait_impl_entry(trait_name: String, target: Type, s: Subst, free_ids: Array[Int], free_names: Array[String]) -> String {
+  let encoded_target = canonical_type(target, s, array_empty(), array_empty(), free_ids, free_names, array_empty())
+  canonical_node("I", [
+    trait_name,
+    encoded_target
+  ])
+}
+
+fn canonical_trait_impl_gen_entry(trait_name: String, params: Array[String], bounds: Array[(String, Array[String])], target: Type, s: Subst, free_ids: Array[Int], free_names: Array[String]) -> String {
+  let encoded_bounds = canonical_trait_impl_bounds(params, bounds)
+  let encoded_target = canonical_type(target, s, array_empty(), params, free_ids, free_names, array_empty())
+  canonical_node("G", [
+    trait_name,
+    __to_string(Array::length(params)),
+    encoded_bounds,
+    encoded_target
+  ])
+}
+
+/// Canonical, observation-only retained trait-implementation snapshot. It
+/// preserves final-environment traversal order and includes only EnvTraitImpl
+/// and EnvTraitImplGen entries. Generic parameter names are alpha-normalized
+/// by declaration position; bounds retain association as semantic sets.
+/// The generic target is intentionally the checker's retained erased target
+/// (normally its constructor with erased type arguments), not reconstructed
+/// source syntax. EnvFlat and EnvEmpty terminate traversal; trait definitions,
+/// values, cache payloads, and all other CheckedProgram state are excluded.
+export fn canonical_retained_trait_impl_entries_snapshot(env: TypeEnv, s: Subst) -> String {
+  let fields = [
+    "v1"
+  ]
+  let free_ids = array_empty()
+  let free_names = array_empty()
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImpl(trait_name, target, rest) => {
+        let entry = canonical_trait_impl_entry(trait_name, target, s, free_ids, free_names)
+        Array::push(fields, entry)
+        cur = rest
+      },
+      EnvTraitImplGen(trait_name, params, bounds, target, rest) => {
+        let entry = canonical_trait_impl_gen_entry(trait_name, params, bounds, target, s, free_ids, free_names)
+        Array::push(fields, entry)
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  canonical_node("CTIS", fields)
 }
 
 //# Retained type-definition observation
