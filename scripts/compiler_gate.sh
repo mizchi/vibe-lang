@@ -8813,4 +8813,32 @@ fi
 rm -rf "$excdir"
 echo "[compiler-gate] typed Exception[E] rows ok"
 
+echo "[compiler-gate] 86/86 string interpolation renders derive(Show) structurally (#1392)"
+# `"\{v}"` lowers in the parser to `__to_string(v)`, before any type is
+# known, so every aggregate used to render as the ADR-0058 heuristic's raw
+# pointer decimal -- `derive(Show)` or not. desugar_trait_dict now retargets
+# the call to the generated `T::to_string` whenever infer_arg_type_name can
+# resolve the argument's type. The fixture encodes one digit group per case
+# (10000 scalars / 1000 struct let / 200 enum let / 30 nullary ctor / 4
+# annotated param), so a partial regression names itself: this exact program
+# returned 10000 on the pre-fix compiler.
+showdir="_build/_gate_interp_show"
+rm -rf "$showdir"; mkdir -p "$showdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/interp_show_derive.vibe > "$showdir/show.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$showdir/show.vibe" "$showdir/show.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$showdir/show.wasm" ]; then
+  echo "[compiler-gate] FAIL: interp_show_derive.vibe did not compile (#1392)" >&2
+  cat "$showdir/show.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>/dev/null | tail -1)"
+if [ "$show_out" != "11234" ]; then
+  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11234) (#1392)" >&2
+  exit 1
+fi
+rm -rf "$showdir"
+echo "[compiler-gate] interpolation Show rendering ok"
+
 echo "[compiler-gate] ok"

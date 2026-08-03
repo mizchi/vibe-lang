@@ -3126,6 +3126,76 @@ export fn desugar_railway_binds(stmts: Array[Stmt]) -> Unit {
   }
 }
 
+// ---- #1392: string interpolation renders a derive(Show) value structurally ----
+//
+// `"\{v}"` lowers in the PARSER (build_interp_expr, parser_expr_primary.vibe)
+// to `__to_string(v)`, i.e. before any type is known. `__to_string` is the
+// ADR-0058 runtime heuristic -- "a tagged i64 that looks like a string
+// pointer, else a decimal integer" -- so every aggregate reached it as a raw
+// pointer rendered in decimal (`"\{P::{ x: 1, y: 2 }}"` measured as `208`),
+// `derive(Show)` or not. docs/effect-evidence-passing.md 追記23 recorded that
+// as needing "a new dispatch mechanism"; since then `derive(Show)` generates a
+// concrete `T::to_string`, so for a value whose type this pass can resolve the
+// dispatch is just a name.
+//
+// Scope of THIS slice (#1392 lists the rest): only a type that both resolves
+// through `infer_arg_type_name` and already has a top-level `T::to_string` is
+// rewritten, so nothing new has to be generated. `Option`/`Result`/tuple/
+// `Array[T]` interpolation still renders as a pointer -- `show_for_typed`
+// handles those shapes, but `Array[T]` needs its `__arr_to_string__<key>`
+// helper emitted, which means driving that collection from interpolation
+// sites too.
+//
+// The resolver is the same `infer_arg_type_name` the #1374 throw-kind write
+// uses, with the same precision: an annotated parameter, a `let` whose value
+// this pass can type, a struct literal, a constructor call. A pattern binding
+// stays unresolved and keeps today's rendering -- no site gets WORSE.
+
+/// The top-level binding `rewrite_stmt` is currently rewriting. Read only by
+/// `interp_show_target`, to keep the interpolation rewrite from turning a
+/// hand-written `T::to_string`'s own `"\{self}"` into an infinite self-call.
+/// (The DERIVED `T::to_string` never spells that -- `show_for_typed` already
+/// emits `n::to_string` for a known field type and `__to_string` only for
+/// scalars -- so this guards user-written renderers.)
+let dtd_show_self_fn = [
+  ""
+]
+
+fn show_self_fn_set(name: String) -> Unit {
+  Array::set(dtd_show_self_fn, 0, name)
+}
+
+/// `__to_string(x)`: the single-argument shape string interpolation lowers to.
+fn is_interp_to_string_call(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(n, _) => n == "__to_string" && Array::length(args) == 1,
+    _ => false
+  }
+}
+
+/// The `T::to_string` that should render `arg`, or "" when this pass cannot
+/// resolve one and the `__to_string` call must stay as it is.
+///
+/// The `fn_exists` gate is what keeps this from naming a function that is not
+/// there: `fn_returns` holds the program's top-level bindings AFTER
+/// `desugar_derives` has appended the generated renderers, so a hit means
+/// `derive(Show)`, `derive(Hash)`, or a hand-written `T::to_string`. Scalars
+/// are excluded outright -- `__to_string` is already faithful for them, and
+/// they are the shapes a `T::to_string` name could plausibly collide with.
+fn interp_show_target(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(tn) => {
+      let target = String::concat(tn, "::to_string")
+      if !is_scalar_type_name(tn) && fn_exists(fn_returns, target) && target != Array::get(dtd_show_self_fn, 0) {
+        target
+      } else {
+        ""
+      }
+    },
+    None => ""
+  }
+}
+
 /// The core rewriter. `dict_binds` is non-empty only inside a transformed
 /// generic's body (so `T::method` resolves to a dict field); call-site dict
 /// threading applies everywhere a transformed generic is called. `var_types`
@@ -3154,6 +3224,13 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       // function literally named `__try_bind`/`__try_op` with the wrong shape
       // (handled by `try_sentinel` returning None) takes the generic path.
       let try_kind = try_sentinel(callee, args)
+      // #1392: computed once here rather than in the else-if chain below, so
+      // the resolver runs at most once per call site.
+      let show_target = if is_interp_to_string_call(callee, args) {
+        interp_show_target(Array::get(args, 0), struct_sets, var_types, fn_returns)
+      } else {
+        ""
+      }
       if try_kind == 0 {
         // __try_bind(val, (name) -> rest)
         let val = Array::get(args, 0)
@@ -3189,6 +3266,13 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         let val = Array::get(args, 0)
         let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
         lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      } else if show_target != "" {
+        // #1392: `"\{v}"` where `v`'s type has a structural renderer. The
+        // argument is still rewritten first -- it is ordinary user code that
+        // may itself contain dict-threaded calls.
+        ECall(EIdent(show_target, -1), Array::slice([
+          rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        ], 0, 1), off)
       } else if !exn_kind_suppressed() && is_exception_kind_read(callee, args) {
         // #1374: `__exn_kind()` is a checker-only intrinsic (typed
         // `() -> String` in checker/builtins_misc.vibe, no wasm body) -- it
@@ -3744,6 +3828,12 @@ fn thread_dict_params(threaded: Array[(String, String, Int)], params: Array[(Str
 /// tree" gap.
 fn rewrite_stmt(stmt: Stmt, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)]) -> Stmt with { Error } {
   let no_binds = empty_dict_binds()
+  // #1392: which top-level binding's body is about to be walked, so the
+  // interpolation rewrite can decline to make `T::to_string` call itself.
+  show_self_fn_set(match stmt {
+    SLet(_, _, sname, _, _) => sname,
+    _ => ""
+  })
   match stmt {
     SLet(exp, isrec, fname, ann, body) => match lookup_gen(gens, fname) {
       Some(threaded) => match body {
