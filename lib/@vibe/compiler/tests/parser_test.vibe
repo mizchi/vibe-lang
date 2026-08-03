@@ -4,6 +4,10 @@ import @vibe/compiler/syntax {
   lex, print_program
 }
 
+import @vibe/ast {
+  Stmt
+}
+
 import ../parser.vibe {
   parse_program
 }
@@ -54,6 +58,26 @@ test "parse generic impl" {
     Throw(_) => "threw"
   }
   assert(ok == "ok")
+}
+
+test "trait header params roundtrip with supertrait and method-generic metadata" {
+  let source = "trait Iterator[T, U]: Iterable { next[V: Show](T, U) -> V }"
+  let parsed = parse_program(lex(source))
+  match Array::get(parsed, 0) {
+    STrait(_, "Iterator", supers, methods, method_gens, tparams) => {
+      assert(Array::length(tparams) == 2)
+      assert(Array::get(tparams, 0) == "T")
+      assert(Array::get(tparams, 1) == "U")
+      assert(Array::length(supers) == 1)
+      assert(Array::get(supers, 0) == "Iterable")
+      assert(Array::length(methods) == 1)
+      assert(Array::length(method_gens) == 1)
+    },
+    _ => assert(false)
+  }
+  let printed = print_program(parsed)
+  assert(printed == "trait Iterator[T, U]: Iterable {\n  next[V: Show](T, U) -> V\n}")
+  assert(print_program(parse_program(lex(printed))) == printed)
 }
 
 test "print trait method generic bounds preserves semantic differences" {
