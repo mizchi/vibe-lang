@@ -500,11 +500,9 @@ let incremental_interface_trace_observations: Array[(String, String)] = [
 let incremental_checked_env_trace_observations: Array[(String, String)] = [
 ]
 
-// This opt-in is intentionally narrow: it reuses only a decoded value-binding
-// TypeEnv when the exact dependency transport environments are unchanged. It
-// is not a language interface cache; trait definitions are not transported by
-// persistent_env_codec, so projects requiring trait definitions remain on the
-// conservative full-check path.
+// This opt-in aliases only an exact v2 decoded TypeEnv when every direct
+// dependency transport environment is unchanged. It is not a CheckedProgram
+// or typed-IR transport; v2 retains the TypeEnv trait/impl chain only.
 let experimental_typing_dependency_env_reuse_enabled_cell = array_empty()
 
 export fn set_experimental_typing_dependency_env_reuse_enabled(enabled: Bool) -> Unit {
@@ -1361,74 +1359,47 @@ let parse_memo_paths: Array[String] = [
   Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
 }
 
-// The sidecar wire format is intentionally independent from persistent TypeEnv
-// v1: `TDRE1` followed by two strict decimal length-delimited strings
+// The sidecar wire format is intentionally independent from the TypeEnv v2
+// envelope: `TDRE2` followed by two strict decimal length-delimited strings
 // (typing-input key, target conservative fingerprint). It is an alias to an
-// existing artifact, never a new TypeEnv format or language interface.
+// existing artifact, never a CheckedProgram or typed-IR transport.
 //
 // TDRE eligibility is a separate, versioned witness keyed by the ordinary
-// conservative module fingerprint. A TypeEnv is deliberately NOT evidence:
-// its persistent codec drops traits and impls, so eligibility comes only from
-// parsed source plus already validated direct dependency witnesses.
-let typing_dependency_env_reuse_eligibility_v1_text = "TDRE-ELIGIBILITY-1"
+// conservative module fingerprint. The v2 transport is complete for TypeEnv
+// variants, including trait/impl state, so source exclusion is no longer
+// necessary; publication still requires an already validated witness chain.
+let typing_dependency_env_reuse_eligibility_v2_text = "TDRE-ELIGIBILITY-2"
 
 fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with { Fs } {
   let marker_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
   if Fs::exists(marker_path) {
-    Fs::read_file(marker_path) == typing_dependency_env_reuse_eligibility_v1_text
+    Fs::read_file(marker_path) == typing_dependency_env_reuse_eligibility_v2_text
   } else {
     false
   }
 }
 
-fn stmts_have_trait_or_impl_deep(stmts: Array[Stmt]) -> Bool {
+/// Eligibility is transitively witnessed by successful v2 TypeEnv commits.
+/// The input key below fingerprints those complete direct dependency transports,
+/// including trait definitions and impls; an absent/malformed witness fails
+/// closed before any alias lookup.
+fn typing_dependency_env_reuse_is_eligible(_path: String, _source: String, dep_fps: Array[(String, String)]) -> Bool with { Error, Fs } {
   let mut i = 0
-  let mut found = false
-  while !found && i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STrait(_, _, _, _, _, _) => {
-        found = true
-      },
-      SImpl(_, _, _, _) => {
-        found = true
-      },
-      SModule(_, _, inner) => if stmts_have_trait_or_impl_deep(inner) {
-        found = true
-      } else {
-        ()
-      },
-      _ => ()
+  let mut deps_eligible = true
+  while deps_eligible && i < Array::length(dep_fps) {
+    let (_dep_path, dep_fingerprint) = Array::get(dep_fps, i)
+    if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
+      ()
+    } else {
+      deps_eligible = false
     }
     i = i + 1
   }
-  found
-}
-
-/// Eligibility is intentionally conservative and transitively witnessed. Do
-/// not replace this with an inspection of a decoded TypeEnv: trait/impl state
-/// is absent from that transport format.
-fn typing_dependency_env_reuse_is_eligible(path: String, source: String, dep_fps: Array[(String, String)]) -> Bool with { Error, Fs } {
-  let own_stmts = parse_program_with_path(path, source)
-  if stmts_have_trait_or_impl_deep(own_stmts) {
-    false
-  } else {
-    let mut i = 0
-    let mut deps_eligible = true
-    while deps_eligible && i < Array::length(dep_fps) {
-      let (_dep_path, dep_fingerprint) = Array::get(dep_fps, i)
-      if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
-        ()
-      } else {
-        deps_eligible = false
-      }
-      i = i + 1
-    }
-    deps_eligible
-  }
+  deps_eligible
 }
 
 fn publish_typing_dependency_env_reuse_eligibility(fingerprint: String) -> Unit with { Fs } {
-  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), typing_dependency_env_reuse_eligibility_v1_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), typing_dependency_env_reuse_eligibility_v2_text)
 }
 
 fn typing_reuse_segment(text: String) -> String {
@@ -1466,7 +1437,7 @@ fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
 
 fn typing_dependency_transport_input_key(source: String, deps: Array[String], env_cache: Array[(String, TypeEnv)]) -> Option[String] {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v1")
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v2")
   StringBuilder::push(out, typing_reuse_segment(source))
   StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(deps))))
   let mut i = 0
@@ -1475,7 +1446,7 @@ fn typing_dependency_transport_input_key(source: String, deps: Array[String], en
     let dep_path = Array::get(deps, i)
     match lookup_env_cache(env_cache, dep_path) {
       Some(dep_env) => {
-        // This is the exact value-binding environment text transported through
+        // This is the exact complete TypeEnv v2 text transported through
         // persistent_env_codec, not the trace-only module-interface:v1 value.
         let transport_env_fingerprint = compact_string_fingerprint(persistent_type_env_cache_text(dep_env))
         StringBuilder::push(out, typing_reuse_segment(dep_path))
@@ -1495,11 +1466,11 @@ fn typing_dependency_transport_input_key(source: String, deps: Array[String], en
 }
 
 fn typing_dependency_env_reuse_sidecar_text(input_key: String, target_fingerprint: String) -> String {
-  String::concat("TDRE1", String::concat(typing_reuse_segment(input_key), typing_reuse_segment(target_fingerprint)))
+  String::concat("TDRE2", String::concat(typing_reuse_segment(input_key), typing_reuse_segment(target_fingerprint)))
 }
 
 fn parse_typing_dependency_env_reuse_sidecar(text: String, expected_input_key: String) -> Option[String] {
-  if !String::starts_with(text, "TDRE1") {
+  if !String::starts_with(text, "TDRE2") {
     None
   } else {
     match parse_typing_reuse_segment(text, 5) {
@@ -1919,10 +1890,10 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity) => {
       store_persistent_type_env(fingerprint, checked_env)
-      // The TypeEnv commit comes first. Only a source parsed as trait/impl-free
-      // with every direct conservative dependency marker validated may publish
-      // its witness and alias; this establishes the full transitive property
-      // because each dependency witness was itself published under that rule.
+      // The TypeEnv commit comes first. Every direct conservative dependency
+      // marker must already be validated before this module may publish its
+      // witness and alias; each dependency witness was itself published under
+      // that rule, establishing the transitive v2 TypeEnv commit chain.
       if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(path, job.source, job.dep_fps) {
         publish_typing_dependency_env_reuse_eligibility(fingerprint)
         write_typing_dependency_env_reuse_sidecar(job.source, job.deps, job.dep_envs, fingerprint)

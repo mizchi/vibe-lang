@@ -55,14 +55,24 @@ function publicChainEdit(project) {
 
 function makeTraitProject(project) {
   mkdirSync(project, { recursive: true });
-  const trait = "trait Hidden\nimpl Hidden for Int\n";
-  writeFileSync(join(project, "helper.vibe"), `${trait}export fn value() -> Int { 1 }\n`);
+  writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: Base { hidden(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for Int\nexport fn value() -> Int { 1 }\n");
   writeFileSync(join(project, "app.vibe"), "import ./helper.vibe { value }\nfn main() -> Int { value() }\n");
 }
 
-function privateTraitEdit(project) {
-  const trait = "trait Hidden\nimpl Hidden for Int\n";
-  writeFileSync(join(project, "helper.vibe"), `${trait}export fn value() -> Int { let ignored = 1\n2 }\n`);
+function privateTraitModuleBodyEdit(project) {
+  writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: Base { hidden(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for Int\nexport fn value() -> Int { let ignored = 1\n2 }\n");
+}
+
+function supertraitDependencyEdit(project) {
+  // Only the hidden supertrait changes; the exported value signature, method,
+  // and impl targets stay fixed.
+  writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: OtherBase { hidden(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for Int\nexport fn value() -> Int { let ignored = 1\n2 }\n");
+}
+
+function traitDependencyEdit(project) {
+  // The app does not import the trait name. This independently proves that
+  // hidden method and concrete-impl changes invalidate the v2 transport key.
+  writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: Base { changed(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for String\nexport fn value() -> Int { 1 }\n");
 }
 
 function check(stage2, project, cache, gate, name, allowFailure = false) {
@@ -110,11 +120,11 @@ function parseSegment(text, start) {
 
 function appSidecar(cache, appSource) {
   const candidates = readdirSync(cache)
-    .filter((name) => name.startsWith("vibe_selfhost_typing_dependency_env_reuse_v1_"))
+    .filter((name) => name.startsWith("vibe_selfhost_typing_dependency_env_reuse_v2_"))
     .map((name) => join(cache, name));
   const path = candidates.find((candidate) => {
     const text = readFileSync(candidate, "utf8");
-    return text.startsWith("TDRE1") && text.includes(appSource);
+    return text.startsWith("TDRE2") && text.includes(appSource);
   });
   if (!path) fail(`non-vacuous app sidecar missing in ${basename(cache)}`);
   const text = readFileSync(path, "utf8");
@@ -147,7 +157,7 @@ function referencedAppTargetEnv(stage2, cache, target) {
   const stageSource = readFileSync(join(dirname(stage2), "cli_adapter_module_source.vibe"), "utf8");
   const codegen = stageSource.match(/codegen_fingerprint[\s\S]{0,200}?"([0-9a-f]{16})"/)?.[1];
   if (!codegen) fail("could not read stage compiler codegen fingerprint");
-  const version = `v14|cg-${codegen}`;
+  const version = `v15|cg-${codegen}`;
   const token = compactFingerprint(`persistent-cache-${version}|${target}`).replaceAll(":", "_");
   const path = join(cache, `vibe_selfhost_type_env_v2_${token}.tsv`);
   try { readFileSync(path, "utf8"); }
@@ -219,7 +229,7 @@ function run(stage2) {
     makeProject(malformedProject);
     check(stage2, malformedProject, malformedCache, true, "malformed-target-cold");
     const malformedSidecar = appSidecar(malformedCache, readFileSync(join(malformedProject, "app.vibe"), "utf8"));
-    writeFileSync(referencedAppTargetEnv(stage2, malformedCache, malformedSidecar.target), "version\t1\nbind\tmain\t");
+    writeFileSync(referencedAppTargetEnv(stage2, malformedCache, malformedSidecar.target), "version\t2\nenv\t");
     privateEdit(malformedProject);
     const malformedTargetFallback = check(stage2, malformedProject, malformedCache, true, "malformed-target-fallback");
     expectCounts("malformed referenced target fallback", malformedTargetFallback.telemetry, 2, 0);
@@ -239,7 +249,7 @@ function run(stage2) {
     makeProject(staleProject);
     check(stage2, staleProject, staleCache, true, "stale-target-cold");
     const staleSidecar = appSidecar(staleCache, readFileSync(join(staleProject, "app.vibe"), "utf8"));
-    writeFileSync(staleSidecar.path, `TDRE1${segment(staleSidecar.input)}${segment("stale-conservative-target")}`);
+    writeFileSync(staleSidecar.path, `TDRE2${segment(staleSidecar.input)}${segment("stale-conservative-target")}`);
     privateEdit(staleProject);
     const staleTargetFallback = check(stage2, staleProject, staleCache, true, "stale-target-fallback");
     expectCounts("stale referenced target fallback", staleTargetFallback.telemetry, 2, 0);
@@ -258,9 +268,20 @@ function run(stage2) {
     const traitCache = join(work, "trait-cache");
     makeTraitProject(traitProject);
     check(stage2, traitProject, traitCache, true, "trait-cold");
-    privateTraitEdit(traitProject);
-    const traitFallback = check(stage2, traitProject, traitCache, true, "trait-private-fallback");
-    expectCounts("trait graph fallback", traitFallback.telemetry, 2, 0);
+    privateTraitModuleBodyEdit(traitProject);
+    const traitPrivate = check(stage2, traitProject, traitCache, true, "trait-private-body");
+    expectCounts("trait module private body reuse", traitPrivate.telemetry, 1, 1);
+    supertraitDependencyEdit(traitProject);
+    const supertraitFallback = check(stage2, traitProject, traitCache, true, "supertrait-dependency-fallback");
+    expectCounts("supertrait-only dependency change fallback", supertraitFallback.telemetry, 2, 0);
+
+    const traitChangeProject = join(work, "trait-change-project");
+    const traitChangeCache = join(work, "trait-change-cache");
+    makeTraitProject(traitChangeProject);
+    check(stage2, traitChangeProject, traitChangeCache, true, "trait-change-cold");
+    traitDependencyEdit(traitChangeProject);
+    const traitFallback = check(stage2, traitChangeProject, traitChangeCache, true, "trait-dependency-fallback");
+    expectCounts("trait method/impl dependency change fallback", traitFallback.telemetry, 2, 0);
 
     const chainProject = join(work, "chain-project");
     const chainCache = join(work, "chain-cache");
@@ -292,7 +313,11 @@ function run(stage2) {
       missing_target_fallback: missingTargetFallback.telemetry,
       stale_target_fallback: staleTargetFallback.telemetry,
       malformed_sidecar_fallback: malformedSidecarFallback.telemetry,
-      trait_fallback: traitFallback.telemetry,
+      trait_graph: {
+        private_body_reuse: traitPrivate.telemetry,
+        supertrait_change_fallback: supertraitFallback.telemetry,
+        method_impl_change_fallback: traitFallback.telemetry,
+      },
       multi_level_chain: { private_leaf_body: chainPrivate.telemetry, public_leaf_signature: chainPublic.telemetry },
     }));
   } finally {

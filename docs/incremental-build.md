@@ -153,33 +153,37 @@ trusted stat-token limitation, and it does not prove artifact equivalence.
 
 The in-memory parser and checker retain bare trait-header parameter names for
 provenance. This appends a sixth field to the transparent `STrait` AST variant,
-which is an explicit source migration for positional consumers. Persistent warm
-cache state still drops trait definitions, however, so a complete clean/warm
-trait artifact remains blocked; this is not a claim that artifacts are lossless.
+which is an explicit source migration for positional consumers. Persistent
+TypeEnv v2 retains trait definitions, but that narrow environment transport is
+not a complete clean/warm typed artifact or lossless CheckedProgram claim.
 
 ## Experimental dependency transport-environment typing reuse
 
 `VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE=1` enables a deliberately
 narrow check-only experiment. It aliases a source plus ordered direct-dependency
-**value-binding transport environment** identities to a previously checked
-TypeEnv, then validates and republishes that decoded environment under the
+**v2 TypeEnv transport** identities to a previously checked TypeEnv, then
+validates and republishes that decoded environment under the
 ordinary conservative fingerprint. It does not use the trace-only
 `vibe-module-interface:v1` observation as a production key, and malformed,
 missing, or stale aliases—including a malformed, truncated, or absent referenced
 TypeEnv—fall back to a full check. The alias is incompatible with the
 incremental invalidation trace lane so the two identities cannot be confused.
 
-This experiment has a separate versioned eligibility-marker namespace keyed by
-the ordinary conservative module fingerprint; it does not alter the TypeEnv or
-sidecar formats. A marker is published only after that module's TypeEnv commit,
-and only when its parsed source contains no `STrait` or `SImpl` anywhere
-(including nested `SModule` bodies) and every direct dependency already has a
-validated marker for its own conservative fingerprint. Consequently a marker
-witnesses the same condition transitively. Alias publication and reuse require
-that witness chain; absent or malformed markers fail closed. Decoded TypeEnv
-contents must never be used to infer eligibility because that persistent codec
-transports flat value bindings only and drops trait/impl definitions. The gate
-remains disabled by default.
+The v2 TypeEnv codec round-trips every current `TypeEnv` variant, including
+trait definitions, impls, generic impl bounds, trait header parameters, and
+method `TypeExpr` metadata. Its cache namespace, `TDRE2` alias envelope, and
+eligibility-marker namespace are all version-bumped, so lossy v1 artifacts
+cannot be reused. The sidecar is still only an alias to a conservative TypeEnv
+commit, not a `CheckedProgram` or lossless typed-IR transport.
+
+A marker is published only after that module's v2 TypeEnv commit and when every
+direct dependency already has a validated marker for its conservative
+fingerprint. The transport-input key fingerprints the complete ordered v2
+dependency environments, so a trait or impl dependency edit changes the key and
+fails closed to a full check. The production oracle covers that hidden
+trait/impl-dependency invalidation. Alias publication and reuse require the
+witness chain; absent or malformed markers, sidecars, targets, and envelopes
+fall back to full checking. The gate remains disabled by default.
 
 ## Artifact boundaries
 
