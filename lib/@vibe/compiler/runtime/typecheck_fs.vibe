@@ -848,6 +848,34 @@ fn interface_canonical_trait_method_type_expr(ty: TypeExpr, header_params: Array
   }
 }
 
+fn interface_trait_header_malformed_rows(header_params: Array[String]) -> Array[String] {
+  let rows = array_empty()
+  let mut p = 0
+  while p < Array::length(header_params) {
+    let param_name = Array::get(header_params, p)
+    let mut matches = 0
+    let mut p2 = 0
+    while p2 < Array::length(header_params) {
+      if Array::get(header_params, p2) == param_name {
+        matches = matches + 1
+      } else {
+        ()
+      }
+      p2 = p2 + 1
+    }
+    if matches > 1 {
+      // Encode the binder position, not its source spelling, so malformed
+      // duplicate groups remain alpha-invariant while staying distinct from
+      // a valid header of the same arity.
+      Array::push(rows, String::concat("ambiguous-header-param:", __to_string(p)))
+    } else {
+      ()
+    }
+    p = p + 1
+  }
+  rows
+}
+
 fn interface_trait_generic_malformed_rows(method_params: Array[String], generic_bounds: Array[(String, Array[String])]) -> Array[String] {
   let rows = array_empty()
   let mut p = 0
@@ -1137,6 +1165,8 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
         let trait_body = StringBuilder::new()
         StringBuilder::push(trait_body, "header-gens")
         StringBuilder::push(trait_body, interface_bracketed(header_rows, ";"))
+        StringBuilder::push(trait_body, "header-malformed")
+        StringBuilder::push(trait_body, interface_bracketed(interface_trait_header_malformed_rows(header_params), ";"))
         StringBuilder::push(trait_body, "super")
         StringBuilder::push(trait_body, interface_bracketed(interface_sorted_unique(supers), ","))
         StringBuilder::push(trait_body, "methods")
@@ -1202,8 +1232,8 @@ fn incremental_implementation_identity(source: String) -> String with { Error } 
 
 /// Test-only seam for malformed transparent AST provenance that source parsing
 /// cannot construct. Production interface serialization calls the same helpers.
-export fn incremental_trait_generic_provenance_markers_for_test(method_params: Array[String], generic_bounds: Array[(String, Array[String])], method_count: Int, method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
-  String::concat(interface_bracketed(interface_trait_generic_malformed_rows(method_params, generic_bounds), ";"), interface_bracketed(interface_surplus_method_generic_rows(method_count, method_gens), ";"))
+export fn incremental_trait_generic_provenance_markers_for_test(header_params: Array[String], method_params: Array[String], generic_bounds: Array[(String, Array[String])], method_count: Int, method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
+  String::concat(interface_bracketed(interface_trait_header_malformed_rows(header_params), ";"), String::concat(interface_bracketed(interface_trait_generic_malformed_rows(method_params, generic_bounds), ";"), interface_bracketed(interface_surplus_method_generic_rows(method_count, method_gens), ";")))
 }
 
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with { Error } {

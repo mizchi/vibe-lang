@@ -361,8 +361,9 @@ generic-binder row, bounds, and signature. Method binders explicitly shadow
 trait-header binders; names outside either binder scope remain free/nominal
 names. Header and method alpha-renames therefore preserve identity, while
 binder arity, association, bounds, signatures, and free/nominal names do not.
-Missing/surplus method-generic rows and unbound/ambiguous bound ownership are
-encoded as deterministic malformed-provenance markers rather than omitted.
+Duplicate trait-header binders, missing/surplus method-generic rows, and
+unbound/ambiguous bound ownership are encoded as deterministic
+malformed-provenance markers rather than omitted.
 Quantified variables are alpha-normalized; effect rows, bounds, derives, and
 effectset members are lexically sorted/deduplicated. Bodies, comments, private
 declarations, and ordinary imports are excluded. The compiler removes a pre-existing requested sidecar

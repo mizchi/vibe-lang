@@ -444,6 +444,9 @@ function run(stage2) {
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitHeaderArity = check("trait_header_arity");
     if (interfaceOwnersChanged(traitMethodShadowsHeader, traitHeaderArity).join(",") !== "library") fail("trait header binder arity did not change interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, A] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitDuplicateHeader = check("trait_duplicate_header");
+    if (interfaceOwnersChanged(traitHeaderArity, traitDuplicateHeader).join(",") !== "library") fail("duplicate trait header binders were not marked as malformed provenance");
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Show](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitScopedBound = check("trait_scoped_bound");
     if (interfaceOwnersChanged(traitHeaderArity, traitScopedBound).join(",") !== "library") fail("trait method binder bound did not change interface identity");
