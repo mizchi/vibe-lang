@@ -319,11 +319,37 @@ trace は生成 helper 帯の低番号: `function[63] <- [22] <- [1937] <- [1996
 | `codegen/expr/compile_expr_tail6.vibe` | 1 | PASS |
 | **`codegen/expr/compile_expr_tail.vibe`** | **9** | **FAIL** |
 
+**さらに 1 行単位で二分したところ、単一の犯人は存在しなかった**:
+
+| compile_expr_tail.vibe で call 形を残した site | all-RC bootstrap |
+| --- | --- |
+| 920 / 977 / 1267 / 1377 (前半4) | PASS |
+| 1591 / 1604 / 1645 / 1666 / 1714 (後半5) | PASS |
+| 1591 / 1604 のみ | PASS |
+| 1645 のみ | PASS |
+| 1666 のみ | PASS |
+| 1714 のみ | PASS |
+| **9 site 全部** | **FAIL** |
+
+**前半だけでも後半だけでも通り、両方揃ったときだけ落ちる。** 個々の site の
+意味論の問題ではなく、out-line された dup の総数がある閾値を越えて確保
+パターンが変わったときに初めて表面化する、**累積的**な事象である。
+
 **同じ helper (`__rt_rc_dup`) を同じ形で呼んでいるのに、この 1 ファイルの site
 だけが壊す。** つまり helper 本体でも call 形そのものでもなく、この 9 site の
 どれかが置かれている文脈(ELet の scope-end drop / borrow-ret / loop-borrow
-まわり)と call 形の組み合わせが問題。次はこの 9 site を二分する
-(~3-4 build)。
+まわり)と call 形の組み合わせが問題。したがって **out-line 化そのものは健全**と考えるのが妥当:
+各 site は単独では正しく、helper は inline emitter の再利用で意味論が同一、
+小規模では compile+run が通り、compiler source 全体の RC コンパイルも通る。
+落ちるのは「十分な数の dup を out-line したときの確保パターン」でだけ。
+
+つまりこれは #1262 が4ラウンド繰り返した *set membership shuffles latent
+imbalances* と同型で、**既存の潜在的な RC/allocator 不整合を本変更が
+可視化している**という読みが最も整合的。次の作業は「out-line を直す」では
+なく「その潜在不整合を見つける」であり、#1262 とは独立に価値がある
+(見つかれば main のバグ)。ただし `main` を `VIBE_WASM_NAMES=1` で
+all-RC ビルドしても再現しないので、出力サイズ変化だけでは引き出せない —
+dup の配置そのものが効いている。
 
 なお crash は `__rt_rc_alloc` ← `__rt_arr_new` ← `lc_fresh_int_array` で、
 heap に 105MB の余裕がある状態で起きる = free list の壊れた next を辿っている。
