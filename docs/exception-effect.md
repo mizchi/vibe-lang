@@ -413,6 +413,11 @@ regression lock:
 - `@vibex/concurrent` の "a typed child throw is reported by kind" は
   `Failed("<SendError>")` から `Failed("Closed")` へ更新した (caller が switch
   したいのは変種名の方)
+- `suspend_test.vibe` の "result_wait propagates a cancelled sibling to the
+  awaiter" — suspend lane を `Exception[E]` へ移した #1324 slice 2 が
+  この channel に依存している。cancel された sibling の `Cancelled` が
+  CPS 分割 callee の throw → erased runner arm → `fail_msg` → `join` の
+  再 throw まで variant 名のまま届くことを assert する
 
 ## #1324 (Result 削除) との統合順序
 
