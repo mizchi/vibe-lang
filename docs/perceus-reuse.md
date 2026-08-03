@@ -239,3 +239,67 @@ drop specialization (PR #1274) が inline 化して size を +14% 悪化させ�
 | 実装観測 | self-build gate が VIBE_RC=0 に pin(性能) | 成功指標 2 で pin 解除を出口条件にする |
 | 優先度 | 表面構文なし・bootstrap 不要・全コードに即効・zero_alloc の前提 | region/zero_alloc より先に実装する(本 ADR の主決定) |
 | 回帰ガード | 出力 byte 同一 gate、shadow lane、rc_reuse fixture、B/op tracked series | Phase 1 から固定 |
+
+## Implementation notes (2026-08-03, #1262) — dup guard の out-line 化 (未完)
+
+### 測定: RC の size overhead の 86% は inline dup guard 1 箇所
+
+RC stage2 のバイナリを直接読んで数えた (bump 側は同パターン 0 個なので
+判別子として完全):
+
+| | |
+| --- | --- |
+| inline dup guard | **52,479 sites** |
+| 1 site あたり | **きっかり 72 B** (2000 サンプルで min == max) |
+| 合計 | 3.78 MB |
+| RC の size overhead 実測 | 4.37 MB |
+| **dup guard がその** | **86%** |
+
+形状モデルは実測で裏取り済み (guard あたり `push_addr` 3.00 個、
+saturating check 1.00 個)。
+
+### 実装と実測 (out-line 版は動く)
+
+runtime helper `__rt_rc_dup` を追加し各 site を `local.get v; call` の
+~5 B にする。helper 本体は `emit_rc_dup_inline` をそのまま呼ぶので inline
+形と意味論がずれない。
+
+| | size | |
+| --- | --- | --- |
+| bump stage2 | 1,841,905 B | — |
+| rc stage2 (inline) | 6,213,090 B | 3.37x |
+| rc stage2 (**out-line**) | **2,644,637 B** | **1.44x** (−57.4%) |
+
+この out-line 版 RC コンパイラは実際に動く (tiny を compile+run して 42、
+compiler source 全体の RC コンパイルも通る)。
+
+### 未解決: all-RC bootstrap だけが落ちる
+
+`VIBE_RC=1 scripts/generations.sh build` が stage1 → stage2 で
+`memory access out of bounds`。**潰した仮説**: borrow 推論との相互作用
+(OFF でも同じ) / seed の source 誤コンパイル (出力を inline に戻すと通る)
+/ EIf MIN-merge の分岐非対称 #705 (対称化しても変わらず) / stage1 が壊れて
+いる (小入力なら正常) / メモリ上限。
+
+**最後のが一番情報量が大きい**。同じ入力を同じフラグで両 stage1 に
+食わせると:
+
+```
+probe_inline stage1 : 成功。peak 19,746 pages (1.29 GB) / heap_ptr 924MB / 出力 5,436,015 B
+dup_rc2 stage1      : OOB。 memory_size 13,164 pages (862 MB) / heap_ptr 757MB
+```
+
+**通る方は 19,746 pages まで伸びているので 13,164 pages は上限ではない** —
+落ちる方は伸ばさずに現在サイズの外へアクセスしている。両者は
+「1 dup site あたり 72 B 出すか 5 B 出すか」だけが違い、出力量が 5.4MB と
+~2.6MB で変わるので確保パターンが変わる。#1262 が4ラウンド繰り返した
+「set membership shuffles latent imbalances」と同型で、**既存の
+allocator/RC の潜在不整合を本変更が可視化しているだけの可能性がある**。
+
+trace は生成 helper 帯の低番号: `function[63] <- [22] <- [1937] <- [1996]
+<- [1997] <- [2582] <- [3316]`。
+
+次の一手は [selfhost-miscompile-bisect](../.claude/skills/selfhost-miscompile-bisect)
+の probe entry + phase 二分。最小差分ペア (`emit_rc_dup_guarded` が
+どちらの分岐を取るかだけが違う stage1 が2つ) が手元にある。
+
