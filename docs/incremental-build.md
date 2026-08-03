@@ -149,19 +149,22 @@ traces (apart from the freshness nonce) and equal check output bytes/text. It
 retains malformed and content-token fallback checks. This does not remove the
 trusted stat-token limitation, and it does not prove artifact equivalence.
 
-## Trait header provenance (bounded Phase 3)
+## Trait generic provenance (bounded Phase 3)
 
-The in-memory parser and checker retain bare trait-header parameter names for
-provenance. This appends a sixth field to the transparent `STrait` AST variant,
-which is an explicit source migration for positional consumers. Persistent
-TypeEnv v2 retains trait definitions, but that narrow environment transport is
-not a complete clean/warm typed artifact or lossless CheckedProgram claim.
+The in-memory parser and checker retain bare trait-header parameter names and
+positional method-generic rows for provenance. The header names append a sixth
+field to transparent `STrait`; checker-retained `EnvTraitDef` appends method
+rows seventh, without shifting its prior slots. This is an explicit source
+migration for positional consumers. Persistent TypeEnv v3 transports those
+trait definitions and method-generic rows, but remains a narrow environment
+transport, not a complete clean/warm typed artifact or lossless `CheckedProgram`
+claim.
 
 ## Experimental dependency transport-environment typing reuse
 
 `VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE=1` enables a deliberately
 narrow check-only experiment. It aliases a source plus ordered direct-dependency
-**v2 TypeEnv transport** identities to a previously checked TypeEnv, then
+**v3 TypeEnv transport** identities to a previously checked TypeEnv, then
 validates and republishes that decoded environment under the
 ordinary conservative fingerprint. It does not use the trace-only
 `vibe-module-interface:v2` observation as a production key, and malformed,
@@ -169,16 +172,16 @@ missing, or stale aliases—including a malformed, truncated, or absent referenc
 TypeEnv—fall back to a full check. The alias is incompatible with the
 incremental invalidation trace lane so the two identities cannot be confused.
 
-The v2 TypeEnv codec round-trips every current `TypeEnv` variant, including
-trait definitions, impls, generic impl bounds, trait header parameters, and
-method `TypeExpr` metadata. Its cache namespace, `TDRE2` alias envelope, and
-eligibility-marker namespace are all version-bumped, so lossy v1 artifacts
-cannot be reused. The sidecar is still only an alias to a conservative TypeEnv
+The v3 TypeEnv codec round-trips every current `TypeEnv` variant, including
+trait definitions, impls, generic impl bounds, trait-header parameters,
+positional method-generic binders/bounds, and method `TypeExpr` metadata. Its
+TypeEnv cache namespace, `TDRE3` alias envelope, and eligibility-marker
+namespace are all version-bumped, so v1/v2 artifacts cannot be reused. The sidecar is still only an alias to a conservative TypeEnv
 commit, not a `CheckedProgram` or lossless typed-IR transport.
 
-A marker is published only after that module's v2 TypeEnv commit and when every
+A marker is published only after that module's v3 TypeEnv commit and when every
 direct dependency already has a validated marker for its conservative
-fingerprint. The transport-input key fingerprints the complete ordered v2
+fingerprint. The transport-input key fingerprints the complete ordered v3
 dependency environments, so a trait or impl dependency edit changes the key and
 fails closed to a full check. The production oracle covers that hidden
 trait/impl-dependency invalidation. Alias publication and reuse require the
@@ -393,14 +396,14 @@ definitions, effect declarations, and bodies are out of scope. It is a
 trace-only format, explicitly not the production persistent TypeEnv codec.
 Schema 5 additionally observes `persistent_type_env_transport_fingerprint` as
 `compact_string_fingerprint(persistent_type_env_cache_text(env))`: the canonical
-complete persistent TypeEnv v2 transport bytes for the checked or reused
+complete persistent TypeEnv v3 transport bytes for the checked or reused
 environment. It covers transport state omitted by the value-only checked-env
 observation, including trait and impl state. Schema 6 changes only the
 trace-only interface observation: method-generic provenance is consumed from
-the source `STrait` to canonicalize trait methods, because it is still not
-retained in TypeEnv or the full checked artifact. It is TypeEnv transport
-only—not a `CheckedProgram`, typed IR, exported interface, cache key, or reuse
-decision.
+the source `STrait` to canonicalize trait methods. The provenance is now also
+retained in `EnvTraitDef` and the TypeEnv v3 transport, but no full checked
+artifact exists yet. The transport remains TypeEnv-only—not a `CheckedProgram`,
+typed IR, exported interface, cache key, or reuse decision.
 The token-stream, interface, checked-environment, and transport reconstructions
 are not charged to the existing TypeDb `parse_operations` counter, so the `rechecked`/`reused`
 report remains the current conservative cache-path observation rather than a
@@ -425,10 +428,11 @@ proves that a private body can change token-stream identity while leaving
 checked-value-env identity unchanged. Trait-header/method-generic cases prove
 clean/warm parity, alpha-rename invariance under method-over-header scope, and
 identity changes for binder association, arity, bounds, signatures, and free
-nominal names. The method generic rows are deliberately read from source
-`STrait` for this observation only; they remain absent from TypeEnv and the full
-checked artifact. A trait/impl regression proves an impl-bound edit changes the
-complete persistent TypeEnv v2 transport observation while leaving the
+nominal names. The interface observation deliberately continues to read method
+generic rows from source `STrait`; the same provenance is independently retained
+in TypeEnv v3, but remains absent from a full checked artifact. A trait/impl
+regression proves an impl-bound edit changes the
+complete persistent TypeEnv v3 transport observation while leaving the
 value-only checked-env observation unchanged; it makes no exported-interface
 stability assertion.
 An external

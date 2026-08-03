@@ -8,6 +8,10 @@ import @vibe/compiler/runtime {
   parse_persistent_type_env, persistent_type_env_cache_text
 }
 
+import @vibe/core {
+  array_empty
+}
+
 //# Helpers
 
 fn cached_polymorphic_type() -> Type {
@@ -82,6 +86,15 @@ fn codec_fixture() -> TypeEnv {
   ], cached_flat_rest()), [
     "T",
     "E"
+  ], [
+    ("map", [
+      "A"
+    ], [
+      ("A", [
+        "Eq",
+        "Show"
+      ])
+    ])
   ]))))
 }
 
@@ -90,7 +103,7 @@ fn retained_trait_header_params(env: TypeEnv, name: String) -> Array[String] {
     EnvEmpty => [
     ],
     EnvBind(_, _, rest) => retained_trait_header_params(rest, name),
-    EnvTraitDef(trait_name, _, _, _, rest, header_params) => if trait_name == name {
+    EnvTraitDef(trait_name, _, _, _, rest, header_params, _) => if trait_name == name {
       header_params
     } else {
       retained_trait_header_params(rest, name)
@@ -103,12 +116,28 @@ fn retained_trait_header_params(env: TypeEnv, name: String) -> Array[String] {
   }
 }
 
+fn retained_trait_method_gens(env: TypeEnv, name: String) -> Array[(String, Array[String], Array[(String, Array[String])])] {
+  match env {
+    EnvEmpty => array_empty(),
+    EnvBind(_, _, rest) => retained_trait_method_gens(rest, name),
+    EnvTraitDef(trait_name, _, _, _, rest, _, method_gens) => if trait_name == name {
+      method_gens
+    } else {
+      retained_trait_method_gens(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => retained_trait_method_gens(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => retained_trait_method_gens(rest, name),
+    EnvFlat(_) => array_empty(),
+    EnvCached(_, _, rest) => retained_trait_method_gens(rest, name)
+  }
+}
+
 fn retained_generic_impl_bounds(env: TypeEnv, name: String) -> Array[(String, Array[String])] {
   match env {
     EnvEmpty => [
     ],
     EnvBind(_, _, rest) => retained_generic_impl_bounds(rest, name),
-    EnvTraitDef(_, _, _, _, rest, _) => retained_generic_impl_bounds(rest, name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => retained_generic_impl_bounds(rest, name),
     EnvTraitImpl(_, _, rest) => retained_generic_impl_bounds(rest, name),
     EnvTraitImplGen(trait_name, _, bounds, _, rest) => if trait_name == name {
       bounds
@@ -134,10 +163,10 @@ fn malformed_rejected(text: String) -> Bool {
 
 //# Tests
 
-test "persistent TypeEnv v2 round-trips every variant and trait payload" {
+test "persistent TypeEnv v3 round-trips every variant and trait payload" {
   let env = codec_fixture()
   let encoded = persistent_type_env_cache_text(env)
-  assert(String::starts_with(encoded, "version\t2\nenv\t"))
+  assert(String::starts_with(encoded, "version\t3\nenv\t"))
   match parse_persistent_type_env(encoded) {
     Some(decoded) => {
       assert(persistent_type_env_cache_text(decoded) == encoded)
@@ -154,6 +183,14 @@ test "persistent TypeEnv v2 round-trips every variant and trait payload" {
       assert(Array::length(header_params) == 2)
       assert(Array::get(header_params, 0) == "T")
       assert(Array::get(header_params, 1) == "E")
+      let method_gens = retained_trait_method_gens(decoded, "Functor")
+      assert(Array::length(method_gens) == 1)
+      let (generic_method, generic_params, generic_bounds) = Array::get(method_gens, 0)
+      assert(generic_method == "map")
+      assert(Array::get(generic_params, 0) == "A")
+      let (generic_bound_name, generic_bound_labels) = Array::get(generic_bounds, 0)
+      assert(generic_bound_name == "A")
+      assert(Array::get(generic_bound_labels, 0) == "Eq")
       let impl_bounds = retained_generic_impl_bounds(decoded, "Functor")
       assert(Array::length(impl_bounds) == 1)
       let (bound_name, bound_labels) = Array::get(impl_bounds, 0)
@@ -181,7 +218,7 @@ test "persistent TypeEnv v2 round-trips every variant and trait payload" {
   }
 }
 
-test "persistent TypeEnv v2 rebuilds untrusted cached lookup indexes" {
+test "persistent TypeEnv v3 rebuilds untrusted cached lookup indexes" {
   let corrupt = EnvCached([
     "shadow",
     "shadow",
@@ -213,11 +250,12 @@ test "persistent TypeEnv v2 rebuilds untrusted cached lookup indexes" {
   }
 }
 
-test "persistent TypeEnv v2 rejects old, truncated, and malformed envelopes" {
+test "persistent TypeEnv v3 rejects old, truncated, and malformed envelopes" {
   assert(malformed_rejected("version\t1\nbind\tvalue\tI\n"))
-  assert(malformed_rejected("version\t2\nenv\t"))
-  assert(malformed_rejected("version\t2\nenv\t1:Z\n"))
-  assert(malformed_rejected("version\t2\nenv\t2:00\n"))
-  assert(malformed_rejected("version\t2\nenv\t4:B0:0\n"))
-  assert(malformed_rejected("version\t2\nenv\t1:0\ntrailing"))
+  assert(malformed_rejected("version\t2\nenv\t1:0\n"))
+  assert(malformed_rejected("version\t3\nenv\t"))
+  assert(malformed_rejected("version\t3\nenv\t1:Z\n"))
+  assert(malformed_rejected("version\t3\nenv\t2:00\n"))
+  assert(malformed_rejected("version\t3\nenv\t4:B0:0\n"))
+  assert(malformed_rejected("version\t3\nenv\t1:0\ntrailing"))
 }

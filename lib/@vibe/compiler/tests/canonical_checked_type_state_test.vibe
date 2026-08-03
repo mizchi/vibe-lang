@@ -5,11 +5,12 @@ import @vibe/compiler/checker {
   canonical_checked_value_env_snapshot,
   canonical_effective_value_env_snapshot,
   canonical_retained_trait_impl_entries_snapshot,
+  canonical_retained_trait_method_gens_snapshot,
   check_program_result
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, Subst, Type, TypeDef, TypeEnv
+  Expr, Stmt, Subst, Type, TypeDef, TypeEnv, TypeExpr
 }
 
 import @vibe/core {
@@ -40,6 +41,10 @@ fn typedef_snapshot(defs: Array[TypeDef], binders: Array[Array[Int]], subst: Sub
 
 fn trait_impl_snapshot(env: TypeEnv, subst: Subst) -> String {
   canonical_retained_trait_impl_entries_snapshot(env, subst)
+}
+
+fn trait_method_gens_snapshot(env: TypeEnv) -> String {
+  canonical_retained_trait_method_gens_snapshot(env)
 }
 
 test "canonical checked state preserves EnvBind EnvFlat and EnvCached first-match shadows" {
@@ -433,7 +438,7 @@ test "canonical trait impl snapshot retains entries in final-env traversal order
   ], EnvTraitImpl("Earlier", CtInt, EnvEmpty)), [
     "T",
     "U"
-  ])))
+  ], array_empty())))
   let expected = EnvTraitImpl("Later", CtString, EnvTraitImpl("Earlier", CtInt, EnvEmpty))
   assert(trait_impl_snapshot(retained, SubstEmpty) == trait_impl_snapshot(expected, SubstEmpty))
   assert(trait_impl_snapshot(EnvFlat([
@@ -555,6 +560,109 @@ test "canonical trait impl snapshot observes real checker registrations" {
   assert(String::contains(snapshot, "Box"))
   assert(String::contains(snapshot, "Eq"))
   assert(String::contains(snapshot, "Show"))
+}
+
+test "canonical retained trait method generics are alpha-normalized by position" {
+  let methods = [
+    ("map", [
+      TyName("Self")
+    ], TyName("Result"))
+  ]
+  let left = EnvTraitDef("Mapper", array_empty(), false, methods, EnvEmpty, array_empty(), [
+    ("map", [
+      "T",
+      "U"
+    ], [
+      ("U", [
+        "Ord"
+      ]),
+      ("T", [
+        "Eq"
+      ])
+    ])
+  ])
+  let alpha = EnvTraitDef("Mapper", array_empty(), false, methods, EnvEmpty, array_empty(), [
+    ("map", [
+      "A",
+      "B"
+    ], [
+      ("B", [
+        "Ord"
+      ]),
+      ("A", [
+        "Eq"
+      ])
+    ])
+  ])
+  let changed = EnvTraitDef("Mapper", array_empty(), false, methods, EnvEmpty, array_empty(), [
+    ("map", [
+      "A",
+      "B"
+    ], [
+      ("A", [
+        "Ord"
+      ]),
+      ("B", [
+        "Eq"
+      ])
+    ])
+  ])
+  assert(trait_method_gens_snapshot(left) == trait_method_gens_snapshot(alpha))
+  assert(trait_method_gens_snapshot(left) != trait_method_gens_snapshot(changed))
+}
+
+test "canonical retained trait method generics fail closed for malformed provenance" {
+  let methods = [
+    ("map", array_empty(), TyName("Int"))
+  ]
+  let missing = EnvTraitDef("Malformed", array_empty(), false, methods, EnvEmpty, array_empty(), array_empty())
+  let surplus = EnvTraitDef("Malformed", array_empty(), false, array_empty(), EnvEmpty, array_empty(), [
+    ("map", [
+      "T"
+    ], array_empty())
+  ])
+  let ambiguous = EnvTraitDef("Malformed", array_empty(), false, methods, EnvEmpty, array_empty(), [
+    ("map", [
+      "T",
+      "T"
+    ], [
+      ("T", [
+        "Eq"
+      ]),
+      ("Missing", [
+        "Show"
+      ])
+    ])
+  ])
+  let mismatched = EnvTraitDef("Malformed", array_empty(), false, methods, EnvEmpty, array_empty(), [
+    ("other", array_empty(), array_empty())
+  ])
+  assert(String::contains(trait_method_gens_snapshot(missing), "missing_method_generic_provenance"))
+  assert(String::contains(trait_method_gens_snapshot(surplus), "surplus_method_generic_provenance"))
+  assert(String::contains(trait_method_gens_snapshot(ambiguous), "ambiguous_method_parameter"))
+  assert(String::contains(trait_method_gens_snapshot(ambiguous), "unbound_bound_parameter"))
+  assert(String::contains(trait_method_gens_snapshot(mismatched), "method_name_mismatch"))
+}
+
+test "canonical retained trait method generics observe checker registrations" {
+  let checked = check_program_result([
+    STrait(false, "Observed", array_empty(), [
+      ("map", [
+        TyName("T")
+      ], TyName("T"))
+    ], [
+      ("map", [
+        "T"
+      ], [
+        ("T", [
+          "Eq"
+        ])
+      ])
+    ], array_empty())
+  ])
+  let snapshot = trait_method_gens_snapshot(checked.final_env)
+  assert(String::contains(snapshot, "Observed"))
+  assert(String::contains(snapshot, "Eq"))
 }
 
 test "canonical typedef snapshot marks missing provenance" {
