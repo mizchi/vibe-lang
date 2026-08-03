@@ -6597,6 +6597,14 @@ scps_run_expect "effect_needing_value_escape_wrapped.vibe" "42" "valwrap"
 # hatch and mixes a perform with the call in one body.
 scps_run_expect "effect_needing_call_in_row_slot.vibe" "142" "callslot"
 scps_run_expect "effect_needing_call_in_row_slot_capture.vibe" "188" "callslotcap"
+# #1385: the same literal reached through an IIFE. dlh_hoist_expr only named
+# an IIFE'd literal when its body performed DIRECTLY, so one that discharges
+# the row by CALLING stayed anonymous -- and an opaque callee sinks the whole
+# effect's eligibility. The wrapper lane never types an IIFE: trivial-wrapper
+# inlining (#1070) makes one out of `apply0(lit)`, which is why only the
+# ZERO-argument slot was affected.
+scps_run_expect "effect_iife_needing_call.vibe" "142" "iifecall"
+scps_run_expect "effect_trivial_wrapper_needing_call.vibe" "142" "iifewrap"
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 

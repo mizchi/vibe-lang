@@ -1,0 +1,32 @@
+// #1385: a bare IIFE whose literal carries the row but discharges it by
+// CALLING a needing fn rather than performing directly.
+//
+// The IIFE normalization in dlh_hoist_expr (`(lit)()` -> `let f = lit  f()`)
+// used to fire only when the body performed DIRECTLY, so this literal kept
+// its anonymous shape -- and edp_has_unsafe_construct treats any call whose
+// callee is not a bare identifier as opaque, which sank the whole effect's
+// evidence migration into a hard error.
+//
+// Suspend(1) -> resume(42) -> 42 + 100.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+fn bump0() -> Int with { Async } {
+  let w = perform Async::Suspend(1)
+  w + 100
+}
+
+let _start = () -> Int {
+  handle {
+    (() -> Int with { Async } {
+      bump0()
+    })()
+  } with Async {
+    Suspend(t) => resume(t + 41)
+  }
+}
+_start()
+
+__DATA__
+{"last":"142"}
