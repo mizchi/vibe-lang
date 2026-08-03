@@ -6891,7 +6891,20 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
     // return type/declared row are untouched, only its body. A perform
     // of `ename` found inside resolves through `dict_pname` via ordinary
     // lexical capture from the enclosing scope.
-    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_rewrite_needing_body(body, ename, dict_pname, needing)),
+    //
+    // UNLESS the literal already carries its own dict param: the
+    // type-directed sweep (edp_sweep_row_lits_expr) runs first and gives
+    // every row-`ename` literal an `__ev_ename` of its OWN, rewriting the
+    // body against it. That param shadows the enclosing one, so the body
+    // is already complete -- walking in again would forward the dict a
+    // SECOND time at each needing call and hand the callee one argument
+    // too many. This is the `__ev_` first-param guard edp_rewrite_needing_fn
+    // already uses for the same reason, applied to the nested case.
+    EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, dict_pname) {
+      expr
+    } else {
+      EFn(tps, tbs, params, ret, eff, edp_rewrite_needing_body(body, ename, dict_pname, needing))
+    },
     // A nested EHandle for a DIFFERENT effect than `ename` is safe to
     // recurse into (edp_has_unsafe_construct already verified this, both
     // for its body and its arms -- see that function's doc comment); one
@@ -7097,7 +7110,20 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
     // AST substitution of the arm's prepared body, not a runtime
     // reference -- see edp_splice_perform -- so it's exactly as valid
     // wherever the closure ends up being called, sync or later).
-    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    //
+    // Same `__ev_` guard as there, and for the same reason: a literal the
+    // type-directed sweep already migrated takes its own dict param and
+    // forwards THAT at its needing calls, so prepending this handle's
+    // synthesized dict literal on top would pass one argument too many.
+    // Only visible when the literal CALLS a needing fn -- a body that just
+    // performs has no call left for this arm to prepend to, which is why
+    // the perform-only shape (effect_needing_value_annotated.vibe) always
+    // worked and the calling shape emitted an invalid module.
+    EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, edp_dict_param_name(ename)) {
+      expr
+    } else {
+      EFn(tps, tbs, params, ret, eff, edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    },
     // Same nested-EHandle handling as edp_rewrite_needing_body: recurse
     // into a DIFFERENT effect's nested handle (splicing any `perform
     // ename::Op` found inside it exactly like anywhere else in this
@@ -8088,9 +8114,25 @@ fn scps_ty_row(ty: Option[TypeExpr]) -> String {
 /// Is `v` an EFn literal already step-split for `eff` (its body mentions the
 /// generated step runtime for that effect)? The generated namespace is
 /// reserved (`__Scps`/`__scps_`), so a mention is unambiguous.
+///
+/// #1371: a CPS CLONE call counts too. A literal whose body is a bare TAIL
+/// call to a needing fn splits to the step PASSTHROUGH form
+/// (`__scps_cps_E_f(a)`, see scps_split_tail) -- it constructs no step of its
+/// own, so it mentions none of the other three names. Missing it here made
+/// the arg-position fixup in scps_prepass_expr split the literal a SECOND
+/// time, Done-wrapping a body that already returns a step: the task settled
+/// with the step OBJECT as its value (a heap pointer read back as the
+/// result) and the continuation was never resumed, so a `throw` past the
+/// first suspension never ran either. Both call sites that ask this question
+/// (the arg-position fixup and the let-bound cps-local rule) need the clone
+/// form to answer yes.
 fn scps_literal_is_step_for(v: Expr, eff: String) -> Bool {
   match v {
-    EFn(_, _, _, _, _, b) => scps_mentions_step(b, scps_done_name(eff), String::concat(scps_y_name(eff, ""), ""), scps_bubble_name(eff)),
+    EFn(_, _, _, _, _, b) => {
+      let dn = scps_done_name(eff)
+      let bn = scps_bubble_name(eff)
+      scps_mentions_step(b, dn, scps_y_name(eff, ""), bn) || scps_mentions_step(b, dn, scps_clone_name(eff, ""), bn)
+    },
     _ => false
   }
 }

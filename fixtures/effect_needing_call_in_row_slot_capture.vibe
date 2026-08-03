@@ -1,0 +1,40 @@
+// #1380 companion: the same double-prepend, with the two things that could
+// plausibly have rescued it removed.
+//
+// - the literal CAPTURES `k`, so dlh_hoist_expr cannot lift it to a
+//   top-level needing fn (passing an already-top-level needing fn by name
+//   is the shape that always worked -- it is never lexically inside the
+//   handle body, so the handle rewrite never reaches it)
+// - the literal both PERFORMS and CALLS, so the sweep's own perform
+//   rewrite and its needing-call forwarding have to coexist in one body
+//
+// 1 + 5 -> Suspend(6) -> resume(47) -> bump(47) -> Suspend(47)
+// -> resume(88) -> 88 + 100.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+fn bump(x: Int) -> Int with { Async } {
+  let w = perform Async::Suspend(x)
+  w + 100
+}
+
+fn apply1(f: (x: Int) -> Int with { Async }) -> Int with { Async } {
+  f(1)
+}
+
+let _start = () -> Int {
+  let k = 5
+  handle {
+    apply1((x: Int) -> Int with { Async } {
+      let y = perform Async::Suspend(x + k)
+      bump(y)
+    })
+  } with Async {
+    Suspend(t) => resume(t + 41)
+  }
+}
+_start()
+
+__DATA__
+{"last":"188"}

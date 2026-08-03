@@ -6552,6 +6552,14 @@ scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail 
 scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
 scps_run_expect "effect_needing_value_annotated.vibe" "42" "valann"
 scps_run_expect "effect_needing_value_escape_wrapped.vibe" "42" "valwrap"
+# #1380: the row-slot literal whose body CALLS a needing fn (rather than
+# performing inline). The type-directed sweep and the handle-site rewrite
+# each prepended an evidence dict to that call, so the callee got one
+# argument too many -- clean compile, module failed to instantiate.
+# The capture variant additionally blocks the hoist-to-top-level escape
+# hatch and mixes a perform with the call in one body.
+scps_run_expect "effect_needing_call_in_row_slot.vibe" "142" "callslot"
+scps_run_expect "effect_needing_call_in_row_slot_capture.vibe" "188" "callslotcap"
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 

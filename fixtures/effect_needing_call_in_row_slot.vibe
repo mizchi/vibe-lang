@@ -1,0 +1,38 @@
+// #1380: a closure literal in an E-row parameter slot whose body CALLS a
+// needing fn (rather than performing inline). The type-directed sweep gives
+// the literal its own `__ev_Async` and forwards it at the `bump` call; the
+// enclosing handle-site rewrite then walked back INTO the literal and
+// prepended its synthesized dict literal to that same call, so `bump` was
+// handed one argument too many. The module compiled clean and failed to
+// instantiate ("expected 1 elements on the stack for fallthru, found 2").
+//
+// Same program as effect_needing_value_annotated.vibe except that the
+// literal delegates to `bump` instead of performing inline -- which is why
+// that fixture always passed while this shape did not:
+// 1 -> Suspend(1) -> resume(42) -> 42 + 100.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+fn bump(x: Int) -> Int with { Async } {
+  let w = perform Async::Suspend(x)
+  w + 100
+}
+
+fn apply1(f: (x: Int) -> Int with { Async }) -> Int with { Async } {
+  f(1)
+}
+
+let _start = () -> Int {
+  handle {
+    apply1((x: Int) -> Int with { Async } {
+      bump(x)
+    })
+  } with Async {
+    Suspend(t) => resume(t + 41)
+  }
+}
+_start()
+
+__DATA__
+{"last":"142"}
