@@ -31,7 +31,7 @@ const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
 const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v2 canonical exported surface including trait-header and method-generic binders)";
 const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)";
-const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v2 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
+const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v3 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
 const expectedCorpus = new Map([
   ["no_op", { sourceChanged: [], implementationChanged: [], invalidated: [] }],

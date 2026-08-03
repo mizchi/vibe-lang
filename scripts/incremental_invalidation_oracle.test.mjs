@@ -25,7 +25,7 @@ const validTrace = {
       checked_env_fingerprint: "32:1:2",
       checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)",
       persistent_type_env_transport_fingerprint: "33:1:2",
-      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v2 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
+      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v3 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
       decision: "reused",
     },
   ],

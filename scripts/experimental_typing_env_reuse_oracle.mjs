@@ -71,7 +71,7 @@ function supertraitDependencyEdit(project) {
 
 function traitDependencyEdit(project) {
   // The app does not import the trait name. This independently proves that
-  // hidden method and concrete-impl changes invalidate the v2 transport key.
+  // hidden method and concrete-impl changes invalidate the v3 transport key.
   writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: Base { changed(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for String\nexport fn value() -> Int { 1 }\n");
 }
 
@@ -120,11 +120,11 @@ function parseSegment(text, start) {
 
 function appSidecar(cache, appSource) {
   const candidates = readdirSync(cache)
-    .filter((name) => name.startsWith("vibe_selfhost_typing_dependency_env_reuse_v2_"))
+    .filter((name) => name.startsWith("vibe_selfhost_typing_dependency_env_reuse_v3_"))
     .map((name) => join(cache, name));
   const path = candidates.find((candidate) => {
     const text = readFileSync(candidate, "utf8");
-    return text.startsWith("TDRE2") && text.includes(appSource);
+    return text.startsWith("TDRE3") && text.includes(appSource);
   });
   if (!path) fail(`non-vacuous app sidecar missing in ${basename(cache)}`);
   const text = readFileSync(path, "utf8");
@@ -157,9 +157,9 @@ function referencedAppTargetEnv(stage2, cache, target) {
   const stageSource = readFileSync(join(dirname(stage2), "cli_adapter_module_source.vibe"), "utf8");
   const codegen = stageSource.match(/codegen_fingerprint[\s\S]{0,200}?"([0-9a-f]{16})"/)?.[1];
   if (!codegen) fail("could not read stage compiler codegen fingerprint");
-  const version = `v15|cg-${codegen}`;
+  const version = `v16|cg-${codegen}`;
   const token = compactFingerprint(`persistent-cache-${version}|${target}`).replaceAll(":", "_");
-  const path = join(cache, `vibe_selfhost_type_env_v2_${token}.tsv`);
+  const path = join(cache, `vibe_selfhost_type_env_v3_${token}.tsv`);
   try { readFileSync(path, "utf8"); }
   catch { fail("referenced app TypeEnv missing before corruption"); }
   return path;
@@ -229,7 +229,7 @@ function run(stage2) {
     makeProject(malformedProject);
     check(stage2, malformedProject, malformedCache, true, "malformed-target-cold");
     const malformedSidecar = appSidecar(malformedCache, readFileSync(join(malformedProject, "app.vibe"), "utf8"));
-    writeFileSync(referencedAppTargetEnv(stage2, malformedCache, malformedSidecar.target), "version\t2\nenv\t");
+    writeFileSync(referencedAppTargetEnv(stage2, malformedCache, malformedSidecar.target), "version\t3\nenv\t");
     privateEdit(malformedProject);
     const malformedTargetFallback = check(stage2, malformedProject, malformedCache, true, "malformed-target-fallback");
     expectCounts("malformed referenced target fallback", malformedTargetFallback.telemetry, 2, 0);
@@ -249,7 +249,7 @@ function run(stage2) {
     makeProject(staleProject);
     check(stage2, staleProject, staleCache, true, "stale-target-cold");
     const staleSidecar = appSidecar(staleCache, readFileSync(join(staleProject, "app.vibe"), "utf8"));
-    writeFileSync(staleSidecar.path, `TDRE2${segment(staleSidecar.input)}${segment("stale-conservative-target")}`);
+    writeFileSync(staleSidecar.path, `TDRE3${segment(staleSidecar.input)}${segment("stale-conservative-target")}`);
     privateEdit(staleProject);
     const staleTargetFallback = check(stage2, staleProject, staleCache, true, "stale-target-fallback");
     expectCounts("stale referenced target fallback", staleTargetFallback.telemetry, 2, 0);

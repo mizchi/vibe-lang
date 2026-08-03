@@ -502,9 +502,9 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = [
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// This opt-in aliases only an exact v2 decoded TypeEnv when every direct
+// This opt-in aliases only an exact v3 decoded TypeEnv when every direct
 // dependency transport environment is unchanged. It is not a CheckedProgram
-// or typed-IR transport; v2 retains the TypeEnv trait/impl chain only.
+// or typed-IR transport; v3 retains the TypeEnv trait/impl chain only.
 let experimental_typing_dependency_env_reuse_enabled_cell = array_empty()
 
 export fn set_experimental_typing_dependency_env_reuse_enabled(enabled: Bool) -> Unit {
@@ -1304,7 +1304,7 @@ fn incremental_checked_env_identity(env: TypeEnv) -> String with { Error } {
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
-/// A trace-only observation of the complete persistent TypeEnv v2 transport.
+/// A trace-only observation of the complete persistent TypeEnv v3 transport.
 /// The canonical cache-text bytes are the sole input. This is not a
 /// CheckedProgram, typed IR, exported interface, cache key, or reuse decision.
 fn incremental_persistent_type_env_transport_identity(env: TypeEnv) -> String {
@@ -1358,7 +1358,7 @@ fn incremental_trace_json_string(text: String) -> String {
 /// provisional canonical token-stream identity, not normalized typed IR.
 /// `checked_env_fingerprint` is a complete value-environment observation.
 /// `persistent_type_env_transport_fingerprint` observes only the complete
-/// persistent TypeEnv v2 transport, not a CheckedProgram, typed IR, exported
+/// persistent TypeEnv v3 transport, not a CheckedProgram, typed IR, exported
 /// interface, cache key, or reuse decision. `decision` records what this current TypeDb
 /// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
@@ -1423,7 +1423,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete persistent TypeEnv transport observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(persistent_type_env_transport_fingerprint))
-    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v2 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
+    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v3 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1
@@ -1551,27 +1551,27 @@ let parse_memo_paths: Array[String] = [
   Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
 }
 
-// The sidecar wire format is intentionally independent from the TypeEnv v2
-// envelope: `TDRE2` followed by two strict decimal length-delimited strings
+// The sidecar wire format is intentionally independent from the TypeEnv v3
+// envelope: `TDRE3` followed by two strict decimal length-delimited strings
 // (typing-input key, target conservative fingerprint). It is an alias to an
 // existing artifact, never a CheckedProgram or typed-IR transport.
 //
 // TDRE eligibility is a separate, versioned witness keyed by the ordinary
-// conservative module fingerprint. The v2 transport is complete for TypeEnv
+// conservative module fingerprint. The v3 transport is complete for TypeEnv
 // variants, including trait/impl state, so source exclusion is no longer
 // necessary; publication still requires an already validated witness chain.
-let typing_dependency_env_reuse_eligibility_v2_text = "TDRE-ELIGIBILITY-2"
+let typing_dependency_env_reuse_eligibility_v3_text = "TDRE-ELIGIBILITY-3"
 
 fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with { Fs } {
   let marker_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
   if Fs::exists(marker_path) {
-    Fs::read_file(marker_path) == typing_dependency_env_reuse_eligibility_v2_text
+    Fs::read_file(marker_path) == typing_dependency_env_reuse_eligibility_v3_text
   } else {
     false
   }
 }
 
-/// Eligibility is transitively witnessed by successful v2 TypeEnv commits.
+/// Eligibility is transitively witnessed by successful v3 TypeEnv commits.
 /// The input key below fingerprints those complete direct dependency transports,
 /// including trait definitions and impls; an absent/malformed witness fails
 /// closed before any alias lookup.
@@ -1591,7 +1591,7 @@ fn typing_dependency_env_reuse_is_eligible(_path: String, _source: String, dep_f
 }
 
 fn publish_typing_dependency_env_reuse_eligibility(fingerprint: String) -> Unit with { Fs } {
-  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), typing_dependency_env_reuse_eligibility_v2_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), typing_dependency_env_reuse_eligibility_v3_text)
 }
 
 fn typing_reuse_segment(text: String) -> String {
@@ -1629,7 +1629,7 @@ fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
 
 fn typing_dependency_transport_input_key(source: String, deps: Array[String], env_cache: Array[(String, TypeEnv)]) -> Option[String] {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v2")
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v3")
   StringBuilder::push(out, typing_reuse_segment(source))
   StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(deps))))
   let mut i = 0
@@ -1638,8 +1638,8 @@ fn typing_dependency_transport_input_key(source: String, deps: Array[String], en
     let dep_path = Array::get(deps, i)
     match lookup_env_cache(env_cache, dep_path) {
       Some(dep_env) => {
-        // This is the exact complete TypeEnv v2 text transported through
-        // persistent_env_codec, not the trace-only module-interface:v1 value.
+        // This is the exact complete TypeEnv v3 text transported through
+        // persistent_env_codec, not the trace-only module-interface:v2 value.
         let transport_env_fingerprint = compact_string_fingerprint(persistent_type_env_cache_text(dep_env))
         StringBuilder::push(out, typing_reuse_segment(dep_path))
         StringBuilder::push(out, typing_reuse_segment(transport_env_fingerprint))
@@ -1658,11 +1658,11 @@ fn typing_dependency_transport_input_key(source: String, deps: Array[String], en
 }
 
 fn typing_dependency_env_reuse_sidecar_text(input_key: String, target_fingerprint: String) -> String {
-  String::concat("TDRE2", String::concat(typing_reuse_segment(input_key), typing_reuse_segment(target_fingerprint)))
+  String::concat("TDRE3", String::concat(typing_reuse_segment(input_key), typing_reuse_segment(target_fingerprint)))
 }
 
 fn parse_typing_dependency_env_reuse_sidecar(text: String, expected_input_key: String) -> Option[String] {
-  if !String::starts_with(text, "TDRE2") {
+  if !String::starts_with(text, "TDRE3") {
     None
   } else {
     match parse_typing_reuse_segment(text, 5) {
@@ -2023,7 +2023,7 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
   // The final strings are trace-only interface, checked-value-env, and
-  // complete persistent TypeEnv v2 transport identities. They are computed
+  // complete persistent TypeEnv v3 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
   // inputs, and are empty unless the invalidation trace is enabled.
   Checked(String, String, TypeEnv, String, String, String);
@@ -2090,7 +2090,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       // The TypeEnv commit comes first. Every direct conservative dependency
       // marker must already be validated before this module may publish its
       // witness and alias; each dependency witness was itself published under
-      // that rule, establishing the transitive v2 TypeEnv commit chain.
+      // that rule, establishing the transitive v3 TypeEnv commit chain.
       if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(path, job.source, job.dep_fps) {
         publish_typing_dependency_env_reuse_eligibility(fingerprint)
         write_typing_dependency_env_reuse_sidecar(job.source, job.deps, job.dep_envs, fingerprint)
