@@ -26,11 +26,12 @@ const telemetryKeys = [
   "parse_operations",
   "modules_failed_or_blocked",
 ];
-const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint and checked_env_fingerprint are observation only; none is a production cache key";
+const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key";
 const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
 const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)";
 const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)";
+const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v2 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
 const expectedCorpus = new Map([
   ["no_op", { sourceChanged: [], implementationChanged: [], invalidated: [] }],
@@ -64,7 +65,7 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
   }
   if (!trace || typeof trace !== "object" || Array.isArray(trace)) fail("expected object");
   exactKeys(trace, ["schema", "run_nonce", "fingerprint_note", "modules", "aggregate_telemetry"], "trace");
-  if (trace.schema !== 4) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
+  if (trace.schema !== 5) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
   if (typeof trace.run_nonce !== "string" || trace.run_nonce.length === 0) fail("missing run_nonce");
   if (expectedNonce !== undefined && trace.run_nonce !== expectedNonce) fail("run_nonce mismatch (stale sidecar)");
   if (trace.fingerprint_note !== fingerprintNote) fail("dishonest fingerprint_note");
@@ -76,7 +77,8 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
     exactKeys(module, [
       "path", "direct_dependencies", "source_fingerprint", "source_fingerprint_kind",
       "implementation_fingerprint", "implementation_fingerprint_kind", "interface_fingerprint",
-      "interface_fingerprint_kind", "checked_env_fingerprint", "checked_env_fingerprint_kind", "decision",
+      "interface_fingerprint_kind", "checked_env_fingerprint", "checked_env_fingerprint_kind",
+      "persistent_type_env_transport_fingerprint", "persistent_type_env_transport_fingerprint_kind", "decision",
     ], `module row`);
     if (typeof module.path !== "string" || module.path.length === 0 || paths.has(module.path)) fail("invalid or duplicate module path");
     paths.add(module.path);
@@ -91,6 +93,8 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
     if (module.interface_fingerprint_kind !== interfaceFingerprintKind) fail(`dishonest interface fingerprint kind for ${module.path}`);
     if (typeof module.checked_env_fingerprint !== "string" || module.checked_env_fingerprint.length === 0) fail(`missing checked environment fingerprint for ${module.path}`);
     if (module.checked_env_fingerprint_kind !== checkedEnvFingerprintKind) fail(`dishonest checked environment fingerprint kind for ${module.path}`);
+    if (typeof module.persistent_type_env_transport_fingerprint !== "string" || module.persistent_type_env_transport_fingerprint.length === 0) fail(`missing persistent TypeEnv transport fingerprint for ${module.path}`);
+    if (module.persistent_type_env_transport_fingerprint_kind !== persistentTypeEnvTransportFingerprintKind) fail(`dishonest persistent TypeEnv transport fingerprint kind for ${module.path}`);
     if (module.decision !== "rechecked" && module.decision !== "reused") fail(`invalid current decision for ${module.path}`);
     decisions.set(module.path, module.decision);
   }
@@ -140,7 +144,8 @@ export function compareSuccessfulIncrementalInvalidationTraces(expected, actual)
   const moduleFields = [
     "path", "source_fingerprint", "source_fingerprint_kind",
     "implementation_fingerprint", "implementation_fingerprint_kind", "interface_fingerprint",
-    "interface_fingerprint_kind", "checked_env_fingerprint", "checked_env_fingerprint_kind", "decision",
+    "interface_fingerprint_kind", "checked_env_fingerprint", "checked_env_fingerprint_kind",
+    "persistent_type_env_transport_fingerprint", "persistent_type_env_transport_fingerprint_kind", "decision",
   ];
   for (let index = 0; index < expected.modules.length; index += 1) {
     const left = expected.modules[index];
@@ -187,6 +192,11 @@ function checkedEnvOwnersChanged(before, after) {
   return after.modules.filter((module) => prior.get(module.path) !== module.checked_env_fingerprint).map((module) => basename(module.path).replace(/\.vibe$/, ""));
 }
 
+function persistentTypeEnvTransportOwnersChanged(before, after) {
+  const prior = new Map(before.modules.map((module) => [module.path, module.persistent_type_env_transport_fingerprint]));
+  return after.modules.filter((module) => prior.get(module.path) !== module.persistent_type_env_transport_fingerprint).map((module) => basename(module.path).replace(/\.vibe$/, ""));
+}
+
 /// Clean snapshots must reproduce every semantic observation for the same
 /// sources. Decisions intentionally remain excluded: clean runs necessarily
 /// recheck while a warm TypeDb may reuse.
@@ -196,7 +206,7 @@ function compareCleanSnapshotObservations(name, warm, clean) {
   for (const warmModule of warm.modules) {
     const cleanModule = cleanByPath.get(warmModule.path);
     if (!cleanModule) fail(`${name} clean snapshot missing module ${warmModule.path}`);
-    for (const field of ["source_fingerprint", "implementation_fingerprint", "interface_fingerprint", "checked_env_fingerprint"]) {
+    for (const field of ["source_fingerprint", "implementation_fingerprint", "interface_fingerprint", "checked_env_fingerprint", "persistent_type_env_transport_fingerprint"]) {
       if (warmModule[field] !== cleanModule[field]) fail(`${name} clean/warm ${field} mismatch for ${warmModule.path}`);
     }
   }
@@ -424,11 +434,13 @@ function run(stage2) {
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Eq] Eq for Option[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const implBoundEq = check("impl_bound_eq");
     if (implementationOwnersChanged(traitBoundEq, implBoundEq).join(",") !== "library") fail("impl generic bound addition did not change token-stream implementation identity");
-    if (interfaceOwnersChanged(traitBoundEq, implBoundEq).length !== 0) fail("non-exported impl addition changed the exported interface identity");
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Show] Eq for Option[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const implBoundShow = check("impl_bound_show");
     if (implementationOwnersChanged(implBoundEq, implBoundShow).join(",") !== "library") fail("impl generic bound edit did not change token-stream implementation identity");
-    if (interfaceOwnersChanged(implBoundEq, implBoundShow).length !== 0) fail("non-exported impl bound edit changed the exported interface identity");
+    if (checkedEnvOwnersChanged(implBoundEq, implBoundShow).length !== 0) fail("impl-bound edit changed the value-only checked environment identity");
+    if (persistentTypeEnvTransportOwnersChanged(implBoundEq, implBoundShow).join(",") !== "library") {
+      fail("impl-bound edit did not change the complete persistent TypeEnv transport identity")
+    }
 
     writeFileSync(join(project, "app.vibe"), "import ./base.vibe { base_value }\nimport ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\nbase_value(0) }\n");
     const planEdit = check("dependency_plan_edit");
@@ -454,7 +466,7 @@ function run(stage2) {
     // rechecks. This is the intended conservative-over-invalidation record.
     const currentPrivateRechecks = privateEdit.modules.filter((module) => module.decision === "rechecked").map((module) => module.path.replace(/\.vibe$/, ""));
     console.log(JSON.stringify({
-      schema: 4,
+      schema: 5,
       scenario: "three-module-incremental-invalidation",
       model_private_body_typing_invalidated: ["library"],
       current_private_body_rechecked: currentPrivateRechecks,
