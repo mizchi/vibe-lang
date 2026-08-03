@@ -1455,16 +1455,16 @@ fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
 ///
 /// #1324 EXCEPTION (still Result-returning): every function on the
 /// SUSPEND lane (`send_wait` / `conc_send_wait_consumed` /
-/// `TaskHandle::result_wait`) keeps its `Result` return until the
-/// ADR-0076 suspend lowering propagates a `throw` correctly. A `throw`
-/// executed inside a CPS-split (suspend-lowered) callee today does NOT
-/// abort the task: the split body yields a garbage value to its caller
-/// instead. Verified on `main` (before any #1324 change) with a
-/// `spawn_suspend` body calling `fn pw(x) -> Int with { Error, Async } {
-/// perform Async::Suspend(0); throw(Failed("boom")) }` -- the group
-/// closed successfully and `join` returned 699. Migrating these three to
-/// `Exception[E]` would therefore turn "closed channel" / "cancelled
-/// sibling" from an observable outcome into silent corruption.
+/// `TaskHandle::result_wait`) still returns `Result`. The blocker that
+/// forced that -- a `throw` inside a CPS-split callee never running,
+/// because the task settled with the step object as its value and the
+/// continuation was never resumed -- is FIXED (#1371, pinned by
+/// suspend_test.vibe's "CPS-split callee results" section). Migrating
+/// these three to `Exception[E]` is now a plain #1324 slice rather than
+/// something blocked on the lowering; it is not done here because these
+/// carry ENUM payloads (`Closed`, `Cancelled`), which the erased
+/// `with Error` handler in the task runner still reads as a String
+/// (#1374).
 export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { Async } {
   let c = s.ch
   if chan_closed(c) {

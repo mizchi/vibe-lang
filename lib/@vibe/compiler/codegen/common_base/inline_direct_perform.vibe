@@ -8088,9 +8088,25 @@ fn scps_ty_row(ty: Option[TypeExpr]) -> String {
 /// Is `v` an EFn literal already step-split for `eff` (its body mentions the
 /// generated step runtime for that effect)? The generated namespace is
 /// reserved (`__Scps`/`__scps_`), so a mention is unambiguous.
+///
+/// #1371: a CPS CLONE call counts too. A literal whose body is a bare TAIL
+/// call to a needing fn splits to the step PASSTHROUGH form
+/// (`__scps_cps_E_f(a)`, see scps_split_tail) -- it constructs no step of its
+/// own, so it mentions none of the other three names. Missing it here made
+/// the arg-position fixup in scps_prepass_expr split the literal a SECOND
+/// time, Done-wrapping a body that already returns a step: the task settled
+/// with the step OBJECT as its value (a heap pointer read back as the
+/// result) and the continuation was never resumed, so a `throw` past the
+/// first suspension never ran either. Both call sites that ask this question
+/// (the arg-position fixup and the let-bound cps-local rule) need the clone
+/// form to answer yes.
 fn scps_literal_is_step_for(v: Expr, eff: String) -> Bool {
   match v {
-    EFn(_, _, _, _, _, b) => scps_mentions_step(b, scps_done_name(eff), String::concat(scps_y_name(eff, ""), ""), scps_bubble_name(eff)),
+    EFn(_, _, _, _, _, b) => {
+      let dn = scps_done_name(eff)
+      let bn = scps_bubble_name(eff)
+      scps_mentions_step(b, dn, scps_y_name(eff, ""), bn) || scps_mentions_step(b, dn, scps_clone_name(eff, ""), bn)
+    },
     _ => false
   }
 }

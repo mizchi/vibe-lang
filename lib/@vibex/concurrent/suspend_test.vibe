@@ -876,3 +876,105 @@ test "resolve direct-wakes several awaiters of one pending future" {
   })
   assert_eq(out, 36)
 }
+
+//# CPS-split callee results (#1371)
+
+/// A NEEDING function: its row carries Async, so the suspend lowering
+/// compiles a CPS CLONE of it and the call site consumes the clone's steps
+/// instead of calling it directly.
+fn needing_value(x: Int) -> Int with { Async } {
+  let _w = perform Async::Suspend(0)
+  x + 111
+}
+
+/// Two suspension points and work on both sides of them, so the clone has
+/// three steps and real state to carry across each one.
+fn needing_two_steps(x: Int) -> Int with { Async } {
+  let a = x + 1
+  let _w1 = perform Async::Suspend(0)
+  let _w2 = perform Async::Suspend(0)
+  a + 100
+}
+
+/// #1371's headline shape: a `throw` on the FAR SIDE of a suspension point,
+/// inside a needing fn rather than in the task body itself.
+fn needing_throws(x: Int) -> Int with { Async, Error } {
+  let _w = perform Async::Suspend(0)
+  if x > 0 {
+    throw("boom")
+  } else {
+    x
+  }
+}
+
+/// #1371: a needing call in TAIL position of a spawn_suspend body splits to
+/// the step PASSTHROUGH form -- the literal returns the CLONE's step and
+/// builds none of its own. scps_literal_is_step_for did not recognize that
+/// as already-split, so the arg-position fixup Done-wrapped it a second
+/// time and the task settled with the step OBJECT (a heap pointer) as its
+/// value. The task looked like it had SUCCEEDED, so nothing surfaced.
+test "a needing callee in tail position returns its value" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      needing_value(0)
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h)
+  })
+  assert_eq(out, 111)
+}
+
+/// The non-tail counterpart, which went through the bubble combinator and
+/// was always correct. Kept beside the tail case so a future change that
+/// breaks only one of the two spines is visibly asymmetric.
+test "a needing callee in non-tail position returns its value" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let v = needing_value(0)
+      v + 1000
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h)
+  })
+  assert_eq(out, 1111)
+}
+
+/// Same tail shape across TWO suspensions: the double-split defect made the
+/// continuation unreachable, so this leg never ran past the first one.
+test "a two-step needing callee in tail position runs to completion" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      needing_two_steps(0)
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h)
+  })
+  assert_eq(out, 101)
+}
+
+/// #1371 as reported: because the continuation was never resumed, a `throw`
+/// past the first suspension in a CPS-split callee never executed at all --
+/// the task settled "successfully" with a garbage value instead of failing.
+/// The payload is a String on purpose: an enum payload would also exercise
+/// the erased-handler kind confusion (#1374), which is a separate defect.
+test "a throw past the first suspension in a needing callee fails the task" {
+  let out = handle {
+    TaskGroup::run((g) -> {
+      let h = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+        needing_throws(1)
+      })
+      TaskGroup::pump_all(g)
+      TaskHandle::join(h)
+    })
+  } with Exception[TaskError] {
+    Throw(err) => match err {
+      TaskError::Failed(m) => if m == "boom" {
+        1
+      } else {
+        0 - 1
+      },
+      _ => 0 - 2
+    }
+  }
+  assert_eq(out, 1)
+}
