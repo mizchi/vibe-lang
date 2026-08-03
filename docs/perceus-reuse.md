@@ -412,3 +412,48 @@ poison 方式を入れた (サイズは 2^30 に遠く届かないので追加�
 free push で立て、alloc の払い出しで落とし、`__rt_rc_drop` の入口で
 立っていたら `unreachable`。bin 払い出し時に `size == 要求 sz` も検査する。
 
+### 落とし穴: **source 側の runtime 計装は crash する binary に入らない**
+
+**落ちるのは stage1 で、stage1 の runtime helper は seed が出力したもの。**
+`lib/@vibe/compiler/codegen/builtin_bodies/` を書き換えても、それが効くのは
+「stage1 が stage2 へ**出力する** runtime」であって、**stage1 自身の
+`__rt_rc_alloc` / `__rt_rc_drop` は seed のまま**である。
+
+これを踏み外して3ラウンド無駄にした。`VIBE_RC=1 generations.sh build` を
+poison 版 / poison v2 版 / quarantine 版の tree で回して、いずれも
+「トラップせず元と同じ `__rt_rc_alloc` の範囲外アクセスで落ちた」ため
+「二重 free ではない」「再利用は無関係」と読んだが、**そもそも計装が
+入っていない binary が落ちていた**だけで、これらの結論は支持されない。
+撤回する。crash 位置が 757000688 → 757657136 → 757724408 と少しずつ
+動いたのは計装の効果ではなく、compiler source が変われば stage1 の挙動と
+出力量が変わるため。
+
+**計装を crash する binary に入れる唯一の方法は、seed 以外のコンパイラで
+stage1 を作ること。** それを試したのが下の切り分けで、結果は「現行
+コンパイラで作った RC stage1 は落ちない」だった。
+
+### 切り分け: seed 固有か、現行 codegen の生きたバグか
+
+| stage1 を作ったコンパイラ | stage1 の dup guard | サイズ | flat source をコンパイル |
+| --- | --- | --- | --- |
+| **seed** (`bootstrap/seed/compiler.wasm`) | inline (seed に `__rt_rc_dup` はない) | 6,332,395 | **OOB で落ちる** |
+| 現行 source からビルドした bump コンパイラ | out-line | 2,896,884 | **通る** |
+
+ここから2つ言える:
+
+1. **落ちる binary に out-line された dup は1つも入っていない。** seed は
+   `__rt_rc_dup` を持たないので、out-line 化がどれだけ source に入って
+   いても seed の出力は inline guard のままである (6.3MB という
+   サイズがその証拠)。out-line 化そのものが crash するコードに存在しない
+   以上、out-line の意味論は原因ではありえない。source 変更が stage1 に
+   与える影響は「seed がコンパイルする source の形」だけで、これは
+   bisect が「単一 site ではなく累積的」と出したことと整合する。
+
+2. 同じ source を現行 codegen で RC コンパイルすると**動く stage1 が
+   できる**。つまり疑うべきは pin されている seed の codegen/perceus で
+   あって、現行 source ではない。残る確認は「un-instrumented な full
+   out-line source で同じ対比を取る」(上の「通る」側は poison 計装入りの
+   source でビルドしたもの)。ここが確認できれば、対処は
+   [bootstrap.md](bootstrap.md) の bootstrap bump (seed を現行ビルドで
+   貼り替える) になる。
+
