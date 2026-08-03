@@ -239,3 +239,276 @@ drop specialization (PR #1274) が inline 化して size を +14% 悪化させ�
 | 実装観測 | self-build gate が VIBE_RC=0 に pin(性能) | 成功指標 2 で pin 解除を出口条件にする |
 | 優先度 | 表面構文なし・bootstrap 不要・全コードに即効・zero_alloc の前提 | region/zero_alloc より先に実装する(本 ADR の主決定) |
 | 回帰ガード | 出力 byte 同一 gate、shadow lane、rc_reuse fixture、B/op tracked series | Phase 1 から固定 |
+
+## Implementation notes (2026-08-03, #1262) — dup guard の out-line 化 (未完)
+
+### 測定: RC の size overhead の 86% は inline dup guard 1 箇所
+
+RC stage2 のバイナリを直接読んで数えた (bump 側は同パターン 0 個なので
+判別子として完全):
+
+| | |
+| --- | --- |
+| inline dup guard | **52,479 sites** |
+| 1 site あたり | **きっかり 72 B** (2000 サンプルで min == max) |
+| 合計 | 3.78 MB |
+| RC の size overhead 実測 | 4.37 MB |
+| **dup guard がその** | **86%** |
+
+形状モデルは実測で裏取り済み (guard あたり `push_addr` 3.00 個、
+saturating check 1.00 個)。
+
+### 実装と実測 (out-line 版は動く)
+
+runtime helper `__rt_rc_dup` を追加し各 site を `local.get v; call` の
+~5 B にする。helper 本体は `emit_rc_dup_inline` をそのまま呼ぶので inline
+形と意味論がずれない。
+
+| | size | |
+| --- | --- | --- |
+| bump stage2 | 1,841,905 B | — |
+| rc stage2 (inline) | 6,213,090 B | 3.37x |
+| rc stage2 (**out-line**) | **2,644,637 B** | **1.44x** (−57.4%) |
+
+この out-line 版 RC コンパイラは実際に動く (tiny を compile+run して 42、
+compiler source 全体の RC コンパイルも通る)。
+
+### 未解決: all-RC bootstrap だけが落ちる
+
+`VIBE_RC=1 scripts/generations.sh build` が stage1 → stage2 で
+`memory access out of bounds`。**潰した仮説**: borrow 推論との相互作用
+(OFF でも同じ) / seed の source 誤コンパイル (出力を inline に戻すと通る)
+/ EIf MIN-merge の分岐非対称 #705 (対称化しても変わらず) / stage1 が壊れて
+いる (小入力なら正常) / メモリ上限。
+
+**最後のが一番情報量が大きい**。同じ入力を同じフラグで両 stage1 に
+食わせると:
+
+```
+probe_inline stage1 : 成功。peak 19,746 pages (1.29 GB) / heap_ptr 924MB / 出力 5,436,015 B
+dup_rc2 stage1      : OOB。 memory_size 13,164 pages (862 MB) / heap_ptr 757MB
+```
+
+**通る方は 19,746 pages まで伸びているので 13,164 pages は上限ではない** —
+落ちる方は伸ばさずに現在サイズの外へアクセスしている。両者は
+「1 dup site あたり 72 B 出すか 5 B 出すか」だけが違い、出力量が 5.4MB と
+~2.6MB で変わるので確保パターンが変わる。#1262 が4ラウンド繰り返した
+「set membership shuffles latent imbalances」と同型で、**既存の
+allocator/RC の潜在不整合を本変更が可視化しているだけの可能性がある**。
+
+trace は生成 helper 帯の低番号: `function[63] <- [22] <- [1937] <- [1996]
+<- [1997] <- [2582] <- [3316]`。
+
+### bisect 結果: 犯人は `compile_expr_tail.vibe` の 9 サイト
+
+まず **main を `VIBE_WASM_NAMES=1` 付きで all-RC ビルドすると通る**ことを確認した
+(names は出力サイズを大きく変える)。よって「出力サイズが変わると壊れる main 側の
+潜在バグ」ではなく、本変更由来であることが確定。
+
+そのうえで call 形を残すファイルを1つずつ変えて all-RC bootstrap を回した
+(それ以外の site は `-1` を渡して inline 形へ戻す):
+
+| ファイル | site 数 | all-RC bootstrap |
+| --- | --- | --- |
+| `codegen/wasi/linked_compile.vibe` | 4 | PASS |
+| `codegen/expr/compile_call.vibe` | 7 | PASS |
+| `codegen/expr/compile_match.vibe` | 6 | PASS |
+| `codegen/expr/compile_lambda.vibe` | 4 | PASS |
+| `codegen/expr/compile_expr_tail2.vibe` | 2 | PASS |
+| `codegen/expr/compile_expr_tail4.vibe` | 1 | PASS |
+| `codegen/expr/compile_expr_tail6.vibe` | 1 | PASS |
+| **`codegen/expr/compile_expr_tail.vibe`** | **9** | **FAIL** |
+
+**さらに 1 行単位で二分したところ、単一の犯人は存在しなかった**:
+
+| compile_expr_tail.vibe で call 形を残した site | all-RC bootstrap |
+| --- | --- |
+| 920 / 977 / 1267 / 1377 (前半4) | PASS |
+| 1591 / 1604 / 1645 / 1666 / 1714 (後半5) | PASS |
+| 1591 / 1604 のみ | PASS |
+| 1645 のみ | PASS |
+| 1666 のみ | PASS |
+| 1714 のみ | PASS |
+| **9 site 全部** | **FAIL** |
+
+**前半だけでも後半だけでも通り、両方揃ったときだけ落ちる。** 個々の site の
+意味論の問題ではなく、out-line された dup の総数がある閾値を越えて確保
+パターンが変わったときに初めて表面化する、**累積的**な事象である。
+
+**同じ helper (`__rt_rc_dup`) を同じ形で呼んでいるのに、この 1 ファイルの site
+だけが壊す。** つまり helper 本体でも call 形そのものでもなく、この 9 site の
+どれかが置かれている文脈(ELet の scope-end drop / borrow-ret / loop-borrow
+まわり)と call 形の組み合わせが問題。したがって **out-line 化そのものは健全**と考えるのが妥当:
+各 site は単独では正しく、helper は inline emitter の再利用で意味論が同一、
+小規模では compile+run が通り、compiler source 全体の RC コンパイルも通る。
+落ちるのは「十分な数の dup を out-line したときの確保パターン」でだけ。
+
+つまりこれは #1262 が4ラウンド繰り返した *set membership shuffles latent
+imbalances* と同型で、**既存の潜在的な RC/allocator 不整合を本変更が
+可視化している**という読みが最も整合的。次の作業は「out-line を直す」では
+なく「その潜在不整合を見つける」であり、#1262 とは独立に価値がある
+(見つかれば main のバグ)。ただし `main` を `VIBE_WASM_NAMES=1` で
+all-RC ビルドしても再現しないので、出力サイズ変化だけでは引き出せない —
+dup の配置そのものが効いている。
+
+なお crash は `__rt_rc_alloc` ← `__rt_arr_new` ← `lc_fresh_int_array` で、
+heap に 105MB の余裕がある状態で起きる = free list の壊れた next を辿っている。
+`VIBE_RC=shadow` では checker の `expr_children` で落ちる(設定で場所が変わる =
+ヒープ破壊の典型)。size bins を無効化しても再現するので bin ロジックでもない。
+
+次の一手は [selfhost-miscompile-bisect](../.claude/skills/selfhost-miscompile-bisect)
+の probe entry + phase 二分。最小差分ペア (`emit_rc_dup_guarded` が
+どちらの分岐を取るかだけが違う stage1 が2つ) が手元にある。
+
+## Implementation notes (2026-08-03 続き, #1262) — blocker 追跡の前提の訂正
+
+### bisect harness の sed 残骸が生成物として commit されていた
+
+`bisect_sites.sh` / `bisect_lines.sh` は sed で call site を `-1` に潰し、
+`resolve_generated_conflicts.sh --regen` で生成物を作り直してからビルドし、
+最後に `git checkout -- lib/@vibe/compiler` で戻す。この戻しが効かないまま
+commit した結果、**手書き source と生成物が食い違う commit が2つできていた**:
+
+| commit | 手書き source の call site | committed `_cli_adapter_module_source.vibe` |
+| --- | --- | --- |
+| `84b771ed` / `24cb1afa` / `97c7b559` | 30 | 30 (一致) |
+| `b1976ce3` | 30 | **9** (= onlyTail 構成 = FAIL 既知) |
+| `334f924a` | 30 | **5** (= bl_half2 構成 = PASS 既知) |
+
+生成物は committed source の決定的関数で、`generations.sh` は
+`VIBE_REGEN_MODULE_SOURCE=1` がなければ committed 版をそのまま使う。よって
+`334f924a` から `VIBE_RC=1 scripts/generations.sh build` を回すと full
+out-line ではなく **bl_half2 構成がビルドされ、通ってしまう**。blocker が
+消えたように見える。実際そう見えた (`_build/repro_head` = exit 0)。
+
+再生成して 30 site に戻した (`d9588da9`、bundles は `97c7b559` と byte 一致)
+うえで回すと **同じ crash が同じ heap_ptr=757000688 で再現**する。
+`84b771ed`〜`97c7b559` は生成物が一致していたので、**前節の bisect 表と
+「潰した仮説」は有効**。
+
+`pkf run test` の `scripts/check_module_source_sync.sh` はこの食い違いを
+検出する gate だが、この WIP 群は gate を通していなかった。**探索用に
+source を機械的に書き換える harness を使うときは、commit 前に必ず
+`pkf run test` か最低でも `check_module_source_sync.sh` を通すこと。**
+
+### `VIBE_RC=shadow` は selfcompile 規模では使えない (heap と shadow 表が重なる)
+
+#715 recurrence guard は「1 heap address = 1 byte」の liveness 表を
+`rc_shadow_base()` = **256 MB** 固定に置く。`rc_shadow_reserve()` は
+memory section の最小ページ数を増やすだけで、**heap の開始位置も上限も
+動かさない**。heap は 0 付近から上へ伸びるので、**heap が 256 MB を超えた
+瞬間から bump pointer が shadow 表そのものを踏む**。
+
+selfcompile の heap は実測 924 MB (通る側の probe) まで伸びるので、
+shadow モードは必ずこの状態に入る。実際 shadow 実行のクラッシュは
+`heap_ptr=268501644 (0x1001028c)` — `rc_shadow_base()` = `0x10000000` の
+**66 KB 先**で、落ちる場所も checker の `expr_children` (guard ではない
+普通の関数) だった。これは「設定で場所が変わる = ヒープ破壊の典型」では
+なく、**shadow 機構自身がヒープを壊していた**。
+
+したがって #715 guard は今回の diagnosis に使えない。代替として、block
+header の `alloc_size` word の **bit 30** を free-list 在籍マークに使う
+poison 方式を入れた (サイズは 2^30 に遠く届かないので追加メモリ 0):
+free push で立て、alloc の払い出しで落とし、`__rt_rc_drop` の入口で
+立っていたら `unreachable`。bin 払い出し時に `size == 要求 sz` も検査する。
+
+### 落とし穴: **source 側の runtime 計装は crash する binary に入らない**
+
+**落ちるのは stage1 で、stage1 の runtime helper は seed が出力したもの。**
+`lib/@vibe/compiler/codegen/builtin_bodies/` を書き換えても、それが効くのは
+「stage1 が stage2 へ**出力する** runtime」であって、**stage1 自身の
+`__rt_rc_alloc` / `__rt_rc_drop` は seed のまま**である。
+
+これを踏み外して3ラウンド無駄にした。`VIBE_RC=1 generations.sh build` を
+poison 版 / poison v2 版 / quarantine 版の tree で回して、いずれも
+「トラップせず元と同じ `__rt_rc_alloc` の範囲外アクセスで落ちた」ため
+「二重 free ではない」「再利用は無関係」と読んだが、**そもそも計装が
+入っていない binary が落ちていた**だけで、これらの結論は支持されない。
+撤回する。crash 位置が 757000688 → 757657136 → 757724408 と少しずつ
+動いたのは計装の効果ではなく、compiler source が変われば stage1 の挙動と
+出力量が変わるため。
+
+**計装を crash する binary に入れる唯一の方法は、seed 以外のコンパイラで
+stage1 を作ること。** それを試したのが下の切り分けで、結果は「現行
+コンパイラで作った RC stage1 は落ちない」だった。
+
+### 切り分け: seed 固有か、現行 codegen の生きたバグか
+
+| stage1 を作ったコンパイラ | stage1 の dup guard | サイズ | flat source をコンパイル |
+| --- | --- | --- | --- |
+| **seed** (`bootstrap/seed/compiler.wasm`) | inline (seed に `__rt_rc_dup` はない) | 6,332,395 | **OOB で落ちる** |
+| 現行 source からビルドした bump コンパイラ | out-line | 2,896,884 | **通る** |
+
+ここから2つ言える:
+
+1. **落ちる binary に out-line された dup は1つも入っていない。** seed は
+   `__rt_rc_dup` を持たないので、out-line 化がどれだけ source に入って
+   いても seed の出力は inline guard のままである (6.3MB という
+   サイズがその証拠)。out-line 化そのものが crash するコードに存在しない
+   以上、out-line の意味論は原因ではありえない。source 変更が stage1 に
+   与える影響は「seed がコンパイルする source の形」だけで、これは
+   bisect が「単一 site ではなく累積的」と出したことと整合する。
+
+2. 同じ source を現行 codegen で RC コンパイルすると**動く stage1 が
+   できる**。つまり疑うべきは pin されている seed の codegen/perceus で
+   あって、現行 source ではない。
+
+### 結論: seed 固有。out-line 化した RC コンパイラは fixpoint する
+
+quarantine を戻した HEAD (poison は trap のみで意味論的に中立) で、
+seed を介さない2段を回した:
+
+```
+final_bump/stage2.wasm  --VIBE_RC=1-->  F_stage1.wasm   2,645,681 B   PASS
+F_stage1.wasm           --VIBE_RC=1-->  F_stage2.wasm   2,645,681 B   PASS
+```
+
+**F_stage1 と F_stage2 は同サイズ = fixpoint。** out-line 版 RC
+コンパイラは自分自身を再生産できる。落ちるのは
+`bootstrap/seed/compiler.wasm` が出力した stage1 だけである。
+
+| stage1 を作ったコンパイラ | dup guard | サイズ | 結果 |
+| --- | --- | --- | --- |
+| seed | inline | 6,332,395 | **OOB** |
+| 現行 (bump ビルド) | out-line | 2,645,681 | **PASS (fixpoint)** |
+
+したがって #1262 の blocker は「out-line 化のバグ」でも「現行 RC/allocator
+の潜在不整合」でもなく、**pin された seed が この source 形状を RC で
+誤コンパイルする**という一点に還元される。対処は
+[bootstrap.md](bootstrap.md) の bootstrap bump — seed を現行ビルドで
+貼り替えれば all-RC bootstrap は通るはずである (未実施)。
+
+`main` が all-RC で通るのは、seed がたまたま `main` の source 形状を
+正しく扱えるからで、seed のバグが無いことの証明ではない。bisect が
+「単一 site ではなく累積的」と出たのも、seed が踏む形状かどうかが
+site 集合で変わるためと読める。
+
+### 検証: seed を差し替えたら all-RC bootstrap が通った (fixpoint 一致)
+
+seed をローカルで現行ビルド (`_build/final_bump/stage2.wasm`) へ adopt して
+`VIBE_RC=1 scripts/generations.sh build --stage3` を回した (計装は撤去済み、
+out-line 化だけの状態):
+
+```
+stage0 (差し替えた seed)   1,842,511 B
+stage1                     2,644,914 B   OK
+stage2                     2,644,652 B   OK
+stage3                     2,644,652 B   OK
+stage2 == stage3           byte-identical  = FIXPOINT
+```
+
+stage1/2/3 それぞれの sample 検証も通過。**旧 seed で必ず OOB していた
+`stage1 -> stage2` が、seed を替えただけで通る。** source は1バイトも
+変えていない。これで #1262 の blocker が seed 起因であることは確定した。
+
+同時に、out-line 化の効果が all-RC 経路でそのまま出ることも確認できた:
+
+| | bump stage2 | RC stage2 | 比 |
+| --- | --- | --- | --- |
+| inline guard (従来) | 1,841,905 | 6,213,090 | 3.37x |
+| **out-line (本変更)** | 1,842,511 | **2,644,652** | **1.44x** |
+
+seed の正式な bump は GitHub Release の publish を伴う ([bootstrap.md](bootstrap.md)
+の手順) ため、この確認では `bootstrap/seed.json` は commit していない
+(存在しない tag を pin すると全クローン/CI の `ensure_seed.sh` が失敗する)。
+

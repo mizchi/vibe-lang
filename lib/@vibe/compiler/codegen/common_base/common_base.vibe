@@ -418,6 +418,10 @@ export struct CompileCtx {
   // anywhere in the free-list (not just the head), eliminating the size-ordering
   // fragmentation a head-only check leaves when interleaved sizes are freed.
   rc_alloc_func_idx: Int;
+  // ADR-0092 (#1262): index of the out-of-line dup helper (__rt_rc_dup).
+  // -1 outside the linked RC path, which makes emit_rc_dup_guarded fall back
+  // to the inline form.
+  rc_dup_func_idx: Int;
   // Linear-memory backend: wasm function index of `vibe_heap_grow_check`, or -1
   // when the surrounding module does not define the helper. Bump allocations
   // call it after updating global 0 so low initial memory can grow on demand.
@@ -1912,7 +1916,53 @@ export fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit
   emit_end(buf)
 }
 
-export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Unit {
+/// ADR-0092 (#1262): the dup guard, OUT-OF-LINE -- `local.get v; call
+/// __rt_rc_dup`, ~5 B instead of the 72 B the inline form costs at every
+/// site. `dup_fn_idx < 0` falls back to the inline form, which is what the
+/// runtime helper itself is built from (gen_rc_dup_body) and what any
+/// emitter without a function table in reach still uses.
+///
+/// Why this is the size lever and borrow inference is not (all measured on
+/// the RC-built stage2, 2026-08-03): the RC binary carries **52,479** inline
+/// dup guards, each **exactly 72 B** (min == max over a 2000-site sample --
+/// the shape is fully deterministic). That is 3.78 MB of the 4.37 MB by
+/// which the RC stage2 exceeds the bump one, i.e. **86% of the entire RC
+/// size overhead is this one emitter**. Widening borrow inference removes
+/// guards, but even its unsound ceiling was only -5.8%; out-lining touches
+/// every guard that legitimately has to exist.
+///
+/// This is the MIRROR of the reverted #1274 experiment, which INLINED the
+/// drop fast path: that grew per-site code ~5 B -> ~70 B, failed the
+/// output-size ratchet, and bought no wall time. The direction that lost
+/// there is the direction that wins here.
+export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_fn_idx: Int) -> Unit {
+  // Both arms use `buf` EXACTLY ONCE. That symmetry is load-bearing, not
+  // style: pc_emit merges an EIf's two arms by taking the MINIMUM use count
+  // (#705), so an arm that touches `buf` twice while the other touches it
+  // once gets a budget of one and releases two -- the over-release that
+  // corrupts the free list and surfaces later as an out-of-bounds access
+  // (#715). Writing the call form inline here cost exactly that: the
+  // all-RC bootstrap trapped in stage1 while every bump-built compiler
+  // emitting the same bytes was fine, because only an RC-built binary
+  // actually refcounts. Keep the two-instruction form in its own function.
+  if dup_fn_idx >= 0 {
+    emit_rc_dup_call(buf, local_idx, dup_fn_idx)
+  } else {
+    emit_rc_dup_inline(buf, local_idx, rc_shadow)
+  }
+}
+
+/// `local.get v; call __rt_rc_dup` -- factored out so emit_rc_dup_guarded's
+/// arms stay use-count symmetric (see the note there).
+fn emit_rc_dup_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_call(buf, dup_fn_idx)
+}
+
+/// The guard expanded in place. Kept as the single definition of what a dup
+/// MEANS: gen_rc_dup_body builds the out-of-line helper by calling this with
+/// local 0, so the two forms cannot drift apart.
+export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Unit {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
   emit_i64_and(buf)
