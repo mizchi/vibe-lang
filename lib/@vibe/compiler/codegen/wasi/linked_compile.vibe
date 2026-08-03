@@ -73,6 +73,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_map_probe_index_body,
   gen_rc_alloc_body,
   gen_rc_drop_body,
+  gen_rc_dup_body,
   gen_simd_scan_alnum_body,
   gen_simd_skip_ws_body,
   gen_sources_proper_body,
@@ -4177,8 +4178,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let bytes_to_array_idx = bytes_from_array_idx + 1
   let rc_drop_idx = bytes_to_array_idx + 1
   let rc_alloc_idx = rc_drop_idx + 1
+  // ADR-0092 (#1262): out-of-line dup helper. Slot order here MUST match the
+  // push_builtin order below.
+  let rc_dup_idx = rc_alloc_idx + 1
   let heap_grow_check_idx = if enable_rc {
-    rc_alloc_idx + 1
+    rc_dup_idx + 1
   } else {
     bytes_to_array_idx + 1
   }
@@ -4678,6 +4682,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "Double::to_i64_bits" => identity_idx,
         "__to_string" => identity_idx,
         "vibe_rc_drop" => rc_drop_idx,
+        "vibe_rc_dup" => rc_dup_idx,
         "vibe_rc_alloc" => rc_alloc_idx,
         "vibe_heap_grow_check" => heap_grow_check_idx,
         _ => 0 - 1
@@ -4883,6 +4888,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if enable_rc {
     push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base), 5, 1, 1)
     push_builtin(gen_rc_alloc_body(rc_shadow, rc_bins_base), 5, 0, 3)
+    push_builtin(gen_rc_dup_body(rc_shadow), 0, 0, 1)
   } else {
     ()
   }
@@ -5372,6 +5378,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           } else {
             -1
           },
+          rc_dup_func_idx: if enable_rc {
+            rc_dup_idx
+          } else {
+            -1
+          },
           rc_alloc_func_idx: if enable_rc {
             rc_alloc_idx
           } else {
@@ -5508,7 +5519,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
                 }
                 let mut ede = 0
                 while ede < edc {
-                  emit_rc_dup_guarded(body_buf, edi, rc_shadow)
+                  emit_rc_dup_guarded(body_buf, edi, rc_shadow, if enable_rc {
+                    rc_dup_idx
+                  } else {
+                    -1
+                  })
                   ede = ede + 1
                 }
               } else {
@@ -5619,7 +5634,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             let rtemp = final_nl
             if need_dup {
               emit_local_set(body_buf, rtemp)
-              emit_rc_dup_guarded(body_buf, rtemp, rc_shadow)
+              emit_rc_dup_guarded(body_buf, rtemp, rc_shadow, if enable_rc {
+                rc_dup_idx
+              } else {
+                -1
+              })
               tail_nl = final_nl + 1
             } else {
               ()
@@ -5751,7 +5770,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           emit_global_get(body_buf, tg_value_g)
           emit_local_tee(body_buf, 1)
           if enable_rc {
-            emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+            emit_rc_dup_guarded(body_buf, 1, rc_shadow, if enable_rc {
+              rc_dup_idx
+            } else {
+              -1
+            })
           } else {
             ()
           }
@@ -5761,7 +5784,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           emit_local_tee(body_buf, 1)
           emit_global_set(body_buf, tg_value_g)
           if enable_rc {
-            emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+            emit_rc_dup_guarded(body_buf, 1, rc_shadow, if enable_rc {
+              rc_dup_idx
+            } else {
+              -1
+            })
           } else {
             ()
           }
@@ -7365,6 +7392,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::set(gen_sec_names, bytes_to_array_idx - num_imported_funcs, "__rt_bytes_to_array")
   if enable_rc {
     Array::set(gen_sec_names, rc_drop_idx - num_imported_funcs, "__rt_rc_drop")
+    Array::set(gen_sec_names, rc_dup_idx - num_imported_funcs, "__rt_rc_dup")
     Array::set(gen_sec_names, rc_alloc_idx - num_imported_funcs, "__rt_rc_alloc")
   } else {
     ()

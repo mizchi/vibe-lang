@@ -404,7 +404,7 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
   // shadow ledger already considers freed traps deterministically here
   // instead of corrupting the free list downstream.
   if ctx.rc_shadow {
-    emit_rc_dup_guarded(buf, scrut_local, true)
+    emit_rc_dup_guarded(buf, scrut_local, true, ctx.rc_dup_func_idx)
     emit_local_get(buf, scrut_local)
     emit_call(buf, ctx.rc_drop_func_idx)
   } else {
@@ -444,7 +444,7 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
     if is_pbind(Array::get(pargs, dj)) {
       // payload locals sit just below tk, in pattern order
       let nbinds_before = mr_binds_before(pargs, dj)
-      emit_rc_dup_guarded(buf, tk - mr_bind_count(pargs) + nbinds_before, ctx.rc_shadow)
+      emit_rc_dup_guarded(buf, tk - mr_bind_count(pargs) + nbinds_before, ctx.rc_shadow, ctx.rc_dup_func_idx)
       bl2 = bl2 + 1
     } else {
       ()
@@ -484,9 +484,9 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
     emit_local_set(buf, vl)
     if mr_is_loop_borrowed_ident(a, ctx) {
       Array::push(ctx.loop_consumed_names, get_eident_name(a))
-      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow)
+      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow, ctx.rc_dup_func_idx)
     } else if mr_is_projection(a) || mr_is_borrow_ret_call(a, ctx) {
-      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow)
+      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow, ctx.rc_dup_func_idx)
     } else {
       ()
     }
@@ -588,10 +588,10 @@ fn mr_binds_before(pargs: Array[Pat], idx: Int) -> Int {
 
 /// Emit `n` guarded rc_dups of `local_idx` (one per owning consume of a matched
 /// field; see md_consume_count). n<=0 emits nothing.
-fn emit_rc_dup_guarded_n(buf: Bytes, local_idx: Int, n: Int, rc_shadow: Bool) -> Unit {
+fn emit_rc_dup_guarded_n(buf: Bytes, local_idx: Int, n: Int, rc_shadow: Bool, dup_fn_idx: Int) -> Unit {
   let mut k = 0
   while k < n {
-    emit_rc_dup_guarded(buf, local_idx, rc_shadow)
+    emit_rc_dup_guarded(buf, local_idx, rc_shadow, dup_fn_idx)
     k = k + 1
   }
 }
@@ -661,7 +661,7 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       // Vertical A) moved that +1 into compile_lambda's creation-site dup,
       // so only the owning-consume compensation remains here.
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, ctx.borrow_param_user, md_bmasks), ctx.rc_shadow)
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, ctx.borrow_param_user, md_bmasks), ctx.rc_shadow, ctx.rc_dup_func_idx)
       } else {
         ()
       }
@@ -794,7 +794,7 @@ fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(St
       // irrefutable struct-pattern field. The former #1097 capturing-literal
       // term moved to compile_lambda's creation-site dup (owned-captures).
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, ctx.borrow_param_user, md_bmasks), ctx.rc_shadow)
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count_pre(body, nm, ctx.borrow_param_user, md_bmasks), ctx.rc_shadow, ctx.rc_dup_func_idx)
       } else {
         ()
       }

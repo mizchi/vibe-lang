@@ -35,6 +35,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_rc_dup_inline,
   emit_str_ref,
   expr_tag,
   get_arm_body,
@@ -476,6 +477,20 @@ fn emit_rc_free_push(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
 ///
 /// Locals: 0 = i64 v (param); 1 vptr, 2 class, 3 cnt, 4 idx, 5 dptr (i32);
 /// 6 = i64 field value.
+/// ADR-0092 (#1262): the out-of-line dup helper (`__rt_rc_dup`). One param
+/// (local 0) = the tagged value; no extra locals; no result.
+///
+/// The body is emit_rc_dup_inline at local 0 -- literally the same emitter
+/// the inline form uses -- so the out-of-line and inline dups can never
+/// disagree about what a dup does, including the VIBE_RC=shadow
+/// freed-block trap, which is baked in here per module instead of at every
+/// site.
+export fn gen_rc_dup_body(rc_shadow: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_rc_dup_inline(b, 0, rc_shadow)
+  b
+}
+
 export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int) -> Bytes {
   let b = bytebuf_new()
   // not a heap pointer (even) → nothing to do
