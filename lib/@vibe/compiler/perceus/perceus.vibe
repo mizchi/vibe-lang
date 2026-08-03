@@ -35,12 +35,19 @@ struct PCtx {
   mut next_id: Int;
   mut seq_id: Int;
   pctx_names: Array[String];
-  // ADR-0092 borrow-inference slice 1: whole-program set of user fns with a
-  // borrowed arg0 ABI (compute_borrow_arg0_user_fns, common_analysis.vibe).
-  // Same COPY discipline as pctx_names -- see pctx_new's doc comment.
-  borrow_arg0_user: Array[String];
-  // The subset of borrow_arg0_user whose RETURN may be an unowned interior
-  // view (compute_may_return_view_fns intersected in linked_compile). Only
+  // ADR-0092 borrow-inference: whole-program set of user fns with at least
+  // one borrowed parameter (compute_borrow_param_user_fns,
+  // common_analysis.vibe), sorted. Same COPY discipline as pctx_names -- see
+  // pctx_new's doc comment.
+  borrow_param_user: Array[String];
+  // Aligned to borrow_param_user: bit i of entry k says parameter i of
+  // borrow_param_user[k] is borrowed. One bsearch on the names indexes
+  // straight into this. Same COPY discipline.
+  borrow_param_mask: Array[Int];
+  // User fns whose RETURN may be an unowned interior view
+  // (compute_may_return_view_fns; NOT intersected with borrow_param_user --
+  // see the linked_compile gate comment for why that intersection was a
+  // latent over-release). Only
   // calls to THESE mark view_call_let: suppressing the scope-end drop for a
   // fresh-returning callee's binding leaks its result (compiler-gate RC
   // reclamation guard), while a view-returning callee's binding must not
@@ -134,12 +141,13 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
 /// storing it directly would let PCtx's structural drop decrement a refcount
 /// this plan never owned -- the #707/#715 double-free shape. One
 /// Array::slice is a single allocation + memory.copy of the name pointers.
-fn pctx_new(borrow_ret_names: Array[String], borrow_arg0_fns: Array[String], view_ret_fns: Array[String]) -> PCtx {
+fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> PCtx {
   PCtx::{
     next_id: 0,
     seq_id: 0,
     pctx_names: Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names)),
-    borrow_arg0_user: Array::slice(borrow_arg0_fns, 0, Array::length(borrow_arg0_fns)),
+    borrow_param_user: Array::slice(borrow_param_fns, 0, Array::length(borrow_param_fns)),
+    borrow_param_mask: Array::slice(borrow_param_masks, 0, Array::length(borrow_param_masks)),
     view_ret_user: Array::slice(view_ret_fns, 0, Array::length(view_ret_fns)),
     uses: [
     ],
@@ -1283,6 +1291,37 @@ fn is_borrow_arg0_call(f: String) -> Bool {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
+/// Bit i means parameter i of this callee is borrowed. Mirrors
+/// bmask_has/md_borrow_mask_of in codegen/common_analysis (the same
+/// keep-in-sync convention as is_borrow_arg0_call above).
+fn pe_bmask_has(mask: Int, i: Int) -> Bool {
+  i >= 0 && i < 32 && ((mask>>i)&1) == 1
+}
+
+/// The borrowed-parameter mask for callee `f`, honoring lexical scope: a
+/// LOCAL binding that shadows a borrow-set name is an ordinary owned
+/// closure call (mirrors compile_call's #875 local_idx_hint guard).
+fn pe_borrow_mask(ctx: PCtx, scope: Map[String, Int], callee: Expr) -> Int {
+  match callee {
+    EIdent(f, _) => if Map::has_key(scope, f) {
+      0
+    } else {
+      let bi = bsearch_leftmost(ctx.borrow_param_user, f)
+      let user = if bi >= 0 && bi < Array::length(ctx.borrow_param_mask) {
+        Array::get(ctx.borrow_param_mask, bi)
+      } else {
+        0
+      }
+      if is_borrow_arg0_call(f) {
+        user|1
+      } else {
+        user
+      }
+    },
+    _ => 0
+  }
+}
+
 export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
@@ -1294,10 +1333,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EIdent(x, _) => pe_use(ctx, scope, x),
     ECall(callee, args, _) => {
       // Same lexical-shadow guard as pc_count (and compile_call #875).
-      let is_index = match callee {
-        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || bsearch_leftmost(ctx.borrow_arg0_user, f) >= 0),
-        _ => false
-      }
+      let bmask = pe_borrow_mask(ctx, scope, callee)
       match callee {
         EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, callee)
@@ -1305,7 +1341,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       let mut i = 0
       while i < Array::length(args) {
         let arg = Array::get(args, i)
-        if is_index && i == 0 {
+        if pe_bmask_has(bmask, i) {
           match arg {
             EIdent(_, _) => 0,
             _ => pc_emit(ctx, scope, arg)
@@ -1664,17 +1700,12 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         EIdent(f, _) => pc_count_borrow(ctx, scope, f),
         _ => pc_count(ctx, scope, callee)
       }
-      // Lexical scoping wins over the borrow sets (mirrors compile_call's
-      // #875 local_idx_hint guard): a local binding that shadows a
-      // borrow-arg0 name is an ordinary owned closure call.
-      let is_index = match callee {
-        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || bsearch_leftmost(ctx.borrow_arg0_user, f) >= 0),
-        _ => false
-      }
+      // Lexical scoping wins over the borrow sets: see pe_borrow_mask.
+      let bmask = pe_borrow_mask(ctx, scope, callee)
       let mut i = 0
       while i < Array::length(args) {
         let arg = Array::get(args, i)
-        if is_index && i == 0 {
+        if pe_bmask_has(bmask, i) {
           match arg {
             EIdent(obj, _) => pc_count_borrow(ctx, scope, obj),
             _ => pc_count(ctx, scope, arg)
@@ -2000,9 +2031,11 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
 
 /// Build the dup/drop plan for a function body expression.
 export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
+  let no_masks: Array[Int] = [
+  ]
   let ctx = pctx_new([
   ], [
-  ], [
+  ], no_masks, [
   ])
   let empty: Map[String, Int] = Map::new()
   pc_count(ctx, empty, body)
@@ -2259,8 +2292,8 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 /// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
-export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_arg0_fns: Array[String], view_ret_fns: Array[String]) -> Array[PerceusAction] {
-  let ctx = pctx_new(borrow_ret_names, borrow_arg0_fns, view_ret_fns)
+export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
+  let ctx = pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
   while pi < Array::length(params) {

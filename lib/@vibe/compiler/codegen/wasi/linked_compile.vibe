@@ -109,9 +109,10 @@ import @vibe/compiler/codegen/builtin_bodies {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  bmask_has,
   collect_free_vars,
   collect_strings_stmts,
-  compute_borrow_arg0_user_fns,
+  compute_borrow_param_user_fns,
   compute_may_return_view_fns,
   count_lambda_sites_expr,
   emit_closure_call_tail,
@@ -2961,11 +2962,16 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program) so those lookups are bsearch_leftmost instead of a linear scan
   // -- same rationale as ctor_table.names_sorted above.
   let lc_borrow_ret_names = sorted_names_of(compute_borrow_returning_names(stmts))
-  // ADR-0092 borrow-inference slice 1: user fns whose arg0 ABI is borrowed
-  // program-wide (read-only first param, never valued/aliased -- see
-  // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
+  // ADR-0092 borrow-inference: user fns with at least one borrowed parameter
+  // program-wide (read-only, never valued/aliased -- see
+  // compute_borrow_param_user_fns). The entry fn and the conventional entry
   // names are excluded: the host invokes them without consulting the set.
-  // ADR-0092 borrow-inference slice 1, per-use-paired accounting. The
+  //
+  // Slice 1 (#1282) inferred POSITION 0 only; this is the per-position
+  // generalization, so a fn that consumes param0 but only reads param2 now
+  // borrows param2. Bit 0 of every mask is exactly slice 1's set.
+  //
+  // ADR-0092 borrow-inference, per-use-paired accounting. The
   // planner's invariant per binding: acquisitions (initial owned ref +
   // dups) must equal releases (owned consumes + scope-end drop). A
   // view-call binding (value = call to a lc_borrow_view_ret fn) holds NO
@@ -2978,9 +2984,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // Earlier isolated classes, still covered: fresh-result leak (marking
   // restricted to compute_may_return_view_fns callees, intersected into
   // lc_borrow_view_ret -- a fresh result from a may-return-view callee
-  // still leaks, bounded, safe direction), temp-arg0 leak (fns ever
-  // called with a non-ident arg0 disqualified via
-  // ca_collect_nonident_arg0), and the lexical-shadow holes (a local
+  // still leaks, bounded, safe direction), temp-argument leak (a POSITION
+  // ever passed a non-ident argument is disqualified via
+  // ca_collect_nonident_args), and the lexical-shadow holes (a local
   // shadowing a borrow-set name is an ordinary owned call: pc_count /
   // pc_emit / pctx_mark_view_call all guard on scope, mirroring
   // compile_call's #875 local_idx_hint guard). Known conservative gaps:
@@ -2989,33 +2995,29 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // reaching a binding through an if/match VALUE position is unmarked
   // (treated owned).
   let lc_borrow_arg0_enabled = true
-  let lc_borrow_arg0_user_all = if lc_borrow_arg0_enabled {
-    compute_borrow_arg0_user_fns(stmts)
+  // Names arrive SORTED with the masks already aligned to them (the analysis
+  // sorts and re-reads the masks by name in one place, so no caller can
+  // misalign them). Sorting matters: every membership test on the borrow set
+  // -- pc_count / pc_emit per call site, compile_call's borrows_this per
+  // call, the md consume-count borrow test -- is a bsearch_leftmost instead
+  // of a 500+-name linear scan (profiled at ~35% of selfcompile CPU as
+  // array_contains_str + __rt_eq/__rt_str_eq/__rt_arr_get traffic).
+  let lc_borrow_param_mask = lc_fresh_int_array()
+  let lc_borrow_param_user_srt = if lc_borrow_arg0_enabled {
+    compute_borrow_param_user_fns(stmts, [
+      entry_name,
+      "main",
+      "_start",
+      "cli_main"
+    ], lc_borrow_param_mask)
   } else {
     lc_fresh_string_array()
   }
-  let lc_borrow_arg0_user = lc_fresh_string_array()
-  let mut lba_i = 0
-  while lba_i < Array::length(lc_borrow_arg0_user_all) {
-    let lba_n = Array::get(lc_borrow_arg0_user_all, lba_i)
-    if lba_n != entry_name && lba_n != "main" && lba_n != "_start" && lba_n != "cli_main" {
-      Array::push(lc_borrow_arg0_user, lba_n)
-    } else {
-      ()
-    }
-    lba_i = lba_i + 1
-  }
-  // Sorted once so every membership test on the borrow set -- pc_count /
-  // pc_emit per call site, compile_call's borrows_this per arg, the md
-  // consume-count borrow0 test -- is a bsearch_leftmost instead of a
-  // 500+-name linear scan (profiled at ~35% of selfcompile CPU as
-  // array_contains_str + __rt_eq/__rt_str_eq/__rt_arr_get traffic).
-  let lc_borrow_arg0_user_srt = sorted_names_of(lc_borrow_arg0_user)
   // Fns whose RETURN may be an unowned interior view: these mark
   // view_call_let in the planner (see PCtx.view_ret_user and the gate
-  // comment above). NOT intersected with the borrow-arg0 set: a callee
-  // returns a view regardless of whether its arg0 qualified for the
-  // borrowed ABI (e.g. a fn disqualified by a non-ident arg0 call site
+  // comment above). NOT intersected with the borrow-param set: a callee
+  // returns a view regardless of whether any of its params qualified for the
+  // borrowed ABI (e.g. a fn disqualified by a non-ident argument call site
   // still hands back an interior view whose binding must not be dropped)
   // -- the round-3 intersection left exactly those bindings with a
   // release they never acquired.
@@ -5235,7 +5237,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           __bi_expr
         }
         if enable_rc {
-          let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user_srt, lc_borrow_view_ret)
+          let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_param_user_srt, lc_borrow_param_mask, lc_borrow_view_ret)
           let mut lhpi = 0
           while lhpi < Array::length(lc_norm_params) {
             let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -5246,29 +5248,42 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             }
             lhpi = lhpi + 1
           }
-          // ADR-0092 borrow-inference slice 1: when THIS fn's arg0 ABI is
-          // borrowed, the caller keeps ownership -- the plan's scope-end drop
-          // (and any entry dup) for param0 must not be emitted here.
-          let bfn_p0 = if bsearch_leftmost(lc_borrow_arg0_user_srt, fn_name_dbg) >= 0 && Array::length(lc_norm_params) >= 1 {
-            let (bfn_p0n, _) = Array::get(lc_norm_params, 0)
-            bfn_p0n
+          // ADR-0092 borrow-inference: for each of THIS fn's borrowed
+          // parameters the caller keeps ownership, so the plan's scope-end
+          // drop (and any entry dup) for that param must not be emitted here.
+          // Slice 1 skipped param0 alone; the mask names every borrowed
+          // position.
+          let bfn_bi = bsearch_leftmost(lc_borrow_param_user_srt, fn_name_dbg)
+          let bfn_mask = if bfn_bi >= 0 && bfn_bi < Array::length(lc_borrow_param_mask) {
+            Array::get(lc_borrow_param_mask, bfn_bi)
           } else {
-            ""
+            0
+          }
+          let bfn_borrowed = lc_fresh_string_array()
+          let mut bfp = 0
+          while bfp < Array::length(lc_norm_params) {
+            if bmask_has(bfn_mask, bfp) {
+              let (bfpn, _) = Array::get(lc_norm_params, bfp)
+              Array::push(bfn_borrowed, bfpn)
+            } else {
+              ()
+            }
+            bfp = bfp + 1
           }
           let mut di = 0
           while di < Array::length(plan) {
             let pa = Array::get(plan, di)
             if pa_is_drop(pa) {
-              // Skip ONLY the drop for the borrowed param -- the plan is
-              // name-keyed, so a shadowing local sharing param0's name can
-              // carry dup/alias-dup actions of its own, and filtering those
-              // out under-counts references (use-after-free that only
+              // Skip ONLY the drops for the borrowed params -- the plan is
+              // name-keyed, so a shadowing local sharing a borrowed param's
+              // name can carry dup/alias-dup actions of its own, and filtering
+              // those out under-counts references (use-after-free that only
               // surfaces under allocation churn -- codegen_heap_e2e_test
               // caught it after ~90 compiles). A same-named shadow's own
               // scope-end drop is also skipped here (a bounded leak, safe
               // direction); eligibility makes that rare since a bare read of
-              // the shadow disqualifies the fn.
-              if pa.name == bfn_p0 && bfn_p0 != "" {
+              // the shadow disqualifies the position.
+              if array_contains_str(bfn_borrowed, pa.name) {
                 ()
               } else {
                 Array::push(rc_drops, pa.name)
@@ -5372,7 +5387,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           reuse_scrutinee_names: lc_fresh_string_array(),
           reuse_flag_locals: lc_fresh_int_array(),
           borrow_ret_names: lc_borrow_ret_names,
-          borrow_arg0_user: lc_borrow_arg0_user_srt,
+          borrow_param_user: lc_borrow_param_user_srt,
+          borrow_param_mask: lc_borrow_param_mask,
           borrow_view_ret: lc_borrow_view_ret,
           scalar_ret_names: lc_scalar_ret_names,
           pending_letrec_self_name: lc_fresh_string_array(),

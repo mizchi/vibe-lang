@@ -140,9 +140,94 @@ Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が
      push、`gen_rc_alloc_body` は bin pop 優先 → bounded walk → bump。
   dup 側 (`emit_rc_dup_guarded`) は元から inline。
 - 未着手: プランナ語彙 PaReuseToken/PaReuseAlloc(分岐越え一般化)、
-  borrow 推論拡張(dup/drop ペア削減 — KPI 2.6-3.8x の主犯)、
   drop specialization の残り site 系統(match 内 drop 等)、KPI 再計測は
   各段で #1262 に記録。
+
+## Implementation notes (2026-08-03, #1262 continued)
+
+### 計測手順の訂正 — `selfcompile_kpi_rc_lane.sh` は ratio を過小に出していた
+
+**旧 lane script は bump を N 回まとめて回してから rc を N 回回していた。**
+2つの self-build 直後の数分は machine がまだ落ち着いておらず、その warm-up が
+まるごと bump lane に課金される。**同じ tree・同じ artifact・同じ 3 runs で
+all-then-all が 1.193 (bump_med 8304)、interleaved が 1.820 (bump_med 5218)**。
+1.193 は「出口条件 (≤1.2) 達成」と読めてしまう数字であり、実際には達成して
+いない。
+
+このコンテナでの bump は 7 runs で 4346..7447ms(1.7x の幅)振れる —
+**測ろうとしている効果 (~1.8x) より drift の方が大きい**。lane script は
+(a) interleave (bump, rc, bump, rc, ...) し、(b) round ごとの rc/bump 比の
+中央値 `paired_ratio` も出すようにした(pair 内は数秒差なので slow drift が
+相殺される)。**過去の tracking series の数値はこの bias を含む**ので、
+比較するなら同一 invocation 内の interleaved 値どうしに限る。
+
+### RC の output size は 3.5x、しかも全関数に一様
+
+code section: bump **1,751,277 B / 3579 fns** → rc **6,153,809 B / 3581 fns**
+(**3.51x**)。top-8 の占有率が 16.3% → 16.0% とほぼ不変なので、**数個の
+runtime helper が太ったのではなく、per-site の inline RC guard が全関数に
+一様に積み上がっている**(rc alloc/drop helper の 2 fn 増加分を除く)。
+`emit_rc_dup_guarded` は inline (41 命令)、drop は call。
+
+### borrow 推論の per-position 一般化 — landed、ただし利得 −0.69%
+
+slice 1 (#1282) は **param 0 のみ**を推論していた。これを全 parameter
+position へ一般化した(`compute_borrow_param_user_fns` が name→bitmask を
+返し、call site / planner / callee 側 drop filter がすべて mask を引く)。
+param0 を consume するが param2 は読むだけ、という関数も param2 を borrow
+できる。
+
+**差分検証**: mask を `& 1` に制限した build の出力は、main の RC stage2 の
+出力と `bench/binary_size/*` 全 5 本で **byte 単位で一致** — 配線が
+position 0 において完全に inert であることを先に固定してから、全 mask を
+有効化した。
+
+**実測 (RC stage2 の size)**:
+
+| build | size | vs slice 1 |
+| --- | --- | --- |
+| position 0 のみ (= main) | 6,256,272 | — |
+| 全 position (健全) | 6,213,090 | **−0.69%** |
+| 天井: non-ident 失格を撤去 (**不健全**) | 5,895,092 | −5.77% |
+
+**利得が小さい理由は測定で特定済み**: `ca_collect_nonident_args` の失格
+条件が効きすぎている。ある position はプログラム中の **どこか 1 箇所** でも
+非 ident 引数(`f(ctx, i + 1)` のような計算式)を渡されると、その position
+全体が owned に落ちる。第 2 引数以降は計算式で渡されるのが普通なので、
+ほとんどの position がこれで消える。**天井との差 5.1 ポイントがこの失格
+条件のコスト**。
+
+次の slice はここ: 失格を position 単位ではなく **call site 単位**にし、
+borrow position に非 ident(= fresh temp)を渡す呼び出し側が call 後に
+自分で drop を出す。ident 呼び出し側の dup 除去を保ったまま、temp 側だけ
+drop を払う形になる。
+
+### 検証手順の罠2つ(どちらも今回踏んだ)
+
+1. **`generate_bundle.sh` 単体では `_cli_adapter_module_source.vibe` は更新
+   されない**。`build_adapter_module_source` は `VIBE_REGEN_MODULE_SOURCE=1`
+   でない限り committed 版を優先する。stage1/stage2 はそこから bootstrap
+   するので、compiler source を編集して `generations.sh build` しても
+   **変更が artifact に入らないまま「ビルドが通った」ように見える**。
+   `bash scripts/resolve_generated_conflicts.sh --regen` を使う(5生成物を
+   すべて regenerate。lib/ が未整形だと止まるので先に
+   `bash scripts/vibe_fmt.sh <file>`)。
+2. **`compiler_gate.sh` は arity/型エラーを取りこぼす**。gate は bundle
+   flatten 済みソース(DCE 込み)を通すので、flatten で落ちる関数の中の
+   エラーは見えない。今回 `build_perceus_plan`(test 専用なので DCE 対象)
+   に 3 引数のままの `pctx_new` 呼び出しが残っていたが、**gate は 85/85 で
+   通り fixpoint も一致**し、unit battery だけが 107 file の
+   `fail(compile)` として検出した。**package 境界をまたぐ signature を
+   変えたら battery を必ず回す** — #1262 の `bsearch_leftmost` /
+   `mr_spine_tail` 事件と同じクラス。
+
+**ただし size 問題の本命はこれではない**: 天井の −5.8% ですら 3.5x
+(=+250%) に対しては誤差である。**残る ~4MB は「本当に必要な」guard の
+inline 展開そのもの**なので、size の lever は guard の数をさらに減らすこと
+ではなく **dup guard の out-line 化**(41 命令の inline → runtime call)。
+drop specialization (PR #1274) が inline 化して size を +14% 悪化させた
+のと**逆向き**の操作であり、まだ試されていない。wall とのトレードオフを
+測ってから判断する。
 
 ## Reconciliation ledger
 

@@ -1473,7 +1473,26 @@ fn md_max(a: Int, b: Int) -> Int {
 export fn md_consume_count(e: Expr, name: String) -> Int {
   let md_no_user_fns: Array[String] = [
   ]
-  md_cc_go(e, name, md_no_user_fns)
+  let md_no_user_masks: Array[Int] = [
+  ]
+  md_cc_go(e, name, md_no_user_fns, md_no_user_masks)
+}
+
+/// Which parameter positions of callee `f` are borrowed: the builtin
+/// arg0 list unioned with the user set's per-position mask. `bfns` is
+/// sorted and `bmasks` is aligned to it (compute_borrow_param_user_fns).
+fn md_borrow_mask_of(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  let bi = bsearch_leftmost(bfns, f)
+  let user = if bi >= 0 && bi < Array::length(bmasks) {
+    Array::get(bmasks, bi)
+  } else {
+    0
+  }
+  if md_is_borrow_arg0_call(f) {
+    user|1
+  } else {
+    user
+  }
 }
 
 /// All names locally BOUND anywhere inside `e` -- let/let mut/let rec
@@ -1654,14 +1673,20 @@ fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
 /// that count MANY names against the SAME body (compile_match's per-field
 /// bind loops, compile_lambda's capture loop) can run the binder prepass
 /// ONCE per body instead of once per name -- the per-name form showed up
-/// directly in selfcompile wall time. Returns `bfns` itself (no copy)
-/// when the body shadows no member; otherwise a filtered copy.
-/// PRECONDITION: `bfns` is sorted (linked_compile sorts the borrow set
-/// once; membership here is bsearch_leftmost). The filtered copy preserves
-/// order, so it stays bsearch-able.
-export fn md_shadow_filtered_bfns(e: Expr, bfns: Array[String]) -> Array[String] {
+/// directly in selfcompile wall time.
+///
+/// Shadows are neutralized by ZEROING the offending entry's mask rather
+/// than by removing its name: a zero mask already means "no position of
+/// this callee is borrowed", which is exactly what a shadowing local
+/// deserves, and it leaves `bfns` shareable so names and masks can never
+/// drift out of alignment. Returns `bmasks` itself (no copy) when the body
+/// shadows no member.
+/// PRECONDITION: `bfns` is sorted and `bmasks` is aligned to it
+/// (compute_borrow_param_user_fns produces both together; membership here
+/// is bsearch_leftmost).
+export fn md_shadow_zeroed_bmasks(e: Expr, bfns: Array[String], bmasks: Array[Int]) -> Array[Int] {
   if Array::length(bfns) == 0 {
-    bfns
+    bmasks
   } else {
     let sh: Array[String] = [
     ]
@@ -1677,47 +1702,52 @@ export fn md_shadow_filtered_bfns(e: Expr, bfns: Array[String]) -> Array[String]
       si = si + 1
     }
     if !any_hit {
-      bfns
+      bmasks
     } else {
-      let bfns2: Array[String] = [
+      let bmasks2: Array[Int] = [
       ]
       let mut bi = 0
       while bi < Array::length(bfns) {
         let bn = Array::get(bfns, bi)
-        if array_contains_str(sh, bn) {
-          ()
+        let m = if bi < Array::length(bmasks) {
+          Array::get(bmasks, bi)
         } else {
-          Array::push(bfns2, bn)
+          0
         }
+        Array::push(bmasks2, if array_contains_str(sh, bn) {
+          0
+        } else {
+          m
+        })
         bi = bi + 1
       }
-      bfns2
+      bmasks2
     }
   }
 }
 
-/// md_consume_count against a set ALREADY filtered by
-/// md_shadow_filtered_bfns for this same body. The hoisted form of
-/// md_consume_count_b -- pass the raw set here only if it is empty.
-export fn md_consume_count_pre(e: Expr, name: String, bfns_filtered: Array[String]) -> Int {
-  md_cc_go(e, name, bfns_filtered)
+/// md_consume_count against masks ALREADY zeroed by
+/// md_shadow_zeroed_bmasks for this same body. The hoisted form of
+/// md_consume_count_b -- pass the raw masks here only if they are empty.
+export fn md_consume_count_pre(e: Expr, name: String, bfns: Array[String], bmasks_zeroed: Array[Int]) -> Int {
+  md_cc_go(e, name, bfns, bmasks_zeroed)
 }
 
-/// md_consume_count with the USER borrow-arg0 set threaded through the
-/// ECall borrow0 test. Lexical shadows are honored conservatively (Codex
+/// md_consume_count with the USER borrow-param set threaded through the
+/// ECall borrow test. Lexical shadows are honored conservatively (Codex
 /// P1 on #1282): any bfns name that also appears as a LOCAL binder
-/// anywhere in `e` is dropped from the set for this body, so a call to a
+/// anywhere in `e` has its mask zeroed for this body, so a call to a
 /// same-named local closure counts as an owning consume (compile_call and
 /// the planner give lexical bindings precedence, so the dup it forces is
 /// matched by the closure call's real consume; for the rare body that
 /// binds the name but still calls the top-level fn, the extra dup is a
 /// bounded leak -- never a missing one). One-shot form; loops over many
-/// names against one body should hoist md_shadow_filtered_bfns instead.
-export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int {
-  md_cc_go(e, name, md_shadow_filtered_bfns(e, bfns))
+/// names against one body should hoist md_shadow_zeroed_bmasks instead.
+export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  md_cc_go(e, name, bfns, md_shadow_zeroed_bmasks(e, bfns, bmasks))
 }
 
-fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
+fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -1734,7 +1764,7 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_cc_go(Array::get(items, i), name, bfns)
+        acc = acc + md_cc_go(Array::get(items, i), name, bfns, bmasks)
         i = i + 1
       }
       acc
@@ -1743,7 +1773,7 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_cc_go(Array::get(items, i), name, bfns)
+        acc = acc + md_cc_go(Array::get(items, i), name, bfns, bmasks)
         i = i + 1
       }
       acc
@@ -1753,7 +1783,7 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_cc_go(v, name, bfns)
+        acc = acc + md_cc_go(v, name, bfns, bmasks)
         i = i + 1
       }
       acc
@@ -1763,25 +1793,25 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_cc_go(v, name, bfns)
+        acc = acc + md_cc_go(v, name, bfns, bmasks)
         i = i + 1
       }
       acc
     },
     EIf(c, t, el) =>
-    md_cc_go(c, name, bfns) + md_max(md_cc_go(t, name, bfns), md_cc_go(el, name, bfns)),
-    ELet(_, v, b, _) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
-    ELetRec(_, v, b) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
-    ELetMut(_, v, b, _) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
-    EAssign(_, v, b) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
-    EAssignOp(_, _, v, b) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
-    ESeq(a, b) => md_cc_go(a, name, bfns) + md_cc_go(b, name, bfns),
+    md_cc_go(c, name, bfns, bmasks) + md_max(md_cc_go(t, name, bfns, bmasks), md_cc_go(el, name, bfns, bmasks)),
+    ELet(_, v, b, _) => md_cc_go(v, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
+    ELetRec(_, v, b) => md_cc_go(v, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
+    ELetMut(_, v, b, _) => md_cc_go(v, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
+    EAssign(_, v, b) => md_cc_go(v, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
+    EAssignOp(_, _, v, b) => md_cc_go(v, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
+    ESeq(a, b) => md_cc_go(a, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
     EMatch(s, arms) => {
       let mut mx = 0
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_cc_go(v, name, bfns))
+        mx = md_max(mx, md_cc_go(v, name, bfns, bmasks))
         i = i + 1
       }
       // A bare `match name { .. }` BORROWS the scrutinee (its fields become
@@ -1792,7 +1822,7 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
       // sub-expression, so recurse there.
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_cc_go(s, name, bfns)
+        _ => md_cc_go(s, name, bfns, bmasks)
       }
       scr + mx
     },
@@ -1801,44 +1831,31 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_cc_go(v, name, bfns))
+        mx = md_max(mx, md_cc_go(v, name, bfns, bmasks))
         i = i + 1
       }
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_cc_go(s, name, bfns)
+        _ => md_cc_go(s, name, bfns, bmasks)
       }
       scr + mx
     },
-    EWhile(c, b) => md_cc_go(c, name, bfns) + md_cc_go(b, name, bfns),
+    EWhile(c, b) => md_cc_go(c, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
     ELoop(params, b) => {
-      let mut acc = md_cc_go(b, name, bfns)
+      let mut acc = md_cc_go(b, name, bfns, bmasks)
       let mut i = 0
       while i < Array::length(params) {
         let (_, v) = Array::get(params, i)
-        acc = acc + md_cc_go(v, name, bfns)
+        acc = acc + md_cc_go(v, name, bfns, bmasks)
         i = i + 1
       }
       acc
     },
-    EForIn(_, _, it, b) => md_cc_go(it, name, bfns) + md_cc_go(b, name, bfns),
+    EForIn(_, _, it, b) => md_cc_go(it, name, bfns, bmasks) + md_cc_go(b, name, bfns, bmasks),
     ECall(callee, args, _) => {
-      let borrow0 = match callee {
-        EIdent(f, _) => md_is_borrow_arg0_call(f) || bsearch_leftmost(bfns, f) >= 0,
-        _ => false
-      }
-      let start = if borrow0 && Array::length(args) >= 1 {
-        1
-      } else {
-        0
-      }
-      let head = if start == 1 {
-        match Array::get(args, 0) {
-          EIdent(_, _) => 0,
-          _ => md_cc_go(Array::get(args, 0), name, bfns)
-        }
-      } else {
-        0
+      let bmask = match callee {
+        EIdent(f, _) => md_borrow_mask_of(f, bfns, bmasks),
+        _ => 0
       }
       // A bare-ident CALLEE is invoked, not consumed — calling a function or a
       // captured closure (incl. a recursive closure's own self-reference) does
@@ -1848,36 +1865,48 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
       // in a sub-expression.
       let callee_c = match callee {
         EIdent(_, _) => 0,
-        _ => md_cc_go(callee, name, bfns)
+        _ => md_cc_go(callee, name, bfns, bmasks)
       }
-      let mut acc = callee_c + head
-      let mut ri = start
+      let mut acc = callee_c
+      let mut ri = 0
       while ri < Array::length(args) {
-        acc = acc + md_cc_go(Array::get(args, ri), name, bfns)
+        let a = Array::get(args, ri)
+        // A bare ident at a BORROWED position is read, not consumed. A
+        // non-ident there still has to be walked: its subexpressions can
+        // consume `name` even though the argument value itself is borrowed
+        // (and such a position is disqualified from the borrow set anyway).
+        acc = acc + (if bmask_has(bmask, ri) {
+          match a {
+            EIdent(_, _) => 0,
+            _ => md_cc_go(a, name, bfns, bmasks)
+          }
+        } else {
+          md_cc_go(a, name, bfns, bmasks)
+        })
         ri = ri + 1
       }
       acc
     },
-    EBinOp(_, l, r) => md_cc_go(l, name, bfns) + md_cc_go(r, name, bfns),
-    EUnaryOp(_, x) => md_cc_go(x, name, bfns),
-    EFn(_, _, _, _, _, body) => md_cc_go(body, name, bfns),
-    EDot(x, _, _, _) => md_cc_go(x, name, bfns),
-    ELabeledArg(_, _, v) => md_cc_go(v, name, bfns),
-    EReturn(x) => md_cc_go(x, name, bfns),
+    EBinOp(_, l, r) => md_cc_go(l, name, bfns, bmasks) + md_cc_go(r, name, bfns, bmasks),
+    EUnaryOp(_, x) => md_cc_go(x, name, bfns, bmasks),
+    EFn(_, _, _, _, _, body) => md_cc_go(body, name, bfns, bmasks),
+    EDot(x, _, _, _) => md_cc_go(x, name, bfns, bmasks),
+    ELabeledArg(_, _, v) => md_cc_go(v, name, bfns, bmasks),
+    EReturn(x) => md_cc_go(x, name, bfns, bmasks),
     EBreak(opt) => match opt {
-      Some(v) => md_cc_go(v, name, bfns),
+      Some(v) => md_cc_go(v, name, bfns, bmasks),
       None => 0
     },
     EContinue(args) => {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(args) {
-        acc = acc + md_cc_go(Array::get(args, i), name, bfns)
+        acc = acc + md_cc_go(Array::get(args, i), name, bfns, bmasks)
         i = i + 1
       }
       acc
     },
-    ESpread(x) => md_cc_go(x, name, bfns)
+    ESpread(x) => md_cc_go(x, name, bfns, bmasks)
   }
 }
 
@@ -2387,17 +2416,28 @@ fn ca_walk_stmts_valued(stmts: Array[Stmt], out: Array[String]) -> Int {
   0
 }
 
-/// Callee names that somewhere receive a NON-IDENT first argument. A
-/// borrow-arg0 callee never drops its param0 (the epilogue drop is
-/// filtered program-wide in linked_compile), and the call-emission borrow
-/// check is shape-independent, so a fresh temporary passed directly at
-/// arg0 -- `ignore_children(Node(Leaf(i), Leaf(j)))` in the RC
-/// reclamation gate fixture -- would be released by NOBODY: the caller
-/// has no binding to scope-drop and the callee's drop is gone (one leak
-/// per call; compiler-gate 40d catches it at N=20000). Such fns must
-/// keep the owned ABI, so collect every callee name with a non-ident
-/// arg0 anywhere and disqualify it.
-fn ca_collect_nonident_arg0(e: Expr, out: Array[String]) -> Int {
+/// Callee name / argument POSITION pairs where a call somewhere passes a
+/// NON-IDENT argument. A borrowed parameter is never dropped by the callee
+/// (the epilogue drop is filtered program-wide in linked_compile), and the
+/// call-emission borrow check is shape-independent, so a fresh temporary
+/// passed directly at a borrowed position -- `ignore_children(Node(Leaf(i),
+/// Leaf(j)))` in the RC reclamation gate fixture -- would be released by
+/// NOBODY: the caller has no binding to scope-drop and the callee's drop is
+/// gone (one leak per call; compiler-gate 40d catches it at N=20000). Such
+/// POSITIONS must keep the owned ABI, so record every (callee, position)
+/// with a non-ident argument and clear that bit of the callee's mask.
+///
+/// Per-position, not per-function: one fresh temp at arg2 disqualifies arg2
+/// alone and leaves the fn's other read-only params borrowed. `out` and
+/// `out_pos` are parallel -- entry k says "callee out[k] takes a non-ident
+/// argument at position out_pos[k]".
+///
+/// A surviving `ELabeledArg` wrapper is not an `EIdent`, so it disqualifies
+/// its position here. That is also what makes positional indexing safe at
+/// all: `desugar_labeled_args` (pre-check) reorders fully-labeled calls into
+/// declared parameter order and strips the wrappers, and any label it could
+/// NOT resolve stays wrapped and lands in this set.
+fn ca_collect_nonident_args(e: Expr, out: Array[String], out_pos: Array[Int]) -> Int {
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -2408,33 +2448,39 @@ fn ca_collect_nonident_arg0(e: Expr, out: Array[String]) -> Int {
     EIdent(_, _) => 0,
     ECall(callee, cargs, _) => {
       match callee {
-        EIdent(cf, _) => if Array::length(cargs) >= 1 {
-          match Array::get(cargs, 0) {
-            EIdent(_, _) => (),
-            _ => Array::push(out, cf)
+        EIdent(cf, _) => {
+          let mut ni = 0
+          while ni < Array::length(cargs) {
+            match Array::get(cargs, ni) {
+              EIdent(_, _) => (),
+              _ => {
+                Array::push(out, cf)
+                Array::push(out_pos, ni)
+              }
+            }
+            ni = ni + 1
           }
-        } else {
           ()
         },
         _ => {
-          let _ = ca_collect_nonident_arg0(callee, out)
+          let _ = ca_collect_nonident_args(callee, out, out_pos)
           ()
         }
       }
       let mut ci = 0
       while ci < Array::length(cargs) {
-        let _ = ca_collect_nonident_arg0(Array::get(cargs, ci), out)
+        let _ = ca_collect_nonident_args(Array::get(cargs, ci), out, out_pos)
         ci = ci + 1
       }
       0
     },
-    ETuple(items) => ca_collect_nonident_arg0_list(items, out),
-    EArray(items) => ca_collect_nonident_arg0_list(items, out),
+    ETuple(items) => ca_collect_nonident_args_list(items, out, out_pos),
+    EArray(items) => ca_collect_nonident_args_list(items, out, out_pos),
     ERecord(_, rfields, _) => {
       let mut ri = 0
       while ri < Array::length(rfields) {
         let (_, rv) = Array::get(rfields, ri)
-        let _ = ca_collect_nonident_arg0(rv, out)
+        let _ = ca_collect_nonident_args(rv, out, out_pos)
         ri = ri + 1
       }
       0
@@ -2443,133 +2489,133 @@ fn ca_collect_nonident_arg0(e: Expr, out: Array[String]) -> Int {
       let mut mi = 0
       while mi < Array::length(mfields) {
         let (_, mv) = Array::get(mfields, mi)
-        let _ = ca_collect_nonident_arg0(mv, out)
+        let _ = ca_collect_nonident_args(mv, out, out_pos)
         mi = mi + 1
       }
       0
     },
     EIf(c0, t0, f0) => {
-      let _ = ca_collect_nonident_arg0(c0, out)
-      let _ = ca_collect_nonident_arg0(t0, out)
-      ca_collect_nonident_arg0(f0, out)
+      let _ = ca_collect_nonident_args(c0, out, out_pos)
+      let _ = ca_collect_nonident_args(t0, out, out_pos)
+      ca_collect_nonident_args(f0, out, out_pos)
     },
     ELet(_, v0, b0, _) => {
-      let _ = ca_collect_nonident_arg0(v0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(v0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     ELetRec(_, v0, b0) => {
-      let _ = ca_collect_nonident_arg0(v0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(v0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     ELetMut(_, v0, b0, _) => {
-      let _ = ca_collect_nonident_arg0(v0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(v0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     EAssign(_, v0, b0) => {
-      let _ = ca_collect_nonident_arg0(v0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(v0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     EAssignOp(_, _, v0, b0) => {
-      let _ = ca_collect_nonident_arg0(v0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(v0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     ESeq(a0, b0) => {
-      let _ = ca_collect_nonident_arg0(a0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(a0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     EMatch(scr, arms) => {
-      let _ = ca_collect_nonident_arg0(scr, out)
+      let _ = ca_collect_nonident_args(scr, out, out_pos)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (_, ab) = Array::get(arms, ai)
-        let _ = ca_collect_nonident_arg0(ab, out)
+        let _ = ca_collect_nonident_args(ab, out, out_pos)
         ai = ai + 1
       }
       0
     },
     EHandle(hb, harms) => {
-      let _ = ca_collect_nonident_arg0(hb, out)
+      let _ = ca_collect_nonident_args(hb, out, out_pos)
       let mut hi = 0
       while hi < Array::length(harms) {
         let (_, hab) = Array::get(harms, hi)
-        let _ = ca_collect_nonident_arg0(hab, out)
+        let _ = ca_collect_nonident_args(hab, out, out_pos)
         hi = hi + 1
       }
       0
     },
     EWhile(c0, b0) => {
-      let _ = ca_collect_nonident_arg0(c0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(c0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     ELoop(inits, b0) => {
       let mut li = 0
       while li < Array::length(inits) {
         let (_, iv) = Array::get(inits, li)
-        let _ = ca_collect_nonident_arg0(iv, out)
+        let _ = ca_collect_nonident_args(iv, out, out_pos)
         li = li + 1
       }
-      ca_collect_nonident_arg0(b0, out)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     EForIn(_, _, s0, b0) => {
-      let _ = ca_collect_nonident_arg0(s0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(s0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
     EBinOp(_, a0, b0) => {
-      let _ = ca_collect_nonident_arg0(a0, out)
-      ca_collect_nonident_arg0(b0, out)
+      let _ = ca_collect_nonident_args(a0, out, out_pos)
+      ca_collect_nonident_args(b0, out, out_pos)
     },
-    EUnaryOp(_, a0) => ca_collect_nonident_arg0(a0, out),
-    EFn(_, _, _, _, _, fb) => ca_collect_nonident_arg0(fb, out),
-    EDot(o0, _, _, _) => ca_collect_nonident_arg0(o0, out),
-    ELabeledArg(_, _, v0) => ca_collect_nonident_arg0(v0, out),
-    EReturn(v0) => ca_collect_nonident_arg0(v0, out),
+    EUnaryOp(_, a0) => ca_collect_nonident_args(a0, out, out_pos),
+    EFn(_, _, _, _, _, fb) => ca_collect_nonident_args(fb, out, out_pos),
+    EDot(o0, _, _, _) => ca_collect_nonident_args(o0, out, out_pos),
+    ELabeledArg(_, _, v0) => ca_collect_nonident_args(v0, out, out_pos),
+    EReturn(v0) => ca_collect_nonident_args(v0, out, out_pos),
     EBreak(bo) => match bo {
-      Some(bv) => ca_collect_nonident_arg0(bv, out),
+      Some(bv) => ca_collect_nonident_args(bv, out, out_pos),
       None => 0
     },
-    EContinue(cvs) => ca_collect_nonident_arg0_list(cvs, out),
-    ESpread(sv) => ca_collect_nonident_arg0(sv, out)
+    EContinue(cvs) => ca_collect_nonident_args_list(cvs, out, out_pos),
+    ESpread(sv) => ca_collect_nonident_args(sv, out, out_pos)
   }
 }
 
-fn ca_collect_nonident_arg0_list(items: Array[Expr], out: Array[String]) -> Int {
+fn ca_collect_nonident_args_list(items: Array[Expr], out: Array[String], out_pos: Array[Int]) -> Int {
   let mut i = 0
   while i < Array::length(items) {
-    let _ = ca_collect_nonident_arg0(Array::get(items, i), out)
+    let _ = ca_collect_nonident_args(Array::get(items, i), out, out_pos)
     i = i + 1
   }
   0
 }
 
-fn ca_walk_stmts_nonident_arg0(stmts: Array[Stmt], out: Array[String]) -> Int {
+fn ca_walk_stmts_nonident_args(stmts: Array[Stmt], out: Array[String], out_pos: Array[Int]) -> Int {
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
       SLet(_, _, _, _, lv) => {
-        let _ = ca_collect_nonident_arg0(lv, out)
+        let _ = ca_collect_nonident_args(lv, out, out_pos)
         0
       },
       SLetMut(_, _, lv) => {
-        let _ = ca_collect_nonident_arg0(lv, out)
+        let _ = ca_collect_nonident_args(lv, out, out_pos)
         0
       },
       SLetPat(_, lv) => {
-        let _ = ca_collect_nonident_arg0(lv, out)
+        let _ = ca_collect_nonident_args(lv, out, out_pos)
         0
       },
       SExpr(se) => {
-        let _ = ca_collect_nonident_arg0(se, out)
+        let _ = ca_collect_nonident_args(se, out, out_pos)
         0
       },
       STest(_, tb) => {
-        let _ = ca_collect_nonident_arg0(tb, out)
+        let _ = ca_collect_nonident_args(tb, out, out_pos)
         0
       },
       SBench(_, bb) => {
-        let _ = ca_collect_nonident_arg0(bb, out)
+        let _ = ca_collect_nonident_args(bb, out, out_pos)
         0
       },
-      SModule(_, _, mb) => ca_walk_stmts_nonident_arg0(mb, out),
+      SModule(_, _, mb) => ca_walk_stmts_nonident_args(mb, out, out_pos),
       _ => 0
     }
     si = si + 1
@@ -2577,55 +2623,140 @@ fn ca_walk_stmts_nonident_arg0(stmts: Array[Stmt], out: Array[String]) -> Int {
   0
 }
 
-/// ADR-0092 borrow-inference slice 1: top-level fns whose FIRST param is
-/// only ever read. For such a fn the arg0 ABI flips to borrowed, program-
-/// wide and in lockstep: the caller's plan counts an ident arg0 as a free
-/// borrow (no transfer dup) and the callee's plan-site drop for that param
-/// is skipped (linked_compile). Eligibility, all conservative:
-///   - the fn is a top-level `SLet` + `EFn` with >= 1 param
-///   - param0's consume count in the body is 0 (only borrow-position uses:
-///     projections, borrow-arg0 builtin calls -- md_consume_count)
-///   - param0 is not mut-captured by an inner closure
-///   - the fn body does not shadow param0 (a rebinding would make the
-///     consume count unreliable) -- approximated by md_consume_count only,
-///     which counts ANY bare mention; a shadowed rebind's value read would
-///     count as a consume and disqualify the fn
-///   - the fn name is never used as a value anywhere in the program
-///     (indirect call sites cannot consult this set)
-///   - the fn is never called with a NON-IDENT first argument anywhere
-///     (ca_collect_nonident_arg0 -- a fresh temp at a borrowed arg0 has
+/// Bit `i` of a borrow mask means "parameter `i` of this fn is BORROWED":
+/// the caller keeps ownership across the call, so it emits no transfer dup
+/// and the callee emits no epilogue drop. Positions >= `bmask_max_param`
+/// are never borrowed -- Int is 62-bit tagged, and a 32-param ceiling keeps
+/// every shift far inside it with no arity check at the query sites.
+///
+/// Kept in sync with the identical helpers in perceus/perceus.vibe and
+/// codegen/expr/compile_call.vibe (same convention as is_borrow_arg0_call).
+export fn bmask_max_param() -> Int {
+  32
+}
+
+export fn bmask_has(mask: Int, i: Int) -> Bool {
+  i >= 0 && i < 32 && ((mask>>i)&1) == 1
+}
+
+/// Strip a labeled/optional parameter's trailing `~`/`?` marker.
+fn bp_param_base_name(raw: String) -> String {
+  let l = String::length(raw)
+  if l > 0 {
+    let c = String::char_code_at(raw, l - 1)
+    if c == '~' || c == '?' {
+      raw[0: l - 1]
+    } else {
+      raw
+    }
+  } else {
+    raw
+  }
+}
+
+/// ADR-0092 borrow-inference: for every top-level fn, which of its
+/// parameters are only ever READ. Each such position's ABI flips to
+/// borrowed, program-wide and in lockstep: the caller's plan counts an
+/// ident argument there as a free borrow (no transfer dup) and the callee's
+/// plan-site drop for that param is skipped (linked_compile).
+///
+/// Slice 1 (#1282) inferred position 0 only. This is the per-position
+/// generalization: a fn that consumes param0 but only reads param1 now gets
+/// param1 borrowed, and a fn all of whose params are read-only gets all of
+/// them. **Bit 0 of the result is exactly slice 1's set** -- same
+/// eligibility test, same disqualifiers -- which is what makes
+/// `mask & 1` a byte-identity differential against the previous compiler.
+///
+/// Eligibility is decided per position, all conservative:
+///   - the fn is a top-level `SLet` + `EFn`, and the position is < arity
+///     and < bmask_max_param()
+///   - that param's consume count in the body is 0 (only borrow-position
+///     uses: projections, borrow-arg0 builtin calls -- md_consume_count)
+///   - that param is not mut-captured by an inner closure
+///   - the fn body does not shadow it (a rebinding would make the consume
+///     count unreliable) -- approximated by md_consume_count only, which
+///     counts ANY bare mention; a shadowed rebind's value read would count
+///     as a consume and disqualify the position
+///   - no call anywhere passes a NON-IDENT argument at that position
+///     (ca_collect_nonident_args -- a fresh temp at a borrowed position has
 ///     no owner left to release it)
-/// The caller must additionally exclude the program entry (invoked by the
-/// host, which cannot consult the set either).
-export fn compute_borrow_arg0_user_fns(stmts: Array[Stmt]) -> Array[String] {
+/// Whole-fn disqualifiers, which zero the mask outright:
+///   - the fn name is used as a VALUE anywhere in the program (indirect
+///     call sites cannot consult this set)
+///   - the caller passes it in `exclude` (the program entry and the
+///     conventional entry names: the host invokes them without consulting
+///     the set either)
+///
+/// `md_consume_count` is used WITHOUT a user borrow set on purpose: this
+/// computation must not consume its own output (a fixpoint would make each
+/// position's eligibility depend on positions still being decided).
+///
+/// Returns the SORTED name array of fns with a non-zero mask and fills
+/// `out_masks` aligned to it, so a single `bsearch_leftmost` on the names
+/// indexes straight into the masks. Sorting and alignment happen here
+/// together -- a caller that sorted the names itself would silently
+/// misattribute every mask.
+export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
   let valued = array_empty()
   let _ = ca_walk_stmts_valued(stmts, valued)
-  let nonident0 = array_empty()
-  let _ = ca_walk_stmts_nonident_arg0(stmts, nonident0)
-  // Same shape as compute_may_return_view_fns below: both sets are complete
-  // before this loop starts and were then linearly scanned once per function.
+  let nonident_fns = array_empty()
+  let nonident_pos = array_empty()
+  let _ = ca_walk_stmts_nonident_args(stmts, nonident_fns, nonident_pos)
+  // Fold the (callee, position) pairs into one mask per callee of the
+  // positions that must STAY owned, so the per-function loop below is a
+  // single hash lookup instead of a scan of the whole pair list.
+  let nonident: HashMap[String, Int] = HashMap::new_string()
+  let mut ni = 0
+  while ni < Array::length(nonident_fns) {
+    let nf = Array::get(nonident_fns, ni)
+    let np = Array::get(nonident_pos, ni)
+    let prev = match HashMap::get(nonident, nf) {
+      Some(m) => m,
+      None => 0
+    }
+    if np >= 0 && np < bmask_max_param() {
+      HashMap::set(nonident, nf, prev|(1<<np))
+    } else {
+      ()
+    }
+    ni = ni + 1
+  }
+  // Same shape as compute_may_return_view_fns below: the set is complete
+  // before this loop starts and was then linearly scanned once per function.
   let valued_srt = sorted_names_of(valued)
-  let nonident0_srt = sorted_names_of(nonident0)
-  let out = array_empty()
+  let excluded_srt = sorted_names_of(exclude)
+  let names = array_empty()
+  let masks: HashMap[String, Int] = HashMap::new_string()
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
       SLet(_, _, fname, _, fval) => match fval {
-        EFn(_, _, fps, _, _, fbody) => if Array::length(fps) >= 1 {
-          let (p0_raw, _) = Array::get(fps, 0)
-          let p0l = String::length(p0_raw)
-          let p0 = if p0l > 0 {
-            let p0c = String::char_code_at(p0_raw, p0l - 1)
-            if p0c == '~' || p0c == '?' {
-              p0_raw[0: p0l - 1]
-            } else {
-              p0_raw
-            }
-          } else {
-            p0_raw
+        EFn(_, _, fps, _, _, fbody) => if bsearch_leftmost(valued_srt, fname) < 0 && bsearch_leftmost(excluded_srt, fname) < 0 {
+          let owned_bits = match HashMap::get(nonident, fname) {
+            Some(m) => m,
+            None => 0
           }
-          if p0 != "" && md_consume_count(fbody, p0) == 0 && !is_mut_captured_in(fbody, p0) && bsearch_leftmost(valued_srt, fname) < 0 && bsearch_leftmost(nonident0_srt, fname) < 0 {
-            Array::push(out, fname)
+          let mut mask = 0
+          let mut pi = 0
+          let np = Array::length(fps)
+          let lim = if np < bmask_max_param() {
+            np
+          } else {
+            bmask_max_param()
+          }
+          while pi < lim {
+            let (praw, _) = Array::get(fps, pi)
+            let pn = bp_param_base_name(praw)
+            if pn != "" && !bmask_has(owned_bits, pi) && md_consume_count(fbody, pn) == 0 && !is_mut_captured_in(fbody, pn) {
+              mask = mask|(1<<pi)
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          if mask != 0 {
+            Array::push(names, fname)
+            HashMap::set(masks, fname, mask)
           } else {
             ()
           }
@@ -2638,7 +2769,19 @@ export fn compute_borrow_arg0_user_fns(stmts: Array[Stmt]) -> Array[String] {
     }
     si = si + 1
   }
-  out
+  // Sort the names, then re-read each mask by name. Rebuilding the mask
+  // array from the SORTED names (rather than sorting two arrays in step)
+  // makes misalignment unrepresentable.
+  let names_srt = sorted_names_of(names)
+  let mut oi = 0
+  while oi < Array::length(names_srt) {
+    Array::push(out_masks, match HashMap::get(masks, Array::get(names_srt, oi)) {
+      Some(m) => m,
+      None => 0
+    })
+    oi = oi + 1
+  }
+  names_srt
 }
 
 //# ADR-0092 borrow-inference: may-return-view analysis
