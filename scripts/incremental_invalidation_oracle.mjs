@@ -29,7 +29,7 @@ const telemetryKeys = [
 const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key";
 const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
-const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)";
+const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v2 canonical exported surface including trait-header and method-generic binders)";
 const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)";
 const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v2 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
@@ -65,7 +65,7 @@ export function parseIncrementalInvalidationTrace(text, expectedNonce = undefine
   }
   if (!trace || typeof trace !== "object" || Array.isArray(trace)) fail("expected object");
   exactKeys(trace, ["schema", "run_nonce", "fingerprint_note", "modules", "aggregate_telemetry"], "trace");
-  if (trace.schema !== 5) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
+  if (trace.schema !== 6) fail(`unsupported schema ${JSON.stringify(trace.schema)}`);
   if (typeof trace.run_nonce !== "string" || trace.run_nonce.length === 0) fail("missing run_nonce");
   if (expectedNonce !== undefined && trace.run_nonce !== expectedNonce) fail("run_nonce mismatch (stale sidecar)");
   if (trace.fingerprint_note !== fingerprintNote) fail("dishonest fingerprint_note");
@@ -431,6 +431,29 @@ function run(stage2) {
     if (interfaceOwnersChanged(traitBoundShow, traitBoundEq).join(",") !== "library") fail("trait method generic bound edit did not change interface identity");
     if (implementationOwnersChanged(traitBoundShow, traitBoundEq).join(",") !== "library") fail("trait method generic bound edit did not change token-stream implementation identity");
 
+    // Schema 6 consumes both trait-header and method-generic source binders.
+    // The header scope surrounds every method; a method binder shadows it.
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[T] { project[U: Eq](T, U, Foreign) -> T }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitHeaderT = check("trait_header_t");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitHeaderA = check("trait_header_a");
+    if (interfaceOwnersChanged(traitHeaderT, traitHeaderA).length !== 0) fail("alpha-equivalent trait header/method binder rename changed interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A] { project[A: Eq](A, A, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitMethodShadowsHeader = check("trait_method_shadows_header");
+    if (interfaceOwnersChanged(traitHeaderA, traitMethodShadowsHeader).join(",") !== "library") fail("method/header binder association did not change interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitHeaderArity = check("trait_header_arity");
+    if (interfaceOwnersChanged(traitMethodShadowsHeader, traitHeaderArity).join(",") !== "library") fail("trait header binder arity did not change interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Show](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitScopedBound = check("trait_scoped_bound");
+    if (interfaceOwnersChanged(traitHeaderArity, traitScopedBound).join(",") !== "library") fail("trait method binder bound did not change interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Show](A, B, Foreign) -> B }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitScopedSignature = check("trait_scoped_signature");
+    if (interfaceOwnersChanged(traitScopedBound, traitScopedSignature).join(",") !== "library") fail("trait method signature did not change interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Show](A, B, Other) -> B }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitFreeName = check("trait_free_name");
+    if (interfaceOwnersChanged(traitScopedSignature, traitFreeName).join(",") !== "library") fail("free nominal type name did not remain distinct in trait interface identity");
+
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Eq] Eq for Option[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const implBoundEq = check("impl_bound_eq");
     if (implementationOwnersChanged(traitBoundEq, implBoundEq).join(",") !== "library") fail("impl generic bound addition did not change token-stream implementation identity");
@@ -466,7 +489,7 @@ function run(stage2) {
     // rechecks. This is the intended conservative-over-invalidation record.
     const currentPrivateRechecks = privateEdit.modules.filter((module) => module.decision === "rechecked").map((module) => module.path.replace(/\.vibe$/, ""));
     console.log(JSON.stringify({
-      schema: 5,
+      schema: 6,
       scenario: "three-module-incremental-invalidation",
       model_private_body_typing_invalidated: ["library"],
       current_private_body_rechecked: currentPrivateRechecks,

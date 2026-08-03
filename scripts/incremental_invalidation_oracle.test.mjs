@@ -9,7 +9,7 @@ import {
 } from "./incremental_invalidation_oracle.mjs";
 
 const validTrace = {
-  schema: 5,
+  schema: 6,
   run_nonce: "unit-nonce",
   fingerprint_note: "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key",
   modules: [
@@ -21,7 +21,7 @@ const validTrace = {
       implementation_fingerprint: "30:1:2",
       implementation_fingerprint_kind: "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))",
       interface_fingerprint: "31:1:2",
-      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)",
+      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v2 canonical exported surface including trait-header and method-generic binders)",
       checked_env_fingerprint: "32:1:2",
       checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)",
       persistent_type_env_transport_fingerprint: "33:1:2",
@@ -39,7 +39,7 @@ const validTrace = {
   },
 };
 
-test("incremental invalidation trace accepts schema 5 successful observations", () => {
+test("incremental invalidation trace accepts schema 6 successful observations", () => {
   assert.deepEqual(parseIncrementalInvalidationTrace(JSON.stringify(validTrace), "unit-nonce"), validTrace);
 });
 
@@ -54,6 +54,9 @@ test("incremental invalidation trace rejects stale, missing, and dishonest ident
   const incomplete = structuredClone(validTrace);
   delete incomplete.modules[0].implementation_fingerprint;
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(incomplete)), /missing module row implementation_fingerprint/);
+  const schema5 = structuredClone(validTrace);
+  schema5.schema = 5;
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(schema5)), /unsupported schema 5/);
   const schema3 = structuredClone(validTrace);
   schema3.schema = 3;
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(schema3)), /unsupported schema 3/);
