@@ -886,8 +886,10 @@ fn exn_kind_cell_present(stmts: Array[Stmt]) -> Bool {
 /// pass on the same program already wrapped every throw. Re-wrapping would nest
 /// a second, redundant write inside the first one's `ESeq`. `[1]` = used: at
 /// least one throw was wrapped or one `__exn_kind()` was lowered, so the cell
-/// has to be appended once the rewrite loop finishes.
+/// has to be appended once the rewrite loop finishes. `[2]` = the payload-temp
+/// counter, so each wrapped throw binds its payload under a name of its own.
 let dtd_exn_kind_state = [
+  0,
   0,
   0
 ]
@@ -898,6 +900,16 @@ fn exn_kind_suppressed() -> Bool {
 
 fn exn_kind_mark_used() -> Unit {
   Array::set(dtd_exn_kind_state, 1, 1)
+}
+
+/// A payload-temp name no other throw site shares. Lexical scoping alone would
+/// make one fixed name correct (an inner throw's binding closes before the
+/// outer one binds), but a distinct name per site keeps that from being a fact
+/// the reader has to re-derive, and keeps the nesting legible in dumped IR.
+fn exn_kind_fresh_payload_name() -> String {
+  let n = Array::get(dtd_exn_kind_state, 2)
+  Array::set(dtd_exn_kind_state, 2, n + 1)
+  String::concat("__exn_payload", __to_string(n))
 }
 
 /// `perform <Error|Exception[K]>::Throw(payload)` -- the ONLY shape `throw(x)`
@@ -932,6 +944,20 @@ fn perform_throw_payload(args: Array[Expr]) -> Expr {
   match Array::get(args, 0) {
     ECall(_, oargs, _) => Array::get(oargs, 0),
     _ => EUnit
+  }
+}
+
+/// `perform_throw_payload`'s inverse: the same `perform Throw(..)` shape with
+/// the payload swapped for `payload`. Used to hoist the payload into a `let`
+/// so the kind write happens after it is evaluated (#1374).
+fn perform_throw_with_payload(args: Array[Expr], payload: Expr) -> Array[Expr] {
+  match Array::get(args, 0) {
+    ECall(op_callee, _, ooff) => [
+      ECall(op_callee, [
+        payload
+      ], ooff)
+    ],
+    _ => args
   }
 }
 
@@ -3192,7 +3218,16 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
         }
         exn_kind_mark_used()
-        ESeq(exn_kind_write_expr(kind), ECall(callee, rwargs, off))
+        // The write has to land AFTER the payload is evaluated, not before.
+        // There is ONE slot, so anything the payload expression does that
+        // reaches a throw -- even one it handles itself -- overwrites the kind
+        // this site just recorded. `throw(payload())` where `payload()`
+        // internally catches a `throw(Bang(1))` and returns a String would
+        // otherwise leave `Boom` in the slot and be reported as `<Boom>`
+        // instead of its own message. Binding the payload first makes the
+        // write the last thing before the perform.
+        let pname = exn_kind_fresh_payload_name()
+        ELet(pname, perform_throw_payload(rwargs), ESeq(exn_kind_write_expr(kind), ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off)), -1)
       } else {
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
@@ -7885,6 +7920,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with { Error } {
     0
   })
   Array::set(dtd_exn_kind_state, 1, 0)
+  Array::set(dtd_exn_kind_state, 2, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns, toplevel_vars))

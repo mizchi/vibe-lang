@@ -1,0 +1,119 @@
+// #1371: a suspend-class closure LITERAL whose body is a TAIL call to a
+// needing function.
+//
+// ADR-0076 追記31 Vertical B splits such a literal so it returns a
+// `__ScpsStep_E`. For a tail needing call the split is the clone call and
+// nothing else (the clone already returns a step), so the split body mentions
+// no `__ScpsDone_E`, no `__ScpsY_E_*` ctor and no `__scps_bubble_E`. That is
+// exactly the vocabulary `scps_literal_is_step_for` used to decide whether a
+// literal had already been split -- so it answered "no", and the arg-position
+// fixup in `scps_prepass_expr` Done-WRAPPED the already-split literal:
+//
+//   __ScpsDone_Yield(__scps_cps_Yield_callee(1))
+//
+// The driver then matched `Done` immediately and returned the inner step
+// OBJECT as the computation's value: a heap pointer where an Int was expected,
+// with the continuation never run.
+//
+// #1371 reported this as "`throw` inside a CPS-split callee does not
+// propagate", which was a symptom -- the continuation containing the `throw`
+// never ran. A continuation containing nothing but `x + 4` was equally broken
+// and returned the same class of garbage (measured 699 / 730 / 1152 depending
+// on data layout). These tests assert the VALUE, so they fail on any pointer.
+//
+// The let-bound spelling was never affected: it splits to a
+// `__scps_bubble_E` composition, which the predicate already recognized. It is
+// pinned here as the control -- the two spellings must agree.
+
+effect Yield {
+  Y(Int) -> Int
+}
+
+fn callee(x: Int) -> Int with { Yield } {
+  let w = perform Yield::Y(x)
+  w + 4
+}
+
+/// A needing function that reaches the perform only through ANOTHER needing
+/// function, so the clone worklist has to recurse.
+fn callee_chained(x: Int) -> Int with { Yield } {
+  callee(x)
+}
+
+/// A needing function that never actually performs: its clone must still be
+/// step-typed, so a tail call to it produces `Done` rather than a bare Int.
+fn callee_quiet(x: Int) -> Int with { Yield } {
+  x + 4
+}
+
+/// Suspend-class driver: the arm binds `resume` as a VALUE, which is what
+/// triggers the CPS lowering (a tail-resumptive `resume(x)` would take the
+/// older paths instead).
+fn driver(f: () -> Int with { Yield }) -> Int {
+  handle {
+    f()
+  } with Yield {
+    Y(p) => {
+      let k = resume
+      k(p * 10)
+    }
+  }
+}
+
+test "a literal that TAIL-calls a needing fn returns its value, not a step" {
+  assert_eq(driver(() -> Int with { Yield } {
+    callee(1)
+  }), 14)
+}
+
+test "the let-bound spelling agrees with the tail spelling" {
+  assert_eq(driver(() -> Int with { Yield } {
+    let v = callee(1)
+    v
+  }), 14)
+}
+
+test "an inert let before the tail call does not change the outcome" {
+  assert_eq(driver(() -> Int with { Yield } {
+    let _z = 1
+    callee(1)
+  }), 14)
+}
+
+test "a capturing literal tail-calling a needing fn" {
+  let cap = 1
+  assert_eq(driver(() -> Int with { Yield } {
+    callee(cap)
+  }), 14)
+}
+
+test "a tail call through a chain of needing fns" {
+  assert_eq(driver(() -> Int with { Yield } {
+    callee_chained(1)
+  }), 14)
+}
+
+test "a tail call to a needing fn that never performs" {
+  assert_eq(driver(() -> Int with { Yield } {
+    callee_quiet(1)
+  }), 5)
+}
+
+// The same shapes at a HANDLE SITE body rather than in a literal. These were
+// already correct (the handle path wraps the split body in its driver, so no
+// arg-position fixup is involved) and are pinned so a fix on the literal side
+// cannot be made by weakening the shared split.
+fn site_tail() -> Int {
+  handle {
+    callee(1)
+  } with Yield {
+    Y(p) => {
+      let k = resume
+      k(p * 10)
+    }
+  }
+}
+
+test "a handle body that tail-calls a needing fn" {
+  assert_eq(site_tail(), 14)
+}
