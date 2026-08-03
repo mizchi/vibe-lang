@@ -453,62 +453,55 @@ stage1 を作ること。** それを試したのが下の切り分けで、結�
    できる**。つまり疑うべきは pin されている seed の codegen/perceus で
    あって、現行 source ではない。
 
-### 結論: seed 固有。out-line 化した RC コンパイラは fixpoint する
+### 結論 (訂正済み): seed と source の**交互作用**。bootstrap bump は恒久的な修正ではない
 
-quarantine を戻した HEAD (poison は trap のみで意味論的に中立) で、
-seed を介さない2段を回した:
+> **2026-08-03 訂正**: 当初この節は「blocker は seed 固有」と結論していた。
+> その比較は seed と source を**同時に**動かしており、支持されない。
+> 実際に bootstrap bump を試したら再発した。以下が訂正後の内容。
 
-```
-final_bump/stage2.wasm  --VIBE_RC=1-->  F_stage1.wasm   2,645,681 B   PASS
-F_stage1.wasm           --VIBE_RC=1-->  F_stage2.wasm   2,645,681 B   PASS
-```
+「どのコンパイラが stage1 を出力したか」と「どの source をコンパイルしたか」
+の2軸で all-RC bootstrap を回した結果:
 
-**F_stage1 と F_stage2 は同サイズ = fixpoint。** out-line 版 RC
-コンパイラは自分自身を再生産できる。落ちるのは
-`bootstrap/seed/compiler.wasm` が出力した stage1 だけである。
+| stage1 を出力したコンパイラ | source | all-RC |
+| --- | --- | --- |
+| pin 済み seed | `d9588da9` | **FAIL** |
+| `d9588da9` からビルド | `d9588da9` | **PASS** (fixpoint) |
+| `89a052b9` からビルド | `d9588da9` | **PASS** |
+| `89a052b9` からビルド | `89a052b9` | **FAIL** |
 
-| stage1 を作ったコンパイラ | dup guard | サイズ | 結果 |
-| --- | --- | --- | --- |
-| seed | inline | 6,332,395 | **OOB** |
-| 現行 (bump ビルド) | out-line | 2,645,681 | **PASS (fixpoint)** |
+- 行1 vs 行2/3: **source を固定して seed を替えると結果が変わる** → seed が効く
+- 行3 vs 行4: **seed を固定して source を替えると結果が変わる** → source も効く
 
-したがって #1262 の blocker は「out-line 化のバグ」でも「現行 RC/allocator
-の潜在不整合」でもなく、**pin された seed が この source 形状を RC で
-誤コンパイルする**という一点に還元される。対処は
-[bootstrap.md](bootstrap.md) の bootstrap bump — seed を現行ビルドで
-貼り替えれば all-RC bootstrap は通るはずである (未実施)。
+つまりどちらか一方に帰属させることはできない。**(コンパイラ, source 形状) の
+組み合わせで出たり出なかったりする潜在的な RC/allocator バグ**であり、#1262 が
+何度も踏んだ *set membership shuffles latent imbalances* と同型である。
 
-`main` が all-RC で通るのは、seed がたまたま `main` の source 形状を
-正しく扱えるからで、seed のバグが無いことの証明ではない。bisect が
-「単一 site ではなく累積的」と出たのも、seed が踏む形状かどうかが
-site 集合で変わるためと読める。
+**bootstrap bump は修正ではない。** その時点の source に対してたまたま当たりを
+引く操作でしかなく、以降どんな source 変更でも再発しうる。実際、out-line 化を
+マージした main (`89a052b9`) から作った seed で all-RC を回すと、旧 seed と
+**同じ `__rt_rc_alloc` ← `__rt_arr_new` で落ちる** (`heap_ptr=730006172`)。
 
-### 検証: seed を差し替えたら all-RC bootstrap が通った (fixpoint 一致)
+したがって `bootstrap/seed.json` の bump は行わなかった。all-RC 経路を
+production で有効にする前に、この潜在バグ自体を見つける必要がある。
 
-seed をローカルで現行ビルド (`_build/final_bump/stage2.wasm`) へ adopt して
-`VIBE_RC=1 scripts/generations.sh build --stage3` を回した (計装は撤去済み、
-out-line 化だけの状態):
+#### 依然として有効な結論
 
-```
-stage0 (差し替えた seed)   1,842,511 B
-stage1                     2,644,914 B   OK
-stage2                     2,644,652 B   OK
-stage3                     2,644,652 B   OK
-stage2 == stage3           byte-identical  = FIXPOINT
-```
-
-stage1/2/3 それぞれの sample 検証も通過。**旧 seed で必ず OOB していた
-`stage1 -> stage2` が、seed を替えただけで通る。** source は1バイトも
-変えていない。これで #1262 の blocker が seed 起因であることは確定した。
-
-同時に、out-line 化の効果が all-RC 経路でそのまま出ることも確認できた:
+- **out-line 化そのものは無罪**: seed は `__rt_rc_dup` を持たないので、
+  旧 seed の出力に out-line された dup は1つも含まれない (6.3MB がその証拠)。
+  crash するコードに存在しない機能が原因ではありえない。
+- **out-line 化の効果**: RC/bump 比 **3.37x → 1.44x** (−57.4%)。
+  `pkf run release-check` 緑、default gate は `VIBE_RC=0` pin なので影響なし。
 
 | | bump stage2 | RC stage2 | 比 |
 | --- | --- | --- | --- |
 | inline guard (従来) | 1,841,905 | 6,213,090 | 3.37x |
-| **out-line (本変更)** | 1,842,511 | **2,644,652** | **1.44x** |
+| **out-line** | 1,842,511 | **2,644,652** | **1.44x** |
 
-seed の正式な bump は GitHub Release の publish を伴う ([bootstrap.md](bootstrap.md)
-の手順) ため、この確認では `bootstrap/seed.json` は commit していない
-(存在しない tag を pin すると全クローン/CI の `ensure_seed.sh` が失敗する)。
+#### 次に潰すべきもの
 
+潜在バグの本体。制約が1つ判明している: **source 側の runtime 計装は seed が
+出力する stage1 には入らない** (前節) ので、計装するなら seed 以外で stage1 を
+作る必要がある。ただし「seed 以外で作った stage1」は source によって通ったり
+落ちたりするので、**落ちる (コンパイラ, source) の組で計装を入れる**のが要件に
+なる。`89a052b9` からビルドしたコンパイラ + `89a052b9` の source がその組で、
+これは手元で再現する。
