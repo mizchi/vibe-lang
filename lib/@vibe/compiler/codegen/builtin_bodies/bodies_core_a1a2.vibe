@@ -457,6 +457,72 @@ fn emit_rc_free_push(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
   emit_else(b)
   emit_rc_legacy_free_push(b, ptr_local)
   emit_end(b)
+  emit_rc_poison_set(b, ptr_local)
+}
+
+/// ADR-0092 (#1262) free-list poison, the memory-free replacement for
+/// VIBE_RC=shadow. `rc_shadow` needs a 1-byte-per-heap-address table at
+/// rc_shadow_base() = 256 MB, but a selfcompile heap reaches ~900 MB, so the
+/// bump pointer runs INTO the table and the guard corrupts the very heap it
+/// watches (observed: the shadow run dies in the checker, not in the
+/// allocator). This marks bit 30 of the block's own alloc_size word instead:
+/// sizes are far below 2^30, the bit costs no memory, and it says exactly one
+/// thing -- "this block is currently on a free list". Set on every free push,
+/// cleared on every allocation, checked at rc_drop entry. A drop of a poisoned
+/// block is a double free (or a drop through a stale reference), which is what
+/// puts a bogus NEXT link on the list and later faults inside the allocator.
+fn rc_poison_bit() -> Int {
+  1073741824
+}
+
+fn rc_poison_mask_off() -> Int {
+  -1073741825
+}
+
+/// store(ptr-8, load(ptr-8) | POISON). Pure emission, no scratch local.
+fn emit_rc_poison_set(b: Bytes, ptr_local: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_bit())
+  // i32.or (0x72)
+  bytebuf_push(b, 114)
+  emit_i32_store(b, 2, 0)
+}
+
+/// store(ptr-8, load(ptr-8) & ~POISON) -- the block is live again.
+fn emit_rc_poison_clear(b: Bytes, ptr_local: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_mask_off())
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_i32_store(b, 2, 0)
+}
+
+/// `if (load(ptr-8) & POISON) unreachable` -- trap AT the faulting operation
+/// so the wasm backtrace names the compiler function that owns the bad drop.
+fn emit_rc_poison_trap_if_freed(b: Bytes, ptr_local: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_bit())
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_if_void(b)
+  // unreachable
+  bytebuf_push(b, 0)
+  emit_end(b)
 }
 
 /// ADR-0055 Stage 3: the generic recursive rc_drop helper (linear RC backend).
@@ -535,6 +601,12 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int) -> By
   } else {
     ()
   }
+  // ADR-0092 (#1262) free-list poison: a drop of a block that is already on a
+  // free list is a double free. Trapping here names the caller in the wasm
+  // backtrace; letting it through instead decrements the NEXT link and the
+  // damage only surfaces later, inside __rt_rc_alloc, with no way back to the
+  // guilty function.
+  emit_rc_poison_trap_if_freed(b, 1)
   // #720: a saturated rc (low 24 bits == 0xFFFFFF) marks an immortal block
   // (see emit_rc_word_inc_saturating) -- never decrement, never free.
   emit_local_get(b, 1)
@@ -898,6 +970,23 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   } else {
     ()
   }
+  // ADR-0092 (#1262) free-list poison: bin[k] must only ever hold blocks of
+  // size 16+8k. Checking it here turns a corrupted bin into a trap at the
+  // moment of handout instead of a wild pointer handed to a caller.
+  emit_local_get(b, 4)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_mask_off())
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_local_get(b, 3)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  // unreachable
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_rc_poison_clear(b, 4)
   emit_local_get(b, 4)
   emit_i32_const(b, 8)
   emit_i32_sub(b)
@@ -927,11 +1016,15 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   emit_i32_const(b, 1)
   emit_i32_sub(b)
   emit_local_set(b, 5)
-  // load(cur-8) == sz → exact-fit block found
+  // load(cur-8) == sz → exact-fit block found (mask off the free-list poison
+  // bit, which every pushed block carries)
   emit_local_get(b, 1)
   emit_i32_const(b, 8)
   emit_i32_sub(b)
   emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_mask_off())
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
   emit_local_get(b, 3)
   emit_i32_eq(b)
   emit_if_void(b)
@@ -966,6 +1059,7 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
     ()
   }
   // return block_start = cur - 8
+  emit_rc_poison_clear(b, 1)
   emit_local_get(b, 1)
   emit_i32_const(b, 8)
   emit_i32_sub(b)

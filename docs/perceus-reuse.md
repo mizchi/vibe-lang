@@ -360,3 +360,55 @@ heap に 105MB の余裕がある状態で起きる = free list の壊れた nex
 の probe entry + phase 二分。最小差分ペア (`emit_rc_dup_guarded` が
 どちらの分岐を取るかだけが違う stage1 が2つ) が手元にある。
 
+## Implementation notes (2026-08-03 続き, #1262) — blocker 追跡の前提の訂正
+
+### bisect harness の sed 残骸が生成物として commit されていた
+
+`bisect_sites.sh` / `bisect_lines.sh` は sed で call site を `-1` に潰し、
+`resolve_generated_conflicts.sh --regen` で生成物を作り直してからビルドし、
+最後に `git checkout -- lib/@vibe/compiler` で戻す。この戻しが効かないまま
+commit した結果、**手書き source と生成物が食い違う commit が2つできていた**:
+
+| commit | 手書き source の call site | committed `_cli_adapter_module_source.vibe` |
+| --- | --- | --- |
+| `84b771ed` / `24cb1afa` / `97c7b559` | 30 | 30 (一致) |
+| `b1976ce3` | 30 | **9** (= onlyTail 構成 = FAIL 既知) |
+| `334f924a` | 30 | **5** (= bl_half2 構成 = PASS 既知) |
+
+生成物は committed source の決定的関数で、`generations.sh` は
+`VIBE_REGEN_MODULE_SOURCE=1` がなければ committed 版をそのまま使う。よって
+`334f924a` から `VIBE_RC=1 scripts/generations.sh build` を回すと full
+out-line ではなく **bl_half2 構成がビルドされ、通ってしまう**。blocker が
+消えたように見える。実際そう見えた (`_build/repro_head` = exit 0)。
+
+再生成して 30 site に戻した (`d9588da9`、bundles は `97c7b559` と byte 一致)
+うえで回すと **同じ crash が同じ heap_ptr=757000688 で再現**する。
+`84b771ed`〜`97c7b559` は生成物が一致していたので、**前節の bisect 表と
+「潰した仮説」は有効**。
+
+`pkf run test` の `scripts/check_module_source_sync.sh` はこの食い違いを
+検出する gate だが、この WIP 群は gate を通していなかった。**探索用に
+source を機械的に書き換える harness を使うときは、commit 前に必ず
+`pkf run test` か最低でも `check_module_source_sync.sh` を通すこと。**
+
+### `VIBE_RC=shadow` は selfcompile 規模では使えない (heap と shadow 表が重なる)
+
+#715 recurrence guard は「1 heap address = 1 byte」の liveness 表を
+`rc_shadow_base()` = **256 MB** 固定に置く。`rc_shadow_reserve()` は
+memory section の最小ページ数を増やすだけで、**heap の開始位置も上限も
+動かさない**。heap は 0 付近から上へ伸びるので、**heap が 256 MB を超えた
+瞬間から bump pointer が shadow 表そのものを踏む**。
+
+selfcompile の heap は実測 924 MB (通る側の probe) まで伸びるので、
+shadow モードは必ずこの状態に入る。実際 shadow 実行のクラッシュは
+`heap_ptr=268501644 (0x1001028c)` — `rc_shadow_base()` = `0x10000000` の
+**66 KB 先**で、落ちる場所も checker の `expr_children` (guard ではない
+普通の関数) だった。これは「設定で場所が変わる = ヒープ破壊の典型」では
+なく、**shadow 機構自身がヒープを壊していた**。
+
+したがって #715 guard は今回の diagnosis に使えない。代替として、block
+header の `alloc_size` word の **bit 30** を free-list 在籍マークに使う
+poison 方式を入れた (サイズは 2^30 に遠く届かないので追加メモリ 0):
+free push で立て、alloc の払い出しで落とし、`__rt_rc_drop` の入口で
+立っていたら `unreachable`。bin 払い出し時に `size == 要求 sz` も検査する。
+
