@@ -2637,6 +2637,58 @@ literal の body がちょうど `f()` (f は自身の E-row param) なら原理
 二重包みになるはずだが、その形は callee の arity と噛み合わないため
 **再現できていない**。実例が出たら同じ場所を直す。
 
+### 追記39 (2026-08-03): 名前を持たない closure literal (IIFE) の正規化漏れ (#1385)
+
+edp の eligibility (`edp_has_unsafe_construct`) は **callee が bare
+`EIdent` でない call を無条件に opaque とみなす**。`ECall(EDot(..))` を弾く
+ための fallback だが、**IIFE** — `(() -> Int with { E } { .. })()` — も同じ
+形なので巻き込まれる。追記34 V2 が replay を撤去した後、これは「その effect
+全体が migration 不能」= hard error を意味する。
+
+IIFE 自体は想定済みで、`dlh_hoist_expr` に
+`(lit)()` → `ELet(fresh, lit, fresh())` の正規化がある (追記20 の周辺)。
+名前が付けば `edp_row_lit_scan` の `binds` に載り、その名前経由の呼び出しに
+evidence が前置される。**問題はその発火条件が `dlh_has_perform(body)` =
+「body が直接 perform するか」だったこと**。row を宣言しつつ、その row を
+**別の row-carrying 関数を呼ぶことで消費する** literal は「effectful でない」
+と判定され、無名のまま残っていた。
+
+```vibe
+fn bump0() -> Int with { Async } { let w = perform Async::Suspend(1)  w + 100 }
+handle { (() -> Int with { Async } { bump0() })() } with Async { .. }
+```
+
+**この形をユーザは普通 IIFE として書かない**。`dtpw_inline_trivial_wrappers`
+(#1070) が作る:
+
+```vibe
+fn apply0(f: () -> Int with { Async }) -> Int with { Async } { f() }
+handle { apply0(() -> Int with { Async } { bump0() }) } with Async { .. }
+```
+
+`apply0` は body が「自分の唯一の param への同アリティ直接呼び出し」ちょうど
+なので trivial wrapper と判定され、`apply0(lit)` は `(lit)()` に簡約される。
+1引数の綴り `apply1(f) { f(1) }` は同アリティ forward ではないので簡約されず
+無事 — **0引数のときだけ壊れる**という非対称はここから来ていた
+(#1380 が「planning 側の非対称」として範囲外に残したもの。planning は無関係
+だった)。
+
+**修正**: naming の発火条件を「body が直接 perform する **または** 宣言
+された effect row が空でない」(`dlh_row_is_effectful`) に広げる。row を持つ
+literal は定義上 effectful なので委譲形も拾う。ゲートが元々狭かったのは pure
+な `derive(Eq)`/`derive(Ord)` comparator closure を触って壊した実績があるため
+だが、あれらは row を持たないので row 基準では巻き込まない。
+
+**ELet の hoist 判定 (`dlh_has_perform`) は広げていない**。名前を付けるのは
+意味論を変えないが、top-level へ **移動** するのは変える (suberror ctor の
+scope 破壊が記録されている)。広げたのは naming 側だけで、row はあるが直接
+perform しない literal は「ローカルの `let` に束縛されるが hoist はされない」
+— 手で `let g = ...` と書いたときと同じ形に落ちる。
+
+fixtures: `effect_iife_needing_call.vibe` (素の IIFE、want 142)、
+`effect_trivial_wrapper_needing_call.vibe` (#1070 経由で IIFE になる形、
+want 142)。どちらも修正前の compiler では上記 hard error になることを確認済み。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

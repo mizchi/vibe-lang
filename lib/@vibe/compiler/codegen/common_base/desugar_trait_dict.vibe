@@ -6440,6 +6440,32 @@ fn dlh_naa_scan_arms(arms: Array[(Pat, Expr)], names: Array[String], bad: Array[
 /// closure completely untouched by this pass, restoring the pre-existing
 /// (working) behavior for that case while keeping the IIFE/HOF-arg fix
 /// for genuinely effectful literals.
+/// A closure literal's DECLARED effect row is non-empty.
+///
+/// #1385: the IIFE normalization below used `dlh_has_perform` alone to
+/// decide "is this literal effectful enough to deserve a name". That asks
+/// whether the body performs DIRECTLY, so a literal that carries a row but
+/// discharges it by CALLING a row-carrying function (`() -> Int with { E }
+/// { helper(1) }`) answered no and kept its anonymous IIFE shape. The
+/// evidence-dict pass then rejected the whole effect, because
+/// edp_has_unsafe_construct treats every call whose callee is not a bare
+/// identifier as opaque -- an IIFE is exactly that. Reading the declared
+/// row instead of the body catches the delegating case while leaving the
+/// derive(Eq)/derive(Ord) comparator closures that motivated the narrow
+/// gate (see dlh_args_have_literal_efn's doc comment) untouched: those are
+/// pure and carry no row at all.
+///
+/// Deliberately NOT used for the ELet hoist decision, which stays on
+/// `dlh_has_perform`. Naming a literal is semantics-preserving; RELOCATING
+/// one to the top level is not (that gate's own comment records a
+/// suberror-ctor scoping break), so widening this must not widen that.
+fn dlh_row_is_effectful(eff: Option[String]) -> Bool {
+  match eff {
+    Some(s) => String::trim(s) != "",
+    None => false
+  }
+}
+
 fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
   let mut i = 0
   let mut found = false
@@ -6631,7 +6657,7 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
     // function -- reuses 100% of the existing, separately-verified
     // ELet/EFn logic above with no new closure-conversion code.
     ECall(callee, args, off) => match callee {
-      EFn(_, _, _, _, _, cfbody) => if dlh_has_perform(cfbody) {
+      EFn(_, _, _, _, ceff, cfbody) => if dlh_has_perform(cfbody) || dlh_row_is_effectful(ceff) {
         let idx = Array::get(ctr, 0)
         Array::set(ctr, 0, idx + 1)
         let iife_name = "__dlh_iife_\{idx}"
