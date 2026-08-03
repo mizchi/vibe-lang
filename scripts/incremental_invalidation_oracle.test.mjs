@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   compareObservedInvalidation,
+  compareSuccessfulIncrementalInvalidationTraces,
   parseIncrementalInvalidationTrace,
   planObservedTypingInvalidation,
 } from "./incremental_invalidation_oracle.mjs";
@@ -69,6 +70,76 @@ test("incremental invalidation trace rejects stale, missing, and dishonest ident
   const stale = structuredClone(validTrace);
   stale.modules[0].decision = "rechecked";
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(stale)), /rechecked decision count mismatch/);
+});
+
+function parsedComparisonTrace(nonce) {
+  const trace = structuredClone(validTrace);
+  const row = (path, dependencies, suffix) => ({
+    ...structuredClone(validTrace.modules[0]),
+    path,
+    direct_dependencies: dependencies,
+    source_fingerprint: `source:${suffix}`,
+    implementation_fingerprint: `implementation:${suffix}`,
+    interface_fingerprint: `interface:${suffix}`,
+    checked_env_fingerprint: `checked-env:${suffix}`,
+  });
+  trace.run_nonce = nonce;
+  trace.modules = [
+    row("base.vibe", [], "base"),
+    row("library.vibe", ["base.vibe"], "library"),
+    row("app.vibe", ["base.vibe", "library.vibe"], "app"),
+  ];
+  trace.aggregate_telemetry = {
+    schema: 1,
+    modules_planned: 3,
+    modules_rechecked: 0,
+    modules_reused: 3,
+    parse_operations: 0,
+    modules_failed_or_blocked: 0,
+  };
+  return parseIncrementalInvalidationTrace(JSON.stringify(trace), nonce);
+}
+
+test("successful trace semantic comparison excludes only run_nonce", () => {
+  const expected = parsedComparisonTrace("comparison-expected");
+  const actual = parsedComparisonTrace("comparison-actual");
+  assert.doesNotThrow(() => compareSuccessfulIncrementalInvalidationTraces(expected, actual));
+
+  const fingerprintMismatch = structuredClone(actual);
+  fingerprintMismatch.modules[1].implementation_fingerprint = "implementation:changed";
+  assert.throws(
+    () => compareSuccessfulIncrementalInvalidationTraces(expected, fingerprintMismatch),
+    /modules\[1\]\(library\.vibe\)\.implementation_fingerprint/,
+  );
+
+  const dependencyOrderMismatch = structuredClone(actual);
+  dependencyOrderMismatch.modules[2].direct_dependencies.reverse();
+  assert.throws(
+    () => compareSuccessfulIncrementalInvalidationTraces(expected, dependencyOrderMismatch),
+    /modules\[2\]\(app\.vibe\)\.direct_dependencies\[0\]/,
+  );
+
+  // Keep this altered trace internally valid: the decision counts still
+  // partition planned modules, so rejection comes from semantic comparison.
+  const decisionMismatch = structuredClone(actual);
+  decisionMismatch.modules[0].decision = "rechecked";
+  decisionMismatch.aggregate_telemetry.modules_rechecked = 1;
+  decisionMismatch.aggregate_telemetry.modules_reused = 2;
+  const parsedDecisionMismatch = parseIncrementalInvalidationTrace(JSON.stringify(decisionMismatch), "comparison-actual");
+  assert.throws(
+    () => compareSuccessfulIncrementalInvalidationTraces(expected, parsedDecisionMismatch),
+    /modules\[0\]\(base\.vibe\)\.decision/,
+  );
+
+  // parse_operations is independent aggregate accounting, making this a
+  // valid successful trace with deliberately different observed telemetry.
+  const telemetryMismatch = structuredClone(actual);
+  telemetryMismatch.aggregate_telemetry.parse_operations = 1;
+  const parsedTelemetryMismatch = parseIncrementalInvalidationTrace(JSON.stringify(telemetryMismatch), "comparison-actual");
+  assert.throws(
+    () => compareSuccessfulIncrementalInvalidationTraces(expected, parsedTelemetryMismatch),
+    /aggregate_telemetry\.parse_operations/,
+  );
 });
 
 test("incremental invalidation trace rejects dependencies outside its complete module universe", () => {

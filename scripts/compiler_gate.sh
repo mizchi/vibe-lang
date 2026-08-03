@@ -69,10 +69,10 @@ VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3aa/3 incremental invalidation observation oracle"
 VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 
-# 3ab. #1379 opt-in metadata-only ingestion stamp: a copied real index.vpkg
-# member proves cross-process exact-token reuse, malformed/token-change
-# fallback, and unchanged checker success under an isolated cache.
-echo "[compiler-gate] 3ab/3 persistent ingestion stamp oracle"
+# 3ab. #1379 opt-in metadata-only ingestion stamp: isolated equivalent cache
+# histories prove observed successful-check invalidation/output equivalence,
+# while retaining malformed/token-change fallback coverage.
+echo "[compiler-gate] 3ab/3 persistent ingestion stamp observed-check equivalence oracle"
 node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
