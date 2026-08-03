@@ -1936,12 +1936,27 @@ export fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit
 /// output-size ratchet, and bought no wall time. The direction that lost
 /// there is the direction that wins here.
 export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_fn_idx: Int) -> Unit {
+  // Both arms use `buf` EXACTLY ONCE. That symmetry is load-bearing, not
+  // style: pc_emit merges an EIf's two arms by taking the MINIMUM use count
+  // (#705), so an arm that touches `buf` twice while the other touches it
+  // once gets a budget of one and releases two -- the over-release that
+  // corrupts the free list and surfaces later as an out-of-bounds access
+  // (#715). Writing the call form inline here cost exactly that: the
+  // all-RC bootstrap trapped in stage1 while every bump-built compiler
+  // emitting the same bytes was fine, because only an RC-built binary
+  // actually refcounts. Keep the two-instruction form in its own function.
   if dup_fn_idx >= 0 {
-    emit_local_get(buf, local_idx)
-    emit_call(buf, dup_fn_idx)
+    emit_rc_dup_call(buf, local_idx, dup_fn_idx)
   } else {
     emit_rc_dup_inline(buf, local_idx, rc_shadow)
   }
+}
+
+/// `local.get v; call __rt_rc_dup` -- factored out so emit_rc_dup_guarded's
+/// arms stay use-count symmetric (see the note there).
+fn emit_rc_dup_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_call(buf, dup_fn_idx)
 }
 
 /// The guard expanded in place. Kept as the single definition of what a dup
