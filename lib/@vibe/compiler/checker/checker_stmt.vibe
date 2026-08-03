@@ -71,6 +71,15 @@ export struct CheckedProgram {
   typed_occurrences: Array[(Int, Type)]
 }
 
+/// Observation-only provenance aligned with `checked_program.type_defs`.
+/// `type_def_binders` contains generic TDEnum binder CtVar ids in declaration
+/// order. This is deliberately separate so CheckedProgram remains source
+/// compatible with its original production-result shape.
+export struct CheckedProgramTypeDefsObservation {
+  checked_program: CheckedProgram;
+  type_def_binders: Array[Array[Int]]
+}
+
 //# Functions
 
 /// ADR-0069 Phase 1: locate a top-level statement for the reject diagnostics
@@ -610,7 +619,7 @@ fn reorder_type_decls_first(stmts: Array[Stmt], start: Int) -> Array[Stmt] {
   out
 }
 
-export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
+fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   let mut idx = i
   let mut cur_env = env
@@ -914,6 +923,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
           vi = vi + 1
         }
         Array::push(defs, TDEnum(name, params, resolved_variants))
+        Array::push(type_def_binders, param_var_ids)
         let mut env1 = env_bind(env, name, CtEnum(name))
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
@@ -1030,6 +1040,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
           vi = vi + 1
         }
         Array::push(defs, TDEnum(name, array_empty(), resolved_variants))
+        Array::push(type_def_binders, array_empty())
         let mut env1 = env_bind(env, name, CtEnum(name))
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
@@ -1074,6 +1085,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         // to a rigid `CtNamed(param, [])` (no such typedef/builtin), which is
         // exactly what the checker's literal instantiation substitutes.
         Array::push(defs, TDStruct(name, resolved_fields, mut_fields, tparams))
+        Array::push(type_def_binders, array_empty())
         let field_types = array_empty()
         let mut fj = 0
         while fj < Array::length(resolved_fields) {
@@ -1133,6 +1145,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         // Record the alias (with its formal params) so an applied use
         // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
         Array::push(defs, TDAlias(name, params, t))
+        Array::push(type_def_binders, array_empty())
         (env_bind(env, name, t), s, c)
       },
       SExternLet(name, te) => {
@@ -1171,7 +1184,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         }
       },
       SModule(_, _, body) => {
-        let _ = check_stmts(body, 0, env, defs, s, c, errors, tytab)
+        let _ = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab)
         (env, s, c)
       },
       SImport(_, names) => (bind_stmt_imports(env, names), s, c)
@@ -1231,6 +1244,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
           oi = oi + 1
         }
         Array::push(defs, TDEffect(ename, resolved_ops, eparams))
+        Array::push(type_def_binders, array_empty())
         (env, s, c)
       },
       SEffectSet(_, esname, _) => {
@@ -1999,10 +2013,17 @@ fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_
   }
 }
 
+/// Compatibility statement checker. It intentionally preserves the historical
+/// signature; production result APIs use the provenance-aware internal helper.
+export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
+  let ignored_type_def_binders = array_empty()
+  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, s, c, errors, tytab)
+}
+
 /// Run the production whole-program check and retain every successful output
 /// the checker actually produces. This deliberately does not use the
 /// hover-only `check_program_type_table` path.
-export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Error } {
+fn check_program_type_defs_observation_impl(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with { Error } {
   // #760(2): make `Result` (Ok/Err) resolvable standalone — append its enum
   // declaration unless already declared/imported. Must run before checking so
   // `Result::Ok` / bare `Ok` / `Result[T, E]` annotations resolve on the
@@ -2033,6 +2054,7 @@ export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Erro
   // reordered form.
   desugar_labeled_args(stmts)
   let empty_defs = array_empty()
+  let type_def_binders = array_empty()
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
   } else {
@@ -2058,7 +2080,7 @@ export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Erro
     let (top_es_names, top_es_members_list, _, _) = es_collect_tables(stmts, 0)
     es_expand_stmts_effect_rows(stmts, top_es_names, top_es_members_list)
   }
-  let (env, final_s, _) = check_stmts(expanded_stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   // #1081 step 3 Phase B (Codex review, PR #1151): `let mut` capture
@@ -2076,13 +2098,27 @@ export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Erro
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
-  CheckedProgram::{
-    checked_stmts: stmts,
-    final_env: env,
-    type_defs: empty_defs,
-    final_subst: final_s,
-    typed_occurrences: tytab
+  CheckedProgramTypeDefsObservation::{
+    checked_program: CheckedProgram::{
+      checked_stmts: stmts,
+      final_env: env,
+      type_defs: empty_defs,
+      final_subst: final_s,
+      typed_occurrences: tytab
+    },
+    type_def_binders: type_def_binders
   }
+}
+
+/// Run the production checker once and expose retained type-definition binder
+/// provenance for canonical observation.
+export fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with { Error } {
+  check_program_type_defs_observation_impl(stmts)
+}
+
+/// Successful production-check result, preserving the original public shape.
+export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Error } {
+  check_program_type_defs_observation_impl(stmts).checked_program
 }
 
 /// Compatibility API: preserve the historical TypeEnv result and error
@@ -2120,9 +2156,9 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
-export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with { Error } {
+fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgramTypeDefsObservation with { Error } {
   match initial_env {
-    EnvEmpty => check_program_result(stmts),
+    EnvEmpty => check_program_type_defs_observation_impl(stmts),
     _ => {
       inject_prelude_result(stmts)
       inject_trait_method_generics(stmts)
@@ -2136,6 +2172,7 @@ export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv
       // #986: reorder fully-labeled calls before checking (see check_program).
       desugar_labeled_args(stmts)
       let empty_defs = array_empty()
+      let type_def_binders = array_empty()
       let cached_env = env_cache(initial_env)
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env
@@ -2146,7 +2183,7 @@ export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv
       let tytab = array_empty()
       // #986: labeled-argument name validation (see check_program).
       check_labeled_arg_names_stmts(stmts, frozen_errors, false)
-      let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+      let (env, final_s, _) = check_stmts_with_binders(stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab)
       // #1090 review: the FS typecheck path (every file with imports) went
       // through here and never enforced trait bounds, so `[T: Send]` on an
       // imported generic fn was silently bypassed. Enforce the Send bound
@@ -2166,15 +2203,29 @@ export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }
-      CheckedProgram::{
-        checked_stmts: stmts,
-        final_env: env,
-        type_defs: empty_defs,
-        final_subst: final_s,
-        typed_occurrences: tytab
+      CheckedProgramTypeDefsObservation::{
+        checked_program: CheckedProgram::{
+          checked_stmts: stmts,
+          final_env: env,
+          type_defs: empty_defs,
+          final_subst: final_s,
+          typed_occurrences: tytab
+        },
+        type_def_binders: type_def_binders
       }
     }
   }
+}
+
+/// Run the production checker once with an initial environment and expose
+/// retained type-definition binder provenance for canonical observation.
+export fn check_program_with_env_type_defs_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgramTypeDefsObservation with { Error } {
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env)
+}
+
+/// Successful production-check result, preserving the original public shape.
+export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with { Error } {
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env).checked_program
 }
 
 /// Compatibility API: preserve the historical TypeEnv result and error

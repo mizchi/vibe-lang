@@ -1,11 +1,12 @@
 //# Canonical checked value-environment observation (# canonical-checked-type-state)
 //
-// This deliberately observes only CheckedProgram.final_env and final_subst.
-// It does not serialize checked statements, typedefs, traits/impls, typed
-// occurrences, runtime sidecars, or persistent cache state.
+// The value-environment API below deliberately observes only CheckedProgram.final_env
+// and final_subst. The separate typedef API at the end observes retained type
+// definitions plus their declaration-time binder provenance. Neither serializes
+// checked statements, traits/impls, typed occurrences, runtime sidecars, or cache state.
 
 import @vibe/compiler/core {
-  Subst, Type, TypeEnv, __to_string, canonical_exception_effect_name, str_lt, subst_lookup
+  Subst, Type, TypeDef, TypeEnv, __to_string, canonical_exception_effect_name, str_lt, subst_lookup
 }
 
 import @vibe/core {
@@ -232,7 +233,20 @@ fn canonical_bounds_for(vars: Array[Int], rows: Array[(Int, Array[String])], id:
   canonical_node("B", sorted_unique_strings(labels))
 }
 
-fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], free_ids: Array[Int], free_names: Array[String], resolving: Array[Int]) -> String {
+fn canonical_named_bound(names: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(names) && found < 0 {
+    if Array::get(names, i) == name {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], bound_names: Array[String], free_ids: Array[Int], free_names: Array[String], resolving: Array[Int]) -> String {
   match ty {
     CtInt => canonical_node("I", array_empty()),
     CtDouble => canonical_node("D", array_empty()),
@@ -257,7 +271,7 @@ fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], free_ids: Array[Int
           Some(next) => {
             let next_resolving = Array::slice(resolving, 0, Array::length(resolving))
             Array::push(next_resolving, id)
-            canonical_type(next, s, bound_ids, free_ids, free_names, next_resolving)
+            canonical_type(next, s, bound_ids, bound_names, free_ids, free_names, next_resolving)
           },
           None => canonical_node("V", [
             canonical_free_var(id, free_ids, free_names)
@@ -269,16 +283,16 @@ fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], free_ids: Array[Int
       let fields = array_empty()
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(fields, canonical_type(Array::get(items, i), s, bound_ids, free_ids, free_names, resolving))
+        Array::push(fields, canonical_type(Array::get(items, i), s, bound_ids, bound_names, free_ids, free_names, resolving))
         i = i + 1
       }
       canonical_node("T", fields)
     },
     CtArray(item) => canonical_node("A", [
-      canonical_type(item, s, bound_ids, free_ids, free_names, resolving)
+      canonical_type(item, s, bound_ids, bound_names, free_ids, free_names, resolving)
     ]),
     CtOption(item) => canonical_node("O", [
-      canonical_type(item, s, bound_ids, free_ids, free_names, resolving)
+      canonical_type(item, s, bound_ids, bound_names, free_ids, free_names, resolving)
     ]),
     CtEnum(name) => canonical_node("N", [
       name
@@ -287,25 +301,36 @@ fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], free_ids: Array[Int
       name
     ]),
     CtNamed(name, args) => {
-      let fields = [
-        name
-      ]
-      let mut i = 0
-      while i < Array::length(args) {
-        Array::push(fields, canonical_type(Array::get(args, i), s, bound_ids, free_ids, free_names, resolving))
-        i = i + 1
+      let bound_at = if Array::length(args) == 0 {
+        canonical_named_bound(bound_names, name)
+      } else {
+        -1
       }
-      canonical_node("M", fields)
+      if bound_at >= 0 {
+        canonical_node("Q", [
+          __to_string(bound_at)
+        ])
+      } else {
+        let fields = [
+          name
+        ]
+        let mut i = 0
+        while i < Array::length(args) {
+          Array::push(fields, canonical_type(Array::get(args, i), s, bound_ids, bound_names, free_ids, free_names, resolving))
+          i = i + 1
+        }
+        canonical_node("M", fields)
+      }
     },
     CtFn(params, ret, effect) => {
       let fields = array_empty()
       let mut i = 0
       while i < Array::length(params) {
-        Array::push(fields, canonical_type(Array::get(params, i), s, bound_ids, free_ids, free_names, resolving))
+        Array::push(fields, canonical_type(Array::get(params, i), s, bound_ids, bound_names, free_ids, free_names, resolving))
         i = i + 1
       }
-      Array::push(fields, canonical_type(ret, s, bound_ids, free_ids, free_names, resolving))
-      Array::push(fields, canonical_effect(s, effect))
+      Array::push(fields, canonical_type(ret, s, bound_ids, bound_names, free_ids, free_names, resolving))
+      Array::push(fields, canonical_effect_with_params(s, effect, bound_names))
       canonical_node("F", fields)
     },
     CtForAll(vars, rows, body) => {
@@ -325,7 +350,7 @@ fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], free_ids: Array[Int
         Array::push(fields, canonical_bounds_for(vars, rows, id))
         j = j + 1
       }
-      Array::push(fields, canonical_type(body, s, nested_bound, free_ids, free_names, resolving))
+      Array::push(fields, canonical_type(body, s, nested_bound, bound_names, free_ids, free_names, resolving))
       canonical_node("G", fields)
     }
   }
@@ -440,7 +465,7 @@ export fn canonical_effective_value_env_snapshot(env: TypeEnv, s: Subst) -> Stri
     let (name, ty) = Array::get(bindings, i)
     Array::push(fields, canonical_node("B", [
       name,
-      canonical_type(ty, s, array_empty(), free_ids, free_names, array_empty())
+      canonical_type(ty, s, array_empty(), array_empty(), free_ids, free_names, array_empty())
     ]))
     i = i + 1
   }
@@ -450,4 +475,240 @@ export fn canonical_effective_value_env_snapshot(env: TypeEnv, s: Subst) -> Stri
 /// CheckedProgram wrapper: observes only final_env and final_subst.
 export fn canonical_checked_value_env_snapshot(checked: CheckedProgram) -> String {
   canonical_effective_value_env_snapshot(checked.final_env, checked.final_subst)
+}
+
+//# Retained type-definition observation
+
+// Normalize only complete identifier tokens, so a parameter `T` does not
+// accidentally rewrite a nominal name such as `Thing` in an effect label.
+fn canonical_effect_label_with_params(label: String, params: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < String::length(label) {
+    let code = String::char_code_at(label, i)
+    let is_ident = (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || code == 95
+    if is_ident {
+      let start = i
+      while i < String::length(label) {
+        let inner = String::char_code_at(label, i)
+        if (inner >= 65 && inner <= 90) || (inner >= 97 && inner <= 122) || (inner >= 48 && inner <= 57) || inner == 95 {
+          i = i + 1
+        } else {
+          ()
+          // Break by advancing no further; the outer loop consumes punctuation.
+          break
+        }
+      }
+      let token = String::substring(label, start, i)
+      let at = canonical_named_bound(params, token)
+      if at >= 0 {
+        out = String::concat(out, String::concat("Q", __to_string(at)))
+      } else {
+        out = String::concat(out, token)
+      }
+    } else {
+      out = String::concat(out, String::substring(label, i, i + 1))
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn canonical_effect_with_params(s: Subst, effect: Option[String], params: Array[String]) -> String {
+  match effect {
+    None => canonical_node("EP", array_empty()),
+    Some(name) => {
+      let resolved = if canonical_is_effect_var(name) {
+        canonical_effect_lookup(s, name, array_empty())
+      } else {
+        Some(name)
+      }
+      match resolved {
+        Some(text) => if String::length(text) == 0 {
+          canonical_node("EP", array_empty())
+        } else {
+          let labels = canonical_effect_labels(text)
+          let normalized = array_empty()
+          let mut i = 0
+          while i < Array::length(labels) {
+            Array::push(normalized, canonical_effect_label_with_params(Array::get(labels, i), params))
+            i = i + 1
+          }
+          canonical_node("ER", sorted_unique_strings(normalized))
+        },
+        None => canonical_node("EV", [
+          canonical_effect_label_with_params(name, params)
+        ])
+      }
+    }
+  }
+}
+
+fn canonical_typedef_type(ty: Type, s: Subst, enum_binders: Array[Int], rigid_params: Array[String], free_ids: Array[Int], free_names: Array[String]) -> String {
+  // `canonical_type` handles bound CtVar before looking in `s`, making enum
+  // declaration binders substitution-safe. CtNamed rigid params are handled
+  // before their nominal encoding for structs, aliases, and effects.
+  canonical_type(ty, s, enum_binders, rigid_params, free_ids, free_names, array_empty())
+}
+
+fn canonical_typedef(def: TypeDef, binders: Array[Int], s: Subst, free_ids: Array[Int], free_names: Array[String]) -> String {
+  match def {
+    TDEnum(name, params, variants) => {
+      let fields = [
+        name,
+        __to_string(Array::length(params))
+      ]
+      let mut i = 0
+      while i < Array::length(variants) {
+        let (variant_name, payloads) = Array::get(variants, i)
+        let variant_fields = [
+          variant_name
+        ]
+        let mut j = 0
+        while j < Array::length(payloads) {
+          Array::push(variant_fields, canonical_typedef_type(Array::get(payloads, j), s, binders, array_empty(), free_ids, free_names))
+          j = j + 1
+        }
+        Array::push(fields, canonical_node("V", variant_fields))
+        i = i + 1
+      }
+      canonical_node("E", fields)
+    },
+    TDStruct(name, fields_raw, mut_fields, params) => {
+      let fields = [
+        name,
+        __to_string(Array::length(params))
+      ]
+      let mut i = 0
+      while i < Array::length(fields_raw) {
+        let (field_name, field_ty) = Array::get(fields_raw, i)
+        Array::push(fields, canonical_node("F", [
+          field_name,
+          canonical_typedef_type(field_ty, s, array_empty(), params, free_ids, free_names)
+        ]))
+        i = i + 1
+      }
+      Array::push(fields, canonical_node("MU", sorted_unique_strings(mut_fields)))
+      canonical_node("S", fields)
+    },
+    TDAlias(name, params, body) => canonical_node("A", [
+      name,
+      __to_string(Array::length(params)),
+      canonical_typedef_type(body, s, array_empty(), params, free_ids, free_names)
+    ]),
+    TDEffect(name, ops, params) => {
+      let fields = [
+        name,
+        __to_string(Array::length(params))
+      ]
+      let mut i = 0
+      while i < Array::length(ops) {
+        let (op_name, args, ret) = Array::get(ops, i)
+        let op_fields = [
+          op_name
+        ]
+        let mut j = 0
+        while j < Array::length(args) {
+          Array::push(op_fields, canonical_typedef_type(Array::get(args, j), s, array_empty(), params, free_ids, free_names))
+          j = j + 1
+        }
+        Array::push(op_fields, canonical_typedef_type(ret, s, array_empty(), params, free_ids, free_names))
+        Array::push(fields, canonical_node("O", op_fields))
+        i = i + 1
+      }
+      canonical_node("K", fields)
+    }
+  }
+}
+
+/// Canonical, observation-only retained type-definition snapshot. It is not a
+/// typed IR, source serialization, cache key, sidecar, or reuse contract.
+/// Definitions and their nested members remain in checker registration order.
+fn canonical_typedef_kind(def: TypeDef) -> String {
+  match def {
+    TDEnum(_, _, _) => "enum",
+    TDStruct(_, _, _, _) => "struct",
+    TDAlias(_, _, _) => "alias",
+    TDEffect(_, _, _) => "effect"
+  }
+}
+
+// Malformed observations are data, not recoverable empty provenance. Include
+// the aligned position, definition kind, overall counts, and local counts so
+// snapshots fail closed and remain deterministic for diagnostics/tests.
+fn canonical_malformed_provenance(position: Int, kind: String, defs_count: Int, binders_count: Int, expected_binders: Int, actual_binders: Int, reason: String) -> String {
+  canonical_node("M", [
+    "position",
+    __to_string(position),
+    "kind",
+    kind,
+    "defs_count",
+    __to_string(defs_count),
+    "binders_count",
+    __to_string(binders_count),
+    "expected_binders",
+    __to_string(expected_binders),
+    "actual_binders",
+    __to_string(actual_binders),
+    "reason",
+    reason
+  ])
+}
+
+/// Canonical, observation-only retained type-definition snapshot. It is not a
+/// typed IR, source serialization, cache key, sidecar, or reuse contract.
+/// Malformed provenance is represented explicitly rather than treated as an
+/// empty binder list.
+export fn canonical_checked_type_defs_snapshot(observation: CheckedProgramTypeDefsObservation) -> String {
+  let fields = [
+    "v1"
+  ]
+  let checked = observation.checked_program
+  let defs = checked.type_defs
+  let binders_by_def = observation.type_def_binders
+  let defs_count = Array::length(defs)
+  let binders_count = Array::length(binders_by_def)
+  let free_ids = array_empty()
+  let free_names = array_empty()
+  if defs_count != binders_count {
+    Array::push(fields, canonical_malformed_provenance(-1, "array", defs_count, binders_count, defs_count, binders_count, "array_count_mismatch"))
+  } else {
+    ()
+  }
+  let mut i = 0
+  while i < defs_count {
+    let def = Array::get(defs, i)
+    let kind = canonical_typedef_kind(def)
+    if i >= binders_count {
+      let expected = match def {
+        TDEnum(_, params, _) => Array::length(params),
+        _ => 0
+      }
+      Array::push(fields, canonical_malformed_provenance(i, kind, defs_count, binders_count, expected, -1, "missing_metadata"))
+    } else {
+      let binders = Array::get(binders_by_def, i)
+      let actual = Array::length(binders)
+      match def {
+        TDEnum(_, params, _) => {
+          let expected = Array::length(params)
+          if actual != expected {
+            Array::push(fields, canonical_malformed_provenance(i, kind, defs_count, binders_count, expected, actual, "enum_binder_count_mismatch"))
+          } else {
+            Array::push(fields, canonical_typedef(def, binders, checked.final_subst, free_ids, free_names))
+          }
+        },
+        _ => if actual != 0 {
+          Array::push(fields, canonical_malformed_provenance(i, kind, defs_count, binders_count, 0, actual, "non_enum_binders"))
+        } else {
+          Array::push(fields, canonical_typedef(def, binders, checked.final_subst, free_ids, free_names))
+        }
+      }
+    }
+    i = i + 1
+  }
+  while i < binders_count {
+    Array::push(fields, canonical_malformed_provenance(i, "none", defs_count, binders_count, 0, Array::length(Array::get(binders_by_def, i)), "surplus_metadata"))
+    i = i + 1
+  }
+  canonical_node("CTDS", fields)
 }
