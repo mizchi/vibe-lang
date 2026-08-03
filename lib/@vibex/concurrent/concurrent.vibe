@@ -525,12 +525,24 @@ fn drive_one[rg, e](n: TaskGroup[rg, e]) -> Bool with { e } {
 
 /// The spec's `nursery { n => body }` construct as a library function
 /// until the dedicated syntax lands: introduces the scope, runs body,
-/// then joins all remaining children (normal close). The group result is
-/// Err(Failed(first observed failure)) when any child failed, otherwise
-/// Ok(body result). NOTE (MVP): a `throw` escaping the body itself is
-/// not yet converted to a group failure — it propagates as a normal
-/// Error effect of `e`.
-export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with { e }) -> Result[T, TaskError] with { e } {
+/// then joins all remaining children (normal close). The group THROWS
+/// `Failed(first observed failure)` when any child failed, otherwise it
+/// returns the body's result. NOTE (MVP): a `throw` escaping the body
+/// itself is not yet converted to a group failure — it propagates as a
+/// normal Error effect of `e`.
+///
+/// #1324: this used to return `Result[T, TaskError]`. The outcome is now
+/// carried by the typed `Exception[TaskError]` row (ADR-0085), so the happy
+/// path is the value itself and a caller that wants to inspect the failure
+/// writes `handle { .. } with Exception[TaskError] { Throw(e) => .. }`.
+///
+/// NOTE for callers: this row carries the effect VARIABLE `e`, and the
+/// ADR-0076 suspend/evidence lowering refuses a row-variable callee reached
+/// from a closure literal (scps_calls_ok). So the call must sit at the USE
+/// site -- it can be wrapped in neither a generic helper (the nursery token
+/// then escapes through the type variable, #1081 step 3) nor a closure
+/// literal. Put the catching `handle` directly around the call instead.
+export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with { e }) -> T with { Exception[TaskError], e } {
   // Explicit type argument (#886 `TaskGroup[rg]::{ .. }` syntax) is required
   // here, not just cosmetic: the `_region_witness` field's value is a
   // freely-inferred closure literal `(x) => x` with nothing else tying its
@@ -570,9 +582,9 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with { e }) -> 
   }
   n.phase = 3
   if n.failing {
-    Err(Failed(n.fail_msg))
+    throw(Failed(n.fail_msg))
   } else {
-    Ok(v)
+    v
   }
 }
 
@@ -678,20 +690,20 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
 /// returns the same value. Joining a task that is currently Running
 /// (i.e. the join forms a cycle through the dispatch stack) is a
 /// deadlock and traps.
-export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T, TaskError] with { e } {
+export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with { Exception[TaskError], e } {
   loop (d = 0) {
     let s = h.cell.status
     if s == 2 {
       break match h.result.value {
-        Some(v) => Ok(v),
-        None => Err(Failed("concurrent: missing result"))
+        Some(v) => v,
+        None => throw(Failed("concurrent: missing result"))
       }
     }
     if s == 3 {
-      break Err(Failed(h.cell.fail_msg))
+      throw(Failed(h.cell.fail_msg))
     }
     if s == 4 {
-      break Err(Cancelled)
+      throw(Cancelled)
     }
     // s == 1: join cycle through the dispatch stack — deadlock.
     conc_require(s == 0)
@@ -730,9 +742,9 @@ fn chan_closed[rg, e, T](c: Channel[rg, e, T]) -> Bool {
 
 /// Bounded MPMC channel. Capacity 0 is a rendezvous channel; negative
 /// capacity is a configuration error.
-export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -> Result[(Sender[rg, e, T], Receiver[rg, e, T]), ChannelConfigError] {
+export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -> (Sender[rg, e, T], Receiver[rg, e, T]) with { Exception[ChannelConfigError] } {
   if capacity < 0 {
-    Err(NegativeCapacity)
+    throw(NegativeCapacity)
   } else {
     let core = Channel::{
       group: n,
@@ -746,30 +758,30 @@ export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -
       pend_consumed: 0,
       waiters: empty_cells()
     }
-    Ok((Sender::{
+    (Sender::{
       ch: core
     }, Receiver::{
       ch: core
-    }))
+    })
   }
 }
 
-/// Send: Ok when the message is linearized (buffered, deposited for a
-/// committed receiver, or consumed by a receiver we drove). Err(Closed)
-/// on a closed channel. Blocking with no runnable task traps (deadlock).
+/// Send: returns once the message is linearized (buffered, deposited for a
+/// committed receiver, or consumed by a receiver we drove). THROWS `Closed`
+/// on a closed channel (#1324: was `Err(Closed)` in a Result return). Blocking with no runnable task traps (deadlock).
 /// Row-polymorphic (`with { e }`, #1181) -- ineligible as a callee inside
 /// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
 /// lowering rejects row-variable callees); use `Sender::send_wait` there.
-export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { e } {
+export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with { Exception[SendError], e } {
   let c = s.ch
   if chan_closed(c) {
-    return Err(Closed)
+    throw(Closed)
   }
   if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
     ring_push(c.buf, v)
     conc_progress(c.group)
     conc_chan_notify(c)
-    return Ok(())
+    return ()
   }
   if c.waiting_recv > 0 {
     // A receiver below us on the stack is committed to taking the next
@@ -778,7 +790,7 @@ export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, Send
     c.pend_seq = c.pend_seq + 1
     conc_progress(c.group)
     conc_chan_notify(c)
-    return Ok(())
+    return ()
   }
   // Block: register the message and drive other tasks until a receiver
   // consumes it (FIFO by pend_seq). The deposit itself can satisfy a
@@ -789,10 +801,10 @@ export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, Send
   conc_chan_notify(c)
   loop (d = 0) {
     if c.pend_consumed > myseq {
-      break Ok(())
+      break ()
     }
     if chan_closed(c) {
-      break Err(Closed)
+      throw(Closed)
     }
     conc_require(drive_one(c.group))
     continue (d)
@@ -836,7 +848,7 @@ export struct Parallel {
   tag: Int
 }
 
-export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with { Error, e }) -> Result[Array[U], TaskError] with { e } {
+export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with { Error, e }) -> Array[U] with { Exception[TaskError], e } {
   let len = Array::length(xs)
   let hb = ArrayBuilder::new()
   let mut i = 0
@@ -858,15 +870,12 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
   let rb = ArrayBuilder::new()
   loop (j = 0) {
     if j >= len {
-      break Ok(ArrayBuilder::freeze(rb))
+      break ArrayBuilder::freeze(rb)
     }
-    match TaskHandle::join(Array::get(handles, j)) {
-      Ok(v) => {
-        ArrayBuilder::push(rb, v)
-        continue (j + 1)
-      },
-      Err(e) => break Err(e)
-    }
+    // #1324: join now THROWS its TaskError, so a child failure aborts this
+    // loop by itself -- the old `Err(e) => break Err(e)` re-wrap is gone.
+    ArrayBuilder::push(rb, TaskHandle::join(Array::get(handles, j)))
+    continue (j + 1)
   }
 }
 
@@ -1431,6 +1440,19 @@ fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
 /// is DEPOSITED into `pend` first (the linearization point — rendezvous
 /// receivers and buffer promotion consume from there) and the task
 /// suspends until its own seq is consumed (FIFO).
+///
+/// #1324 EXCEPTION (still Result-returning): every function on the
+/// SUSPEND lane (`send_wait` / `conc_send_wait_consumed` /
+/// `TaskHandle::result_wait`) keeps its `Result` return until the
+/// ADR-0076 suspend lowering propagates a `throw` correctly. A `throw`
+/// executed inside a CPS-split (suspend-lowered) callee today does NOT
+/// abort the task: the split body yields a garbage value to its caller
+/// instead. Verified on `main` (before any #1324 change) with a
+/// `spawn_suspend` body calling `fn pw(x) -> Int with { Error, Async } {
+/// perform Async::Suspend(0); throw(Failed("boom")) }` -- the group
+/// closed successfully and `join` returned 699. Migrating these three to
+/// `Exception[E]` would therefore turn "closed channel" / "cancelled
+/// sibling" from an observable outcome into silent corruption.
 export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { Async } {
   let c = s.ch
   if chan_closed(c) {
@@ -1453,7 +1475,7 @@ export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit,
 
 /// Suspend until the deposited message (seq `myseq`) is consumed. A close
 /// while parked surfaces as Err(Closed), matching Sender::send's blocked
-/// branch.
+/// branch. (#1324: suspend lane -- see Sender::send_wait's note.)
 fn conc_send_wait_consumed[rg, e, T](c: Channel[rg, e, T], myseq: Int) -> Result[Unit, SendError] with { Async } {
   if c.pend_consumed > myseq {
     Ok(())
@@ -1517,6 +1539,8 @@ export fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] wit
 /// cancelled sibling surfaces as Err(Cancelled). NOTE fail-fast: a
 /// sibling FAILURE usually cancels this parked awaiter before it can
 /// observe Err(Failed) -- the group result carries the failure instead.
+/// (#1324: suspend lane -- see Sender::send_wait's note for why this one
+/// keeps its `Result` while `TaskHandle::join` throws.)
 export fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T, TaskError] with { Async } {
   let s = h.cell.status
   if s == 2 {

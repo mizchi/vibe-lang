@@ -32,6 +32,24 @@ import ./concurrent.vibe {
   TaskHandle::wake
 }
 
+//# Test helpers
+
+/// #1324: `TaskHandle::join` / `TaskGroup::run` now THROW their `TaskError`
+/// instead of returning `Result[T, TaskError]`. The happy path is the value
+/// itself (an unexpected failure fails the test by escaping); a test that
+/// asserts a SPECIFIC failure catches it. `TaskGroup::run` is caught INLINE
+/// at the use site, never through a helper or a closure literal: its row
+/// carries the effect variable `e`, and the ADR-0076 lowering refuses a
+/// row-variable callee reached from a closure literal (scps_calls_ok).
+fn caught_join[rg, e, T](h: TaskHandle[rg, e, T]) -> Option[TaskError] with { e } {
+  handle {
+    let _v = TaskHandle::join(h)
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
+}
+
 //# Types
 
 /// Transparent effect declaration (#752): matches the package contract's
@@ -83,20 +101,11 @@ test "adopted tasks interleave mid-body via Async::Suspend" {
       }
     })
     TaskGroup::pump_all(g)
-    let ra = match TaskHandle::join(ha) {
-      Ok(v) => v,
-      Err(_) => -1
-    }
-    let rb = match TaskHandle::join(hb) {
-      Ok(v) => v,
-      Err(_) => -1
-    }
+    let ra = TaskHandle::join(ha)
+    let rb = TaskHandle::join(hb)
     ra + rb
   })
-  assert(match out {
-    Ok(v) => v == 300,
-    Err(_) => false
-  })
+  assert_eq(out, 300)
   assert(Array::length(log) == 6)
   assert(Array::get(log, 0) == 1)
   assert(Array::get(log, 1) == 2)
@@ -120,20 +129,14 @@ test "wake delivers the resume value to the suspension point" {
     })
     let woke = TaskHandle::wake(h, 21)
     let again = TaskHandle::wake(h, 99)
-    let r = match TaskHandle::join(h) {
-      Ok(v) => v,
-      Err(_) => -1
-    }
+    let r = TaskHandle::join(h)
     if woke && !again {
       r
     } else {
       -2
     }
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 test "cancel on a parked task resolves Cancelled and drops the continuation" {
@@ -150,23 +153,14 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
     })
     TaskHandle::cancel(h)
     let woke = TaskHandle::wake(h, 1)
-    let cancelled = match TaskHandle::join(h) {
-      Ok(_) => false,
-      Err(e) => match e {
-        Cancelled => true,
-        Failed(_) => false
-      }
-    }
+    let cancelled = caught_join(h) is Some(TaskError::Cancelled)
     if !woke && cancelled {
       1
     } else {
       0
     }
   })
-  assert(match out {
-    Ok(v) => v == 1,
-    Err(_) => false
-  })
+  assert_eq(out, 1)
 }
 
 /// closure-CPS (ADR-0076 追記31 Vertical B): the handle site lives inside
@@ -196,10 +190,9 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
 /// here, so the fast path is always taken and behavior is unchanged.
 test "spawn_suspend interleaves two plain closure bodies" {
   let out = TaskGroup::run((g) -> {
-    match Channel::bounded(g, 6) {
-      Err(_) => [
-      ],
-      Ok((tx, rx)) => {
+    {
+      let (tx, rx) = Channel::bounded(g, 6)
+      {
         let tx2 = Sender::clone(tx)
         let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
           let _s1 = Sender::send_wait(tx, 1)
@@ -220,14 +213,8 @@ test "spawn_suspend interleaves two plain closure bodies" {
           200
         })
         TaskGroup::pump_all(g)
-        let ra = match TaskHandle::join(ha) {
-          Ok(v) => v,
-          Err(_) => -1
-        }
-        let rb = match TaskHandle::join(hb) {
-          Ok(v) => v,
-          Err(_) => -1
-        }
+        let ra = TaskHandle::join(ha)
+        let rb = TaskHandle::join(hb)
         let log = ArrayBuilder::new()
         let mut going = true
         while going {
@@ -243,19 +230,15 @@ test "spawn_suspend interleaves two plain closure bodies" {
       }
     }
   })
-  match out {
-    Ok(log) => {
-      assert_eq(Array::length(log), 7)
-      assert_eq(Array::get(log, 0), 1)
-      assert_eq(Array::get(log, 1), 2)
-      assert_eq(Array::get(log, 2), 3)
-      assert_eq(Array::get(log, 3), 4)
-      assert_eq(Array::get(log, 4), 5)
-      assert_eq(Array::get(log, 5), 6)
-      assert_eq(Array::get(log, 6), 300)
-    },
-    Err(_) => assert(false)
-  }
+  let log = out
+  assert_eq(Array::length(log), 7)
+  assert_eq(Array::get(log, 0), 1)
+  assert_eq(Array::get(log, 1), 2)
+  assert_eq(Array::get(log, 2), 3)
+  assert_eq(Array::get(log, 3), 4)
+  assert_eq(Array::get(log, 4), 5)
+  assert_eq(Array::get(log, 5), 6)
+  assert_eq(Array::get(log, 6), 300)
 }
 
 /// A pure body (no perform at all) passed to spawn_suspend still settles:
@@ -264,15 +247,9 @@ test "spawn_suspend interleaves two plain closure bodies" {
 test "spawn_suspend with a pure body settles synchronously" {
   let out = TaskGroup::run((g) -> {
     let h = TaskGroup::spawn_suspend(g, () -> 6 * 7)
-    match TaskHandle::join(h) {
-      Ok(v) => v,
-      Err(_) => -1
-    }
+    TaskHandle::join(h)
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// Codex review (#1111): the ADOPTION-lane canonical arm must propagate
@@ -283,8 +260,9 @@ test "spawn_suspend with a pure body settles synchronously" {
 /// the message through the stack-driving send, and pump_all delivers.
 test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
   let out = TaskGroup::run((g) -> {
-    match Channel::bounded(g, 1) {
-      Ok(pair) => {
+    {
+      let pair = Channel::bounded(g, 1)
+      {
         let (tx, rx) = pair
         let h = TaskGroup::adopt(g)
         TaskHandle::settle(h, handle {
@@ -303,18 +281,11 @@ test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
         let _s = Sender::send(tx, 14)
         Sender::release(tx)
         TaskGroup::pump_all(g)
-        match TaskHandle::join(h) {
-          Ok(v) => v,
-          Err(_) => 0 - 1
-        }
-      },
-      Err(_) => 0 - 999
+        TaskHandle::join(h)
+      }
     }
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// Codex review regression (#1110): a LONE task that yields (Suspend(0))
@@ -331,15 +302,9 @@ test "a lone spawn_suspend task may yield three times without tripping the deadl
       21
     })
     TaskGroup::pump_all(g)
-    match TaskHandle::join(h) {
-      Ok(v) => v * 2,
-      Err(_) => 0 - 1
-    }
+    (TaskHandle::join(h) * 2)
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// Fail-fast × suspendable (ADR-0068 次スライス): a spawn_suspend body
@@ -348,41 +313,34 @@ test "a lone spawn_suspend task may yield three times without tripping the deadl
 /// continuations are dropped). Case 1: the throw happens on the settle
 /// leg (before any suspend) — the sibling parked first and never wakes.
 test "spawn_suspend Error on the settle leg fails fast and cancels the parked sibling" {
-  let out = TaskGroup::run((g) -> {
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-      let _w = perform Async::Suspend(0)
-      100
-    })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
-      throw("boom")
-    })
-    TaskGroup::pump_all(g)
-    let a_cancelled = match TaskHandle::join(ha) {
-      Ok(_) => false,
-      Err(e) => match e {
-        Cancelled => true,
-        Failed(_) => false
+  let out = handle {
+    TaskGroup::run((g) -> {
+      let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let _w = perform Async::Suspend(0)
+        100
+      })
+      let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+        throw("boom")
+      })
+      TaskGroup::pump_all(g)
+      let a_cancelled = caught_join(ha) is Some(TaskError::Cancelled)
+      let b_failed = match caught_join(hb) {
+        Some(TaskError::Failed(m)) => m == "boom",
+        _ => false
       }
-    }
-    let b_failed = match TaskHandle::join(hb) {
-      Ok(_) => false,
-      Err(e) => match e {
-        Cancelled => false,
-        Failed(m) => m == "boom"
+      if a_cancelled && b_failed {
+        1
+      } else {
+        0
       }
-    }
-    if a_cancelled && b_failed {
-      1
-    } else {
-      0
-    }
-  })
+    })
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
   assert(match out {
-    Ok(_) => false,
-    Err(e) => match e {
-      Failed(m) => m == "boom",
-      Cancelled => false
-    }
+    Some(TaskError::Failed(m)) => m == "boom",
+    _ => false
   })
 }
 
@@ -390,43 +348,36 @@ test "spawn_suspend Error on the settle leg fails fast and cancels the parked si
 /// on the pump's stack, caught by the park wrapper's per-leg Error
 /// boundary. The parked sibling is cancelled by the fail-fast sweep.
 test "spawn_suspend Error after a resume fails fast from the pump stack" {
-  let out = TaskGroup::run((g) -> {
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
-      let _w = perform Async::Suspend(0)
-      throw("later")
-    })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-      let _w1 = perform Async::Suspend(0)
-      let _w2 = perform Async::Suspend(0)
-      200
-    })
-    TaskGroup::pump_all(g)
-    let a_failed = match TaskHandle::join(ha) {
-      Ok(_) => false,
-      Err(e) => match e {
-        Cancelled => false,
-        Failed(m) => m == "later"
+  let out = handle {
+    TaskGroup::run((g) -> {
+      let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+        let _w = perform Async::Suspend(0)
+        throw("later")
+      })
+      let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let _w1 = perform Async::Suspend(0)
+        let _w2 = perform Async::Suspend(0)
+        200
+      })
+      TaskGroup::pump_all(g)
+      let a_failed = match caught_join(ha) {
+        Some(TaskError::Failed(m)) => m == "later",
+        _ => false
       }
-    }
-    let b_cancelled = match TaskHandle::join(hb) {
-      Ok(_) => false,
-      Err(e) => match e {
-        Cancelled => true,
-        Failed(_) => false
+      let b_cancelled = caught_join(hb) is Some(TaskError::Cancelled)
+      if a_failed && b_cancelled {
+        1
+      } else {
+        0
       }
-    }
-    if a_failed && b_cancelled {
-      1
-    } else {
-      0
-    }
-  })
+    })
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
   assert(match out {
-    Ok(_) => false,
-    Err(e) => match e {
-      Failed(m) => m == "later",
-      Cancelled => false
-    }
+    Some(TaskError::Failed(m)) => m == "later",
+    _ => false
   })
 }
 
@@ -436,22 +387,24 @@ test "spawn_suspend Error after a resume fails fast from the pump stack" {
 /// sweep the close-time terminal check would TRAP on the still-parked
 /// cell instead of returning Err(Failed(...)).
 test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
-  let out = TaskGroup::run((g) -> {
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-      let _w = perform Async::Suspend(0)
-      100
+  let out = handle {
+    TaskGroup::run((g) -> {
+      let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let _w = perform Async::Suspend(0)
+        100
+      })
+      let _hb = TaskGroup::spawn(g, () -> Int with { Error } {
+        throw("spawn-lane")
+      })
+      7
     })
-    let _hb = TaskGroup::spawn(g, () -> Int with { Error } {
-      throw("spawn-lane")
-    })
-    7
-  })
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
   assert(match out {
-    Ok(_) => false,
-    Err(e) => match e {
-      Failed(m) => m == "spawn-lane",
-      Cancelled => false
-    }
+    Some(TaskError::Failed(m)) => m == "spawn-lane",
+    _ => false
   })
 }
 
@@ -481,11 +434,13 @@ test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
 /// recv_wait pin on `tx`/`rx` are unaffected.
 test "spawn_suspend producer/consumer block mid-body through a capacity-1 channel" {
   let out = TaskGroup::run((g) -> {
-    match Channel::bounded(g, 1) {
-      Ok(pair) => {
+    {
+      let pair = Channel::bounded(g, 1)
+      {
         let (tx, rx) = pair
-        match Channel::bounded(g, 6) {
-          Ok(logpair) => {
+        {
+          let logpair = Channel::bounded(g, 6)
+          {
             let (logtx, logrx) = logpair
             let logtx2 = Sender::clone(logtx)
             let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
@@ -522,14 +477,8 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
               a * 100 + b * 10 + c
             })
             TaskGroup::pump_all(g)
-            let rp = match TaskHandle::join(hp) {
-              Ok(v) => v,
-              Err(_) => 0 - 1
-            }
-            let rc = match TaskHandle::join(hc) {
-              Ok(v) => v,
-              Err(_) => 0 - 1
-            }
+            let rp = TaskHandle::join(hp)
+            let rc = TaskHandle::join(hc)
             let log = ArrayBuilder::new()
             let mut going = true
             while going {
@@ -541,17 +490,14 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
               }
             }
             (rp * 10000 + rc, ArrayBuilder::freeze(log))
-          },
-          Err(_) => (0 - 998, [
-          ])
+          }
         }
-      },
-      Err(_) => (0 - 999, [
-      ])
+      }
     }
   })
-  match out {
-    Ok((v, log)) => {
+  {
+    let (v, log) = out
+    {
       assert_eq(v, 1230)
       assert_eq(Array::length(log), 6)
       assert_eq(Array::get(log, 0), 1)
@@ -560,8 +506,7 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
       assert_eq(Array::get(log, 3), 2)
       assert_eq(Array::get(log, 4), 3)
       assert_eq(Array::get(log, 5), 130)
-    },
-    Err(_) => assert(false)
+    }
   }
 }
 
@@ -569,39 +514,28 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
 /// linearization point), parks, and is woken after the receiver consumes.
 test "spawn_suspend rendezvous send_wait/recv_wait on a capacity-0 channel" {
   let out = TaskGroup::run((g) -> {
-    match Channel::bounded(g, 0) {
-      Ok(pair) => {
-        let (tx, rx) = pair
-        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-          let _a = Sender::send_wait(tx, 7)
-          Sender::release(tx)
-          1
-        })
-        let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-          let r = Receiver::recv_wait(rx)
-          match r {
-            Some(v) => v,
-            None => 0 - 1
-          }
-        })
-        TaskGroup::pump_all(g)
-        let rp = match TaskHandle::join(hp) {
-          Ok(v) => v,
-          Err(_) => 0 - 1
+    let pair = Channel::bounded(g, 0)
+    {
+      let (tx, rx) = pair
+      let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let _a = Sender::send_wait(tx, 7)
+        Sender::release(tx)
+        1
+      })
+      let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let r = Receiver::recv_wait(rx)
+        match r {
+          Some(v) => v,
+          None => 0 - 1
         }
-        let rc = match TaskHandle::join(hc) {
-          Ok(v) => v,
-          Err(_) => 0 - 1
-        }
-        rp * 10 + rc
-      },
-      Err(_) => 0 - 999
+      })
+      TaskGroup::pump_all(g)
+      let rp = TaskHandle::join(hp)
+      let rc = TaskHandle::join(hc)
+      rp * 10 + rc
     }
   })
-  assert(match out {
-    Ok(v) => v == 17,
-    Err(_) => false
-  })
+  assert_eq(out, 17)
 }
 
 test "a body that never suspends settles synchronously" {
@@ -615,15 +549,9 @@ test "a body that never suspends settles synchronously" {
         SParked
       }
     })
-    match TaskHandle::join(h) {
-      Ok(v) => v,
-      Err(_) => -1
-    }
+    TaskHandle::join(h)
   })
-  assert(match out {
-    Ok(v) => v == 33,
-    Err(_) => false
-  })
+  assert_eq(out, 33)
 }
 
 /// ADR-0089 Decision 1 increment 3 (#1218): PLAIN `sleep` inside
@@ -641,10 +569,9 @@ test "a body that never suspends settles synchronously" {
 /// before A -> [1, 2, 4, 3].
 test "plain sleep parks a spawn_suspend task instead of blocking it" {
   let out = TaskGroup::run((g) -> {
-    match Channel::bounded(g, 4) {
-      Err(_) => [
-      ],
-      Ok((tx, rx)) => {
+    {
+      let (tx, rx) = Channel::bounded(g, 4)
+      {
         let tx2 = Sender::clone(tx)
         let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
           let _s1 = Sender::send_wait(tx, 1)
@@ -661,14 +588,8 @@ test "plain sleep parks a spawn_suspend task instead of blocking it" {
           200
         })
         TaskGroup::pump_all(g)
-        let ra = match TaskHandle::join(ha) {
-          Ok(v) => v,
-          Err(_) => -1
-        }
-        let rb = match TaskHandle::join(hb) {
-          Ok(v) => v,
-          Err(_) => -1
-        }
+        let ra = TaskHandle::join(ha)
+        let rb = TaskHandle::join(hb)
         let log = ArrayBuilder::new()
         let mut going = true
         while going {
@@ -684,17 +605,13 @@ test "plain sleep parks a spawn_suspend task instead of blocking it" {
       }
     }
   })
-  match out {
-    Ok(log) => {
-      assert_eq(Array::length(log), 5)
-      assert_eq(Array::get(log, 0), 1)
-      assert_eq(Array::get(log, 1), 2)
-      assert_eq(Array::get(log, 2), 4)
-      assert_eq(Array::get(log, 3), 3)
-      assert_eq(Array::get(log, 4), 300)
-    },
-    Err(_) => assert(false)
-  }
+  let log = out
+  assert_eq(Array::length(log), 5)
+  assert_eq(Array::get(log, 0), 1)
+  assert_eq(Array::get(log, 1), 2)
+  assert_eq(Array::get(log, 2), 4)
+  assert_eq(Array::get(log, 3), 3)
+  assert_eq(Array::get(log, 4), 300)
 }
 
 /// ADR-0089 Decision 2 (#1218): a Future cell is scheduler-visible data.
@@ -718,20 +635,11 @@ test "await on a pending future parks until a sleeping sibling resolves it" {
       1
     })
     TaskGroup::pump_all(g)
-    let ra = match TaskHandle::join(ha) {
-      Ok(v) => v,
-      Err(_) => -1
-    }
-    let rb = match TaskHandle::join(hb) {
-      Ok(v) => v,
-      Err(_) => -100
-    }
+    let ra = TaskHandle::join(ha)
+    let rb = TaskHandle::join(hb)
     ra + rb
   })
-  assert(match out {
-    Ok(v) => v == 43,
-    Err(_) => false
-  })
+  assert_eq(out, 43)
 }
 
 /// Same scheduler hole, channel spelling: a consumer polling recv_wait on
@@ -739,9 +647,9 @@ test "await on a pending future parks until a sleeping sibling resolves it" {
 /// forced settle wakes the producer.
 test "recv_wait on a sleeping producer advances virtual time instead of trapping" {
   let out = TaskGroup::run((g) -> {
-    match Channel::bounded(g, 2) {
-      Err(_) => -1,
-      Ok((tx, rx)) => {
+    {
+      let (tx, rx) = Channel::bounded(g, 2)
+      {
         let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
           // let-bound, not a match scrutinee: a suspending call is only
           // eligible on the let/seq/tail spine (ADR-0076 追記31).
@@ -758,22 +666,13 @@ test "recv_wait on a sleeping producer advances virtual time instead of trapping
           0
         })
         TaskGroup::pump_all(g)
-        let rc = match TaskHandle::join(hc) {
-          Ok(v) => v,
-          Err(_) => -10
-        }
-        let rp = match TaskHandle::join(hp) {
-          Ok(v) => v,
-          Err(_) => -20
-        }
+        let rc = TaskHandle::join(hc)
+        let rp = TaskHandle::join(hp)
         rc + rp
       }
     }
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// ADR-0089 Decision 2 (#1218): a task handle IS a future --
@@ -791,19 +690,13 @@ test "result_wait awaits a sibling task's result" {
       let got = TaskHandle::result_wait(ha)
       match got {
         Ok(v) => v + 2,
-        Err(_) => -1
+        Err(_) => 0 - 1
       }
     })
     TaskGroup::pump_all(g)
-    match TaskHandle::join(hb) {
-      Ok(v) => v,
-      Err(_) => -100
-    }
+    TaskHandle::join(hb)
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// result_wait on a CANCELLED sibling surfaces Err(Cancelled): cancel
@@ -811,6 +704,10 @@ test "result_wait awaits a sibling task's result" {
 /// observes the terminal state. (A FAILED sibling is deliberately not
 /// pinned here -- fail-fast cancels the parked awaiter itself; the group
 /// result carries the failure.)
+///
+/// #1324: this stays on `Result` while `TaskHandle::join` (below) throws,
+/// because `result_wait` is on the SUSPEND lane -- see the note on
+/// `Sender::send_wait` in concurrent.vibe.
 test "result_wait observes a cancelled sibling" {
   let out = TaskGroup::run((g) -> {
     let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
@@ -821,22 +718,16 @@ test "result_wait observes a cancelled sibling" {
       // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
       let got = TaskHandle::result_wait(ha)
       match got {
-        Ok(_) => -1,
+        Ok(_) => 0 - 1,
         Err(Cancelled) => 42,
-        Err(_) => -2
+        Err(_) => 0 - 2
       }
     })
     TaskHandle::cancel(ha)
     TaskGroup::pump_all(g)
-    match TaskHandle::join(hb) {
-      Ok(v) => v,
-      Err(_) => -100
-    }
+    TaskHandle::join(hb)
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// Direct wake (ADR-0089 #1218): several awaiters parked on ONE sibling
@@ -855,42 +746,30 @@ test "direct wake resumes every result_wait awaiter of one sibling" {
       let got = TaskHandle::result_wait(ha)
       match got {
         Ok(v) => v + 1,
-        Err(_) => -1
+        Err(_) => 0 - 1
       }
     })
     let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
       let got = TaskHandle::result_wait(ha)
       match got {
         Ok(v) => v + 2,
-        Err(_) => -2
+        Err(_) => 0 - 1
       }
     })
     let hd = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
       let got = TaskHandle::result_wait(ha)
       match got {
         Ok(v) => v + 3,
-        Err(_) => -3
+        Err(_) => 0 - 1
       }
     })
     TaskGroup::pump_all(g)
-    let rb = match TaskHandle::join(hb) {
-      Ok(v) => v,
-      Err(_) => -100
-    }
-    let rc = match TaskHandle::join(hc) {
-      Ok(v) => v,
-      Err(_) => -200
-    }
-    let rd = match TaskHandle::join(hd) {
-      Ok(v) => v,
-      Err(_) => -300
-    }
+    let rb = TaskHandle::join(hb)
+    let rc = TaskHandle::join(hc)
+    let rd = TaskHandle::join(hd)
     rb + rc + rd
   })
-  assert(match out {
-    Ok(v) => v == 126,
-    Err(_) => false
-  })
+  assert_eq(out, 126)
 }
 
 /// A manual TaskHandle::wake on a direct-parked awaiter is a legal
@@ -913,7 +792,7 @@ test "manual wake of a direct-parked awaiter is a safe spurious poll" {
       let _y = perform Async::Suspend(0)
       match got {
         Ok(v) => v + 2,
-        Err(_) => -1
+        Err(_) => 0 - 1
       }
     })
     // hb is now parked on ha (direct). Wake it manually: it must simply
@@ -921,15 +800,9 @@ test "manual wake of a direct-parked awaiter is a safe spurious poll" {
     let woke = TaskHandle::wake(hb, 0)
     assert(woke)
     TaskGroup::pump_all(g)
-    match TaskHandle::join(hb) {
-      Ok(v) => v,
-      Err(_) => -100
-    }
+    TaskHandle::join(hb)
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// A direct-parked consumer must not hold the virtual clock back: the
@@ -938,9 +811,9 @@ test "manual wake of a direct-parked awaiter is a safe spurious poll" {
 /// needing the pump_all stall counter to force it.
 test "direct-parked recv_wait does not block a sleeping producer's clock" {
   let out = TaskGroup::run((g) -> {
-    match Channel::bounded(g, 1) {
-      Err(_) => -1,
-      Ok(ends) => {
+    {
+      let ends = Channel::bounded(g, 1)
+      {
         let (tx, rx) = ends
         let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
           sleep(5)
@@ -964,17 +837,11 @@ test "direct-parked recv_wait does not block a sleeping producer's clock" {
         })
         TaskGroup::pump_all(g)
         let _p = TaskHandle::join(hp)
-        match TaskHandle::join(hc) {
-          Ok(v) => v,
-          Err(_) => -100
-        }
+        TaskHandle::join(hc)
       }
     }
   })
-  assert(match out {
-    Ok(v) => v == 42,
-    Err(_) => false
-  })
+  assert_eq(out, 42)
 }
 
 /// Direct wake for BUILTIN futures (ADR-0089 #1218): with the
@@ -1002,22 +869,10 @@ test "resolve direct-wakes several awaiters of one pending future" {
       0
     })
     TaskGroup::pump_all(g)
-    let ra = match TaskHandle::join(ha) {
-      Ok(v) => v,
-      Err(_) => -100
-    }
-    let rb = match TaskHandle::join(hb) {
-      Ok(v) => v,
-      Err(_) => -200
-    }
-    let rc = match TaskHandle::join(hc) {
-      Ok(v) => v,
-      Err(_) => -300
-    }
+    let ra = TaskHandle::join(ha)
+    let rb = TaskHandle::join(hb)
+    let rc = TaskHandle::join(hc)
     ra + rb + rc
   })
-  assert(match out {
-    Ok(v) => v == 36,
-    Err(_) => false
-  })
+  assert_eq(out, 36)
 }

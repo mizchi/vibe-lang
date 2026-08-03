@@ -22,6 +22,38 @@ import ./concurrent.vibe {
   TaskHandle::join
 }
 
+//# Test helpers
+
+/// #1324: `TaskHandle::join` / `TaskGroup::run` now THROW their `TaskError`
+/// instead of returning `Result[T, TaskError]`, so the happy path is the
+/// value itself and every `Err(_) => assert(false)` arm below simply went
+/// away -- an unexpected failure now fails the test by escaping. Only the
+/// tests that assert a SPECIFIC failure catch it.
+///
+/// `TaskGroup::run` gets its catching `handle` INLINE at each use site rather
+/// than through a helper: its row carries the effect variable `e`, and the
+/// ADR-0076 lowering refuses a row-variable callee reached from a closure
+/// literal (scps_calls_ok), while a generic wrapper would leak the nursery
+/// token through the type variable (#1081 step 3). `join` has neither problem
+/// at the shapes used here, so it does get a helper.
+fn caught_join[rg, e, T](h: TaskHandle[rg, e, T]) -> Option[TaskError] with { e } {
+  handle {
+    let _v = TaskHandle::join(h)
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
+}
+
+fn caught_send[rg, e, T](s: Sender[rg, e, T], v: T) -> Option[SendError] with { e } {
+  handle {
+    Sender::send(s, v)
+    None
+  } with Exception[SendError] {
+    Throw(err) => Some(err)
+  }
+}
+
 //# Lifecycle conformance locks (docs/concurrency.md)
 
 /// The eager prototype ran the thunk inside spawn; the ADR-0068 scheduler
@@ -39,10 +71,7 @@ test "spawn is deferred: child does not run before join" {
     })
     TaskHandle::join(t)
   })
-  match r {
-    Ok(joined) => assert(joined is Ok(42)),
-    Err(_) => assert(false)
-  }
+  assert_eq(r, 42)
 }
 
 test "join is idempotent: repeated joins observe the same outcome" {
@@ -54,13 +83,8 @@ test "join is idempotent: repeated joins observe the same outcome" {
     let b = TaskHandle::join(t)
     (a, b)
   })
-  match r {
-    Ok((a, b)) => {
-      assert(a is Ok(7))
-      assert(b is Ok(7))
-    },
-    Err(_) => assert(false)
-  }
+  assert_eq(r.0, 7)
+  assert_eq(r.1, 7)
 }
 
 /// #1081 step 3 Phase B: a plain outer ArrayBuilder can no longer be
@@ -70,10 +94,9 @@ test "join is idempotent: repeated joins observe the same outcome" {
 /// per-sender FIFO ordering pins the exact same dispatch-order guarantee.
 test "dispatch order is deterministic FIFO in spawn order" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 3) {
-      Err(_) => [
-      ],
-      Ok((s, rx)) => {
+    {
+      let (s, rx) = Channel::bounded(n, 3)
+      {
         let s1 = Sender::clone(s)
         let s2 = Sender::clone(s)
         let t1 = TaskGroup::spawn(n, () -> {
@@ -103,15 +126,10 @@ test "dispatch order is deterministic FIFO in spawn order" {
       }
     }
   })
-  match r {
-    Ok(order) => {
-      assert_eq(Array::length(order), 3)
-      assert_eq(Array::get(order, 0), 1)
-      assert_eq(Array::get(order, 1), 2)
-      assert_eq(Array::get(order, 2), 3)
-    },
-    Err(_) => assert(false)
-  }
+  assert_eq(Array::length(r), 3)
+  assert_eq(Array::get(r, 0), 1)
+  assert_eq(Array::get(r, 1), 2)
+  assert_eq(Array::get(r, 2), 3)
 }
 
 /// #1081 step 3 Phase B note: this used to observe the never-joined child's
@@ -132,7 +150,7 @@ test "task-group close joins children the body never joined" {
     // body returns without joining; normal close must run the child
     99
   })
-  assert(r is Ok(99))
+  assert_eq(r, 99)
 }
 
 test "cancel before dispatch resolves Cancelled without running the body" {
@@ -143,13 +161,12 @@ test "cancel before dispatch resolves Cancelled without running the body" {
     TaskHandle::cancel(t)
     // cancel is idempotent
     TaskHandle::cancel(t)
-    let out = TaskHandle::join(t)
-    assert(out is Err(TaskError::Cancelled))
+    assert(caught_join(t) is Some(TaskError::Cancelled))
     // repeated join observes the same terminal outcome
-    assert(TaskHandle::join(t) is Err(TaskError::Cancelled))
+    assert(caught_join(t) is Some(TaskError::Cancelled))
     0
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 test "cancel after terminal is a no-op" {
@@ -162,13 +179,8 @@ test "cancel after terminal is a no-op" {
     let second = TaskHandle::join(t)
     (first, second)
   })
-  match r {
-    Ok((first, second)) => {
-      assert(first is Ok(5))
-      assert(second is Ok(5))
-    },
-    Err(_) => assert(false)
-  }
+  assert_eq(r.0, 5)
+  assert_eq(r.1, 5)
 }
 
 test "explicitly cancelled child does not fail the task group" {
@@ -179,28 +191,32 @@ test "explicitly cancelled child does not fail the task group" {
     TaskHandle::cancel(t)
     123
   })
-  assert(r is Ok(123))
+  assert_eq(r, 123)
 }
 
 //# Failure conformance locks
 
 test "unhandled child throw becomes Failed(msg) and fails the task group" {
-  let r: Result[Int, TaskError] = TaskGroup::run((n) -> {
-    let t = TaskGroup::spawn(n, () -> {
-      throw("boom")
-      0
+  let r = handle {
+    TaskGroup::run((n) -> {
+      let t = TaskGroup::spawn(n, () -> {
+        throw("boom")
+        0
+      })
+      match caught_join(t) {
+        Some(TaskError::Failed(msg)) => assert_eq(msg, "boom"),
+        _ => assert(false)
+      }
+      7
     })
-    let out = TaskHandle::join(t)
-    match out {
-      Err(TaskError::Failed(msg)) => assert_eq(msg, "boom"),
-      _ => assert(false)
-    }
-    7
-  })
-  // The group result reports the first observed failure even though
-  // the body itself completed normally.
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
+  // The group reports the first observed failure even though the body
+  // itself completed normally.
   match r {
-    Err(TaskError::Failed(msg)) => assert_eq(msg, "boom"),
+    Some(TaskError::Failed(msg)) => assert_eq(msg, "boom"),
     _ => assert(false)
   }
 }
@@ -212,19 +228,24 @@ test "unhandled child throw becomes Failed(msg) and fails the task group" {
 /// observes the fail-fast cancellation on `good` itself via the type-safe
 /// join result, rather than an out-of-band side effect.
 test "fail-fast: sibling still Ready when a child fails is cancelled" {
-  let r: Result[Int, TaskError] = TaskGroup::run((n) -> {
-    let _bad = TaskGroup::spawn(n, () -> {
-      throw("first-failure")
+  let r = handle {
+    TaskGroup::run((n) -> {
+      let _bad = TaskGroup::spawn(n, () -> {
+        throw("first-failure")
+        0
+      })
+      let good = TaskGroup::spawn(n, () -> {
+        1
+      })
+      assert(caught_join(good) is Some(TaskError::Cancelled))
       0
     })
-    let good = TaskGroup::spawn(n, () -> {
-      1
-    })
-    assert(TaskHandle::join(good) is Err(TaskError::Cancelled))
-    0
-  })
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
   match r {
-    Err(TaskError::Failed(msg)) => assert_eq(msg, "first-failure"),
+    Some(TaskError::Failed(msg)) => assert_eq(msg, "first-failure"),
     _ => assert(false)
   }
 }
@@ -237,33 +258,32 @@ test "child Err value is a recoverable result, not a task failure" {
     })
     TaskHandle::join(t)
   })
-  match r {
-    Ok(joined) => match joined {
-      Ok(inner) => assert(inner is Err("recoverable")),
-      Err(_) => assert(false)
-    },
-    Err(_) => assert(false)
-  }
+  assert(r is Err("recoverable"))
 }
 
 //# Channel conformance locks
 
 test "negative capacity is a configuration error" {
   let r = TaskGroup::run((n) -> {
-    let ch = Channel::bounded(n, -1)
-    assert(ch is Err(ChannelConfigError::NegativeCapacity))
+    let caught = handle {
+      let _ch = Channel::bounded(n, -1)
+      false
+    } with Exception[ChannelConfigError] {
+      Throw(e) => e is ChannelConfigError::NegativeCapacity
+    }
+    assert(caught)
     0
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 test "bounded buffer preserves per-sender FIFO order" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 2) {
-      Err(_) => -1,
-      Ok((s, rx)) => {
-        assert(Sender::send(s, 10) is Ok(_))
-        assert(Sender::send(s, 20) is Ok(_))
+    {
+      let (s, rx) = Channel::bounded(n, 2)
+      {
+        Sender::send(s, 10)
+        Sender::send(s, 20)
         assert(Receiver::recv(rx) is Some(10))
         assert(Receiver::recv(rx) is Some(20))
         Sender::release(s)
@@ -271,16 +291,16 @@ test "bounded buffer preserves per-sender FIFO order" {
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 test "close on last sender release: drain buffered messages then None" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 4) {
-      Err(_) => -1,
-      Ok((s, rx)) => {
-        let _ = Sender::send(s, 1)
-        let _ = Sender::send(s, 2)
+    {
+      let (s, rx) = Channel::bounded(n, 4)
+      {
+        Sender::send(s, 1)
+        Sender::send(s, 2)
         Sender::release(s)
         assert(Receiver::recv(rx) is Some(1))
         assert(Receiver::recv(rx) is Some(2))
@@ -291,40 +311,40 @@ test "close on last sender release: drain buffered messages then None" {
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
-test "send to a closed channel is Err(Closed)" {
+test "send to a closed channel throws Closed" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 1) {
-      Err(_) => -1,
-      Ok((s, _rx)) => {
+    {
+      let (s, _rx) = Channel::bounded(n, 1)
+      {
         let extra = Sender::clone(s)
         Sender::release(s)
         // one live sender (the clone) remains: still open
-        assert(Sender::send(extra, 5) is Ok(_))
+        Sender::send(extra, 5)
         Sender::release(extra)
         // last release closed the channel
-        assert(Sender::send(extra, 6) is Err(SendError::Closed))
+        assert(caught_send(extra, 6) is Some(SendError::Closed))
         0
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 test "clone keeps the channel open until every sender is released" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 4) {
-      Err(_) => -1,
-      Ok((s1, rx)) => {
+    {
+      let (s1, rx) = Channel::bounded(n, 4)
+      {
         let s2 = Sender::clone(s1)
-        let _ = Sender::send(s1, 1)
-        let _ = Sender::send(s2, 2)
+        Sender::send(s1, 1)
+        Sender::send(s2, 2)
         Sender::release(s1)
         // s2 still live: not closed, buffered messages intact
         assert(Receiver::recv(rx) is Some(1))
-        let _ = Sender::send(s2, 3)
+        Sender::send(s2, 3)
         Sender::release(s2)
         assert(Receiver::recv(rx) is Some(2))
         assert(Receiver::recv(rx) is Some(3))
@@ -333,16 +353,16 @@ test "clone keeps the channel open until every sender is released" {
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 test "recv blocks by driving a spawned producer (buffer path)" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 1) {
-      Err(_) => -1,
-      Ok((s, rx)) => {
+    {
+      let (s, rx) = Channel::bounded(n, 1)
+      {
         let _p = TaskGroup::spawn(n, () -> {
-          let _ = Sender::send(s, 77)
+          Sender::send(s, 77)
           Sender::release(s)
           0
         })
@@ -354,20 +374,18 @@ test "recv blocks by driving a spawned producer (buffer path)" {
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 test "rendezvous (capacity 0): recv drives the producer and pairs up" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 0) {
-      Err(_) => -1,
-      Ok((s, rx)) => {
+    {
+      let (s, rx) = Channel::bounded(n, 0)
+      {
         let _p = TaskGroup::spawn(n, () -> {
-          let a = Sender::send(s, 1)
-          let b = Sender::send(s, 2)
+          Sender::send(s, 1)
+          Sender::send(s, 2)
           Sender::release(s)
-          assert(a is Ok(_))
-          assert(b is Ok(_))
           0
         })
         assert(Receiver::recv(rx) is Some(1))
@@ -377,7 +395,7 @@ test "rendezvous (capacity 0): recv drives the producer and pairs up" {
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 /// #1081 step 3 Phase B: the consumer used to write its received value into
@@ -387,9 +405,9 @@ test "rendezvous (capacity 0): recv drives the producer and pairs up" {
 /// the join below reads an already-terminal cell -- same timing as before.
 test "rendezvous (capacity 0): sender blocks until a consumer task runs" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 0) {
-      Err(_) => -1,
-      Ok((s, rx)) => {
+    {
+      let (s, rx) = Channel::bounded(n, 0)
+      {
         let consumer = TaskGroup::spawn(n, () -> {
           match Receiver::recv(rx) {
             Some(v) => v,
@@ -398,15 +416,14 @@ test "rendezvous (capacity 0): sender blocks until a consumer task runs" {
         })
         // The body is the sender: send must drive the consumer task and
         // only return Ok once the message is consumed.
-        let sent = Sender::send(s, 42)
-        assert(sent is Ok(_))
-        assert(TaskHandle::join(consumer) is Ok(42))
+        Sender::send(s, 42)
+        assert_eq(TaskHandle::join(consumer), 42)
         Sender::release(s)
         0
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 /// #1081 step 3 Phase B: same replacement as the rendezvous test above --
@@ -414,10 +431,10 @@ test "rendezvous (capacity 0): sender blocks until a consumer task runs" {
 /// captured Array.
 test "full buffer send blocks and is promoted when a consumer drains" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 1) {
-      Err(_) => -1,
-      Ok((s, rx)) => {
-        let _ = Sender::send(s, 1)
+    {
+      let (s, rx) = Channel::bounded(n, 1)
+      {
+        Sender::send(s, 1)
         let consumer = TaskGroup::spawn(n, () -> {
           match Receiver::recv(rx) {
             Some(v) => v,
@@ -426,16 +443,15 @@ test "full buffer send blocks and is promoted when a consumer drains" {
         })
         // Buffer is full: this send must drive the consumer, get its
         // message promoted into the freed slot, then return Ok.
-        let sent = Sender::send(s, 2)
-        assert(sent is Ok(_))
-        assert(TaskHandle::join(consumer) is Ok(1))
+        Sender::send(s, 2)
+        assert_eq(TaskHandle::join(consumer), 1)
         assert(Receiver::recv(rx) is Some(2))
         Sender::release(s)
         0
       }
     }
   })
-  assert(r is Ok(0))
+  assert_eq(r, 0)
 }
 
 // "task-group close closes remaining endpoints" used to leak a Receiver
@@ -463,13 +479,13 @@ test "pipeline: body consumes a spawned producer past capacity" {
   // strict suspension-based backpressure interleaving needs the ADR-0076
   // suspend IR (see module header).
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 2) {
-      Err(_) => Err(Cancelled),
-      Ok((s, rx)) => {
+    {
+      let (s, rx) = Channel::bounded(n, 2)
+      {
         let _producer = TaskGroup::spawn(n, () -> {
           let mut i = 1
           while i <= 5 {
-            let _ = Sender::send(s, i * 10)
+            Sender::send(s, i * 10)
             i = i + 1
           }
           Sender::release(s)
@@ -487,14 +503,11 @@ test "pipeline: body consumes a spawned producer past capacity" {
             }
           }
         }
-        Ok(sum)
+        sum
       }
     }
   })
-  match r {
-    Ok(joined) => assert(joined is Ok(150)),
-    Err(_) => assert(false)
-  }
+  assert_eq(r, 150)
 }
 
 test "Parallel::map returns results in input index order" {
@@ -509,44 +522,42 @@ test "Parallel::map returns results in input index order" {
       x * x
     })
   })
-  match r {
-    Ok(mapped) => match mapped {
-      Ok(sq) => {
-        assert_eq(Array::length(sq), 5)
-        assert_eq(Array::get(sq, 0), 1)
-        assert_eq(Array::get(sq, 1), 4)
-        assert_eq(Array::get(sq, 2), 9)
-        assert_eq(Array::get(sq, 3), 16)
-        assert_eq(Array::get(sq, 4), 25)
-      },
-      Err(_) => assert(false)
-    },
-    Err(_) => assert(false)
-  }
+  assert_eq(Array::length(r), 5)
+  assert_eq(Array::get(r, 0), 1)
+  assert_eq(Array::get(r, 1), 4)
+  assert_eq(Array::get(r, 2), 9)
+  assert_eq(Array::get(r, 3), 16)
+  assert_eq(Array::get(r, 4), 25)
 }
 
 test "Parallel::map surfaces the first failure" {
-  let r: Result[Result[Array[Int], TaskError], TaskError] = TaskGroup::run((n) -> {
-    Parallel::map(n, [
-      1,
-      2,
-      3
-    ], (x) -> {
-      if x == 2 {
-        throw("map-boom")
-      }
-      x
+  let r = handle {
+    TaskGroup::run((n) -> {
+      Parallel::map(n, [
+        1,
+        2,
+        3
+      ], (x) -> {
+        if x == 2 {
+          throw("map-boom")
+        }
+        x
+      })
     })
-  })
-  // Inner: the map observed the failure. Outer: the task group reports the
-  // same first failure at close.
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
+  // #1324: the map's own failure now THROWS out of `Parallel::map`, and the
+  // task group reports the same first failure at close -- one exception, not
+  // a nested `Result[Result[..]]`.
   match r {
-    Err(TaskError::Failed(msg)) => assert_eq(msg, "map-boom"),
+    Some(TaskError::Failed(msg)) => assert_eq(msg, "map-boom"),
     _ => assert(false)
   }
 }
 
-test "Parallel::map on an empty input is Ok([])" {
+test "Parallel::map on an empty input returns []" {
   let r = TaskGroup::run((n) -> {
     let empty: Array[Int] = [
     ]
@@ -554,24 +565,18 @@ test "Parallel::map on an empty input is Ok([])" {
       x
     })
   })
-  match r {
-    Ok(mapped) => match mapped {
-      Ok(out) => assert_eq(Array::length(out), 0),
-      Err(_) => assert(false)
-    },
-    Err(_) => assert(false)
-  }
+  assert_eq(Array::length(r), 0)
 }
 
 test "pipeline: spawned producer and consumer within capacity" {
   let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 8) {
-      Err(_) => Err(Cancelled),
-      Ok((s, rx)) => {
+    {
+      let (s, rx) = Channel::bounded(n, 8)
+      {
         let _producer = TaskGroup::spawn(n, () -> {
           let mut i = 1
           while i <= 5 {
-            let _ = Sender::send(s, i * 10)
+            Sender::send(s, i * 10)
             i = i + 1
           }
           Sender::release(s)
@@ -596,10 +601,7 @@ test "pipeline: spawned producer and consumer within capacity" {
       }
     }
   })
-  match r {
-    Ok(joined) => assert(joined is Ok(150)),
-    Err(_) => assert(false)
-  }
+  assert_eq(r, 150)
 }
 
 // #1181: TaskGroup::spawn's closure row used to be fixed to { Error },
@@ -619,8 +621,5 @@ test "spawned task may perform Fs and Process alongside Error" {
     })
     TaskHandle::join(t)
   })
-  match r {
-    Ok(joined) => assert(joined is Ok("from-subprocess|hello from a spawned task")),
-    Err(_) => assert(false)
-  }
+  assert_eq(r, "from-subprocess|hello from a spawned task")
 }

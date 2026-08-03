@@ -6687,6 +6687,26 @@ if ! grep -qF "mixing the step convention" "$ccpsdir/mixed.wasm.diag" 2>/dev/nul
   cat "$ccpsdir/mixed.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1324: ordinary arithmetic on a value bound from a GENERIC suspend-lane
+# callee must stay eligible. `v`'s syntactically inferable type is the type
+# variable `T`, so desugar_trait_dict rewrites `v + 2` to `__generic_add`
+# (#973) -- a registered pure builtin that was missing from
+# idp_pure_builtin_names, which sank the whole literal to ineligible on the
+# synthesized callee name alone. Positive pin 70.
+rm -f "$ccpsdir/genop.wasm" "$ccpsdir/genop.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/effect_closure_cps_generic_operand.vibe "$ccpsdir/genop.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$ccpsdir/genop.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_cps_generic_operand did not compile -- a pure desugar helper (__generic_add / __generic_rel_diff / str_lex_diff) sank a suspend-class closure literal again (#1324)" >&2
+  cat "$ccpsdir/genop.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+ccps_genop_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ccpsdir/genop.wasm" 2>/dev/null | tail -1)"
+if [ "$ccps_genop_out" != "70" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_cps_generic_operand got '$ccps_genop_out' (want 70)" >&2
+  exit 1
+fi
 rm -rf "$ccpsdir"
 echo "[compiler-gate] closure-CPS param suspend ok"
 

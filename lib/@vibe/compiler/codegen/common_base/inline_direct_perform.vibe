@@ -299,6 +299,23 @@ fn idp_pure_builtin_names() -> Array[String] {
     // quickcheck_effect's `if not(prop()) {..}` needing body.
     "__to_string",
     "not",
+    // #1324: the operator helpers desugar_trait_dict emits when an operand's
+    // type is not syntactically determinable. `a + b` becomes
+    // `__generic_add(a, b)` and `a < b` becomes `__generic_rel_diff(a, b) < 0`
+    // whenever `infer_arg_type_name` reports a non-concrete name (#973), and
+    // `str_lex_diff` is the String arm of the same relational rewrite. That
+    // fires for any value bound from a GENERIC callee's result -- e.g.
+    // `let v = TaskHandle::result_wait(h)` (returns `T`) followed by `v + 1`
+    // inside a `spawn_suspend` closure literal -- so an ordinary arithmetic
+    // tail sank the whole closure to ineligible on the synthesized callee
+    // name alone, exactly like `__to_string` above. All three are registered
+    // builtins with hand-written wasm bodies and a `None` effect
+    // (builtin_registry.vibe: `(Int, Int) -> Int` / `(String, String) -> Int`),
+    // so they can neither perform a user effect nor invoke a function-typed
+    // argument.
+    "__generic_add",
+    "__generic_rel_diff",
+    "str_lex_diff",
     // ADR-0089 D1 (#1218/#1312): the HOST sleeps. Not effect-free -- `sleep`
     // carries the nominal Async row -- but what this list actually gates is
     // "an opaque callee that cannot PERFORM a user effect and never invokes
@@ -3800,6 +3817,11 @@ fn edp_pure_builtin_names() -> Array[String] {
     "Bytes::length",
     "__to_string",
     "not",
+    // #1324: desugar_trait_dict's undeterminable-operand helpers -- mirrors
+    // idp_pure_builtin_names' entry (same audit, see that list's comment).
+    "__generic_add",
+    "__generic_rel_diff",
+    "str_lex_diff",
     // ADR-0089 D1 (#1218/#1312): the HOST sleeps. Not effect-free -- `sleep`
     // carries the nominal Async row -- but what this list actually gates is
     // "an opaque callee that cannot PERFORM a user effect and never invokes
