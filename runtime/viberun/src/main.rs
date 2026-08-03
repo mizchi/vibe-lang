@@ -136,6 +136,25 @@ impl ResourceLimiter for MemLimiter {
     }
 }
 
+#[derive(Default)]
+struct HostFsScopeCounters {
+    read_file_calls: u64,
+    read_file_returned_bytes: u64,
+    read_bytes_calls: u64,
+    read_bytes_returned_bytes: u64,
+    stat_token_calls: u64,
+    exists_calls: u64,
+}
+
+// Opt-in, runner-owned observation of the core `vibe` filesystem imports.
+// This deliberately reports host import calls, not compiler source hashes or
+// cache decisions.
+struct HostFsScope {
+    output: PathBuf,
+    nonce: String,
+    counters: HostFsScopeCounters,
+}
+
 struct HostState {
     last_error: Option<String>,
     args: Arc<Vec<String>>,
@@ -255,6 +274,7 @@ struct HostState {
     // See stdin_read_stream's own comment for why this matters for the
     // self-hosted LSP's JSON-RPC framing.
     stdin_pending: Vec<u8>,
+    host_fs_scope: Option<HostFsScope>,
 }
 
 // #901: {exit_code, stdout, stderr} parked behind a handle by `sh_capture`,
@@ -364,12 +384,17 @@ impl HostState {
             http_responses: std::collections::HashMap::new(),
             next_http_handle: 1,
             stdin_pending: Vec::new(),
+            host_fs_scope: None,
         }
     }
 
     fn record_err<E: std::fmt::Display>(&mut self, e: E) -> i32 {
         self.last_error = Some(format!("{e}"));
         -1
+    }
+
+    fn host_fs_scope_mut(&mut self) -> Option<&mut HostFsScopeCounters> {
+        self.host_fs_scope.as_mut().map(|scope| &mut scope.counters)
     }
 }
 
@@ -1054,7 +1079,13 @@ fn run(args: Vec<String>) -> Result<i32> {
         bail!("missing wasm/cwasm argument");
     }
     let wasm_path = &args[0];
+    let host_fs_scope = prepare_host_fs_scope()?;
     if is_component_file(wasm_path) {
+        if host_fs_scope.is_some() {
+            bail!(
+                "host_fs_scope: unsupported for component guests (no core vibe filesystem imports)"
+            );
+        }
         return run_async_component(wasm_path);
     }
     let prog_args: Vec<String> = std::iter::once("viberun".to_string())
@@ -1088,7 +1119,9 @@ fn run(args: Vec<String>) -> Result<i32> {
 
     let limits = store_mem_limits();
 
-    let mut store = Store::new(&engine, HostState::new(prog_args, MemLimiter::new(limits)));
+    let mut state = HostState::new(prog_args, MemLimiter::new(limits));
+    state.host_fs_scope = host_fs_scope;
+    let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.mem);
 
     // DAP P2: if the module is a break build it carries a `vibe.dbgargs` custom
@@ -1269,11 +1302,21 @@ fn run(args: Vec<String>) -> Result<i32> {
     }
 
     match result {
-        Ok(()) => Ok(0),
+        Ok(()) => {
+            if let Some(scope) = store.data().host_fs_scope.as_ref() {
+                publish_host_fs_scope(scope)?;
+            }
+            Ok(0)
+        }
         Err(e) => {
             // `__moonbit_sys_unstable::exit(code)` traps via `ExitTrap(code)`.
             // Recover the code and propagate as our exit status.
             if let Some(ExitTrap(code)) = e.downcast_ref::<ExitTrap>() {
+                if *code == 0 {
+                    if let Some(scope) = store.data().host_fs_scope.as_ref() {
+                        publish_host_fs_scope(scope)?;
+                    }
+                }
                 return Ok(*code);
             }
             // `vibe::dbg_break` user abort (`q` at an interactive breakpoint).
@@ -2064,8 +2107,8 @@ fn vibe_alloc_packed_bytes(caller: &mut Caller<'_, HostState>, data: &[u8]) -> R
     Ok(aligned as i64)
 }
 
-fn vibe_ensure_parent_dir(path: &str) {
-    if let Some(dir) = std::path::Path::new(path).parent() {
+fn vibe_ensure_parent_dir(path: &std::path::Path) {
+    if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
             let _ = fs::create_dir_all(dir);
         }
@@ -2087,7 +2130,7 @@ fn vibe_ensure_parent_dir(path: &str) {
 static VIBE_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn vibe_atomic_write(path: &str, data: &[u8]) -> Result<()> {
-    vibe_ensure_parent_dir(path);
+    vibe_ensure_parent_dir(std::path::Path::new(path));
     let counter = VIBE_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = format!("{path}.tmp-{}-{counter}", std::process::id());
     let write_result = fs::write(&tmp, data);
@@ -2099,6 +2142,76 @@ fn vibe_atomic_write(path: &str, data: &[u8]) -> Result<()> {
         Err(e) => {
             let _ = fs::remove_file(&tmp);
             Err(format_err!("vibe atomic write '{tmp}': {e}"))
+        }
+    }
+}
+
+// Prepare the opt-in telemetry sidecar before the guest can run. A stale file
+// is removed even when the nonce is invalid, so callers cannot accidentally
+// accept an old observation after this invocation fails closed.
+fn prepare_host_fs_scope() -> Result<Option<HostFsScope>> {
+    let Some(output) = std::env::var_os("VIBE_HOST_FS_SCOPE_OUT") else {
+        return Ok(None);
+    };
+    if output.is_empty() {
+        return Ok(None);
+    }
+    let output = PathBuf::from(output);
+    match fs::remove_file(&output) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => bail!("host_fs_scope: remove stale '{}': {e}", output.display()),
+    }
+    let nonce = std::env::var("VIBE_HOST_FS_SCOPE_NONCE")
+        .map_err(|_| format_err!("host_fs_scope: VIBE_HOST_FS_SCOPE_NONCE is required"))?;
+    if nonce.is_empty() || nonce.chars().any(char::is_control) {
+        bail!("host_fs_scope: VIBE_HOST_FS_SCOPE_NONCE must be non-empty and contain no control characters");
+    }
+    Ok(Some(HostFsScope {
+        output,
+        nonce,
+        counters: HostFsScopeCounters::default(),
+    }))
+}
+
+fn host_fs_scope_json(scope: &HostFsScope) -> Result<Vec<u8>> {
+    serde_json::to_vec(&serde_json::json!({
+        "schema": "host_fs_scope",
+        "version": 1,
+        "nonce": scope.nonce,
+        "read_file_calls": scope.counters.read_file_calls,
+        "read_file_returned_bytes": scope.counters.read_file_returned_bytes,
+        "read_bytes_calls": scope.counters.read_bytes_calls,
+        "read_bytes_returned_bytes": scope.counters.read_bytes_returned_bytes,
+        "stat_token_calls": scope.counters.stat_token_calls,
+        "exists_calls": scope.counters.exists_calls,
+    }))
+    .map_err(|e| format_err!("host_fs_scope: serialize sidecar: {e}"))
+}
+
+// This is intentionally a host-side write after `_start` returns successfully,
+// so it cannot itself show up as a guest filesystem-import counter.
+fn publish_host_fs_scope(scope: &HostFsScope) -> Result<()> {
+    let json = host_fs_scope_json(scope)?;
+    // `vibe_atomic_write` takes a UTF-8 guest ABI path. The host-side output
+    // path may be a native non-UTF-8 path, so use the same atomic protocol
+    // directly without lossy path conversion.
+    vibe_ensure_parent_dir(&scope.output);
+    let counter = VIBE_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp_name = scope.output.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(format!(".tmp-{}-{counter}", std::process::id()));
+    let tmp = scope.output.with_file_name(tmp_name);
+    match fs::write(&tmp, &json) {
+        Ok(()) => fs::rename(&tmp, &scope.output).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format_err!("host_fs_scope: publish '{}': {e}", scope.output.display())
+        }),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(format_err!(
+                "host_fs_scope: publish '{}': {e}",
+                scope.output.display()
+            ))
         }
     }
 }
@@ -2319,9 +2432,15 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "fs_read_file",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
+            if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
+                counters.read_file_calls += 1;
+            }
             let content =
                 fs::read(&path).map_err(|e| format_err!("vibe fs_read_file '{path}': {e}"))?;
             let s = String::from_utf8_lossy(&content).into_owned();
+            if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
+                counters.read_file_returned_bytes += s.len() as u64;
+            }
             vibe_alloc_packed_str(&mut caller, &s)
         },
     )?;
@@ -2330,6 +2449,9 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "fs_exists",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
+            if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
+                counters.exists_calls += 1;
+            }
             Ok(i64::from(std::path::Path::new(&path).exists()))
         },
     )?;
@@ -2338,6 +2460,9 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "fs_stat_token",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
+            if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
+                counters.stat_token_calls += 1;
+            }
             Ok(vibe_stat_token(&path))
         },
     )?;
@@ -2481,8 +2606,14 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "fs_read_bytes",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
+            if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
+                counters.read_bytes_calls += 1;
+            }
             let data =
                 fs::read(&path).map_err(|e| format_err!("vibe fs_read_bytes '{path}': {e}"))?;
+            if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
+                counters.read_bytes_returned_bytes += data.len() as u64;
+            }
             vibe_alloc_packed_bytes(&mut caller, &data)
         },
     )?;
@@ -4160,6 +4291,39 @@ fn main() {
     match handle.join() {
         Ok(()) => {}
         Err(_) => std::process::exit(1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_fs_scope_sidecar_is_versioned_and_has_only_host_import_counters() {
+        let scope = HostFsScope {
+            output: PathBuf::from("unused.json"),
+            nonce: "run-1".to_string(),
+            counters: HostFsScopeCounters {
+                read_file_calls: 2,
+                read_file_returned_bytes: 7,
+                read_bytes_calls: 3,
+                read_bytes_returned_bytes: 11,
+                stat_token_calls: 5,
+                exists_calls: 13,
+            },
+        };
+        let value: serde_json::Value =
+            serde_json::from_slice(&host_fs_scope_json(&scope).unwrap()).unwrap();
+        assert_eq!(value["schema"], "host_fs_scope");
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["nonce"], "run-1");
+        assert_eq!(value["read_file_calls"], 2);
+        assert_eq!(value["read_file_returned_bytes"], 7);
+        assert_eq!(value["read_bytes_calls"], 3);
+        assert_eq!(value["read_bytes_returned_bytes"], 11);
+        assert_eq!(value["stat_token_calls"], 5);
+        assert_eq!(value["exists_calls"], 13);
+        assert_eq!(value.as_object().unwrap().len(), 9);
     }
 }
 

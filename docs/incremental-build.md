@@ -108,6 +108,40 @@ and is not yet a per-cache-class hit count. The next implementation target is
 therefore interface/implementation fingerprint separation, preceded by an
 invalidation model/oracle rather than more wall-time tuning.
 
+### Host filesystem ingestion telemetry
+
+The edit-cycle KPI also requests a separate runner-owned sidecar for actual
+host filesystem import work. It opts in only when both variables are supplied:
+
+```text
+VIBE_HOST_FS_SCOPE_OUT=<sidecar.json>
+VIBE_HOST_FS_SCOPE_NONCE=<unique-non-empty-run-id-without-control-characters>
+```
+
+`viberun` deletes an old requested sidecar before it executes the core guest,
+counts calls at the exact `vibe` host-import boundaries (`fs_read_file`,
+`fs_read_bytes`, `fs_stat_token`, and `fs_exists`), and publishes the sidecar
+atomically only after a successful guest completion (including explicit
+`exit(0)`). The host's post-completion write is not a guest import and does not
+contaminate these counters. Failed guests, missing nonces, invalid nonces, and
+sidecar publication failures produce no successful observation.
+
+The strict version-1 JSON object has `schema: "host_fs_scope"`, `version: 1`,
+the caller nonce, and non-negative integer fields `read_file_calls`,
+`read_file_returned_bytes`, `read_bytes_calls`,
+`read_bytes_returned_bytes`, `stat_token_calls`, and `exists_calls`.
+`read_*_returned_bytes` count bytes returned through that import (after
+`fs_read_file`'s existing lossy UTF-8 conversion). This schema describes host
+filesystem-import scope only: it does **not** claim compiler source hashes,
+cache keys, cache hits, reuse decisions, or a compiler ingestion identity.
+
+`scripts/edit_cycle_kpi.mjs` generates a fresh nonce and fails closed if this
+sidecar is missing, malformed, has unexpected fields, contains invalid counts
+or a control-character nonce, or has the wrong nonce. It records the result as
+`host_fs_scope` alongside—not inside—the compiler-owned
+`incremental_typecheck` telemetry. The feature is disabled by default and does
+not change compiler source loading, persistent formats, cache keys, or reuse.
+
 ## Artifact boundaries
 
 A physical file is a useful ingestion/cache shard, but is not always an

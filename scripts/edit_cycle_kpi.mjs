@@ -8,7 +8,7 @@
 // sources or generated compiler bundles. It measures the current one-shot
 // `vibe check` behavior and records its opt-in db_typecheck_fs work counters.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -31,6 +31,18 @@ const telemetryKeys = [
   "parse_operations",
   "modules_failed_or_blocked",
 ];
+const hostFsScopeKeys = [
+  "schema",
+  "version",
+  "nonce",
+  "read_file_calls",
+  "read_file_returned_bytes",
+  "read_bytes_calls",
+  "read_bytes_returned_bytes",
+  "stat_token_calls",
+  "exists_calls",
+];
+const hostFsScopeCounterKeys = hostFsScopeKeys.slice(3);
 
 /// Parse and validate the compiler-owned incremental typecheck sidecar.
 /// Kept exported so the structural contract has a focused Node regression test
@@ -62,6 +74,45 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
     throw new Error(
       `${source}: modules_rechecked + modules_reused + modules_failed_or_blocked must equal modules_planned`,
     );
+  }
+  return telemetry;
+}
+
+/// Parse the runner-owned host filesystem import sidecar. This is intentionally
+/// separate from compiler-owned incremental typecheck telemetry: its schema is
+/// `host_fs_scope`, and its counters are import boundaries, not source hashes.
+export function parseHostFsScopeTelemetry(text, expectedNonce, source = "host filesystem telemetry") {
+  let telemetry;
+  try {
+    telemetry = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${source}: invalid JSON (${error.message})`);
+  }
+  if (telemetry === null || typeof telemetry !== "object" || Array.isArray(telemetry)) {
+    throw new Error(`${source}: expected a JSON object`);
+  }
+  const actualKeys = Object.keys(telemetry).sort();
+  const expectedKeys = [...hostFsScopeKeys].sort();
+  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error(`${source}: expected exactly the host_fs_scope v1 fields`);
+  }
+  if (telemetry.schema !== "host_fs_scope" || telemetry.version !== 1) {
+    throw new Error(`${source}: unsupported host_fs_scope schema/version`);
+  }
+  if (
+    typeof telemetry.nonce !== "string"
+    || telemetry.nonce.length === 0
+    || /\p{Cc}/u.test(telemetry.nonce)
+  ) {
+    throw new Error(`${source}: nonce must be non-empty and contain no control characters`);
+  }
+  if (telemetry.nonce !== expectedNonce) {
+    throw new Error(`${source}: nonce mismatch`);
+  }
+  for (const key of hostFsScopeCounterKeys) {
+    if (!Number.isSafeInteger(telemetry[key]) || telemetry[key] < 0) {
+      throw new Error(`${source}: ${key} must be a non-negative safe integer`);
+    }
   }
   return telemetry;
 }
@@ -104,7 +155,12 @@ function main() {
 
   function check(project, cache, run, caseName, editKind, cacheState) {
     const telemetryPath = join(project, ".vibe-incremental-telemetry.json");
+    const hostFsScopePath = join(project, ".vibe-host-fs-scope.json");
+    const hostFsScopeNonce = randomUUID();
     rmSync(telemetryPath, { force: true });
+    // The runner also removes this before guest execution; do it here too so
+    // a runner regression cannot turn a stale sidecar into a benchmark result.
+    rmSync(hostFsScopePath, { force: true });
     const start = process.hrtime.bigint();
     const result = spawnSync(launcher, ["check", "entry.vibe"], {
       cwd: project,
@@ -116,6 +172,8 @@ function main() {
         VIBE_CLI_WASM: stage2,
         VIBE_HOME: join(work, "home"),
         VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryPath,
+        VIBE_HOST_FS_SCOPE_OUT: hostFsScopePath,
+        VIBE_HOST_FS_SCOPE_NONCE: hostFsScopeNonce,
         VIBE_PREOPEN_DIR: project,
         VIBE_RUNNER: runner,
       },
@@ -137,8 +195,16 @@ function main() {
     if (telemetry.modules_planned < 1) {
       throw new Error(`edit-cycle-kpi: ${caseName} telemetry planned no modules`);
     }
+    if (!existsSync(hostFsScopePath)) {
+      throw new Error(`edit-cycle-kpi: ${caseName} omitted host filesystem telemetry sidecar`);
+    }
+    const hostFsScope = parseHostFsScopeTelemetry(
+      readFileSync(hostFsScopePath, "utf8"),
+      hostFsScopeNonce,
+      `edit-cycle-kpi: ${caseName} host filesystem telemetry`,
+    );
     records.push({
-      schema: 2,
+      schema: 3,
       benchmark: "user-edit-cycle-check",
       compiler_sha256: compilerSha,
       compiler_file: basename(stage2),
@@ -151,6 +217,7 @@ function main() {
       process_mode: "one-shot",
       endpoint: "check-command-complete",
       incremental_typecheck: telemetry,
+      host_fs_scope: hostFsScope,
       wall_ms: Number(wallMs.toFixed(3)),
       success: true,
     });
