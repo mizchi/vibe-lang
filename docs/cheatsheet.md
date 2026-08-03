@@ -36,6 +36,11 @@ let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
+                               // #1392: 補間の値の型がコンパイラに解決でき、
+                               // その型に `T::to_string` (derive(Show)/
+                               // derive(Hash) 生成物、または手書き) があれば
+                               // それを呼ぶ。解決できない型・`Option`/`Array`/
+                               // タプルはまだ生ポインタの10進数が出る (#1392)
 let c: Char = 'A'              // char code (Int alias)
 let b: Bool = true
 let u: Unit = ()
@@ -415,7 +420,11 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // Bag[Int]::{ xs: [] })
 // struct derive(Ord) -> Point::compare(a, b) : Int   (-1 / 0 / 1, lexicographic)
 // struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
-// (Eq is a no-op marker; Hash / Default and enum derive are not yet generated)
+// enum derive(Show) -> E::to_string(v) : String ("B(3)" / "A")
+// derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)
+// derive(Default) -> T::default()
+// (Eq は marker: 構造的 `==` は T::equals として常に生成される)
+// #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ
 
 trait Eq
 trait Ord: Eq                              // supertrait
