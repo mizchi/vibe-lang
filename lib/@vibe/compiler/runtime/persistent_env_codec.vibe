@@ -475,6 +475,42 @@ fn parse_trait_methods(text: String, pos: Int) -> (Array[(String, Array[TypeExpr
   }
 }
 
+fn serialize_trait_method_gens(items: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, params, bounds) = Array::get(items, i)
+    StringBuilder::push(buf, serialize_segment(name))
+    StringBuilder::push(buf, serialize_string_array(params))
+    StringBuilder::push(buf, serialize_string_bounds(bounds))
+    i = i + 1
+  }
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_trait_method_gens(text: String, pos: Int) -> (Array[(String, Array[String], Array[(String, Array[String])])], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (name, after_name) = parse_segment(text, cursor)
+    let (params, after_params) = parse_string_array(text, after_name)
+    let (bounds, next) = parse_string_bounds(text, after_params)
+    Array::push(items, (name, params, bounds))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env trait method generics")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
 fn serialize_bindings(items: Array[(String, Type)]) -> String {
   let buf = StringBuilder::new()
   StringBuilder::push(buf, __to_string(Array::length(items)))
@@ -518,7 +554,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
       StringBuilder::push(buf, serialize_type(ty))
       serialize_type_env_into(buf, rest)
     },
-    EnvTraitDef(name, supers, is_auto, methods, rest, params) => {
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
       StringBuilder::push(buf, "D")
       StringBuilder::push(buf, serialize_segment(name))
       StringBuilder::push(buf, serialize_string_array(supers))
@@ -530,6 +566,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
       StringBuilder::push(buf, serialize_trait_methods(methods))
       serialize_type_env_into(buf, rest)
       StringBuilder::push(buf, serialize_string_array(params))
+      StringBuilder::push(buf, serialize_trait_method_gens(method_gens))
     },
     EnvTraitImpl(name, target, rest) => {
       StringBuilder::push(buf, "I")
@@ -600,8 +637,9 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
           }
           let (methods, after_methods) = parse_trait_methods(text, after_supers + 1)
           let (rest, after_rest) = parse_persistent_type_env_payload(text, after_methods)
-          let (params, next) = parse_string_array(text, after_rest)
-          (EnvTraitDef(name, supers, is_auto, methods, rest, params), next)
+          let (params, after_params) = parse_string_array(text, after_rest)
+          let (method_gens, next) = parse_trait_method_gens(text, after_params)
+          (EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens), next)
         }
       },
       'I' => {
@@ -703,23 +741,24 @@ export fn load_persistent_dep_list(path: String, source: String) -> Option[Array
   }
 }
 
-/// Strict v2 TypeEnv wire format. It preserves the full persistent chain,
-/// including trait/impl entries and EnvCached lookup state; v1 was intentionally
-/// lossy and is rejected rather than silently reconstructed.
+/// Strict v3 TypeEnv wire format. It preserves the full persistent chain,
+/// including trait definitions' header and method-generic provenance, impl
+/// entries, and EnvCached lookup state; v1/v2 are rejected rather than silently
+/// reconstructed or partially reused.
 export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with { Error } {
   let normalized = normalize_persistent_cache_text(text)
-  let header = "version\t2\nenv\t"
+  let header = "version\t3\nenv\t"
   let header_len = String::length(header)
   if String::length(normalized) < header_len || normalized[0: header_len] != header {
     None
   } else {
     let (payload, after_payload) = parse_segment(normalized, header_len)
     if after_payload + 1 != String::length(normalized) || String::char_code_at(normalized, after_payload) != '\n' {
-      throw("invalid persistent type env v2 envelope")
+      throw("invalid persistent type env v3 envelope")
     } else {
       let (env, end) = parse_persistent_type_env_payload(payload, 0)
       if end != String::length(payload) {
-        throw("invalid persistent type env v2 payload")
+        throw("invalid persistent type env v3 payload")
       } else {
         Some(env)
       }
@@ -737,7 +776,7 @@ export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with 
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
-  String::concat("version\t2\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
+  String::concat("version\t3\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
 }
 
 export fn load_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with { Error, Fs } {

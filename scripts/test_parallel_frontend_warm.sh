@@ -121,7 +121,7 @@ fi
 #        common `vibe build src/main.vibe` case. This drives the real
 #        `runtime/vibe --jobs` entry point, not the driver script directly,
 #        since the bug was in how runtime/vibe passed $src to each phase.
-cache_keys() { find "$1/_build" -iname "*selfhost_type_env_v2*" 2>/dev/null | sed 's#.*/##' | sort; }
+cache_keys() { find "$1/_build" -iname "*selfhost_type_env_v3*" 2>/dev/null | sed 's#.*/##' | sort; }
 
 rel_warm="$(mktemp -d)"
 cp "$work"/leaf.vibe "$work"/mid.vibe "$work"/main.vibe "$rel_warm/"

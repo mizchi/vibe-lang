@@ -7,7 +7,7 @@
 // statements, trait definitions, typed occurrences, runtime sidecars, or cache state.
 
 import @vibe/compiler/core {
-  Subst, Type, TypeDef, TypeEnv, __to_string, canonical_exception_effect_name, str_lt, subst_lookup
+  Subst, Type, TypeDef, TypeEnv, TypeExpr, __to_string, canonical_exception_effect_name, str_lt, subst_lookup
 }
 
 import @vibe/core {
@@ -382,7 +382,7 @@ fn canonical_collect_effective_bindings(env: TypeEnv) -> Array[(String, Type)] {
         }
         cur = rest
       },
-      EnvTraitDef(_, _, _, _, rest, _) => {
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
@@ -628,7 +628,7 @@ export fn canonical_retained_trait_impl_entries_snapshot(env: TypeEnv, s: Subst)
       EnvBind(_, _, rest) => {
         cur = rest
       },
-      EnvTraitDef(_, _, _, _, rest, _) => {
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
         cur = rest
       },
       EnvTraitImpl(trait_name, target, rest) => {
@@ -650,6 +650,148 @@ export fn canonical_retained_trait_impl_entries_snapshot(env: TypeEnv, s: Subst)
     }
   }
   canonical_node("CTIS", fields)
+}
+
+//# Retained trait method-generic observation
+
+// Method-generic bounds share the generic-impl encoding above: declared
+// parameter positions are the alpha-normal names, bounds are semantic sets,
+// and unbound or ambiguous rows are explicit malformed nodes. Add a separate
+// duplicate-parameter marker because a duplicate declaration with no bounds
+// would otherwise serialize like two distinct unbounded parameters.
+fn canonical_trait_method_generic_entry(params: Array[String], bounds: Array[(String, Array[String])]) -> String {
+  let fields = [
+    __to_string(Array::length(params)),
+    canonical_trait_impl_bounds(params, bounds)
+  ]
+  let mut position = 0
+  while position < Array::length(params) {
+    let name = Array::get(params, position)
+    let mut matches = 0
+    let mut i = 0
+    while i < Array::length(params) {
+      if Array::get(params, i) == name {
+        matches = matches + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if matches > 1 {
+      Array::push(fields, canonical_node("M", [
+        "reason",
+        "ambiguous_method_parameter",
+        "position",
+        __to_string(position)
+      ]))
+    } else {
+      ()
+    }
+    position = position + 1
+  }
+  canonical_node("G", fields)
+}
+
+fn canonical_retained_trait_method_gens_entry(trait_name: String, methods: Array[(String, Array[TypeExpr], TypeExpr)], method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
+  let fields = [
+    trait_name,
+    __to_string(Array::length(methods))
+  ]
+  let mut position = 0
+  while position < Array::length(methods) {
+    let (method_name, _, _) = Array::get(methods, position)
+    if position >= Array::length(method_gens) {
+      Array::push(fields, canonical_node("M", [
+        "reason",
+        "missing_method_generic_provenance",
+        "position",
+        __to_string(position),
+        "method",
+        method_name
+      ]))
+    } else {
+      let (source_method, params, bounds) = Array::get(method_gens, position)
+      let generic = canonical_trait_method_generic_entry(params, bounds)
+      if source_method == method_name {
+        Array::push(fields, canonical_node("R", [
+          __to_string(position),
+          generic
+        ]))
+      } else {
+        Array::push(fields, canonical_node("M", [
+          "reason",
+          "method_name_mismatch",
+          "position",
+          __to_string(position),
+          "method",
+          method_name,
+          "source_method",
+          source_method,
+          "generic",
+          generic
+        ]))
+      }
+    }
+    position = position + 1
+  }
+  while position < Array::length(method_gens) {
+    let (source_method, params, bounds) = Array::get(method_gens, position)
+    Array::push(fields, canonical_node("M", [
+      "reason",
+      "surplus_method_generic_provenance",
+      "position",
+      __to_string(position),
+      "source_method",
+      source_method,
+      "generic",
+      canonical_trait_method_generic_entry(params, bounds)
+    ]))
+    position = position + 1
+  }
+  canonical_node("T", fields)
+}
+
+/// Canonical, observation-only trait method-generic provenance retained by the
+/// checker in EnvTraitDef. Entries preserve final-environment traversal order;
+/// generic parameter spellings are alpha-normalized by position and method
+/// generic rows pair with method signatures only by position. Missing,
+/// surplus, duplicate, unbound, ambiguous, and mismatched provenance becomes
+/// explicit data rather than silently becoming an empty generic declaration.
+/// This is not source interface identity, trace schema, cache key, or reuse
+/// decision. EnvFlat and EnvEmpty terminate traversal.
+export fn canonical_retained_trait_method_gens_snapshot(env: TypeEnv) -> String {
+  let fields = [
+    "v1"
+  ]
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(trait_name, _, _, methods, rest, _, method_gens) => {
+        Array::push(fields, canonical_retained_trait_method_gens_entry(trait_name, methods, method_gens))
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  canonical_node("CTMGS", fields)
 }
 
 //# Retained type-definition observation
