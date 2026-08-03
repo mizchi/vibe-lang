@@ -39,7 +39,7 @@ STAGE2="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)st
 if [ -s "$STAGE2" ]; then
   echo "[real-async-host] vibe end-to-end: compiling examples/wasm/sleep_async.vibe"
   vdir="_build/_realasync_vibe"; mkdir -p "$vdir"
-  rm -f _build/vibe_selfhost_type_env_v2_*.tsv 2>/dev/null || true
+  rm -f _build/vibe_selfhost_type_env_v3_*.tsv 2>/dev/null || true
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     examples/wasm/sleep_async.vibe "$vdir/sleep.wasm" run >/dev/null 2>&1 || true
@@ -64,7 +64,7 @@ if [ -s "$STAGE2" ]; then
     echo "[real-async-host] FAIL: vibe sleep program did not suspend/resume to 42" >&2; exit 1
   fi
   # Value-returning async import: `Stdin::read_char()` reads async DATA.
-  rm -f _build/vibe_selfhost_type_env_v2_*.tsv 2>/dev/null || true
+  rm -f _build/vibe_selfhost_type_env_v3_*.tsv 2>/dev/null || true
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     examples/wasm/read_async.vibe "$vdir/read.wasm" run >/dev/null 2>&1 || true

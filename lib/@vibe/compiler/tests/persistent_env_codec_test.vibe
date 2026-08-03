@@ -1,0 +1,261 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Type, TypeEnv, TypeExpr, env_lookup, trait_method_sig, trait_supers, types_equal
+}
+
+import @vibe/compiler/runtime {
+  parse_persistent_type_env, persistent_type_env_cache_text
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Helpers
+
+fn cached_polymorphic_type() -> Type {
+  CtForAll([
+    7
+  ], [
+    (7, [
+      "Eq"
+    ])
+  ], CtFn([
+    CtVar(7)
+  ], CtNamed("Box", [
+    CtVar(7)
+  ]), Some("Async")))
+}
+
+fn cached_flat_rest() -> TypeEnv {
+  EnvFlat([
+    ("shadow", CtInt),
+    ("flat", CtTuple([
+      CtChar,
+      CtBytes
+    ])),
+    ("cached", cached_polymorphic_type())
+  ])
+}
+
+fn codec_fixture() -> TypeEnv {
+  let methods = [
+    ("map", [
+      TyFn([
+        TyName("Self")
+      ], TyApp("Result", [
+        TyName("T"),
+        TyName("E")
+      ]), Some("Error")),
+      TyTuple([
+        TyName("T"),
+        TyUnit
+      ])
+    ], TyFn([
+      TyName("Self")
+    ], TyApp("Option", [
+      TyName("T")
+    ]), None))
+  ]
+  EnvBind("shadow", CtString, EnvTraitImplGen("Functor", [
+    "T"
+  ], [
+    ("T", [
+      "Show",
+      "Eq",
+      "Eq"
+    ])
+  ], CtNamed("Box", [
+    CtVar(7)
+  ]), EnvTraitImpl("Renderable", CtNamed("Box", [
+    CtUnknown
+  ]), EnvTraitDef("Functor", [
+    "Show"
+  ], true, methods, EnvCached([
+    "cached",
+    "flat",
+    "shadow"
+  ], [
+    cached_polymorphic_type(),
+    CtTuple([
+      CtChar,
+      CtBytes
+    ]),
+    CtInt
+  ], cached_flat_rest()), [
+    "T",
+    "E"
+  ], [
+    ("map", [
+      "A"
+    ], [
+      ("A", [
+        "Eq",
+        "Show"
+      ])
+    ])
+  ]))))
+}
+
+fn retained_trait_header_params(env: TypeEnv, name: String) -> Array[String] {
+  match env {
+    EnvEmpty => [
+    ],
+    EnvBind(_, _, rest) => retained_trait_header_params(rest, name),
+    EnvTraitDef(trait_name, _, _, _, rest, header_params, _) => if trait_name == name {
+      header_params
+    } else {
+      retained_trait_header_params(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => retained_trait_header_params(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => retained_trait_header_params(rest, name),
+    EnvFlat(_) => [
+    ],
+    EnvCached(_, _, rest) => retained_trait_header_params(rest, name)
+  }
+}
+
+fn retained_trait_method_gens(env: TypeEnv, name: String) -> Array[(String, Array[String], Array[(String, Array[String])])] {
+  match env {
+    EnvEmpty => array_empty(),
+    EnvBind(_, _, rest) => retained_trait_method_gens(rest, name),
+    EnvTraitDef(trait_name, _, _, _, rest, _, method_gens) => if trait_name == name {
+      method_gens
+    } else {
+      retained_trait_method_gens(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => retained_trait_method_gens(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => retained_trait_method_gens(rest, name),
+    EnvFlat(_) => array_empty(),
+    EnvCached(_, _, rest) => retained_trait_method_gens(rest, name)
+  }
+}
+
+fn retained_generic_impl_bounds(env: TypeEnv, name: String) -> Array[(String, Array[String])] {
+  match env {
+    EnvEmpty => [
+    ],
+    EnvBind(_, _, rest) => retained_generic_impl_bounds(rest, name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => retained_generic_impl_bounds(rest, name),
+    EnvTraitImpl(_, _, rest) => retained_generic_impl_bounds(rest, name),
+    EnvTraitImplGen(trait_name, _, bounds, _, rest) => if trait_name == name {
+      bounds
+    } else {
+      retained_generic_impl_bounds(rest, name)
+    },
+    EnvFlat(_) => [
+    ],
+    EnvCached(_, _, rest) => retained_generic_impl_bounds(rest, name)
+  }
+}
+
+fn malformed_rejected(text: String) -> Bool {
+  handle {
+    match parse_persistent_type_env(text) {
+      Some(_) => false,
+      None => true
+    }
+  } with Error {
+    Throw(_) => true
+  }
+}
+
+//# Tests
+
+test "persistent TypeEnv v3 round-trips every variant and trait payload" {
+  let env = codec_fixture()
+  let encoded = persistent_type_env_cache_text(env)
+  assert(String::starts_with(encoded, "version\t3\nenv\t"))
+  match parse_persistent_type_env(encoded) {
+    Some(decoded) => {
+      assert(persistent_type_env_cache_text(decoded) == encoded)
+      match env_lookup(decoded, "shadow") {
+        Some(ty) => assert(types_equal(ty, CtString)),
+        None => assert(false)
+      }
+      match env_lookup(decoded, "cached") {
+        Some(ty) => assert(types_equal(ty, cached_polymorphic_type())),
+        None => assert(false)
+      }
+      assert(Array::get(trait_supers(decoded, "Functor"), 0) == "Show")
+      let header_params = retained_trait_header_params(decoded, "Functor")
+      assert(Array::length(header_params) == 2)
+      assert(Array::get(header_params, 0) == "T")
+      assert(Array::get(header_params, 1) == "E")
+      let method_gens = retained_trait_method_gens(decoded, "Functor")
+      assert(Array::length(method_gens) == 1)
+      let (generic_method, generic_params, generic_bounds) = Array::get(method_gens, 0)
+      assert(generic_method == "map")
+      assert(Array::get(generic_params, 0) == "A")
+      let (generic_bound_name, generic_bound_labels) = Array::get(generic_bounds, 0)
+      assert(generic_bound_name == "A")
+      assert(Array::get(generic_bound_labels, 0) == "Eq")
+      let impl_bounds = retained_generic_impl_bounds(decoded, "Functor")
+      assert(Array::length(impl_bounds) == 1)
+      let (bound_name, bound_labels) = Array::get(impl_bounds, 0)
+      assert(bound_name == "T")
+      assert(Array::length(bound_labels) == 3)
+      assert(Array::get(bound_labels, 0) == "Show")
+      assert(Array::get(bound_labels, 1) == "Eq")
+      assert(Array::get(bound_labels, 2) == "Eq")
+      match trait_method_sig(decoded, "Functor", "map") {
+        Some((params, ret)) => {
+          assert(Array::length(params) == 2)
+          match Array::get(params, 0) {
+            TyFn(_, _, Some("Error")) => assert(true),
+            _ => assert(false)
+          }
+          match ret {
+            TyFn(_, TyApp("Option", _), None) => assert(true),
+            _ => assert(false)
+          }
+        },
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "persistent TypeEnv v3 rebuilds untrusted cached lookup indexes" {
+  let corrupt = EnvCached([
+    "shadow",
+    "shadow",
+    "cached"
+  ], [
+    CtBool,
+    CtString,
+    CtUnit
+  ], cached_flat_rest())
+  match parse_persistent_type_env(persistent_type_env_cache_text(corrupt)) {
+    Some(decoded) => {
+      match env_lookup(decoded, "cached") {
+        Some(ty) => assert(types_equal(ty, cached_polymorphic_type())),
+        None => assert(false)
+      }
+      match env_lookup(decoded, "flat") {
+        Some(ty) => assert(types_equal(ty, CtTuple([
+          CtChar,
+          CtBytes
+        ]))),
+        None => assert(false)
+      }
+      match env_lookup(decoded, "shadow") {
+        Some(ty) => assert(types_equal(ty, CtInt)),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "persistent TypeEnv v3 rejects old, truncated, and malformed envelopes" {
+  assert(malformed_rejected("version\t1\nbind\tvalue\tI\n"))
+  assert(malformed_rejected("version\t2\nenv\t1:0\n"))
+  assert(malformed_rejected("version\t3\nenv\t"))
+  assert(malformed_rejected("version\t3\nenv\t1:Z\n"))
+  assert(malformed_rejected("version\t3\nenv\t2:00\n"))
+  assert(malformed_rejected("version\t3\nenv\t4:B0:0\n"))
+  assert(malformed_rejected("version\t3\nenv\t1:0\ntrailing"))
+}

@@ -634,11 +634,15 @@ test "spawned task may perform Fs and Process alongside Error" {
 /// `Sender::send` throws `Closed`) produced a `Failed(..)` whose
 /// `String::length` was 2129.
 ///
-/// #1374 gave the throw site a kind side channel, so the arm can now NAME what
-/// it caught: `Failed("<SendError>")`. That is the exact-value assertion below.
-/// The kind is the payload's declared type (`Closed` is a variant of
-/// `SendError`), not the variant -- a variant tag needs per-kind formatting,
-/// which the side channel does not carry.
+/// #1374 gave the throw site a kind side channel, so the arm could NAME what it
+/// caught: `Failed("<SendError>")` -- the payload's declared type, not the
+/// variant, because a variant tag needs per-kind formatting.
+///
+/// #1392 slice 3 carries that formatting: the throw site now also RENDERS the
+/// payload, where its static type is still known, and `SendError` derives
+/// `Show`. So the arm reports the variant a caller would actually switch on --
+/// `Failed("Closed")`, the exact-value assertion below. `<SendError>` remains
+/// the answer for a payload type with no structural renderer.
 test "a typed child throw is reported by kind, not as a reinterpreted pointer" {
   let caught = handle {
     let _v = TaskGroup::run((g) -> {
@@ -660,8 +664,9 @@ test "a typed child throw is reported by kind, not as a reinterpreted pointer" {
     Some(Failed(m)) => {
       // A reinterpreted enum pointer measured 2129 characters here, and
       // #1375's blind `__to_string` produced a bare decimal that read like a
-      // message. Both fail this exact comparison.
-      assert_eq(m, "<SendError>")
+      // message. Both fail this exact comparison, as does #1374's kind-only
+      // `<SendError>`.
+      assert_eq(m, "Closed")
     },
     _ => assert(false)
   }

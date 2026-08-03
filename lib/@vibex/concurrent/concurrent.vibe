@@ -177,18 +177,23 @@ export struct TaskHandle[rg, e, T] {
   result: ResCell[T]
 }
 
+// #1392 slice 3: `derive(Show)` so a throw of one of these carries a rendered
+// message through the exception side channel. The renderer is chosen at the
+// THROW site (where the payload's static type is known); an erased
+// `with Error { Throw(m) => .. }` arm -- which is what the task runner below
+// is -- binds `m` at `CtUnknown` and can never resolve one itself.
 export enum TaskError {
   Failed(String);
   Cancelled
-}
+} derive (Show)
 
 export enum SendError {
   Closed
-}
+} derive (Show)
 
 export enum ChannelConfigError {
   NegativeCapacity
-}
+} derive (Show)
 
 /// Internal growable ring queue (deque-style: filler-grown because a
 /// default value of an arbitrary T cannot be conjured).
@@ -402,7 +407,18 @@ fn conc_exn_message(rendered: String, kind: String) -> String {
   if kind == "" || kind == "String" || kind == "Int" {
     rendered
   } else {
-    "<\{kind}>"
+    // #1392 slice 3: the throw site also renders the payload, when it can find
+    // a structural renderer for it, and writes the string alongside the kind.
+    // A non-empty slot means it found one -- it deliberately writes nothing
+    // when all it had was `__to_string`, so this stays a plain emptiness check
+    // instead of an impossible "is this decimal real" one, and the `<Kind>`
+    // form remains the answer for a payload nothing can render.
+    let shown = __exn_message()
+    if String::length(shown) == 0 {
+      "<\{kind}>"
+    } else {
+      shown
+    }
   }
 }
 
@@ -1475,31 +1491,43 @@ fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
 /// receivers and buffer promotion consume from there) and the task
 /// suspends until its own seq is consumed (FIFO).
 ///
-/// #1324 EXCEPTION (still Result-returning): every function on the
-/// SUSPEND lane (`send_wait` / `conc_send_wait_consumed` /
-/// `TaskHandle::result_wait`) still returns `Result`. The blocker that
-/// forced that -- a `throw` inside a CPS-split callee never running,
-/// because the task settled with the step object as its value and the
-/// continuation was never resumed -- is FIXED (#1371, pinned by
-/// suspend_test.vibe's "CPS-split callee results" section). Migrating
-/// these three to `Exception[E]` is now a plain #1324 slice rather than
-/// something blocked on the lowering; it is not done here because these
-/// carry ENUM payloads (`Closed`, `Cancelled`) and the erased `with Error`
-/// handler in the task runner cannot carry an enum through `fail_msg:
-/// String`. #1374 stopped that from reading as a raw pointer, but the kind
-/// channel records the payload's TYPE, so `Closed` arrives as
-/// `<SendError>`: still lossy, and the VARIANT -- the thing a caller
-/// switches on -- is gone. Recovering it needs the payload itself to
-/// survive the runner, not just its kind.
-export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { Async } {
+/// THROWS `Closed` on a closed channel, matching `Sender::send` (#1324:
+/// was `Err(Closed)` in a `Result` return).
+///
+/// #1324 SUSPEND LANE: this function, `conc_send_wait_consumed` and
+/// `TaskHandle::result_wait` were the last three holdouts, kept on `Result`
+/// by two blockers that are both gone now.
+///
+/// 1. A `throw` inside a CPS-split callee never ran (the task settled with
+///    the step object as its value and the continuation was never resumed).
+///    FIXED in #1371, pinned by suspend_test.vibe's "CPS-split callee
+///    results" section.
+/// 2. These carry ENUM payloads (`Closed`, `Cancelled`) and the erased
+///    `with Error` handler in the task runner funnels them through
+///    `fail_msg: String`. #1374 stopped that from reading as a raw pointer
+///    but recorded only the payload's TYPE, so `Closed` arrived as
+///    `<SendError>` and the VARIANT -- the thing a caller switches on --
+///    was gone. #1392 slice 3 renders the payload at the THROW site (the
+///    one place its static type is known) and carries the string, so it
+///    arrives as `Closed`.
+///
+/// What a suspendable CALLER can do with the exception is still narrower
+/// than on the stack-driving lane: a suspend-class closure literal cannot
+/// contain a `handle` (the CPS clone's eligibility rules), so inside a
+/// `spawn_suspend` body the throw can only PROPAGATE -- it fails that task
+/// and, through fail-fast, the group. Catching it means putting the
+/// `handle` around the `TaskGroup::run` call at the use site, where the
+/// payload arrives as the runner's `Failed(<rendered>)` rather than as the
+/// original `SendError`/`TaskError` value (#1374's remaining gap: the erased
+/// arm carries the variant's NAME, not a value to pattern-match).
+export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with { Exception[SendError], Async } {
   let c = s.ch
   if chan_closed(c) {
-    Err(Closed)
+    throw(Closed)
   } else if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
     ring_push(c.buf, v)
     conc_progress(c.group)
     conc_chan_notify(c)
-    Ok(())
   } else {
     // The deposit itself can satisfy a direct-parked recv_wait, so
     // notify before suspending on our own consumption.
@@ -1512,13 +1540,13 @@ export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit,
 }
 
 /// Suspend until the deposited message (seq `myseq`) is consumed. A close
-/// while parked surfaces as Err(Closed), matching Sender::send's blocked
-/// branch. (#1324: suspend lane -- see Sender::send_wait's note.)
-fn conc_send_wait_consumed[rg, e, T](c: Channel[rg, e, T], myseq: Int) -> Result[Unit, SendError] with { Async } {
+/// while parked THROWS `Closed`, matching Sender::send's blocked branch.
+/// (#1324: suspend lane -- see Sender::send_wait's note.)
+fn conc_send_wait_consumed[rg, e, T](c: Channel[rg, e, T], myseq: Int) -> Unit with { Exception[SendError], Async } {
   if c.pend_consumed > myseq {
-    Ok(())
+    ()
   } else if chan_closed(c) {
-    Err(Closed)
+    throw(Closed)
   } else {
     conc_chan_register(c)
     let _w = perform Async::Suspend(1)
@@ -1574,22 +1602,29 @@ export fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] wit
 /// works because pump_all force-settles sleep debts once the resumable
 /// pollers stop progressing (conc_force_settle_sleep_debt). Terminal
 /// outcomes are stable, so awaiting again returns the same value; a
-/// cancelled sibling surfaces as Err(Cancelled). NOTE fail-fast: a
-/// sibling FAILURE usually cancels this parked awaiter before it can
-/// observe Err(Failed) -- the group result carries the failure instead.
-/// (#1324: suspend lane -- see Sender::send_wait's note for why this one
-/// keeps its `Result` while `TaskHandle::join` throws.)
-export fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T, TaskError] with { Async } {
+/// cancelled sibling THROWS `Cancelled` (#1324: was `Err(Cancelled)`).
+/// NOTE fail-fast: a sibling FAILURE usually cancels this parked awaiter
+/// before it can observe `Failed` -- the group result carries the failure
+/// instead.
+///
+/// #1324: this now matches `TaskHandle::join`, with one consequence worth
+/// stating outright -- an awaiter can no longer BRANCH on the outcome. A
+/// suspend-class closure literal cannot contain a `handle`, so a cancelled
+/// or failed sibling propagates and fails the awaiting task too. That is
+/// the intended semantics (cancellation is not something to swallow
+/// silently), but it is a real behavior change from the `Result` form; see
+/// Sender::send_wait's note for the full picture.
+export fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> T with { Exception[TaskError], Async } {
   let s = h.cell.status
   if s == 2 {
     match h.result.value {
-      Some(v) => Ok(v),
-      None => Err(Failed("concurrent: missing result"))
+      Some(v) => v,
+      None => throw(Failed("concurrent: missing result"))
     }
   } else if s == 3 {
-    Err(Failed(h.cell.fail_msg))
+    throw(Failed(h.cell.fail_msg))
   } else if s == 4 {
-    Err(Cancelled)
+    throw(Cancelled)
   } else {
     conc_result_register(h)
     let _w = perform Async::Suspend(1)

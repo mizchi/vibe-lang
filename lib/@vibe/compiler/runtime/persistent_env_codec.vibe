@@ -14,63 +14,45 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Type, TypeEnv, env_flat_bindings
+  Type, TypeEnv, TypeExpr, env_cache
 }
 
 //# Functions
 
-fn parse_int_unwrap(raw: String, fallback: Int) -> Int {
+fn parse_int_strict(raw: String) -> Int with { Error } {
   let len = String::length(raw)
-  let mut result = 0
-  let mut i = 0
-  let mut neg = false
-  let mut valid = true
   if len == 0 {
-    valid = false
-  }
-  if valid {
-    if String::char_code_at(raw, 0) == 45 {
-      neg = true; i = 1
+    throw("invalid persistent type env integer")
+  } else {
+    let mut i = 0
+    if String::char_code_at(raw, 0) == '-' {
+      if len == 1 || String::char_code_at(raw, 1) == '0' {
+        throw("invalid persistent type env integer")
+      } else {
+        i = 1
+      }
+    } else if String::char_code_at(raw, 0) == '0' && len > 1 {
+      throw("invalid persistent type env integer")
+    } else {
+      ()
+    }
+    while i < len {
+      let c = String::char_code_at(raw, i)
+      if c < '0' || c > '9' {
+        throw("invalid persistent type env integer")
+      } else {
+        i = i + 1
+      }
+    }
+    match Int::parse(raw) {
+      Some(value) => value,
+      None => throw("invalid persistent type env integer")
     }
   }
-  while valid {
-    if i >= len {
-      break
-    }
-    let c = String::char_code_at(raw, i)
-    if c < 48 {
-      valid = false
-    }
-    else if c > 57 {
-      valid = false
-    }
-    else {
-      result = result * 10 + (c - 48)
-      i = i + 1
-    }
-  }
-  if valid {
-    if neg {
-      0 - result
-    } else result
-  } else fallback
 }
 
 fn serialize_segment(text: String) -> String {
-  let len = String::length(text)
-  let len_str = __to_string(len)
-  let colon_text = String::concat(":", text)
-  String::concat(len_str, colon_text)
-}
-
-fn decode_effect_name(raw: String) -> String {
-  if raw == "" || raw == "0" {
-    ""
-  } else if raw == "1" {
-    "Error"
-  } else {
-    raw
-  }
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
 }
 
 fn parse_count_header(text: String, pos: Int, terminator: Int) -> (Int, Int) with { Error } {
@@ -79,175 +61,29 @@ fn parse_count_header(text: String, pos: Int, terminator: Int) -> (Int, Int) wit
   while i < len && String::char_code_at(text, i) != terminator {
     i = i + 1
   }
-  if i >= len {
+  if i == pos || i >= len {
     throw("invalid persistent type env payload")
   } else {
-    let parsed = parse_int_unwrap(text[pos: i], 0)
-    (parsed, i + 1)
+    let raw = text[pos: i]
+    let count = parse_int_strict(raw)
+    if count < 0 {
+      throw("invalid persistent type env count")
+    } else {
+      (count, i + 1)
+    }
   }
 }
 
 fn parse_segment(text: String, pos: Int) -> (String, Int) with { Error } {
-  let (seg_len, start) = parse_count_header(text, pos, 58)
+  let (seg_len, start) = parse_count_header(text, pos, ':')
   let end = start + seg_len
-  if end > String::length(text) {
+  if end < start || end > String::length(text) {
     throw("invalid persistent type env segment")
   } else {
     (text[start: end], end)
   }
 }
 
-fn parse_int_array(text: String, pos: Int) -> (Array[Int], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = array_empty()
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (raw, next_cursor) = parse_segment(text, cursor)
-    let parsed_val = parse_int_unwrap(raw, 0)
-    Array::push(items, parsed_val)
-    cursor = next_cursor
-    i = i + 1
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env int array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-fn parse_string_array(text: String, pos: Int) -> (Array[String], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = array_empty()
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (item, next_cursor) = parse_segment(text, cursor)
-    Array::push(items, item)
-    cursor = next_cursor
-    i = i + 1
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env string array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-fn parse_bounds_array(text: String, pos: Int) -> (Array[(Int, Array[String])], Int) with { Error } {
-  let (count, start) = parse_count_header(text, pos, 91)
-  let items = array_empty()
-  let mut i = 0
-  let mut cursor = start
-  while i < count {
-    let (raw_id, next_cursor) = parse_segment(text, cursor)
-    let (bounds, next_cursor2) = parse_string_array(text, next_cursor)
-    let parsed_id = parse_int_unwrap(raw_id, 0)
-    Array::push(items, (parsed_id, bounds))
-    cursor = next_cursor2
-    i = i + 1
-  }
-  if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-    throw("invalid persistent type env bounds array")
-  } else {
-    (items, cursor + 1)
-  }
-}
-
-fn parse_cached_type(source: String, pos: Int) -> (Type, Int) with { Error } {
-  let rec parse_type_array: (String, Int) -> (Array[Type], Int) with { Error } = (text, pos) -> {
-    let (count, start) = parse_count_header(text, pos, 91)
-    let items = array_empty()
-    let mut i = 0
-    let mut cursor = start
-    while i < count {
-      let (raw, next_cursor) = parse_segment(text, cursor)
-      let (item, end_cursor) = parse_cached_type(raw, 0)
-      if end_cursor != String::length(raw) {
-        throw("invalid persistent type env nested type")
-      } else {
-        Array::push(items, item)
-        cursor = next_cursor
-        i = i + 1
-      }
-    }
-    if cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
-      throw("invalid persistent type env type array")
-    } else {
-      (items, cursor + 1)
-    }
-  }
-  if pos >= String::length(source) {
-    throw("invalid persistent type env type")
-  } else {
-    let tag = String::char_code_at(source, pos)
-    match tag {
-      73 => (CtInt, pos + 1),
-      68 => (CtDouble, pos + 1),
-      66 => (CtBool, pos + 1),
-      71 => (CtString, pos + 1),
-      72 => (CtChar, pos + 1),
-      85 => (CtUnit, pos + 1),
-      89 => (CtBytes, pos + 1),
-      88 => (CtUnknown, pos + 1),
-      86 => {
-        let (raw, next_pos) = parse_segment(source, pos + 1)
-        let var_id = parse_int_unwrap(raw, 0)
-        (CtVar(var_id), next_pos)
-      },
-      69 => {
-        let (name, next_pos) = parse_segment(source, pos + 1)
-        (CtEnum(name), next_pos)
-      },
-      82 => {
-        let (name, next_pos) = parse_segment(source, pos + 1)
-        (CtStruct(name), next_pos)
-      },
-      65 => {
-        let (elem, next_pos) = parse_cached_type(source, pos + 1)
-        (CtArray(elem), next_pos)
-      },
-      79 => {
-        let (elem, next_pos) = parse_cached_type(source, pos + 1)
-        (CtOption(elem), next_pos)
-      },
-      84 => {
-        let (elems, next_pos) = parse_type_array(source, pos + 1)
-        (CtTuple(elems), next_pos)
-      },
-      70 => {
-        let (raw_effect, next_pos1) = parse_segment(source, pos + 1)
-        let (params, next_pos2) = parse_type_array(source, next_pos1)
-        let (ret, next_pos3) = parse_cached_type(source, next_pos2)
-        let eff_raw = decode_effect_name(raw_effect)
-        let eff_name = if String::length(eff_raw) > 0 {
-          Some(eff_raw)
-        } else {
-          None
-        }
-        (CtFn(params, ret, eff_name), next_pos3)
-      },
-      78 => {
-        let (name, next_pos1) = parse_segment(source, pos + 1)
-        let (args, next_pos2) = parse_type_array(source, next_pos1)
-        (CtNamed(name, args), next_pos2)
-      },
-      81 => {
-        let (vars, next_pos1) = parse_int_array(source, pos + 1)
-        let (bounds, next_pos2) = parse_bounds_array(source, next_pos1)
-        let (body, next_pos3) = parse_cached_type(source, next_pos2)
-        (CtForAll(vars, bounds, body), next_pos3)
-      },
-      _ => throw("invalid persistent type env type tag")
-    }
-  }
-}
-
-/// All `serialize_*_array` helpers below used a `String::concat(out, ...)`
-/// accumulator that was O(N²) over the array length. Cache-serialisation
-/// runs them on every TypeEnv save, and large modules hit thousands of
-/// bindings — the cumulative cost shows up in `vibe check` cold runs.
-/// StringBuilder collapses each one to O(N).
 fn serialize_int_array(items: Array[Int]) -> String {
   let buf = StringBuilder::new()
   StringBuilder::push(buf, __to_string(Array::length(items)))
@@ -261,8 +97,22 @@ fn serialize_int_array(items: Array[Int]) -> String {
   StringBuilder::freeze(buf)
 }
 
-fn serialize_effect_name_str(effect_name: String) -> String {
-  effect_name
+fn parse_int_array(text: String, pos: Int) -> (Array[Int], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (raw, next) = parse_segment(text, cursor)
+    Array::push(items, parse_int_strict(raw))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env int array")
+  } else {
+    (items, cursor + 1)
+  }
 }
 
 fn serialize_string_array(items: Array[String]) -> String {
@@ -276,6 +126,24 @@ fn serialize_string_array(items: Array[String]) -> String {
   }
   StringBuilder::push(buf, "]")
   StringBuilder::freeze(buf)
+}
+
+fn parse_string_array(text: String, pos: Int) -> (Array[String], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (item, next) = parse_segment(text, cursor)
+    Array::push(items, item)
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env string array")
+  } else {
+    (items, cursor + 1)
+  }
 }
 
 fn serialize_bounds_array(items: Array[(Int, Array[String])]) -> String {
@@ -293,19 +161,126 @@ fn serialize_bounds_array(items: Array[(Int, Array[String])]) -> String {
   StringBuilder::freeze(buf)
 }
 
-fn serialize_type(ty: Type) -> String {
-  let rec serialize_type_array: (Array[Type]) -> String = (items) -> {
-    let buf = StringBuilder::new()
-    StringBuilder::push(buf, __to_string(Array::length(items)))
-    StringBuilder::push(buf, "[")
-    let mut i = 0
-    while i < Array::length(items) {
-      StringBuilder::push(buf, serialize_segment(serialize_type(Array::get(items, i))))
+fn parse_bounds_array(text: String, pos: Int) -> (Array[(Int, Array[String])], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (raw_id, after_id) = parse_segment(text, cursor)
+    let (bounds, next) = parse_string_array(text, after_id)
+    Array::push(items, (parse_int_strict(raw_id), bounds))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env bounds array")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
+fn serialize_type_array(items: Array[Type]) -> String {
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    StringBuilder::push(buf, serialize_segment(serialize_type(Array::get(items, i))))
+    i = i + 1
+  }
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_type_array(text: String, pos: Int) -> (Array[Type], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (raw, next) = parse_segment(text, cursor)
+    let (item, end) = parse_cached_type(raw, 0)
+    if end != String::length(raw) {
+      throw("invalid persistent type env nested type")
+    } else {
+      Array::push(items, item)
+      cursor = next
       i = i + 1
     }
-    StringBuilder::push(buf, "]")
-    StringBuilder::freeze(buf)
   }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env type array")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
+fn parse_cached_type(source: String, pos: Int) -> (Type, Int) with { Error } {
+  if pos >= String::length(source) {
+    throw("invalid persistent type env type")
+  } else {
+    match String::char_code_at(source, pos) {
+      'I' => (CtInt, pos + 1),
+      'D' => (CtDouble, pos + 1),
+      'B' => (CtBool, pos + 1),
+      'G' => (CtString, pos + 1),
+      'H' => (CtChar, pos + 1),
+      'U' => (CtUnit, pos + 1),
+      'Y' => (CtBytes, pos + 1),
+      'X' => (CtUnknown, pos + 1),
+      'V' => {
+        let (raw, next) = parse_segment(source, pos + 1)
+        (CtVar(parse_int_strict(raw)), next)
+      },
+      'E' => {
+        let (name, next) = parse_segment(source, pos + 1)
+        (CtEnum(name), next)
+      },
+      'R' => {
+        let (name, next) = parse_segment(source, pos + 1)
+        (CtStruct(name), next)
+      },
+      'A' => {
+        let (elem, next) = parse_cached_type(source, pos + 1)
+        (CtArray(elem), next)
+      },
+      'O' => {
+        let (elem, next) = parse_cached_type(source, pos + 1)
+        (CtOption(elem), next)
+      },
+      'T' => {
+        let (elems, next) = parse_type_array(source, pos + 1)
+        (CtTuple(elems), next)
+      },
+      'F' => {
+        let (effect, after_effect) = parse_segment(source, pos + 1)
+        let (params, after_params) = parse_type_array(source, after_effect)
+        let (ret, next) = parse_cached_type(source, after_params)
+        let effect_name = if String::length(effect) == 0 {
+          None
+        } else {
+          Some(effect)
+        }
+        (CtFn(params, ret, effect_name), next)
+      },
+      'N' => {
+        let (name, after_name) = parse_segment(source, pos + 1)
+        let (args, next) = parse_type_array(source, after_name)
+        (CtNamed(name, args), next)
+      },
+      'Q' => {
+        let (vars, after_vars) = parse_int_array(source, pos + 1)
+        let (bounds, after_bounds) = parse_bounds_array(source, after_vars)
+        let (body, next) = parse_cached_type(source, after_bounds)
+        (CtForAll(vars, bounds, body), next)
+      },
+      _ => throw("invalid persistent type env type tag")
+    }
+  }
+}
+
+fn serialize_type(ty: Type) -> String {
   match ty {
     CtInt => "I",
     CtDouble => "D",
@@ -322,17 +297,384 @@ fn serialize_type(ty: Type) -> String {
     CtOption(elem) => String::concat("O", serialize_type(elem)),
     CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
     CtFn(params, ret, effect_name) => {
-      let eff_str = if effect_name is Some(n) {
-        n
+      let effect = if effect_name is Some(name) {
+        name
       } else {
         ""
       }
-      String::concat("F", String::concat(serialize_segment(eff_str), String::concat(serialize_type_array(params), serialize_type(ret))))
+      String::concat("F", String::concat(serialize_segment(effect), String::concat(serialize_type_array(params), serialize_type(ret))))
     },
-    CtNamed(name, args) =>
-    String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
-    CtForAll(vars, bounds, body) =>
-    String::concat("Q", String::concat(serialize_int_array(vars), String::concat(serialize_bounds_array(bounds), serialize_type(body))))
+    CtNamed(name, args) => String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
+    CtForAll(vars, bounds, body) => String::concat("Q", String::concat(serialize_int_array(vars), String::concat(serialize_bounds_array(bounds), serialize_type(body))))
+  }
+}
+
+fn serialize_type_expr_array(items: Array[TypeExpr]) -> String {
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    StringBuilder::push(buf, serialize_segment(serialize_type_expr(Array::get(items, i))))
+    i = i + 1
+  }
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_type_expr_array(text: String, pos: Int) -> (Array[TypeExpr], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (raw, next) = parse_segment(text, cursor)
+    let (item, end) = parse_type_expr(raw, 0)
+    if end != String::length(raw) {
+      throw("invalid persistent type env nested type expr")
+    } else {
+      Array::push(items, item)
+      cursor = next
+      i = i + 1
+    }
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env type expr array")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
+fn serialize_type_expr(ty: TypeExpr) -> String {
+  match ty {
+    TyName(name) => String::concat("n", serialize_segment(name)),
+    TyApp(name, args) => String::concat("a", String::concat(serialize_segment(name), serialize_type_expr_array(args))),
+    TyFn(params, ret, effect_name) => {
+      let effect = if effect_name is Some(name) {
+        String::concat("1", serialize_segment(name))
+      } else {
+        "0"
+      }
+      String::concat("f", String::concat(effect, String::concat(serialize_type_expr_array(params), serialize_type_expr(ret))))
+    },
+    TyTuple(elems) => String::concat("t", serialize_type_expr_array(elems)),
+    TyUnit => "u"
+  }
+}
+
+fn parse_type_expr(source: String, pos: Int) -> (TypeExpr, Int) with { Error } {
+  if pos >= String::length(source) {
+    throw("invalid persistent type env type expr")
+  } else {
+    match String::char_code_at(source, pos) {
+      'n' => {
+        let (name, next) = parse_segment(source, pos + 1)
+        (TyName(name), next)
+      },
+      'a' => {
+        let (name, after_name) = parse_segment(source, pos + 1)
+        let (args, next) = parse_type_expr_array(source, after_name)
+        (TyApp(name, args), next)
+      },
+      'f' => {
+        let effect_pos = pos + 1
+        if effect_pos >= String::length(source) {
+          throw("invalid persistent type env function type expr")
+        } else {
+          let tag = String::char_code_at(source, effect_pos)
+          let (effect_name, after_effect) = if tag == '0' {
+            (None, effect_pos + 1)
+          } else if tag == '1' {
+            let (name, next) = parse_segment(source, effect_pos + 1)
+            (Some(name), next)
+          } else {
+            throw("invalid persistent type env function effect")
+          }
+          let (params, after_params) = parse_type_expr_array(source, after_effect)
+          let (ret, next) = parse_type_expr(source, after_params)
+          (TyFn(params, ret, effect_name), next)
+        }
+      },
+      't' => {
+        let (elems, next) = parse_type_expr_array(source, pos + 1)
+        (TyTuple(elems), next)
+      },
+      'u' => (TyUnit, pos + 1),
+      _ => throw("invalid persistent type env type expr tag")
+    }
+  }
+}
+
+fn serialize_string_bounds(items: Array[(String, Array[String])]) -> String {
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, bounds) = Array::get(items, i)
+    StringBuilder::push(buf, serialize_segment(name))
+    StringBuilder::push(buf, serialize_string_array(bounds))
+    i = i + 1
+  }
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_string_bounds(text: String, pos: Int) -> (Array[(String, Array[String])], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (name, after_name) = parse_segment(text, cursor)
+    let (bounds, next) = parse_string_array(text, after_name)
+    Array::push(items, (name, bounds))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env generic bounds")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
+fn serialize_trait_methods(items: Array[(String, Array[TypeExpr], TypeExpr)]) -> String {
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, params, ret) = Array::get(items, i)
+    StringBuilder::push(buf, serialize_segment(name))
+    StringBuilder::push(buf, serialize_type_expr_array(params))
+    StringBuilder::push(buf, serialize_type_expr(ret))
+    i = i + 1
+  }
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_trait_methods(text: String, pos: Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (name, after_name) = parse_segment(text, cursor)
+    let (params, after_params) = parse_type_expr_array(text, after_name)
+    let (ret, next) = parse_type_expr(text, after_params)
+    Array::push(items, (name, params, ret))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env trait methods")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
+fn serialize_trait_method_gens(items: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, params, bounds) = Array::get(items, i)
+    StringBuilder::push(buf, serialize_segment(name))
+    StringBuilder::push(buf, serialize_string_array(params))
+    StringBuilder::push(buf, serialize_string_bounds(bounds))
+    i = i + 1
+  }
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_trait_method_gens(text: String, pos: Int) -> (Array[(String, Array[String], Array[(String, Array[String])])], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (name, after_name) = parse_segment(text, cursor)
+    let (params, after_params) = parse_string_array(text, after_name)
+    let (bounds, next) = parse_string_bounds(text, after_params)
+    Array::push(items, (name, params, bounds))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env trait method generics")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
+fn serialize_bindings(items: Array[(String, Type)]) -> String {
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, ty) = Array::get(items, i)
+    StringBuilder::push(buf, serialize_segment(name))
+    StringBuilder::push(buf, serialize_type(ty))
+    i = i + 1
+  }
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_bindings(text: String, pos: Int) -> (Array[(String, Type)], Int) with { Error } {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (name, after_name) = parse_segment(text, cursor)
+    let (ty, next) = parse_cached_type(text, after_name)
+    Array::push(items, (name, ty))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent type env bindings")
+  } else {
+    (items, cursor + 1)
+  }
+}
+
+fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
+  match env {
+    EnvEmpty => StringBuilder::push(buf, "0"),
+    EnvBind(name, ty, rest) => {
+      StringBuilder::push(buf, "B")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_type(ty))
+      serialize_type_env_into(buf, rest)
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
+      StringBuilder::push(buf, "D")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_string_array(supers))
+      StringBuilder::push(buf, if is_auto {
+        "1"
+      } else {
+        "0"
+      })
+      StringBuilder::push(buf, serialize_trait_methods(methods))
+      serialize_type_env_into(buf, rest)
+      StringBuilder::push(buf, serialize_string_array(params))
+      StringBuilder::push(buf, serialize_trait_method_gens(method_gens))
+    },
+    EnvTraitImpl(name, target, rest) => {
+      StringBuilder::push(buf, "I")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_type(target))
+      serialize_type_env_into(buf, rest)
+    },
+    EnvTraitImplGen(name, params, bounds, target, rest) => {
+      StringBuilder::push(buf, "G")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_string_array(params))
+      StringBuilder::push(buf, serialize_string_bounds(bounds))
+      StringBuilder::push(buf, serialize_type(target))
+      serialize_type_env_into(buf, rest)
+    },
+    EnvFlat(bindings) => {
+      StringBuilder::push(buf, "L")
+      StringBuilder::push(buf, serialize_bindings(bindings))
+    },
+    EnvCached(_, _, rest) => {
+      // Cached arrays are acceleration state, not trusted semantics. Emit the
+      // canonical index rebuilt from the chain so cold-store bytes and decoded
+      // transport identities agree even if an in-memory cache is stale.
+      match env_cache(rest) {
+        EnvCached(names, types, _) => {
+          StringBuilder::push(buf, "C")
+          StringBuilder::push(buf, serialize_string_array(names))
+          StringBuilder::push(buf, serialize_type_array(types))
+          serialize_type_env_into(buf, rest)
+        },
+        _ => serialize_type_env_into(buf, rest)
+      }
+    }
+  }
+}
+
+fn serialize_type_env(env: TypeEnv) -> String {
+  let buf = StringBuilder::new()
+  serialize_type_env_into(buf, env)
+  StringBuilder::freeze(buf)
+}
+
+fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) with { Error } {
+  if pos >= String::length(text) {
+    throw("invalid persistent type env")
+  } else {
+    match String::char_code_at(text, pos) {
+      '0' => (EnvEmpty, pos + 1),
+      'B' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        let (ty, after_ty) = parse_cached_type(text, after_name)
+        let (rest, next) = parse_persistent_type_env_payload(text, after_ty)
+        (EnvBind(name, ty, rest), next)
+      },
+      'D' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        let (supers, after_supers) = parse_string_array(text, after_name)
+        if after_supers >= String::length(text) {
+          throw("invalid persistent type env trait auto flag")
+        } else {
+          let auto_tag = String::char_code_at(text, after_supers)
+          let is_auto = if auto_tag == '0' {
+            false
+          } else if auto_tag == '1' {
+            true
+          } else {
+            throw("invalid persistent type env trait auto flag")
+          }
+          let (methods, after_methods) = parse_trait_methods(text, after_supers + 1)
+          let (rest, after_rest) = parse_persistent_type_env_payload(text, after_methods)
+          let (params, after_params) = parse_string_array(text, after_rest)
+          let (method_gens, next) = parse_trait_method_gens(text, after_params)
+          (EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens), next)
+        }
+      },
+      'I' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        let (target, after_target) = parse_cached_type(text, after_name)
+        let (rest, next) = parse_persistent_type_env_payload(text, after_target)
+        (EnvTraitImpl(name, target, rest), next)
+      },
+      'G' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        let (params, after_params) = parse_string_array(text, after_name)
+        let (bounds, after_bounds) = parse_string_bounds(text, after_params)
+        let (target, after_target) = parse_cached_type(text, after_bounds)
+        let (rest, next) = parse_persistent_type_env_payload(text, after_target)
+        (EnvTraitImplGen(name, params, bounds, target, rest), next)
+      },
+      'L' => {
+        let (bindings, next) = parse_bindings(text, pos + 1)
+        (EnvFlat(bindings), next)
+      },
+      'C' => {
+        let (names, after_names) = parse_string_array(text, pos + 1)
+        let (types, after_types) = parse_type_array(text, after_names)
+        if Array::length(names) != Array::length(types) {
+          throw("invalid persistent type env cached shape")
+        } else {
+          let (rest, next) = parse_persistent_type_env_payload(text, after_types)
+          // Serialized cached arrays are untrusted acceleration data. Rebuild
+          // them from the decoded chain so malformed indexes cannot change
+          // lookup semantics.
+          (env_cache(rest), next)
+        }
+      },
+      _ => throw("invalid persistent type env tag")
+    }
   }
 }
 
@@ -399,60 +741,29 @@ export fn load_persistent_dep_list(path: String, source: String) -> Option[Array
   }
 }
 
-fn rebuild_persistent_type_env(bindings: Array[(String, Type)]) -> TypeEnv {
-  EnvFlat(bindings)
-}
-
-/// #906 Phase 2: the decode half of the type-env cache, split out of
-/// load_persistent_type_env so a value can be reconstituted from TEXT rather
-/// than only from a file at a fingerprint-derived path.
-///
-/// A worker checking a module with imports has to be handed its
-/// dependencies' public environments. It cannot go find them: the cache key
-/// is derived from the whole transitive source snapshot, which is exactly
-/// what a worker is not allowed to see. So the driver serializes each
-/// dependency env with persistent_type_env_cache_text and the worker decodes
-/// it here -- the same bytes the on-disk cache holds, moved as a value.
+/// Strict v3 TypeEnv wire format. It preserves the full persistent chain,
+/// including trait definitions' header and method-generic provenance, impl
+/// entries, and EnvCached lookup state; v1/v2 are rejected rather than silently
+/// reconstructed or partially reused.
 export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with { Error } {
-  let lines = String::split(normalize_persistent_cache_text(text), "\n")
-  let len = Array::length(lines)
-  let rec go: (Int, Bool, Array[(String, Type)]) -> Option[TypeEnv] with { Error } = (index, version_ok, bindings) -> {
-    if index >= len {
-      if version_ok {
-        Some(rebuild_persistent_type_env(bindings))
-      } else {
-        None
-      }
+  let normalized = normalize_persistent_cache_text(text)
+  let header = "version\t3\nenv\t"
+  let header_len = String::length(header)
+  if String::length(normalized) < header_len || normalized[0: header_len] != header {
+    None
+  } else {
+    let (payload, after_payload) = parse_segment(normalized, header_len)
+    if after_payload + 1 != String::length(normalized) || String::char_code_at(normalized, after_payload) != '\n' {
+      throw("invalid persistent type env v3 envelope")
     } else {
-      let line = Array::get(lines, index)
-      if String::length(line) == 0 {
-        go(index + 1, version_ok, bindings)
+      let (env, end) = parse_persistent_type_env_payload(payload, 0)
+      if end != String::length(payload) {
+        throw("invalid persistent type env v3 payload")
       } else {
-        let parts = String::split(line, "\t")
-        if !version_ok {
-          if Array::length(parts) == 2 &&
-          Array::get(parts, 0) == "version" &&
-          Array::get(parts, 1) == "1" {
-            go(index + 1, true, bindings)
-          } else {
-            throw(String::concat("invalid persistent type env header: ", line))
-          }
-        } else if Array::length(parts) == 3 && Array::get(parts, 0) == "bind" {
-          let raw_type = Array::get(parts, 2)
-          let (ty, end_pos) = parse_cached_type(raw_type, 0)
-          if end_pos != String::length(raw_type) {
-            throw(String::concat("invalid persistent type env bind row: ", line))
-          } else {
-            Array::push(bindings, (Array::get(parts, 1), ty))
-            go(index + 1, true, bindings)
-          }
-        } else {
-          throw(String::concat("invalid persistent type env row: ", line))
-        }
+        Some(env)
       }
     }
   }
-  go(0, false, array_empty())
 }
 
 export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with { Error, Fs } {
@@ -465,22 +776,7 @@ export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with 
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
-  let bindings = env_flat_bindings(env)
-  // StringBuilder over the bindings list — was O(N²) via `out =
-  // String::concat(out, ...)` for N bindings.
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, "version\t1\n")
-  let mut i = 0
-  while i < Array::length(bindings) {
-    let (name, ty) = Array::get(bindings, i)
-    StringBuilder::push(buf, "bind\t")
-    StringBuilder::push(buf, name)
-    StringBuilder::push(buf, "\t")
-    StringBuilder::push(buf, serialize_type(ty))
-    StringBuilder::push(buf, "\n")
-    i = i + 1
-  }
-  StringBuilder::freeze(buf)
+  String::concat("version\t3\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
 }
 
 export fn load_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with { Error, Fs } {

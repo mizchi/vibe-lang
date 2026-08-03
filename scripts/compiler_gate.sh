@@ -75,6 +75,13 @@ VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3ab/3 persistent ingestion stamp observed-check equivalence oracle"
 node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 
+# 3ac. Experimental production typing reuse: only the persistent value-binding
+# transport environment can authorize this sidecar alias; trace interfaces are
+# explicitly excluded. The isolated oracle proves cold/warm, private/public,
+# output/diagnostic parity, and malformed-alias fallback.
+echo "[compiler-gate] 3ac/3 experimental typing dependency-env reuse oracle"
+VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that
@@ -8817,11 +8824,11 @@ echo "[compiler-gate] 86/86 string interpolation renders derive(Show) structural
 # `"\{v}"` lowers in the parser to `__to_string(v)`, before any type is
 # known, so every aggregate used to render as the ADR-0058 heuristic's raw
 # pointer decimal -- `derive(Show)` or not. desugar_trait_dict now retargets
-# the call to the generated `T::to_string` whenever infer_arg_type_name can
-# resolve the argument's type. The fixture encodes one digit group per case
-# (10000 scalars / 1000 struct let / 200 enum let / 30 nullary ctor / 4
-# annotated param), so a partial regression names itself: this exact program
-# returned 10000 on the pre-fix compiler.
+# the call to the generated `T::to_string` (slice 1) and expands the wrapper
+# shapes (slice 2) whenever it can resolve the argument. The fixture returns
+# one DIGIT per case, 1 = ok, so a partial regression names itself by which
+# digit went to zero -- see the fixture header for the mapping. This exact
+# program returned 1 before #1392 and 11111 with slice 1 alone.
 showdir="_build/_gate_interp_show"
 rm -rf "$showdir"; mkdir -p "$showdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/interp_show_derive.vibe > "$showdir/show.vibe"
@@ -8834,11 +8841,118 @@ if [ ! -s "$showdir/show.wasm" ]; then
   exit 1
 fi
 show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>/dev/null | tail -1)"
-if [ "$show_out" != "11234" ]; then
-  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11234) (#1392)" >&2
+if [ "$show_out" != "11111111111111" ]; then
+  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11111111111111) (#1392)" >&2
   exit 1
 fi
 rm -rf "$showdir"
 echo "[compiler-gate] interpolation Show rendering ok"
+
+echo "[compiler-gate] 87/87 uncaught throw reports the payload VALUE (#1374 / #1392 slice 3)"
+# ADR-0085's runtime carries one abortive tag with no kind, so the entry
+# boundary's erased `with Error` arm binds the payload at CtUnknown and can
+# resolve neither a `T::to_string` nor a `[T: Show]` witness. #1374 gave it the
+# payload's TYPE; slice 3 gives it the payload RENDERED at the throw site,
+# where the type is still known. Three cases, because the interesting part is
+# that the third did NOT regress: a type with no structural renderer must keep
+# printing `<Kind>` rather than the pointer decimal a naive "trust any non-empty
+# render" reader would emit.
+exnmsgdir="_build/_gate_exn_msg"
+rm -rf "$exnmsgdir"; mkdir -p "$exnmsgdir"
+cat > "$exnmsgdir/shown.vibe" <<'VIBEEOF'
+enum AppError {
+  Failed(String);
+  Cancelled
+} derive (Show)
+
+let _start = () -> Int with { Error } {
+  throw(Failed("io"))
+}
+VIBEEOF
+cat > "$exnmsgdir/plain.vibe" <<'VIBEEOF'
+let _start = () -> Int with { Error } {
+  throw("plain message")
+}
+VIBEEOF
+cat > "$exnmsgdir/noshow.vibe" <<'VIBEEOF'
+enum NoShow {
+  Bang(Int)
+}
+
+let _start = () -> Int with { Error } {
+  throw(Bang(5))
+}
+VIBEEOF
+exn_msg_expect() {
+  local name="$1" want="$2"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$exnmsgdir/$name.vibe" "$exnmsgdir/$name.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$exnmsgdir/$name.wasm" ]; then
+    echo "[compiler-gate] FAIL: $name.vibe did not compile (#1392 slice 3)" >&2
+    cat "$exnmsgdir/$name.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  local got
+  got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/$name.wasm" 2>&1 | grep "uncaught error" | head -1)"
+  if [ "$got" != "vibe: uncaught error: $want" ]; then
+    echo "[compiler-gate] FAIL: $name got '$got' (want 'vibe: uncaught error: $want') (#1392 slice 3)" >&2
+    exit 1
+  fi
+}
+# derive(Show) enum: the VALUE, not `<AppError>` (which is what #1374 printed).
+exn_msg_expect shown "Failed(io)"
+# String payload: `__to_string` is the identity, output unchanged.
+exn_msg_expect plain "plain message"
+# No structural renderer: the kind, NOT the pointer decimal.
+exn_msg_expect noshow "<NoShow>"
+# #1398 review (Codex P1): the render is SYNTHESIZED, runs on every throw even
+# when no handler reads it, and its effects are absent from the throwing
+# function's checked row -- so it must only ever call a renderer this pass
+# GENERATED. A hand-written `T::to_string` is called for an interpolation the
+# user wrote and for nothing else. Before the fix this program printed
+# "FORMATTER RAN" twice; a formatter that threw would have replaced the
+# original exception outright.
+cat > "$exnmsgdir/handwritten.vibe" <<'VIBEEOF'
+enum Boom {
+  Bang(Int)
+}
+
+fn Boom::to_string(self: Boom) -> String {
+  println("FORMATTER RAN")
+  "boom"
+}
+
+let _start = () -> Int {
+  println("interp=\{Bang(1)}")
+  handle {
+    throw(Bang(1))
+  } with Error {
+    Throw(_m) => 7
+  }
+}
+VIBEEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$exnmsgdir/handwritten.vibe" "$exnmsgdir/handwritten.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$exnmsgdir/handwritten.wasm" ]; then
+  echo "[compiler-gate] FAIL: handwritten.vibe did not compile (#1398 review P1)" >&2
+  cat "$exnmsgdir/handwritten.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+hw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/handwritten.wasm" 2>&1)"
+hw_runs="$(printf '%s\n' "$hw_out" | grep -c "FORMATTER RAN" || true)"
+if [ "$hw_runs" != "1" ]; then
+  echo "[compiler-gate] FAIL: hand-written formatter ran $hw_runs time(s), want 1 (#1398 review P1)" >&2
+  printf '%s\n' "$hw_out" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$hw_out" | grep -q "^interp=boom$"; then
+  echo "[compiler-gate] FAIL: an EXPLICIT interpolation must still use the hand-written formatter (#1398 review P1)" >&2
+  printf '%s\n' "$hw_out" >&2
+  exit 1
+fi
+rm -rf "$exnmsgdir"
+echo "[compiler-gate] uncaught throw payload rendering ok"
 
 echo "[compiler-gate] ok"
