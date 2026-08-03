@@ -927,6 +927,59 @@ nursery の capture は必ず異なる var id を持つ)。実装は
   `err_taskgroup_sugar_region_escape.vibe`(sugar body から漏れた
   `TaskHandle`、reject)。
 
+### 実装ノート (2026-08-03 追記): `Result` → 型付き `Exception[E]` (#1324 slice 1)
+
+ADR-0085 の型付き `Exception[E]` (#1344) を受けて、`@vibex/concurrent` の
+公開 API のうち **suspend lane にないもの**を throw ベースへ移した。
+`Result` の二重ラップ (`Result[Result[T, TaskError], TaskError]`) が消え、
+成功パスが値そのものになる。
+
+移行済み (5 本):
+
+| API | 旧 | 新 |
+| --- | --- | --- |
+| `TaskGroup::run` | `-> Result[T, TaskError] with { e }` | `-> T with { Exception[TaskError], e }` |
+| `TaskHandle::join` | `-> Result[T, TaskError] with { e }` | `-> T with { Exception[TaskError], e }` |
+| `Channel::bounded` | `-> Result[(Sender, Receiver), ChannelConfigError]` | `-> (Sender, Receiver) with { Exception[ChannelConfigError] }` |
+| `Sender::send` | `-> Result[Unit, SendError] with { e }` | `-> Unit with { Exception[SendError], e }` |
+| `Parallel::map` | `-> Result[Array[U], TaskError] with { e }` | `-> Array[U] with { Exception[TaskError], e }` |
+
+失敗を観測したい呼び出し側は
+`handle { .. } with Exception[TaskError] { Throw(e) => .. }` を書く。
+`TaskGroup::run` の row は effect 変数 `e` を含むため、その `handle` は
+**呼び出し地点に直接**置く — generic helper で包むと nursery token が型変数
+経由で escape し (#1081 step 3)、closure literal で包むと ADR-0076 の
+suspend lowering が row 変数 callee を拒否する (`scps_calls_ok`)。
+
+**移行しなかったもの (suspend lane、意図的)**:
+`Sender::send_wait` / `conc_send_wait_consumed` / `TaskHandle::result_wait`
+は `Result` のまま。ADR-0076 の suspend lowering は **CPS 分割された callee
+の中で実行された `throw` を正しく伝播しない** — task を abort せず、呼び出し
+元に garbage 値を返す。`main` 上で計測して確認した (この #1324 の変更前):
+`fn pw(x) -> Int with { Error, Async } { perform Async::Suspend(0);
+throw(Failed("boom")) }` を `spawn_suspend` の body から呼ぶと、group は
+成功終了し `join` は 699 を返した。この3本を throw 化すると「閉じた
+channel」「cancel された sibling」が観測可能な結果から静かな破損に変わる
+ため、lowering 側が直るまで据え置く。
+
+`Result` を返す `TaskHandle::join` に依存していた fixture 群
+(`region_ok_*.vibe`、`err_spawnable_capture_*.vibe` ほか) は throw 版へ
+更新済み。エントリが throw を素通しするため `with { Error }` の row 付与が
+必要になった点に注意。
+
+**同時に踏んだ checker のバグ (修正済み)**: `unify` の `CtUnknown` 節が
+`CtVar` 節より下にあったため、`unify(CtVar(T), CtUnknown)` が
+`T := CtUnknown` を束縛して T を恒久的に消していた。`throw` の結果型は
+`CtUnknown` (builtins_misc.vibe `lookup_throw`) なので、`-> T` を宣言した
+関数が T の位置で `throw` すると (= 移行後の `TaskGroup::run` /
+`TaskHandle::join` そのもの) 一般化された scheme が `T` の代わりに
+`CtUnknown` を持つ。その結果 #1081 の region-escape 検査
+(`TaskGroup::run` の body 戻り値が rigid skolem を含むか) が常に false と
+なり、**`fixtures/err_region_escape_return.vibe` が clean に通ってしまう**
+状態になっていた。`CtUnknown` 節を `CtVar` 節より上へ移し、型変数を
+`CtUnknown` に束縛しないようにして修正 (`core/types.vibe`)。同 fixture が
+そのまま regression lock になっている。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開

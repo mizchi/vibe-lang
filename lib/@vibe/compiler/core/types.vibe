@@ -1700,18 +1700,35 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
   else if char_int_compatible(ta, tb) {
     Some(s)
   }
+  // #1324: `CtUnknown` means "no information", so it is compatible with
+  // everything -- but it must never BIND a type variable to itself. This
+  // arm used to sit BELOW the two `CtVar` arms, so `unify(CtVar(T),
+  // CtUnknown)` recorded `T := CtUnknown` and erased T for good. That fires
+  // on any `fn f[T](..) -> T` whose body reaches `throw` in a T-typed
+  // position (`throw`'s own result is CtUnknown -- builtins_misc.vibe's
+  // lookup_throw), which is exactly the shape #1324 gives
+  // `TaskGroup::run` / `TaskHandle::join`. The declaration's generalized
+  // scheme then carries `CtUnknown` where `T` belongs, and checker.vibe's
+  // #1081 region-escape scan -- which asks whether the zonked body return
+  // still mentions this run call's rigid skolem -- silently saw
+  // `CtUnknown` and stopped rejecting real escapes
+  // (fixtures/err_region_escape_return.vibe compiled clean).
+  // Leaving the variable UNBOUND is strictly better on both counts: the
+  // var stays free to unify with the real type from another use site, and
+  // a type that was never learned stays unknown instead of masquerading as
+  // a known one.
   else match ta {
-    CtVar(id) => if occurs_in(id, tb) {
-      None
-    } else Some(SubstBind(id, tb, s)),
+    CtUnknown => Some(s),
     _ => match tb {
-      CtVar(id) => if occurs_in(id, ta) {
-        None
-      } else Some(SubstBind(id, ta, s)),
+      CtUnknown => Some(s),
       _ => match ta {
-        CtUnknown => Some(s),
+        CtVar(id) => if occurs_in(id, tb) {
+          None
+        } else Some(SubstBind(id, tb, s)),
         _ => match tb {
-          CtUnknown => Some(s),
+          CtVar(id) => if occurs_in(id, ta) {
+            None
+          } else Some(SubstBind(id, ta, s)),
           _ => match ta {
             CtForAll(_, _, body_a) => match tb {
               CtForAll(_, _, body_b) => unify(body_a, body_b, s),

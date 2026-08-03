@@ -1,0 +1,40 @@
+// closure-CPS (ADR-0076 追記31 Vertical B) × #973's undeterminable-operand
+// desugar (#1324): the step-compiled closure literal binds the result of a
+// GENERIC suspend-lane callee, so `v`'s syntactically inferable type is the
+// type variable `T`. desugar_trait_dict therefore rewrites `v + 2` into
+// `__generic_add(v, 2)` — and before #1324 that synthesized callee name
+// alone sank the whole literal to ineligible ("a closure literal whose row
+// carries Yield ... calls something the suspend lowering cannot see
+// through"), even though `__generic_add` is a registered pure builtin with
+// no effect row. Ordinary arithmetic on an awaited value must stay legal.
+//
+// Value trace (want 70): bump's Emit(1) parks; the arm resumes it with 2,
+// bump returns 5, v + 2 = 7, the handle body computes 7 * 10 = 70 and the
+// arm returns it unchanged.
+effect Yield {
+  Emit(Int) -> Int
+}
+
+fn run_with(f: () -> Int with { Yield }) -> Int {
+  handle {
+    let a = f()
+    a * 10
+  } with Yield {
+    Emit(p) => {
+      let k = resume
+      k(p + 1)
+    }
+  }
+}
+
+fn bump[T](x: T) -> T with { Yield } {
+  let _w = perform Yield::Emit(1)
+  x
+}
+
+let _start = () -> Int {
+  run_with(() -> Int with { Yield } {
+    let v = bump(5)
+    v + 2
+  })
+}
