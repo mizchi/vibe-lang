@@ -1414,24 +1414,34 @@ AsyncIterator の impl を持たないので、`afe_async_iterand`（checker_eff
 while ループと同じ 42 を返すこと、および `{ Async }` の無い row で
 **reject されること**の両方を pin する。
 
-**実測した限界（Codex review on #1369）**: この routing が効くのは
-identifier と直接の `host_stream_named(..)` 呼び出しで、**projection
-（`for b in h.s`）は効かない** — 42 ではなく 4 が返る（cell を数えたまま）。
-閉じるには2つ必要で、片方だけでは足りない:
+**projection（Codex review on #1369 で修正）**: 当初この routing は
+identifier と直接の `host_stream_named(..)` 呼び出しにしか効かず、
+`for b in h.s`（struct field 経由）は 42 ではなく 4 を返していた。原因は
+**両方の pass に struct の field 型が無かった**こと — desugar の
+`struct_sets` は field 名だけを持ち、async effect pass も同様だった。
+両者に `Struct.field -> 型名` の表を持たせて解消した:
 
-1. desugar 側に **struct の field 型**が無い（`struct_sets` は field 名だけ）。
-2. **checker 側でも `h.s` は nominal 型を運んでいない**。実測: `s: HostStream`
-   の field を `take_int(h.s)` に渡しても型エラーにならない。しかもこれは
-   projection 特有ではなく、**素の local でも `take_int(s)` が通る** —
-   `CtNamed` の head は引数位置で許容される（`nominal_head_conflict` の
-   concreteness gate）。
+- desugar: `collect_struct_field_types` が `fn_returns` に予約キー
+  (`struct_field_type_key`, `.` は識別子に現れないので衝突しない) で相乗り。
+  `infer_arg_type_name` の `EDot` arm がそれを引く。**sort の前に push する
+  必要がある** — この表は binary search されるので、後から append しても
+  見えない（最初の実装はこれを踏み、seeding を別の collector に置いてしまい
+  無効だった）。
+- checker_effects: 同じ表を module cell で持ち、`afe_expr_head_name` の
+  `EDot` arm が引く。これが無いと desugar だけが await ループを組み立て、
+  row 無しで park できてしまう（#1358 が塞いだ穴の別ルート）。
 
-したがって現時点の `HostStream` は **routing key であって barrier ではない**。
+副産物として `let s = h.s; for b in s` も通る（`extend_var_types` が
+`infer_arg_type_name` を通すため）。回帰ロックは gate の projected `for`
+lane（bytes を読むこと + `{ Async }` 無しの row が reject されること）。
+
+**残る限界**: `HostStream` は **routing key であって barrier ではない**。
+実測: `s: HostStream` を `take_int(s)` に渡しても型エラーにならない
+（projection 特有ではなく素の local でも同様 — `CtNamed` の head は引数位置で
+許容される、`nominal_head_conflict` の concreteness gate）。したがって
 「eager 用 combinator を host stream に適用すると型エラー」という当初の主張は
-**この意味で誤り**で、引数位置の nominal 検査を別途強くする必要がある。
-projection 越しの `for` は #1341 以前も（すべてが `Stream[Int]` だったので）
-同じく静かに間違っていたため、#1341 は純粋な改善ではあるが、クラス全体を
-閉じてはいない。
+**誤り**で、引数位置の nominal 検査を強くするのは `HostStream` に限らない
+横断的な別作業。
 
 **残り**: 一般 `Stream::next`（`Future[Option[T]]`）を host read へ落とす件は
 まだ。実測では `await(Stream::next(s))` は ADR-0076 の evidence-passing

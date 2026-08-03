@@ -1095,6 +1095,18 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
         None => ctor_enum_of_name(fn_returns, name)
       }
     },
+    // #1341 (Codex P1 on #1369): a PROJECTION (`h.s`). The object's type name
+    // plus the field name give the field's declared type head, via the
+    // reserved fn_returns key seeded by collect_struct_field_types. Without
+    // this, `for b in h.s` over a host stream fell through to the array loop
+    // and iterated the 2-word `[state, handle]` cell -- returning 4 instead of
+    // the body's bytes, with no diagnostic. It also makes `let s = h.s`
+    // record `s -> HostStream` (extend_var_types runs infer_arg_type_name on
+    // the bound value), so the bind-then-loop spelling works too.
+    EDot(obj, field, _, _) => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+      Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
+      None => None
+    },
     // A call-valued iterable (`for x in lazy_iter_arr([..])`) or data ctor
     // (`Sh::Circle(5)`): its type is the head of the callee's return type. The
     // builtin `Some`/`Ok`/`Err` constructors resolve to "Option"/"Result" so a
@@ -1136,18 +1148,19 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       // its nominal type is what routes `for b in s` to the host read below
       // instead of to the array loop -- which used to iterate the 2-word cell.
       //
-      // Codex review on #1369, MEASURED limit: this routing covers an
-      // identifier and a direct `host_stream_named(..)` call, NOT a projection
-      // (`for b in h.s`, which still yields 4 instead of the body's bytes).
-      // Two things are missing and BOTH are needed to close it: struct FIELD
-      // types are absent from this pass's tables (struct_sets records field
-      // names only), and `h.s` does not carry its nominal type in the checker
-      // either -- `take_int(h.s)` with `s: HostStream` type-checks, as does
-      // `take_int(s)` for a plain local, because a `CtNamed` head is tolerated
-      // at argument positions (nominal_head_conflict's concreteness gate).
-      // So the nominal type is a ROUTING KEY here, not an enforced barrier;
-      // making it a barrier is separate work on argument-position nominal
-      // checking. Tracked on #1341.
+      // Codex P1 on #1369: projections (`for b in h.s`) are covered too --
+      // see the EDot arm above, which reads the field's declared head from
+      // the `Struct.field` entries collect_struct_field_types seeds into
+      // fn_returns. Before that they fell back to the array loop and summed
+      // the 2-word cell (measured: 4).
+      //
+      // Still true, and NOT closed here: the nominal type is a ROUTING KEY,
+      // not an enforced barrier. `take_int(s)` with `s: HostStream`
+      // type-checks (a `CtNamed` head is tolerated at argument positions,
+      // nominal_head_conflict's concreteness gate), so applying an eager
+      // Stream combinator to a host stream is not itself a type error.
+      // Tightening argument-position nominal checking is cross-cutting work
+      // beyond HostStream. Tracked on #1341.
       EIdent("host_stream_named", _) => Some("HostStream"),
       EIdent("String::concat", _) => Some("String"),
       EIdent("String::join", _) => Some("String"),
@@ -2055,6 +2068,50 @@ fn fn_return_head_of(ret: Option[TypeExpr], body: Expr) -> String {
   }
 }
 
+/// #1341 (Codex P1 on #1369): the key under which a struct FIELD's declared
+/// type head rides in the fn_returns table. `.` cannot appear in a vibe
+/// binding or function name (qualified names use `::`), so this can never
+/// collide with a real entry -- the same reserved-key trick array_elem_key
+/// already uses for var_types.
+///
+/// fn_returns is threaded through every infer_arg_type_name caller already,
+/// and struct_sets carries field NAMES only, so this is the cheapest place to
+/// put field types without adding a parameter to a dozen signatures.
+fn struct_field_type_key(struct_name: String, field: String) -> String {
+  String::concat(struct_name, String::concat(".", field))
+}
+
+/// (`Holder.s` -> `HostStream`) for every declared struct field whose
+/// annotation has a head name. Appended to fn_returns so `infer_arg_type_name`
+/// can type a projection (`h.s`).
+fn collect_struct_field_types(stmts: Array[Stmt], out: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, fields, _, _, _) => {
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, j)
+          let head = match fty {
+            TyName(n) => n,
+            TyApp(n, _) => n,
+            _ => ""
+          }
+          if String::length(head) > 0 {
+            Array::push(out, (struct_field_type_key(sname, fname), head))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SModule(_, _, inner) => collect_struct_field_types(inner, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
@@ -2092,6 +2149,13 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
     }
     i = i + 1
   }
+  // #1341: struct FIELD type heads ride along under the reserved
+  // `Struct.field` key (struct_field_type_key). Must be pushed BEFORE the
+  // sort below -- fn_exists/fn_return_type binary-search this table, so an
+  // entry appended afterwards would be invisible. (That is exactly how the
+  // first cut of this failed: the seeding call landed in a different
+  // collector whose result is not what infer_arg_type_name reads.)
+  collect_struct_field_types(stmts, out)
   // Perf: this table holds every top-level fn + enum variant of the merged
   // compile (thousands of entries) and fn_exists/fn_return_type consulted it
   // LINEARLY per expression during the rewrite. Sort once (STABLE, so the

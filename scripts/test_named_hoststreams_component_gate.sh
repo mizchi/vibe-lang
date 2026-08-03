@@ -224,6 +224,65 @@ if [ -s "$FOR_NEG_OUT" ]; then
 fi
 echo "[named-hoststreams-component-gate] for path: 42 (same bytes as the while loop; an Async-free row is rejected)"
 
+# Codex P1 on #1369: the same loop through a struct FIELD (`for b in h.s`).
+# The desugar recovers the iterand's type name from its own syntactic tables,
+# and struct field types were absent from them -- so this shape fell back to
+# the array loop and summed the 2-word cell (measured: 4, no diagnostic).
+# Both passes now carry field types, so the projection must read the bytes AND
+# still demand the Async row.
+PROJ_SRC="$OUT_DIR/stream_for_proj.vibe"
+cat >"$PROJ_SRC" <<'EOF'
+struct Holder { s: HostStream }
+
+let run: () -> Int with { Async } = () -> {
+  let h = Holder::{ s: host_stream_named("body") }
+  let mut sum = 0
+  for b in h.s {
+    sum = sum + b
+  }
+  sum
+}
+EOF
+PROJ_COMPONENT="$OUT_DIR/stream_for_proj.component.wasm"
+compile_fixture "$PROJ_SRC" "$PROJ_COMPONENT"
+check_component_header "$PROJ_COMPONENT"
+PROJ_LOG="$OUT_DIR/run.for_proj.log"
+if ! VIBE_ASYNC_STREAMS="body=10|15|17" timeout 60 "$RUNNER" "$PROJ_COMPONENT" >"$PROJ_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: the projected for form did not exit 0" >&2
+  cat "$PROJ_LOG" >&2
+  exit 1
+fi
+PROJ_GOT="$(cat "$PROJ_LOG")"
+[ "$PROJ_GOT" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: for-over-h.s expected 42, got: $PROJ_GOT (4 = the [state, handle] cell)" >&2; exit 1; }
+
+PROJ_NEG="$OUT_DIR/stream_for_proj_norow.vibe"
+cat >"$PROJ_NEG" <<'EOF'
+struct Holder { s: HostStream }
+
+let drain = (h: Holder) -> Int {
+  let mut sum = 0
+  for b in h.s {
+    sum = sum + b
+  }
+  sum
+}
+
+let run: () -> Int with { Async } = () -> {
+  drain(Holder::{ s: host_stream_named("body") })
+}
+EOF
+PROJ_NEG_OUT="$OUT_DIR/stream_for_proj_norow.wasm"
+rm -f "$PROJ_NEG_OUT" "$PROJ_NEG_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" "$PROJ_NEG" "$PROJ_NEG_OUT" run >/dev/null 2>&1 || true
+if [ -s "$PROJ_NEG_OUT" ]; then
+  echo "named hoststreams component gate FAILED: a projected for-over-host-stream without { Async } compiled (#1369 review)" >&2
+  exit 1
+fi
+echo "[named-hoststreams-component-gate] projected for path: 42 (h.s reads bytes; an Async-free row is still rejected)"
+
 # --- delayed lane: reads genuinely PARK + the INLINE terminal shape ----------
 # The buffered Vec producer above hands every byte to the pipe on its first
 # poll, so no read ever blocks and the end arrives as a separate zero-amount
