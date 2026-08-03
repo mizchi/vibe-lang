@@ -3196,6 +3196,155 @@ fn interp_show_target(arg: Expr, struct_sets: Array[(String, Array[String])], va
   }
 }
 
+// ---- #1392 slice 2: interpolating a WRAPPER value ----
+//
+// `show_for_typed` already renders `Option`/`Result`/tuple/array structurally,
+// but it needs a TypeExpr and this pass only carries head NAMES (`var_types`
+// is `Array[(String, String)]`, and a local `let`'s type annotation is not even
+// in the AST -- `ELet` has no annotation field, only `SLet` does). Two sources
+// of shape need no TypeExpr:
+//
+//   - the argument IS the wrapper's syntax (`Some(e)`, `Ok(e)`, `(a, b)`,
+//     `[a, b]`), so the shape and every element are right there;
+//   - the argument's inferred HEAD is `Option`/`Result`, which is enough for
+//     the structural match. Only the payload falls back to the ordinary
+//     renderer -- the same thing `show_for_typed` does for an element type it
+//     cannot place.
+//
+// Trusting that head for a MATCH (rather than just for picking a function
+// name, as slice 1 does) is the one new risk here, and it is the same bet the
+// railway lowering already makes: `lower_try_bind` picks Option-vs-Result
+// codegen for every `?`/`let*` in the language from this exact predicate.
+//
+// Elements are rendered by re-entering `rewrite_expr` on a synthetic
+// `__to_string(sub)`, so slice 1 and this slice both apply recursively
+// (`"\{Some(P::{ x: 1, y: 2 })}"` -> `Some(P { x: 1, y: 2 })`). Each step
+// strictly shrinks the argument, so the recursion terminates.
+//
+// Still unrendered (#1392 slice 2b onward): a tuple or array reached through a
+// VARIABLE. The head alone gives neither arity nor element type, and `Array[t]`
+// additionally needs its `__arr_to_string__<key>` helper emitted, which means
+// driving that collection from interpolation sites in `desugar_derives`.
+
+/// A fresh binder for the structural expansions below. Lexical scoping alone
+/// would make one fixed name correct, but a distinct name per site keeps
+/// nesting legible in dumped IR -- same rationale as
+/// `exn_kind_fresh_payload_name`.
+let dtd_show_tmp = [
+  0
+]
+
+fn show_tmp_name() -> String {
+  let n = Array::get(dtd_show_tmp, 0)
+  Array::set(dtd_show_tmp, 0, n + 1)
+  String::concat("__show_v", __to_string(n))
+}
+
+/// Render one sub-expression by re-entering the interpolation rewrite on a
+/// synthetic `__to_string(sub)`, so a nested wrapper or a derive(Show) value
+/// inside one is rendered too.
+fn interp_render_sub(sub: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
+  rewrite_expr(ECall(EIdent("__to_string", -1), Array::slice([
+    sub
+  ], 0, 1), -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+}
+
+/// `open_s ++ e0 ++ sep ++ e1 ++ .. ++ close_s`, each element rendered.
+/// (`open` is a reserved word in vibe, hence the suffixed names.)
+fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
+  let mut acc = EString(open_s)
+  let mut i = 0
+  while i < Array::length(items) {
+    let piece = interp_render_sub(Array::get(items, i), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    acc = if i == 0 {
+      concat2(acc, piece)
+    } else {
+      concat2(concat2(acc, EString(sep)), piece)
+    }
+    i = i + 1
+  }
+  concat2(acc, EString(close_s))
+}
+
+/// `ctor_name(<rendered payload>)`.
+fn interp_wrap1(ctor: String, payload: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
+  concat2(EString(String::concat(ctor, "(")), concat2(interp_render_sub(payload, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")")))
+}
+
+/// The head-only fallback: a value this pass knows is an `Option`/`Result` but
+/// whose payload type it does not know. The match is emitted over the REWRITTEN
+/// argument (evaluated once, as the scrutinee), and the payload is rendered by
+/// the ordinary path.
+fn interp_expand_by_head(arg: Expr, head: String, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with { Error } {
+  if head == "Option" {
+    let v = show_tmp_name()
+    Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
+      (PCtor("Some", Array::slice([
+        PBind(v)
+      ], 0, 1)), interp_wrap1("Some", EIdent(v, -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      (PCtor("None", array_empty()), EString("None"))
+    ], 0, 2)))
+  } else if head == "Result" {
+    let ov = show_tmp_name()
+    let ev = show_tmp_name()
+    Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
+      (PCtor("Ok", Array::slice([
+        PBind(ov)
+      ], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      (PCtor("Err", Array::slice([
+        PBind(ev)
+      ], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+    ], 0, 2)))
+  } else {
+    None
+  }
+}
+
+/// The structural rendering for an interpolated wrapper value, or None when
+/// this pass has no shape to work from and the `__to_string` call must stand.
+fn interp_expand(arg: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with { Error } {
+  let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(h) => h,
+    None => ""
+  }
+  match arg {
+    ETuple(items) => Some(interp_join(items, "(", ", ", ")", gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EArray(items) => Some(interp_join(items, "[", ", ", "]", gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EIdent(n, _) => if n == "None" && head == "Option" {
+      Some(EString("None"))
+    } else {
+      interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    },
+    ECall(callee, cargs, _) => match callee {
+      EIdent(cn, _) => if Array::length(cargs) == 1 && ((head == "Option" && cn == "Some") || (head == "Result" && (cn == "Ok" || cn == "Err"))) {
+        Some(interp_wrap1(cn, Array::get(cargs, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+      } else {
+        interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      },
+      _ => interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    },
+    _ => interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+/// Whether the interpolation rewrite produced a replacement. Split from
+/// `interp_take_repl` because the decision is made in an else-if chain, which
+/// cannot bind the payload.
+fn interp_has_repl(r: Option[Expr]) -> Bool {
+  match r {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// The replacement, given `interp_has_repl` already said there is one.
+fn interp_take_repl(r: Option[Expr]) -> Expr {
+  match r {
+    Some(e) => e,
+    None => EUnit
+  }
+}
+
 /// The core rewriter. `dict_binds` is non-empty only inside a transformed
 /// generic's body (so `T::method` resolves to a dict field); call-site dict
 /// threading applies everywhere a transformed generic is called. `var_types`
@@ -3224,12 +3373,21 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       // function literally named `__try_bind`/`__try_op` with the wrong shape
       // (handled by `try_sentinel` returning None) takes the generic path.
       let try_kind = try_sentinel(callee, args)
-      // #1392: computed once here rather than in the else-if chain below, so
-      // the resolver runs at most once per call site.
-      let show_target = if is_interp_to_string_call(callee, args) {
-        interp_show_target(Array::get(args, 0), struct_sets, var_types, fn_returns)
+      // #1392: the interpolation replacement, computed once here rather than
+      // inside the else-if chain below so the resolvers run at most once per
+      // call site. Slice 1 (the argument's type names a `T::to_string`) wins
+      // over slice 2 (the argument is, or is headed by, a wrapper).
+      let interp_repl = if is_interp_to_string_call(callee, args) {
+        let show_target = interp_show_target(Array::get(args, 0), struct_sets, var_types, fn_returns)
+        if show_target != "" {
+          Some(ECall(EIdent(show_target, -1), Array::slice([
+            rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          ], 0, 1), off))
+        } else {
+          interp_expand(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        }
       } else {
-        ""
+        None
       }
       if try_kind == 0 {
         // __try_bind(val, (name) -> rest)
@@ -3266,13 +3424,9 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         let val = Array::get(args, 0)
         let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
         lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
-      } else if show_target != "" {
-        // #1392: `"\{v}"` where `v`'s type has a structural renderer. The
-        // argument is still rewritten first -- it is ordinary user code that
-        // may itself contain dict-threaded calls.
-        ECall(EIdent(show_target, -1), Array::slice([
-          rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-        ], 0, 1), off)
+      } else if interp_has_repl(interp_repl) {
+        // #1392: the interpolation of a value this pass can render.
+        interp_take_repl(interp_repl)
       } else if !exn_kind_suppressed() && is_exception_kind_read(callee, args) {
         // #1374: `__exn_kind()` is a checker-only intrinsic (typed
         // `() -> String` in checker/builtins_misc.vibe, no wasm body) -- it

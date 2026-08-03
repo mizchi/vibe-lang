@@ -8817,11 +8817,11 @@ echo "[compiler-gate] 86/86 string interpolation renders derive(Show) structural
 # `"\{v}"` lowers in the parser to `__to_string(v)`, before any type is
 # known, so every aggregate used to render as the ADR-0058 heuristic's raw
 # pointer decimal -- `derive(Show)` or not. desugar_trait_dict now retargets
-# the call to the generated `T::to_string` whenever infer_arg_type_name can
-# resolve the argument's type. The fixture encodes one digit group per case
-# (10000 scalars / 1000 struct let / 200 enum let / 30 nullary ctor / 4
-# annotated param), so a partial regression names itself: this exact program
-# returned 10000 on the pre-fix compiler.
+# the call to the generated `T::to_string` (slice 1) and expands the wrapper
+# shapes (slice 2) whenever it can resolve the argument. The fixture returns
+# one DIGIT per case, 1 = ok, so a partial regression names itself by which
+# digit went to zero -- see the fixture header for the mapping. This exact
+# program returned 1 before #1392 and 11111 with slice 1 alone.
 showdir="_build/_gate_interp_show"
 rm -rf "$showdir"; mkdir -p "$showdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/interp_show_derive.vibe > "$showdir/show.vibe"
@@ -8834,8 +8834,8 @@ if [ ! -s "$showdir/show.wasm" ]; then
   exit 1
 fi
 show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>/dev/null | tail -1)"
-if [ "$show_out" != "11234" ]; then
-  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11234) (#1392)" >&2
+if [ "$show_out" != "11111111111111" ]; then
+  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11111111111111) (#1392)" >&2
   exit 1
 fi
 rm -rf "$showdir"

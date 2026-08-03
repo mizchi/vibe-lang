@@ -39,8 +39,11 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // #1392: 補間の値の型がコンパイラに解決でき、
                                // その型に `T::to_string` (derive(Show)/
                                // derive(Hash) 生成物、または手書き) があれば
-                               // それを呼ぶ。解決できない型・`Option`/`Array`/
-                               // タプルはまだ生ポインタの10進数が出る (#1392)
+                               // それを呼ぶ。`Option`/`Result` と、その場に
+                               // 書かれたタプル/配列リテラルは構造的に展開
+                               // される (`"\{Some(p)}"` -> `Some(P { .. })`)。
+                               // 型が解決できない値、および変数越しの
+                               // タプル/配列はまだ生ポインタの10進数 (#1392)
 let c: Char = 'A'              // char code (Int alias)
 let b: Bool = true
 let u: Unit = ()
