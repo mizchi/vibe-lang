@@ -623,3 +623,64 @@ test "spawned task may perform Fs and Process alongside Error" {
   })
   assert_eq(r, "from-subprocess|hello from a spawned task")
 }
+
+/// #1372 review (Codex P1): a spawned child's TYPED `Exception[E]` throw is
+/// caught by the runner's ERASED `with Error` arm -- ADR-0085's runtime
+/// carries a single abortive tag with NO kind discriminator, and the erased
+/// `Error` spelling is compatible with every kind by design. The bound
+/// payload is therefore an enum, not a String, and storing it straight into
+/// `fail_msg: String` reinterpreted the pointer as a packed `(ptr<<32)|len`
+/// string: this scenario (a child sending on an already-released channel, so
+/// `Sender::send` throws `Closed`) produced a `Failed(..)` whose
+/// `String::length` was 2129. The runner now renders the payload through
+/// `__to_string` (ADR-0058's int/string discrimination), which is the
+/// identity on real strings and a bounded decimal otherwise. Recovering the
+/// real payload needs a runtime kind tag (#1374).
+test "a typed child throw yields a bounded fail message, not a reinterpreted pointer" {
+  let caught = handle {
+    let _v = TaskGroup::run((g) -> {
+      let (tx, rx) = Channel::bounded(g, 1)
+      let tx2 = Sender::clone(tx)
+      Sender::release(tx)
+      Sender::release(tx2)
+      let h = TaskGroup::spawn(g, () -> {
+        Sender::send(tx, 1)
+        0
+      })
+      TaskHandle::join(h)
+    })
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
+  match caught {
+    Some(Failed(m)) => {
+      // A reinterpreted enum pointer measured 2129 characters here; the
+      // decimal rendering is single-digit-to-a-few characters.
+      assert(String::length(m) > 0)
+      assert(String::length(m) < 24)
+    },
+    _ => assert(false)
+  }
+}
+
+/// The String half of the same arm must be untouched: `__to_string` is the
+/// identity on a real string, so a child's `throw("...")` still surfaces its
+/// own message verbatim.
+test "a string child throw still surfaces its own message" {
+  let caught = handle {
+    let _v = TaskGroup::run((g) -> {
+      let h = TaskGroup::spawn(g, () -> {
+        throw("child boom")
+      })
+      TaskHandle::join(h)
+    })
+    None
+  } with Exception[TaskError] {
+    Throw(err) => Some(err)
+  }
+  match caught {
+    Some(Failed(m)) => assert_eq(m, "child boom"),
+    _ => assert(false)
+  }
+}

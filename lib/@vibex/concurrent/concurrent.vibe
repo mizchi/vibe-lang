@@ -617,7 +617,19 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
       cell.status = 2
       conc_notify_waiters(cell)
     } with Error {
-      Throw(msg) => {
+      Throw(payload) => {
+        // #1372 review (Codex P1): the ERASED `with Error` arm catches every
+        // typed `Exception[E]` too -- ADR-0085's runtime carries a single
+        // abortive tag with NO kind -- so `payload` is not necessarily a
+        // String. Storing it straight into `fail_msg: String` reinterpreted
+        // an enum pointer as a packed `(ptr<<32)|len` string: a child whose
+        // `Sender::send` threw `Closed` produced a `TaskError::Failed(..)`
+        // whose `String::length` was 2129 (the raw pointer). `__to_string`
+        // (via interpolation) applies ADR-0058's int/string discrimination,
+        // which is the identity on real strings and renders anything else as
+        // a bounded decimal instead of reading arbitrary memory. Recovering
+        // the real payload needs a runtime kind tag -- see #1374.
+        let msg = "\{payload}"
         cell.status = 3
         cell.fail_msg = msg
         conc_notify_waiters(cell)

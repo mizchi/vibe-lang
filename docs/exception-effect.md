@@ -277,6 +277,42 @@ local (scope が持つのは値の kind であって結果の kind ではない)
 `Exception[E]` に限って先取りしただけで、他の generic effect
 (`State[Int]` 等) は base 名比較の v1 のままである。
 
+### runtime に kind が無い (2026-08-03、PR #1372 review で顕在化)
+
+上の throw-site kind 解決 (#1377) は **compile time** の話である。以下は
+runtime 側に残っている、それとは独立な限界。
+
+上の「erased は全 kind と compatible」は **静的規律だけ**である。runtime は
+kind を出さず単一 abortive tag のままなので、**erased な
+`handle { .. } with Error { Throw(msg) => .. }` は typed な `Exception[E]` の
+throw も捕まえ、`msg` に enum 値が入る**。`msg` の静的型は `CtUnknown` なので、
+それを `String` として使うコードは型検査を通ってしまう。
+
+#1324 slice 1 で `TaskGroup::run` / `TaskHandle::join` / `Sender::send` が
+enum payload を throw するようになり、既存の String 専用 sink 2 箇所で
+実際に踏んだ (どちらも計測で確認):
+
+| sink | 症状 |
+| --- | --- |
+| entry boundary (`lc_wrap_entry_error_boundary`) | payload を packed `(ptr<<32)\|len` として解釈し、**data segment がまるごと stderr に出た** |
+| `TaskGroup::spawn` の child runner (`cell.fail_msg = msg`) | `TaskError::Failed(m)` の `String::length(m)` が **2129** (生ポインタ) |
+
+**緩和 (入っているもの)**: どちらも payload を `__to_string` 経由にした。
+ADR-0058 の int/string 判定 (`64 <= ptr && ptr + len <= memory_size`) は
+本物の文字列に対しては恒等で、それ以外は有界な10進数を返すので、任意メモリを
+読むことはなくなる。ただし**非 String payload の中身は失われる**。
+regression lock: `fixtures/err_entry_boundary_typed_payload.vibe` +
+compiler_gate 44c、`@vibex/concurrent` の
+"a typed child throw yields a bounded fail message" テスト。
+
+**本来の修正**は runtime に kind discriminator を持たせること
+(**#1374**)。payload の表現を変えずに済む案として、`throw(v)` を
+`__exn_kind_set(<kind id>); perform Error::Throw(v)` へ lower し、handler 側が
+`__exn_kind_get()` を読めるようにする side channel がある — checker は throw
+site で `typeof(v)` を既に解決している (`exception_throw_label_for_kind`) ので
+静的情報は揃っている。#1324 の後続 slice は throw payload の型を String 以外へ
+大きく広げるので、その前に決めること。
+
 ## #1324 (Result 削除) との統合順序
 
 #1324 は `Result` を捨てて例外に一本化する提案で、この ADR の完成形の上に

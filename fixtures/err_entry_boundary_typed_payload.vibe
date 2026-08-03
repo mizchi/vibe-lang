@@ -1,0 +1,25 @@
+// #1372 review (Codex P1): the compiler-generated entry boundary
+// (linked_compile.vibe's lc_wrap_entry_error_boundary) catches the ERASED
+// `Error::Throw`, and under ADR-0085 that arm also catches every typed
+// `Exception[E]` -- the runtime carries a single abortive tag with NO kind
+// discriminator, and the erased `Error` spelling is deliberately compatible
+// with every kind (that is what made #1344 additive).
+//
+// So the payload bound here is an ENUM, not a String. Writing it straight to
+// `Stderr::write_stream` decoded the enum pointer as a packed `(ptr<<32)|len`
+// string and printed the whole data segment (measured: ~1KB of unrelated
+// identifier bytes for a `TaskError` escaping `main`). The boundary now routes
+// the payload through `__to_string`, whose ADR-0058 int/string discrimination
+// is the identity on real strings and renders anything else as a bounded
+// decimal.
+//
+// Pinned behaviour: exit 1, one short `vibe: uncaught error: <n>` line on
+// stderr -- NOT a memory dump. Printing the real payload of a non-String kind
+// needs a runtime kind tag (#1374).
+enum Boom {
+  Bang(Int)
+}
+
+fn main() -> Int with { Error } {
+  throw(Bang(7))
+}
