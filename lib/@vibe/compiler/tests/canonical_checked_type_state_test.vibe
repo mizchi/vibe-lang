@@ -3,7 +3,9 @@ import @vibe/compiler/checker {
   CheckedProgramTypeDefsObservation,
   canonical_checked_type_defs_snapshot,
   canonical_checked_value_env_snapshot,
-  canonical_effective_value_env_snapshot
+  canonical_effective_value_env_snapshot,
+  canonical_retained_trait_impl_entries_snapshot,
+  check_program_result
 }
 
 import @vibe/compiler/core {
@@ -34,6 +36,10 @@ fn typedef_observation(defs: Array[TypeDef], binders: Array[Array[Int]], subst: 
 
 fn typedef_snapshot(defs: Array[TypeDef], binders: Array[Array[Int]], subst: Subst) -> String {
   canonical_checked_type_defs_snapshot(typedef_observation(defs, binders, subst))
+}
+
+fn trait_impl_snapshot(env: TypeEnv, subst: Subst) -> String {
+  canonical_retained_trait_impl_entries_snapshot(env, subst)
 }
 
 test "canonical checked state preserves EnvBind EnvFlat and EnvCached first-match shadows" {
@@ -417,6 +423,121 @@ test "canonical checked wrappers isolate value and typedef observations" {
   }
   assert(canonical_checked_type_defs_snapshot(first_observation) == canonical_checked_type_defs_snapshot(second_observation))
   assert(canonical_checked_value_env_snapshot(first) == canonical_checked_value_env_snapshot(value_only))
+}
+
+test "canonical trait impl snapshot retains entries in final-env traversal order" {
+  let retained = EnvBind("value", CtInt, EnvTraitImpl("Later", CtString, EnvTraitDef("Ignored", array_empty(), false, array_empty(), EnvCached([
+    "cached"
+  ], [
+    CtBool
+  ], EnvTraitImpl("Earlier", CtInt, EnvEmpty)))))
+  let expected = EnvTraitImpl("Later", CtString, EnvTraitImpl("Earlier", CtInt, EnvEmpty))
+  assert(trait_impl_snapshot(retained, SubstEmpty) == trait_impl_snapshot(expected, SubstEmpty))
+  assert(trait_impl_snapshot(EnvFlat([
+    ("not_traversed", CtInt)
+  ]), SubstEmpty) == trait_impl_snapshot(EnvEmpty, SubstEmpty))
+}
+
+test "canonical trait impl snapshot alpha-normalizes generic bounds by declared position" {
+  let left = EnvTraitImplGen("Map", [
+    "T",
+    "U"
+  ], [
+    ("U", [
+      "Ord",
+      "Eq"
+    ]),
+    ("T", [
+      "Show"
+    ])
+  ], CtNamed("Box", array_empty()), EnvEmpty)
+  let alpha = EnvTraitImplGen("Map", [
+    "X",
+    "Y"
+  ], [
+    ("Y", [
+      "Ord",
+      "Eq"
+    ]),
+    ("X", [
+      "Show"
+    ])
+  ], CtNamed("Box", array_empty()), EnvEmpty)
+  let moved_association = EnvTraitImplGen("Map", [
+    "X",
+    "Y"
+  ], [
+    ("X", [
+      "Ord",
+      "Eq"
+    ]),
+    ("Y", [
+      "Show"
+    ])
+  ], CtNamed("Box", array_empty()), EnvEmpty)
+  let reordered_rows_and_labels = EnvTraitImplGen("Map", [
+    "X",
+    "Y"
+  ], [
+    ("X", [
+      "Show"
+    ]),
+    ("Y", [
+      "Eq"
+    ]),
+    ("Y", [
+      "Ord",
+      "Eq"
+    ])
+  ], CtNamed("Box", array_empty()), EnvEmpty)
+  assert(trait_impl_snapshot(left, SubstEmpty) == trait_impl_snapshot(alpha, SubstEmpty))
+  assert(trait_impl_snapshot(left, SubstEmpty) == trait_impl_snapshot(reordered_rows_and_labels, SubstEmpty))
+  assert(trait_impl_snapshot(left, SubstEmpty) != trait_impl_snapshot(moved_association, SubstEmpty))
+}
+
+test "canonical trait impl snapshot applies final substitution and fails closed for malformed bounds" {
+  let substituted = EnvTraitImpl("Eq", CtVar(81), EnvEmpty)
+  let resolved = EnvTraitImpl("Eq", CtString, EnvEmpty)
+  assert(trait_impl_snapshot(substituted, SubstBind(81, CtString, SubstEmpty)) == trait_impl_snapshot(resolved, SubstEmpty))
+  let unbound = trait_impl_snapshot(EnvTraitImplGen("Map", [
+    "T"
+  ], [
+    ("Missing", [
+      "Eq"
+    ])
+  ], CtNamed("Box", array_empty()), EnvEmpty), SubstEmpty)
+  let ambiguous = trait_impl_snapshot(EnvTraitImplGen("Map", [
+    "T",
+    "T"
+  ], [
+    ("T", [
+      "Eq"
+    ])
+  ], CtNamed("Box", array_empty()), EnvEmpty), SubstEmpty)
+  assert(String::contains(unbound, "unbound_bound_parameter"))
+  assert(String::contains(unbound, "Missing"))
+  assert(String::contains(ambiguous, "ambiguous_bound_parameter"))
+  assert(unbound != ambiguous)
+}
+
+test "canonical trait impl snapshot observes real checker registrations" {
+  let checked = check_program_result([
+    STrait(false, "Observed", array_empty(), array_empty(), array_empty()),
+    SImpl([
+      "T"
+    ], [
+      ("T", [
+        "Eq",
+        "Show"
+      ])
+    ], "Observed", "Box"),
+    SImpl(array_empty(), array_empty(), "Observed", "Int")
+  ])
+  let snapshot = canonical_retained_trait_impl_entries_snapshot(checked.final_env, checked.final_subst)
+  assert(String::contains(snapshot, "Observed"))
+  assert(String::contains(snapshot, "Box"))
+  assert(String::contains(snapshot, "Eq"))
+  assert(String::contains(snapshot, "Show"))
 }
 
 test "canonical typedef snapshot marks missing provenance" {
