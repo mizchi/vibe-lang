@@ -294,7 +294,7 @@ echo "[named-hoststreams-component-gate] mixed path: 42 (future + stream share o
 # has no reserved import and compilation fails with a missing call target.
 NESTED_SRC="$OUT_DIR/nested.vibe"
 cat >"$NESTED_SRC" <<'EOF'
-struct Holder { s: Stream[Int] }
+struct Holder { s: HostStream }
 
 let run: () -> Int with { Async } = () -> {
   let h = Holder::{ s: host_stream_named("body") }

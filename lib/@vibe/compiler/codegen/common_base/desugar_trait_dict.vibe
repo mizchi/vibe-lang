@@ -1135,6 +1135,19 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       // #1341: the p3 host stream. Not in fn_returns (it is a builtin), and
       // its nominal type is what routes `for b in s` to the host read below
       // instead of to the array loop -- which used to iterate the 2-word cell.
+      //
+      // Codex review on #1369, MEASURED limit: this routing covers an
+      // identifier and a direct `host_stream_named(..)` call, NOT a projection
+      // (`for b in h.s`, which still yields 4 instead of the body's bytes).
+      // Two things are missing and BOTH are needed to close it: struct FIELD
+      // types are absent from this pass's tables (struct_sets records field
+      // names only), and `h.s` does not carry its nominal type in the checker
+      // either -- `take_int(h.s)` with `s: HostStream` type-checks, as does
+      // `take_int(s)` for a plain local, because a `CtNamed` head is tolerated
+      // at argument positions (nominal_head_conflict's concreteness gate).
+      // So the nominal type is a ROUTING KEY here, not an enforced barrier;
+      // making it a barrier is separate work on argument-position nominal
+      // checking. Tracked on #1341.
       EIdent("host_stream_named", _) => Some("HostStream"),
       EIdent("String::concat", _) => Some("String"),
       EIdent("String::join", _) => Some("String"),

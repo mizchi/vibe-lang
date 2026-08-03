@@ -1414,6 +1414,25 @@ AsyncIterator の impl を持たないので、`afe_async_iterand`（checker_eff
 while ループと同じ 42 を返すこと、および `{ Async }` の無い row で
 **reject されること**の両方を pin する。
 
+**実測した限界（Codex review on #1369）**: この routing が効くのは
+identifier と直接の `host_stream_named(..)` 呼び出しで、**projection
+（`for b in h.s`）は効かない** — 42 ではなく 4 が返る（cell を数えたまま）。
+閉じるには2つ必要で、片方だけでは足りない:
+
+1. desugar 側に **struct の field 型**が無い（`struct_sets` は field 名だけ）。
+2. **checker 側でも `h.s` は nominal 型を運んでいない**。実測: `s: HostStream`
+   の field を `take_int(h.s)` に渡しても型エラーにならない。しかもこれは
+   projection 特有ではなく、**素の local でも `take_int(s)` が通る** —
+   `CtNamed` の head は引数位置で許容される（`nominal_head_conflict` の
+   concreteness gate）。
+
+したがって現時点の `HostStream` は **routing key であって barrier ではない**。
+「eager 用 combinator を host stream に適用すると型エラー」という当初の主張は
+**この意味で誤り**で、引数位置の nominal 検査を別途強くする必要がある。
+projection 越しの `for` は #1341 以前も（すべてが `Stream[Int]` だったので）
+同じく静かに間違っていたため、#1341 は純粋な改善ではあるが、クラス全体を
+閉じてはいない。
+
 **残り**: 一般 `Stream::next`（`Future[Option[T]]`）を host read へ落とす件は
 まだ。実測では `await(Stream::next(s))` は ADR-0076 の evidence-passing
 migration に弾かれて**コンパイルすら通らない**（"the site is not eligible
