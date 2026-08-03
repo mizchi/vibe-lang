@@ -64,6 +64,7 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   lookup_ctor,
+  rc_quarantine,
   rc_shadow_base,
   resolve_func,
   resolve_local
@@ -1305,14 +1306,18 @@ export fn gen_arr_push_all_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: B
     // buffer with its own inline legacy push, bypassing emit_rc_free_push, so
     // the double-free trap and the mark both have to be repeated here.
     emit_rc_poison_trap_if_freed(b, 6)
-    emit_local_get(b, 6)
-    emit_i32_const(b, 4)
-    emit_i32_sub(b)
-    emit_global_get(b, 2)
-    emit_i32_store(b, 2, 0)
-    emit_local_get(b, 6)
-    emit_global_set(b, 2)
-    emit_rc_poison_set(b, 6)
+    if rc_quarantine() {
+      ()
+    } else {
+      emit_local_get(b, 6)
+      emit_i32_const(b, 4)
+      emit_i32_sub(b)
+      emit_global_get(b, 2)
+      emit_i32_store(b, 2, 0)
+      emit_local_get(b, 6)
+      emit_global_set(b, 2)
+      emit_rc_poison_set(b, 6)
+    }
     emit_end(b)
     // cap = newcap; data_ptr = block+8; data_a = block+8
     emit_local_get(b, 2)
