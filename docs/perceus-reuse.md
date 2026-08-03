@@ -299,6 +299,37 @@ allocator/RC の潜在不整合を本変更が可視化しているだけの可�
 trace は生成 helper 帯の低番号: `function[63] <- [22] <- [1937] <- [1996]
 <- [1997] <- [2582] <- [3316]`。
 
+### bisect 結果: 犯人は `compile_expr_tail.vibe` の 9 サイト
+
+まず **main を `VIBE_WASM_NAMES=1` 付きで all-RC ビルドすると通る**ことを確認した
+(names は出力サイズを大きく変える)。よって「出力サイズが変わると壊れる main 側の
+潜在バグ」ではなく、本変更由来であることが確定。
+
+そのうえで call 形を残すファイルを1つずつ変えて all-RC bootstrap を回した
+(それ以外の site は `-1` を渡して inline 形へ戻す):
+
+| ファイル | site 数 | all-RC bootstrap |
+| --- | --- | --- |
+| `codegen/wasi/linked_compile.vibe` | 4 | PASS |
+| `codegen/expr/compile_call.vibe` | 7 | PASS |
+| `codegen/expr/compile_match.vibe` | 6 | PASS |
+| `codegen/expr/compile_lambda.vibe` | 4 | PASS |
+| `codegen/expr/compile_expr_tail2.vibe` | 2 | PASS |
+| `codegen/expr/compile_expr_tail4.vibe` | 1 | PASS |
+| `codegen/expr/compile_expr_tail6.vibe` | 1 | PASS |
+| **`codegen/expr/compile_expr_tail.vibe`** | **9** | **FAIL** |
+
+**同じ helper (`__rt_rc_dup`) を同じ形で呼んでいるのに、この 1 ファイルの site
+だけが壊す。** つまり helper 本体でも call 形そのものでもなく、この 9 site の
+どれかが置かれている文脈(ELet の scope-end drop / borrow-ret / loop-borrow
+まわり)と call 形の組み合わせが問題。次はこの 9 site を二分する
+(~3-4 build)。
+
+なお crash は `__rt_rc_alloc` ← `__rt_arr_new` ← `lc_fresh_int_array` で、
+heap に 105MB の余裕がある状態で起きる = free list の壊れた next を辿っている。
+`VIBE_RC=shadow` では checker の `expr_children` で落ちる(設定で場所が変わる =
+ヒープ破壊の典型)。size bins を無効化しても再現するので bin ロジックでもない。
+
 次の一手は [selfhost-miscompile-bisect](../.claude/skills/selfhost-miscompile-bisect)
 の probe entry + phase 二分。最小差分ペア (`emit_rc_dup_guarded` が
 どちらの分岐を取るかだけが違う stage1 が2つ) が手元にある。
