@@ -697,7 +697,8 @@ suspendable task の第一スライスを実装した:
   追記31 Vertical B) の着地で handle site が library 内部へ移り、caller
   は `() -> T with { Async } { ... }` の plain closure を渡すだけに
   なった (suspend する literal には明示 row 注釈が必要、#761)。
-- **channel の mid-body blocking も着地**: `Sender::send_wait` /
+- **channel の mid-body blocking も着地**: `Sender::send_wait`
+  (#1324 slice 2 で `with { Exception[SendError], Async }`) /
   `Receiver::recv_wait` (`with { Async }`)。バッファ満杯の send は
   deposit → suspend → 消費 (pend_consumed) を自己再帰で待ち、空の recv
   は suspend → 再検査 (loop spine 非対応のためリトライは再帰 — 3b の
@@ -716,8 +717,11 @@ suspendable task の第一スライスを実装した:
   (`inline_direct_perform.vibe` の `scps_calls_ok`/`scps_row_has_var`) は
   row 変数を持つ callee を常に保守的に拒否するため、`Async` を持つ
   `spawn_suspend` closure literal の**内側**から呼ぶ場合は引き続き
-  row-free ではなく具体的な `with { Async }` row を持つ `send_wait`/
-  `recv_wait` を使う必要がある(この2関数の呼び出し側は変わっていない)。
+  row 変数を持たない `send_wait`/`recv_wait` を使う必要がある。#1324
+  slice 2 で `send_wait` の row に bracketed な `Exception[SendError]` が
+  加わったが、bracketed ラベルは row 変数ではないので適格性は変わらない
+  (呼び出し側で変わったのは、closure literal の row 注釈に `Error` が
+  要ることだけ)。
   **Suspend payload 規約**: `0` = cooperative yield / `1` = poll wait。
   adoption-site の arm は理由を伝播する
   `TaskHandle::park_poll(h, resume, r == 1)` を canonical とする —
@@ -951,16 +955,16 @@ ADR-0085 の型付き `Exception[E]` (#1344) を受けて、`@vibex/concurrent` 
 経由で escape し (#1081 step 3)、closure literal で包むと ADR-0076 の
 suspend lowering が row 変数 callee を拒否する (`scps_calls_ok`)。
 
-**移行しなかったもの (suspend lane、意図的)**:
+**当時移行しなかったもの (suspend lane)**:
 `Sender::send_wait` / `conc_send_wait_consumed` / `TaskHandle::result_wait`
-は `Result` のまま。ADR-0076 の suspend lowering は **CPS 分割された callee
-の中で実行された `throw` を正しく伝播しない** — task を abort せず、呼び出し
-元に garbage 値を返す。`main` 上で計測して確認した (この #1324 の変更前):
-`fn pw(x) -> Int with { Error, Async } { perform Async::Suspend(0);
-throw(Failed("boom")) }` を `spawn_suspend` の body から呼ぶと、group は
-成功終了し `join` は 699 を返した。この3本を throw 化すると「閉じた
-channel」「cancel された sibling」が観測可能な結果から静かな破損に変わる
-ため、lowering 側が直るまで据え置く。
+は `Result` のまま据え置いた。ADR-0076 の suspend lowering が **CPS 分割
+された callee の中で実行された `throw` を正しく伝播しない** — task を abort
+せず、呼び出し元に garbage 値を返す — ためで、`main` 上で計測して確認した
+(この #1324 の変更前): `fn pw(x) -> Int with { Error, Async } { perform
+Async::Suspend(0); throw(Failed("boom")) }` を `spawn_suspend` の body から
+呼ぶと、group は成功終了し `join` は 699 を返した。この3本を throw 化すると
+「閉じた channel」「cancel された sibling」が観測可能な結果から静かな破損に
+変わるため、lowering 側が直るまで据え置いた。→ **slice 2 で移行済み (下記)**。
 
 `Result` を返す `TaskHandle::join` に依存していた fixture 群
 (`region_ok_*.vibe`、`err_spawnable_capture_*.vibe` ほか) は throw 版へ
@@ -991,10 +995,48 @@ lane の2つの Error boundary は、どれも payload を `fail_msg: String` �
 | payload の kind | `fail_msg` |
 | --- | --- |
 | `String` / `Int` / 解決不能 | `__to_string` の結果 (従来どおり) |
-| その他 | `<Kind>` (例: `Failed("<SendError>")`) |
+| その他 (throw site が描画できた) | 描画結果 (例: `Failed("Closed")`) |
+| その他 (描画できない) | `<Kind>` (例: `Failed("<SendError>")`) |
 
 つまり **String を throw する既存コードの見え方は変わらない**。非 String
-payload の値そのものはまだ出せない (kind ごとの formatting が要る)。
+payload については、#1392 slice 3 で **throw site 側** (payload の静的型が
+分かる唯一の場所) が `derive(Show)` 由来の renderer を持つ型を描画して
+message slot に書くようになったので、`Closed` / `Cancelled` のような variant
+名はここまで届く。まだ失われるのは**値そのもの** — 呼び出し側が受け取るのは
+variant の名前であって pattern-match できる `SendError` ではない。
+
+### 追記 (2026-08-03): suspend lane も移行 (#1324 slice 2)
+
+上で据え置いた3本を `Exception[E]` へ移した。塞いでいた2つがどちらも
+解消したため:
+
+1. CPS 分割 callee 内の `throw` が伝播しない問題 → **#1371 で修正済み**
+   (`suspend_test.vibe` の "CPS-split callee results" 節が lock)。
+2. enum payload が erased arm で variant を失う問題 → **#1392 slice 3**
+   (上表)。`Closed` / `Cancelled` は payload を持たないので、variant 名が
+   届けば情報は落ちない。
+
+| API | 旧 | 新 |
+| --- | --- | --- |
+| `Sender::send_wait` | `-> Result[Unit, SendError] with { Async }` | `-> Unit with { Exception[SendError], Async }` |
+| `conc_send_wait_consumed` (internal) | 同上 | 同上 |
+| `TaskHandle::result_wait` | `-> Result[T, TaskError] with { Async }` | `-> T with { Exception[TaskError], Async }` |
+
+**呼び出し側の意味論が変わる点**: suspend-class の closure literal は
+`handle` を含められない (CPS clone の適格性規則) ので、`spawn_suspend` の
+body の中では throw を**伝播させるしかない** — awaiter は cancel された
+sibling を見て別の値を返す、という分岐が書けなくなった。捕まえたければ
+`TaskGroup::run` の呼び出しを `handle` で囲む (row 変数を持つ callee なので
+使用地点に直接置く)。そこで受け取るのは runner が組み立てた
+`Failed(<描画結果>)` であって、元の `SendError` / `TaskError` 値ではない。
+`suspend_test.vibe` の "result_wait propagates a cancelled sibling to the
+awaiter" がこの経路 (`Failed("Cancelled")` まで variant が届くこと) を lock
+している。
+
+row 注釈も更新が要る: これらを呼ぶ `spawn_suspend` closure literal は
+`() -> T with { Async }` では足りず `with { Async, Error }` になる
+(bracketed な `Exception[E]` ラベル自体は row 変数ではないので、
+`scps_calls_ok` の適格性判定には影響しない)。
 
 ## v0.4.0 に含めないもの
 

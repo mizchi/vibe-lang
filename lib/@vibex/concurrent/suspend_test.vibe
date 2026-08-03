@@ -192,17 +192,19 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
 /// eligibility check (`scps_calls_ok`/`scps_row_has_var`,
 /// `inline_direct_perform.vibe`) always conservatively rejects as a callee
 /// from inside an `Async`-carrying closure (it cannot see that `e` resolves
-/// to `{}` here). `Sender::send_wait` has a concrete `with { Async }` row
-/// instead and is eligible; its buffered fast path is identical to
-/// `Sender::send`'s, and capacity (6) never drops below the 6 total sends
-/// here, so the fast path is always taken and behavior is unchanged.
+/// to `{}` here). `Sender::send_wait`'s row is variable-free
+/// (`with { Exception[SendError], Async }` since #1324 -- a BRACKETED label
+/// is not a row variable and does not affect eligibility) and it is
+/// eligible; its buffered fast path is identical to `Sender::send`'s, and
+/// capacity (6) never drops below the 6 total sends here, so the fast path
+/// is always taken, no `Closed` is ever thrown, and behavior is unchanged.
 test "spawn_suspend interleaves two plain closure bodies" {
   let out = TaskGroup::run((g) -> {
     {
       let (tx, rx) = Channel::bounded(g, 6)
       {
         let tx2 = Sender::clone(tx)
-        let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
           let _s1 = Sender::send_wait(tx, 1)
           let _a = perform Async::Suspend(0)
           let _s3 = Sender::send_wait(tx, 3)
@@ -211,7 +213,7 @@ test "spawn_suspend interleaves two plain closure bodies" {
           Sender::release(tx)
           100
         })
-        let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
           let _s2 = Sender::send_wait(tx2, 2)
           let _a = perform Async::Suspend(0)
           let _s4 = Sender::send_wait(tx2, 4)
@@ -470,11 +472,12 @@ test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
 /// (`with { e }`), which the suspend lowering's eligibility check
 /// (`scps_calls_ok`/`scps_row_has_var`) always conservatively rejects as an
 /// ineligible callee inside an `Async`-carrying closure (it cannot see that
-/// `e` resolves to `{}` here). `send_wait`'s concrete `with { Async }` row
-/// is eligible, and its buffered fast path is identical to `send`'s -- the
-/// log channel (capacity 6, only 3 sends per side) never overflows it, so
-/// it never actually suspends and the mid-body suspend points send_wait/
-/// recv_wait pin on `tx`/`rx` are unaffected.
+/// `e` resolves to `{}` here). `send_wait`'s row is variable-free
+/// (`with { Exception[SendError], Async }` since #1324) and is eligible,
+/// and its buffered fast path is identical to `send`'s -- the log channel
+/// (capacity 6, only 3 sends per side) never overflows it, so it never
+/// actually suspends and the mid-body suspend points send_wait/recv_wait
+/// pin on `tx`/`rx` are unaffected.
 test "spawn_suspend producer/consumer block mid-body through a capacity-1 channel" {
   let out = TaskGroup::run((g) -> {
     {
@@ -486,7 +489,7 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
           {
             let (logtx, logrx) = logpair
             let logtx2 = Sender::clone(logtx)
-            let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+            let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
               let _a = Sender::send_wait(tx, 10)
               let _l1 = Sender::send_wait(logtx, 1)
               let _b = Sender::send_wait(tx, 20)
@@ -497,7 +500,7 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
               Sender::release(logtx)
               0
             })
-            let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+            let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
               let r1 = Receiver::recv_wait(rx)
               let a = match r1 {
                 Some(v) => v,
@@ -560,7 +563,7 @@ test "spawn_suspend rendezvous send_wait/recv_wait on a capacity-0 channel" {
     let pair = Channel::bounded(g, 0)
     {
       let (tx, rx) = pair
-      let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
         let _a = Sender::send_wait(tx, 7)
         Sender::release(tx)
         1
@@ -616,14 +619,14 @@ test "plain sleep parks a spawn_suspend task instead of blocking it" {
       let (tx, rx) = Channel::bounded(g, 4)
       {
         let tx2 = Sender::clone(tx)
-        let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
           let _s1 = Sender::send_wait(tx, 1)
           sleep(10)
           let _s3 = Sender::send_wait(tx, 3)
           Sender::release(tx)
           100
         })
-        let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
           let _s2 = Sender::send_wait(tx2, 2)
           sleep(5)
           let _s4 = Sender::send_wait(tx2, 4)
@@ -702,7 +705,7 @@ test "recv_wait on a sleeping producer advances virtual time instead of trapping
             None => -1
           }
         })
-        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
           sleep(5)
           let _s = Sender::send_wait(tx, 40)
           Sender::release(tx)
@@ -728,13 +731,10 @@ test "result_wait awaits a sibling task's result" {
       sleep(5)
       40
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
       // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
       let got = TaskHandle::result_wait(ha)
-      match got {
-        Ok(v) => v + 2,
-        Err(_) => 0 - 1
-      }
+      got + 2
     })
     TaskGroup::pump_all(g)
     TaskHandle::join(hb)
@@ -742,35 +742,47 @@ test "result_wait awaits a sibling task's result" {
   assert_eq(out, 42)
 }
 
-/// result_wait on a CANCELLED sibling surfaces Err(Cancelled): cancel
-/// resolves the parked sibling immediately, the awaiter's next resume
-/// observes the terminal state. (A FAILED sibling is deliberately not
-/// pinned here -- fail-fast cancels the parked awaiter itself; the group
-/// result carries the failure.)
+/// result_wait on a CANCELLED sibling THROWS `Cancelled`: cancel resolves
+/// the parked sibling immediately, and the awaiter's next resume observes
+/// the terminal state. (A FAILED sibling is deliberately not pinned here --
+/// fail-fast cancels the parked awaiter itself; the group result carries
+/// the failure.)
 ///
-/// #1324: this stays on `Result` while `TaskHandle::join` (below) throws,
-/// because `result_wait` is on the SUSPEND lane -- see the note on
-/// `Sender::send_wait` in concurrent.vibe.
-test "result_wait observes a cancelled sibling" {
-  let out = TaskGroup::run((g) -> {
-    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-      let _w = perform Async::Suspend(0)
-      99
+/// #1324 moved this from `Err(Cancelled)` to a throw, which CHANGES what an
+/// awaiter can do: a suspend-class closure literal cannot contain a
+/// `handle`, so the awaiter can no longer branch on the outcome (the old
+/// body returned 42 from an `Err(Cancelled)` arm). Cancellation now
+/// propagates -- it fails the awaiting task, fail-fast fails the group, and
+/// the catch has to sit around the `TaskGroup::run` call at the use site.
+/// The `Cancelled` VARIANT still survives that trip (#1392 slice 3 renders
+/// the payload at the throw site), which is what `Failed(Cancelled)` below
+/// pins; before it, the erased runner arm could only report `<TaskError>`.
+test "result_wait propagates a cancelled sibling to the awaiter" {
+  let out = handle {
+    let v = TaskGroup::run((g) -> {
+      let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let _w = perform Async::Suspend(0)
+        99
+      })
+      let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+        // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
+        let got = TaskHandle::result_wait(ha)
+        got + 1
+      })
+      TaskHandle::cancel(ha)
+      TaskGroup::pump_all(g)
+      TaskHandle::join(hb)
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-      // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
-      let got = TaskHandle::result_wait(ha)
-      match got {
-        Ok(_) => 0 - 1,
-        Err(Cancelled) => 42,
-        Err(_) => 0 - 2
-      }
-    })
-    TaskHandle::cancel(ha)
-    TaskGroup::pump_all(g)
-    TaskHandle::join(hb)
-  })
-  assert_eq(out, 42)
+    "no throw: \{v}"
+  } with Exception[TaskError] {
+    // Matched, not interpolated: `"\{err}"` on a PATTERN-BOUND binder is the
+    // one interpolation shape #1392 left rendering as a pointer decimal.
+    Throw(err) => match err {
+      TaskError::Failed(m) => "Failed(\{m})",
+      TaskError::Cancelled => "Cancelled"
+    }
+  }
+  assert_eq(out, "Failed(Cancelled)")
 }
 
 /// Direct wake (ADR-0089 #1218): several awaiters parked on ONE sibling
@@ -785,26 +797,17 @@ test "direct wake resumes every result_wait awaiter of one sibling" {
       let _w2 = perform Async::Suspend(0)
       40
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
       let got = TaskHandle::result_wait(ha)
-      match got {
-        Ok(v) => v + 1,
-        Err(_) => 0 - 1
-      }
+      got + 1
     })
-    let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+    let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
       let got = TaskHandle::result_wait(ha)
-      match got {
-        Ok(v) => v + 2,
-        Err(_) => 0 - 1
-      }
+      got + 2
     })
-    let hd = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+    let hd = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
       let got = TaskHandle::result_wait(ha)
-      match got {
-        Ok(v) => v + 3,
-        Err(_) => 0 - 1
-      }
+      got + 3
     })
     TaskGroup::pump_all(g)
     let rb = TaskHandle::join(hb)
@@ -826,17 +829,14 @@ test "manual wake of a direct-parked awaiter is a safe spurious poll" {
       let _w1 = perform Async::Suspend(0)
       40
     })
-    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
       let got = TaskHandle::result_wait(ha)
       // A cooperative yield AFTER the direct-parked wait: if the resume
       // left a stale direct_wait flag, this yield would be skipped by the
       // pump and strand the task behind the fallback valve. (Spine
-      // discipline: calls let-bound, match only in tail position.)
+      // discipline: calls let-bound, the value expression in tail position.)
       let _y = perform Async::Suspend(0)
-      match got {
-        Ok(v) => v + 2,
-        Err(_) => 0 - 1
-      }
+      got + 2
     })
     // hb is now parked on ha (direct). Wake it manually: it must simply
     // re-check, re-park, and still complete once ha does.
@@ -858,7 +858,7 @@ test "direct-parked recv_wait does not block a sleeping producer's clock" {
       let ends = Channel::bounded(g, 1)
       {
         let (tx, rx) = ends
-        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
           sleep(5)
           let _s1 = Sender::send_wait(tx, 21)
           sleep(5)
