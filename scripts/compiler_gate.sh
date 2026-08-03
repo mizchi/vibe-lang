@@ -8848,4 +8848,65 @@ fi
 rm -rf "$showdir"
 echo "[compiler-gate] interpolation Show rendering ok"
 
+echo "[compiler-gate] 87/87 uncaught throw reports the payload VALUE (#1374 / #1392 slice 3)"
+# ADR-0085's runtime carries one abortive tag with no kind, so the entry
+# boundary's erased `with Error` arm binds the payload at CtUnknown and can
+# resolve neither a `T::to_string` nor a `[T: Show]` witness. #1374 gave it the
+# payload's TYPE; slice 3 gives it the payload RENDERED at the throw site,
+# where the type is still known. Three cases, because the interesting part is
+# that the third did NOT regress: a type with no structural renderer must keep
+# printing `<Kind>` rather than the pointer decimal a naive "trust any non-empty
+# render" reader would emit.
+exnmsgdir="_build/_gate_exn_msg"
+rm -rf "$exnmsgdir"; mkdir -p "$exnmsgdir"
+cat > "$exnmsgdir/shown.vibe" <<'VIBEEOF'
+enum AppError {
+  Failed(String);
+  Cancelled
+} derive (Show)
+
+let _start = () -> Int with { Error } {
+  throw(Failed("io"))
+}
+VIBEEOF
+cat > "$exnmsgdir/plain.vibe" <<'VIBEEOF'
+let _start = () -> Int with { Error } {
+  throw("plain message")
+}
+VIBEEOF
+cat > "$exnmsgdir/noshow.vibe" <<'VIBEEOF'
+enum NoShow {
+  Bang(Int)
+}
+
+let _start = () -> Int with { Error } {
+  throw(Bang(5))
+}
+VIBEEOF
+exn_msg_expect() {
+  local name="$1" want="$2"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$exnmsgdir/$name.vibe" "$exnmsgdir/$name.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$exnmsgdir/$name.wasm" ]; then
+    echo "[compiler-gate] FAIL: $name.vibe did not compile (#1392 slice 3)" >&2
+    cat "$exnmsgdir/$name.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  local got
+  got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/$name.wasm" 2>&1 | grep "uncaught error" | head -1)"
+  if [ "$got" != "vibe: uncaught error: $want" ]; then
+    echo "[compiler-gate] FAIL: $name got '$got' (want 'vibe: uncaught error: $want') (#1392 slice 3)" >&2
+    exit 1
+  fi
+}
+# derive(Show) enum: the VALUE, not `<AppError>` (which is what #1374 printed).
+exn_msg_expect shown "Failed(io)"
+# String payload: `__to_string` is the identity, output unchanged.
+exn_msg_expect plain "plain message"
+# No structural renderer: the kind, NOT the pointer decimal.
+exn_msg_expect noshow "<NoShow>"
+rm -rf "$exnmsgdir"
+echo "[compiler-gate] uncaught throw payload rendering ok"
+
 echo "[compiler-gate] ok"

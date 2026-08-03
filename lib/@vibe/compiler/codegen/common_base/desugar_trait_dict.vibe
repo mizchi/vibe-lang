@@ -825,9 +825,18 @@ fn exn_kind_cell_name() -> String {
   "__exn_kind_cell"
 }
 
-/// The `[""]`-shaped one-slot cell, appended to the program on demand.
+/// The two-slot cell, appended to the program on demand.
+///
+/// `[0]` = the payload's static TYPE name (#1374). `[1]` = the payload
+/// RENDERED at the throw site (#1392 slice 3): the kind alone tells an erased
+/// arm that the payload is not text, but not what it says, and the arm cannot
+/// recover that itself -- its binder's static type is `CtUnknown`, so neither a
+/// `T::to_string` call nor a `[T: Show]` witness can be resolved there. The
+/// throw site is the one place the type IS known, so it renders there and the
+/// arm reads the string.
 fn exn_kind_cell_stmt() -> Stmt {
   SLet(false, false, exn_kind_cell_name(), None, EArray([
+    EString(""),
     EString("")
   ]))
 }
@@ -847,6 +856,23 @@ fn exn_kind_write_expr(kind: String) -> Expr {
     EIdent(exn_kind_cell_name(), -1),
     EInt(0),
     EString(kind)
+  ], -1)
+}
+
+/// What `__exn_message()` lowers to. Exported for the same reason
+/// `exn_kind_read_expr` is: the entry boundary is synthesized after this pass.
+export fn exn_msg_read_expr() -> Expr {
+  ECall(EIdent("Array::get", -1), [
+    EIdent(exn_kind_cell_name(), -1),
+    EInt(1)
+  ], -1)
+}
+
+fn exn_msg_write_expr(rendered: Expr) -> Expr {
+  ECall(EIdent("Array::set", -1), [
+    EIdent(exn_kind_cell_name(), -1),
+    EInt(1),
+    rendered
   ], -1)
 }
 
@@ -936,6 +962,14 @@ fn is_perform_throw_shape(callee: Expr, args: Array[Expr]) -> Bool {
 fn is_exception_kind_read(callee: Expr, args: Array[Expr]) -> Bool {
   match callee {
     EIdent(n, _) => n == "__exn_kind" && Array::length(args) == 0,
+    _ => false
+  }
+}
+
+/// A nullary `__exn_message()` call.
+fn is_exception_message_read(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(n, _) => n == "__exn_message" && Array::length(args) == 0,
     _ => false
   }
 }
@@ -3434,6 +3468,11 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // time either backend sees the program.
         exn_kind_mark_used()
         exn_kind_read_expr()
+      } else if !exn_kind_suppressed() && is_exception_message_read(callee, args) {
+        // #1392 slice 3: the companion read. Same checker-only intrinsic shape
+        // as `__exn_kind()`.
+        exn_kind_mark_used()
+        exn_msg_read_expr()
       } else if !exn_kind_suppressed() && is_perform_throw_shape(callee, args) {
         // #1374: record the payload's static type name for the handler. The
         // write is UNCONDITIONAL, including the empty name for a payload this
@@ -3465,7 +3504,42 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // instead of its own message. Binding the payload first makes the
         // write the last thing before the perform.
         let pname = exn_kind_fresh_payload_name()
-        ELet(pname, perform_throw_payload(rwargs), ESeq(exn_kind_write_expr(kind), ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off)), -1)
+        // #1392 slice 3: render the payload HERE, where its type is known, and
+        // carry the string alongside the kind. The erased arm cannot do this
+        // itself at any later point -- see exn_kind_cell_stmt's comment.
+        //
+        // The renderer is the ordinary interpolation path, run against the
+        // payload TEMP with `kind` injected into var_types. Rendering the
+        // original payload expression instead would evaluate it twice; the
+        // temp is exactly the same value and `kind` is exactly the type
+        // `infer_arg_type_name` just derived from that expression.
+        //
+        // The slot is written ONLY when a STRUCTURAL renderer was found, and
+        // is cleared otherwise. The reader cannot make that distinction
+        // itself: `__to_string`'s pointer decimal is a perfectly ordinary
+        // non-empty string, so a reader that trusted any non-empty slot would
+        // print `192` for an enum without `derive(Show)` -- strictly worse
+        // than the `<Kind>` #1374 already prints there. Faithfulness is a
+        // static property of this site, so it is decided here.
+        let render_vars = if kind == "" {
+          var_types
+        } else {
+          extend_var_types(var_types, pname, Some(kind))
+        }
+        let render_target = interp_show_target(EIdent(pname, -1), struct_sets, render_vars, fn_returns)
+        let rendered = if render_target != "" {
+          Some(ECall(EIdent(render_target, -1), Array::slice([
+            EIdent(pname, -1)
+          ], 0, 1), -1))
+        } else {
+          interp_expand(EIdent(pname, -1), gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
+        }
+        let msg_write = exn_msg_write_expr(if interp_has_repl(rendered) {
+          interp_take_repl(rendered)
+        } else {
+          EString("")
+        })
+        ELet(pname, perform_throw_payload(rwargs), ESeq(exn_kind_write_expr(kind), ESeq(msg_write, ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off))), -1)
       } else {
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
