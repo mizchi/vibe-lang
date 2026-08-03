@@ -3199,6 +3199,42 @@ fn show_self_fn_set(name: String) -> Unit {
   Array::set(dtd_show_self_fn, 0, name)
 }
 
+/// #1398 review (Codex P1): the type names whose `T::to_string` THIS PASS
+/// generated, recorded by `desugar_derives` as it emits them.
+///
+/// It exists to keep the SYNTHESIZED render at a throw site from calling a
+/// user-written formatter. An interpolation `"\{v}"` is the user asking for
+/// the call, so any `T::to_string` is fair game there. A throw site is not:
+/// the call is inserted after type checking, runs on EVERY throw even when no
+/// handler reads the message, and its effects are absent from the throwing
+/// function's checked row. A formatter that itself throws would recurse during
+/// formatting or silently replace the original exception; one that mutates or
+/// performs would do so invisibly. Measured before this fix: a `Boom::to_string`
+/// containing `println` printed on a `throw(Bang(1))` whose handler ignored the
+/// payload entirely.
+///
+/// The derived renderers are structural, total, and effect-free by
+/// construction, so restricting the eager path to them removes the hazard
+/// rather than narrowing it.
+///
+/// Reset at each `desugar_trait_dicts` entry, BEFORE `desugar_derives` runs.
+/// The second run of the pass over one program regenerates nothing (the
+/// functions already exist) and leaves this empty, which is harmless: that run
+/// also has `exn_kind_suppressed()` set, so it rewrites no throw site.
+let dtd_derived_renderers: Array[String] = array_empty()
+
+fn derived_renderers_reset() -> Unit {
+  Array::truncate(dtd_derived_renderers, 0)
+}
+
+fn derived_renderer_record(tname: String) -> Unit {
+  Array::push(dtd_derived_renderers, tname)
+}
+
+fn has_derived_renderer(tname: String) -> Bool {
+  str_array_contains(dtd_derived_renderers, tname)
+}
+
 /// `__to_string(x)`: the single-argument shape string interpolation lowers to.
 fn is_interp_to_string_call(callee: Expr, args: Array[Expr]) -> Bool {
   match callee {
@@ -3216,11 +3252,15 @@ fn is_interp_to_string_call(callee: Expr, args: Array[Expr]) -> Bool {
 /// `derive(Show)`, `derive(Hash)`, or a hand-written `T::to_string`. Scalars
 /// are excluded outright -- `__to_string` is already faithful for them, and
 /// they are the shapes a `T::to_string` name could plausibly collide with.
-fn interp_show_target(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
     Some(tn) => {
       let target = String::concat(tn, "::to_string")
-      if !is_scalar_type_name(tn) && fn_exists(fn_returns, target) && target != Array::get(dtd_show_self_fn, 0) {
+      // `derived_only` (#1398 review, Codex P1) restricts this to renderers
+      // THIS PASS generated -- see dtd_derived_renderers. Set at a throw site,
+      // where the call is synthesized; clear at an interpolation, where the
+      // user wrote it.
+      if !is_scalar_type_name(tn) && fn_exists(fn_returns, target) && target != Array::get(dtd_show_self_fn, 0) && (!derived_only || has_derived_renderer(tn)) {
         target
       } else {
         ""
@@ -3277,7 +3317,7 @@ fn show_tmp_name() -> String {
 /// Render one sub-expression by re-entering the interpolation rewrite on a
 /// synthetic `__to_string(sub)`, so a nested wrapper or a derive(Show) value
 /// inside one is rendered too.
-fn interp_render_sub(sub: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
+fn interp_render_sub(sub: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
   rewrite_expr(ECall(EIdent("__to_string", -1), Array::slice([
     sub
   ], 0, 1), -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
@@ -3285,11 +3325,11 @@ fn interp_render_sub(sub: Expr, gens: Array[(String, Array[(String, String, Int)
 
 /// `open_s ++ e0 ++ sep ++ e1 ++ .. ++ close_s`, each element rendered.
 /// (`open` is a reserved word in vibe, hence the suffixed names.)
-fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
+fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
   let mut acc = EString(open_s)
   let mut i = 0
   while i < Array::length(items) {
-    let piece = interp_render_sub(Array::get(items, i), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    let piece = interp_render_sub(Array::get(items, i), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     acc = if i == 0 {
       concat2(acc, piece)
     } else {
@@ -3301,21 +3341,21 @@ fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String,
 }
 
 /// `ctor_name(<rendered payload>)`.
-fn interp_wrap1(ctor: String, payload: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
-  concat2(EString(String::concat(ctor, "(")), concat2(interp_render_sub(payload, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")")))
+fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with { Error } {
+  concat2(EString(String::concat(ctor, "(")), concat2(interp_render_sub(payload, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")")))
 }
 
 /// The head-only fallback: a value this pass knows is an `Option`/`Result` but
 /// whose payload type it does not know. The match is emitted over the REWRITTEN
 /// argument (evaluated once, as the scrutinee), and the payload is rendered by
 /// the ordinary path.
-fn interp_expand_by_head(arg: Expr, head: String, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with { Error } {
+fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with { Error } {
   if head == "Option" {
     let v = show_tmp_name()
     Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Some", Array::slice([
         PBind(v)
-      ], 0, 1)), interp_wrap1("Some", EIdent(v, -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      ], 0, 1)), interp_wrap1("Some", EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
       (PCtor("None", array_empty()), EString("None"))
     ], 0, 2)))
   } else if head == "Result" {
@@ -3324,10 +3364,10 @@ fn interp_expand_by_head(arg: Expr, head: String, gens: Array[(String, Array[(St
     Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Ok", Array::slice([
         PBind(ov)
-      ], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      ], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
       (PCtor("Err", Array::slice([
         PBind(ev)
-      ], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+      ], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
     ], 0, 2)))
   } else {
     None
@@ -3336,28 +3376,28 @@ fn interp_expand_by_head(arg: Expr, head: String, gens: Array[(String, Array[(St
 
 /// The structural rendering for an interpolated wrapper value, or None when
 /// this pass has no shape to work from and the `__to_string` call must stand.
-fn interp_expand(arg: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with { Error } {
+fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with { Error } {
   let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
     Some(h) => h,
     None => ""
   }
   match arg {
-    ETuple(items) => Some(interp_join(items, "(", ", ", ")", gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
-    EArray(items) => Some(interp_join(items, "[", ", ", "]", gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ETuple(items) => Some(interp_join(items, "(", ", ", ")", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EArray(items) => Some(interp_join(items, "[", ", ", "]", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EIdent(n, _) => if n == "None" && head == "Option" {
       Some(EString("None"))
     } else {
-      interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     },
     ECall(callee, cargs, _) => match callee {
       EIdent(cn, _) => if Array::length(cargs) == 1 && ((head == "Option" && cn == "Some") || (head == "Result" && (cn == "Ok" || cn == "Err"))) {
-        Some(interp_wrap1(cn, Array::get(cargs, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+        Some(interp_wrap1(cn, Array::get(cargs, 0), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
       } else {
-        interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       },
-      _ => interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      _ => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     },
-    _ => interp_expand_by_head(arg, head, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    _ => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   }
 }
 
@@ -3412,13 +3452,13 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       // call site. Slice 1 (the argument's type names a `T::to_string`) wins
       // over slice 2 (the argument is, or is headed by, a wrapper).
       let interp_repl = if is_interp_to_string_call(callee, args) {
-        let show_target = interp_show_target(Array::get(args, 0), struct_sets, var_types, fn_returns)
+        let show_target = interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
         if show_target != "" {
           Some(ECall(EIdent(show_target, -1), Array::slice([
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           ], 0, 1), off))
         } else {
-          interp_expand(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
         }
       } else {
         None
@@ -3521,18 +3561,27 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // print `192` for an enum without `derive(Show)` -- strictly worse
         // than the `<Kind>` #1374 already prints there. Faithfulness is a
         // static property of this site, so it is decided here.
+        //
+        // #1398 review (Codex P2): "" is therefore a sentinel, and it is a
+        // sound one only because every renderer reachable from here produces a
+        // NON-EMPTY string by construction. `derived_only` (Codex P1, above)
+        // is what makes that true: a derived struct renderer opens with the
+        // type name (`P { ..`), a derived enum renderer IS a variant name, and
+        // the wrapper expansions are `Some(..)`/`Ok(..)`/`Err(..)`/`None`. A
+        // user-written formatter could legitimately return "" -- and is no
+        // longer called from here at all.
         let render_vars = if kind == "" {
           var_types
         } else {
           extend_var_types(var_types, pname, Some(kind))
         }
-        let render_target = interp_show_target(EIdent(pname, -1), struct_sets, render_vars, fn_returns)
+        let render_target = interp_show_target(EIdent(pname, -1), true, struct_sets, render_vars, fn_returns)
         let rendered = if render_target != "" {
           Some(ECall(EIdent(render_target, -1), Array::slice([
             EIdent(pname, -1)
           ], 0, 1), -1))
         } else {
-          interp_expand(EIdent(pname, -1), gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
+          interp_expand(EIdent(pname, -1), true, gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
         }
         let msg_write = exn_msg_write_expr(if interp_has_repl(rendered) {
           interp_take_repl(rendered)
@@ -5458,6 +5507,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // generate `to_string` for Show OR Hash.
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
           Array::push(gen, gen_show_fn(name, fields, known_types))
+          derived_renderer_record(name)
         } else {
           ()
         }
@@ -5502,6 +5552,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
       SEnum(_, ename, _, variants, derives) => {
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
           Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
+          derived_renderer_record(ename)
         } else {
           ()
         }
@@ -8231,6 +8282,10 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with { Error } {
   inject_prelude_result(stmts)
   // derive(...) structural function generation (#638) — independent of traits,
   // idempotent, so it runs unconditionally here at the shared pre-check points.
+  // #1398 review (Codex P1): reset before desugar_derives repopulates it, so
+  // the throw-site render can only ever name a renderer generated for THIS
+  // program.
+  derived_renderers_reset()
   desugar_derives(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
