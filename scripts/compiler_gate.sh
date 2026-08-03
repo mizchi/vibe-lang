@@ -8645,6 +8645,25 @@ if ! grep -q "missing { Exception\[IoError\] }" "$excdir/neg.wasm.diag" 2>/dev/n
   cat "$excdir/neg.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1344 follow-up: the same rejection when the payload is a LOCAL binder rather
+# than an inline constructor application. Until the payload-kind scope was
+# threaded through the perform walk this compiled -- a local's type was
+# invisible to that (untyped) pass, so the throw fell back to the erased
+# `Error::Throw`, which every exception row authorizes. That exempted exactly
+# the shape #1324's migration produces.
+sed '/^__DATA__$/,$d' fixtures/err_exception_local_binder_kind.vibe > "$excdir/neglocal.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$excdir/neglocal.vibe" "$excdir/neglocal.wasm" main >/dev/null 2>&1 || true
+if [ -s "$excdir/neglocal.wasm" ]; then
+  echo "[compiler-gate] FAIL: a LOCAL binder's throw payload was not kind-checked (#1344 follow-up)" >&2
+  exit 1
+fi
+if ! grep -q "missing { Exception\[IoError\] }" "$excdir/neglocal.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the local-binder diagnostic must name the missing KIND (#1344 follow-up)" >&2
+  cat "$excdir/neglocal.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 # The fix-it must be pasteable: the row grammar takes `Eff::Op` and `Eff[T]`
 # but NOT `Eff[T]::Op`, so a `Exception[IoError]::Throw` hint would name a
 # label that does not parse. Feed the hint's row back through the compiler.

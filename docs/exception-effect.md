@@ -219,8 +219,9 @@ compiler source を移行する前に、seed compiler と stage2/stage3 fixpoint
 
 この帰結として **Phase 5 (alias 削除) は単なる改名ではなく本物の breaking
 change** になる。`Error` を消すということは「kind 不明の throw を許す」逃げ道
-を消すことであり、下記 v1 の限界 (local binding の型が見えない) を先に閉じて
-おく必要がある。
+を消すことであり、下記の解決範囲を広げるほど安全に近づく (local binder と
+annotated parameter は follow-up で閉じた。pattern binder と field 射影は
+まだ解決不能)。
 
 ## 実装状況 (Phase 3)
 
@@ -243,14 +244,34 @@ change** になる。`Error` を消すということは「kind 不明の throw 
   `lc_row_has_error` が拾い、診断付き process failure へ変換する
   (`lc_wrap_entry_error_boundary`)。
 
-**v1 の限界 (意図的)**: throw payload の kind は effect pass が
-**module 環境から** 解決する — 文字列/数値リテラル、constructor 適用
-(`throw(NotFound("x"))`)、nullary constructor、top-level 関数の戻り値まで。
-**local binding は見えない** (`fn f(e: IoError) { throw(e) }` の `e` は
-kind 不明)。effect pass は型付けを持たない AST walk なので、ここを閉じるには
-local binder の型を walk に通すか、型検査側で throw site ごとの kind を
-記録する必要がある。kind 不明は「どの exception row でも通る」に倒してある
-ので、この隙間が **誤検出を生むことはなく、検出漏れだけを生む**。
+**throw payload の kind 解決範囲**: effect pass は型付けを持たない AST walk
+なので、payload の kind は syntax と module 環境から復元する。解決できるのは:
+
+| payload | kind |
+| --- | --- |
+| `throw("boom")` / `throw(1)` / `throw(1.5)` / `throw(true)` | リテラルの型 |
+| `throw(NotFound("cfg"))` | constructor の結果型 |
+| `throw(Eof)` | nullary constructor |
+| `throw(make_err(x))` | top-level 関数の戻り値型 |
+| `throw(Wrapped::{ .. })` | struct literal の型 |
+| `let e = NotFound("cfg"); throw(e)` | initializer から (再帰的に) |
+| `fn f(e: IoError) { throw(e) }` | parameter annotation の head 名 |
+| `match r { Err(e) => throw(e) }` | **解決不能** (pattern binder) |
+| `throw(r.cause)` | **解決不能** (field 射影) |
+
+local binder は #1344 の v1 では見えていなかったが、**#1324 の移行が生む形
+(`let e = ..; Err(e)` → `let e = ..; throw(e)`) がちょうどそれ**だったため
+follow-up で閉じた。実装は `(name, kind)` の scope を perform walk に通す形で、
+既に同じように walk に乗っている `ov_names`/`ov_effs` と同じ機構
+(`throw_kind_bind*`, checker/checker_effects.vibe)。
+
+kind 不明は「どの exception row でも通る」に倒してあるので、この隙間が
+**誤検出を生むことはなく、検出漏れだけを生む**。その性質を保つために、
+**解決できない binder も明示的に kind `""` で scope に載せる**: lookup は
+名前が scope に無いとき module 表へ落ちるので、載せないと同名の top-level
+binding が local の代わりに答えてしまう (それは誤検出になる)。pattern binder、
+`for` の要素・index、`loop` param、無注釈 parameter、`let rec`、適用された
+local (scope が持つのは値の kind であって結果の kind ではない) がこれに当たる。
 
 同じ理由で、#1340 が残した「row 要素の完全な OperationRef 正規化」も
 `Exception[E]` に限って先取りしただけで、他の generic effect
@@ -266,11 +287,13 @@ local binder の型を walk に通すか、型検査側で throw site ごとの 
    だったので、`Result[T, ParseError]` を `with { Error }` に置き換えると
    `E` の情報が消えた。今は `with { Exception[ParseError] }` が同じ情報を
    持つので、置き換えが情報を落とさない。
-2. ただし **#1324 を始める前に上記 v1 の限界を閉じる必要がある**。
-   `Result` を返していたコードは失敗値を local binding に持って回してから
+2. `Result` を返していたコードは失敗値を local binding に持って回してから
    返すことが多く (`let e = ...; Err(e)`)、それを throw に直すと
-   `throw(e)` — つまり kind 不明の形になる。移行の主役がちょうど検査漏れ
-   する形なので、先に local binder の型を effect pass へ通すこと。
+   `throw(e)` — #1344 の v1 ではちょうどここが kind 不明に落ちていた。
+   **移行の主役が検査漏れする形だったため、#1344 の follow-up で local
+   binder と annotated parameter を解決可能にした** (上表)。残る解決不能形
+   (pattern binder / field 射影) は移行の主役ではないので、gradual のまま
+   でよい。
 3. Phase 4 (stdlib/compiler を `Exception[E]` へ移行) は #1324 と同じ
    コードに触るので、別々に2回書き換えないよう #1324 と一体で行う。
 
