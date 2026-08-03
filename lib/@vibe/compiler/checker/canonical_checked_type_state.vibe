@@ -1,0 +1,453 @@
+//# Canonical checked value-environment observation (# canonical-checked-type-state)
+//
+// This deliberately observes only CheckedProgram.final_env and final_subst.
+// It does not serialize checked statements, typedefs, traits/impls, typed
+// occurrences, runtime sidecars, or persistent cache state.
+
+import @vibe/compiler/core {
+  Subst, Type, TypeEnv, __to_string, canonical_exception_effect_name, str_lt, subst_lookup
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Encoding helpers
+
+fn canonical_piece(text: String) -> String {
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
+}
+
+fn canonical_node(tag: String, fields: Array[String]) -> String {
+  let mut out = String::concat(tag, __to_string(Array::length(fields)))
+  let mut i = 0
+  while i < Array::length(fields) {
+    out = String::concat(out, canonical_piece(Array::get(fields, i)))
+    i = i + 1
+  }
+  out
+}
+
+fn int_in(items: Array[Int], id: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == id {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn int_index(items: Array[Int], id: Int) -> Int {
+  let mut i = 0
+  let mut out = -1
+  while i < Array::length(items) && out < 0 {
+    if Array::get(items, i) == id {
+      out = i
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn string_in(items: Array[String], item: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == item {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn sorted_unique_strings(items: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if !string_in(out, item) {
+      let mut at = Array::length(out)
+      let mut j = 0
+      while j < Array::length(out) && at == Array::length(out) {
+        if str_lt(item, Array::get(out, j)) {
+          at = j
+        } else {
+          j = j + 1
+        }
+      }
+      Array::push(out, item)
+      let mut k = Array::length(out) - 1
+      while k > at {
+        Array::set(out, k, Array::get(out, k - 1))
+        k = k - 1
+      }
+      Array::set(out, at, item)
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# Effect rows
+
+// This is nesting-aware: generic effect labels can themselves contain commas.
+fn canonical_effect_labels(text: String) -> Array[String] {
+  let raw = array_empty()
+  let mut start = 0
+  let mut depth = 0
+  let mut i = 0
+  while i < String::length(text) {
+    let c = String::char_code_at(text, i)
+    if c == 91 || c == 40 || c == 123 {
+      depth = depth + 1
+    } else if (c == 93 || c == 41 || c == 125) && depth > 0 {
+      depth = depth - 1
+    } else if c == 44 && depth == 0 {
+      let label = String::trim(String::substring(text, start, i))
+      if String::length(label) > 0 {
+        Array::push(raw, canonical_exception_effect_name(label))
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  let last = String::trim(String::substring(text, start, String::length(text)))
+  if String::length(last) > 0 {
+    Array::push(raw, canonical_exception_effect_name(last))
+  }
+  sorted_unique_strings(raw)
+}
+
+fn canonical_is_effect_var(name: String) -> Bool {
+  let len = String::length(name)
+  if len == 1 {
+    String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+  } else if len >= 2 {
+    String::char_code_at(name, 0) == 36
+  } else {
+    false
+  }
+}
+
+fn canonical_effect_lookup(s: Subst, name: String, seen: Array[String]) -> Option[String] {
+  if string_in(seen, name) {
+    Some(name)
+  } else {
+    let next_seen = Array::slice(seen, 0, Array::length(seen))
+    Array::push(next_seen, name)
+    let mut cur = s
+    let mut found = None
+    let mut done = false
+    while !done {
+      match cur {
+        SubstEmpty => {
+          done = true
+        },
+        SubstBind(_, _, rest) => {
+          cur = rest
+        },
+        SubstBound(_, _, rest) => {
+          cur = rest
+        },
+        SubstCached(_, _, rest) => {
+          cur = rest
+        },
+        SubstEffBind(v, value, rest) => if v == name {
+          found = Some(value)
+          done = true
+        } else {
+          cur = rest
+        }
+      }
+    }
+    match found {
+      Some(value) => if canonical_is_effect_var(value) {
+        canonical_effect_lookup(s, value, next_seen)
+      } else {
+        Some(value)
+      },
+      None => None
+    }
+  }
+}
+
+fn canonical_effect(s: Subst, effect: Option[String]) -> String {
+  match effect {
+    None => canonical_node("EP", array_empty()),
+    Some(name) => {
+      let resolved = if canonical_is_effect_var(name) {
+        canonical_effect_lookup(s, name, array_empty())
+      } else {
+        Some(name)
+      }
+      match resolved {
+        Some(text) => if String::length(text) == 0 {
+          canonical_node("EP", array_empty())
+        } else {
+          canonical_node("ER", canonical_effect_labels(text))
+        },
+        None => canonical_node("EV", [
+          name
+        ])
+      }
+    }
+  }
+}
+
+//# Type alpha-normalization
+
+fn canonical_free_var(id: Int, free_ids: Array[Int], free_names: Array[String]) -> String {
+  let found = int_index(free_ids, id)
+  if found >= 0 {
+    Array::get(free_names, found)
+  } else {
+    let name = String::concat("f", __to_string(Array::length(free_ids)))
+    Array::push(free_ids, id)
+    Array::push(free_names, name)
+    name
+  }
+}
+
+fn canonical_bounds_for(vars: Array[Int], rows: Array[(Int, Array[String])], id: Int) -> String {
+  let labels = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (row_id, row_labels) = Array::get(rows, i)
+    if row_id == id {
+      let mut j = 0
+      while j < Array::length(row_labels) {
+        Array::push(labels, Array::get(row_labels, j))
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  canonical_node("B", sorted_unique_strings(labels))
+}
+
+fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], free_ids: Array[Int], free_names: Array[String], resolving: Array[Int]) -> String {
+  match ty {
+    CtInt => canonical_node("I", array_empty()),
+    CtDouble => canonical_node("D", array_empty()),
+    CtBool => canonical_node("Z", array_empty()),
+    CtString => canonical_node("S", array_empty()),
+    CtChar => canonical_node("C", array_empty()),
+    CtUnit => canonical_node("U", array_empty()),
+    CtBytes => canonical_node("Y", array_empty()),
+    CtUnknown => canonical_node("X", array_empty()),
+    CtVar(id) => {
+      let bound_at = int_index(bound_ids, id)
+      if bound_at >= 0 {
+        canonical_node("Q", [
+          __to_string(bound_at)
+        ])
+      } else if int_in(resolving, id) {
+        canonical_node("V", [
+          canonical_free_var(id, free_ids, free_names)
+        ])
+      } else {
+        match subst_lookup(s, id) {
+          Some(next) => {
+            let next_resolving = Array::slice(resolving, 0, Array::length(resolving))
+            Array::push(next_resolving, id)
+            canonical_type(next, s, bound_ids, free_ids, free_names, next_resolving)
+          },
+          None => canonical_node("V", [
+            canonical_free_var(id, free_ids, free_names)
+          ])
+        }
+      }
+    },
+    CtTuple(items) => {
+      let fields = array_empty()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(fields, canonical_type(Array::get(items, i), s, bound_ids, free_ids, free_names, resolving))
+        i = i + 1
+      }
+      canonical_node("T", fields)
+    },
+    CtArray(item) => canonical_node("A", [
+      canonical_type(item, s, bound_ids, free_ids, free_names, resolving)
+    ]),
+    CtOption(item) => canonical_node("O", [
+      canonical_type(item, s, bound_ids, free_ids, free_names, resolving)
+    ]),
+    CtEnum(name) => canonical_node("N", [
+      name
+    ]),
+    CtStruct(name) => canonical_node("R", [
+      name
+    ]),
+    CtNamed(name, args) => {
+      let fields = [
+        name
+      ]
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(fields, canonical_type(Array::get(args, i), s, bound_ids, free_ids, free_names, resolving))
+        i = i + 1
+      }
+      canonical_node("M", fields)
+    },
+    CtFn(params, ret, effect) => {
+      let fields = array_empty()
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(fields, canonical_type(Array::get(params, i), s, bound_ids, free_ids, free_names, resolving))
+        i = i + 1
+      }
+      Array::push(fields, canonical_type(ret, s, bound_ids, free_ids, free_names, resolving))
+      Array::push(fields, canonical_effect(s, effect))
+      canonical_node("F", fields)
+    },
+    CtForAll(vars, rows, body) => {
+      // The locally introduced ids precede outer ids, so Q0 is always the
+      // innermost lexical binder and outer binders shift outward.
+      let nested_bound = Array::slice(vars, 0, Array::length(vars))
+      let mut i = 0
+      while i < Array::length(bound_ids) {
+        Array::push(nested_bound, Array::get(bound_ids, i))
+        i = i + 1
+      }
+      let fields = array_empty()
+      let mut j = 0
+      while j < Array::length(vars) {
+        let id = Array::get(vars, j)
+        // Each row is emitted at its binder position; rows are never sorted.
+        Array::push(fields, canonical_bounds_for(vars, rows, id))
+        j = j + 1
+      }
+      Array::push(fields, canonical_type(body, s, nested_bound, free_ids, free_names, resolving))
+      canonical_node("G", fields)
+    }
+  }
+}
+
+//# Effective environment collection
+
+fn canonical_name_seen(names: Array[String], name: String) -> Bool {
+  string_in(names, name)
+}
+
+fn canonical_collect_effective_bindings(env: TypeEnv) -> Array[(String, Type)] {
+  let out = array_empty()
+  let seen = array_empty()
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(name, ty, rest) => {
+        if !canonical_name_seen(seen, name) {
+          Array::push(seen, name)
+          if !String::starts_with(name, "__fn_ret__:") {
+            Array::push(out, (name, ty))
+          }
+        }
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) {
+          let (name, ty) = Array::get(bindings, i)
+          if !canonical_name_seen(seen, name) {
+            Array::push(seen, name)
+            if !String::starts_with(name, "__fn_ret__:") {
+              Array::push(out, (name, ty))
+            }
+          }
+          i = i + 1
+        }
+        done = true
+      },
+      EnvCached(names, types, rest) => {
+        let mut i = 0
+        while i < Array::length(names) {
+          let name = Array::get(names, i)
+          if !canonical_name_seen(seen, name) {
+            Array::push(seen, name)
+            if !String::starts_with(name, "__fn_ret__:") {
+              Array::push(out, (name, Array::get(types, i)))
+            }
+          }
+          i = i + 1
+        }
+        cur = rest
+      }
+    }
+  }
+  out
+}
+
+fn canonical_sorted_bindings(bindings: Array[(String, Type)]) -> Array[(String, Type)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(bindings) {
+    let item = Array::get(bindings, i)
+    let (name, _) = item
+    let mut at = Array::length(out)
+    let mut j = 0
+    while j < Array::length(out) && at == Array::length(out) {
+      let (other, _) = Array::get(out, j)
+      if str_lt(name, other) {
+        at = j
+      } else {
+        j = j + 1
+      }
+    }
+    Array::push(out, item)
+    let mut k = Array::length(out) - 1
+    while k > at {
+      Array::set(out, k, Array::get(out, k - 1))
+      k = k - 1
+    }
+    Array::set(out, at, item)
+    i = i + 1
+  }
+  out
+}
+
+/// Canonical, observation-only effective value environment. It intentionally
+/// excludes statements, type definitions, traits/impls, and typed occurrences.
+export fn canonical_effective_value_env_snapshot(env: TypeEnv, s: Subst) -> String {
+  let bindings = canonical_sorted_bindings(canonical_collect_effective_bindings(env))
+  let free_ids = array_empty()
+  let free_names = array_empty()
+  let fields = [
+    "v1"
+  ]
+  let mut i = 0
+  while i < Array::length(bindings) {
+    let (name, ty) = Array::get(bindings, i)
+    Array::push(fields, canonical_node("B", [
+      name,
+      canonical_type(ty, s, array_empty(), free_ids, free_names, array_empty())
+    ]))
+    i = i + 1
+  }
+  canonical_node("CEVS", fields)
+}
+
+/// CheckedProgram wrapper: observes only final_env and final_subst.
+export fn canonical_checked_value_env_snapshot(checked: CheckedProgram) -> String {
+  canonical_effective_value_env_snapshot(checked.final_env, checked.final_subst)
+}

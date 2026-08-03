@@ -1,0 +1,215 @@
+import @vibe/compiler/checker {
+  CheckedProgram, canonical_checked_value_env_snapshot, canonical_effective_value_env_snapshot
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, Subst, Type, TypeDef, TypeEnv
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn snapshot(env: TypeEnv, subst: Subst) -> String {
+  canonical_effective_value_env_snapshot(env, subst)
+}
+
+test "canonical checked state preserves EnvBind EnvFlat and EnvCached first-match shadows" {
+  let bind_flat = EnvBind("__fn_ret__:bind", CtUnit, EnvBind("value", CtInt, EnvFlat([
+    ("value", CtBool),
+    ("outer", CtString),
+    ("__fn_ret__:flat", CtDouble)
+  ])))
+  let expected = EnvFlat([
+    ("outer", CtString),
+    ("value", CtInt)
+  ])
+  assert(snapshot(bind_flat, SubstEmpty) == snapshot(expected, SubstEmpty))
+  let cached = EnvCached([
+    "alpha",
+    "alpha",
+    "__fn_ret__:cached",
+    "z"
+  ], [
+    CtBool,
+    CtInt,
+    CtDouble,
+    CtString
+  ], EnvBind("z", CtUnit, EnvEmpty))
+  let cached_expected = EnvBind("alpha", CtBool, EnvBind("z", CtString, EnvEmpty))
+  assert(snapshot(cached, SubstEmpty) == snapshot(cached_expected, SubstEmpty))
+}
+
+test "canonical checked state shares free alpha variables across sorted values" {
+  let left = EnvFlat([
+    ("z", CtVar(91)),
+    ("a", CtVar(91))
+  ])
+  let alpha_equivalent = EnvFlat([
+    ("a", CtVar(4)),
+    ("z", CtVar(4))
+  ])
+  let changed_relation = EnvFlat([
+    ("a", CtVar(4)),
+    ("z", CtVar(5))
+  ])
+  assert(snapshot(left, SubstEmpty) == snapshot(alpha_equivalent, SubstEmpty))
+  assert(snapshot(left, SubstEmpty) != snapshot(changed_relation, SubstEmpty))
+}
+
+test "canonical checked state alpha-normalizes forall bounds without moving them" {
+  let left = CtForAll([
+    31,
+    44
+  ], [
+    (44, [
+      "Ord",
+      "Eq",
+      "Eq"
+    ]),
+    (31, [
+      "Show"
+    ])
+  ], CtTuple([
+    CtVar(31),
+    CtVar(44)
+  ]))
+  let reordered = CtForAll([
+    8,
+    9
+  ], [
+    (8, [
+      "Show"
+    ]),
+    (9, [
+      "Eq",
+      "Ord"
+    ])
+  ], CtTuple([
+    CtVar(8),
+    CtVar(9)
+  ]))
+  let moved = CtForAll([
+    8,
+    9
+  ], [
+    (8, [
+      "Eq",
+      "Ord"
+    ]),
+    (9, [
+      "Show"
+    ])
+  ], CtTuple([
+    CtVar(8),
+    CtVar(9)
+  ]))
+  assert(snapshot(EnvFlat([
+    ("f", left)
+  ]), SubstEmpty) == snapshot(EnvFlat([
+    ("f", reordered)
+  ]), SubstEmpty))
+  assert(snapshot(EnvFlat([
+    ("f", left)
+  ]), SubstEmpty) != snapshot(EnvFlat([
+    ("f", moved)
+  ]), SubstEmpty))
+}
+
+test "canonical checked state keeps quantified ids out of substitution" {
+  let source = CtForAll([
+    7
+  ], [
+    (7, [
+      "Eq"
+    ])
+  ], CtTuple([
+    CtVar(7),
+    CtVar(8)
+  ]))
+  let subst = SubstBind(7, CtString, SubstBind(8, CtInt, SubstEmpty))
+  let expected = CtForAll([
+    99
+  ], [
+    (99, [
+      "Eq"
+    ])
+  ], CtTuple([
+    CtVar(99),
+    CtInt
+  ]))
+  assert(snapshot(EnvFlat([
+    ("f", source)
+  ]), subst) == snapshot(EnvFlat([
+    ("f", expected)
+  ]), SubstEmpty))
+}
+
+test "canonical checked state sorts effect rows and resolves effect substitutions" {
+  let permuted = CtFn([
+    CtInt
+  ], CtUnit, Some("Fs, Exception, State[Int], State[String], Fs"))
+  let normalized = CtFn([
+    CtInt
+  ], CtUnit, Some("State[String], Error, State[Int], Fs"))
+  let via_var = CtFn([
+    CtInt
+  ], CtUnit, Some("e"))
+  let effect_subst = SubstEffBind("e", "State[String], Fs, State[Int], Fs", SubstEmpty)
+  assert(snapshot(EnvFlat([
+    ("f", permuted)
+  ]), SubstEmpty) == snapshot(EnvFlat([
+    ("f", normalized)
+  ]), SubstEmpty))
+  assert(snapshot(EnvFlat([
+    ("f", via_var)
+  ]), effect_subst) == snapshot(EnvFlat([
+    ("f", CtFn([
+      CtInt
+    ], CtUnit, Some("Fs, State[Int], State[String]")))
+  ]), SubstEmpty))
+  assert(snapshot(EnvFlat([
+    ("f", CtFn([
+    ], CtUnit, Some("State[Int]")))
+  ]), SubstEmpty) != snapshot(EnvFlat([
+    ("f", CtFn([
+    ], CtUnit, Some("State[String]")))
+  ]), SubstEmpty))
+}
+
+test "canonical checked state uses lexicographic names and wrapper ignores other checked fields" {
+  // String `<` is length-first in the historical host; this must emit a before aa.
+  let ordered = snapshot(EnvFlat([
+    ("aa", CtInt),
+    ("a", CtBool)
+  ]), SubstEmpty)
+  let expected = snapshot(EnvFlat([
+    ("a", CtBool),
+    ("aa", CtInt)
+  ]), SubstEmpty)
+  assert(ordered == expected)
+  let env = EnvFlat([
+    ("value", CtInt)
+  ])
+  let first = CheckedProgram::{
+    checked_stmts: array_empty(),
+    final_env: env,
+    type_defs: array_empty(),
+    final_subst: SubstEmpty,
+    typed_occurrences: array_empty()
+  }
+  let second = CheckedProgram::{
+    checked_stmts: [
+      SLet(false, false, "ignored", None, EInt(1))
+    ],
+    final_env: env,
+    type_defs: [
+      TDEnum("Ignored", array_empty(), array_empty())
+    ],
+    final_subst: SubstEmpty,
+    typed_occurrences: [
+      (99, CtString)
+    ]
+  }
+  assert(canonical_checked_value_env_snapshot(first) == canonical_checked_value_env_snapshot(second))
+}
