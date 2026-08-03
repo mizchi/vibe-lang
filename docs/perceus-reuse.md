@@ -483,3 +483,32 @@ F_stage1.wasm           --VIBE_RC=1-->  F_stage2.wasm   2,645,681 B   PASS
 「単一 site ではなく累積的」と出たのも、seed が踏む形状かどうかが
 site 集合で変わるためと読める。
 
+### 検証: seed を差し替えたら all-RC bootstrap が通った (fixpoint 一致)
+
+seed をローカルで現行ビルド (`_build/final_bump/stage2.wasm`) へ adopt して
+`VIBE_RC=1 scripts/generations.sh build --stage3` を回した (計装は撤去済み、
+out-line 化だけの状態):
+
+```
+stage0 (差し替えた seed)   1,842,511 B
+stage1                     2,644,914 B   OK
+stage2                     2,644,652 B   OK
+stage3                     2,644,652 B   OK
+stage2 == stage3           byte-identical  = FIXPOINT
+```
+
+stage1/2/3 それぞれの sample 検証も通過。**旧 seed で必ず OOB していた
+`stage1 -> stage2` が、seed を替えただけで通る。** source は1バイトも
+変えていない。これで #1262 の blocker が seed 起因であることは確定した。
+
+同時に、out-line 化の効果が all-RC 経路でそのまま出ることも確認できた:
+
+| | bump stage2 | RC stage2 | 比 |
+| --- | --- | --- | --- |
+| inline guard (従来) | 1,841,905 | 6,213,090 | 3.37x |
+| **out-line (本変更)** | 1,842,511 | **2,644,652** | **1.44x** |
+
+seed の正式な bump は GitHub Release の publish を伴う ([bootstrap.md](bootstrap.md)
+の手順) ため、この確認では `bootstrap/seed.json` は commit していない
+(存在しない tag を pin すると全クローン/CI の `ensure_seed.sh` が失敗する)。
+
