@@ -153,6 +153,26 @@ fn lookup_to_string(name: String) -> Option[Type] {
   else None
 }
 
+/// #1374: the static type name of the payload of the throw currently being
+/// handled, or "" when the throw site's payload type was not syntactically
+/// resolvable. Only meaningful INSIDE an exception handler arm.
+///
+/// This is a checker-only intrinsic: it has no wasm body and no entry in the
+/// codegen builtin registry, because `desugar_trait_dicts` lowers every call to
+/// a read of the one-slot module cell it also maintains (see the "#1374"
+/// section of desugar_trait_dict.vibe). Effect `None` -- reading the cell can
+/// neither perform nor throw.
+///
+/// It exists because ADR-0085's runtime carries a single abortive tag with no
+/// kind, so an erased `with Error { Throw(m) => .. }` arm also catches every
+/// typed `Exception[E]` and cannot otherwise tell what `m` actually is.
+fn lookup_exn_kind(name: String) -> Option[Type] {
+  if name == "__exn_kind" {
+    Some(CtFn(misc_no_params(), CtString, None))
+  }
+  else None
+}
+
 fn lookup_len(name: String) -> Option[Type] {
   if name == "__len" {
     Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
@@ -198,9 +218,12 @@ fn lookup_misc_group_a(name: String) -> Option[Type] {
           Some(t) => Some(t),
           None => match lookup_to_string(name) {
             Some(t) => Some(t),
-            None => match lookup_len(name) {
+            None => match lookup_exn_kind(name) {
               Some(t) => Some(t),
-              None => lookup_index(name)
+              None => match lookup_len(name) {
+                Some(t) => Some(t),
+                None => lookup_index(name)
+              }
             }
           }
         }

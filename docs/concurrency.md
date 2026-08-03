@@ -980,6 +980,22 @@ channel」「cancel された sibling」が観測可能な結果から静かな�
 `CtUnknown` に束縛しないようにして修正 (`core/types.vibe`)。同 fixture が
 そのまま regression lock になっている。
 
+**失敗メッセージの表現 (#1374)**: `TaskGroup::spawn` の runner と suspend
+lane の2つの Error boundary は、どれも payload を `fail_msg: String` に
+流し込む。ADR-0085 の runtime は kind を出さないので、これらの **erased な
+`with Error` arm は typed な `Exception[E]` の throw も捕まえ**、enum
+ポインタが String として保存されていた (計測: `String::length` が 2129)。
+#1374 の kind side channel が入ったので、3箇所とも `conc_exn_message` を
+通す:
+
+| payload の kind | `fail_msg` |
+| --- | --- |
+| `String` / `Int` / 解決不能 | `__to_string` の結果 (従来どおり) |
+| その他 | `<Kind>` (例: `Failed("<SendError>")`) |
+
+つまり **String を throw する既存コードの見え方は変わらない**。非 String
+payload の値そのものはまだ出せない (kind ごとの formatting が要る)。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開

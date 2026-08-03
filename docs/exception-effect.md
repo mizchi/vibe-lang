@@ -297,21 +297,62 @@ enum payload を throw するようになり、既存の String 専用 sink 2 �
 | entry boundary (`lc_wrap_entry_error_boundary`) | payload を packed `(ptr<<32)\|len` として解釈し、**data segment がまるごと stderr に出た** |
 | `TaskGroup::spawn` の child runner (`cell.fail_msg = msg`) | `TaskError::Failed(m)` の `String::length(m)` が **2129** (生ポインタ) |
 
-**緩和 (入っているもの)**: どちらも payload を `__to_string` 経由にした。
+**第一段の緩和 (PR #1375)**: どちらも payload を `__to_string` 経由にした。
 ADR-0058 の int/string 判定 (`64 <= ptr && ptr + len <= memory_size`) は
 本物の文字列に対しては恒等で、それ以外は有界な10進数を返すので、任意メモリを
-読むことはなくなる。ただし**非 String payload の中身は失われる**。
-regression lock: `fixtures/err_entry_boundary_typed_payload.vibe` +
-compiler_gate 44c、`@vibex/concurrent` の
-"a typed child throw yields a bounded fail message" テスト。
+読むことはなくなった。ただし**非 String payload は「メッセージに見える裸の
+10進数」になり、中身は失われた**。
 
-**本来の修正**は runtime に kind discriminator を持たせること
-(**#1374**)。payload の表現を変えずに済む案として、`throw(v)` を
-`__exn_kind_set(<kind id>); perform Error::Throw(v)` へ lower し、handler 側が
-`__exn_kind_get()` を読めるようにする side channel がある — checker は throw
-site で `typeof(v)` を既に解決している (`exception_throw_label_for_kind`) ので
-静的情報は揃っている。#1324 の後続 slice は throw payload の型を String 以外へ
-大きく広げるので、その前に決めること。
+### kind side channel (#1374、2026-08-03)
+
+**入っている修正**: throw site が payload の静的型名を1スロットの module cell
+に記録し、handler 側が `__exn_kind()` で読む。**payload の表現は一切変えない**
+ので、既存の handler はすべてそのまま動く — 純粋に additive。
+
+| 層 | 実装 |
+| --- | --- |
+| 書き込み | `desugar_trait_dicts` が `perform <Exception>::Throw(v)` の直前に `Array::set(__exn_kind_cell, 0, "<Kind>")` を挿入する。kind は codegen 側の `infer_arg_type_name` で解決し、解決できなければ `""` を**必ず**書く (前の throw の kind が残らないように) |
+| 読み出し | `__exn_kind() -> String` は checker-only intrinsic (`checker/builtins_misc.vibe` の `lookup_exn_kind`)。desugar が cell 読み出しへ lower するので、どちらの backend にも新しい emission はない |
+| cell | `let __exn_kind_cell = [""]` を必要な program にだけ append する。module-level let の「一度だけ初期化・同一 identity・mutation が見える」性質は `fixtures/module_let_memo_test.vibe` が既に pin している |
+
+**なぜ wasm global や新しい builtin ではないか**: cell を普通の vibe AST にして
+おけば、linear / wasm-gc の2つの backend で実装が分岐しない。新しい global の
+index 割り当ても memory layout の変更も要らない。
+
+**なぜ1スロットで足りるか**。書き込みから handler の読み出しまでの区間は単一の
+abortive unwind であり、その中で他のゲストコードは走らない:
+
+- `Error` は非 resumable (#640) なので、throw site へ戻ることはなく、書き込みの
+  後に handler 以外のコードが挟まらない。
+- ADR-0076 の task pump が task に再入するのは suspend 点だけで、unwind 途中では
+  ない。兄弟 task が書き込みを割り込ませることはできない。
+- handler arm の中の入れ子 throw は、内側が先に書き内側の handler が先に読む —
+  innermost-wins という正しい順序になる。
+
+payload を保存して**後で** kind を見る handler はこの区間の外なので、`__exn_kind()`
+は arm の中で読むこと。2つの sink はどちらもそうしている。
+
+**sink の挙動**:
+
+| kind | 出力 | 理由 |
+| --- | --- | --- |
+| `String` / `Int` | `__to_string` の結果 (#1374 以前と同一) | ADR-0058 の判定が忠実 |
+| `""` (解決不能) | `__to_string` の結果 | String かもしれない。#1375 の保守的な挙動を維持 |
+| その他 | `<Kind>` | bytes がテキストではない。メッセージに見える10進数を出さない |
+
+**まだ残っている限界**: 非 String payload の**値**は依然として出せない。それには
+kind ごとの formatting (derive された `to_string` への dispatch) が要る。kind
+名までが side channel の守備範囲。
+
+regression lock:
+
+- `fixtures/exn_kind_side_channel_test.vibe` — enum / String / Int / struct /
+  解決不能 / 入れ子 / 連続 throw の kind を直接 assert する
+- `fixtures/err_entry_boundary_typed_payload.vibe` (`<Boom>`) と
+  `fixtures/err_entry_boundary_string_payload.vibe` (verbatim) の対 +
+  compiler_gate 44c
+- `@vibex/concurrent` の "a typed child throw is reported by kind"
+  (`Failed("<SendError>")`) と suspend lane の settle leg 版
 
 ## #1324 (Result 削除) との統合順序
 

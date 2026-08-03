@@ -377,6 +377,35 @@ fn conc_clear_direct_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
   any
 }
 
+/// #1374: render the payload of an exception caught by an ERASED `with Error`
+/// arm, given the kind `__exn_kind()` reports for the throw now unwinding.
+///
+/// ADR-0085's runtime carries ONE abortive tag with no kind, and the erased
+/// `Error` spelling is compatible with every kind, so such an arm also catches
+/// every typed `Exception[E]` and its binder's static type is unknown. Every
+/// caller here funnels the payload into `fail_msg: String`, so before the kind
+/// side channel existed there was nothing to check:
+///
+///   String / Int  `rendered` (i.e. `__to_string`) is FAITHFUL -- ADR-0058's
+///                 int/string discrimination is the identity on a real string
+///                 and renders an int as its decimal. Unchanged text.
+///   ""            the throw site could not resolve a type name. Keep the
+///                 rendered form: bounded, and possibly the real message.
+///   otherwise     the payload's bytes are not text. Name the KIND rather than
+///                 a decimal that reads like a message. #1372's measured
+///                 failure was `String::length` == 2129 (a raw pointer) on a
+///                 `Closed` payload; it is now `<Closed>`.
+///
+/// Call it INSIDE the arm: the cell holds the kind of the throw currently
+/// unwinding, and the next throw overwrites it.
+fn conc_exn_message(rendered: String, kind: String) -> String {
+  if kind == "" || kind == "String" || kind == "Int" {
+    rendered
+  } else {
+    "<\{kind}>"
+  }
+}
+
 /// Fail-fast entry for the SUSPENDABLE lane (mirrors spawn's runner-side
 /// Error conversion): mark the cell Failed, record the group's first
 /// observed failure, and auto-cancel parked adopted siblings — their
@@ -618,18 +647,9 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
       conc_notify_waiters(cell)
     } with Error {
       Throw(payload) => {
-        // #1372 review (Codex P1): the ERASED `with Error` arm catches every
-        // typed `Exception[E]` too -- ADR-0085's runtime carries a single
-        // abortive tag with NO kind -- so `payload` is not necessarily a
-        // String. Storing it straight into `fail_msg: String` reinterpreted
-        // an enum pointer as a packed `(ptr<<32)|len` string: a child whose
-        // `Sender::send` threw `Closed` produced a `TaskError::Failed(..)`
-        // whose `String::length` was 2129 (the raw pointer). `__to_string`
-        // (via interpolation) applies ADR-0058's int/string discrimination,
-        // which is the identity on real strings and renders anything else as
-        // a bounded decimal instead of reading arbitrary memory. Recovering
-        // the real payload needs a runtime kind tag -- see #1374.
-        let msg = "\{payload}"
+        // #1372 review (Codex P1) / #1374: `payload` is not necessarily a
+        // String -- see conc_exn_message.
+        let msg = conc_exn_message("\{payload}", __exn_kind())
         cell.status = 3
         cell.fail_msg = msg
         conc_notify_waiters(cell)
@@ -1028,7 +1048,8 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
       // Error escaping the first (settle) leg: Failed conversion +
       // fail-fast, exactly like spawn's runner. The Async handle is
       // CPS-lowered (no exceptions), so only real throws land here.
-      conc_fail_cell(n, h.cell, msg)
+      // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
+      conc_fail_cell(n, h.cell, conc_exn_message("\{msg}", __exn_kind()))
       SParked
     }
   }
@@ -1118,7 +1139,8 @@ export fn TaskHandle::park_kind[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> T
       k(rv)
     } with Error {
       Throw(msg) => {
-        conc_fail_cell(grp, cell, msg)
+        // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
+        conc_fail_cell(grp, cell, conc_exn_message("\{msg}", __exn_kind()))
         SParked
       }
     }
@@ -1462,9 +1484,13 @@ fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
 /// suspend_test.vibe's "CPS-split callee results" section). Migrating
 /// these three to `Exception[E]` is now a plain #1324 slice rather than
 /// something blocked on the lowering; it is not done here because these
-/// carry ENUM payloads (`Closed`, `Cancelled`), which the erased
-/// `with Error` handler in the task runner still reads as a String
-/// (#1374).
+/// carry ENUM payloads (`Closed`, `Cancelled`) and the erased `with Error`
+/// handler in the task runner cannot carry an enum through `fail_msg:
+/// String`. #1374 stopped that from reading as a raw pointer, but the kind
+/// channel records the payload's TYPE, so `Closed` arrives as
+/// `<SendError>`: still lossy, and the VARIANT -- the thing a caller
+/// switches on -- is gone. Recovering it needs the payload itself to
+/// survive the runner, not just its kind.
 export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { Async } {
   let c = s.ch
   if chan_closed(c) {

@@ -783,6 +783,158 @@ export fn inject_prelude_result(stmts: Array[Stmt]) -> Unit {
   }
 }
 
+//# #1374: the runtime exception-kind side channel
+//
+// ADR-0085 lowers EVERY exception spelling to one abortive Wasm tag with no
+// kind discriminator, and the erased `Error` spelling is deliberately
+// compatible with every kind (that is what kept #1344 additive over #786's
+// suberror throws). So `handle { .. } with Error { Throw(m) => .. }` also
+// catches a typed `Exception[E]` throw, and `m`'s static type there is
+// `CtUnknown` -- using it as a String type-checks, then misreads an enum
+// pointer as a packed `(ptr<<32)|len` string. Measured on #1372: a whole data
+// segment written to stderr, and a `String::length` of 2129 on a `Closed`
+// payload. PR #1375 stopped the arbitrary-memory read by routing both sinks
+// through `__to_string`; it could not tell the two cases apart, so a non-String
+// payload printed as a bare decimal.
+//
+// The channel: a one-slot module-level cell, written immediately before every
+// `perform <Exception>::Throw(v)` with the payload's statically resolved type
+// name, read back by `__exn_kind()`. The payload's representation is untouched,
+// so every existing handler keeps working unchanged -- purely additive.
+//
+// Why a module-level `let` array rather than a new wasm global or a new pair of
+// builtins: the cell is ordinary vibe AST, so it rides the already-verified
+// module-let path (initialized once, one shared identity, mutations visible
+// across accesses -- fixtures/module_let_memo_test.vibe pins exactly these
+// three properties) and needs no new emission in EITHER backend, so the linear
+// and wasm-gc lanes cannot desynchronize on it.
+//
+// Why ONE slot is enough. The window between the write and the handler's read
+// is a single abortive unwind, and nothing else runs inside it:
+//   - `Error` is non-resumable (#640), so the unwind never returns to the throw
+//     site and no code after the write executes before the handler.
+//   - the ADR-0076 task pump re-enters a task only at a suspend point, never
+//     mid-unwind, so a sibling task cannot interleave a write.
+//   - a nested throw (a throw inside a handler arm) writes before it unwinds
+//     and is read by ITS handler first, which is the correct innermost-wins
+//     order.
+// A handler that stores the payload and inspects the kind LATER is outside that
+// window and must read `__exn_kind()` in the arm itself. Both sinks below do.
+
+fn exn_kind_cell_name() -> String {
+  "__exn_kind_cell"
+}
+
+/// The `[""]`-shaped one-slot cell, appended to the program on demand.
+fn exn_kind_cell_stmt() -> Stmt {
+  SLet(false, false, exn_kind_cell_name(), None, EArray([
+    EString("")
+  ]))
+}
+
+/// What `__exn_kind()` lowers to. Exported because the compiler-synthesized
+/// entry boundary (lc_wrap_entry_error_boundary) is built AFTER this pass and
+/// so has to spell the lowered form itself.
+export fn exn_kind_read_expr() -> Expr {
+  ECall(EIdent("Array::get", -1), [
+    EIdent(exn_kind_cell_name(), -1),
+    EInt(0)
+  ], -1)
+}
+
+fn exn_kind_write_expr(kind: String) -> Expr {
+  ECall(EIdent("Array::set", -1), [
+    EIdent(exn_kind_cell_name(), -1),
+    EInt(0),
+    EString(kind)
+  ], -1)
+}
+
+/// Append the cell unless the program already declares it. Idempotent, and
+/// callable from any pass that needs the cell to exist (the entry boundary
+/// synthesizes a reader after this pass has already run).
+export fn ensure_exn_kind_cell(stmts: Array[Stmt]) -> Unit {
+  if exn_kind_cell_present(stmts) {
+    ()
+  } else {
+    Array::push(stmts, exn_kind_cell_stmt())
+  }
+}
+
+fn exn_kind_cell_present(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if n == exn_kind_cell_name() {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Pass state for the rewrite below, reset at every `desugar_trait_dicts`
+/// entry (the same discipline `set_throw_kind_table` uses in the checker, and
+/// for the same reason -- state must never survive into the next program).
+///
+/// `[0]` = suppressed: the cell is already declared, so an earlier run of this
+/// pass on the same program already wrapped every throw. Re-wrapping would nest
+/// a second, redundant write inside the first one's `ESeq`. `[1]` = used: at
+/// least one throw was wrapped or one `__exn_kind()` was lowered, so the cell
+/// has to be appended once the rewrite loop finishes.
+let dtd_exn_kind_state = [
+  0,
+  0
+]
+
+fn exn_kind_suppressed() -> Bool {
+  Array::get(dtd_exn_kind_state, 0) == 1
+}
+
+fn exn_kind_mark_used() -> Unit {
+  Array::set(dtd_exn_kind_state, 1, 1)
+}
+
+/// `perform <Error|Exception[K]>::Throw(payload)` -- the ONLY shape `throw(x)`
+/// lowers to (#640 Stage 2), and the only one that reaches the abortive tag.
+fn is_perform_throw_shape(callee: Expr, args: Array[Expr]) -> Bool {
+  let head = match callee {
+    EIdent(n, _) => n == "perform",
+    _ => false
+  }
+  if head && Array::length(args) == 1 {
+    match Array::get(args, 0) {
+      ECall(op_callee, oargs, _) => match op_callee {
+        EIdent(op_n, _) => is_exception_throw_operation(op_n) && Array::length(oargs) == 1,
+        _ => false
+      },
+      _ => false
+    }
+  } else {
+    false
+  }
+}
+
+/// A nullary `__exn_kind()` call.
+fn is_exception_kind_read(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(n, _) => n == "__exn_kind" && Array::length(args) == 0,
+    _ => false
+  }
+}
+
+fn perform_throw_payload(args: Array[Expr]) -> Expr {
+  match Array::get(args, 0) {
+    ECall(_, oargs, _) => Array::get(oargs, 0),
+    _ => EUnit
+  }
+}
+
 /// Collect each trait's declared supertraits (`trait B: A + ...`), for all
 /// traits (method-bearing or not), so a method-bearing trait can inherit its
 /// supertraits' methods.
@@ -3011,6 +3163,36 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         let val = Array::get(args, 0)
         let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
         lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      } else if !exn_kind_suppressed() && is_exception_kind_read(callee, args) {
+        // #1374: `__exn_kind()` is a checker-only intrinsic (typed
+        // `() -> String` in checker/builtins_misc.vibe, no wasm body) -- it
+        // exists so a handler arm can spell the read, and it is gone by the
+        // time either backend sees the program.
+        exn_kind_mark_used()
+        exn_kind_read_expr()
+      } else if !exn_kind_suppressed() && is_perform_throw_shape(callee, args) {
+        // #1374: record the payload's static type name for the handler. The
+        // write is UNCONDITIONAL, including the empty name for a payload this
+        // pass cannot resolve -- leaving the slot alone there would let an
+        // earlier throw's kind be read as this one's.
+        //
+        // The resolver is codegen's own `infer_arg_type_name`, not the
+        // checker's `throw_payload_kind`: both answer the same question from
+        // the same syntax, but the checker's table is TypeEnv-derived state
+        // that does not reach codegen, and this pass already carries
+        // `var_types`/`fn_returns` for every expression it visits. They can
+        // disagree only by one being MORE conservative (an unresolved name is
+        // ""), which costs a kind here and a row precision there, never
+        // soundness.
+        let kind = match infer_arg_type_name(perform_throw_payload(args), struct_sets, var_types, fn_returns) {
+          Some(k) => k,
+          None => ""
+        }
+        let rwargs = for a in args {
+          rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        }
+        exn_kind_mark_used()
+        ESeq(exn_kind_write_expr(kind), ECall(callee, rwargs, off))
       } else {
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
@@ -7694,10 +7876,26 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with { Error } {
   let gens = build_gens(stmts, traits, gimpl_types)
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
   let toplevel_vars = collect_toplevel_anon_records(stmts, struct_sets)
+  // #1374: reset the exception-kind pass state. An already-declared cell means
+  // an earlier run of this pass on this same program already wrapped every
+  // throw, so the rewrite below stays off.
+  Array::set(dtd_exn_kind_state, 0, if exn_kind_cell_present(stmts) {
+    1
+  } else {
+    0
+  })
+  Array::set(dtd_exn_kind_state, 1, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns, toplevel_vars))
     i = i + 1
+  }
+  // #1374: append the cell only for a program that actually reads or writes it,
+  // so a throw-free program's output is unchanged.
+  if Array::get(dtd_exn_kind_state, 1) == 1 {
+    ensure_exn_kind_cell(stmts)
+  } else {
+    ()
   }
   // Witness dict structs are only needed when method-bearing traits exist.
   if Array::length(traits_raw) == 0 {

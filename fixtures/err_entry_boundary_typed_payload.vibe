@@ -8,14 +8,20 @@
 // So the payload bound here is an ENUM, not a String. Writing it straight to
 // `Stderr::write_stream` decoded the enum pointer as a packed `(ptr<<32)|len`
 // string and printed the whole data segment (measured: ~1KB of unrelated
-// identifier bytes for a `TaskError` escaping `main`). The boundary now routes
-// the payload through `__to_string`, whose ADR-0058 int/string discrimination
-// is the identity on real strings and renders anything else as a bounded
-// decimal.
+// identifier bytes for a `TaskError` escaping `main`). PR #1375 routed it
+// through `__to_string` instead -- bounded, but it printed a bare decimal
+// with nothing to say it was not the message.
 //
-// Pinned behaviour: exit 1, one short `vibe: uncaught error: <n>` line on
-// stderr -- NOT a memory dump. Printing the real payload of a non-String kind
-// needs a runtime kind tag (#1374).
+// #1374 gave the throw site a kind side channel, so the boundary can now name
+// what escaped. Pinned behaviour: exit 1, exactly
+//
+//   vibe: uncaught error: <Boom>
+//
+// on stderr. The paired err_entry_boundary_string_payload.vibe pins the other
+// side: a String payload still prints verbatim.
+//
+// Printing the VALUE of a non-String payload is still out of reach -- that
+// needs per-kind formatting, not just a kind name.
 enum Boom {
   Bang(Int)
 }
