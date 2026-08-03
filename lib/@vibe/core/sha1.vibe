@@ -82,6 +82,19 @@ fn push_word_bytes(b: Bytes, w: Int) -> Unit {
   Bytes::push(b, w&255)
 }
 
+/// Overwrite the 4 big-endian bytes of word index `idx` (byte offset
+/// `idx * 4`) in an already-sized `Bytes` buffer. Unlike
+/// `push_word_bytes`, this never grows the buffer — used to mutate the
+/// per-message schedule/output buffers in place across blocks instead
+/// of allocating (and `push`-growing) a fresh `Bytes` per block.
+fn set_word_bytes(b: Bytes, idx: Int, w: Int) -> Unit {
+  let offset = idx * 4
+  Bytes::set(b, offset, ushr(w, 24)&255)
+  Bytes::set(b, offset + 1, ushr(w, 16)&255)
+  Bytes::set(b, offset + 2, ushr(w, 8)&255)
+  Bytes::set(b, offset + 3, w&255)
+}
+
 /// Pad the message to a multiple of 64 bytes per the SHA-1 spec.
 /// Builds via `StringBuilder` so the zero-fill loop doesn't re-copy
 /// the accumulator each iteration — O(N²) → O(N) on wasm-gc.
@@ -127,43 +140,42 @@ fn word_to_hex(w: Int) -> String {
   StringBuilder::freeze(sb)
 }
 
-/// Build the 320-byte (80-word) SHA-1 schedule into a `Bytes` buffer.
-/// Bytes is i8-per-cell so each codepoint stays within a byte (no
-/// 32-bit truncation problem the `Array[Int]` route hits). Random
-/// read access via `read_word_bytes` is O(1); each `push_word_bytes`
-/// is amortised O(1) — so the 80-iteration expand loop is O(N) instead
-/// of the original String-accumulator's O(N²).
-fn build_schedule(msg: String, block_start: Int) -> Bytes {
-  let arr = Bytes::new()
+/// Fill the 320-byte (80-word) SHA-1 schedule for one block into `arr`,
+/// a buffer pre-sized once for the whole message and reused across
+/// blocks (see `sha1`) — writes go through `set_word_bytes` (in-place,
+/// no growth) instead of `push_word_bytes` (which would `Bytes::new` +
+/// grow a fresh buffer on every block). Bytes is i8-per-cell so each
+/// codepoint stays within a byte (no 32-bit truncation problem the
+/// `Array[Int]` route hits). Random read access via `read_word_bytes`
+/// is O(1), so the 80-iteration expand loop is O(N) per block, O(1)
+/// extra allocation for the whole message.
+fn build_schedule(msg: String, block_start: Int, arr: Bytes) -> Unit {
   let mut i = 0
   while i < 16 {
     let w = read_word(msg, block_start / 4 + i)
-    push_word_bytes(arr, w)
+    set_word_bytes(arr, i, w)
     i = i + 1
   }
   while i < 80 {
     let w = rotl(read_word_bytes(arr, i - 3)^read_word_bytes(arr, i - 8)^read_word_bytes(arr, i - 14)^read_word_bytes(arr, i - 16), 1)
-    push_word_bytes(arr, w)
+    set_word_bytes(arr, i, w)
     i = i + 1
   }
-  arr
 }
 
 /// Drive the 80 SHA-1 rounds. `w` is the schedule as `Bytes` (see
 /// `build_schedule`) so each word read is `read_word_bytes(w, i)` —
-/// O(1) lookup, no per-call allocation. The result is returned as a
-/// 5-element `Bytes` buffer (20 bytes) via the same compact write
-/// path the schedule uses, dodging a second tower of `String::concat`
-/// calls.
-fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
+/// O(1) lookup, no per-call allocation. The final `a..e` state is
+/// written into `out`, a 5-word `Bytes` buffer pre-sized once for the
+/// whole message and reused across blocks (see `sha1`), instead of
+/// allocating a fresh `Bytes` per block.
+fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes, out: Bytes) -> Unit {
   if i >= 80 {
-    let out = Bytes::new()
-    push_word_bytes(out, a)
-    push_word_bytes(out, b)
-    push_word_bytes(out, c)
-    push_word_bytes(out, d)
-    push_word_bytes(out, e)
-    out
+    set_word_bytes(out, 0, a)
+    set_word_bytes(out, 1, b)
+    set_word_bytes(out, 2, c)
+    set_word_bytes(out, 3, d)
+    set_word_bytes(out, 4, e)
   } else {
     let f = if i < 20 {
       (b&c)^((b^mask32)&d)
@@ -187,11 +199,11 @@ fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> B
       k3
     }
     let temp = add32(add32(add32(add32(rotl(a, 5), f), e), k), read_word_bytes(w, i))
-    process_rounds(i + 1, temp, a, rotl(b, 30), c, d, w)
+    process_rounds(i + 1, temp, a, rotl(b, 30), c, d, w, out)
   }
 }
 
-fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
+fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int, schedule: Bytes, result: Bytes) -> String {
   if block_idx >= num_blocks {
     // Final 40-char hex digest assembled through a single StringBuilder
     // freeze (5 word_to_hex pushes), not a tower of String::concat.
@@ -203,19 +215,37 @@ fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int
     StringBuilder::push(sb, word_to_hex(h4))
     StringBuilder::freeze(sb)
   } else {
-    let w = build_schedule(msg, block_idx * 64)
-    let result = process_rounds(0, h0, h1, h2, h3, h4, w)
+    build_schedule(msg, block_idx * 64, schedule)
+    process_rounds(0, h0, h1, h2, h3, h4, schedule, result)
     let new_h0 = add32(h0, read_word_bytes(result, 0))
     let new_h1 = add32(h1, read_word_bytes(result, 1))
     let new_h2 = add32(h2, read_word_bytes(result, 2))
     let new_h3 = add32(h3, read_word_bytes(result, 3))
     let new_h4 = add32(h4, read_word_bytes(result, 4))
-    process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4)
+    process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4, schedule, result)
+  }
+}
+
+/// Push `n` zero words (`n * 4` zero bytes) to grow a fresh `Bytes`
+/// buffer to its final size exactly once. Used to pre-size the
+/// per-message `schedule` (80 words) and `result` (5 words) buffers
+/// below so `process_blocks` can mutate them in place across every
+/// block via `set_word_bytes` instead of allocating (and `push`-growing)
+/// a new `Bytes` per block.
+fn push_zero_words(b: Bytes, n: Int) -> Unit {
+  let mut i = 0
+  while i < n {
+    push_word_bytes(b, 0)
+    i = i + 1
   }
 }
 
 export fn sha1(msg: String) -> String {
   let padded = pad_message(msg)
   let num_blocks = (padded |> String::length()) / 64
-  process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init)
+  let schedule = Bytes::new()
+  push_zero_words(schedule, 80)
+  let result = Bytes::new()
+  push_zero_words(result, 5)
+  process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init, schedule, result)
 }
