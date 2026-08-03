@@ -75,6 +75,13 @@ VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3ab/3 persistent ingestion stamp observed-check equivalence oracle"
 node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 
+# 3ac. Experimental production typing reuse: only the persistent value-binding
+# transport environment can authorize this sidecar alias; trace interfaces are
+# explicitly excluded. The isolated oracle proves cold/warm, private/public,
+# output/diagnostic parity, and malformed-alias fallback.
+echo "[compiler-gate] 3ac/3 experimental typing dependency-env reuse oracle"
+VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that

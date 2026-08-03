@@ -29,6 +29,7 @@ import @vibe/compiler/runtime {
   run_publish_env_cache_dir,
   set_collect_module_diagnostics,
   set_dep_order_seed,
+  set_experimental_typing_dependency_env_reuse_enabled,
   set_incremental_interface_trace_enabled,
   set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
@@ -745,6 +746,20 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       let telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
       let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
       let invalidation_trace_nonce = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+      let experimental_typing_dependency_env_reuse = Env::get("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE")
+      if experimental_typing_dependency_env_reuse != "" && experimental_typing_dependency_env_reuse != "1" {
+        throw("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE must be exactly 1 when enabled")
+      } else {
+        ()
+      }
+      // The invalidation trace is deliberately observation-only and has its
+      // own interface identity. Keep this experimental production reuse lane
+      // separate so no trace schema/value becomes a cache key by accident.
+      if experimental_typing_dependency_env_reuse == "1" && invalidation_trace_out != "" {
+        throw("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE does not support VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+      } else {
+        ()
+      }
       if telemetry_out != "" {
         // Never leave a previous successful run looking like telemetry for a
         // failed check. The sidecar is published only after check_linked_file.
@@ -783,6 +798,7 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       // This has no cache behavior: it only makes the successful walk carry
       // a canonical public-interface observation into the requested sidecar.
       set_incremental_interface_trace_enabled(invalidation_trace_out != "")
+      set_experimental_typing_dependency_env_reuse_enabled(experimental_typing_dependency_env_reuse == "1")
       let _ = check_linked_file(input_path)
       if telemetry_out != "" {
         Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())

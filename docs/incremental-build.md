@@ -157,6 +157,30 @@ which is an explicit source migration for positional consumers. Persistent warm
 cache state still drops trait definitions, however, so a complete clean/warm
 trait artifact remains blocked; this is not a claim that artifacts are lossless.
 
+## Experimental dependency transport-environment typing reuse
+
+`VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE=1` enables a deliberately
+narrow check-only experiment. It aliases a source plus ordered direct-dependency
+**value-binding transport environment** identities to a previously checked
+TypeEnv, then validates and republishes that decoded environment under the
+ordinary conservative fingerprint. It does not use the trace-only
+`vibe-module-interface:v1` observation as a production key, and malformed,
+missing, or stale aliases—including a malformed, truncated, or absent referenced
+TypeEnv—fall back to a full check. The alias is incompatible with the
+incremental invalidation trace lane so the two identities cannot be confused.
+
+This experiment has a separate versioned eligibility-marker namespace keyed by
+the ordinary conservative module fingerprint; it does not alter the TypeEnv or
+sidecar formats. A marker is published only after that module's TypeEnv commit,
+and only when its parsed source contains no `STrait` or `SImpl` anywhere
+(including nested `SModule` bodies) and every direct dependency already has a
+validated marker for its own conservative fingerprint. Consequently a marker
+witnesses the same condition transitively. Alias publication and reuse require
+that witness chain; absent or malformed markers fail closed. Decoded TypeEnv
+contents must never be used to infer eligibility because that persistent codec
+transports flat value bindings only and drops trait/impl definitions. The gate
+remains disabled by default.
+
 ## Artifact boundaries
 
 A physical file is a useful ingestion/cache shard, but is not always an
