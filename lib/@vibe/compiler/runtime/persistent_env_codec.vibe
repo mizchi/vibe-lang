@@ -14,7 +14,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Type, TypeEnv, TypeExpr
+  Type, TypeEnv, TypeExpr, env_cache
 }
 
 //# Functions
@@ -509,23 +509,67 @@ fn parse_bindings(text: String, pos: Int) -> (Array[(String, Type)], Int) with {
   }
 }
 
-fn serialize_type_env(env: TypeEnv) -> String {
+fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
   match env {
-    EnvEmpty => "0",
-    EnvBind(name, ty, rest) => String::concat("B", String::concat(serialize_segment(name), String::concat(serialize_type(ty), serialize_type_env(rest)))),
+    EnvEmpty => StringBuilder::push(buf, "0"),
+    EnvBind(name, ty, rest) => {
+      StringBuilder::push(buf, "B")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_type(ty))
+      serialize_type_env_into(buf, rest)
+    },
     EnvTraitDef(name, supers, is_auto, methods, rest, params) => {
-      let auto = if is_auto {
+      StringBuilder::push(buf, "D")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_string_array(supers))
+      StringBuilder::push(buf, if is_auto {
         "1"
       } else {
         "0"
-      }
-      String::concat("D", String::concat(serialize_segment(name), String::concat(serialize_string_array(supers), String::concat(auto, String::concat(serialize_trait_methods(methods), String::concat(serialize_type_env(rest), serialize_string_array(params)))))))
+      })
+      StringBuilder::push(buf, serialize_trait_methods(methods))
+      serialize_type_env_into(buf, rest)
+      StringBuilder::push(buf, serialize_string_array(params))
     },
-    EnvTraitImpl(name, target, rest) => String::concat("I", String::concat(serialize_segment(name), String::concat(serialize_type(target), serialize_type_env(rest)))),
-    EnvTraitImplGen(name, params, bounds, target, rest) => String::concat("G", String::concat(serialize_segment(name), String::concat(serialize_string_array(params), String::concat(serialize_string_bounds(bounds), String::concat(serialize_type(target), serialize_type_env(rest)))))),
-    EnvFlat(bindings) => String::concat("L", serialize_bindings(bindings)),
-    EnvCached(names, types, rest) => String::concat("C", String::concat(serialize_string_array(names), String::concat(serialize_type_array(types), serialize_type_env(rest))))
+    EnvTraitImpl(name, target, rest) => {
+      StringBuilder::push(buf, "I")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_type(target))
+      serialize_type_env_into(buf, rest)
+    },
+    EnvTraitImplGen(name, params, bounds, target, rest) => {
+      StringBuilder::push(buf, "G")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, serialize_string_array(params))
+      StringBuilder::push(buf, serialize_string_bounds(bounds))
+      StringBuilder::push(buf, serialize_type(target))
+      serialize_type_env_into(buf, rest)
+    },
+    EnvFlat(bindings) => {
+      StringBuilder::push(buf, "L")
+      StringBuilder::push(buf, serialize_bindings(bindings))
+    },
+    EnvCached(_, _, rest) => {
+      // Cached arrays are acceleration state, not trusted semantics. Emit the
+      // canonical index rebuilt from the chain so cold-store bytes and decoded
+      // transport identities agree even if an in-memory cache is stale.
+      match env_cache(rest) {
+        EnvCached(names, types, _) => {
+          StringBuilder::push(buf, "C")
+          StringBuilder::push(buf, serialize_string_array(names))
+          StringBuilder::push(buf, serialize_type_array(types))
+          serialize_type_env_into(buf, rest)
+        },
+        _ => serialize_type_env_into(buf, rest)
+      }
+    }
   }
+}
+
+fn serialize_type_env(env: TypeEnv) -> String {
+  let buf = StringBuilder::new()
+  serialize_type_env_into(buf, env)
+  StringBuilder::freeze(buf)
 }
 
 fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) with { Error } {
@@ -585,7 +629,10 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
           throw("invalid persistent type env cached shape")
         } else {
           let (rest, next) = parse_persistent_type_env_payload(text, after_types)
-          (EnvCached(names, types, rest), next)
+          // Serialized cached arrays are untrusted acceleration data. Rebuild
+          // them from the decoded chain so malformed indexes cannot change
+          // lookup semantics.
+          (env_cache(rest), next)
         }
       },
       _ => throw("invalid persistent type env tag")
