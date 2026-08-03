@@ -164,7 +164,7 @@ narrow check-only experiment. It aliases a source plus ordered direct-dependency
 **v2 TypeEnv transport** identities to a previously checked TypeEnv, then
 validates and republishes that decoded environment under the
 ordinary conservative fingerprint. It does not use the trace-only
-`vibe-module-interface:v1` observation as a production key, and malformed,
+`vibe-module-interface:v2` observation as a production key, and malformed,
 missing, or stale aliases—including a malformed, truncated, or absent referenced
 TypeEnv—fall back to a full check. The alias is incompatible with the
 incremental invalidation trace lane so the two identities cannot be confused.
@@ -346,19 +346,27 @@ VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT=<sidecar.json>
 VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE=<unique-non-empty-run-id>
 ```
 
-The sidecar is schema version 5 and is written **only after a successful
+The sidecar is schema version 6 and is written **only after a successful
 check**. It includes the nonce, canonical module path, direct dependencies,
 `compact_string_fingerprint` of each module's **ingested source**, distinct
 version-tagged `implementation_fingerprint`, `interface_fingerprint`,
 `checked_env_fingerprint`, and `persistent_type_env_transport_fingerprint`,
 the observed current TypeDb decision (`rechecked`
 or `reused`), and aggregate work telemetry. The interface identity hashes a canonical
-`vibe-module-interface:v1` serialization of exported inferred value/function
+`vibe-module-interface:v2` serialization of exported inferred value/function
 types (including effects), exported public type/trait/effect/effectset
-declarations, and re-exports. Quantified variables are alpha-normalized;
-effect rows, bounds, derives, and effectset members are lexically
-sorted/deduplicated. Bodies, comments, private declarations, and ordinary
-imports are excluded. The compiler removes a pre-existing requested sidecar
+declarations, and re-exports. For exported traits, schema 6 serializes
+header-binder arity and positional association plus every method's positional
+generic-binder row, bounds, and signature. Method binders explicitly shadow
+trait-header binders; names outside either binder scope remain free/nominal
+names. Header and method alpha-renames therefore preserve identity, while
+binder arity, association, bounds, signatures, and free/nominal names do not.
+Duplicate trait-header binders, missing/surplus method-generic rows, and
+unbound/ambiguous bound ownership are encoded as deterministic
+malformed-provenance markers rather than omitted.
+Quantified variables are alpha-normalized; effect rows, bounds, derives, and
+effectset members are lexically sorted/deduplicated. Bodies, comments, private
+declarations, and ordinary imports are excluded. The compiler removes a pre-existing requested sidecar
 before the check, rejects a missing nonce, and refuses to publish a partial
 trace when an observation is missing. Callers must reject a missing sidecar or
 a nonce mismatch as stale/failed rather than reusing old data.
@@ -387,8 +395,12 @@ Schema 5 additionally observes `persistent_type_env_transport_fingerprint` as
 `compact_string_fingerprint(persistent_type_env_cache_text(env))`: the canonical
 complete persistent TypeEnv v2 transport bytes for the checked or reused
 environment. It covers transport state omitted by the value-only checked-env
-observation, including trait and impl state. It is TypeEnv transport only—not a
-`CheckedProgram`, typed IR, exported interface, cache key, or reuse decision.
+observation, including trait and impl state. Schema 6 changes only the
+trace-only interface observation: method-generic provenance is consumed from
+the source `STrait` to canonicalize trait methods, because it is still not
+retained in TypeEnv or the full checked artifact. It is TypeEnv transport
+only—not a `CheckedProgram`, typed IR, exported interface, cache key, or reuse
+decision.
 The token-stream, interface, checked-environment, and transport reconstructions
 are not charged to the existing TypeDb `parse_operations` counter, so the `rechecked`/`reused`
 report remains the current conservative cache-path observation rather than a
@@ -410,10 +422,15 @@ compares source, token-stream implementation, interface, checked-value-env, and
 persistent-TypeEnv-transport identities module by module; TypeDb decisions are
 deliberately excluded from that parity comparison. A private-body regression
 proves that a private body can change token-stream identity while leaving
-checked-value-env identity unchanged. A trait/impl regression proves an
-impl-bound edit changes the complete persistent TypeEnv v2 transport observation
-while leaving the value-only checked-env observation unchanged; it makes no
-exported-interface stability assertion.
+checked-value-env identity unchanged. Trait-header/method-generic cases prove
+clean/warm parity, alpha-rename invariance under method-over-header scope, and
+identity changes for binder association, arity, bounds, signatures, and free
+nominal names. The method generic rows are deliberately read from source
+`STrait` for this observation only; they remain absent from TypeEnv and the full
+checked artifact. A trait/impl regression proves an impl-bound edit changes the
+complete persistent TypeEnv v2 transport observation while leaving the
+value-only checked-env observation unchanged; it makes no exported-interface
+stability assertion.
 An external
 executable shadow planner treats source changes as ingestion telemetry, derives
 owner typing invalidation from canonical token-stream implementation changes

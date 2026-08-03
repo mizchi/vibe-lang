@@ -789,6 +789,164 @@ fn interface_lookup_type_param(params: Array[String], name: String) -> String {
   result
 }
 
+/// Resolve a trait-method signature name with explicit lexical scope.
+/// Method binders shadow trait-header binders; names outside both scopes stay
+/// free (rather than being accidentally alpha-normalized as a binder).
+fn interface_lookup_trait_type_param(header_params: Array[String], method_params: Array[String], name: String) -> String {
+  let mut i = 0
+  let mut method_result = String::concat("free:", name)
+  let mut found_method = false
+  while i < Array::length(method_params) && !found_method {
+    if Array::get(method_params, i) == name {
+      method_result = String::concat("method:", __to_string(i))
+      found_method = true
+    } else {
+      i = i + 1
+    }
+  }
+  if found_method {
+    method_result
+  } else {
+    let mut j = 0
+    let mut header_result = String::concat("free:", name)
+    let mut found_header = false
+    while j < Array::length(header_params) && !found_header {
+      if Array::get(header_params, j) == name {
+        header_result = String::concat("header:", __to_string(j))
+        found_header = true
+      } else {
+        j = j + 1
+      }
+    }
+    header_result
+  }
+}
+
+/// Canonicalize a trait method signature. Unlike ordinary declaration
+/// signatures, this has nested binders: method generics take precedence over
+/// the surrounding trait-header binders. This observation consumes both
+/// binder lists from source `STrait`; method generic provenance is not retained
+/// by TypeEnv or the full checked artifact.
+fn interface_canonical_trait_method_type_expr(ty: TypeExpr, header_params: Array[String], method_params: Array[String]) -> String {
+  let rec exprs: (Array[TypeExpr], Array[String], Array[String]) -> String = (items, header_scope, method_scope) -> {
+    let out = StringBuilder::new()
+    StringBuilder::push(out, "[")
+    let mut i = 0
+    while i < Array::length(items) {
+      StringBuilder::push(out, interface_segment(interface_canonical_trait_method_type_expr(Array::get(items, i), header_scope, method_scope)))
+      i = i + 1
+    }
+    StringBuilder::push(out, "]")
+    StringBuilder::freeze(out)
+  }
+  match ty {
+    TyName(name) => String::concat("name:", interface_segment(interface_lookup_trait_type_param(header_params, method_params, name))),
+    TyApp(name, args) => String::concat("app:", String::concat(interface_segment(interface_lookup_trait_type_param(header_params, method_params, name)), exprs(args, header_params, method_params))),
+    TyFn(args, ret, effects) => String::concat("fn:", String::concat(exprs(args, header_params, method_params), String::concat(interface_segment(interface_canonical_trait_method_type_expr(ret, header_params, method_params)), interface_effect_set(effects)))),
+    TyTuple(items) => String::concat("tuple:", exprs(items, header_params, method_params)),
+    TyUnit => "unit"
+  }
+}
+
+fn interface_trait_header_malformed_rows(header_params: Array[String]) -> Array[String] {
+  let rows = array_empty()
+  let mut p = 0
+  while p < Array::length(header_params) {
+    let param_name = Array::get(header_params, p)
+    let mut matches = 0
+    let mut p2 = 0
+    while p2 < Array::length(header_params) {
+      if Array::get(header_params, p2) == param_name {
+        matches = matches + 1
+      } else {
+        ()
+      }
+      p2 = p2 + 1
+    }
+    if matches > 1 {
+      // Encode the binder position, not its source spelling, so malformed
+      // duplicate groups remain alpha-invariant while staying distinct from
+      // a valid header of the same arity.
+      Array::push(rows, String::concat("ambiguous-header-param:", __to_string(p)))
+    } else {
+      ()
+    }
+    p = p + 1
+  }
+  rows
+}
+
+fn interface_trait_generic_malformed_rows(method_params: Array[String], generic_bounds: Array[(String, Array[String])]) -> Array[String] {
+  let rows = array_empty()
+  let mut p = 0
+  while p < Array::length(method_params) {
+    let param_name = Array::get(method_params, p)
+    let mut matches = 0
+    let mut p2 = 0
+    while p2 < Array::length(method_params) {
+      if Array::get(method_params, p2) == param_name {
+        matches = matches + 1
+      } else {
+        ()
+      }
+      p2 = p2 + 1
+    }
+    if matches > 1 {
+      Array::push(rows, String::concat("ambiguous-method-param:", interface_segment(param_name)))
+    } else {
+      ()
+    }
+    p = p + 1
+  }
+  let mut b = 0
+  while b < Array::length(generic_bounds) {
+    let (bound_name, bound_labels) = Array::get(generic_bounds, b)
+    let mut matches = 0
+    let mut p3 = 0
+    while p3 < Array::length(method_params) {
+      if Array::get(method_params, p3) == bound_name {
+        matches = matches + 1
+      } else {
+        ()
+      }
+      p3 = p3 + 1
+    }
+    if matches == 0 {
+      Array::push(rows, String::concat("unbound-bound:", String::concat(interface_segment(bound_name), interface_bracketed(interface_sorted_unique(bound_labels), ","))))
+    } else if matches > 1 {
+      Array::push(rows, String::concat("ambiguous-bound:", String::concat(interface_segment(bound_name), interface_bracketed(interface_sorted_unique(bound_labels), ","))))
+    } else {
+      ()
+    }
+    b = b + 1
+  }
+  rows
+}
+
+fn interface_surplus_method_generic_rows(method_count: Int, method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> Array[String] {
+  let rows = array_empty()
+  let mut surplus = method_count
+  while surplus < Array::length(method_gens) {
+    let (surplus_name, surplus_params, surplus_bounds) = Array::get(method_gens, surplus)
+    let raw_params = array_empty()
+    let mut sp = 0
+    while sp < Array::length(surplus_params) {
+      Array::push(raw_params, interface_segment(Array::get(surplus_params, sp)))
+      sp = sp + 1
+    }
+    let raw_bounds = array_empty()
+    let mut sb = 0
+    while sb < Array::length(surplus_bounds) {
+      let (bound_name, bound_labels) = Array::get(surplus_bounds, sb)
+      Array::push(raw_bounds, String::concat(interface_segment(bound_name), interface_bracketed(interface_sorted_unique(bound_labels), ",")))
+      sb = sb + 1
+    }
+    Array::push(rows, String::concat("surplus-method-generic:", String::concat(interface_segment(surplus_name), String::concat(interface_bracketed(raw_params, ";"), interface_bracketed(raw_bounds, ";")))))
+    surplus = surplus + 1
+  }
+  rows
+}
+
 fn interface_canonical_type_expr(ty: TypeExpr, params: Array[String]) -> String {
   let rec exprs: (Array[TypeExpr], Array[String]) -> String = (items, type_params) -> {
     let out = StringBuilder::new()
@@ -937,40 +1095,25 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
       } else {
         ()
       },
-      STrait(exported, name, supers, methods, method_gens, _) => if exported {
+      STrait(exported, name, supers, methods, method_gens, header_params) => if exported {
         let ms = array_empty()
         let mut j = 0
         while j < Array::length(methods) {
           let (mname, args, ret) = Array::get(methods, j)
-          // Method generics are stored separately from method signatures.
-          // Pair them by method name, then use their positional parameters to
-          // alpha-normalize TypeExpr names and serialize every bound.
-          let type_params = array_empty()
-          let generic_bounds: Array[(String, Array[String])] = [
-          ]
-          let mut g = 0
-          while g < Array::length(method_gens) {
-            let (generic_method, params, bounds) = Array::get(method_gens, g)
-            if generic_method == mname {
-              let mut p = 0
-              while p < Array::length(params) {
-                Array::push(type_params, Array::get(params, p))
-                p = p + 1
-              }
-              let mut b = 0
-              while b < Array::length(bounds) {
-                Array::push(generic_bounds, Array::get(bounds, b))
-                b = b + 1
-              }
-            } else {
-              ()
-            }
-            g = g + 1
+          // `parse_trait_methods` records a generic row for every method in
+          // source order, including an empty row. Pair positionally rather
+          // than by name so binder ownership remains observable even for
+          // duplicate method spellings in an otherwise accepted source AST.
+          let (generic_method, method_params, generic_bounds) = if j < Array::length(method_gens) {
+            Array::get(method_gens, j)
+          } else {
+            ("<missing-method-generic-provenance>", array_empty(), array_empty())
           }
           let bound_rows = array_empty()
+          let malformed_rows = interface_trait_generic_malformed_rows(method_params, generic_bounds)
           let mut p = 0
-          while p < Array::length(type_params) {
-            let param_name = Array::get(type_params, p)
+          while p < Array::length(method_params) {
+            let param_name = Array::get(method_params, p)
             let labels = array_empty()
             let mut b = 0
             while b < Array::length(generic_bounds) {
@@ -986,30 +1129,50 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
               }
               b = b + 1
             }
-            Array::push(bound_rows, String::concat(String::concat("p", __to_string(p)), String::concat("=", String::join(interface_sorted_unique(labels), ","))))
+            Array::push(bound_rows, String::concat(String::concat("method:", __to_string(p)), String::concat("=", String::join(interface_sorted_unique(labels), ","))))
             p = p + 1
           }
           let arg_lines = array_empty()
           let mut k = 0
           while k < Array::length(args) {
-            Array::push(arg_lines, interface_canonical_type_expr(Array::get(args, k), type_params))
+            Array::push(arg_lines, interface_canonical_trait_method_type_expr(Array::get(args, k), header_params, method_params))
             k = k + 1
           }
           let method_body = StringBuilder::new()
+          // Keep the source row's method spelling in the serialization. It is
+          // normally equal to mname, but retaining it makes malformed or
+          // manually-constructed AST binder association fail closed.
+          StringBuilder::push(method_body, "source-method")
+          StringBuilder::push(method_body, interface_segment(generic_method))
           StringBuilder::push(method_body, "gens")
           StringBuilder::push(method_body, interface_bracketed(bound_rows, ";"))
+          StringBuilder::push(method_body, "malformed")
+          StringBuilder::push(method_body, interface_bracketed(malformed_rows, ";"))
           StringBuilder::push(method_body, "args")
           StringBuilder::push(method_body, interface_bracketed(arg_lines, ";"))
           StringBuilder::push(method_body, "ret")
-          StringBuilder::push(method_body, interface_segment(interface_canonical_type_expr(ret, type_params)))
+          StringBuilder::push(method_body, interface_segment(interface_canonical_trait_method_type_expr(ret, header_params, method_params)))
           Array::push(ms, String::concat(interface_segment(mname), StringBuilder::freeze(method_body)))
           j = j + 1
         }
+        let surplus_method_rows = interface_surplus_method_generic_rows(Array::length(methods), method_gens)
+        let header_rows = array_empty()
+        let mut h = 0
+        while h < Array::length(header_params) {
+          Array::push(header_rows, String::concat("header:", __to_string(h)))
+          h = h + 1
+        }
         let trait_body = StringBuilder::new()
+        StringBuilder::push(trait_body, "header-gens")
+        StringBuilder::push(trait_body, interface_bracketed(header_rows, ";"))
+        StringBuilder::push(trait_body, "header-malformed")
+        StringBuilder::push(trait_body, interface_bracketed(interface_trait_header_malformed_rows(header_params), ";"))
         StringBuilder::push(trait_body, "super")
         StringBuilder::push(trait_body, interface_bracketed(interface_sorted_unique(supers), ","))
         StringBuilder::push(trait_body, "methods")
         StringBuilder::push(trait_body, interface_bracketed(ms, ";"))
+        StringBuilder::push(trait_body, "surplus-method-generics")
+        StringBuilder::push(trait_body, interface_bracketed(surplus_method_rows, ";"))
         Array::push(lines, interface_decl_line("trait:", name, StringBuilder::freeze(trait_body)))
       } else {
         ()
@@ -1067,10 +1230,16 @@ fn incremental_implementation_identity(source: String) -> String with { Error } 
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
+/// Test-only seam for malformed transparent AST provenance that source parsing
+/// cannot construct. Production interface serialization calls the same helpers.
+export fn incremental_trait_generic_provenance_markers_for_test(header_params: Array[String], method_params: Array[String], generic_bounds: Array[(String, Array[String])], method_count: Int, method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
+  String::concat(interface_bracketed(interface_trait_header_malformed_rows(header_params), ";"), String::concat(interface_bracketed(interface_trait_generic_malformed_rows(method_params, generic_bounds), ";"), interface_bracketed(interface_surplus_method_generic_rows(method_count, method_gens), ";")))
+}
+
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with { Error } {
   let stmts = parse_program_with_path("<incremental-interface-observation>", source)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-module-interface:v1\n")
+  StringBuilder::push(out, "vibe-module-interface:v2\n")
   let names = interface_public_value_names(stmts)
   let mut i = 0
   while i < Array::length(names) {
@@ -1202,7 +1371,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
   }
   let (paths, _ranks, deps_by_module, sources) = module_plan_data_fs(entry_path)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "{\"schema\":5,\"run_nonce\":")
+  StringBuilder::push(out, "{\"schema\":6,\"run_nonce\":")
   StringBuilder::push(out, incremental_trace_json_string(run_nonce))
   StringBuilder::push(out, ",\"fingerprint_note\":\"source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key\",\"modules\":[")
   let mut i = 0
@@ -1242,7 +1411,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete interface observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(interface_fingerprint))
-    StringBuilder::push(out, ",\"interface_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)\",\"checked_env_fingerprint\":")
+    StringBuilder::push(out, ",\"interface_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-interface:v2 canonical exported surface including trait-header and method-generic binders)\",\"checked_env_fingerprint\":")
     let checked_env_fingerprint = match incremental_checked_env_trace_observation_of(path) {
       Some(value) => value,
       None => throw(String::concat("incremental invalidation trace: missing complete checked environment observation for ", path))
