@@ -57,6 +57,20 @@ import @vibe/compiler/codegen {
   desugar_labeled_args, desugar_railway_binds, inject_prelude_result, inject_trait_method_generics
 }
 
+//# Types
+
+/// Successful production-check boundary. `checked_stmts` is the same
+/// in-place post-desugar program consumed by existing codegen callers;
+/// `typed_occurrences` is only the offset/type information that the production
+/// checker already records (it is not a complete elaborated typed IR).
+export struct CheckedProgram {
+  checked_stmts: Array[Stmt];
+  final_env: TypeEnv;
+  type_defs: Array[TypeDef];
+  final_subst: Subst;
+  typed_occurrences: Array[(Int, Type)]
+}
+
 //# Functions
 
 /// ADR-0069 Phase 1: locate a top-level statement for the reject diagnostics
@@ -1985,7 +1999,10 @@ fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_
   }
 }
 
-export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
+/// Run the production whole-program check and retain every successful output
+/// the checker actually produces. This deliberately does not use the
+/// hover-only `check_program_type_table` path.
+export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Error } {
   // #760(2): make `Result` (Ok/Err) resolvable standalone — append its enum
   // declaration unless already declared/imported. Must run before checking so
   // `Result::Ok` / bare `Ok` / `Result[T, E]` annotations resolve on the
@@ -2059,7 +2076,19 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
-  env
+  CheckedProgram::{
+    checked_stmts: stmts,
+    final_env: env,
+    type_defs: empty_defs,
+    final_subst: final_s,
+    typed_occurrences: tytab
+  }
+}
+
+/// Compatibility API: preserve the historical TypeEnv result and error
+/// behavior while delegating through the successful production result.
+export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
+  check_program_result(stmts).final_env
 }
 
 /// Collecting variant of check_program for typed hover (vibe type-at): runs the
@@ -2088,9 +2117,12 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   }
 }
 
-export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv with { Error } {
+/// As `check_program_result`, seeded with an importing module's environment.
+/// The non-empty path intentionally keeps the existing imported-module checks
+/// and error behavior unchanged.
+export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with { Error } {
   match initial_env {
-    EnvEmpty => check_program(stmts),
+    EnvEmpty => check_program_result(stmts),
     _ => {
       inject_prelude_result(stmts)
       inject_trait_method_generics(stmts)
@@ -2134,9 +2166,21 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> Ty
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }
-      env
+      CheckedProgram::{
+        checked_stmts: stmts,
+        final_env: env,
+        type_defs: empty_defs,
+        final_subst: final_s,
+        typed_occurrences: tytab
+      }
     }
   }
+}
+
+/// Compatibility API: preserve the historical TypeEnv result and error
+/// behavior while delegating through the successful production result.
+export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv with { Error } {
+  check_program_with_env_result(stmts, initial_env).final_env
 }
 
 //# Import-usage / discarded-value diagnostics (#1129, and the companion
