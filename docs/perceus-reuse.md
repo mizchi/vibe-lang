@@ -451,9 +451,35 @@ stage1 を作ること。** それを試したのが下の切り分けで、結�
 
 2. 同じ source を現行 codegen で RC コンパイルすると**動く stage1 が
    できる**。つまり疑うべきは pin されている seed の codegen/perceus で
-   あって、現行 source ではない。残る確認は「un-instrumented な full
-   out-line source で同じ対比を取る」(上の「通る」側は poison 計装入りの
-   source でビルドしたもの)。ここが確認できれば、対処は
-   [bootstrap.md](bootstrap.md) の bootstrap bump (seed を現行ビルドで
-   貼り替える) になる。
+   あって、現行 source ではない。
+
+### 結論: seed 固有。out-line 化した RC コンパイラは fixpoint する
+
+quarantine を戻した HEAD (poison は trap のみで意味論的に中立) で、
+seed を介さない2段を回した:
+
+```
+final_bump/stage2.wasm  --VIBE_RC=1-->  F_stage1.wasm   2,645,681 B   PASS
+F_stage1.wasm           --VIBE_RC=1-->  F_stage2.wasm   2,645,681 B   PASS
+```
+
+**F_stage1 と F_stage2 は同サイズ = fixpoint。** out-line 版 RC
+コンパイラは自分自身を再生産できる。落ちるのは
+`bootstrap/seed/compiler.wasm` が出力した stage1 だけである。
+
+| stage1 を作ったコンパイラ | dup guard | サイズ | 結果 |
+| --- | --- | --- | --- |
+| seed | inline | 6,332,395 | **OOB** |
+| 現行 (bump ビルド) | out-line | 2,645,681 | **PASS (fixpoint)** |
+
+したがって #1262 の blocker は「out-line 化のバグ」でも「現行 RC/allocator
+の潜在不整合」でもなく、**pin された seed が この source 形状を RC で
+誤コンパイルする**という一点に還元される。対処は
+[bootstrap.md](bootstrap.md) の bootstrap bump — seed を現行ビルドで
+貼り替えれば all-RC bootstrap は通るはずである (未実施)。
+
+`main` が all-RC で通るのは、seed がたまたま `main` の source 形状を
+正しく扱えるからで、seed のバグが無いことの証明ではない。bisect が
+「単一 site ではなく累積的」と出たのも、seed が踏む形状かどうかが
+site 集合で変わるためと読める。
 
