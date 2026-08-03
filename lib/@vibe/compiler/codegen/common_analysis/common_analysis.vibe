@@ -629,19 +629,25 @@ fn is_inlined_async_builtin(name: String) -> Bool {
   // (#1230) and Path::to_string/is_absolute were exactly such omissions --
   // each reproduced as a one-closure miscompile before being added
   // (#1218 D1 increment 4 follow-up).
-  // NOT here, measured 2026-08-01 (#1218), do not re-add without a full
-  // battery + Path-shape matrix:
-  //   - the bare `path` builtin: a bare snake_case name collides with
-  //     ordinary local bindings, and listing it corrupted the SELF-COMPILE
-  //     (stage2 miscompiled every Path-touching program, including
-  //     straight-line top-level code).
-  //   - `Path::ref` / `Path::resolve`: listing them regressed TOP-LEVEL
-  //     `Path::is_absolute(Path::resolve(..))` to a trap through a
-  //     mechanism not yet understood -- so `Path::resolve` inside a
-  //     closure remains a known miscompile (null-function trap), tracked
-  //     in #1218. Bind the resolved path OUTSIDE the closure as the
-  //     workaround.
-  name == "await" || name == "Future::ready" || name == "Future::pending" || name == "Future::resolve" || name == "Stream::empty" || name == "Stream::once" || name == "Stream::map" || name == "Stream::filter" || name == "Stream::fold" || name == "Stream::next" || name == "String::to_bytes" || name == "Stream::to_string" || name == "Path::to_string" || name == "Path::is_absolute"
+  // #1348: `Path::ref` / `Path::resolve` are now listed. They were held out
+  // because listing them regressed TOP-LEVEL
+  // `Path::is_absolute(Path::resolve(..))` to a trap "through a mechanism not
+  // yet understood" -- that mechanism is now understood and fixed at its
+  // source: the USED-BUILTIN scan shared this walk and therefore this skip, so
+  // listing a name here also erased it from the used-builtin set and the
+  // `resolve_path` host import these two lower to was never reserved. The
+  // scan now runs with the skip off (collect_free_vars_used_builtins), which
+  // is why they can finally be listed. The other names hid the conflict only
+  // because none of them reserves an import.
+  //
+  // NOT here, measured 2026-08-01 (#1218), do not add without a full battery
+  // + Path-shape matrix: the bare `path` builtin. A bare snake_case name
+  // collides with ordinary local bindings, and listing it corrupted the
+  // SELF-COMPILE (stage2 miscompiled every Path-touching program, including
+  // straight-line top-level code). That is a DIFFERENT failure from the one
+  // fixed here -- shadowing, not import gating -- and `encl` (#1114) is the
+  // machinery that would have to cover it.
+  name == "await" || name == "Future::ready" || name == "Future::pending" || name == "Future::resolve" || name == "Stream::empty" || name == "Stream::once" || name == "Stream::map" || name == "Stream::filter" || name == "Stream::fold" || name == "Stream::next" || name == "String::to_bytes" || name == "Stream::to_string" || name == "Path::to_string" || name == "Path::is_absolute" || name == "Path::ref" || name == "Path::resolve" || name == "host_future_get" || name == "host_future_named" || name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close"
 }
 
 /// #773: the scalar arithmetic/logic intrinsics ("not"/"add"/"sub"/"mul"/"lt")
@@ -675,6 +681,18 @@ fn is_inlined_async_builtin(name: String) -> Bool {
 /// same code produces at top level.
 fn is_inlined_scalar_builtin(name: String) -> Bool {
   name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert"
+}
+
+/// #1348: the SIMD intrinsics (`lib/@vibex/simd`) are inline-dispatched by
+/// compile_call exactly like the scalar ones above and were never registered
+/// here -- a lambda calling `v128_load(..)` produced an INVALID MODULE
+/// ("invalid signature index"), not merely a runtime trap. Found by
+/// scripts/check_inline_builtin_capture.sh rather than by a user crash, which
+/// is the point of that script: the same registration gap had already been
+/// reintroduced four times (#773, #1095, #1230, #1218) and each time it was a
+/// crash report that surfaced it.
+fn is_inlined_simd_builtin(name: String) -> Bool {
+  name == "v128_load" || name == "v128_store" || name == "v128_not" || name == "v128_and" || name == "v128_or" || name == "v128_any_true" || name == "v128_all_true_i8x16" || name == "v128_bitmask_i8x16" || name == "v128_splat_i8x16" || name == "v128_eq_i8x16" || name == "v128_le_u_i8x16" || name == "v128_ge_u_i8x16"
 }
 
 /// Stack-based free variable analysis: uses in-place push/truncate on bound array
@@ -719,10 +737,10 @@ fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
 /// compile_lambda; the public wrapper passes an empty array, which reproduces
 /// the previous behavior exactly for every other caller.
 export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
-  collect_free_vars_expr_sc(expr, bound, fn_names, common_analysis_fresh_string_array(), out)
+  collect_free_vars_expr_sc(expr, bound, fn_names, common_analysis_fresh_string_array(), true, out)
 }
 
-fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[String], encl: Array[String], out: Array[String]) -> Int {
+fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[String], encl: Array[String], skip_inlined: Bool, out: Array[String]) -> Int {
   match expr {
     // #1203: `encl` (the enclosing scope's own locals, e.g. an outer
     // function's parameters) must be checked BEFORE `fn_names` (top-level
@@ -762,11 +780,11 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
     EString(_) => 0,
     EUnit => 0,
     EBinOp(_, lhs, rhs) => {
-      collect_free_vars_expr_sc(lhs, bound, fn_names, encl, out); collect_free_vars_expr_sc(rhs, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(lhs, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(rhs, bound, fn_names, encl, skip_inlined, out)
     },
-    EUnaryOp(_, operand) => collect_free_vars_expr_sc(operand, bound, fn_names, encl, out),
+    EUnaryOp(_, operand) => collect_free_vars_expr_sc(operand, bound, fn_names, encl, skip_inlined, out),
     EIf(cond, then_e, else_e) => {
-      collect_free_vars_expr_sc(cond, bound, fn_names, encl, out); collect_free_vars_expr_sc(then_e, bound, fn_names, encl, out); collect_free_vars_expr_sc(else_e, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(cond, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(then_e, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(else_e, bound, fn_names, encl, skip_inlined, out)
     },
     // #773/regression fix: the inlined-builtin skip only applies to a bare
     // name used as a CALL CALLEE (`sub(a, b)`), never to a plain identifier
@@ -790,67 +808,67 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
         Some(op_args) => {
           let mut i = 0
           while i < Array::length(op_args) {
-            collect_free_vars_expr_sc(Array::get(op_args, i), bound, fn_names, encl, out)
+            collect_free_vars_expr_sc(Array::get(op_args, i), bound, fn_names, encl, skip_inlined, out)
             i = i + 1
           }
           0
         },
         None => {
-          collect_free_vars_expr_sc(EIdent(cname, 0), bound, fn_names, encl, out)
+          collect_free_vars_expr_sc(EIdent(cname, 0), bound, fn_names, encl, skip_inlined, out)
           let mut i = 0
           while i < Array::length(args) {
-            collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
+            collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
             i = i + 1
           }
           0
         }
       }
-    } else if !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
+    } else if skip_inlined && !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname) || is_inlined_simd_builtin(cname)) {
       let mut i = 0
       while i < Array::length(args) {
-        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
         i = i + 1
       }
       0
     } else {
-      collect_free_vars_expr_sc(EIdent(cname, 0), bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(EIdent(cname, 0), bound, fn_names, encl, skip_inlined, out)
       let mut i = 0
       while i < Array::length(args) {
-        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
         i = i + 1
       }
       0
     },
     ECall(callee, args, _) => {
-      collect_free_vars_expr_sc(callee, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(callee, bound, fn_names, encl, skip_inlined, out)
       let mut i = 0
       while i < Array::length(args) {
-        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
         i = i + 1
       }
       0
     },
     ELet(name, value, body, _) => {
-      collect_free_vars_expr_sc(value, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out)
       let saved = Array::length(bound)
       Array::push(bound, name)
-      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
       Array::truncate(bound, saved)
       0
     },
     ELetRec(name, value, body) => {
       let saved = Array::length(bound)
       Array::push(bound, name)
-      collect_free_vars_expr_sc(value, bound, fn_names, encl, out)
-      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
       Array::truncate(bound, saved)
       0
     },
     ELetMut(name, value, body, _) => {
-      collect_free_vars_expr_sc(value, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out)
       let saved = Array::length(bound)
       Array::push(bound, name)
-      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
       Array::truncate(bound, saved)
       0
     },
@@ -881,7 +899,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
         Array::push(out, name)
         0
       }
-      collect_free_vars_expr_sc(value, bound, fn_names, encl, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
     },
     EAssignOp(name, _, value, body) => {
       if array_contains_str(bound, name) {
@@ -899,30 +917,30 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
         Array::push(out, name)
         0
       }
-      collect_free_vars_expr_sc(value, bound, fn_names, encl, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
     },
     ESeq(first, second) => {
-      collect_free_vars_expr_sc(first, bound, fn_names, encl, out); collect_free_vars_expr_sc(second, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(first, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(second, bound, fn_names, encl, skip_inlined, out)
     },
     EWhile(cond, body) => {
-      collect_free_vars_expr_sc(cond, bound, fn_names, encl, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(cond, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
     },
     EForIn(var_name, index_name, iter_e, body) => {
-      collect_free_vars_expr_sc(iter_e, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(iter_e, bound, fn_names, encl, skip_inlined, out)
       let saved = Array::length(bound)
       Array::push(bound, var_name)
       match index_name {
         Some(index_name) => Array::push(bound, index_name),
         None => ()
       }
-      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
       Array::truncate(bound, saved)
       0
     },
     ETuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, skip_inlined, out)
         i = i + 1
       }
       0
@@ -930,19 +948,19 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
     EArray(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, skip_inlined, out)
         i = i + 1
       }
       0
     },
     EMatch(scrutinee, arms) => {
-      collect_free_vars_expr_sc(scrutinee, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(scrutinee, bound, fn_names, encl, skip_inlined, out)
       let mut i = 0
       while i < Array::length(arms) {
         let (arm_pat, arm_expr) = Array::get(arms, i)
         let saved = Array::length(bound)
         collect_pattern_bindings(arm_pat, bound)
-        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, skip_inlined, out)
         Array::truncate(bound, saved)
         i = i + 1
       }
@@ -963,34 +981,34 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
         Array::push(bound, pname)
         pi = pi + 1
       }
-      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
       Array::truncate(bound, saved)
       0
     },
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EReturn(msg) => collect_free_vars_expr_sc(msg, bound, fn_names, encl, out),
+    EReturn(msg) => collect_free_vars_expr_sc(msg, bound, fn_names, encl, skip_inlined, out),
     EHandle(body, arms) => {
-      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
       let mut hi = 0
       while hi < Array::length(arms) {
         let (_, arm_expr) = Array::get(arms, hi)
-        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, skip_inlined, out)
         hi = hi + 1
       }
       0
     },
-    EDot(obj, _, _, _) => collect_free_vars_expr_sc(obj, bound, fn_names, encl, out),
+    EDot(obj, _, _, _) => collect_free_vars_expr_sc(obj, bound, fn_names, encl, skip_inlined, out),
     ERecord(_, fields, _) => {
       let mut ri = 0
       while ri < Array::length(fields) {
         let (_, fval) = Array::get(fields, ri)
-        collect_free_vars_expr_sc(fval, bound, fn_names, encl, out)
+        collect_free_vars_expr_sc(fval, bound, fn_names, encl, skip_inlined, out)
         ri = ri + 1
       }
       0
     },
-    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr_sc(arg_expr, bound, fn_names, encl, out),
+    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr_sc(arg_expr, bound, fn_names, encl, skip_inlined, out),
     _ => 0
   }
 }
@@ -1005,17 +1023,46 @@ export fn collect_free_vars(body: Expr, param_names: Array[String], fn_names: Ar
 /// #799 perf: index-taking entry -- the index is built ONCE per compile
 /// (linked_compile) and reused for every lambda.
 export fn collect_free_vars_indexed(body: Expr, param_names: Array[String], fn_name_index: Array[String]) -> Array[String] {
-  collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array())
+  collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array(), true)
+}
+
+/// #1348: the same walk WITHOUT the inlined-builtin skip, for the used-builtin
+/// scan (collect_used_builtin_names, wasi/linked_helpers.vibe) rather than for
+/// closure capture.
+///
+/// These two consumers ask opposite questions of the same walk, and conflating
+/// them is what made `Path::resolve` unfixable for a year:
+///
+/// - CAPTURE asks "is this name a value this lambda must close over?" An
+///   inlined builtin is not -- capturing it produces a call_indirect of a
+///   nonexistent closure (the #773 story above), so the skip is right.
+/// - USED-BUILTIN asks "does this program mention this builtin at all?", and
+///   the answer gates whether its host import is even reserved
+///   (`need_resolve_path_builtin` etc., linked_compile.vibe). Applying the
+///   capture skip here DELETES the evidence: the name vanishes from the used
+///   set, no import is reserved, and the inline lowering -- which for
+///   `Path::ref`/`Path::resolve` emits a call to the `resolve_path` host
+///   import -- targets an index that was never emitted.
+///
+/// That is the "mechanism not yet understood" recorded in #1218/#1348: adding
+/// `Path::resolve` to is_inlined_async_builtin fixed the closure case and
+/// simultaneously broke straight-line TOP-LEVEL `Path::is_absolute(
+/// Path::resolve(..))`, because the skip is not scoped to lambdas at all --
+/// it fires at every call site in the program. The other listed names hid the
+/// conflict only because none of them reserves an import (`Path::to_string`
+/// is identity, `Path::is_absolute` is a char compare).
+export fn collect_free_vars_used_builtins(body: Expr, param_names: Array[String], fn_name_index: Array[String]) -> Array[String] {
+  collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array(), false)
 }
 
 /// #1114: same, plus the ENCLOSING compile scope's local names -- a bare
 /// inlined-builtin call callee that one of those shadows must be captured,
 /// not inline-lowered. See collect_free_vars_expr's doc comment.
-fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_index: Array[String], encl: Array[String]) -> Array[String] {
+fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_index: Array[String], encl: Array[String], skip_inlined: Bool) -> Array[String] {
   let out = common_analysis_fresh_string_array()
   // Make a mutable copy of param_names for stack-based push/truncate
   let bound = Array::slice(param_names, 0, Array::length(param_names))
-  collect_free_vars_expr_sc(body, bound, fn_name_index, encl, out)
+  collect_free_vars_expr_sc(body, bound, fn_name_index, encl, skip_inlined, out)
   out
 }
 
@@ -1056,12 +1103,12 @@ fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_
 /// inlined-builtin call callee shadowed by one of them is captured instead
 /// of inline-lowered. Pass an empty array for "no enclosing locals".
 export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String], fn_name_index: Array[String], self_name: String, encl: Array[String]) -> Array[String] {
-  let captures = collect_free_vars_indexed_sc(body, param_names, fn_name_index, encl)
+  let captures = collect_free_vars_indexed_sc(body, param_names, fn_name_index, encl, true)
   if self_name == "" || array_contains_str(captures, self_name) {
     captures
   } else {
     let no_globals = common_analysis_fresh_string_array()
-    let unfiltered = collect_free_vars_indexed_sc(body, param_names, no_globals, encl)
+    let unfiltered = collect_free_vars_indexed_sc(body, param_names, no_globals, encl, true)
     if array_contains_str(unfiltered, self_name) {
       Array::push(captures, self_name)
       captures

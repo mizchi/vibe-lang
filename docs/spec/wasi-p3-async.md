@@ -1242,12 +1242,13 @@ with { Async }`）、`Suspend` の stream 帯と entry boundary の settle arm�
 per-name `stream<u8>` component import を出す composer、AsyncIter/`for await`
 への接続。設計は §3.16 の named host futures と同型で、park が「future 1本
 ごと」から「read 1回ごと」に変わる点だけが違う。
-→ **guest surface / stream 帯 / composer は §3.18 で landed**。残るは
-AsyncIter への接続のみ。`for await` という別綴りは **#1350 で削除済み** —
-iteration の suspend 可能性は effect row（`with { Async }`）が既に語って
-おり、構文レベルの `await` マーカーは二重表現だったため、素の `for` に
-一本化した（同期/非同期の選択は iterand の型だけで決まる）。host stream の
-現状の消費形は素の `while` + `host_stream_next`。
+→ **guest surface / stream 帯 / composer は §3.18 で landed**。`for await`
+という別綴りは **#1350 で削除済み** — iteration の suspend 可能性は effect
+row（`with { Async }`）が既に語っており、構文レベルの `await` マーカーは
+二重表現だったため、素の `for` に一本化した（同期/非同期の選択は iterand の
+型だけで決まる）。**`for` からの消費は #1341 で landed**（§3.18.2）。残るは
+一般 `Stream::next`（`Future[Option[T]]` protocol）と eager `Stream[T]`
+combinator の退役。
 
 **追加実測（2026-08-02、per-byte delay producer 追加後）** — viberun の
 `VIBE_ASYNC_STREAMS="body=10|15|17@60"`（`@delay_ms` = 1バイトごとに遅延
@@ -1350,6 +1351,103 @@ lane（future 30 + stream 5+7 = 42、両 import が WIT に出る）。byte leve
 `component_codegen_test.vibe` の stream-only / mixed composition テスト。
 検証済みの consume 形: 直列 let 読み、while ループ、自己再帰、EOS 後の
 再読（latch で -1）。
+
+#### 3.18.2 `for b in <host stream>` — 表現の分離と読み出しへの接続（done, #1341）
+
+D3 の「AsyncIter への接続」の最初のスライス。**着手前に測った事実が設計を
+決めた**:
+
+```vibe skip
+let run: () -> Int with { Async } = () -> {
+  let s = host_stream_named("body")
+  let mut sum = 0
+  for b in s { sum = sum + b }
+  sum
+}
+```
+
+これは **エラーにならず 4 を返していた**（`VIBE_ASYNC_STREAMS="body=10|15|17"`、
+期待値 42）。原因は型ではなく**表現の衝突**である: `host_stream_named` の
+戻り型は `Stream[Int]` で、これは eager な配列バックの stream と同一の静的型
+だった。ところが実行時表現は非互換で、eager 側は要素の配列、host stream 側は
+2語の cell `[state, handle]`。`for` は静的型しか見ないので array ループを選び、
+cell の2語（state 3 + handle 1）を足していた。**診断も trap も出ない、
+それらしい小さい数**という最悪の失敗形。
+
+したがって修正は「`for` に host stream 対応を足す」ではなく、まず
+**表現ごとに別の名前型を与える**こと:
+
+- `host_stream_named(name) -> HostStream`（`Stream[Int]` ではない）
+- `host_stream_next(HostStream) -> Int with { Async }`
+- `host_stream_close(HostStream) -> Unit`
+
+これで eager 用の `Stream::map` / `Stream::fold` / `Stream::to_string` を
+host stream に適用するのは**型エラー**になり、静かなゴミではなくなる。
+
+その上で desugar（`build_host_stream_for`, desugar_trait_dict.vibe）が
+`for` を read へ落とす:
+
+```vibe skip
+let __hs_src = <iter>
+let mut __hs_b = host_stream_next(__hs_src)
+while 0 <= __hs_b {
+  let <name> = __hs_b
+  <body>
+  __hs_b = host_stream_next(__hs_src)
+}
+```
+
+これは §3.18 の gate が #1339 以来走らせてきた手書き while ループそのもの
+なので、**新しい codegen は無い — 表面だけ**。AsyncIter protocol
+（`next -> Future[Option[(T, Self)]]`）は経由しない: host stream の read
+primitive はスカラの `host_stream_next` であり、protocol を挟むと
+`Future[Option[...]]` の割り当てを1バイトごとに行うことになる。
+
+**index binding は非対応**（`for b, i in s`）。read 回数を数えることになるが、
+byte offset は再走査可能なコレクションの位置とは別物なので、それらしい誤った
+意味を与えるより未対応のままにした。
+
+row 要求は #1358 と同じ理由で必要（read ごとに park する）。`HostStream` は
+AsyncIterator の impl を持たないので、`afe_async_iterand`（checker_effects）に
+明示の分岐を置いた。回帰ロックは
+`scripts/test_named_hoststreams_component_gate.sh` の `for` lane —
+while ループと同じ 42 を返すこと、および `{ Async }` の無い row で
+**reject されること**の両方を pin する。
+
+**projection（Codex review on #1369 で修正）**: 当初この routing は
+identifier と直接の `host_stream_named(..)` 呼び出しにしか効かず、
+`for b in h.s`（struct field 経由）は 42 ではなく 4 を返していた。原因は
+**両方の pass に struct の field 型が無かった**こと — desugar の
+`struct_sets` は field 名だけを持ち、async effect pass も同様だった。
+両者に `Struct.field -> 型名` の表を持たせて解消した:
+
+- desugar: `collect_struct_field_types` が `fn_returns` に予約キー
+  (`struct_field_type_key`, `.` は識別子に現れないので衝突しない) で相乗り。
+  `infer_arg_type_name` の `EDot` arm がそれを引く。**sort の前に push する
+  必要がある** — この表は binary search されるので、後から append しても
+  見えない（最初の実装はこれを踏み、seeding を別の collector に置いてしまい
+  無効だった）。
+- checker_effects: 同じ表を module cell で持ち、`afe_expr_head_name` の
+  `EDot` arm が引く。これが無いと desugar だけが await ループを組み立て、
+  row 無しで park できてしまう（#1358 が塞いだ穴の別ルート）。
+
+副産物として `let s = h.s; for b in s` も通る（`extend_var_types` が
+`infer_arg_type_name` を通すため）。回帰ロックは gate の projected `for`
+lane（bytes を読むこと + `{ Async }` 無しの row が reject されること）。
+
+**残る限界**: `HostStream` は **routing key であって barrier ではない**。
+実測: `s: HostStream` を `take_int(s)` に渡しても型エラーにならない
+（projection 特有ではなく素の local でも同様 — `CtNamed` の head は引数位置で
+許容される、`nominal_head_conflict` の concreteness gate）。したがって
+「eager 用 combinator を host stream に適用すると型エラー」という当初の主張は
+**誤り**で、引数位置の nominal 検査を強くするのは `HostStream` に限らない
+横断的な別作業。
+
+**残り**: 一般 `Stream::next`（`Future[Option[T]]`）を host read へ落とす件は
+まだ。実測では `await(Stream::next(s))` は ADR-0076 の evidence-passing
+migration に弾かれて**コンパイルすら通らない**（"the site is not eligible
+for evidence-passing migration"）ので、これは D3 の接続作業ではなく
+suspend lowering 側の適格性の話。eager `Stream[T]` combinator の退役も別途。
 
 #### 3.18.1 `host_stream_close` — 部分消費した stream の明示解放（done）
 

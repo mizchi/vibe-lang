@@ -294,6 +294,76 @@ fn afe_bind_params(locals: Array[(String, String)], params: Array[(String, Optio
 
 /// Best-effort head type name of an expression used as a `for` iterand (or as a
 /// `let` value feeding one).
+/// #1341 (Codex P1 on #1369): struct FIELD type heads, `Holder.s ->
+/// HostStream`. The async pass walks per-statement, so a whole-program table
+/// cannot ride the walk's parameters; it lives in a module cell rebuilt at each
+/// public entry, exactly like error_row_mode_cell / throw_kind_cell in this
+/// file. Entries are keyed with a `.` that no vibe binding name can contain.
+///
+/// Needed because the desugar now routes `for b in h.s` over a host stream to
+/// the parking read loop (build_host_stream_for). If this pass could not
+/// classify the same projection, that loop would be legal in a row without
+/// { Async } -- the precise hole #1358 exists to close, reopened one
+/// expression shape over.
+let afe_field_types_cell: Array[(String, String)] = array_empty()
+
+fn afe_field_type_key(struct_name: String, field: String) -> String {
+  String::concat(struct_name, String::concat(".", field))
+}
+
+fn afe_collect_field_types(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, fields, _, _, _) => {
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, j)
+          let head = texpr_head_name_afe(fty)
+          if String::length(head) > 0 {
+            Array::push(afe_field_types_cell, (afe_field_type_key(sname, fname), head))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SModule(_, _, inner) => afe_collect_field_types(inner),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn texpr_head_name_afe(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(n, _) => n,
+    _ => ""
+  }
+}
+
+fn afe_set_field_types(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(afe_field_types_cell, 0)
+  afe_collect_field_types(stmts)
+}
+
+fn afe_lookup_field_type(struct_name: String, field: String) -> Option[String] {
+  let key = afe_field_type_key(struct_name, field)
+  let mut i = 0
+  let mut out = None
+  while i < Array::length(afe_field_types_cell) {
+    let (k, v) = Array::get(afe_field_types_cell, i)
+    if k == key {
+      out = Some(v)
+      i = Array::length(afe_field_types_cell)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
 fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
   match e {
     EIdent(n, _) => match afe_lookup_local(locals, n) {
@@ -309,10 +379,23 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
     } else {
       None
     },
+    // #1341: a PROJECTION (`h.s`) -- the object's type name plus the field
+    // name give the field's declared head. Mirrors infer_arg_type_name's EDot
+    // arm in the desugar so both passes classify the same expression shapes.
+    EDot(obj, field, _, _) => match afe_expr_head_name(obj, env, locals) {
+      Some(otype) => afe_lookup_field_type(otype, field),
+      None => None
+    },
     // `for x in async_iter_arr(xs)` -- the callee's declared return head.
+    // #1341: a BUILTIN callee (`host_stream_named("body")`) is absent from the
+    // type env -- builtins resolve through lookup_builtin -- so the env lookup
+    // alone left every direct-call iterand unclassified.
     ECall(EIdent(f, _), _, _) => match env_lookup(env, f) {
       Some(CtFn(_, ret, _)) => afe_type_head_name(ret),
-      _ => None
+      _ => match lookup_builtin(f) {
+        Some(CtFn(_, bret, _)) => afe_type_head_name(bret),
+        _ => None
+      }
     },
     _ => None
   }
@@ -322,7 +405,13 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
 /// otherwise None. Named so the diagnostic can point at `<T>::next`.
 fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
   match afe_expr_head_name(iter, env, locals) {
-    Some(tn) => if type_name_has_async_iterator_impl(env, tn) {
+    // #1341: the p3 host stream is async by construction and has no
+    // AsyncIterator impl to find -- its read primitive is the scalar
+    // `host_stream_next(s) -> Int with { Async }`, and the desugar builds the
+    // loop on that read directly (build_host_stream_for). The loop therefore
+    // parks once per byte, so the enclosing row must carry `Async` for exactly
+    // the reason #1358 gave for trait-based async iterators.
+    Some(tn) => if tn == "HostStream" || type_name_has_async_iterator_impl(env, tn) {
       Some(tn)
     } else {
       None
@@ -444,6 +533,10 @@ export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectErro
 }
 
 export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+  // #1341: rebuild the struct field-type table for THIS program before the
+  // walk, so a stale one from a previous module can never classify a
+  // same-named field here.
+  afe_set_field_types(stmts)
   let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {

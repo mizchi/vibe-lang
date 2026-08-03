@@ -10,11 +10,18 @@
 /// which signature the garbage index happened to name. Same mechanism as
 /// the #773 scalar-intrinsic capture bug.
 ///
-/// Each closure below reproduced a miscompile on the unfixed compiler.
-/// The Path value is resolved OUTSIDE the closures on purpose:
-/// `Path::resolve` inside a closure is a separate, still-open miscompile
-/// (see is_inlined_async_builtin's do-not-re-add note). 40 + 1 + 1 = 42.
-fn main() -> Int {
+/// #1348 extends this: `Path::resolve` and `Path::ref` are now called
+/// INSIDE the closures too. They had been held out because registering
+/// them broke straight-line top-level `Path::is_absolute(Path::resolve(..))`
+/// -- the used-builtin scan shared the same walk and therefore the same
+/// skip, so registering a name also erased it from the used set and the
+/// `resolve_path` host import these two lower to was never reserved. The
+/// scan now runs with the skip off (collect_free_vars_used_builtins), so
+/// both call sites below and the top-level one at the end must all work.
+///
+/// Each closure here reproduced a miscompile on the unfixed compiler.
+/// 40 + 1 + 1 + 1 + 1 - 2 = 42.
+fn probe() -> Int {
   let f = Future::pending()
   let resolver = (v: Int) -> Unit {
     Future::resolve(f, v)
@@ -35,5 +42,33 @@ fn main() -> Int {
       0
     }
   }
-  Array::get(f, 1) + abs_one() + nonempty_one()
+  // #1348: the resolve/ref calls themselves inside a closure.
+  let resolved_one = () -> Int {
+    if Path::is_absolute(Path::resolve("rel")) {
+      1
+    } else {
+      0
+    }
+  }
+  let ref_one = () -> Int {
+    if Path::is_absolute(Path::ref("/abs")) {
+      1
+    } else {
+      0
+    }
+  }
+  // The top-level shape that registering the two names used to break.
+  let top_two = if Path::is_absolute(Path::resolve("rel")) {
+    2
+  } else {
+    0
+  }
+  Array::get(f, 1) + abs_one() + nonempty_one() + resolved_one() + ref_one() - top_two
+}
+
+test "inline-lowered builtins are never captured by a closure" {
+  // A miscompile here is not an assertion failure: the module either fails to
+  // instantiate ("invalid signature index") or traps ("null function or
+  // function signature mismatch") before this line is reached.
+  assert(eq(probe(), 42))
 }

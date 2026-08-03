@@ -17,6 +17,11 @@ cd "$ROOT_DIR"
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
 
+# #1348: inline-dispatched builtins that the closure-capture analysis does not
+# know about are a latent miscompile (invalid module / null-function trap).
+# Static check, so it runs here with the other pre-build checks.
+bash scripts/check_inline_builtin_capture.sh
+
 echo "[compiler-gate] 1-2/3 bundle + module-source sync (via seed, combined)"
 # One generate_bundle.sh pass checks both the three bundles and the flat
 # module source (VIBE_CHECK_BUNDLES_TOO=1) — the previous separate

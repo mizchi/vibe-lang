@@ -1,0 +1,33 @@
+# #1348: inline-dispatched builtins that scripts/check_inline_builtin_capture.sh
+# must NOT flag. Every entry needs a MEASURED reason -- "unreachable from user
+# source" must be demonstrated (the checker rejects the spelling), not assumed.
+#
+# Format: <name> <reason>
+
+# The checker resolves no such name, so no user source can spell it and no
+# lambda can capture it. Measured: `__float_bits(1.5)` inside a lambda fails
+# with `unknown name: __float_bits` before codegen runs.
+__float_bits          not-checker-visible
+
+# `map` is the bare alias of `Array::map` in compile_call's dispatch, but the
+# checker rejects the bare spelling. Measured: `map([1,2,3], f)` reports
+# "dot-call syntax is not supported for the builtin method `Array::map`".
+map                   not-reachable-as-a-bare-name
+
+# Measured 2026-08-01 (#1218): listing `path` corrupted the SELF-COMPILE --
+# stage2 miscompiled every Path-touching program, including straight-line
+# top-level code. A bare snake_case name collides with ordinary local
+# bindings, so the fix here is the `encl` shadowing channel (#1114), not this
+# list. This is a DIFFERENT failure from the import-gating one #1348 fixed.
+path                  bare-name-shadowing-hazard
+
+# `perform` is a keyword form, not a value: the collector has its own
+# `cname == "perform"` branch above the inlined-builtin check, which recurses
+# into the payload and never records the callee. Measured: a lambda containing
+# `perform Ask::Get()` runs correctly.
+perform               handled-by-its-own-collector-branch
+
+# `resume` only exists inside a handler arm, where the handle lowering (not
+# compile_call's closure path) supplies it; the checker rejects it elsewhere
+# (ADR-0050). Measured: `resume(7)` in an arm runs correctly.
+resume                handler-arm-only
