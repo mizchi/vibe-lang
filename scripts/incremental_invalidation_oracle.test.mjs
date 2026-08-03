@@ -9,9 +9,9 @@ import {
 } from "./incremental_invalidation_oracle.mjs";
 
 const validTrace = {
-  schema: 4,
+  schema: 5,
   run_nonce: "unit-nonce",
-  fingerprint_note: "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint and checked_env_fingerprint are observation only; none is a production cache key",
+  fingerprint_note: "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key",
   modules: [
     {
       path: "base.vibe",
@@ -24,6 +24,8 @@ const validTrace = {
       interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v1 canonical exported surface)",
       checked_env_fingerprint: "32:1:2",
       checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)",
+      persistent_type_env_transport_fingerprint: "33:1:2",
+      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v2 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
       decision: "reused",
     },
   ],
@@ -37,7 +39,7 @@ const validTrace = {
   },
 };
 
-test("incremental invalidation trace accepts schema 4 successful observations", () => {
+test("incremental invalidation trace accepts schema 5 successful observations", () => {
   assert.deepEqual(parseIncrementalInvalidationTrace(JSON.stringify(validTrace), "unit-nonce"), validTrace);
 });
 
@@ -61,6 +63,12 @@ test("incremental invalidation trace rejects stale, missing, and dishonest ident
   const missingCheckedEnv = structuredClone(validTrace);
   delete missingCheckedEnv.modules[0].checked_env_fingerprint;
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(missingCheckedEnv)), /missing module row checked_env_fingerprint/);
+  const dishonestTransport = structuredClone(validTrace);
+  dishonestTransport.modules[0].persistent_type_env_transport_fingerprint_kind = "typed-ir";
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonestTransport)), /dishonest persistent TypeEnv transport fingerprint kind/);
+  const missingTransport = structuredClone(validTrace);
+  delete missingTransport.modules[0].persistent_type_env_transport_fingerprint;
+  assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(missingTransport)), /missing module row persistent_type_env_transport_fingerprint/);
   const dishonestNote = structuredClone(validTrace);
   dishonestNote.fingerprint_note = "observation only";
   assert.throws(() => parseIncrementalInvalidationTrace(JSON.stringify(dishonestNote)), /dishonest fingerprint_note/);
@@ -82,6 +90,7 @@ function parsedComparisonTrace(nonce) {
     implementation_fingerprint: `implementation:${suffix}`,
     interface_fingerprint: `interface:${suffix}`,
     checked_env_fingerprint: `checked-env:${suffix}`,
+    persistent_type_env_transport_fingerprint: `persistent-type-env-transport:${suffix}`,
   });
   trace.run_nonce = nonce;
   trace.modules = [
@@ -110,6 +119,13 @@ test("successful trace semantic comparison excludes only run_nonce", () => {
   assert.throws(
     () => compareSuccessfulIncrementalInvalidationTraces(expected, fingerprintMismatch),
     /modules\[1\]\(library\.vibe\)\.implementation_fingerprint/,
+  );
+
+  const transportMismatch = structuredClone(actual);
+  transportMismatch.modules[1].persistent_type_env_transport_fingerprint = "persistent-type-env-transport:changed";
+  assert.throws(
+    () => compareSuccessfulIncrementalInvalidationTraces(expected, transportMismatch),
+    /modules\[1\]\(library\.vibe\)\.persistent_type_env_transport_fingerprint/,
   );
 
   const dependencyOrderMismatch = structuredClone(actual);
