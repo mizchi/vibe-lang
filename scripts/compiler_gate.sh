@@ -8906,6 +8906,52 @@ exn_msg_expect shown "Failed(io)"
 exn_msg_expect plain "plain message"
 # No structural renderer: the kind, NOT the pointer decimal.
 exn_msg_expect noshow "<NoShow>"
+# #1398 review (Codex P1): the render is SYNTHESIZED, runs on every throw even
+# when no handler reads it, and its effects are absent from the throwing
+# function's checked row -- so it must only ever call a renderer this pass
+# GENERATED. A hand-written `T::to_string` is called for an interpolation the
+# user wrote and for nothing else. Before the fix this program printed
+# "FORMATTER RAN" twice; a formatter that threw would have replaced the
+# original exception outright.
+cat > "$exnmsgdir/handwritten.vibe" <<'VIBEEOF'
+enum Boom {
+  Bang(Int)
+}
+
+fn Boom::to_string(self: Boom) -> String {
+  println("FORMATTER RAN")
+  "boom"
+}
+
+let _start = () -> Int {
+  println("interp=\{Bang(1)}")
+  handle {
+    throw(Bang(1))
+  } with Error {
+    Throw(_m) => 7
+  }
+}
+VIBEEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$exnmsgdir/handwritten.vibe" "$exnmsgdir/handwritten.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$exnmsgdir/handwritten.wasm" ]; then
+  echo "[compiler-gate] FAIL: handwritten.vibe did not compile (#1398 review P1)" >&2
+  cat "$exnmsgdir/handwritten.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+hw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/handwritten.wasm" 2>&1)"
+hw_runs="$(printf '%s\n' "$hw_out" | grep -c "FORMATTER RAN" || true)"
+if [ "$hw_runs" != "1" ]; then
+  echo "[compiler-gate] FAIL: hand-written formatter ran $hw_runs time(s), want 1 (#1398 review P1)" >&2
+  printf '%s\n' "$hw_out" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$hw_out" | grep -q "^interp=boom$"; then
+  echo "[compiler-gate] FAIL: an EXPLICIT interpolation must still use the hand-written formatter (#1398 review P1)" >&2
+  printf '%s\n' "$hw_out" >&2
+  exit 1
+fi
 rm -rf "$exnmsgdir"
 echo "[compiler-gate] uncaught throw payload rendering ok"
 

@@ -385,10 +385,31 @@ sink の実測:
 最後の行の二重 `Failed` は正しい: 外側が `TaskHandle::join` の wrapper、内側が
 子自身の payload。#1374 ではこの内側が丸ごと失われていた。
 
+**呼ぶのは「このパスが生成した renderer」だけ** (#1398 review, Codex P1)。
+補間 `"\{v}"` はユーザがその呼び出しを書いているので任意の `T::to_string` を
+使ってよいが、throw site の呼び出しは**合成**であり、
+
+- どの handler も message を読まなくても**毎回**走る
+- 型検査の後に挿入されるので、その effect は throwing function の checked row に
+  一切現れない
+- formatter 自身が throw すると、元の例外を差し替えるか formatting 中に再帰する
+
+という性質を持つ。実測: `println` を含む `Boom::to_string` が、payload を無視する
+handler しか無い `throw(Bang(1))` で実行された。derive 由来の renderer は構造的・
+全域・effect-free なので、eager path をそれだけに絞ればこの危険は消える
+(`dtd_derived_renderers`)。
+
+**`""` sentinel が健全な理由** (#1398 review, Codex P2)。ここから到達できる
+renderer の出力は構造上必ず非空である: derived struct renderer は型名で始まり
+(`P { ..`)、derived enum renderer は変種名そのもの、wrapper 展開は
+`Some(..)` / `Ok(..)` / `Err(..)` / `None`。「空文字列を返すのが正しい」
+ユーザ定義 formatter は上の P1 の制限により、そもそもここから呼ばれない。
+
 regression lock:
 
-- compiler_gate 87 — `derive(Show)` enum / String / renderer 無しの3本。3本目が
-  「悪化していないこと」の pin
+- compiler_gate 87 — `derive(Show)` enum / String / renderer 無し / 手書き
+  formatter の4本。3本目が「#1374 より悪化していないこと」、4本目が
+  「手書き formatter は補間でだけ走る」の pin
 - `@vibex/concurrent` の "a typed child throw is reported by kind" は
   `Failed("<SendError>")` から `Failed("Closed")` へ更新した (caller が switch
   したいのは変種名の方)
