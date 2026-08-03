@@ -35,6 +35,8 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_rc_poison_set,
+  emit_rc_poison_trap_if_freed,
   emit_str_ref,
   expr_tag,
   get_arm_body,
@@ -300,6 +302,10 @@ export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool)
     } else {
       ()
     }
+    // ADR-0092 (#1262) free-list poison: the regrow path frees the old data
+    // buffer with its own inline legacy push, bypassing emit_rc_free_push, so
+    // the double-free trap and the mark both have to be repeated here.
+    emit_rc_poison_trap_if_freed(b, 5)
     emit_local_get(b, 5)
     emit_i32_const(b, 4)
     emit_i32_sub(b)
@@ -307,6 +313,7 @@ export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool)
     emit_i32_store(b, 2, 0)
     emit_local_get(b, 5)
     emit_global_set(b, 2)
+    emit_rc_poison_set(b, 5)
     emit_end(b)
     // capacity = newcap; data_ptr = block_start+8; local5 = block_start+8
     emit_local_get(b, 2)

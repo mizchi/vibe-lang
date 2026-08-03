@@ -2094,3 +2094,87 @@ export fn emit_heap_grow_after_heap_set(buf: Bytes, ctx: CompileCtx) -> Unit {
     ()
   }
 }
+
+/// ADR-0092 (#1262) free-list poison, the memory-free replacement for
+/// VIBE_RC=shadow. `rc_shadow` needs a 1-byte-per-heap-address table at
+/// rc_shadow_base() = 256 MB, but a selfcompile heap reaches ~900 MB, so the
+/// bump pointer runs INTO the table and the guard corrupts the very heap it
+/// watches (observed: the shadow run dies in the checker, not in the
+/// allocator). This marks bit 30 of the block's own alloc_size word instead:
+/// sizes are far below 2^30, the bit costs no memory, and it says exactly one
+/// thing -- "this block is currently on a free list". Set on every free push,
+/// cleared on every allocation, checked at rc_drop entry. A drop of a poisoned
+/// block is a double free (or a drop through a stale reference), which is what
+/// puts a bogus NEXT link on the list and later faults inside the allocator.
+export fn rc_poison_bit() -> Int {
+  1073741824
+}
+
+export fn rc_poison_mask_off() -> Int {
+  -1073741825
+}
+
+/// store(ptr-8, load(ptr-8) | POISON). Pure emission, no scratch local.
+export fn emit_rc_poison_set(b: Bytes, ptr_local: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_bit())
+  // i32.or (0x72)
+  bytebuf_push(b, 114)
+  emit_i32_store(b, 2, 0)
+}
+
+/// store(ptr-8, load(ptr-8) & ~POISON) -- the block is live again.
+export fn emit_rc_poison_clear(b: Bytes, ptr_local: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_mask_off())
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_i32_store(b, 2, 0)
+}
+
+/// `if (load(ptr-8) & POISON) unreachable` -- trap AT the faulting operation
+/// so the wasm backtrace names the compiler function that owns the bad drop.
+export fn emit_rc_poison_trap_if_freed(b: Bytes, ptr_local: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, rc_poison_bit())
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_if_void(b)
+  // unreachable
+  bytebuf_push(b, 0)
+  emit_end(b)
+}
+
+/// ADR-0055 Stage 3: the generic recursive rc_drop helper (linear RC backend).
+/// Signature (i64 value) -> (): decrement the value's reference count and, at
+/// zero, recursively drop its heap fields before pushing the block onto the
+/// free-list (global 2). `self_idx` is this function's own wasm index so it can
+/// recurse into fields to arbitrary depth.
+///
+/// Value representation (ADR-0055): a heap pointer is odd (`(block+8)|1`); an
+/// int/bool is even (`n<<1`). The block header is
+///   [alloc_size@block+0][rc_count@block+4 (class id in high byte)] and
+///   value = block+8 → live header at value-8 / value-4, payload at value+8.
+/// The drop-class byte (value-1) is: 1 = field-vector (tuple/record/ctor/
+/// closure: [_@value+0][count@value+4][fields@value+8+i*8]); 5 = array
+/// (length@value+4, data_ptr@value+8, elements at data_ptr+i*8). Anything else
+/// (leaf: int/bool/string/float/bare-fn, or an unheadered pointer) is freed
+/// without following fields.
+///
+/// Locals: 0 = i64 v (param); 1 vptr, 2 class, 3 cnt, 4 idx, 5 dptr (i32);
+/// 6 = i64 field value.
