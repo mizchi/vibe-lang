@@ -1,5 +1,9 @@
 import @vibe/compiler/checker {
-  CheckedProgram, canonical_checked_value_env_snapshot, canonical_effective_value_env_snapshot
+  CheckedProgram,
+  CheckedProgramTypeDefsObservation,
+  canonical_checked_type_defs_snapshot,
+  canonical_checked_value_env_snapshot,
+  canonical_effective_value_env_snapshot
 }
 
 import @vibe/compiler/core {
@@ -12,6 +16,24 @@ import @vibe/core {
 
 fn snapshot(env: TypeEnv, subst: Subst) -> String {
   canonical_effective_value_env_snapshot(env, subst)
+}
+
+fn typedef_observation(defs: Array[TypeDef], binders: Array[Array[Int]], subst: Subst) -> CheckedProgramTypeDefsObservation {
+  CheckedProgramTypeDefsObservation::{
+    // This original-shape literal is intentionally source-compatible.
+    checked_program: CheckedProgram::{
+      checked_stmts: array_empty(),
+      final_env: EnvEmpty,
+      type_defs: defs,
+      final_subst: subst,
+      typed_occurrences: array_empty()
+    },
+    type_def_binders: binders
+  }
+}
+
+fn typedef_snapshot(defs: Array[TypeDef], binders: Array[Array[Int]], subst: Subst) -> String {
+  canonical_checked_type_defs_snapshot(typedef_observation(defs, binders, subst))
 }
 
 test "canonical checked state preserves EnvBind EnvFlat and EnvCached first-match shadows" {
@@ -177,8 +199,165 @@ test "canonical checked state sorts effect rows and resolves effect substitution
   ]), SubstEmpty))
 }
 
-test "canonical checked state uses lexicographic names and wrapper ignores other checked fields" {
-  // String `<` is length-first in the historical host; this must emit a before aa.
+test "canonical enum provenance uses declared binder positions" {
+  let second_only = typedef_snapshot([
+    TDEnum("Choice", [
+      "A",
+      "B"
+    ], [
+      ("Only", [
+        CtVar(91)
+      ])
+    ])
+  ], [
+    [
+      12,
+      91
+    ]
+  ], SubstBind(91, CtString, SubstEmpty))
+  let alpha_equivalent = typedef_snapshot([
+    TDEnum("Choice", [
+      "X",
+      "Y"
+    ], [
+      ("Only", [
+        CtVar(4)
+      ])
+    ])
+  ], [
+    [
+      3,
+      4
+    ]
+  ], SubstBind(4, CtBool, SubstEmpty))
+  let first_only = typedef_snapshot([
+    TDEnum("Choice", [
+      "X",
+      "Y"
+    ], [
+      ("Only", [
+        CtVar(3)
+      ])
+    ])
+  ], [
+    [
+      3,
+      4
+    ]
+  ], SubstEmpty)
+  assert(second_only == alpha_equivalent)
+  // If enum variables were normalized by first occurrence, these would collide.
+  assert(second_only != first_only)
+}
+
+test "canonical retained typedefs alpha-normalize rigid params and effect rows" {
+  let left = typedef_snapshot([
+    TDStruct("Box", [
+      ("value", CtNamed("T", array_empty()))
+    ], [
+      "value"
+    ], [
+      "T"
+    ]),
+    TDAlias("Wrapped", [
+      "T"
+    ], CtNamed("T", array_empty())),
+    TDEffect("Reader", [
+      ("ask", array_empty(), CtFn(array_empty(), CtNamed("T", array_empty()), Some("Exception, State[T], State[T]")))
+    ], [
+      "T"
+    ])
+  ], [
+    array_empty(),
+    array_empty(),
+    array_empty()
+  ], SubstEmpty)
+  let alpha = typedef_snapshot([
+    TDStruct("Box", [
+      ("value", CtNamed("X", array_empty()))
+    ], [
+      "value"
+    ], [
+      "X"
+    ]),
+    TDAlias("Wrapped", [
+      "X"
+    ], CtNamed("X", array_empty())),
+    TDEffect("Reader", [
+      ("ask", array_empty(), CtFn(array_empty(), CtNamed("X", array_empty()), Some("State[X], Error")))
+    ], [
+      "X"
+    ])
+  ], [
+    array_empty(),
+    array_empty(),
+    array_empty()
+  ], SubstEmpty)
+  assert(left == alpha)
+}
+
+test "canonical retained typedefs preserve definition and member order" {
+  let ordered = typedef_snapshot([
+    TDEnum("First", array_empty(), [
+      ("A", array_empty()),
+      ("B", array_empty())
+    ]),
+    TDStruct("Second", [
+      ("x", CtInt),
+      ("y", CtString)
+    ], array_empty(), array_empty())
+  ], [
+    array_empty(),
+    array_empty()
+  ], SubstEmpty)
+  let changed_members = typedef_snapshot([
+    TDEnum("First", array_empty(), [
+      ("B", array_empty()),
+      ("A", array_empty())
+    ]),
+    TDStruct("Second", [
+      ("x", CtInt),
+      ("y", CtString)
+    ], array_empty(), array_empty())
+  ], [
+    array_empty(),
+    array_empty()
+  ], SubstEmpty)
+  let changed_defs = typedef_snapshot([
+    TDStruct("Second", [
+      ("x", CtInt),
+      ("y", CtString)
+    ], array_empty(), array_empty()),
+    TDEnum("First", array_empty(), [
+      ("A", array_empty()),
+      ("B", array_empty())
+    ])
+  ], [
+    array_empty(),
+    array_empty()
+  ], SubstEmpty)
+  let changed_mutability = typedef_snapshot([
+    TDEnum("First", array_empty(), [
+      ("A", array_empty()),
+      ("B", array_empty())
+    ]),
+    TDStruct("Second", [
+      ("x", CtInt),
+      ("y", CtString)
+    ], [
+      "y"
+    ], array_empty())
+  ], [
+    array_empty(),
+    array_empty()
+  ], SubstEmpty)
+  assert(ordered != changed_members)
+  assert(ordered != changed_defs)
+  assert(ordered != changed_mutability)
+}
+
+test "canonical checked wrappers isolate value and typedef observations" {
+  // String ordering must be lexical, not the runtime's length-first ordering.
   let ordered = snapshot(EnvFlat([
     ("aa", CtInt),
     ("a", CtBool)
@@ -188,13 +367,20 @@ test "canonical checked state uses lexicographic names and wrapper ignores other
     ("aa", CtInt)
   ]), SubstEmpty)
   assert(ordered == expected)
-  let env = EnvFlat([
-    ("value", CtInt)
-  ])
+  let type_defs = [
+    TDEnum("Kept", array_empty(), [
+      ("K", [
+        CtInt
+      ])
+    ])
+  ]
+  // Old CheckedProgram literals remain source-compatible without provenance.
   let first = CheckedProgram::{
     checked_stmts: array_empty(),
-    final_env: env,
-    type_defs: array_empty(),
+    final_env: EnvFlat([
+      ("value", CtInt)
+    ]),
+    type_defs: type_defs,
     final_subst: SubstEmpty,
     typed_occurrences: array_empty()
   }
@@ -202,14 +388,86 @@ test "canonical checked state uses lexicographic names and wrapper ignores other
     checked_stmts: [
       SLet(false, false, "ignored", None, EInt(1))
     ],
-    final_env: env,
-    type_defs: [
-      TDEnum("Ignored", array_empty(), array_empty())
-    ],
+    final_env: EnvBind("other", CtString, EnvTraitImpl("Eq", CtInt, EnvEmpty)),
+    type_defs: type_defs,
     final_subst: SubstEmpty,
     typed_occurrences: [
       (99, CtString)
     ]
   }
-  assert(canonical_checked_value_env_snapshot(first) == canonical_checked_value_env_snapshot(second))
+  let value_only = CheckedProgram::{
+    checked_stmts: array_empty(),
+    final_env: EnvFlat([
+      ("value", CtInt)
+    ]),
+    type_defs: array_empty(),
+    final_subst: SubstEmpty,
+    typed_occurrences: array_empty()
+  }
+  let binders = [
+    array_empty()
+  ]
+  let first_observation = CheckedProgramTypeDefsObservation::{
+    checked_program: first,
+    type_def_binders: binders
+  }
+  let second_observation = CheckedProgramTypeDefsObservation::{
+    checked_program: second,
+    type_def_binders: binders
+  }
+  assert(canonical_checked_type_defs_snapshot(first_observation) == canonical_checked_type_defs_snapshot(second_observation))
+  assert(canonical_checked_value_env_snapshot(first) == canonical_checked_value_env_snapshot(value_only))
+}
+
+test "canonical typedef snapshot marks missing provenance" {
+  let snapshot = typedef_snapshot([
+    TDEnum("Missing", [
+      "T"
+    ], array_empty())
+  ], array_empty(), SubstEmpty)
+  assert(String::contains(snapshot, "array_count_mismatch"))
+  assert(String::contains(snapshot, "missing_metadata"))
+  assert(String::contains(snapshot, "position"))
+  assert(String::contains(snapshot, "enum"))
+}
+
+test "canonical typedef snapshot marks surplus provenance" {
+  let snapshot = typedef_snapshot(array_empty(), [
+    array_empty()
+  ], SubstEmpty)
+  assert(String::contains(snapshot, "array_count_mismatch"))
+  assert(String::contains(snapshot, "surplus_metadata"))
+  assert(String::contains(snapshot, "position"))
+  assert(String::contains(snapshot, "none"))
+}
+
+test "canonical typedef snapshot marks wrong enum binder length" {
+  let snapshot = typedef_snapshot([
+    TDEnum("Wrong", [
+      "A",
+      "B"
+    ], array_empty())
+  ], [
+    [
+      7
+    ]
+  ], SubstEmpty)
+  assert(String::contains(snapshot, "enum_binder_count_mismatch"))
+  assert(String::contains(snapshot, "expected_binders"))
+  assert(String::contains(snapshot, "actual_binders"))
+  assert(String::contains(snapshot, "enum"))
+}
+
+test "canonical typedef snapshot marks non-enum binders" {
+  let snapshot = typedef_snapshot([
+    TDStruct("Wrong", array_empty(), array_empty(), array_empty())
+  ], [
+    [
+      7
+    ]
+  ], SubstEmpty)
+  assert(String::contains(snapshot, "non_enum_binders"))
+  assert(String::contains(snapshot, "position"))
+  assert(String::contains(snapshot, "struct"))
+  assert(String::contains(snapshot, "actual_binders"))
 }

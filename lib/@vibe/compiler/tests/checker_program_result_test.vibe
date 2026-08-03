@@ -5,7 +5,12 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/checker {
-  check_program, check_program_result, check_program_with_env, check_program_with_env_result
+  check_program,
+  check_program_result,
+  check_program_type_defs_observation,
+  check_program_with_env,
+  check_program_with_env_result,
+  check_program_with_env_type_defs_observation
 }
 
 import @vibe/core {
@@ -68,24 +73,81 @@ test "check_program_result retains production outputs" {
   assert(occurrences_apply_final_subst(checked.typed_occurrences, checked.final_subst))
 }
 
+test "production result retains every typedef form and enum binder provenance" {
+  let observation = check_program_type_defs_observation([
+    SEnum(false, "Choice", [
+      "A",
+      "B"
+    ], [
+      ("Only", [
+        TyName("B")
+      ])
+    ], array_empty()),
+    SStruct(false, "Box", [
+      ("value", TyName("T"))
+    ], array_empty(), [
+      "value"
+    ], [
+      "T"
+    ]),
+    STypeAlias(false, "Wrapped", [
+      "T"
+    ], TyName("T")),
+    SEffectDef(false, "Reader", [
+      "T"
+    ], [
+      ("ask", array_empty(), TyName("T"))
+    ])
+  ])
+  let checked = observation.checked_program
+  let type_def_binders = observation.type_def_binders
+  assert(Array::length(checked.type_defs) == 4)
+  assert(Array::length(checked.type_defs) == Array::length(type_def_binders))
+  match Array::get(checked.type_defs, 0) {
+    TDEnum("Choice", params, _) => assert(Array::length(params) == 2),
+    _ => assert(false)
+  }
+  // Captured at declaration time, in declared order, even though A is unused.
+  let binders = Array::get(type_def_binders, 0)
+  assert(Array::length(binders) == 2)
+  match Array::get(checked.type_defs, 1) {
+    TDStruct("Box", _, _, params) => assert(Array::length(params) == 1),
+    _ => assert(false)
+  }
+  match Array::get(checked.type_defs, 2) {
+    TDAlias("Wrapped", params, _) => assert(Array::length(params) == 1),
+    _ => assert(false)
+  }
+  match Array::get(checked.type_defs, 3) {
+    TDEffect("Reader", _, params) => assert(Array::length(params) == 1),
+    _ => assert(false)
+  }
+}
+
 test "check_program_with_env_result retains production outputs" {
   let initial_env = env_bind(EnvEmpty, "seed", CtInt)
   let stmts = [
-    SStruct(false, "Local", [
+    SEnum(false, "Local", [
+      "T"
+    ], [
+      ("Wrap", [
+        TyName("T")
+      ])
+    ], array_empty()),
+    SStruct(false, "Record", [
       ("value", TyName("Int"))
     ], array_empty(), array_empty(), array_empty()),
     SLet(false, false, "copied", None, array_length_expr())
   ]
-  let checked = check_program_with_env_result(stmts, initial_env)
-  assert(Array::length(checked.checked_stmts) == 2)
-  match Array::get(checked.checked_stmts, 0) {
-    SStruct(_, "Local", _, _, _, _) => assert(true),
-    _ => assert(false)
-  }
+  let observation = check_program_with_env_type_defs_observation(stmts, initial_env)
+  let checked = observation.checked_program
+  let type_def_binders = observation.type_def_binders
+  assert(Array::length(checked.checked_stmts) == 3)
   assert_int_binding(checked.final_env, "seed")
   assert_int_binding(checked.final_env, "copied")
+  assert(Array::length(checked.type_defs) == Array::length(type_def_binders))
   match Array::get(checked.type_defs, 0) {
-    TDStruct("Local", fields, _, _) => assert(Array::length(fields) == 1),
+    TDEnum("Local", _, _) => assert(Array::length(Array::get(type_def_binders, 0)) == 1),
     _ => assert(false)
   }
   match checked.final_subst {
