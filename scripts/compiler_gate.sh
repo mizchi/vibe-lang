@@ -6087,8 +6087,36 @@ if ! grep -q "vibe: uncaught error: boom" "$g944cdir/stderr.txt"; then
   cat "$g944cdir/stderr.txt" >&2 || true
   exit 1
 fi
+# #1372 review (Codex P1): the same boundary arm also catches every TYPED
+# `Exception[E]` (ADR-0085's runtime has a single abortive tag and no kind
+# discriminator, and the erased `Error` spelling is compatible with every
+# kind). Writing that enum payload straight to `Stderr::write_stream`
+# decoded the pointer as a packed `(ptr<<32)|len` string and printed
+# unrelated memory. It now goes through `__to_string`, so a non-String
+# payload renders as a bounded decimal: the diagnostic line must match
+# `vibe: uncaught error: <digits>` exactly, never arbitrary bytes.
+rm -f "$g944cdir/typed.wasm" "$g944cdir/typed_stderr.txt"
+sed '/^__DATA__$/,$d' fixtures/err_entry_boundary_typed_payload.vibe > "$g944cdir/typed.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g944cdir/typed.vibe" "$g944cdir/typed.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$g944cdir/typed.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_entry_boundary_typed_payload.vibe did not compile (#1372 review)" >&2
+  cat "$g944cdir/typed.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g944c_typed_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944cdir/typed.wasm" 2>"$g944cdir/typed_stderr.txt" | tail -1)"
+if [ "$g944c_typed_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: typed-payload entry boundary got '$g944c_typed_out' (want 1)" >&2
+  exit 1
+fi
+if ! grep -qE '^vibe: uncaught error: [0-9]+$' "$g944cdir/typed_stderr.txt"; then
+  echo "[compiler-gate] FAIL: a TYPED exception escaping the entry printed something other than a bounded decimal -- the boundary is reinterpreting the payload as a string again (#1372 review)" >&2
+  head -c 400 "$g944cdir/typed_stderr.txt" >&2 || true
+  exit 1
+fi
 rm -rf "$g944cdir"
-echo "[compiler-gate] entry-boundary Error handler ok (#944 stage C)"
+echo "[compiler-gate] entry-boundary Error handler ok (#944 stage C, typed payload #1372)"
 
 # 44d. #1087: a NON-tail `throw` inline in a `handle .. with Error` body
 #      must abort the body -- the arm's value (1) is the handle's result,

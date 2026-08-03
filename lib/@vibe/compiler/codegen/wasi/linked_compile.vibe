@@ -773,10 +773,24 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name && lc_row_has_error(eff) {
+        // #1372 review (Codex P1): the bound payload is NOT necessarily a
+        // String. ADR-0085's runtime carries a single abortive tag with no
+        // kind, so this erased `Error::Throw` arm also catches every typed
+        // `Exception[E]` -- including the `TaskError` that #1324's
+        // `TaskGroup::run` throws. Writing that enum pointer straight to
+        // `Stderr::write_stream` decoded it as a packed `(ptr<<32)|len`
+        // string and dumped the whole data segment. Route it through
+        // `__to_string`, whose ADR-0058 int/string discrimination
+        // (`64 <= ptr && ptr + len <= memory_size`) is the identity on real
+        // strings and renders anything else as a bounded decimal instead of
+        // reading arbitrary memory. Printing the real payload of a non-String
+        // kind needs a runtime kind tag -- see #1374.
         let diag = ESeq(ECall(EIdent("Stderr::write_stream", -1), [
           EString("vibe: uncaught error: ")
         ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
-          EIdent("__entry_err_msg", -1)
+          ECall(EIdent("__to_string", -1), [
+            EIdent("__entry_err_msg", -1)
+          ], -1)
         ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
           EString("\n")
         ], -1), EInt(1))))
