@@ -35,8 +35,10 @@ import @vibe/compiler/core {
 }
 
 import ./checker.vibe {
+  TypedOccurrenceRoleLaneCapture,
   check_assignable,
   check_expr,
+  check_expr_capture,
   fn_return_env_name,
   is_array_builder_ty,
   is_region_tagged_ty,
@@ -90,6 +92,13 @@ export struct CheckedTypedOccurrenceStatementObservation {
   entries: Array[(Array[Int], Int, Type)]
 }
 
+/// Opaque append-time role/lane observation. Its rows are exactly aligned to
+/// the retained legacy typed_occurrences table, but expose no offsets or types.
+export struct CheckedTypedOccurrenceRoleLaneObservation {
+  checked_program: CheckedProgram;
+  entries: TypedOccurrenceRoleLaneCapture
+}
+
 fn copy_ints(items: Array[Int]) -> Array[Int] {
   Array::slice(items, 0, Array::length(items))
 }
@@ -112,6 +121,40 @@ fn typed_occurrence_statement_observation_from_capture(checked: CheckedProgram, 
   Some(CheckedTypedOccurrenceStatementObservation::{
     checked_program: checked, entries: entries
   })
+}
+
+fn typed_occurrence_role_lane_observation_from_capture(checked: CheckedProgram, entries: TypedOccurrenceRoleLaneCapture) -> Option[CheckedTypedOccurrenceRoleLaneObservation] {
+  if Array::length(entries.entries) == Array::length(checked.typed_occurrences) {
+    Some(CheckedTypedOccurrenceRoleLaneObservation::{
+      checked_program: checked, entries: entries
+    })
+  } else {
+    None
+  }
+}
+
+/// Invalid indexes are deliberately invisible rather than exposing the raw
+/// capture representation.
+export fn checked_typed_occurrence_role_lane_observation_row_count(observation: CheckedTypedOccurrenceRoleLaneObservation) -> Int {
+  Array::length(observation.entries.entries)
+}
+
+export fn checked_typed_occurrence_role_lane_observation_role_at(observation: CheckedTypedOccurrenceRoleLaneObservation, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(observation.entries.entries) {
+    None
+  } else {
+    let (role, _) = Array::get(observation.entries.entries, row_index)
+    Some(role)
+  }
+}
+
+export fn checked_typed_occurrence_role_lane_observation_lane_at(observation: CheckedTypedOccurrenceRoleLaneObservation, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(observation.entries.entries) {
+    None
+  } else {
+    let (_, lane) = Array::get(observation.entries.entries, row_index)
+    Some(lane)
+  }
 }
 
 /// Row count is exposed without making the observation's retained capture
@@ -720,7 +763,7 @@ fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
   out
 }
 
-fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[Array[(Array[Int], Int, Type)]]) -> (TypeEnv, Subst, Int) {
+fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[Array[(Array[Int], Int, Type)]], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
@@ -878,9 +921,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns0, nc) = if is_rec {
-          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
+          check_expr_capture(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         } else {
-          check_expr(val, env, defs, s, c, errors, tytab)
+          check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
@@ -925,7 +968,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // miscompiles cross-function references); reject it, but keep
         // checking/binding below for error recovery.
         Array::push(errors, top_level_reject_msg("top-level `let mut` bindings are not allowed; move it into fn main", val))
-        let (vt, ns0, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let (vt, ns0, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         let ns = match ann {
           Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
           None => ns0
@@ -938,7 +981,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetPat(pat, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let (vt, ns, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         let new_env = match pat {
           PTuple(pats) => match vt {
             CtTuple(types) => {
@@ -1281,11 +1324,11 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
       },
       STest(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
+        let (_, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
+        let (_, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         (env, ns, nc)
       },
       SExpr(expr) => {
@@ -1306,14 +1349,14 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           // expression statement was silently DROPPED by the linear backend;
           // reject it (still type-check the expression for error recovery).
           Array::push(errors, top_level_reject_msg("top-level expressions are not allowed; move it into fn main", expr))
-          let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
+          let (_, ns, nc) = check_expr_capture(expr, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
           (env, ns, nc)
         }
       },
       SModule(_, _, body) => {
         // `statement_path` is None in ordinary checking, so nested modules
         // recurse without allocating retained path state.
-        let _ = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab, statement_path, capture)
+        let _ = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab, statement_path, capture, role_lane_capture)
         (env, s, c)
       },
       SImport(_, names) => (bind_stmt_imports(env, names), s, c)
@@ -2156,13 +2199,13 @@ fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_
 /// signature; production result APIs use the provenance-aware internal helper.
 export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
   let ignored_type_def_binders = array_empty()
-  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, s, c, errors, tytab, None, None)
+  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, s, c, errors, tytab, None, None, None)
 }
 
 /// Run the production whole-program check and retain every successful output
 /// the checker actually produces. This deliberately does not use the
 /// hover-only `check_program_type_table` path.
-fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[Array[(Array[Int], Int, Type)]]) -> CheckedProgramTypeDefsObservation with { Error } {
+fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[Array[(Array[Int], Int, Type)]], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with { Error } {
   // #760(2): make `Result` (Ok/Err) resolvable standalone — append its enum
   // declaration unless already declared/imported. Must run before checking so
   // `Result::Ok` / bare `Ok` / `Result[T, E]` annotations resolve on the
@@ -2220,7 +2263,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
     Some(_) => Some(array_empty()),
     None => None
   }
-  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture)
+  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   // #1081 step 3 Phase B (Codex review, PR #1151): `let mut` capture
@@ -2253,7 +2296,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
 /// Run the production checker once and expose retained type-definition binder
 /// provenance for canonical observation.
 export fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with { Error } {
-  check_program_type_defs_observation_impl(stmts, None)
+  check_program_type_defs_observation_impl(stmts, None, None)
 }
 
 /// Observe every legacy typed-occurrence row at checker time by its owning
@@ -2261,13 +2304,23 @@ export fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProg
 /// CheckedProgram; they are not original-source or edit-stable coordinates.
 export fn check_program_typed_occurrence_statement_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error } {
   let entries = array_empty()
-  let checked = check_program_type_defs_observation_impl(stmts, Some(entries)).checked_program
+  let checked = check_program_type_defs_observation_impl(stmts, Some(entries), None).checked_program
   typed_occurrence_statement_observation_from_capture(checked, entries)
+}
+
+/// Append-time role/lane capture. Failure or an alignment mismatch is hidden as
+/// None, so no partial observation can escape.
+export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with { Error } {
+  let entries = TypedOccurrenceRoleLaneCapture::{
+    entries: array_empty()
+  }
+  let checked = check_program_type_defs_observation_impl(stmts, None, Some(entries)).checked_program
+  typed_occurrence_role_lane_observation_from_capture(checked, entries)
 }
 
 /// Successful production-check result, preserving the original public shape.
 export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Error } {
-  check_program_type_defs_observation_impl(stmts, None).checked_program
+  check_program_type_defs_observation_impl(stmts, None, None).checked_program
 }
 
 /// Compatibility API: preserve the historical TypeEnv result and error
@@ -2305,9 +2358,9 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
-fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[Array[(Array[Int], Int, Type)]]) -> CheckedProgramTypeDefsObservation with { Error } {
+fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[Array[(Array[Int], Int, Type)]], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with { Error } {
   match initial_env {
-    EnvEmpty => check_program_type_defs_observation_impl(stmts, capture),
+    EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
     _ => {
       inject_prelude_result(stmts)
       inject_trait_method_generics(stmts)
@@ -2339,7 +2392,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
         Some(_) => Some(array_empty()),
         None => None
       }
-      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture)
+      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
       // #1090 review: the FS typecheck path (every file with imports) went
       // through here and never enforced trait bounds, so `[T: Send]` on an
       // imported generic fn was silently bypassed. Enforce the Send bound
@@ -2376,20 +2429,28 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
 /// Run the production checker once with an initial environment and expose
 /// retained type-definition binder provenance for canonical observation.
 export fn check_program_with_env_type_defs_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgramTypeDefsObservation with { Error } {
-  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None)
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, None)
 }
 
 /// As the ordinary statement-owner observation, seeded with an importing
 /// environment. Validation failure is fail-closed as None.
 export fn check_program_with_env_typed_occurrence_statement_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error } {
   let entries = array_empty()
-  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(entries)).checked_program
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(entries), None).checked_program
   typed_occurrence_statement_observation_from_capture(checked, entries)
+}
+
+export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with { Error } {
+  let entries = TypedOccurrenceRoleLaneCapture::{
+    entries: array_empty()
+  }
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries)).checked_program
+  typed_occurrence_role_lane_observation_from_capture(checked, entries)
 }
 
 /// Successful production-check result, preserving the original public shape.
 export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with { Error } {
-  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None).checked_program
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, None).checked_program
 }
 
 /// Compatibility API: preserve the historical TypeEnv result and error
