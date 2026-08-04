@@ -2367,7 +2367,169 @@ fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
 // observation entry points; ordinary checking carries None and keeps the
 // legacy `(offset, Type)` table as its only output.
 export struct TypedOccurrenceRoleLaneCapture {
-  entries: Array[(String, String)]
+  entries: Array[(String, String)];
+  provenance_entries: Array[(Array[Int], Array[Int], String, String, Type)];
+  mut statement_path: Array[Int];
+  frame_paths: Array[Array[Int]];
+  frame_next_children: Array[Int];
+  mut frame_depth: Int;
+  mut complete: Bool
+}
+
+/// Start one retained statement's expression root. This mutable state exists
+/// only for explicit provenance observations; the production checker passes
+/// None and performs no path allocation.
+export fn typed_occurrence_capture_begin_statement(capture: Option[TypedOccurrenceRoleLaneCapture], statement_path: Array[Int]) -> Unit {
+  match capture {
+    Some(c) => {
+      c.statement_path = Array::slice(statement_path, 0, Array::length(statement_path))
+      c.frame_depth = 0
+    },
+    None => ()
+  }
+}
+
+/// End a retained statement. Clearing the logical stack prevents a later
+/// statement from ever inheriting an expression coordinate.
+export fn typed_occurrence_capture_end_statement(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
+  match capture {
+    Some(c) => {
+      // Every statement root must have exited before the statement boundary.
+      // Do not let a checker traversal-order divergence leak into the next
+      // statement as a plausible path.
+      if c.frame_depth != 0 {
+        c.complete = false
+        c.frame_depth = 0
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+}
+
+fn typed_occurrence_capture_enter_expression(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
+  match capture {
+    Some(c) => {
+      let path = if c.frame_depth == 0 {
+        // The statement coordinate is captured independently at append time;
+        // each retained statement expression starts at structural root [].
+        array_empty()
+      } else {
+        let parent_index = c.frame_depth - 1
+        let parent_path = Array::get(c.frame_paths, parent_index)
+        let child_index = Array::get(c.frame_next_children, parent_index)
+        Array::set(c.frame_next_children, parent_index, child_index + 1)
+        let next_path = Array::slice(parent_path, 0, Array::length(parent_path))
+        Array::push(next_path, child_index)
+        next_path
+      }
+      if c.frame_depth < Array::length(c.frame_paths) {
+        Array::set(c.frame_paths, c.frame_depth, path)
+        Array::set(c.frame_next_children, c.frame_depth, 0)
+      } else {
+        Array::push(c.frame_paths, path)
+        Array::push(c.frame_next_children, 0)
+      }
+      c.frame_depth = c.frame_depth + 1
+    },
+    None => ()
+  }
+}
+
+fn typed_occurrence_capture_exit_expression(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
+  match capture {
+    Some(c) => {
+      if c.frame_depth > 0 {
+        c.frame_depth = c.frame_depth - 1
+      } else {
+        c.complete = false
+      }
+    },
+    None => ()
+  }
+}
+
+/// Account for structural children that checker semantics deliberately do not
+/// recurse into (for example a recognized call callee). The next actual
+/// recursive child then still receives its `expr_children` index.
+fn typed_occurrence_capture_skip_children(capture: Option[TypedOccurrenceRoleLaneCapture], count: Int) -> Unit {
+  match capture {
+    Some(c) => {
+      if c.frame_depth > 0 {
+        let parent_index = c.frame_depth - 1
+        let next_child = Array::get(c.frame_next_children, parent_index)
+        Array::set(c.frame_next_children, parent_index, next_child + count)
+      } else {
+        c.complete = false
+      }
+    },
+    None => ()
+  }
+}
+
+/// Represent a structural child that checker control flow enters iteratively
+/// rather than through `check_expr_capture`. This is needed for the right
+/// spine of sequence/let expressions and for specialized call traversal.
+fn typed_occurrence_capture_enter_virtual_child(capture: Option[TypedOccurrenceRoleLaneCapture], expected_child: Int) -> Unit {
+  match capture {
+    Some(c) => {
+      if c.frame_depth > 0 {
+        let parent_index = c.frame_depth - 1
+        let actual_child = Array::get(c.frame_next_children, parent_index)
+        if actual_child != expected_child {
+          c.complete = false
+        } else {
+          ()
+        }
+        Array::set(c.frame_next_children, parent_index, actual_child + 1)
+        let parent_path = Array::get(c.frame_paths, parent_index)
+        let path = Array::slice(parent_path, 0, Array::length(parent_path))
+        Array::push(path, actual_child)
+        if c.frame_depth < Array::length(c.frame_paths) {
+          Array::set(c.frame_paths, c.frame_depth, path)
+          Array::set(c.frame_next_children, c.frame_depth, 0)
+        } else {
+          Array::push(c.frame_paths, path)
+          Array::push(c.frame_next_children, 0)
+        }
+        c.frame_depth = c.frame_depth + 1
+      } else {
+        c.complete = false
+      }
+    },
+    None => ()
+  }
+}
+
+/// Restore a virtual traversal stack to its entry depth. Any imbalance is
+/// incomplete rather than a fabricated provenance path.
+fn typed_occurrence_capture_restore_frame_depth(capture: Option[TypedOccurrenceRoleLaneCapture], expected_depth: Int) -> Unit {
+  match capture {
+    Some(c) => {
+      if c.frame_depth < expected_depth {
+        c.complete = false
+      } else {
+        ()
+      }
+      while c.frame_depth > expected_depth {
+        c.frame_depth = c.frame_depth - 1
+      }
+      if c.frame_depth != expected_depth {
+        c.complete = false
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+}
+
+fn typed_occurrence_capture_frame_depth(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Int {
+  match capture {
+    Some(c) => c.frame_depth,
+    None => -1
+  }
 }
 
 fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], role: String, lane: String) -> Unit {
@@ -2375,7 +2537,15 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
   // row exists. Negative offsets are filtered by the individual funnels.
   Array::push(tytab, (offset, ty))
   match capture {
-    Some(capture_entries) => Array::push(capture_entries.entries, (role, lane)),
+    Some(capture_entries) => {
+      Array::push(capture_entries.entries, (role, lane))
+      if lane == "SyntheticRewrite" || lane == "AuxiliaryResumeValueRecheck" || capture_entries.frame_depth == 0 {
+        capture_entries.complete = false
+      } else {
+        let expression_path = Array::get(capture_entries.frame_paths, capture_entries.frame_depth - 1)
+        Array::push(capture_entries.provenance_entries, (Array::slice(capture_entries.statement_path, 0, Array::length(capture_entries.statement_path)), Array::slice(expression_path, 0, Array::length(expression_path)), role, lane, ty))
+      }
+    },
     None => ()
   }
 }
@@ -2413,6 +2583,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   let mut cenv = env
   let mut s1 = s
   let mut c1 = c
+  let start_frame_depth = typed_occurrence_capture_frame_depth(capture)
   let mut done = false
   let mut result = (CtUnit, s, c)
   while !done {
@@ -2421,6 +2592,10 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         let (_, ns, nc) = ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
         s1 = ns
         c1 = nc
+        // The right child is processed by this iterative loop, not by a
+        // recursive call. Keep its frame so nested spine values receive the
+        // exact `expr_children` prefix.
+        typed_occurrence_capture_enter_virtual_child(capture, 1)
         cur = right
       },
       ELet(name, val, body, _) => {
@@ -2439,6 +2614,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         cenv = env_bind(cenv, name, gen)
         s1 = ns
         c1 = nc
+        typed_occurrence_capture_enter_virtual_child(capture, 1)
         cur = body
       },
       ELetMut(name, val, body, _) => {
@@ -2459,6 +2635,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           c1 = nc
         }
         s1 = ns
+        typed_occurrence_capture_enter_virtual_child(capture, 1)
         cur = body
       },
       ELetRec(name, val, body) => {
@@ -2472,14 +2649,18 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         cenv = env_bind(cenv, name, gen)
         s1 = s2
         c1 = nc
+        typed_occurrence_capture_enter_virtual_child(capture, 1)
         cur = body
       },
       _ => {
-        result = ce(cur, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        // `cur` already owns the active virtual right-child frame. Calling
+        // the wrapper here would add a fictional child before checking it.
+        result = check_expr_capture_impl(cur, cenv, defs, s1, c1, errors, tytab, capture, lane)
         done = true
       }
     }
   }
+  typed_occurrence_capture_restore_frame_depth(capture, start_frame_depth)
   result
 }
 
@@ -3414,7 +3595,7 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
   }
 }
 
-export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
+fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
@@ -3536,6 +3717,9 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       // `resume(v)` likewise yields the continuation result (a fresh var;
       // handler arms are otherwise unchecked).
       EIdent(name, callee_off) => {
+        // The recognized-callee path types arguments directly, but its callee
+        // remains structural child 0 under core::expr_children.
+        typed_occurrence_capture_skip_children(capture, 1)
         field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_expr)
         index_target_check(name, args, env, defs, s, c, errors, check_expr)
         if name == "perform" {
@@ -3557,6 +3741,12 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
                 if is_error_throw {
                   (CtUnknown, s, c)
                 } else {
+                  // The op call is perform's outer argument (child 1), and
+                  // its callee is its own child 0. We check only op arguments,
+                  // so retain both skipped structural frames explicitly.
+                  let virtual_parent_depth = typed_occurrence_capture_frame_depth(capture)
+                  typed_occurrence_capture_enter_virtual_child(capture, 1)
+                  typed_occurrence_capture_skip_children(capture, 1)
                   let oalen = Array::length(opargs)
                   let mut s1 = s
                   let mut c1 = c
@@ -3574,7 +3764,7 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
                   // argument types were previously unchecked, so
                   // `perform R::Take("str")` against `Take(Int)` compiled and
                   // produced garbage. Builtin/imported effects (no TDEffect) skip.
-                  match op_callee {
+                  let perform_result = match op_callee {
                     EIdent(op_qname, op_off) => match effect_op_sig(defs, op_qname) {
                       Some(sig) => {
                         let (sig_params_decl, sig_ret_decl) = sig
@@ -3637,6 +3827,8 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
                       (tv, s1, c2)
                     }
                   }
+                  typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
+                  perform_result
                 }
               },
               EIdent(bare_qname, bare_off) => {
@@ -4405,7 +4597,13 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
               let (binder_name, _) = Array::get(fn_params, 0)
               let env_body = env_bind(env, binder_name, CtNamed(skolem_name, [
               ]))
+              // The specialized region path checks the literal lambda body
+              // directly. Preserve both structural edges from the outer call:
+              // argument child 1, then EFn body child 0.
+              let virtual_parent_depth = typed_occurrence_capture_frame_depth(capture)
+              typed_occurrence_capture_enter_virtual_child(capture, 1)
               let (body_ty, s1, c1) = check_expr_capture(fn_body, env_body, defs, s, c + 1, errors, tytab, capture, lane)
+              typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
               let zonked_ret = subst_apply(s1, body_ty)
               if type_mentions_named(zonked_ret, skolem_name) {
                 Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
@@ -4745,7 +4943,13 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
             None => (CtUnknown, s, c)
           },
           None => {
+            // The receiver is the dot object's child 0, while the dot callee
+            // is the outer call's child 0. The specialized method path skips
+            // that EDot recursion, so retain its frame explicitly.
+            let virtual_parent_depth = typed_occurrence_capture_frame_depth(capture)
+            typed_occurrence_capture_enter_virtual_child(capture, 0)
             let (obj_ty, s1, c1) = check_expr_capture(obj, env, defs, s, c, errors, tytab, capture, lane)
+            typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
             let resolved = subst_apply(s1, obj_ty)
             let type_prefix = type_name_prefix(resolved)
             let qualified = String::concat(type_prefix, String::concat("::", method))
@@ -4941,6 +5145,9 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         }
         match asc_ann {
           Some(ann_te) => {
+            // The synthetic ascription lambda is structural child 0 but is
+            // intentionally not type-checked as a callable expression.
+            typed_occurrence_capture_skip_children(capture, 1)
             let (at, ns0, nc0) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
             let resolved = resolve_type_expr(ann_te, defs)
             let actual = subst_apply(ns0, at)
@@ -4957,6 +5164,8 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
             if callee_name0 != "" {
               match direct_call_return(env, callee_name0) {
                 Some(ret_ty) => {
+                  // A direct-return lookup avoids rechecking this callee.
+                  typed_occurrence_capture_skip_children(capture, 1)
                   let alen = Array::length(args)
                   let mut ai = 0
                   let mut s2 = s
@@ -6384,8 +6593,26 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
 
 /// Compatibility public expression checker. Ordinary callers never allocate a
 /// role/lane capture and all retained legacy output stays unchanged.
+/// Expression paths follow `core::expr_children`: root is `[]`, and each
+/// recursively checked structural child receives its zero-based child index.
+/// The dynamic stack makes the rule apply uniformly to every existing
+/// recursive check without reconstructing provenance from source offsets.
+export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
+  // Production calls carry None. Avoid enter/exit Option dispatches for every
+  // recursive expression while preserving them exactly for opt-in capture.
+  match capture {
+    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane),
+    Some(_) => {
+      typed_occurrence_capture_enter_expression(capture)
+      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane)
+      typed_occurrence_capture_exit_expression(capture)
+      result
+    }
+  }
+}
+
 export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
-  check_expr_capture(expr, env, defs, s, c, errors, tytab, None, "Primary")
+  check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary")
 }
 
 fn map_literal_ground(t: Type) -> Bool {

@@ -1,0 +1,321 @@
+//# Complete append-time typed-occurrence structural provenance
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
+}
+
+import @vibe/compiler/checker {
+  CheckedTypedOccurrenceExpressionPathObservation,
+  canonical_checked_typed_occurrence_expression_path_snapshot,
+  check_program_typed_occurrence_expression_path_observation,
+  check_program_with_env_typed_occurrence_expression_path_observation,
+  checked_typed_occurrence_expression_path_observation_expression_path_at,
+  checked_typed_occurrence_expression_path_observation_lane_at,
+  checked_typed_occurrence_expression_path_observation_role_at,
+  checked_typed_occurrence_expression_path_observation_row_count,
+  checked_typed_occurrence_expression_path_observation_statement_path_at
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn ints_equal(left: Array[Int], right: Array[Int]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut equal = true
+    while i < Array::length(left) {
+      if Array::get(left, i) == Array::get(right, i) {
+        ()
+      } else {
+        equal = false
+      }
+      i = i + 1
+    }
+    equal
+  }
+}
+
+fn assert_path(actual: Option[Array[Int]], expected: Array[Int]) -> Unit {
+  match actual {
+    Some(path) => assert(ints_equal(path, expected)),
+    None => assert(false)
+  }
+}
+
+fn assert_role(observation: CheckedTypedOccurrenceExpressionPathObservation, row: Int, expected: String) -> Unit {
+  match checked_typed_occurrence_expression_path_observation_role_at(observation, row) {
+    Some(role) => assert(role == expected),
+    None => assert(false)
+  }
+}
+
+fn snapshot_contains(snapshot: String, piece: String) -> Bool {
+  String::index_of(snapshot, piece) >= 0
+}
+
+fn nested_call_fixture() -> Array[Stmt] {
+  [
+    SLet(false, false, "value", None, ECall(EIdent("Some", 10), [
+      ECall(EIdent("Some", 11), [
+        EInt(1)
+      ], 12)
+    ], 13))
+  ]
+}
+
+test "expression provenance records root and nested call paths at append time" {
+  match check_program_typed_occurrence_expression_path_observation(nested_call_fixture()) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_expression_path_observation_row_count(observation) == 2)
+      assert_path(checked_typed_occurrence_expression_path_observation_statement_path_at(observation, 0), [
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 0), [
+        1
+      ])
+      assert_role(observation, 0, "CallResult")
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 1), array_empty())
+      assert_role(observation, 1, "CallResult")
+    },
+    None => assert(false)
+  }
+}
+
+test "expression provenance follows seq and dot child indexes despite shared offsets" {
+  let stmts = [
+    SStruct(false, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    SLet(false, false, "box", None, ECall(EIdent("Box", 10), [
+      EInt(1)
+    ], 11)),
+    SLet(false, false, "value", None, ESeq(EIdent("box", 20), EDot(EIdent("box", 21), "value", 22, 22)))
+  ]
+  match check_program_typed_occurrence_expression_path_observation(stmts) {
+    Some(observation) => {
+      // Shared dot/field offsets retain only the projection row.
+      assert(checked_typed_occurrence_expression_path_observation_row_count(observation) == 4)
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 1), [
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 2), [
+        1,
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 3), [
+        1
+      ])
+      assert_role(observation, 3, "DotProjection")
+    },
+    None => assert(false)
+  }
+}
+
+test "expression provenance keeps exact paths through a mixed iterative let spine" {
+  let stmts = [
+    SLet(false, false, "result", None, ELet("a", ECall(EIdent("Some", 100), [
+      EInt(1)
+    ], 101), ELetMut("b", ECall(EIdent("Some", 102), [
+      EInt(2)
+    ], 103), ELetRec("c", ECall(EIdent("Some", 104), [
+      EInt(3)
+    ], 105), ESeq(ECall(EIdent("Some", 106), [
+      EInt(4)
+    ], 107), ECall(EIdent("Some", 108), [
+      EInt(5)
+    ], 109))), -1), -1))
+  ]
+  match check_program_typed_occurrence_expression_path_observation(stmts) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_expression_path_observation_row_count(observation) == 5)
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 0), [
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 1), [
+        1,
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 2), [
+        1,
+        1,
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 3), [
+        1,
+        1,
+        1,
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 4), [
+        1,
+        1,
+        1,
+        1
+      ])
+    },
+    None => assert(false)
+  }
+}
+
+test "expression provenance keeps outer and nested perform call frames" {
+  let stmts = [
+    SEffectDef(false, "Ask", array_empty(), [
+      ("Get", [
+        TyApp("Option", [
+          TyName("Int")
+        ])
+      ], TyName("Int"))
+    ]),
+    SLet(false, false, "run", None, EFn(array_empty(), array_empty(), array_empty(), None, Some("Ask"), ECall(EIdent("perform", -1), [
+      ECall(EIdent("Ask::Get", -1), [
+        ECall(EIdent("Some", 110), [
+          EInt(1)
+        ], 111)
+      ], -1)
+    ], -1)))
+  ]
+  match check_program_typed_occurrence_expression_path_observation(stmts) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_expression_path_observation_row_count(observation) == 1)
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 0), [
+        0,
+        1,
+        1
+      ])
+    },
+    None => assert(false)
+  }
+}
+
+test "expression provenance keeps call-callee and dot-object receiver frames" {
+  let stmts = [
+    SLet(false, false, "result", None, ECall(EDot(EIdent("box", 120), "method", 121, 122), [
+      ECall(EIdent("Some", 123), [
+        EInt(1)
+      ], 124)
+    ], 125))
+  ]
+  match check_program_with_env_typed_occurrence_expression_path_observation(stmts, env_bind(EnvEmpty, "box", CtUnknown)) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_expression_path_observation_row_count(observation) == 3)
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 0), [
+        0,
+        0
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 1), [
+        1
+      ])
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 2), array_empty())
+    },
+    None => assert(false)
+  }
+}
+
+test "expression provenance keeps region literal lambda body frame" {
+  let stmts = [
+    SLet(false, false, "result", None, ECall(EIdent("__region_run", -1), [
+      EFn(array_empty(), array_empty(), [
+        ("region_token", None)
+      ], None, None, EIdent("outer", 126))
+    ], 127))
+  ]
+  match check_program_with_env_typed_occurrence_expression_path_observation(stmts, env_bind(EnvEmpty, "outer", CtInt)) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_expression_path_observation_row_count(observation) == 2)
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 0), [
+        1,
+        0
+      ])
+      assert_role(observation, 0, "Identifier")
+      assert_path(checked_typed_occurrence_expression_path_observation_expression_path_at(observation, 1), array_empty())
+      assert_role(observation, 1, "CallResult")
+    },
+    None => assert(false)
+  }
+}
+
+test "expression provenance snapshot retains final-substitution occurrence types" {
+  let stmts = [
+    SLet(false, false, "identity", None, EFn(array_empty(), array_empty(), [
+      ("x", None)
+    ], None, None, EIdent("x", 130))),
+    SLet(false, false, "answer", None, ECall(EIdent("identity", 131), [
+      EInt(1)
+    ], 132))
+  ]
+  match check_program_typed_occurrence_expression_path_observation(stmts) {
+    Some(observation) => {
+      // The call's raw fresh result type resolves through final_subst to Int.
+      assert(snapshot_contains(canonical_checked_typed_occurrence_expression_path_snapshot(observation), "2:I0"))
+    },
+    None => assert(false)
+  }
+}
+
+test "expression provenance snapshot is deterministic and invalid indexes are invisible" {
+  match check_program_typed_occurrence_expression_path_observation(nested_call_fixture()) {
+    Some(observation) => {
+      let snapshot = canonical_checked_typed_occurrence_expression_path_snapshot(observation)
+      assert(String::index_of(snapshot, "vibe-checked-typed-occurrence-expression-path-observation:v1") == 0)
+      match check_program_typed_occurrence_expression_path_observation(nested_call_fixture()) {
+        Some(repeated) => assert(snapshot == canonical_checked_typed_occurrence_expression_path_snapshot(repeated)),
+        None => assert(false)
+      }
+      match checked_typed_occurrence_expression_path_observation_expression_path_at(observation, -1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      match checked_typed_occurrence_expression_path_observation_statement_path_at(observation, 2) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      match checked_typed_occurrence_expression_path_observation_role_at(observation, 2) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      match checked_typed_occurrence_expression_path_observation_lane_at(observation, 2) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "ordinary and with-env expression provenance observations have parity" {
+  match check_program_typed_occurrence_expression_path_observation(nested_call_fixture()) {
+    Some(ordinary) => match check_program_with_env_typed_occurrence_expression_path_observation(nested_call_fixture(), EnvEmpty) {
+      Some(with_env) => assert(canonical_checked_typed_occurrence_expression_path_snapshot(ordinary) == canonical_checked_typed_occurrence_expression_path_snapshot(with_env)),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "synthetic rewrite and auxiliary resume recheck fail closed" {
+  let synthetic_env = env_bind(EnvEmpty, "mod.value", CtInt)
+  let synthetic = [
+    SLet(false, false, "value", None, EDot(EIdent("mod", 40), "value", 41, 42))
+  ]
+  match check_program_with_env_typed_occurrence_expression_path_observation(synthetic, synthetic_env) {
+    None => (),
+    Some(_) => assert(false)
+  }
+  let auxiliary = [
+    SEffectDef(false, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("Int"))
+    ]),
+    SLet(false, false, "handled", None, EHandle(EInt(1), [
+      (PCtor("Ask::Get", array_empty()), ECall(EIdent("resume", -1), [
+        EIdent("outer", 50)
+      ], -1))
+    ]))
+  ]
+  match check_program_with_env_typed_occurrence_expression_path_observation(auxiliary, env_bind(EnvEmpty, "outer", CtInt)) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
