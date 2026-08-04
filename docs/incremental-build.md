@@ -430,8 +430,16 @@ clean/warm parity, alpha-rename invariance under method-over-header scope, and
 identity changes for binder association, arity, bounds, signatures, and free
 nominal names. The interface observation deliberately continues to read method
 generic rows from source `STrait`; the same provenance is independently retained
-in TypeEnv v3, but remains absent from a full checked artifact. A trait/impl
-regression proves an impl-bound edit changes the
+in TypeEnv v3. Issue #1379 additionally defines a narrow, length-delimited
+`CheckedTypeDefsArtifact` v1 for retained `type_defs`, aligned declaration
+binders, and the authoritative semantic `final_subst` chain. `SubstCached`
+acceleration-bearing substitutions are rejected rather than normalized or
+serialized: no invariant establishes that their maps are semantically equivalent
+to the rest chain, and v1 excludes them until the `Map[Type]` codegen issue is
+fixed. It is not a full
+CheckedProgram/TypeEnv artifact, typed IR, cache key/reuse input, interface,
+import contract, or trace schema; it leaves schema 6, interface v2, and
+TypeEnv v3 unchanged. A trait/impl regression proves an impl-bound edit changes the
 complete persistent TypeEnv v3 transport observation while leaving the
 value-only checked-env observation unchanged; it makes no exported-interface
 stability assertion.
