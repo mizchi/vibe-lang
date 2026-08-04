@@ -560,8 +560,16 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
   let catchall_idx = find_catchall_idx(arms)
   let num_cond_arms = catchall_idx
   let mut max_nl = nl1
+  // Match arms are sibling control-flow scopes. Their locals may have
+  // different Wasm value types (notably native array refs versus i64), so
+  // allocate each arm after the previous arm's high-water mark rather than
+  // reusing the same lexical slots.
+  let mut next_arm_local = Array::length(local_names)
   let mut ai = 0
   while ai < num_cond_arms {
+    while Array::length(local_names) < next_arm_local {
+      Array::push(local_names, "")
+    }
     let names_len_at_arm = Array::length(local_names)
     let (p, arm_body) = Array::get(arms, ai)
     let ld_arm = if ld >= 0 {
@@ -581,17 +589,22 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
     if Array::length(local_names) > max_nl {
       max_nl = Array::length(local_names)
     }
+    next_arm_local = max_nl
     emit_else(buf)
     Array::truncate(local_names, names_len_at_arm)
     agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_arm)
     gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_at_arm)
     gc_slot_log_reset_above(ctx.gc_float_locals, names_len_at_arm)
+    gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_at_arm)
     ai = ai + 1
   }
   let ld_catch = if ld >= 0 {
     ld + num_cond_arms
   } else {
     -1
+  }
+  while Array::length(local_names) < next_arm_local {
+    Array::push(local_names, "")
   }
   let _names_len_at_catch = Array::length(local_names)
   if catchall_idx < num_arms {
