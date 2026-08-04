@@ -492,8 +492,16 @@ only the effective row with the existing canonical checked-row semantics
 Error/Exception alias rule, and distinct typed `Exception[E]`). The opaque
 observation is fail-closed when owner association is malformed. It has no
 decoder or structured EffectRow and is not persistent transport, cache/trace/
-interface/import/reuse state. Consequently this slice does not claim full
-effect-row transport or a stable row-to-body association.
+interface/import/reuse state. A distinct opaque
+`CheckedEffectiveEffectRowArtifact` v1 can deep-copy that existing observation
+and strictly transport its exact six tuple fields with a versioned,
+length-delimited codec. Its decoder accepts only canonical encodings and the
+observer-guaranteed shape (nonnegative strictly increasing owners, unique names,
+and annotation kind/presence consistency); it deliberately does not parse row
+text or attest that decoded data was produced by checking. It likewise is not
+persistent transport, cache/trace/interface/import/reuse state. Consequently
+this slice does not claim full effect-row transport or a stable row-to-body
+association.
 A trait/impl regression proves an impl-bound edit changes the
 complete persistent TypeEnv v3 transport observation while leaving the
 value-only checked-env observation unchanged; it makes no exported-interface
