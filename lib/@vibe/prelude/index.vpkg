@@ -27,12 +27,10 @@ generated_hash =
 //      that mentions `Result` but doesn't already define it gets a
 //      non-exported `enum Result[T, E] { Ok(T); Err(E) }` injected directly
 //      into its own statement list, independent of whether this package is
-//      imported at all. `result.vibe`'s `export enum Result[T, E]` below is
-//      the real, exported definition its OWN sibling functions (`ok`, `err`,
-//      `bind`, ...) type-check against, and is exactly what the OLD
-//      `index.vibe` facade re-exported as bare `Result` — this migration
-//      preserves that (declared as `type Result[T, E]` below) without
-//      touching the injection mechanism.
+//      imported at all. #1324 removed `result.vibe` (the exported definition
+//      and its combinators) from this package, so that injection is now the
+//      ONLY way `Result` reaches a program that does not declare its own —
+//      this package no longer exports the type or any `Result::` function.
 //   2. `Option`/`Some`/`None` are genuine compiler builtins (`CtOption`),
 //      never defined anywhere in this directory — `option.vibe` only
 //      defines helper functions OVER `Option`, never the type itself.
@@ -149,7 +147,6 @@ opaque type Hash
 opaque type Signed
 
 type Byte
-type Result[T, E]
 type ParseResult[T]
 type Parser[T]
 type ArrayView[T]
@@ -387,40 +384,6 @@ fn Option::zip_sum(a: Option[Int], b: Option[Int]) -> Option[Int]
 fn Option::unwrap_or[T](opt: Option[T], default: T) -> T
 fn Option::unwrap_or_else[T](opt: Option[T], fallback: () -> T) -> T
 
-// --- result. map_or/flatten/unwrap_or/or/unwrap_or_else/or_else are also
-// bare-exported by option.vibe (Option wins those bare names above; see its
-// section comment) and and_then is also bare-exported by string_parser.vibe
-// (which wins it, matching the OLD facade's string_parser.vibe block) — none
-// of these six Result forms were ever in the OLD facade's bare result.vibe
-// re-export list either (only ok/err/bind/is_ok/is_err/map_ok/equals_by/
-// to_option/from_option were), so this preserves that non-exposure; every
-// one of them is still reachable externally via its `Result::` form below.
-fn ok[T, E](res: Result[T, E]) -> Option[T]
-fn err[T, E](res: Result[T, E]) -> Option[E]
-fn bind[T, E, U](res: Result[T, E], f: (x: T) -> Result[U, E]) -> Result[U, E]
-fn is_ok[T, E](res: Result[T, E]) -> Bool
-fn is_err[T, E](res: Result[T, E]) -> Bool
-fn map_ok[T, E, U](res: Result[T, E], f: (x: T) -> U) -> Result[U, E]
-fn map_err[T, E, F](res: Result[T, E], f: (e: E) -> F) -> Result[T, F]
-fn equals_by[T, E](a: Result[T, E], b: Result[T, E], ok_eq: (x: T, y: T) -> Bool, err_eq: (x: E, y: E) -> Bool) -> Bool
-fn to_option[T, E](res: Result[T, E]) -> Option[T]
-fn from_option[T, E](opt: Option[T], err_value: E) -> Result[T, E]
-fn Result::ok[T, E](res: Result[T, E]) -> Option[T]
-fn Result::or[T, E](res: Result[T, E], default: T) -> T
-fn Result::err[T, E](res: Result[T, E]) -> Option[E]
-fn Result::bind[T, E, U](res: Result[T, E], f: (x: T) -> Result[U, E]) -> Result[U, E]
-fn Result::is_ok[T, E](res: Result[T, E]) -> Bool
-fn Result::is_err[T, E](res: Result[T, E]) -> Bool
-fn Result::map_ok[T, E, U](res: Result[T, E], f: (x: T) -> U) -> Result[U, E]
-fn Result::map_or[T, E, U](res: Result[T, E], default: U, f: (x: T) -> U) -> U
-fn Result::flatten[T, E](res: Result[Result[T, E], E]) -> Result[T, E]
-fn Result::map_err[T, E, F](res: Result[T, E], f: (e: E) -> F) -> Result[T, F]
-fn Result::or_else[T, E](res: Result[T, E], fallback: () -> T) -> T
-fn Result::and_then[T, E, U](res: Result[T, E], f: (x: T) -> Result[U, E]) -> Result[U, E]
-fn Result::equals_by[T, E](a: Result[T, E], b: Result[T, E], ok_eq: (x: T, y: T) -> Bool, err_eq: (x: E, y: E) -> Bool) -> Bool
-fn Result::to_option[T, E](res: Result[T, E]) -> Option[T]
-fn Result::unwrap_or[T, E](res: Result[T, E], default: T) -> T
-fn Result::unwrap_or_else[T, E](res: Result[T, E], fallback: () -> T) -> T
 
 // --- char. to_int/from_int (also bare-exported by bool.vibe, for Bool) and
 // to_string (also bare-exported by builtin_traits.vibe, generic [T: Show])
@@ -502,8 +465,6 @@ fn stdin_read(max_bytes: Int) -> String with { Stdin }
 fn ansi_escape(suffix: String) -> Unit with { Stdout }
 fn stdout_write(s: String) -> Unit with { Stdout }
 fn tap[T](x: T, f: (v: T) -> Unit with { Stdout }) -> T with { Stdout }
-fn tap_ok[T, E](res: Result[T, E], f: (v: T) -> Unit with { Stdout }) -> Result[T, E] with { Stdout }
-fn tap_err[T, E](res: Result[T, E], f: (v: E) -> Unit with { Stdout }) -> Result[T, E] with { Stdout }
 fn tap_some[T](opt: Option[T], f: (v: T) -> Unit with { Stdout }) -> Option[T] with { Stdout }
 fn stdout_writeln(s: String) -> Unit with { Stdout }
 fn stdin_read_line() -> String with { Stdin }
@@ -512,13 +473,11 @@ fn tui_clear_screen() -> Unit with { Stdout }
 fn tui_enter_alt_screen() -> Unit with { Stdout }
 fn tui_leave_alt_screen() -> Unit with { Stdout }
 
-// --- string_parser. `or_else` also collides with option.vibe/result.vibe's
-// bare `or_else` (Option wins that name, see the option.vibe section
-// comment above) — string_parser's own `or_else[T](Parser,Parser)->Parser`
-// is not part of this package's bare-name surface (it never was under the
-// OLD facade either). `and_then` is the one collision string_parser DOES
-// win (it was in the OLD facade's bare list; result.vibe's and_then was
-// not), so it stays declared bare here.
+// --- string_parser. `or_else` also collides with option.vibe's bare
+// `or_else` (Option wins that name, see the option.vibe section comment
+// above) — string_parser's own `or_else[T](Parser,Parser)->Parser` is not
+// part of this package's bare-name surface (it never was under the OLD
+// facade either). `and_then` stays declared bare here.
 fn map[A, B](parser: Parser[A], f: (x: A) -> B) -> Parser[B]
 fn run[T](parser: Parser[T], input: String) -> Option[T]
 fn char(expected: String) -> Parser[String]

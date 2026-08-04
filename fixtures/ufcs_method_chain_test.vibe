@@ -1,9 +1,9 @@
 // #864: UFCS-style method chaining (`x.method(args)`) on a prelude function
-// like `Result::and_then` used to fail at CODEGEN time with
-// "unknown struct field: and_then" (or whichever method came next in a
-// chain), even though the checker already accepted the expression as a
-// normal function call (its `EDot(obj, method, ...)` arm in checker.vibe
-// resolves `T::method` via type-directed lookup independently of codegen).
+// like `Option::flatmap` used to fail at CODEGEN time with "unknown struct
+// field: flatmap" (or whichever method came next in a chain), even though the
+// checker already accepted the expression as a normal function call (its
+// `EDot(obj, method, ...)` arm in checker.vibe resolves `T::method` via
+// type-directed lookup independently of codegen).
 //
 // Root cause: `infer_arg_type_name` in desugar_trait_dict.vibe (the
 // best-effort pass that decides whether `x.method(args)` should be rewritten
@@ -15,56 +15,60 @@
 // `let`-bound UFCS call result, couldn't infer its receiver's type, so it
 // was left as a bare EDot and codegen's EDot fallback (which only
 // understands genuine struct-field projections) threw. A standalone single
-// `x.and_then(f)` whose result is never chained/reused was unaffected —
+// `x.flatmap(f)` whose result is never chained/reused was unaffected —
 // only the SECOND method in the pipeline (chained or via a `let`) surfaced
 // the bug.
+//
+// #1324 removed the prelude `Result`, so this regression is now pinned on
+// `Option::flatmap` — the same shape it always tested (an imported prelude
+// `T::method` whose result feeds the next `.method(..)`).
 
 import ../lib/@vibe/prelude {
-  Result, Ok, Err, Result::and_then
+  Option, Option::flatmap, Option::is_some, Option::unwrap_or
 }
 
-fn half(x: Int) -> Result[Int, String] {
+fn half(x: Int) -> Option[Int] {
   if x % 2 == 0 {
-    Ok(x / 2)
+    Some(x / 2)
   } else {
-    Err("odd")
+    None
   }
 }
 
-test "pipe-first Result::and_then still works" {
-  let a = Ok(4) |> Result::and_then(half)
-  assert_eq(a.unwrap_or(-1), 2)
+test "pipe-first Option::flatmap still works" {
+  let a = Some(4) |> Option::flatmap(half)
+  assert_eq(a.unwrap_or(0 - 1), 2)
 }
 
-test "UFCS and_then on inline literal receiver, chained with unwrap_or" {
-  let b = Ok(4).and_then(half)
-  assert_eq(b.unwrap_or(-1), 2)
+test "UFCS flatmap on inline literal receiver, chained with unwrap_or" {
+  let b = Some(4).flatmap(half)
+  assert_eq(b.unwrap_or(0 - 1), 2)
 }
 
-test "UFCS and_then on let-bound receiver, chained with unwrap_or" {
-  let r: Result[Int, String] = Ok(16)
-  let c = r.and_then(half)
-  assert_eq(c.unwrap_or(-1), 8)
+test "UFCS flatmap on let-bound receiver, chained with unwrap_or" {
+  let r: Option[Int] = Some(16)
+  let c = r.flatmap(half)
+  assert_eq(c.unwrap_or(0 - 1), 8)
 }
 
-test "UFCS and_then multi-stage chain, inline literal receiver" {
-  let d = Ok(16).and_then(half).and_then(half)
-  assert_eq(d.unwrap_or(-1), 4)
+test "UFCS flatmap multi-stage chain, inline literal receiver" {
+  let d = Some(16).flatmap(half).flatmap(half)
+  assert_eq(d.unwrap_or(0 - 1), 4)
 }
 
-test "UFCS and_then multi-stage chain, let-bound receiver" {
-  let r: Result[Int, String] = Ok(16)
-  let e = r.and_then(half).and_then(half)
-  assert_eq(e.unwrap_or(-1), 4)
+test "UFCS flatmap multi-stage chain, let-bound receiver" {
+  let r: Option[Int] = Some(16)
+  let e = r.flatmap(half).flatmap(half)
+  assert_eq(e.unwrap_or(0 - 1), 4)
 }
 
-test "UFCS and_then chained directly with is_ok (no intermediate let)" {
-  assert(Ok(4).and_then(half).is_ok())
-  assert(!Ok(3).and_then(half).is_ok())
+test "UFCS flatmap chained directly with is_some (no intermediate let)" {
+  assert(Some(4).flatmap(half).is_some())
+  assert(!Some(3).flatmap(half).is_some())
 }
 
-test "UFCS and_then propagates Err through the chain" {
-  let f = Ok(3).and_then(half)
-  assert(f.is_err())
-  assert_eq(f.unwrap_or(-1), -1)
+test "UFCS flatmap propagates None through the chain" {
+  let f = Some(3).flatmap(half)
+  assert(!f.is_some())
+  assert_eq(f.unwrap_or(0 - 1), 0 - 1)
 }

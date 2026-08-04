@@ -14,31 +14,24 @@ let add: (Int, Int) -> Int = (a, b) -> { a + b }  // pure
 
 ## Error handling
 
-### Railway-oriented Result pipeline (recommended)
+### Failure-carrying pipeline (recommended)
 
-Use `Result` composition in the pipeline core, and isolate error boundaries at edges.
+Carry the failure in the effect row (`Exception[E]`) and isolate the boundary at
+the edge. Success values flow straight through, so the stages just chain.
 
 ```vibe
-import ./lib/@vibe/prelude/result.vibe { Result::and_then }
-
 // stub stages so the example is self-contained
-// (note: the current checker cannot yet infer an `and_then` chain whose
-// success type changes mid-pipeline, so the stages share one type)
-let parse_id: (String) -> Result[Int, String] = (raw) -> { Ok(1) }
-let validate_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
-let load_user: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+fn parse_id(raw: String) -> Int with { Exception[String] } { 1 }
+fn validate_id(id: Int) -> Int with { Exception[String] } { id }
+fn load_user(id: Int) -> Int with { Exception[String] } { id }
 
-let fetch_user: (String) -> Result[Int, String] = (raw) -> {
-  raw
-  |> parse_id
-  |> Result::and_then(validate_id)
-  |> Result::and_then(load_user)
+fn fetch_user(raw: String) -> Int with { Exception[String] } {
+  raw |> parse_id |> validate_id |> load_user
 }
 
-let fetch_user_or_guest: (String) -> Int = (raw) -> {
-  match fetch_user(raw) {
-    Ok(user) => user,
-    Err(_) => -1     // guest
+fn fetch_user_or_guest(raw: String) -> Int {
+  handle { fetch_user(raw) } with Exception[String] {
+    Throw(_) => 0 - 1     // guest
   }
 }
 ```
