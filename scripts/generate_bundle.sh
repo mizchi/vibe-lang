@@ -681,16 +681,16 @@ write_vibe_string_function_from_file() {
 run_host_vibe_cmd() {
   local cmd="$1"
   shift
-  local release_vibe="$SCRIPT_PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
-  local debug_vibe="$SCRIPT_PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
   if [ "$cmd" = "emit-module-source" ]; then
-    # #594 Stage 1b/seed-bump: prefer the selfhost seed compiler.
-    # The seed carries emit-module-source (VIBE_EMIT_MODULE_SOURCE mode), so the
-    # flat module source needs no MoonBit host. Args are (input, output, entry),
-    # rewritten to repo-root-relative for the wasm preopen. Force the legacy host
-    # path with VIBE_EMIT_VIA_HOST=1.
+    # #594 Stage 1b/seed-bump: the selfhost seed compiler carries
+    # emit-module-source (VIBE_EMIT_MODULE_SOURCE mode), so the flat module
+    # source needs no MoonBit host. Args are (input, output, entry), rewritten
+    # to repo-root-relative for the wasm preopen. The former fallbacks —
+    # `_build/native/**/vibe.exe` and `moon build/run src/cmd/vibe`, selected by
+    # VIBE_EMIT_VIA_HOST=1 — were retired with the MoonBit host: nothing in this
+    # repo can build that binary any more, so the seed is the only path.
     local seed_wasm="$SCRIPT_PROJECT_ROOT/bootstrap/seed/compiler.wasm"
-    if [ -f "$seed_wasm" ] && [ "${VIBE_EMIT_VIA_HOST:-0}" != "1" ]; then
+    if [ -f "$seed_wasm" ]; then
       local emit_in="${1#"$SCRIPT_PROJECT_ROOT"/}"
       local emit_out="${2#"$SCRIPT_PROJECT_ROOT"/}"
       local emit_entry="${3:-cli_main}"
@@ -704,27 +704,11 @@ run_host_vibe_cmd() {
       )
       return 0
     fi
-    if [ -x "$release_vibe" ]; then
-      (cd "$SCRIPT_PROJECT_ROOT" && "$release_vibe" "$cmd" "$@")
-      return 0
-    fi
-    if [ -x "$debug_vibe" ]; then
-      (cd "$SCRIPT_PROJECT_ROOT" && "$debug_vibe" "$cmd" "$@")
-      return 0
-    fi
-    (cd "$SCRIPT_PROJECT_ROOT" && moon build --target native --release src/cmd/vibe --warn-list '-1-7-24-29' >/dev/null)
-    "$release_vibe" "$cmd" "$@"
-    return 0
+    echo "generate_bundle: emit-module-source needs the seed compiler at $seed_wasm (run scripts/ensure_seed.sh)" >&2
+    return 1
   fi
-  if [ -x "$release_vibe" ]; then
-    (cd "$SCRIPT_PROJECT_ROOT" && "$release_vibe" "$cmd" "$@")
-    return 0
-  fi
-  if [ -x "$debug_vibe" ]; then
-    (cd "$SCRIPT_PROJECT_ROOT" && "$debug_vibe" "$cmd" "$@")
-    return 0
-  fi
-  (cd "$SCRIPT_PROJECT_ROOT" && moon run --target native src/cmd/vibe -- "$cmd" "$@")
+  echo "generate_bundle: no host compiler for '$cmd' — the MoonBit host was retired (#594); only emit-module-source is served, via the seed" >&2
+  return 1
 }
 
 build_adapter_module_source() {

@@ -4,15 +4,16 @@
 content-addressed caching) is the **canonical task runner** for vibe-lang —
 it replaces the former `justfile`.
 
-`pkspec/Packages.pkl` (the canonical package list, imported directly by
-`Taskfile.pkl` to generate one `test:<pkg>` task per package) is the only
-part of [`pkspec`](https://github.com/mizchi/pkspec) actually wired into the
-task graph. `pkspec/VibeSpec.pkl` / `VibeTest.pkl` — a spec↔test coverage
-companion tool — were removed: they were never consumed by `pkf run test` /
-`test-local` / any CI job beyond a standalone `pkspec check`/`coverage` step,
-and had sat unused since they were added. If a spec-coverage gate is wanted
-again, re-run `pkspec init --dir pkspec` and re-author `VibeTest.pkl` from
-scratch rather than resurrecting the old files.
+[`pkspec`](https://github.com/mizchi/pkspec) is no longer part of this repo.
+`pkspec/VibeSpec.pkl` / `VibeTest.pkl` — a spec↔test coverage companion tool —
+were removed first: they were never consumed by `pkf run test` / `test-local` /
+any CI job beyond a standalone `pkspec check`/`coverage` step, and had sat
+unused since they were added. `pkspec/Packages.pkl` (the package list that
+generated one `test:<pkg>` task per package) went with those tasks in
+#881/#987. That left `pkspec/` holding nothing but a `.gitignore` for schemas
+nothing regenerates, so the directory was deleted. If a spec-coverage gate is
+wanted again, re-run `pkspec init --dir pkspec` and re-author `VibeTest.pkl`
+from scratch rather than resurrecting the old files.
 
 The task definitions live in `Taskfile.pkl` (~100 tasks after the dead-task cleanup). Multi-line
 shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
@@ -135,7 +136,7 @@ pkf hooks uninstall    # remove the shims
 
 ## Status
 
-`pkspec/Packages.pkl` is load-bearing (imported directly by `Taskfile.pkl`)
-and stays. The `.github/workflows/pkfire-pkspec.yml` workflow now only runs
-`pkf format --check` + `pkf lint` — both required (no
-`continue-on-error`), sub-10s per PR.
+`Taskfile.pkl` imports nothing from `pkspec` any more and the directory is
+gone. The `.github/workflows/pkfire-pkspec.yml` workflow (name kept — it is a
+required check) now only runs `pkf format --check` + `pkf lint` — both required
+(no `continue-on-error`), sub-10s per PR.

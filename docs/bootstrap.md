@@ -87,11 +87,32 @@ corpus parity に差分が出たときの切り分けに使う。
 
 bootstrap bump は最低限、以下を満たす。
 
-- `release-gates` が green。
-- perf KPI: TOTAL compile <= 2.5x、TOTAL check <= 1.33x。
-- peak RSS: compile/check とも <= 2.0x。
-- corpus check parity: REAL gap = 0。
-- portable one-shot wasm path と wasmtime/cwasm accelerated path の correctness が一致。
+- `pkf run full-gate` が green (staged generation + `scripts/compiler_gate.sh`)。
+- 新 seed を stage0 に据えて回した generation で `stage3 == stage2`。
+  自分自身を再生産する seed なら `stage0 == stage1 == stage2 == stage3` に
+  なる (fixpoint) — bump 候補としてはこれが最も強い状態。
+- `VIBE_CHECK_BUNDLES_TOO=1 scripts/check_module_source_sync.sh` が ok。
+- `scripts/check_vibe_fmt.sh` が clean。
+- unit battery (`scripts/unit_test_runner.sh`) が green。
+
+> **Historical:** かつてここには `release-gates` に加えて4条件 — perf KPI
+> (TOTAL compile <= 2.5x、TOTAL check <= 1.33x)、peak RSS (compile/check とも
+> <= 2.0x)、corpus check parity (REAL gap = 0)、portable one-shot と
+> wasmtime/cwasm accelerated の correctness 一致 — が並んでいた。**4つとも
+> MoonBit host 時代の計測基盤に依存していて、host 退役 (#594) 以降は実行でき
+> ない**。2026-08-04 の bump で実際に確認した:
+>
+> - 前3者: `scripts/gate.sh --post-generation` は `scripts/trial_gate.sh`
+>   経由で `compiler_gate.sh` へ redirect するだけになっている
+>   (trial_gate.sh 冒頭が「host 比較の corpus parity / perf / RSS bench は
+>   src/ と一緒に退役した」と書いている)。`release-gates` task も同じく
+>   `compiler_gate.sh` の alias。
+> - 最後の1つ: `scripts/test_moonrun_wt_daemon_parity.sh` は
+>   `_build/wasm/{opt,release,debug}/.../vibe_check_wasi.wasm` を探していたが、
+>   これは MoonBit host の `cmd/vibe_check_wasi` パッケージの成果物で、
+>   repo 内にこれを生成するものは無かった。実行すると
+>   `no stage1 check wasm found` で必ず落ちる dead task だったため、
+>   2026-08-04 の MoonBit dead-code 退役でスクリプトごと削除した。
 
 ### 新機能の入れ方
 

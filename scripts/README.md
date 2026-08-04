@@ -59,9 +59,8 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - **Runtime / mem / perf:** `test_vibe_{alloc_site,mem,bench}.sh`,
   `test_gc_selfbuild.sh`, `test_name_section.sh`, `test_simd_emit_wasmtime.sh`
 - **Host ABI / library / install:** `test_host_abi.js`, `test_vibe_library.sh`,
-  `test_vibe_cli_install.sh`, `test_wasm_vibe_{host_runner,wasmtime}.sh`
-- **Async / http / process:** `test_real_async_host.sh`, `test_wasi_http_p3_full_gate.sh`,
-  `test_moonrun_wt_daemon_parity.sh`, `test_{internal_parent_watchdog,parallel_cleanup}_e2e.sh`
+  `test_vibe_cli_install.sh`, `test_wasm_vibe_wasmtime.sh`
+- **Async / http / process:** `test_real_async_host.sh`, `test_wasi_http_p3_full_gate.sh`
 
 ## Coverage
 - `coverage_{corpus,driver,drivers,features,fn,manifestcache,merge,multimodule,suite,testexec,unittests}.*`
@@ -79,8 +78,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `scripts/coverage/` — supporting coverage assets (subdir)
 
 ## Bench
-- `bench_cmd_latency.sh`, `bench_http.sh`, `bench_moonrun_wt_daemon.sh`,
-  `bench_regression.mjs`, `bench_{cache_probe,loader_hotspots,rc}.*`,
+- `bench_cmd_latency.sh`, `bench_http.sh`, `bench_regression.mjs`, `bench_rc.*`,
   `bench_vibe_lsp.js`
 
 ## Check / lint / gate / repro
@@ -99,12 +97,11 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 
 ## Install / release
 - `installer.sh` (curl entry) → `install.sh` (checkout install; toolchain layout)
-- `install_wasmtime_release.sh`, `install_moonbit.sh` (legacy)
+- `install_wasmtime_release.sh`
 - `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`, `precompile.sh`
 
 ## Generators / codegen data
-- `generate_runtime_fixture_tests.mjs`, `gen_wasm_intrinsics_table.mjs`,
-  `emit_async_lift_fixture.sh`
+- `generate_runtime_fixture_tests.mjs`, `emit_async_lift_fixture.sh`
 
 ## Misc infra
 - `cache_clean.sh`, `flaker_run.sh` (+ `_test`), `measure_heap.mjs`
