@@ -80,6 +80,68 @@ export struct CheckedProgramTypeDefsObservation {
   type_def_binders: Array[Array[Int]]
 }
 
+/// Statement-owner-only typed-occurrence observation. Each entry retains the
+/// post-desugar CheckedProgram statement path, its capture ordinal, and the raw
+/// checker type. It deliberately does not claim expression/role provenance,
+/// source offsets, edit stability, typed IR, cache, trace, interface, or codec
+/// semantics. The first erasure point is each statement's expression tree.
+export struct CheckedTypedOccurrenceStatementObservation {
+  checked_program: CheckedProgram;
+  entries: Array[(Array[Int], Int, Type)]
+}
+
+fn copy_ints(items: Array[Int]) -> Array[Int] {
+  Array::slice(items, 0, Array::length(items))
+}
+
+/// Capture the legacy table rows appended by exactly one retained statement.
+/// This observes the checker-time append range rather than reconstructing any
+/// association from offsets. Module containers never own their child rows.
+fn capture_statement_rows(entries: Array[(Array[Int], Int, Type)], tytab: Array[(Int, Type)], start: Int, path: Array[Int]) -> Unit {
+  let mut i = start
+  let mut ordinal = 0
+  while i < Array::length(tytab) {
+    let (_, ty) = Array::get(tytab, i)
+    Array::push(entries, (copy_ints(path), ordinal, ty))
+    i = i + 1
+    ordinal = ordinal + 1
+  }
+}
+
+fn typed_occurrence_statement_observation_from_capture(checked: CheckedProgram, entries: Array[(Array[Int], Int, Type)]) -> Option[CheckedTypedOccurrenceStatementObservation] {
+  Some(CheckedTypedOccurrenceStatementObservation::{
+    checked_program: checked, entries: entries
+  })
+}
+
+/// Row count is exposed without making the observation's retained capture
+/// representation transparent at the package boundary.
+export fn checked_typed_occurrence_statement_observation_row_count(observation: CheckedTypedOccurrenceStatementObservation) -> Int {
+  Array::length(observation.entries)
+}
+
+/// Return an independent exact retained statement path for a captured row.
+/// The observation stays opaque; invalid row indexes have no path.
+export fn checked_typed_occurrence_statement_observation_statement_path_at(observation: CheckedTypedOccurrenceStatementObservation, row_index: Int) -> Option[Array[Int]] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (path, _, _) = Array::get(observation.entries, row_index)
+    Some(copy_ints(path))
+  }
+}
+
+/// Return the exact capture ordinal within the row's retained statement path.
+/// Invalid row indexes have no ordinal.
+export fn checked_typed_occurrence_statement_observation_capture_ordinal_at(observation: CheckedTypedOccurrenceStatementObservation, row_index: Int) -> Option[Int] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (_, ordinal, _) = Array::get(observation.entries, row_index)
+    Some(ordinal)
+  }
+}
+
 //# Functions
 
 /// ADR-0069 Phase 1: locate a top-level statement for the reject diagnostics
@@ -628,8 +690,44 @@ fn reorder_type_decls_first(stmts: Array[Stmt], start: Int) -> Array[Stmt] {
   out
 }
 
-fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
+/// Map the stable type-declaration schedule back to the retained statement
+/// coordinates. `checked_stmts` stays in source/post-desugar order even though
+/// declaration checking is scheduled type-first.
+fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
+  let out = array_empty()
+  let mut i = 0
+  while i < start {
+    Array::push(out, i)
+    i = i + 1
+  }
+  while i < Array::length(stmts) {
+    if stmt_is_type_decl(Array::get(stmts, i)) {
+      Array::push(out, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut j = start
+  while j < Array::length(stmts) {
+    if !stmt_is_type_decl(Array::get(stmts, j)) {
+      Array::push(out, j)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
+fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[Array[(Array[Int], Int, Type)]]) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
+  // Retained coordinates exist solely for the opt-in observation. Keep the
+  // ordinary checker path free of its position-map allocation.
+  let retained_positions = match capture {
+    Some(_) => Some(reordered_type_decl_positions(raw_stmts, i)),
+    None => None
+  }
   let mut idx = i
   let mut cur_env = env
   let mut cur_s = s
@@ -740,6 +838,26 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     let s = cur_s
     let c = cur_c
     let stmt = Array::get(stmts, idx)
+    // Do not construct paths or read the legacy append boundary on the normal
+    // checker path. The parent/current coordinate is observation-only.
+    let statement_path = match capture {
+      Some(_) => match retained_positions {
+        Some(positions) => match statement_parent_path {
+          Some(parent_path) => {
+            let path = copy_ints(parent_path)
+            Array::push(path, Array::get(positions, idx))
+            Some(path)
+          },
+          None => None
+        },
+        None => None
+      },
+      None => None
+    }
+    let capture_start = match capture {
+      Some(_) => Some(Array::length(tytab)),
+      None => None
+    }
     // #942 (ADR-0050): resume-misuse walk — a call-position `resume(...)`
     // outside any handler arm is rejected, and inside a (non-Error) arm it
     // must sit in tail position. Runs on a throwaway lane per statement
@@ -1193,7 +1311,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
       },
       SModule(_, _, body) => {
-        let _ = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab)
+        // `statement_path` is None in ordinary checking, so nested modules
+        // recurse without allocating retained path state.
+        let _ = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab, statement_path, capture)
         (env, s, c)
       },
       SImport(_, names) => (bind_stmt_imports(env, names), s, c)
@@ -1286,6 +1406,16 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         (env, s, c)
       },
       _ => (env, s, c)
+    }
+    match capture {
+      Some(entries) => match stmt {
+        SModule(_, _, _) => (),
+        _ => match (capture_start, statement_path) {
+          (Some(start), Some(path)) => capture_statement_rows(entries, tytab, start, path),
+          _ => ()
+        }
+      },
+      None => ()
     }
     cur_env = new_env
     cur_s = s1
@@ -2026,13 +2156,13 @@ fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_
 /// signature; production result APIs use the provenance-aware internal helper.
 export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
   let ignored_type_def_binders = array_empty()
-  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, s, c, errors, tytab)
+  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, s, c, errors, tytab, None, None)
 }
 
 /// Run the production whole-program check and retain every successful output
 /// the checker actually produces. This deliberately does not use the
 /// hover-only `check_program_type_table` path.
-fn check_program_type_defs_observation_impl(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with { Error } {
+fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[Array[(Array[Int], Int, Type)]]) -> CheckedProgramTypeDefsObservation with { Error } {
   // #760(2): make `Result` (Ok/Err) resolvable standalone — append its enum
   // declaration unless already declared/imported. Must run before checking so
   // `Result::Ok` / bare `Ok` / `Result[T, E]` annotations resolve on the
@@ -2086,7 +2216,11 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt]) -> CheckedProgra
   // whatever the caller does with it after check_program returns, are
   // unaffected) is enough: codegen never reads the row's text content.
   let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
-  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab)
+  let statement_parent_path = match capture {
+    Some(_) => Some(array_empty()),
+    None => None
+  }
+  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   // #1081 step 3 Phase B (Codex review, PR #1151): `let mut` capture
@@ -2119,12 +2253,21 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt]) -> CheckedProgra
 /// Run the production checker once and expose retained type-definition binder
 /// provenance for canonical observation.
 export fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with { Error } {
-  check_program_type_defs_observation_impl(stmts)
+  check_program_type_defs_observation_impl(stmts, None)
+}
+
+/// Observe every legacy typed-occurrence row at checker time by its owning
+/// retained statement. Paths are relative only to this post-desugar
+/// CheckedProgram; they are not original-source or edit-stable coordinates.
+export fn check_program_typed_occurrence_statement_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error } {
+  let entries = array_empty()
+  let checked = check_program_type_defs_observation_impl(stmts, Some(entries)).checked_program
+  typed_occurrence_statement_observation_from_capture(checked, entries)
 }
 
 /// Successful production-check result, preserving the original public shape.
 export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Error } {
-  check_program_type_defs_observation_impl(stmts).checked_program
+  check_program_type_defs_observation_impl(stmts, None).checked_program
 }
 
 /// Compatibility API: preserve the historical TypeEnv result and error
@@ -2162,9 +2305,9 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
-fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgramTypeDefsObservation with { Error } {
+fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[Array[(Array[Int], Int, Type)]]) -> CheckedProgramTypeDefsObservation with { Error } {
   match initial_env {
-    EnvEmpty => check_program_type_defs_observation_impl(stmts),
+    EnvEmpty => check_program_type_defs_observation_impl(stmts, capture),
     _ => {
       inject_prelude_result(stmts)
       inject_trait_method_generics(stmts)
@@ -2192,7 +2335,11 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,
       // but match the ordinary path by checking and validating an expanded copy.
       let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
-      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab)
+      let statement_parent_path = match capture {
+        Some(_) => Some(array_empty()),
+        None => None
+      }
+      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture)
       // #1090 review: the FS typecheck path (every file with imports) went
       // through here and never enforced trait bounds, so `[T: Send]` on an
       // imported generic fn was silently bypassed. Enforce the Send bound
@@ -2229,12 +2376,20 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
 /// Run the production checker once with an initial environment and expose
 /// retained type-definition binder provenance for canonical observation.
 export fn check_program_with_env_type_defs_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgramTypeDefsObservation with { Error } {
-  check_program_with_env_type_defs_observation_impl(stmts, initial_env)
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None)
+}
+
+/// As the ordinary statement-owner observation, seeded with an importing
+/// environment. Validation failure is fail-closed as None.
+export fn check_program_with_env_typed_occurrence_statement_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error } {
+  let entries = array_empty()
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(entries)).checked_program
+  typed_occurrence_statement_observation_from_capture(checked, entries)
 }
 
 /// Successful production-check result, preserving the original public shape.
 export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with { Error } {
-  check_program_with_env_type_defs_observation_impl(stmts, initial_env).checked_program
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None).checked_program
 }
 
 /// Compatibility API: preserve the historical TypeEnv result and error

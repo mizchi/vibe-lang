@@ -190,6 +190,12 @@ fall back to full checking. The gate remains disabled by default.
 
 ## Artifact boundaries
 
+Checker-time typed-occurrence observation can remove legacy offsets only at
+statement-owner granularity: each retained row is associated with its checked
+statement path, while expression and role association remains erased. Recovering
+that finer provenance requires later path-aware `check_expr` work; this is not
+an edit-stability guarantee or a full typed-IR claim.
+
 A physical file is a useful ingestion/cache shard, but is not always an
 independent semantic or code-generation unit. Files in one package can share a
 namespace, and declarations can form dependency cycles. Use two layers.

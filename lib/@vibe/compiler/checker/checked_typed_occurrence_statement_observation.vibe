@@ -1,0 +1,68 @@
+//# Statement-owner typed-occurrence observation (#1379 Phase 3)
+//
+// This deliberately records only the retained post-desugar statement that
+// owned each checker-time legacy typed_occurrences append. It is not
+// expression/role provenance, source-offset recovery, edit-stable typed IR,
+// cache/reuse input, trace schema, interface, import transport, or codec. The
+// first intentional erasure point is the expression tree inside that statement.
+
+import @vibe/compiler/core {
+  Type
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./canonical_checked_type_state.vibe {
+  canonical_checked_occurrence_type_fields
+}
+
+import ./checker_stmt.vibe {
+  CheckedTypedOccurrenceStatementObservation
+}
+
+fn snapshot_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn snapshot_push_piece(out: StringBuilder, value: String) -> Unit {
+  snapshot_push_int(out, String::length(value))
+  StringBuilder::push(out, value)
+}
+
+fn snapshot_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  snapshot_push_int(out, Array::length(path))
+  let mut i = 0
+  while i < Array::length(path) {
+    snapshot_push_int(out, Array::get(path, i))
+    i = i + 1
+  }
+}
+
+/// Deterministic, length-delimited capture-order snapshot. It omits legacy
+/// offsets by design and applies final_subst through the shared canonical
+/// type machinery before emitting each row type.
+export fn canonical_checked_typed_occurrence_statement_snapshot(observation: CheckedTypedOccurrenceStatementObservation) -> String {
+  let raw_types = array_empty()
+  let mut i = 0
+  while i < Array::length(observation.entries) {
+    let (_, _, ty) = Array::get(observation.entries, i)
+    Array::push(raw_types, ty)
+    i = i + 1
+  }
+  let types = canonical_checked_occurrence_type_fields(raw_types, observation.checked_program.final_subst)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-typed-occurrence-statement-observation:v1\n")
+  snapshot_push_int(out, Array::length(observation.entries))
+  let mut j = 0
+  while j < Array::length(observation.entries) {
+    let (path, ordinal, _) = Array::get(observation.entries, j)
+    snapshot_push_path(out, path)
+    snapshot_push_int(out, ordinal)
+    snapshot_push_piece(out, Array::get(types, j))
+    j = j + 1
+  }
+  StringBuilder::freeze(out)
+}
