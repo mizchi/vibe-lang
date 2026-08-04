@@ -1,0 +1,235 @@
+//# #1379 Phase 3 active direct-function effective-row observation tests.
+
+import @vibe/compiler/checker {
+  CheckedProgram,
+  canonical_checked_effect_row_snapshot,
+  canonical_checked_effective_effect_row_snapshot,
+  check_program_result,
+  check_program_with_env_result,
+  checked_effective_effect_row_observation
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, Subst, Type, TypeEnv, TypeExpr, env_bind
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn direct_fn(row: Option[String], body: Expr) -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, row, body)
+}
+
+fn checked_with(stmts: Array[Stmt], env: TypeEnv, subst: Subst) -> CheckedProgram {
+  CheckedProgram::{
+    checked_stmts: stmts,
+    final_env: env,
+    type_defs: array_empty(),
+    final_subst: subst,
+    typed_occurrences: array_empty()
+  }
+}
+
+fn observed_snapshot(checked: CheckedProgram) -> Option[String] {
+  match checked_effective_effect_row_observation(checked) {
+    Some(observation) => canonical_checked_effective_effect_row_snapshot(observation),
+    None => None
+  }
+}
+
+fn assert_some_text(value: Option[String]) -> String {
+  match value {
+    Some(text) => text,
+    None => {
+      assert(false)
+      ""
+    }
+  }
+}
+
+test "effective row observation keeps raw source options and canonicalizes only final row" {
+  let stmts = [
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some("Source, Source"))), direct_fn(Some(""), EUnit))
+  ]
+  let checked = checked_with(stmts, EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Fs, Error, Fs")))
+  ]), SubstEmpty)
+  let snapshot = assert_some_text(observed_snapshot(checked))
+  assert(String::contains(snapshot, "S14:Source, Source"))
+  assert(String::contains(snapshot, "S0:"))
+  assert(String::contains(snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("Error, Fs"))))
+  let no_source_row = checked_with([
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some("Source, Source"))), direct_fn(None, EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Error, Fs")))
+  ]), SubstEmpty)
+  assert(snapshot != assert_some_text(observed_snapshot(no_source_row)))
+  assert(canonical_checked_effect_row_snapshot(SubstEmpty, Some("Fs, Error, Fs")) == canonical_checked_effect_row_snapshot(SubstEmpty, Some("Error, Fs")))
+  assert(canonical_checked_effect_row_snapshot(SubstEmpty, Some("Exception[IoError]")) != canonical_checked_effect_row_snapshot(SubstEmpty, Some("Exception[ParseError]")))
+}
+
+test "effective row observation resolves transitive effect variables" {
+  let checked = checked_with([
+    SLet(false, false, "f", None, direct_fn(Some("e"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("e")))
+  ]), SubstEffBind("e", "x", SubstEffBind("x", "Fs, Fs", SubstEmpty)))
+  let snapshot = assert_some_text(observed_snapshot(checked))
+  assert(String::contains(snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("Fs"))))
+}
+
+test "effective row observation selects active root shadows in source order and locates roots" {
+  let checked = checked_with([
+    SLet(false, false, "a", None, direct_fn(Some("A"), EUnit)),
+    SLet(false, false, "f", None, direct_fn(Some("Old"), EUnit)),
+    SLet(false, false, "f", None, direct_fn(Some("New"), EUnit))
+  ], EnvBind("f", CtFn(array_empty(), CtUnit, Some("New")), EnvBind("a", CtFn(array_empty(), CtUnit, Some("A")), EnvEmpty)), SubstEmpty)
+  let snapshot = assert_some_text(observed_snapshot(checked))
+  assert(String::starts_with(snapshot, "vibe-checked-effective-effect-rows-observation:v1\n2:0:1:a"))
+  assert(String::contains(snapshot, "2:1:f"))
+  assert(!String::contains(snapshot, "S3:Old"))
+  let shifted = checked_with([
+    SExpr(EUnit),
+    SLet(false, false, "a", None, direct_fn(Some("A"), EUnit)),
+    SLet(false, false, "f", None, direct_fn(Some("Old"), EUnit)),
+    SLet(false, false, "f", None, direct_fn(Some("New"), EUnit))
+  ], EnvBind("f", CtFn(array_empty(), CtUnit, Some("New")), EnvBind("a", CtFn(array_empty(), CtUnit, Some("A")), EnvEmpty)), SubstEmpty)
+  assert(snapshot != assert_some_text(observed_snapshot(shifted)))
+}
+
+test "effective row observation excludes non-root and mutable candidates and fails closed" {
+  let checked = checked_with([
+    SLetMut("mut_fn", None, direct_fn(Some("Mut"), EUnit)),
+    SModule(false, "Nested", [
+      SLet(false, false, "hidden", None, direct_fn(Some("Hidden"), EUnit))
+    ]),
+    SLet(false, false, "outer", Some(TyName("NotFn")), direct_fn(Some("Root"), direct_fn(Some("NestedFn"), EUnit)))
+  ], EnvFlat([
+    ("outer", CtFn(array_empty(), CtUnit, Some("Root")))
+  ]), SubstEmpty)
+  let snapshot = assert_some_text(observed_snapshot(checked))
+  assert(String::starts_with(snapshot, "vibe-checked-effective-effect-rows-observation:v1\n1:"))
+  assert(!String::contains(snapshot, "Hidden"))
+  assert(!String::contains(snapshot, "NestedFn"))
+  // An active selected owner without an authoritative final binding is rejected.
+  let malformed = checked_with([
+    SLet(false, false, "missing", None, direct_fn(None, EUnit))
+  ], EnvEmpty, SubstEmpty)
+  match observed_snapshot(malformed) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+  // EnvFlat is an association list: duplicate names select the first match.
+  let duplicate_flat = checked_with([
+    SLet(false, false, "f", None, direct_fn(None, EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("First"))),
+    ("f", CtFn(array_empty(), CtUnit, Some("Second")))
+  ]), SubstEmpty)
+  let duplicate_flat_snapshot = assert_some_text(observed_snapshot(duplicate_flat))
+  assert(String::contains(duplicate_flat_snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("First"))))
+  assert(!String::contains(duplicate_flat_snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("Second"))))
+}
+
+test "effectset expansion has identical direct-function association with imported env" {
+  let stmts = [
+    SEffectSet(false, "Caps", [
+      "Fs",
+      "Error"
+    ]),
+    SLet(false, false, "f", None, direct_fn(Some("Caps"), EUnit))
+  ]
+  let ordinary = check_program_result(stmts)
+  let imported = check_program_with_env_result(stmts, env_bind(EnvEmpty, "seed", CtInt))
+  let ordinary_snapshot = assert_some_text(observed_snapshot(ordinary))
+  let imported_snapshot = assert_some_text(observed_snapshot(imported))
+  assert(ordinary_snapshot == imported_snapshot)
+  // The retained source row remains raw while the final row saw expansion.
+  assert(String::contains(ordinary_snapshot, "S4:Caps"))
+  assert(String::contains(ordinary_snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("Fs, Error"))))
+}
+
+test "effective row observation skips any earlier root binding shadowed by final non-function root" {
+  let later_let = checked_with([
+    SLet(false, false, "f", None, direct_fn(Some("Old"), EUnit)),
+    SLet(false, false, "f", None, EInt(1))
+  ], EnvFlat([
+    ("f", CtInt)
+  ]), SubstEmpty)
+  let later_let_snapshot = assert_some_text(observed_snapshot(later_let))
+  assert(later_let_snapshot == "vibe-checked-effective-effect-rows-observation:v1\n0:")
+  let later_mut = checked_with([
+    SLet(false, false, "f", None, direct_fn(Some("Old"), EUnit)),
+    SLetMut("f", None, EInt(1))
+  ], EnvFlat([
+    ("f", CtInt)
+  ]), SubstEmpty)
+  let later_mut_snapshot = assert_some_text(observed_snapshot(later_mut))
+  assert(later_mut_snapshot == "vibe-checked-effective-effect-rows-observation:v1\n0:")
+}
+
+test "effective row observation validates cached env state and keeps valid cached duplicates leftmost" {
+  let direct = [
+    SLet(false, false, "f", None, direct_fn(None, EUnit))
+  ]
+  let cached_duplicates = checked_with(direct, EnvCached([
+    "f",
+    "f"
+  ], [
+    CtFn(array_empty(), CtUnit, Some("First")),
+    CtFn(array_empty(), CtUnit, Some("Second"))
+  ], EnvEmpty), SubstEmpty)
+  let cached_duplicate_snapshot = assert_some_text(observed_snapshot(cached_duplicates))
+  assert(String::contains(cached_duplicate_snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("First"))))
+  assert(!String::contains(cached_duplicate_snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("Second"))))
+  let unsorted_cached = checked_with(direct, EnvCached([
+    "z",
+    "f"
+  ], [
+    CtFn(array_empty(), CtUnit, Some("Z")),
+    CtFn(array_empty(), CtUnit, Some("F"))
+  ], EnvEmpty), SubstEmpty)
+  match observed_snapshot(unsorted_cached) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+  let mismatched_cached = checked_with(direct, EnvCached([
+    "f"
+  ], [
+  ], EnvEmpty), SubstEmpty)
+  match observed_snapshot(mismatched_cached) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "effective row observation accepts production generalized direct functions" {
+  let checked = check_program_result([
+    SLet(false, false, "identity", None, EFn(array_empty(), array_empty(), [
+      ("x", None)
+    ], None, None, EIdent("x", -1)))
+  ])
+  let snapshot = assert_some_text(observed_snapshot(checked))
+  assert(String::contains(snapshot, "8:identity"))
+  assert(String::contains(snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, None)))
+}
+
+test "effective row observation resolves CtVar and effect chains without accepting cycles" {
+  let via_type_var = checked_with([
+    SLet(false, false, "f", None, direct_fn(Some("e"), EUnit))
+  ], EnvFlat([
+    ("f", CtVar(1))
+  ]), SubstBind(1, CtVar(2), SubstBind(2, CtFn(array_empty(), CtUnit, Some("e")), SubstEffBind("e", "x", SubstEffBind("x", "Fs", SubstEmpty)))))
+  let via_type_var_snapshot = assert_some_text(observed_snapshot(via_type_var))
+  assert(String::contains(via_type_var_snapshot, canonical_checked_effect_row_snapshot(SubstEmpty, Some("Fs"))))
+  let cyclic_effect = checked_with([
+    SLet(false, false, "f", None, direct_fn(Some("e"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("e")))
+  ]), SubstEffBind("e", "x", SubstEffBind("x", "e", SubstEmpty)))
+  match observed_snapshot(cyclic_effect) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}

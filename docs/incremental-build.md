@@ -448,8 +448,23 @@ snapshot preserves recursive module-name paths, export bits, declaration order,
 and exact ordered/duplicate member text. It is observation-only and has no decoder
 or persistent format. Inferred/effective rows remain stringly
 `Option[String]` state distributed across final environments, typed occurrences,
-and final substitution; typed-occurrence offsets are unstable. Consequently this
-slice does not claim full effect-row transport or a stable row-to-body association.
+and final substitution; typed-occurrence offsets are unstable. A subsequent
+narrow #1379 Phase 3 observation records only active root-level direct
+`SLet`/`EFn` bindings: its deterministic owner locator is the root statement
+index (not edit-stable), and it retains exact source annotation and direct-`EFn`
+rows alongside the final substituted `CtFn` row, including a `CtFn` body retained
+under a generalized `CtForAll` wrapper. Only the final root binding per name is
+observed, and only when that final binding
+is itself a direct `SLet`/`EFn`; `SLetMut`, nested lambdas, modules, callback
+rows, handlers, and perform sites are excluded. Its length-delimited snapshot preserves raw source
+`None` versus `Some("")`, order, and duplicates; it first erases/normalizes
+only the effective row with the existing canonical checked-row semantics
+(transitive `SubstEffBind`, unordered/deduplicated labels, the current
+Error/Exception alias rule, and distinct typed `Exception[E]`). The opaque
+observation is fail-closed when owner association is malformed. It has no
+decoder or structured EffectRow and is not persistent transport, cache/trace/
+interface/import/reuse state. Consequently this slice does not claim full
+effect-row transport or a stable row-to-body association.
 A trait/impl regression proves an impl-bound edit changes the
 complete persistent TypeEnv v3 transport observation while leaving the
 value-only checked-env observation unchanged; it makes no exported-interface

@@ -407,6 +407,15 @@ fn es_expand_stmts_effect_rows(stmts: Array[Stmt], es_names: Array[String], es_m
   }
 }
 
+/// Expand root-level effectset rows on a non-mutating checker input copy.
+/// The retained CheckedProgram statements deliberately remain the original
+/// post-desugar source representation, while all checking passes see this
+/// identical expanded copy on both ordinary and imported-environment paths.
+fn es_expand_top_level_effectset_rows(stmts: Array[Stmt]) -> Array[Stmt] {
+  let (top_es_names, top_es_members_list, _, _) = es_collect_tables(stmts, 0)
+  es_expand_stmts_effect_rows(stmts, top_es_names, top_es_members_list)
+}
+
 /// String::concat only (never `+` / interpolation — NUL-miscodegen hazard
 /// here, same rule as checker.vibe off_marker).
 fn top_level_reject_msg(what: String, e: Expr) -> String {
@@ -2076,10 +2085,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt]) -> CheckedProgra
   // effectset actually covers it. A non-mutating copy (stmts itself, and
   // whatever the caller does with it after check_program returns, are
   // unaffected) is enough: codegen never reads the row's text content.
-  let expanded_stmts = {
-    let (top_es_names, top_es_members_list, _, _) = es_collect_tables(stmts, 0)
-    es_expand_stmts_effect_rows(stmts, top_es_names, top_es_members_list)
-  }
+  let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
   let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
@@ -2183,14 +2189,17 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       let tytab = array_empty()
       // #986: labeled-argument name validation (see check_program).
       check_labeled_arg_names_stmts(stmts, frozen_errors, false)
-      let (env, final_s, _) = check_stmts_with_binders(stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab)
+      // Keep CheckedProgram.checked_stmts as the original post-desugar source,
+      // but match the ordinary path by checking and validating an expanded copy.
+      let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
+      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab)
       // #1090 review: the FS typecheck path (every file with imports) went
       // through here and never enforced trait bounds, so `[T: Send]` on an
       // imported generic fn was silently bypassed. Enforce the Send bound
       // here (send_only — see check_program_bounds_impl for why user-trait
       // bounds cannot be enforced on this path yet).
       check_program_bounds_impl(env, final_s, empty_defs, frozen_errors, true)
-      collect_async_effect_errors(stmts, env, frozen_errors)
+      collect_async_effect_errors(expanded_stmts, env, frozen_errors)
       // #1081 step 3 Phase B (Codex review, PR #1151): see check_program's
       // matching call for why this runs whole-program rather than per
       // `TaskGroup::run` call.
