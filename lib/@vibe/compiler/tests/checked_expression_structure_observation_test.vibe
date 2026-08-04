@@ -1,0 +1,357 @@
+import @vibe/compiler/checker {
+  CheckedExpressionStructureObservation,
+  CheckedProgram,
+  CheckedTypedOccurrenceExpressionPathObservation,
+  canonical_checked_expression_structure_snapshot,
+  check_program_result,
+  check_program_typed_occurrence_expression_path_observation,
+  checked_expression_structure_observation,
+  checked_expression_structure_observation_expression_path_at,
+  checked_expression_structure_observation_kind_at,
+  checked_expression_structure_observation_row_count,
+  checked_expression_structure_observation_statement_path_at,
+  checked_typed_occurrence_expression_path_observation_expression_path_at,
+  checked_typed_occurrence_expression_path_observation_row_count,
+  checked_typed_occurrence_expression_path_observation_statement_path_at
+}
+
+import @vibe/compiler/core {
+  EnvEmpty, Expr, Stmt, SubstEmpty, TypeExpr
+}
+
+fn checked_with(stmts: Array[Stmt]) -> CheckedProgram {
+  CheckedProgram::{
+    checked_stmts: stmts,
+    final_env: EnvEmpty,
+    type_defs: [
+    ],
+    final_subst: SubstEmpty,
+    typed_occurrences: [
+    ]
+  }
+}
+
+fn paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut equal = true
+    let mut i = 0
+    while i < Array::length(left) {
+      if Array::get(left, i) != Array::get(right, i) {
+        equal = false
+      }
+      i = i + 1
+    }
+    equal
+  }
+}
+
+fn assert_path(actual: Option[Array[Int]], expected: Array[Int]) -> Unit {
+  match actual {
+    Some(path) => assert(paths_equal(path, expected)),
+    None => assert(false)
+  }
+}
+
+fn structure_has_coordinate(observation: CheckedExpressionStructureObservation, statement_path: Array[Int], expression_path: Array[Int]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < checked_expression_structure_observation_row_count(observation) {
+    match (checked_expression_structure_observation_statement_path_at(observation, i), checked_expression_structure_observation_expression_path_at(observation, i)) {
+      (Some(actual_statement), Some(actual_expression)) => if paths_equal(actual_statement, statement_path) && paths_equal(actual_expression, expression_path) {
+        found = true
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn all_typed_occurrences_have_structure_coordinates(structure: CheckedExpressionStructureObservation, occurrences: CheckedTypedOccurrenceExpressionPathObservation) -> Bool {
+  let mut complete = true
+  let mut i = 0
+  while i < checked_typed_occurrence_expression_path_observation_row_count(occurrences) {
+    match (checked_typed_occurrence_expression_path_observation_statement_path_at(occurrences, i), checked_typed_occurrence_expression_path_observation_expression_path_at(occurrences, i)) {
+      (Some(statement_path), Some(expression_path)) => if !structure_has_coordinate(structure, statement_path, expression_path) {
+        complete = false
+      },
+      _ => {
+        complete = false
+      }
+    }
+    i = i + 1
+  }
+  complete
+}
+
+fn assert_root_kind(expr: Expr, expected: String) -> Unit {
+  match checked_expression_structure_observation(checked_with([
+    SExpr(expr)
+  ])) {
+    Some(observation) => match checked_expression_structure_observation_kind_at(observation, 0) {
+      Some(kind) => assert(kind == expected),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "checked expression structure uses statement order and expr_children preorder" {
+  let checked = checked_with([
+    SExpr(EIf(EIdent("cond", 17), ECall(EIdent("f", 18), [
+      EInt(1),
+      EDot(EIdent("x", 19), "field", 20, 21)
+    ], 22), EUnit)),
+    SExpr(EString("done"))
+  ])
+  match checked_expression_structure_observation(checked) {
+    Some(observation) => {
+      assert(checked_expression_structure_observation_row_count(observation) == 9)
+      let expected_kinds = [
+        "EIf",
+        "EIdent",
+        "ECall",
+        "EIdent",
+        "EInt",
+        "EDot",
+        "EIdent",
+        "EUnit",
+        "EString"
+      ]
+      let expected_expr_paths = [
+        [
+        ],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          2,
+          0
+        ],
+        [
+          2
+        ],
+        [
+        ]
+      ]
+      let mut i = 0
+      while i < Array::length(expected_kinds) {
+        match checked_expression_structure_observation_kind_at(observation, i) {
+          Some(kind) => assert(kind == Array::get(expected_kinds, i)),
+          None => assert(false)
+        }
+        if i < 8 {
+          assert_path(checked_expression_structure_observation_statement_path_at(observation, i), [
+            0
+          ])
+        } else {
+          assert_path(checked_expression_structure_observation_statement_path_at(observation, i), [
+            1
+          ])
+        }
+        assert_path(checked_expression_structure_observation_expression_path_at(observation, i), Array::get(expected_expr_paths, i))
+        i = i + 1
+      }
+      let snapshot = canonical_checked_expression_structure_snapshot(observation)
+      assert(String::contains(snapshot, "vibe-checked-expression-structure-observation:v1\n"))
+      assert(String::contains(snapshot, "5:ECall"))
+    },
+    None => assert(false)
+  }
+}
+
+test "nested modules extend statement paths and empty expression bodies are valid" {
+  let checked = checked_with([
+    SModule(false, "Outer", [
+      SModule(false, "Inner", [
+        SExpr(ESeq(EInt(1), EString("x")))
+      ]),
+      SExport([
+        "x"
+      ])
+    ]),
+    SEnum(false, "Empty", [
+    ], [
+    ], [
+    ])
+  ])
+  match checked_expression_structure_observation(checked) {
+    Some(observation) => {
+      assert(checked_expression_structure_observation_row_count(observation) == 3)
+      assert_path(checked_expression_structure_observation_statement_path_at(observation, 0), [
+        0,
+        0,
+        0
+      ])
+      assert_path(checked_expression_structure_observation_expression_path_at(observation, 0), [
+      ])
+      assert_path(checked_expression_structure_observation_expression_path_at(observation, 1), [
+        0
+      ])
+      assert_path(checked_expression_structure_observation_expression_path_at(observation, 2), [
+        1
+      ])
+    },
+    None => assert(false)
+  }
+  match checked_expression_structure_observation(checked_with([
+  ])) {
+    Some(observation) => assert(checked_expression_structure_observation_row_count(observation) == 0),
+    None => assert(false)
+  }
+}
+
+test "complete typed-occurrence coordinates exist in the full expression skeleton" {
+  let stmts = [
+    SStruct(false, "Box", [
+      ("value", TyName("Int"))
+    ], [
+    ], [
+    ], [
+    ]),
+    SLet(false, false, "box", None, ECall(EIdent("Box", 10), [
+      EInt(1)
+    ], 11)),
+    SLet(false, false, "value", None, ESeq(EIdent("box", 20), EDot(EIdent("box", 21), "value", 22, 22)))
+  ]
+  let checked = check_program_result(stmts)
+  match (checked_expression_structure_observation(checked), check_program_typed_occurrence_expression_path_observation(stmts)) {
+    (Some(structure), Some(occurrences)) => assert(all_typed_occurrences_have_structure_coordinates(structure, occurrences)),
+    _ => assert(false)
+  }
+}
+
+test "all expression constructor kinds are closed and explicit" {
+  assert_root_kind(EInt(1), "EInt")
+  assert_root_kind(EFloat(1.5), "EFloat")
+  assert_root_kind(EString("s"), "EString")
+  assert_root_kind(EBool(true), "EBool")
+  assert_root_kind(EIdent("x", 1), "EIdent")
+  assert_root_kind(ETuple([
+  ]), "ETuple")
+  assert_root_kind(EArray([
+  ]), "EArray")
+  assert_root_kind(ERecord("R", [
+  ], [
+  ]), "ERecord")
+  assert_root_kind(EIf(EUnit, EUnit, EUnit), "EIf")
+  assert_root_kind(ELet("x", EUnit, EUnit, 1), "ELet")
+  assert_root_kind(ELetRec("x", EUnit, EUnit), "ELetRec")
+  assert_root_kind(ELetMut("x", EUnit, EUnit, 1), "ELetMut")
+  assert_root_kind(EAssign("x", EUnit, EUnit), "EAssign")
+  assert_root_kind(EAssignOp("x", "+", EUnit, EUnit), "EAssignOp")
+  assert_root_kind(ESeq(EUnit, EUnit), "ESeq")
+  assert_root_kind(EMatch(EUnit, [
+  ]), "EMatch")
+  assert_root_kind(EHandle(EUnit, [
+  ]), "EHandle")
+  assert_root_kind(EWhile(EUnit, EUnit), "EWhile")
+  assert_root_kind(ELoop([
+  ], EUnit), "ELoop")
+  assert_root_kind(EForIn("x", None, EUnit, EUnit), "EForIn")
+  assert_root_kind(ECall(EUnit, [
+  ], 1), "ECall")
+  assert_root_kind(EBinOp("+", EUnit, EUnit), "EBinOp")
+  assert_root_kind(EUnaryOp("!", EUnit), "EUnaryOp")
+  assert_root_kind(EFn([
+  ], [
+  ], [
+  ], None, None, EUnit), "EFn")
+  assert_root_kind(EDot(EUnit, "x", 1, 2), "EDot")
+  assert_root_kind(ELabeledArg("x", "", EUnit), "ELabeledArg")
+  assert_root_kind(EReturn(EUnit), "EReturn")
+  assert_root_kind(EBreak(None), "EBreak")
+  assert_root_kind(EContinue([
+  ]), "EContinue")
+  assert_root_kind(EMap([
+  ]), "EMap")
+  assert_root_kind(ESpread(EUnit), "ESpread")
+  assert_root_kind(EStringInterp([
+  ]), "EStringInterp")
+  assert_root_kind(EUnit, "EUnit")
+}
+
+test "structure erases payloads and legacy offsets but preserves shape" {
+  let left = checked_with([
+    SExpr(ESeq(EIdent("left", 1), EInt(10)))
+  ])
+  let right = checked_with([
+    SExpr(ESeq(EIdent("right", 2305843009213693951), EInt(99)))
+  ])
+  match (checked_expression_structure_observation(left), checked_expression_structure_observation(right)) {
+    (Some(a), Some(b)) => assert(canonical_checked_expression_structure_snapshot(a) == canonical_checked_expression_structure_snapshot(b)),
+    _ => assert(false)
+  }
+}
+
+test "accessor paths are copied and invalid indexes fail closed" {
+  match checked_expression_structure_observation(checked_with([
+    SExpr(EUnit)
+  ])) {
+    Some(observation) => {
+      match checked_expression_structure_observation_statement_path_at(observation, 0) {
+        Some(path) => Array::push(path, 99),
+        None => assert(false)
+      }
+      assert_path(checked_expression_structure_observation_statement_path_at(observation, 0), [
+        0
+      ])
+      match checked_expression_structure_observation_expression_path_at(observation, -1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      match checked_expression_structure_observation_kind_at(observation, 1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "cyclic mutable expression state is bounded and fails complete-or-none" {
+  let items = [
+  ]
+  let cyclic = EArray(items)
+  Array::push(items, cyclic)
+  match checked_expression_structure_observation(checked_with([
+    SExpr(cyclic)
+  ])) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "unlowered function declarations fail complete-or-none" {
+  let unlowered = checked_with([
+    SExpr(EUnit),
+    SFnDecl(false, "f", EFn([
+    ], [
+    ], [
+    ], None, None, EUnit), [
+    ], [
+    ])
+  ])
+  match checked_expression_structure_observation(unlowered) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}

@@ -1,0 +1,273 @@
+//# Complete checked-expression structural observation
+//
+// This structural view enumerates every expression supplied through
+// `CheckedProgram.checked_stmts` in deterministic preorder. Production callers
+// supply retained post-desugar statements, but this API does not attest checker
+// success, post-desugar provenance, or consistency with the other
+// `CheckedProgram` fields. Statement coordinates follow the nested-module
+// convention; expression coordinates follow `core::expr_children` with root
+// `[]`. It deliberately retains only constructor kinds, not payloads, source
+// offsets, inferred types, bindings, typed IR, cache identity, or edit-stable
+// identity.
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, expr_children
+}
+
+import ./checker_stmt.vibe {
+  CheckedProgram
+}
+
+/// Opaque complete structural coordinate table for retained checked
+/// expressions. Rows are `(statement_path, expression_path, constructor_kind)`
+/// in statement order and expression preorder.
+export struct CheckedExpressionStructureObservation {
+  rows: Array[(Array[Int], Array[Int], String)]
+}
+
+fn checked_expression_structure_copy_path(path: Array[Int]) -> Array[Int] {
+  Array::slice(path, 0, Array::length(path))
+}
+
+fn checked_expression_structure_child_path(path: Array[Int], child: Int) -> Array[Int] {
+  let out = checked_expression_structure_copy_path(path)
+  Array::push(out, child)
+  out
+}
+
+fn checked_expression_structure_kind(expr: Expr) -> String {
+  match expr {
+    EInt(_) => "EInt",
+    EFloat(_) => "EFloat",
+    EString(_) => "EString",
+    EBool(_) => "EBool",
+    EIdent(_, _) => "EIdent",
+    ETuple(_) => "ETuple",
+    EArray(_) => "EArray",
+    ERecord(_, _, _) => "ERecord",
+    EIf(_, _, _) => "EIf",
+    ELet(_, _, _, _) => "ELet",
+    ELetRec(_, _, _) => "ELetRec",
+    ELetMut(_, _, _, _) => "ELetMut",
+    EAssign(_, _, _) => "EAssign",
+    EAssignOp(_, _, _, _) => "EAssignOp",
+    ESeq(_, _) => "ESeq",
+    EMatch(_, _) => "EMatch",
+    EHandle(_, _) => "EHandle",
+    EWhile(_, _) => "EWhile",
+    ELoop(_, _) => "ELoop",
+    EForIn(_, _, _, _) => "EForIn",
+    ECall(_, _, _) => "ECall",
+    EBinOp(_, _, _) => "EBinOp",
+    EUnaryOp(_, _) => "EUnaryOp",
+    EFn(_, _, _, _, _, _) => "EFn",
+    EDot(_, _, _, _) => "EDot",
+    ELabeledArg(_, _, _) => "ELabeledArg",
+    EReturn(_) => "EReturn",
+    EBreak(_) => "EBreak",
+    EContinue(_) => "EContinue",
+    EMap(_) => "EMap",
+    ESpread(_) => "ESpread",
+    EStringInterp(_) => "EStringInterp",
+    EUnit => "EUnit"
+  }
+}
+
+fn checked_expression_structure_max_rows() -> Int {
+  262144
+}
+
+fn checked_expression_structure_max_depth() -> Int {
+  2048
+}
+
+fn collect_checked_expression_structure_expr(rows: Array[(Array[Int], Array[Int], String)], statement_path: Array[Int], root: Expr) -> Bool {
+  let stack = array_empty()
+  Array::push(stack, (root, array_empty()))
+  let mut complete = true
+  while Array::length(stack) > 0 && complete {
+    let stack_len = Array::length(stack)
+    let (expr, expression_path) = Array::get(stack, stack_len - 1)
+    Array::truncate(stack, stack_len - 1)
+    if Array::length(expression_path) > checked_expression_structure_max_depth() || Array::length(rows) >= checked_expression_structure_max_rows() {
+      complete = false
+    } else {
+      Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), checked_expression_structure_kind(expr)))
+      let children = expr_children(expr)
+      if Array::length(children) > checked_expression_structure_max_rows() - Array::length(stack) {
+        complete = false
+      } else {
+        let mut i = Array::length(children)
+        while i > 0 && complete {
+          let child_index = i - 1
+          let child_path = checked_expression_structure_child_path(expression_path, child_index)
+          if Array::length(child_path) > checked_expression_structure_max_depth() {
+            complete = false
+          } else {
+            Array::push(stack, (Array::get(children, child_index), child_path))
+          }
+          i = i - 1
+        }
+      }
+    }
+  }
+  complete
+}
+
+fn push_checked_expression_structure_stmts(stack: Array[(Stmt, Array[Int])], parent_path: Array[Int], stmts: Array[Stmt]) -> Bool {
+  if Array::length(parent_path) >= checked_expression_structure_max_depth() || Array::length(stmts) > checked_expression_structure_max_rows() - Array::length(stack) {
+    false
+  } else {
+    let mut i = Array::length(stmts)
+    while i > 0 {
+      let statement_index = i - 1
+      Array::push(stack, (Array::get(stmts, statement_index), checked_expression_structure_child_path(parent_path, statement_index)))
+      i = i - 1
+    }
+    true
+  }
+}
+
+fn collect_checked_expression_structure_stmts(rows: Array[(Array[Int], Array[Int], String)], stmts: Array[Stmt]) -> Bool {
+  let stack = array_empty()
+  let mut complete = push_checked_expression_structure_stmts(stack, array_empty(), stmts)
+  let mut visited = 0
+  while Array::length(stack) > 0 && complete {
+    let stack_len = Array::length(stack)
+    let (stmt, statement_path) = Array::get(stack, stack_len - 1)
+    Array::truncate(stack, stack_len - 1)
+    visited = visited + 1
+    if visited > checked_expression_structure_max_rows() || Array::length(statement_path) > checked_expression_structure_max_depth() {
+      complete = false
+    } else {
+      match stmt {
+        SLet(_, _, _, _, value) => {
+          complete = collect_checked_expression_structure_expr(rows, statement_path, value)
+        },
+        SLetMut(_, _, value) => {
+          complete = collect_checked_expression_structure_expr(rows, statement_path, value)
+        },
+        STest(_, body) => {
+          complete = collect_checked_expression_structure_expr(rows, statement_path, body)
+        },
+        SBench(_, body) => {
+          complete = collect_checked_expression_structure_expr(rows, statement_path, body)
+        },
+        SExpr(expr) => {
+          complete = collect_checked_expression_structure_expr(rows, statement_path, expr)
+        },
+        SLetPat(_, value) => {
+          complete = collect_checked_expression_structure_expr(rows, statement_path, value)
+        },
+        SModule(_, _, body) => {
+          complete = push_checked_expression_structure_stmts(stack, statement_path, body)
+        },
+        // Production checking lowers SFnDecl before CheckedProgram construction.
+        // Reject sibling/manual unlowered state rather than inventing a root-slot
+        // coordinate for its value/requires/ensures expression lists.
+        SFnDecl(_, _, _, _, _) => {
+          complete = false
+        },
+        SEnum(_, _, _, _, _) => (),
+        SSuberror(_, _, _) => (),
+        SStruct(_, _, _, _, _, _) => (),
+        STypeAlias(_, _, _, _) => (),
+        STrait(_, _, _, _, _, _) => (),
+        SImpl(_, _, _, _) => (),
+        SExternLet(_, _) => (),
+        SImport(_, _) => (),
+        SExport(_) => (),
+        SReExport(_, _) => (),
+        SAliasDecl(_, _) => (),
+        SEffectDef(_, _, _, _) => (),
+        SEffectSet(_, _, _) => ()
+      }
+    }
+  }
+  complete
+}
+
+/// Build a complete structural coordinate table from the supplied statements.
+/// This does not attest checker success or post-desugar provenance. Unlowered
+/// `SFnDecl`, excessive depth/size, and cyclic expression/module state fail
+/// complete-or-none.
+export fn checked_expression_structure_observation(checked: CheckedProgram) -> Option[CheckedExpressionStructureObservation] {
+  let rows = array_empty()
+  if collect_checked_expression_structure_stmts(rows, checked.checked_stmts) {
+    Some(CheckedExpressionStructureObservation::{
+      rows: rows
+    })
+  } else {
+    None
+  }
+}
+
+fn checked_expression_structure_snapshot_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn checked_expression_structure_snapshot_push_piece(out: StringBuilder, value: String) -> Unit {
+  checked_expression_structure_snapshot_push_int(out, String::length(value))
+  StringBuilder::push(out, value)
+}
+
+fn checked_expression_structure_snapshot_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  checked_expression_structure_snapshot_push_int(out, Array::length(path))
+  let mut i = 0
+  while i < Array::length(path) {
+    checked_expression_structure_snapshot_push_int(out, Array::get(path, i))
+    i = i + 1
+  }
+}
+
+/// Deterministic length-delimited structure-only snapshot.
+export fn canonical_checked_expression_structure_snapshot(observation: CheckedExpressionStructureObservation) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-expression-structure-observation:v1\n")
+  checked_expression_structure_snapshot_push_int(out, Array::length(observation.rows))
+  let mut i = 0
+  while i < Array::length(observation.rows) {
+    let (statement_path, expression_path, kind) = Array::get(observation.rows, i)
+    checked_expression_structure_snapshot_push_path(out, statement_path)
+    checked_expression_structure_snapshot_push_path(out, expression_path)
+    checked_expression_structure_snapshot_push_piece(out, kind)
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+export fn checked_expression_structure_observation_row_count(observation: CheckedExpressionStructureObservation) -> Int {
+  Array::length(observation.rows)
+}
+
+export fn checked_expression_structure_observation_statement_path_at(observation: CheckedExpressionStructureObservation, row_index: Int) -> Option[Array[Int]] {
+  if row_index < 0 || row_index >= Array::length(observation.rows) {
+    None
+  } else {
+    let (statement_path, _, _) = Array::get(observation.rows, row_index)
+    Some(checked_expression_structure_copy_path(statement_path))
+  }
+}
+
+export fn checked_expression_structure_observation_expression_path_at(observation: CheckedExpressionStructureObservation, row_index: Int) -> Option[Array[Int]] {
+  if row_index < 0 || row_index >= Array::length(observation.rows) {
+    None
+  } else {
+    let (_, expression_path, _) = Array::get(observation.rows, row_index)
+    Some(checked_expression_structure_copy_path(expression_path))
+  }
+}
+
+export fn checked_expression_structure_observation_kind_at(observation: CheckedExpressionStructureObservation, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(observation.rows) {
+    None
+  } else {
+    let (_, _, kind) = Array::get(observation.rows, row_index)
+    Some(String::concat(kind, ""))
+  }
+}
