@@ -212,6 +212,15 @@ path. It is observation-only—not an edit-stability guarantee, typed-IR claim,
 persistent artifact, or production cache identity—and ordinary checker calls
 allocate no capture state.
 
+`CheckedStatementRootTypeObservation` is a separate successful-check-only,
+opt-in root view. It captures the direct checker return type for each retained
+expression-bearing `SLet`, `SLetMut`, `SLetPat`, `STest`, `SBench`, and
+non-marker `SExpr`, recursively through modules, alongside its retained path
+and closed statement kind. Its canonical snapshot applies `final_subst` via the
+shared checked-type formatter. Marker or alignment failures return `None`, and
+it deliberately has no artifact codec, typed-IR, cache/reuse, import, or
+production-path connection.
+
 A physical file is a useful ingestion/cache shard, but is not always an
 independent semantic or code-generation unit. Files in one package can share a
 namespace, and declarations can form dependency cycles. Use two layers.

@@ -1,0 +1,96 @@
+//# Checked statement-root-type observation
+//
+// This successful-check-only view retains exactly one direct checker-returned
+// root type for each retained expression-bearing statement. It is neither a
+// typed IR nor an artifact, cache/reuse input, import contract, or codec.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./canonical_checked_type_state.vibe {
+  canonical_checked_occurrence_type_fields
+}
+
+import ./checker_stmt.vibe {
+  CheckedStatementRootTypeObservation
+}
+
+fn statement_root_snapshot_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn statement_root_snapshot_push_piece(out: StringBuilder, value: String) -> Unit {
+  statement_root_snapshot_push_int(out, String::length(value))
+  StringBuilder::push(out, value)
+}
+
+fn statement_root_snapshot_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  statement_root_snapshot_push_int(out, Array::length(path))
+  let mut i = 0
+  while i < Array::length(path) {
+    statement_root_snapshot_push_int(out, Array::get(path, i))
+    i = i + 1
+  }
+}
+
+/// Deterministic capture-order snapshot. Raw direct checker return types are
+/// canonicalized only after the successful program's final substitution.
+export fn canonical_checked_statement_root_type_snapshot(observation: CheckedStatementRootTypeObservation) -> String {
+  let raw_types = array_empty()
+  let mut i = 0
+  while i < Array::length(observation.entries) {
+    let (_, _, ty) = Array::get(observation.entries, i)
+    Array::push(raw_types, ty)
+    i = i + 1
+  }
+  let types = canonical_checked_occurrence_type_fields(raw_types, observation.checked_program.final_subst)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-statement-root-type-observation:v1\n")
+  statement_root_snapshot_push_int(out, Array::length(observation.entries))
+  let mut j = 0
+  while j < Array::length(observation.entries) {
+    let (path, kind, _) = Array::get(observation.entries, j)
+    statement_root_snapshot_push_path(out, path)
+    statement_root_snapshot_push_piece(out, kind)
+    statement_root_snapshot_push_piece(out, Array::get(types, j))
+    j = j + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+export fn checked_statement_root_type_observation_row_count(observation: CheckedStatementRootTypeObservation) -> Int {
+  Array::length(observation.entries)
+}
+
+export fn checked_statement_root_type_observation_statement_path_at(observation: CheckedStatementRootTypeObservation, row_index: Int) -> Option[Array[Int]] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (path, _, _) = Array::get(observation.entries, row_index)
+    Some(Array::slice(path, 0, Array::length(path)))
+  }
+}
+
+export fn checked_statement_root_type_observation_kind_at(observation: CheckedStatementRootTypeObservation, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (_, kind, _) = Array::get(observation.entries, row_index)
+    Some(kind)
+  }
+}
+
+/// Canonical root type at an observation row, resolved with final_subst.
+export fn checked_statement_root_type_observation_type_at(observation: CheckedStatementRootTypeObservation, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (_, _, ty) = Array::get(observation.entries, row_index)
+    let types = canonical_checked_occurrence_type_fields([
+      ty
+    ], observation.checked_program.final_subst)
+    Some(Array::get(types, 0))
+  }
+}
