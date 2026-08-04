@@ -1,0 +1,395 @@
+//# Active root direct-function effective-row observation (#1379)
+//
+// This deliberately narrow observation associates only active root-level
+// `SLet` direct `EFn` bindings with their existing stringly rows. It is not a
+// structured EffectRow, typed IR, persistent codec, cache/reuse key, trace,
+// interface, or import transport.
+
+import @vibe/compiler/core {
+  Stmt, Subst, Type, TypeEnv, TypeExpr, str_lt, subst_lookup
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./canonical_checked_type_state.vibe {
+  canonical_checked_effect_row_snapshot
+}
+
+import ./checker_stmt.vibe {
+  CheckedProgram
+}
+
+/// Internal entries retain `(root statement index, name, annotation kind,
+/// annotation row, direct EFn source row, final effective CtFn row)`. The
+/// owner locator is deterministic only for this checked statement sequence;
+/// it is explicitly not edit-stable. Annotation kind is 0 = absent, 1 = TyFn,
+/// 2 = present but non-function, preserving that distinction from its row.
+export struct CheckedEffectiveEffectRowObservation {
+  entries: Array[(Int, String, Int, Option[String], Option[String], Option[String])]
+}
+
+fn option_row_snapshot(out: StringBuilder, row: Option[String]) -> Unit {
+  match row {
+    None => StringBuilder::push(out, "N"),
+    Some(text) => {
+      StringBuilder::push(out, "S")
+      StringBuilder::push(out, __to_string(String::length(text)))
+      StringBuilder::push(out, ":")
+      StringBuilder::push(out, text)
+    }
+  }
+}
+
+fn root_has_later_root_binding(stmts: Array[Stmt], after: Int, wanted: String) -> Bool {
+  let mut i = after + 1
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(name, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn entry_name_seen(entries: Array[(Int, String, Int, Option[String], Option[String], Option[String])], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(entries) && !found {
+    let (_, name, _, _, _, _) = Array::get(entries, i)
+    if name == wanted {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// This mirrors TypeEnv's first-match lookup order. Flat duplicate entries
+/// are ordinary association-list state, so their first match is authoritative.
+/// EnvCached is an acceleration state: before searching it, validate its
+/// paired arrays and nondecreasing `str_lt` order. Stable cached duplicate
+/// names are valid (`env_cache` deliberately preserves them); their leftmost
+/// slot is the same first/innermost binding that TypeEnv lookup observes.
+fn owner_env_lookup(env: TypeEnv, wanted: String) -> Option[Type] {
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(name, ty, rest) => if name == wanted {
+        result = Some(ty)
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) && !done {
+          let (name, ty) = Array::get(bindings, i)
+          if name == wanted {
+            result = Some(ty)
+            done = true
+          } else {
+            i = i + 1
+          }
+        }
+        if !done {
+          done = true
+        }
+      },
+      EnvCached(names, types, rest) => {
+        if Array::length(names) != Array::length(types) {
+          done = true
+        } else {
+          let mut i = 1
+          let mut sorted = true
+          while i < Array::length(names) && sorted {
+            if str_lt(Array::get(names, i), Array::get(names, i - 1)) {
+              sorted = false
+            } else {
+              i = i + 1
+            }
+          }
+          if !sorted {
+            done = true
+          } else {
+            let mut i = 0
+            while i < Array::length(names) && !done {
+              if Array::get(names, i) == wanted {
+                result = Some(Array::get(types, i))
+                done = true
+              } else {
+                i = i + 1
+              }
+            }
+            if !done {
+              cur = rest
+            }
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+fn int_seen(items: Array[Int], item: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == item {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn string_seen(items: Array[String], item: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == item {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn is_effect_var(name: String) -> Bool {
+  let len = String::length(name)
+  if len == 1 {
+    String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+  } else if len >= 2 {
+    String::char_code_at(name, 0) == 36
+  } else {
+    false
+  }
+}
+
+/// First-match lookup through effect bindings only. Other substitution nodes
+/// are deliberately skipped so this observer cannot invoke `subst_apply`'s
+/// recursive CtFn path.
+fn observation_effect_binding(s: Subst, wanted: String) -> Option[String] {
+  let mut cur = s
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(_, _, rest) => {
+        cur = rest
+      },
+      SubstCached(_, _, rest) => {
+        cur = rest
+      },
+      SubstEffBind(name, value, rest) => if name == wanted {
+        result = Some(value)
+        done = true
+      } else {
+        cur = rest
+      }
+    }
+  }
+  result
+}
+
+/// Resolve an effect-variable chain without recursing into arbitrary CtFn
+/// parameters/returns. The outer None is malformed/cyclic; the inner None is
+/// the valid absent or empty effective row.
+fn observation_effect_row(s: Subst, effect: Option[String]) -> Option[Option[String]] {
+  match effect {
+    None => Some(None),
+    Some(initial) => {
+      let mut name = initial
+      let seen = array_empty()
+      let mut valid = true
+      let mut done = false
+      while !done && valid {
+        if !is_effect_var(name) {
+          done = true
+        } else if string_seen(seen, name) {
+          valid = false
+        } else {
+          Array::push(seen, name)
+          match observation_effect_binding(s, name) {
+            None => {
+              done = true
+            },
+            Some(value) => if String::length(value) == 0 {
+              name = value
+              done = true
+            } else {
+              name = value
+            }
+          }
+        }
+      }
+      if valid {
+        if String::length(name) == 0 {
+          Some(None)
+        } else {
+          Some(Some(name))
+        }
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// Resolve only CtVar links and generalized CtForAll wrappers until the
+/// authoritative CtFn is reached. Top-level inferred functions are normally
+/// generalized, so the wrapper is production state rather than malformed
+/// input. This avoids `subst_apply`, whose recursive CtFn effect resolution is
+/// not safe for malformed cyclic observation input.
+fn observation_final_effect_row(s: Subst, raw_type: Type) -> Option[Option[String]] {
+  let mut cur = raw_type
+  let seen = array_empty()
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      CtVar(id) => if int_seen(seen, id) {
+        done = true
+      } else {
+        Array::push(seen, id)
+        match subst_lookup(s, id) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      CtForAll(_, _, body) => {
+        cur = body
+      },
+      CtFn(_, _, effect) => {
+        result = observation_effect_row(s, effect)
+        done = true
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
+fn annotation_row(annotation: Option[TypeExpr]) -> (Int, Option[String]) {
+  match annotation {
+    None => (0, None),
+    Some(TyFn(_, _, row)) => (1, row),
+    Some(_) => (2, None)
+  }
+}
+
+/// Derive active root direct-function row associations from an already
+/// successful checker result. Only the final root binding per name is
+/// active, and it must itself be a direct `SLet`/`EFn`; `SLetMut`, nested lambdas, module contents, callbacks, handlers,
+/// and perform sites are intentionally excluded. A missing or non-function
+/// authoritative final binding, duplicate active name, or malformed lookup
+/// fails closed with None.
+export fn checked_effective_effect_row_observation(checked: CheckedProgram) -> Option[CheckedEffectiveEffectRowObservation] {
+  let entries = array_empty()
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(checked.checked_stmts) && valid {
+    match Array::get(checked.checked_stmts, i) {
+      SLet(_, _, name, annotation, EFn(_, _, _, _, source_row, _)) => if root_has_later_root_binding(checked.checked_stmts, i, name) {
+        ()
+      } else if entry_name_seen(entries, name) {
+        valid = false
+      } else {
+        match owner_env_lookup(checked.final_env, name) {
+          Some(raw_type) => match observation_final_effect_row(checked.final_subst, raw_type) {
+            Some(effective_row) => {
+              let (annotation_kind, annotation_effect_row) = annotation_row(annotation)
+              Array::push(entries, (i, name, annotation_kind, annotation_effect_row, source_row, effective_row))
+            },
+            None => {
+              valid = false
+            }
+          },
+          None => {
+            valid = false
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if valid {
+    Some(CheckedEffectiveEffectRowObservation::{
+      entries: entries
+    })
+  } else {
+    None
+  }
+}
+
+/// Deterministic, length-delimited observation snapshot. Source rows remain
+/// byte-exact Option[String] values (including None versus Some(""), order,
+/// and duplicates). Only the final effective row uses the established
+/// canonical checked-row helper.
+export fn canonical_checked_effective_effect_row_snapshot(observation: CheckedEffectiveEffectRowObservation) -> Option[String] {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-effective-effect-rows-observation:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(observation.entries)))
+  StringBuilder::push(out, ":")
+  let mut i = 0
+  while i < Array::length(observation.entries) {
+    let (owner, name, annotation_kind, annotation_row_text, source_row, effective_row) = Array::get(observation.entries, i)
+    StringBuilder::push(out, __to_string(owner))
+    StringBuilder::push(out, ":")
+    StringBuilder::push(out, __to_string(String::length(name)))
+    StringBuilder::push(out, ":")
+    StringBuilder::push(out, name)
+    StringBuilder::push(out, __to_string(annotation_kind))
+    StringBuilder::push(out, ":")
+    option_row_snapshot(out, annotation_row_text)
+    option_row_snapshot(out, source_row)
+    // effective_row was already obtained after checked.final_subst; applying
+    // no additional substitution keeps this opaque snapshot deterministic.
+    StringBuilder::push(out, canonical_checked_effect_row_snapshot(SubstEmpty, effective_row))
+    i = i + 1
+  }
+  Some(StringBuilder::freeze(out))
+}
