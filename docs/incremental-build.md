@@ -467,8 +467,15 @@ artifact. Effect-set declarations are retained separately as the opaque
 `CheckedEffectSetDeclarationsObservation`, derived from a successful
 `CheckedProgram` without reparsing source. Its deterministic length-delimited
 snapshot preserves recursive module-name paths, export bits, declaration order,
-and exact ordered/duplicate member text. It is observation-only and has no decoder
-or persistent format. Inferred/effective rows remain stringly
+and exact ordered/duplicate member text. A separate strict declaration-only
+`CheckedEffectSetDeclarationsArtifact` v1 copies that checked-program-derived
+observation without sorting, normalization, or deduplication and canonically
+encodes the same fields. The artifact does not attest that a manually
+constructed `CheckedProgram` passed checking. Its decoder is fail-closed on version/count/length/export-tag
+errors, truncation, trailing bytes, and noncanonical encodings (exact
+re-encode equality). It is not a CheckedProgram, TypeEnv, inferred/effective
+row, typed IR, interface, cache identity, import contract, trace schema, or
+reuse input; it changes no runtime or cache policy. Inferred/effective rows remain stringly
 `Option[String]` state distributed across final environments, typed occurrences,
 and final substitution; typed-occurrence offsets are unstable. A subsequent
 narrow #1379 Phase 3 observation records only active root-level direct

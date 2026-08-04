@@ -1,0 +1,267 @@
+//# Checked effect-set declaration artifact (#1379 Phase 3)
+//
+// This strict, declaration-only v1 transport retains exact checked-program
+// SEffectSet provenance. It does not attest that a manually constructed
+// CheckedProgram passed checking. It is not a CheckedProgram, TypeEnv,
+// effective row, typed IR, interface, cache identity, import contract, trace,
+// or reuse input.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checked_effect_set_observation.vibe {
+  CheckedEffectSetDeclarationsObservation, canonical_checked_effect_set_declarations_snapshot
+}
+
+/// Narrow declaration-only fragment. Entries retain `(module-name path,
+/// exported, name, exact ordered members)` in checked-statement traversal order.
+export struct CheckedEffectSetDeclarationsArtifact {
+  entries: Array[(Array[String], Bool, String, Array[String])]
+}
+
+fn artifact_copy_strings(items: Array[String]) -> Array[String] {
+  Array::slice(items, 0, Array::length(items))
+}
+
+fn artifact_copy_entries(entries: Array[(Array[String], Bool, String, Array[String])]) -> Array[(Array[String], Bool, String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(entries) {
+    let (module_path, exported, name, members) = Array::get(entries, i)
+    Array::push(out, (artifact_copy_strings(module_path), exported, name, artifact_copy_strings(members)))
+    i = i + 1
+  }
+  out
+}
+
+/// Copy an observation without normalizing, sorting, or deduplicating any
+/// declaration field. The artifact does not attest checker success.
+export fn checked_effect_set_declarations_artifact_from_observation(observation: CheckedEffectSetDeclarationsObservation) -> CheckedEffectSetDeclarationsArtifact {
+  CheckedEffectSetDeclarationsArtifact::{
+    entries: artifact_copy_entries(observation.entries)
+  }
+}
+
+fn artifact_push_piece(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+fn artifact_array(items: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, __to_string(Array::length(items)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    artifact_push_piece(out, Array::get(items, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn artifact_entry(module_path: Array[String], exported: Bool, name: String, members: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, artifact_array(module_path))
+  StringBuilder::push(out, if exported {
+    "1"
+  } else {
+    "0"
+  })
+  artifact_push_piece(out, name)
+  StringBuilder::push(out, artifact_array(members))
+  StringBuilder::freeze(out)
+}
+
+/// Strict length-delimited v1 encoder. It preserves module paths, exported
+/// bits, declaration order/names, and member order/duplicates exactly.
+export fn encode_checked_effect_set_declarations_artifact_v1(artifact: CheckedEffectSetDeclarationsArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-effectsets-artifact:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(artifact.entries)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(artifact.entries) {
+    let (module_path, exported, name, members) = Array::get(artifact.entries, i)
+    artifact_push_piece(out, artifact_entry(module_path, exported, name, members))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn artifact_decimal(text: String, start: Int, end: Int, bound: Int) -> Option[Int] {
+  if start >= end {
+    None
+  } else {
+    let mut i = start
+    let mut value = 0
+    let mut valid = true
+    if end - start > 1 && String::char_code_at(text, start) == 48 {
+      valid = false
+    } else {
+      ()
+    }
+    while i < end {
+      let code = String::char_code_at(text, i)
+      if code < 48 || code > 57 || value > (bound - (code - 48)) / 10 {
+        valid = false
+      } else {
+        value = value * 10 + (code - 48)
+      }
+      i = i + 1
+    }
+    if valid {
+      Some(value)
+    } else {
+      None
+    }
+  }
+}
+
+fn artifact_piece_parse(text: String, pos: Int) -> Option[(String, Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 58 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match artifact_decimal(text, pos, at, n - at - 1) {
+      Some(size) => {
+        let start = at + 1
+        let end = start + size
+        if end < start || end > n {
+          None
+        } else {
+          Some((text[start: end], end))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn artifact_array_parse(text: String, pos: Int) -> Option[(Array[String], Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 91 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match artifact_decimal(text, pos, at, n - at - 1) {
+      Some(count) => {
+        let out = array_empty()
+        let mut cursor = at + 1
+        let mut i = 0
+        let mut valid = true
+        while i < count && valid {
+          match artifact_piece_parse(text, cursor) {
+            Some((item, next)) => {
+              Array::push(out, item)
+              cursor = next
+            },
+            None => {
+              // Stop immediately: retrying at the same cursor would rescan
+              // the remaining untrusted payload once per declared item.
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        if !valid || cursor >= n || String::char_code_at(text, cursor) != 93 {
+          None
+        } else {
+          Some((out, cursor + 1))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn artifact_entry_parse(text: String) -> Option[(Array[String], Bool, String, Array[String])] {
+  match artifact_array_parse(text, 0) {
+    Some((module_path, after_path)) => {
+      if after_path >= String::length(text) {
+        None
+      } else {
+        let exported_tag = String::char_code_at(text, after_path)
+        let exported = if exported_tag == 48 {
+          Some(false)
+        } else if exported_tag == 49 {
+          Some(true)
+        } else {
+          None
+        }
+        match exported {
+          Some(exported) => match artifact_piece_parse(text, after_path + 1) {
+            Some((name, after_name)) => match artifact_array_parse(text, after_name) {
+              Some((members, end)) => if end == String::length(text) {
+                Some((module_path, exported, name, members))
+              } else {
+                None
+              },
+              None => None
+            },
+            None => None
+          },
+          None => None
+        }
+      }
+    },
+    None => None
+  }
+}
+
+/// Strict v1 decoder. It fails closed on wrong versions, malformed counts or
+/// lengths, invalid export tags, truncation, trailing bytes, and every
+/// noncanonical spelling by requiring exact decode/re-encode equality.
+export fn decode_checked_effect_set_declarations_artifact_v1(text: String) -> Option[CheckedEffectSetDeclarationsArtifact] {
+  let prefix = "vibe-checked-effectsets-artifact:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else {
+    match artifact_array_parse(text, String::length(prefix)) {
+      Some((raw_entries, end)) => {
+        let entries = array_empty()
+        let mut i = 0
+        let mut valid = end == String::length(text)
+        while i < Array::length(raw_entries) {
+          match artifact_entry_parse(Array::get(raw_entries, i)) {
+            Some(entry) => Array::push(entries, entry),
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        let artifact = CheckedEffectSetDeclarationsArtifact::{
+          entries: entries
+        }
+        if !valid {
+          None
+        } else if encode_checked_effect_set_declarations_artifact_v1(artifact) == text {
+          Some(artifact)
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+/// Deterministic declaration-only snapshot with the established observation
+/// vocabulary. This is a view of the opaque artifact, not a cache identity.
+export fn canonical_checked_effect_set_declarations_artifact_snapshot(artifact: CheckedEffectSetDeclarationsArtifact) -> String {
+  let observation: CheckedEffectSetDeclarationsObservation = CheckedEffectSetDeclarationsObservation::{
+    entries: artifact.entries
+  }
+  canonical_checked_effect_set_declarations_snapshot(observation)
+}
