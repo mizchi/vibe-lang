@@ -1,0 +1,53 @@
+// ADR-0092 (#1262) regression lock: a closure-captured `let mut` whose init is
+// NOT "intish" must still get a HEADERED RC ref cell.
+//
+// `expr_is_intish` rejects every unary op but `!`, so `-1` alone used to send
+// the cell down the raw-bump path -- an 8-byte box with no [alloc_size][rc]
+// header -- while compile_lambda kept treating the capture as RC-owned
+// (odd tagging + emit_rc_word_inc_saturating at box-4 + the class-7 recursive
+// __rt_rc_drop). That incremented whatever preceded the box and eventually
+// pushed a headerless pointer onto the RC free list.
+//
+// The observable the gate checks is not this program's OUTPUT (a corrupted
+// neighbour rarely changes it) but the allocator invariant itself: the gate
+// splices "trap if alloc_size == 0" into __rt_rc_drop and requires a clean run.
+let cell_neg = () -> Int {
+  let mut i = -1
+  let f = () -> Int {
+    i
+  }
+  i = 7
+  f()
+}
+
+let cell_str = () -> Int {
+  let mut acc = ""
+  let g = () -> String {
+    acc
+  }
+  acc = "ok"
+  String::length(g())
+}
+
+let cell_call = () -> Int {
+  let mut n = String::length("abcd")
+  let h = () -> Int {
+    n
+  }
+  n = n + 1
+  h()
+}
+
+let _start = () -> Int {
+  let mut total = 0
+  let mut k = 0
+  while k < 64 {
+    total = total + cell_neg() + cell_str() + cell_call()
+    k = k + 1
+  }
+  if total == 896 {
+    1
+  } else {
+    0
+  }
+}
