@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-# Characterize the current wasm-gc lane's guest-linear bump allocation.
-#
-# This is intentionally NOT a Wasmtime tracing-GC leak test: current gc-lane
-# aggregate/closure lowering advances exported `__heap_ptr` in linear memory.
-# It proves that the churn fixture runs and allocates enough discarded objects
-# to exercise that path; a future struct.new/array.new backend needs a separate
-# embedding-level live-heap test.
+# Verify non-escaping Wasm-GC local array literals do not churn the guest
+# linear bump heap. This intentionally does not claim tracing-GC liveness;
+# it only proves the private typed local never touches exported __heap_ptr.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,6 +34,25 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   exit 1
 }
 
+# Churn plus the if and match native branches each have one eligible literal.
+# Alias/push/return cases still use the linear fallback. This guards both
+# typed-ref/i64 sibling-control-flow regressions at Wasm emission.
+python3 - "$OUT" <<'PY'
+import sys
+wasm = open(sys.argv[1], "rb").read()
+count = wasm.count(b"\xfb\x07\x0c")
+if count != 3:
+    raise SystemExit(
+        "[gc-heap-accounting] FAIL: expected three eligible native "
+        f"array.new_default type 12 instructions, found {count}"
+    )
+PY
+
+# The nested-lambda fixture must also pass independent Wasm-GC validation:
+# lambda records currently do not describe typed native-array locals, so its
+# arrays intentionally use the linear fallback.
+wasm-tools validate --features all "$OUT" >/dev/null
+
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2
   echo "[gc-heap-accounting] FAIL: churn fixture trapped" >&2
@@ -53,12 +68,15 @@ case "$ALLOCATED" in
     ;;
 esac
 
-# 8192 discarded four-element arrays currently allocate ~600 KiB. Keep the
-# threshold deliberately low so harmless layout/capacity changes do not make
-# the characterization brittle, while still proving multiple page crossings.
-if [ "$ALLOCATED" -lt 65536 ]; then
-  echo "[gc-heap-accounting] FAIL: allocated=$ALLOCATED, expected >=65536 bytes" >&2
+# The fixture's 8192 churn literals are native GC arrays. The current fixture
+# also deliberately executes several linear fallback examples (including a
+# nested lambda), so its observed fixed baseline is 304 B rather than the
+# earlier 228 B. Do not assert that exact value: startup/layout and fallback
+# fixture changes may move it. The old linear churn lowering was hundreds of
+# KiB, therefore this bounded allowance remains the regression property.
+if [ "$ALLOCATED" -gt 8192 ]; then
+  echo "[gc-heap-accounting] FAIL: allocated=$ALLOCATED, expected <=8192 bytes (native local arrays must not bump __heap_ptr per iteration)" >&2
   exit 1
 fi
 
-echo "[gc-heap-accounting] ok: guest bump high-water increased by $ALLOCATED bytes"
+echo "[gc-heap-accounting] ok: native local array churn kept guest bump allocation at $ALLOCATED bytes"
