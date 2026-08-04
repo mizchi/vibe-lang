@@ -88,7 +88,7 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
   `handle { .. } with Exception[E] { Throw(e) => .. }` で受ける。**`Result` は
   言語にも prelude にも無い** — `Ok`/`Err` を bare で書くと `unknown name: Err`
   になる。二本立ての返り値が要るのは実質 **WIT 境界だけ**で、そこには
-  `import @vibe/wit { Result }` がある (WIT の `result<T,E>` へ射影される
+  `import @vibe/wit_runtime { Result }` がある (WIT の `result<T,E>` へ射影される
   唯一の綴り、[effect-wit-mapping.md](effect-wit-mapping.md))。それ以外の
   用途で自前に `enum Result[T, E] { Ok(T); Err(E) }` を宣言するのは自由だが、
   特別扱いは一切無いただのユーザー enum になる

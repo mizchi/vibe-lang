@@ -69,7 +69,7 @@ uppercase letters split per letter (`URL` → `u-r-l`) — keep to CamelCase.
 | `Bytes` | `list<u8>` |
 | `Array[T]` | `list<T>` |
 | `Option[T]` | `option<T>` |
-| `Result[T, E]` | `result<T, E>` (matched by TypeExpr head NAME — #1324 removed the built-in `Result`; import the canonical one from `@vibe/wit`) |
+| `Result[T, E]` | `result<T, E>` (matched by TypeExpr head NAME — #1324 removed the built-in `Result`; import the canonical one from `@vibe/wit_runtime`) |
 | `Map[K, V]` | `list<tuple<K, V>>` |
 | `(A, B, ...)` | `tuple<A, B, ...>` |
 | `Future[T]` | `future<T'>` (ADR-0089 Decision 5; backed by the step-4 lowering, spec §3.13/§3.14) |
@@ -82,7 +82,7 @@ a follow-up; general `stream<T'>` stays restricted to nominal host-owned
 handles by ADR-0089 Decision 4/5 (a guest-side producer cannot enter the
 component instance, spec §3.3).
 
-### Fallible exports: `@vibe/wit`
+### Fallible exports: `@vibe/wit_runtime`
 
 **An `Exception[E]` row does not project to `result<T, E>`.** Since #1324 the
 idiomatic fallible signature is `fn f(..) -> T with { Exception[E] }`, but the
@@ -92,12 +92,12 @@ export therefore renders as plain `T`, and an escaping throw stays a component
 trap rather than a declared failure channel.
 
 So the boundary is where a two-track value is still needed, and
-**`@vibe/wit` is the canonical `Result[T, E]` for it** — import it rather than
+**`@vibe/wit_runtime` is the canonical `Result[T, E]` for it** — import it rather than
 hand-declaring a copy in every component entry. Carry failure in the row
 inside, and convert once, in the export body:
 
 ```vibe
-import @vibe/wit { Result }
+import @vibe/wit_runtime { Result }
 
 fn parse_port(s: String) -> Int with { Exception[String] } {
   if String::length(s) == 0 { throw("empty port") }
@@ -122,7 +122,7 @@ The `handle` goes in the export body, **not** in a shared generic
 its call site, because the caller's closure literal leaks its own latent row
 (#1361) — measured with both a generic `Exception[E]` and a monomorphic
 `Exception[String]` wrapper, each leaving the caller reporting
-`missing { Exception[String] }`. That is why `@vibe/wit` ships the type only.
+`missing { Exception[String] }`. That is why `@vibe/wit_runtime` ships the type only.
 
 ## Example
 

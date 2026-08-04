@@ -575,7 +575,7 @@ handle { fetch_user(input) } with Exception[String] {
 >
 > `Ok`/`Err` が本当に要るのは **WIT 境界だけ** — WIT の `result<T,E>` は
 > `Exception[E]` row からは射影されないので、そこには
-> `import @vibe/wit { Result }` を使う ([effect-wit-mapping.md](effect-wit-mapping.md)、
+> `import @vibe/wit_runtime { Result }` を使う ([effect-wit-mapping.md](effect-wit-mapping.md)、
 > compiler-gate 89/89 が byte 単位で pin)。それ以外で自前に
 > `enum Result[T, E] { Ok(T); Err(E) }` を宣言するのは自由だが、特別扱いは
 > 一切なくただのユーザー enum になる。
