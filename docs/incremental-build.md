@@ -531,7 +531,17 @@ bindings, and effect rows are intentionally absent, so this is only a complete
 body-coordinate skeleton—not a checked-body transport or typed IR. Its paths
 are post-desugar artifact-local coordinates, not source- or edit-stable
 identity, and the observation has no decoder or connection to imports,
-interfaces, traces, caches, or reuse policy.
+interfaces, traces, caches, or reuse policy. A distinct opaque
+`CheckedExpressionStructureArtifact` v1 deep-copies exactly that preorder
+skeleton and transports only statement path, expression path, and the closed
+constructor-kind vocabulary. Its strict length-delimited decoder rejects wrong
+versions, unknown tags, negative or overflowing path components,
+noncanonical counts and lengths, truncation, trailing bytes, and hostile
+unavailable counts, then requires exact re-encoding. Decoded bytes do not
+attest checker success or provenance. The artifact remains payload- and
+type-free, post-desugar/artifact-local rather than source- or edit-stable, and
+is not connected to full checked bodies, typed IR, imports, interfaces, traces,
+caches, or reuse policy.
 A trait/impl regression proves an impl-bound edit changes the
 complete persistent TypeEnv v3 transport observation while leaving the
 value-only checked-env observation unchanged; it makes no exported-interface
