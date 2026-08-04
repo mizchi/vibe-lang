@@ -1,0 +1,997 @@
+//# Checked type-definition artifact (#1379)
+//
+// This deliberately narrow, lossless-semantic v1 transport contains only
+// retained TypeDefs, aligned binder provenance, and final_subst's authoritative
+// chain. It is not a
+// CheckedProgram, TypeEnv, typed IR, cache artifact, trace schema, interface,
+// import contract, or production reuse input.
+
+import @vibe/compiler/core {
+  Subst, Type, TypeDef, TypeEnv
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./canonical_checked_type_state.vibe {
+  canonical_checked_type_defs_snapshot
+}
+
+/// Narrow checked semantic fragment. Binder rows align positionally with
+/// `type_defs`; TDEnum owns one binder per declared parameter, all other
+/// definitions own no binders.
+export struct CheckedTypeDefsArtifact {
+  type_defs: Array[TypeDef];
+  type_def_binders: Array[Array[Int]];
+  final_subst: Subst
+}
+
+fn artifact_valid_shape(defs: Array[TypeDef], binders: Array[Array[Int]]) -> Bool {
+  if Array::length(defs) != Array::length(binders) {
+    false
+  } else {
+    // Enum binders are allocated by the checker's single fresh-id counter, so
+    // no two retained declarations may claim the same id. Keep this check
+    // order-independent and global rather than silently choosing a winner.
+    let seen = array_empty()
+    let mut i = 0
+    let mut valid = true
+    while i < Array::length(defs) {
+      let row = Array::get(binders, i)
+      let actual = Array::length(row)
+      match Array::get(defs, i) {
+        TDEnum(_, params, _) => if actual != Array::length(params) {
+          valid = false
+        } else {
+          ()
+        },
+        _ => if actual != 0 {
+          valid = false
+        } else {
+          ()
+        }
+      }
+      let mut j = 0
+      while j < actual {
+        let id = Array::get(row, j)
+        let mut k = 0
+        while k < Array::length(seen) {
+          if Array::get(seen, k) == id {
+            valid = false
+          } else {
+            ()
+          }
+          k = k + 1
+        }
+        Array::push(seen, id)
+        j = j + 1
+      }
+      i = i + 1
+    }
+    valid
+  }
+}
+
+fn artifact_subst_has_cache(s: Subst) -> Bool {
+  match s {
+    SubstEmpty => false,
+    SubstBind(_, _, rest) => artifact_subst_has_cache(rest),
+    SubstBound(_, _, rest) => artifact_subst_has_cache(rest),
+    SubstCached(_, _, _) => true,
+    SubstEffBind(_, _, rest) => artifact_subst_has_cache(rest)
+  }
+}
+
+fn artifact_valid(defs: Array[TypeDef], binders: Array[Array[Int]], subst: Subst) -> Bool {
+  artifact_valid_shape(defs, binders) && !artifact_subst_has_cache(subst)
+}
+
+/// Extract the only retained state this artifact is allowed to observe.
+/// Malformed manually-built observations are rejected rather than repaired.
+export fn checked_type_defs_artifact_from_observation(observation: CheckedProgramTypeDefsObservation) -> Option[CheckedTypeDefsArtifact] {
+  let checked = observation.checked_program
+  if artifact_valid(checked.type_defs, observation.type_def_binders, checked.final_subst) {
+    Some(CheckedTypeDefsArtifact::{
+      type_defs: checked.type_defs,
+      type_def_binders: observation.type_def_binders,
+      final_subst: checked.final_subst
+    })
+  } else {
+    None
+  }
+}
+
+fn artifact_piece(text: String) -> String {
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
+}
+
+fn artifact_array(items: Array[String]) -> String {
+  let mut out = String::concat(__to_string(Array::length(items)), "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    out = String::concat(out, artifact_piece(Array::get(items, i)))
+    i = i + 1
+  }
+  String::concat(out, "]")
+}
+
+fn artifact_ints(items: Array[Int]) -> String {
+  let fields = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    Array::push(fields, __to_string(Array::get(items, i)))
+    i = i + 1
+  }
+  artifact_array(fields)
+}
+
+fn artifact_strings(items: Array[String]) -> String {
+  artifact_array(items)
+}
+
+fn artifact_type(ty: Type) -> String {
+  match ty {
+    CtInt => "I",
+    CtDouble => "D",
+    CtBool => "B",
+    CtString => "G",
+    CtChar => "H",
+    CtUnit => "U",
+    CtBytes => "Y",
+    CtUnknown => "X",
+    CtVar(id) => String::concat("V", artifact_piece(__to_string(id))),
+    CtTuple(items) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(encoded, artifact_type(Array::get(items, i)))
+        i = i + 1
+      }
+      String::concat("T", artifact_array(encoded))
+    },
+    CtArray(item) => String::concat("A", artifact_type(item)),
+    CtOption(item) => String::concat("O", artifact_type(item)),
+    CtFn(params, ret, effect) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(encoded, artifact_type(Array::get(params, i)))
+        i = i + 1
+      }
+      // The tag makes None distinct from Some("").
+      let effect_text = match effect {
+        Some(name) => String::concat("S", artifact_piece(name)),
+        None => "N"
+      }
+      String::concat("F", String::concat(effect_text, String::concat(artifact_array(encoded), artifact_type(ret))))
+    },
+    CtEnum(name) => String::concat("E", artifact_piece(name)),
+    CtStruct(name) => String::concat("R", artifact_piece(name)),
+    CtNamed(name, args) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(encoded, artifact_type(Array::get(args, i)))
+        i = i + 1
+      }
+      String::concat("N", String::concat(artifact_piece(name), artifact_array(encoded)))
+    },
+    CtForAll(vars, bounds, body) => {
+      let rows = array_empty()
+      let mut i = 0
+      while i < Array::length(bounds) {
+        let (id, labels) = Array::get(bounds, i)
+        Array::push(rows, String::concat(artifact_piece(__to_string(id)), artifact_strings(labels)))
+        i = i + 1
+      }
+      String::concat("Q", String::concat(artifact_ints(vars), String::concat(artifact_array(rows), artifact_type(body))))
+    }
+  }
+}
+
+fn artifact_typedef(def: TypeDef) -> String {
+  match def {
+    TDEnum(name, params, variants) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(variants) {
+        let (variant_name, payloads) = Array::get(variants, i)
+        let payload_text = array_empty()
+        let mut j = 0
+        while j < Array::length(payloads) {
+          Array::push(payload_text, artifact_type(Array::get(payloads, j)))
+          j = j + 1
+        }
+        Array::push(encoded, String::concat(artifact_piece(variant_name), artifact_array(payload_text)))
+        i = i + 1
+      }
+      String::concat("E", String::concat(artifact_piece(name), String::concat(artifact_strings(params), artifact_array(encoded))))
+    },
+    TDStruct(name, fields, mut_fields, params) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (field_name, field_type) = Array::get(fields, i)
+        Array::push(encoded, String::concat(artifact_piece(field_name), artifact_type(field_type)))
+        i = i + 1
+      }
+      String::concat("S", String::concat(artifact_piece(name), String::concat(artifact_array(encoded), String::concat(artifact_strings(mut_fields), artifact_strings(params)))))
+    },
+    TDAlias(name, params, body) => String::concat("A", String::concat(artifact_piece(name), String::concat(artifact_strings(params), artifact_type(body)))),
+    TDEffect(name, ops, params) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(ops) {
+        let (op_name, args, ret) = Array::get(ops, i)
+        let arg_text = array_empty()
+        let mut j = 0
+        while j < Array::length(args) {
+          Array::push(arg_text, artifact_type(Array::get(args, j)))
+          j = j + 1
+        }
+        Array::push(encoded, String::concat(artifact_piece(op_name), String::concat(artifact_array(arg_text), artifact_type(ret))))
+        i = i + 1
+      }
+      String::concat("K", String::concat(artifact_piece(name), String::concat(artifact_array(encoded), artifact_strings(params))))
+    }
+  }
+}
+
+fn artifact_subst(s: Subst) -> String {
+  // Emit the linked chain iteratively into one builder. Recursive suffix
+  // concatenation copies the already-serialized tail at every node (O(N²)).
+  let out = StringBuilder::new()
+  let mut cur = s
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        StringBuilder::push(out, "0")
+        done = true
+      },
+      SubstBind(id, ty, rest) => {
+        StringBuilder::push(out, "B")
+        StringBuilder::push(out, artifact_piece(__to_string(id)))
+        StringBuilder::push(out, artifact_type(ty))
+        cur = rest
+      },
+      SubstBound(id, labels, rest) => {
+        StringBuilder::push(out, "R")
+        StringBuilder::push(out, artifact_piece(__to_string(id)))
+        StringBuilder::push(out, artifact_strings(labels))
+        cur = rest
+      },
+      // Callers reject SubstCached before encoding. It has no v1
+      // representation: cache maps are semantically observable and must not
+      // be normalized away.
+      SubstCached(_, _, _) => {
+        StringBuilder::push(out, "C")
+        done = true
+      },
+      SubstEffBind(name, value, rest) => {
+        StringBuilder::push(out, "E")
+        StringBuilder::push(out, artifact_piece(name))
+        StringBuilder::push(out, artifact_piece(value))
+        cur = rest
+      }
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Strict length-delimited v1 encoder. It refuses malformed/colliding binder
+/// provenance and every SubstCached chain; v1 excludes acceleration-bearing
+/// substitutions until Map[Type] codegen can preserve their semantics.
+export fn encode_checked_type_defs_artifact_v1(artifact: CheckedTypeDefsArtifact) -> Option[String] {
+  if !artifact_valid(artifact.type_defs, artifact.type_def_binders, artifact.final_subst) {
+    None
+  } else {
+    let defs = array_empty()
+    let binders = array_empty()
+    let mut i = 0
+    while i < Array::length(artifact.type_defs) {
+      Array::push(defs, artifact_typedef(Array::get(artifact.type_defs, i)))
+      Array::push(binders, artifact_ints(Array::get(artifact.type_def_binders, i)))
+      i = i + 1
+    }
+    Some(String::concat("vibe-checked-type-defs:v1\n", String::concat(artifact_array(defs), String::concat(artifact_array(binders), artifact_subst(artifact.final_subst)))))
+  }
+}
+
+fn artifact_decimal(text: String, start: Int, end: Int, bound: Int) -> Option[Int] {
+  if start >= end {
+    None
+  } else {
+    let mut i = start
+    let mut value = 0
+    let mut valid = true
+    if end - start > 1 && String::char_code_at(text, start) == 48 {
+      valid = false
+    } else {
+      ()
+    }
+    while i < end {
+      let code = String::char_code_at(text, i)
+      if code < 48 || code > 57 || value > (bound - (code - 48)) / 10 {
+        valid = false
+      } else {
+        value = value * 10 + (code - 48)
+      }
+      i = i + 1
+    }
+    if valid {
+      Some(value)
+    } else {
+      None
+    }
+  }
+}
+
+fn artifact_int(text: String) -> Option[Int] {
+  let n = String::length(text)
+  if n == 0 {
+    None
+  } else {
+    let negative = String::char_code_at(text, 0) == 45
+    let start = if negative {
+      1
+    } else {
+      0
+    }
+    if start >= n || (negative && String::char_code_at(text, start) == 48) || (!negative && n > 1 && String::char_code_at(text, 0) == 48) {
+      None
+    } else {
+      // The positive literal limit is 2^61-1, but the tagged runtime also
+      // admits -2^61. Spell that one value with safe operations, never an
+      // unrepresentable positive literal.
+      if negative && text[start: n] == "2305843009213693952" {
+        Some(0 - 2305843009213693951 - 1)
+      } else {
+        match artifact_decimal(text, start, n, 2305843009213693951) {
+          Some(value) => if negative {
+            Some(0 - value)
+          } else {
+            Some(value)
+          },
+          None => None
+        }
+      }
+    }
+  }
+}
+
+fn artifact_piece_parse(text: String, pos: Int) -> Option[(String, Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 58 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match artifact_decimal(text, pos, at, n - at - 1) {
+      Some(size) => {
+        let start = at + 1
+        let end = start + size
+        if end < start || end > n {
+          None
+        } else {
+          Some((text[start: end], end))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn artifact_array_parse(text: String, pos: Int) -> Option[(Array[String], Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 91 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match artifact_decimal(text, pos, at, n - at - 1) {
+      Some(count) => {
+        let out = array_empty()
+        let mut cursor = at + 1
+        let mut i = 0
+        let mut valid = true
+        while i < count {
+          match artifact_piece_parse(text, cursor) {
+            Some((item, next)) => {
+              Array::push(out, item)
+              cursor = next
+            },
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        if !valid || cursor >= n || String::char_code_at(text, cursor) != 93 {
+          None
+        } else {
+          Some((out, cursor + 1))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn artifact_ints_parse(text: String, pos: Int) -> Option[(Array[Int], Int)] {
+  match artifact_array_parse(text, pos) {
+    Some((raws, next)) => {
+      let out = array_empty()
+      let mut i = 0
+      let mut valid = true
+      while i < Array::length(raws) {
+        match artifact_int(Array::get(raws, i)) {
+          Some(value) => Array::push(out, value),
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      if valid {
+        Some((out, next))
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+fn artifact_type_parse(text: String, pos: Int) -> Option[(Type, Int)] {
+  if pos >= String::length(text) {
+    None
+  } else {
+    let tag = String::char_code_at(text, pos)
+    if tag == 73 {
+      Some((CtInt, pos + 1))
+    }
+    else if tag == 68 {
+      Some((CtDouble, pos + 1))
+    }
+    else if tag == 66 {
+      Some((CtBool, pos + 1))
+    }
+    else if tag == 71 {
+      Some((CtString, pos + 1))
+    }
+    else if tag == 72 {
+      Some((CtChar, pos + 1))
+    }
+    else if tag == 85 {
+      Some((CtUnit, pos + 1))
+    }
+    else if tag == 89 {
+      Some((CtBytes, pos + 1))
+    }
+    else if tag == 88 {
+      Some((CtUnknown, pos + 1))
+    }
+    else if tag == 86 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((raw, next)) => match artifact_int(raw) {
+          Some(id) => Some((CtVar(id), next)),
+          None => None
+        },
+        None => None
+      }
+    } else if tag == 69 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((name, next)) => Some((CtEnum(name), next)),
+        None => None
+      }
+    } else if tag == 82 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((name, next)) => Some((CtStruct(name), next)),
+        None => None
+      }
+    } else if tag == 65 || tag == 79 {
+      match artifact_type_parse(text, pos + 1) {
+        Some((item, next)) => if tag == 65 {
+          Some((CtArray(item), next))
+        } else {
+          Some((CtOption(item), next))
+        },
+        None => None
+      }
+    } else if tag == 84 {
+      match artifact_array_parse(text, pos + 1) {
+        Some((raws, next)) => {
+          let out = array_empty()
+          let mut i = 0
+          let mut valid = true
+          while i < Array::length(raws) {
+            match artifact_type_parse(Array::get(raws, i), 0) {
+              Some((item, end)) => if end == String::length(Array::get(raws, i)) {
+                Array::push(out, item)
+              } else {
+                valid = false
+              },
+              None => {
+                valid = false
+              }
+            }
+            i = i + 1
+          }
+          if valid {
+            Some((CtTuple(out), next))
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    } else if tag == 78 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((name, after_name)) => match artifact_array_parse(text, after_name) {
+          Some((raws, next)) => {
+            let args = array_empty()
+            let mut i = 0
+            let mut valid = true
+            while i < Array::length(raws) {
+              match artifact_type_parse(Array::get(raws, i), 0) {
+                Some((item, end)) => if end == String::length(Array::get(raws, i)) {
+                  Array::push(args, item)
+                } else {
+                  valid = false
+                },
+                None => {
+                  valid = false
+                }
+              }
+              i = i + 1
+            }
+            if valid {
+              Some((CtNamed(name, args), next))
+            } else {
+              None
+            }
+          },
+          None => None
+        },
+        None => None
+      }
+    } else if tag == 70 {
+      let effect_tag_pos = pos + 1
+      if effect_tag_pos >= String::length(text) {
+        None
+      } else {
+        let effect_tag = String::char_code_at(text, effect_tag_pos)
+        let parsed_effect = if effect_tag == 78 {
+          Some((None, effect_tag_pos + 1))
+        } else if effect_tag == 83 {
+          match artifact_piece_parse(text, effect_tag_pos + 1) {
+            Some((name, next)) => Some((Some(name), next)),
+            None => None
+          }
+        } else {
+          None
+        }
+        match parsed_effect {
+          Some((effect, after_effect)) => match artifact_array_parse(text, after_effect) {
+            Some((raws, after_params)) => {
+              let params = array_empty()
+              let mut i = 0
+              let mut valid = true
+              while i < Array::length(raws) {
+                match artifact_type_parse(Array::get(raws, i), 0) {
+                  Some((item, end)) => if end == String::length(Array::get(raws, i)) {
+                    Array::push(params, item)
+                  } else {
+                    valid = false
+                  },
+                  None => {
+                    valid = false
+                  }
+                }
+                i = i + 1
+              }
+              match artifact_type_parse(text, after_params) {
+                Some((ret, next)) => if valid {
+                  Some((CtFn(params, ret, effect), next))
+                } else {
+                  None
+                },
+                None => None
+              }
+            },
+            None => None
+          },
+          None => None
+        }
+      }
+    } else if tag == 81 {
+      match artifact_ints_parse(text, pos + 1) {
+        Some((vars, after_vars)) => match artifact_array_parse(text, after_vars) {
+          Some((raws, after_bounds)) => {
+            let bounds = array_empty()
+            let mut i = 0
+            let mut valid = true
+            while i < Array::length(raws) {
+              let raw = Array::get(raws, i)
+              match artifact_piece_parse(raw, 0) {
+                Some((id_text, after_id)) => match (artifact_int(id_text), artifact_array_parse(raw, after_id)) {
+                  (Some(id), Some((labels, end))) => if end == String::length(raw) {
+                    Array::push(bounds, (id, labels))
+                  } else {
+                    valid = false
+                  },
+                  _ => {
+                    valid = false
+                  }
+                },
+                None => {
+                  valid = false
+                }
+              }
+              i = i + 1
+            }
+            match artifact_type_parse(text, after_bounds) {
+              Some((body, next)) => if valid {
+                Some((CtForAll(vars, bounds, body), next))
+              } else {
+                None
+              },
+              None => None
+            }
+          },
+          None => None
+        },
+        None => None
+      }
+    } else {
+      None
+    }
+  }
+}
+
+fn artifact_types_parse(raws: Array[String]) -> Option[Array[Type]] {
+  let out = array_empty()
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(raws) {
+    let raw = Array::get(raws, i)
+    match artifact_type_parse(raw, 0) {
+      Some((item, end)) => if end == String::length(raw) {
+        Array::push(out, item)
+      } else {
+        valid = false
+      },
+      None => {
+        valid = false
+      }
+    }
+    i = i + 1
+  }
+  if valid {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+fn artifact_enum_parse(name: String, params: Array[String], raws: Array[String]) -> Option[TypeDef] {
+  let variants = array_empty()
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(raws) {
+    let raw = Array::get(raws, i)
+    match artifact_piece_parse(raw, 0) {
+      Some((variant_name, pos)) => match artifact_array_parse(raw, pos) {
+        Some((payload_raws, end)) => if end == String::length(raw) {
+          match artifact_types_parse(payload_raws) {
+            Some(payloads) => Array::push(variants, (variant_name, payloads)),
+            None => {
+              valid = false
+            }
+          }
+        } else {
+          valid = false
+        },
+        None => {
+          valid = false
+        }
+      },
+      None => {
+        valid = false
+      }
+    }
+    i = i + 1
+  }
+  if valid {
+    Some(TDEnum(name, params, variants))
+  } else {
+    None
+  }
+}
+
+fn artifact_struct_parse(name: String, raws: Array[String], mut_fields: Array[String], params: Array[String]) -> Option[TypeDef] {
+  let fields = array_empty()
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(raws) {
+    let raw = Array::get(raws, i)
+    match artifact_piece_parse(raw, 0) {
+      Some((field_name, pos)) => match artifact_type_parse(raw, pos) {
+        Some((field_type, end)) => if end == String::length(raw) {
+          Array::push(fields, (field_name, field_type))
+        } else {
+          valid = false
+        },
+        None => {
+          valid = false
+        }
+      },
+      None => {
+        valid = false
+      }
+    }
+    i = i + 1
+  }
+  if valid {
+    Some(TDStruct(name, fields, mut_fields, params))
+  } else {
+    None
+  }
+}
+
+fn artifact_effect_parse(name: String, raws: Array[String], params: Array[String]) -> Option[TypeDef] {
+  let ops = array_empty()
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(raws) {
+    let raw = Array::get(raws, i)
+    match artifact_piece_parse(raw, 0) {
+      Some((op_name, pos)) => match artifact_array_parse(raw, pos) {
+        Some((arg_raws, after_args)) => match artifact_type_parse(raw, after_args) {
+          Some((ret, end)) => if end == String::length(raw) {
+            match artifact_types_parse(arg_raws) {
+              Some(args) => Array::push(ops, (op_name, args, ret)),
+              None => {
+                valid = false
+              }
+            }
+          } else {
+            valid = false
+          },
+          None => {
+            valid = false
+          }
+        },
+        None => {
+          valid = false
+        }
+      },
+      None => {
+        valid = false
+      }
+    }
+    i = i + 1
+  }
+  if valid {
+    Some(TDEffect(name, ops, params))
+  } else {
+    None
+  }
+}
+
+fn artifact_typedef_parse(text: String) -> Option[TypeDef] {
+  if String::length(text) == 0 {
+    None
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 69 {
+      match artifact_piece_parse(text, 1) {
+        Some((name, p1)) => match artifact_array_parse(text, p1) {
+          Some((params, p2)) => match artifact_array_parse(text, p2) {
+            Some((raws, end)) => if end == String::length(text) {
+              artifact_enum_parse(name, params, raws)
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    } else if tag == 83 {
+      match artifact_piece_parse(text, 1) {
+        Some((name, p1)) => match artifact_array_parse(text, p1) {
+          Some((raws, p2)) => match artifact_array_parse(text, p2) {
+            Some((mut_fields, p3)) => match artifact_array_parse(text, p3) {
+              Some((params, end)) => if end == String::length(text) {
+                artifact_struct_parse(name, raws, mut_fields, params)
+              } else {
+                None
+              },
+              None => None
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    } else if tag == 65 {
+      match artifact_piece_parse(text, 1) {
+        Some((name, p1)) => match artifact_array_parse(text, p1) {
+          Some((params, p2)) => match artifact_type_parse(text, p2) {
+            Some((body, end)) => if end == String::length(text) {
+              Some(TDAlias(name, params, body))
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    } else if tag == 75 {
+      match artifact_piece_parse(text, 1) {
+        Some((name, p1)) => match artifact_array_parse(text, p1) {
+          Some((raws, p2)) => match artifact_array_parse(text, p2) {
+            Some((params, end)) => if end == String::length(text) {
+              artifact_effect_parse(name, raws, params)
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    } else {
+      None
+    }
+  }
+}
+
+fn artifact_subst_parse(text: String, pos: Int) -> Option[(Subst, Int)] {
+  if pos >= String::length(text) {
+    None
+  } else {
+    let tag = String::char_code_at(text, pos)
+    if tag == 48 {
+      Some((SubstEmpty, pos + 1))
+    }
+    else if tag == 66 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((raw, p)) => match (artifact_int(raw), artifact_type_parse(text, p)) {
+          (Some(id), Some((ty, p2))) => match artifact_subst_parse(text, p2) {
+            Some((rest, end)) => Some((SubstBind(id, ty, rest), end)),
+            None => None
+          },
+          _ => None
+        },
+        None => None
+      }
+    }
+    else if tag == 82 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((raw, p)) => match (artifact_int(raw), artifact_array_parse(text, p)) {
+          (Some(id), Some((labels, p2))) => match artifact_subst_parse(text, p2) {
+            Some((rest, end)) => Some((SubstBound(id, labels, rest), end)),
+            None => None
+          },
+          _ => None
+        },
+        None => None
+      }
+    }
+    // C was deliberately never assigned in v1. Reject it rather than
+    // silently interpreting a claimed raw cache payload.
+    else if tag == 67 {
+      None
+    }
+    else if tag == 69 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((name, p1)) => match artifact_piece_parse(text, p1) {
+          Some((value, p2)) => match artifact_subst_parse(text, p2) {
+            Some((rest, end)) => Some((SubstEffBind(name, value, rest), end)),
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    }
+    else {
+      None
+    }
+  }
+}
+
+/// Strict v1 decoder. It accepts only complete canonical encodings; unknown
+/// tags, truncation, extra bytes, claimed raw SubstCached payloads, and malformed
+/// binder provenance all return None.
+export fn decode_checked_type_defs_artifact_v1(text: String) -> Option[CheckedTypeDefsArtifact] {
+  let prefix = "vibe-checked-type-defs:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else {
+    match artifact_array_parse(text, String::length(prefix)) {
+      Some((raw_defs, after_defs)) => match artifact_array_parse(text, after_defs) {
+        Some((raw_binders, after_binders)) => match artifact_subst_parse(text, after_binders) {
+          Some((subst, end)) => {
+            let defs = array_empty()
+            let binders = array_empty()
+            let mut i = 0
+            let mut valid = end == String::length(text)
+            while i < Array::length(raw_defs) {
+              match artifact_typedef_parse(Array::get(raw_defs, i)) {
+                Some(def) => Array::push(defs, def),
+                None => {
+                  valid = false
+                }
+              }
+              i = i + 1
+            }
+            i = 0
+            while i < Array::length(raw_binders) {
+              match artifact_ints_parse(Array::get(raw_binders, i), 0) {
+                Some((row, row_end)) => if row_end == String::length(Array::get(raw_binders, i)) {
+                  Array::push(binders, row)
+                } else {
+                  valid = false
+                },
+                None => {
+                  valid = false
+                }
+              }
+              i = i + 1
+            }
+            let artifact = CheckedTypeDefsArtifact::{
+              type_defs: defs,
+              type_def_binders: binders,
+              final_subst: subst
+            }
+            if !valid || !artifact_valid(defs, binders, subst) {
+              None
+            } else {
+              match encode_checked_type_defs_artifact_v1(artifact) {
+                Some(canonical) => if canonical == text {
+                  Some(artifact)
+                } else {
+                  None
+                },
+                None => None
+              }
+            }
+          },
+          None => None
+        },
+        None => None
+      },
+      None => None
+    }
+  }
+}
+
+/// Canonical artifact view shares the existing CTDS semantics exactly. It does
+/// not create or expose a complete CheckedProgram; the wrapper is local only.
+export fn canonical_checked_type_defs_artifact_snapshot(artifact: CheckedTypeDefsArtifact) -> Option[String] {
+  if !artifact_valid(artifact.type_defs, artifact.type_def_binders, artifact.final_subst) {
+    None
+  } else {
+    let observation = CheckedProgramTypeDefsObservation::{
+      checked_program: CheckedProgram::{
+        checked_stmts: array_empty(), final_env: EnvEmpty, type_defs: artifact.type_defs, final_subst: artifact.final_subst, typed_occurrences: array_empty()
+      },
+      type_def_binders: artifact.type_def_binders
+    }
+    Some(canonical_checked_type_defs_snapshot(observation))
+  }
+}
