@@ -72,6 +72,19 @@ lower しても、以下の意味論を保つ。
 
 概念上の最小 surface は次のとおりとする。
 
+> **#1324 による読み替え (2026-08-04 追記)**: 以下の提案 surface と、本節から
+> 「Region と structured concurrency」節までの散文は `Result[T, TaskError]` /
+> `Err(Closed)` / `Err(Cancelled)` という綴りで書かれているが、**`Result` は
+> #1324 で言語からも prelude からも削除された**。実装済みの
+> `@vibex/concurrent` は既に row ベースへ移行しており
+> (`-> T with { Exception[TaskError], e }`)、対応表は下の実装ノート
+> 「`Result` → 型付き `Exception[E]`」(#1324 slice 1 / slice 2) にある。
+> 本節の綴りは提案当時の記録としてそのまま残す — v0.4.0 の目標 surface 自体を
+> row ベースへ書き直すのは #1324 のスコープ外の設計作業。読むときは
+> `-> Result[T, E]` を `-> T with { Exception[E] }`、`Err(x)` を `throw(x)`、
+> `match .. { Ok(v) => .., Err(e) => .. }` を
+> `handle { .. } with Exception[E] { Throw(e) => .. }` と読み替えること。
+
 ```vibe skip
 effect Async {
   suspend() -> Unit

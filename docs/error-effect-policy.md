@@ -4,7 +4,7 @@ Status: accepted
 
 Date: 2026-07-17
 
-Related: ADR-0003, ADR-0016, ADR-0050, ADR-0071, #626, #939, #944, #955
+Related: ADR-0003, ADR-0016, ADR-0050, ADR-0071, #626, #939, #944, #955, #1324
 
 Follow-up: ADR-0085 は、この checked/non-resumable/entry-boundary 契約を保った
 まま `Error` を typed `Exception[E]` へ移行する案を定める。compatibility alias
@@ -38,8 +38,13 @@ effectful callee の双方について `with { ... }` へ推移的に伝播す�
 - 明示 `with { Error }` は高階関数型、subtyping、package contract、contract hash、
   effect surface diff で意味のある row element とする。
 - 公開関数への Error 追加は effect surface の拡大であり、破壊的変更として扱う。
-- 通常の失敗表現には `Result[T, E]` を推奨し、`throw` は adapter / CLI / FFI / test
-  などの boundary mechanism と位置づける。
+- ~~通常の失敗表現には `Result[T, E]` を推奨し、`throw` は adapter / CLI / FFI / test
+  などの boundary mechanism と位置づける。~~ **この項は #1324 で撤回された。**
+  `Result` は言語からも prelude からも削除されたので、通常の失敗表現は
+  **effect row 自体** (`fn f(..) -> T with { Exception[E] }`) になり、`throw` は
+  境界専用の逃げ道ではなく失敗の第一級の表現手段になった。`handle` を置く位置が
+  「回復したい境界」を表す。本 ADR の他の項 (checked / 非再開 / 推移伝播 /
+  entry boundary) はいずれもこの変更の影響を受けない。
 
 `Async` の非強制理由と structured concurrency 上の扱いは ADR-0068 に委ね、本 ADR
 では変更しない。

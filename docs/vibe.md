@@ -134,18 +134,24 @@ let g3: (String) -> Int = (msg) -> {
 }
 ```
 
-### Error model (Result-first, current policy)
+### Error model (effect-row-first, current policy)
 
 - `Error` is checked: direct throws and transitive calls require declaration or
   handling. An empty effect row excludes escaping `Error`, but not divergence
   or runtime traps.
 - `fn main with { Error }` is allowed; the runtime boundary converts an
   escaping Error into a diagnosed unsuccessful process outcome.
-- Standard error model is `Result[T, E]`.
-- Application/core pipelines should compose with `Result` (`map`,
-  `and_then`/`bind`, `map_err`).
-- `throw` is an advanced boundary mechanism and should be isolated at adapters
-  (CLI/HTTP/FFI/tests).
+- The standard error model is the **effect row**: a fallible function returns
+  its success type and declares the failure in its row —
+  `fn f(..) -> T with { Exception[E] }`. There is no built-in `Result[T, E]`
+  (#1324 removed it from the language and the prelude); a two-track return type
+  is now an ordinary user `enum` you declare yourself.
+- Pipelines compose by ordinary application: the success value flows straight
+  through, so stages chain without `and_then`/`map_err` and without a per-call
+  `match`. Failure short-circuits to the nearest `handle`.
+- `throw` raises the failure; `handle .. with Exception[E] { Throw(e) => .. }`
+  is where it is discharged. Keep `handle` at the boundary you actually want to
+  recover at (adapters, CLI/HTTP/FFI, tests) rather than at every call.
 - `handle` remains the core mechanism for local effect/error pattern handling.
 - `perform` / `resume` are effect-handler operations used with `handle` and are
   checked together with effect declarations.

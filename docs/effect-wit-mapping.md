@@ -69,7 +69,7 @@ uppercase letters split per letter (`URL` → `u-r-l`) — keep to CamelCase.
 | `Bytes` | `list<u8>` |
 | `Array[T]` | `list<T>` |
 | `Option[T]` | `option<T>` |
-| `Result[T, E]` | `result<T, E>` |
+| `Result[T, E]` | `result<T, E>` (matched by TypeExpr head NAME — #1324 removed the built-in `Result`, so this projects a `Result` enum you declared yourself) |
 | `Map[K, V]` | `list<tuple<K, V>>` |
 | `(A, B, ...)` | `tuple<A, B, ...>` |
 | `Future[T]` | `future<T'>` (ADR-0089 Decision 5; backed by the step-4 lowering, spec §3.13/§3.14) |
@@ -81,6 +81,16 @@ mis-declares a boundary type. User enum/struct → WIT `variant`/`record` is
 a follow-up; general `stream<T'>` stays restricted to nominal host-owned
 handles by ADR-0089 Decision 4/5 (a guest-side producer cannot enter the
 component instance, spec §3.3).
+
+**Gap (#1324 follow-up): an `Exception[E]` row does not project to
+`result<T, E>`.** Since #1324 the idiomatic fallible signature is
+`fn f(..) -> T with { Exception[E] }`, but the signature text is built from the
+RETURN TYPE alone and exception labels are filtered out of the world imports
+(same rule as `Error` above). Such an export therefore projects as plain `T`,
+and an escaping throw stays a component trap rather than a declared failure
+channel. Until that mapping exists, a WIT-facing fallible export must return a
+hand-declared `enum Result[T, E] { Ok(T); Err(E) }` so the head name hits the
+row above.
 
 ## Example
 

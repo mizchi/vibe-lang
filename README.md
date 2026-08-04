@@ -28,11 +28,12 @@ to update the compiler independently of the runner.
 ## Sample code
 
 ```vibe
-// Pattern matching + effect-typed error handling
-fn safe_div(a: Int, b: Int) -> Result[Int, String] {
+// Effect-typed error handling: failure travels in the effect row, not in the
+// return type, so the success value flows straight through to the caller.
+fn safe_div(a: Int, b: Int) -> Int with { Exception[String] } {
   match b {
-    0 => Err("division by zero"),
-    _ => Ok(a / b)
+    0 => throw("division by zero"),
+    _ => a / b
   }
 }
 
@@ -44,9 +45,14 @@ fn Point::manhattan(p: Point) -> Int {
 }
 
 fn main with { Stdout } {
-  let result = match safe_div(10, 2) {
-    Ok(v) => v + Point::manhattan(Point::{ x: 3, y: 4 }),
-    Err(_) => -1
+  // `handle` is where the row is discharged — no per-call unwrapping.
+  let result = handle {
+    safe_div(10, 2) + Point::manhattan(Point::{ x: 3, y: 4 })
+  } with Exception[String] {
+    Throw(msg) => {
+      Stdout::write_stream("failed: \{msg}\n")
+      0 - 1
+    }
   }
   Stdout::write_stream("\{result}\n")
 }

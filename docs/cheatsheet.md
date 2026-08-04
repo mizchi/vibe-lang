@@ -290,10 +290,12 @@ Array::map(xs, compose(parse, render))
 
 > Runnable reference for the pipe `_` slot, combinators, `let*`, and `tap`:
 > [`lib/@vibe/prelude/pipeline_ergonomics_test.vibe`](../lib/@vibe/prelude/pipeline_ergonomics_test.vibe)
-> (`vibe test lib/@vibe/prelude/pipeline_ergonomics_test.vibe`). `Result`, `tap*`,
+> (`vibe test lib/@vibe/prelude/pipeline_ergonomics_test.vibe`). `tap` / `tap_some`
 > and the combinators are prelude exports, so a file must `import` them and sit
 > where it can reach the prelude — `import` paths may not escape the file's root
 > directory, so standalone `examples/` files cannot reach `lib/@vibe/prelude/`.
+> (`Result` and the `tap_ok`/`tap_err` railway taps were prelude exports until
+> #1324 removed them; `let*` and `?` now bind `Option` only.)
 
 ## Control Flow
 

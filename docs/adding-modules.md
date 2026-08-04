@@ -83,9 +83,14 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
 
 ## 4. よく踏む言語・checker の罠 (2026-07 時点)
 
-- **`Ok`/`Err` は enum ctor**: bare で使うにも `import ../prelude/result.vibe { Result }`
-  が要る (型 import が ctor を随伴させる)
-- **qualified ctor パターン** `Result::Ok(v) =>` は #742 で対応済み
+- **失敗は返り値ではなく effect row に載せる** (#1324): `-> Result[T, E]` ではなく
+  `-> T with { Exception[E] }` を書き、`throw(e)` で送出して
+  `handle { .. } with Exception[E] { Throw(e) => .. }` で受ける。**`Result` は
+  言語にも prelude にも無い** — `Ok`/`Err` を bare で書くと `unknown name: Err`
+  になる。二本立ての返り値がどうしても要るなら自分で
+  `enum Result[T, E] { Ok(T); Err(E) }` を宣言する (特別扱いは一切無い)
+- **qualified ctor パターン** `Result::Ok(v) =>` は #742 で対応済み (上記のように
+  自分で宣言した enum に対しても効く)
 - **`Type::method` を使うなら import 列に明示する** (`Json::get` など —
   host 時代の暗黙随伴 import は無い)
 - **Double の文字列化**: `"\{x}"` は静的に floatish と分かる形 (リテラル /
