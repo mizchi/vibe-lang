@@ -151,8 +151,12 @@ jobs:
   # / well under 1 min with both caches warm, against a ~4 min critical path
   # (the smoke matrix), so this adds no bottleneck.
   #
-  # Only node is required to drive the compile: run_wasm_vibe_host_runner.sh
-  # is node-only, and viberun embeds wasmtime as a crate — no wasmtime binary.
+  # Toolchain: node drives the compile (run_wasm_vibe_host_runner.sh is
+  # node-only) and viberun embeds wasmtime as a crate, but generations.sh's
+  # "validate stageN compiler -> sample" step shells out to a wasmtime BINARY,
+  # so the same install the unit-test shards do is required here too. (Dropping
+  # it passed locally purely because this dev box had wasmtime on PATH — the
+  # first CI run caught it.)
   gc-gate:
     name: gc-gate
     runs-on: ubuntu-latest
@@ -168,6 +172,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Install wasm-tools (this job only)
         # Same pinned version and prebuilt-first/cargo-fallback shape as the
         # wasi-p3 job's toolchain step, kept local to this job so no other
