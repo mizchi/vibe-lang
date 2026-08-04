@@ -9,7 +9,7 @@ import @vibe/ast {
 }
 
 import ../parser.vibe {
-  parse_program
+  parse_program, parse_program_preserving
 }
 
 import ./parser_test_support.vibe {
@@ -524,4 +524,248 @@ test "Map::from_pairs rejects non-literal arguments (#960)" {
     Throw(e) => String::concat("ERROR: ", e)
   }
   assert(String::contains(new_args, "Map::new takes no arguments"))
+}
+
+//# #1284: loop continue/break argument arity
+
+test "#1284: continue must pass every loop parameter" {
+  // The asymmetry between `continue` and `break` is real and intentional:
+  // `continue(..)` supplies the loop's PARAMETERS (as many as `loop (..)`
+  // declares), `break e` supplies the loop's single RESULT. This test pins
+  // the arity rule for `continue`; the `break`-is-one-value half is pinned
+  // by the tuple test below.
+  let exact = handle {
+    let _ = parse_program(lex("loop (i = 0, sum = 0) { if i > 3 { break sum } continue(i + 1, sum + i) }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(exact == "ok")
+  // Bare `continue` repeats with every parameter unchanged — still legal.
+  let bare = handle {
+    let _ = parse_program(lex("loop (i = 0, sum = 0) { if i > 3 { break sum } continue }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(bare == "ok")
+}
+
+test "#1284: a continue arity mismatch is a located error, not a silent miscompile" {
+  // Too FEW arguments used to update a positional prefix of the parameters
+  // and leave the rest unchanged — a rule no document ever stated.
+  let too_few = handle {
+    let _ = parse_program(lex("loop (i = 0, sum = 0) { if i > 3 { break sum } continue(i + 1) }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(too_few, "ERROR: "))
+  assert(String::contains(too_few, "#1284"))
+  assert(String::contains(too_few, "2 parameter(s) (i, sum)"))
+  assert(String::contains(too_few, "1 argument(s)"))
+  // Too MANY arguments fell into a pass-through arm that dropped the payload
+  // entirely: the parameters were never assigned, so the loop spun forever
+  // with its initial values — compile-clean, and the same failure shape #808
+  // fixed for break/continue inside match arms.
+  let too_many = handle {
+    let _ = parse_program(lex("loop (i = 0, sum = 0) { if i > 3 { break sum } continue(i + 1, sum + i, 9) }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(too_many, "ERROR: "))
+  assert(String::contains(too_many, "#1284"))
+  assert(String::contains(too_many, "3 argument(s)"))
+}
+
+test "#1284: break takes one value, so a parenthesized list is a tuple" {
+  // `break (a, b)` in a two-parameter loop is NOT the mirror of
+  // `continue(a, b)` — a `loop` is an expression with a single value, so this
+  // breaks with one tuple. It stays legal; the diagnostic above is what tells
+  // a reader which of the two they wanted.
+  let tup = handle {
+    let _ = parse_program(lex("loop (i = 0, sum = 0) { if i > 3 { break (i, sum) } continue(i + 1, sum + i) }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(tup == "ok")
+}
+
+//# #1283: guard ... is ... else
+
+test "#1283: guard binds over the rest of the block when the else returns" {
+  let ok = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { return -1 }\n  v + 1 }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(ok == "ok")
+  // Every path of a branching else may return.
+  let branched = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { if true { return -1 } else { return -2 } }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(branched == "ok")
+}
+
+test "#1283: a guard else that does not diverge is rejected" {
+  // This is the whole point of the form: the else arm sits where the REST OF
+  // THE BLOCK would be, so a fallthrough would reach the following statements
+  // with `v` unbound. The retired let-else accepted exactly this and silently
+  // replaced the rest of the function with the else value.
+  let fallthrough = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { 0 }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(fallthrough, "ERROR: "))
+  assert(String::contains(fallthrough, "#1283"))
+  assert(String::contains(fallthrough, "every path"))
+  // An `if` with no `else` cannot diverge on both paths.
+  let half_branch = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { if true { return -1 } }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(half_branch, "ERROR: "))
+  assert(String::contains(half_branch, "#1283"))
+}
+
+test "#1283: a guard else that only throws gets its own message" {
+  // `throw` is NOT accepted as divergence yet -- the #1283 decision defers the
+  // checker's explicit abortive-effect judgement -- but it is the mistake most
+  // likely to be made first, since let-else did accept it. So it must not fall
+  // into the generic message.
+  let thrown = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int with { Error } = (o) -> { guard o is Some(v) else { throw(\"none\") }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(thrown, "ERROR: "))
+  assert(String::contains(thrown, "#1283"))
+  assert(String::contains(thrown, "ADR-0073"))
+}
+
+test "#1283: guard requires both `is` and `else`" {
+  let no_is = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o else { return -1 }\n  0 }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(no_is, "ERROR: "))
+  assert(String::contains(no_is, "#1283"))
+  let no_else = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v)\n  v }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(no_else, "ERROR: "))
+  assert(String::contains(no_else, "#1283"))
+}
+
+test "#1283: the retired let-else spelling is rejected by name" {
+  // A generic parse error here would send the reader looking for a typo. The
+  // message has to say what replaced it, because the replacement is not a
+  // drop-in: let-else's else supplied a VALUE for the remaining block.
+  let old_form = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { let Some(v) = o else { return -1 }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(old_form, "ERROR: "))
+  assert(String::contains(old_form, "#1283"))
+  assert(String::contains(old_form, "let-else"))
+  assert(String::contains(old_form, "guard"))
+  // The irrefutable pattern-let with NO else is a different construct and
+  // stays legal.
+  let no_else = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { let Some(v) = o\n  v }\nf(Some(1))"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(no_else == "ok")
+}
+
+test "#1283: `guard` is a reserved word, escapable as r#guard" {
+  let reserved = handle {
+    let _ = parse_program(lex("let guard = 1\nguard"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(reserved, "ERROR: "))
+  let escaped = handle {
+    let _ = parse_program(lex("let r#guard = 1\nr#guard"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(escaped == "ok")
+}
+
+//# #819: example blocks
+
+test "#819: example parses and lowers to a test for every downstream stage" {
+  // The default entry point lowers SExample to STest, so the printed program
+  // is indistinguishable from a test -- that IS the contract: no downstream
+  // pass learns a third block form, and the ~106 STest sites stay untouched.
+  let lowered = handle {
+    print_program(parse_program(lex("example \"adds\" { assert_eq(1 + 1, 2) }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(lowered, "test \"adds\""))
+  assert(!String::contains(lowered, "example \"adds\""))
+}
+
+test "#819: the preserving entry point keeps the example distinguishable" {
+  // Tooling that must tell an example from a test -- LSP hover, doc
+  // extraction -- reads this parse, exactly as the printer/normalize
+  // round-trip reads it to keep `fn` in `fn` form (ADR-0064 #727).
+  let kept = handle {
+    print_program(parse_program_preserving(lex("example \"adds\" { assert_eq(1 + 1, 2) }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(kept, "example \"adds\""))
+}
+
+test "#819: an example needs a name string" {
+  let unnamed = handle {
+    let _ = parse_program(lex("example { assert_eq(1, 1) }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(unnamed, "ERROR: "))
+  assert(String::contains(unnamed, "example name string"))
+}
+
+test "#819: `example` is a reserved word, escapable as r#example" {
+  let reserved = handle {
+    let _ = parse_program(lex("let example = 1\nexample"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(reserved, "ERROR: "))
+  let escaped = handle {
+    let _ = parse_program(lex("let r#example = 1\nr#example"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(escaped == "ok")
 }

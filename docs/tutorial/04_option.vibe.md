@@ -122,13 +122,25 @@ first_half(4, 6) unwrap_or -1 = 2
 first_half(4, 3) unwrap_or -1 = -1
 ```
 
-## `let-else` — 束縛するか脱出
+## `guard` — 束縛するか脱出
 
-`let PAT = e else { ... }` は `Some(v)` を剥がして `v` を**後続のスコープで**束縛し、
-マッチしなければ `else` に入る。現行では `else` は脱出 (`return` / `throw`) する必要が
-ある — `match e { PAT => <残り>, _ => else }` に脱糖され、両腕の型が合う必要が
-あるため。`return` を維持するかは [#1283](https://github.com/mizchi/vibe-lang/issues/1283) で
-決める。`match` のような右方向ネストなしで「剥がして続行」を書ける。
+`guard e is PAT else { ... }` は `Some(v)` を剥がして `v` を**後続のスコープで**束縛し、
+マッチしなければ `else` に入る。`match` のような右方向ネストなしで
+「剥がして続行」を書ける。
+
+`else` は**必ず脱出**する。`match e { PAT => <残り>, _ => else }` に脱糖されるので
+`else` 腕は残りのブロックそのものの代わりに評価される位置にあり、脱出しないと
+束縛されていない `v` を使う経路ができてしまうため。現行で受理する脱出の形は
+`return` **だけ**で、`throw` はまだ受理しない
+([#1283](https://github.com/mizchi/vibe-lang/issues/1283) — ADR-0073 が
+`Error::Throw` を非再開と定めてはいるが、checker 側の abortive 判定は別作業)。
+
+フォールバックが「脱出」ではなく「値」なら `if e is PAT { .. } else { .. }` を使う。
+
+> 旧綴りの `let PAT = e else { ... }` (#760(1)) は廃止され、名指しの parse error に
+> なる。同義ではない — 旧形の `else` はブロックの**残り全体**の値になったので、
+> `let Some(v) = o else { 0 }` は残りの関数を黙って `0` に差し替えられた。
+> `guard` が脱出を必須にしたのはこの形を消すため。
 
 ```vibe run
 import @vibe/prelude {
@@ -136,7 +148,7 @@ import @vibe/prelude {
 }
 
 fn double_or_zero(o: Option[Int]) -> Int {
-  let Some(v) = o else {
+  guard o is Some(v) else {
     return 0
   }
   v * 2

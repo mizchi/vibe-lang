@@ -84,12 +84,30 @@ fn main with { Stdout } {
 sum = 45
 ```
 
-`continue(...)` と `break ...` は見た目が似ているが対称ではない。この学習コストを
-解消する構文方針は [#1284](https://github.com/mizchi/vibe-lang/issues/1284) で追跡する。
-`continue(a, b)` はループの次の状態 (`i`, `acc`, ... それぞれ 1 つずつ)
-への関数呼び出しのような構文だが、`break(a, b)` の丸括弧はただの式の括弧
-— `break` に `(a, b)` という**タプル 1 個**を渡しているだけ (`break a, b`
-のような「2 値の loop 結果」にはならない)。
+`continue(...)` と `break ...` は見た目が似ているが対称ではない。**これは
+[#1284](https://github.com/mizchi/vibe-lang/issues/1284) で「そのまま維持する」と
+決着した**。2つが数えているものが違うからで、揃えようがない:
+
+- `continue(a, b)` が渡すのは**ループのパラメータ**。`loop (i = ..., acc = ...)`
+  が宣言した個数とちょうど同じ数だけ渡す。
+- `break e` が渡すのは**ループの結果**。`loop` は値を1つ持つ式なので、結果は
+  つねに1個。`break(a, b)` の丸括弧はただの式の括弧で、`(a, b)` という
+  **タプル 1 個**を渡しているだけ (`break a, b` のような「2 値の loop 結果」
+  にはならない)。
+
+代わりに、取り違えを**コンパイルエラーで捕まえる**ようにした。`continue` の
+引数がパラメータの個数と一致しなければ、どちらの個数かを示して落ちる:
+
+```
+continue: this loop declares 2 parameter(s) (i, acc), but continue was given
+1 argument(s). `continue` passes a new value for EVERY loop parameter; use a
+bare `continue` to repeat with the current values unchanged. `break` is NOT
+symmetric with this — it takes the loop's single result value, so
+`break (a, b)` is one tuple. (#1284)
+```
+
+引数を1つも書かない `continue` は「全パラメータをそのままにもう1周」の意味で、
+これは今も有効。
 
 ```vibe run
 import @vibe/prelude {

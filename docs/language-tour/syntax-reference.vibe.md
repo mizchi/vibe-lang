@@ -293,11 +293,11 @@ let t1 = t.1   // => "two"
 
 ### Destructuring let
 
-<!-- doctest-skip: 未定義名 (r / opt / fallback) の断片。record destructure は top-level では parse error (#830)、let-else の else は diverging 必須 -->
+<!-- doctest-skip: 未定義名 (r / opt) の断片。record destructure は top-level では parse error (#830)、guard の else は diverging 必須 -->
 ```vibe skip
 let (a, b) = (1, 2)
 let record { x, y } = r          // fn/test body 内で使う (#830)
-let Some(v) = opt else { fallback }
+guard opt is Some(v) else { return -1 }   // 屈折可能な束縛は guard (#1283)
 ```
 
 ## Type Annotations

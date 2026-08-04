@@ -222,10 +222,37 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
   result
 }
 
+/// Render a loop's parameter list for the #1284 arity diagnostic: `i, sum`.
+fn join_loop_params(param_names: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(param_names) {
+    out = if i == 0 {
+      Array::get(param_names, i)
+    } else {
+      String::concat(out, String::concat(", ", Array::get(param_names, i)))
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Transform break(val) and continue(args) inside a loop body for desugaring.
 /// break(val) → { __loop_result = val; break }
 /// continue(a, b) → { let __lt0 = a; let __lt1 = b; p0 = __lt0; p1 = __lt1; continue }
-fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr {
+///
+/// #1284: `continue` and `break` are deliberately NOT symmetric, because they
+/// name different things — `continue(a, b)` supplies the loop's PARAMETERS (as
+/// many as `loop (..)` declares) while `break e` supplies the loop's single
+/// RESULT (a `loop` is an expression with one value, so `break (a, b)` is one
+/// tuple, not two values). The arity check below is what makes that rule
+/// observable: before it, an argument list that did not match the parameter
+/// list was accepted and silently miscompiled — too many arguments fell into a
+/// pass-through arm that dropped the payload entirely (a compile-clean
+/// infinite loop, the same failure mode #808 fixed for match arms), and too
+/// few updated a positional PREFIX of the parameters and left the rest
+/// unchanged, which no document ever specified.
+fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr with { Error } {
   match expr {
     EBreak(opt) => match opt {
       Some(val) => EAssign("__loop_result", desugar_loop_body(val, param_names), EBreak(None)),
@@ -233,13 +260,13 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr {
     },
     EContinue(args) => {
       if Array::length(args) == 0 {
+        // Bare `continue`: repeat with every parameter unchanged.
         EContinue(args)
       } else {
         let nargs = Array::length(args)
         let nparams = Array::length(param_names)
-        if nargs > nparams {
-          // Guard: more args than params → use only param count to avoid OOB
-          EContinue(args)
+        if nargs != nparams {
+          throw(String::concat("continue: this loop declares ", String::concat(__to_string(nparams), String::concat(" parameter(s) (", String::concat(join_loop_params(param_names), String::concat("), but continue was given ", String::concat(__to_string(nargs), " argument(s). `continue` passes a new value for EVERY loop parameter; use a bare `continue` to repeat with the current values unchanged. `break` is NOT symmetric with this — it takes the loop's single result value, so `break (a, b)` is one tuple. (#1284)")))))))
         } else {
           let mut result = EContinue(Array::slice([
             EUnit

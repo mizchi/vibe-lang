@@ -69,7 +69,7 @@ Reserved keywords:
 ```text
 let rec mut fn if else match while loop for in break continue yield
 throw perform resume handle with effect suberror
-test bench enum struct trait impl type import export module extern internal
+test example bench enum struct trait impl type import export module extern internal
 as true false do derive
 ```
 
@@ -165,7 +165,7 @@ Accepted forms:
 "let" "mut" Name TypeAnn? "=" Expr
 "let" "rec" Name TypeAnn? "=" Expr
 "let" Pat "=" Expr
-"let" Pat "=" Expr "else" Block
+"guard" Expr "is" Pat "else" Block
 ```
 
 Compatibility:
@@ -394,6 +394,14 @@ Rules:
   (see `docs/tutorial/02_control_flow.vibe.md`'s loop section for a runnable
   example of this asymmetry).
 - Parameterized `loop (...)` is tail-recursive state threading.
+- `continue` and `break` count different things, and #1284 settled that the
+  asymmetry stays: `continue(..)` passes the loop's PARAMETERS (exactly as many
+  as `loop (..)` declares), while `break e` passes the loop's single RESULT --
+  a `loop` is an expression with one value, so there is no arity for `break` to
+  match. To keep the two distinguishable at the point of confusion, a
+  `continue` whose argument count differs from the parameter count is a parse
+  error naming both counts. A bare `continue` (no argument list) means "repeat
+  with every parameter unchanged" and stays legal.
 - Avoid naming a top-level function `f` or `g`: those identifiers collide
   with `@vibe/prelude/func.vibe`'s `compose`/`flip` combinator parameter
   names and can produce invalid wasm at codegen time (checker passes,
@@ -526,9 +534,25 @@ Destructuring:
 ```vibe
 let (a, b) = pair
 let record { x, y } = rec
-let Some(v) = opt else { fallback }
+guard opt is Some(v) else { return -1 }
 if opt is Some(v) { v } else { 0 }
 ```
+
+`guard <scrutinee> is <pattern> else <block>` (#1283) is the refutable binding
+form. It desugars to `match <scrutinee> { <pattern> => <rest-of-block>, _ =>
+<block> }`, so the `else` block is the continuation's fallthrough and must
+leave the enclosing function on every path. `return` is the only divergence
+form accepted for now (`throw` is deferred: ADR-0073 pins `Error::Throw` as
+checked and non-resumable, but the checker's explicit abortive-effect
+judgement is separate work). Use `if <scrutinee> is <pattern> { .. } else
+{ .. }` when the fallback produces a value rather than exiting.
+
+`guard` is a reserved word. A binding that needs the name spells it `r#guard`.
+
+The earlier `let PAT = value else { .. }` (let-else, #760(1)) is retired and
+rejected by name. It is not a synonym: its `else` block produced the value of
+the whole remaining block, so a non-diverging one silently replaced the rest
+of the function.
 
 ## Types
 
@@ -562,7 +586,7 @@ Rules:
 - Effect row variables such as `with { e }` are accepted in polymorphic
   higher-order signatures.
 
-## Tests And Benches
+## Tests, Examples And Benches
 
 ```vibe
 test "arithmetic" {
@@ -573,6 +597,10 @@ test smoke_case {
   assert(true)
 }
 
+example "adding two numbers" {
+  assert_eq(add(1, 2), 3)
+}
+
 bench "hot path" {
   expensive()
 }
@@ -580,6 +608,26 @@ bench "hot path" {
 
 Quoted and bare test names are accepted. Quoted names are preferred in public
 examples.
+
+`example "name" { .. }` (#819) is a documentation example. It is compiled and
+RUN exactly like a test -- that is the point of the form: a doc sample that
+stopped compiling is the failure it exists to prevent, and a sample that lives
+in the source cannot be missed the way a Markdown file outside a hardcoded
+check list can.
+
+The default parse entry points lower it to a test, so no stage after the
+parser distinguishes the two: it is checked, kept alive by DCE (an example is
+a DCE root, so declarations only an example references survive), compiled and
+executed as a test. The separate form survives only through the
+`parse_*_preserving` entry points, which is what lets LSP hover and doc
+extraction tell an example from a test.
+
+Because examples are read as sample code, they are not held to lint rules that
+would distort them -- in particular an unused binding inside an example is not
+reported.
+
+`example` is a reserved word, like `test` and `bench`. A binding that needs the
+name spells it `r#example`.
 
 ## Deprecated Or Compatibility Forms
 

@@ -322,9 +322,13 @@ for b in pull { b }            // async iterator (struct: next() -> Future[Optio
 
 // loop (parameterized tail-recursion)
 let result = loop (i = 0, sum = 0) {
-  if i >= 10 { break sum }
-  continue(i + 1, sum + i)
+  if i >= 10 { break sum }       // break = the loop's single RESULT
+  continue(i + 1, sum + i)       // continue = the loop's PARAMETERS (all of them)
 }
+// #1284: the two are not symmetric and stay that way — they count different
+// things. `continue` must pass every parameter (a bare `continue` repeats with
+// them unchanged); a mismatch is a parse error naming both counts. `break` has
+// no arity to match, so `break (a, b)` is one tuple, not two values.
 
 // return (early exit from the enclosing function)
 let find_first_neg: (Array[Int]) -> Int = (arr) -> {
@@ -376,16 +380,25 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
   let record { x, y } = r          // any field names bind
   let Some((px, py)) = pt          // ctor pattern (partial: traps on mismatch)
 
-  // let-else: bind on match, else run a DIVERGING fallback (#760)
-  let Some(v) = opt else { return -1 }   // else must return / throw
-  a + b + x + y + px + py + v            // v is in scope past the let-else
+  // guard: bind on match, else leave the function (#1283)
+  guard opt is Some(v) else { return -1 }   // else must `return` on every path
+  a + b + x + y + px + py + v               // v is in scope past the guard
 }
 ```
 
-> **let-else semantics (#760):** `let PAT = e else { alt }` desugars to
-> `match e { PAT => <rest>, _ => alt }`, so `alt` must diverge (`return` /
-> `throw`) — its arm has to unify with the continuation. For a fall-through
-> *value* fallback, use an explicit `match`/`if … is` instead.
+> **guard semantics (#1283):** `guard e is PAT else { alt }` desugars to
+> `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the
+> continuation's fallthrough, which is why it must diverge. `return` is the
+> only accepted divergence form for now; `throw` is deliberately not accepted
+> yet (ADR-0073 pins `Error::Throw` as non-resumable, but the checker's
+> explicit abortive-effect judgement is deferred). For a fall-through *value*
+> fallback, use `if e is PAT { .. } else { .. }` or an explicit `match`.
+>
+> This replaced the `let PAT = e else { .. }` spelling (#760(1)), which is now
+> a named parse error. The two are not interchangeable: let-else's else block
+> supplied the value of the whole *remaining* block, so `let Some(v) = o else
+> { 0 }` silently turned the rest of the function into `0`. Requiring
+> divergence removes that shape.
 
 ### is expression
 
@@ -840,18 +853,28 @@ import . { helper }          // own directory's index (same resolution)
 Package refs: `@json`, `@lib/path` (hyphen/slash are part of name after `@`).
 Qualified access: `Type::method`, `Module::name`.
 
-## Tests
+## Tests and Examples
 
 ```vibe
 test "arithmetic" {
   assert_eq(1 + 1, 2)
   assert(eq("a", "a"))
 }
+
+// #819: a documentation example. Compiled and RUN like a test -- a doc sample
+// that stopped compiling is exactly what this form exists to prevent. Lowered
+// to a test by the parser, so every later stage treats it as one (checked,
+// kept alive by DCE, executed); only LSP hover / doc extraction see the
+// difference. Unused bindings inside an example are not reported -- sample
+// code is read, not just executed.
+example "adding two numbers" {
+  assert_eq(add(1, 2), 3)
+}
 ```
 
 ```bash
 vibe test file.vibe
-vibe test dir/            # run all tests in directory
+vibe test dir/            # run all tests in directory (examples run too)
 ```
 
 ## Key Builtins
