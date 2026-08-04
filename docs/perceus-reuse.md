@@ -505,3 +505,61 @@ production で有効にする前に、この潜在バグ自体を見つける必
 落ちたりするので、**落ちる (コンパイラ, source) の組で計装を入れる**のが要件に
 なる。`89a052b9` からビルドしたコンパイラ + `89a052b9` の source がその組で、
 これは手元で再現する。
+
+## Implementation notes (2026-08-04, #1262) — borrow 推論の残り伸びしろは out-line 化が食べていた
+
+### 試したこと
+
+borrow 推論の「非識別子引数による位置の失格」を per-call-site 化した。
+失格の理由は健全で、borrow 位置では caller が transfer dup を出さず callee も
+epilogue drop を省くため、**一時値を渡すと解放する持ち主が誰もいなくなる**。
+ただしこの判定は `(callee, position)` 単位で**全プログラム**に効くので、
+1箇所でも一時値を渡す call site があるとその位置の borrow が全部潰れていた。
+
+borrow かどうかは callee の ABI の性質 (本体は1つ、drop の判断も1つ) なので
+位置ごとに変えることはできない。よって修正は call site 側に置く:
+一時値を `local.tee` で local に留め、call の**後**に drop する
+(callee は本体の間ずっと借りているので drop は call 後でなければならない)。
+
+### 実測: 期待 5.1 ポイントに対して −0.48%
+
+同一入力 (`_build/seedbump/cli_adapter_module_source.vibe`) を2つの codegen で
+RC コンパイル:
+
+| codegen | size |
+| --- | --- |
+| baseline (失格判定あり) | 2,687,364 |
+| per-call-site 化 | **2,674,503** (−12,861 B = **−0.48%**) |
+
+固定 fixture (`bench/binary_size/`) では 5本中4本が byte 一致、
+**`variant_float` だけ +244 B (+4.9%)**。`scripts/bench_binary_size.sh` は
+`VIBE_RC=0` と `VIBE_RC=1` の両方を測るので、これは output-size ratchet
+(+2% 上限) に引っかかる。**よって landable ではない。変更は戻した。**
+
+### なぜ伸びしろが消えたか (算数が合う)
+
+5.1 ポイントという数字は **out-line 化の前**に測ったものだった:
+
+```
+天井測定 (inline 時代)   6,256,272 -> 5,895,092  = 361,180 B の inline guard が消えた
+out-line 後の同じ dup 群  361,180 x (5/72)       = 約 25,081 B
+                        = 現行 RC binary 2,674,503 B の 0.94%
+実測 (parking コスト差引後)                       = -0.48%
+```
+
+inline guard 1個は 72 B だったが、out-line 後は `local.get v; call` の約 5 B。
+**removed dup 1個の価値が 1/14 になった**一方、per-call-site の parking は
+`tee` (~2 B) + `get`+`call drop` (~5 B) で約 7 B かかる。差し引きが
+ほぼ拮抗するところまで来ている。
+
+**教訓: out-line 化と borrow 推論は加算されない。** 両方とも同じ 3.78 MB の
+inline dup guard を取り合っており、先に out-line 化が取った。docs や #1262 に
+残っていた「borrow の伸びしろ 5.1 ポイント」は out-line 化のマージ (#1405) を
+もって **stale** である。
+
+### RC size の次を探すなら
+
+dup guard は out-line 済みで、borrow 推論は上記のとおり頭打ち。
+残る size overhead (RC 2.67 MB / bump 1.87 MB = 1.43x、差 0.80 MB) の内訳は
+**未測定**。次にやるなら、まず out-line 後のバイナリで内訳を取り直すこと
+(以前の「86% は dup guard」はもう成立しない)。
