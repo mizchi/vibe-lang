@@ -1,0 +1,66 @@
+//# Complete typed-occurrence structural expression-path observation
+//
+// This opaque successful-check-only view is append-aligned to the legacy
+// typed-occurrences table. Coordinates are post-desugar structural paths:
+// statement paths use the retained statement convention and expression paths
+// use `core::expr_children` zero-based child indexes (root `[]`). Synthetic
+// rewrites and auxiliary resume rechecks fail closed rather than claiming a
+// partial path observation.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./canonical_checked_type_state.vibe {
+  canonical_checked_occurrence_type_fields
+}
+
+import ./checker_stmt.vibe {
+  CheckedTypedOccurrenceExpressionPathObservation
+}
+
+fn snapshot_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn snapshot_push_piece(out: StringBuilder, value: String) -> Unit {
+  snapshot_push_int(out, String::length(value))
+  StringBuilder::push(out, value)
+}
+
+fn snapshot_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  snapshot_push_int(out, Array::length(path))
+  let mut i = 0
+  while i < Array::length(path) {
+    snapshot_push_int(out, Array::get(path, i))
+    i = i + 1
+  }
+}
+
+/// Deterministic, length-delimited capture-order schema. It intentionally
+/// exposes no legacy offsets or raw capture representation.
+export fn canonical_checked_typed_occurrence_expression_path_snapshot(observation: CheckedTypedOccurrenceExpressionPathObservation) -> String {
+  let raw_types = array_empty()
+  let mut i = 0
+  while i < Array::length(observation.entries.provenance_entries) {
+    let (_, _, _, _, ty) = Array::get(observation.entries.provenance_entries, i)
+    Array::push(raw_types, ty)
+    i = i + 1
+  }
+  let types = canonical_checked_occurrence_type_fields(raw_types, observation.checked_program.final_subst)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-typed-occurrence-expression-path-observation:v1\n")
+  snapshot_push_int(out, Array::length(observation.entries.provenance_entries))
+  let mut j = 0
+  while j < Array::length(observation.entries.provenance_entries) {
+    let (statement_path, expression_path, role, lane, _) = Array::get(observation.entries.provenance_entries, j)
+    snapshot_push_path(out, statement_path)
+    snapshot_push_path(out, expression_path)
+    snapshot_push_piece(out, role)
+    snapshot_push_piece(out, lane)
+    snapshot_push_piece(out, Array::get(types, j))
+    j = j + 1
+  }
+  StringBuilder::freeze(out)
+}

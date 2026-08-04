@@ -199,9 +199,18 @@ checking, synthetic rewrites, and auxiliary resume-value rechecks without
 post-hoc offset inference. The ordinary checker path allocates no capture and
 the legacy `CheckedProgram` shape remains unchanged.
 
-Expression paths remain erased. Recovering that finer provenance requires later
-path-aware `check_expr` work; neither current observation is an edit-stability
-guarantee, typed-IR claim, persistent artifact, or production cache identity.
+An additional opt-in, opaque successful-check observation is append-aligned
+with the same legacy table and records each row's statement path, exact
+post-desugar `core::expr_children` expression path, role, lane, and raw checker
+type. Its versioned snapshot applies `final_subst` through the shared canonical
+occurrence-type formatter. Expression root is `[]`; each child appends its
+zero-based structural index. Paths are captured when legacy rows append, never
+recovered from offsets, so duplicate offsets remain unambiguous. This contract
+is complete-or-none: synthetic rewrites, auxiliary resume rechecks, or a
+checker traversal/frame imbalance return `None` rather than claim a partial
+path. It is observation-only—not an edit-stability guarantee, typed-IR claim,
+persistent artifact, or production cache identity—and ordinary checker calls
+allocate no capture state.
 
 A physical file is a useful ingestion/cache shard, but is not always an
 independent semantic or code-generation unit. Files in one package can share a
@@ -458,8 +467,15 @@ artifact. Effect-set declarations are retained separately as the opaque
 `CheckedEffectSetDeclarationsObservation`, derived from a successful
 `CheckedProgram` without reparsing source. Its deterministic length-delimited
 snapshot preserves recursive module-name paths, export bits, declaration order,
-and exact ordered/duplicate member text. It is observation-only and has no decoder
-or persistent format. Inferred/effective rows remain stringly
+and exact ordered/duplicate member text. A separate strict declaration-only
+`CheckedEffectSetDeclarationsArtifact` v1 copies that checked-program-derived
+observation without sorting, normalization, or deduplication and canonically
+encodes the same fields. The artifact does not attest that a manually
+constructed `CheckedProgram` passed checking. Its decoder is fail-closed on version/count/length/export-tag
+errors, truncation, trailing bytes, and noncanonical encodings (exact
+re-encode equality). It is not a CheckedProgram, TypeEnv, inferred/effective
+row, typed IR, interface, cache identity, import contract, trace schema, or
+reuse input; it changes no runtime or cache policy. Inferred/effective rows remain stringly
 `Option[String]` state distributed across final environments, typed occurrences,
 and final substitution; typed-occurrence offsets are unstable. A subsequent
 narrow #1379 Phase 3 observation records only active root-level direct

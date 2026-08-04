@@ -11,7 +11,7 @@ deps = {
 generated_hash =
 
 // @vibe/compiler/checker — ADR-0070 / #897 compiler-internal contract.
-// Directory-shared-scope package (21 files): the type checker's builtin
+// Directory-shared-scope package (22 files): the type checker's builtin
 // signature tables (builtins.vibe + 13 builtins_*.vibe lookup_* modules),
 // the core expression/statement checker (checker.vibe, checker_stmt.vibe),
 // pattern checking + exhaustiveness (checker_pattern.vibe,
@@ -139,6 +139,8 @@ fn reject_resume_outside_handler(e: Expr, sh: Bool, errors: Array[String]) -> Un
 // Cross-file checker capability. Opaque and unconstructable at the package
 // boundary; only the successful observation entry points allocate one.
 opaque type TypedOccurrenceRoleLaneCapture
+fn typed_occurrence_capture_begin_statement(capture: Option[TypedOccurrenceRoleLaneCapture], statement_path: Array[Int]) -> Unit
+fn typed_occurrence_capture_end_statement(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit
 fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int)
 fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int)
 
@@ -173,6 +175,15 @@ opaque type CheckedEffectSetDeclarationsObservation
 fn checked_effect_set_declarations_observation(checked: CheckedProgram) -> CheckedEffectSetDeclarationsObservation
 fn canonical_checked_effect_set_declarations_snapshot(observation: CheckedEffectSetDeclarationsObservation) -> String
 
+// --- checked_effect_set_artifact.vibe
+// Strict declaration-only v1 transport of the successful-check observation.
+// It excludes CheckedProgram/TypeEnv/effective rows/typed IR/interfaces/caches.
+opaque type CheckedEffectSetDeclarationsArtifact
+fn checked_effect_set_declarations_artifact_from_observation(observation: CheckedEffectSetDeclarationsObservation) -> CheckedEffectSetDeclarationsArtifact
+fn encode_checked_effect_set_declarations_artifact_v1(artifact: CheckedEffectSetDeclarationsArtifact) -> String
+fn decode_checked_effect_set_declarations_artifact_v1(text: String) -> Option[CheckedEffectSetDeclarationsArtifact]
+fn canonical_checked_effect_set_declarations_artifact_snapshot(artifact: CheckedEffectSetDeclarationsArtifact) -> String
+
 // --- checked_effective_effect_row_observation.vibe
 // Active root direct-SLet/EFn association only. This remains stringly,
 // observation-only, and excludes typed IR, cache, trace, interface, imports,
@@ -200,6 +211,17 @@ fn checked_typed_occurrence_role_lane_observation_row_count(observation: Checked
 fn checked_typed_occurrence_role_lane_observation_role_at(observation: CheckedTypedOccurrenceRoleLaneObservation, row_index: Int) -> Option[String]
 fn checked_typed_occurrence_role_lane_observation_lane_at(observation: CheckedTypedOccurrenceRoleLaneObservation, row_index: Int) -> Option[String]
 
+// --- checked_typed_occurrence_expression_path_observation.vibe
+// Complete-or-none post-desugar structural provenance. Expression paths use
+// core::expr_children child indexes; no offsets or raw capture state escape.
+opaque type CheckedTypedOccurrenceExpressionPathObservation
+fn canonical_checked_typed_occurrence_expression_path_snapshot(observation: CheckedTypedOccurrenceExpressionPathObservation) -> String
+fn checked_typed_occurrence_expression_path_observation_row_count(observation: CheckedTypedOccurrenceExpressionPathObservation) -> Int
+fn checked_typed_occurrence_expression_path_observation_statement_path_at(observation: CheckedTypedOccurrenceExpressionPathObservation, row_index: Int) -> Option[Array[Int]]
+fn checked_typed_occurrence_expression_path_observation_expression_path_at(observation: CheckedTypedOccurrenceExpressionPathObservation, row_index: Int) -> Option[Array[Int]]
+fn checked_typed_occurrence_expression_path_observation_role_at(observation: CheckedTypedOccurrenceExpressionPathObservation, row_index: Int) -> Option[String]
+fn checked_typed_occurrence_expression_path_observation_lane_at(observation: CheckedTypedOccurrenceExpressionPathObservation, row_index: Int) -> Option[String]
+
 // --- canonical_checked_type_state.vibe
 // Observation-only canonical encodings of effective final value bindings,
 // retained trait implementations, and separately supplied typedef provenance.
@@ -222,12 +244,14 @@ fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with { Error }
 fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with { Error }
 fn check_program_typed_occurrence_statement_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error }
 fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with { Error }
+fn check_program_typed_occurrence_expression_path_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with { Error }
 fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error }
 fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error }
 fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with { Error }
 fn check_program_with_env_type_defs_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgramTypeDefsObservation with { Error }
 fn check_program_with_env_typed_occurrence_statement_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error }
 fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with { Error }
+fn check_program_with_env_typed_occurrence_expression_path_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with { Error }
 fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv with { Error }
 fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, String)]
 fn detect_unbound_nonunit_returns(stmts: Array[Stmt], tytab: Array[(Int, Type)], final_s: Subst) -> Array[String]
