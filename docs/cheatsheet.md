@@ -916,7 +916,7 @@ vibe test dir/            # run all tests in directory (examples run too)
 > `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
 > するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
 
-**SIMD スキャン** (`Bytes` / `String` 上を 16 バイト単位で走査。**linear backend 専用**):
+**SIMD スキャン** (`Bytes` / `String` 上を 16 バイト単位で走査。linear / gc 両対応):
 
 | 関数 | 意味 |
 |---|---|
@@ -927,7 +927,8 @@ vibe test dir/            # run all tests in directory (examples run too)
 > SIMD は linear memory 上でのみ成立する。`v128.load` はメモリアドレスを取る
 > 命令で、wasm-gc の配列はアドレス可能なメモリではないため、`(array i8)` から
 > v128 へ一括ロードする命令が存在しない。**バイト処理を速くしたいデータは
-> linear memory (= `Bytes`) に置くこと。**
+> linear memory (= `Bytes`) に置くこと。** `Bytes` は gc backend でも linear
+> memory 上にあるので、これらは両レーンで同じように使える。
 
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->

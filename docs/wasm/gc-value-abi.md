@@ -219,7 +219,9 @@ gc レーン外のファイルを触らないことで構造的に担保する�
 一括ロードする命令は wasm-gc に存在しない (`array.copy` / `array.fill` /
 `array.new_data` はあるが、配列↔配列・データセグメント間のみ)。
 **したがって `Bytes` を GC 化すると SIMD を得るのではなく失う。**
-既存の `simd_skip_ws` / `simd_scan_alnum` は linear レーン専用である。
+`simd_skip_ws` / `simd_scan_alnum` は当初 linear 専用として登録されていたが、
+`Bytes` が両レーンとも linear memory 上にある以上 gc で動かない理由は無く、
+単なる登録漏れだった (両レーンへ登録済み。gc-gate が回帰を押さえる)。
 
 **2. バイト経路は既に速い。** 2026-08-04 の実コンパイル計測
 (`codegen_lexer_test.vibe` full closure, 7.6s, `node --cpu-prof` の self time):

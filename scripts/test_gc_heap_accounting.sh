@@ -64,6 +64,29 @@ REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
 }
 printf '%s\n' "$REPORT"
 
+# SIMD lane parity (#1331 調査の派生). `simd_*` は linear 専用として登録されて
+# おり、`Bytes::blit`/`fill` は gc にあるのに SIMD だけ無い、という不整合だった。
+# `Bytes` は両レーンとも linear memory 上にあり SIMD はまさにそこで成立する
+# (`v128.load` はメモリアドレスを取る命令で、wasm-gc の配列はアドレス可能では
+# ないため GC 側へ移す道は無い) ので、gc で動かない理由が無かった。
+#
+# ここに置くのは #125 の教訓 — CI に無い検証は腐る。登録を落とすと gc での
+# コンパイルが失敗し、このステップで落ちる。
+SIMD_OUT="$ROOT_DIR/_build/_gc_gate_simd.wasm"
+SIMD_OUT_REL="${SIMD_OUT#"$ROOT_DIR"/}"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  fixtures/simd_skip_ws_test.vibe "$SIMD_OUT_REL" __no_entry__ >/dev/null || {
+  echo "[gc-heap-accounting] FAIL: simd fixture did not compile on the gc lane" >&2
+  exit 1
+}
+wasm-tools validate --features all "$SIMD_OUT" >/dev/null
+"$RUNNER" "$SIMD_OUT" >/dev/null || {
+  echo "[gc-heap-accounting] FAIL: simd fixture trapped on the gc lane" >&2
+  exit 1
+}
+echo "[gc-heap-accounting] ok: simd_skip_ws fixture passes on the gc lane"
+
 ALLOCATED="$(printf '%s\n' "$REPORT" | sed -n 's/.*allocated=\([0-9][0-9]*\).*/\1/p' | head -1)"
 case "$ALLOCATED" in
   ''|*[!0-9]*)

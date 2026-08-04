@@ -166,6 +166,8 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_slice_body,
   gen_bytes_to_array_body,
   gen_eq_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_skip_ws_body,
   gen_str_eq_body,
   gen_str_lex_diff_body,
   gen_string_contains_body,
@@ -612,7 +614,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
-  let num_generated = 42
+  let num_generated = 45
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
   // modules stay import-free (runnable on bare wasmtime); a module touching
@@ -689,6 +691,14 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
         "Bytes::to_array" => 26,
         "Bytes::blit" => 27,
         "Bytes::fill" => 28,
+        // #1331 調査: `Bytes` は両レーンとも linear memory にあり、SIMD は
+        // その linear memory 上で成立する (v128.load はメモリアドレスを取る
+        // 命令で、wasm-gc の配列はアドレス可能ではない)。つまり gc レーンで
+        // 動かない理由は無く、単に未登録だっただけ。ボディは linear と同一の
+        // 生成器を共有する。
+        "simd_skip_ws" => 43,
+        "simd_scan_alnum" => 44,
+        "simd_scan_alnum_str" => 45,
         "Double::to_i64_bits" => 16,
         "Double::from_i64_bits" => 16,
         // #538 P4.5: identity wraps the trait-dict desugar emits around float
@@ -938,6 +948,14 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // #746: same packed-string layout as the linear lane, generator shared
   // verbatim (untagged ints in the gc lane -> enable_rc=false).
   push_gc_builtin(gen_str_lex_diff_body(false), 7, 0, 4)
+  // #1331 調査で見つかった穴: `Bytes::blit`/`fill` は gc にあるのに SIMD
+  // スキャンだけ linear 専用だった。generator は linear と同一 (gc レーンは
+  // 他の Bytes builtin と同じく enable_rc=false)、型は 8 = (i64,i64,i64)->i64。
+  // 追加は必ず末尾に置くこと -- 上の `hbo + N` は push 順の序数なので、
+  // 途中に挿入すると既存の参照が全てずれる。
+  push_gc_builtin(gen_simd_skip_ws_body(false), 2, 2, 8)
+  push_gc_builtin(gen_simd_scan_alnum_body(false, false), 1, 3, 8)
+  push_gc_builtin(gen_simd_scan_alnum_body(false, true), 1, 3, 8)
   // #1109 gc parity (linear twin: linked_compile.vibe's table_slots_used):
   // module-wide recorder of funcref-table slots codegen actually
   // materializes as closure values. Created once here -- every CompileCtxGc
