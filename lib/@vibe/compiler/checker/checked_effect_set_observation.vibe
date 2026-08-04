@@ -1,0 +1,100 @@
+//# Checked effect-set declaration observation (#1379)
+//
+// This deliberately narrow observation retains validated SEffectSet declaration
+// provenance from a successful CheckedProgram. TDEffect declarations, CtFn
+// effect text, and final SubstEffBind state are already covered separately by
+// CheckedTypeDefsArtifact v1. This is not inferred/effective effect-row
+// transport, typed IR, a persistent codec, cache input, interface, or reuse key.
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checker_stmt.vibe {
+  CheckedProgram
+}
+
+/// Entries are `(module-name path, exported, name, exact ordered members)` in
+/// checked-statement traversal order. The public checker contract keeps this
+/// representation opaque.
+export struct CheckedEffectSetDeclarationsObservation {
+  entries: Array[(Array[String], Bool, String, Array[String])]
+}
+
+fn copy_strings(items: Array[String]) -> Array[String] {
+  Array::slice(items, 0, Array::length(items))
+}
+
+fn collect_effect_sets(stmts: Array[Stmt], module_path: Array[String], out: Array[(Array[String], Bool, String, Array[String])]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(exported, name, members) => {
+        Array::push(out, (copy_strings(module_path), exported, name, copy_strings(members)))
+      },
+      SModule(_, module_name, body) => {
+        Array::push(module_path, module_name)
+        collect_effect_sets(body, module_path, out)
+        Array::truncate(module_path, Array::length(module_path) - 1)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Derive retained effect-set declaration provenance from an already successful
+/// production checker result. No source reparsing or row re-expansion occurs.
+export fn checked_effect_set_declarations_observation(checked: CheckedProgram) -> CheckedEffectSetDeclarationsObservation {
+  let entries = array_empty()
+  collect_effect_sets(checked.checked_stmts, array_empty(), entries)
+  CheckedEffectSetDeclarationsObservation::{
+    entries: entries
+  }
+}
+
+fn snapshot_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn snapshot_push_piece(out: StringBuilder, value: String) -> Unit {
+  snapshot_push_int(out, String::length(value))
+  StringBuilder::push(out, value)
+}
+
+fn snapshot_push_strings(out: StringBuilder, values: Array[String]) -> Unit {
+  snapshot_push_int(out, Array::length(values))
+  let mut i = 0
+  while i < Array::length(values) {
+    snapshot_push_piece(out, Array::get(values, i))
+    i = i + 1
+  }
+}
+
+/// Deterministic, length-delimited observation snapshot. It intentionally
+/// preserves declaration/member order and duplicates; it is not a persistent
+/// decoder format or a normalized semantic effect-row identity.
+export fn canonical_checked_effect_set_declarations_snapshot(observation: CheckedEffectSetDeclarationsObservation) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-effectsets-observation:v1\n")
+  snapshot_push_int(out, Array::length(observation.entries))
+  let mut i = 0
+  while i < Array::length(observation.entries) {
+    let (module_path, exported, name, members) = Array::get(observation.entries, i)
+    snapshot_push_strings(out, module_path)
+    StringBuilder::push(out, if exported {
+      "1"
+    } else {
+      "0"
+    })
+    snapshot_push_piece(out, name)
+    snapshot_push_strings(out, members)
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
