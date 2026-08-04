@@ -232,6 +232,23 @@ def prologue_drop(heap_lo, l_ptr, l_sz):
     return bytes(b)
 
 
+def prologue_watch_global2(_heap_lo, _l_head, _l_sz):
+    """Free-list HEAD watchpoint: trap once global 2 holds VIBE_RC_WATCH_GLOBAL2.
+
+    The memory watchpoint above finds who wrote a bad LINK; this finds when a
+    bad pointer became the HEAD, which is the earlier event -- a link word only
+    ever receives the previous head, so a corrupt link means the head was
+    already corrupt (or the "link" is not a link at all, just live data that a
+    walk mistook for one)."""
+    import os
+    val = int(os.environ["VIBE_RC_WATCH_GLOBAL2"])
+    b = bytearray()
+    b += b"\x23\x02"                                  # global.get 2
+    b += b"\x41" + enc_s(val) + b"\x46"               # == val
+    b += b"\x04\x40\x00\x0b"                          # if; unreachable; end
+    return bytes(b)
+
+
 def prologue_watch(_heap_lo, _l_head, _l_sz):
     """Fixed-address watchpoint: trap when the word at VIBE_RC_WATCH_ADDR
     already holds VIBE_RC_WATCH_VALUE. The corrupting store is bracketed by
@@ -352,7 +369,9 @@ def patch_one(d, want, dst=None):
     new_locals += enc_u(2) + b"\x7f"          # 2 fresh i32 locals
 
     import os
-    if os.environ.get("VIBE_RC_WATCH_ADDR"):
+    if os.environ.get("VIBE_RC_WATCH_GLOBAL2"):
+        pro = prologue_watch_global2
+    elif os.environ.get("VIBE_RC_WATCH_ADDR"):
         pro = prologue_watch
     else:
         pro = prologue_drop if mode == "drop" else prologue
