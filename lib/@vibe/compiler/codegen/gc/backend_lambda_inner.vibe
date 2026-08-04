@@ -30,7 +30,7 @@ import ./backend_lambda_sig.vibe {
 
 //# Functions
 
-export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, captures: Array[String], user_params: Int, ctx: CompileCtxGc, compile_fn: CompileLambdaGcFn, ld: Int) -> (Bytes, Int) with { Error } {
+export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, captures: Array[String], user_params: Int, ctx: CompileCtxGc, compile_fn: CompileLambdaGcFn, ld: Int) -> (Bytes, Int, Array[Int]) with { Error } {
   let lam_buf = bytebuf_new()
   let lam_locals = array_empty()
   let mut lpi = 0
@@ -94,5 +94,9 @@ export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_
     lfs_i = lfs_i + 1
   }
   let final_lam_nl = compile_fn(lam_buf, fn_body, lam_locals, lam_nl, lam_ctx, ld)
-  (lam_buf, final_lam_nl)
+  // #1332: the lam_ctx does not escape, so the typed-local row it accumulated
+  // has to be handed back explicitly. Returning it (rather than stashing it on
+  // the shared ctx) keeps nesting correct: a nested lambda finishes and records
+  // itself DURING this call, so a single handoff slot would be overwritten.
+  (lam_buf, final_lam_nl, lam_ctx.gc_native_array_local_types)
 }

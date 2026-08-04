@@ -26,12 +26,26 @@ fn make_lambda_ctx_gc(ctx: CompileCtxGc, ref_cell_names: Array[String], ref_loca
     // Double/Bool params, seeded separately after this call returns).
     gc_float_locals: array_empty(),
     gc_bool_locals: array_empty(),
-    // Lambda records do not carry typed-local metadata into the module body
-    // declaration pass. Disable the private native array path here so every
-    // lambda array retains the established i64/linear representation.
+    // #1332: lambda records now DO carry typed-local metadata into the module
+    // body declaration pass (gc_lambda_native_array_locals, appended by
+    // record_lambda_meta_gc), so the native path is live here.
+    //
+    // Both tracking rows are FRESH per lambda -- a lambda body compiles into
+    // its own local frame, so the enclosing function's slot numbers mean
+    // nothing here. Only the module-level row array below is shared.
+    //
+    // Escapes across the universal i64 closure ABI stay excluded by
+    // gc_native_array_body_is_safe, unchanged: it already returns false for
+    // `EFn`, so an array a DEEPER lambda captures is never eligible, and the
+    // recursive EIdent check still rejects returning the reference itself.
     gc_native_array_locals: array_empty(),
     gc_native_array_local_types: array_empty(),
-    gc_native_array_type_idx: -1,
+    gc_native_array_type_idx: ctx.gc_native_array_type_idx,
+    // Shared BY REFERENCE (see the field's doc comment): a nested lambda
+    // records itself during this lambda's own compile, and both rows must
+    // land in the one module-level array to stay parallel to
+    // LambdaTable.bodies.
+    gc_lambda_native_array_locals: ctx.gc_lambda_native_array_locals,
     // #1015: computed once per compile, never per-scope -- pass through
     // unchanged (see the doc comment on CompileCtxGc.gc_to_string_is_show_wrapper).
     gc_to_string_is_show_wrapper: ctx.gc_to_string_is_show_wrapper,

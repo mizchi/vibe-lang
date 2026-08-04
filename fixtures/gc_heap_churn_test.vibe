@@ -54,7 +54,10 @@ let match_local_type_split: (Int) -> Int = (tag) -> {
 // Lambda records currently carry only i64 local metadata. Nested lambda
 // arrays must therefore retain the linear fallback rather than introduce a
 // typed Wasm-GC local that the module declaration pass cannot describe.
-let nested_lambda_array_fallback: () -> Int = () -> {
+// #1332: a lambda body's own non-escaping array now takes a typed Wasm-GC
+// local, like a top-level function's. The reference never crosses the
+// universal i64 closure ABI: it is created and consumed inside `inner`.
+let nested_lambda_array_native: () -> Int = () -> {
   let middle = () -> {
     let inner = (base) -> {
       let values = [
@@ -67,6 +70,25 @@ let nested_lambda_array_fallback: () -> Int = () -> {
     inner(40)
   }
   middle()
+}
+
+// #1332 boundary: the array is bound in `outer`, but a DEEPER lambda captures
+// it, so the reference would have to cross the i64 closure ABI. This must stay
+// on the linear fallback -- gc_native_array_body_is_safe returns false for any
+// `EFn` in the binding's scope body, which is what keeps captures out. Its
+// presence holds the eligible-native count at FOUR.
+let lambda_array_captured_by_deeper_lambda: () -> Int = () -> {
+  let outer = () -> {
+    let values = [
+      3,
+      4
+    ]
+    let deeper = () -> {
+      Array::get(values, 0) + Array::get(values, 1)
+    }
+    deeper()
+  }
+  outer()
 }
 
 let escaped_alias: () -> Int = () -> {
@@ -122,8 +144,12 @@ let module_init_array_stays_linear: Int = {
   Array::get(xs, 0) + Array::get(xs, 1)
 }
 
-test "gc lane: nested lambda arrays retain the linear fallback" {
-  assert(nested_lambda_array_fallback() == 44)
+test "gc lane: nested lambda arrays use typed native locals (#1332)" {
+  assert(nested_lambda_array_native() == 44)
+}
+
+test "gc lane: an array a deeper lambda captures stays on the linear fallback" {
+  assert(lambda_array_captured_by_deeper_lambda() == 7)
 }
 
 test "gc lane: aliases, push, and return retain the linear fallback" {
