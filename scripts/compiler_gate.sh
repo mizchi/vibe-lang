@@ -9011,15 +9011,36 @@ echo "[compiler-gate] 89/89 the @vibe/wit_runtime Result reaches the WIT project
 # is), so a row-carrying export would render as plain `T`. @vibe/wit_runtime is the
 # canonical `Result` for that boundary.
 #
-# What this locks is specifically that the IMPORTED type survives to the
-# projection: wit_gen matches on the TypeExpr HEAD NAME, so a contract import
-# only works as long as the annotation still reads `Result[..]` at the point
-# wit_gen sees it. A locally-declared copy would pass this gate trivially --
-# fixtures/wit_gen_result.vibe deliberately imports @vibe/wit_runtime instead, and
-# also pins the boundary idiom itself (row inside, ONE `handle` in the export
-# body producing Ok/Err).
+# TWO steps, because the WIT emission alone cannot see the import.
+#
+# VIBE_EMIT_WIT parses the ENTRY FILE ONLY and hands its raw annotations to
+# wit_from_program -- it never resolves imports and never type-checks. Measured:
+# swapping the import for a nonexistent package, or deleting it outright, still
+# emits a byte-identical world (only the world NAME, derived from the filename,
+# changes). So a golden diff by itself would pass with the package missing, and
+# would NOT establish what this gate is for.
+#
+# Step 1 therefore FS-compiles the fixture (module resolution + checking), which
+# does discriminate -- measured rc=1 with "no require pin for @vibe/..." on a
+# broken import and "unknown name: Ok" with the import deleted. Step 2 then
+# diffs the emitted WIT against the golden.
+#
+# Together they lock what the package is for: the IMPORTED type reaches the
+# projection. wit_gen matches on the TypeExpr HEAD NAME, so a contract import
+# only works as long as the annotation still reads `Result[..]` where wit_gen
+# sees it. fixtures/wit_gen_result.vibe imports @vibe/wit_runtime rather than
+# declaring a local copy, and also pins the boundary idiom itself (row inside,
+# ONE `handle` in the export body producing Ok/Err).
 witresdir="_build/_gate_wit_result"
 rm -rf "$witresdir"; mkdir -p "$witresdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/wit_gen_result.vibe" "$witresdir/fixture.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$witresdir/fixture.wasm" ]; then
+  echo "[compiler-gate] FAIL: fixtures/wit_gen_result.vibe did not FS-compile -- the @vibe/wit_runtime import does not resolve or does not type-check (#1324)" >&2
+  cat "$witresdir/fixture.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/wit_gen_result.vibe" "$witresdir/out.wit" main >/dev/null 2>&1
