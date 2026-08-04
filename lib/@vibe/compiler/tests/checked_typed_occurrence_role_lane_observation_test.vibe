@@ -1,0 +1,209 @@
+//# Append-aligned typed-occurrence role/lane observation
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
+}
+
+import @vibe/compiler/checker {
+  CheckedTypedOccurrenceRoleLaneObservation,
+  canonical_checked_typed_occurrence_role_lane_snapshot,
+  check_program_result,
+  check_program_typed_occurrence_role_lane_observation,
+  check_program_with_env_typed_occurrence_role_lane_observation,
+  checked_typed_occurrence_role_lane_observation_lane_at,
+  checked_typed_occurrence_role_lane_observation_role_at,
+  checked_typed_occurrence_role_lane_observation_row_count
+}
+
+import @vibe/core {
+  array_empty
+}
+
+// This shape is intentionally copied from the established statement-owner
+// fixture so it stays seed-parser compatible while exercising identifier and
+// call result rows in one retained successful program.
+fn observation_fixture() -> Array[Stmt] {
+  [
+    SLet(false, false, "before_type", None, EIdent("Pick", 10)),
+    SEnum(false, "Choice", array_empty(), [
+      ("Pick", array_empty())
+    ], array_empty()),
+    SLet(false, false, "inside", None, ESeq(EFn(array_empty(), array_empty(), [
+      ("arg", None)
+    ], None, None, EIdent("arg", 20)), ECall(EIdent("Array::length", 20), [
+      EArray([
+        EInt(1)
+      ])
+    ], 30)))
+  ]
+}
+
+fn assert_role(observation: CheckedTypedOccurrenceRoleLaneObservation, row: Int, expected: String) -> Unit {
+  match checked_typed_occurrence_role_lane_observation_role_at(observation, row) {
+    Some(actual) => assert(actual == expected),
+    None => assert(false)
+  }
+}
+
+fn assert_lane(observation: CheckedTypedOccurrenceRoleLaneObservation, row: Int, expected: String) -> Unit {
+  match checked_typed_occurrence_role_lane_observation_lane_at(observation, row) {
+    Some(actual) => assert(actual == expected),
+    None => assert(false)
+  }
+}
+
+fn dot_fixture(shared: Bool) -> Array[Stmt] {
+  let field_off = if shared {
+    14
+  } else {
+    15
+  }
+  [
+    SStruct(false, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    SLet(false, false, "box", None, ECall(EIdent("Box", 10), [
+      EInt(1)
+    ], 11)),
+    SLet(false, false, "value", None, EDot(EIdent("box", 13), "value", 14, field_off))
+  ]
+}
+
+test "role/lane observation is append-aligned and opaque" {
+  let legacy = check_program_result(observation_fixture())
+  match check_program_typed_occurrence_role_lane_observation(observation_fixture()) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == Array::length(legacy.typed_occurrences))
+      assert_role(observation, 0, "Identifier")
+      assert_role(observation, 1, "Identifier")
+      assert_role(observation, 2, "CallResult")
+      let mut i = 0
+      while i < checked_typed_occurrence_role_lane_observation_row_count(observation) {
+        match checked_typed_occurrence_role_lane_observation_lane_at(observation, i) {
+          Some(lane) => assert(lane == "Primary"),
+          None => assert(false)
+        }
+        i = i + 1
+      }
+      match checked_typed_occurrence_role_lane_observation_role_at(observation, -1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      match checked_typed_occurrence_role_lane_observation_lane_at(observation, checked_typed_occurrence_role_lane_observation_row_count(observation)) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      let snapshot = canonical_checked_typed_occurrence_role_lane_snapshot(observation)
+      assert(String::index_of(snapshot, "vibe-checked-typed-occurrence-role-lane-observation:v1") == 0)
+      match check_program_typed_occurrence_role_lane_observation(observation_fixture()) {
+        Some(repeated) => assert(snapshot == canonical_checked_typed_occurrence_role_lane_snapshot(repeated)),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "dot projection and field-name roles preserve shared-offset behavior" {
+  match check_program_typed_occurrence_role_lane_observation(dot_fixture(false)) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 4)
+      assert_role(observation, 0, "CallResult")
+      assert_role(observation, 1, "Identifier")
+      assert_role(observation, 2, "DotProjection")
+      assert_role(observation, 3, "DotFieldName")
+    },
+    None => assert(false)
+  }
+  match check_program_typed_occurrence_role_lane_observation(dot_fixture(true)) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 3)
+      assert_role(observation, 2, "DotProjection")
+    },
+    None => assert(false)
+  }
+}
+
+test "qualified rewrites are classified at append time as synthetic" {
+  let initial_env = env_bind(EnvEmpty, "mod.value", CtInt)
+  let stmts = [
+    SLet(false, false, "value", None, EDot(EIdent("mod", 40), "value", 41, 42))
+  ]
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts, initial_env) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 1)
+      assert_role(observation, 0, "Identifier")
+      assert_lane(observation, 0, "SyntheticRewrite")
+    },
+    None => assert(false)
+  }
+}
+
+test "qualified call rewrite captures its result as synthetic" {
+  let initial_env = env_bind(EnvEmpty, "mod.f", CtFn(array_empty(), CtInt, None))
+  let stmts = [
+    SLet(false, false, "value", None, ECall(EDot(EIdent("mod", 45), "f", 46, 47), array_empty(), 48))
+  ]
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts, initial_env) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 1)
+      assert_role(observation, 0, "CallResult")
+      assert_lane(observation, 0, "SyntheticRewrite")
+    },
+    None => assert(false)
+  }
+}
+
+test "bare receiver-method rewrite is classified as synthetic" {
+  let initial_env = env_bind(env_bind(EnvEmpty, "box", CtStruct("Box")), "Box::get", CtFn([
+    CtStruct("Box")
+  ], CtInt, None))
+  let stmts = [
+    SLet(false, false, "value", None, ECall(EIdent("get", 55), [
+      EIdent("box", 56)
+    ], 57))
+  ]
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts, initial_env) {
+    Some(observation) => {
+      let count = checked_typed_occurrence_role_lane_observation_row_count(observation)
+      assert(count >= 3)
+      assert_lane(observation, count - 1, "SyntheticRewrite")
+      assert_role(observation, count - 1, "CallResult")
+    },
+    None => assert(false)
+  }
+}
+
+test "resume value recheck has an explicit auxiliary lane" {
+  let stmts = [
+    SEffectDef(false, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("Int"))
+    ]),
+    SLet(false, false, "handled", None, EHandle(EInt(1), [
+      (PCtor("Ask::Get", array_empty()), ECall(EIdent("resume", -1), [
+        EIdent("outer", 50)
+      ], -1))
+    ]))
+  ]
+  let initial_env = env_bind(EnvEmpty, "outer", CtInt)
+  match check_program_with_env_typed_occurrence_role_lane_observation(stmts, initial_env) {
+    Some(observation) => {
+      assert(checked_typed_occurrence_role_lane_observation_row_count(observation) == 2)
+      assert_role(observation, 0, "Identifier")
+      assert_lane(observation, 0, "Primary")
+      assert_role(observation, 1, "Identifier")
+      assert_lane(observation, 1, "AuxiliaryResumeValueRecheck")
+    },
+    None => assert(false)
+  }
+}
+
+test "ordinary and with-env observation entry points have parity" {
+  match check_program_typed_occurrence_role_lane_observation(observation_fixture()) {
+    Some(ordinary) => match check_program_with_env_typed_occurrence_role_lane_observation(observation_fixture(), EnvEmpty) {
+      Some(with_env) => assert(canonical_checked_typed_occurrence_role_lane_snapshot(ordinary) == canonical_checked_typed_occurrence_role_lane_snapshot(with_env)),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
