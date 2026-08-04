@@ -347,18 +347,13 @@ let run: () -> Unit with { Process } = () -> {
 ### Error handling
 
 ```vibe
-import ./lib/@vibe/prelude/result.vibe { Result::and_then }
-
 // stub stages so the example is self-contained
-let parse_id: (String) -> Result[Int, String] = (raw) -> { Ok(1) }
-let validate_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
-let load_user: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+fn parse_id(raw: String) -> Int with { Exception[String] } { 1 }
+fn validate_id(id: Int) -> Int with { Exception[String] } { id }
+fn load_user(id: Int) -> Int with { Exception[String] } { id }
 
-let fetch_user: (String) -> Result[Int, String] = (raw) -> {
-  raw
-  |> parse_id
-  |> Result::and_then(validate_id)
-  |> Result::and_then(load_user)
+fn fetch_user(raw: String) -> Int with { Exception[String] } {
+  raw |> parse_id |> validate_id |> load_user
 }
 
 // Boundary helper when you need local Error handling
