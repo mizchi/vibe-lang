@@ -106,6 +106,22 @@ test "gc lane: native match arm and sibling i64 arm use distinct Wasm slots" {
   assert(match_local_type_split(0) == 7)
 }
 
+// Module-level initializers compile into `_start`, which is registered with an
+// unconditionally EMPTY native-local row, so the native path must stay OFF here
+// (see the init_ctx comment in codegen/gc/backend_body.vibe). Before that was
+// enforced, this exact shape declared the slot `i64` while the body used it as
+// an array reference and the module failed to validate outright:
+//   local.set[0] expected type i64, found array.new_default of type (ref 12)
+// This binding therefore keeps the eligible-native count at THREE -- the array
+// below must take the linear fallback.
+let module_init_array_stays_linear: Int = {
+  let xs = [
+    5,
+    7
+  ]
+  Array::get(xs, 0) + Array::get(xs, 1)
+}
+
 test "gc lane: nested lambda arrays retain the linear fallback" {
   assert(nested_lambda_array_fallback() == 44)
 }
@@ -114,4 +130,8 @@ test "gc lane: aliases, push, and return retain the linear fallback" {
   assert(escaped_alias() == 7)
   assert(pushed() == 9)
   assert(Array::get(returned(), 0) == 8)
+}
+
+test "gc lane: module-level initializer arrays retain the linear fallback" {
+  assert(module_init_array_stays_linear == 12)
 }
