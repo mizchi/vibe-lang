@@ -544,29 +544,36 @@ Missing effects are reported as a set difference (`effect row mismatch for 'f':
 missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
 `hint:` line suggesting the exact `with { ... }` row to declare (#639).
 
-### Result-first pipeline (recommended)
+### Failure-carrying pipeline
 
-> **status (#760):** `Result` (`Ok`/`Err`, `Result::Ok`/`Result::Err`,
-> `Result[T, E]`) is available standalone — the compiler auto-provides
-> `enum Result[T, E] { Ok(T); Err(E) }` for any program that references it and
-> neither declares nor imports its own. Declaring or importing a `Result` (e.g.
-> a single-param `enum Result[T] { Ok(T); Err(String) }`) overrides the built-in
-> one. `Option` (`Some`/`None`) is built in as a first-class type. Both the
-> `let*`/`?` railway on `Result` and on `Option` work standalone.
+> **推奨は `throw` + `Exception[E]` row** (ADR-0085 / #1324)。失敗は返り値では
+> なく row で運ぶ。成功値がそのまま次段へ流れるので `and_then` の連結が要らない。
 
 <!-- doctest-skip: `...` ellipsis による意図的省略 (パイプライン形の提示) -->
 ```vibe skip
-let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
-let validate_id: (Int) -> Result[Int, String] = (id) -> { ... }
-let load_user: (Int) -> Result[String, String] = (id) -> { ... }
+fn parse_id(raw: String) -> Int with { Exception[String] } { ... }
+fn validate_id(id: Int) -> Int with { Exception[String] } { ... }
+fn load_user(id: Int) -> String with { Exception[String] } { ... }
 
-let fetch_user: (String) -> Result[String, String] = (raw) -> {
-  raw
-  |> parse_id
-  |> Result::and_then(validate_id)
-  |> Result::and_then(load_user)
+fn fetch_user(raw: String) -> String with { Exception[String] } {
+  raw |> parse_id |> validate_id |> load_user
+}
+
+// 呼び出し側で捕まえる
+handle { fetch_user(input) } with Exception[String] {
+  Throw(msg) => "failed: \{msg}"
 }
 ```
+
+> **status (#760 / #1324):** `Result` (`Ok`/`Err`, `Result::Ok`/`Result::Err`,
+> `Result[T, E]`) は今も standalone で使える — その名前に言及していて自分で
+> 宣言も import もしていないプログラムには、コンパイラが
+> `enum Result[T, E] { Ok(T); Err(E) }` を auto-provide する。自分で宣言/import
+> すればそちらが優先される。ただし **#1324 で prelude の `result.vibe` は削除
+> された** ので、`Result::and_then` / `Result::map_ok` などの combinator と
+> `tap_ok` / `tap_err` はもう存在しない。`Option` (`Some`/`None`) は
+> first-class builtin で無変更。`let*`/`?` の railway は `Result`・`Option`
+> どちらでも従来どおり動く。
 
 ### Railway bind (`let*`) — `Result` and `Option` (#635)
 
@@ -609,17 +616,18 @@ function return type) if a borderline `Option` case is misread as `Result`.
 ### Debugging a pipeline (`tap`)
 
 `tap` runs a side effect on the value and returns it unchanged — observe a
-stage without breaking the `|>` chain. Railway variants `tap_ok` / `tap_err` /
-`tap_some` observe only one track. They are prelude exports
-(`lib/@vibe/prelude/io.vibe`); import them and note they carry the `Stdout` effect:
+stage without breaking the `|>` chain. `tap_some` observes only the `Some`
+track. They are prelude exports (`lib/@vibe/prelude/io.vibe`); import them and
+note they carry the `Stdout` effect. (`tap_ok` / `tap_err` were removed with
+the prelude `Result` in #1324.)
 
-<!-- doctest-skip: 未定義名 (x / next_stage / result) を参照する構文提示の断片 -->
+<!-- doctest-skip: 未定義名 (x / next_stage / opt) を参照する構文提示の断片 -->
 ```vibe skip
 x
 |> tap((v) -> stdout_write("step: \{v}\n"))
 |> next_stage
 
-result |> tap_ok((v) -> stdout_write("ok\n")) |> tap_err((e) -> stdout_write("err\n"))
+opt |> tap_some((v) -> stdout_write("got \{v}\n"))
 ```
 
 ### Error boundary (`throw` / `handle`)
@@ -890,11 +898,9 @@ Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
 
 <!-- doctest-skip: 未定義名 (read_config / parse / process / risky / xs / parse_int 等) を参照するイディオム断片 -->
 ```vibe skip
-// Result composition (railway-style)
-let result =
-  read_config()
-  |> Result::and_then(parse)
-  |> Result::and_then(process)
+// Failure composition: the row carries it, so stages just chain
+// (fn read_config() -> Config with { Exception[String] } etc.)
+let result = read_config() |> parse |> process
 
 // Boundary at the edge
 let value = handle { risky(0) } with Error { Throw(_) => default_value }

@@ -169,33 +169,27 @@ let fail: () -> Result[Unit, AppError] = () -> {
 }
 ```
 
-Railway-oriented guideline (pipe-first error flow):
-- pipeline core should stay in `Result` composition (`Result::and_then`,
-  `Result::map_ok`, `Result::map_err`).
-- terminal boundaries (`match`, project-local `unwrap`, optional `handle`/`throw`) should be
-  isolated at adapter edges (CLI/HTTP/FFI/tests).
+Pipe-first error-flow guideline:
+- the pipeline core should carry failure in the effect row
+  (`-> T with { Exception[E] }`), so stages chain on the success value.
+- terminal boundaries (`handle`, project-local `unwrap`) should be isolated at
+  adapter edges (CLI/HTTP/FFI/tests).
 - avoid scattering multiple implicit boundaries across one flow; make the
   boundary location explicit in code.
 
 ```vibe
-import ./lib/@vibe/prelude/result.vibe { Result::and_then }
-
 // stubs so the guideline block is self-contained
-let parse_id: (String) -> Result[Int, String] = (raw) -> { Ok(1) }
-let validate_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
-let load_user_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+fn parse_id(raw: String) -> Int with { Exception[String] } { 1 }
+fn validate_id(id: Int) -> Int with { Exception[String] } { id }
+fn load_user_id(id: Int) -> Int with { Exception[String] } { id }
 
-let run_core: (String) -> Result[Int, String] = (raw) -> {
-  raw
-  |> parse_id
-  |> Result::and_then(validate_id)
-  |> Result::and_then(load_user_id)
+fn run_core(raw: String) -> Int with { Exception[String] } {
+  raw |> parse_id |> validate_id |> load_user_id
 }
 
-let run_cli: (String) -> Int = (raw) -> {
-  match run_core(raw) {
-    Ok(v) => v,
-    Err(_) => -1
+fn run_cli(raw: String) -> Int {
+  handle { run_core(raw) } with Exception[String] {
+    Throw(_) => 0 - 1
   }
 }
 ```

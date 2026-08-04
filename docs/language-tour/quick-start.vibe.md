@@ -147,16 +147,12 @@ let (a, b) = pair         // destructure
 ## Effects & Error Handling
 
 ```vibe
-import ./lib/@vibe/prelude/result.vibe { Result::and_then }
+// Preferred: carry the failure in the row (stub stages for a runnable example)
+fn parse_id(raw: String) -> Int with { Exception[String] } { 1 }
+fn load_user(id: Int) -> Int with { Exception[String] } { id }
 
-// Preferred: keep the core flow in Result (stub stages for a runnable example)
-let parse_id: (String) -> Result[Int, String] = (raw) -> { Ok(1) }
-let load_user: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
-
-let run: (String) -> Result[Int, String] = (raw) -> {
-  raw
-  |> parse_id
-  |> Result::and_then(load_user)
+fn run(raw: String) -> Int with { Exception[String] } {
+  raw |> parse_id |> load_user
 }
 
 // Boundary helper when you need to localize Error
