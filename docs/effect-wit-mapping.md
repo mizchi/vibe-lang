@@ -69,7 +69,7 @@ uppercase letters split per letter (`URL` → `u-r-l`) — keep to CamelCase.
 | `Bytes` | `list<u8>` |
 | `Array[T]` | `list<T>` |
 | `Option[T]` | `option<T>` |
-| `Result[T, E]` | `result<T, E>` |
+| `Result[T, E]` | `result<T, E>` (matched by TypeExpr head NAME — #1324 removed the built-in `Result`; import the canonical one from `@vibe/wit_runtime`) |
 | `Map[K, V]` | `list<tuple<K, V>>` |
 | `(A, B, ...)` | `tuple<A, B, ...>` |
 | `Future[T]` | `future<T'>` (ADR-0089 Decision 5; backed by the step-4 lowering, spec §3.13/§3.14) |
@@ -81,6 +81,48 @@ mis-declares a boundary type. User enum/struct → WIT `variant`/`record` is
 a follow-up; general `stream<T'>` stays restricted to nominal host-owned
 handles by ADR-0089 Decision 4/5 (a guest-side producer cannot enter the
 component instance, spec §3.3).
+
+### Fallible exports: `@vibe/wit_runtime`
+
+**An `Exception[E]` row does not project to `result<T, E>`.** Since #1324 the
+idiomatic fallible signature is `fn f(..) -> T with { Exception[E] }`, but the
+WIT signature is built from the RETURN TYPE alone and exception labels are
+filtered out of the world imports (same rule as `Error` above). A row-carrying
+export therefore renders as plain `T`, and an escaping throw stays a component
+trap rather than a declared failure channel.
+
+So the boundary is where a two-track value is still needed, and
+**`@vibe/wit_runtime` is the canonical `Result[T, E]` for it** — import it rather than
+hand-declaring a copy in every component entry. Carry failure in the row
+inside, and convert once, in the export body:
+
+```vibe
+import @vibe/wit_runtime { Result }
+
+fn parse_port(s: String) -> Int with { Exception[String] } {
+  if String::length(s) == 0 { throw("empty port") }
+  8080
+}
+
+export let port_of: (String) -> Result[Int, String] = (s) -> {
+  handle {
+    Ok(parse_port(s))
+  } with Exception[String] {
+    Throw(e) => Err(e)
+  }
+}
+```
+
+renders as `export port-of: func(s: string) -> result<s64, string>;`
+(pinned byte-exactly by compiler-gate 89/89 against
+`fixtures/wit_gen_result.golden.wit`).
+
+The `handle` goes in the export body, **not** in a shared generic
+`catching(f)` helper. A helper taking a thunk does not discharge the row at
+its call site, because the caller's closure literal leaks its own latent row
+(#1361) — measured with both a generic `Exception[E]` and a monomorphic
+`Exception[String]` wrapper, each leaving the caller reporting
+`missing { Exception[String] }`. That is why `@vibe/wit_runtime` ships the type only.
 
 ## Example
 

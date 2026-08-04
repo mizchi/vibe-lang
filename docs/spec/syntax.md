@@ -220,7 +220,7 @@ lists are not part of the current surface syntax.
 
 ```vibe
 type Pair = (Int, Int)
-export type IntResult = Result[Int, String]
+export type Ids = Array[Int]
 ```
 
 ### Enums
@@ -547,7 +547,6 @@ f64
 Array[T]
 Map[K, V]
 Option[T]
-Result[T, E]
 (Int, String)
 (Int, String) -> Bool
 () -> Int with { Error }

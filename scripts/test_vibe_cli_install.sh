@@ -47,6 +47,10 @@ VIBE="$VIBE_BIN_DIR/vibe"
   || { echo "FAIL: .cwasm not generated" >&2; exit 1; }
 [ -f "$VIBE_HOME/toolchain" ] || { echo "FAIL: default toolchain file not written" >&2; exit 1; }
 [ -f "$VIBE_HOME/lib/@vibe/core/index.vpkg" ] || [ -f "$VIBE_HOME/lib/@vibe/core/index.vibei" ] || { echo "FAIL: stdlib @vibe/core not materialized" >&2; exit 1; }
+# @vibe/wit_runtime is user-facing (#1324): docs/effect-wit-mapping.md tells
+# users to import it for a WIT-facing fallible export, so an installed
+# toolchain that lacks it makes documented code fail to resolve.
+[ -f "$VIBE_HOME/lib/@vibe/wit_runtime/index.vpkg" ] || { echo "FAIL: stdlib @vibe/wit_runtime not materialized" >&2; exit 1; }
 echo "ok: install produced launcher + .cwasm + default toolchain + stdlib"
 pass=$((pass + 1))
 

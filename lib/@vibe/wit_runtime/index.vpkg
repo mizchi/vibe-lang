@@ -1,0 +1,72 @@
+name = @vibe/wit_runtime
+version = 0.0.1
+description =
+  #|@vibe/wit_runtime — the canonical `Result[T, E]` for the WIT boundary
+deps = {}
+
+generated_hash =
+
+// @vibe/wit_runtime — the canonical `Result[T, E]` for the WASM component
+// boundary (#1324 follow-up).
+//
+// NAME: deliberately not `@vibe/wit`. "wit" alone is too broad a subject for
+// what this holds — WIT tooling already lives elsewhere (`@vibex/wasm_wit_parser`
+// parses WIT; `lib/@vibe/compiler/wit_gen.vibe` generates it). This package is
+// only the guest-side runtime type the generated WIT projects onto, so it takes
+// the narrower `wit_runtime`.
+//
+// #1324 removed `Result` from the language and the prelude, because inside
+// vibe failure belongs in the effect row. The WIT boundary is the exception:
+// `wit_gen` projects a type application whose HEAD NAME is `Result` onto WIT
+// `result<T, E>`, and an `Exception[E]` row has no such projection (the
+// signature is built from the return type alone, and exception labels are
+// filtered out of the world imports the same way `Error` is). Rather than
+// have every component entry hand-declare its own `enum Result`, they import
+// this one.
+//
+// `Result` is a TRANSPARENT definition living in the facade, on the @vibe/ast
+// precedent (#753): the definition itself is the contract, and result.vibe is
+// an implementation stub whose only job is to be the explicit impl import
+// target (so result_test.vibe beside this file does not join the facade).
+// `opaque type` is not an option — it does not take type parameters
+// ("opaque type 'Result': type parameters are not yet supported (#729)").
+//
+// The package is deliberately type-only — no `and_then`/`map_err`/`map_ok`.
+// Those combinators were what made the old prelude `Result` a rival error
+// model, which is exactly what #1324 removed. Compose with rows; convert once,
+// in the export body.
+//
+// The conversion belongs in the export body itself, NOT in a shared generic
+// `catching(f)` helper: a helper taking a thunk does not discharge the row at
+// its call site, because the caller's closure literal leaks its own latent
+// row (#1361). Measured — both a generic `Exception[E]` and a monomorphic
+// `Exception[String]` wrapper leave the caller reporting
+// "missing { Exception[String] }".
+
+/// Two-track value for the WASM component boundary — projects to WIT
+/// `result<T, E>` (docs/effect-wit-mapping.md).
+///
+/// Use it ONLY on exports that cross into WIT. Inside vibe, carry failure in
+/// the effect row and discharge it in the export body:
+///
+///     import @vibe/wit_runtime { Result }
+///
+///     fn parse_port(s: String) -> Int with { Exception[String] } {
+///       if String::length(s) == 0 { throw("empty port") }
+///       8080
+///     }
+///
+///     export let port_of: (String) -> Result[Int, String] = (s) -> {
+///       handle {
+///         Ok(parse_port(s))
+///       } with Exception[String] {
+///         Throw(e) => Err(e)
+///       }
+///     }
+///
+/// `vibe wit` renders that as
+/// `export port-of: func(s: string) -> result<s64, string>;`.
+export enum Result[T, E] {
+  Ok(T);
+  Err(E)
+}

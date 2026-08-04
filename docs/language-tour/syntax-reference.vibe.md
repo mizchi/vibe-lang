@@ -139,7 +139,8 @@ let sum = match p { Point::{ x, y } => x + y }
 
 ```vibe
 type Pair = (Int, Int)
-type IntResult = Result[Int, String]
+type Ids = Array[Int]
+type MaybeInt = Option[Int]
 ```
 
 ### trait / impl
@@ -313,8 +314,9 @@ i32, f32, f64
 Array[T], Map[K, V]
 ArrayBuilder[T], MapBuilder[K, V]
 
-// Generic
-Option[T], Result[T, E]
+// Generic (Option is the only built-in two-track type; #1324 removed Result,
+// so a two-track return type is an ordinary user enum you declare yourself)
+Option[T]
 
 // Function type
 (Int, String) -> Bool
@@ -335,11 +337,12 @@ T, U, V
 
 <!-- doctest-skip: `...` ellipsis + effect context 無しの top-level perform を含む構文提示の断片 -->
 ```vibe skip
-// Result-first core flow
-let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
-let load_user: (Int) -> Result[String, String] = (id) -> { ... }
+// Row-first core flow: failure lives in the effect row, so the success value
+// flows straight through and stages chain by ordinary application (#1324)
+let parse_id: (String) -> Int with { Exception[String] } = (raw) -> { ... }
+let load_user: (Int) -> String with { Exception[String] } = (id) -> { ... }
 
-raw |> parse_id |> Result::and_then(load_user)
+raw |> parse_id |> load_user
 
 // Error boundary
 let f: () -> Int with { Error } = () -> { throw("fail") }

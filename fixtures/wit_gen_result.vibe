@@ -1,0 +1,46 @@
+// #1324 follow-up golden fixture: the WIT boundary `Result`.
+//
+// Inside vibe, failure lives in the effect row — `parse_port` returns `Int`
+// and declares `with { Exception[String] }`. That row has NO WIT projection
+// (the signature is built from the return type alone, and exception labels
+// are filtered out of the world imports the same way `Error` is), so a
+// WIT-facing fallible export converts once, in its own body, into the
+// `Result[T, E]` that `wit_gen` does project onto WIT `result<T, E>`.
+//
+// The `Result` here is IMPORTED from the @vibe/wit_runtime contract, not
+// declared locally, so that the gate pins the canonical package actually
+// reaching the projection (wit_gen matches the TypeExpr HEAD NAME, so an
+// imported type has to survive as `Result[..]` in the annotation).
+//
+// NOTE for whoever edits this next: the WIT emission alone does NOT witness
+// the import -- VIBE_EMIT_WIT parses this file only and never resolves or
+// type-checks imports, so a broken import still emits the same world. That is
+// why compiler-gate 89 FS-COMPILES this fixture first and only then diffs the
+// WIT. Keep both steps.
+//
+// Expected output: fixtures/wit_gen_result.golden.wit (byte-exact).
+
+import @vibe/wit_runtime { Result }
+
+fn parse_port(s: String) -> Int with { Exception[String] } {
+  if String::length(s) == 0 {
+    throw("empty port")
+  }
+  8080
+}
+
+export let port_of: (String) -> Result[Int, String] = (s) -> {
+  handle {
+    Ok(parse_port(s))
+  } with Exception[String] {
+    Throw(e) => Err(e)
+  }
+}
+
+export let describe: (Int) -> Result[String, Int] = (n) -> {
+  if n < 0 {
+    Err(n)
+  } else {
+    Ok("port \{n}")
+  }
+}

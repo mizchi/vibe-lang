@@ -290,10 +290,12 @@ Array::map(xs, compose(parse, render))
 
 > Runnable reference for the pipe `_` slot, combinators, `let*`, and `tap`:
 > [`lib/@vibe/prelude/pipeline_ergonomics_test.vibe`](../lib/@vibe/prelude/pipeline_ergonomics_test.vibe)
-> (`vibe test lib/@vibe/prelude/pipeline_ergonomics_test.vibe`). `Result`, `tap*`,
+> (`vibe test lib/@vibe/prelude/pipeline_ergonomics_test.vibe`). `tap` / `tap_some`
 > and the combinators are prelude exports, so a file must `import` them and sit
 > where it can reach the prelude — `import` paths may not escape the file's root
 > directory, so standalone `examples/` files cannot reach `lib/@vibe/prelude/`.
+> (`Result` and the `tap_ok`/`tap_err` railway taps were prelude exports until
+> #1324 removed them; `let*` and `?` now bind `Option` only.)
 
 ## Control Flow
 
@@ -567,11 +569,16 @@ handle { fetch_user(input) } with Exception[String] {
 
 > **status (#1324):** `Result` は**言語からも prelude からも無くなった**。
 > slice 4 で `result.vibe` (型と combinator) を削除し、slice 5 で #760(2) の
-> auto-injection (`inject_prelude_result`) を撤去した。`Ok`/`Err` が要るなら
-> **自分で `enum Result[T, E] { Ok(T); Err(E) }` を宣言する** — 特別扱いは
-> 一切なく、ただのユーザー enum になる。失敗は `Exception[E]` row で運ぶのが
-> 標準の形 (ADR-0085)。`Option` (`Some`/`None`) は first-class builtin で
-> 無変更。
+> auto-injection (`inject_prelude_result`) を撤去した。失敗は `Exception[E]`
+> row で運ぶのが標準の形 (ADR-0085)。`Option` (`Some`/`None`) は first-class
+> builtin で無変更。
+>
+> `Ok`/`Err` が本当に要るのは **WIT 境界だけ** — WIT の `result<T,E>` は
+> `Exception[E]` row からは射影されないので、そこには
+> `import @vibe/wit_runtime { Result }` を使う ([effect-wit-mapping.md](effect-wit-mapping.md)、
+> compiler-gate 89/89 が byte 単位で pin)。それ以外で自前に
+> `enum Result[T, E] { Ok(T); Err(E) }` を宣言するのは自由だが、特別扱いは
+> 一切なくただのユーザー enum になる。
 
 ### Railway bind (`let*`) — `Option` (#635 / #1324)
 

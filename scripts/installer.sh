@@ -10,7 +10,8 @@
 #   ~/.vibe/bin/vibe                    dispatcher (put this dir -- or the
 #                                       --bin-dir symlink -- on PATH)
 #   ~/.vibe/toolchains/<name>/...         compiler wasm + runner + launcher
-#   ~/.vibe/lib/@vibe/{core,ast,parser} stdlib packages (hash-verified;
+#   ~/.vibe/lib/@vibe/{core,ast,parser,wit_runtime}
+#                                       stdlib packages (hash-verified;
 #                                       the default VIBE_LIB root)
 #   ~/.vibe/cache/...                     package fetch cache
 #
