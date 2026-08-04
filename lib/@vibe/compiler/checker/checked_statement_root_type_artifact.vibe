@@ -1,0 +1,399 @@
+//# Checked statement-root-type artifact (#1379 Phase 3)
+//
+// This strict opaque v1 transport retains only checked statement-root paths,
+// closed kinds, and final-substitution canonical type text. It is not a
+// CheckedProgram, typed IR, checker attestation, cache/reuse key, interface,
+// import contract, trace, or full expression typing artifact.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./canonical_checked_type_state.vibe {
+  canonical_checked_occurrence_type_fields
+}
+
+import ./checker_stmt.vibe {
+  CheckedStatementRootTypeObservation
+}
+
+/// Opaque capture-order rows of `(statement_path, kind, canonical_type_text)`.
+export struct CheckedStatementRootTypeArtifact {
+  entries: Array[(Array[Int], String, String)]
+}
+
+fn root_type_artifact_copy_string(text: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, text)
+  StringBuilder::freeze(out)
+}
+
+fn root_type_artifact_copy_path(path: Array[Int]) -> Array[Int] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(path) {
+    Array::push(out, Array::get(path, i))
+    i = i + 1
+  }
+  out
+}
+
+fn root_type_artifact_copy_entries(entries: Array[(Array[Int], String, String)]) -> Array[(Array[Int], String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(entries) {
+    let (path, kind, ty) = Array::get(entries, i)
+    Array::push(out, (root_type_artifact_copy_path(path), root_type_artifact_copy_string(kind), root_type_artifact_copy_string(ty)))
+    i = i + 1
+  }
+  out
+}
+
+fn root_type_artifact_path_valid(path: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(path) && valid {
+    if Array::get(path, i) < 0 {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+fn root_type_artifact_kind_valid(kind: String) -> Bool {
+  kind == "SLet" || kind == "SLetMut" || kind == "SLetPat" || kind == "STest" || kind == "SBench" || kind == "SExpr"
+}
+
+fn root_type_artifact_valid(entries: Array[(Array[Int], String, String)]) -> Bool {
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(entries) && valid {
+    let (path, kind, _) = Array::get(entries, i)
+    if !root_type_artifact_path_valid(path) || !root_type_artifact_kind_valid(kind) {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+/// Complete-or-none conversion: deep-copy every row and canonicalize every
+/// raw direct checker type with the successful program's final substitution.
+export fn checked_statement_root_type_artifact_from_observation(observation: CheckedStatementRootTypeObservation) -> Option[CheckedStatementRootTypeArtifact] {
+  let raw_types = array_empty()
+  let mut i = 0
+  while i < Array::length(observation.entries) {
+    let (_, _, ty) = Array::get(observation.entries, i)
+    Array::push(raw_types, ty)
+    i = i + 1
+  }
+  let types = canonical_checked_occurrence_type_fields(raw_types, observation.checked_program.final_subst)
+  let entries = array_empty()
+  let mut j = 0
+  while j < Array::length(observation.entries) {
+    let (path, kind, _) = Array::get(observation.entries, j)
+    Array::push(entries, (root_type_artifact_copy_path(path), root_type_artifact_copy_string(kind), root_type_artifact_copy_string(Array::get(types, j))))
+    j = j + 1
+  }
+  if root_type_artifact_valid(entries) {
+    Some(CheckedStatementRootTypeArtifact::{
+      entries: entries
+    })
+  } else {
+    None
+  }
+}
+
+fn root_type_artifact_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn root_type_artifact_push_piece(out: StringBuilder, text: String) -> Unit {
+  root_type_artifact_push_int(out, String::length(text))
+  StringBuilder::push(out, text)
+}
+
+fn root_type_artifact_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  StringBuilder::push(out, __to_string(Array::length(path)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(path) {
+    root_type_artifact_push_int(out, Array::get(path, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+}
+
+fn root_type_artifact_entry(path: Array[Int], kind: String, ty: String) -> String {
+  let out = StringBuilder::new()
+  root_type_artifact_push_path(out, path)
+  root_type_artifact_push_piece(out, kind)
+  root_type_artifact_push_piece(out, ty)
+  StringBuilder::freeze(out)
+}
+
+/// Canonical versioned length-delimited v1 encoding of copied artifact rows.
+export fn encode_checked_statement_root_type_artifact_v1(artifact: CheckedStatementRootTypeArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-statement-root-type-artifact:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(artifact.entries)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(artifact.entries) {
+    let (path, kind, ty) = Array::get(artifact.entries, i)
+    root_type_artifact_push_piece(out, root_type_artifact_entry(path, kind, ty))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn root_type_artifact_decimal(text: String, start: Int, end: Int, bound: Int) -> Option[Int] {
+  if start >= end || bound < 0 {
+    None
+  } else {
+    let mut i = start
+    let mut value = 0
+    let mut valid = true
+    if end - start > 1 && String::char_code_at(text, start) == 48 {
+      valid = false
+    } else {
+      ()
+    }
+    while i < end && valid {
+      let digit = String::char_code_at(text, i) - 48
+      if digit < 0 || digit > 9 || value > (bound - digit) / 10 {
+        valid = false
+      } else {
+        value = value * 10 + digit
+        i = i + 1
+      }
+    }
+    if valid {
+      Some(value)
+    } else {
+      None
+    }
+  }
+}
+
+fn root_type_artifact_piece_parse(text: String, pos: Int) -> Option[(String, Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 58 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match root_type_artifact_decimal(text, pos, at, n - at - 1) {
+      Some(size) => {
+        let start = at + 1
+        let end = start + size
+        if end < start || end > n {
+          None
+        } else {
+          Some((text[start: end], end))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn root_type_artifact_path_parse(text: String, pos: Int) -> Option[(Array[Int], Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 91 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match root_type_artifact_decimal(text, pos, at, n - at - 1) {
+      Some(count) => {
+        let path = array_empty()
+        let mut cursor = at + 1
+        let mut i = 0
+        let mut valid = true
+        while i < count && valid {
+          let start = cursor
+          while cursor < n && String::char_code_at(text, cursor) != 58 {
+            cursor = cursor + 1
+          }
+          if cursor == start || cursor >= n {
+            valid = false
+          } else {
+            match root_type_artifact_decimal(text, start, cursor, 2305843009213693951) {
+              Some(value) => {
+                Array::push(path, value)
+                cursor = cursor + 1
+              },
+              None => {
+                valid = false
+              }
+            }
+          }
+          i = i + 1
+        }
+        if !valid || cursor >= n || String::char_code_at(text, cursor) != 93 {
+          None
+        } else {
+          Some((path, cursor + 1))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn root_type_artifact_array_parse(text: String, pos: Int) -> Option[(Array[String], Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 91 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match root_type_artifact_decimal(text, pos, at, n - at - 1) {
+      Some(count) => {
+        let out = array_empty()
+        let mut cursor = at + 1
+        let mut i = 0
+        let mut valid = true
+        while i < count && valid {
+          match root_type_artifact_piece_parse(text, cursor) {
+            Some((item, next)) => {
+              Array::push(out, item)
+              cursor = next
+            },
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        if !valid || cursor >= n || String::char_code_at(text, cursor) != 93 {
+          None
+        } else {
+          Some((out, cursor + 1))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn root_type_artifact_entry_parse(text: String) -> Option[(Array[Int], String, String)] {
+  match root_type_artifact_path_parse(text, 0) {
+    Some((path, after_path)) => match root_type_artifact_piece_parse(text, after_path) {
+      Some((kind, after_kind)) => match root_type_artifact_piece_parse(text, after_kind) {
+        Some((ty, end)) => if end == String::length(text) {
+          Some((path, kind, ty))
+        } else {
+          None
+        },
+        None => None
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+/// Strict v1 decoder. It bounds untrusted counts and lengths by remaining
+/// input, rejects malformed/noncanonical fields, validates closed rows, and
+/// requires exact decode/re-encode equality before returning an artifact.
+export fn decode_checked_statement_root_type_artifact_v1(text: String) -> Option[CheckedStatementRootTypeArtifact] {
+  let prefix = "vibe-checked-statement-root-type-artifact:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else {
+    match root_type_artifact_array_parse(text, String::length(prefix)) {
+      Some((raw_entries, end)) => {
+        let entries = array_empty()
+        let mut i = 0
+        let mut valid = end == String::length(text)
+        while i < Array::length(raw_entries) && valid {
+          match root_type_artifact_entry_parse(Array::get(raw_entries, i)) {
+            Some(entry) => Array::push(entries, entry),
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        if !valid || !root_type_artifact_valid(entries) {
+          None
+        } else {
+          let artifact = CheckedStatementRootTypeArtifact::{
+            entries: root_type_artifact_copy_entries(entries)
+          }
+          if encode_checked_statement_root_type_artifact_v1(artifact) == text {
+            Some(artifact)
+          } else {
+            None
+          }
+        }
+      },
+      None => None
+    }
+  }
+}
+
+/// Deterministic artifact view using the observation snapshot vocabulary.
+export fn canonical_checked_statement_root_type_artifact_snapshot(artifact: CheckedStatementRootTypeArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-statement-root-type-observation:v1\n")
+  root_type_artifact_push_int(out, Array::length(artifact.entries))
+  let mut i = 0
+  while i < Array::length(artifact.entries) {
+    let (path, kind, ty) = Array::get(artifact.entries, i)
+    root_type_artifact_push_int(out, Array::length(path))
+    let mut j = 0
+    while j < Array::length(path) {
+      root_type_artifact_push_int(out, Array::get(path, j))
+      j = j + 1
+    }
+    root_type_artifact_push_piece(out, kind)
+    root_type_artifact_push_piece(out, ty)
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+export fn checked_statement_root_type_artifact_row_count(artifact: CheckedStatementRootTypeArtifact) -> Int {
+  Array::length(artifact.entries)
+}
+
+export fn checked_statement_root_type_artifact_statement_path_at(artifact: CheckedStatementRootTypeArtifact, row_index: Int) -> Option[Array[Int]] {
+  if row_index < 0 || row_index >= Array::length(artifact.entries) {
+    None
+  } else {
+    let (path, _, _) = Array::get(artifact.entries, row_index)
+    Some(root_type_artifact_copy_path(path))
+  }
+}
+
+export fn checked_statement_root_type_artifact_kind_at(artifact: CheckedStatementRootTypeArtifact, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(artifact.entries) {
+    None
+  } else {
+    let (_, kind, _) = Array::get(artifact.entries, row_index)
+    Some(root_type_artifact_copy_string(kind))
+  }
+}
+
+export fn checked_statement_root_type_artifact_type_at(artifact: CheckedStatementRootTypeArtifact, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(artifact.entries) {
+    None
+  } else {
+    let (_, _, ty) = Array::get(artifact.entries, row_index)
+    Some(root_type_artifact_copy_string(ty))
+  }
+}
