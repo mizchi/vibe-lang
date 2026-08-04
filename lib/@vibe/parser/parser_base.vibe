@@ -888,6 +888,72 @@ fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String,
   }
 }
 
+/// #1429: one effect-row item -- `Name`, `Name::Op`, or `Name[T, ..]`. Split
+/// out of collect_effect_names so the braced and braceless spellings read the
+/// same item grammar rather than drifting apart.
+fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(member) =>
+        (String::concat(name, String::concat("::", member)), pos + 3),
+        _ => throw("expected qualified operation name after '::' in effect row")
+      },
+      TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(name, "[")),
+      _ => (name, pos + 1)
+    },
+    _ => throw("expected an effect name in the effect row after 'with'")
+  }
+}
+
+/// #1429: the braceless row `A + B`. Items are separated by `+` and the row
+/// ends at the first token that is not `+` -- which is why the separator is
+/// `+` and not `,`: in a nested function TYPE a comma cannot be told apart
+/// from the enclosing list's comma (`((Int) -> Int with A, B)` would be either
+/// one row of two labels or a two-element tuple), while `+` can start neither
+/// a type nor a parameter, so the row's end is unambiguous in every position
+/// with no lookahead. `+` is also already the language's "and another one"
+/// separator, in trait bounds (`[T: A + B]`).
+fn collect_effect_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with { Error } {
+  let (item, after_item) = parse_effect_item(tokens, pos)
+  let new_acc = if String::length(acc) == 0 {
+    item
+  } else "\{acc}, \{item}"
+  match peek(tokens, after_item) {
+    TPlus => collect_effect_names_plus(tokens, after_item + 1, new_acc),
+    _ => (new_acc, after_item)
+  }
+}
+
+/// #1429: parse the effect row that follows `with`. `pos` is the token AFTER
+/// the `with` keyword. Three spellings are accepted:
+///
+///   with A + B      braceless, `+`-separated  (the spelling being migrated TO)
+///   with ()         the explicitly empty row
+///   with { A, B }   braced, comma-separated   (the spelling being migrated FROM)
+///
+/// All three normalize to the same comma-joined internal string, so nothing
+/// downstream of the parser -- checker, codegen, printer, contract hash --
+/// observes which one was written. That is what lets the two spellings coexist
+/// across the bootstrap bump: the compiler source keeps the braced form (so the
+/// committed bundles and the seed stay byte-stable) while the new form becomes
+/// parseable, and only then can the tree be converted.
+///
+/// `()` is the empty row and NOTHING else: a parenthesised non-empty row is
+/// rejected rather than accepted as a second grouping syntax, because allowing
+/// it would put the brace-vs-no-brace choice straight back into the language
+/// under different punctuation.
+fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with { Error } {
+  match peek(tokens, pos) {
+    TLBrace => collect_effect_names(tokens, pos + 1, ""),
+    TLParen => match peek(tokens, pos + 1) {
+      TRParen => ("", pos + 2),
+      _ => throw("`with (` spells the EMPTY effect row `with ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `with A + B` (#1429)")
+    },
+    _ => collect_effect_names_plus(tokens, pos, "")
+  }
+}
+
 fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int) with { Error } {
   let rec type_list_rest: (Array[Token], Int, ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int) with { Error } = (tokens, pos, b) -> {
     match peek(tokens, pos) {
@@ -918,12 +984,12 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       _ => (ArrayBuilder::freeze(b), pos)
     }
   }
-  // The optional `with { E1, E2 }` effect row after a function type's return.
+  // The optional effect row after a function type's return (#1429: `with
+  // A + B`, `with ()`, or the legacy `with { E1, E2 }`).
   let parse_effect_suffix: (Array[Token], Int) -> (Option[String], Int) with { Error } = (tokens, rn) -> {
     match peek(tokens, rn) {
       TWith => {
-        let with_pos = expect_tk(tokens, rn + 1, "{")
-        let effect_name_pair = collect_effect_names(tokens, with_pos, "")
+        let effect_name_pair = parse_effect_row(tokens, rn + 1)
         (Some(effect_name_pair.0), effect_name_pair.1)
       },
       _ => (None, rn)
@@ -1639,6 +1705,7 @@ export {
   mode_while,
   parse_binding_name,
   parse_derive_names,
+  parse_effect_row,
   parse_effect_stmt,
   parse_enum_stmt,
   parse_impl_stmt_dispatch,
@@ -1685,6 +1752,7 @@ export {
   mode_while,
   parse_binding_name,
   parse_derive_names,
+  parse_effect_row,
   parse_effect_stmt,
   parse_enum_stmt,
   parse_impl_stmt_dispatch,
@@ -1731,6 +1799,7 @@ export {
   mode_while,
   parse_binding_name,
   parse_derive_names,
+  parse_effect_row,
   parse_effect_stmt,
   parse_enum_stmt,
   parse_impl_stmt_dispatch,

@@ -582,9 +582,38 @@ Rules:
 
 - `i32`, `f32`, and `f64` are aliases for `Int`, `Float`, and `Double` in type
   positions.
-- Function effects appear after return type: `-> T with { Effect }`.
-- Effect row variables such as `with { e }` are accepted in polymorphic
+- Function effects appear after return type: `-> T with Effect`.
+- Effect row variables such as `with e` are accepted in polymorphic
   higher-order signatures.
+- The effect row has three accepted spellings, and #1429 is migrating the
+  language from the third to the first. All three parse to the same row, so
+  nothing after the parser -- checker, codegen, printer, contract hash --
+  observes which was written:
+
+  | spelling | |
+  | --- | --- |
+  | `with A + B` | braceless, `+`-separated. The form being migrated **to** |
+  | `with ()` | the explicitly empty row |
+  | `with { A, B }` | braced, comma-separated. The form being migrated **from** |
+
+  The separator is `+`, not `,`, because a comma cannot be told apart from an
+  enclosing list's comma once the braces are gone: in `((Int) -> Int with A, B)`
+  the `B` is either a second label or a second tuple element, and in
+  `fn g(cb: (Int) -> Int with A, x: Int)` it is either a second label or the
+  next parameter. `+` can start neither a type nor a parameter name, so the
+  row's end is unambiguous in every position with no lookahead. It is also
+  already the language's "and another one" separator, in trait bounds
+  (`[T: A + B]`).
+
+  `()` spells the empty row and nothing else: a parenthesised NON-empty row
+  (`with (A + B)`) is rejected by name rather than accepted as a second
+  grouping syntax.
+
+  Writing no `with` clause at all is not the same construct as `with ()` on an
+  inline lambda -- there, omission means the row is inferred from the enclosing
+  context. On a top-level declaration the two already agree: a declaration with
+  no `with` clause is checked as empty, so performing an undeclared effect in
+  one is a compile error.
 
 ## Tests, Examples And Benches
 

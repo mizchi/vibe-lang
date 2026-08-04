@@ -769,3 +769,81 @@ test "#819: `example` is a reserved word, escapable as r#example" {
   }
   assert(escaped == "ok")
 }
+
+//# #1429: effect-row spellings
+
+test "#1429: all three row spellings normalize to the same row" {
+  // The braced and braceless forms are indistinguishable after parsing --
+  // that is the property that lets them coexist across the bootstrap bump.
+  // The printer emits the braced form for both, so a round-trip of either
+  // spelling produces byte-identical output (and the committed bundles, which
+  // embed printed source, stay stable while the tree is still unconverted).
+  let braced = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with { Error, Fs } = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  let braceless = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with Error + Fs = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(braced, "ERROR: "))
+  assert(braced == braceless)
+}
+
+test "#1429: `with ()` is the same row as the legacy `with {}`" {
+  let parens = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with () = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  let braces = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with {} = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(parens, "ERROR: "))
+  assert(parens == braces)
+}
+
+test "#1429: a parenthesized non-empty row is rejected by name" {
+  // Accepting `with (A + B)` would put the brackets-or-not choice straight
+  // back into the language under different punctuation, so it is a named
+  // error rather than a second grouping syntax.
+  let grouped = handle {
+    let _ = parse_program(lex("let f: (Int) -> Int with (Error + Fs) = (x) -> { x }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(grouped, "ERROR: "))
+  assert(String::contains(grouped, "#1429"))
+  assert(String::contains(grouped, "EMPTY effect row"))
+}
+
+test "#1429: a braceless row in a nested function type ends at the comma" {
+  // The separator is `+` and not `,` precisely so this parses: with a comma,
+  // `(Int) -> Int with Error, b: Int` is either one row of two labels or a
+  // row of one followed by another parameter, and the parser cannot tell.
+  let nested = handle {
+    let _ = parse_program(lex("let g: ((Int) -> Int with Error, Int) -> Int = (f, b) -> { f(b) }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(nested == "ok")
+}
+
+test "#1429: an empty braceless row is a located error, not a silent empty row" {
+  // `with` followed by the body brace would silently read as "no labels" if
+  // the row reader tolerated an empty item list.
+  let dangling = handle {
+    let _ = parse_program(lex("let f: (Int) -> Int with = (x) -> { x }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(dangling, "ERROR: "))
+  assert(String::contains(dangling, "effect name"))
+}
