@@ -1,7 +1,6 @@
-// Current wasm-gc-lane allocation characterization. The gc backend still
-// stores user aggregates in guest linear memory; this deliberately discards
-// a fresh aggregate on every iteration so the runner can observe its bump
-// high-water mark. It does NOT claim Wasmtime tracing-GC liveness.
+// Non-escaping local array literals use a private Wasm-GC i64 array. This
+// exercises direct length/get/set only; it must not advance __heap_ptr once
+// per iteration. The reference never enters the universal i64 function ABI.
 
 let churn: (Int) -> Int = (n) -> {
   let mut i = 0
@@ -13,12 +12,126 @@ let churn: (Int) -> Int = (n) -> {
       i + 2,
       i + 3
     ]
-    sum = sum + Array::get(values, 0) + Array::get(values, 3)
+    Array::set(values, 1, i + 10)
+    sum = sum + Array::length(values) + Array::get(values, 0) + Array::get(values, 1)
     i = i + 1
   }
   sum
 }
 
-test "gc lane: discarded aggregate churn remains semantically correct" {
-  assert(churn(8192) == 67125248)
+// The then local is eligible for native lowering, while the sibling branch
+// binds an ordinary i64 at the same source-level depth. The GC emitter must
+// allocate distinct Wasm local slots; typed refs and i64s cannot share one.
+let branch_local_type_split: (Bool) -> Int = (choose_native) -> {
+  if choose_native {
+    let native_values = [
+      40,
+      2
+    ]
+    Array::get(native_values, 0) + Array::length(native_values)
+  } else {
+    let ordinary_value = 7
+    ordinary_value
+  }
+}
+
+let match_local_type_split: (Int) -> Int = (tag) -> {
+  match tag {
+    1 => {
+      let native_values = [
+        40,
+        2
+      ]
+      Array::get(native_values, 0) + Array::length(native_values)
+    },
+    _ => {
+      let ordinary_value = 7
+      ordinary_value
+    }
+  }
+}
+
+// Lambda records currently carry only i64 local metadata. Nested lambda
+// arrays must therefore retain the linear fallback rather than introduce a
+// typed Wasm-GC local that the module declaration pass cannot describe.
+let nested_lambda_array_fallback: () -> Int = () -> {
+  let middle = () -> {
+    let inner = (base) -> {
+      let values = [
+        base,
+        base + 1
+      ]
+      Array::set(values, 1, base + 2)
+      Array::length(values) + Array::get(values, 1)
+    }
+    inner(40)
+  }
+  middle()
+}
+
+let escaped_alias: () -> Int = () -> {
+  let xs = [
+    7
+  ]
+  let alias = xs
+  Array::get(alias, 0)
+}
+
+let pushed: () -> Int = () -> {
+  let xs = [
+    1
+  ]
+  Array::push(xs, 9)
+  Array::get(xs, 1)
+}
+
+let returned: () -> Array[Int] = () -> {
+  let xs = [
+    8
+  ]
+  xs
+}
+
+test "gc lane: non-escaping native array churn preserves length/get/set semantics" {
+  assert(churn(8192) == 67215360)
+}
+
+test "gc lane: native branch local and sibling i64 local use distinct Wasm slots" {
+  assert(branch_local_type_split(true) == 42)
+  assert(branch_local_type_split(false) == 7)
+}
+
+test "gc lane: native match arm and sibling i64 arm use distinct Wasm slots" {
+  assert(match_local_type_split(1) == 42)
+  assert(match_local_type_split(0) == 7)
+}
+
+// Module-level initializers compile into `_start`, which is registered with an
+// unconditionally EMPTY native-local row, so the native path must stay OFF here
+// (see the init_ctx comment in codegen/gc/backend_body.vibe). Before that was
+// enforced, this exact shape declared the slot `i64` while the body used it as
+// an array reference and the module failed to validate outright:
+//   local.set[0] expected type i64, found array.new_default of type (ref 12)
+// This binding therefore keeps the eligible-native count at THREE -- the array
+// below must take the linear fallback.
+let module_init_array_stays_linear: Int = {
+  let xs = [
+    5,
+    7
+  ]
+  Array::get(xs, 0) + Array::get(xs, 1)
+}
+
+test "gc lane: nested lambda arrays retain the linear fallback" {
+  assert(nested_lambda_array_fallback() == 44)
+}
+
+test "gc lane: aliases, push, and return retain the linear fallback" {
+  assert(escaped_alias() == 7)
+  assert(pushed() == 9)
+  assert(Array::get(returned(), 0) == 8)
+}
+
+test "gc lane: module-level initializer arrays retain the linear fallback" {
+  assert(module_init_array_stays_linear == 12)
 }
