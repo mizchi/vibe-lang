@@ -1497,7 +1497,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     if mut_needs_ref_cell(body, name) {
       Array::push(ctx.ref_cell_names, name)
-      if ctx.enable_rc && ctx.rc_alloc_func_idx >= 0 && ctx.rc_drop_func_idx >= 0 && expr_is_intish(value, local_names, ctx) {
+      if ctx.enable_rc && ctx.rc_alloc_func_idx >= 0 && ctx.rc_drop_func_idx >= 0 {
         // #699 RC-managed ref cell: a captured `let mut` is heap-boxed for
         // by-reference sharing; under RC make that box an RC object so it is
         // reclaimed instead of leaking. Layout [alloc_size@0][rc_count@4 +
@@ -1505,9 +1505,24 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // read/write/assign-op sites are byte-identical to the raw-box path. The
         // capturing closure dups it (compile_lambda.vibe) and drops it via the
         // class-7 owned-capture recursion (gen_rc_drop_body); the defining scope
-        // drops it inline below. Restricted to intish (scalar) values so the
-        // payload is never a heap object that the body could return (no
-        // use-after-free): class-8 payload-drop then stays a no-op.
+        // drops it inline below. class-8 means the payload itself is never
+        // dropped with the cell, so a heap payload leaks rather than being
+        // freed out from under the body -- no use-after-free either way.
+        //
+        // ADR-0092 (#1262): this used to ALSO require
+        // `expr_is_intish(value, ..)`, which made the two sides of the ref-cell
+        // contract disagree. `Array::push(ctx.ref_cell_names, name)` above is
+        // UNCONDITIONAL, and compile_lambda keys the RC-owned-capture treatment
+        // (odd tagging + emit_rc_word_inc_saturating at box-4 + the class-7
+        // recursive __rt_rc_drop) purely off `ref_cell_names`. A non-intish
+        // init -- `let mut x = -1` is enough, since expr_is_intish only accepts
+        // `!` among unary ops -- took the raw 8-byte HEADERLESS box below while
+        // the closure kept treating it as an RC object. That incremented a
+        // nonexistent rc word in whatever preceded the box, and later pushed a
+        // headerless pointer onto the free list; the allocator's walk then
+        // followed a wild link and trapped far away (the long-standing
+        // "all-RC bootstrap" OOB). Every captured `let mut` under RC now gets a
+        // real header, so no headerless box can ever be treated as RC-owned.
         emit_i64_const(buf, 16)
         emit_call(buf, ctx.rc_alloc_func_idx)
         emit_local_set(buf, local_idx)

@@ -8959,4 +8959,48 @@ fi
 rm -rf "$exnmsgdir"
 echo "[compiler-gate] uncaught throw payload rendering ok"
 
+echo "[compiler-gate] 88/88 a closure-captured let mut is always a HEADERED RC cell (ADR-0092/#1262)"
+# The ref-cell contract used to be half-conditional: the name went into
+# ctx.ref_cell_names unconditionally, but the RC-managed (headered) cell was
+# only built when expr_is_intish(value) held. expr_is_intish accepts no unary
+# op but `!`, so `let mut i = -1` alone took the raw 8-byte HEADERLESS box --
+# while compile_lambda still treated the capture as RC-owned (odd tagging +
+# emit_rc_word_inc_saturating at box-4 + the class-7 recursive __rt_rc_drop).
+# That incremented whatever preceded the box and pushed a headerless pointer
+# onto the RC free list; the allocator's walk later followed a wild link and
+# trapped far away -- the long-standing "all-RC bootstrap" OOB.
+#
+# The program's OUTPUT does not witness this (the corrupted neighbour is
+# usually dead), so the lock asserts the ALLOCATOR INVARIANT instead:
+# rc_patch_freelist_assert.py splices "trap if alloc_size == 0" into
+# __rt_rc_drop (a post-hoc binary patch -- wasm code is outside linear memory,
+# so it cannot move the guest heap), and a headerless box reaching a drop
+# turns into `unreachable`. Verified to fire on the pre-fix codegen.
+refcelldir="_build/_gate_rc_ref_cell"
+rm -rf "$refcelldir"; mkdir -p "$refcelldir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  VIBE_RC=1 VIBE_WASM_NAMES=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/rc_captured_let_mut.vibe "$refcelldir/cell.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$refcelldir/cell.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_captured_let_mut.vibe did not compile under VIBE_RC=1 (#1262)" >&2
+  cat "$refcelldir/cell.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_RC_ASSERT_SIZE0_ONLY=1 python3 scripts/rc_patch_freelist_assert.py \
+  "$refcelldir/cell.wasm" "$refcelldir/cell_sz0.wasm" __rt_rc_drop >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: could not splice the alloc_size==0 assert into __rt_rc_drop (#1262)" >&2
+  exit 1
+fi
+refcell_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$refcelldir/cell_sz0.wasm" 2>&1 | tail -1)"
+if [ "$refcell_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: a headerless ref-cell box reached __rt_rc_drop (#1262)" >&2
+  echo "  got '$refcell_out' (want 1); an 'unreachable' trap here means a captured" >&2
+  echo "  let mut took the raw-bump path while the closure treated it as RC-owned" >&2
+  exit 1
+fi
+rm -rf "$refcelldir"
+echo "[compiler-gate] RC ref cell header ok"
+
 echo "[compiler-gate] ok"
