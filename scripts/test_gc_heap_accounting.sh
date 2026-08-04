@@ -69,9 +69,10 @@ case "$ALLOCATED" in
 esac
 
 # The fixture's 8192 churn literals are native GC arrays. The current fixture
-# also deliberately executes several linear fallback examples (including a
-# nested lambda), so its observed fixed baseline is 304 B rather than the
-# earlier 228 B. Do not assert that exact value: startup/layout and fallback
+# also deliberately executes several linear fallback examples (a nested lambda,
+# and since #1426-follow-up a module-level initializer), so its observed fixed
+# baseline is 380 B rather than the earlier 304 B / 228 B.
+# Do not assert that exact value: startup/layout and fallback
 # fixture changes may move it. The old linear churn lowering was hundreds of
 # KiB, therefore this bounded allowance remains the regression property.
 if [ "$ALLOCATED" -gt 8192 ]; then

@@ -1098,7 +1098,26 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       gc_bool_locals: array_empty(),
       gc_native_array_locals: array_empty(),
       gc_native_array_local_types: array_empty(),
-      gc_native_array_type_idx: gc_native_array_type_idx,
+      // Module-level initializers compile into `_start`, which is registered
+      // below with an unconditionally EMPTY native-local row -- so a slot the
+      // native path claimed here would be declared `i64` while the body used
+      // it as an array reference, and the module would fail validation
+      // outright (`let result = { let xs = [1]; Array::get(xs, 0) }` reproduced
+      // it: "local.set[0] expected type i64, found array.new_default").
+      //
+      // Propagating the row instead is NOT a drop-in alternative, for two
+      // independent reasons:
+      //   * the declaration pass reaches a body's param count via
+      //     `ft_params[ci - num_generated]`, which only maps for USER
+      //     functions -- `_start` is not one; and
+      //   * every global initializer is compiled into the SAME local frame
+      //     (`init_locals` / `start_extra_locals` is a max over them), so one
+      //     slot can be a native array in one initializer and an i64 in the
+      //     next, which no single declaration can satisfy.
+      //
+      // Disable the path the same way lambda bodies do (backend_lambda_ctx.vibe)
+      // -- ONE predicate, `gc_native_array_type_idx >= 0`, read in one place.
+      gc_native_array_type_idx: -1,
       gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
       gc_agg_local_slots: array_empty(),
       gc_agg_ret_names: gc_agg_ret_names_l,
