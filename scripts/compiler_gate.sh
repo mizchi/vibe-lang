@@ -9003,4 +9003,39 @@ fi
 rm -rf "$refcelldir"
 echo "[compiler-gate] RC ref cell header ok"
 
+# 89. #1262 / ADR-0055 Blocker-2: no codegen site may push a FULL f64 bit
+#     pattern through an `Int`.
+#
+# `Double::to_i64_bits(Double) -> Int` cannot honour its own signature: a normal
+# f64 pattern (`2.0` = 0x4000000000000000 = 2^62) exceeds Int::max_value
+# (2^61-1). Under RC the value comes back HALVED, so `emit_f64_const_bits` --
+# which slices the pattern with `>>8/16/.../56` -- writes `true_byte >> 1` for
+# every one of the 8 bytes. The correct form splits the pattern into two 32-bit
+# halves (each <= 2^32-1, both fit) via Double::to_i64_bits_lo/_hi +
+# emit_f64_const_lohi.
+#
+# uniform-value-repr.md has recorded Blocker-2 as "FIXED" since #505, but the
+# fix only ever landed in the LINEAR backend; codegen/gc/backend_expr.vibe kept
+# the broken form and silently miscompiled every gc-lane float literal whenever
+# the COMPILER ITSELF was RC-built (gate 40h read 91527 instead of 101557 --
+# Double::to_int saturating to 0 and float interpolation stringifying to one
+# char). A bump-built compiler hides it completely, which is why 40h never
+# caught it: the DEFAULT self-build is VIBE_RC=0.
+#
+# So this lock is STATIC. A runtime lock would have to build an RC stage2 first
+# (minutes), and the default gate has no RC-built compiler to ask.
+badf64="$(grep -rn 'emit_f64_const_bits(\|Double::to_i64_bits(' lib/@vibe/compiler --include=*.vibe \
+  | grep -v 'compiler_sources_bundle\|cli_adapter_bundle\|selfbuild_runtime_entry_bundle\|_cli_adapter_module_source' \
+  | grep -v 'export fn emit_f64_const_bits(' \
+  | grep -v 'declare Double::to_i64_bits(' || true)"
+if [ -n "$badf64" ]; then
+  echo "[compiler-gate] FAIL: full-f64-pattern-through-Int in codegen (#1262, ADR-0055 Blocker-2)" >&2
+  echo "$badf64" >&2
+  echo "  A full f64 bit pattern does not fit the 62-bit Int; under RC it arrives halved" >&2
+  echo "  and every emitted f64.const byte becomes (true_byte >> 1)." >&2
+  echo "  Use: emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))" >&2
+  exit 1
+fi
+echo "[compiler-gate] f64 literal lo/hi split ok"
+
 echo "[compiler-gate] ok"

@@ -122,6 +122,25 @@ no bootstrap risk):
 >    - Verified: float literals (`4.0`→4, `7.9`→7, `1.5+2.5`→4, `10.0/4.0`→2,
 >      mixed) in `codegen_heap_e2e_test` default **and** RC; byte-parity 74/74;
 >      selfbuild/bootstrap deterministic.
+>    - ⚠️ **The wasm-gc backend was left behind until #1262 (2026-08).** This
+>      entry read "FIXED" for over a year while `codegen/gc/backend_expr.vibe`
+>      still ran the original `emit_f64_const_bits(buf, Double::to_i64_bits(v))`.
+>      Nothing caught it because the divergence needs the **compiler itself** to
+>      be RC-built — the default self-build is `VIBE_RC=0`, and a bump-built
+>      compiler computes the full pattern correctly. Flipping the gate to
+>      `VIBE_RC=1` surfaced it as gate 40h reading 91527 instead of 101557
+>      (`Double::to_int` saturating to 0 for every input, float interpolation
+>      stringifying to one character): under RC the builtin returns the pattern
+>      HALVED, so all 8 emitted `f64.const` bytes are `true_byte >> 1`. Now
+>      fixed, and locked statically by compiler-gate §89 (no codegen site may
+>      call `emit_f64_const_bits` / `Double::to_i64_bits`) — a static lock
+>      because the default gate has no RC-built compiler to ask.
+>    - `Double::to_i64_bits` itself remains **unsound by signature** and is a
+>      trap for user code too, not just codegen: under the production default
+>      (`VIBE_RC=1`) it returns exactly half the true pattern for every double
+>      (`2.0` → 2305843009213693952 = `Int::max_value + 1`, not
+>      4611686018427387904). `lib/@vibex/wasm_wat_encoder`'s `parse_f64_bits`
+>      still routes through it. Callers must use the `_lo` / `_hi` pair.
 > 3. ✅ **Float-ness through `let` bindings (Blocker-3) — FIXED.** The AST is
 >    untyped, so `expr_is_floatish` was purely syntactic and could not see that
 >    a *variable* held a float (`let x = 1.5; x + y` took the integer `+`).
