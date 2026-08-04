@@ -209,6 +209,42 @@ gc レーン外のファイルを触らないことで構造的に担保する�
 そのときは Phase A–D の型主導レーンが土台になる — 表現の静的決定という
 不変条件 (§4.1) は統一表現でもそのまま必要だからである。
 
+## 6.5 `Bytes` は linear memory に留める (実測付き)
+
+本設計の対象は `Array[T]` であり、**`Bytes` は対象外**とする。理由は2つで、
+どちらも実測・仕様の裏付けがある。
+
+**1. SIMD は wasm-gc 配列では成立しない。** `v128.load` はメモリアドレスを
+取る命令で、GC 配列はアドレス可能なメモリではない。`(array i8)` から v128 へ
+一括ロードする命令は wasm-gc に存在しない (`array.copy` / `array.fill` /
+`array.new_data` はあるが、配列↔配列・データセグメント間のみ)。
+**したがって `Bytes` を GC 化すると SIMD を得るのではなく失う。**
+既存の `simd_skip_ws` / `simd_scan_alnum` は linear レーン専用である。
+
+**2. バイト経路は既に速い。** 2026-08-04 の実コンパイル計測
+(`codegen_lexer_test.vibe` full closure, 7.6s, `node --cpu-prof` の self time):
+
+| ランタイム関数 | self |
+|---|---:|
+| `__rt_arr_slice` | 8.8% |
+| `__rt_arr_new` | 8.3% |
+| `__rt_arr_push` | 6.4% |
+| `__rt_arr_get` | 3.7% |
+| **Array 系 計** | **27.2%** |
+| `__rt_bytes_push` | 1.0% |
+| `__rt_bytes_append` | 0.9% |
+| **Bytes 系 計** | **1.9%** |
+
+wasm 出力バッファは `Bytes` で、`bytebuf_push_buf` は `Bytes::append`
+(= `memory.copy` 1発)、`Bytes::push` は容量倍々 (64 起点) の償却 O(1)。
+**バイト組み立ての残り伸びしろは全体の 2% 未満**であり、ここを `Bytes::blit`
+へ寄せる最適化の期待値は小さい。
+
+対して Array 系が 27%、その最大の呼び出し元は perceus の
+`pctx_new` (361ms) + `copy_ints` (225ms) = **全体の 7.7% がコンテキスト複製**
+である。**性能改善の当たりはバイト列側ではなく、作業配列の持ち方にある。**
+これは #1262 の系列であり、本 ADR のスコープ外として別途扱う。
+
 ## 7. 未解決の論点
 
 着手前に決める必要があるもの:
