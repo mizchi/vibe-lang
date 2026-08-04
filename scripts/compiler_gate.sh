@@ -9003,4 +9003,36 @@ fi
 rm -rf "$refcelldir"
 echo "[compiler-gate] RC ref cell header ok"
 
+echo "[compiler-gate] 89/89 the @vibe/wit Result reaches the WIT projection (#1324)"
+# #1324 removed `Result` from the language, but the WASM component boundary
+# still needs one: WIT has `result<T, E>` and an `Exception[E]` row has no
+# projection onto it (the signature is built from the return type alone, and
+# exception labels are filtered out of the world imports the same way `Error`
+# is), so a row-carrying export would render as plain `T`. @vibe/wit is the
+# canonical `Result` for that boundary.
+#
+# What this locks is specifically that the IMPORTED type survives to the
+# projection: wit_gen matches on the TypeExpr HEAD NAME, so a contract import
+# only works as long as the annotation still reads `Result[..]` at the point
+# wit_gen sees it. A locally-declared copy would pass this gate trivially --
+# fixtures/wit_gen_result.vibe deliberately imports @vibe/wit instead, and
+# also pins the boundary idiom itself (row inside, ONE `handle` in the export
+# body producing Ok/Err).
+witresdir="_build/_gate_wit_result"
+rm -rf "$witresdir"; mkdir -p "$witresdir"
+VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/wit_gen_result.vibe" "$witresdir/out.wit" main >/dev/null 2>&1
+if [ ! -s "$witresdir/out.wit" ]; then
+  echo "[compiler-gate] FAIL: VIBE_EMIT_WIT produced no output for the @vibe/wit fixture (#1324)" >&2
+  cat "$witresdir/out.wit.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! diff -u "fixtures/wit_gen_result.golden.wit" "$witresdir/out.wit" >&2; then
+  echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_result.golden.wit. If the boundary contract changed intentionally, update the golden AND docs/effect-wit-mapping.md together." >&2
+  exit 1
+fi
+rm -rf "$witresdir"
+echo "[compiler-gate] @vibe/wit Result projection ok"
+
 echo "[compiler-gate] ok"

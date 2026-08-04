@@ -1,0 +1,58 @@
+//# Imports
+
+import .{
+  type Result
+}
+
+//# Functions
+
+/// A fallible computation written the way vibe wants it written: the failure
+/// is in the row, the success value is the return type.
+fn parse_port(s: String) -> Int with { Exception[String] } {
+  if String::length(s) == 0 {
+    throw("empty port")
+  }
+  8080
+}
+
+/// The boundary shape a WIT-facing export uses: one `handle` in the export
+/// body converts the row into the two-track value WIT can name. `wit_gen`
+/// renders this return type as `result<s64, string>`.
+fn port_of(s: String) -> Result[Int, String] {
+  handle {
+    Ok(parse_port(s))
+  } with Exception[String] {
+    Throw(e) => Err(e)
+  }
+}
+
+//# Misc
+
+test "the contract exports Result and its variants resolve" {
+  let ok: Result[Int, String] = Ok(7)
+  let err: Result[Int, String] = Err("bad")
+  let a = match ok {
+    Ok(v) => v,
+    Err(_) => 0 - 1
+  }
+  let b = match err {
+    Ok(_) => "",
+    Err(m) => m
+  }
+  assert_eq(a, 7)
+  assert_eq(b, "bad")
+}
+
+test "boundary conversion: an Exception row becomes Ok at the export" {
+  assert_eq(match port_of("8080") {
+    Ok(v) => v,
+    Err(_) => 0 - 1
+  }, 8080)
+}
+
+test "boundary conversion: a throw becomes Err at the export" {
+  assert_eq(match port_of("") {
+    Ok(_) => "no throw",
+    Err(m) => m
+  }, "empty port")
+}

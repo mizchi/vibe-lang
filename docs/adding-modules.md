@@ -87,8 +87,11 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
   `-> T with { Exception[E] }` を書き、`throw(e)` で送出して
   `handle { .. } with Exception[E] { Throw(e) => .. }` で受ける。**`Result` は
   言語にも prelude にも無い** — `Ok`/`Err` を bare で書くと `unknown name: Err`
-  になる。二本立ての返り値がどうしても要るなら自分で
-  `enum Result[T, E] { Ok(T); Err(E) }` を宣言する (特別扱いは一切無い)
+  になる。二本立ての返り値が要るのは実質 **WIT 境界だけ**で、そこには
+  `import @vibe/wit { Result }` がある (WIT の `result<T,E>` へ射影される
+  唯一の綴り、[effect-wit-mapping.md](effect-wit-mapping.md))。それ以外の
+  用途で自前に `enum Result[T, E] { Ok(T); Err(E) }` を宣言するのは自由だが、
+  特別扱いは一切無いただのユーザー enum になる
 - **qualified ctor パターン** `Result::Ok(v) =>` は #742 で対応済み (上記のように
   自分で宣言した enum に対しても効く)
 - **`Type::method` を使うなら import 列に明示する** (`Json::get` など —
