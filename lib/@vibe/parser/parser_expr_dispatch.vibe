@@ -245,16 +245,16 @@ fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr) -> Array
   if i >= Array::length(arms) {
     empty_arms()
   } else {
-    let (pat, guard, body) = Array::get(arms, i)
+    let (pat, arm_guard, body) = Array::get(arms, i)
     let rest = desugar_guarded(arms, i + 1, scrut)
-    let no_guard = match guard {
+    let no_guard = match arm_guard {
       EBool(bv) => bv,
       _ => false
     }
     let arm_body = if no_guard {
       body
     } else {
-      EIf(guard, body, EMatch(scrut, rest))
+      EIf(arm_guard, body, EMatch(scrut, rest))
     }
     let out = ArrayBuilder::new()
     ArrayBuilder::push(out, (pat, arm_body))
@@ -272,7 +272,7 @@ fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr) -> Array
 /// at `}` (optionally with a trailing comma).
 fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(Pat, Expr, Expr)], hg: Array[Bool], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Int with { Error } {
   let (pat, pa) = parse_pattern(tokens, pos)
-  let (guard, after_g) = match peek(tokens, pa) {
+  let (arm_guard, after_g) = match peek(tokens, pa) {
     TIf => {
       Array::set(hg, 0, true)
       parse_recur(tokens, pa + 1, 0)
@@ -281,7 +281,7 @@ fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: Arr
   }
   let arrow = expect_tk(tokens, after_g, "=>")
   let (body, bn) = parse_recur(tokens, arrow, 0)
-  ArrayBuilder::push(b, (pat, guard, body))
+  ArrayBuilder::push(b, (pat, arm_guard, body))
   match peek(tokens, bn) {
     TComma => match peek(tokens, bn + 1) {
       TRBrace => bn + 2,
@@ -583,29 +583,139 @@ fn fold_block_steps(steps: Array[BlockStep]) -> Expr {
   result
 }
 
-/// #760(1): after a pattern-let's value, consume an optional `else { body }`
-/// (let-else) and return the body block. `else` is not an infix continuation,
-/// so parse_block_value_only stops before it; an `if/else`-valued RHS already
-/// consumed its own `else`, so only a genuine let-else `else` remains here.
-fn parse_optional_let_else(tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Option[Expr], Int) with { Error } {
-  match peek(tokens, pos) {
-    TElse => {
-      let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_recur(tokens, br, 20)
-      (Some(body), end)
+/// #1283: does EVERY exit of this expression leave the enclosing function via
+/// `return`? This is what makes a `guard`'s binding safe to publish to the
+/// rest of the block: the else arm never falls through to the continuation, so
+/// there is no path on which the name would be unbound.
+///
+/// The property is syntactic, and it has to be decided HERE rather than in the
+/// checker, because `guard` desugars to `match` in this file — by the time the
+/// checker sees the tree, nothing distinguishes a guard's else arm from an
+/// ordinary match arm that happens to return.
+///
+/// Deliberately NOT counted as divergence, per the #1283 decision:
+///   - `throw` — ADR-0073 does pin Error::Throw as checked and non-resumable,
+///     but the decision defers an explicit abortive-effect judgement in the
+///     checker to separate work, and guessing here would bake in a rule the
+///     effect system has not agreed to yet.
+///   - a general `perform` — resumptive, so the handler CAN resume back into
+///     the continuation, which is exactly the case the binding must not see.
+///   - `break` / `continue` — they escape the enclosing LOOP, not the
+///     function. Sound in principle, out of scope for the first version.
+fn expr_always_returns(e: Expr) -> Bool {
+  match e {
+    EReturn(_) => true,
+    ESeq(_, b) => expr_always_returns(b),
+    ELet(_, _, b, _) => expr_always_returns(b),
+    ELetMut(_, _, b, _) => expr_always_returns(b),
+    ELetRec(_, _, b) => expr_always_returns(b),
+    EAssign(_, _, c) => expr_always_returns(c),
+    EAssignOp(_, _, _, c) => expr_always_returns(c),
+    // An `if` with no `else` parses with EUnit in the else slot, which is not
+    // a return — so a one-armed `if` correctly fails the check.
+    EIf(_, t, f) => expr_always_returns(t) && expr_always_returns(f),
+    EMatch(_, arms) => {
+      let mut all = Array::length(arms) > 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        if !expr_always_returns(body) {
+          all = false
+        }
+        i = i + 1
+      }
+      all
     },
-    _ => (None, pos)
+    _ => false
   }
 }
 
-/// Push a refutable pattern-let step, folding in a let-else fallback when one
-/// follows. Returns the position past the (optional) else block.
-fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, next_pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Int with { Error } {
-  let (else_body, after) = parse_optional_let_else(tokens, next_pos, parse_recur)
-  match else_body {
-    Some(alt) => ArrayBuilder::push(steps, StepPatternElse(pat, val, alt)),
-    None => ArrayBuilder::push(steps, StepPattern(pat, val))
+/// #1283: does the tail of this block reach a `perform` (which `throw`
+/// desugars to)? Only used to pick a more specific rejection message — a
+/// `guard .. else { throw(..) }` is the mistake most likely to be made first,
+/// since the let-else this replaces did accept it.
+fn expr_tail_performs(e: Expr) -> Bool {
+  match e {
+    ECall(callee, _, _) => match callee {
+      EIdent(n, _) => n == "perform",
+      _ => false
+    },
+    ESeq(_, b) => expr_tail_performs(b),
+    ELet(_, _, b, _) => expr_tail_performs(b),
+    ELetMut(_, _, b, _) => expr_tail_performs(b),
+    ELetRec(_, _, b) => expr_tail_performs(b),
+    EIf(_, t, f) => expr_tail_performs(t) || expr_tail_performs(f),
+    EMatch(_, arms) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        if expr_tail_performs(body) {
+          any = true
+        }
+        i = i + 1
+      }
+      any
+    },
+    _ => false
   }
+}
+
+/// #1283: `guard <scrutinee> is <pattern> else <block>` — the canonical
+/// refutable binding form, replacing `let PAT = value else { .. }`.
+///
+/// Returns the pieces of a StepPatternElse: the caller folds them so the
+/// pattern's bindings scope over the REST of the block, and the else arm
+/// becomes the fallthrough. Scrutinee is evaluated exactly once (it is bound
+/// into the match's discriminant position, not re-parsed per arm).
+fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Pat, Expr, Expr, Int) with { Error } {
+  // Parse the scrutinee with the no-is variant, exactly as `if` does (mode
+  // 21): otherwise a trailing `is pattern` collapses into a Bool match instead
+  // of landing in the guard's pattern slot.
+  let (scrut, sn) = parse_infix_no_is(tokens, starts, pos, 0, pos, parse_recur)
+  let after_is = match peek(tokens, sn) {
+    TIs => sn + 1,
+    TIdent(kw) => if kw == "is" {
+      sn + 1
+    } else {
+      throw("guard: expected `is <pattern>` after the scrutinee, as in `guard x is Some(v) else { return -1 }` (#1283)")
+    },
+    _ => throw("guard: expected `is <pattern>` after the scrutinee, as in `guard x is Some(v) else { return -1 }` (#1283)")
+  }
+  let (pat, pn) = parse_pattern(tokens, after_is)
+  let else_pos = match peek(tokens, pn) {
+    TElse => pn + 1,
+    _ => throw("guard: expected `else { .. }` after the pattern (#1283)")
+  }
+  let br = expect_tk(tokens, else_pos, "{")
+  let (alt, end) = parse_recur(tokens, br, 20)
+  if expr_always_returns(alt) {
+    (pat, scrut, alt, end)
+  } else if expr_tail_performs(alt) {
+    throw("guard: the `else` block must leave the enclosing function on every path, and `return` is the only form accepted for now. `throw` is not accepted yet: ADR-0073 pins Error::Throw as checked and non-resumable, but #1283 defers the checker's explicit abortive-effect judgement to separate work, so treating it as divergence here would commit the effect system to a rule it has not agreed to. Write `else { return <value> }`, or use `if <scrutinee> is <pattern> { .. } else { .. }` when the fallback produces a value. (#1283)")
+  } else {
+    throw("guard: the `else` block must leave the enclosing function on every path with `return` -- that is exactly what makes the bound name safe to use in the rest of the block. Write `else { return <value> }`, or use `if <scrutinee> is <pattern> { .. } else { .. }` when the fallback produces a value instead of exiting. (#1283)")
+  }
+}
+
+/// #1283: `let PAT = value else { .. }` (the #760(1) let-else) was retired in
+/// favour of `guard value is PAT else { .. }`. The two are not spelled
+/// differently for taste — let-else's else block produced the value of the
+/// WHOLE remaining block, so `let Some(v) = o else { 0 }` silently turned the
+/// rest of the function into `0`, while `guard` requires the else arm to
+/// diverge and therefore cannot do that. Rejecting the old spelling by name
+/// keeps that from being a confusing generic parse error.
+fn reject_let_else(tokens: Array[Token], pos: Int) -> Int with { Error } {
+  match peek(tokens, pos) {
+    TElse => throw("`let PAT = value else { .. }` (let-else) was replaced by `guard value is PAT else { .. }` (#1283). The guard form requires the `else` block to `return`; if you relied on let-else's else block supplying a fallback VALUE for the rest of the block, write `if value is PAT { .. } else { .. }` instead."),
+    _ => pos
+  }
+}
+
+/// Push a refutable pattern-let step. Returns the position past it.
+fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, next_pos: Int) -> Int with { Error } {
+  let after = reject_let_else(tokens, next_pos)
+  ArrayBuilder::push(steps, StepPattern(pat, val))
   after
 }
 
@@ -774,7 +884,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   if next_pos <= eq {
                     throw("internal parser error: block let-ctor-pat parser did not advance")
                   } else {
-                    p = push_pattern_let_step(tokens, steps, pat, val, next_pos, parse_recur)
+                    p = push_pattern_let_step(tokens, steps, pat, val, next_pos)
                   }
                 },
                 _ => {
@@ -832,11 +942,24 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             if next_pos <= eq {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
-              p = push_pattern_let_step(tokens, steps, pat, val, next_pos, parse_recur)
+              p = push_pattern_let_step(tokens, steps, pat, val, next_pos)
             }
           },
           _ => throw("expected identifier after 'let'")
         }
+      },
+      // #1283: `guard <scrutinee> is <pattern> else { .. }`. Folded as a
+      // StepPatternElse so the pattern's bindings scope over the REST of the
+      // block (the continuation) and the else arm is the fallthrough -- the
+      // same shape the retired let-else used, now with a divergence
+      // requirement on the else arm that makes the binding unconditional.
+      TGuard => {
+        let (gpat, gscrut, galt, gnext) = parse_guard_stmt(tokens, starts, p + 1, parse_recur)
+        ArrayBuilder::push(steps, StepPatternElse(gpat, gscrut, galt))
+        // A guard is a statement, so consume the separator the lexer's ASI
+        // inserts after the else block's `}` — without this, the next
+        // statement starts on a `;` the block loop has no arm for.
+        p = skip_semi(tokens, gnext)
       },
       _ => {
         let (e, next) = parse_recur(tokens, p, 0)

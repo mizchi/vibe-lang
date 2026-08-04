@@ -322,9 +322,13 @@ for b in pull { b }            // async iterator (struct: next() -> Future[Optio
 
 // loop (parameterized tail-recursion)
 let result = loop (i = 0, sum = 0) {
-  if i >= 10 { break sum }
-  continue(i + 1, sum + i)
+  if i >= 10 { break sum }       // break = the loop's single RESULT
+  continue(i + 1, sum + i)       // continue = the loop's PARAMETERS (all of them)
 }
+// #1284: the two are not symmetric and stay that way — they count different
+// things. `continue` must pass every parameter (a bare `continue` repeats with
+// them unchanged); a mismatch is a parse error naming both counts. `break` has
+// no arity to match, so `break (a, b)` is one tuple, not two values.
 
 // return (early exit from the enclosing function)
 let find_first_neg: (Array[Int]) -> Int = (arr) -> {
@@ -376,16 +380,25 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
   let record { x, y } = r          // any field names bind
   let Some((px, py)) = pt          // ctor pattern (partial: traps on mismatch)
 
-  // let-else: bind on match, else run a DIVERGING fallback (#760)
-  let Some(v) = opt else { return -1 }   // else must return / throw
-  a + b + x + y + px + py + v            // v is in scope past the let-else
+  // guard: bind on match, else leave the function (#1283)
+  guard opt is Some(v) else { return -1 }   // else must `return` on every path
+  a + b + x + y + px + py + v               // v is in scope past the guard
 }
 ```
 
-> **let-else semantics (#760):** `let PAT = e else { alt }` desugars to
-> `match e { PAT => <rest>, _ => alt }`, so `alt` must diverge (`return` /
-> `throw`) — its arm has to unify with the continuation. For a fall-through
-> *value* fallback, use an explicit `match`/`if … is` instead.
+> **guard semantics (#1283):** `guard e is PAT else { alt }` desugars to
+> `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the
+> continuation's fallthrough, which is why it must diverge. `return` is the
+> only accepted divergence form for now; `throw` is deliberately not accepted
+> yet (ADR-0073 pins `Error::Throw` as non-resumable, but the checker's
+> explicit abortive-effect judgement is deferred). For a fall-through *value*
+> fallback, use `if e is PAT { .. } else { .. }` or an explicit `match`.
+>
+> This replaced the `let PAT = e else { .. }` spelling (#760(1)), which is now
+> a named parse error. The two are not interchangeable: let-else's else block
+> supplied the value of the whole *remaining* block, so `let Some(v) = o else
+> { 0 }` silently turned the rest of the function into `0`. Requiring
+> divergence removes that shape.
 
 ### is expression
 

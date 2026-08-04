@@ -1,0 +1,99 @@
+// #1283: `guard <scrutinee> is <pattern> else { .. }` — the canonical
+// refutable binding form. It desugars to
+//   match <scrutinee> { <pattern> => <rest-of-block>, _ => <else> }
+// so the else arm IS the continuation's fallthrough, which is why it has to
+// diverge: the bound name is published to every statement after the guard, and
+// an else arm that fell through would reach them unbound.
+//
+// This file covers the ACCEPTED forms. The rejected ones (a non-diverging
+// else, an else that only `throw`s, a missing `is`/`else`, and the retired
+// `let PAT = v else { .. }` spelling) are pinned in
+// lib/@vibe/compiler/tests/parser_test.vibe, where the error text can be
+// asserted — a fixture can only witness what compiles.
+//
+// Replaces fixtures/let_else_test.vibe (#760(1)).
+
+let unwrap_or_return: (Option[Int]) -> Int = (opt) -> {
+  guard opt is Some(v) else {
+    return -1
+  }
+  v + 100
+}
+
+// Nested pattern in the bind position.
+let sum_pair_or_return: (Option[(Int, Int)]) -> Int = (opt) -> {
+  guard opt is Some((a, b)) else {
+    return -1
+  }
+  a + b
+}
+
+// The else arm may branch, as long as EVERY path returns.
+let classify_or_return: (Option[Int]) -> Int = (opt) -> {
+  guard opt is Some(v) else {
+    if 1 > 0 {
+      return -1
+    } else {
+      return -2
+    }
+  }
+  v
+}
+
+// Two guards in a row: the first one's binding is in scope for the second.
+let add_both_or_return: (Option[Int], Option[Int]) -> Int = (a, b) -> {
+  guard a is Some(x) else {
+    return -1
+  }
+  guard b is Some(y) else {
+    return x
+  }
+  x + y
+}
+
+// A guard as the last statement of a block: the continuation is `()`, so the
+// match's success arm is Unit and the else arm still has to return.
+let touch_or_return: (Option[Int]) -> Unit = (opt) -> {
+  guard opt is Some(_) else {
+    return ()
+  }
+  ()
+}
+
+test "guard binds on Some and falls through to the rest of the block" {
+  assert_eq(unwrap_or_return(Some(5)), 105)
+}
+
+test "guard takes the else arm on None" {
+  assert_eq(unwrap_or_return(None), -1)
+}
+
+test "guard with a nested tuple pattern" {
+  assert_eq(sum_pair_or_return(Some((3, 4))), 7)
+  assert_eq(sum_pair_or_return(None), -1)
+}
+
+test "guard else may branch when every path returns" {
+  assert_eq(classify_or_return(Some(9)), 9)
+  assert_eq(classify_or_return(None), -1)
+}
+
+test "a guard binding is in scope for the guards that follow it" {
+  assert_eq(add_both_or_return(Some(2), Some(3)), 5)
+  assert_eq(add_both_or_return(Some(2), None), 2)
+  assert_eq(add_both_or_return(None, Some(3)), -1)
+}
+
+test "guard as the final statement of a block" {
+  assert_eq(touch_or_return(Some(1)), ())
+  assert_eq(touch_or_return(None), ())
+}
+
+// A plain destructuring let (no else) is a different construct and is
+// unaffected: it is irrefutable, so it needs no fallback arm at all.
+test "plain pattern-let still works" {
+  let (a, b) = (11, 22)
+  assert_eq(a + b, 33)
+  let Some(v) = Some(5)
+  assert_eq(v, 5)
+}
