@@ -830,7 +830,36 @@ export struct CompileCtxGc {
   // every typed local, including one that only existed in a branch.
   gc_native_array_locals: Array[Int];
   gc_native_array_local_types: Array[Int];
+  /// The MODULE's native i64-array type index, or -1 if this compile has none.
+  /// A property of the module, never of the frame -- see
+  /// gc_native_array_frame_ok for the per-frame half.
   gc_native_array_type_idx: Int;
+  /// Whether THIS frame's own locals may hold a native array reference.
+  ///
+  /// These two facts used to share the `gc_native_array_type_idx >= 0`
+  /// sentinel, which conflated "the module has no array type" with "this
+  /// particular body cannot declare typed locals". That conflation leaked:
+  /// `_start` sets the frame half false (its slots are shared across every
+  /// module initializer, and its typed-local row is never emitted), and a
+  /// lambda CREATED INSIDE an initializer then inherited the sentinel and
+  /// silently lost native lowering even though a lambda compiles into its own
+  /// independent frame with its own emitted row (#1332, Codex review).
+  ///
+  /// Kept as one predicate read in one place (backend_expr.vibe's ELet/EArray
+  /// gate); this only stops it from meaning two different things.
+  gc_native_array_frame_ok: Bool;
+  // #1332: one typed-local row PER RECORDED LAMBDA, parallel to
+  // LambdaTable.bodies. A lambda body compiles into its own local frame, so
+  // its typed slots cannot live in the enclosing function's row -- but the
+  // code section declares lambda locals from a module-level array, which is
+  // why lambda bodies previously had to keep the linear fallback.
+  //
+  // Shared BY REFERENCE through make_lambda_ctx_gc (same discipline as
+  // table_slots_used below): a nested lambda records itself DURING its
+  // parent's compile, so both must append to the one module-level array or
+  // the rows stop lining up with LambdaTable.bodies. Appended in
+  // record_lambda_meta_gc, which is the single writer of that table.
+  gc_lambda_native_array_locals: Array[Array[Int]];
   // #1015: computed ONCE per compile (backend_body.vibe's
   // gc_to_string_resolves_to_show_wrapper, before any CompileCtxGc is
   // constructed) and copied unchanged into every ctx thereafter (including

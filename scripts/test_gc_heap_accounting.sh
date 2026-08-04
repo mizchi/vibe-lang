@@ -34,23 +34,27 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   exit 1
 }
 
-# Churn plus the if and match native branches each have one eligible literal.
-# Alias/push/return cases still use the linear fallback. This guards both
-# typed-ref/i64 sibling-control-flow regressions at Wasm emission.
+# Churn, the if branch, the match branch, and (since #1332) the nested lambda
+# body and a lambda created inside a module initializer each have one eligible
+# literal -- five in total. Alias/push/return, an array a DEEPER lambda
+# captures, and an array bound directly in an initializer's own `_start` frame
+# still use the linear fallback. This guards typed-ref/i64 sibling-control-flow
+# regressions, the lambda/capture boundary, and the frame-vs-module halves of
+# the eligibility split, all at Wasm emission.
 python3 - "$OUT" <<'PY'
 import sys
 wasm = open(sys.argv[1], "rb").read()
 count = wasm.count(b"\xfb\x07\x0c")
-if count != 3:
+if count != 5:
     raise SystemExit(
-        "[gc-heap-accounting] FAIL: expected three eligible native "
+        "[gc-heap-accounting] FAIL: expected five eligible native "
         f"array.new_default type 12 instructions, found {count}"
     )
 PY
 
-# The nested-lambda fixture must also pass independent Wasm-GC validation:
-# lambda records currently do not describe typed native-array locals, so its
-# arrays intentionally use the linear fallback.
+# The fixture must also pass independent Wasm-GC validation: since #1332 lambda
+# records DO describe typed native-array locals, so this is the check that the
+# lambda code section declares (ref null $array) for exactly those slots.
 wasm-tools validate --features all "$OUT" >/dev/null
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
@@ -69,9 +73,10 @@ case "$ALLOCATED" in
 esac
 
 # The fixture's 8192 churn literals are native GC arrays. The current fixture
-# also deliberately executes several linear fallback examples (a nested lambda,
-# and since #1426-follow-up a module-level initializer), so its observed fixed
-# baseline is 380 B rather than the earlier 304 B / 228 B.
+# also deliberately executes several linear fallback examples (alias, push,
+# return, a module-level initializer, and since #1332 an array a DEEPER lambda
+# captures), so its observed fixed baseline is 396 B -- it has moved 228 -> 304
+# -> 380 -> 396 as those fallback cases were added.
 # Do not assert that exact value: startup/layout and fallback
 # fixture changes may move it. The old linear churn lowering was hundreds of
 # KiB, therefore this bounded allowance remains the regression property.
