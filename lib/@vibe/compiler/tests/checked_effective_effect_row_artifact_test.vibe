@@ -1,0 +1,300 @@
+//# #1379 strict checked effective-effect-row artifact v1 codec tests.
+
+import @vibe/compiler/checker {
+  CheckedProgram,
+  canonical_checked_effective_effect_row_artifact_snapshot,
+  canonical_checked_effective_effect_row_snapshot,
+  check_program_result,
+  checked_effective_effect_row_artifact_from_observation,
+  checked_effective_effect_row_observation,
+  decode_checked_effective_effect_row_artifact_v1,
+  encode_checked_effective_effect_row_artifact_v1
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, Subst, Type, TypeEnv, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn direct_fn(row: Option[String], body: Expr) -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, row, body)
+}
+
+fn checked_with(stmts: Array[Stmt], env: TypeEnv) -> CheckedProgram {
+  CheckedProgram::{
+    checked_stmts: stmts,
+    final_env: env,
+    type_defs: array_empty(),
+    final_subst: SubstEmpty,
+    typed_occurrences: array_empty()
+  }
+}
+
+fn assert_some_text(value: Option[String]) -> String {
+  match value {
+    Some(text) => text,
+    None => {
+      assert(false)
+      ""
+    }
+  }
+}
+
+fn artifact_text(checked: CheckedProgram) -> String {
+  match checked_effective_effect_row_observation(checked) {
+    Some(observation) => match checked_effective_effect_row_artifact_from_observation(observation) {
+      Some(artifact) => encode_checked_effective_effect_row_artifact_v1(artifact),
+      None => {
+        assert(false)
+        ""
+      }
+    },
+    None => {
+      assert(false)
+      ""
+    }
+  }
+}
+
+fn repeated_text(text: String, count: Int) -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < count {
+    StringBuilder::push(out, text)
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+fn push_piece(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+fn colliding_name(value: Int, blocks: Int) -> String {
+  let out = StringBuilder::new()
+  let mut bit = 0
+  while bit < blocks {
+    StringBuilder::push(out, if ((value>>bit)&1) == 0 {
+      "Aa"
+    } else {
+      "BB"
+    })
+    bit = bit + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+fn valid_many_entries(count: Int, collide: Bool) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-effective-effect-rows-artifact:v1\n")
+  StringBuilder::push(out, __to_string(count))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < count {
+    let entry = StringBuilder::new()
+    StringBuilder::push(entry, __to_string(i))
+    StringBuilder::push(entry, ":")
+    push_piece(entry, if collide {
+      colliding_name(i, 12)
+    } else {
+      String::concat("f", __to_string(i))
+    })
+    StringBuilder::push(entry, "0:NNN")
+    push_piece(out, StringBuilder::freeze(entry))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+test "effective-row artifact v1 round-trips successful checked observation with snapshot parity" {
+  let checked = check_program_result([
+    SLet(false, false, "identity", None, EFn(array_empty(), array_empty(), [
+      ("x", None)
+    ], None, None, EIdent("x", -1)))
+  ])
+  match checked_effective_effect_row_observation(checked) {
+    Some(observation) => match checked_effective_effect_row_artifact_from_observation(observation) {
+      Some(artifact) => {
+        let text = encode_checked_effective_effect_row_artifact_v1(artifact)
+        match decode_checked_effective_effect_row_artifact_v1(text) {
+          Some(decoded) => {
+            assert(encode_checked_effective_effect_row_artifact_v1(decoded) == text)
+            assert(assert_some_text(canonical_checked_effective_effect_row_artifact_snapshot(decoded)) == assert_some_text(canonical_checked_effective_effect_row_snapshot(observation)))
+          },
+          None => assert(false)
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "effective-row artifact v1 is sensitive to every retained tuple field" {
+  let base = artifact_text(checked_with([
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some("Annotation"))), direct_fn(Some("Source"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Final")))
+  ])))
+  let shifted_owner = artifact_text(checked_with([
+    SExpr(EUnit),
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some("Annotation"))), direct_fn(Some("Source"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Final")))
+  ])))
+  let renamed = artifact_text(checked_with([
+    SLet(false, false, "g", Some(TyFn(array_empty(), TyUnit, Some("Annotation"))), direct_fn(Some("Source"), EUnit))
+  ], EnvFlat([
+    ("g", CtFn(array_empty(), CtUnit, Some("Final")))
+  ])))
+  let absent_annotation = artifact_text(checked_with([
+    SLet(false, false, "f", None, direct_fn(Some("Source"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Final")))
+  ])))
+  let non_function_annotation = artifact_text(checked_with([
+    SLet(false, false, "f", Some(TyName("NotFn")), direct_fn(Some("Source"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Final")))
+  ])))
+  let missing_annotation_row = artifact_text(checked_with([
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, None)), direct_fn(Some("Source"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Final")))
+  ])))
+  let empty_source_row = artifact_text(checked_with([
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some("Annotation"))), direct_fn(Some(""), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Final")))
+  ])))
+  let changed_final_row = artifact_text(checked_with([
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some("Annotation"))), direct_fn(Some("Source"), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("Other")))
+  ])))
+  assert(base != shifted_owner)
+  assert(base != renamed)
+  assert(base != absent_annotation)
+  assert(absent_annotation != non_function_annotation)
+  assert(base != non_function_annotation)
+  assert(base != missing_annotation_row)
+  assert(base != empty_source_row)
+  assert(base != changed_final_row)
+}
+
+test "effective-row artifact v1 preserves delimiters unicode and None versus Some empty rows exactly" {
+  let unusual = artifact_text(checked_with([
+    SLet(false, false, "f:[]雪", Some(TyFn(array_empty(), TyUnit, Some("Ann:S[]雪"))), direct_fn(Some("Src:N[]雪"), EUnit))
+  ], EnvFlat([
+    ("f:[]雪", CtFn(array_empty(), CtUnit, Some("Final:S[]雪")))
+  ])))
+  match decode_checked_effective_effect_row_artifact_v1(unusual) {
+    Some(decoded) => assert(encode_checked_effective_effect_row_artifact_v1(decoded) == unusual),
+    None => assert(false)
+  }
+  let missing = artifact_text(checked_with([
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, None)), direct_fn(None, EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, None))
+  ])))
+  let empty = artifact_text(checked_with([
+    SLet(false, false, "f", Some(TyFn(array_empty(), TyUnit, Some(""))), direct_fn(Some(""), EUnit))
+  ], EnvFlat([
+    ("f", CtFn(array_empty(), CtUnit, Some("")))
+  ])))
+  assert(missing != empty)
+  match decode_checked_effective_effect_row_artifact_v1(missing) {
+    Some(decoded) => assert(encode_checked_effective_effect_row_artifact_v1(decoded) == missing),
+    None => assert(false)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(empty) {
+    Some(decoded) => assert(encode_checked_effective_effect_row_artifact_v1(decoded) == empty),
+    None => assert(false)
+  }
+}
+
+test "effective-row artifact v1 rejects malformed noncanonical trailing and hostile input" {
+  let prefix = "vibe-checked-effective-effect-rows-artifact:v1\n"
+  let entry = "0:1:f1:S3:AnnS3:SrcS5:Final"
+  let valid = String::concat(prefix, String::concat("1[27:", String::concat(entry, "]")))
+  match decode_checked_effective_effect_row_artifact_v1("vibe-checked-effective-effect-rows-artifact:v2\n0[]") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(prefix) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(String::concat(prefix, "01[]")) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(String::concat(prefix, "1[27:0:1:f1:Q3:AnnS3:SrcS5:Final]")) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(String::concat(valid, "!")) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  // The parser accepts only observer-guaranteed structure: names must be
+  // unique, owners must increase, and kinds 0/2 cannot carry annotation rows.
+  match decode_checked_effective_effect_row_artifact_v1(String::concat(prefix, "2[27:0:1:f1:S3:AnnS3:SrcS5:Final27:1:1:f1:S3:AnnS3:SrcS5:Final]")) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(String::concat(prefix, "2[27:0:1:f1:S3:AnnS3:SrcS5:Final27:0:1:g1:S3:AnnS3:SrcS5:Final]")) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(String::concat(prefix, "1[28:-1:1:f1:S3:AnnS3:SrcS5:Final]")) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_effective_effect_row_artifact_v1(String::concat(prefix, "1[27:0:1:f0:S3:AnnS3:SrcS5:Final]")) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  // The maximum representable owner is canonical; the next decimal rejects
+  // before arithmetic overflow.
+  let max_owner_entry = "2305843009213693951:1:f0:NNN"
+  let max_owner = String::concat(prefix, String::concat("1[", String::concat(String::concat(__to_string(String::length(max_owner_entry)), ":"), String::concat(max_owner_entry, "]"))))
+  match decode_checked_effective_effect_row_artifact_v1(max_owner) {
+    Some(decoded) => assert(encode_checked_effective_effect_row_artifact_v1(decoded) == max_owner),
+    None => assert(false)
+  }
+  let overflow_owner_entry = "2305843009213693952:1:f0:NNN"
+  let overflow_owner = String::concat(prefix, String::concat("1[", String::concat(String::concat(__to_string(String::length(overflow_owner_entry)), ":"), String::concat(overflow_owner_entry, "]"))))
+  match decode_checked_effective_effect_row_artifact_v1(overflow_owner) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  // Count is bounded by remaining payload and parse halts on this first bad
+  // item rather than rescanning the same colon-free suffix 4096 times.
+  let hostile = String::concat(prefix, String::concat("4096[", repeated_text("x", 4096)))
+  match decode_checked_effective_effect_row_artifact_v1(hostile) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  // Canonical attacker-sized input also stays linear during unique-name
+  // validation instead of rescanning all preceding names.
+  let many = valid_many_entries(4096, false)
+  match decode_checked_effective_effect_row_artifact_v1(many) {
+    Some(decoded) => assert(encode_checked_effective_effect_row_artifact_v1(decoded) == many),
+    None => assert(false)
+  }
+  // Every 12-block Aa/BB name has the same deterministic polynomial hash.
+  // Sorting keeps duplicate validation bounded even for all 4096 distinct
+  // colliding names.
+  let colliding = valid_many_entries(4096, true)
+  match decode_checked_effective_effect_row_artifact_v1(colliding) {
+    Some(decoded) => assert(encode_checked_effective_effect_row_artifact_v1(decoded) == colliding),
+    None => assert(false)
+  }
+}
