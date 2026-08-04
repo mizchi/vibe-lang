@@ -82,6 +82,33 @@ fn push_word_bytes(b: Bytes, w: Int) -> Unit {
   Bytes::push(b, w&255)
 }
 
+/// Overwrite the 4 big-endian bytes of `w` at word index `idx` of an
+/// already-sized `Bytes` (see `push_word_bytes` for the growing-buffer
+/// counterpart). Used by the per-block schedule/output buffers `sha1`
+/// allocates once and reuses across every block via `Bytes::set`, so a
+/// multi-block message no longer re-grows a fresh 320-byte (or 20-byte)
+/// `Bytes` from empty on every block.
+fn set_word_bytes(b: Bytes, idx: Int, w: Int) -> Unit {
+  let offset = idx * 4
+  Bytes::set(b, offset, ushr(w, 24)&255)
+  Bytes::set(b, offset + 1, ushr(w, 16)&255)
+  Bytes::set(b, offset + 2, ushr(w, 8)&255)
+  Bytes::set(b, offset + 3, w&255)
+}
+
+/// A `Bytes` of `len` zero bytes, built once via `push` (amortised O(1)
+/// growth) so callers can fill it afterwards with `Bytes::set` instead of
+/// re-growing from empty on every use.
+fn zero_bytes(len: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < len {
+    Bytes::push(b, 0)
+    i = i + 1
+  }
+  b
+}
+
 /// Pad the message to a multiple of 64 bytes per the SHA-1 spec.
 /// Builds via `StringBuilder` so the zero-fill loop doesn't re-copy
 /// the accumulator each iteration — O(N²) → O(N) on wasm-gc.
@@ -127,43 +154,42 @@ fn word_to_hex(w: Int) -> String {
   StringBuilder::freeze(sb)
 }
 
-/// Build the 320-byte (80-word) SHA-1 schedule into a `Bytes` buffer.
-/// Bytes is i8-per-cell so each codepoint stays within a byte (no
-/// 32-bit truncation problem the `Array[Int]` route hits). Random
-/// read access via `read_word_bytes` is O(1); each `push_word_bytes`
-/// is amortised O(1) — so the 80-iteration expand loop is O(N) instead
-/// of the original String-accumulator's O(N²).
-fn build_schedule(msg: String, block_start: Int) -> Bytes {
-  let arr = Bytes::new()
+/// Fill the 320-byte (80-word) SHA-1 schedule into `arr` (a caller-owned
+/// buffer, already sized to 320 bytes — see `zero_bytes` — and reused
+/// across every block of a multi-block message, see `sha1`). Bytes is
+/// i8-per-cell so each codepoint stays within a byte (no 32-bit
+/// truncation problem the `Array[Int]` route hits). Random read access
+/// via `read_word_bytes` is O(1); each `set_word_bytes` write is O(1) —
+/// so the 80-iteration expand loop is O(N) per block instead of the
+/// original String-accumulator's O(N²), with no per-block allocation.
+fn build_schedule(msg: String, block_start: Int, arr: Bytes) -> Unit {
   let mut i = 0
   while i < 16 {
     let w = read_word(msg, block_start / 4 + i)
-    push_word_bytes(arr, w)
+    set_word_bytes(arr, i, w)
     i = i + 1
   }
   while i < 80 {
     let w = rotl(read_word_bytes(arr, i - 3)^read_word_bytes(arr, i - 8)^read_word_bytes(arr, i - 14)^read_word_bytes(arr, i - 16), 1)
-    push_word_bytes(arr, w)
+    set_word_bytes(arr, i, w)
     i = i + 1
   }
-  arr
 }
 
 /// Drive the 80 SHA-1 rounds. `w` is the schedule as `Bytes` (see
 /// `build_schedule`) so each word read is `read_word_bytes(w, i)` —
-/// O(1) lookup, no per-call allocation. The result is returned as a
-/// 5-element `Bytes` buffer (20 bytes) via the same compact write
-/// path the schedule uses, dodging a second tower of `String::concat`
-/// calls.
-fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
+/// O(1) lookup, no per-call allocation. The result is written into the
+/// caller-owned 5-element `Bytes` buffer `out` (20 bytes, reused across
+/// every block — see `sha1`) via the same compact write path the
+/// schedule uses, dodging a second tower of `String::concat` calls and
+/// a fresh `Bytes` allocation per block.
+fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes, out: Bytes) -> Unit {
   if i >= 80 {
-    let out = Bytes::new()
-    push_word_bytes(out, a)
-    push_word_bytes(out, b)
-    push_word_bytes(out, c)
-    push_word_bytes(out, d)
-    push_word_bytes(out, e)
-    out
+    set_word_bytes(out, 0, a)
+    set_word_bytes(out, 1, b)
+    set_word_bytes(out, 2, c)
+    set_word_bytes(out, 3, d)
+    set_word_bytes(out, 4, e)
   } else {
     let f = if i < 20 {
       (b&c)^((b^mask32)&d)
@@ -187,11 +213,16 @@ fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> B
       k3
     }
     let temp = add32(add32(add32(add32(rotl(a, 5), f), e), k), read_word_bytes(w, i))
-    process_rounds(i + 1, temp, a, rotl(b, 30), c, d, w)
+    process_rounds(i + 1, temp, a, rotl(b, 30), c, d, w, out)
   }
 }
 
-fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
+/// `sched` (320 bytes) and `result` (20 bytes) are allocated once by
+/// `sha1` and threaded through unchanged across every recursive call —
+/// `build_schedule`/`process_rounds` overwrite them in place each block
+/// via `Bytes::set`, so hashing an N-block message no longer allocates
+/// and grows N fresh `Bytes` buffers from empty.
+fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int, sched: Bytes, result: Bytes) -> String {
   if block_idx >= num_blocks {
     // Final 40-char hex digest assembled through a single StringBuilder
     // freeze (5 word_to_hex pushes), not a tower of String::concat.
@@ -203,19 +234,21 @@ fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int
     StringBuilder::push(sb, word_to_hex(h4))
     StringBuilder::freeze(sb)
   } else {
-    let w = build_schedule(msg, block_idx * 64)
-    let result = process_rounds(0, h0, h1, h2, h3, h4, w)
+    build_schedule(msg, block_idx * 64, sched)
+    process_rounds(0, h0, h1, h2, h3, h4, sched, result)
     let new_h0 = add32(h0, read_word_bytes(result, 0))
     let new_h1 = add32(h1, read_word_bytes(result, 1))
     let new_h2 = add32(h2, read_word_bytes(result, 2))
     let new_h3 = add32(h3, read_word_bytes(result, 3))
     let new_h4 = add32(h4, read_word_bytes(result, 4))
-    process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4)
+    process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4, sched, result)
   }
 }
 
 export fn sha1(msg: String) -> String {
   let padded = pad_message(msg)
   let num_blocks = (padded |> String::length()) / 64
-  process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init)
+  let sched = zero_bytes(320)
+  let result = zero_bytes(20)
+  process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init, sched, result)
 }
