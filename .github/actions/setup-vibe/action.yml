@@ -1,5 +1,5 @@
 name: Setup Vibe
-description: Install MoonBit (cached) and optional toolchains for Vibe CI
+description: Install optional toolchains (node, wasmtime, wasm-tools, pkfire) for Vibe CI
 
 inputs:
   wasmtime:
@@ -17,9 +17,6 @@ inputs:
   node-version:
     description: Node version (empty=skip)
     default: ''
-  moon-build-cache:
-    description: Cache _build / .mooncakes for MoonBit project
-    default: 'true'
   vibe-debug-cache:
     description: Cache vibe linked build artifacts (dist/cache)
     default: 'false'
@@ -36,50 +33,12 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
 
-    # Daily-rotating key for ~/.moon. The official CDN serves a moving
-    # "latest" tag; we accept up to ~1 day of staleness so cache hits stay
-    # frequent while invalidating quickly when upstream releases. The
-    # downstream `moonbit-build` cache below is keyed on .moon-version for
-    # finer invalidation when moonc itself changes (see install_moonbit.sh
-    # context).
-    - name: Resolve cache date
-      id: cache-date
-      shell: bash
-      run: echo "value=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-
-    - name: Restore MoonBit toolchain cache
-      id: moonbit-toolchain-cache
-      uses: actions/cache/restore@v5
-      with:
-        path: ~/.moon
-        key: moonbit-toolchain-${{ runner.os }}-${{ steps.cache-date.outputs.value }}
-        restore-keys: |
-          moonbit-toolchain-${{ runner.os }}-
-
-    - name: Install MoonBit (cache miss)
-      if: steps.moonbit-toolchain-cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: bash "$GITHUB_WORKSPACE/scripts/install_moonbit.sh"
-
-    - name: Save MoonBit toolchain cache
-      if: steps.moonbit-toolchain-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v5
-      with:
-        path: ~/.moon
-        key: ${{ steps.moonbit-toolchain-cache.outputs.cache-primary-key }}
-
-    - name: Add MoonBit to PATH
-      shell: bash
-      run: echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
-
-    # The install script writes .moon-version on cache miss; on cache hit we
-    # need to (re-)stamp from the cached binary so downstream hashFiles keys
-    # remain consistent.
-    - name: Stamp .moon-version
-      shell: bash
-      run: |
-        export PATH="$HOME/.moon/bin:$PATH"
-        moon version 2>/dev/null | head -1 > "$GITHUB_WORKSPACE/.moon-version"
+    # The MoonBit toolchain steps that used to live here — ~/.moon cache
+    # restore/save, scripts/install_moonbit.sh, the $HOME/.moon/bin PATH entry,
+    # and the .moon-version stamp that keyed the downstream `moonbit-build`
+    # cache (ADR-0049) — were removed with the host itself (#594). They ran a
+    # no-op installer, cached an empty directory, and stamped an empty file from
+    # a `moon` binary that is never installed.
 
     - name: Install ripgrep
       if: inputs.ripgrep == 'true'
@@ -146,17 +105,6 @@ runs:
         tar xzf /tmp/wasm-tools.tar.gz -C /tmp
         sudo install -m 0755 "/tmp/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
         wasm-tools --version
-
-    - name: Cache MoonBit build
-      if: inputs.moon-build-cache == 'true'
-      uses: actions/cache@v5
-      with:
-        path: |
-          _build
-          .mooncakes
-        key: moonbit-${{ runner.os }}-${{ hashFiles('.moon-version') }}-${{ hashFiles('moon.mod.json', '**/moon.pkg', 'src/**/*.mbt') }}
-        restore-keys: |
-          moonbit-${{ runner.os }}-${{ hashFiles('.moon-version') }}-
 
     - name: Cache vibe linked build
       if: inputs.vibe-debug-cache == 'true'

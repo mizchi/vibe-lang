@@ -108,10 +108,11 @@ bootstrap bump は最低限、以下を満たす。
 >   src/ と一緒に退役した」と書いている)。`release-gates` task も同じく
 >   `compiler_gate.sh` の alias。
 > - 最後の1つ: `scripts/test_moonrun_wt_daemon_parity.sh` は
->   `_build/wasm/{opt,release,debug}/.../vibe_check_wasi.wasm` を探すが、
+>   `_build/wasm/{opt,release,debug}/.../vibe_check_wasi.wasm` を探していたが、
 >   これは MoonBit host の `cmd/vibe_check_wasi` パッケージの成果物で、
->   現在 repo 内にこれを生成するものは無い。実行すると
->   `no stage1 check wasm found` で必ず落ちる (dead task)。
+>   repo 内にこれを生成するものは無かった。実行すると
+>   `no stage1 check wasm found` で必ず落ちる dead task だったため、
+>   2026-08-04 の MoonBit dead-code 退役でスクリプトごと削除した。
 
 ### 新機能の入れ方
 

@@ -13,11 +13,10 @@ amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.10.0#/Taskf
 
 // --- Configuration (env vars, mirroring the former justfile defaults) ---
 
-local moonSources: Listing<String> = new {
-  "moon.mod"
-  "src/**/*.mbt"
-  "src/**/moon.pkg"
-  // selfhost sources: top-level vibe/ was dissolved into lib/ (#766 Phase 2-4)
+// selfhost sources: top-level vibe/ was dissolved into lib/ (#766 Phase 2-4).
+// The MoonBit-host globs (moon.mod, src/**/*.mbt, src/**/moon.pkg) were
+// dropped with the rest of the retired host — they matched nothing.
+local vibeSources: Listing<String> = new {
   "lib/**/*.vibe"
   "lib/**/*.vibei"
 }
@@ -33,7 +32,7 @@ local scriptSources: Listing<String> = new {
 local function scriptTask(taskName: String, script: String): Task = new Task {
   name = taskName
   cmd = "bash \(script)"
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 // === Quick Commands ===
@@ -219,7 +218,7 @@ local checkOffbuildTypecheck = new Task {
     "typecheck the lib/@vibe/compiler + lib/@vibe/cli sources the self-build fixpoint does not cover (~30s)"
   cmd = "bash scripts/check_offbuild_typecheck.sh"
   cache = false
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 local testSelfhostAsyncComponent =
   scriptTask("test-async-component", "scripts/test_async_component_gate.sh")
@@ -253,7 +252,7 @@ local testParallelWarmPool = new Task {
     "warm-pool coordinator: byte-identical publish at -P 1/2/4/8, peak workers within the -P bound, no leaked workers"
   cmd = "bash scripts/test_parallel_warm_pool_gate.sh"
   cache = false
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 // Uncached for the same reason as test-warm-pool: the assertion is that the
@@ -267,7 +266,7 @@ local testSchedulerTraceOracle = new Task {
     "#1239 step 8: the real walk's trace satisfies Scheduler.lean's Project/Ready/Complete, and reaches the same store under permuted schedules"
   cmd = "bash scripts/scheduler_trace_oracle.sh"
   cache = false
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 // Uncached (like kpi-selfcompile) because neither of the two things this
@@ -283,7 +282,7 @@ local benchModuleJobPool = new Task {
     "module-job process pool: determinism at -P 1/2/4/8 (gate) + parallel speedup (measured)"
   cmd = "bash scripts/bench_module_job_pool.sh"
   cache = false
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local testWasiHttpP3Full =
@@ -365,14 +364,14 @@ local ciWasmQuickShard = new Task {
   name = "ci-wasm-quick-shard"
   cmd = "bash scripts/pkfire/wasm_quick_shard.sh $@"
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local ciSelfhostGatesShard = new Task {
   name = "ci-gates-shard"
   cmd = "bash scripts/pkfire/gates_shard.sh $@"
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local ciSelfhostExamplesSmoke = scriptTask("ci-examples-smoke", "scripts/pkfire/examples_smoke.sh")
@@ -383,14 +382,14 @@ local buildReleaseAssets = new Task {
   name = "build-release-assets"
   cmd = "bash scripts/build_release_assets.sh $@"
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local releaseTagPreflight = new Task {
   name = "release-tag-preflight"
   cmd = "bash scripts/build_release_assets.sh $@"
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local fetchCompiler = new Task {
@@ -420,7 +419,7 @@ local selfhostGeneration = new Task {
   acceptsArgs = true
   cache = false
   inputs {
-    ...moonSources
+    ...vibeSources
     ...scriptSources
     "bootstrap/seed.json"
   }
@@ -465,7 +464,7 @@ local coverageSelfhostSuiteBranch = new Task {
   name = "coverage-suite-branch"
   cmd =
     #"VIBE_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SUITE_EXTRA_ENTRIES="$(node scripts/coverage_suite_next_branches.mjs --preset branch --format env)" scripts/coverage_suite.sh"#
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
   deps { selfhostGeneration }
 }
 
@@ -474,7 +473,7 @@ local coverageSelfhostSuiteBranchGate = new Task {
   cmd =
     #"VIBE_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SUITE_EXTRA_ENTRIES="$(node scripts/coverage_suite_next_branches.mjs --preset branch --format env)" VIBE_SUITE_MIN_POINT_RATE="${1:-40}" VIBE_SUITE_MIN_LINE_RATE="${2:-93}" VIBE_SUITE_MIN_BRANCH_RATE="${3:-33}" scripts/coverage_suite.sh"#
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
   deps { selfhostGeneration }
 }
 
@@ -482,14 +481,14 @@ local coverageScratchSidecar = new Task {
   name = "coverage-scratch-sidecar"
   cmd = "scripts/coverage_scratch_sidecar.sh $@"
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local coverageEvalSidecar = new Task {
   name = "coverage-eval-sidecar"
   cmd = "scripts/coverage_scratch_sidecar.sh $@"
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local coverageWasmStd = scriptTask("coverage-wasm-std", "scripts/coverage_wasm_std.sh")
@@ -543,40 +542,14 @@ local benchCmdLatency = scriptTask("bench-cmd-latency", "scripts/bench_cmd_laten
 // selfhost wasmtime-AOT (cwasm) peak RSS for compile/check on the KPI cases.
 // `--gate` fails if a TOTAL ratio exceeds VIBE_RSS_MAX_RATIO (2.0).
 
-// wasmtime-AOT variant of bench-selfhost-perf. Builds the viberun host
-// (runtime/viberun), pre-compiles stage1 wasm → cwasm, and reuses
-// the same harness. Selfhost compile ratio drops ~5× on examples/basics.vibe
-// (6.30 → 1.21) versus the moonrun-backed default (TODO #295).
-
-// Output parity gate: moonrun and viberun must produce byte-identical
-// stage1 compile output on the default case set. Catches regressions in the
-// wasmtime host shim before they show up as ratio noise (TODO #295).
-
-// Import-surface drift guard. Dumps moon `--target wasm` imports from the
-// stage1 compile + check artifacts and diffs against
-// `runtime/viberun/expected_imports.txt`. Catches new moonbit
-// toolchain imports before they trap at runtime under viberun
-// (TODO #295).
-
-// Daemon-mode parity gate (#400): viberun --daemon and one-shot
-// invocations must produce byte-identical check output across the
-// bench cases. Catches cache-poisoning / state-leak regressions in
-// the new long-running mode before they ship.
-local testMoonrunWtDaemonParity = new Task {
-  name = "test-moonrun-wt-daemon-parity"
-  cmd = "scripts/test_moonrun_wt_daemon_parity.sh $@"
-  acceptsArgs = true
-  inputs {
-    ...moonSources
-    ...scriptSources
-    "bench/perf/cases.txt"
-    "runtime/viberun/**/*"
-  }
-}
-
-local benchSelfhostCacheProbe = scriptTask("bench-cache-probe", "scripts/bench_cache_probe.sh")
-local benchSelfhostLoaderHotspots =
-  scriptTask("bench-loader-hotspots", "scripts/bench_loader_hotspots.sh")
+// Retired with the MoonBit host: the wasmtime-AOT bench variant, the
+// moonrun/viberun output-parity gate, the `moon --target wasm` import-surface
+// drift guard, the #400 daemon-mode parity gate, and the two selfhost bench
+// probes (bench-cache-probe / bench-loader-hotspots) all drove artifacts only
+// the retired host could build — `_build/wasm/**/vibe_check_wasi.wasm` and
+// `_build/native/**/vibe.exe`, neither of which anything in this repo still
+// produces. Their comments outlived their tasks; the scripts and the two
+// surviving task definitions went with them.
 
 // #851: scripts/bench_selfhost_compile_hotspots.sh no longer exists; repointed
 // to scripts/profile_compile.sh (the current hotspot-table + memory
@@ -586,7 +559,7 @@ local benchSelfhostCompileHotspots = new Task {
   name = "bench-compile-hotspots"
   cmd = "bash scripts/profile_compile.sh $@"
   acceptsArgs = true
-  inputs { ...moonSources; ...scriptSources }
+  inputs { ...vibeSources; ...scriptSources }
 }
 
 local selfcompileKpi = new Task {
@@ -619,7 +592,7 @@ local selfhostGenerationGate = new Task {
   cmd = "bash scripts/generations.sh build --stage3"
   cache = false
   inputs {
-    ...moonSources
+    ...vibeSources
     ...scriptSources
     "bootstrap/seed.json"
     "bootstrap/seed/compiler.wasm"
@@ -634,7 +607,7 @@ local selfhostPostGenerationGate = new Task {
   cache = false
   visibility = "internal"
   inputs {
-    ...moonSources
+    ...vibeSources
     ...scriptSources
     "bench/perf/kpi_cases.txt"
     "scripts/corpus_baseline.txt"
@@ -700,8 +673,11 @@ local testGcHeapAccounting = new Task {
 }
 
 local testSelfhostCliCore = scriptTask("test-cli-core", "scripts/test_cli_core.sh")
-local testWasmVibeHostRunner =
-  scriptTask("test-wasm-vibe-host-runner", "scripts/test_wasm_vibe_host_runner.sh")
+// `test-wasm-vibe-host-runner` retired with the MoonBit host: the test
+// compiled its fixtures with `_build/native/**/vibe.exe` before driving
+// scripts/run_wasm_vibe_host_runner.sh, so it could not run once that binary
+// stopped being buildable. The runner itself is still live (generate_bundle.sh
+// drives the seed through it) but is now covered only indirectly.
 // #1182 regression: `.vibex` entry (ADR-0075 `main`) must run exactly once
 // through scripts/vibe_run.sh, not twice (wasm_vibe_host_runner.js's
 // pre-invoke `_start()` used to double-run it).
@@ -1025,9 +1001,6 @@ tasks {
   componentRunMoonix
   benchHttp
   benchCmdLatency
-  testMoonrunWtDaemonParity
-  benchSelfhostCacheProbe
-  benchSelfhostLoaderHotspots
   benchSelfhostCompileHotspots
   selfhostGenerationGate
   selfcompileKpi
@@ -1039,7 +1012,6 @@ tasks {
   testGcNativeAllocProbe
   testGcHeapAccounting
   testSelfhostCliCore
-  testWasmVibeHostRunner
   testVibeRunSingleInvoke
   testSelfhostCliFixedAdapterPreview2
   runSelfhostCliPreview2Component

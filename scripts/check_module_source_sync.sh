@@ -24,21 +24,13 @@ if [ ! -f "$EXPECTED" ]; then
   exit 1
 fi
 
-# Prefer the selfhost seed compiler to regenerate; the seed carries
-# emit-module-source. Fall back to the MoonBit host only if the seed is absent.
-# If neither is available, the freshness check cannot run and is skipped.
-have_emit=0
-if [ -f "$PROJECT_ROOT/bootstrap/seed/compiler.wasm" ] &&
-  [ "${VIBE_EMIT_VIA_HOST:-0}" != "1" ]; then
-  have_emit=1
-elif [ -x "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe" ] ||
-  [ -x "$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe" ] ||
-  [ -x "$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe" ] ||
-  command -v moon >/dev/null 2>&1; then
-  have_emit=1
-fi
-if [ "$have_emit" -ne 1 ]; then
-  echo "selfhost module source sync: skipped (no seed or host compiler; trusting pinned prebuilt)"
+# The selfhost seed compiler regenerates the module source (it carries
+# emit-module-source). The MoonBit-host fallbacks (_build/native/**/vibe.exe,
+# `command -v moon`) were retired with the host itself (#594) — nothing in this
+# repo builds them any more. Without the seed the freshness check cannot run
+# and is skipped.
+if [ ! -f "$PROJECT_ROOT/bootstrap/seed/compiler.wasm" ]; then
+  echo "selfhost module source sync: skipped (no seed compiler; trusting pinned prebuilt)"
   exit 0
 fi
 
