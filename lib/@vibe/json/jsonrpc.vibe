@@ -1,9 +1,5 @@
 //# Imports
 
-import @vibe/prelude {
-  Result
-}
-
 import ./json.vibe {
   Json, parse, stringify
 }
@@ -34,105 +30,74 @@ export enum RpcMessage {
 /// collect_merged_stmts resolves references BY NAME, so a cross-package
 /// prelude FUNCTION reference here is unresolvable once this file rides in
 /// the compiler's merged bundle (@vibe/prelude has no bundle rows). A local
-/// definition survives the strip; Result/Option/Some/None/Ok/Err are
-/// builtins and need no import.
-fn require_key(obj: Map[String, Json], key: String) -> Result[Json, String] {
+/// definition survives the strip; Option/Some/None are builtins and need no
+/// import.
+fn require_key(obj: Map[String, Json], key: String) -> Json with { Error } {
   if Map::has_key(obj, key) {
-    Ok(Map::get(obj, key))
+    Map::get(obj, key)
   } else {
-    Err("missing key: \{key}")
+    throw("missing key: \{key}")
   }
 }
 
-fn get_string(obj: Map[String, Json], key: String) -> Result[String, String] {
+fn get_string(obj: Map[String, Json], key: String) -> String with { Error } {
   match require_key(obj, key) {
-    Ok(JStr(s)) => Ok(s),
-    Ok(_) => Err("expected string for key: \{key}"),
-    Err(msg) => Err(msg)
+    JStr(s) => s,
+    _ => throw("expected string for key: \{key}")
   }
 }
 
-fn get_object(j: Json, message: String) -> Result[Map[String, Json], String] {
+fn get_object(j: Json, message: String) -> Map[String, Json] with { Error } {
   match j {
-    JObj(m) => Ok(m),
-    _ => Err(message)
+    JObj(m) => m,
+    _ => throw(message)
   }
 }
 
-fn parse_rpc_id(j: Json) -> Result[RpcId, String] {
+fn parse_rpc_id(j: Json) -> RpcId with { Error } {
   match j {
-    JNum(n) => Ok(IdNum(Double::to_int(n))),
-    JStr(s) => Ok(IdStr(s)),
-    JNull => Ok(IdNull),
-    _ => Err("invalid id")
+    JNum(n) => IdNum(Double::to_int(n)),
+    JStr(s) => IdStr(s),
+    JNull => IdNull,
+    _ => throw("invalid id")
   }
 }
 
-export fn parse_message(input: String) -> Result[RpcMessage, String] {
-  match parse(input) {
-    Ok((json, _)) => match get_object(json, "expected object") {
-      Ok(obj) => match get_string(obj, "jsonrpc") {
-        Ok(jsonrpc) =>
-        if jsonrpc != "2.0" {
-          Err("invalid jsonrpc version")
-        } else {
-          let has_method = Map::has_key(obj, "method")
-          let has_result = Map::has_key(obj, "result")
-          let has_error = Map::has_key(obj, "error")
-          if has_method {
-            match get_string(obj, "method") {
-              Ok(method) => {
-                let params = if Map::has_key(obj, "params") {
-                  Map::get(obj, "params")
-                } else JNull
-                if Map::has_key(obj, "id") {
-                  match parse_rpc_id(Map::get(obj, "id")) {
-                    Ok(id) => Ok(Request(method, params, id)),
-                    Err(msg) => Err(msg)
-                  }
-                } else Ok(Notification(method, params))
-              },
-              Err(msg) => Err(msg)
-            }
-          } else if has_result {
-            match require_key(obj, "id") {
-              Ok(id_json) => match parse_rpc_id(id_json) {
-                Ok(id) => Ok(SuccessResponse(id, Map::get(obj, "result"))),
-                Err(msg) => Err(msg)
-              },
-              Err(msg) => Err(msg)
-            }
-          } else if has_error {
-            match require_key(obj, "id") {
-              Ok(id_json) => match parse_rpc_id(id_json) {
-                Ok(id) => match get_object(Map::get(obj, "error"), "error must be object") {
-                  Ok(err_obj) => match require_key(err_obj, "code") {
-                    Ok(JNum(n)) => match get_string(err_obj, "message") {
-                      Ok(message) => {
-                        let data = if Map::has_key(err_obj, "data") {
-                          Map::get(err_obj, "data")
-                        } else JNull
-                        Ok(ErrorResponse(id, Double::to_int(n), message, data))
-                      },
-                      Err(msg) => Err(msg)
-                    },
-                    Ok(_) => Err("error code must be number"),
-                    Err(msg) => Err(msg)
-                  },
-                  Err(msg) => Err(msg)
-                },
-                Err(msg) => Err(msg)
-              },
-              Err(msg) => Err(msg)
-            }
-          } else Err("invalid message: missing method, result, or error")
-        },
-        Err(msg) => Err(msg)
-      },
-      Err(msg) => Err(msg)
-    },
-    Err(msg) => Err(msg)
-  }
+/// #1324 slice 3: this was a `Result[RpcMessage, String]` built out of ~60
+/// lines of nested `match .. { Ok(..) => .., Err(msg) => Err(msg) }`. Every
+/// one of those `Err(msg) => Err(msg)` arms was a hand-rolled propagation
+/// that the `Error` row now does for free, so the body is linear code and
+/// only the real decisions are left. Callers that want to branch write
+/// `handle { parse_message(s) } with Error { Throw(msg) => .. }`.
+export fn parse_message(input: String) -> RpcMessage with { Error } {
+  let (json, _) = parse(input)
+  let obj = get_object(json, "expected object")
+  if get_string(obj, "jsonrpc") != "2.0" {
+    throw("invalid jsonrpc version")
+  } else if Map::has_key(obj, "method") {
+    let method = get_string(obj, "method")
+    let params = if Map::has_key(obj, "params") {
+      Map::get(obj, "params")
+    } else JNull
+    if Map::has_key(obj, "id") {
+      Request(method, params, parse_rpc_id(Map::get(obj, "id")))
+    } else Notification(method, params)
+  } else if Map::has_key(obj, "result") {
+    let id = parse_rpc_id(require_key(obj, "id"))
+    SuccessResponse(id, Map::get(obj, "result"))
+  } else if Map::has_key(obj, "error") {
+    let id = parse_rpc_id(require_key(obj, "id"))
+    let err_obj = get_object(Map::get(obj, "error"), "error must be object")
+    let code = match require_key(err_obj, "code") {
+      JNum(n) => Double::to_int(n),
+      _ => throw("error code must be number")
+    }
+    let message = get_string(err_obj, "message")
+    let data = if Map::has_key(err_obj, "data") {
+      Map::get(err_obj, "data")
+    } else JNull
+    ErrorResponse(id, code, message, data)
+  } else throw("invalid message: missing method, result, or error")
 }
 
 fn rpc_id_json_str(id: RpcId) -> String {
@@ -176,7 +141,7 @@ export fn stringify_notification(method: String, params: Json) -> String {
 // RpcMessage (Request/Notification/SuccessResponse/ErrorResponse), the
 // same "no literal receiver, still Type::-namespaced" shape as
 // Json::parse/Json::stringify in json_convenience.vibe.
-export fn RpcMessage::parse(input: String) -> Result[RpcMessage, String] {
+export fn RpcMessage::parse(input: String) -> RpcMessage with { Error } {
   parse_message(input)
 }
 

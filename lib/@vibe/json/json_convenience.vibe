@@ -3,7 +3,7 @@
 // #777: host-era `Json::xxx(...)` direct-value accessors. The MoonBit host
 // exposed `Json` as a builtin type with these methods auto-imported
 // alongside the type; the selfhost `@vibe/json` package only ships the
-// Result-based primitives (`parse`, `Json::get`, `json_as_*`). Library code
+// throwing primitives (`parse`, `Json::get`, `json_as_*`). Library code
 // migrated verbatim from the host era (lib/@vibe/shell/{pipeline,from_csv,
 // from_yaml}.vibe and their tests) still calls the old direct-value surface,
 // so this module reimplements it on top of the real primitives: parse
@@ -13,16 +13,13 @@
 //
 // NOTE: the object-field accessor is named `Json::field`, NOT `Json::get` —
 // `Json::get` already exists in ./json_types.vibe with a DIFFERENT
-// (Result-returning) signature. Since this module transitively depends on
+// (throwing, and returning `Json` not a defaulted value) signature. Since
+// this module transitively depends on
 // json_types.vibe (for the `Json` type itself), a same-named-but-different
 // `Json::get` here collides under FS-mode's whole-source-tree symbol merge:
 // call sites resolve to the wrong implementation and the mismatched runtime
 // representation traps downstream (confirmed empirically — do not reuse
 // `Json::get` for a different signature anywhere in this tree).
-
-import @vibe/prelude {
-  Result
-}
 
 import ./json_types.vibe {
   Json
@@ -38,10 +35,15 @@ import ./json_stringify.vibe {
 
 //# Functions
 
+/// #1324 slice 3: `parse` throws instead of returning `Result`, so the
+/// default-to-JNull behavior this module exists to provide is now a `handle`
+/// rather than an `Err` arm. The observable contract is unchanged.
 export fn Json::parse(s: String) -> Json {
-  match parse(s) {
-    Result::Ok((j, _)) => j,
-    Result::Err(_) => JNull
+  handle {
+    let (j, _) = parse(s)
+    j
+  } with Error {
+    Throw(_) => JNull
   }
 }
 

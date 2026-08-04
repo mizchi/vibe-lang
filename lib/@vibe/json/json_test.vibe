@@ -1,9 +1,5 @@
 //# Imports
 
-import @vibe/prelude {
-  Result
-}
-
 // #897: retargeted from `import ./json.vibe` to the package directory (the
 // canonical post-#897 form; `Json` is `opaque type` in index.vpkg, its
 // definition re-exported from json_types.vibe).
@@ -28,17 +24,31 @@ import .{
 
 let input = "{\"name\":\"vibe\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
 
+/// #1324 slice 3: `parse` throws instead of returning `Result`, so the
+/// "did it parse" predicate is a `handle` rather than a match. Everything
+/// below that merely NEEDED the parse to succeed dropped its `Err(_) =>
+/// assert(false)` arm entirely -- an escaping throw fails the test by
+/// itself (test blocks carry an ambient `Error`).
 fn parse_ok(s: String) -> Bool {
-  match parse(s) {
-    Result::Ok(_) => true,
-    Result::Err(_) => false
+  handle {
+    let _ = parse(s)
+    true
+  } with Error {
+    Throw(_) => false
   }
 }
 
 fn parse_err(s: String) -> Bool {
-  match parse(s) {
-    Result::Ok(_) => false,
-    Result::Err(_) => true
+  !parse_ok(s)
+}
+
+/// Catch a parse failure's MESSAGE (empty string when it succeeded).
+fn parse_err_msg(s: String) -> String {
+  handle {
+    let _ = parse(s)
+    ""
+  } with Error {
+    Throw(msg) => msg
   }
 }
 
@@ -59,13 +69,8 @@ test "json_parser_numbers" {
 }
 
 test "json_parser_exponent_value" {
-  match parse("1.25e-2") {
-    Result::Ok((j, _)) => match json_as_num(j) {
-      Result::Ok(value) => assert(eq(value, 0.0125)),
-      Result::Err(_) => assert(false)
-    },
-    Result::Err(_) => assert(false)
-  }
+  let (j, _) = parse("1.25e-2")
+  assert(eq(json_as_num(j), 0.0125))
 }
 
 test "json_parser_whitespace_nested_string" {
@@ -94,15 +99,9 @@ test "json_parser_errors" {
   assert(parse_err("\"a\nb\""))
 }
 
-test "json_parser_result_error_message" {
-  match parse("1e") {
-    Result::Ok(_) => assert(false),
-    Result::Err(msg) => assert(msg == "expected exponent")
-  }
-  match parse("true false") {
-    Result::Ok(_) => assert(false),
-    Result::Err(msg) => assert(msg == "trailing input")
-  }
+test "json_parser_thrown_error_message" {
+  assert_eq(parse_err_msg("1e"), "expected exponent")
+  assert_eq(parse_err_msg("true false"), "trailing input")
 }
 
 test "stringify_null" {
@@ -148,10 +147,8 @@ test "stringify_escape_cr" {
 }
 
 test "stringify_array" {
-  match parse("[]") {
-    Result::Ok((empty_arr, _)) => assert(stringify(empty_arr) == "[]"),
-    Result::Err(_) => assert(false)
-  }
+  let (empty_arr, _) = parse("[]")
+  assert(stringify(empty_arr) == "[]")
   assert(stringify(JArr([
     JNum(1.0),
     JNum(2.0),
@@ -165,10 +162,8 @@ test "stringify_array" {
 }
 
 test "stringify_object" {
-  match parse("{}") {
-    Result::Ok((empty_obj, _)) => assert(stringify(empty_obj) == "{}"),
-    Result::Err(_) => assert(false)
-  }
+  let (empty_obj, _) = parse("{}")
+  assert(stringify(empty_obj) == "{}")
   assert(stringify(JObj(Map::from_pairs([
     ("x", JNum(1.0))
   ]))) == "{\"x\":1}")
@@ -176,87 +171,61 @@ test "stringify_object" {
 
 test "roundtrip_simple" {
   let original = "{\"name\":\"vibe\",\"ok\":true}"
-  match parse(original) {
-    Result::Ok((parsed, _)) => {
-      let serialized = stringify(parsed)
-      assert(parse_ok(serialized))
-    },
-    Result::Err(_) => assert(false)
-  }
+  let (parsed, _) = parse(original)
+  assert(parse_ok(stringify(parsed)))
 }
 
 test "roundtrip_array" {
   let original = "[1,2,3]"
-  match parse(original) {
-    Result::Ok((parsed, _)) => {
-      let serialized = stringify(parsed)
-      assert(serialized == "[1,2,3]")
-    },
-    Result::Err(_) => assert(false)
-  }
+  let (parsed, _) = parse(original)
+  assert(stringify(parsed) == "[1,2,3]")
 }
 
 test "roundtrip_nested" {
   let original = "{\"a\":[1,true,null],\"b\":{\"c\":\"hello\"}}"
-  match parse(original) {
-    Result::Ok((parsed, _)) => {
-      let serialized = stringify(parsed)
-      assert(parse_ok(serialized))
-    },
-    Result::Err(_) => assert(false)
-  }
+  let (parsed, _) = parse(original)
+  assert(parse_ok(stringify(parsed)))
 }
 
 test "Json::get" {
-  match parse("{\"name\":\"vibe\",\"ver\":1}") {
-    Result::Ok((j, _)) => {
-      match Json::get(j, "name") {
-        Result::Ok(name) => match json_as_str(name) {
-          Result::Ok(value) => assert(value == "vibe"),
-          Result::Err(_) => assert(false)
-        },
-        Result::Err(_) => assert(false)
-      }
-      match Json::get(j, "ver") {
-        Result::Ok(ver) => match json_as_num(ver) {
-          Result::Ok(value) => assert(eq(value, 1.0)),
-          Result::Err(_) => assert(false)
-        },
-        Result::Err(_) => assert(false)
-      }
-    },
-    Result::Err(_) => assert(false)
+  let (j, _) = parse("{\"name\":\"vibe\",\"ver\":1}")
+  assert(json_as_str(Json::get(j, "name")) == "vibe")
+  assert(eq(json_as_num(Json::get(j, "ver")), 1.0))
+}
+
+/// The failure side of the accessors, which the old `Err(_) => assert(false)`
+/// arms never actually asserted anything about.
+test "Json::get and json_as_* throw their message" {
+  let (j, _) = parse("{\"a\":1}")
+  let missing = handle {
+    let _ = Json::get(j, "nope")
+    ""
+  } with Error {
+    Throw(msg) => msg
   }
+  assert_eq(missing, "key not found: nope")
+  let mismatch = handle {
+    let _ = json_as_str(j)
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert_eq(mismatch, "not a string")
 }
 
 test "json_as_bool" {
-  match parse("true") {
-    Result::Ok((j, _)) => match json_as_bool(j) {
-      Result::Ok(value) => assert(value),
-      Result::Err(_) => assert(false)
-    },
-    Result::Err(_) => assert(false)
-  }
+  let (j, _) = parse("true")
+  assert(json_as_bool(j))
 }
 
 test "json_as_arr" {
-  match parse("[1,2]") {
-    Result::Ok((j, _)) => match json_as_arr(j) {
-      Result::Ok(arr) => assert(eq(Array::length(arr), 2)),
-      Result::Err(_) => assert(false)
-    },
-    Result::Err(_) => assert(false)
-  }
+  let (j, _) = parse("[1,2]")
+  assert(eq(Array::length(json_as_arr(j)), 2))
 }
 
 test "json_as_obj" {
-  match parse("{\"a\":1}") {
-    Result::Ok((j, _)) => match json_as_obj(j) {
-      Result::Ok(m) => assert(Map::has_key(m, "a")),
-      Result::Err(_) => assert(false)
-    },
-    Result::Err(_) => assert(false)
-  }
+  let (j, _) = parse("{\"a\":1}")
+  assert(Map::has_key(json_as_obj(j), "a"))
 }
 
 // #1189 naming consistency (wave 2): the Json::as_* companions resolve via
@@ -268,43 +237,17 @@ test "json_as_obj" {
 // explicit `let x: Json = ...` first (same constraint `vibe normalize`
 // documents for #1194).
 test "json_method_style_parity" {
-  let obj: Json = match parse("{\"a\":[1,2],\"b\":true,\"c\":\"x\"}") {
-    Result::Ok((j, _)) => j,
-    Result::Err(_) => JNull
-  }
+  let (parsed, _) = parse("{\"a\":[1,2],\"b\":true,\"c\":\"x\"}")
+  let obj: Json = parsed
   let dot_obj = obj.as_obj()
   let bare_obj = json_as_obj(obj)
-  match (dot_obj, bare_obj) {
-    (Result::Ok(dot), Result::Ok(bare)) => assert(Map::has_key(dot, "a") == Map::has_key(bare, "a")),
-    _ => assert(false)
-  }
-  let arr: Json = match Json::get(obj, "a") {
-    Result::Ok(v) => v,
-    Result::Err(_) => JNull
-  }
-  match (arr.as_arr(), json_as_arr(arr)) {
-    (Result::Ok(a), Result::Ok(b)) => assert(eq(Array::length(a), Array::length(b))),
-    _ => assert(false)
-  }
-  let bv: Json = match Json::get(obj, "b") {
-    Result::Ok(v) => v,
-    Result::Err(_) => JNull
-  }
-  match (bv.as_bool(), json_as_bool(bv)) {
-    (Result::Ok(a), Result::Ok(b)) => assert(a == b),
-    _ => assert(false)
-  }
-  let cv: Json = match Json::get(obj, "c") {
-    Result::Ok(v) => v,
-    Result::Err(_) => JNull
-  }
-  match (cv.as_str(), json_as_str(cv)) {
-    (Result::Ok(a), Result::Ok(b)) => assert(a == b),
-    _ => assert(false)
-  }
+  assert(Map::has_key(dot_obj, "a") == Map::has_key(bare_obj, "a"))
+  let arr: Json = Json::get(obj, "a")
+  assert(eq(Array::length(arr.as_arr()), Array::length(json_as_arr(arr))))
+  let bv: Json = Json::get(obj, "b")
+  assert(bv.as_bool() == json_as_bool(bv))
+  let cv: Json = Json::get(obj, "c")
+  assert(cv.as_str() == json_as_str(cv))
   let nv: Json = JNum(1.0)
-  match (nv.as_num(), json_as_num(nv)) {
-    (Result::Ok(a), Result::Ok(b)) => assert(eq(a, b)),
-    _ => assert(false)
-  }
+  assert(eq(nv.as_num(), json_as_num(nv)))
 }

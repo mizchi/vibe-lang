@@ -1,9 +1,5 @@
 //# Imports
 
-import @vibe/prelude {
-  Result
-}
-
 // #897: retargeted from direct impl-file imports (./json.vibe /
 // ./jsonrpc.vibe) to the package directory — the transparent
 // Json/RpcId/RpcMessage definitions now live in index.vpkg's facade, which
@@ -24,11 +20,27 @@ import .{
   stringify_response
 }
 
+//# Helpers
+
+/// #1324 slice 3: `parse_message` throws its `String` instead of returning
+/// `Result[RpcMessage, String]`. Tests that merely need a message to PARSE
+/// dropped their `_ => assert(false)` fallback -- an escaping throw fails
+/// the test by itself (test blocks carry an ambient `Error`) -- so only the
+/// tests asserting a REJECTION need to catch.
+fn parse_message_throws(s: String) -> Bool {
+  handle {
+    let _ = parse_message(s)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+}
+
 //# Misc
 
 test "parse_request" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"method\":\"add\",\"params\":[1,2],\"id\":1}") {
-    Result::Ok(Request(method, _, id)) => {
+    Request(method, _, id) => {
       assert(method == "add")
       match id {
         IdNum(n) => assert(eq(n, 1)),
@@ -41,7 +53,7 @@ test "parse_request" {
 
 test "parse_request_string_id" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"method\":\"foo\",\"params\":null,\"id\":\"abc\"}") {
-    Result::Ok(Request(method, _, id)) => {
+    Request(method, _, id) => {
       assert(method == "foo")
       match id {
         IdStr(s) => assert(s == "abc"),
@@ -54,7 +66,7 @@ test "parse_request_string_id" {
 
 test "parse_request_null_id" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"method\":\"foo\",\"params\":null,\"id\":null}") {
-    Result::Ok(Request(_, _, id)) => match id {
+    Request(_, _, id) => match id {
       IdNull => assert(true),
       _ => assert(false)
     },
@@ -64,14 +76,14 @@ test "parse_request_null_id" {
 
 test "parse_notification" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"method\":\"update\",\"params\":[1]}") {
-    Result::Ok(Notification(method, _)) => assert(method == "update"),
+    Notification(method, _) => assert(method == "update"),
     _ => assert(false)
   }
 }
 
 test "parse_notification_no_params" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}") {
-    Result::Ok(Notification(method, params)) => {
+    Notification(method, params) => {
       assert(method == "ping")
       match params {
         JNull => assert(true),
@@ -84,7 +96,7 @@ test "parse_notification_no_params" {
 
 test "parse_success_response" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"result\":42,\"id\":1}") {
-    Result::Ok(SuccessResponse(id, result)) => {
+    SuccessResponse(id, result) => {
       match id {
         IdNum(n) => assert(eq(n, 1)),
         _ => assert(false)
@@ -100,7 +112,7 @@ test "parse_success_response" {
 
 test "parse_error_response" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":1}") {
-    Result::Ok(ErrorResponse(id, code, message, _)) => {
+    ErrorResponse(id, code, message, _) => {
       match id {
         IdNum(n) => assert(eq(n, 1)),
         _ => assert(false)
@@ -114,7 +126,7 @@ test "parse_error_response" {
 
 test "parse_error_response_with_data" {
   match parse_message("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid\",\"data\":\"detail\"},\"id\":\"x\"}") {
-    Result::Ok(ErrorResponse(id, code, _, data)) => {
+    ErrorResponse(id, code, _, data) => {
       match id {
         IdStr(s) => assert(s == "x"),
         _ => assert(false)
@@ -130,24 +142,15 @@ test "parse_error_response_with_data" {
 }
 
 test "parse_invalid_jsonrpc_version" {
-  match parse_message("{\"jsonrpc\":\"1.0\",\"method\":\"foo\"}") {
-    Result::Err(_) => assert(true),
-    _ => assert(false)
-  }
+  assert(parse_message_throws("{\"jsonrpc\":\"1.0\",\"method\":\"foo\"}"))
 }
 
 test "parse_invalid_not_object" {
-  match parse_message("[1,2,3]") {
-    Result::Err(_) => assert(true),
-    _ => assert(false)
-  }
+  assert(parse_message_throws("[1,2,3]"))
 }
 
 test "parse_missing_jsonrpc" {
-  match parse_message("{\"method\":\"foo\"}") {
-    Result::Err(_) => assert(true),
-    _ => assert(false)
-  }
+  assert(parse_message_throws("{\"method\":\"foo\"}"))
 }
 
 test "stringify_request_roundtrip" {
@@ -156,7 +159,7 @@ test "stringify_request_roundtrip" {
     JNum(2.0)
   ]), IdNum(1))
   match parse_message(s) {
-    Result::Ok(Request(method, _, id)) => {
+    Request(method, _, id) => {
       assert(method == "add")
       match id {
         IdNum(n) => assert(eq(n, 1)),
@@ -170,7 +173,7 @@ test "stringify_request_roundtrip" {
 test "stringify_notification_roundtrip" {
   let s = stringify_notification("ping", JNull)
   match parse_message(s) {
-    Result::Ok(Notification(method, _)) => assert(method == "ping"),
+    Notification(method, _) => assert(method == "ping"),
     _ => assert(false)
   }
 }
@@ -178,7 +181,7 @@ test "stringify_notification_roundtrip" {
 test "stringify_response_roundtrip" {
   let s = stringify_response(IdNum(42), JStr("ok"))
   match parse_message(s) {
-    Result::Ok(SuccessResponse(id, result)) => {
+    SuccessResponse(id, result) => {
       match id {
         IdNum(n) => assert(eq(n, 42)),
         _ => assert(false)
@@ -195,7 +198,7 @@ test "stringify_response_roundtrip" {
 test "stringify_error_roundtrip" {
   let s = stringify_error(IdNum(1), -32601, "Method not found", JNull)
   match parse_message(s) {
-    Result::Ok(ErrorResponse(id, code, message, _)) => {
+    ErrorResponse(id, code, message, _) => {
       match id {
         IdNum(n) => assert(eq(n, 1)),
         _ => assert(false)
@@ -215,7 +218,7 @@ test "stringify_error_roundtrip" {
 test "rpc_method_style_parity" {
   let req = "{\"jsonrpc\":\"2.0\",\"method\":\"add\",\"params\":[1,2],\"id\":1}"
   match (RpcMessage::parse(req), parse_message(req)) {
-    (Result::Ok(Request(m1, _, _)), Result::Ok(Request(m2, _, _))) => assert(m1 == m2),
+    (Request(m1, _, _), Request(m2, _, _)) => assert(m1 == m2),
     _ => assert(false)
   }
   assert(RpcMessage::stringify_error(IdNum(1), -32601, "Method not found", JNull) == stringify_error(IdNum(1), -32601, "Method not found", JNull))

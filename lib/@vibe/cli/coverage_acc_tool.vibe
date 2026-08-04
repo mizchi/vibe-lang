@@ -41,7 +41,7 @@
 //#     parsed JSON bitmap entry could be JBool OR JNum depending on how the
 //#     dumping side serialized it; Python's `if v` covers both uniformly.
 //#   * mutating an existing acc's "fn"/"br" arrays in place uses
-//#     @vibe/json's json_as_arr (Result-returning) to reach the underlying
+//#     @vibe/json's json_as_arr (throwing, #1324) to reach the underlying
 //#     Array[Json], then Array::set per index -- Json::field/Json::index
 //#     alone only ever hand back read-only-looking values, not a mutable
 //#     handle.
@@ -140,13 +140,19 @@ fn cmd_merge(acc_path: String, run_path: String) -> Unit with { Fs } {
         JNull
       }
       if Json::type_of(acc) == "object" {
-        match json_as_arr(Json::field(acc, "fn")) {
-          Result::Ok(fn_arr) => or_bitmap_into(fn_arr, fb),
-          Result::Err(_) => ()
+        // #1324 slice 3: `json_as_arr` throws instead of returning `Result`.
+        // A missing/ill-typed "fn"/"br" is not an error here (a fresh acc
+        // simply has neither), so the throw is swallowed -- the shape that
+        // gets LONGER under the migration.
+        handle {
+          or_bitmap_into(json_as_arr(Json::field(acc, "fn")), fb)
+        } with Error {
+          Throw(_) => ()
         }
-        match json_as_arr(Json::field(acc, "br")) {
-          Result::Ok(br_arr) => or_bitmap_into(br_arr, bb),
-          Result::Err(_) => ()
+        handle {
+          or_bitmap_into(json_as_arr(Json::field(acc, "br")), bb)
+        } with Error {
+          Throw(_) => ()
         }
         write_json_atomic(acc_path, acc)
       } else {

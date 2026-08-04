@@ -1,7 +1,3 @@
-import @vibe/prelude {
-  Result
-}
-
 //# Values
 
 //# Types
@@ -26,38 +22,53 @@ export enum Json {
   JObj(Map[String, Json])
 }
 
-export fn json_as_arr(j: Json) -> Result[Array[Json], String] {
+/// #1324 slice 3: these returned `Result[T, String]` until now. The failure
+/// type was already `String`, so throwing carries the same information and the
+/// happy path becomes the value itself. A caller that wants to branch writes
+/// `handle { json_as_arr(j) } with Error { Throw(msg) => .. }`; a caller that
+/// just wants the value (the overwhelmingly common case -- every consumer in
+/// this repo had a hand-written `match .. { Ok(v) => v, Err(m) => throw(m) }`
+/// wrapper) now writes the call.
+///
+/// The row is the ERASED `Error`, not `Exception[String]`, and that is a
+/// bootstrap constraint rather than a design choice: @vibe/json rides in the
+/// compiler's merged bundle, and the pinned seed compiler cannot parse a
+/// bracketed label (`expected ',' or '}' in effect list`). Since the payload
+/// IS a String, nothing is lost at runtime -- only static precision, because
+/// an erased arm binds `msg` at `CtUnknown`. Tighten to `Exception[String]`
+/// after the bootstrap bump; see docs/exception-effect.md.
+export fn json_as_arr(j: Json) -> Array[Json] with { Error } {
   match j {
-    JArr(a) => Ok(a),
-    _ => Err("not an array")
+    JArr(a) => a,
+    _ => throw("not an array")
   }
 }
 
-export fn json_as_num(j: Json) -> Result[Double, String] {
+export fn json_as_num(j: Json) -> Double with { Error } {
   match j {
-    JNum(n) => Ok(n),
-    _ => Err("not a number")
+    JNum(n) => n,
+    _ => throw("not a number")
   }
 }
 
-export fn json_as_obj(j: Json) -> Result[Map[String, Json], String] {
+export fn json_as_obj(j: Json) -> Map[String, Json] with { Error } {
   match j {
-    JObj(m) => Ok(m),
-    _ => Err("not an object")
+    JObj(m) => m,
+    _ => throw("not an object")
   }
 }
 
-export fn json_as_str(j: Json) -> Result[String, String] {
+export fn json_as_str(j: Json) -> String with { Error } {
   match j {
-    JStr(s) => Ok(s),
-    _ => Err("not a string")
+    JStr(s) => s,
+    _ => throw("not a string")
   }
 }
 
-export fn json_as_bool(j: Json) -> Result[Bool, String] {
+export fn json_as_bool(j: Json) -> Bool with { Error } {
   match j {
-    JBool(b) => Ok(b),
-    _ => Err("not a bool")
+    JBool(b) => b,
+    _ => throw("not a bool")
   }
 }
 
@@ -66,31 +77,31 @@ export fn json_as_bool(j: Json) -> Result[Bool, String] {
 // bare names stay (existing call sites, pipe ergonomics), Type::-qualified
 // names are what `recv.as_arr()`-style dot calls resolve to and what
 // `vibe normalize` rewrites dot calls back to (#1194/ADR-0081).
-export fn Json::as_arr(j: Json) -> Result[Array[Json], String] {
+export fn Json::as_arr(j: Json) -> Array[Json] with { Error } {
   json_as_arr(j)
 }
 
-export fn Json::as_num(j: Json) -> Result[Double, String] {
+export fn Json::as_num(j: Json) -> Double with { Error } {
   json_as_num(j)
 }
 
-export fn Json::as_obj(j: Json) -> Result[Map[String, Json], String] {
+export fn Json::as_obj(j: Json) -> Map[String, Json] with { Error } {
   json_as_obj(j)
 }
 
-export fn Json::as_str(j: Json) -> Result[String, String] {
+export fn Json::as_str(j: Json) -> String with { Error } {
   json_as_str(j)
 }
 
-export fn Json::as_bool(j: Json) -> Result[Bool, String] {
+export fn Json::as_bool(j: Json) -> Bool with { Error } {
   json_as_bool(j)
 }
 
-export fn Json::get(j: Json, key: String) -> Result[Json, String] {
+export fn Json::get(j: Json, key: String) -> Json with { Error } {
   match j {
     JObj(m) => if Map::has_key(m, key) {
-      Ok(Map::get(m, key))
-    } else Err("key not found: \{key}"),
-    _ => Err("not an object")
+      Map::get(m, key)
+    } else throw("key not found: \{key}"),
+    _ => throw("not an object")
   }
 }
