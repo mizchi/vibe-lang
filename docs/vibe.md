@@ -164,8 +164,9 @@ suberror AppError {
   Parse(Int);
 }
 
-let fail: () -> Result[Unit, AppError] = () -> {
-  Err(Io("io"))
+// #1324: a suberror is thrown, not returned in a `Result`.
+fn fail() -> Unit with { Exception[AppError] } {
+  throw(Io("io"))
 }
 ```
 

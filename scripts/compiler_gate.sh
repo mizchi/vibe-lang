@@ -3749,6 +3749,10 @@ EOF
 # lowered match interpolates as true/false, not raw 1/0 (the boolish
 # classifier sees through the lift_match_scrutinees `let __m_scrut_N` wrap).
 cat > "$sdir/beq.vibe" <<'EOF'
+enum Res[T, E] {
+  Ok(T);
+  Err(E)
+}
 export let _start: () -> Int = () -> {
   let v1 = if Some([1, 2]) == Some([1, 2]) { 1 } else { 0 }
   let v2 = if Some((1, 2)) == Some((1, 2)) { 20 } else { 0 }

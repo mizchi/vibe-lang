@@ -1,0 +1,58 @@
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// First checker error message for `source`, or "" when it checks clean.
+/// (check_program throws the first collected diagnostic.)
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+//# Misc
+
+// This file replaces `checker_railway_mixing_test.vibe`, which locked the #941
+// Option-vs-Result railway-head diagnostic. #1324 removed `Result` from the
+// language, so `Option` is the only railway monad `?`/`let*` lower to and
+// there is no second head to mix with — the mixing cases it asserted can no
+// longer be spelled with two BUILT-IN monads.
+//
+// What is still worth locking is the Option railway itself: the chains must
+// keep checking clean, and the `#964` shadowing rule must survive.
+
+test "same-monad ? chain on Option checks clean" {
+  let src = "fn find(x: Int) -> Option[Int] { if x < 0 { None } else { Some(x) } }\nfn g(x: Int) -> Option[Int] { let v = find(x)?; let w = find(v + 1)?; Some(w + 1) }\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "same-monad let* chain on Option checks clean" {
+  let src = "fn find(x: Int) -> Option[Int] { if x < 0 { None } else { Some(x) } }\nfn g(x: Int) -> Option[Int] { let* v = find(x)\n  let* w = find(v + 1)\n  Some(w + 1) }\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "let* binds the UNWRAPPED payload, not the Option" {
+  // #1064: `let* v = find(x)` binds `v` to the Int inside `Some`, so a
+  // following arithmetic use must check clean.
+  let src = "fn find(x: Int) -> Option[Int] { if x < 0 { None } else { Some(x) } }\nfn g(x: Int) -> Option[Int] { let* v = find(x)\n  Some(v * 2) }\nfn main() -> Int { match g(3) { Some(v) => v, None => -1 } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "unannotated nested lambda's own return is not compared to the outer fn" {
+  // #964 (Codex P2): `return` targets the NEAREST enclosing function. An
+  // unannotated lambda shadows the `__return__` sentinel (CtUnknown), so its
+  // `return` must NOT be compared against the outer fn's Option[Int].
+  let src = "fn outer(x: Int) -> Option[Int] {\n  let g = (y: Int) -> { return y + 1 }\n  Some(g(x))\n}\nfn main() -> Int { match outer(1) { Some(v) => v, None => -1 } }\n"
+  assert(first_check_error(src) == "")
+}

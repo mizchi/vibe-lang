@@ -162,9 +162,9 @@ let total = loop (i = 10, acc = 0) {
 
 ```vibe
 // Enum
-let from_enum = match Ok(1) {
-  Ok(v) => v,
-  Err(_) => 0,
+let from_enum = match Some(1) {
+  Some(v) => v,
+  None => 0,
 }
 
 // Tuple
@@ -393,14 +393,12 @@ let risky: () -> Int with { Error } = () -> {
   throw(NotFound("missing"))
 }
 
-let lookup_user: (String) -> Result[String, AppError] = (raw) -> {
-  if raw == "" { Err(NotFound("missing")) } else { Ok(raw) }
+// #1324: the failure rides the row; the boundary is a `handle` at the edge.
+fn lookup_user(raw: String) -> String with { Exception[AppError] } {
+  if raw == "" { throw(NotFound("missing")) } else { raw }
 }
 
-let result = match lookup_user("42") {
-  Ok(user) => user,
-  Err(_) => "guest"
-}
+let result = handle { lookup_user("42") } with Error { Throw(_) => "guest" }
 
 let fallback = handle { risky() } with Error { Throw(_) => -1 }
 // => -1
