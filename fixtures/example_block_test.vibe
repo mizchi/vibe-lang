@@ -1,0 +1,49 @@
+// #819: `example "name" { .. }` — a documentation example.
+//
+// An example is compiled and RUN like a test, which is the whole point: the
+// failure mode this form exists to remove is a doc sample that stopped
+// compiling and nobody noticed (README's headline sample did exactly that
+// after #1324 removed `Result`, because "which files are checked" lived in a
+// hardcoded string list in Taskfile.pkl).
+//
+// The block is lowered to STest by the default parse entry points, so every
+// downstream stage (checker, DCE, codegen, the test runner) treats it as a
+// test. The distinction survives only through the *_preserving parse entry
+// points, for LSP hover and doc extraction.
+
+fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+/// Only ever referenced from an `example` block. It must survive DCE: an
+/// example is a DCE root (`dce.vibe` keeps STest unconditionally and collects
+/// references out of its body), so lowering examples to STest is what keeps
+/// an example's supporting declarations alive.
+fn example_only_helper(n: Int) -> Int {
+  n * 3
+}
+
+example "add returns the sum" {
+  let sum = add(1, 2)
+  assert_eq(sum, 3)
+}
+
+example "an example may leave a binding unused" {
+  // Sample code is read, not just executed — an example that had to justify
+  // every binding to a linter would stop reading like an example. Nothing
+  // reports this today (the unused-variable pass in checker_warning.vibe is
+  // not wired into the compile path, and it only ever walked TOP-LEVEL
+  // SLet/SLetMut, never block bodies), and this block is here so that stays
+  // true if it ever is wired up.
+  let shown_for_illustration = 41
+  let used = add(20, 22)
+  assert_eq(used, 42)
+}
+
+example "an example keeps its own helpers alive" {
+  assert_eq(example_only_helper(4), 12)
+}
+
+test "examples and tests coexist in one file" {
+  assert_eq(add(2, 2), 4)
+}

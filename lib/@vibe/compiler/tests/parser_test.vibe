@@ -9,7 +9,7 @@ import @vibe/ast {
 }
 
 import ../parser.vibe {
-  parse_program
+  parse_program, parse_program_preserving
 }
 
 import ./parser_test_support.vibe {
@@ -708,6 +708,61 @@ test "#1283: `guard` is a reserved word, escapable as r#guard" {
   assert(String::starts_with(reserved, "ERROR: "))
   let escaped = handle {
     let _ = parse_program(lex("let r#guard = 1\nr#guard"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(escaped == "ok")
+}
+
+//# #819: example blocks
+
+test "#819: example parses and lowers to a test for every downstream stage" {
+  // The default entry point lowers SExample to STest, so the printed program
+  // is indistinguishable from a test -- that IS the contract: no downstream
+  // pass learns a third block form, and the ~106 STest sites stay untouched.
+  let lowered = handle {
+    print_program(parse_program(lex("example \"adds\" { assert_eq(1 + 1, 2) }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(lowered, "test \"adds\""))
+  assert(!String::contains(lowered, "example \"adds\""))
+}
+
+test "#819: the preserving entry point keeps the example distinguishable" {
+  // Tooling that must tell an example from a test -- LSP hover, doc
+  // extraction -- reads this parse, exactly as the printer/normalize
+  // round-trip reads it to keep `fn` in `fn` form (ADR-0064 #727).
+  let kept = handle {
+    print_program(parse_program_preserving(lex("example \"adds\" { assert_eq(1 + 1, 2) }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(kept, "example \"adds\""))
+}
+
+test "#819: an example needs a name string" {
+  let unnamed = handle {
+    let _ = parse_program(lex("example { assert_eq(1, 1) }"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(unnamed, "ERROR: "))
+  assert(String::contains(unnamed, "example name string"))
+}
+
+test "#819: `example` is a reserved word, escapable as r#example" {
+  let reserved = handle {
+    let _ = parse_program(lex("let example = 1\nexample"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(reserved, "ERROR: "))
+  let escaped = handle {
+    let _ = parse_program(lex("let r#example = 1\nr#example"))
     "ok"
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)

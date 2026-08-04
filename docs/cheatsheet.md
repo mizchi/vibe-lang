@@ -853,18 +853,28 @@ import . { helper }          // own directory's index (same resolution)
 Package refs: `@json`, `@lib/path` (hyphen/slash are part of name after `@`).
 Qualified access: `Type::method`, `Module::name`.
 
-## Tests
+## Tests and Examples
 
 ```vibe
 test "arithmetic" {
   assert_eq(1 + 1, 2)
   assert(eq("a", "a"))
 }
+
+// #819: a documentation example. Compiled and RUN like a test -- a doc sample
+// that stopped compiling is exactly what this form exists to prevent. Lowered
+// to a test by the parser, so every later stage treats it as one (checked,
+// kept alive by DCE, executed); only LSP hover / doc extraction see the
+// difference. Unused bindings inside an example are not reported -- sample
+// code is read, not just executed.
+example "adding two numbers" {
+  assert_eq(add(1, 2), 3)
+}
 ```
 
 ```bash
 vibe test file.vibe
-vibe test dir/            # run all tests in directory
+vibe test dir/            # run all tests in directory (examples run too)
 ```
 
 ## Key Builtins

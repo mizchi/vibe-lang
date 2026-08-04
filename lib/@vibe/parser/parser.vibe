@@ -69,6 +69,22 @@ fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt,
   }
 }
 
+/// #819: `example "name" { .. }` -- a documentation example. Same shape as
+/// `test`, and the default parse entry points lower it to STest so it is
+/// compiled and run by the same machinery (an example that does not compile is
+/// the failure mode this form exists to remove). The separate node survives
+/// only through parse_*_preserving, for LSP hover and doc extraction.
+fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
+  match peek(tokens, pos) {
+    TString(name) => {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
+      (SExample(name, body), end)
+    },
+    _ => throw("expected example name string")
+  }
+}
+
 fn parse_bench_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TString(name) => {
@@ -410,6 +426,7 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
     TType => parse_type_alias_stmt(tokens, pos + 1, false),
     TTrait => parse_trait_stmt(tokens, pos + 1, false),
     TTest => parse_test_stmt(tokens, starts, pos + 1),
+    TExample => parse_example_stmt(tokens, starts, pos + 1),
     TBench => parse_bench_stmt(tokens, starts, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
     // #1280: `fn` lexes as TFn (reserved word), no longer TIdent("fn").
@@ -855,6 +872,7 @@ fn is_recovery_point(t: Token) -> Bool {
     TType => true,
     TTrait => true,
     TTest => true,
+    TExample => true,
     TBench => true,
     TImport => true,
     TImpl => true,
