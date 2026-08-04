@@ -323,53 +323,25 @@ fn arm_body_diverges(body: Expr) -> Bool {
   }
 }
 
-/// #941: the railway monad HEAD of a type — 1 for Option, 2 for Result, 0 for
-/// anything else. `Option[T]` is the builtin `CtOption`; the prelude `Result`
-/// is an injected user-level enum, so a constructed value surfaces as
-/// `CtNamed("Result", args)` (or bare `CtEnum("Result")`). Mixing the two
-/// monads on one railway (`?` / `let*` — docs/cheatsheet.md #635) is documented
-/// as a type error, but `check_assignable` tolerates the pair silently: a
-/// `CtNamed` head is kind 0 in `head_kind` (it may be a rigid type parameter)
-/// and makes `type_no_named` false, so NEITHER report gate fires and the
-/// mismatch sailed through to a runtime `unreachable` trap. The name-based
-/// check below is safe precisely because "Result"/"Option" as heads are the
-/// prelude monads — a rigid type parameter never carries those names.
-fn railway_head(t: Type) -> Int {
-  match t {
-    CtOption(_) => 1,
-    CtEnum(n) => if n == "Result" {
-      2
-    } else if n == "Option" {
-      1
-    } else {
-      0
-    },
-    CtNamed(n, _) => if n == "Result" {
-      2
-    } else if n == "Option" {
-      1
-    } else {
-      0
-    },
-    _ => 0
-  }
-}
+// #1324 removed the #941 `railway_head` / `railway_heads_conflict` pair,
+// which reported an Option-vs-Result head conflict on one railway. `Result`
+// is no longer a language- or prelude-provided type, so `?`/`let*` lower only
+// to `Option` and there is no second built-in monad to conflict with.
+//
+// The mismatch #941 was written for is still reported, just by the ordinary
+// path: a `?` on an `Option` inside a function annotated with a DECLARED
+// two-track enum is caught by `check_assignable` at the desugar's
+// `return None` (measured on `fixtures/try_question_option_test.vibe`:
+// "return type mismatch: expected Result[Int, String], got Option[?]").
+// #941 existed because the PRELUDE-INJECTED `Result` surfaced as a bare
+// `CtNamed` head that `check_assignable` tolerates; with the injection gone
+// the enum is an ordinary declared type and the ordinary gate fires.
 
-/// #941: true when `expected` and `actual` sit on DIFFERENT railway monads
-/// (one Option-headed, the other Result-headed). No instantiation of inner
-/// type parameters can ever reconcile the two heads, so this is a genuine
-/// mismatch even though both types mention type variables / named params.
-fn railway_heads_conflict(expected: Type, actual: Type) -> Bool {
-  let he = railway_head(expected)
-  let ha = railway_head(actual)
-  he != 0 && ha != 0 && he != ha
-}
-
-/// #941: best-effort source anchor for a (possibly desugar-generated) expr —
-/// the first real char offset found walking into the value position, or -1.
-/// The railway desugar (#635) threads the `?`/`let*` operand's offset into its
-/// generated `Err(..)`/`None` failure-track nodes, so the mixing diagnostics
-/// below locate at the offending operand.
+/// Best-effort source anchor for a (possibly desugar-generated) expr — the
+/// first real char offset found walking into the value position, or -1. The
+/// railway desugar (#635) threads the `?`/`let*` operand's offset into its
+/// generated `None` failure-track nodes, so a diagnostic on desugar output
+/// still locates at the offending operand.
 fn railway_expr_off(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
@@ -965,7 +937,7 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
 /// #1001: the type's outer constructor's nominal name, when it is one that can
 /// NEVER be a placeholder for a still-unresolved rigid type parameter --
 /// `CtOption` (the builtin `Option[T]`; `Option` written as an annotation
-/// resolves to this, not `CtNamed("Option", _)` -- see `railway_head` above)
+/// resolves to this, not `CtNamed("Option", _)`)
 /// and `CtEnum`/`CtStruct` (a RESOLVED reference to a declared enum/struct,
 /// always concrete) are unconditionally trustworthy. A bare `CtNamed(n, _)`
 /// is ambiguous -- it is ALSO how an uninstantiated generic type parameter
@@ -5179,7 +5151,6 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         // exactly the `let*` desugar's failure track (`Err(e)` / `None`)
         // yielding the WRONG monad into a match whose other arms yield the
         // function's annotated one (docs/cheatsheet.md #635).
-        let mut railway_arms = false
         let mut si = s1
         let mut ci = c1
         let mut ai = 0
@@ -5220,7 +5191,6 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
               CtChar => true,
               _ => false
             }
-            railway_arms = railway_head(r0) != 0
           } else {
             if check_arms {
               // Tolerate a `CtUnit` arm (statement-position match); rely on
@@ -5236,22 +5206,6 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
                 match r2 {
                   CtUnit => si,
                   _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
-                }
-              }
-            } else if railway_arms {
-              // #941: report ONLY the Option⇔Result head conflict; every
-              // other shape keeps the historical no-cross-check tolerance.
-              // Diverging (early-`return`) arms yield no value to the match
-              // and are checked at their own EReturn instead.
-              if arm_body_diverges(body) {
-                ()
-              } else {
-                let rr0 = subst_apply(si, result_ty)
-                let rr2 = subst_apply(si, arm_ty)
-                if railway_heads_conflict(rr0, rr2) {
-                  Array::push(errors, String::concat("match arms have incompatible types", String::concat(": expected ", String::concat(type_to_string(rr0), String::concat(", got ", String::concat(type_to_string(rr2), off_marker(railway_expr_off(scrutinee))))))))
-                } else {
-                  ()
                 }
               }
             } else {
@@ -6346,18 +6300,8 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         Some(rt) => {
           let rte = subst_apply(s1, rt)
           let ate = subst_apply(s1, et)
-          // #941: an Option⇔Result railway-head conflict is a genuine
-          // mismatch, but check_assignable tolerates it (a `CtNamed` head is
-          // neither reportable nor a differing head_kind). Report it directly
-          // — this is exactly the `?`-desugar's early `return Err(e)` /
-          // `return None` escaping a function annotated with the OTHER monad
-          // (docs/cheatsheet.md #635: mixing is a type error).
-          if railway_heads_conflict(rte, ate) {
-            Array::push(errors, String::concat("return type mismatch", String::concat(": expected ", String::concat(type_to_string(rte), String::concat(", got ", String::concat(type_to_string(ate), off_marker(railway_expr_off(e))))))))
-          } else {
-            let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", 0 - 1)
-            ()
-          }
+          let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", 0 - 1)
+          ()
         },
         None => ()
       }

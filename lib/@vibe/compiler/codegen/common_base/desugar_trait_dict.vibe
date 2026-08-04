@@ -346,442 +346,13 @@ export fn inject_trait_method_generics(stmts: Array[Stmt]) -> Unit {
   inject_trait_method_generics_with(stmts, traits)
 }
 
-/// #760(2): `Result` is not a built-in type constructor (unlike Option/CtOption);
-/// it is the ordinary user enum `enum Result[T, E] { Ok(T); Err(E) }` (see
-/// vibe/prelude/result.vibe). A standalone program that neither declares nor
-/// imports it gets `unknown name: Ok` / `Err` / `Result::Ok`. This appends that
-/// enum declaration to the program UNLESS a `Result` type (or an `Ok`/`Err`
-/// constructor) is already in scope — user-declared, or imported and merged in as
-/// a statement. All the existing user-enum machinery (ctor resolution, pattern
-/// match, exhaustiveness, codegen ctor construction) then applies with no
-/// type-system changes. Type declarations are hoisted, so appending is order-safe.
-/// In-place + idempotent + inert when Result is already present. Shared by
-/// `desugar_trait_dicts` (pre-codegen) and `check_program` (the FS-compile path
-/// type-checks before the codegen desugar runs), which both re-parse the merged
-/// program, so each independently appends the SAME deterministic declaration.
-/// #760(2): does the program actually reference `Result` / `Ok` / `Err`? The
-/// prelude injection is gated on this so a program that never mentions Result
-/// gets NO injected enum — otherwise every binary would carry (and #cov would
-/// instrument) a dead `Ok`/`Err` ctor. Covers construction (`Ok`/`Err`/
-/// `Result::Ok`/`Result::Err` value references), pattern matches (`Ok(..)` /
-/// `Err(..)` arms), and `Result[..]` type annotations.
-fn is_result_ctor_name(s: String) -> Bool {
-  s == "Ok" || s == "Err" || s == "Result::Ok" || s == "Result::Err"
-}
-
-fn ty_mentions_result(te: TypeExpr) -> Bool {
-  match te {
-    TyName(n) => n == "Result",
-    TyApp(n, args) => if n == "Result" {
-      true
-    } else {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(args) {
-        if ty_mentions_result(Array::get(args, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    TyFn(params, ret, _) => {
-      let mut found = ty_mentions_result(ret)
-      let mut i = 0
-      while i < Array::length(params) {
-        if ty_mentions_result(Array::get(params, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    TyTuple(elems) => {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(elems) {
-        if ty_mentions_result(Array::get(elems, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    TyUnit => false
-  }
-}
-
-fn opt_ty_mentions_result(o: Option[TypeExpr]) -> Bool {
-  match o {
-    Some(t) => ty_mentions_result(t),
-    None => false
-  }
-}
-
-fn pat_mentions_result(p: Pat) -> Bool {
-  match p {
-    PCtor(name, sub) => if is_result_ctor_name(name) {
-      true
-    } else {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(sub) {
-        if pat_mentions_result(Array::get(sub, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    PStruct(name, fields) => if is_result_ctor_name(name) || name == "Result" {
-      true
-    } else {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        if pat_mentions_result(fp) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    PTuple(sub) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(sub) {
-        if pat_mentions_result(Array::get(sub, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    POr(a, b) => pat_mentions_result(a) || pat_mentions_result(b),
-    _ => false
-  }
-}
-
-/// Recurse into an array of exprs (inlined, like collect_strings_expr — a `let
-/// rec` cannot forward-reference a plain `let` helper defined later).
-fn expr_mentions_result(e: Expr) -> Bool {
-  match e {
-    EIdent(n, _) => is_result_ctor_name(n) || n == "Result",
-    ETuple(elems) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(elems) {
-        if expr_mentions_result(Array::get(elems, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EArray(elems) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(elems) {
-        if expr_mentions_result(Array::get(elems, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    ERecord(_, fields, _) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(fields) {
-        let (_, v) = Array::get(fields, i)
-        if expr_mentions_result(v) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EMap(fields) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(fields) {
-        let (_, v) = Array::get(fields, i)
-        if expr_mentions_result(v) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EIf(c, t, el) => expr_mentions_result(c) || expr_mentions_result(t) || expr_mentions_result(el),
-    ELet(_, v, b, _) => expr_mentions_result(v) || expr_mentions_result(b),
-    ELetRec(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
-    ELetMut(_, v, b, _) => expr_mentions_result(v) || expr_mentions_result(b),
-    EAssign(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
-    EAssignOp(_, _, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
-    ESeq(a, b) => expr_mentions_result(a) || expr_mentions_result(b),
-    EMatch(scrut, arms) => {
-      let mut found = expr_mentions_result(scrut)
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (p, b) = Array::get(arms, i)
-        if pat_mentions_result(p) || expr_mentions_result(b) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EHandle(scrut, arms) => {
-      let mut found = expr_mentions_result(scrut)
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (p, b) = Array::get(arms, i)
-        if pat_mentions_result(p) || expr_mentions_result(b) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EWhile(c, b) => expr_mentions_result(c) || expr_mentions_result(b),
-    ELoop(params, body) => {
-      let mut found = expr_mentions_result(body)
-      let mut i = 0
-      while i < Array::length(params) {
-        let (_, v) = Array::get(params, i)
-        if expr_mentions_result(v) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EForIn(_, _, it, body) => expr_mentions_result(it) || expr_mentions_result(body),
-    ECall(callee, args, _) => {
-      let mut found = expr_mentions_result(callee)
-      let mut i = 0
-      while i < Array::length(args) {
-        if expr_mentions_result(Array::get(args, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EBinOp(_, l, r) => expr_mentions_result(l) || expr_mentions_result(r),
-    EUnaryOp(_, x) => expr_mentions_result(x),
-    EFn(_, _, params, ret, _, body) => {
-      let mut found = opt_ty_mentions_result(ret) || expr_mentions_result(body)
-      let mut i = 0
-      while i < Array::length(params) {
-        let (_, ann) = Array::get(params, i)
-        if opt_ty_mentions_result(ann) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    EDot(o, _, _, _) => expr_mentions_result(o),
-    ELabeledArg(_, _, v) => expr_mentions_result(v),
-    EReturn(x) => expr_mentions_result(x),
-    EBreak(o) => match o {
-      Some(x) => expr_mentions_result(x),
-      None => false
-    },
-    EContinue(xs) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(xs) {
-        if expr_mentions_result(Array::get(xs, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    ESpread(x) => expr_mentions_result(x),
-    _ => false
-  }
-}
-
-fn stmt_mentions_result(s: Stmt) -> Bool {
-  match s {
-    SLet(_, _, _, ann, v) => opt_ty_mentions_result(ann) || expr_mentions_result(v),
-    SLetMut(_, ann, v) => opt_ty_mentions_result(ann) || expr_mentions_result(v),
-    STest(_, b) => expr_mentions_result(b),
-    SBench(_, b) => expr_mentions_result(b),
-    SExpr(e) => expr_mentions_result(e),
-    SLetPat(p, e) => pat_mentions_result(p) || expr_mentions_result(e),
-    SExternLet(_, te) => ty_mentions_result(te),
-    STypeAlias(_, _, _, te) => ty_mentions_result(te),
-    SStruct(_, _, fields, _, _, _) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(fields) {
-        let (_, te) = Array::get(fields, i)
-        if ty_mentions_result(te) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    SModule(_, _, body) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(body) {
-        if stmt_mentions_result(Array::get(body, i)) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
-    },
-    _ => false
-  }
-}
-
-fn program_mentions_result(stmts: Array[Stmt]) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(stmts) {
-    if stmt_mentions_result(Array::get(stmts, i)) {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-fn result_already_present(stmts: Array[Stmt]) -> Bool {
-  let mut present = false
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEnum(_, name, _, variants, _) => {
-        if name == "Result" {
-          present = true
-        } else {
-          ()
-        }
-        let mut vi = 0
-        while vi < Array::length(variants) {
-          let (vn, _) = Array::get(variants, vi)
-          if vn == "Ok" || vn == "Err" {
-            present = true
-          } else {
-            ()
-          }
-          vi = vi + 1
-        }
-      },
-      SStruct(_, name, _, _, _, _) => if name == "Result" {
-        present = true
-      } else {
-        ()
-      },
-      STypeAlias(_, name, _, _) => if name == "Result" {
-        present = true
-      } else {
-        ()
-      },
-      // An imported / re-exported `Result` (or `Ok`/`Err`) — e.g.
-      // `import ../prelude/result.vibe { Result }`. Without this the per-file
-      // checker path (which sees the import but not the merged enum declaration)
-      // would inject a SECOND, nominally-distinct `Result`, so a value of the
-      // imported type would not unify with the injected one (`type mismatch in
-      // '=='`). Treat the imported name as already-present.
-      SImport(_, names) => {
-        let mut ni = 0
-        while ni < Array::length(names) {
-          let (nm, _) = Array::get(names, ni)
-          if nm == "Result" || nm == "Ok" || nm == "Err" {
-            present = true
-          } else {
-            ()
-          }
-          ni = ni + 1
-        }
-      },
-      SReExport(_, names) => {
-        let mut ni = 0
-        while ni < Array::length(names) {
-          let (nm, _) = Array::get(names, ni)
-          if nm == "Result" || nm == "Ok" || nm == "Err" {
-            present = true
-          } else {
-            ()
-          }
-          ni = ni + 1
-        }
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  present
-}
-
-export fn inject_prelude_result(stmts: Array[Stmt]) -> Unit {
-  if result_already_present(stmts) || !program_mentions_result(stmts) {
-    ()
-  } else {
-    let variants = [
-      ("Ok", [
-        TyName("T")
-      ]),
-      ("Err", [
-        TyName("E")
-      ])
-    ]
-    let params = [
-      "T",
-      "E"
-    ]
-    Array::push(stmts, SEnum(false, "Result", params, variants, empty_str_array()))
-  }
-}
+// #1324 removed the #760(2) `inject_prelude_result` pass (and its
+// `*_mentions_result` walkers). `Result` was never a built-in type
+// constructor -- it was the ordinary user enum `enum Result[T, E] { Ok(T);
+// Err(E) }`, appended here to any program that mentioned `Ok`/`Err`/
+// `Result[..]` and did not declare or import its own. With the prelude
+// definition gone (slice 4) and `Exception[E]` rows carrying failure
+// instead, a program that wants that enum now declares it like any other.
 
 //# #1374: the runtime exception-kind side channel
 //
@@ -2868,82 +2439,36 @@ fn railway_val_off(e: Expr) -> Int {
   }
 }
 
-/// #635: lower the `let* name = val <rest>` sentinel by `val`'s head type.
-/// Option -> `match val { Some(name) => rest, None => None }`; else (Result, or
-/// undeterminable -> default Result, today's behavior) the railway Result match
-/// `match val { Ok(name) => rest, Err(__bind_err) => Err(__bind_err) }`.
-fn lower_try_bind(val: Expr, name: String, rest: Expr, inferred: Option[String]) -> Expr {
+/// #635/#1324: lower the `let* name = val <rest>` sentinel to the Option
+/// railway — `match val { Some(name) => rest, None => None }`.
+///
+/// `Result` used to be the OTHER railway monad (and the default when this
+/// pass could not name `val`'s type), but #1324 removed it from the language,
+/// leaving `Option` as the only short-circuit monad — so the lowering no
+/// longer needs to type-direct at all. A scrutinee that is not an `Option`
+/// is reported by the checker's ordinary unification against these arms.
+fn lower_try_bind(val: Expr, name: String, rest: Expr) -> Expr {
   let voff = railway_val_off(val)
-  match inferred {
-    Some(tn) => if tn == "Option" {
-      EMatch(val, [
-        (PCtor("Some", [
-          PBind(name)
-        ]), rest),
-        (PCtor("None", array_empty()), EIdent("None", voff))
-      ])
-    } else {
-      EMatch(val, [
-        (PCtor("Ok", [
-          PBind(name)
-        ]), rest),
-        (PCtor("Err", [
-          PBind("__bind_err")
-        ]), ECall(EIdent("Err", voff), [
-          EIdent("__bind_err", -1)
-        ], voff))
-      ])
-    },
-    None => EMatch(val, [
-      (PCtor("Ok", [
-        PBind(name)
-      ]), rest),
-      (PCtor("Err", [
-        PBind("__bind_err")
-      ]), ECall(EIdent("Err", voff), [
-        EIdent("__bind_err", -1)
-      ], voff))
-    ])
-  }
+  EMatch(val, [
+    (PCtor("Some", [
+      PBind(name)
+    ]), rest),
+    (PCtor("None", array_empty()), EIdent("None", voff))
+  ])
 }
 
-/// #635: lower the `val?` sentinel by `val`'s head type. Option -> yield the
-/// inner value on `Some`, early-`return None` on `None`. Else (Result, or
-/// undeterminable -> default Result) -> yield on `Ok`, early-`return Err(e)` on
-/// `Err`. Uses `EReturn`, so the enclosing function short-circuits.
-fn lower_try_op(val: Expr, inferred: Option[String]) -> Expr {
+/// #635/#1324: lower the `val?` sentinel to the Option railway — yield the
+/// inner value on `Some`, early-`return None` on `None`. Uses `EReturn`, so
+/// the enclosing function short-circuits. See `lower_try_bind` for why
+/// `Option` is now the only monad this lowers to.
+fn lower_try_op(val: Expr) -> Expr {
   let voff = railway_val_off(val)
-  match inferred {
-    Some(tn) => if tn == "Option" {
-      EMatch(val, [
-        (PCtor("Some", [
-          PBind("__try_v")
-        ]), EIdent("__try_v", -1)),
-        (PCtor("None", array_empty()), EReturn(EIdent("None", voff)))
-      ])
-    } else {
-      EMatch(val, [
-        (PCtor("Ok", [
-          PBind("__try_v")
-        ]), EIdent("__try_v", -1)),
-        (PCtor("Err", [
-          PBind("__try_e")
-        ]), EReturn(ECall(EIdent("Err", voff), [
-          EIdent("__try_e", -1)
-        ], voff)))
-      ])
-    },
-    None => EMatch(val, [
-      (PCtor("Ok", [
-        PBind("__try_v")
-      ]), EIdent("__try_v", -1)),
-      (PCtor("Err", [
-        PBind("__try_e")
-      ]), EReturn(ECall(EIdent("Err", voff), [
-        EIdent("__try_e", -1)
-      ], voff)))
-    ])
-  }
+  EMatch(val, [
+    (PCtor("Some", [
+      PBind("__try_v")
+    ]), EIdent("__try_v", -1)),
+    (PCtor("None", array_empty()), EReturn(EIdent("None", voff)))
+  ])
 }
 
 /// #635: standalone railway-sentinel lowering. Walks an expr and rewrites only
@@ -2963,7 +2488,6 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
           EFn(_, _, ps, _, _, rest) => {
             let (name, _) = Array::get(ps, 0)
             let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
-            let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
             // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
             // field), never to a value of `inferred`'s own type (the
             // wrapper "Option"/"Result" of `val`) -- recording name ->
@@ -2982,14 +2506,14 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
             // which keeps the plain scalar `==`/`!=` codegen path.
             let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
             let rwrest = railway_rw(rest, struct_sets, body_vars, fn_returns)
-            lower_try_bind(rwval, name, rwrest, inferred)
+            lower_try_bind(rwval, name, rwrest)
           },
           _ => EUnit
         }
       } else if k == 1 {
         let val = Array::get(args, 0)
         let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
-        lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+        lower_try_op(rwval)
       } else {
         let rwargs = for a in args {
           railway_rw(a, struct_sets, var_types, fn_returns)
@@ -3287,8 +2811,8 @@ fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(String,
 //
 // Trusting that head for a MATCH (rather than just for picking a function
 // name, as slice 1 does) is the one new risk here, and it is the same bet the
-// railway lowering already makes: `lower_try_bind` picks Option-vs-Result
-// codegen for every `?`/`let*` in the language from this exact predicate.
+// railway lowering used to make: before #1324 `lower_try_bind` picked
+// Option-vs-Result codegen for every `?`/`let*` from this exact predicate.
 //
 // Elements are rendered by re-entering `rewrite_expr` on a synthetic
 // `__to_string(sub)`, so slice 1 and this slice both apply recursively
@@ -3470,7 +2994,6 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
           EFn(_, _, ps, _, _, rest) => {
             let (name, _) = Array::get(ps, 0)
             let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-            let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
             // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
             // field), never to a value of `inferred`'s own type (the
             // wrapper "Option"/"Result" of `val`) -- recording name ->
@@ -3489,7 +3012,7 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
             // which keeps the plain scalar `==`/`!=` codegen path.
             let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
             let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
-            lower_try_bind(rwval, name, rwrest, inferred)
+            lower_try_bind(rwval, name, rwrest)
           },
           _ => EUnit
         }
@@ -3497,7 +3020,7 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // __try_op(val)
         let val = Array::get(args, 0)
         let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-        lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+        lower_try_op(rwval)
       } else if interp_has_repl(interp_repl) {
         // #1392: the interpolation of a value this pass can render.
         interp_take_repl(interp_repl)
@@ -8276,10 +7799,6 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with { Error } {
   // Labeled-argument reordering runs first so downstream passes and codegen see
   // args already in declared parameter order.
   desugar_labeled_args(stmts)
-  // #760(2): make `Result` (Ok/Err) available standalone by appending its enum
-  // declaration when neither declared nor imported. Runs first so the ctor table
-  // and every downstream pass see it. Idempotent + inert when already present.
-  inject_prelude_result(stmts)
   // derive(...) structural function generation (#638) — independent of traits,
   // idempotent, so it runs unconditionally here at the shared pre-check points.
   // #1398 review (Codex P1): reset before desugar_derives repopulates it, so

@@ -565,35 +565,26 @@ handle { fetch_user(input) } with Exception[String] {
 }
 ```
 
-> **status (#760 / #1324):** `Result` (`Ok`/`Err`, `Result::Ok`/`Result::Err`,
-> `Result[T, E]`) は今も standalone で使える — その名前に言及していて自分で
-> 宣言も import もしていないプログラムには、コンパイラが
-> `enum Result[T, E] { Ok(T); Err(E) }` を auto-provide する。自分で宣言/import
-> すればそちらが優先される。ただし **#1324 で prelude の `result.vibe` は削除
-> された** ので、`Result::and_then` / `Result::map_ok` などの combinator と
-> `tap_ok` / `tap_err` はもう存在しない。`Option` (`Some`/`None`) は
-> first-class builtin で無変更。`let*`/`?` の railway は `Result`・`Option`
-> どちらでも従来どおり動く。
+> **status (#1324):** `Result` は**言語からも prelude からも無くなった**。
+> slice 4 で `result.vibe` (型と combinator) を削除し、slice 5 で #760(2) の
+> auto-injection (`inject_prelude_result`) を撤去した。`Ok`/`Err` が要るなら
+> **自分で `enum Result[T, E] { Ok(T); Err(E) }` を宣言する** — 特別扱いは
+> 一切なく、ただのユーザー enum になる。失敗は `Exception[E]` row で運ぶのが
+> 標準の形 (ADR-0085)。`Option` (`Some`/`None`) は first-class builtin で
+> 無変更。
 
-### Railway bind (`let*`) — `Result` and `Option` (#635)
+### Railway bind (`let*`) — `Option` (#635 / #1324)
 
 `let* x = e` unwraps the success case and binds `x`, or short-circuits the whole
 block with the failure case. The lowering is **type-directed by `e`'s type**:
 
-- `e: Result[T, E]` → `match e { Ok(x) => <rest>, Err(e) => Err(e) }`
-- `e: Option[T]`    → `match e { Some(x) => <rest>, None => None }`
+- `e: Option[T]` → `match e { Some(x) => <rest>, None => None }`
 
-so the enclosing function must return the matching `Result`/`Option`. Handy when
-stages need names instead of point-free `and_then`:
+so the enclosing function must return an `Option`. Handy when stages need
+names:
 
-<!-- doctest-skip: 直前 block の定義 (parse_id 等) に依存する断片 (将来の `vibe continue` 候補) -->
+<!-- doctest-skip: 直前 block の定義 (half 等) に依存する断片 (将来の `vibe continue` 候補) -->
 ```vibe skip
-let fetch_user: (String) -> Result[String, String] = (raw) -> {
-  let* id    = parse_id(raw)       // Err short-circuits the block
-  let* valid = validate_id(id)
-  load_user(valid)                 // last expr is the block's Result
-}
-
 let pair: (Int, Int) -> Option[Int] = (a, b) -> {
   let* x = half(a)                 // None short-circuits the block
   let* y = half(b)
@@ -601,17 +592,18 @@ let pair: (Int, Int) -> Option[Int] = (a, b) -> {
 }
 ```
 
-**Adopted scope (#635, "option 1: built-in set extension"):** `let*`/`?` are
-generalized to the compiler's built-in short-circuit set — `Result` and
-`Option` — *only*. A user-extensible `Try`/`Bind` trait (option 2) is **deferred**
-(it depends on method-bearing traits). **No implicit conversion** between the two:
-a block returns one type, so mixing `Result` and `Option` in one `let*`/`?` chain
-is a type error (e.g. `return type mismatch: expected Option[Int], got
-Result[Int, String]`). Type direction is **best-effort syntactic inference** on
-the operand's head type (a function's declared return head, a local binding's
-inferred type, a constructor's enum); when **undeterminable, it defaults to
-`Result`** (the historical behavior) — so annotate the operand's source (e.g. a
-function return type) if a borderline `Option` case is misread as `Result`.
+**Adopted scope (#635, narrowed by #1324):** `let*`/`?` lower to **`Option`
+only**. They used to type-direct between `Option` and `Result`, defaulting to
+`Result` when the operand's head type was undeterminable; #1324 removed
+`Result` from the language, so there is nothing to direct between and no
+default to get wrong. A user-extensible `Try`/`Bind` trait (option 2) is
+**deferred** (it depends on method-bearing traits).
+
+Using `let*`/`?` on something that is not an `Option` is a type error — the
+short-circuit arm is `None`, so it is reported where that value meets the
+enclosing function's return type (e.g. `return type mismatch: expected
+Result[Int, String], got Option[?]` for a `?` inside a function returning a
+hand-declared `Result`).
 
 ### Debugging a pipeline (`tap`)
 
@@ -696,23 +688,15 @@ let n = handle { read_cfg() } with Exception[IoError] { Throw(_e) => 0 }
 
 詳細と v1 の限界: [exception-effect.md](exception-effect.md)。
 
-### Railway try (`?`) — `Result` and `Option` (#635)
+### Railway try (`?`) — `Option` (#635 / #1324)
 
-`e?` unwraps the success case and yields the inner value, or **early-`return`s**
-the failure case from the enclosing function. Like `let*`, the lowering is
-**type-directed by `e`'s type**:
+`e?` unwraps `Some` and yields the inner value, or **early-`return`s** `None`
+from the enclosing function:
 
-- `e: Result[T, E]` → `match e { Ok(v) => v, Err(err) => return Err(err) }`
-- `e: Option[T]`    → `match e { Some(v) => v, None => return None }`
+- `e: Option[T]` → `match e { Some(v) => v, None => return None }`
 
-<!-- doctest-skip: 未定義名 (checked / half) を参照する断片 (前セクション依存) -->
+<!-- doctest-skip: 未定義名 (half) を参照する断片 (前セクション依存) -->
 ```vibe skip
-let sum_checked: (Int, Int) -> Result[Int, String] = (a, b) -> {
-  let x = checked(a)?              // Err early-returns from sum_checked
-  let y = checked(b)?
-  Ok(x + y)
-}
-
 let sum_halves: (Int, Int) -> Option[Int] = (a, b) -> {
   let x = half(a)?                 // None early-returns from sum_halves
   let y = half(b)?
@@ -720,10 +704,8 @@ let sum_halves: (Int, Int) -> Option[Int] = (a, b) -> {
 }
 ```
 
-Same adopted scope as `let*` above: built-in `Result`/`Option` only, no implicit
-conversion, best-effort type direction defaulting to `Result` when
-undeterminable. (The deferred `Try` trait — option 2 — would let user types opt
-in; it is not implemented.)
+Same adopted scope as `let*` above: `Option` only. (The deferred `Try` trait —
+option 2 — would let user types opt in; it is not implemented.)
 
 ### suberror (typed errors)
 

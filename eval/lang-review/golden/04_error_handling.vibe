@@ -1,8 +1,11 @@
 import ../../../lib/@vibe/prelude { stdout_write }
 
-fn parse_int(s: String) -> Result[Int, String] {
+// #1324: failure is carried by the effect row, not a `Result` return. The
+// success value flows straight through, so stages chain without `and_then`
+// and without a per-call `match`.
+fn parse_int(s: String) -> Int with { Exception[String] } {
   let n = String::length(s)
-  if n == 0 { return Err("invalid int: \{s}") }
+  if n == 0 { throw("invalid int: \{s}") }
   let mut i = 0
   let mut acc = 0
   let mut ok = true
@@ -15,27 +18,29 @@ fn parse_int(s: String) -> Result[Int, String] {
     }
     i = i + 1
   }
-  if ok { Ok(acc) } else { Err("invalid int: \{s}") }
+  if ok { acc } else { throw("invalid int: \{s}") }
 }
 
-// `?` railway: Err early-returns from the enclosing function
-fn parse_doubled(s: String) -> Result[Int, String] {
-  let v = parse_int(s)?
-  Ok(v * 2)
+// The failure propagates on its own — no `?` and no early-return spelling.
+fn parse_doubled(s: String) -> Int with { Exception[String] } {
+  parse_int(s) * 2
 }
 
 fn report(s: String) -> String {
-  match parse_int(s) {
-    Ok(v) => "parsed: \{v}",
-    Err(e) => "error: \{e}",
+  handle {
+    "parsed: \{parse_int(s)}"
+  } with Exception[String] {
+    Throw(e) => "error: \{e}"
   }
 }
 
 let main: () -> Unit with { Stdout } = () -> {
   stdout_write("\{report("42")}\n")
   stdout_write("\{report("abc")}\n")
-  match parse_doubled("21") {
-    Ok(v) => stdout_write("doubled: \{v}\n"),
-    Err(e) => stdout_write("error: \{e}\n"),
+  let doubled = handle {
+    "doubled: \{parse_doubled("21")}"
+  } with Exception[String] {
+    Throw(e) => "error: \{e}"
   }
+  stdout_write("\{doubled}\n")
 }

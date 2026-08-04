@@ -1,16 +1,8 @@
-// #635: `let*` generalized to Option (and Result unchanged).
+// #635/#1324: `let*` is the Option railway.
 //
-// `Option` is a builtin (Some/None); `Result` is the standard enum (here
-// declared locally so the fixture is self-contained, mirroring the prelude
-// `enum Result[T, E] { Ok(T); Err(E) }`).
-//
-// The lowering is type-directed by the operand's return-type head, picked in
-// the pre-check railway desugar: `Option` -> `match { Some(x) => rest, None =>
-// None }`; `Result` (or undeterminable) -> the railway Result match.
-enum Result[T, E] {
-  Ok(T);
-  Err(E)
-}
+// `Option` is a builtin (Some/None). #1324 removed `Result` from the language,
+// so `let*` no longer type-directs between two monads — it always lowers to
+// `match { Some(x) => rest, None => None }`.
 
 // Option railway: `let* x = opt` unwraps `Some`, short-circuits the block with
 // `None`.
@@ -21,16 +13,6 @@ let chain_opt = (a: Int, b: Int) -> Option[Int] {
   let* x = half(a)
   let* y = half(b)
   Some(x + y)
-}
-
-// Result railway must keep working unchanged.
-let checked = (n: Int) -> Result[Int, String] {
-  if n >= 0 { Ok(n) } else { Err("neg") }
-}
-let chain_res = (a: Int, b: Int) -> Result[Int, String] {
-  let* x = checked(a)
-  let* y = checked(b)
-  Ok(x + y)
 }
 
 test "let* on Option: all Some" {
@@ -47,17 +29,5 @@ test "let* on Option: short-circuits to None" {
   match chain_opt(7, 4) {
     Some(_) => assert_eq(1, 2),
     None => assert_eq(0, 0)
-  }
-}
-test "let* on Result still works (Ok)" {
-  match chain_res(2, 3) {
-    Ok(v) => assert_eq(v, 5),
-    Err(_) => assert_eq(1, 2)
-  }
-}
-test "let* on Result still works (Err short-circuit)" {
-  match chain_res(2, 0 - 1) {
-    Ok(_) => assert_eq(1, 2),
-    Err(e) => assert_eq(e, "neg")
   }
 }
