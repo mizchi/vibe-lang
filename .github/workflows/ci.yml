@@ -137,6 +137,81 @@ jobs:
       - name: vibe-fmt lint
         run: bash scripts/check_vibe_fmt.sh
 
+  # wasm-gc lane gate (#1332). The gc backend's native-array lowering is the
+  # one path whose failure mode is a module that does not VALIDATE, and it was
+  # invisible to every other job: #1329's work sat un-merged for days because
+  # nothing checked it, and #1427's `_start` type mismatch shipped to main for
+  # the same reason. scripts/test_gc_heap_accounting.sh is that check.
+  #
+  # It runs as its OWN parallel job rather than a step inside compiler-gate:
+  # it needs two things no other job wants — `wasm-tools` (for independent
+  # Wasm-GC validation) and a release `viberun` (for the vibe::mem bump-heap
+  # telemetry the allocation assertion reads). Both are installed HERE, so the
+  # global setup and the critical path stay untouched. Job wall is ~2 min cold
+  # / well under 1 min with both caches warm, against a ~4 min critical path
+  # (the smoke matrix), so this adds no bottleneck.
+  #
+  # Only node is required to drive the compile: run_wasm_vibe_host_runner.sh
+  # is node-only, and viberun embeds wasmtime as a crate — no wasmtime binary.
+  gc-gate:
+    name: gc-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install wasm-tools (this job only)
+        # Same pinned version and prebuilt-first/cargo-fallback shape as the
+        # wasi-p3 job's toolchain step, kept local to this job so no other
+        # job pays for it.
+        env:
+          WASM_TOOLS_VERSION: "1.253.0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/gc-tools"
+          if curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz; then
+            cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/gc-tools/"
+          else
+            cargo install wasm-tools --locked --version "$WASM_TOOLS_VERSION" --root "$PWD/gc-tools-cargo"
+            cp "$PWD/gc-tools-cargo/bin/wasm-tools" "$PWD/gc-tools/"
+          fi
+          echo "$PWD/gc-tools" >> "$GITHUB_PATH"
+      - name: Cache stage2 (keyed on seed + flat module source)
+        # Same key shape as the unit-test shards: stage2 is a deterministic
+        # function of (seed, committed flat module source, runner).
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_gc_gen
+          key: stage2gc-v1-${{ hashFiles('bootstrap/seed.json', 'lib/@vibe/compiler/_cli_adapter_module_source.vibe', 'scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 from committed flat module source
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe             bash scripts/generations.sh build --out-dir _build/_ci_gc_gen
+      - name: Cache viberun build
+        # test_gc_heap_accounting.sh rebuilds viberun only when its sources are
+        # newer than the binary, so a warm cache turns the ~80s release build
+        # into a no-op.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/viberun/target
+          key: viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          restore-keys: |
+            viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+      - name: wasm-gc heap accounting + validation
+        run: bash scripts/test_gc_heap_accounting.sh "$PWD/_build/_ci_gc_gen/stage2.wasm"
+
   # The 467-file selfhost unit-test battery (#531/#535), weight-balanced into
   # parallel shards (scripts/unit_test_weights.tsv drives the LPT partition
   # inside unit_test_runner.sh). Each shard builds its own stage2 from the
@@ -335,7 +410,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, unit-tests, vibe-fmt-check]
+    needs: [compiler-gate, unit-tests, vibe-fmt-check, gc-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -351,6 +426,10 @@ jobs:
           fi
           if [ "${{ needs.vibe-fmt-check.result }}" != "success" ]; then
             echo "::error::vibe-fmt-check did not succeed (${{ needs.vibe-fmt-check.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.gc-gate.result }}" != "success" ]; then
+            echo "::error::gc-gate did not succeed (${{ needs.gc-gate.result }})"
             exit 1
           fi
           echo "all required jobs passed"

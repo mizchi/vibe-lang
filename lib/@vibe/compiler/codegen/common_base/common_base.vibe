@@ -830,7 +830,24 @@ export struct CompileCtxGc {
   // every typed local, including one that only existed in a branch.
   gc_native_array_locals: Array[Int];
   gc_native_array_local_types: Array[Int];
+  /// The MODULE's native i64-array type index, or -1 if this compile has none.
+  /// A property of the module, never of the frame -- see
+  /// gc_native_array_frame_ok for the per-frame half.
   gc_native_array_type_idx: Int;
+  /// Whether THIS frame's own locals may hold a native array reference.
+  ///
+  /// These two facts used to share the `gc_native_array_type_idx >= 0`
+  /// sentinel, which conflated "the module has no array type" with "this
+  /// particular body cannot declare typed locals". That conflation leaked:
+  /// `_start` sets the frame half false (its slots are shared across every
+  /// module initializer, and its typed-local row is never emitted), and a
+  /// lambda CREATED INSIDE an initializer then inherited the sentinel and
+  /// silently lost native lowering even though a lambda compiles into its own
+  /// independent frame with its own emitted row (#1332, Codex review).
+  ///
+  /// Kept as one predicate read in one place (backend_expr.vibe's ELet/EArray
+  /// gate); this only stops it from meaning two different things.
+  gc_native_array_frame_ok: Bool;
   // #1332: one typed-local row PER RECORDED LAMBDA, parallel to
   // LambdaTable.bodies. A lambda body compiles into its own local frame, so
   // its typed slots cannot live in the enclosing function's row -- but the

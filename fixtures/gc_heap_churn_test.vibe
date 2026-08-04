@@ -144,6 +144,23 @@ let module_init_array_stays_linear: Int = {
   Array::get(xs, 0) + Array::get(xs, 1)
 }
 
+// #1332 (Codex review): the pair below pins BOTH halves of the eligibility
+// split. `module_init_array_stays_linear` above binds its array directly in the
+// `_start` frame -- shared across every initializer, row never emitted -- so it
+// stays linear. This one binds it inside a LAMBDA created in an initializer:
+// that lambda compiles into its own frame with its own emitted row, so it is
+// eligible even though its enclosing frame is not. Fifth native site.
+let module_initializer_lambda_is_native: Int = {
+  let f = () -> {
+    let xs = [
+      5,
+      7
+    ]
+    Array::get(xs, 0) + Array::get(xs, 1)
+  }
+  f()
+}
+
 test "gc lane: nested lambda arrays use typed native locals (#1332)" {
   assert(nested_lambda_array_native() == 44)
 }
@@ -160,4 +177,8 @@ test "gc lane: aliases, push, and return retain the linear fallback" {
 
 test "gc lane: module-level initializer arrays retain the linear fallback" {
   assert(module_init_array_stays_linear == 12)
+}
+
+test "gc lane: a lambda inside a module initializer is still eligible (#1332)" {
+  assert(module_initializer_lambda_is_native == 12)
 }

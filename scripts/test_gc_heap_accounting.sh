@@ -35,17 +35,19 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
 }
 
 # Churn, the if branch, the match branch, and (since #1332) the nested lambda
-# body each have one eligible literal -- four in total. Alias/push/return, an
-# array a DEEPER lambda captures, and module-level initializers still use the
-# linear fallback. This guards both typed-ref/i64 sibling-control-flow
-# regressions and the lambda/capture boundary at Wasm emission.
+# body and a lambda created inside a module initializer each have one eligible
+# literal -- five in total. Alias/push/return, an array a DEEPER lambda
+# captures, and an array bound directly in an initializer's own `_start` frame
+# still use the linear fallback. This guards typed-ref/i64 sibling-control-flow
+# regressions, the lambda/capture boundary, and the frame-vs-module halves of
+# the eligibility split, all at Wasm emission.
 python3 - "$OUT" <<'PY'
 import sys
 wasm = open(sys.argv[1], "rb").read()
 count = wasm.count(b"\xfb\x07\x0c")
-if count != 4:
+if count != 5:
     raise SystemExit(
-        "[gc-heap-accounting] FAIL: expected four eligible native "
+        "[gc-heap-accounting] FAIL: expected five eligible native "
         f"array.new_default type 12 instructions, found {count}"
     )
 PY
