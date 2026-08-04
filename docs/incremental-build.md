@@ -501,7 +501,20 @@ and annotation kind/presence consistency); it deliberately does not parse row
 text or attest that decoded data was produced by checking. It likewise is not
 persistent transport, cache/trace/interface/import/reuse state. Consequently
 this slice does not claim full effect-row transport or a stable row-to-body
-association.
+association. The independently opaque
+`CheckedTypedOccurrenceExpressionPathArtifact` v1 transports the complete
+append-aligned expression-path observation in capture order: retained statement
+path, post-desugar `core::expr_children` path, role, lane, and the occurrence
+type snapshot after `final_subst`. It deep-copies paths and strings, omits legacy
+offsets, and accepts only known role/lane tags and nonnegative path components.
+Its strict length-delimited decoder bounds untrusted counts by remaining input,
+stops at the first failed parse, rejects integer overflow, truncation, trailing
+bytes, and noncanonical equivalents, and requires exact re-encoding. Decoded
+bytes do not attest checker success; synthetic/auxiliary checker traversal still
+makes the successful-check observation complete-or-none. This artifact remains
+post-desugar and capture-order-relative rather than source- or edit-stable, and
+is not a complete expression tree, checked body, typed IR, import contract,
+interface, cache identity, trace, or reuse input.
 A trait/impl regression proves an impl-bound edit changes the
 complete persistent TypeEnv v3 transport observation while leaving the
 value-only checked-env observation unchanged; it makes no exported-interface

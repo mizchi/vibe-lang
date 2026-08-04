@@ -1,0 +1,247 @@
+//# Strict checked typed-occurrence expression-path artifact v1
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/checker {
+  canonical_checked_typed_occurrence_expression_path_artifact_snapshot,
+  canonical_checked_typed_occurrence_expression_path_snapshot,
+  check_program_typed_occurrence_expression_path_observation,
+  checked_typed_occurrence_expression_path_artifact_expression_path_at,
+  checked_typed_occurrence_expression_path_artifact_from_observation,
+  checked_typed_occurrence_expression_path_artifact_lane_at,
+  checked_typed_occurrence_expression_path_artifact_role_at,
+  checked_typed_occurrence_expression_path_artifact_row_count,
+  checked_typed_occurrence_expression_path_artifact_statement_path_at,
+  checked_typed_occurrence_expression_path_artifact_type_at,
+  decode_checked_typed_occurrence_expression_path_artifact_v1,
+  encode_checked_typed_occurrence_expression_path_artifact_v1
+}
+
+fn artifact_push_piece(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+fn artifact_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  StringBuilder::push(out, __to_string(Array::length(path)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(path) {
+    StringBuilder::push(out, __to_string(Array::get(path, i)))
+    StringBuilder::push(out, ":")
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+}
+
+fn artifact_entry(statement_path: Array[Int], expression_path: Array[Int], role: String, lane: String, ty: String) -> String {
+  let out = StringBuilder::new()
+  artifact_push_path(out, statement_path)
+  artifact_push_path(out, expression_path)
+  artifact_push_piece(out, role)
+  artifact_push_piece(out, lane)
+  artifact_push_piece(out, ty)
+  StringBuilder::freeze(out)
+}
+
+fn artifact_payload(entries: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-typed-occurrence-expression-path-artifact:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(entries)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(entries) {
+    artifact_push_piece(out, Array::get(entries, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn nested_call_fixture() -> Array[Stmt] {
+  [
+    SLet(false, false, "value", None, ECall(EIdent("Some", 10), [
+      ECall(EIdent("Some", 11), [
+        EInt(1)
+      ], 12)
+    ], 13))
+  ]
+}
+
+fn assert_decode_none(text: String) -> Unit {
+  match decode_checked_typed_occurrence_expression_path_artifact_v1(text) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+fn assert_path(actual: Option[Array[Int]], expected: Array[Int]) -> Unit {
+  match actual {
+    Some(path) => {
+      assert(Array::length(path) == Array::length(expected))
+      let mut i = 0
+      while i < Array::length(path) {
+        assert(Array::get(path, i) == Array::get(expected, i))
+        i = i + 1
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "successful observation becomes an exact canonical artifact snapshot" {
+  match check_program_typed_occurrence_expression_path_observation(nested_call_fixture()) {
+    Some(observation) => match checked_typed_occurrence_expression_path_artifact_from_observation(observation) {
+      Some(artifact) => {
+        assert(checked_typed_occurrence_expression_path_artifact_row_count(artifact) == 2)
+        assert(canonical_checked_typed_occurrence_expression_path_artifact_snapshot(artifact) == canonical_checked_typed_occurrence_expression_path_snapshot(observation))
+        let encoded = encode_checked_typed_occurrence_expression_path_artifact_v1(artifact)
+        match decode_checked_typed_occurrence_expression_path_artifact_v1(encoded) {
+          Some(decoded) => {
+            assert(encode_checked_typed_occurrence_expression_path_artifact_v1(decoded) == encoded)
+            assert(canonical_checked_typed_occurrence_expression_path_artifact_snapshot(decoded) == canonical_checked_typed_occurrence_expression_path_snapshot(observation))
+          },
+          None => assert(false)
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "opaque accessors preserve nested and empty paths and return copies" {
+  let text = artifact_payload([
+    artifact_entry([
+      0,
+      2
+    ], [
+    ], "CallResult", "Primary", "I0")
+  ])
+  match decode_checked_typed_occurrence_expression_path_artifact_v1(text) {
+    Some(artifact) => {
+      assert_path(checked_typed_occurrence_expression_path_artifact_statement_path_at(artifact, 0), [
+        0,
+        2
+      ])
+      assert_path(checked_typed_occurrence_expression_path_artifact_expression_path_at(artifact, 0), [
+      ])
+      match checked_typed_occurrence_expression_path_artifact_statement_path_at(artifact, 0) {
+        Some(path) => Array::set(path, 0, 99),
+        None => assert(false)
+      }
+      assert_path(checked_typed_occurrence_expression_path_artifact_statement_path_at(artifact, 0), [
+        0,
+        2
+      ])
+      match checked_typed_occurrence_expression_path_artifact_statement_path_at(artifact, -1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      match checked_typed_occurrence_expression_path_artifact_type_at(artifact, 1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "known role and lane tags plus arbitrary canonical type text round trip exactly" {
+  let text = artifact_payload([
+    artifact_entry([
+    ], [
+    ], "Identifier", "Primary", "type:[]\n雪"),
+    artifact_entry([
+      1
+    ], [
+      0
+    ], "CallResult", "SyntheticRewrite", ""),
+    artifact_entry([
+      2
+    ], [
+      1,
+      3
+    ], "DotProjection", "AuxiliaryResumeValueRecheck", "A:B"),
+    artifact_entry([
+      3
+    ], [
+      2
+    ], "DotFieldName", "Primary", "🙂")
+  ])
+  match decode_checked_typed_occurrence_expression_path_artifact_v1(text) {
+    Some(artifact) => {
+      assert(encode_checked_typed_occurrence_expression_path_artifact_v1(artifact) == text)
+      match checked_typed_occurrence_expression_path_artifact_role_at(artifact, 3) {
+        Some(role) => assert(role == "DotFieldName"),
+        None => assert(false)
+      }
+      match checked_typed_occurrence_expression_path_artifact_lane_at(artifact, 2) {
+        Some(lane) => assert(lane == "AuxiliaryResumeValueRecheck"),
+        None => assert(false)
+      }
+      match checked_typed_occurrence_expression_path_artifact_type_at(artifact, 0) {
+        Some(ty) => assert(ty == "type:[]\n雪"),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "path component Int maximum is canonical and overflow fails closed" {
+  let maximum = artifact_payload([
+    artifact_entry([
+      2305843009213693951
+    ], [
+    ], "Identifier", "Primary", "I0")
+  ])
+  match decode_checked_typed_occurrence_expression_path_artifact_v1(maximum) {
+    Some(artifact) => assert(encode_checked_typed_occurrence_expression_path_artifact_v1(artifact) == maximum),
+    None => assert(false)
+  }
+  let overflow_entry = "1[2305843009213693952:]0[]10:Identifier7:Primary2:I0"
+  assert_decode_none(artifact_payload([
+    overflow_entry
+  ]))
+  let negative_entry = "1[-1:]0[]10:Identifier7:Primary2:I0"
+  assert_decode_none(artifact_payload([
+    negative_entry
+  ]))
+}
+
+test "unknown role and lane tags fail closed" {
+  assert_decode_none(artifact_payload([
+    artifact_entry([
+    ], [
+    ], "Unknown", "Primary", "I0")
+  ]))
+  assert_decode_none(artifact_payload([
+    artifact_entry([
+    ], [
+    ], "Identifier", "Unknown", "I0")
+  ]))
+}
+
+test "wrong version truncation trailing bytes and noncanonical numbers fail closed" {
+  assert_decode_none("vibe-checked-typed-occurrence-expression-path-artifact:v2\n0[]")
+  assert_decode_none("vibe-checked-typed-occurrence-expression-path-artifact:v1\n1[")
+  assert_decode_none(String::concat(artifact_payload([
+  ]), "x"))
+  assert_decode_none("vibe-checked-typed-occurrence-expression-path-artifact:v1\n00[]")
+  let leading_zero_entry = "01[0:]0[]10:Identifier7:Primary2:I0"
+  assert_decode_none(artifact_payload([
+    leading_zero_entry
+  ]))
+}
+
+test "hostile outer and path counts stop at the first unavailable item" {
+  assert_decode_none("vibe-checked-typed-occurrence-expression-path-artifact:v1\n2305843009213693951[")
+  let hostile_path = "2305843009213693951["
+  assert_decode_none(artifact_payload([
+    hostile_path
+  ]))
+}
