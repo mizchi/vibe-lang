@@ -192,9 +192,13 @@ fall back to full checking. The gate remains disabled by default.
 
 Checker-time typed-occurrence observation can remove legacy offsets only at
 statement-owner granularity: each retained row is associated with its checked
-statement path, while expression and role association remains erased. Recovering
-that finer provenance requires later path-aware `check_expr` work; this is not
-an edit-stability guarantee or a full typed-IR claim.
+statement path, while expression and role association remains erased. Legacy
+`(offset, Type)` append sites are centralized in structurally role-separated
+checker funnels (identifier, call result, dot projection, and dot field name),
+but those roles and expression paths are not retained in any artifact.
+Recovering that finer provenance requires later path-aware `check_expr` work;
+this is not an edit-stability guarantee, typed-IR claim, or persistent artifact
+claim.
 
 A physical file is a useful ingestion/cache shard, but is not always an
 independent semantic or code-generation unit. Files in one package can share a

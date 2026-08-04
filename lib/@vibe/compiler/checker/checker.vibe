@@ -2391,20 +2391,41 @@ fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
   }
 }
 
-/// Record a call-site node's (raw, pre-final-subst) result type `ty` keyed by
+/// Append one legacy typed-occurrence row. This remains the erased
+/// `(offset, Type)` table: role/provenance is deliberately not retained yet.
+fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Type) -> Unit {
+  Array::push(tytab, (offset, ty))
+}
+
+/// Legacy occurrence funnel for identifier hover rows.
+fn tab_identifier_ty(tytab: Array[(Int, Type)], ident_off: Int, ty: Type) -> Unit {
+  append_legacy_typed_occurrence(tytab, ident_off, ty)
+}
+
+/// Record a call-result node's (raw, pre-final-subst) result type `ty` keyed by
 /// its real source char offset `call_off`, for typed-hover (vibe type-at) on
 /// `foo(x)` / `obj.method(x)`, then return `ty` unchanged so it can be dropped
 /// into the call-result tuple in place. Synthetic calls (call_off < 0) skip the
-/// push. Used at the ECall result sites (NOT by wrapping the giant ECall match,
-/// which the bootstrap seed parser cannot reparse when that match is nested one
-/// level deeper — only the interior result types are tagged).
+/// append. Used at the ECall result sites (NOT by wrapping the giant ECall
+/// match, which the bootstrap seed parser cannot reparse when that match is
+/// nested one level deeper — only the interior result types are tagged).
 fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type) -> Type {
   if call_off >= 0 {
-    Array::push(tytab, (call_off, ty))
+    append_legacy_typed_occurrence(tytab, call_off, ty)
   } else {
     ()
   }
   ty
+}
+
+/// Legacy occurrence funnel for an EDot projection token.
+fn tab_dot_projection_ty(tytab: Array[(Int, Type)], dot_off: Int, ty: Type) -> Unit {
+  append_legacy_typed_occurrence(tytab, dot_off, ty)
+}
+
+/// Legacy occurrence funnel for an EDot field-name token.
+fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type) -> Unit {
+  append_legacy_typed_occurrence(tytab, field_off, ty)
 }
 
 /// Iteratively check a sequence/let SPINE (`ESeq` and `ELet`/`ELetMut`/`ELetRec`
@@ -3444,7 +3465,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         // keyed by its real source offset, for typed-hover (vibe type-at) on
         // locals and parameters. Synthetic idents (off < 0) are skipped.
         if ident_off >= 0 {
-          Array::push(tytab, (ident_off, ti))
+          tab_identifier_ty(tytab, ident_off, ti)
         } else {
           ()
         }
@@ -3453,7 +3474,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       None => match lookup_builtin(name) {
         Some(t) => {
           if ident_off >= 0 {
-            Array::push(tytab, (ident_off, t))
+            tab_identifier_ty(tytab, ident_off, t)
           } else {
             ()
           }
@@ -3462,7 +3483,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         None => match resolve_trait_method_ident(name, env, defs, s) {
           Some(mty) => {
             if ident_off >= 0 {
-              Array::push(tytab, (ident_off, mty))
+              tab_identifier_ty(tytab, ident_off, mty)
             } else {
               ()
             }
@@ -3484,7 +3505,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 bi = bi + 1
               }
               if ident_off >= 0 {
-                Array::push(tytab, (ident_off, ti))
+                tab_identifier_ty(tytab, ident_off, ti)
               } else {
                 ()
               }
@@ -5926,12 +5947,12 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // own offset gets the same entry, so hovering the field NAME (not just
           // the base) resolves the projection type.
           if dot_off >= 0 {
-            Array::push(tytab, (dot_off, field_ty))
+            tab_dot_projection_ty(tytab, dot_off, field_ty)
           } else {
             ()
           }
           if field_off >= 0 && field_off != dot_off {
-            Array::push(tytab, (field_off, field_ty))
+            tab_dot_field_name_ty(tytab, field_off, field_ty)
           } else {
             ()
           }
