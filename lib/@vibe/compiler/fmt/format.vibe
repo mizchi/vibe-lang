@@ -1599,7 +1599,23 @@ fn should_insert_struct_double_colon(prev_prev_kind: Int, prev_prev_text: String
     // declaration headers, not struct literals — inserting `::` here
     // produced unparseable `trait Greet::{`.
     false
-  } else if prev_prev_text == "effect" || prev_prev_text == "suberror" || prev_prev_text == "with" { false } else if prev_prev_kind == k_thin_arrow {
+  } else if prev_prev_text == "effect" || prev_prev_text == "suberror" || prev_prev_text == "with" { false } else if prev_prev_kind == k_plus {
+    // #1429: the tail of a braceless multi-label effect row sits directly
+    // before the BODY brace -- `fn f() -> T with Error + Fs {` has prev_prev
+    // `+`, prev `Fs`, curr `{`. The `with` guard above only covers the
+    // single-label shape (`with Stdout {`), so without this the row's last
+    // label was rewritten to `Fs::{` and the body parsed as struct-literal
+    // fields: the same corruption family the k_is and k_match/k_while/k_if
+    // guards below were added for. Measured on the tree-wide conversion --
+    // 52 unit-test files regressed and the bundle flatten failed with
+    // "expected qualified operation name after '::' in effect row".
+    //
+    // Cost: `a + Point { x: 1 }` no longer gets the `::` inserted for it.
+    // That spelling is not valid vibe anyway (struct literals are written
+    // `Point::{ .. }`), whereas `with A + B {` is now the shape of EVERY
+    // multi-label row, so the trade is one-sided.
+    false
+  } else if prev_prev_kind == k_thin_arrow {
     false
   } else if prev_prev_kind == k_is {
     // `x is CtUnknown {` (a bare-variant pattern check) followed by an
@@ -2307,6 +2323,85 @@ fn reorder_import_lists(toks: Array[LTok]) -> Array[LTok] {
   out
 }
 
+/// #1429: rewrite a braced effect row into the braceless spelling.
+///
+///   with { A, B }  ->  with A + B
+///   with { }       ->  with ()
+///
+/// This runs as a token pre-pass rather than as a rule inside the emitter,
+/// which is what makes it safe to apply to the whole tree: it can only ever
+/// see real `with` and `{` TOKENS, so the 115 occurrences of the text
+/// `with {` that live INSIDE string literals in the compiler's own sources
+/// (checker test inputs, and the `hint: declare 'fn f(...) -> T with { .. }'`
+/// diagnostic text) are structurally untouchable. A textual rewrite would
+/// have corrupted every one of them.
+///
+/// Idempotent: an already-converted row has a name or `(` after `with`, not
+/// `{`, so a second pass leaves it alone. `handle .. with E { arms }` is also
+/// unaffected -- that `with` is followed by the effect NAME, and the brace it
+/// eventually reaches belongs to the handler arms.
+fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
+  let out = Array::slice([
+    LTok::{
+      kind: k_none, text: ""
+    }
+  ], 0, 0)
+  let n = Array::length(toks)
+  let mut i = 0
+  while i < n {
+    let t = Array::get(toks, i)
+    if t.kind == k_with && next_non_trivia_kind(toks, i) == k_lbrace {
+      Array::push(out, t)
+      // Find the row's `{` and its matching `}` (rows do not nest braces).
+      let mut open_i = i + 1
+      while Array::get(toks, open_i).kind != k_lbrace {
+        open_i = open_i + 1
+      }
+      let mut close_i = open_i + 1
+      while close_i < n && Array::get(toks, close_i).kind != k_rbrace {
+        close_i = close_i + 1
+      }
+      // Is there any code token between the braces?
+      let mut has_item = false
+      let mut scan = open_i + 1
+      while scan < close_i {
+        let sk = Array::get(toks, scan).kind
+        if sk != k_ws && sk != k_newline && sk != k_comment {
+          has_item = true
+        }
+        scan = scan + 1
+      }
+      if has_item {
+        // Drop both braces; every top-level comma becomes `+`.
+        let mut j = open_i + 1
+        while j < close_i {
+          let inner = Array::get(toks, j)
+          if inner.kind == k_comma {
+            Array::push(out, LTok::{
+              kind: k_plus, text: "+"
+            })
+          } else {
+            Array::push(out, inner)
+          }
+          j = j + 1
+        }
+      } else {
+        Array::push(out, LTok::{
+          kind: k_lparen, text: "("
+        })
+        Array::push(out, LTok::{
+          kind: k_rparen, text: ")"
+        })
+      }
+      i = close_i + 1
+    } else {
+      Array::push(out, t)
+      i = i + 1
+    }
+  }
+  out
+}
+
 export fn format_script(src: String) -> String {
-  format_tokens(reorder_import_lists(lex_lossless(src)), 2)
+  format_tokens(normalize_effect_rows(reorder_import_lists(lex_lossless(src))), 2)
 }
