@@ -109,6 +109,19 @@ export struct CheckedTypedOccurrenceExpressionPathObservation {
   entries: TypedOccurrenceRoleLaneCapture
 }
 
+enum CheckerStatementCapture {
+  StatementTypedOccurrences(Array[(Array[Int], Int, Type)]);
+  StatementRootTypes(Array[(Array[Int], String, Type)])
+}
+
+/// Successful-check-only direct root types for retained expression-bearing
+/// statements. Entries retain `(statement_path, closed_statement_kind, raw_type)`;
+/// canonical consumers apply `checked_program.final_subst` after checking.
+export struct CheckedStatementRootTypeObservation {
+  checked_program: CheckedProgram;
+  entries: Array[(Array[Int], String, Type)]
+}
+
 fn copy_ints(items: Array[Int]) -> Array[Int] {
   Array::slice(items, 0, Array::length(items))
 }
@@ -146,6 +159,138 @@ fn typed_occurrence_role_lane_observation_from_capture(checked: CheckedProgram, 
 fn typed_occurrence_expression_path_observation_from_capture(checked: CheckedProgram, entries: TypedOccurrenceRoleLaneCapture) -> Option[CheckedTypedOccurrenceExpressionPathObservation] {
   if entries.complete && Array::length(entries.provenance_entries) == Array::length(checked.typed_occurrences) {
     Some(CheckedTypedOccurrenceExpressionPathObservation::{
+      checked_program: checked, entries: entries
+    })
+  } else {
+    None
+  }
+}
+
+fn capture_statement_root_type(capture: Option[CheckerStatementCapture], statement_path: Option[Array[Int]], kind: String, ty: Type) -> Unit {
+  match capture {
+    Some(StatementRootTypes(entries)) => match statement_path {
+      Some(path) => Array::push(entries, (path, kind, ty)),
+      None => ()
+    },
+    _ => ()
+  }
+}
+
+fn statement_capture_is_root(capture: Option[CheckerStatementCapture]) -> Bool {
+  match capture {
+    Some(StatementRootTypes(_)) => true,
+    _ => false
+  }
+}
+
+fn root_type_paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) {
+      if Array::get(left, i) != Array::get(right, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn root_type_capture_entries_valid_stmts(entries: Array[(Array[Int], String, Type)], stmts: Array[Stmt], parent: Array[Int], next: Int) -> (Bool, Int) {
+  let mut valid = true
+  let mut row = next
+  let mut i = 0
+  while i < Array::length(stmts) && valid {
+    let stmt = Array::get(stmts, i)
+    let path = copy_ints(parent)
+    Array::push(path, i)
+    match stmt {
+      SLet(_, _, _, _, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SLet"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SLetMut(_, _, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SLetMut"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SLetPat(_, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SLetPat"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      STest(_, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "STest"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SBench(_, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SBench"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SExpr(EIdent(name, _)) => {
+        if name == "@zero_alloc" {
+          valid = false
+        } else if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SExpr"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SExpr(_) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SExpr"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SModule(_, _, body) => {
+        let (nested_valid, nested_row) = root_type_capture_entries_valid_stmts(entries, body, path, row)
+        valid = nested_valid
+        row = nested_row
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (valid, row)
+}
+
+fn statement_root_type_observation_from_capture(checked: CheckedProgram, entries: Array[(Array[Int], String, Type)]) -> Option[CheckedStatementRootTypeObservation] {
+  let (valid, consumed) = root_type_capture_entries_valid_stmts(entries, checked.checked_stmts, array_empty(), 0)
+  if valid && consumed == Array::length(entries) {
+    Some(CheckedStatementRootTypeObservation::{
       checked_program: checked, entries: entries
     })
   } else {
@@ -823,7 +968,7 @@ fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
   out
 }
 
-fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[Array[(Array[Int], Int, Type)]], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> (TypeEnv, Subst, Int) {
+fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
@@ -978,8 +1123,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       None => ()
     }
     let capture_start = match capture {
-      Some(_) => Some(Array::length(tytab)),
-      None => None
+      Some(StatementTypedOccurrences(_)) => Some(Array::length(tytab)),
+      _ => None
     }
     // #942 (ADR-0050): resume-misuse walk — a call-position `resume(...)`
     // outside any handler arm is rejected, and inside a (non-Error) arm it
@@ -1040,6 +1185,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           }
         }
         let env1 = env_bind(env, name, t)
+        capture_statement_root_type(capture, statement_path, "SLet", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
@@ -1058,6 +1204,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           None => vt
         }
         let env1 = env_bind(env, name, t)
+        capture_statement_root_type(capture, statement_path, "SLetMut", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetPat(pat, val) => {
@@ -1138,6 +1285,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           },
           _ => env
         }
+        capture_statement_root_type(capture, statement_path, "SLetPat", vt)
         (new_env, ns, nc)
       },
       SEnum(_, name, params, variants, enum_derives) => {
@@ -1404,11 +1552,13 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
       },
       STest(_, body) => {
-        let (_, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        let (vt, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        capture_statement_root_type(capture, statement_path, "STest", vt)
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (_, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        let (vt, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        capture_statement_root_type(capture, statement_path, "SBench", vt)
         (env, ns, nc)
       },
       SExpr(expr) => {
@@ -1429,15 +1579,23 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           // expression statement was silently DROPPED by the linear backend;
           // reject it (still type-check the expression for error recovery).
           Array::push(errors, top_level_reject_msg("top-level expressions are not allowed; move it into fn main", expr))
-          let (_, ns, nc) = check_expr_capture(expr, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+          let (vt, ns, nc) = check_expr_capture(expr, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+          capture_statement_root_type(capture, statement_path, "SExpr", vt)
           (env, ns, nc)
         }
       },
       SModule(_, _, body) => {
         // `statement_path` is None in ordinary checking, so nested modules
         // recurse without allocating retained path state.
-        let _ = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab, statement_path, capture, role_lane_capture)
-        (env, s, c)
+        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab, statement_path, capture, role_lane_capture)
+        // Preserve the historical checker flow when this opt-in observation is
+        // absent. The root observation alone needs nested substitutions to
+        // canonicalize its nested raw types; module bindings remain lexical.
+        if statement_capture_is_root(capture) {
+          (env, nested_s, nested_c)
+        } else {
+          (env, s, c)
+        }
       },
       SImport(_, names) => (bind_stmt_imports(env, names), s, c)
       ,
@@ -1531,14 +1689,14 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       _ => (env, s, c)
     }
     match capture {
-      Some(entries) => match stmt {
+      Some(StatementTypedOccurrences(entries)) => match stmt {
         SModule(_, _, _) => (),
         _ => match (capture_start, statement_path) {
           (Some(start), Some(path)) => capture_statement_rows(entries, tytab, start, path),
           _ => ()
         }
       },
-      None => ()
+      _ => ()
     }
     typed_occurrence_capture_end_statement(role_lane_capture)
     cur_env = new_env
@@ -2286,7 +2444,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
 /// Run the production whole-program check and retain every successful output
 /// the checker actually produces. This deliberately does not use the
 /// hover-only `check_program_type_table` path.
-fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[Array[(Array[Int], Int, Type)]], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with { Error } {
+fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with { Error } {
   // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
   // to impl free functions before checking, so `X::method` in an impl body
   // resolves on every path (the FS-compile path type-checks before the codegen
@@ -2383,8 +2541,17 @@ export fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProg
 /// CheckedProgram; they are not original-source or edit-stable coordinates.
 export fn check_program_typed_occurrence_statement_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error } {
   let entries = array_empty()
-  let checked = check_program_type_defs_observation_impl(stmts, Some(entries), None).checked_program
+  let checked = check_program_type_defs_observation_impl(stmts, Some(StatementTypedOccurrences(entries)), None).checked_program
   typed_occurrence_statement_observation_from_capture(checked, entries)
+}
+
+/// Capture the direct checker-returned root type for every retained
+/// expression-bearing statement. Marker or alignment failures are hidden as
+/// None so no partial observation escapes.
+export fn check_program_statement_root_type_observation(stmts: Array[Stmt]) -> Option[CheckedStatementRootTypeObservation] with { Error } {
+  let entries = array_empty()
+  let checked = check_program_type_defs_observation_impl(stmts, Some(StatementRootTypes(entries)), None).checked_program
+  statement_root_type_observation_from_capture(checked, entries)
 }
 
 /// Append-time role/lane capture. Failure or an alignment mismatch is hidden as
@@ -2447,7 +2614,7 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
-fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[Array[(Array[Int], Int, Type)]], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with { Error } {
+fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with { Error } {
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
     _ => {
@@ -2527,8 +2694,16 @@ export fn check_program_with_env_type_defs_observation(stmts: Array[Stmt], initi
 /// environment. Validation failure is fail-closed as None.
 export fn check_program_with_env_typed_occurrence_statement_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceStatementObservation] with { Error } {
   let entries = array_empty()
-  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(entries), None).checked_program
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementTypedOccurrences(entries)), None).checked_program
   typed_occurrence_statement_observation_from_capture(checked, entries)
+}
+
+/// With-env form of the direct root-type observation. The initial environment
+/// seeds checking only; nested module environments remain lexical.
+export fn check_program_with_env_statement_root_type_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedStatementRootTypeObservation] with { Error } {
+  let entries = array_empty()
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementRootTypes(entries)), None).checked_program
+  statement_root_type_observation_from_capture(checked, entries)
 }
 
 export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with { Error } {

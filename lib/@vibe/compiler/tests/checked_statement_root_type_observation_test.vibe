@@ -1,0 +1,162 @@
+//# CheckedStatementRootTypeObservation regression coverage
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, Type, TypeEnv, env_bind
+}
+
+import @vibe/compiler/checker {
+  CheckedStatementRootTypeObservation,
+  canonical_checked_statement_root_type_snapshot,
+  check_program_statement_root_type_observation,
+  check_program_with_env_statement_root_type_observation,
+  checked_statement_root_type_observation_kind_at,
+  checked_statement_root_type_observation_row_count,
+  checked_statement_root_type_observation_statement_path_at,
+  checked_statement_root_type_observation_type_at
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) {
+      if Array::get(left, i) != Array::get(right, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn assert_path_at(observation: CheckedStatementRootTypeObservation, row: Int, expected: Array[Int]) -> Unit {
+  match checked_statement_root_type_observation_statement_path_at(observation, row) {
+    Some(path) => assert(paths_equal(path, expected)),
+    None => assert(false)
+  }
+}
+
+fn assert_kind_at(observation: CheckedStatementRootTypeObservation, row: Int, expected: String) -> Unit {
+  match checked_statement_root_type_observation_kind_at(observation, row) {
+    Some(kind) => assert(kind == expected),
+    None => assert(false)
+  }
+}
+
+fn root_fixture() -> Array[Stmt] {
+  [
+    // The declaration schedule checks Choice first, but the observed retained
+    // coordinate remains this source position.
+    SLet(false, false, "before_type", None, EIdent("Pick", 10)),
+    SEnum(false, "Choice", array_empty(), [
+      ("Pick", array_empty())
+    ], array_empty()),
+    SLetPat(PTuple([
+      PBind("left"),
+      PBind("right")
+    ]), ETuple([
+      EInt(1),
+      EInt(2)
+    ])),
+    STest("test-root", EBool(true)),
+    SBench("bench-root", EInt(3)),
+    SModule(false, "Nested", [
+      SLetPat(PBind("nested_identity"), EFn(array_empty(), array_empty(), [
+        ("x", None)
+      ], None, None, EIdent("x", 20))),
+      SLet(false, false, "inside", None, ECall(EIdent("nested_identity", 21), [
+        EInt(1)
+      ], 22))
+    ])
+  ]
+}
+
+test "statement root observation retains closed kinds and retained nested paths" {
+  match check_program_statement_root_type_observation(root_fixture()) {
+    Some(observation) => {
+      assert(checked_statement_root_type_observation_row_count(observation) == 6)
+      assert_path_at(observation, 0, [
+        0
+      ])
+      assert_kind_at(observation, 0, "SLet")
+      assert_path_at(observation, 1, [
+        2
+      ])
+      assert_kind_at(observation, 1, "SLetPat")
+      assert_path_at(observation, 2, [
+        3
+      ])
+      assert_kind_at(observation, 2, "STest")
+      assert_path_at(observation, 3, [
+        4
+      ])
+      assert_kind_at(observation, 3, "SBench")
+      assert_path_at(observation, 4, [
+        5,
+        0
+      ])
+      assert_kind_at(observation, 4, "SLetPat")
+      match checked_statement_root_type_observation_type_at(observation, 4) {
+        Some(ty) => assert(ty == "F32:I02:I03:EP0"),
+        None => assert(false)
+      }
+      assert_path_at(observation, 5, [
+        5,
+        1
+      ])
+      assert_kind_at(observation, 5, "SLet")
+      match checked_statement_root_type_observation_type_at(observation, 5) {
+        Some(ty) => assert(ty == "I0"),
+        None => assert(false)
+      }
+      match checked_statement_root_type_observation_kind_at(observation, 6) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "statement root observation applies final substitution and with-env has parity" {
+  let stmts = [
+    SLet(false, false, "identity", None, EFn(array_empty(), array_empty(), [
+      ("x", None)
+    ], None, None, EIdent("x", 30))),
+    SLet(false, false, "answer", None, ECall(EIdent("identity", 31), [
+      EInt(1)
+    ], 32))
+  ]
+  match check_program_statement_root_type_observation(stmts) {
+    Some(ordinary) => match check_program_with_env_statement_root_type_observation(stmts, env_bind(EnvEmpty, "seed", CtInt)) {
+      Some(with_env) => {
+        assert(canonical_checked_statement_root_type_snapshot(ordinary) == canonical_checked_statement_root_type_snapshot(with_env))
+        match checked_statement_root_type_observation_type_at(ordinary, 1) {
+          Some(ty) => assert(ty == "I0"),
+          None => assert(false)
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "zero alloc marker fails root observation closed" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc", 40)),
+    SLet(false, false, "f", None, EFn(array_empty(), array_empty(), array_empty(), None, None, EInt(1)))
+  ]
+  match check_program_statement_root_type_observation(stmts) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
