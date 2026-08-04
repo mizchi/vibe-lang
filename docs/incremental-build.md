@@ -218,8 +218,17 @@ expression-bearing `SLet`, `SLetMut`, `SLetPat`, `STest`, `SBench`, and
 non-marker `SExpr`, recursively through modules, alongside its retained path
 and closed statement kind. Its canonical snapshot applies `final_subst` via the
 shared checked-type formatter. Marker or alignment failures return `None`, and
-it deliberately has no artifact codec, typed-IR, cache/reuse, import, or
-production-path connection.
+it deliberately has no typed-IR, cache/reuse, import, or production-path
+connection.
+
+`CheckedStatementRootTypeArtifact` is a strict opaque v1 transport for that
+merged observation. It deep-copies each statement path, accepts only the six
+closed root kinds, and freezes each type as final-substitution canonical text.
+Its singular marker is `vibe-checked-statement-root-type-artifact:v1\n`;
+decoding bounds untrusted counts and lengths by remaining input, rejects
+noncanonical fields and malformed rows, and requires exact re-encoding. It
+carries no checker-provenance attestation, typed IR, cache/reuse, interface,
+trace, or import claim.
 
 A physical file is a useful ingestion/cache shard, but is not always an
 independent semantic or code-generation unit. Files in one package can share a
