@@ -80,7 +80,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_export_section_multi,
   emit_exports_with_memory,
   emit_f64_add,
-  emit_f64_const_bits,
+  emit_f64_const_lohi,
   emit_f64_convert_i64_s,
   emit_f64_div,
   emit_f64_eq,
@@ -502,8 +502,15 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       next_local
     },
     EFloat(v) => {
-      let bits = Double::to_i64_bits(v)
-      emit_f64_const_bits(buf, bits)
+      // ADR-0055 Blocker-2: the full f64 bit pattern does NOT fit the 62-bit
+      // tagged Int (`2.0` = 0x4000000000000000 = 2^62), so `Double::to_i64_bits`
+      // cannot return it -- under RC it comes back halved, and every byte of the
+      // emitted `f64.const` is the true byte `>> 1`. The linear backend was
+      // migrated to the 32-bit halves (compile_expr.vibe); this gc-lane site was
+      // left behind and silently miscompiled every float literal whenever the
+      // COMPILER ITSELF was RC-built (gate 40h: 91527 vs 101557). Split the
+      // pattern -- each half is <= 2^32-1 and fits.
+      emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))
       emit_i64_reinterpret_f64(buf)
       next_local
     },
