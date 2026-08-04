@@ -439,7 +439,18 @@ to the rest chain, and v1 excludes them until the `Map[Type]` codegen issue is
 fixed. It is not a full
 CheckedProgram/TypeEnv artifact, typed IR, cache key/reuse input, interface,
 import contract, or trace schema; it leaves schema 6, interface v2, and
-TypeEnv v3 unchanged. A trait/impl regression proves an impl-bound edit changes the
+TypeEnv v3 unchanged. `TDEffect` operation declarations, `CtFn` effect text, and
+accepted final `SubstEffBind` chains are therefore already inside that narrow
+artifact. Effect-set declarations are retained separately as the opaque
+`CheckedEffectSetDeclarationsObservation`, derived from a successful
+`CheckedProgram` without reparsing source. Its deterministic length-delimited
+snapshot preserves recursive module-name paths, export bits, declaration order,
+and exact ordered/duplicate member text. It is observation-only and has no decoder
+or persistent format. Inferred/effective rows remain stringly
+`Option[String]` state distributed across final environments, typed occurrences,
+and final substitution; typed-occurrence offsets are unstable. Consequently this
+slice does not claim full effect-row transport or a stable row-to-body association.
+A trait/impl regression proves an impl-bound edit changes the
 complete persistent TypeEnv v3 transport observation while leaving the
 value-only checked-env observation unchanged; it makes no exported-interface
 stability assertion.
