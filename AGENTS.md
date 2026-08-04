@@ -57,7 +57,7 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 - `*_bench.vibe` - Benchmark files (`bench { ... }` ブロック)
 - `index.vibe` - パッケージのエントリ (`lib/@vibe/<pkg>/index.vibe`)
 - `index.vibei` - パッケージの契約 interface (bodyless 宣言 + conformance 照合)
-- `Taskfile.pkl` - pkfire タスク定義。`pkspec/*.pkl` - テスト宣言
+- `Taskfile.pkl` - pkfire タスク定義
 
 ### 変更の入れ先
 
@@ -283,9 +283,10 @@ bash scripts/resolve_generated_conflicts.sh --regen   # 衝突不要。tree か�
 
 詳細は [docs/bootstrap.md](docs/bootstrap.md).
 
-## pkfire / pkspec
+## pkfire
 
-タスク runner は `Taskfile.pkl` (~100 tasks、dead-task cleanup 後)、テスト宣言は `pkspec/{VibeSpec,VibeTest}.pkl`。
+タスク runner は `Taskfile.pkl` (129 tasks、dead-task cleanup 後)。`pkspec/` は
+Taskfile から参照されなくなったため削除済み。
 CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
 詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。
