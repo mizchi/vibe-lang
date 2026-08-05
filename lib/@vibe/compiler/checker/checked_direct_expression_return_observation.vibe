@@ -1,0 +1,96 @@
+//# Complete direct checker-return expression observation
+//
+// `Some` proves every retained post-desugar `expr_children` coordinate has one
+// authoritative Primary checker return. It is not typed IR, a codec, artifact,
+// cache/reuse input, binding table, import contract, or trace.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./canonical_checked_type_state.vibe {
+  canonical_checked_occurrence_type_fields
+}
+
+import ./checker_stmt.vibe {
+  CheckedDirectExpressionReturnObservation
+}
+
+fn checked_direct_return_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn checked_direct_return_push_piece(out: StringBuilder, value: String) -> Unit {
+  checked_direct_return_push_int(out, String::length(value))
+  StringBuilder::push(out, value)
+}
+
+fn checked_direct_return_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  checked_direct_return_push_int(out, Array::length(path))
+  let mut i = 0
+  while i < Array::length(path) {
+    checked_direct_return_push_int(out, Array::get(path, i))
+    i = i + 1
+  }
+}
+
+/// Deterministic retained-preorder snapshot, canonicalized only with this
+/// successful observation run's final substitution.
+export fn canonical_checked_direct_expression_return_snapshot(observation: CheckedDirectExpressionReturnObservation) -> String {
+  let raw_types = array_empty()
+  let mut i = 0
+  while i < Array::length(observation.entries) {
+    let (_, _, ty) = Array::get(observation.entries, i)
+    Array::push(raw_types, ty)
+    i = i + 1
+  }
+  let types = canonical_checked_occurrence_type_fields(raw_types, observation.checked_program.final_subst)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-direct-expression-return-observation:v1\n")
+  checked_direct_return_push_int(out, Array::length(observation.entries))
+  let mut j = 0
+  while j < Array::length(observation.entries) {
+    let (statement_path, expression_path, _) = Array::get(observation.entries, j)
+    checked_direct_return_push_path(out, statement_path)
+    checked_direct_return_push_path(out, expression_path)
+    checked_direct_return_push_piece(out, Array::get(types, j))
+    j = j + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+export fn checked_direct_expression_return_observation_row_count(observation: CheckedDirectExpressionReturnObservation) -> Int {
+  Array::length(observation.entries)
+}
+
+export fn checked_direct_expression_return_observation_statement_path_at(observation: CheckedDirectExpressionReturnObservation, row_index: Int) -> Option[Array[Int]] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (path, _, _) = Array::get(observation.entries, row_index)
+    Some(Array::slice(path, 0, Array::length(path)))
+  }
+}
+
+export fn checked_direct_expression_return_observation_expression_path_at(observation: CheckedDirectExpressionReturnObservation, row_index: Int) -> Option[Array[Int]] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (_, path, _) = Array::get(observation.entries, row_index)
+    Some(Array::slice(path, 0, Array::length(path)))
+  }
+}
+
+/// Canonical direct checker-return type at a retained coordinate.
+export fn checked_direct_expression_return_observation_type_at(observation: CheckedDirectExpressionReturnObservation, row_index: Int) -> Option[String] {
+  if row_index < 0 || row_index >= Array::length(observation.entries) {
+    None
+  } else {
+    let (_, _, ty) = Array::get(observation.entries, row_index)
+    let types = canonical_checked_occurrence_type_fields([
+      ty
+    ], observation.checked_program.final_subst)
+    Some(Array::get(types, 0))
+  }
+}

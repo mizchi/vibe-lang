@@ -1,0 +1,305 @@
+//# Strict checked statement-root-type artifact v1
+
+import @vibe/compiler/checker {
+  canonical_checked_statement_root_type_artifact_snapshot,
+  canonical_checked_statement_root_type_snapshot,
+  check_program_statement_root_type_observation,
+  checked_statement_root_type_artifact_from_observation,
+  checked_statement_root_type_artifact_kind_at,
+  checked_statement_root_type_artifact_row_count,
+  checked_statement_root_type_artifact_statement_path_at,
+  checked_statement_root_type_artifact_type_at,
+  decode_checked_statement_root_type_artifact_v1,
+  encode_checked_statement_root_type_artifact_v1
+}
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn artifact_push_piece(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+fn artifact_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  StringBuilder::push(out, __to_string(Array::length(path)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(path) {
+    StringBuilder::push(out, __to_string(Array::get(path, i)))
+    StringBuilder::push(out, ":")
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+}
+
+fn artifact_entry(path: Array[Int], kind: String, ty: String) -> String {
+  let out = StringBuilder::new()
+  artifact_push_path(out, path)
+  artifact_push_piece(out, kind)
+  artifact_push_piece(out, ty)
+  StringBuilder::freeze(out)
+}
+
+fn artifact_payload(entries: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-statement-root-type-artifact:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(entries)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(entries) {
+    artifact_push_piece(out, Array::get(entries, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn assert_decode_none(text: String) -> Unit {
+  match decode_checked_statement_root_type_artifact_v1(text) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+fn assert_path(actual: Option[Array[Int]], expected: Array[Int]) -> Unit {
+  match actual {
+    Some(path) => {
+      assert(Array::length(path) == Array::length(expected))
+      let mut i = 0
+      while i < Array::length(path) {
+        assert(Array::get(path, i) == Array::get(expected, i))
+        i = i + 1
+      }
+    },
+    None => assert(false)
+  }
+}
+
+fn merged_fixture() -> Array[Stmt] {
+  [
+    // This forward declaration proves source-row order survives declaration
+    // scheduling, while the nested module below proves retained paths copy.
+    SLet(false, false, "before_type", None, EIdent("Pick", 10)),
+    SEnum(false, "Choice", array_empty(), [
+      ("Pick", array_empty())
+    ], array_empty()),
+    SLetPat(PTuple([
+      PBind("left"),
+      PBind("right")
+    ]), ETuple([
+      EInt(1),
+      EInt(2)
+    ])),
+    STest("test-root", EBool(true)),
+    SBench("bench-root", EInt(3)),
+    SModule(false, "Nested", [
+      SLetPat(PBind("nested_identity"), EFn(array_empty(), array_empty(), [
+        ("x", None)
+      ], None, None, EIdent("x", 20))),
+      SLet(false, false, "inside", None, ECall(EIdent("nested_identity", 21), [
+        EInt(1)
+      ], 22))
+    ])
+  ]
+}
+
+test "merged observation becomes a copied canonical artifact with snapshot parity" {
+  match check_program_statement_root_type_observation(merged_fixture()) {
+    Some(observation) => match checked_statement_root_type_artifact_from_observation(observation) {
+      Some(artifact) => {
+        assert(checked_statement_root_type_artifact_row_count(artifact) == 6)
+        assert(canonical_checked_statement_root_type_artifact_snapshot(artifact) == canonical_checked_statement_root_type_snapshot(observation))
+        assert_path(checked_statement_root_type_artifact_statement_path_at(artifact, 5), [
+          5,
+          1
+        ])
+        match checked_statement_root_type_artifact_type_at(artifact, 5) {
+          Some(ty) => assert(ty == "I0"),
+          None => assert(false)
+        }
+        let encoded = encode_checked_statement_root_type_artifact_v1(artifact)
+        match decode_checked_statement_root_type_artifact_v1(encoded) {
+          Some(decoded) => {
+            assert(encode_checked_statement_root_type_artifact_v1(decoded) == encoded)
+            assert(canonical_checked_statement_root_type_artifact_snapshot(decoded) == canonical_checked_statement_root_type_snapshot(observation))
+          },
+          None => assert(false)
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "generic roots freeze final substitution canonical type text" {
+  let stmts = [
+    SLet(false, false, "identity", None, EFn(array_empty(), array_empty(), [
+      ("x", None)
+    ], None, None, EIdent("x", 30))),
+    SLet(false, false, "answer", None, ECall(EIdent("identity", 31), [
+      EInt(4)
+    ], 32))
+  ]
+  match check_program_statement_root_type_observation(stmts) {
+    Some(observation) => match checked_statement_root_type_artifact_from_observation(observation) {
+      Some(artifact) => match checked_statement_root_type_artifact_type_at(artifact, 1) {
+        Some(ty) => assert(ty == "I0"),
+        None => assert(false)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "all six closed kinds and arbitrary canonical type text round trip" {
+  let kinds = [
+    "SLet",
+    "SLetMut",
+    "SLetPat",
+    "STest",
+    "SBench",
+    "SExpr"
+  ]
+  let entries = array_empty()
+  let mut i = 0
+  while i < Array::length(kinds) {
+    Array::push(entries, artifact_entry([
+      i
+    ], Array::get(kinds, i), if i == 5 {
+      "type:[]\n雪"
+    } else {
+      "I0"
+    }))
+    i = i + 1
+  }
+  let text = artifact_payload(entries)
+  match decode_checked_statement_root_type_artifact_v1(text) {
+    Some(artifact) => {
+      assert(encode_checked_statement_root_type_artifact_v1(artifact) == text)
+      match checked_statement_root_type_artifact_kind_at(artifact, 5) {
+        Some(kind) => assert(kind == "SExpr"),
+        None => assert(false)
+      }
+      match checked_statement_root_type_artifact_type_at(artifact, 5) {
+        Some(ty) => assert(ty == "type:[]\n雪"),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "empty artifacts and copied path accessors are safe" {
+  let empty = "vibe-checked-statement-root-type-artifact:v1\n0[]"
+  match check_program_statement_root_type_observation([
+    SEnum(false, "OnlyType", array_empty(), [
+      ("Only", array_empty())
+    ], array_empty())
+  ]) {
+    Some(observation) => match checked_statement_root_type_artifact_from_observation(observation) {
+      Some(artifact) => {
+        assert(checked_statement_root_type_artifact_row_count(artifact) == 0)
+        assert(canonical_checked_statement_root_type_artifact_snapshot(artifact) == canonical_checked_statement_root_type_snapshot(observation))
+        assert(encode_checked_statement_root_type_artifact_v1(artifact) == empty)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+  match decode_checked_statement_root_type_artifact_v1(empty) {
+    Some(artifact) => {
+      assert(checked_statement_root_type_artifact_row_count(artifact) == 0)
+      assert(encode_checked_statement_root_type_artifact_v1(artifact) == empty)
+      match checked_statement_root_type_artifact_kind_at(artifact, 0) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+  let text = artifact_payload([
+    artifact_entry([
+      0,
+      2
+    ], "SLet", "I0")
+  ])
+  match decode_checked_statement_root_type_artifact_v1(text) {
+    Some(artifact) => {
+      assert_path(checked_statement_root_type_artifact_statement_path_at(artifact, 0), [
+        0,
+        2
+      ])
+      match checked_statement_root_type_artifact_statement_path_at(artifact, 0) {
+        Some(path) => Array::set(path, 0, 99),
+        None => assert(false)
+      }
+      assert_path(checked_statement_root_type_artifact_statement_path_at(artifact, 0), [
+        0,
+        2
+      ])
+      match checked_statement_root_type_artifact_statement_path_at(artifact, -1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+      match checked_statement_root_type_artifact_type_at(artifact, 1) {
+        None => (),
+        Some(_) => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "zero alloc marker has no observation and therefore no artifact" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc", 40)),
+    SLet(false, false, "f", None, EFn(array_empty(), array_empty(), array_empty(), None, None, EInt(1)))
+  ]
+  match check_program_statement_root_type_observation(stmts) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "hostile malformed and noncanonical decoder inputs fail closed" {
+  let maximum = artifact_payload([
+    artifact_entry([
+      2305843009213693951
+    ], "SExpr", "I0")
+  ])
+  match decode_checked_statement_root_type_artifact_v1(maximum) {
+    Some(artifact) => assert(encode_checked_statement_root_type_artifact_v1(artifact) == maximum),
+    None => assert(false)
+  }
+  assert_decode_none("vibe-checked-statement-root-type-artifact:v2\n0[]")
+  assert_decode_none("vibe-checked-statement-root-type-artifact:v1\n1[")
+  assert_decode_none(String::concat("vibe-checked-statement-root-type-artifact:v1\n0[]", "x"))
+  assert_decode_none("vibe-checked-statement-root-type-artifact:v1\n00[]")
+  assert_decode_none(artifact_payload([
+    "01[0:]4:SLet2:I0"
+  ]))
+  assert_decode_none(artifact_payload([
+    "1[-1:]4:SLet2:I0"
+  ]))
+  assert_decode_none(artifact_payload([
+    "1[2305843009213693952:]4:SLet2:I0"
+  ]))
+  assert_decode_none(artifact_payload([
+    artifact_entry([
+    ], "SUnknown", "I0")
+  ]))
+  assert_decode_none("vibe-checked-statement-root-type-artifact:v1\n2305843009213693951[")
+  assert_decode_none(artifact_payload([
+    "2305843009213693951["
+  ]))
+  assert_decode_none("vibe-checked-statement-root-type-artifact:v1\n1[2305843009213693951:")
+}

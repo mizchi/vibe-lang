@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  __to_string,
   collect_subst_bounds_pairs,
   env_bind,
   env_cache,
@@ -28,6 +29,7 @@ import @vibe/compiler/core {
   env_lookup_flat,
   generalize,
   resolve_builtin,
+  sort_perm_by_names,
   subst_apply,
   trait_defined,
   type_implements_trait,
@@ -47,6 +49,10 @@ import ./checker.vibe {
   reject_resume_outside_handler,
   typed_occurrence_capture_begin_statement,
   typed_occurrence_capture_end_statement
+}
+
+import ./checked_expression_structure_core.vibe {
+  checked_expression_structure_rows
 }
 
 import ./checker_spawnable.vibe {
@@ -109,9 +115,17 @@ export struct CheckedTypedOccurrenceExpressionPathObservation {
   entries: TypedOccurrenceRoleLaneCapture
 }
 
+/// Complete-or-none direct primary checker-return types for every retained
+/// post-desugar expression coordinate. This is an observation, not typed IR.
+export struct CheckedDirectExpressionReturnObservation {
+  checked_program: CheckedProgram;
+  entries: Array[(Array[Int], Array[Int], Type)]
+}
+
 enum CheckerStatementCapture {
   StatementTypedOccurrences(Array[(Array[Int], Int, Type)]);
-  StatementRootTypes(Array[(Array[Int], String, Type)])
+  StatementRootTypes(Array[(Array[Int], String, Type)]);
+  StatementDirectExpressionReturns
 }
 
 /// Successful-check-only direct root types for retained expression-bearing
@@ -179,6 +193,7 @@ fn capture_statement_root_type(capture: Option[CheckerStatementCapture], stateme
 fn statement_capture_is_root(capture: Option[CheckerStatementCapture]) -> Bool {
   match capture {
     Some(StatementRootTypes(_)) => true,
+    Some(StatementDirectExpressionReturns) => true,
     _ => false
   }
 }
@@ -2530,6 +2545,126 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   }
 }
 
+fn direct_paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) {
+      if Array::get(left, i) != Array::get(right, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+/// Append an injective decimal path encoding. Length and per-element
+/// delimiters make `[1, 23]`, `[12, 3]`, and signed coordinates distinct.
+/// This is a complete coordinate value, never a hash used as an identity.
+fn direct_coordinate_key_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  StringBuilder::push(out, __to_string(Array::length(path)))
+  StringBuilder::push(out, ":")
+  let mut i = 0
+  while i < Array::length(path) {
+    StringBuilder::push(out, __to_string(Array::get(path, i)))
+    StringBuilder::push(out, ":")
+    i = i + 1
+  }
+}
+
+/// Collision-safe total key for one retained statement/expression coordinate.
+/// The tags prevent the two independently length-prefixed paths from merging.
+fn direct_coordinate_key(statement_path: Array[Int], expression_path: Array[Int]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "S")
+  direct_coordinate_key_push_path(out, statement_path)
+  StringBuilder::push(out, "E")
+  direct_coordinate_key_push_path(out, expression_path)
+  StringBuilder::freeze(out)
+}
+
+/// Reconcile checker-return frames against authoritative retained preorder in
+/// O(n log n): stable bottom-up sorts arrange complete coordinate keys, then
+/// an exact merge detects missing and duplicate frames. The final assembly
+/// walks the skeleton's original preorder, never checker scheduling order.
+/// Any synthetic lane, skipped child, duplicate, or missing frame is invisible
+/// as `None`; normal checker errors have already propagated to the caller.
+fn direct_expression_return_observation_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> Option[CheckedDirectExpressionReturnObservation] {
+  if !capture.complete {
+    None
+  } else {
+    match checked_expression_structure_rows(checked.checked_stmts) {
+      None => None,
+      Some(skeleton) => if Array::length(skeleton) != Array::length(capture.direct_entries) {
+        None
+      } else {
+        let skeleton_keys = array_empty()
+        let direct_keys = array_empty()
+        let mut i = 0
+        while i < Array::length(skeleton) {
+          let (statement_path, expression_path, _) = Array::get(skeleton, i)
+          let (direct_statement_path, direct_expression_path, _) = Array::get(capture.direct_entries, i)
+          Array::push(skeleton_keys, direct_coordinate_key(statement_path, expression_path))
+          Array::push(direct_keys, direct_coordinate_key(direct_statement_path, direct_expression_path))
+          i = i + 1
+        }
+        let skeleton_perm = sort_perm_by_names(skeleton_keys)
+        let direct_perm = sort_perm_by_names(direct_keys)
+        let direct_index_for_skeleton = array_empty()
+        let mut fill = 0
+        while fill < Array::length(skeleton) {
+          Array::push(direct_index_for_skeleton, -1)
+          fill = fill + 1
+        }
+        let mut sorted = 0
+        let mut valid = true
+        while sorted < Array::length(skeleton) && valid {
+          let skeleton_index = Array::get(skeleton_perm, sorted)
+          let direct_index = Array::get(direct_perm, sorted)
+          let skeleton_key = Array::get(skeleton_keys, skeleton_index)
+          let direct_key = Array::get(direct_keys, direct_index)
+          let duplicate_skeleton = sorted > 0 && skeleton_key == Array::get(skeleton_keys, Array::get(skeleton_perm, sorted - 1))
+          let duplicate_direct = sorted > 0 && direct_key == Array::get(direct_keys, Array::get(direct_perm, sorted - 1))
+          let (statement_path, expression_path, _) = Array::get(skeleton, skeleton_index)
+          let (actual_statement_path, actual_expression_path, _) = Array::get(capture.direct_entries, direct_index)
+          if duplicate_skeleton || duplicate_direct || skeleton_key != direct_key || !direct_paths_equal(statement_path, actual_statement_path) || !direct_paths_equal(expression_path, actual_expression_path) {
+            valid = false
+          } else {
+            Array::set(direct_index_for_skeleton, skeleton_index, direct_index)
+          }
+          sorted = sorted + 1
+        }
+        if valid {
+          let entries = array_empty()
+          let mut row = 0
+          while row < Array::length(skeleton) {
+            let (statement_path, expression_path, _) = Array::get(skeleton, row)
+            let (_, _, ty) = Array::get(capture.direct_entries, Array::get(direct_index_for_skeleton, row))
+            Array::push(entries, (copy_ints(statement_path), copy_ints(expression_path), ty))
+            row = row + 1
+          }
+          Some(CheckedDirectExpressionReturnObservation::{
+            checked_program: checked, entries: entries
+          })
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
+fn direct_expression_return_capture() -> TypedOccurrenceRoleLaneCapture {
+  TypedOccurrenceRoleLaneCapture::{
+    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_expected_children: array_empty(), frame_direct_recorded: array_empty(), direct_entries: array_empty(), direct_enabled: true, frame_depth: 0, complete: true
+  }
+}
+
 /// Run the production checker once and expose retained type-definition binder
 /// provenance for canonical observation.
 export fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with Error {
@@ -2558,7 +2693,7 @@ export fn check_program_statement_root_type_observation(stmts: Array[Stmt]) -> O
 /// None, so no partial observation can escape.
 export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with Error {
   let entries = TypedOccurrenceRoleLaneCapture::{
-    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_depth: 0, complete: true
+    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_expected_children: array_empty(), frame_direct_recorded: array_empty(), direct_entries: array_empty(), direct_enabled: false, frame_depth: 0, complete: true
   }
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(entries)).checked_program
   typed_occurrence_role_lane_observation_from_capture(checked, entries)
@@ -2568,10 +2703,24 @@ export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt
 /// and auxiliary resume-value rechecks deliberately make this return None.
 export fn check_program_typed_occurrence_expression_path_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with Error {
   let entries = TypedOccurrenceRoleLaneCapture::{
-    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_depth: 0, complete: true
+    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_expected_children: array_empty(), frame_direct_recorded: array_empty(), direct_entries: array_empty(), direct_enabled: false, frame_depth: 0, complete: true
   }
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(entries)).checked_program
   typed_occurrence_expression_path_observation_from_capture(checked, entries)
+}
+
+/// Opt-in complete direct-primary return observation. The bounded retained
+/// skeleton is preflighted before checking; unsupported routes return None only
+/// after a successful ordinary checker run.
+export fn check_program_direct_expression_return_observation(stmts: Array[Stmt]) -> Option[CheckedDirectExpressionReturnObservation] with Error {
+  match checked_expression_structure_rows(stmts) {
+    None => None,
+    Some(_) => {
+      let capture = direct_expression_return_capture()
+      let checked = check_program_type_defs_observation_impl(stmts, Some(StatementDirectExpressionReturns), Some(capture)).checked_program
+      direct_expression_return_observation_from_capture(checked, capture)
+    }
+  }
 }
 
 /// Successful production-check result, preserving the original public shape.
@@ -2708,7 +2857,7 @@ export fn check_program_with_env_statement_root_type_observation(stmts: Array[St
 
 export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with Error {
   let entries = TypedOccurrenceRoleLaneCapture::{
-    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_depth: 0, complete: true
+    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_expected_children: array_empty(), frame_direct_recorded: array_empty(), direct_entries: array_empty(), direct_enabled: false, frame_depth: 0, complete: true
   }
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries)).checked_program
   typed_occurrence_role_lane_observation_from_capture(checked, entries)
@@ -2716,10 +2865,22 @@ export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: A
 
 export fn check_program_with_env_typed_occurrence_expression_path_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with Error {
   let entries = TypedOccurrenceRoleLaneCapture::{
-    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_depth: 0, complete: true
+    entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_expected_children: array_empty(), frame_direct_recorded: array_empty(), direct_entries: array_empty(), direct_enabled: false, frame_depth: 0, complete: true
   }
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries)).checked_program
   typed_occurrence_expression_path_observation_from_capture(checked, entries)
+}
+
+/// With-env variant of the complete direct-primary return observation.
+export fn check_program_with_env_direct_expression_return_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedDirectExpressionReturnObservation] with Error {
+  match checked_expression_structure_rows(stmts) {
+    None => None,
+    Some(_) => {
+      let capture = direct_expression_return_capture()
+      let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementDirectExpressionReturns), Some(capture)).checked_program
+      direct_expression_return_observation_from_capture(checked, capture)
+    }
+  }
 }
 
 /// Successful production-check result, preserving the original public shape.
