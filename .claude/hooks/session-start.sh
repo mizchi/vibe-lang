@@ -143,4 +143,18 @@ if [ -x "$PKF_BIN" ]; then
   fi
 fi
 
+# The five generated compiler artifacts are build outputs, not tracked files
+# (scripts/ensure_generated.sh), and lib/@vibe/compiler/compiler.vibe IMPORTS
+# three of them -- so a fresh clone cannot typecheck the compiler, and `vibe
+# lsp` reports phantom unresolved-import errors, until they exist. Produce them
+# once here. ~1s when the fingerprint has not moved; the first run in a fresh
+# container pays the full generation.
+if [ -f "$PROJECT_DIR/scripts/ensure_generated.sh" ]; then
+  if (cd "$PROJECT_DIR" && bash scripts/ensure_generated.sh >/dev/null 2>&1); then
+    echo "[session-start] generated compiler artifacts ready"
+  else
+    echo "[session-start] WARNING: ensure_generated.sh failed; run it manually before building" >&2
+  fi
+fi
+
 echo "[session-start] toolchain init complete"

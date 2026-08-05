@@ -20,12 +20,12 @@ shard="${1:?missing shard argument: bootstrap|bootstrap-core|cli|check|coverage}
 
 case "$shard" in
   bootstrap-core)
-    bash scripts/check_bundle_sync.sh
-    bash scripts/check_module_source_sync.sh
+    # The generated artifacts are build outputs, not tracked files, so this
+    # shard produces them instead of diffing them against committed copies.
+    bash scripts/ensure_generated.sh
     ;;
   bootstrap)
-    bash scripts/check_bundle_sync.sh
-    bash scripts/check_module_source_sync.sh
+    bash scripts/ensure_generated.sh
     # Live replacement for the retired MoonBit-host bootstrap/selfbuild gates:
     # the seed->stage1->stage2(->stage3 fixpoint) build is exactly
     # what those gates existed to protect.

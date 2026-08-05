@@ -22,16 +22,19 @@ bash scripts/check_builtin_parity.sh
 # Static check, so it runs here with the other pre-build checks.
 bash scripts/check_inline_builtin_capture.sh
 
-echo "[compiler-gate] 1-2/3 bundle + module-source sync (via seed, combined)"
-# One generate_bundle.sh pass checks both the three bundles and the flat
-# module source (VIBE_CHECK_BUNDLES_TOO=1) — the previous separate
-# check_bundle_sync.sh step re-ran the same ~25s generation a second time.
-VIBE_CHECK_BUNDLES_TOO=1 bash scripts/check_module_source_sync.sh
+echo "[compiler-gate] 1-2/3 generated compiler artifacts"
+# This used to be a SYNC CHECK: regenerate the five artifacts into a temp dir
+# and assert the committed copies matched byte for byte. The artifacts are no
+# longer committed (see scripts/ensure_generated.sh), so the same generation
+# now simply produces them -- identical work, minus a failure mode that could
+# only ever mean "someone forgot to run the regen".
+#
+# Warm (fingerprint unchanged since the last run) this is ~1s.
+bash scripts/ensure_generated.sh
 
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
-# The sync check above just proved the committed flat module source is
-# byte-identical to what generate_bundle.sh would regenerate, so feed it to
-# the selfbuild directly instead of paying a third ~25s regeneration.
+# ensure_generated just wrote the flat module source from the current tree, so
+# feed it to the selfbuild directly rather than paying a second generation.
 VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
   bash scripts/generations.sh build --stage3
 

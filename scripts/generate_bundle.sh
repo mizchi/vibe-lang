@@ -736,22 +736,15 @@ PY
     printf '%s\n' "$module_source_path"
     return 0
   fi
-  # Moon-free default (#594 Stage 1): prefer the committed prebuilt flat
-  # module source so that seed -> stage1 -> stage2 needs no MoonBit host.
-  # emit-module-source is a deterministic function of the compiler source;
-  # the committed copy is kept fresh by scripts/check_module_source_sync.sh
-  # (run in the compiler gate). Force regeneration through the host compiler with
-  # VIBE_REGEN_MODULE_SOURCE=1 (used by that gate and by intentional
-  # module-source bumps).
-  local committed_module_source="$COMPILER_DIR/_cli_adapter_module_source.vibe"
-  if [ "${VIBE_REGEN_MODULE_SOURCE:-0}" != "1" ] && [ -s "$committed_module_source" ]; then
-    local module_source_path
-    mkdir -p "$PROJECT_ROOT/_build"
-    module_source_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_module_source.XXXXXX")"
-    cp "$committed_module_source" "$module_source_path"
-    printf '%s\n' "$module_source_path"
-    return 0
-  fi
+  # The flat module source is a deterministic function of the compiler source,
+  # so it is ALWAYS regenerated here. It used to be read back from the committed
+  # _cli_adapter_module_source.vibe unless VIBE_REGEN_MODULE_SOURCE=1 was set --
+  # a silent staleness trap: a source edit that nobody thought to regenerate for
+  # produced a compiler WITHOUT that edit, and the build reported success. (Cost
+  # of that trap, measured: three full rebuilds spent measuring a compiler that
+  # did not contain the change under test.) Freshness is now decided ONCE, by
+  # fingerprint, in scripts/ensure_generated.sh -- reaching this function at all
+  # means the answer was already "regenerate".
   local module_source_path
   mkdir -p "$PROJECT_ROOT/_build"
   module_source_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_module_source.XXXXXX")"
@@ -878,33 +871,77 @@ write_runtime_entry_bundle() {
   } > "$OUT_RUNTIME_ENTRY"
 }
 
-build_exact_adapter_merged_source() {
-  # #726: flatten via the compiler's OWN merge machinery (ExportRenamePlan +
-  # private namespacing), replacing the Python flattener. The flattener
-  # binary is built by compiling the COMMITTED flat module source with the
-  # seed — the same robust single-file lane every stage1 build uses — and
-  # then run with VIBE_EMIT_MERGED_SOURCE=1 on the adapter entry (the mode
-  # resolves imports from the FS and prints the merged program). Bootstrap
-  # note: this self-hosts one generation back, exactly like the seed itself
-  # (the committed module source always contains the mode once #726 landed).
-  # The old flattener stripped import/export lines and concatenated files,
-  # leaving duplicate top-level defs resolved by fn-table first-match; the
-  # merge renames them, so the flat source has ZERO duplicates (asserted
-  # below) and carries the #716 visibility guarantees.
-  local merged_path
-  mkdir -p "$PROJECT_ROOT/_build"
-  merged_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_merged_source.XXXXXX")"
-  local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
+# #726: flatten via the compiler's OWN merge machinery (ExportRenamePlan +
+# private namespacing), replacing the Python flattener that stripped
+# import/export lines and concatenated files, leaving duplicate top-level defs
+# resolved by fn-table first-match. The merge renames them, so the flat source
+# has ZERO duplicates (asserted by the caller) and carries #716's visibility
+# guarantees.
+#
+# The flatten TOOL is the current source's merge machinery, compiled by the
+# seed -- "one generation back", the same discipline the seed itself follows.
+# It used to be built from the COMMITTED _cli_adapter_module_source.vibe, which
+# is what forced that 4MB artifact to be tracked: regenerating it needed a copy
+# of itself.
+#
+# That was never a real cycle. The pinned seed can resolve imports off the live
+# tree and print the merged program on its own (VIBE_EMIT_MERGED_SOURCE), so the
+# tool can be bootstrapped from source in two extra seed passes and the
+# committed copy drops out entirely -- see scripts/ensure_generated.sh and
+# docs/bootstrap.md. Verified when this landed: the tool built this way produces
+# a merged source BYTE-IDENTICAL to the one built from the committed artifact.
+#
+# The seed's own flatten is deliberately NOT used for the final output. It would
+# be one generation older, so an edit to the merge machinery itself
+# (merge_sources.vibe / import_alias_rewrite.vibe) would not take effect until
+# the next seed bump -- silently, since the output would still be valid. Paying
+# two extra seed passes keeps "edit the merge, regenerate, see it" true.
+bootstrap_merge_flatten_tool() {
+  local flatten_wasm="$1"
   local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
-  local committed_module_source="$COMPILER_DIR/_cli_adapter_module_source.vibe"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
+  local seed_merged seed_modsrc
+  seed_merged="$(mktemp "$PROJECT_ROOT/_build/seed_merged_source.XXXXXX")"
+  seed_modsrc="$(mktemp "$PROJECT_ROOT/_build/seed_module_source.XXXXXX")"
+  # Pass 1: the seed flattens the live tree.
+  rm -f "$seed_merged" "$seed_merged.diag"
+  (cd "$PROJECT_ROOT" && env VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
+    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
+    lib/@vibe/compiler/cli_adapter.vibe "$seed_merged" cli_main >"$tool_log.seedflat" 2>&1) || true
+  if [ ! -s "$seed_merged" ]; then
+    echo "generate_bundle: seed could not flatten the live tree (bootstrap pass 1)" >&2
+    cat "$seed_merged.diag" >&2 2>/dev/null || true
+    tail -40 "$tool_log.seedflat" >&2 2>/dev/null || true
+    exit 1
+  fi
+  # Pass 2: DCE it to a module source the seed can compile (same rooting as the
+  # real emit below -- see the #1137 note in build_adapter_module_source).
+  run_host_vibe_cmd emit-module-source "$seed_merged" "$seed_modsrc" "main" >/dev/null
+  if [ ! -s "$seed_modsrc" ]; then
+    echo "generate_bundle: emit-module-source failed on the seed-flattened source (bootstrap pass 2)" >&2
+    exit 1
+  fi
+  # Pass 3: compile it -- this is the current source's merge machinery.
   rm -f "$flatten_wasm" "$flatten_wasm.diag"
   (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
     VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
-    "$committed_module_source" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
+    "$seed_modsrc" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
+  rm -f "$seed_merged" "$seed_merged.diag" "$seed_modsrc" "$seed_modsrc.diag"
+}
+
+build_exact_adapter_merged_source() {
+  local merged_path
+  mkdir -p "$PROJECT_ROOT/_build"
+  merged_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_merged_source.XXXXXX")"
+  local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
+  local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
+  local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
+  bootstrap_merge_flatten_tool "$flatten_wasm"
   if [ ! -s "$flatten_wasm" ]; then
     echo "generate_bundle: merge-flatten compiler build failed" >&2
     cat "$flatten_wasm.diag" >&2 2>/dev/null || true
@@ -957,7 +994,7 @@ build_exact_adapter_merged_source() {
 # loudly. When no seed wasm is available (e.g. tiny synthetic fixtures used
 # by generate_bundle_test.sh, which have no bootstrap/seed/ at all) the
 # check is skipped -- same "trust the pinned artifact" fallback
-# check_module_source_sync.sh already uses -- so this adds no new
+# the retired check_module_source_sync.sh used -- so this adds no new
 # dependency, only a safety gate where the seed is present.
 validate_module_source_compiles() {
   local candidate="$1"
