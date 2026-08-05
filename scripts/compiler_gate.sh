@@ -9180,6 +9180,71 @@ fn main {
 rm -rf "$resdir"
 echo "[compiler-gate] resource declaration identity rules ok"
 
+echo "[compiler-gate] 92/92 fixtures/typecheck verdicts match expected.tsv (#138)"
+# These 61 fixtures came with `.diag` snapshots of the RETIRED MoonBit host's
+# rendered diagnostic. No current path emits that shape, no harness read them,
+# and every one was stale -- so they were documentation of an expectation
+# nothing checked. fixtures/typecheck/expected.tsv replaces them with a verdict
+# plus a message substring, and this section is the harness they never had.
+#
+# Running them turned out to matter: 13 fixtures the old snapshots said were
+# REJECTED now compile (see the `debt-accepts` rows). Those are checks the
+# compiler no longer performs, and nothing else in this gate covers them.
+# They are locked at today's behaviour so the debt cannot grow silently, and
+# the gate FAILS if one starts being rejected again -- promote the row then.
+tcdir="_build/_gate_typecheck_fixtures"
+rm -rf "$tcdir"; mkdir -p "$tcdir"
+# `__no_entry__`: a fixture without a `main` would otherwise fail on "entry
+# `main` not found" and count as rejected without its actual check ever having
+# run -- measured, that masked 4 of the 13 lost checks.
+tc_names="$(grep -v '^#' fixtures/typecheck/expected.tsv | cut -f1)"
+# One compile each (~250ms), fanned out -- serially this section would be ~15s.
+printf '%s\n' $tc_names | xargs -P "$(nproc 2>/dev/null || echo 4)" -I{} env \
+  ROOT_DIR="$ROOT_DIR" stage2_wasm="$stage2_wasm" tcdir="$tcdir" \
+  bash -c 'VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/typecheck/{}.vibe" "$tcdir/{}.wasm" __no_entry__ >/dev/null 2>&1 || true'
+tc_fail=0
+tc_debt=0
+while IFS=$'\t' read -r tcname tcstatus tcneedle; do
+  case "$tcname" in ''|'#'*) continue ;; esac
+  if [ -s "$tcdir/$tcname.wasm" ]; then tcact="ok"; else tcact="reject"; fi
+  tcdiag="$(head -1 "$tcdir/$tcname.wasm.diag" 2>/dev/null || true)"
+  case "$tcstatus" in
+    ok) tcwant="ok" ;;
+    debt-accepts) tcwant="ok"; tc_debt=$((tc_debt + 1)) ;;
+    reject) tcwant="reject" ;;
+    debt-rejects) tcwant="reject"; tc_debt=$((tc_debt + 1)) ;;
+    *) echo "[compiler-gate] FAIL: unknown status '$tcstatus' for $tcname in fixtures/typecheck/expected.tsv" >&2; exit 1 ;;
+  esac
+  if [ "$tcact" != "$tcwant" ]; then
+    case "$tcstatus" in
+      debt-accepts)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is REJECTED again -- the lost check is back. Promote its row in expected.tsv from 'debt-accepts' to 'reject' with the new message (#138)." >&2 ;;
+      debt-rejects)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe COMPILES again. Promote its row in expected.tsv from 'debt-rejects' to 'ok' (#138)." >&2 ;;
+      *)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe expected '$tcwant', got '$tcact' (#138)" >&2 ;;
+    esac
+    [ -n "$tcdiag" ] && echo "    diag: $tcdiag" >&2
+    tc_fail=1
+  elif [ "$tcwant" = "reject" ] && [ -n "$tcneedle" ]; then
+    case "$tcdiag" in
+      *"$tcneedle"*) ;;
+      *)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is rejected, but not for the recorded reason (#138)" >&2
+        echo "    expected substring: $tcneedle" >&2
+        echo "    actual:             $tcdiag" >&2
+        tc_fail=1 ;;
+    esac
+  fi
+done < fixtures/typecheck/expected.tsv
+if [ "$tc_fail" -ne 0 ]; then
+  exit 1
+fi
+rm -rf "$tcdir"
+echo "[compiler-gate] typecheck fixtures ok ($(printf '%s\n' $tc_names | wc -l | tr -d ' ') fixtures, $tc_debt known debt)"
+
 # --- #819: per-block `__test_*` exports + isolated invocation -----------------
 # A `__no_entry__` test build exports one `__test_<name>` per `test {}` block
 # (alongside the `__bench_<name>` exports that already existed), and the runner
