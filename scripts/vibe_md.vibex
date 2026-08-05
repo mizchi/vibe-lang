@@ -501,10 +501,41 @@ fn sha256_file(path: String) -> String with Process {
   String::trim(r.stdout)
 }
 
+/// A token unique to THIS process, memoized (module-level `let` = initialized
+/// once). Used to name the cache's temp file; `$$` in the `sh -c` is that
+/// shell's pid, which is unique per invocation of this tool.
+let doctest_tmp_tag_cell = Array::slice([
+  ""
+], 0, 0)
+
+fn doctest_tmp_tag() -> String with Process {
+  if Array::length(doctest_tmp_tag_cell) > 0 {
+    Array::get(doctest_tmp_tag_cell, 0)
+  } else {
+    let t = String::trim(sh_capture("echo $$").stdout)
+    Array::push(doctest_tmp_tag_cell, t)
+    t
+  }
+}
+
+/// Publish a cache entry ATOMICALLY (write to a process-unique temp, then
+/// rename over the final name).
+///
+/// A plain `Fs::write_file` was fine while this tool processed one doc at a
+/// time. `scripts/vibe_md.sh` now runs one process PER DOC in parallel, and
+/// the cache key is the compiled wasm's hash -- so two docs containing the
+/// SAME block source key to the SAME file, and two workers can write it at
+/// once. An interleaved write leaves a truncated or mixed entry, which a
+/// later run reads back AS THE BLOCK'S STDOUT: a silently wrong PASS or FAIL,
+/// the worst failure shape this cache could have. `rename` within one
+/// directory is atomic, so a reader sees either the old entry or a complete
+/// new one.
 fn write_doctest_cache(cache_path: String, content: String) -> Unit with Fs + Process {
   let dir = dirname(cache_path)
   let _ = sh_capture("mkdir -p \{shq(dir)}")
-  Fs::write_file(cache_path, content)
+  let tmp = "\{cache_path}.tmp\{doctest_tmp_tag()}"
+  Fs::write_file(tmp, content)
+  Fs::rename(tmp, cache_path)
 }
 
 fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with Fs + Process + Env {

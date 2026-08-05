@@ -35,7 +35,16 @@ esac
 
 entry_wasm_rel="$(bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh")"
 
-out_rel="_build/vibe_fmt/out.vibe"
+# The formatter's output path is PER PROCESS. It used to be the fixed
+# `_build/vibe_fmt/out.vibe`, which two concurrent `vibe_fmt.sh` runs would
+# clobber -- each then compared its OWN source against whichever process wrote
+# last, so `--check` reported files as unformatted at random. Found while
+# parallelizing the doctest driver (#819): `fmt-check` over 7 docs went from
+# 0 failures serially to 4-7 different failures per parallel run. Nothing
+# reads this path from outside, so making it unique costs nothing.
+out_rel="_build/vibe_fmt/out.$$.vibe"
+mkdir -p "$ROOT_DIR/_build/vibe_fmt"
+trap 'rm -f "$ROOT_DIR/$out_rel"' EXIT
 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
   --invoke main "$entry_wasm_rel" "$src_rel" "$out_rel" >/dev/null
