@@ -106,6 +106,18 @@ CI shard では:
   `///` の「直後の1宣言に対応する doc」という意味論とは食い違う) ため、
   一括置換はしていない — 使い分けは書く場所ごとに判断すること。
 - variables/functions は snake_case (lowercase only)
+- **effect 名と代数 effect の operation は CamelCase** (#1458)。operation が
+  snake_case でないのは、effect が**代数レコードを発行している**からで、
+  `Log::Emit` は関数ではなく constructor に当たる。一方 capability builtin
+  (`Fs::read_file` / `Env::get` / `Console::write_stream`) は本当に関数なので
+  `Effect::snake_case`。この二トラックは揺れではなく用途の違いで、
+  `perform` が要るかどうかで見分けられる。分類の表と使い分けは
+  [docs/cheatsheet.md](docs/cheatsheet.md) の "Effect classes and how
+  operations are spelled" と ADR-0084
+  ([docs/effect-taxonomy-entry-policy.md](docs/effect-taxonomy-entry-policy.md))。
+- **言語ポリシー: コアロジック以外は、できるだけ「色のない関数」で書けるように
+  する** — 権限は row が運び、呼び出し側の式は素の関数呼び出しのままにする
+  (capability builtin がその形)。
 
 ## Code Navigation (IMPORTANT)
 
