@@ -585,16 +585,25 @@ Rules:
 - Function effects appear after return type: `-> T with Effect`.
 - Effect row variables such as `with e` are accepted in polymorphic
   higher-order signatures.
-- The effect row has three accepted spellings, and #1429 is migrating the
-  language from the third to the first. All three parse to the same row, so
-  nothing after the parser -- checker, codegen, printer, contract hash --
-  observes which was written:
+- The effect row has exactly two spellings (#1429):
 
   | spelling | |
   | --- | --- |
-  | `with A + B` | braceless, `+`-separated. The form being migrated **to** |
+  | `with A + B` | braceless, `+`-separated |
   | `with ()` | the explicitly empty row |
-  | `with { A, B }` | braced, comma-separated. The form being migrated **from** |
+
+  The legacy braced/comma spelling (`with { A, B }`) is **gone** — it is a
+  parse error naming its replacement. It was accepted alongside the new one
+  only for the length of the migration, because the bootstrap rule
+  ([bootstrap.md](../bootstrap.md)) requires the seed to understand a spelling
+  before the compiler's own source may use it: the parser had to take both
+  while the tree was converted and the seed was bumped. `vibe fmt` still
+  rewrites it (`normalize_effect_rows` is a token pre-pass, so it converts
+  source the parser no longer accepts).
+
+  `effectset` keeps its braced member list (`effectset FsAll = { Fs::read_file,
+  Fs::write_file }`) — that `{ .. }` is a set literal on the right of `=`, not
+  a `with` row, and it never had a braceless spelling to collapse into.
 
   The separator is `+`, not `,`, because a comma cannot be told apart from an
   enclosing list's comma once the braces are gone: in `((Int) -> Int with A, B)`

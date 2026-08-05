@@ -224,8 +224,15 @@ test "parse generic type alias" {
 test "parse higher-order effect function type annotation" {
   // Regression: function types can appear as parenthesized parameter types
   // inside another function type, with an effect variable on both levels.
+  //
+  // #1429: this is the exact position the `+` separator exists for. The
+  // nested row is followed by the enclosing parameter list's `,` -- with a
+  // comma separator `(Int) -> Int with e, Int` could be read either as one
+  // row of two labels or as two parameters, so the row has to end at a token
+  // that can start neither a type nor a parameter. `+` can start neither, so
+  // no lookahead is needed here.
   let ok = handle {
-    let _ = parse_program(lex("let apply: [e]((Int) -> Int with { e }, Int) -> Int with { e } = (f, x) -> { f(x) }\n0"))
+    let _ = parse_program(lex("let apply: [e]((Int) -> Int with e, Int) -> Int with e = (f, x) -> { f(x) }\n0"))
     "ok"
   } with Error {
     Throw(_) => "threw"
@@ -234,7 +241,7 @@ test "parse higher-order effect function type annotation" {
 }
 
 test "parse higher-order effect function type annotation with trailing comma" {
-  let source = "let chain: [e](\n  (Int) -> Int with { e },\n  (Int) -> Int with { e },\n  Int,\n) -> Int with { e } = (f, g, x) -> { add(f(x), g(x)) }\n0"
+  let source = "let chain: [e](\n  (Int) -> Int with e,\n  (Int) -> Int with e,\n  Int,\n) -> Int with e = (f, g, x) -> { add(f(x), g(x)) }\n0"
   let ok = handle {
     let _ = parse_program(lex(source))
     "ok"
@@ -644,7 +651,7 @@ test "#1283: a guard else that only throws gets its own message" {
   // likely to be made first, since let-else did accept it. So it must not fall
   // into the generic message.
   let thrown = handle {
-    let _ = parse_program(lex("let f: (Option[Int]) -> Int with { Error } = (o) -> { guard o is Some(v) else { throw(\"none\") }\n  v }\nf(Some(1))"))
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int with Error = (o) -> { guard o is Some(v) else { throw(\"none\") }\n  v }\nf(Some(1))"))
     "ok"
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
@@ -772,41 +779,86 @@ test "#819: `example` is a reserved word, escapable as r#example" {
 
 //# #1429: effect-row spellings
 
-test "#1429: all three row spellings normalize to the same row" {
-  // The braced and braceless forms are indistinguishable after parsing --
-  // that is the property that lets them coexist across the bootstrap bump.
-  // The printer emits the BRACELESS form for both (#1429 step 3), so a
-  // round-trip of either spelling produces byte-identical output.
-  let braced = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with { Error, Fs } = (x) -> { x }")))
-  } with Error {
-    Throw(e) => String::concat("ERROR: ", e)
-  }
+test "#1429: the braceless row round-trips through the printer" {
   let braceless = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with Error + Fs = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(!String::starts_with(braced, "ERROR: "))
-  assert(braced == braceless)
-  assert(String::contains(braced, "with Error + Fs"))
-  assert(!String::contains(braced, "with {"))
+  assert(!String::starts_with(braceless, "ERROR: "))
+  assert(String::contains(braceless, "with Error + Fs"))
+  assert(!String::contains(braceless, "with {"))
 }
 
-test "#1429: `with ()` is the same row as the legacy `with {}`" {
+test "#1429: `with ()` is the empty row and round-trips" {
   let parens = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with () = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  let braces = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with {} = (x) -> { x }")))
-  } with Error {
-    Throw(e) => String::concat("ERROR: ", e)
-  }
   assert(!String::starts_with(parens, "ERROR: "))
-  assert(parens == braces)
   assert(String::contains(parens, "with ()"))
+}
+
+test "#1429: the braced row is rejected with a migration message" {
+  // The legacy `with { A, B }` spelling was accepted only for the length of
+  // the migration: the bootstrap rule is that the seed must understand a
+  // spelling before the compiler's own source may use it, so the parser took
+  // BOTH while the tree was converted and the seed was bumped. This is the
+  // retirement lock -- it must now be a parse ERROR, and the error must name
+  // the replacement, because `vibe fmt`'s normalize_effect_rows is a TOKEN
+  // pre-pass that still rewrites source this parser no longer accepts.
+  let msg = handle {
+    let _ = parse_program(lex("fn read_all(p: String) -> String with { Error, Fs } { p }\n"))
+    "parsed"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(not(msg == "parsed"))
+  assert(String::contains(msg, "with { A, B }"))
+  assert(String::contains(msg, "with A + B"))
+}
+
+test "#1429: the braced row is rejected in a function TYPE position too" {
+  // One row parser serves every position (fn decl, fn type, lambda
+  // annotation), so retiring the branch covers all of them at once -- a type
+  // annotation is where the braced form survived longest in the corpus.
+  let msg = handle {
+    let _ = parse_program(lex("let f: (Int) -> Int with { Error } = (x) -> { x }\n0"))
+    "parsed"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(not(msg == "parsed"))
+  assert(String::contains(msg, "#1429"))
+}
+
+test "#1429: the legacy empty row `with {}` is rejected too" {
+  // `with {}` and `with { A }` take the same parser branch, so the empty
+  // legacy spelling has to go with it -- `with ()` is the replacement.
+  let msg = handle {
+    let _ = parse_program(lex("let f: (Int) -> Int with {} = (x) -> { x }"))
+    "parsed"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(not(msg == "parsed"))
+  assert(String::contains(msg, "with ()"))
+}
+
+test "#1429: effectset keeps its braced member list" {
+  // #1429 removed the braces from the effect ROW, not from `effectset`'s
+  // member list -- that `{ .. }` is a set literal on the right of `=`, not a
+  // `with` row, and it never had a braceless spelling to collapse into. It
+  // still goes through collect_effect_names (the comma-separated collector),
+  // which is why that function survives the retirement.
+  let ok = handle {
+    let _ = parse_program(lex("effectset FsAll = { Fs::read_file, Fs::write_file }\nfn f() -> Int with FsAll { 0 }\n"))
+    "ok"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(ok == "ok")
 }
 
 test "#1429: a parenthesized non-empty row is rejected by name" {

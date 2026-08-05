@@ -152,11 +152,12 @@ fn fact(n: Int) -> Int {
 fn identity[T](x: T) -> T { x }                // generic
 fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
 fn hello() -> Unit with Stdout { stdout_write("hi\n") }
-// #1429: the effect row has three accepted spellings while the migration runs.
-// They parse to the SAME row — nothing after the parser can tell them apart.
-//   with A + B      braceless, `+`-separated   (migrating TO this one)
+// #1429: the effect row has exactly two spellings.
+//   with A + B      braceless, `+`-separated
 //   with ()         the explicitly empty row
-//   with { A, B }   braced, comma-separated    (migrating FROM)
+// The old `with { A, B }` is a parse error naming its replacement; `vibe fmt`
+// rewrites it for you. (`effectset X = { A, B }` keeps its braces — that is a
+// set literal, not a row.)
 // `+` rather than `,` because once the braces are gone a comma cannot be told
 // apart from an enclosing list's comma: in `fn g(cb: (Int) -> Int with A, x: Int)`
 // the `x` is either a second label or the next parameter. `+` starts neither a
