@@ -1,0 +1,136 @@
+//# Imports
+
+import ./vpkg_fmt_entry.vibe {
+  format_vpkg
+}
+
+//# Functions
+
+/// #1392-style helper (see lib/@vibe/json/json_test.vibe's parse_err_msg):
+/// catch format_vpkg's thrown message instead of letting it fail the test
+/// (test blocks carry an ambient Error, so an escaping throw would just
+/// fail the test outright).
+fn format_err_msg(s: String) -> String {
+  handle {
+    let _ = format_vpkg(s)
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+let canonical_no_deps =
+"name = @scope/pkg\n" +
+"version = 0.0.1\n" +
+"description =\n" +
+"  #|a package\n" +
+"deps = {}\n" +
+"\n" +
+"generated_hash =\n" +
+"\n" +
+"// a package\n" +
+"\n" +
+"fn f(x: Int) -> Int\n"
+
+let canonical_with_deps =
+"name = @scope/pkg\n" +
+"version = 0.1.0\n" +
+"description =\n" +
+"  #|line one\n" +
+"  #|line two\n" +
+"deps = {\n" +
+"  @scope/other : 1.2.3\n" +
+"}\n" +
+"\n" +
+"generated_hash =\n" +
+"\n" +
+"fn g() -> Unit\n"
+
+//# Misc
+
+test "format_vpkg is a no-op on an already-canonical header with empty deps" {
+  assert_eq(format_vpkg(canonical_no_deps), canonical_no_deps)
+}
+
+test "format_vpkg is a no-op on an already-canonical header with deps + multi-line description" {
+  assert_eq(format_vpkg(canonical_with_deps), canonical_with_deps)
+}
+
+test "format_vpkg normalizes deps block whitespace without reordering entries" {
+  let messy =
+  "name = @scope/pkg\n" +
+  "version = 0.0.1\n" +
+  "description =\n" +
+  "  #|d\n" +
+  "deps = {\n" +
+  "  @scope/b:1.0.0\n" +
+  "  @scope/a  :  2.0.0\n" +
+  "}\n" +
+  "\n" +
+  "generated_hash =\n" +
+  "\n" +
+  "fn h() -> Unit\n"
+  let expected =
+  "name = @scope/pkg\n" +
+  "version = 0.0.1\n" +
+  "description =\n" +
+  "  #|d\n" +
+  "deps = {\n" +
+  "  @scope/b : 1.0.0\n" +
+  "  @scope/a : 2.0.0\n" +
+  "}\n" +
+  "\n" +
+  "generated_hash =\n" +
+  "\n" +
+  "fn h() -> Unit\n"
+  assert_eq(format_vpkg(messy), expected)
+}
+
+test "format_vpkg preserves a populated generated_hash value" {
+  let pinned =
+  "name = @scope/pkg\n" +
+  "version = 0.0.1\n" +
+  "description =\n" +
+  "  #|d\n" +
+  "deps = {}\n" +
+  "\n" +
+  "generated_hash = #pkg:sha1:0000000000000000000000000000000000000a\n" +
+  "\n" +
+  "fn h() -> Unit\n"
+  assert_eq(format_vpkg(pinned), pinned)
+}
+
+test "format_vpkg rejects a file missing the name directive" {
+  let bad = "version = 0.0.1\ndescription =\n  #|d\ndeps = {}\n\ngenerated_hash =\n\nfn h() -> Unit\n"
+  assert(String::contains(format_err_msg(bad), "name ="))
+}
+
+test "format_vpkg rejects an unterminated deps block" {
+  // No trailing newline: the file genuinely ends mid-block (a trailing "\n"
+  // would instead leave one more phantom blank "line" from the split,
+  // which the deps-entry branch reports as a malformed entry first).
+  let bad =
+  "name = @scope/pkg\n" +
+  "version = 0.0.1\n" +
+  "description =\n" +
+  "  #|d\n" +
+  "deps = {\n" +
+  "  @scope/a : 1.0.0"
+  assert(String::contains(format_err_msg(bad), "unterminated deps block"))
+}
+
+test "format_vpkg rejects a malformed deps entry" {
+  let bad =
+  "name = @scope/pkg\n" +
+  "version = 0.0.1\n" +
+  "description =\n" +
+  "  #|d\n" +
+  "deps = {\n" +
+  "  not-a-valid-entry\n" +
+  "}\n" +
+  "\n" +
+  "generated_hash =\n" +
+  "\n" +
+  "fn h() -> Unit\n"
+  assert(String::contains(format_err_msg(bad), "malformed deps entry"))
+}

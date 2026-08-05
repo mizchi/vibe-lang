@@ -1,0 +1,202 @@
+//# `vibe vpkg-fmt` entry (#1435): format an `index.vpkg` file. The header
+//# (name/version/description/deps/generated_hash directives, a syntax of
+//# its own — not vibe expressions) is re-rendered from parsed field values;
+//# everything after it (comments + bodyless declarations, which IS ordinary
+//# vibe syntax) is formatted by the existing CST formatter
+//# (../compiler/fmt/format.vibe).
+//#
+//# argv[0] = input path, argv[1] = output path (both repo-root-relative,
+//# under the wasm preopen dir). Driven by scripts/vpkg_fmt.sh.
+
+import @vibe/core {
+  array_empty
+}
+
+import ../compiler/fmt {
+  format_script
+}
+
+//# Header parsing
+
+fn line_value(line: String, prefix: String) -> String {
+  String::trim(String::substring(line, String::length(prefix), String::length(line)))
+}
+
+fn join_lines(lines: Array[String], from: Int, to: Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = from
+  while i < to {
+    if i > from {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    StringBuilder::push(sb, Array::get(lines, i))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// Parses the 5-directive header every lib/**/*.vpkg file carries today
+/// (`name = `, `version = `, `description =` + `  #|` lines, `deps = {...}`,
+/// `generated_hash = `) and returns (name, version, description lines,
+/// deps entries, generated_hash, index of the first line after the header).
+///
+/// Deliberately narrower than contract.vibe's scan_package_header, which
+/// also accepts the legacy bare `version x.y.z` spelling, `require` lines,
+/// and an entirely absent header (for fixtures/contract_* packages that
+/// exercise the conformance engine itself). This formatter only
+/// canonicalizes files already in the current header shape and fails
+/// loudly — a located Error — on anything else rather than guessing at a
+/// rendering.
+fn parse_header(lines: Array[String]) -> (String, String, Array[String], Array[(String, String)], String, Int) with { Error } {
+  let n = Array::length(lines)
+  if n < 6 {
+    throw("vpkg_fmt: file too short to carry a header")
+  } else ()
+  let l0 = Array::get(lines, 0)
+  if !String::starts_with(l0, "name = ") {
+    throw("vpkg_fmt: expected 'name = ...' on line 1, got: \{l0}")
+  } else ()
+  let name = line_value(l0, "name = ")
+  let l1 = Array::get(lines, 1)
+  if !String::starts_with(l1, "version = ") {
+    throw("vpkg_fmt: expected 'version = ...' on line 2, got: \{l1}")
+  } else ()
+  let version = line_value(l1, "version = ")
+  let l2 = Array::get(lines, 2)
+  if l2 != "description =" {
+    throw("vpkg_fmt: expected 'description =' on line 3, got: \{l2}")
+  } else ()
+  let desc = array_empty()
+  let mut i = 3
+  let mut in_desc = true
+  while in_desc {
+    if i >= n {
+      throw("vpkg_fmt: unterminated description block")
+    } else ()
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "  #|") {
+      Array::push(desc, String::substring(line, 4, String::length(line)))
+      i = i + 1
+    } else {
+      in_desc = false
+    }
+  }
+  if Array::length(desc) == 0 {
+    throw("vpkg_fmt: description block has no '  #|...' lines")
+  } else ()
+  if i >= n {
+    throw("vpkg_fmt: missing deps directive")
+  } else ()
+  let deps = array_empty()
+  let dline = Array::get(lines, i)
+  if dline == "deps = {}" {
+    i = i + 1
+  } else if dline == "deps = {" {
+    i = i + 1
+    let mut closed = false
+    while !closed {
+      if i >= n {
+        throw("vpkg_fmt: unterminated deps block")
+      } else ()
+      let line = Array::get(lines, i)
+      let trimmed = String::trim(line)
+      if trimmed == "}" {
+        closed = true
+        i = i + 1
+      } else {
+        let parts = String::split(trimmed, ":")
+        if Array::length(parts) != 2 {
+          throw("vpkg_fmt: malformed deps entry: \{line}")
+        } else ()
+        let dname = String::trim(Array::get(parts, 0))
+        let dver = String::trim(Array::get(parts, 1))
+        Array::push(deps, (dname, dver))
+        i = i + 1
+      }
+    }
+  } else {
+    throw("vpkg_fmt: expected 'deps = {' or 'deps = {}', got: \{dline}")
+  }
+  if i >= n || Array::get(lines, i) != "" {
+    throw("vpkg_fmt: expected a blank line after the deps block")
+  } else ()
+  i = i + 1
+  if i >= n {
+    throw("vpkg_fmt: missing generated_hash directive")
+  } else ()
+  let ghline = Array::get(lines, i)
+  if !String::starts_with(ghline, "generated_hash =") {
+    throw("vpkg_fmt: expected 'generated_hash = ...', got: \{ghline}")
+  } else ()
+  let gh = line_value(ghline, "generated_hash =")
+  i = i + 1
+  (name, version, desc, deps, gh, i)
+}
+
+//# Header rendering
+
+fn render_header(name: String, version: String, desc: Array[String], deps: Array[(String, String)], generated_hash: String) -> String {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "name = " + name + "\n")
+  StringBuilder::push(sb, "version = " + version + "\n")
+  StringBuilder::push(sb, "description =\n")
+  let mut i = 0
+  while i < Array::length(desc) {
+    StringBuilder::push(sb, "  #|" + Array::get(desc, i) + "\n")
+    i = i + 1
+  }
+  if Array::length(deps) == 0 {
+    StringBuilder::push(sb, "deps = {}\n")
+  } else {
+    StringBuilder::push(sb, "deps = {\n")
+    let mut j = 0
+    while j < Array::length(deps) {
+      let (dname, dver) = Array::get(deps, j)
+      StringBuilder::push(sb, "  " + dname + " : " + dver + "\n")
+      j = j + 1
+    }
+    StringBuilder::push(sb, "}\n")
+  }
+  StringBuilder::push(sb, "\n")
+  StringBuilder::push(sb, if generated_hash == "" {
+    "generated_hash =\n"
+  } else {
+    "generated_hash = " + generated_hash + "\n"
+  })
+  StringBuilder::freeze(sb)
+}
+
+//# Entry
+
+export fn format_vpkg(src: String) -> String with { Error } {
+  let lines = String::split(src, "\n")
+  let (name, version, desc, deps, gh, header_end) = parse_header(lines)
+  let header = render_header(name, version, desc, deps, gh)
+  let n = Array::length(lines)
+  let mut rest_start = header_end
+  while rest_start < n && Array::get(lines, rest_start) == "" {
+    rest_start = rest_start + 1
+  }
+  let rest = join_lines(lines, rest_start, n)
+  if String::length(String::trim(rest)) == 0 {
+    header
+  } else {
+    header + "\n" + format_script(rest)
+  }
+}
+
+export fn main() -> Int with { Fs, Env, Stderr } {
+  let input = Env::args_get(0)
+  let output = Env::args_get(1)
+  handle {
+    let src = Fs::read_file(input)
+    let formatted = format_vpkg(src)
+    Fs::write_file(output, formatted)
+    0
+  } with Error {
+    Throw(msg) => {
+      Stderr::write_stream("vpkg_fmt: " + msg + "\n")
+      1
+    }
+  }
+}
