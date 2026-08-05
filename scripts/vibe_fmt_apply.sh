@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# vibe-fmt bulk apply: format every tracked lib/**/*.vibe file in place,
-# except the small set of AUTO-GENERATED files listed in
+# vibe-fmt bulk apply: format every tracked lib/**/*.vibe and lib/**/*.vpkg
+# file in place (`.vpkg` package contracts go through format_vpkg -- a
+# canonical header writer plus the CST formatter over the bodyless
+# declarations, #1435), except the small set of AUTO-GENERATED files in
 # scripts/vibe_fmt_allowlist.txt (bundle/module-source artifacts
 # scripts/generate_bundle.sh emits as compact/minified output -- those
 # aren't meant to be hand-formatted). This is the counterpart to
@@ -34,7 +36,7 @@ is_excluded() {
   ' "$ALLOWLIST_FILE"
 }
 
-mapfile -t files < <(git ls-files "$SCAN_ROOT/*.vibe" | sort)
+mapfile -t files < <(git ls-files "$SCAN_ROOT/*.vibe" "$SCAN_ROOT/*.vpkg" | sort)
 
 to_format=()
 skipped=0

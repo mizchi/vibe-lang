@@ -1,0 +1,109 @@
+//# Imports
+
+import ./format.vibe {
+  format_script, format_source, format_vpkg
+}
+
+//# Tests
+// #1435: the `.vpkg` formatter. The header is NOT vibe syntax, so the guard
+// that matters most is #3 below -- `name = @vibe/parser` must survive
+// verbatim, where format_script would render it `name = @vibe / parser`.
+
+test "vpkg: a canonical header is a fixpoint" {
+  let src = "name = @vibe/parser\nversion = 0.1.0\ndescription =\n  #|the parser\ndeps = {\n  @vibe/ast : 0.1.0\n}\n\ngenerated_hash =\n\n// doc\nfn lex(src: String) -> Int\n"
+  assert(format_vpkg(src) == src)
+}
+
+test "vpkg: key order, value spacing and the generated_hash blank are normalized" {
+  let src = "version = 0.1.0\nname =    @vibe/parser\ngenerated_hash =\ndeps = {}\n\nfn f() -> Int\n"
+  let want = "name = @vibe/parser\nversion = 0.1.0\ndeps = {}\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  assert(format_vpkg(src) == want)
+}
+
+test "vpkg: a key the loader would not recognize is left completely alone" {
+  // scan_package_header matches the exact spelling `name =`, so `name  =`
+  // and `nmae =` are not directives to the loader either. Formatting them
+  // as declarations would rewrite `@vibe/parser` to `@vibe / parser`.
+  let loose = "name  = @vibe/parser\nversion = 0.1.0\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  assert(format_vpkg(loose) == loose)
+  let typo = "nmae = @vibe/parser\nversion = 0.1.0\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  assert(format_vpkg(typo) == typo)
+}
+
+test "vpkg: the package reference in the header is never tokenized" {
+  // format_script would split `@vibe/parser` on `/` and space the operator:
+  // this is the whole reason .vpkg needs its own formatter.
+  let src = "name = @vibe/parser\nversion = 0.1.0\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  let out = format_vpkg(src)
+  assert(out == src)
+  assert(format_script(src) != src)
+}
+
+test "vpkg: the declaration region still goes through format_script" {
+  // `with { Error }` is the pre-#1429 spelling; normalize_effect_rows in
+  // format_script rewrites it. That it applies here is the point -- the
+  // declarations are ordinary bodyless vibe.
+  let src = "name = @vibe/x\nversion = 0.0.1\n\ngenerated_hash =\n\nfn f() -> Int with { Error }\n"
+  let want = "name = @vibe/x\nversion = 0.0.1\n\ngenerated_hash =\n\nfn f() -> Int with Error\n"
+  assert(format_vpkg(src) == want)
+}
+
+test "vpkg: deps entries are sorted and re-spaced" {
+  let src = "name = @vibe/x\nversion = 0.0.1\ndeps = {\n  @vibe/zzz:0.0.1\n  @vibe/aaaa   :   0.2.0\n}\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  let want = "name = @vibe/x\nversion = 0.0.1\ndeps = {\n  @vibe/aaaa : 0.2.0\n  @vibe/zzz : 0.0.1\n}\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  // Also pins the comparator: plain String `<` is length-first, which would
+  // order the shorter `@vibe/zzz` first (see str_lt in format.vibe).
+  assert(format_vpkg(src) == want)
+}
+
+test "vpkg: description continuation lines keep their text and take a 2-space indent" {
+  let src = "name = @vibe/x\nversion = 0.0.1\ndescription =\n#|first  line\n      #|  second\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  let want = "name = @vibe/x\nversion = 0.0.1\ndescription =\n  #|first  line\n  #|  second\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  assert(format_vpkg(src) == want)
+}
+
+test "vpkg: the blank line between header and declarations is normalized to one" {
+  let src = "name = @vibe/x\nversion = 0.0.1\n\ngenerated_hash =\n\n\n\nfn f() -> Int\n"
+  let want = "name = @vibe/x\nversion = 0.0.1\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  assert(format_vpkg(src) == want)
+}
+
+test "vpkg: a file with no header is plain vibe" {
+  // The fixtures/contract_* packages carry no header at all.
+  let src = "// a contract with no header\nfn f() -> Int with { Error }\n"
+  assert(format_vpkg(src) == format_script(src))
+}
+
+test "vpkg: a comment block after the header belongs to the declarations" {
+  // Comments do not end the header scan (scan_package_header treats them as
+  // neutral), so the boundary must be the last DIRECTIVE line -- otherwise
+  // the package's doc comment would be swallowed into the header and lost.
+  let src = "name = @vibe/x\nversion = 0.0.1\n\ngenerated_hash =\n\n// package doc\n// second line\nfn f() -> Int\n"
+  assert(format_vpkg(src) == src)
+}
+
+test "vpkg: an unterminated deps block is left completely alone" {
+  // The loader rejects this file anyway. A formatter that guessed here
+  // would run the header scan to EOF and delete every declaration.
+  let src = "name = @vibe/x\nversion = 0.0.1\ndeps = {\n  @vibe/ast : 0.0.1\n\nfn f() -> Int\n"
+  assert(format_vpkg(src) == src)
+}
+
+test "vpkg: a deps entry with no colon is left completely alone" {
+  let src = "name = @vibe/x\nversion = 0.0.1\ndeps = {\n  @vibe/ast 0.0.1\n}\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  assert(format_vpkg(src) == src)
+}
+
+test "vpkg: formatting is idempotent" {
+  let src = "version = 0.1.0\nname = @vibe/parser\ndeps = {\n  @vibe/zzz:0.0.1\n  @vibe/aaaa:0.2.0\n}\ngenerated_hash =\n\nfn f() -> Int with { Error }\n"
+  let once = format_vpkg(src)
+  assert(format_vpkg(once) == once)
+}
+
+test "format_source dispatches on the .vpkg extension" {
+  let src = "name = @vibe/parser\nversion = 0.1.0\n\ngenerated_hash =\n\nfn f() -> Int\n"
+  assert(format_source("lib/@vibe/parser/index.vpkg", src) == format_vpkg(src))
+  assert(format_source("lib/@vibe/parser/lexer.vibe", src) == format_script(src))
+  // A path too short to carry the extension must not index out of bounds.
+  assert(format_source("x", "fn f() -> Int\n") == "fn f() -> Int\n")
+}
