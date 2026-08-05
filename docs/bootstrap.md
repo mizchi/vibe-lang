@@ -267,6 +267,25 @@ commit され続けるのは `bootstrap/seed/compiler.wasm` だけ (これも実
 13MB の1行 bundle が diff に出ないようにするためと、衝突したときに
 何千個もの conflict marker ではなく whole-file conflict にするため。
 
+### printer の出力を変えても bootstrap bump は要らない (#1429 step 3)
+
+`lib/@vibe/parser/printer.vibe` の出力を変えると生成物 (flatten は宣言を
+`print_program` 経由で書く) の中身も変わるが、それは **bump の理由にならない**。
+bump が要るのは compiler source 自体が **seed の読めない新しい syntax** を
+使い始めるときだけで、printer が何を*出す*かは seed が何を*読める*かと独立。
+
+#1429 step 3 (effect row を braceless 化) では、committed seed
+(`effect-row-spellings-2026-08-04`) に `with A + B` / `with ()` を直接食わせて
+parse できることを確認した上で、bump なしで通している。**推論ではなく probe
+すること** — seed が読めるかどうかは1コマンドで確かめられる。
+
+> **履歴**: #1443 以前、この変更は `generate_bundle.sh` を**収束するまで複数回**
+> 回す必要があった (printer 実測で3パス)。`_cli_adapter_module_source.vibe` が
+> 1世代前のスナップショットでありながら次の flatten の入力でもあったため、
+> printer の変更が1 pass につき1世代しか進まなかった。#1443 が seed に live
+> tree を直接解決させ (`VIBE_EMIT_MERGED_SOURCE`)、成果物の tracking もやめた
+> ので、この世代遅れも `drift detected` ゲートも今は存在しない。
+
 ### bootstrap bump の手順 (更新版)
 
 `seed-release.yml` は **tag push ではなく `workflow_dispatch`** で手動起動する

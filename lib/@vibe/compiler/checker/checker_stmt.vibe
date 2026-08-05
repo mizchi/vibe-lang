@@ -447,7 +447,7 @@ fn top_stmt_expr_off(e: Expr) -> Int {
 // "Bootstrap gotcha" note on why introducing a brand new cross-file
 // function+its first caller in the same change once broke
 // generate_bundle.sh's flatten step). Full resolution (actually authorizing
-// `with { EffectsetName }`) is still step 3; this only powers the two
+// `with EffectsetName`) is still step 3; this only powers the two
 // specific checks the ADR's Decision section calls out by name (cycle
 // rejection, operation/effectset member-namespace collision) so the
 // checker's current blanket "not yet supported" rejection at least
@@ -638,7 +638,7 @@ fn es_join_comma(names: Array[String]) -> String {
 /// (TyFn/EFn's `Option[String]` field) into its flat leaf-label expansion,
 /// leaving ordinary effect/operation labels and row variables untouched
 /// (es_expand_label is a no-op passthrough for any name that isn't a known
-/// effectset). `with { AskAll, Fs }` where `effectset AskAll = { Ask }`
+/// effectset). `with AskAll + Fs` where `effectset AskAll = { Ask }`
 /// becomes `"Ask, Fs"` -- from that point on, the EXISTING string-label-based
 /// containment machinery (decl_authorizes_effect et al., unmodified) sees
 /// only base labels, so `AskAll` now genuinely authorizes what it expands to
@@ -690,7 +690,7 @@ fn es_expand_opt_texpr(ty: Option[TypeExpr], es_names: Array[String], es_members
 }
 
 /// Also expands a PARAMETER's own function-typed annotation (the #885
-/// callback-overlay case, e.g. `run(f: () -> Int with { AskAll }) -> Int`) --
+/// callback-overlay case, e.g. `run(f: () -> Int with AskAll) -> Int`) --
 /// es_expand_opt_texpr already handles any TypeExpr generically (it only
 /// touches TyFn's effect slot, passing every other shape through unchanged),
 /// so reusing it here for each param needs no new logic.
@@ -708,8 +708,8 @@ fn es_expand_top_value(e: Expr, es_names: Array[String], es_members_list: Array[
 }
 
 /// Rewrite a top-level binding's OWN declared effect row(s) -- the `ty`
-/// annotation (`let f: () -> T with { Es } = ...`), the EFn value's own
-/// inline row (`let f = () -> T with { Es } { ... }`), and every
+/// annotation (`let f: () -> T with Es = ...`), the EFn value's own
+/// inline row (`let f = () -> T with Es { ... }`), and every
 /// PARAMETER's own function-typed row -- expanding any effectset-name token
 /// before check_perform_effects_stmts_env (unmodified) sees it. A parameter
 /// nested more than one level deep (a function-typed field inside a struct
@@ -1680,7 +1680,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // their own specific diagnostics via the resolver-core helpers
         // above (using the whole-list pre-pass tables, order-independent).
         // A definition that is neither is now ACCEPTED (step 3): its
-        // members are used to expand any `with { EffectsetName }` row item
+        // members are used to expand any `with EffectsetName` row item
         // that references it, via es_expand_stmts_effect_rows in
         // collect_async_effect_errors below -- an accepted effectset
         // genuinely has capability now, unlike step 2's placeholder
@@ -1950,8 +1950,8 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: 
       // ADR-0071 step 3 (#755): expand any effectset-name token in a
       // top-level binding's OWN declared effect row into its flat
       // leaf-label set BEFORE the (otherwise unmodified)
-      // check_perform_effects_stmts_env sees it -- `with { AskAll }`
-      // becomes e.g. `with { Ask }`, so the existing string-label
+      // check_perform_effects_stmts_env sees it -- `with AskAll`
+      // becomes e.g. `with Ask`, so the existing string-label
       // containment machinery authorizes what AskAll actually expands to
       // instead of requiring callers to re-declare it verbatim. Pure AST
       // rewrite local to this file (see es_expand_stmts_effect_rows);

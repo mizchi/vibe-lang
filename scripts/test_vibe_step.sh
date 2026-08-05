@@ -54,7 +54,7 @@ proj="$WORK/proj"; mkdir -p "$proj"
 cat > "$proj/prog.vibex" <<'EOF'
 export let leaf = (x: Int) -> Int { x + 1 }
 export let mid = (x: Int) -> Int { leaf(x) + 1 }
-fn main with { Stdout } { Stdout::write_stream("\{mid(40)}\n") }
+fn main with Stdout { Stdout::write_stream("\{mid(40)}\n") }
 EOF
 
 # 1. Plain `vibe run` is unaffected: prints 42, emits NO debugger output.

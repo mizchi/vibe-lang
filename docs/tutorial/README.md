@@ -24,7 +24,7 @@ pkf run vibe-md-tutorial                                # check を task 化し�
 | [02 制御フロー](02_control_flow.vibe.md) | if / while / loop / for-in / return / パイプ |
 | [03 データ](03_data.vibe.md) | tuple / array / record / struct / enum / パターンマッチ |
 | [04 Option](04_option.vibe.md) | Option / `let*` / `?` |
-| [05 エフェクト](05_effects.vibe.md) | `with { ... }` / Exception / handle / perform / resume |
+| [05 エフェクト](05_effects.vibe.md) | `with ...` / Exception / handle / perform / resume |
 | [06 テスト](06_tests.vibe.md) | test ブロック / assert / CLI ツーリング |
 | [07 モジュールとパッケージ](07_modules_packages.vibe.md) | import / export / @scope パッケージ / 契約 / pin |
 

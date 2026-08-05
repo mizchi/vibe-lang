@@ -144,7 +144,7 @@ effect FileIo {
   ReadFile(String) -> String
 }
 
-let rec walk = (path: String, depth: Int) -> String with { FileIo } {
+let rec walk = (path: String, depth: Int) -> String with FileIo {
   let source = perform FileIo::ReadFile(path)
   if depth <= 0 {
     source
@@ -155,7 +155,7 @@ let rec walk = (path: String, depth: Int) -> String with { FileIo } {
   }
 }
 
-export let _start: () -> Int with { Fs } = () -> {
+export let _start: () -> Int with Fs = () -> {
   let out = handle {
     walk("_build/_gate_deepresume/a.txt", 1)
   } with FileIo {
@@ -1854,7 +1854,7 @@ let counter_stream = () -> (() -> Option[Int]) {
   let mut n = 0
   () -> Option[Int] { if n < 4 { n = n + 1; Some(n) } else { None } }
 }
-export let _start: () -> Int with { Async } = () -> {
+export let _start: () -> Int with Async = () -> {
   let mut t = 0
   for x in mkstream([10, 20, 30]) { t = t + x }
   for y in counter_stream() { t = t + y }
@@ -2195,23 +2195,23 @@ echo "[compiler-gate] nested literal sub-pattern discrimination ok"
 # 26. effect-call discipline (#626 criteria 1 & 3-builtin-slice): both
 #     `perform EffName::Op` and a call to an effectful BUILTIN (`Fs::read_file`,
 #     ...) are type errors unless the enclosing function declares that effect in
-#     `with { ... }` (or it is inside a `handle`). Declared variants must
+#     a `with` row (or it is inside a `handle`). Declared variants must
 #     compile; undeclared variants must be REJECTED. (`Error`/`Async` are out of
 #     this slice; pure builtins like `Array::length` are never flagged.)
 echo "[compiler-gate] 26/26 effect-call discipline (perform + builtin)"
 pfdir="_build/_gate_perform"
 rm -rf "$pfdir"; mkdir -p "$pfdir"
 cat > "$pfdir/good.vibe" <<'EOF'
-let emit: () -> Unit with { Stdout } = () -> {
+let emit: () -> Unit with Stdout = () -> {
   perform Stdout::WriteStream("hi")
 }
-let load: (String) -> String with { Fs } = (p) -> {
+let load: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
 let pure_use: (Array[Int]) -> Int = (xs) -> {
   Array::length(xs)
 }
-export let _start: () -> Int with { Stdout } = () -> {
+export let _start: () -> Int with Stdout = () -> {
   emit()
   pure_use([1, 2, 3]) + 39
 }
@@ -2236,26 +2236,26 @@ EOF
 # Transitive (#626): a function calling an Fs-declaring helper must itself
 # declare Fs (or handle it). `mid` leaks Fs from `leaf` without declaring it.
 cat > "$pfdir/bad_transitive.vibe" <<'EOF'
-let leaf: (String) -> String with { Fs } = (p) -> {
+let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
 let mid: (String) -> String = (p) -> {
   leaf(p)
 }
-export let _start: () -> Int with { Fs } = () -> {
+export let _start: () -> Int with Fs = () -> {
   let _ = mid("x")
   42
 }
 EOF
 # The same chain with `mid` correctly declaring Fs must compile.
 cat > "$pfdir/good_transitive.vibe" <<'EOF'
-let leaf: (String) -> String with { Fs } = (p) -> {
+let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
-let mid: (String) -> String with { Fs } = (p) -> {
+let mid: (String) -> String with Fs = (p) -> {
   leaf(p)
 }
-export let _start: () -> Int with { Fs } = () -> {
+export let _start: () -> Int with Fs = () -> {
   let _ = mid("x")
   42
 }
@@ -2292,17 +2292,17 @@ if ! grep -qF "effect row mismatch for 'mid': missing { Fs }" "$pfdir/bad_transi
   echo "[compiler-gate] FAIL: transitive reject lacks the effect-row set-difference diagnostic (#639)" >&2
   cat "$pfdir/bad_transitive.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-if ! grep -qF "hint: declare 'fn mid(...) -> T with { Fs }'" "$pfdir/bad_transitive.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: declare 'fn mid(...) -> T with Fs'" "$pfdir/bad_transitive.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: no-row reject lacks the declare-form fix-it hint (#639)" >&2
   cat "$pfdir/bad_transitive.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 # #639: a caller that already declares a row gets the add-form hint carrying
 # the sorted union (existing row preserved, missing effect appended).
 cat > "$pfdir/bad_row_single.vibe" <<'EOF'
-let leaf: (String) -> String with { Fs } = (p) -> {
+let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
-let mid: (String) -> String with { Error } = (p) -> {
+let mid: (String) -> String with Error = (p) -> {
   leaf(p)
 }
 export let _start: () -> Int = () -> { 42 }
@@ -2313,11 +2313,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$pfdir/bad_row_single.wasm" ]; then
   echo "[compiler-gate] FAIL: partially-declared transitive effect call compiled (#639)" >&2; exit 1
 fi
-if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared with { Error }, requires { Error, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared { Error }, requires { Error, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-if ! grep -qF "hint: add 'with { Error, Fs }' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: add 'with Error + Fs' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the add-form fix-it hint (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
 fi
@@ -2325,7 +2325,7 @@ fi
 # set difference (leaf declares "Fs, Env" in reversed order; the diagnostic
 # must render "{ Env, Fs }").
 cat > "$pfdir/bad_row_multi.vibe" <<'EOF'
-let leaf: (String) -> String with { Fs, Env } = (p) -> {
+let leaf: (String) -> String with Fs + Env = (p) -> {
   Fs::read_file(p)
 }
 let mid: (String) -> String = (p) -> {
@@ -2343,7 +2343,7 @@ if ! grep -qF "effect row mismatch for 'mid': missing { Env, Fs }" "$pfdir/bad_r
   echo "[compiler-gate] FAIL: multi-effect reject is not an aggregated sorted set difference (#639)" >&2
   cat "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-if ! grep -qF "hint: declare 'fn mid(...) -> T with { Env, Fs }'" "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: declare 'fn mid(...) -> T with Env + Fs'" "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: multi-effect reject lacks the sorted fix-it hint (#639)" >&2
   cat "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null >&2; exit 1
 fi
@@ -2354,12 +2354,12 @@ if [ ! -s "$pfdir/good_transitive.wasm" ]; then
   echo "[compiler-gate] FAIL: correctly-declared transitive effect chain did not compile (#626 over-rejects)" >&2; exit 1
 fi
 # #812: the transitive map must also cover IMPORTED effectful functions — a
-# caller invoking an imported `with { Fs }` function without declaring Fs used
+# caller invoking an imported `with Fs` function without declaring Fs used
 # to compile (and reach the filesystem at runtime) while the same shape with a
 # local callee was rejected. The env-seeded row closes the module boundary.
 mkdir -p "$pfdir/sub"
 cat > "$pfdir/sub/helper.vibe" <<'EOF'
-export let read_it: (String) -> String with { Error, Fs } = (p) -> {
+export let read_it: (String) -> String with Error + Fs = (p) -> {
   Fs::read_file(p)
 }
 EOF
@@ -2375,7 +2375,7 @@ EOF
 cat > "$pfdir/good_import_transitive.vibe" <<'EOF'
 import ./sub/helper.vibe { read_it }
 
-let g: (String) -> String with { Error, Fs } = (p) -> {
+let g: (String) -> String with Error + Fs = (p) -> {
   read_it(p)
 }
 export let _start: () -> Int = () -> { 42 }
@@ -2732,7 +2732,7 @@ echo "[compiler-gate] 27e/27 Error-as-perform equivalence + non-resumability (#6
 edir="_build/_gate_error_perform"
 rm -rf "$edir"; mkdir -p "$edir"
 cat > "$edir/via_perform.vibe" <<'EOF'
-let safe = () -> Int with { Error } {
+let safe = () -> Int with Error {
   perform Error::Throw("fail")
   0
 }
@@ -2741,7 +2741,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 cat > "$edir/via_throw.vibe" <<'EOF'
-let safe = () -> Int with { Error } {
+let safe = () -> Int with Error {
   throw("fail")
   0
 }
@@ -2750,7 +2750,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 cat > "$edir/bad_resume_arm.vibe" <<'EOF'
-let risky = () -> Int with { Error } {
+let risky = () -> Int with Error {
   throw("boom")
   0
 }
@@ -2762,7 +2762,7 @@ EOF
 # ELoop (and EMap/ESpread/ELabeledArg/EContinue/ERecord), so a resume tucked
 # into `loop { break resume(0) }` reached codegen's meaningless tag-1 path.
 cat > "$edir/bad_resume_loop.vibe" <<'EOF'
-let risky = () -> Int with { Error } {
+let risky = () -> Int with Error {
   throw("boom")
   0
 }
@@ -2821,7 +2821,7 @@ echo "[compiler-gate] 27f/27 print primitives on the FS lane (#929/#930)"
 ppdir="_build/_gate_print_prims"
 rm -rf "$ppdir"; mkdir -p "$ppdir"
 cat > "$ppdir/prints.vibe" <<'EOF'
-fn main() -> Unit with { Stdout } {
+fn main() -> Unit with Stdout {
   println("hello gate")
   print("forty")
   print("two")
@@ -4247,7 +4247,7 @@ rm -rf "$gcselfdir"
 echo "[compiler-gate] wasm-gc backend self-discharging needing function filtering ok (42)"
 
 # 40h5. ADR-0076 (#817) gc-backend follow-up: a local closure literal with
-#       NO explicit `with {...}` annotation (its `eff` field is blank in the
+#       NO explicit `with` annotation (its `eff` field is blank in the
 #       AST -- the checker infers the row internally but never writes it
 #       back onto the node) that performs an effect and gets lambda-lifted
 #       to a fresh top-level binding (dlh_hoist_expr, the capture-free
@@ -4516,7 +4516,7 @@ fi
 rm -rf "$m2dir"
 echo "[compiler-gate] handle-replay side-effect corruption regression guard ok (3013, ADR-0076 Phase 2 fix verified)"
 
-# 40m. ADR-0071 step 1 (#755, docs/effectset.md): a `with { ... }` row item
+# 40m. ADR-0071 step 1 (#755, docs/effectset.md): a `with` row item
 #      may now name a single qualified operation (`Effect::op`), not just a
 #      whole effect name -- collect_effect_names in
 #      lib/@vibe/parser/parser_base.vibe. Parser-only slice: the row stays
@@ -4533,7 +4533,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a71dir/src.vibe" "$a71dir/out.wasm" main >/dev/null 2>&1
 if [ ! -s "$a71dir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_row_operation_item.vibe did not compile (with { Effect::op } row-item grammar regressed)" >&2
+  echo "[compiler-gate] FAIL: effect_row_operation_item.vibe did not compile (with Effect::op row-item grammar regressed)" >&2
   cat "$a71dir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -4547,12 +4547,12 @@ echo "[compiler-gate] effect row operation-item grammar ok"
 
 # 40n. ADR-0071 step 3 (#755, docs/effectset.md): a VALID `effectset` (no
 #      cycle, no operation-name collision) is now ACCEPTED and its members
-#      are expanded into any `with { EffectsetName }` row item that
+#      are expanded into any `with EffectsetName` row item that
 #      references it (checker_stmt.vibe's es_expand_stmts_effect_rows),
 #      before the existing string-label containment machinery
 #      (decl_authorizes_effect et al., unmodified) runs. This gate compiles
 #      fixtures/effect_effectset_expansion.vibe, where a function's OWN
-#      declared row is JUST an effectset name (`with { AskAll }`) and that
+#      declared row is JUST an effectset name (`with AskAll`) and that
 #      alone must authorize a transitively-called function requiring the
 #      operation the effectset expands to (`Ask::Get`) -- proving expansion
 #      is actually wired in, not just that the effectset parses. (Step 2's
@@ -4661,7 +4661,7 @@ echo "[compiler-gate] effectset parameter-type row expansion ok"
 #      collect_handle_effects (checker_effects.vibe) now records BOTH,
 #      instead of just the bare name, fixing a case where a handled body
 #      transitively calling a function with an operation-level declared row
-#      (`with { Ask::Get }`, not the bare effect `Ask`) was incorrectly
+#      (`with Ask::Get`, not the bare effect `Ask`) was incorrectly
 #      rejected as still missing that requirement even though the handle
 #      plainly covers it. This gate compiles
 #      fixtures/effect_handle_operation_level_discharge.vibe, which has
@@ -4721,9 +4721,9 @@ echo "[compiler-gate] effectset contract passthrough ok"
 #      docs/effectset.md): check_contract (contract.vibe) previously
 #      compared a contract's and an implementation's effect row as raw,
 #      unexpanded strings -- a contract signature spelled with an
-#      effectset alias (`fn f() -> T with { AskAll }`) reported a false
+#      effectset alias (`fn f() -> T with AskAll`) reported a false
 #      "signature mismatch" against an implementation spelled with the
-#      literal operations it expands to (`with { Ask::Get }`), even though
+#      literal operations it expands to (`with Ask::Get`), even though
 #      they are semantically identical. check_contract now expands both
 #      sides (ctr_expand_sig_row, using an ES table built from the
 #      contract's own type_defs) before comparing. This gate compiles
@@ -4751,9 +4751,9 @@ echo "[compiler-gate] effectset contract signature-matching ok"
 # 40t. ADR-0071 step 5, WIT generation effectset/qualified resolution (#755,
 #      docs/effectset.md): wit_gen.vibe previously resolved each raw
 #      effect-row label verbatim against the effect definitions it collected,
-#      so an `effectset` alias (`with { AskAll }`) or a bare qualified
+#      so an `effectset` alias (`with AskAll`) or a bare qualified
 #      operation item with no accompanying plain effect-name item
-#      (`with { Ask::Get }`) never matched `Ask`'s definition and fell
+#      (`with Ask::Get`) never matched `Ask`'s definition and fell
 #      through to the "host capability effect ... no WIT mapping yet"
 #      comment marker, even though `Ask` has a real interface mapping.
 #      wit_gen.vibe now expands effectset aliases and resolves qualified
@@ -5081,7 +5081,7 @@ rm -rf "$edpclodir"
 echo "[compiler-gate] evidence-dict pass closure literal ok"
 
 # 40ad. ADR-0076 Phase 3 (#817): a needing function's row is spelled with an
-#       `effectset` alias (`with { AskAll }` where `effectset AskAll = {
+#       `effectset` alias (`with AskAll` where `effectset AskAll = {
 #       Ask }`) instead of the bare effect name. checker_stmt.vibe's own
 #       effectset expansion deliberately runs on a non-mutating copy of
 #       `stmts` used only for type-checking ("codegen never reads the row's
@@ -5118,7 +5118,7 @@ rm -rf "$edpesdir"
 echo "[compiler-gate] evidence-dict pass effectset alias ok"
 
 # 40ae. ADR-0076 Phase 3 (#817): a needing function's row directly
-#       enumerates a QUALIFIED operation (`with { Ask::Get }`) instead of
+#       enumerates a QUALIFIED operation (`with Ask::Get`) instead of
 #       the bare effect name -- no `effectset` alias involved, exercising
 #       edp_effect_name_of's `::`-prefix stripping directly rather than
 #       effectset-table expansion (gate 40ad's own code path). Completeness
@@ -5144,7 +5144,7 @@ rm -rf "$edpqodir"
 echo "[compiler-gate] evidence-dict pass qualified-operation row ok"
 
 # 40af. ADR-0076 Phase 3 (#817): a needing function's row combines a
-#       concrete effect with an open row-variable TAIL (`with { Ask, e }`).
+#       concrete effect with an open row-variable TAIL (`with Ask + e`).
 #       Initially assumed a genuine limitation alongside the
 #       fully-row-polymorphic case; verified directly instead of continuing
 #       to assume -- this already migrates its concrete effect via the same
@@ -5433,7 +5433,7 @@ echo "[compiler-gate] evidence-dict needing-forwarding shadowing fix ok (47)"
 
 # 40ap. #1070 (general case): a needing function calling its OWN
 #       closure-typed parameter (not another named needing function) --
-#       `apply_twice`'s body calls `f` (a `with { Ask }`-typed parameter)
+#       `apply_twice`'s body calls `f` (a `with Ask`-typed parameter)
 #       twice, so #1074's trivial-pass-through-wrapper inlining (a single
 #       same-arity call only) correctly declines to touch it. Previously
 #       this crashed at runtime ("null function or function signature
@@ -5498,7 +5498,7 @@ rm -rf "$edpedir"
 echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
 
 # 40ar. #1070 (general case, second slice -- docs/effect-evidence-passing.md
-#       追記25): a SELF-DISCHARGING owner -- a function with NO `with { Ask }`
+#       追記25): a SELF-DISCHARGING owner -- a function with NO `with Ask`
 #       row that establishes its own `handle .. with Ask` and calls its
 #       closure-typed parameter inside that handle's body. Never "needing"
 #       (no row), so 40ap's edp_own_closure_params path can't see it; was
@@ -5529,8 +5529,8 @@ rm -rf "$edphdir"
 echo "[compiler-gate] self-discharging owner's closure-typed parameter ok (285)"
 
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
-#     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
-#         special form compiles as `let main: () -> Unit with { Stdout }` and the
+#     (a) ok_fnmain: the paren-less/annotation-less `fn main with Stdout { .. }`
+#         special form compiles as `let main: () -> Unit with Stdout` and the
 #         synthesized `_start` runs it (output contains 42).
 #     (b) bad_entry_typo: a nonexistent entry name is a COMPILE ERROR (it used
 #         to silently fall through to an empty test-runner `_start`); only the
@@ -5542,7 +5542,7 @@ echo "[compiler-gate] 41/41 ADR-0069 fn main sugar + entry/top-level hardening"
 a69dir="_build/_gate_adr69"
 rm -rf "$a69dir"; mkdir -p "$a69dir"
 cat > "$a69dir/ok_fnmain.vibe" <<'EOF'
-fn main with { Stdout } {
+fn main with Stdout {
   Stdout::write_stream("42\n")
 }
 EOF
@@ -6001,7 +6001,7 @@ echo "[compiler-gate] top-level irrefutable pattern let (#1281) ok"
 # Phase 3 finished migrating all 76 directories this became a required gate
 # to prevent a future PR from silently reintroducing a plain index.vibe dir.
 # 44b. #944 (ADR-0073 stage B): checked-Error row discipline is ON by
-#      default -- a row-less caller of a `with { Error }` function is
+#      default -- a row-less caller of a `with Error` function is
 #      rejected with the row-mismatch diagnostic; VIBE_CHECK_ERROR_ROW=0
 #      is the opt-out escape hatch that restores the old exemption; a
 #      caller that discharges via `handle .. with Error` compiles and
@@ -6010,7 +6010,7 @@ echo "[compiler-gate] 44b/44 checked-Error row discipline default-on (#944 stage
 g944dir="_build/_gate_944"
 rm -rf "$g944dir"; mkdir -p "$g944dir"
 cat > "$g944dir/leak.vibe" <<'EOF'
-fn boom(x: Int) -> Int with { Error } {
+fn boom(x: Int) -> Int with Error {
   if x == 0 {
     throw("zero")
   }
@@ -6026,7 +6026,7 @@ export let main = () -> Int {
 }
 EOF
 cat > "$g944dir/discharged.vibe" <<'EOF'
-fn boom(x: Int) -> Int with { Error } {
+fn boom(x: Int) -> Int with Error {
   if x == 0 {
     throw("zero")
   }
@@ -6081,7 +6081,7 @@ rm -rf "$g944dir"
 echo "[compiler-gate] opt-in checked-Error row discipline ok (#944 stage A)"
 
 # 44c. #944 (ADR-0073 stage C, "entry boundary A"): an entry declared
-#      `with { Error }` whose Throw escapes must produce the stderr
+#      `with Error` whose Throw escapes must produce the stderr
 #      diagnostic and evaluate to 1 (unsuccessful outcome) instead of
 #      leaking a raw WebAssembly.Exception out of the entry.
 echo "[compiler-gate] 44c/44 entry-boundary Error handler (#944 stage C)"
@@ -6983,7 +6983,7 @@ export effect Net {
   Request(String, String, String, String) -> Int
 }
 
-export fn fetch(url: String) -> Int with { Net } {
+export fn fetch(url: String) -> Int with Net {
   perform Net::Request("GET", url, "", "")
 }
 VEOF
@@ -7354,7 +7354,7 @@ echo "[compiler-gate] FrozenArray[T] Send-eligible immutable container ok"
 #        message must show the handled one folded into "declared" rather
 #        than re-flagging it as missing). Pins the exact wording so it
 #        can't silently drift; see #639's discussion for why the riskier
-#        "over-declared with{} is itself a hard error" reading was
+#        "over-declared with () is itself a hard error" reading was
 #        deliberately NOT implemented.
 echo "[compiler-gate] 64/67 effect-row mismatch diagnostic snapshots (#639)"
 eff639dir="_build/_gate_eff639"
@@ -7380,7 +7380,7 @@ if [ -s "$eff639dir/partial.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe compiled successfully -- must be rejected" >&2
   exit 1
 fi
-if ! grep -qF "missing { Fs } (declared with { Ask, Ask::Get }, requires { Ask, Ask::Get, Fs })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
+if ! grep -qF "missing { Fs } (declared { Ask, Ask::Get }, requires { Ask, Ask::Get, Fs })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe did not produce the expected diagnostic" >&2
   cat "$eff639dir/partial.wasm.diag" 2>/dev/null >&2 || true
   exit 1
@@ -7429,12 +7429,12 @@ if [ -s "$eff1161dir/x.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe compiled successfully -- must be rejected" >&2
   exit 1
 fi
-if ! grep -qF "missing { Ask::Get } (declared with { Ask::Other }, requires { Ask::Get, Ask::Other })" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
+if ! grep -qF "missing { Ask::Get } (declared { Ask::Other }, requires { Ask::Get, Ask::Other })" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected diagnostic" >&2
   cat "$eff1161dir/x.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-if ! grep -qF "hint: add 'with { Ask::Get, Ask::Other }' to 'asks'" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: add 'with Ask::Get + Ask::Other' to 'asks'" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected operation-level fix-it hint" >&2
   cat "$eff1161dir/x.wasm.diag" 2>/dev/null >&2 || true
   exit 1
@@ -8097,7 +8097,7 @@ if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null
   exit 1
 fi
 # Increment 2 (#1218): a `handle ... with Async` discharges the builtin
-# row (the enclosing fn needs no `with { Async }`) and the handler REALLY
+# row (the enclosing fn needs no `with Async`) and the handler REALLY
 # receives the operations -- sleep(20)+sleep(15) reach the arm as
 # Suspend(-20)/Suspend(-15) (debt-payload convention), accumulate to 35,
 # and 7 + 35 = 42 (async_sleep_handler_discharge_test.vibe).
@@ -8231,7 +8231,7 @@ fn make_cell() -> Future[Int] {
   r.p
 }
 
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   await(make_cell())
 }
 EOF
@@ -8279,7 +8279,7 @@ echo "[compiler-gate] named host future collector ok"
 # declarations now REGISTER their operation signatures (checker_stmt.vibe's
 # SEffectDef arm keeps the type params; perform/handle sites instantiate
 # them with fresh inference vars — one shared instantiation per handle),
-# and `with { State[Int] }` row items parse (collect_row_item_targs,
+# and `with State[Int]` row items parse (collect_row_item_targs,
 # parser_base.vibe) with base-name-aware containment. Positive: the
 # instantiated-row fixture compiles and runs to 42. Negatives: the #1218
 # hole (a 3-argument perform against a 0-arity generic op used to pass
@@ -8293,7 +8293,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g1340dir/pos.vibe" "$g1340dir/pos.wasm" main >/dev/null 2>&1
 if [ ! -s "$g1340dir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_generic_row_instantiation.vibe did not compile (with { State[Int] } row grammar or generic registration regressed)" >&2
+  echo "[compiler-gate] FAIL: effect_generic_row_instantiation.vibe did not compile (with State[Int] row grammar or generic registration regressed)" >&2
   cat "$g1340dir/pos.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -8334,9 +8334,9 @@ echo "[compiler-gate] generic effect instantiation ok"
 # 80/80. ADR-0071 operation-level rows, BUILTIN slice (#1343): host capabilities
 # can be granted one operation at a time. Before this the builtin call path
 # compared only the bare effect label (builtin_call_effect -> decl_authorizes_
-# effect), so `with { Fs::read_file }` was rejected with `missing { Fs }` and the
+# effect), so `with Fs::read_file` was rejected with `missing { Fs }` and the
 # only expressible grant for a host capability was the whole effect -- which is
-# what forced coarse rows like `with { Http }` (serve + outbound request in one
+# what forced coarse rows like `with Http` (serve + outbound request in one
 # grant). The row is the CONSUMER axis (minimal permission); the effect name
 # stays the PROVIDER axis (which host provider implements it), so this needs no
 # splitting of provider labels.
@@ -8352,7 +8352,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$opb/pos.vibe" "$opb/pos.wasm" main >/dev/null 2>&1
 if [ ! -s "$opb/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: with { Fs::read_file } no longer authorizes the Fs::read_file builtin (#1343)" >&2
+  echo "[compiler-gate] FAIL: with Fs::read_file no longer authorizes the Fs::read_file builtin (#1343)" >&2
   cat "$opb/pos.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -8362,7 +8362,7 @@ if [ "$op_out" != "42" ]; then
   exit 1
 fi
 cat > "$opb/neg.vibe" <<'EOF'
-fn only_read(p: String) -> Unit with { Fs::read_file } {
+fn only_read(p: String) -> Unit with Fs::read_file {
   Fs::write_file(p, "x")
 }
 
@@ -8374,7 +8374,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$opb/neg.vibe" "$opb/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$opb/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: with { Fs::read_file } authorized Fs::write_file -- operation grants are not minimal (#1343)" >&2
+  echo "[compiler-gate] FAIL: with Fs::read_file authorized Fs::write_file -- operation grants are not minimal (#1343)" >&2
   exit 1
 fi
 if ! grep -q "missing { Fs::write_file }" "$opb/neg.wasm.diag" 2>/dev/null; then
@@ -8383,7 +8383,7 @@ if ! grep -q "missing { Fs::write_file }" "$opb/neg.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 cat > "$opb/bare.vibe" <<'EOF'
-fn both(p: String) -> Unit with { Fs } {
+fn both(p: String) -> Unit with Fs {
   Fs::write_file(p, Fs::read_file(p))
 }
 
@@ -8419,7 +8419,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$afdir/pos.vibe" "$afdir/pos.wasm" main >/dev/null 2>&1
 if [ ! -s "$afdir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_async_for_row.vibe did not compile -- a declared { Async } row must still accept the async for loop (#1358)" >&2
+  echo "[compiler-gate] FAIL: effect_async_for_row.vibe did not compile -- a declared `with Async` row must still accept the async for loop (#1358)" >&2
   cat "$afdir/pos.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -8551,8 +8551,8 @@ if ! grep -q "missing { Env }" "$lcdir/neg.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 cat > "$lcdir/pos.vibe" <<'EOF'
-let main = () -> Unit with { Stdout, Env } {
-  let read_home = () -> String with { Env } {
+let main = () -> Unit with Stdout + Env {
+  let read_home = () -> String with Env {
     Env::get("HOME")
   }
   println(read_home())
@@ -8567,7 +8567,7 @@ if [ ! -s "$lcdir/pos.wasm" ]; then
   exit 1
 fi
 cat > "$lcdir/pure.vibe" <<'EOF'
-let main = () -> Unit with { Stdout } {
+let main = () -> Unit with Stdout {
   let twice = (n: Int) -> Int {
     n * 2
   }
@@ -8619,7 +8619,7 @@ effect Yield {
   Yield(Int) -> Unit
 }
 
-fn gen() -> Unit with { Yield } {
+fn gen() -> Unit with Yield {
   perform Yield::Yield(1)
 }
 
@@ -8645,11 +8645,11 @@ effect Yield {
   Yield(Int) -> Unit
 }
 
-fn gen() -> Unit with { Yield } {
+fn gen() -> Unit with Yield {
   perform Yield::Yield(1)
 }
 
-fn run(f: () -> Int with { Yield }) -> Int {
+fn run(f: () -> Int with Yield) -> Int {
   handle {
     f()
   } with Yield {
@@ -8658,7 +8658,7 @@ fn run(f: () -> Int with { Yield }) -> Int {
 }
 
 let main = () -> Int {
-  let body: () -> Int with { Yield } = () -> {
+  let body: () -> Int with Yield = () -> {
     gen()
     42
   }
@@ -8732,7 +8732,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$excdir/neg.vibe" "$excdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$excdir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: with { Exception[ParseError] } authorized an IoError throw -- exact-kind rows are not enforced (#1344)" >&2
+  echo "[compiler-gate] FAIL: with Exception[ParseError] authorized an IoError throw -- exact-kind rows are not enforced (#1344)" >&2
   exit 1
 fi
 if ! grep -q "missing { Exception\[IoError\] }" "$excdir/neg.wasm.diag" 2>/dev/null; then
@@ -8771,7 +8771,7 @@ enum ParseError {
   Eof
 }
 
-let boom = () -> Int with { Exception[IoError], Exception[ParseError] } {
+let boom = () -> Int with Exception[IoError] + Exception[ParseError] {
   throw(NotFound("cfg"))
 }
 
@@ -8876,12 +8876,12 @@ enum AppError {
   Cancelled
 } derive (Show)
 
-let _start = () -> Int with { Error } {
+let _start = () -> Int with Error {
   throw(Failed("io"))
 }
 VIBEEOF
 cat > "$exnmsgdir/plain.vibe" <<'VIBEEOF'
-let _start = () -> Int with { Error } {
+let _start = () -> Int with Error {
   throw("plain message")
 }
 VIBEEOF
@@ -8890,7 +8890,7 @@ enum NoShow {
   Bang(Int)
 }
 
-let _start = () -> Int with { Error } {
+let _start = () -> Int with Error {
   throw(Bang(5))
 }
 VIBEEOF

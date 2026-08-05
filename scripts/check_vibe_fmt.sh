@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# vibe-fmt lint gate: every lib/**/*.vibe file must be a fixpoint of
-# the selfhost CST-token formatter, UNLESS it's listed in the allowlist
-# below. Runs through scripts/run_vibe_fmt_batch.sh (one batched wasm
+# vibe-fmt lint gate: every lib/**/*.vibe and lib/**/*.vpkg file must be a
+# fixpoint of the selfhost CST-token formatter, UNLESS it's listed in the
+# allowlist below. `.vpkg` package contracts (#1435) go through
+# format_vpkg: a canonical header writer plus the same CST formatter over
+# the bodyless declarations below it -- the header is not vibe syntax, so
+# it cannot go through format_script (see format.vibe's `.vpkg` section).
+# Runs through scripts/run_vibe_fmt_batch.sh (one batched wasm
 # process for the whole file list, sharded across VIBE_FMT_JOBS
 # subprocesses) instead of one scripts/vibe_fmt.sh process per file --
 # see lib/@vibe/cli/fmt.vibe's header comment for why that matters at
@@ -40,10 +44,10 @@ is_allowed() {
   ' "$ALLOWLIST_FILE"
 }
 
-mapfile -t files < <(git ls-files "$SCAN_ROOT/*.vibe" | sort)
+mapfile -t files < <(git ls-files "$SCAN_ROOT/*.vibe" "$SCAN_ROOT/*.vpkg" | sort)
 
 if [ "${#files[@]}" -eq 0 ]; then
-  echo "vibe-fmt lint: no tracked .vibe files under $SCAN_ROOT" >&2
+  echo "vibe-fmt lint: no tracked .vibe/.vpkg files under $SCAN_ROOT" >&2
   exit 1
 fi
 

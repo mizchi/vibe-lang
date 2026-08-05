@@ -2330,11 +2330,11 @@ fn reorder_import_lists(toks: Array[LTok]) -> Array[LTok] {
 ///
 /// This runs as a token pre-pass rather than as a rule inside the emitter,
 /// which is what makes it safe to apply to the whole tree: it can only ever
-/// see real `with` and `{` TOKENS, so the 115 occurrences of the text
-/// `with {` that live INSIDE string literals in the compiler's own sources
-/// (checker test inputs, and the `hint: declare 'fn f(...) -> T with { .. }'`
-/// diagnostic text) are structurally untouchable. A textual rewrite would
-/// have corrupted every one of them.
+/// see real `with` and `{` TOKENS, so every occurrence of the TEXT `with {`
+/// that lives inside a string literal in the compiler's own sources (the
+/// checker's test-input corpora, and the diagnostic strings that render an
+/// effect SET as `missing { .. }` / `requires { .. }`) is structurally
+/// untouchable. A textual rewrite would have corrupted every one of them.
 ///
 /// Idempotent: an already-converted row has a name or `(` after `with`, not
 /// `{`, so a second pass leaves it alone. `handle .. with E { arms }` is also
@@ -2404,4 +2404,546 @@ fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
 
 export fn format_script(src: String) -> String {
   format_tokens(normalize_effect_rows(reorder_import_lists(lex_lossless(src))), 2)
+}
+
+//# ======================================================================
+//# `.vpkg` package-contract formatter (#1435)
+//#
+//# A `.vpkg` file is two languages stacked. The header is NOT vibe syntax:
+//#
+//#   name = @vibe/parser        `@vibe/parser` is not an expression, and
+//#   version = 0.1.0            `0.1.0` is not a literal (two dots)
+//#   description =
+//#     #|the vibe lexer ...     `#|` raw block
+//#   deps = {
+//#     @vibe/ast : 0.1.0        `@scope/pkg : x.y.z` -- a spelling that
+//#   }                          exists nowhere else in the language
+//#
+//#   generated_hash =
+//#
+//# Feeding that to format_script renders `name = @vibe / parser`. Below the
+//# header the file is ORDINARY bodyless vibe (`type Token`,
+//# `fn lex(src: String) -> Array[Token] with Error`, `export enum ...`) and
+//# already a fixpoint of format_script -- measured over all 84 tracked
+//# `.vpkg` files, the declaration regions needed no formatter work at all.
+//# So this is a splitter plus a header writer; the declarations go through
+//# format_script verbatim.
+//#
+//# The split is not a heuristic. `vp_header_end` mirrors the line
+//# classification in contract.vibe's `scan_package_header` -- the loader's
+//# own scanner -- so the two agree by construction on where the header
+//# stops. A line the loader would not treat as a directive falls into the
+//# declaration region, where format_script sees it. There is no third
+//# outcome in which a line is silently dropped.
+//#
+//# The canonical header this emits is the shape all 76 headered files
+//# already have (key order name/version/main/description/deps/require, two
+//# space continuation indent, ` : ` in deps entries, one blank line before
+//# `generated_hash`), so introducing the formatter rewrites nothing: it
+//# writes the existing convention down where CI can enforce it.
+
+/// True if `s` starts with `p`. Local, like the char-class helpers above:
+/// this file deliberately keeps to a small String vocabulary.
+fn vp_starts_with(s: String, p: String) -> Bool {
+  let ls = String::length(s)
+  let lp = String::length(p)
+  if lp > ls {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < lp {
+      if String::char_code_at(s, i) != String::char_code_at(p, i) {
+        ok = false
+      } else {
+        i = i + 1
+      }
+    }
+    ok
+  }
+}
+
+/// Index of the first non-space/tab char of `s` (== its length when blank).
+fn vp_lead(s: String) -> Int {
+  let n = String::length(s)
+  let mut i = 0
+  while i < n && is_ws_c(String::char_code_at(s, i)) {
+    i = i + 1
+  }
+  i
+}
+
+fn vp_trim(s: String) -> String {
+  let a = vp_lead(s)
+  let mut b = String::length(s)
+  while b > a && is_ws_c(String::char_code_at(s, b - 1)) {
+    b = b - 1
+  }
+  String::substring(s, a, b)
+}
+
+/// An Array[String] with nothing in it. Written this way (rather than `[]`)
+/// so the element type never depends on a push that a branch might skip.
+fn vp_empty_strings() -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+fn vp_split_lines(text: String) -> Array[String] {
+  let out = vp_empty_strings()
+  let n = String::length(text)
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(text, i) == '\n' {
+      Array::push(out, String::substring(text, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start < n {
+    Array::push(out, String::substring(text, start, n))
+  } else ()
+  out
+}
+
+/// Offset of the newline ending the line that starts at `from` (== length
+/// when the last line is unterminated).
+fn vp_line_end(src: String, from: Int) -> Int {
+  let n = String::length(src)
+  let mut i = from
+  while i < n && String::char_code_at(src, i) != '\n' {
+    i = i + 1
+  }
+  i
+}
+
+/// Start of the line after the one ending at `nl`. Clamps at the end of an
+/// unterminated final line so the caller's scan can never run past it.
+fn vp_after_line(src: String, nl: Int) -> Int {
+  if nl < String::length(src) {
+    nl + 1
+  } else {
+    nl
+  }
+}
+
+/// Index of the first `c` in `s`, or -1.
+fn vp_index_of(s: String, c: Int) -> Int {
+  let n = String::length(s)
+  let mut i = 0
+  let mut found = -1
+  while found < 0 && i < n {
+    if String::char_code_at(s, i) == c {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The trimmed text after the first `=` of a `key = value` line ("" when the
+/// value is empty, as every committed `generated_hash =` is).
+fn vp_value_after_eq(trimmed: String) -> String {
+  let eq = vp_index_of(trimmed, '=')
+  if eq < 0 {
+    ""
+  } else {
+    vp_trim(String::substring(trimmed, eq + 1, String::length(trimmed)))
+  }
+}
+
+/// Whitespace-separated fields of `s` rejoined with single spaces.
+fn vp_collapse_spaces(s: String) -> String {
+  let parts = vp_empty_strings()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    while i < n && is_ws_c(String::char_code_at(s, i)) {
+      i = i + 1
+    }
+    let start = i
+    while i < n && !is_ws_c(String::char_code_at(s, i)) {
+      i = i + 1
+    }
+    if i > start {
+      Array::push(parts, String::substring(s, start, i))
+    } else ()
+  }
+  String::join(parts, " ")
+}
+
+/// The one-line header directives (everything except the two block forms).
+fn vp_is_simple_directive(trimmed: String) -> Bool {
+  vp_starts_with(trimmed, "name =") || vp_starts_with(trimmed, "version =") ||
+  vp_starts_with(trimmed, "version ") || vp_starts_with(trimmed, "main =") ||
+  vp_starts_with(trimmed, "generated_hash =") ||
+  vp_starts_with(trimmed, "require ") || trimmed == "deps = {}"
+}
+
+/// Does `s` look like a header key assignment (`ident =` / `ident=`)? Used
+/// only to DECLINE: `scan_package_header` recognizes the exact spelling
+/// `name =` and nothing else, so `name  = @vibe/x` or `nmae = @vibe/x` is
+/// not a directive to the loader -- and therefore not one here either.
+/// Without this check such a line would fall into the declaration region and
+/// format_script would rewrite it to `name = @vibe / x`, mangling a file
+/// whose author obviously meant a header. No real declaration line has this
+/// shape (`let x = 1` does not: the identifier is not adjacent to the `=`),
+/// verified across every tracked .vpkg.
+fn vp_looks_like_header_key(s: String) -> Bool {
+  let n = String::length(s)
+  let mut i = 0
+  while i < n && is_alpha_c(String::char_code_at(s, i)) {
+    i = i + 1
+  }
+  if i == 0 {
+    false
+  } else {
+    let mut j = i
+    while j < n && is_ws_c(String::char_code_at(s, j)) {
+      j = j + 1
+    }
+    j < n && String::char_code_at(s, j) == '='
+  }
+}
+
+/// Byte offset just past the last header directive line of `src`, 0 when the
+/// file carries no header at all (the fixtures/contract_* packages), or -1
+/// when the header is malformed in a way that makes the split unsafe: an
+/// unterminated `deps = {` block, a deps entry with no `:`, or a line that
+/// looks like a header key but is not one the loader recognizes. On -1
+/// format_vpkg leaves the file completely alone. The loader rejects it
+/// anyway (contract.vibe throws, or the line fails to parse as a
+/// declaration), and a formatter that guessed here would swallow real
+/// declarations into the header and delete them.
+///
+/// Blank and `//` comment lines do NOT end the scan -- that matches
+/// scan_package_header, and it is why the boundary is the last DIRECTIVE
+/// line rather than the end of the scanning region: the comment block that
+/// documents the package sits after `generated_hash =` and belongs to the
+/// declaration region.
+fn vp_header_end(src: String) -> Int {
+  let len = String::length(src)
+  let mut pos = 0
+  let mut scanning = true
+  let mut end = 0
+  let mut bad = false
+  while scanning && pos < len {
+    let nl = vp_line_end(src, pos)
+    let trimmed = vp_trim(String::substring(src, pos, nl))
+    let mut next_pos = vp_after_line(src, nl)
+    if trimmed == "description =" {
+      // `#|` continuations at ANY indentation. The column-consistency rule
+      // is the loader's to enforce; re-emission normalizes the column.
+      let mut p = next_pos
+      let mut going = true
+      while going && p < len {
+        let dnl = vp_line_end(src, p)
+        if vp_starts_with(vp_trim(String::substring(src, p, dnl)), "#|") {
+          p = vp_after_line(src, dnl)
+        } else {
+          going = false
+        }
+      }
+      next_pos = p
+      end = p
+    } else if trimmed == "deps = {" {
+      let mut p = next_pos
+      let mut closed = false
+      while !closed && p < len {
+        let dnl = vp_line_end(src, p)
+        let d = vp_trim(String::substring(src, p, dnl))
+        p = vp_after_line(src, dnl)
+        if d == "}" {
+          closed = true
+        } else if String::length(d) > 0 && vp_index_of(d, ':') < 0 {
+          closed = true
+          bad = true
+        } else ()
+      }
+      if !closed {
+        bad = true
+      } else ()
+      next_pos = p
+      end = p
+    } else if vp_is_simple_directive(trimmed) {
+      end = next_pos
+    } else if String::length(trimmed) == 0 || vp_starts_with(trimmed, "//") {
+      ()
+    } else {
+      scanning = false
+      if vp_looks_like_header_key(trimmed) {
+        bad = true
+      } else ()
+    }
+    if bad {
+      scanning = false
+    } else ()
+    pos = next_pos
+  }
+  if bad {
+    -1
+  } else {
+    end
+  }
+}
+
+/// Sorts the parallel (name, version) deps arrays by package name. Uses
+/// str_lt, not `<`: plain String `<` is length-first, which would order
+/// `@a/zzz` before `@a/bbbb` (see str_lt's own note).
+fn vp_sort_deps(names: Array[String], vers: Array[String]) -> Unit {
+  let n = Array::length(names)
+  let mut i = 1
+  while i < n {
+    let cur_name = Array::get(names, i)
+    let cur_ver = Array::get(vers, i)
+    let mut j = i - 1
+    let mut going = true
+    while going && j >= 0 {
+      if str_lt(cur_name, Array::get(names, j)) {
+        Array::set(names, j + 1, Array::get(names, j))
+        Array::set(vers, j + 1, Array::get(vers, j))
+        j = j - 1
+      } else {
+        going = false
+      }
+    }
+    Array::set(names, j + 1, cur_name)
+    Array::set(vers, j + 1, cur_ver)
+    i = i + 1
+  }
+}
+
+/// Re-emits the header in canonical order and spacing. `header` is exactly
+/// the region vp_header_end delimited, so every line in it is one this
+/// function recognizes -- there is no unrecognized-line case to preserve.
+fn vp_render_header(header: String) -> String {
+  let lines = vp_split_lines(header)
+  let n = Array::length(lines)
+  let out = vp_empty_strings()
+  let desc = vp_empty_strings()
+  let dep_names = vp_empty_strings()
+  let dep_vers = vp_empty_strings()
+  let reqs = vp_empty_strings()
+  let mut name_v = ""
+  let mut seen_name = false
+  let mut version_v = ""
+  // The legacy bare `version x.y.z` (ADR-0065/#754) is still accepted by
+  // the loader, so its spelling is preserved rather than upgraded: the
+  // bootstrap seed that builds the compiler understands only that form for
+  // some packages, and switching one is a bootstrap-bump decision, not a
+  // formatting one.
+  let mut version_eq = true
+  let mut seen_version = false
+  let mut main_v = ""
+  let mut seen_main = false
+  let mut seen_desc = false
+  let mut seen_deps = false
+  let mut hash_v = ""
+  let mut seen_hash = false
+  let mut i = 0
+  while i < n {
+    let raw = Array::get(lines, i)
+    let trimmed = vp_trim(raw)
+    if trimmed == "description =" {
+      seen_desc = true
+      i = i + 1
+      let mut going = true
+      while going && i < n {
+        let draw = Array::get(lines, i)
+        if vp_starts_with(vp_trim(draw), "#|") {
+          // Everything after `#|` is raw description text -- kept byte for
+          // byte, including any trailing spaces. Only the indent moves.
+          let lead = vp_lead(draw)
+          Array::push(desc, String::substring(draw, lead + 2, String::length(draw)))
+          i = i + 1
+        } else {
+          going = false
+        }
+      }
+    } else if trimmed == "deps = {" {
+      seen_deps = true
+      i = i + 1
+      let mut closed = false
+      while !closed && i < n {
+        let d = vp_trim(Array::get(lines, i))
+        i = i + 1
+        if d == "}" {
+          closed = true
+        } else if String::length(d) > 0 {
+          let c = vp_index_of(d, ':')
+          Array::push(dep_names, vp_trim(String::substring(d, 0, c)))
+          Array::push(dep_vers, vp_trim(String::substring(d, c + 1, String::length(d))))
+        } else ()
+      }
+    } else if trimmed == "deps = {}" {
+      seen_deps = true
+      i = i + 1
+    } else if vp_starts_with(trimmed, "name =") {
+      name_v = vp_value_after_eq(trimmed)
+      seen_name = true
+      i = i + 1
+    } else if vp_starts_with(trimmed, "version =") {
+      version_v = vp_value_after_eq(trimmed)
+      version_eq = true
+      seen_version = true
+      i = i + 1
+    } else if vp_starts_with(trimmed, "version ") {
+      version_v = vp_collapse_spaces(String::substring(trimmed, 8, String::length(trimmed)))
+      version_eq = false
+      seen_version = true
+      i = i + 1
+    } else if vp_starts_with(trimmed, "main =") {
+      main_v = vp_value_after_eq(trimmed)
+      seen_main = true
+      i = i + 1
+    } else if vp_starts_with(trimmed, "generated_hash =") {
+      hash_v = vp_value_after_eq(trimmed)
+      seen_hash = true
+      i = i + 1
+    } else if vp_starts_with(trimmed, "require ") {
+      Array::push(reqs, vp_collapse_spaces(trimmed))
+      i = i + 1
+    } else {
+      // Blank lines between directives: dropped here and re-emitted by the
+      // layout rules below.
+      i = i + 1
+    }
+  }
+  if seen_name {
+    Array::push(out, String::join([
+      "name = ",
+      name_v
+    ], ""))
+  } else ()
+  if seen_version {
+    if version_eq {
+      Array::push(out, String::join([
+        "version = ",
+        version_v
+      ], ""))
+    } else {
+      Array::push(out, String::join([
+        "version ",
+        version_v
+      ], ""))
+    }
+  } else ()
+  if seen_main {
+    Array::push(out, String::join([
+      "main = ",
+      main_v
+    ], ""))
+  } else ()
+  if seen_desc {
+    Array::push(out, "description =")
+    let mut d = 0
+    while d < Array::length(desc) {
+      Array::push(out, String::join([
+        "  #|",
+        Array::get(desc, d)
+      ], ""))
+      d = d + 1
+    }
+  } else ()
+  if seen_deps {
+    let ndeps = Array::length(dep_names)
+    if ndeps == 0 {
+      Array::push(out, "deps = {}")
+    } else {
+      vp_sort_deps(dep_names, dep_vers)
+      Array::push(out, "deps = {")
+      let mut d = 0
+      while d < ndeps {
+        Array::push(out, String::join([
+          "  ",
+          Array::get(dep_names, d),
+          " : ",
+          Array::get(dep_vers, d)
+        ], ""))
+        d = d + 1
+      }
+      Array::push(out, "}")
+    }
+  } else ()
+  let mut r = 0
+  while r < Array::length(reqs) {
+    Array::push(out, Array::get(reqs, r))
+    r = r + 1
+  }
+  if seen_hash {
+    if Array::length(out) > 0 {
+      Array::push(out, "")
+    } else ()
+    if String::length(hash_v) == 0 {
+      Array::push(out, "generated_hash =")
+    } else {
+      Array::push(out, String::join([
+        "generated_hash = ",
+        hash_v
+      ], ""))
+    }
+  } else ()
+  String::join(out, "\n")
+}
+
+/// Drops leading all-whitespace lines. The single blank line separating the
+/// header from the declarations is re-emitted by format_vpkg, so however
+/// many the input had, the output has exactly one.
+fn vp_strip_leading_blanks(text: String) -> String {
+  let n = String::length(text)
+  let mut pos = 0
+  let mut going = true
+  while going && pos < n {
+    let nl = vp_line_end(text, pos)
+    if nl < n && String::length(vp_trim(String::substring(text, pos, nl))) == 0 {
+      pos = nl + 1
+    } else {
+      going = false
+    }
+  }
+  String::substring(text, pos, n)
+}
+
+/// Format a `.vpkg` package contract: canonical header + format_script over
+/// the declarations. See the section header above for the split.
+export fn format_vpkg(src: String) -> String {
+  let end = vp_header_end(src)
+  if end < 0 {
+    src
+  } else if end == 0 {
+    format_script(src)
+  } else {
+    let header = vp_render_header(String::substring(src, 0, end))
+    let rest = vp_strip_leading_blanks(String::substring(src, end, String::length(src)))
+    if String::length(rest) == 0 {
+      String::join([
+        header,
+        ""
+      ], "\n")
+    } else {
+      String::join([
+        header,
+        "",
+        format_script(rest)
+      ], "\n")
+    }
+  }
+}
+
+/// Format `src` the way `path`'s extension calls for. The dispatch lives
+/// here rather than in the two entries that drive the formatter
+/// (lib/@vibe/cli/fmt_entry.vibe single-file, lib/@vibe/cli/fmt.vibe batch)
+/// so they cannot drift apart on which files get header handling.
+export fn format_source(path: String, src: String) -> String {
+  let n = String::length(path)
+  if n < 5 {
+    format_script(src)
+  } else if String::substring(path, n - 5, n) == ".vpkg" {
+    format_vpkg(src)
+  } else {
+    format_script(src)
+  }
 }

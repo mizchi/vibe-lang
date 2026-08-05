@@ -8,7 +8,7 @@ Related: ADR-0003, ADR-0021, ADR-0050, ADR-0063, ADR-0076, #639, #755, #817
 
 ## Context
 
-現在の effect row は `with { Env }` のように effect 宣言全体を単位として
+現在の effect row は `with Env` のように effect 宣言全体を単位として
 追跡する。`Env` が読み取りと書き込みの operation を両方持つ場合、読み取り
 だけを行う関数も `Env` 全体を要求するため、型と package contract が実際より
 広い権限を表す。
@@ -40,12 +40,12 @@ effectset Env::Read = {
 }
 
 // operation を直接列挙する形
-fn read_one(key: String) -> Option[String] with { Env::get } {
+fn read_one(key: String) -> Option[String] with Env::get {
   perform Env::get(key)
 }
 
 // 名前付き集合を再利用する形
-fn read_config(key: String) -> Option[String] with { Env::Read } {
+fn read_config(key: String) -> Option[String] with Env::Read {
   perform Env::get(key)
 }
 ```
@@ -54,9 +54,9 @@ effect を丸ごと書く既存形は、その effect が宣言する全 operati
 とする。
 
 ```vibe skip
-with { Env }
+with Env
 // equivalent to:
-with { Env::get, Env::args_len, Env::args_get, Env::set }
+with Env::get + Env::args_len + Env::args_get + Env::set
 ```
 
 複数 effect にまたがる集合には unqualified な名前を使える。
@@ -64,7 +64,7 @@ with { Env::get, Env::args_len, Env::args_get, Env::set }
 ```vibe skip
 effectset ReadOnly = { Env::Read, Fs::read_file }
 
-fn load() -> String with { ReadOnly } { ... }
+fn load() -> String with ReadOnly { ... }
 ```
 
 generic effect の effectset は通常の型パラメータを持てる。effectset が閉じている
@@ -79,12 +79,12 @@ effect State[T] {
 
 effectset State::Read[T] = { State[T]::get }
 
-fn inspect() -> Int with { State::Read[Int] } { ... }
+fn inspect() -> Int with State::Read[Int] { ... }
 ```
 
 ### Row item
 
-`with { ... }` の各要素は次のいずれかとする。
+`with ...` の各要素は次のいずれかとする。
 
 - effect 名: 宣言された全 operation へ展開する
 - `Effect::operation`: 単一の operation
@@ -142,11 +142,11 @@ Rreq ⊆ Rdecl
 ```
 
 ADR-0073 の `Error::Throw` も通常の semantic operation として `Rreq` に含める。
-明示 `with { Error }` は高階関数型・subtyping・package contract/hash で意味を持ち、
+明示 `with Error` は高階関数型・subtyping・package contract/hash で意味を持ち、
 caller は requirement を宣言するか `handle Error` で放電する。
 
 したがって、少ない operation しか要求しない関数は、より広い row を許可する
-context で利用できる。`with { Env::Read }` 内から `Env::set` を perform または
+context で利用できる。`with Env::Read` 内から `Env::set` を perform または
 推移的に要求する関数を呼ぶことは型エラーになる。
 
 `handle body with Env { ... }` は body の正規化 row から、実際に存在する `Env`
@@ -164,7 +164,7 @@ surface とする。
 
 公開関数の effect surface diff は operation 単位で行う。operation または
 effectset の追加によって既存関数の展開後 row が広がる変更は、権限拡大として
-breaking/security-sensitive change にする。特に `with { Env }` は全 operation
+breaking/security-sensitive change にする。特に `with Env` は全 operation
 shorthand なので、`Env` への operation 追加で公開 surface も広がる。
 
 WIT world 生成では公開 entry の row を展開し、元の effect ごとに operation の
@@ -195,7 +195,7 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 - **effectset を nominal capability にする**: full `Env` handler が `Env::Read` を
   満たすための subtyping/evidence 規則が別途必要になる。透明展開なら通常の集合
   包含だけで済む。
-- **`with { Env }` の atom を維持したまま alias だけ追加する**: alias が operation
+- **`with Env` の atom を維持したまま alias だけ追加する**: alias が operation
   単位の最小権限を表せず、本件の目的を満たさない。
 
 ## Implementation and regression locks
@@ -240,7 +240,7 @@ effectset と一致する場合はその effectset の参照を優先する。ef
    docs/effect-evidence-passing.md の「追記 (2026-07-22, ADR-0071 step 6
    着手時の調査で判明)」セクション参照。
 
-**進捗 (2026-07-22)**: 項目 1 (parser/printer) は着地済み。`with { Env::get }` の
+**進捗 (2026-07-22)**: 項目 1 (parser/printer) は着地済み。`with Env::get` の
 ような直接 operation row item と `effectset Name = { ... }` /
 `effectset Effect::Name = { ... }` 宣言の両方が parse・round-trip する
 (collect_effect_names の拡張、SEffectSet Stmt variant)。項目 2 (resolver)
@@ -255,7 +255,7 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 項目 3 (checker: 展開・包含) のうち、**関数自身の宣言 row の展開**と
 **関数パラメータ自身の型に付く row (#885 callback overlay) の展開**は
 着地済み: 循環・衝突のない `effectset` は (項目 2 時点の「常に reject」
-から変わり) 受理され、`with { EffectsetName }` を持つ row を実際に
+から変わり) 受理され、`with EffectsetName` を持つ row を実際に
 展開してから (checker_stmt.vibe の es_expand_stmts_effect_rows /
 es_expand_top_value、純粋な AST 変換パス)、既存の文字列ラベルベースの
 effect row 包含チェック機構に渡す。展開は check_program の最初
@@ -263,36 +263,36 @@ effect row 包含チェック機構に渡す。展開は check_program の最初
 collect_async_effect_errors の直前だけに絞っていたところ、
 checker.vibe の effect_row_dropped (引数の型互換性チェック、
 check_stmts の一部として実行される、独立した別経路) が展開前の生の
-row 文字列を比較してしまい、`with { AskAll }` を持つコールバック
+row 文字列を比較してしまい、`with AskAll` を持つコールバック
 引数を渡すと「未展開の "AskAll" と "Ask::Get" が一致しない」という
 誤検出で reject される実例が見つかった。展開のタイミングを
 check_stmts より前に前倒しすることで、この経路と perform-effect
 leak-through チェック (checker_effects.vibe の #885 overlay) の両方が
-展開後の row を見るようになり、修正された。`with { AskAll }` だけを
+展開後の row を見るようになり、修正された。`with AskAll` だけを
 宣言した関数・コールバック引数のどちらも、`Ask::Get` を要求する呼び出しを
 正しく authorize できることを実証済み
 (fixtures/effect_effectset_expansion.vibe /
 effect_effectset_param_expansion.vibe)。
 
 **#1361 (2026-08-02)**: この #885 overlay に **ローカル closure** も載る
-ようになった。`let f = () -> T with { E } { .. }` を関数本体の中に書いた
+ようになった。`let f = () -> T with E { .. }` を関数本体の中に書いた
 場合、それは top-level 関数やコールバック引数と同じ call-graph の葉だが、
 どちらの表にも載っていなかった (call-graph map は top-level SLet/SLetMut
 のみ、overlay は関数型パラメータのみ) ため、`f()` は何もリークせず、
 closure 本体は自分の宣言 row の下で自己充足していた — つまり
-`with { Stdout }` しか宣言していない関数から `Env` に到達できた。同じ walk
+`with Stdout` しか宣言していない関数から `Env` に到達できた。同じ walk
 を使う doctest / `vibe test` の cache 判定 (`file_entry_cacheable` /
 `file_tests_cacheable`) もこれを決定的とみなしていた。ELet/ELetRec/ELetMut
 で binding を overlay に登録することで両方閉じている。実測: この変更で
 cache 判定が変わったファイルは test 499/499・doctest ```vibe run 27/27 で
 **ゼロ** (`fixtures/err_local_closure_effect_leak.vibe`, compiler_gate 82)。
-なお注釈つきの `let f: () -> T with { E } = ..` は ascription call
+なお注釈つきの `let f: () -> T with E = ..` は ascription call
 (`ascribe_wrap`) に desugar されてからこの walk に来るので row が見えず、
 従来どおりの寛容な扱いのまま。**未着手のまま残っている範囲**:
 handler レベルの operation 単位 discharge (項目 4 — 現状 `handle ...
 with Env` は Env 全体を一括で discharge しており、特定 operation だけを
 discharge する形にはなっていない)、contract/WIT の operation 単位
-surface (項目 5)。`with { Env::get }` (単一 operation の直接列挙、
+surface (項目 5)。`with Env::get` (単一 operation の直接列挙、
 effectset を介さない) 自体は既存の文字列ラベルベースの effect row
 チェック機構にそのまま乗るため、単一 operation を指す row item は
 最小権限として機能する (caller 側の transitive call-graph チェックで
@@ -311,7 +311,7 @@ err_effectset_cycle.vibe・err_effectset_operation_collision.vibe
 (checker_effects.vibe) は従来 bare な effect 名しか記録しておらず、
 下流の包含チェックは厳密な文字列一致で行われるため、handled body が
 transitively 呼び出す関数が operation 単位の row
-(`with { Ask::Get }`、bare な effect ではなく) を宣言していると、
+(`with Ask::Get`、bare な effect ではなく) を宣言していると、
 handle が明らかにそれをカバーしているにも関わらず「still missing」と
 誤って reject されるケースがあった (修正前に実際に再現・確認)。
 collect_handle_effects が各 arm の bare effect 名に加えて fully
@@ -333,8 +333,8 @@ end-to-end テスト) で実証済み。fixtures/contract_effectset_vpkg_main.vi
 さらに、contract-vs-implementation の**signature matching**も
 effectset 対応が着地済み: check_contract (contract.vibe) は従来
 effect row を厳密な文字列比較で照合しており、contract 側で
-`fn f() -> T with { AskAll }` と書き実装側で展開後の operation を
-直接 `with { Ask::Get }` と書くと、意味的に等価でも mismatch エラーに
+`fn f() -> T with AskAll` と書き実装側で展開後の operation を
+直接 `with Ask::Get` と書くと、意味的に等価でも mismatch エラーに
 なるバグがあった (修正前に実際に再現・確認)。check_contract に
 `contract_type_defs: Array[Stmt]` 引数を追加し、contract 自身の
 effectset 宣言から構築した ES table で両側の signature を比較前に
@@ -351,8 +351,8 @@ compiler_gate.sh 40s で回帰を固定。
 さらに、**WIT 生成**(wit_gen.vibe) も effectset 対応が着地し、項目 5 が
 完全に着地した: 従来 wit_gen.vibe は `used_effects` を集める際に生の
 row label をそのまま effect 定義名として突き合わせていたため、
-`effectset` alias (`with { AskAll }`) や、対応する bare な effect 名の
-row item を伴わない qualified operation item 単独 (`with { Ask::Get }`)
+`effectset` alias (`with AskAll`) や、対応する bare な effect 名の
+row item を伴わない qualified operation item 単独 (`with Ask::Get`)
 は effect 定義に一致せず、実際には WIT マッピングを持つ effect でも
 "host capability effect ... no WIT mapping yet" のコメントマーカーに
 フォールバックしてしまうバグがあった (修正前に実際に再現・確認)。
@@ -362,7 +362,7 @@ wit_resolve_effect_names_into、wit_gen.vibe 内のみ、クロスファイル
 参照なし) を追加し、`used_effects` の収集ループで各 raw label を
 effectset 展開 + qualified→effect 名解決してから照合するよう修正。
 既存の effect->WIT golden (fixtures/wit_gen_http.vibe、通常の
-`with { Effect }` 形式) はバイト同一で無回帰であることを確認した上で、
+`with Effect` 形式) はバイト同一で無回帰であることを確認した上で、
 effectset alias と bare qualified item の両方をカバーする新規 golden
 fixtures/wit_gen_effectset.vibe + compiler_gate.sh 40t で回帰を固定。
 
@@ -375,7 +375,7 @@ fresh inference vars で instantiate した signature に対して arity と引�
 を検査する — `perform State::Get(1, 2, 3)` が 0-arity 宣言に通る #1218 の
 横断発見の穴はここで閉じた。(c) handle site は **handle 式ごとに 1 回**
 instantiate して全 arm で共有する (`Get => resume(0)` が束縛した S=Int を
-`Put(v)` の payload binder も見る)。(d) `with { State[Int] }` row item が
+`Put(v)` の payload binder も見る)。(d) `with State[Int]` row item が
 parse する (parser_base.vibe collect_row_item_targs)。row 文字列表現の
 "," 区切りと衝突するため **型引数は1個のみ** (multi-arg instantiation は
 parse error)。containment/unification/dropped-row 比較は base 名
@@ -395,15 +395,15 @@ lib/@vibe/compiler/tests/checker_generic_effect_test.vibe。
 **host capability には effect 全体以外の粒度が存在しなかった** —
 builtin 呼び出しの経路 (`checker_effects.vibe` の `builtin_call_effect`) は
 裸の effect ラベルを返し `decl_authorizes_effect(declared, "Fs")` で照合して
-いたため、`with { Fs::read_file }` は `missing { Fs }` で reject されていた
-(実測)。これが `with { Http }` のような粗い row を強制していた原因で、
+いたため、`with Fs::read_file` は `missing { Fs }` で reject されていた
+(実測)。これが `with Http` のような粗い row を強制していた原因で、
 1つのラベルに「ポートを bind して serve する権限」と「任意 URL への
 outbound request」が同居していた。
 
 builtin 経路を operation ラベルでも認可するよう修正した
 (`builtin_call_op_label`: 修飾 builtin は canonical 名がそのまま operation id、
 非修飾の `sh` 等は従来どおり effect のみ)。**裸の effect を先に試すので純粋な
-緩和**であり、既存の `with { Fs }` / `with { Http }` は一切変わらない。
+緩和**であり、既存の `with Fs` / `with Http` は一切変わらない。
 診断も ADR-0071 の契約どおり不足 operation を名指しする
 (`missing { Fs::write_file }`) — effect 全体への widening を勧めない。
 
@@ -450,7 +450,7 @@ import 元に追加するだけなら問題ない。
 
 最低限、次を回帰として固定する。
 
-- `with { Env::Read }` から `Env::set` は reject
+- `with Env::Read` から `Env::set` は reject
 - direct row と同じ集合の effectset row は型・contract hash・WIT が一致
 - effectset の順序違いと重複は同一、循環は reject
 - `State::Read[Int]` と `State::Read[String]` は異なる operation 集合

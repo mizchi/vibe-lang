@@ -41,7 +41,7 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
    載っている (`"State[Int]"`、ADR-0071/#1340)。`row_label_base` が `[` で
    base 名を切り出す。containment は現状 instantiation-insensitive。
 5. **row のラベルが実在の effect を指すかは検査されていない**。
-   `with { Frobnicate }` は素通りする (module-local な `TDEffect` しか見えず、
+   `with Frobnicate` は素通りする (module-local な `TDEffect` しか見えず、
    import された user effect と builtin を区別できないため、素朴な
    「既知ラベル検査」は false positive を生む)。
 6. **`wit_gen` の分類は反転しており、かつ checker とは独立している**。
@@ -67,7 +67,7 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
 | 軸 | 単位 | 誰のための粒度か | 具体物 |
 |---|---|---|---|
 | **provider 軸** | effect 名 (`Fs` / `Http` / `Socket`) | **実装契約**。どの WASI/host provider が実装するか | host import 束、WIT interface、binding、resource kind |
-| **consumer 軸** | operation (`Http::request`) | **最小権限**。呼ぶ側が `with` に何を宣言するか | `with { ... }` row、`effectset`、ADR-0088 の `allows` |
+| **consumer 軸** | operation (`Http::request`) | **最小権限**。呼ぶ側が `with` に何を宣言するか | `with ...` row、`effectset`、ADR-0088 の `allows` |
 
 - provider 軸を consumer の都合で割ってはならない。`Http` を
   `HttpServer`/`HttpClient`/`HttpIncoming` という**別 effect** に分割すると、
@@ -75,7 +75,7 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
   (raw import 層は `Http` のまま残るので、層ごとにラベルが食い違う —
   実際 `builtins_net.vibe` が現にその状態にある)。
 - consumer 軸の細粒度は **ADR-0071 が既に定めた operation-level row** で表す。
-  `with { Http::request }` (egress) と `with { Http::listen }` (serve) は
+  `with Http::request` (egress) と `with Http::listen` (serve) は
   別々に書ける。束ねた名前が欲しければ
   `effectset Http::Client = { Http::request, Http::response_status, ... }` —
   effectset は透明な compile-time alias で runtime identity を持たないので、
@@ -88,8 +88,8 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
 > **実装状況 (#1343)**: consumer 軸は `perform Eff::Op` の経路でしか効いて
 > いなかった。builtin 呼び出しの経路は `builtin_call_effect` が裸の effect
 > ラベルを返し `decl_authorizes_effect(declared, "Fs")` で照合していたため、
-> `with { Fs::read_file }` は `missing { Fs }` で reject され、**host
-> capability には effect 全体以外の粒度が存在しなかった**。`with { Http }`
+> `with Fs::read_file` は `missing { Fs }` で reject され、**host
+> capability には effect 全体以外の粒度が存在しなかった**。`with Http`
 > のような粗い row が強制されていたのはこれが原因。builtin 経路を
 > operation ラベルでも認可するよう修正した (裸の effect も従来どおり通るので
 > 純粋な緩和)。
@@ -198,7 +198,7 @@ effect_class(name) -> Capability | Algebraic | CoreAmbient
 
 ### 5. resource 引数は Phase 1 では**暗黙**とし、表面構文を変えない
 
-`perform Fs::read_file(...)` / `with { Fs }` は無変更。resource 引数省略時は
+`perform Fs::read_file(...)` / `with Fs` は無変更。resource 引数省略時は
 既定 singleton (`Fs[Process::Root]`) へ展開する sugar として扱う
 (effect-taxonomy-review.md の Phase 1)。これにより compiler 自身のソースを
 含む既存コードは無風で、bootstrap bump も不要。
@@ -210,7 +210,7 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**
 **最初に実装できるのは構文ではなく分類 metadata** である。
 
 0. **(着地済み、#1343)** builtin 呼び出し経路に consumer 軸を通す —
-   `with { Fs::read_file }` / `with { Http::request }` が builtin を認可する。
+   `with Fs::read_file` / `with Http::request` が builtin を認可する。
    これで `Http` が広すぎる問題は provider 軸を割らずに解ける。後続として
    `builtins_net.vibe` の `HttpServer`/`HttpClient`/`HttpIncoming` は
    **provider ラベルではなく `Http::*` operation 上の effectset** へ寄せる
@@ -240,7 +240,7 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**
   実測 3」の5箇所が `Array::length(targs) == N` で黙って分岐から漏れるため、
   やる場合は同一コミットで lockstep 修正すること (#1181 の再発防止)。
 - row containment は当面 instantiation-insensitive のままなので、
-  `with { Fs }` は `Fs[Anything]` を authorize する。resource 単位の最小権限が
+  `with Fs` は `Fs[Anything]` を authorize する。resource 単位の最小権限が
   実効化するのは ADR-0071 の OperationRef 正規化が入ってからで、本 ADR は
   その表現を先に確定させるだけである。
 - 表面構文を変えないため、compiler 自身のソースは Phase 1〜3 で無変更。

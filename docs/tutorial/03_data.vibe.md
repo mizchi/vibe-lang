@@ -9,7 +9,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let t = (1, "two", true)
   stdout_write("t.0 = \{t.0}\n")
   let a = [
@@ -55,7 +55,7 @@ struct Point {
   x: Int; y: Int
 } derive (Eq, Ord, Show)
 
-fn main with { Stdout } {
+fn main with Stdout {
   let p = Point::{
     x: 1, y: 2
   }
@@ -92,7 +92,7 @@ fn area(s: Shape) -> Int {
   }
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("area(Circle(2)) = \{area(Circle(2))}\n")
   stdout_write("area(Rect(6, 7)) = \{area(Rect(6, 7))}\n")
 }
@@ -119,7 +119,7 @@ fn classify(n: Int) -> String {
   }
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("classify(0) = \{classify(0)}\n")
   stdout_write("classify(2) = \{classify(2)}\n")
   stdout_write("classify(-5) = \{classify(-5)}\n")
@@ -168,7 +168,7 @@ let Version::{
   major: 0, minor: 3
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("sum = \{left + right}, \{name} \{major}.\{minor}\n")
 }
 ```
@@ -186,7 +186,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let (a, b) = (1, 2)
   stdout_write("a + b = \{a + b}\n")
   let opt = Some(41)
@@ -220,7 +220,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let arr = {
     let bld = ArrayBuilder::new()
     ArrayBuilder::push(bld, 1)

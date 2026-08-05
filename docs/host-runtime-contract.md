@@ -46,7 +46,7 @@ compiler's own entry point rather than arbitrary user programs.
 
 ## The contract
 
-`export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout }`
+`export fn cli_main() -> Int with Error + Fs + Env + Stdin + Stdout`
 (`lib/@vibe/compiler/cli_adapter.vibe`) is the row that matters. `Error`
 never crosses the host boundary (vibe-internal control flow — an escaping
 throw is a component trap, not a host capability), matching the rule
@@ -60,8 +60,8 @@ is only a 4-op convenience subset for user-program `import Fs` usage. The
 actual boundary the checker enforces is a per-builtin string tag
 (`Some("Fs")` on each entry in
 `lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe`, plus
-`Fs::readdir` in `checker/builtins_fs.vibe`), and `cli_main`'s `with {
-Fs }` row admits any builtin carrying that tag. Round 1 added all 17
+`Fs::readdir` in `checker/builtins_fs.vibe`), and `cli_main`'s `with
+Fs` row admits any builtin carrying that tag. Round 1 added all 17
 tagged ops on that basis.
 
 **Round 2 correction (self-review, following up on round 1's own open

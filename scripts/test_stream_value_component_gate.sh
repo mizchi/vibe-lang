@@ -75,7 +75,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_stream_value
 }
 
-fn main() -> Unit with { Error, Fs } {
+fn main() -> Unit with Error + Fs {
   let bytes = comp_emit_component_wasm_stream_value("run", 121)
   Fs::write_bytes("_build/bench/selfhost_stream_value_component/generated.component.wasm", bytes)
 }

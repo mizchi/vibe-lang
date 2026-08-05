@@ -87,7 +87,7 @@
 //     gate scripts for the identical "newest generation" lookup.
 //   * TaskGroup (#1081/ADR-0068) was deliberately NOT used for concurrent
 //     block processing: `TaskGroup::spawn`'s closure parameter is fixed to
-//     `with { Error }` (not row-polymorphic like `TaskGroup::run`'s own
+//     `with Error` (not row-polymorphic like `TaskGroup::run`'s own
 //     body), so a spawned task cannot itself perform `Process`/`Fs` --
 //     confirmed against the real lib/@vibex/concurrent/index.vpkg contract
 //     before writing this file, not assumed. Parallelizing block processing
@@ -226,7 +226,7 @@ fn array_empty[T]() -> Array[T] {
 // An unterminated fence uses the built-in `Error` effect (`throw`) rather
 // than a custom effect -- distinct from a block that compiled/ran and
 // failed verification, but no new effect vocabulary is needed for it.
-fn parse_blocks(text: String) -> Array[Token] with { Error } {
+fn parse_blocks(text: String) -> Array[Token] with Error {
   let lines = splitlines_like(text)
   let n = Array::length(lines)
   let tokens = ArrayBuilder::new()
@@ -395,7 +395,7 @@ fn shq(s: String) -> String {
 // build) rather than picking the newest DIRECTORY unconditionally -- matches
 // scripts/vibe_md.py's resolve_stage2, which filtered candidates the same
 // way before sorting by mtime.
-fn resolve_stage2() -> String with { Process, Env, Fs } {
+fn resolve_stage2() -> String with Process + Env + Fs {
   let env_val = Env::get("VIBE_MD_STAGE2")
   if String::length(env_val) > 0 {
     env_val
@@ -427,7 +427,7 @@ fn resolve_stage2() -> String with { Process, Env, Fs } {
   }
 }
 
-fn file_nonempty(path: String) -> Bool with { Fs } {
+fn file_nonempty(path: String) -> Bool with Fs {
   if Fs::exists(path) {
     Bytes::length(Fs::read_bytes(path)) > 0
   } else {
@@ -462,7 +462,7 @@ struct BlockResult {
 // scripts/vibe_md.py's VIBE_MD_TIMEOUT, default 120): without it a hung or
 // infinite-looping tutorial block ties up sh_capture (and therefore the CI
 // job running it) with no per-block failure ever produced.
-fn md_timeout_secs() -> String with { Env } {
+fn md_timeout_secs() -> String with Env {
   let v = String::trim(Env::get("VIBE_MD_TIMEOUT"))
   if String::length(v) > 0 {
     v
@@ -473,7 +473,7 @@ fn md_timeout_secs() -> String with { Env } {
 
 // #819 doctest cache directory + opt-out, same env-var-with-default shape as
 // md_timeout_secs above.
-fn doctest_cache_dir() -> String with { Env } {
+fn doctest_cache_dir() -> String with Env {
   let v = String::trim(Env::get("VIBE_MD_CACHE"))
   if String::length(v) > 0 {
     v
@@ -482,26 +482,26 @@ fn doctest_cache_dir() -> String with { Env } {
   }
 }
 
-fn doctest_no_cache() -> Bool with { Env } {
+fn doctest_no_cache() -> Bool with Env {
   String::trim(Env::get("VIBE_MD_NO_CACHE")) == "1"
 }
 
 // Portable single-file sha256 (macOS ships `shasum`, not `sha256sum`) --
 // same fallback runtime/vibe's own `_sha256_file` uses for the `vibe test`
 // pure-test cache.
-fn sha256_file(path: String) -> String with { Process } {
+fn sha256_file(path: String) -> String with Process {
   let cmd = "if command -v sha256sum >/dev/null 2>&1; then sha256sum \{shq(path)} | cut -d' ' -f1; else shasum -a 256 \{shq(path)} | awk '{print $1}'; fi"
   let r = sh_capture(cmd)
   String::trim(r.stdout)
 }
 
-fn write_doctest_cache(cache_path: String, content: String) -> Unit with { Fs, Process } {
+fn write_doctest_cache(cache_path: String, content: String) -> Unit with Fs + Process {
   let dir = dirname(cache_path)
   let _ = sh_capture("mkdir -p \{shq(dir)}")
   Fs::write_file(cache_path, content)
 }
 
-fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with { Fs, Process, Env } {
+fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with Fs + Process + Env {
   let label = "\{md_path}:\{blk.start_line}"
   if blk.mode == "skip" {
     BlockResult::{ label: label, status: "SKIP", reason: "" }
@@ -633,7 +633,7 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
 // rewrite_text via blk.fmt_lines) or reports a FAIL (`mode == "fmt-check"`)
 // when the block isn't already a fixpoint. Unlike run_one_block, this never
 // compiles or executes the block, so it needs no compiler wasm argument.
-fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with { Fs, Process, Env } {
+fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with Fs + Process + Env {
   let label = "\{md_path}:\{blk.start_line}"
   let src = "\{md_dir}/\{scratch_name}.vibe"
   let original = join_lines(blk.code_lines)
@@ -672,7 +672,7 @@ fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Blo
   }
 }
 
-fn cleanup_one(src: String, out: String, diag: String) -> Unit with { Fs } {
+fn cleanup_one(src: String, out: String, diag: String) -> Unit with Fs {
   let funcmap = "\{out}.funcmap"
   let entry_meta = "\{out}.entrymeta"
   if Fs::exists(src) {
@@ -758,7 +758,7 @@ fn basename_no_ext(path: String) -> String {
   }
 }
 
-fn process_file(md_path: String, cwd: String, compiler: String, mode: String) -> FileOutcome with { Fs, Process, Error, Env } {
+fn process_file(md_path: String, cwd: String, compiler: String, mode: String) -> FileOutcome with Fs + Process + Error + Env {
   let text = Fs::read_file(md_path)
   let tokens = parse_blocks(text)
   link_run_output_pairs(tokens)
@@ -811,7 +811,7 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
 // fmt/fmt-check counterpart of process_file: no compiler wasm, no
 // execution, no ```output pairing -- just every vibe-source block
 // (check/run/skip) through run_fmt_block.
-fn process_file_fmt(md_path: String, mode: String) -> FileOutcome with { Fs, Process, Error, Env } {
+fn process_file_fmt(md_path: String, mode: String) -> FileOutcome with Fs + Process + Error + Env {
   let text = Fs::read_file(md_path)
   let tokens = parse_blocks(text)
   let md_dir = dirname(md_path)
@@ -924,7 +924,7 @@ fn push_all[T](b: ArrayBuilder[T], items: Array[T]) -> Unit {
 
 // ---------- entry ----------
 
-fn report(results: Array[BlockResult], mode: String) -> Int with { Stdout } {
+fn report(results: Array[BlockResult], mode: String) -> Int with Stdout {
   let n = Array::length(results)
   let mut i = 0
   let mut fail = 0
@@ -955,7 +955,7 @@ fn report(results: Array[BlockResult], mode: String) -> Int with { Stdout } {
 // builds its formatter entry from the committed seed) -- kept as a separate
 // entry point from run_mode rather than threading an unused `compiler`
 // resolution through the check/write path.
-fn run_mode_fmt(mode: String, files: Array[String]) -> Int with { Fs, Env, Process, Stdout, Stderr } {
+fn run_mode_fmt(mode: String, files: Array[String]) -> Int with Fs + Env + Process + Stdout + Stderr {
   Stdout::write_stream("vibe_md: mode=\{mode}\n")
   let all_results = ArrayBuilder::new()
   let mut i = 0
@@ -995,7 +995,7 @@ fn run_mode_fmt(mode: String, files: Array[String]) -> Int with { Fs, Env, Proce
   }
 }
 
-fn run_mode(mode: String, files: Array[String]) -> Int with { Fs, Env, Process, Stdout, Stderr } {
+fn run_mode(mode: String, files: Array[String]) -> Int with Fs + Env + Process + Stdout + Stderr {
   let cwd = Fs::getcwd()
   let compiler = resolve_stage2()
   if !file_nonempty(compiler) {
@@ -1050,7 +1050,7 @@ fn is_known_mode(mode: String) -> Bool {
   mode == "check" || mode == "write" || mode == "fmt" || mode == "fmt-check"
 }
 
-fn main with { Fs, Env, Process, Stdout, Stderr } {
+fn main with Fs + Env + Process + Stdout + Stderr {
   let argc = Env::args_len()
   let code = if argc < 2 {
     Stderr::write_stream(usage())

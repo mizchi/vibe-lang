@@ -15,8 +15,8 @@ vibe check file.vibe  # Type check
 ## Entry Point
 
 A `.vibex` executable root contains exactly one non-exported
-`fn main with { ... } { ... }`. It takes no parameters, returns `Unit`, and its
-closed effect row is explicit (`with { }` for a pure entry). The top level is
+`fn main with ... { ... }`. It takes no parameters, returns `Unit`, and its
+closed effect row is explicit (`with ()` for a pure entry). The top level is
 declarations-only, and statements/side effects go in `main`. A `.vibex` file
 cannot be imported. When you `vibe build`, `main` is lowered to the generated
 WASM `_start` ABI entry point.
@@ -26,7 +26,7 @@ import ./lib/@vibe/prelude/io.vibe { stdout_write }
 
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("add(1, 2) = \{add(1, 2)}\n")
 }
 ```
@@ -148,15 +148,15 @@ let (a, b) = pair         // destructure
 
 ```vibe
 // Preferred: carry the failure in the row (stub stages for a runnable example)
-fn parse_id(raw: String) -> Int with { Exception[String] } { 1 }
-fn load_user(id: Int) -> Int with { Exception[String] } { id }
+fn parse_id(raw: String) -> Int with Exception[String] { 1 }
+fn load_user(id: Int) -> Int with Exception[String] { id }
 
-fn run(raw: String) -> Int with { Exception[String] } {
+fn run(raw: String) -> Int with Exception[String] {
   raw |> parse_id |> load_user
 }
 
 // Boundary helper when you need to localize Error
-let safe_div: (Int, Int) -> Int with { Error } = (a, b) -> {
+let safe_div: (Int, Int) -> Int with Error = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }

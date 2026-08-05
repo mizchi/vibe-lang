@@ -82,7 +82,7 @@ let count_even: (Array[Int]) -> Int = (arr) -> {
 // ✅ effect: テスト時に mock したい
 effect Db { Query(String) -> String }
 
-let get_user: () -> String with { Db } = () -> {
+let get_user: () -> String with Db = () -> {
   perform Db::Query("SELECT name FROM users WHERE id=1")
 }
 
@@ -102,7 +102,7 @@ effect Config {
   Get(String) -> String
 }
 
-let connect: () -> String with { Config } = () -> {
+let connect: () -> String with Config = () -> {
   let host = perform Config::Get("DB_HOST")
   let port = perform Config::Get("DB_PORT")
   String::concat(host, String::concat(":", port))
@@ -124,7 +124,7 @@ handle { connect() } with Config {
 // ✅ effect: ログの出力先を変えたい
 effect Log { Info(String) -> Unit; Error(String) -> Unit }
 
-let process: (String) -> Int with { Log } = (data) -> {
+let process: (String) -> Int with Log = (data) -> {
   perform Log::Info("processing started")
   let result = String::length(data)
   if result == 0 {
@@ -148,7 +148,7 @@ handle { process("hello") } with Log {
 // ✅ effect: 認証ロジックを差し替え可能に
 effect Auth { Verify(String) -> Bool }
 
-let protected_action: () -> Int with { Auth } = () -> {
+let protected_action: () -> Int with Auth = () -> {
   let ok = perform Auth::Verify("token")
   if ok { 200 } else { 401 }
 }
@@ -162,7 +162,7 @@ let protected_action: () -> Int with { Auth } = () -> {
 // ✅ effect: テストで決定的にしたい
 effect Random { NextInt(Int, Int) -> Int }
 
-let roll_dice: () -> Int with { Random } = () -> {
+let roll_dice: () -> Int with Random = () -> {
   perform Random::NextInt(1, 6)
 }
 

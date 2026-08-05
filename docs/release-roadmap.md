@@ -357,7 +357,7 @@
 先に潰すと 4 テーマ全部のコストが下がる共有基盤。**優先度高**。
 
 - **A. parser のエラー回復 (error recovery)** — 現状 `vibe/parser/parser.vibe` は
-  最初の `expect_tk` 失敗で `with { Error }` throw して停止する。これは
+  最初の `expect_tk` 失敗で `with Error` throw して停止する。これは
   LSP（編集中の壊れたソースで診断/補完を出す）と UX 両方の天井になっている。
   recovery point（`;` / `}` / トップレベル宣言境界で再同期）を入れる。
 - **B. source location / wasm name section** — 現状 codegen は name section も

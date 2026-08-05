@@ -35,12 +35,12 @@
 
 ```vibe
 fn add(x: Int, y: Int) -> Int { x + y }
-fn read(path: String) -> String with { Fs } { ... }
+fn read(path: String) -> String with Fs { ... }
 fn identity[T](x: T) -> T { x }
 fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 ```
 
-- **純粋な sugar**: parse 直後に既存の `let rec name: (T...) -> R with {..} =
+- **純粋な sugar**: parse 直後に既存の `let rec name: (T...) -> R with .. =
   (params) -> { body }` へ脱糖する。checker / codegen は無変更。
 - `fn` は常に完全注釈 (パラメータ型・返り値型) を要求する。ADR-0037 の
   前方参照・自己再帰の条件を常に満たすため、`rec` の書き分けが消える。
@@ -100,7 +100,7 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 契約ファイル (`.vibei`) に書けるもの:
 
 - 型定義。公開 struct/enum は定義ごと。実装を隠す場合は **`opaque type Ast`**。
-- 関数シグネチャ (body なし `fn`)。**effect row (`with { Fs }`) は契約の中核
+- 関数シグネチャ (body なし `fn`)。**effect row (`with Fs`) は契約の中核
   情報**であり必須で照合される。
 - `trait` / `effect` / `suberror` 宣言。
 - サブ境界の公開: `export ./syntax as syntax` (§4)。
@@ -244,7 +244,7 @@ require @vibe/json ^2.0.1 = #31bb9c
 import @vibe/http { get }
 import @vibe/json { parse }
 
-fn main() -> Unit with { Stdout, Net } { ... }
+fn main() -> Unit with Stdout + Net { ... }
 ```
 
 - 任意のエントリ `.vibe` の先頭に `require` を書ける。

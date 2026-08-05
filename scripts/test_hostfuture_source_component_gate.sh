@@ -3,7 +3,7 @@
 #
 # The step-4 wiring end-to-end: a `.vibe` program
 #
-#   let run: () -> Int with { Async } = () -> {
+#   let run: () -> Int with Async = () -> {
 #     let f = host_future_get()
 #     await(f)
 #   }
@@ -102,7 +102,7 @@ echo "[hostfuture-source-component-gate] runner: $RUNNER"
 # --- compile the real-source fixture (single-source path, entry "run") -------
 SRC="$OUT_DIR/hostfuture_await.vibe"
 cat >"$SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let f = host_future_get()
   await(f)
 }
@@ -161,7 +161,7 @@ echo "[hostfuture-source-component-gate] blocked path: 42 in ${ELAPSED_MS}ms (re
 # --- control: an ordinary async entry keeps the p1 wrap ----------------------
 CTRL_SRC="$OUT_DIR/ready_await.vibe"
 cat >"$CTRL_SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   await(Future::ready(42))
 }
 EOF

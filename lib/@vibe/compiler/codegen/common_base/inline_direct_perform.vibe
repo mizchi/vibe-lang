@@ -332,7 +332,7 @@ fn idp_pure_builtin_names() -> Array[String] {
     // a function-typed argument", and both qualify (Int -> Unit host
     // calls). Needed because the scoped sleep retarget deliberately leaves
     // the raw builtin in top-level fn bodies when no entry boundary exists
-    // (Codex P1 on #1312): an Async-row fn like `fn delay() with { Async }
+    // (Codex P1 on #1312): an Async-row fn like `fn delay() with Async
     // { sleep(1) }` must classify as PERFORM-FREE (the stat_token
     // precedent, edp_append_perform_free_row_fns) rather than sinking the
     // whole effect's migration to ineligible on an unknown callee -- and
@@ -814,13 +814,13 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 /// handle site or needing function fails the eligibility scan.
 ///
 /// A function whose row combines `E` with another concrete effect, OR with
-/// an open row-variable tail (`with { Ask, e }`), IS attempted per-effect,
+/// an open row-variable tail (`with Ask + e`), IS attempted per-effect,
 /// independently (`edp_row_is_exactly`'s row-containment match) -- each
 /// effect in the row is eligibility-checked and migrated (or not) on its
 /// own terms; see edp_row_is_exactly's doc comment for why this is sound
 /// and the history of getting there for the concrete-effect-vs-concrete-
 /// effect case. The row-variable-tail case was verified separately
-/// (2026-07-23): `with { Ask, e }` migrates `Ask` too, exactly like any
+/// (2026-07-23): `with Ask + e` migrates `Ask` too, exactly like any
 /// other multi-effect row -- the row-variable token `e` simply never
 /// matches any real declared effect name, so it's inert to this pass's own
 /// matching logic. If the function body actually exercises whatever `e`
@@ -877,7 +877,7 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 /// could paper over even in principle (the underlying replay path is
 /// what's broken for that shape, migrated or not).
 ///
-/// A row spelled with an `effectset` alias (`with { AskAll }`) is ALSO
+/// A row spelled with an `effectset` alias (`with AskAll`) is ALSO
 /// recognized now, at whatever granularity the alias expands to -- see
 /// edp_row_is_exactly's doc comment for why the row string needed its own
 /// local (re-)expansion here rather than trusting it was already expanded
@@ -939,7 +939,7 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 /// compile error, mirroring suspend_cps_pass's contract).
 /// #1347 (ADR-0089 Part A, 資料 p87 "higher-order effect"): does some declared
 /// effect's operation take a BLOCK — a function-typed parameter whose OWN row
-/// carries `ename`? E.g. `effect Tracing { Span(String, () -> Int with { Log })
+/// carries `ename`? E.g. `effect Tracing { Span(String, () -> Int with Log)
 /// -> Int }` handled under an outer `handle .. with Log`: the arm invokes that
 /// block, so Log's evidence would have to migrate across the arm boundary,
 /// which this implementation cannot do. Returns "T::Op" when the shape is
@@ -2812,7 +2812,7 @@ fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) -> Arra
 
 /// Drop any `needing` name whose OWN entire body is BARE `handle {..} with
 /// ename {..}` -- e.g. `fixtures/effect_effectset_expansion.vibe`'s `main`,
-/// declared `with { Ask, Ask::Get }` purely to satisfy a checker requirement
+/// declared `with Ask + Ask::Get` purely to satisfy a checker requirement
 /// unrelated to evidence_dict_pass ("a `handle ... with Effect` expression's
 /// enclosing declared row must authorize the whole effect name" -- see that
 /// fixture's own doc comment), whose body never performs `ename` OUTSIDE the
@@ -2955,7 +2955,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       ""
     }
     if escaped != "" {
-      Array::push(errs, String::concat(String::concat(String::concat("function `", escaped), String::concat("` carries effect ", ename)), String::concat(String::concat(" and is passed as a VALUE into a slot whose type does not carry that row, so evidence-passing (ADR-0076) cannot reach the call through it (#1261) -- annotate the receiving parameter (and any binding it flows through) with `with { ", ename), " }`, or call the function directly instead of passing it")))
+      Array::push(errs, String::concat(String::concat(String::concat("function `", escaped), String::concat("` carries effect ", ename)), String::concat(String::concat(" and is passed as a VALUE into a slot whose type does not carry that row, so evidence-passing (ADR-0076) cannot reach the call through it (#1261) -- annotate the receiving parameter (and any binding it flows through) with `with ", ename), "`, or call the function directly instead of passing it")))
     } else {
       ()
     }
@@ -3005,7 +3005,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
           // Zero sites means nothing can fall to replay — the suspend
           // lane (ADR-0076 Phase 3a/3b) transforms its handles BEFORE
           // this pass, so a CPS-mode effect's row-E closure values (e.g.
-          // spawn_suspend's `f: () -> T with { Async, Error }` param)
+          // spawn_suspend's `f: () -> T with Async + Error` param)
           // follow the STEP convention and are none of edp's business.
           if Array::length(edp_collect_handle_sites(stmts, ename)) > 0 && (Array::length(gb) > 0 || Array::length(gl) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)) {
             // #1347: name the higher-order operation when that is the cause.
@@ -3099,7 +3099,7 @@ fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[Str
 ///
 /// A needing function's row string (EFn's own `eff` slot, taken verbatim by
 /// edp_collect_fn_defs) can be spelled with an `effectset` alias --
-/// `with { AskAll }` where `effectset AskAll = { Ask }` -- instead of the
+/// `with AskAll` where `effectset AskAll = { Ask }` -- instead of the
 /// bare effect name. checker_stmt.vibe's own effectset-expansion
 /// (es_expand_stmts_effect_rows) deliberately runs on a NON-mutating COPY of
 /// `stmts` used only for type-checking (see check_program's comment: "codegen
@@ -3841,7 +3841,7 @@ fn edp_pure_builtin_names() -> Array[String] {
     // a function-typed argument", and both qualify (Int -> Unit host
     // calls). Needed because the scoped sleep retarget deliberately leaves
     // the raw builtin in top-level fn bodies when no entry boundary exists
-    // (Codex P1 on #1312): an Async-row fn like `fn delay() with { Async }
+    // (Codex P1 on #1312): an Async-row fn like `fn delay() with Async
     // { sleep(1) }` must classify as PERFORM-FREE (the stat_token
     // precedent, edp_append_perform_free_row_fns) rather than sinking the
     // whole effect's migration to ineligible on an unknown callee -- and
@@ -4802,7 +4802,7 @@ fn edp_find_fn_params_and_body(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
 //
 // closure-value mode for effect E: the program contains a VALUE of a
 // function type whose row carries E — an annotated closure literal
-// (`() -> T with { E } { .. }`) or a fn-typed parameter annotation. In
+// (`() -> T with E { .. }`) or a fn-typed parameter annotation. In
 // this mode migration is TYPE-directed and TOTAL: every row-E literal
 // gets the `__ev_E` leading param, every call through a row-E-typed name
 // forwards evidence, and a named needing fn used as a value already has
@@ -4816,7 +4816,7 @@ fn edp_find_fn_params_and_body(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
 // fallback) — the frontier-deletion prerequisite.
 
 /// #1116 Codex review (P1): the idempotency check must be EFFECT-SPECIFIC.
-/// A `with { A, B }` literal gets `__ev_A` from A's sweep; a blanket
+/// A `with A + B` literal gets `__ev_A` from A's sweep; a blanket
 /// `starts_with(p0, "__ev_")` would then make B's sweep skip it, so B's
 /// perform escapes after B's handler is removed. Check for THIS effect's
 /// dict param by exact name, scanning ALL params (a prior effect's param
@@ -4898,7 +4898,7 @@ fn edp_row_lit_scan(stmts: Array[Stmt], ename: String, needing: Array[String], e
 /// somewhere and poisoned elsewhere is dropped from the widening set —
 /// call sites through it then fail eligibility (a hard error, loud) rather
 /// than silently mismatching arity. Names bound uniquely to a row-E value
-/// (the common shape: `let inner = () -> _ with { E } {..}`) are never
+/// (the common shape: `let inner = () -> _ with E {..}`) are never
 /// poisoned and stay widened.
 fn edp_filter_unpoisoned(binds: Array[String], poison: Array[String]) -> Array[String] {
   let out = empty_str_array()
@@ -6500,7 +6500,7 @@ fn edp_maybe_migrate_efn(expr: Expr, ename: String, dict_pname: String, needing:
   match expr {
     // 追記34: a literal the type-directed sweep already migrated FOR THIS
     // EFFECT must not be double-prepended by the proof-path revisit
-    // (#1116 Codex P1: effect-specific — a `with { A, B }` literal already
+    // (#1116 Codex P1: effect-specific — a `with A + B` literal already
     // carrying `__ev_A` still needs `__ev_B`).
     EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, dict_pname) {
       None
@@ -7003,7 +7003,7 @@ fn edp_prepend_dict_arg(dict_pname: String, args: Array[Expr]) -> Array[Expr] {
 /// A needing function's declared row is exactly `ename`, but it may still
 /// contain a `perform` for a DIFFERENT effect that is exempt from row
 /// declaration -- `Error` (#640 Stage 2: `perform Error::Throw`/`throw`
-/// never needs a declared `with { Error }` row). Only a perform whose
+/// never needs a declared `with Error` row). Only a perform whose
 /// qualified operation name's own effect prefix is `ename` gets rewritten
 /// into a dict-field call; anything else (in practice, only Error) is left
 /// completely untouched and falls through to its own existing codegen
@@ -7430,7 +7430,7 @@ fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -
 ///     does not contain E (checker row soundness: an unhandled perform of
 ///     E inside f forces E -- or a row variable -- into f's declared row,
 ///     so a concrete E-free row cannot reach one). A row-VARIABLE row
-///     (`with { e }` / `with { X, e }`) on a non-needing callee is
+///     (`with e` / `with X + e`) on a non-needing callee is
 ///     ineligible -- the variable could be instantiated to E via a closure
 ///     argument this pass cannot see;
 ///   - no nested handle, and no closure containing a handled-op perform or
@@ -7775,7 +7775,7 @@ fn scps_fn_row_of(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExp
 }
 
 /// A row item starting with a lowercase letter is a row VARIABLE (`with
-/// { e }` / `with { X, e }`): the variable can be instantiated to the
+/// { e }` / `with X + e`): the variable can be instantiated to the
 /// migrated effect via a closure argument this pass cannot see, so such a
 /// callee is never "provably E-free". Effect names / effectset aliases /
 /// qualified ops are all capitalized or contain `::`.
@@ -9385,7 +9385,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         let site = scps_next_site(st)
         // closure-CPS (追記31 Vertical B): the clone's own params whose
         // annotated row carries the effect are step-typed closure sources
-        // (`run_with(f: () -> T with { E })` called from a suspend body).
+        // (`run_with(f: () -> T with E)` called from a suspend body).
         let cps_seed = array_empty_str()
         let mut cpi = 0
         while cpi < Array::length(params) {
@@ -10652,7 +10652,7 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
   }
 }
 
-/// The synthesized `__aw_poll(fut) -> Int with { Async }` definition:
+/// The synthesized `__aw_poll(fut) -> Int with Async` definition:
 ///
 /// ```text
 /// while 0 < Array::get(fut, 0) {

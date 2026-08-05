@@ -149,7 +149,7 @@ same recursive `let` representation before checking and code generation:
 ```vibe
 fn add(x: Int, y: Int) -> Int { x + y }
 fn identity[T](x: T) -> T { x }
-fn log(message: String) -> Unit with { Stdout } {
+fn log(message: String) -> Unit with Stdout {
   Stdout::write_stream(message)
 }
 export fn doubled(x: Int) -> Int { x * 2 }
@@ -191,7 +191,7 @@ Function types:
 ```vibe
 () -> Int
 (Int, String) -> Bool
-(Int) -> Int with { Error }
+(Int) -> Int with Error
 [T](T) -> T
 [T: Eq + Ord](T) -> Bool
 ```
@@ -573,7 +573,7 @@ Map[K, V]
 Option[T]
 (Int, String)
 (Int, String) -> Bool
-() -> Int with { Error }
+() -> Int with Error
 [T](T) -> T
 [T: Eq + Ord](T) -> Bool
 ```

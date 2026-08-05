@@ -68,7 +68,17 @@ env VIBE_PREOPEN_DIR="$PWD" bash scripts/run_wasm_vibe_host_runner.sh --invoke _
 # 一式 (compiler を触った場合は bundle regen + fixpoint も)
 bash scripts/compiler_gate.sh
 bash scripts/unit_test_runner.sh
+
+# 整形 (CI の vibe-fmt-check job と同じ。lib/**/*.vibe + lib/**/*.vpkg)
+bash scripts/check_vibe_fmt.sh
 ```
+
+新しい `index.vpkg` のヘッダは手で綺麗に書く必要はない —
+`bash scripts/vibe_fmt.sh <path/to/index.vpkg>` がキー順・空白・`#|` と
+dep 行の字下げ・deps のソートを揃える (#1435)。ただし `name =` のような
+directive の綴りは loader が完全一致で見ているので、`name  =` のように
+書くとフォーマッタは directive と認識せず**ファイルに触らない** (壊すより
+降りる)。整形されないときはまずヘッダの綴りを疑うこと。
 
 compiler 本体 (`lib/@vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を触った
 場合は必ず:
@@ -84,7 +94,7 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
 ## 4. よく踏む言語・checker の罠 (2026-07 時点)
 
 - **失敗は返り値ではなく effect row に載せる** (#1324): `-> Result[T, E]` ではなく
-  `-> T with { Exception[E] }` を書き、`throw(e)` で送出して
+  `-> T with Exception[E]` を書き、`throw(e)` で送出して
   `handle { .. } with Exception[E] { Throw(e) => .. }` で受ける。**`Result` は
   言語にも prelude にも無い** — `Ok`/`Err` を bare で書くと `unknown name: Err`
   になる。二本立ての返り値が要るのは実質 **WIT 境界だけ**で、そこには

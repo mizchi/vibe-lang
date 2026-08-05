@@ -63,7 +63,7 @@ let counter = {
 fn add(x: Int, y: Int) -> Int { x + y }
 fn fact(n: Int) -> Int { if n < 2 { 1 } else { n * fact(n - 1) } }
 fn identity[T](x: T) -> T { x }
-fn risky() -> Int with { Error } { throw("fail") }
+fn risky() -> Int with Error { throw("fail") }
 fn labeled(x~: Int, y~: Int) -> Int { x + y }
 export fn doubled(x: Int) -> Int { x * 2 }
 
@@ -85,7 +85,7 @@ let inc: (Int) -> Int = (x) -> { x + 1 }
 let identity: [T](T) -> T = (x) -> { x }
 
 // With effect
-let risky: () -> Int with { Error } = () -> { throw("fail") }
+let risky: () -> Int with Error = () -> { throw("fail") }
 
 // With trait bounds
 let show: [T: Show](T) -> T = (x) -> { x }
@@ -320,7 +320,7 @@ Option[T]
 
 // Function type
 (Int, String) -> Bool
-() -> Int with { Error }
+() -> Int with Error
 
 // Tuple type
 (Int, String, Bool)
@@ -339,13 +339,13 @@ T, U, V
 ```vibe skip
 // Row-first core flow: failure lives in the effect row, so the success value
 // flows straight through and stages chain by ordinary application (#1324)
-let parse_id: (String) -> Int with { Exception[String] } = (raw) -> { ... }
-let load_user: (Int) -> String with { Exception[String] } = (id) -> { ... }
+let parse_id: (String) -> Int with Exception[String] = (raw) -> { ... }
+let load_user: (Int) -> String with Exception[String] = (id) -> { ... }
 
 raw |> parse_id |> load_user
 
 // Error boundary
-let f: () -> Int with { Error } = () -> { throw("fail") }
+let f: () -> Int with Error = () -> { throw("fail") }
 handle { f() } with Error { Throw(msg) => -1 }
 
 // User-defined effect
@@ -354,7 +354,7 @@ perform Ask::Question(42)
 handle { perform Ask::Question(1) } with Ask { Question(v) => resume(v + 1) }
 
 // Effect polymorphism
-let apply: [T](f: (T) -> T with { e }, x: T) -> T with { e } = (f, x) -> {
+let apply: [T](f: (T) -> T with e, x: T) -> T with e = (f, x) -> {
   f(x)
 }
 ```

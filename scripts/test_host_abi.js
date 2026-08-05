@@ -94,10 +94,10 @@ try {
   // is rejected at the package boundary (#729), so import the package
   // directory (resolves index.vpkg).
   const fsPkg = path.join(REPO, "lib", "@vibe", "fs");
-  // #812 enforces the imported effect row: `read_file` is `with { Fs }`, so
+  // #812 enforces the imported effect row: `read_file` is `with Fs`, so
   // the caller must declare it (the Fs op still lowers to a direct host call).
   const fsw = build("fsprog",
-    `import ${fsPkg} { read_file }\nlet main = () -> Unit with { Fs } { let _ = read_file("/tmp/x"); () }\n`);
+    `import ${fsPkg} { read_file }\nlet main = () -> Unit with Fs { let _ = read_file("/tmp/x"); () }\n`);
   ok("fs: still imports wasi_snapshot_preview1::fd_write", fsw.imports.includes("wasi_snapshot_preview1::fd_write"));
   ok("fs: Fs effect lowers to the vibe::fs_* host module", fsw.imports.includes("vibe::fs_read_file"),
     JSON.stringify(fsw.imports));

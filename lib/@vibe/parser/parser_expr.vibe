@@ -591,7 +591,7 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
 }
 
 /// #727 (ADR-0064 Phase A): top-level `fn` sugar.
-///   fn name[T: Eq](x: Int, y: Int) -> Int with { E } where { ... } { body }
+///   fn name[T: Eq](x: Int, y: Int) -> Int with E where { ... } { body }
 /// desugars to the same SLet + EFn shape impl methods lower to
 /// (SLet(exported, rec, name, None, EFn(tps, tbs, params, Some(ret), eff, body))),
 /// so checker/codegen are untouched. Full annotations are required (every
@@ -600,7 +600,7 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
 /// `where { ... }` contract clause is brace-balance skipped for now —
 /// retention + assert semantics land with Phase E (#731); until then
 /// fmt/normalize reject it (same guardrail pattern as #cfg, ADR-0061).
-/// Shared fn-signature head: `name[T: Eq](x: Int, y: Int) -> Ret with { E }
+/// Shared fn-signature head: `name[T: Eq](x: Int, y: Int) -> Ret with E
 /// where { ... }` starting AFTER the `fn` keyword. Returns
 /// ((name, tps, tbs), (params, ret_ty, eff_opt), (requires, ensures), next)
 /// with `next` positioned after the where clause — at the body `{` for a
@@ -675,9 +675,9 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
   ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
 }
 
-/// ADR-0069 Phase 1: `fn main { ... }` / `fn main with { Fs } { ... }` — the ONE
+/// ADR-0069 Phase 1: `fn main { ... }` / `fn main with Fs { ... }` — the ONE
 /// fn form allowed to omit the parens and all annotations. It is a pure sugar
-/// for `fn main() -> Unit [with { .. }] { ... }`: the branch below builds the
+/// for `fn main() -> Unit [with <row>] { ... }`: the branch below builds the
 /// exact SFnDecl shape the general path would produce for that spelling
 /// (EFn([], [], [], Some(TyName("Unit")), eff_opt, body)), so lower_fn_decl_stmt,
 /// checker, codegen, and the printer round-trip (which prints the annotated
@@ -698,7 +698,7 @@ fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, export
 }
 
 fn parse_fn_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with Error {
-  // ADR-0069 Phase 1: dispatch the `fn main {` / `fn main with {` special form
+  // ADR-0069 Phase 1: dispatch the `fn main {` / `fn main with <row> {` special form
   // before the general signature parse (which requires `(`). `fn main(` still
   // takes the general path, so an explicit signature keeps working.
   let is_main_special = match peek(tokens, pos) {
@@ -738,7 +738,7 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
     ()
   }
   match eff_opt {
-    Some(_) => throw("inline wasm fn '\{name}' must have an empty effect row (remove the 'with { ... }' clause) at #\{pos}"),
+    Some(_) => throw("inline wasm fn '\{name}' must have an empty effect row (remove the 'with' clause) at #\{pos}"),
     None => ()
   }
   if Array::length(reqs) > 0 || Array::length(enss) > 0 {

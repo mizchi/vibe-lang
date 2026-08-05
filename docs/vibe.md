@@ -18,7 +18,7 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 
 - POSIX sh superset with a clear syntactic split.
 - Pure by default; semantic effects including `Error` are explicit
-  (`with { ... }`) and can be locally discharged with effect handlers.
+  (`with ...`) and can be locally discharged with effect handlers.
 - Content-addressed functions (Git blob compatible) with Unison-style aliases.
 - Incremental pipeline: CST -> AST -> monomorphized AST -> canonical S-expression -> hash.
 
@@ -51,7 +51,7 @@ Included in standard tutorial:
 - module API: `import` / `export`
 - data model: `enum` / `struct` / tuples / arrays / records
 - error flow: `Result` composition (`map`, `and_then`, `match`)
-- effects: explicit `with { ... }`
+- effects: explicit `with ...`
 - effect handling: `handle` arms for effect/local error pattern matching
 
 Documented but excluded from standard tutorial:
@@ -69,15 +69,15 @@ other operation requirements under ADR-0073.
 
 ADR-0073 and the Lean model are the specification Oracle. Since #944 the
 checker enforces the Error row by default: a direct `throw`/`perform
-Error::Throw`, a call to a `with { Error }` function, and an Error-rowed
+Error::Throw`, a call to a `with Error` function, and an Error-rowed
 callback parameter all require the caller to declare or `handle` Error.
-An entry declared `with { Error }` gets a runtime boundary handler: an
+An entry declared `with Error` gets a runtime boundary handler: an
 escaping Throw becomes `vibe: uncaught error: <msg>` on stderr and an
 unsuccessful (1) entry result. Remaining #944 tail: the builtin-call Error
 carve-out (sub-decision) and the temporary `VIBE_CHECK_ERROR_ROW=0` opt-out.
 
 ```
-let run: () -> Unit with { Stdout } = () -> {
+let run: () -> Unit with Stdout = () -> {
   sh("ls")
 }
 ```
@@ -85,14 +85,14 @@ let run: () -> Unit with { Stdout } = () -> {
 Rules:
 - Effect signature requirement:
   a function's declared effects must be a superset of the effects used inside.
-  (`with { ... }` is the capability contract.)
+  (`with ...` is the capability contract.)
 - Checked Error requirement:
   `throw(x)`, `perform Error::Throw(x)`, and calls to a function annotated with
-  `with { Error }` require the caller to declare or handle `Error`.
+  `with Error` require the caller to declare or handle `Error`.
 - Handler requirement:
   effects can be localized by `handle` arms that pattern-match the handled
   operation/error payload.
-- `with {}` is optional; omission means no semantic effect requirement,
+- `with ()` is optional; omission means no semantic effect requirement,
   including no escaping `Error`. It does not guarantee termination or exclude
   panic, Wasm trap, or resource exhaustion.
 - `do` is not part of the current surface syntax.
@@ -116,17 +116,17 @@ Examples:
 <!-- doctest-skip: 意図的な type error 例 (ok/error 対比の提示) を含むため単体コンパイル不可 -->
 ```vibe skip
 // ok: declared effect allows direct builtin call
-let run: () -> Unit with { Stdout } = () -> { sh("ls") }
+let run: () -> Unit with Stdout = () -> { sh("ls") }
 
 // error: missing effect declaration for direct effectful builtin call
 let run: () -> Unit = () -> { sh("ls") }
 
 // error: Error propagates transitively
-let fail: (String) -> Int with { Error } = (msg) -> { throw(msg) }
+let fail: (String) -> Int with Error = (msg) -> { throw(msg) }
 let g: (String) -> Int = (msg) -> { fail(msg) }
 
 // ok: caller propagates Error explicitly
-let g2: (String) -> Int with { Error } = (msg) -> { fail(msg) }
+let g2: (String) -> Int with Error = (msg) -> { fail(msg) }
 
 // ok: effect is localized by handler pattern
 let g3: (String) -> Int = (msg) -> {
@@ -139,11 +139,11 @@ let g3: (String) -> Int = (msg) -> {
 - `Error` is checked: direct throws and transitive calls require declaration or
   handling. An empty effect row excludes escaping `Error`, but not divergence
   or runtime traps.
-- `fn main with { Error }` is allowed; the runtime boundary converts an
+- `fn main with Error` is allowed; the runtime boundary converts an
   escaping Error into a diagnosed unsuccessful process outcome.
 - The standard error model is the **effect row**: a fallible function returns
   its success type and declares the failure in its row —
-  `fn f(..) -> T with { Exception[E] }`. There is no built-in `Result[T, E]`
+  `fn f(..) -> T with Exception[E]`. There is no built-in `Result[T, E]`
   (#1324 removed it from the language and the prelude); a two-track return type
   is now an ordinary user `enum` you declare yourself.
 - Pipelines compose by ordinary application: the success value flows straight
@@ -171,14 +171,14 @@ suberror AppError {
 }
 
 // #1324: a suberror is thrown, not returned in a `Result`.
-fn fail() -> Unit with { Exception[AppError] } {
+fn fail() -> Unit with Exception[AppError] {
   throw(Io("io"))
 }
 ```
 
 Pipe-first error-flow guideline:
 - the pipeline core should carry failure in the effect row
-  (`-> T with { Exception[E] }`), so stages chain on the success value.
+  (`-> T with Exception[E]`), so stages chain on the success value.
 - terminal boundaries (`handle`, project-local `unwrap`) should be isolated at
   adapter edges (CLI/HTTP/FFI/tests).
 - avoid scattering multiple implicit boundaries across one flow; make the
@@ -186,11 +186,11 @@ Pipe-first error-flow guideline:
 
 ```vibe
 // stubs so the guideline block is self-contained
-fn parse_id(raw: String) -> Int with { Exception[String] } { 1 }
-fn validate_id(id: Int) -> Int with { Exception[String] } { id }
-fn load_user_id(id: Int) -> Int with { Exception[String] } { id }
+fn parse_id(raw: String) -> Int with Exception[String] { 1 }
+fn validate_id(id: Int) -> Int with Exception[String] { id }
+fn load_user_id(id: Int) -> Int with Exception[String] { id }
 
-fn run_core(raw: String) -> Int with { Exception[String] } {
+fn run_core(raw: String) -> Int with Exception[String] {
   raw |> parse_id |> validate_id |> load_user_id
 }
 
@@ -206,7 +206,7 @@ fn run_cli(raw: String) -> Int {
 Effect polymorphism and type polymorphism are checked together.
 
 Rules:
-- Effect row variables (for example `with {e}`) can appear with generic type
+- Effect row variables (for example `with e`) can appear with generic type
   parameters in higher-order function signatures.
 - At call sites, type variables and effect variables are instantiated together.
 - If a callee's effect requirement escapes through a wrapper, the wrapper must
@@ -218,20 +218,20 @@ Rules:
 > rule above ("the wrapper must declare a compatible effect set") is now
 > checked for the callback-PARAMETER case — a wrapper whose body directly
 > invokes an effect-row-polymorphic callback parameter (e.g. `f: (T) -> T with
-> { e }`) must itself declare a compatible `with { ... }` row, or the checker
+> { e }`) must itself declare a compatible `with ...` row, or the checker
 > rejects it. `check_perform_effects_expr_tx` (`checker_effects.vibe`) now
 > tracks function-typed PARAMETERS as call-graph leaves, alongside named
 > top-level bindings, and no longer exempts a row-variable label reached
-> through one. The `apply` example below (missing `with { e }`) is a checker
+> through one. The `apply` example below (missing `with e`) is a checker
 > error today, as its comment says. (Scope note: this covers the callback's
 > OWN declaring function; unifying a row variable against the concrete effect
 > a specific *call site's* argument instantiates it with — e.g. detecting that
 > `apply(risky, 1)` needs `{Error}` when `apply` itself correctly declares
-> `with {e}` — still needs real call-site effect-row unification and remains
+> `with e` — still needs real call-site effect-row unification and remains
 > open.)
 
 > **Enforced (#1361):** the same rule holds for a LOCAL closure. A
-> `let f = () -> T with { E } { ... }` written inside a function body is a
+> `let f = () -> T with E { ... }` written inside a function body is a
 > call-graph leaf just like a top-level function or a callback parameter, so
 > calling `f()` requires the enclosing function to declare `E` (or to be under
 > a `handle` that discharges it). Until #1361 neither table saw such a
@@ -241,8 +241,8 @@ Rules:
 >
 > ```vibe skip
 > // error (ENFORCED — #1361): main declares only { Stdout } but reaches Env
-> let main = () -> Unit with { Stdout } {
->   let read_home = () -> String with { Env } { Env::get("HOME") }
+> let main = () -> Unit with Stdout {
+>   let read_home = () -> String with Env { Env::get("HOME") }
 >   println(read_home())
 > }
 > ```
@@ -251,7 +251,7 @@ Rules:
 > `file_entry_cacheable` / `file_tests_cacheable` reuse this walk, so an entry
 > whose output tracked the environment through a local closure used to be
 > judged deterministic and replayed from cache. (Scope note: an ANNOTATED local
-> binding, `let f: () -> T with { E } = ...`, is desugared to an ascription call
+> binding, `let f: () -> T with E = ...`, is desugared to an ascription call
 > before this walk runs, so its row is not visible here and that spelling keeps
 > the older, permissive behavior.)
 
@@ -265,14 +265,14 @@ Examples:
 ```vibe skip
 // error (ENFORCED — #885): wrapper body calls an effect-polymorphic
 // callback without declaring {e}
-let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> {
+let apply: [T](f: (T) -> T with e, x: T) -> T = (f, x) -> {
   f(x)
 }
 ```
 
 ```vibe
 // ok: wrapper propagates effect requirement explicitly
-let apply_ok: [T](f: (T) -> T with { e }, x: T) -> T with { e } = (f, x) -> {
+let apply_ok: [T](f: (T) -> T with e, x: T) -> T with e = (f, x) -> {
   f(x)
 }
 ```
@@ -852,7 +852,7 @@ Example:
 
 <!-- doctest-skip: PosixMode preview 専用の command-head desugar (標準 compile では `ls` は未定義名) -->
 ```vibe skip
-let run: () -> Array[String] with { Stdout } = () -> {
+let run: () -> Array[String] with Stdout = () -> {
   ls |> where((line) -> { String::contains(line, "vibe") })
 }
 ```

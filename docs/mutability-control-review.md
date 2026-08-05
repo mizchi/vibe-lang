@@ -91,13 +91,13 @@ fn build() -> Array[Int] {
 }
 
 // 可変コレクションに触れる関数は row に r を持つ (Flix の `\ r`)
-fn fill(l: MutList[Int, r]) -> Unit with { r } { ... }
+fn fill(l: MutList[Int, r]) -> Unit with r { ... }
 ```
 
 既存資産との接続が非常に良い:
 
 - **effect row**: ADR-0071 の正規化は `NormalizedEffectArguments` に region
-  引数 kind を既に予約している(`Write[router]` の想定)。`with { r }` は
+  引数 kind を既に予約している(`Write[router]` の想定)。`with r` は
   row 変数と同じ字面だが、region 変数として別 kind で正規化すれば衝突しない
   (effectset.md が「resource identity と nursery/borrow region を混同する
   な」と既に規定)。ADR-0084 の三分類では region effect は capability でも
@@ -185,7 +185,7 @@ region は RC の**補完**であり競合しない。Koka 系譜(Perceus)+ regi
    「呼び出し後は使用不可」のマーカーとして限定導入する価値がある
    (Send 判定の move 版)。CC 全体は不要で、関数パラメータ属性1つで足りる。
 3. **read-only capability の overlay**(`Ref^{cap.rd}` 相当): region 導入後、
-   `MutList[T, r]` に対する読み取り専用ビュー(`with { r.read }` 相当)が
+   `MutList[T, r]` に対する読み取り専用ビュー(`with r.read` 相当)が
    欲しくなったら、ADR-0071 の effectset(`r` の operation 部分集合)として
    表現できる — 新機構ではなく既存の graded subset(ADR-0088)の応用。
 
@@ -281,7 +281,7 @@ ADR 化済み — 実装順は **ADR-0092 → ADR-0090 → ADR-0091**):
    個別 backlog に。
 
 「可変状態を Effect で制御する」という当初の問いへの答えはこうなる:
-**cross-scope の可変性は region 効果(`with { r }`)として row に現れ、
+**cross-scope の可変性は region 効果(`with r`)として row に現れ、
 region 終端で必ず discharge される**(Flix 型)。`let mut` はローカルな
 実装詳細として row に現れないまま(ADR-0060 撤回の維持)、確保の有無という
 直交軸は row ではなく `@zero_alloc` 属性が担う(OxCaml 型)。エイリアスの

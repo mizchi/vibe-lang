@@ -36,10 +36,13 @@ pkf run run -- args       # run main with args
 # selfhost の CST-token formatter (lib/@vibe/compiler/fmt/format.vibe,
 # scripts/vibe_fmt.sh, #854/#1138) は実装済みで `bash scripts/vibe_fmt.sh
 # [--check|--stdout] <file.vibe>` で直接使える。`pkf run fmt`
-# (scripts/vibe_fmt_apply.sh) は `lib/**/*.vibe` 全体をこのフォーマッタで
-# 一括整形する — 既存コードベースは2026-07-28に一括整形済みで fixpoint。
+# (scripts/vibe_fmt_apply.sh) は `lib/**/*.vibe` と `lib/**/*.vpkg` 全体を
+# このフォーマッタで一括整形する (`.vpkg` は #1435 の format_vpkg 経由 —
+# ヘッダは vibe 構文ではないので専用の writer、宣言部は同じ CST
+# formatter) — 既存コードベースは fixpoint。
 # **CI では `vibe-fmt-check` job (scripts/check_vibe_fmt.sh, required) が
-# `lib/**/*.vibe` 全体を --check で lint しており enforce されている** —
+# `lib/**/*.vibe` + `lib/**/*.vpkg` 全体を --check で lint しており
+# enforce されている** —
 # scripts/generate_bundle.sh が生成する圧縮/ミニファイド bundle 成果物
 # (compiler_sources_bundle.vibe 等、手でフォーマットする対象ではない) だけが
 # scripts/vibe_fmt_allowlist.txt に恒久的な例外として載っている。
@@ -173,11 +176,21 @@ completion / signature help を提供する。詳細は
 - `pkf run test-local` — 変更影響範囲のテストのみ (fast inner loop、flaker 経由)。
 - 単一ファイルの型検査 / 診断は `vibe diagnostics <file.vibe>`（空出力 = clean）。
 - selfhost の CST-token formatter は実装済み (`lib/@vibe/compiler/fmt/format.vibe`,
-  #854/#1138) — `bash scripts/vibe_fmt.sh [--check|--stdout] <file.vibe>` で
+  #854/#1138) — `bash scripts/vibe_fmt.sh [--check|--stdout] <file>` で
   直接使える。`pkf run fmt` (`scripts/vibe_fmt_apply.sh`) は `lib/**/*.vibe`
-  全体をこのフォーマッタで一括整形する（書き込みモード）。
+  と `lib/**/*.vpkg` 全体をこのフォーマッタで一括整形する（書き込みモード）。
+- **`.vpkg` は `format_vpkg` (#1435) が扱う**: ヘッダ (`name = @scope/pkg` /
+  `version = x.y.z` / `description =` + `#|` / `deps = { ... }` /
+  `generated_hash =`) は vibe 構文ではない (`@scope/pkg` は式ではない) ので
+  専用の writer で正規化し、その下の bodyless 宣言部だけを `format_script`
+  に通す。境界判定は `contract/contract.vibe` の `scan_package_header` の
+  行分類をそのまま写したもの — loader が directive と見なさない行は必ず
+  宣言部に落ちる。ヘッダが loader にとって不正な形 (未終端の `deps = {`、
+  `:` の無い dep 行、`name  =` のような loader が認識しない綴り) の場合は
+  **ファイルに一切触らない** (壊すより黙って降りる)。
 - **CI では `vibe-fmt-check` job (`scripts/check_vibe_fmt.sh`, required) が
-  `lib/**/*.vibe` 全体を `--check` で lint し、enforce している** —
+  `lib/**/*.vibe` + `lib/**/*.vpkg` 全体を `--check` で lint し、enforce
+  している** —
   `pkf run check-vibe-fmt` / `pkf run release-check` からも呼べる。既存
   コードベースは2026-07-28に `pkf run fmt` で一括整形済みで fixpoint —
   残る `scripts/vibe_fmt_allowlist.txt` のエントリは
