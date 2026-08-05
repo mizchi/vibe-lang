@@ -1,0 +1,315 @@
+//# Strict checked direct-expression-return artifact v1
+
+import @vibe/compiler/checker {
+  CheckedDirectExpressionReturnObservation,
+  canonical_checked_direct_expression_return_artifact_snapshot,
+  canonical_checked_direct_expression_return_snapshot,
+  check_program_direct_expression_return_observation,
+  check_program_with_env_direct_expression_return_observation,
+  checked_direct_expression_return_artifact_expression_path_at,
+  checked_direct_expression_return_artifact_from_observation,
+  checked_direct_expression_return_artifact_row_count,
+  checked_direct_expression_return_artifact_statement_path_at,
+  checked_direct_expression_return_artifact_type_at,
+  decode_checked_direct_expression_return_artifact_v1,
+  encode_checked_direct_expression_return_artifact_v1
+}
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn direct_artifact_paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) {
+      if Array::get(left, i) != Array::get(right, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn direct_artifact_assert_path(actual: Option[Array[Int]], expected: Array[Int]) -> Unit {
+  match actual {
+    Some(path) => assert(direct_artifact_paths_equal(path, expected)),
+    None => assert(false)
+  }
+}
+
+fn direct_artifact_push_piece(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+fn direct_artifact_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
+  StringBuilder::push(out, __to_string(Array::length(path)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(path) {
+    StringBuilder::push(out, __to_string(Array::get(path, i)))
+    StringBuilder::push(out, ":")
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+}
+
+fn direct_artifact_entry(statement_path: Array[Int], expression_path: Array[Int], ty: String) -> String {
+  let out = StringBuilder::new()
+  direct_artifact_push_path(out, statement_path)
+  direct_artifact_push_path(out, expression_path)
+  direct_artifact_push_piece(out, ty)
+  StringBuilder::freeze(out)
+}
+
+fn direct_artifact_payload(entries: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-direct-expression-return-artifact:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(entries)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(entries) {
+    direct_artifact_push_piece(out, Array::get(entries, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn direct_artifact_assert_decode_none(text: String) -> Unit {
+  match decode_checked_direct_expression_return_artifact_v1(text) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+fn direct_artifact_fixture() -> Array[Stmt] {
+  [
+    SLet(false, false, "value", None, EIf(EBool(true), ETuple([
+      EInt(1),
+      EInt(2)
+    ]), ETuple([
+      EInt(3),
+      EInt(4)
+    ]))),
+    SModule(false, "Nested", [
+      SLet(false, false, "identity", None, EFn(array_empty(), array_empty(), [
+        ("x", None)
+      ], Some(TyName("Int")), None, EIdent("x", 1)))
+    ])
+  ]
+}
+
+test "direct-return artifact has observation parity, preorder paths, and final substitution" {
+  match check_program_direct_expression_return_observation(direct_artifact_fixture()) {
+    Some(observation) => match checked_direct_expression_return_artifact_from_observation(observation) {
+      Some(artifact) => {
+        assert(checked_direct_expression_return_artifact_row_count(artifact) == 10)
+        assert(canonical_checked_direct_expression_return_artifact_snapshot(artifact) == canonical_checked_direct_expression_return_snapshot(observation))
+        direct_artifact_assert_path(checked_direct_expression_return_artifact_statement_path_at(artifact, 0), [
+          0
+        ])
+        direct_artifact_assert_path(checked_direct_expression_return_artifact_expression_path_at(artifact, 4), [
+          1,
+          1
+        ])
+        direct_artifact_assert_path(checked_direct_expression_return_artifact_statement_path_at(artifact, 8), [
+          1,
+          0
+        ])
+        match checked_direct_expression_return_artifact_type_at(artifact, 9) {
+          Some(ty) => assert(ty == "I0"),
+          None => assert(false)
+        }
+        let encoded = encode_checked_direct_expression_return_artifact_v1(artifact)
+        match decode_checked_direct_expression_return_artifact_v1(encoded) {
+          Some(decoded) => {
+            assert(encode_checked_direct_expression_return_artifact_v1(decoded) == encoded)
+            assert(canonical_checked_direct_expression_return_artifact_snapshot(decoded) == canonical_checked_direct_expression_return_snapshot(observation))
+          },
+          None => assert(false)
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "direct-return artifact preserves nested paths through type-first checking" {
+  let stmts = [
+    SModule(false, "Outer", [
+      SLet(false, false, "before", None, EIdent("Pick", 70)),
+      SEnum(false, "Choice", array_empty(), [
+        ("Pick", array_empty())
+      ], array_empty()),
+      SLet(false, false, "tuple", None, ETuple([
+        EInt(1),
+        EInt(2)
+      ]))
+    ])
+  ]
+  match check_program_direct_expression_return_observation(stmts) {
+    Some(observation) => match checked_direct_expression_return_artifact_from_observation(observation) {
+      Some(artifact) => {
+        assert(canonical_checked_direct_expression_return_artifact_snapshot(artifact) == canonical_checked_direct_expression_return_snapshot(observation))
+        assert(checked_direct_expression_return_artifact_row_count(artifact) == 4)
+        direct_artifact_assert_path(checked_direct_expression_return_artifact_statement_path_at(artifact, 0), [
+          0,
+          0
+        ])
+        direct_artifact_assert_path(checked_direct_expression_return_artifact_statement_path_at(artifact, 1), [
+          0,
+          2
+        ])
+        direct_artifact_assert_path(checked_direct_expression_return_artifact_expression_path_at(artifact, 1), array_empty())
+        direct_artifact_assert_path(checked_direct_expression_return_artifact_expression_path_at(artifact, 3), [
+          1
+        ])
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "direct-return artifact covers effectset-expanded retained preorder" {
+  let stmts = [
+    SEffectSet(false, "Caps", [
+      "Fs",
+      "Error"
+    ]),
+    SLet(false, false, "f", None, EFn(array_empty(), array_empty(), array_empty(), None, Some("Caps"), EIf(EBool(true), EInt(1), EInt(2))))
+  ]
+  match check_program_direct_expression_return_observation(stmts) {
+    Some(observation) => match checked_direct_expression_return_artifact_from_observation(observation) {
+      Some(artifact) => {
+        assert(checked_direct_expression_return_artifact_row_count(artifact) == 5)
+        match checked_direct_expression_return_artifact_type_at(artifact, 0) {
+          Some(ty) => assert(ty == "F22:I014:ER25:Error2:Fs"),
+          None => assert(false)
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "zero rows arbitrary type text and copied paths remain safe" {
+  let empty = "vibe-checked-direct-expression-return-artifact:v1\n0[]"
+  match check_program_direct_expression_return_observation([
+    SEnum(false, "OnlyType", array_empty(), [
+      ("Only", array_empty())
+    ], array_empty())
+  ]) {
+    Some(observation) => match checked_direct_expression_return_artifact_from_observation(observation) {
+      Some(artifact) => {
+        assert(checked_direct_expression_return_artifact_row_count(artifact) == 0)
+        assert(encode_checked_direct_expression_return_artifact_v1(artifact) == empty)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+  let text = direct_artifact_payload([
+    direct_artifact_entry([
+      0,
+      2
+    ], [
+      1
+    ], "type:[]\n雪")
+  ])
+  match decode_checked_direct_expression_return_artifact_v1(text) {
+    Some(artifact) => {
+      direct_artifact_assert_path(checked_direct_expression_return_artifact_statement_path_at(artifact, 0), [
+        0,
+        2
+      ])
+      match checked_direct_expression_return_artifact_statement_path_at(artifact, 0) {
+        Some(path) => Array::set(path, 0, 99),
+        None => assert(false)
+      }
+      direct_artifact_assert_path(checked_direct_expression_return_artifact_statement_path_at(artifact, 0), [
+        0,
+        2
+      ])
+      match checked_direct_expression_return_artifact_expression_path_at(artifact, 0) {
+        Some(path) => Array::set(path, 0, 88),
+        None => assert(false)
+      }
+      direct_artifact_assert_path(checked_direct_expression_return_artifact_expression_path_at(artifact, 0), [
+        1
+      ])
+      match checked_direct_expression_return_artifact_type_at(artifact, 0) {
+        Some(ty) => assert(ty == "type:[]\n雪"),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "strict decoder rejects malformed hostile and noncanonical payloads" {
+  let maximum = direct_artifact_payload([
+    direct_artifact_entry([
+      2305843009213693951
+    ], array_empty(), "I0")
+  ])
+  match decode_checked_direct_expression_return_artifact_v1(maximum) {
+    Some(artifact) => assert(encode_checked_direct_expression_return_artifact_v1(artifact) == maximum),
+    None => assert(false)
+  }
+  direct_artifact_assert_decode_none("vibe-checked-direct-expression-return-artifact:v2\n0[]")
+  direct_artifact_assert_decode_none("vibe-checked-direct-expression-return-artifact:v1\n1[")
+  direct_artifact_assert_decode_none(String::concat("vibe-checked-direct-expression-return-artifact:v1\n0[]", "x"))
+  direct_artifact_assert_decode_none("vibe-checked-direct-expression-return-artifact:v1\n00[]")
+  direct_artifact_assert_decode_none(direct_artifact_payload([
+    "01[0:]0[]2:I0"
+  ]))
+  direct_artifact_assert_decode_none(direct_artifact_payload([
+    "0[]0[]02:I0"
+  ]))
+  direct_artifact_assert_decode_none(direct_artifact_payload([
+    "1[-1:]0[]2:I0"
+  ]))
+  direct_artifact_assert_decode_none(direct_artifact_payload([
+    "1[2305843009213693952:]0[]2:I0"
+  ]))
+  direct_artifact_assert_decode_none("vibe-checked-direct-expression-return-artifact:v1\n2305843009213693951[")
+  direct_artifact_assert_decode_none(direct_artifact_payload([
+    "2305843009213693951["
+  ]))
+  direct_artifact_assert_decode_none("vibe-checked-direct-expression-return-artifact:v1\n1[2305843009213693951:")
+}
+
+test "observation refusal leaves no artifact route" {
+  let recognized = [
+    SLet(false, false, "value", None, ECall(EIdent("Some", 10), [
+      EInt(1)
+    ], 11))
+  ]
+  match check_program_direct_expression_return_observation(recognized) {
+    None => (),
+    Some(_) => assert(false)
+  }
+  let synthetic = [
+    SLet(false, false, "value", None, EDot(EIdent("mod", 40), "value", 41, 42))
+  ]
+  match check_program_with_env_direct_expression_return_observation(synthetic, env_bind(EnvEmpty, "mod.value", CtInt)) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
