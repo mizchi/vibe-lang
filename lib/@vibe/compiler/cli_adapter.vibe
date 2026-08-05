@@ -391,10 +391,15 @@ export fn cli_main() -> Int with Error + Fs + Env + Stdin + Stdout {
   // downstream code that hasn't annotated yet. Set before ANY compile
   // path runs so every lane (file compile, FS compile, diagnostics, lsp)
   // sees the same mode.
-  if Env::get("VIBE_CHECK_ERROR_ROW") == "0" {
-    ()
+  let artifact_input_trace_checked_error_row_mode = if Env::get("VIBE_CHECK_ERROR_ROW") == "0" {
+    "unchecked"
   } else {
+    "checked"
+  }
+  if artifact_input_trace_checked_error_row_mode == "checked" {
     set_error_row_checked(true)
+  } else {
+    ()
   }
   // #906 Phase 0: dependency-visit-order oracle. A non-zero seed permutes
   // each node's dep visit order (set_dep_order_seed, runtime/typecheck_fs.vibe);
@@ -404,6 +409,16 @@ export fn cli_main() -> Int with Error + Fs + Env + Stdin + Stdout {
   // sets it. Read here with the other mode switches so every lane (file
   // compile, FS compile, diagnostics) sees the same order.
   let dep_seed_text = Env::get("VIBE_DEP_ORDER_SEED")
+  // Canonical trace spelling is the effective parsed decimal, so absent,
+  // invalid, and zero spellings collapse to the production default `0`.
+  let artifact_input_trace_dep_order_seed = match Int::parse(dep_seed_text) {
+    Some(dep_seed) => if dep_seed == 0 {
+      "0"
+    } else {
+      __to_string(dep_seed)
+    },
+    None => "0"
+  }
   if dep_seed_text == "" {
     ()
   } else {
@@ -428,7 +443,12 @@ export fn cli_main() -> Int with Error + Fs + Env + Stdin + Stdout {
   // before db_typecheck_fs is called, so a syntax error still fails the build
   // at that earlier point and only the first one is reported. Collecting
   // there is a loader change, not a walk change.
-  if Env::get("VIBE_DIAGNOSTICS_ALL") == "1" {
+  let artifact_input_trace_diagnostics_mode = if Env::get("VIBE_DIAGNOSTICS_ALL") == "1" {
+    "all"
+  } else {
+    "fail-fast"
+  }
+  if artifact_input_trace_diagnostics_mode == "all" {
     set_collect_module_diagnostics(true)
   } else {
     ()
@@ -870,7 +890,7 @@ export fn cli_main() -> Int with Error + Fs + Env + Stdin + Stdout {
         // layer Env-free.
         let testmeta_out = Env::get("VIBE_TESTMETA_OUT")
         if artifact_input_trace_out != "" {
-          compile_file_fs_mode_cached_artifact_input_trace(input_path, entry_name, "no-dce", artifact_input_trace_nonce)
+          compile_file_fs_mode_cached_artifact_input_trace(input_path, entry_name, "no-dce", artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed)
         } else if testmeta_out != "" {
           (compile_file_fs_mode_testmeta(input_path, entry_name, "no-dce", testmeta_out), "")
         } else {

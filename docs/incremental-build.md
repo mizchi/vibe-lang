@@ -644,19 +644,38 @@ unchanged when `VIBE_ARTIFACT_INPUT_TRACE_OUT` is empty; this wrapper does not
 alter a production cache key, on-disk format, or reuse decision, and it does not
 instrument `fs_compile`, module, or profiled lanes.
 
-Schema version 1 records the nonce and scope disclaimer, exact `compile_lane`,
-persistent artifact kind, entry path/name/mode,
-`source_groups_fingerprint` with its exact builder kind, derived
-`artifact_input_fingerprint` with its exact builder kind, and the hit/miss from
-the cached compile's own persistent lookup that returns bytes or proceeds to
-compile them. It deliberately does not claim a normalized implementation
-identity or a new safe artifact boundary.
+Strict schema version 2 records the nonce and scope disclaimer, exact
+`compile_lane`, persistent artifact kind, entry path/name/mode, and the
+unchanged production lookup identity under the explicit name
+`production_artifact_input_fingerprint`. It also records the exact existing
+`persistent_cache_version_tag()` (the embedded compiler codegen/cache tag,
+**not** #1443's `.generated.stamp`), normalized effective compile
+configuration, and only a fingerprint plus module/edge-occurrence counts for
+an exact dependency plan. That plan is obtained from `module_plan_data_fs`,
+therefore preserves planned module order/ranks and every dependency occurrence
+(including duplicates); it is not source-group order.
+
+The schema additionally records `resolution_env_seed()` and the loader's exact
+`persistent_resolution_context_fingerprint_fs(entry_path,
+grouped_source_paths(source_groups))` authority. Collecting that graph and
+context evidence is explicit trace-only extra filesystem work after the
+ordinary production compile. Because it is a post-compile recollection, the
+sidecar is not an atomic snapshot of the bytes used to produce the wasm; a
+concurrent filesystem or resolution-context change may describe a later
+snapshot. It never changes cache namespace `v16`, artifact
+fingerprints, lookup/store/reuse decisions, interface-v2, TypeEnv-v3, TDRE3,
+or trace schema 6. A separately named shadow fingerprint uses a versioned,
+fixed-order, length-prefixed `vibe-artifact-input-observation:v2` preimage and
+existing compact fingerprint. It is observation-only and is never passed to a
+load/store/database reuse API. This remains neither a normalized implementation
+identity nor a safe artifact boundary.
 
 `pkf run test-artifact-input-trace` runs strict Node parser/schema tests.
 `scripts/artifact_input_trace_oracle.mjs <stage2.wasm>` is the isolated
 fresh-stage2 oracle used by `scripts/compiler_gate.sh`: it requires cold miss /
-warm hit stable identities, a dependency edit changing both identities, and
-failed/no-nonce plus LSP/check-only conflicting runs removing stale sidecars.
+warm hit parity, dependency-content and exact plan sensitivity, config and
+resolution-context shadow sensitivity without a corresponding production-key
+claim, and failed/no-nonce plus LSP/check-only stale-sidecar removal.
 
 ## Delivery order
 
