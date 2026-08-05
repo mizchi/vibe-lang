@@ -69,10 +69,22 @@ compute_fingerprint() {
   {
     # The seed wasm, not just bootstrap/seed.json that pins it: a bootstrap bump
     # (generations.sh adopt) swaps the wasm in place, and that has to move the
-    # fingerprint. It is fetched first if absent so the value never depends on
-    # whether ensure_seed has run yet -- a fingerprint that changed after the
-    # download would miss every CI cache it was used to key.
-    [ -f "$SEED" ] || bash "$SCRIPT_DIR/ensure_seed.sh" >&2
+    # fingerprint.
+    #
+    # ensure_seed runs UNCONDITIONALLY first, not just when the file is absent.
+    # The wasm is gitignored, so pulling a branch that bumped the pin leaves a
+    # stale wasm on disk that an existence check happily accepts -- and then the
+    # generation runs against a seed that predates the syntax the source now
+    # uses, failing with a parse error that points at the source rather than at
+    # the seed. (Measured: exactly that, one merge after the effect-row
+    # migration landed with its bump.) ensure_seed verifies the sha against the
+    # pin and is a no-op when they agree, so this costs nothing and removes a
+    # staleness trap of the same shape as the one this file replaces.
+    #
+    # It also makes the fingerprint independent of whether the seed happened to
+    # be fetched yet: a value that changed after the download would miss every
+    # CI cache it was used to key.
+    bash "$SCRIPT_DIR/ensure_seed.sh" >&2
     sha256sum "$SEED" 2>/dev/null || echo "MISSING $SEED"
     sha256sum "$MANIFEST" 2>/dev/null || echo "MISSING $MANIFEST"
     # Column 2 of the manifest is the path, relative to $COMPILER_DIR, with
