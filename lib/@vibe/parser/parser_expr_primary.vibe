@@ -405,10 +405,10 @@ fn parse_break_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
   }
 }
 
-/// #640 Stage 2: `throw(x)` is sugar for `perform Error::Throw(x)` — the
+/// #640 Stage 2: `throw(x)` is sugar for `perform Exception::Throw(x)` — the
 /// parser desugars it to the exact AST shape parse_perform_primary produces
 /// for the explicit spelling (ECall(EIdent("perform"), [ECall(
-/// EIdent("Error::Throw"), [x])])), so every downstream stage (checker,
+/// EIdent("Exception::Throw"), [x])])), so every downstream stage (checker,
 /// normalize, both codegen backends) sees ONE form. The printer re-sugars
 /// this shape back to `throw(x)` (printer.vibe), keeping print round-trips
 /// and the regenerated flat module source spelling-stable (no seed bump
@@ -416,13 +416,23 @@ fn parse_break_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
 /// in #640 Stage 4 (ctor removed from @vibe/ast); this parse shape is now
 /// the only form of `throw`. All synthesized nodes carry the `throw`
 /// token's offset so located diagnostics keep pointing at the keyword.
+///
+/// #1461: the operation label the desugar SYNTHESIZES is the canonical
+/// `Exception::Throw`. This is what a row-mismatch diagnostic for an
+/// un-annotated `throw` reports -- the single most-seen exception diagnostic
+/// there is -- so leaving it at `Error::Throw` would have made the canonical
+/// flip invisible exactly where it is read most. Every consumer of the label
+/// goes through is_exception_throw_operation, which accepts both spellings;
+/// the printer's re-sugar is the one exact comparison and it now matches both
+/// (it cannot import the predicate -- @vibe/parser must not depend on the
+/// compiler package).
 fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Error) -> (Expr, Int) with Error {
   let open_pos = expect_tk(tokens, pos + 1, "(")
   let (expr, next_pos) = parse_recur(tokens, open_pos, 0)
   let close_pos = expect_tk(tokens, next_pos, ")")
   let off = offset_at(starts, pos)
   (ECall(EIdent("perform", off), [
-    ECall(EIdent("Error::Throw", off), [
+    ECall(EIdent("Exception::Throw", off), [
       expr
     ], off)
   ], off), close_pos)
