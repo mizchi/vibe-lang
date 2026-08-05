@@ -906,6 +906,25 @@ fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Error
   }
 }
 
+/// #1345 / ADR-0088: the `?` GRADE suffix (`Fs::Read[Cfg]?` = Optional) is
+/// NOT parsed yet, on purpose.
+///
+/// It was implemented and then pulled back out of this slice, because the
+/// checker has no grade model: it compares row items as opaque labels, so
+/// `Cfg::Read?` and `Cfg::Read` are two DIFFERENT effects to it. A function
+/// declaring the Optional form and performing the operation gets
+///
+///   declared { Cfg::Read? }, requires { Cfg::Read }
+///   hint: add 'with Cfg::Read + Cfg::Read?'
+///
+/// -- syntax that parses but produces a nonsense diagnostic is worse than
+/// syntax that does not parse. `?` belongs with the slice that gives it
+/// meaning (strict grade matching, `perform?` -> Attempt[T, E]).
+///
+/// `allows` is different and IS shipped here: it desugars to the same single
+/// row, so `with A allows C` behaves exactly as `with A + C` -- there is no
+/// half-implemented behaviour behind it.
+
 /// #1429: the braceless row `A + B`. Items are separated by `+` and the row
 /// ends at the first token that is not `+` -- which is why the separator is
 /// `+` and not `,`: in a nested function TYPE a comma cannot be told apart
@@ -926,31 +945,35 @@ fn collect_effect_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (St
 }
 
 /// #1429: parse the effect row that follows `with`. `pos` is the token AFTER
-/// the `with` keyword. Two spellings, and only two:
+/// the `with` keyword. There is now exactly ONE spelling, plus a spelling for
+/// the empty row:
 ///
-///   with A + B      braceless, `+`-separated
+///   with A + B      the row
 ///   with ()         the explicitly empty row
 ///
-/// The legacy braced/comma spelling (`with { A, B }`) is **gone**. It was
-/// accepted alongside the new one only for the length of the migration: the
-/// bootstrap rule (docs/bootstrap.md) is that the seed must understand a
-/// spelling before the compiler's own source may use it, so the parser had to
-/// take both while the tree was converted and the seed was bumped. The pinned
-/// seed (`effect-row-spellings-2026-08-04`) understands the new spelling and
-/// the tree carries no braced rows, so the transitional branch is retired
-/// rather than left as a permanent second way to write the same thing --
-/// which is the whole point of #1429 (`} with Error {` in handler position was
-/// already braceless, so the language spelled `with` two ways).
+/// The braced `with { A, B }` was accepted through the migration and is now
+/// REJECTED by name. Both were parsed into the same comma-joined internal
+/// string, so nothing downstream ever observed the difference -- which is what
+/// let them coexist while the tree was converted, and why removing one costs
+/// nothing but the error below.
 ///
-/// `vibe fmt` still rewrites the old spelling: `normalize_effect_rows`
-/// (compiler/fmt/format.vibe) is a TOKEN pre-pass, so it converts source the
-/// parser now rejects, and the error below points at it.
+/// The rejection is a named diagnostic rather than "expected an effect name",
+/// because the reader of that generic message has no way to know the syntax
+/// moved. It also names `vibe fmt` as the fix: the CST formatter still carries
+/// normalize_effect_rows, which rewrites the braced row at the TOKEN level, so
+/// it converts source this parser no longer accepts. That is deliberate -- the
+/// formatter is the migration path for code outside this repository.
 ///
 /// `()` is the empty row and NOTHING else: a parenthesised non-empty row is
 /// rejected rather than accepted as a second grouping syntax, because allowing
 /// it would put the brace-vs-no-brace choice straight back into the language
 /// under different punctuation.
-fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Error {
+///
+/// NOTE: `effectset Name = { A, B }` still uses braces and still shares
+/// collect_effect_names' item grammar. Whether that brace should follow the row
+/// is deliberately UNDECIDED -- an `effectset` is a declaration of a set, not a
+/// row, so the two are not obviously the same question.
+fn parse_effect_row_base(tokens: Array[Token], pos: Int) -> (String, Int) with Error {
   match peek(tokens, pos) {
     TLBrace => throw("the braced effect row `with { A, B }` was removed in #1429 -- write `with A + B` (and `with ()` for the empty row). `vibe fmt` rewrites the old spelling for you."),
     TLParen => match peek(tokens, pos + 1) {
@@ -958,6 +981,142 @@ fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Error 
       _ => throw("`with (` spells the EMPTY effect row `with ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `with A + B` (#1429)")
     },
     _ => collect_effect_names_plus(tokens, pos, "")
+  }
+}
+
+/// #1345 / ADR-0088: the effect row plus its optional `allows` clause.
+///
+///   fn main with Stdout allows Fs::Read[Cfg] + Http?
+///
+/// `allows` is a CONTEXTUAL keyword, recognized only here -- directly after a
+/// row -- and deliberately not reserved: the ADR checked that no identifier in
+/// the repo is named `allows`, but reserving it would still break user code for
+/// no gain. The position is unambiguous because nothing else may follow a row:
+/// a declaration continues with `{`, a `let` with `=`, a type with `,`/`)`.
+///
+/// The two clauses desugar to ONE row (`A ∪ C`), which is ADR-0088 decision 1:
+/// the split is a checked audit surface, not a second row representation, so
+/// contract hash and WIT projection stay invariant under the spelling.
+///
+/// KNOWN GAP (this slice is the parser only): because the split is erased at
+/// parse time, the printer renders `with A + C` and `vibe normalize` therefore
+/// ERASES an `allows` clause. For a clause whose whole purpose is to make the
+/// capability surface visible, that is wrong -- preserving it needs the split
+/// carried in the AST, which is a later slice.
+///
+/// The classification check (ADR-0088 decision 1) DOES run -- see
+/// check_allows_clause_items / check_split_with_clause_items below. Still
+/// absent: grade matching, and the entry-point-only rule (`allows` is
+/// currently accepted anywhere a row may appear).
+
+/// #1345 / ADR-0088: the base effect NAME of a row item -- `Fs` for
+/// `Fs::read_file`, `Fs::Read[Cfg]` and plain `Fs`. Classification is a
+/// property of the effect, not of the operation or its resource kind.
+fn row_item_base_name(item: String) -> String {
+  let n = String::length(item)
+  let mut i = 0
+  let mut end = n
+  while i < n && end == n {
+    let c = String::char_code_at(item, i)
+    if c == ':' || c == '[' || c == '?' {
+      end = i
+    } else {
+      i = i + 1
+    }
+  }
+  String::substring(item, 0, end)
+}
+
+/// #1345 / ADR-0088: is this effect a CAPABILITY (resource kind, resolved by
+/// a host/provider) as opposed to an algebraic effect (discharged by an
+/// in-process handler) or a core ambient effect?
+///
+/// PROVISIONAL. ADR-0084's three-way classification is the real home for this
+/// (#1343) and is unimplemented; this list is derived from ADR-0088's own
+/// definition applied to the effects the builtin registry actually tags, so
+/// the checker has something principled to reject against in the meantime.
+///
+/// `Async` is deliberately EXCLUDED even though it is builtin-tagged: it is
+/// ADR-0089's suspension effect, discharged by the runtime driver, and it
+/// carries no resource kind to grant. Classifying it by "is it builtin" would
+/// get that wrong -- which is exactly why the list is written out rather than
+/// derived from the registry.
+fn is_capability_effect_name(name: String) -> Bool {
+  name == "Fs" || name == "Http" || name == "Socket" || name == "Env" ||
+  name == "Stdin" || name == "Stdout" || name == "Stderr" ||
+  name == "Process" || name == "Profiler"
+}
+
+/// ADR-0088: `Error` / `Exception[E]`. Spelled here rather than imported from
+/// the compiler's exception_effect.vibe because the parser package must not
+/// depend on the compiler.
+fn is_core_ambient_effect_name(name: String) -> Bool {
+  name == "Error" || name == "Exception"
+}
+
+/// ADR-0088 decision 1: `allows` takes capability effects ONLY.
+fn check_allows_clause_items(caps: String) -> Unit with Error {
+  let items = String::split(caps, ", ")
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if String::length(item) > 0 {
+      let base = row_item_base_name(item)
+      if !is_capability_effect_name(base) {
+        if is_core_ambient_effect_name(base) {
+          throw("`\{item}` is a core ambient effect and belongs in the `with` clause, not `allows` (ADR-0088)")
+        } else {
+          throw("`\{item}` is not a capability effect, so it cannot appear in `allows` -- `allows` promises every item is a statically known capability, which rules out algebraic effects and row variables. Write it in the `with` clause (ADR-0088, #1345)")
+        }
+      } else ()
+    } else ()
+    i = i + 1
+  }
+}
+
+/// ADR-0088 decision 1: the split `with` clause takes algebraic / core ambient
+/// / row variables ONLY. A bare `with` (no `allows`) stays permanently legal
+/// with anything in it -- the restriction is opt-in, and only applies once the
+/// author has chosen the split form.
+fn check_split_with_clause_items(row: String) -> Unit with Error {
+  let items = String::split(row, ", ")
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if String::length(item) > 0 && is_capability_effect_name(row_item_base_name(item)) {
+      throw("`\{item}` is a capability effect and must appear in the `allows` clause, not `with` (ADR-0088, #1345)")
+    } else ()
+    i = i + 1
+  }
+}
+
+fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Error {
+  let (row, after_row) = parse_effect_row_base(tokens, pos)
+  match peek(tokens, after_row) {
+    TIdent(kw) => if kw == "allows" {
+      let (caps, after_caps) = collect_effect_names_plus(tokens, after_row + 1, "")
+      // ADR-0088 decision 1's classification check. It runs HERE, at parse
+      // time, because this is the only place the split still exists: the two
+      // clauses fold into one row on the next line and nothing downstream can
+      // tell them apart again. That is affordable only because the predicate
+      // is name-level (capability list / `Error` / everything else), so it
+      // needs no scope or declaration knowledge -- when ADR-0084's real
+      // classification lands (#1343) this check moves to the checker along
+      // with the split.
+      check_split_with_clause_items(row)
+      check_allows_clause_items(caps)
+      let joined = if String::length(row) == 0 {
+        caps
+      } else if String::length(caps) == 0 {
+        row
+      } else {
+        "\{row}, \{caps}"
+      }
+      (joined, after_caps)
+    } else {
+      (row, after_row)
+    },
+    _ => (row, after_row)
   }
 }
 
@@ -992,7 +1151,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
     }
   }
   // The optional effect row after a function type's return (#1429: `with
-  // A + B`, `with ()`, or the legacy `with { E1, E2 }`).
+  // A + B`, or `with ()` for the empty row).
   let parse_effect_suffix: (Array[Token], Int) -> (Option[String], Int) with Error = (tokens, rn) -> {
     match peek(tokens, rn) {
       TWith => {

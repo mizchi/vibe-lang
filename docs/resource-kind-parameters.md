@@ -26,7 +26,7 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
    builtin 関数シグネチャ (`CtFn`) の第3スロット `Option[String]` **ただ1つ**
    である。`Fs` という effect の宣言はどこにも存在せず、
    `("Fs::read_file", CtFn(..., Some("Fs")), ...)`
-   (`codegen/common_base/builtin_registry.vibe`) と `builtins_*.vibe` の
+   (`core/builtin_registry.vibe`) と `builtins_*.vibe` の
    `if name == ...` チェーンに散らばった `Some("Fs")` リテラルがすべて。
 2. **`effect Fs[R: Fs::Root]` は現状パースできない**。
    `parse_type_params_list` (`parser/parser_base.vibe`) は**裸の識別子のみ**を

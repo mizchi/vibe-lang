@@ -5,12 +5,19 @@
 # and section layout. Also asserts idempotency and that --check distinguishes
 # normalized from un-normalized. (This script drives the COMMITTED SEED, so
 # stage2-only behavior — module-block rejection #728, fn rejection #727 —
-# is asserted in compiler_gate.sh step 6 instead. #1429: the fixtures below
-# deliberately keep the BRACED effect row. `vibe normalize` renders through
-# the AST printer, and the printer this script exercises is the SEED's --
-# still the pre-#1429 one. Convert these to `with Error` only in the same
-# change that adopts a seed built from the braceless printer, or this smoke
-# test starts failing against the very binary it is meant to pin. The old module-flatten
+# is asserted in compiler_gate.sh step 6 instead.
+#
+# #1429: the fixtures below deliberately keep the BRACED effect row, and that
+# is now load-bearing in BOTH directions:
+#   - the current compiler REJECTS `with { Error }` (the spelling was removed),
+#     so these fixtures are no longer valid input to it;
+#   - this script does not use the current compiler. `vibe normalize` runs
+#     through scripts/vibe_normalize.sh, which drives the COMMITTED SEED, and
+#     the seed still both accepts the braced row and prints it back.
+# So they must stay braced until the seed moves, and must be converted to
+# `with Error` IN THE SAME CHANGE that adopts a seed built from the current
+# source. Converting them earlier breaks this test against the very binary it
+# is meant to pin; converting them later leaves it broken after the bump. The old module-flatten
 # fixture 03 was retired with module blocks, #728.)
 set -euo pipefail
 

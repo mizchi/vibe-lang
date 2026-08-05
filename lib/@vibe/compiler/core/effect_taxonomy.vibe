@@ -17,7 +17,7 @@
 // ## なぜ builtin registry の列ではなく独立した表なのか
 //
 // 分類は **operation ではなく effect の属性**である。
-// `codegen/common_base/builtin_registry.vibe` の行は operation 単位
+// `core/builtin_registry.vibe` の行は operation 単位
 // (`Fs::read_file` / `Fs::write_file` / ...) なので、そこへ class 列を足すと
 // 同じ `Fs` の分類が 19 行に複製され、行ごとに食い違える。effect 名で引ける
 // 表を一つ置き、registry 側の `Some("Fs")` ラベルが全部この表に載っている
@@ -26,7 +26,9 @@
 //
 // core/ に置いてあるのは、consumer が checker (`checker_effects.vibe`) と
 // `wit_gen.vibe` の両方で、どちらも `@vibe/compiler/core` を既に import して
-// いるから (checker → codegen/common_base の向きに依存を増やさない)。
+// いるから。drift guard を持つ `builtin_registry.vibe` も core/ にあるので
+// (#897 で codegen/common_base/ から移動)、この表とは同一パッケージの兄弟
+// として直接 import し合う。
 //
 // ## この表が吸収した散在リテラル列
 //
@@ -44,10 +46,10 @@
 // (「`effect X {...}` 宣言があれば interface、無ければ host capability」という
 // ADR-0084 と逆の規則、#1143 のねじれの実体) は実装順 4 で直す —
 // 挙動変更を分離するため、ここでは触らない。
-// resource kind パラメータの**宣言側構文** (`effect Fs[R: Fs::Root]`) も
-// 実装順 2〜3 で、`resource` 宣言 (ADR-0075 Phase 2) が入ってから。
-// ここの `default_resource_kind` 列はその受け皿を先に用意しているだけで、
-// まだ誰も検査には使っていない。
+// resource kind パラメータの**宣言側構文** (`effect Fs[R: Fs::Root]`) は
+// 実装順 3。`resource` 宣言 (ADR-0075 Phase 2) は実装順 2 で入っており、
+// `Process::Root` の実体はこのファイルの `predeclared_resources` /
+// `is_singleton_resource_kind` にある。
 
 import ./exception_effect.vibe {
   is_exception_label
@@ -88,9 +90,10 @@ export fn effect_class_core_ambient() -> String {
 /// 歩くたびに引かれるので、13 行のタプル配列を毎回組み直すのは無駄。
 ///
 /// `default_resource_kind` は ADR-0094 Decision 5 の「Phase 1 では resource
-/// 引数を暗黙にし、省略時は既定 singleton へ展開する」の既定値。ADR-0075
-/// Phase 2 (`resource` 宣言) が未実装なので `Process::Root` はまだどこにも
-/// 宣言が無い名前であり、この列は**まだ検査に使われていない** (受け皿)。
+/// 引数を暗黙にし、省略時は既定 singleton へ展開する」の既定値。実装順 2 で
+/// `Process::Root` に実体が付いた (下の `predeclared_resources` /
+/// `is_singleton_resource_kind`) が、**この列自体はまだ検査に使われていない**
+/// — 引数省略時の展開が効くのは実装順 3 から。
 /// core ambient は権限ではないので resource kind を持たない ("")。
 let effect_taxonomy_rows: Array[(String, String, String, Bool, Bool)] = [
   // --- capability (host provider が実装する権限) ---

@@ -23,30 +23,21 @@ generated_hash =
 // naming note below) is the ENTIRE directory-owned surface. It is a thin
 // public facade, forwarding compile_module/compile_wasi_module* to the
 // expr/ and wasi/ subpackages, and re-exporting a subset of
-// codegen/common_base's surface (lookup_registry_builtin, builtin_registry,
-// verify_lane_builtins, compile_inline_wat) via the `export ./common_base
-// { names }` cross-package SReExport form (#847 Phase C; same shape as
-// syntax/syntax.vibe's re-export of @vibe/parser).
+// codegen/common_base's compile_inline_wat surface via the `export
+// ./common_base { names }` cross-package SReExport form (#847 Phase C; same
+// shape as syntax/syntax.vibe's re-export of @vibe/parser).
 //
 // Structural wrinkle (found only via the full verification chain, not by
-// static reading — scripts/unit_test_runner.sh, not the earlier build/gate
-// steps, is what caught it): builtin_registry.vibe, double_to_string_expr.
-// vibe, int_parse_expr.vibe and inline_wat.vibe used to live at this
-// directory's top level too (siblings of codegen.vibe). But codegen/'s own
-// subpackages (expr/, gc/, wasi/) need those 4 files directly, while
-// codegen.vibe (this package's facade) ALSO depends downward on expr/ and
-// wasi/ to forward compile_module/compile_wasi_module*. Owning those 4
-// files here therefore made codegen/index.vpkg <-> codegen/expr(gc,wasi)/
-// index.vpkg a genuine two-node import cycle the moment expr/gc/wasi's leaf
-// imports of them were switched from raw file paths (rejected by
-// enforce_incoming_boundary_fs, #729, once this directory became a package
-// boundary) to boundary-legal package imports (`type_db: import cycle
-// detected at codegen/index.vpkg`). Resolved by relocating all 4 files into
-// codegen/common_base/ — see that package's index.vpkg header for the full
-// story — which already plays the "shared substrate every codegen backend
-// and expr-compile module depends on, with no upward edges of its own"
-// role. This package therefore ends up back to a single file, same shape as
-// common_base/ was before this same batch added those 4 files to it.
+// static reading): double_to_string_expr.vibe, int_parse_expr.vibe and
+// inline_wat.vibe used to live at this directory's top level too (siblings
+// of codegen.vibe). But codegen/'s subpackages (expr/, gc/, wasi/) need
+// those 3 files directly, while codegen.vibe (this package's facade) ALSO
+// depends downward on expr/ and wasi/ to forward compile_module/
+// compile_wasi_module*. Owning the files here made codegen/index.vpkg <->
+// codegen/expr(gc,wasi)/index.vpkg a genuine two-node import cycle when their
+// leaf imports were switched to boundary-legal package imports. Moving them
+// to codegen/common_base/ breaks the cycle: that package remains shared
+// substrate with no upward codegen edges.
 //
 // Naming note: the established rename convention for this migration batch
 // is `git mv index.vibe <dirname>.vibe` (codegen/expr/expr.vibe,
@@ -57,10 +48,9 @@ generated_hash =
 //
 // Compiled into the compiler itself via compiler_sources_manifest.tsv
 // (group `codegen`): the old single `codegen/index.vibe` row becomes a dual
-// row (this contract + codegen.vibe); builtin_registry.vibe /
-// double_to_string_expr.vibe / int_parse_expr.vibe / inline_wat.vibe's rows
-// are repointed to their new codegen/common_base/ paths (see that
-// package's manifest rows) as part of this same batch.
+// row (this contract + codegen.vibe); double_to_string_expr.vibe /
+// int_parse_expr.vibe / inline_wat.vibe's rows are repointed to their new codegen/common_base/ paths (see that package's
+// manifest rows) as part of this same batch.
 
 // --- codegen.vibe
 fn compile_module(stmts: Array[Stmt]) -> Bytes with Error
@@ -75,21 +65,12 @@ fn compile_wasi_module_trace(stmts: Array[Stmt], entry_name: String) -> Bytes wi
 fn compile_wasi_module_break(stmts: Array[Stmt], entry_name: String, prov: DbgProv) -> Bytes with Error
 
 // --- re-exported from codegen/common_base (cross-package SReExport, see
-// header note above); NOT declared here: builtin_registry_typed,
-// double_to_string_expr, int_parse_expr, desugar_derives,
-// desugar_hoist_local_lambdas, desugar_array_spread, which codegen.vibe does
-// not re-export (nothing outside codegen/common_base itself consumes them) —
-// see codegen/common_base/index.vpkg for their declarations.
-fn lookup_registry_builtin(name: String) -> Option[Type]
-fn builtin_registry() -> Array[(String, Int, Int, Bool, Bool)]
-fn verify_lane_builtins(lane: String, names: Array[String], param_counts: Array[Int], returns: Array[Int]) -> Unit with Error
-fn verify_effect_taxonomy_coverage() -> Unit with Error
+// header note above).
 fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[String]) -> Bytes with Error
 fn compile_inline_wat_full(fn_name: String, wat: String, param_names: Array[String], extra_base: Int) -> (Bytes, Int, Int, Int) with Error
 
-// --- builtin_name.vibe / desugar_trait_dict.vibe (relocated into
-// codegen/common_base, #897 batch; see that package's index.vpkg header)
-fn canonical_builtin_name(name: String) -> String
+// --- normalize/desugar_trait_dict.vibe (re-exported through
+// codegen/common_base for compatibility; see that package's index.vpkg header)
 fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit
 fn desugar_railway_binds(stmts: Array[Stmt]) -> Unit
 fn inject_trait_method_generics(stmts: Array[Stmt]) -> Unit

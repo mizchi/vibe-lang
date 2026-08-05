@@ -2,7 +2,7 @@
 
 ## Relevant API surface
 
-- argv: `Env::args_len` / `Env::args_get` (`with { Env::Read }` or the
+- argv: `Env::args_len` / `Env::args_get` (`with Env::Read` or the
   narrower `Env::args_len`/`Env::args_get` effectset — see
   `docs/effectset.md`).
 - file I/O: `lib/@vibe/fs` (`Fs::exists`, `Fs::read_file`,

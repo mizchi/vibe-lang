@@ -59,7 +59,7 @@ Exists, Mkdir }` (`lib/@vibe/fs/fs_effect.vibe`) — that's wrong. That block
 is only a 4-op convenience subset for user-program `import Fs` usage. The
 actual boundary the checker enforces is a per-builtin string tag
 (`Some("Fs")` on each entry in
-`lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe`, plus
+`lib/@vibe/compiler/core/builtin_registry.vibe`, plus
 `Fs::readdir` in `checker/builtins_fs.vibe`), and `cli_main`'s `with
 Fs` row admits any builtin carrying that tag. Round 1 added all 17
 tagged ops on that basis.

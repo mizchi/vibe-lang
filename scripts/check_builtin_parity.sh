@@ -2,7 +2,7 @@
 # #415 B-3: builtin parity gate (selfhost re-implementation of the retired
 # check_codegen_parity.sh idea).
 #
-# The registry (codegen/common_base/builtin_registry.vibe) already hard-verifies the two
+# The registry (core/builtin_registry.vibe) already hard-verifies the two
 # FUNC-TABLE lanes at compile time (verify_lane_builtins runs inside every
 # linear compile and every gc compile, incl. the gate's 40h gc smoke). What it
 # cannot see are the CALLSITE lowerings -- the `fname == "..."` dispatch arms
@@ -27,7 +27,7 @@ import re, sys
 
 LIN_CALLSITE = "lib/@vibe/compiler/codegen/expr/compile_call.vibe"
 GC_CALLSITE = "lib/@vibe/compiler/codegen/gc/backend_call.vibe"
-REGISTRY = "lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe"
+REGISTRY = "lib/@vibe/compiler/core/builtin_registry.vibe"
 CLASSIFICATION = "scripts/builtin_parity_classification.tsv"
 
 def callsite_names(path):
