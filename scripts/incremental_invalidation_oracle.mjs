@@ -163,9 +163,10 @@ export function compareSuccessfulIncrementalInvalidationTraces(expected, actual)
 }
 
 function moduleByName(trace, name) {
-  const module = trace.modules.find((row) => basename(row.path) === `${name}.vibe`);
-  if (!module) fail(`missing ${name}.vibe module row`);
-  return module;
+  const modules = trace.modules.filter((row) => basename(row.path) === `${name}.vibe`);
+  if (modules.length === 0) fail(`missing ${name}.vibe module row`);
+  if (modules.length !== 1) fail(`ambiguous ${name}.vibe module row`);
+  return modules[0];
 }
 
 function decisionsByName(trace) {
@@ -283,6 +284,81 @@ function ownerNames(paths) {
   return paths.map((path) => basename(path).replace(/\.vibe$/, ""));
 }
 
+/// Classify the bounded library-body edit without promoting any observation to
+/// production policy. The consumer must name exactly the edited dependency in
+/// both snapshots: extra, missing, reordered, or changed edges fail closed.
+/// TypeEnv-v3 transport state is reported independently from interface-v2.
+export function classifyPrivateDependencyEditExternallyUnchanged(before, after, dependencyName, consumerName) {
+  const beforeDependency = moduleByName(before, dependencyName);
+  const afterDependency = moduleByName(after, dependencyName);
+  const beforeConsumer = moduleByName(before, consumerName);
+  const afterConsumer = moduleByName(after, consumerName);
+  if (beforeDependency.path !== afterDependency.path) fail("private dependency path changed across observations");
+  if (beforeConsumer.path !== afterConsumer.path) fail("private dependency consumer path changed across observations");
+
+  const expectedDependencies = [beforeDependency.path];
+  for (const [snapshot, consumer] of [["before", beforeConsumer], ["after", afterConsumer]]) {
+    if (JSON.stringify(consumer.direct_dependencies) !== JSON.stringify(expectedDependencies)) {
+      fail(`private dependency ${snapshot} direct relation was not exactly ${consumerName} -> ${dependencyName}`);
+    }
+  }
+  const requireIdentity = (snapshot, module, field) => {
+    if (typeof module[field] !== "string" || module[field].length === 0) {
+      fail(`private dependency classification missing ${snapshot} ${field}`);
+    }
+  };
+  for (const [snapshot, dependency] of [["before dependency", beforeDependency], ["after dependency", afterDependency]]) {
+    for (const field of ["source_fingerprint", "implementation_fingerprint", "interface_fingerprint", "persistent_type_env_transport_fingerprint"]) {
+      requireIdentity(snapshot, dependency, field);
+    }
+  }
+  if (beforeDependency.source_fingerprint === afterDependency.source_fingerprint) {
+    fail("private dependency edit did not change dependency source identity");
+  }
+  if (beforeDependency.implementation_fingerprint === afterDependency.implementation_fingerprint) {
+    fail("private dependency edit did not change dependency implementation identity");
+  }
+  if (beforeDependency.interface_fingerprint !== afterDependency.interface_fingerprint) {
+    fail("private dependency edit changed dependency interface-v2 identity");
+  }
+
+  const consumerIdentityFields = [
+    "source_fingerprint",
+    "implementation_fingerprint",
+    "interface_fingerprint",
+    "checked_env_fingerprint",
+    "persistent_type_env_transport_fingerprint",
+  ];
+  for (const field of consumerIdentityFields) {
+    requireIdentity("before consumer", beforeConsumer, field);
+    requireIdentity("after consumer", afterConsumer, field);
+    if (beforeConsumer[field] !== afterConsumer[field]) fail(`private dependency edit changed consumer own ${field}`);
+  }
+  if (afterConsumer.decision !== "rechecked") {
+    fail("private dependency edit consumer is no longer conservatively rechecked");
+  }
+
+  return {
+    classification: "private_dependency_edit_externally_unchanged",
+    dependency: dependencyName,
+    consumer: consumerName,
+    direct_dependency_relation: {
+      before: [`${consumerName}->${dependencyName}`],
+      after: [`${consumerName}->${dependencyName}`],
+    },
+    dependency_identity: {
+      source: "changed",
+      implementation_token_stream_v1: "changed",
+      interface_v2: "unchanged",
+    },
+    dependency_type_env_transport_v3: beforeDependency.persistent_type_env_transport_fingerprint === afterDependency.persistent_type_env_transport_fingerprint
+      ? "unchanged"
+      : "changed",
+    consumer_own_identities: Object.fromEntries(consumerIdentityFields.map((field) => [field, "unchanged"])),
+    current_consumer_decision: "conservative_rechecked",
+  };
+}
+
 function checkPlannerCase(name, before, after) {
   const expected = expectedCorpus.get(name);
   if (!expected) fail(`missing formal corpus case ${name}`);
@@ -392,6 +468,12 @@ function run(stage2) {
     if (JSON.stringify(decisionsByName(privateEdit)) !== JSON.stringify({ base: "reused", library: "rechecked", app: "rechecked" })) {
       fail("private edit current decision drift");
     }
+    const privateDependencyClassification = classifyPrivateDependencyEditExternallyUnchanged(
+      commentEdit,
+      privateEdit,
+      "library",
+      "app",
+    );
     plannerCases.private_body_edit = checkPlannerCase("private_body_edit", commentEdit, privateEdit);
 
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
@@ -540,6 +622,7 @@ function run(stage2) {
       model_private_body_typing_invalidated: ["library"],
       current_private_body_rechecked: currentPrivateRechecks,
       conservative_over_invalidation: currentPrivateRechecks.filter((name) => name !== "library"),
+      private_dependency_classification: privateDependencyClassification,
       planner_cases: plannerCases,
       cases: [...traces.keys()],
     }));

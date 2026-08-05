@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  classifyPrivateDependencyEditExternallyUnchanged,
   compareObservedInvalidation,
   compareSuccessfulIncrementalInvalidationTraces,
   parseIncrementalInvalidationTrace,
@@ -170,7 +171,7 @@ test("incremental invalidation trace rejects dependencies outside its complete m
   );
 });
 
-function plannerTrace({ source = {}, implementation = {}, iface = {}, deps = {}, rechecked = [] } = {}) {
+function plannerTrace({ source = {}, implementation = {}, iface = {}, checkedEnv = {}, transport = {}, deps = {}, rechecked = [] } = {}) {
   const paths = ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"];
   const defaultDeps = {
     "/p/base.vibe": [],
@@ -184,6 +185,8 @@ function plannerTrace({ source = {}, implementation = {}, iface = {}, deps = {},
       source_fingerprint: source[path] ?? `source:${path}`,
       implementation_fingerprint: implementation[path] ?? `implementation:${path}`,
       interface_fingerprint: iface[path] ?? `interface:${path}`,
+      checked_env_fingerprint: checkedEnv[path] ?? `checked-env:${path}`,
+      persistent_type_env_transport_fingerprint: transport[path] ?? `persistent-type-env-transport:${path}`,
       decision: rechecked.includes(path) ? "rechecked" : "reused",
     })),
   };
@@ -235,6 +238,66 @@ test("shadow planner keeps implementation edits local and propagates interface e
     rechecked: ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"],
   });
   assert.deepEqual(planObservedTypingInvalidation(before, removedEdgeAfter), ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"]);
+});
+
+test("private dependency classifier is explicit, fail-closed, and reports TypeEnv-v3 separately", () => {
+  const before = plannerTrace();
+  const after = plannerTrace({
+    source: { "/p/library.vibe": "source:library:private-edit" },
+    implementation: { "/p/library.vibe": "implementation:library:private-edit" },
+    rechecked: ["/p/library.vibe", "/p/app.vibe"],
+  });
+  assert.deepEqual(classifyPrivateDependencyEditExternallyUnchanged(before, after, "library", "app"), {
+    classification: "private_dependency_edit_externally_unchanged",
+    dependency: "library",
+    consumer: "app",
+    direct_dependency_relation: {
+      before: ["app->library"],
+      after: ["app->library"],
+    },
+    dependency_identity: {
+      source: "changed",
+      implementation_token_stream_v1: "changed",
+      interface_v2: "unchanged",
+    },
+    dependency_type_env_transport_v3: "unchanged",
+    consumer_own_identities: {
+      source_fingerprint: "unchanged",
+      implementation_fingerprint: "unchanged",
+      interface_fingerprint: "unchanged",
+      checked_env_fingerprint: "unchanged",
+      persistent_type_env_transport_fingerprint: "unchanged",
+    },
+    current_consumer_decision: "conservative_rechecked",
+  });
+
+  const transportChanged = structuredClone(after);
+  transportChanged.modules[1].persistent_type_env_transport_fingerprint = "persistent-type-env-transport:library:changed";
+  assert.equal(
+    classifyPrivateDependencyEditExternallyUnchanged(before, transportChanged, "library", "app").dependency_type_env_transport_v3,
+    "changed",
+  );
+
+  const cases = [
+    ["before relation", (left) => { left.modules[2].direct_dependencies = ["/p/base.vibe", "/p/library.vibe"]; }, /before direct relation/],
+    ["after relation", (_, right) => { right.modules[2].direct_dependencies = []; }, /after direct relation/],
+    ["source", (_, right) => { right.modules[1].source_fingerprint = before.modules[1].source_fingerprint; }, /did not change dependency source/],
+    ["implementation", (_, right) => { right.modules[1].implementation_fingerprint = before.modules[1].implementation_fingerprint; }, /did not change dependency implementation/],
+    ["interface", (_, right) => { right.modules[1].interface_fingerprint = "interface:library:changed"; }, /changed dependency interface-v2/],
+    ["consumer identity", (_, right) => { right.modules[2].source_fingerprint = "source:app:changed"; }, /changed consumer own source_fingerprint/],
+    ["missing transport", (_, right) => { delete right.modules[1].persistent_type_env_transport_fingerprint; }, /missing after dependency persistent_type_env_transport_fingerprint/],
+    ["consumer decision", (_, right) => { right.modules[2].decision = "reused"; }, /no longer conservatively rechecked/],
+  ];
+  for (const [name, mutate, pattern] of cases) {
+    const left = structuredClone(before);
+    const right = structuredClone(after);
+    mutate(left, right);
+    assert.throws(
+      () => classifyPrivateDependencyEditExternallyUnchanged(left, right, "library", "app"),
+      pattern,
+      name,
+    );
+  }
 });
 
 test("shadow planner retains dependency-plan owner semantics and rejects under-invalidation", () => {
