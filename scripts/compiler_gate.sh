@@ -9112,6 +9112,7 @@ cat > "$pbdir/pb_test.vibe" <<'PBEOF'
 test "alpha_ok" {
   let x = 1 + 1
   if x != 2 { throw("bad alpha") }
+  println("from alpha")
 }
 
 test "beta_fails" {
@@ -9121,6 +9122,7 @@ test "beta_fails" {
 test "gamma_ok" {
   let y = 3
   if y != 3 { throw("bad gamma") }
+  println("from gamma")
 }
 PBEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -9160,7 +9162,54 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   echo "[compiler-gate] FAIL: _start did not trap on a file with a failing block (#819)" >&2
   exit 1
 fi
+
+# --- #141: batched per-block invokes -----------------------------------------
+# `--invoke-batch-dir` runs every `--invoke` target in ONE process and keeps
+# their outputs apart: target i's stdout/stderr/status land in
+# `<dir>/<i>.{out,err,rc}`, 1-based in flag order. That separation is the whole
+# point -- both callers (scripts/vibe_md.vibex's doctest blocks,
+# unit_test_runner.sh's failure attribution) need EACH target's own output, so
+# a plain repeated `--invoke` (which concatenates everything into one stream)
+# cannot serve them.
+pbbatch="$pbdir/batch"
+VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke-batch-dir "$pbbatch" \
+  --invoke __test_alpha_ok --invoke __test_beta_fails --invoke __test_gamma_ok \
+  "$pbdir/pb.wasm" >/dev/null 2>&1 && pbbatch_rc=0 || pbbatch_rc=$?
+if [ "$pbbatch_rc" -eq 0 ]; then
+  echo "[compiler-gate] FAIL: --invoke-batch-dir exited 0 with a failing target (#141)" >&2
+  exit 1
+fi
+for pbslot in 1 2 3; do
+  if [ ! -f "$pbbatch/$pbslot.rc" ]; then
+    echo "[compiler-gate] FAIL: --invoke-batch-dir wrote no $pbslot.rc -- a failing target aborted the batch (#141)" >&2
+    exit 1
+  fi
+done
+pbrcs="$(cat "$pbbatch/1.rc" "$pbbatch/2.rc" "$pbbatch/3.rc" | tr '\n' ' ')"
+if [ "$pbrcs" != "0 1 0 " ]; then
+  echo "[compiler-gate] FAIL: expected batch statuses '0 1 0 ', got '$pbrcs' (#141)" >&2
+  exit 1
+fi
+# Each target's stdout is its OWN, not the concatenation -- this is what the
+# doctest harness compares against a block's ```output.
+if [ "$(cat "$pbbatch/1.out")" != "from alpha" ] || [ -s "$pbbatch/2.out" ] \
+   || [ "$(cat "$pbbatch/3.out")" != "from gamma" ]; then
+  echo "[compiler-gate] FAIL: batch stdout is not split per target (#141):" >&2
+  for pbslot in 1 2 3; do echo "  $pbslot.out: $(cat "$pbbatch/$pbslot.out")" >&2; done
+  exit 1
+fi
+# stderr is split the same way: the trap diagnostics belong to the target that
+# trapped, and do not leak into a passing sibling's report. (What that
+# diagnostic SAYS is a separate, pre-existing limit -- a thrown string reaches
+# the host as an opaque `WebAssembly.Exception` on the single-invoke path too,
+# so this asserts attribution, not message quality.)
+if [ ! -s "$pbbatch/2.err" ] || [ -s "$pbbatch/1.err" ] || [ -s "$pbbatch/3.err" ]; then
+  echo "[compiler-gate] FAIL: batch stderr is not split per target (#141)" >&2
+  for pbslot in 1 2 3; do echo "  $pbslot.err: $(cat "$pbbatch/$pbslot.err")" >&2; done
+  exit 1
+fi
 rm -rf "$pbdir"
-echo "[compiler-gate] per-block __test_* exports + isolated invoke ok"
+echo "[compiler-gate] per-block __test_* exports + isolated invoke + batch ok"
 
 echo "[compiler-gate] ok"

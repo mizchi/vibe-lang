@@ -209,11 +209,22 @@ unit_out_store() {
 # --- failure attribution: WHICH `test {}` block trapped? ----------------------
 # `_start` runs every block in the file, so a trap says the FILE failed but not
 # which block. #819 exports one `__test_<name>` per block, and the runner skips
-# its pre-invoke `_start` for those names, so each can be run in isolation.
+# its pre-invoke `_start` for those names, so each can be named individually.
 # Only invoked ON FAILURE, so the passing path (the overwhelming majority) pays
-# nothing. Sequential isolated re-runs are not identical to one `_start` pass --
-# a block that only trips after a sibling mutated shared module state will not
-# reproduce alone -- so an inconclusive pass says so rather than guessing.
+# nothing.
+#
+# #141: all of them go through ONE runner process (`--invoke-batch-dir` writes
+# each target's status to `<dir>/<i>.rc`) instead of one process per block. A
+# heavy test file has dozens of blocks, and at ~61ms of node startup apiece
+# that dominated the time to a failure report.
+#
+# The batch also runs the blocks the way `_start` does -- sequentially, in one
+# instance -- rather than each in a fresh process. That is a FIDELITY GAIN, not
+# just a speedup: the isolated re-runs this replaces could not reproduce a
+# block that only trips after a sibling mutated shared module state, and said
+# so by reporting nothing. The flip side is that such a block is now named,
+# even though it would pass on its own; naming the block where the `_start`
+# pass actually trapped is the more useful answer.
 attribute_block_failure() {
   local wasm="$1"
   local names
@@ -224,18 +235,31 @@ attribute_block_failure() {
     }
   ' "$wasm" 2>/dev/null)" || return 0
   [ -n "$names" ] || return 0
-  local failed=""
+  local args=() ordered=()
   while IFS= read -r n; do
     [ -n "$n" ] || continue
-    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" \
-         --invoke "$n" "$wasm" >/dev/null 2>&1; then
-      failed="$failed ${n#__test_}"
-    fi
+    args+=(--invoke "$n")
+    ordered+=("$n")
   done <<< "$names"
+  [ "${#ordered[@]}" -gt 0 ] || return 0
+  local bdir; bdir="$(mktemp -d -t vibe-attr-XXXXXX)"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" \
+    --invoke-batch-dir "$bdir" "${args[@]}" "$wasm" >/dev/null 2>&1 || true
+  local failed="" i=0
+  while [ "$i" -lt "${#ordered[@]}" ]; do
+    i=$((i + 1))
+    # A missing .rc means the batch died before reaching this target (timeout,
+    # or a trap that took the process down); that is not evidence about the
+    # block, so it is not reported as one.
+    if [ -f "$bdir/$i.rc" ] && [ "$(cat "$bdir/$i.rc")" != "0" ]; then
+      failed="$failed ${ordered[$((i - 1))]#__test_}"
+    fi
+  done
+  rm -rf "$bdir"
   if [ -n "$failed" ]; then
     LAST_DIAG="test block(s) trapped:$failed"
   else
-    LAST_DIAG="(test assertion trapped at runtime; no single block reproduces it in isolation)"
+    LAST_DIAG="(test assertion trapped at runtime; no individual block reproduces it)"
   fi
 }
 
