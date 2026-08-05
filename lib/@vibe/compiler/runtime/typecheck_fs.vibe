@@ -533,9 +533,12 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = [
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// This opt-in aliases only an exact v3 decoded TypeEnv when every direct
-// dependency transport environment is unchanged. It is not a CheckedProgram
-// or typed-IR transport; v3 retains the TypeEnv trait/impl chain only.
+// TDRE4 aliases only an exact v3 decoded TypeEnv when every direct dependency
+// transport environment is unchanged. It is not a CheckedProgram or typed-IR
+// transport; v3 retains the TypeEnv trait/impl chain only. The empty cell is
+// conservative for direct FS consumers. The CLI check-only lane explicitly
+// enables production reuse after validating its per-invocation policy; build,
+// codegen, and other FS consumers remain off pending compact publication.
 let experimental_typing_dependency_env_reuse_enabled_cell = array_empty()
 
 export fn set_experimental_typing_dependency_env_reuse_enabled(enabled: Bool) -> Unit {
@@ -1575,8 +1578,10 @@ let parse_memo_paths: Array[String] = [
     Array::push(parse_memo_stmts, parsed)
     Array::slice(parsed, 0, Array::length(parsed))
   }
-} fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with Exception + Fs {
-  Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
+} fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Exception + Fs {
+  let text = persistent_type_env_cache_text(env)
+  Fs::write_file(persistent_type_env_cache_path(fingerprint), text)
+  text
 }
 
 // TDRE4 is deliberately independent from the TypeEnv v3 envelope and from
@@ -2154,14 +2159,16 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       throw(String::concat(job.path, ": type error"))
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity) => {
-      store_persistent_type_env(fingerprint, checked_env)
+      // Serialize the TypeEnv once. Production-default TDRE4 publication binds
+      // the exact same text as the conservative target; serializing it a second
+      // time materially inflates fresh selfcompile heap without adding evidence.
+      let target_text = store_persistent_type_env(fingerprint, checked_env)
       // Publish in commit order: canonical target first, bound witness second,
       // alias last. Diagnosed/thrown checks never enter this Checked arm. Keep
       // the extra canonical target text and input serialization wholly inside
       // the enabled, transitively eligible experimental lane.
       if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(job.dep_fps) {
         let input_key = typing_dependency_transport_input_key(path, job.source, job.dep_envs)
-        let target_text = persistent_type_env_cache_text(checked_env)
         publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
         write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
       } else {
@@ -2443,7 +2450,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
         // Preserve the ordinary conservative fingerprint path for every later
         // consumer. Commit this target first, then its exact bound witness, and
         // only then the alias, so torn publication always fails closed.
-        store_persistent_type_env(fingerprint, target_env)
+        Fs::write_file(persistent_type_env_cache_path(fingerprint), target_text)
         publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
         write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
         let next_env_cache = upsert_env_cache(coordinated_env_cache, path, target_env)
