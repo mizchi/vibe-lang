@@ -149,7 +149,18 @@ fn fact(n: Int) -> Int {
 }
 fn identity[T](x: T) -> T { x }                // generic
 fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
-fn hello() -> Unit with { Stdout } { stdout_write("hi\n") }
+fn hello() -> Unit with Stdout { stdout_write("hi\n") }
+// #1429: the effect row has three accepted spellings while the migration runs.
+// They parse to the SAME row — nothing after the parser can tell them apart.
+//   with A + B      braceless, `+`-separated   (migrating TO this one)
+//   with ()         the explicitly empty row
+//   with { A, B }   braced, comma-separated    (migrating FROM)
+// `+` rather than `,` because once the braces are gone a comma cannot be told
+// apart from an enclosing list's comma: in `fn g(cb: (Int) -> Int with A, x: Int)`
+// the `x` is either a second label or the next parameter. `+` starts neither a
+// type nor a parameter, so the row ends unambiguously with no lookahead — and
+// it is already the "and another one" separator in trait bounds (`[T: A + B]`).
+// `with (A + B)` is rejected: `()` spells the empty row and nothing else.
 export fn doubled(x: Int) -> Int { x * 2 }
 // where-contract (#731): requires asserts at entry; ensures binds the
 // function value as `result` and asserts at exit. Violations trap.

@@ -1,0 +1,77 @@
+// #1429: the effect row has three accepted spellings during the migration.
+// All three normalize to the SAME internal row, so nothing downstream of the
+// parser -- checker, codegen, printer, contract hash -- can tell which was
+// written. That is what lets them coexist across the bootstrap bump: the
+// compiler's own source keeps the braced form (committed bundles and the seed
+// stay byte-stable) while the new form becomes parseable.
+//
+//   with A + B      braceless, `+`-separated  (migrating TO)
+//   with ()         the explicitly empty row
+//   with A + B   braced, comma-separated   (migrating FROM)
+
+fn braceless_one(a: Int) -> Int with Error {
+  if a < 0 {
+    throw("negative")
+  }
+  a
+}
+
+fn braceless_plus(a: Int) -> Int with Error + Stdout {
+  if a < 0 {
+    throw("negative")
+  }
+  a
+}
+
+fn braced_legacy(a: Int) -> Int with Error {
+  if a < 0 {
+    throw("negative")
+  }
+  a
+}
+
+// `with ()` is the explicitly empty row. It is not the same thing as omitting
+// the clause on an inline lambda (there, omission means "inherit the enclosing
+// context"), but on a top-level declaration both are already checked as empty.
+fn explicitly_pure(a: Int, b: Int) -> Int with () {
+  a + b
+}
+
+// The row in a nested function TYPE, inside a parameter list, followed by a
+// comma and another parameter. This is the shape the separator was chosen for:
+// with a comma separator, `(Int) -> Int with Error, b: Int` cannot be told
+// apart from a two-label row, so the row's end would need lookahead. `+` can
+// start neither a type nor a parameter name, so the end is unambiguous.
+fn takes_effectful_callback(f: (Int) -> Int with Error, b: Int) -> Int with Error {
+  f(b)
+}
+
+test "braceless single-label row" {
+  let got = handle {
+    braceless_one(0 - 1)
+  } with Error {
+    Throw(_) => 0 - 99
+  }
+  assert_eq(got, 0 - 99)
+  assert_eq(handle { braceless_one(7) } with Error { Throw(_) => 0 }, 7)
+}
+
+test "braceless `+`-separated row" {
+  assert_eq(handle { braceless_plus(7) } with Error { Throw(_) => 0 }, 7)
+}
+
+test "the braced spelling still parses to the same row" {
+  assert_eq(handle { braced_legacy(7) } with Error { Throw(_) => 0 }, 7)
+}
+
+test "`with ()` is the empty row" {
+  assert_eq(explicitly_pure(20, 22), 42)
+}
+
+test "a row inside a parameter's function type ends at the comma" {
+  assert_eq(handle {
+    takes_effectful_callback(braceless_one, 5)
+  } with Error {
+    Throw(_) => 0
+  }, 5)
+}

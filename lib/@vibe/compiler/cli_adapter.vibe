@@ -230,7 +230,7 @@ fn adapter_string_to_bytes(s: String) -> Bytes {
   Bytes::from_array(out)
 }
 
-fn read_arg_or_env(index: Int, env_name: String) -> String with { Env } {
+fn read_arg_or_env(index: Int, env_name: String) -> String with Env {
   let value = Env::args_get(index)
   if value != "" {
     value
@@ -258,7 +258,7 @@ fn has_control_character(value: String) -> Bool {
   found
 }
 
-fn profile_memory_mark(enabled: Bool) -> Unit with { Env } {
+fn profile_memory_mark(enabled: Bool) -> Unit with Env {
   if enabled {
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK")
     ()
@@ -292,7 +292,7 @@ fn apply_cfg_env(source: String, cfg_csv: String) -> String {
   }
 }
 
-fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: String) -> Bytes with { Error } {
+fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: String) -> Bytes with Error {
   // ADR-0055 #493 cutover: the Perceus RC codegen (memory-reclaiming linear
   // backend) is the DEFAULT; set VIBE_RC=0 to opt back into the legacy bump
   // path. The compiler self-build, bootstrap, and bump-baseline gates pin
@@ -311,7 +311,7 @@ fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: Strin
 /// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
 /// the `vibe` launcher can print a real message instead of an opaque wasm trap.
 /// Returns a non-zero exit code. (#594 usability / docs/release-roadmap.md.)
-fn emit_compile_diag(output_path: String, msg: String) -> Int with { Fs } {
+fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
   Fs::write_file(String::concat(output_path, ".diag"), msg)
   1
 }
@@ -328,7 +328,7 @@ fn emit_compile_diag(output_path: String, msg: String) -> Int with { Fs } {
 /// Returns 0 (the value is consumed at the call site so the call is never DCE'd:
 /// it is a discarded `Unit` side-effect otherwise, which aggressive DCE in the
 /// seed compiler may drop).
-fn write_funcmap_sidecar(input_path: String, output_path: String) -> Int with { Fs, Error } {
+fn write_funcmap_sidecar(input_path: String, output_path: String) -> Int with Fs + Error {
   let src = Fs::read_file(input_path)
   let text = build_funcmap_from_source(src)
   Fs::write_bytes(String::concat(output_path, ".funcmap"), adapter_string_to_bytes(text))
@@ -343,7 +343,7 @@ fn write_funcmap_sidecar(input_path: String, output_path: String) -> Int with { 
 /// Entry-file-only surface scan (v1): exports and effect declarations are read
 /// from the entry file itself; effects declared only in imported modules render
 /// as host-capability comments (documented in docs/effect-wit-mapping.md).
-fn adapter_emit_wit(input_path: String, output_path: String) -> Int with { Fs, Env } {
+fn adapter_emit_wit(input_path: String, output_path: String) -> Int with Fs + Env {
   handle {
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     let wit = wit_from_program(entry_stmts, entry_stmts, adapter_basename_no_vibe(input_path))
@@ -361,7 +361,7 @@ fn adapter_emit_wit(input_path: String, output_path: String) -> Int with { Fs, E
 /// adapter and launches `wasmtime serve` — artifact generation stays in the
 /// compiler, serving stays in the runner. VIBE_SERVE_WIT_OUT optionally writes
 /// the WIT world sidecar.
-fn adapter_serve_component(input_path: String, output_path: String) -> Int with { Fs, Env } {
+fn adapter_serve_component(input_path: String, output_path: String) -> Int with Fs + Env {
   handle {
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     validate_serve_handler(entry_stmts)
@@ -383,7 +383,7 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
   }
 }
 
-export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
+export fn cli_main() -> Int with Error + Fs + Env + Stdin + Stdout {
   // #944 (ADR-0073 stage B): checked-Error row discipline is ON by
   // default -- `Error::Throw` propagates to the caller's row like any
   // other effect, dischargeable via `handle .. with Error`.
@@ -1155,7 +1155,7 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
 /// Unit-returning entry from the plain declared return type -- sugar
 /// agnostic -- so this gets the same no-print / real-exit-code `_start`
 /// without needing the sugar or a seed bump.
-export fn main() -> Unit with { Error, Fs, Env, Stdin, Stdout, Process } {
+export fn main() -> Unit with Error + Fs + Env + Stdin + Stdout + Process {
   let code = cli_main()
   if code != 0 {
     vibe_process_exit_raw(code)
