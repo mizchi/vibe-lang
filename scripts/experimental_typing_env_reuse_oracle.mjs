@@ -53,6 +53,33 @@ function publicChainEdit(project) {
   writeFileSync(join(project, "leaf.vibe"), "export fn value() -> Int { let ignored = 1\n2 }\nexport fn public_value() -> String { \"seven\" }\n");
 }
 
+function makeAmbientProject(project) {
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "leaf.vibe"), "export fn used() -> Int { 1 }\nexport fn ambient() -> Int { 2 }\n");
+  writeFileSync(join(project, "middle.vibe"), "import ./leaf.vibe { used }\nexport fn middle() -> Int { used() }\n");
+  writeFileSync(join(project, "app.vibe"), "import ./middle.vibe { middle }\nfn main() -> Int { middle() }\n");
+}
+
+function ambientOnlyTransportEdit(project) {
+  // middle does not import ambient, so its own TypeEnv remains byte-identical;
+  // app nevertheless receives leaf's changed TypeEnv as an ambient dep_env row.
+  writeFileSync(join(project, "leaf.vibe"), "export fn used() -> Int { 1 }\nexport fn ambient() -> String { \"two\" }\n");
+}
+
+function makeOrderProject(project) {
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "a.vibe"), "export fn value() -> Int { 1 }\n");
+  writeFileSync(join(project, "b.vibe"), "export fn value() -> Int { 2 }\n");
+  // Equal exported spellings are deliberately renamed at import. This keeps
+  // the checker result unambiguous while exercising the ordered environment
+  // table whose first-match semantics protect future shadowing cases.
+  writeFileSync(join(project, "app.vibe"), "import ./a.vibe { value as a_value }\nimport ./b.vibe { value as b_value }\nfn main() -> Int { a_value() + b_value() }\n");
+}
+
+function privateOrderEdit(project) {
+  writeFileSync(join(project, "a.vibe"), "export fn value() -> Int { let ignored = 1\n1 }\n");
+}
+
 function makeTraitProject(project) {
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: Base { hidden(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for Int\nexport fn value() -> Int { 1 }\n");
@@ -75,7 +102,7 @@ function traitDependencyEdit(project) {
   writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: Base { changed(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for String\nexport fn value() -> Int { 1 }\n");
 }
 
-function check(stage2, project, cache, gate, name, allowFailure = false) {
+function check(stage2, project, cache, gate, name, allowFailure = false, extraEnv = {}) {
   const out = `${name}.out`;
   const telemetryOut = `${name}.telemetry.json`;
   const result = spawnSync("bash", [join(root, "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main", stage2, "app.vibe", out], {
@@ -87,9 +114,13 @@ function check(stage2, project, cache, gate, name, allowFailure = false) {
       VIBE_CHECK_ONLY: "1",
       VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryOut,
       VIBE_IMPORT_ABI: "raw",
-      VIBE_HOME: join(project, `.home-${name}`),
+      // Resolution authority is part of the TDRE4 logical input. Keep it
+      // stable within each scenario; varying it per invocation would correctly
+      // force a full check rather than exercise reuse.
+      VIBE_HOME: join(project, ".home"),
       VIBE_PREOPEN_DIR: project,
       ...(gate ? { VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1" } : {}),
+      ...extraEnv,
     },
   });
   if (result.status !== 0 && !allowFailure) fail(`${name} failed: ${(result.stderr || result.stdout).trim()}`);
@@ -118,20 +149,80 @@ function parseSegment(text, start) {
   return [text.slice(colon + 1, end), end];
 }
 
-function appSidecar(cache, appSource) {
-  const candidates = readdirSync(cache)
-    .filter((name) => name.startsWith("vibe_selfhost_typing_dependency_env_reuse_v3_"))
+function parseBinding(text, tag) {
+  if (!text.startsWith(tag)) fail(`invalid ${tag} binding marker`);
+  const [input, afterInput] = parseSegment(text, tag.length);
+  const [target, afterTarget] = parseSegment(text, afterInput);
+  const [targetText, end] = parseSegment(text, afterTarget);
+  if (end !== text.length || !input || !target || !targetText) fail(`${tag} binding has trailing or empty data`);
+  return { input, target, targetText };
+}
+
+function bindingFiles(cache, namespace) {
+  return readdirSync(cache)
+    .filter((name) => name.startsWith(`vibe_${namespace}_`))
     .map((name) => join(cache, name));
+}
+
+function appSidecar(cache, appSource) {
+  const candidates = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v4");
   const path = candidates.find((candidate) => {
     const text = readFileSync(candidate, "utf8");
-    return text.startsWith("TDRE3") && text.includes(appSource);
+    return text.startsWith("TDRE4A") && text.includes(appSource);
   });
-  if (!path) fail(`non-vacuous app sidecar missing in ${basename(cache)}`);
-  const text = readFileSync(path, "utf8");
-  const [input, afterInput] = parseSegment(text, 5);
-  const [target, end] = parseSegment(text, afterInput);
-  if (end !== text.length) fail("TDRE sidecar has trailing data");
-  return { path, input, target };
+  if (!path) fail(`non-vacuous TDRE4 app sidecar missing in ${basename(cache)}`);
+  return { path, ...parseBinding(readFileSync(path, "utf8"), "TDRE4A") };
+}
+
+function otherSidecar(cache, target) {
+  for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v4")) {
+    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE4A");
+    if (binding.target !== target) return { path, ...binding };
+  }
+  fail("second valid TDRE4 target missing");
+}
+
+function targetWitness(cache, target) {
+  for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v4")) {
+    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE4W");
+    if (binding.target === target) return { path, ...binding };
+  }
+  fail(`bound TDRE4 witness missing for ${target}`);
+}
+
+function aliasText(input, target, targetText) {
+  return `TDRE4A${segment(input)}${segment(target)}${segment(targetText)}`;
+}
+
+function witnessText(input, target, targetText) {
+  return `TDRE4W${segment(input)}${segment(target)}${segment(targetText)}`;
+}
+
+const logicalInputTag = "vibe-typing-dependency-transport-env:v4";
+function parseLogicalInput(input) {
+  if (!input.startsWith(logicalInputTag)) fail("TDRE4 logical input tag changed");
+  let cursor = logicalInputTag.length;
+  const fields = [];
+  for (let i = 0; i < 4; i += 1) {
+    const [field, next] = parseSegment(input, cursor);
+    fields.push(field);
+    cursor = next;
+  }
+  const count = Number(fields[3]);
+  if (!Number.isInteger(count) || count < 0) fail("invalid TDRE4 dep_env count");
+  const rows = [];
+  for (let i = 0; i < count; i += 1) {
+    const [path, afterPath] = parseSegment(input, cursor);
+    const [text, afterText] = parseSegment(input, afterPath);
+    rows.push([path, text]);
+    cursor = afterText;
+  }
+  if (cursor !== input.length) fail("TDRE4 logical input has trailing data");
+  return { owner: fields[0], source: fields[1], resolutionSeed: fields[2], rows };
+}
+
+function logicalInputText({ owner, source, resolutionSeed, rows }) {
+  return `${logicalInputTag}${segment(owner)}${segment(source)}${segment(resolutionSeed)}${segment(String(rows.length))}${rows.map(([path, text]) => `${segment(path)}${segment(text)}`).join("")}`;
 }
 
 function compactFingerprint(source) {
@@ -249,7 +340,7 @@ function run(stage2) {
     makeProject(staleProject);
     check(stage2, staleProject, staleCache, true, "stale-target-cold");
     const staleSidecar = appSidecar(staleCache, readFileSync(join(staleProject, "app.vibe"), "utf8"));
-    writeFileSync(staleSidecar.path, `TDRE3${segment(staleSidecar.input)}${segment("stale-conservative-target")}`);
+    writeFileSync(staleSidecar.path, aliasText(staleSidecar.input, "stale-conservative-target", staleSidecar.targetText));
     privateEdit(staleProject);
     const staleTargetFallback = check(stage2, staleProject, staleCache, true, "stale-target-fallback");
     expectCounts("stale referenced target fallback", staleTargetFallback.telemetry, 2, 0);
@@ -263,6 +354,116 @@ function run(stage2) {
     privateEdit(malformedSidecarProject);
     const malformedSidecarFallback = check(stage2, malformedSidecarProject, malformedSidecarCache, true, "malformed-sidecar-fallback");
     expectCounts("malformed sidecar fallback", malformedSidecarFallback.telemetry, 2, 0);
+
+    const validWrongProject = join(work, "valid-wrong-target-project");
+    const validWrongCache = join(work, "valid-wrong-target-cache");
+    makeProject(validWrongProject);
+    check(stage2, validWrongProject, validWrongCache, true, "valid-wrong-target-cold");
+    const validWrongApp = appSidecar(validWrongCache, readFileSync(join(validWrongProject, "app.vibe"), "utf8"));
+    const validWrongOther = otherSidecar(validWrongCache, validWrongApp.target);
+    // All target bytes are independently valid, but the other target's witness
+    // is bound to another logical input. A target-only eligibility marker would
+    // incorrectly accept this coherent-looking wrong-target alias.
+    writeFileSync(validWrongApp.path, aliasText(validWrongApp.input, validWrongOther.target, validWrongOther.targetText));
+    privateEdit(validWrongProject);
+    const validWrongFallback = check(stage2, validWrongProject, validWrongCache, true, "valid-wrong-target-fallback");
+    expectCounts("valid wrong target fallback", validWrongFallback.telemetry, 2, 0);
+
+    const sidecarSpliceProject = join(work, "sidecar-splice-project");
+    const sidecarSpliceCache = join(work, "sidecar-splice-cache");
+    makeProject(sidecarSpliceProject);
+    check(stage2, sidecarSpliceProject, sidecarSpliceCache, true, "sidecar-splice-cold");
+    const sidecarSpliceApp = appSidecar(sidecarSpliceCache, readFileSync(join(sidecarSpliceProject, "app.vibe"), "utf8"));
+    const sidecarSpliceOther = otherSidecar(sidecarSpliceCache, sidecarSpliceApp.target);
+    writeFileSync(sidecarSpliceApp.path, readFileSync(sidecarSpliceOther.path, "utf8"));
+    privateEdit(sidecarSpliceProject);
+    const sidecarSpliceFallback = check(stage2, sidecarSpliceProject, sidecarSpliceCache, true, "sidecar-splice-fallback");
+    expectCounts("cross-spliced sidecar fallback", sidecarSpliceFallback.telemetry, 2, 0);
+
+    const witnessSpliceProject = join(work, "witness-splice-project");
+    const witnessSpliceCache = join(work, "witness-splice-cache");
+    makeProject(witnessSpliceProject);
+    check(stage2, witnessSpliceProject, witnessSpliceCache, true, "witness-splice-cold");
+    const witnessSpliceApp = appSidecar(witnessSpliceCache, readFileSync(join(witnessSpliceProject, "app.vibe"), "utf8"));
+    const witnessSpliceOther = otherSidecar(witnessSpliceCache, witnessSpliceApp.target);
+    const witnessSpliceWitness = targetWitness(witnessSpliceCache, witnessSpliceApp.target);
+    writeFileSync(witnessSpliceWitness.path, witnessText(witnessSpliceApp.input, witnessSpliceApp.target, witnessSpliceOther.targetText));
+    privateEdit(witnessSpliceProject);
+    const witnessSpliceFallback = check(stage2, witnessSpliceProject, witnessSpliceCache, true, "witness-splice-fallback");
+    expectCounts("cross-spliced witness fallback", witnessSpliceFallback.telemetry, 2, 0);
+
+    const targetSpliceProject = join(work, "target-splice-project");
+    const targetSpliceCache = join(work, "target-splice-cache");
+    makeProject(targetSpliceProject);
+    check(stage2, targetSpliceProject, targetSpliceCache, true, "target-splice-cold");
+    const targetSpliceApp = appSidecar(targetSpliceCache, readFileSync(join(targetSpliceProject, "app.vibe"), "utf8"));
+    const targetSpliceOther = otherSidecar(targetSpliceCache, targetSpliceApp.target);
+    writeFileSync(referencedAppTargetEnv(stage2, targetSpliceCache, targetSpliceApp.target), targetSpliceOther.targetText);
+    privateEdit(targetSpliceProject);
+    const targetSpliceFallback = check(stage2, targetSpliceProject, targetSpliceCache, true, "target-splice-fallback");
+    expectCounts("cross-spliced target fallback", targetSpliceFallback.telemetry, 2, 0);
+
+    const missingWitnessProject = join(work, "missing-witness-project");
+    const missingWitnessCache = join(work, "missing-witness-cache");
+    makeProject(missingWitnessProject);
+    check(stage2, missingWitnessProject, missingWitnessCache, true, "missing-witness-cold");
+    const missingWitnessApp = appSidecar(missingWitnessCache, readFileSync(join(missingWitnessProject, "app.vibe"), "utf8"));
+    rmSync(targetWitness(missingWitnessCache, missingWitnessApp.target).path);
+    privateEdit(missingWitnessProject);
+    const missingWitnessFallback = check(stage2, missingWitnessProject, missingWitnessCache, true, "missing-witness-fallback");
+    expectCounts("missing witness fallback", missingWitnessFallback.telemetry, 2, 0);
+
+    const malformedWitnessProject = join(work, "malformed-witness-project");
+    const malformedWitnessCache = join(work, "malformed-witness-cache");
+    makeProject(malformedWitnessProject);
+    check(stage2, malformedWitnessProject, malformedWitnessCache, true, "malformed-witness-cold");
+    const malformedWitnessApp = appSidecar(malformedWitnessCache, readFileSync(join(malformedWitnessProject, "app.vibe"), "utf8"));
+    writeFileSync(targetWitness(malformedWitnessCache, malformedWitnessApp.target).path, "TDRE4W1:x");
+    privateEdit(malformedWitnessProject);
+    const malformedWitnessFallback = check(stage2, malformedWitnessProject, malformedWitnessCache, true, "malformed-witness-fallback");
+    expectCounts("malformed witness fallback", malformedWitnessFallback.telemetry, 2, 0);
+
+    const ambientProject = join(work, "ambient-dep-env-project");
+    const ambientCache = join(work, "ambient-dep-env-cache");
+    makeAmbientProject(ambientProject);
+    const ambientCold = check(stage2, ambientProject, ambientCache, true, "ambient-cold");
+    expectCounts("ambient cold", ambientCold.telemetry, 3, 0, 3);
+    ambientOnlyTransportEdit(ambientProject);
+    const ambientFallback = check(stage2, ambientProject, ambientCache, true, "ambient-change-fallback");
+    expectCounts("ambient non-direct dep_env change fallback", ambientFallback.telemetry, 3, 0, 3);
+
+    const resolutionProject = join(work, "resolution-seed-project");
+    const resolutionCache = join(work, "resolution-seed-cache");
+    makeProject(resolutionProject);
+    check(stage2, resolutionProject, resolutionCache, true, "resolution-cold");
+    privateEdit(resolutionProject);
+    const resolutionFallback = check(stage2, resolutionProject, resolutionCache, true, "resolution-change-fallback", false, {
+      VIBE_HOME: join(resolutionProject, ".other-home"),
+    });
+    expectCounts("resolution_env_seed change fallback", resolutionFallback.telemetry, 2, 0);
+
+    const orderProject = join(work, "dep-env-order-project");
+    const orderCache = join(work, "dep-env-order-cache");
+    makeOrderProject(orderProject);
+    const orderCold = check(stage2, orderProject, orderCache, true, "order-cold");
+    expectCounts("dep_env order cold", orderCold.telemetry, 3, 0, 3);
+    const orderApp = appSidecar(orderCache, readFileSync(join(orderProject, "app.vibe"), "utf8"));
+    const parsedOrderInput = parseLogicalInput(orderApp.input);
+    const orderPaths = parsedOrderInput.rows.map(([path]) => basename(path)).sort();
+    if (parsedOrderInput.rows.length !== 2 || orderPaths[0] !== "a.vibe" || orderPaths[1] !== "b.vibe") {
+      fail("TDRE4 app logical input omitted exact dep_env rows");
+    }
+    const swappedOrderInput = logicalInputText({
+      ...parsedOrderInput,
+      rows: [parsedOrderInput.rows[1], parsedOrderInput.rows[0]],
+    });
+    // Keep the sidecar at the correct key path but cross-splice a binding whose
+    // two valid same-spelling dependency rows are reversed. Order-blind parsing
+    // would accept the wrong witness/alias relationship.
+    writeFileSync(orderApp.path, aliasText(swappedOrderInput, orderApp.target, orderApp.targetText));
+    privateOrderEdit(orderProject);
+    const orderFallback = check(stage2, orderProject, orderCache, true, "order-change-fallback");
+    expectCounts("dep_env order/shadow fallback", orderFallback.telemetry, 2, 1, 3);
 
     const traitProject = join(work, "trait-project");
     const traitCache = join(work, "trait-cache");
@@ -304,6 +505,18 @@ function run(stage2) {
     if (diagnosticOff.status === 0 || diagnosticOn.status === 0) fail("diagnostic scenario unexpectedly succeeded");
     if (diagnosticOff.output !== diagnosticOn.output) fail("diagnostic gate-off/on output mismatch");
 
+    const noPublishProject = join(work, "diagnostic-no-publish-project");
+    const noPublishCache = join(work, "diagnostic-no-publish-cache");
+    makeProject(noPublishProject);
+    const failingSource = "import ./helper.vibe { value }\nfn main() -> Int { missing_name }\n";
+    writeFileSync(join(noPublishProject, "app.vibe"), failingSource);
+    const noPublish = check(stage2, noPublishProject, noPublishCache, true, "diagnostic-no-publish", true);
+    if (noPublish.status === 0) fail("diagnostic no-publish scenario unexpectedly succeeded");
+    const noPublishAliases = bindingFiles(noPublishCache, "selfhost_typing_dependency_env_reuse_v4");
+    const noPublishWitnesses = bindingFiles(noPublishCache, "selfhost_typing_dependency_env_reuse_eligibility_v4");
+    if (noPublishAliases.length !== 1 || noPublishWitnesses.length !== 1) fail("diagnosed module published TDRE4 alias or witness");
+    if (noPublishAliases.some((path) => readFileSync(path, "utf8").includes(failingSource))) fail("diagnosed owner source appeared in TDRE4 alias");
+
     console.log(JSON.stringify({
       schema: 1,
       scenario: "experimental-typing-dependency-transport-env-reuse",
@@ -313,6 +526,20 @@ function run(stage2) {
       missing_target_fallback: missingTargetFallback.telemetry,
       stale_target_fallback: staleTargetFallback.telemetry,
       malformed_sidecar_fallback: malformedSidecarFallback.telemetry,
+      valid_wrong_target_fallback: validWrongFallback.telemetry,
+      cross_splice_fallbacks: {
+        sidecar: sidecarSpliceFallback.telemetry,
+        witness: witnessSpliceFallback.telemetry,
+        target: targetSpliceFallback.telemetry,
+      },
+      witness_fallbacks: {
+        missing: missingWitnessFallback.telemetry,
+        malformed: malformedWitnessFallback.telemetry,
+      },
+      ambient_non_direct_dep_env_change_fallback: ambientFallback.telemetry,
+      resolution_env_seed_change_fallback: resolutionFallback.telemetry,
+      dep_env_order_shadow_fallback: orderFallback.telemetry,
+      diagnostics_publish_nothing: true,
       trait_graph: {
         private_body_reuse: traitPrivate.telemetry,
         supertrait_change_fallback: supertraitFallback.telemetry,

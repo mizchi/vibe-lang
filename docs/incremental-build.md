@@ -170,30 +170,37 @@ claim.
 ## Experimental dependency transport-environment typing reuse
 
 `VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE=1` enables a deliberately
-narrow check-only experiment. It aliases a source plus ordered direct-dependency
-**v3 TypeEnv transport** identities to a previously checked TypeEnv, then
-validates and republishes that decoded environment under the
-ordinary conservative fingerprint. It does not use the trace-only
-`vibe-module-interface:v2` observation as a production key, and malformed,
-missing, or stale aliases—including a malformed, truncated, or absent referenced
-TypeEnv—fall back to a full check. The alias is incompatible with the
-incremental invalidation trace lane so the two identities cannot be confused.
+narrow, default-off check-only experiment. TDRE4 aliases the exact logical
+`ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,
+byte-exact owner source, `resolution_env_seed()`, and every `(path, canonical
+TypeEnv-v3 transport text)` row in the full `dep_envs` array in consumed order.
+It does not narrow that table to declared dependencies or replace exact transport
+text with a compact fingerprint. It validates and republishes the decoded
+environment under the ordinary conservative fingerprint. It does not use the
+trace-only `vibe-module-interface:v2` observation as a production key, and
+malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and targets
+fall back to a full check. The alias remains incompatible with the incremental
+invalidation trace lane so the two identities cannot be confused.
 
 The v3 TypeEnv codec round-trips every current `TypeEnv` variant, including
 trait definitions, impls, generic impl bounds, trait-header parameters,
-positional method-generic binders/bounds, and method `TypeExpr` metadata. Its
-TypeEnv cache namespace, `TDRE3` alias envelope, and eligibility-marker
-namespace are all version-bumped, so v1/v2 artifacts cannot be reused. The sidecar is still only an alias to a conservative TypeEnv
-commit, not a `CheckedProgram` or lossless typed-IR transport.
+positional method-generic binders/bounds, and method `TypeExpr` metadata. TDRE4
+keeps that TypeEnv-v3 envelope and production cache namespace v16 unchanged;
+only its experimental alias and eligibility-witness namespaces and `TDRE4A` /
+`TDRE4W` envelopes are new. A sidecar is still only an alias to a conservative
+TypeEnv commit, not a `CheckedProgram` or lossless typed-IR transport.
 
-A marker is published only after that module's v3 TypeEnv commit and when every
-direct dependency already has a validated marker for its conservative
-fingerprint. The transport-input key fingerprints the complete ordered v3
-dependency environments, so a trait or impl dependency edit changes the key and
-fails closed to a full check. The production oracle covers that hidden
-trait/impl-dependency invalidation. Alias publication and reuse require the
-witness chain; absent or malformed markers, sidecars, targets, and envelopes
-fall back to full checking. The gate remains disabled by default.
+A witness is published only after that module's canonical TypeEnv-v3 target and
+when every direct dependency already has a validated witness for its conservative
+fingerprint. Alias and witness both bind the logical input, target conservative
+fingerprint, and exact canonical target text. Reuse reads the raw target,
+strictly decodes it, requires an exact canonical re-encode, and verifies the
+three-way alias/witness/target binding. Publication order is target, witness,
+alias; diagnosed or failed modules publish none of those rows. The production
+oracle covers hidden trait/impl and ambient non-direct `dep_envs` changes,
+valid-but-wrong targets, cross-splicing, missing/malformed/stale entries,
+diagnostic non-publication, and multi-level reuse. The public experimental flag
+and default-off behavior are unchanged.
 
 ## Artifact boundaries
 
@@ -608,8 +615,8 @@ separate `changed`/`unchanged` observation rather than being treated as the
 exported interface. The current consumer decision must still be `rechecked` and
 is reported as `conservative_rechecked`; this is a record of current
 conservative behavior, not a new reuse rule. This classifier does not change
-trace schema 6, cache namespace v16, TypeEnv-v3/TDRE3 transport, production
-reuse, or default-gate wiring; it strengthens the existing observation gate's assertions.
+trace schema 6, cache namespace v16, TypeEnv-v3/TDRE4 transport, production
+artifact reuse, or default-gate wiring; it strengthens the existing observation gate's assertions.
 
 For this comparison, `source_fingerprint` is ingestion telemetry only;
 `implementation_fingerprint` is the provisional owner-change trigger. It is
@@ -684,8 +691,8 @@ ordinary production compile. Because it is a post-compile recollection, the
 sidecar is not an atomic snapshot of the bytes used to produce the wasm; a
 concurrent filesystem or resolution-context change may describe a later
 snapshot. It never changes cache namespace `v16`, artifact
-fingerprints, lookup/store/reuse decisions, interface-v2, TypeEnv-v3, TDRE3,
-or trace schema 6. A separately named shadow fingerprint uses a versioned,
+fingerprints, artifact lookup/store/reuse decisions, interface-v2, TypeEnv-v3,
+TDRE4, or trace schema 6. A separately named shadow fingerprint uses a versioned,
 fixed-order, length-prefixed `vibe-artifact-input-observation:v2` preimage and
 existing compact fingerprint. It is observation-only and is never passed to a
 load/store/database reuse API. This remains neither a normalized implementation
