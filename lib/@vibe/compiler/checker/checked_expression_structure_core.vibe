@@ -73,7 +73,7 @@ export fn checked_expression_structure_kind(expr: Expr) -> String {
   }
 }
 
-fn collect_checked_expression_structure_expr(rows: Array[(Array[Int], Array[Int], String)], statement_path: Array[Int], root: Expr) -> Bool {
+fn collect_checked_expression_structure_expr(rows: Array[(Array[Int], Array[Int], Expr)], statement_path: Array[Int], root: Expr) -> Bool {
   let stack = array_empty()
   Array::push(stack, (root, array_empty()))
   let mut complete = true
@@ -84,7 +84,7 @@ fn collect_checked_expression_structure_expr(rows: Array[(Array[Int], Array[Int]
     if Array::length(expression_path) > checked_expression_structure_max_depth() || Array::length(rows) >= checked_expression_structure_max_rows() {
       complete = false
     } else {
-      Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), checked_expression_structure_kind(expr)))
+      Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), expr))
       let children = expr_children(expr)
       if Array::length(children) > checked_expression_structure_max_rows() - Array::length(stack) {
         complete = false
@@ -120,9 +120,9 @@ fn push_checked_expression_structure_stmts(stack: Array[(Stmt, Array[Int])], par
   }
 }
 
-/// Return the complete retained statement/expression preorder skeleton, or no
-/// rows. Unlowered declarations, depth/row exhaustion, and cycles fail closed.
-export fn checked_expression_structure_rows(stmts: Array[Stmt]) -> Option[Array[(Array[Int], Array[Int], String)]] {
+/// Private complete retained statement/expression preorder authority. Raw
+/// expressions remain package-local so public structure APIs stay payload-free.
+fn checked_expression_structure_expr_rows(stmts: Array[Stmt]) -> Option[Array[(Array[Int], Array[Int], Expr)]] {
   let rows = array_empty()
   let stack = array_empty()
   let mut complete = push_checked_expression_structure_stmts(stack, array_empty(), stmts)
@@ -180,5 +180,52 @@ export fn checked_expression_structure_rows(stmts: Array[Stmt]) -> Option[Array[
     Some(rows)
   } else {
     None
+  }
+}
+
+// Shared payload-free-to-the-boundary leaf projection. The private raw rows
+// above remain the sole traversal authority; this projection exposes no Expr.
+export fn checked_expression_structure_leaf_rows(stmts: Array[Stmt]) -> Option[Array[(Array[Int], Array[Int], String, String)]] {
+  match checked_expression_structure_expr_rows(stmts) {
+    None => None,
+    Some(expr_rows) => {
+      let rows = array_empty()
+      let mut i = 0
+      while i < Array::length(expr_rows) {
+        let (statement_path, expression_path, expr) = Array::get(expr_rows, i)
+        match expr {
+          EInt(value) => Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), "EInt", __to_string(value))),
+          EBool(value) => Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), "EBool", if value {
+            "true"
+          } else {
+            "false"
+          })),
+          EString(value) => Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), "EString", value)),
+          EIdent(name, _) => Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), "EIdent", name)),
+          EUnit => Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), "EUnit", "")),
+          _ => ()
+        }
+        i = i + 1
+      }
+      Some(rows)
+    }
+  }
+}
+
+/// Return the complete retained statement/expression preorder skeleton, or no
+/// rows. Unlowered declarations, depth/row exhaustion, and cycles fail closed.
+export fn checked_expression_structure_rows(stmts: Array[Stmt]) -> Option[Array[(Array[Int], Array[Int], String)]] {
+  match checked_expression_structure_expr_rows(stmts) {
+    None => None,
+    Some(expr_rows) => {
+      let rows = array_empty()
+      let mut i = 0
+      while i < Array::length(expr_rows) {
+        let (statement_path, expression_path, expr) = Array::get(expr_rows, i)
+        Array::push(rows, (checked_expression_structure_copy_path(statement_path), checked_expression_structure_copy_path(expression_path), checked_expression_structure_kind(expr)))
+        i = i + 1
+      }
+      Some(rows)
+    }
   }
 }

@@ -658,3 +658,17 @@ failed/no-nonce plus LSP/check-only conflicting runs removing stale sidecars.
 6. Run a package-level Component Model A/B experiment.
 7. Apply the same KPI harness to compiler selfbuild and only then set regression
    budgets from repeated measurements on a stable runner.
+
+### Checked expression leaf-payload direct-return artifact
+
+Issue #1379 Phase 3 also provides an opaque
+`CheckedExpressionLeafPayloadDirectReturnArtifact` v1 built only from one
+complete `CheckedDirectExpressionReturnObservation`. It first reconciles every
+observation coordinate with the bounded retained-node preorder and only then
+filters to `EInt`, `EBool`, `EString`, `EIdent`, and `EUnit`, preserving exact
+payload text and that run's final-substitution canonical direct-return type
+text. Its strict length-delimited codec marker is
+`vibe-checked-expression-leaf-payload-direct-return-artifact:v1\n`; decoded
+bytes do not attest checking, types, provenance, bindings, typed IR, cache,
+reuse, imports, interfaces, or trace behavior. This adds no runtime, CLI,
+cache, import, interface, or reuse connection.

@@ -53,3 +53,28 @@ opaque exact text. Zero rows are canonical. Decoded bytes attest neither
 checker success nor canonical type semantics, universal expression typing,
 full typed IR, provenance, binding/resolution, source identity, diagnostics,
 cache/reuse/import/interface/trace.
+
+## Expression leaf-payload direct-return artifact v1
+
+`CheckedExpressionLeafPayloadDirectReturnArtifact` is a separate opaque,
+complete-or-none artifact built only from one
+`CheckedDirectExpressionReturnObservation` and its embedded checked program.
+Before filtering, it reconciles the complete direct-return table by count and
+ordered statement/expression coordinates with the bounded private retained-node
+preorder authority. Missing, extra, duplicate, reordered, or unmapped rows fail
+closed. It then canonicalizes direct-return type text with that run's
+`final_subst` and emits only `EInt`, `EBool`, `EString`, `EIdent`, and `EUnit`.
+Each row is `(statement_path, expression_path, closed_leaf_kind,
+exact_payload_text, canonical_direct_return_type_text)`: integers are canonical
+decimal, booleans are `true`/`false`, strings retain exact content, identifiers
+retain their exact name (not a binding), and unit has an empty payload. Floats
+and all non-leaves are excluded.
+
+The exact marker is
+`vibe-checked-expression-leaf-payload-direct-return-artifact:v1\n`. The strict
+length-delimited decoder accepts only those five tags, canonical signed Vibe-Int
+payloads, canonical paths/counts/lengths, and valid bool/unit payloads; it
+rejects malformed, truncated, trailing, noncanonical, overflow, and unknown-tag
+input by exact re-encode equality. Decoded bytes do not attest checking, type
+semantics, provenance, bindings, typed IR, cache/reuse, imports, interfaces, or
+trace behavior.

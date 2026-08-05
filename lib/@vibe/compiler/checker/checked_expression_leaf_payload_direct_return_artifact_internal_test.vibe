@@ -1,0 +1,68 @@
+//# Package-local malformed leaf-payload direct-return observation coverage
+
+import @vibe/compiler/core {
+  Expr, Stmt, Type
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checked_expression_leaf_payload_direct_return_artifact.vibe {
+  checked_expression_leaf_payload_direct_return_artifact_from_observation
+}
+
+import ./checker_stmt.vibe {
+  CheckedDirectExpressionReturnObservation, check_program_direct_expression_return_observation
+}
+
+fn leaf_payload_internal_entries(entries: Array[(Array[Int], Array[Int], Type)]) -> Array[(Array[Int], Array[Int], Type)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(entries) {
+    Array::push(out, Array::get(entries, i)); i = i + 1
+  }
+  out
+}
+
+fn leaf_payload_internal_none(observation: CheckedDirectExpressionReturnObservation) -> Unit {
+  match checked_expression_leaf_payload_direct_return_artifact_from_observation(observation) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "leaf payload artifact rejects malformed complete observation table" {
+  match check_program_direct_expression_return_observation([
+    SLet(false, false, "value", None, EIf(EBool(true), EInt(1), EInt(2)))
+  ]) {
+    Some(observation) => {
+      let count = Array::length(observation.entries)
+      let missing = Array::slice(observation.entries, 0, count - 1)
+      leaf_payload_internal_none(CheckedDirectExpressionReturnObservation::{
+        checked_program: observation.checked_program, entries: missing
+      })
+      let extra = leaf_payload_internal_entries(observation.entries)
+      Array::push(extra, Array::get(observation.entries, 0))
+      leaf_payload_internal_none(CheckedDirectExpressionReturnObservation::{
+        checked_program: observation.checked_program, entries: extra
+      })
+      let duplicate = leaf_payload_internal_entries(observation.entries)
+      let (statement_path, expression_path, _) = Array::get(duplicate, 0)
+      let (_, _, second_ty) = Array::get(duplicate, 1)
+      Array::set(duplicate, 1, (statement_path, expression_path, second_ty))
+      leaf_payload_internal_none(CheckedDirectExpressionReturnObservation::{
+        checked_program: observation.checked_program, entries: duplicate
+      })
+      let misaligned = leaf_payload_internal_entries(observation.entries)
+      let (_, path, ty) = Array::get(misaligned, 0)
+      Array::set(misaligned, 0, ([
+        99
+      ], path, ty))
+      leaf_payload_internal_none(CheckedDirectExpressionReturnObservation::{
+        checked_program: observation.checked_program, entries: misaligned
+      })
+    },
+    None => assert(false)
+  }
+}
