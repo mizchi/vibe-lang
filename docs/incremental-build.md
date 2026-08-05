@@ -146,8 +146,15 @@ The opt-in persistent ingestion-stamp oracle similarly uses isolated gate-off
 and gate-on cache histories for a copied package. It proves only that unchanged
 and metadata-token-miss successful checks have equal observed invalidation
 traces (apart from the freshness nonce) and equal check output bytes/text. It
-retains malformed and content-token fallback checks. This does not remove the
-trusted stat-token limitation, and it does not prove artifact equivalence.
+retains malformed and content-token fallback checks. It also performs a
+same-size in-place content mutation and restores the prior mtime: when the host
+filesystem reproduces the exact inode/size/mtime token inputs, the oracle
+requires the changed bytes to produce a stamp hit with no fingerprint-boundary
+read or hash. Platforms that cannot reproduce the exact token report an
+explicit capability skip. This adversarial evidence means metadata-token
+equality is not a content identity and the stamp is unsafe as production
+authority; it remains default-off and opt-in only. The oracle still does not
+prove artifact equivalence.
 
 ## Trait generic provenance (bounded Phase 3)
 
@@ -589,6 +596,20 @@ the before/after dependency graphs. For the bounded corpus it compares that
 plan with the relational model rows, requires every planned module to appear as
 `rechecked`, and reports additional rechecks as conservative over-invalidation.
 A missing required recheck fails the oracle.
+
+The existing private body case is also emitted under the explicit observation
+classification `private_dependency_edit_externally_unchanged`. That classifier
+fails closed unless `app` has exactly `library` as its sole direct dependency in
+both snapshots, the dependency's source and provisional token-stream
+implementation identities change, its interface-v2 identity does not change,
+and all of the consumer's own observed identities stay unchanged. The
+persistent TypeEnv-v3 transport result for the dependency is reported as a
+separate `changed`/`unchanged` observation rather than being treated as the
+exported interface. The current consumer decision must still be `rechecked` and
+is reported as `conservative_rechecked`; this is a record of current
+conservative behavior, not a new reuse rule. This classifier does not change
+trace schema 6, cache namespace v16, TypeEnv-v3/TDRE3 transport, production
+reuse, or default-gate wiring; it strengthens the existing observation gate's assertions.
 
 For this comparison, `source_fingerprint` is ingestion telemetry only;
 `implementation_fingerprint` is the provisional owner-change trigger. It is

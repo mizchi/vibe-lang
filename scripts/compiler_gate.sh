@@ -73,8 +73,9 @@ echo "[compiler-gate] 3aa/3 incremental invalidation observation oracle"
 VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 
 # 3ab. #1379 opt-in metadata-only ingestion stamp: isolated equivalent cache
-# histories prove observed successful-check invalidation/output equivalence,
-# while retaining malformed/token-change fallback coverage.
+# histories prove observed successful-check invalidation/output equivalence and
+# an exact-token same-size mutation demonstrates the trusted-stat limitation
+# where the filesystem supports it, while retaining fallback coverage.
 echo "[compiler-gate] 3ab/3 persistent ingestion stamp observed-check equivalence oracle"
 node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 
