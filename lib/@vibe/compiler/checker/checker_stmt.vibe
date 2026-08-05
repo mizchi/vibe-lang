@@ -546,6 +546,43 @@ fn resource_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]
   }
 }
 
+/// #1464: reject a value name declared twice in one DECLARATION list (the
+/// top level of a file, or a `module { ... }` body). `fn` declarations are
+/// lowered to `SLet` before the checker, so this covers `fn f` twice,
+/// `let x` twice, and any mix of the two with `let mut` / `extern let`.
+///
+/// Deliberately NOT a shadowing check: this walk only ever sees declaration
+/// lists (check_stmts_with_binders' two callers are the program root and the
+/// SModule arm), never a function body, so the legal and widespread
+/// `let x = ...; let x = f(x)` inside a block is untouched. At the top level
+/// there is no sequencing to shadow -- declarations are hoisted (see the
+/// hoist_i pre-pass), so both `x`s are in scope for the whole file and every
+/// reference resolves to the last one, silently.
+///
+/// `_` is skipped: `let _ = ...` is a discard, not a name.
+fn duplicate_value_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
+  let seen = array_empty()
+  let mut i = from_idx
+  while i < Array::length(stmts) {
+    let dname = match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => n,
+      SLetMut(n, _, _) => n,
+      SExternLet(n, _) => n,
+      _ => "_"
+    }
+    if dname != "_" {
+      if es_string_array_contains(seen, dname) {
+        Array::push(errors, String::concat("duplicate declaration: ", dname))
+      } else {
+        Array::push(seen, dname)
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 /// ADR-0071 step 3 (#755) row expansion: recursively expand `name` into leaf
 /// labels (ordinary effect/operation names -- not further-expandable
 /// effectset names) via es_names/es_members_list, appending each freshly
@@ -830,6 +867,37 @@ fn derive_name_is_known(name: String) -> Bool {
   name == "Eq" || name == "Ord" || name == "Show" || name == "Hash" || name == "Default"
 }
 
+/// #1464: reject a constructor name declared twice by the SAME enum /
+/// suberror. #1078's `find_other_enum_declaring_variant` deliberately skips
+/// the declaration being registered (`other_name != enum_name`), so the
+/// within-one-declaration case fell between the two checks and nothing
+/// caught it.
+///
+/// It has to be an error rather than last-wins: `env_bind` is
+/// last-registered-wins, so `enum E { A(Int); A(String) }` silently binds
+/// only the second `A` and the first payload type becomes unreachable --
+/// `A(1)` then reports `argument type mismatch for A: expected String, got
+/// Int` pointing at a constructor the source really does declare with an
+/// `Int`. Codegen is worse: variant TAGS are assigned by position, so a
+/// `match` arm written against the first `A` gets the second one's tag.
+///
+/// `variants` is scanned rather than the registered `defs` entry because
+/// both callers push their TDEnum before binding, which would make every
+/// variant its own duplicate.
+fn duplicate_ctor_errors(kind: String, name: String, variants: Array[(String, Array[TypeExpr])], errors: Array[String]) -> Unit {
+  let seen = array_empty()
+  let mut i = 0
+  while i < Array::length(variants) {
+    let (vname, _) = Array::get(variants, i)
+    if es_string_array_contains(seen, vname) {
+      Array::push(errors, String::concat("type definition: duplicate ctor: ", String::concat(vname, String::concat(" is declared more than once by ", String::concat(kind, String::concat(" ", name))))))
+    } else {
+      Array::push(seen, vname)
+    }
+    i = i + 1
+  }
+}
+
 /// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
 /// declares a variant named `vname`, or None. Used to reject bare-name
 /// constructor collisions at declaration time -- see the SEnum arm's
@@ -1002,6 +1070,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   // (duplicate detection), so they run here rather than in the SResource arm
   // below -- which is why that arm has nothing left to do.
   resource_decl_errors(stmts, idx, errors)
+  // #1464: same shape -- duplicate value declarations need the WHOLE list.
+  duplicate_value_decl_errors(stmts, idx, errors)
   // #942 (Codex P2 on #969): if any top-level declaration in this statement
   // list binds the name `resume` (fn/let — fn decls are lowered to SLet
   // before the checker — let-pattern, extern let, or an import), codegen's
@@ -1274,6 +1344,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       SEnum(_, name, params, variants, enum_derives) => {
         validate_derives(enum_derives, errors)
+        duplicate_ctor_errors("enum", name, variants, errors)
         let param_len = Array::length(params)
         let param_var_ids = array_empty()
         let param_var_types = array_empty()
@@ -1407,6 +1478,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // a TDEnum def (so `match` + type resolution work) and bind each
         // constructor name as `CtFn(payload, CtEnum(name))`. `throw` accepts the
         // resulting value (its param is CtUnknown, see builtins_misc).
+        duplicate_ctor_errors("suberror", name, variants, errors)
         let ctor_result_type = CtEnum(name)
         let resolved_variants = array_empty()
         let mut vi = 0
