@@ -822,12 +822,12 @@ test "#1345: `allows` folds into the single row" {
   // row representation, so `with A allows C` and `with A + C` are the SAME
   // row and produce byte-identical output.
   let split = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit allows Cfg::Read = (x) -> { x }")))
+    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit allows Fs::read_file = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
   let flat = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit + Cfg::Read = (x) -> { x }")))
+    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit + Fs::read_file = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
@@ -841,24 +841,24 @@ test "#1345: `allows` folds into the single row" {
 
 test "#1345: `with () allows C` is the capability-only row" {
   let out = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with () allows Cfg::Read = (x) -> { x }")))
+    print_program(parse_program(lex("let f: (Int) -> Int with () allows Fs::read_file = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
   assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "with Cfg::Read"))
+  assert(String::contains(out, "with Fs::read_file"))
 }
 
 test "#1345: `allows` works in type position too" {
   // ADR-0088: the sugar is uniform across signature and type positions --
   // there is one row grammar, not a declaration-only spelling.
   let out = handle {
-    print_program(parse_program(lex("let g: ((Int) -> Int with Log::Emit allows Cfg::Read, Int) -> Int = (f, x) -> { f(x) }")))
+    print_program(parse_program(lex("let g: ((Int) -> Int with Log::Emit allows Fs::read_file, Int) -> Int = (f, x) -> { f(x) }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
   assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "with Log::Emit + Cfg::Read"))
+  assert(String::contains(out, "with Log::Emit + Fs::read_file"))
 }
 
 test "#1345: `allows` is contextual, not reserved" {
@@ -873,13 +873,91 @@ test "#1345: `allows` is contextual, not reserved" {
   assert(String::contains(out, "let allows = 7"))
 }
 
+test "#1345: `allows` takes capability effects only" {
+  // ADR-0088 decision 1. The check runs at PARSE time because that is the
+  // only place the two clauses still exist -- they fold into one row
+  // immediately after, and nothing downstream can tell them apart again.
+  let ok = handle {
+    print_program(parse_program(lex("let f: () -> Int with Error allows Fs = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(ok, "ERROR: "))
+  // an algebraic effect in `allows`
+  let alg = handle {
+    print_program(parse_program(lex("let f: () -> Int with () allows Log = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(alg, "not a capability effect"))
+  // a row variable in `allows` -- ADR-0088 rejects it because `allows`
+  // promises every item is a statically known capability
+  let rowvar = handle {
+    print_program(parse_program(lex("let f: [r]() -> Int with () allows r = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(rowvar, "not a capability effect"))
+}
+
+test "#1345: a core ambient effect in `allows` names the right clause" {
+  // `Error`/`Exception[E]` get their own message rather than the generic
+  // "not a capability": the author wrote a real effect in the wrong clause,
+  // and the fix is to move it, not to reclassify it.
+  let out = handle {
+    print_program(parse_program(lex("let f: () -> Int with () allows Error = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(out, "core ambient effect"))
+  assert(String::contains(out, "`with` clause"))
+}
+
+test "#1345: the SPLIT `with` clause rejects capabilities, the bare one does not" {
+  // ADR-0088: "通常関数の裸 with(混在可)は恒久的に合法" -- the restriction is
+  // opt-in and starts only once the author writes `allows`.
+  let bare = handle {
+    print_program(parse_program(lex("let f: () -> Int with Fs = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(bare, "ERROR: "))
+  let split = handle {
+    print_program(parse_program(lex("let f: () -> Int with Fs allows Http = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(split, "must appear in the `allows` clause"))
+}
+
+test "#1345: classification uses the base effect name, and excludes Async" {
+  // A qualified operation classifies by its effect: `Fs::read_file` is a
+  // capability because `Fs` is.
+  let qualified = handle {
+    print_program(parse_program(lex("let f: () -> Int with () allows Fs::read_file = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(qualified, "ERROR: "))
+  // `Async` is builtin-tagged but is NOT a capability: it is ADR-0089's
+  // suspension effect, discharged by the runtime driver, with no resource
+  // kind to grant. Deriving the list from "is it builtin" would get this
+  // wrong, which is why it is written out.
+  let async_cap = handle {
+    print_program(parse_program(lex("let f: () -> Int with () allows Async = () -> { 1 }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(async_cap, "not a capability effect"))
+}
+
 test "#1345: the `?` grade suffix does NOT parse yet" {
   // Deliberately absent: the checker compares row items as opaque labels, so
   // `Cfg::Read?` would be a different effect from `Cfg::Read` and a function
   // declaring the Optional form would be told to declare BOTH. `?` ships with
   // the slice that gives it meaning (strict grade matching / `perform?`).
   let out = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with () allows Cfg::Read? = (x) -> { x }")))
+    print_program(parse_program(lex("let f: (Int) -> Int with () allows Fs::read_file? = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
