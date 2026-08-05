@@ -10,11 +10,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  env_lookup
+  TypeEnv, env_lookup
 }
 
 import @vibe/compiler/runtime {
-  set_collect_module_diagnostics, set_dep_order_seed
+  projected_import_env_for_test, set_collect_module_diagnostics, set_dep_order_seed
 }
 
 import @vibe/compiler/cache {
@@ -55,6 +55,15 @@ fn build_test_fingerprint(source: String, dep_fps: Array[(String, String)]) -> S
     i = i + 1
   }
   acc
+}
+
+fn checked_test_env(source: String) -> TypeEnv with Exception {
+  let path = "projection_fixture.vibe"
+  let checked = db_typecheck(db_set_source(db_new(), path, source), path)
+  match db_check_env(checked, path) {
+    Some(env) => env,
+    None => throw("projection fixture produced no checked environment")
+  }
 }
 
 fn remove_typecheck_fs_cache(path: String, source: String, fingerprint: String) -> Unit with Fs {
@@ -191,6 +200,73 @@ test "db_typecheck_fs: extensionless directory re-export imports enum constructo
     None => false
   }
   assert(has_ctor)
+}
+
+test "exact dep projection resolves the selected package and directory candidates" {
+  let store_env = checked_test_env("export let value = 1")
+  let workspace_env = checked_test_env("export let value = \"workspace\"")
+  let package_env = projected_import_env_for_test("import @scope/name { value }", "main.vibe", [
+    "lib/@scope/name/index.vpkg"
+  ], [
+    (".vibe/store/@scope/name/index.vpkg", store_env),
+    ("lib/@scope/name/index.vpkg", workspace_env)
+  ])
+  match env_lookup(package_env, "value") {
+    Some(CtString) => (),
+    _ => assert(false)
+  }
+  let plain_env = checked_test_env("export let value = 1")
+  let index_env = checked_test_env("export let value = \"index\"")
+  let directory_env = projected_import_env_for_test("export ./core { value }", "workspace/main.vibe", [
+    "workspace/core/index.vibe"
+  ], [
+    ("workspace/core.vibe", plain_env),
+    ("workspace/core/index.vibe", index_env)
+  ])
+  match env_lookup(directory_env, "value") {
+    Some(CtString) => (),
+    _ => assert(false)
+  }
+}
+
+test "exact dep projection preserves duplicate order and cache first-match semantics" {
+  let dep_path = "workspace/dep.vibe"
+  let int_env = checked_test_env("export let value = 1")
+  let string_env = checked_test_env("export let value = \"first\"")
+  let source = "import ./dep.vibe { value as imported }\nexport ./dep.vibe { value as reexported }"
+  let deps = [
+    dep_path,
+    dep_path
+  ]
+  let first_int = projected_import_env_for_test(source, "workspace/main.vibe", deps, [
+    (dep_path, int_env),
+    (dep_path, string_env)
+  ])
+  match (env_lookup(first_int, "imported"), env_lookup(first_int, "reexported")) {
+    (Some(CtInt), Some(CtInt)) => (),
+    _ => assert(false)
+  }
+  let first_string = projected_import_env_for_test(source, "workspace/main.vibe", deps, [
+    (dep_path, string_env),
+    (dep_path, int_env)
+  ])
+  match (env_lookup(first_string, "imported"), env_lookup(first_string, "reexported")) {
+    (Some(CtString), Some(CtString)) => (),
+    _ => assert(false)
+  }
+}
+
+test "exact dep projection fails closed when a resolved row is missing" {
+  let message = handle {
+    let _ = projected_import_env_for_test("import ./dep.vibe { value }", "workspace/main.vibe", [
+      "workspace/dep.vibe"
+    ], [
+    ])
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(message, "type_db: missing resolved dependency environment: workspace/dep.vibe"))
 }
 
 test "db_typecheck_fs: source update bypasses current-run cache" {

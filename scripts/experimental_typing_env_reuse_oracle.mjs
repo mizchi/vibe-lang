@@ -428,9 +428,18 @@ function run(stage2) {
     makeAmbientProject(ambientProject);
     const ambientCold = check(stage2, ambientProject, ambientCache, true, "ambient-cold");
     expectCounts("ambient cold", ambientCold.telemetry, 3, 0, 3);
+    const ambientColdApp = appSidecar(ambientCache, readFileSync(join(ambientProject, "app.vibe"), "utf8"));
+    const ambientColdInput = parseLogicalInput(ambientColdApp.input);
+    if (ambientColdInput.rows.length !== 1 || basename(ambientColdInput.rows[0][0]) !== "middle.vibe") {
+      fail("TDRE4 app logical input was not the exact direct-dependency projection");
+    }
     ambientOnlyTransportEdit(ambientProject);
-    const ambientFallback = check(stage2, ambientProject, ambientCache, true, "ambient-change-fallback");
-    expectCounts("ambient non-direct dep_env change fallback", ambientFallback.telemetry, 3, 0, 3);
+    const ambientReuse = check(stage2, ambientProject, ambientCache, true, "ambient-change-reuse");
+    expectCounts("ambient non-direct cache change reuse", ambientReuse.telemetry, 2, 1, 3);
+    const ambientWarmApp = appSidecar(ambientCache, readFileSync(join(ambientProject, "app.vibe"), "utf8"));
+    if (ambientWarmApp.input !== ambientColdApp.input || ambientWarmApp.path !== ambientColdApp.path) {
+      fail("ambient non-direct cache mutation changed the app TDRE4 input key");
+    }
 
     const resolutionProject = join(work, "resolution-seed-project");
     const resolutionCache = join(work, "resolution-seed-cache");
@@ -441,6 +450,24 @@ function run(stage2) {
       VIBE_HOME: join(resolutionProject, ".other-home"),
     });
     expectCounts("resolution_env_seed change fallback", resolutionFallback.telemetry, 2, 0);
+
+    const rowProject = join(work, "dep-env-row-project");
+    const rowCache = join(work, "dep-env-row-cache");
+    makeProject(rowProject);
+    check(stage2, rowProject, rowCache, true, "row-cold");
+    const rowApp = appSidecar(rowCache, readFileSync(join(rowProject, "app.vibe"), "utf8"));
+    const parsedRowInput = parseLogicalInput(rowApp.input);
+    if (parsedRowInput.rows.length !== 1 || basename(parsedRowInput.rows[0][0]) !== "helper.vibe") {
+      fail("TDRE4 direct dependency row missing before row mutation");
+    }
+    const changedRowInput = logicalInputText({
+      ...parsedRowInput,
+      rows: [[`${parsedRowInput.rows[0][0]}.changed`, parsedRowInput.rows[0][1]]],
+    });
+    writeFileSync(rowApp.path, aliasText(changedRowInput, rowApp.target, rowApp.targetText));
+    privateEdit(rowProject);
+    const rowFallback = check(stage2, rowProject, rowCache, true, "row-change-fallback");
+    expectCounts("direct dep_env row fallback", rowFallback.telemetry, 2, 0);
 
     const orderProject = join(work, "dep-env-order-project");
     const orderCache = join(work, "dep-env-order-cache");
@@ -536,8 +563,9 @@ function run(stage2) {
         missing: missingWitnessFallback.telemetry,
         malformed: malformedWitnessFallback.telemetry,
       },
-      ambient_non_direct_dep_env_change_fallback: ambientFallback.telemetry,
+      ambient_non_direct_cache_change_reuse: ambientReuse.telemetry,
       resolution_env_seed_change_fallback: resolutionFallback.telemetry,
+      direct_dep_env_row_fallback: rowFallback.telemetry,
       dep_env_order_shadow_fallback: orderFallback.telemetry,
       diagnostics_publish_nothing: true,
       trait_graph: {
