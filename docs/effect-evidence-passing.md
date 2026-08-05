@@ -64,7 +64,7 @@ component-model future/stream + JSPI (ADR-0012 の async の写像先) へ
 
 vibe は method-bearing trait の generic 呼び出しに、既に「静的に決まらない
 実装を witness struct (dict) として暗黙引数に通す」機構を持つ
-(`lib/@vibe/compiler/codegen/common_base/desugar_trait_dict.vibe`)。
+(`lib/@vibe/compiler/normalize/desugar_trait_dict.vibe`)。
 generic `f = [T: Tr](.. x: T ..) -> Ret { .. T::m(args) .. }` は隠し
 パラメータ `__dict_Tr_T: TrDict[T]` を受け取り、`T::m(args)` を
 `(__dict_Tr_T.m)(args)` へ書き換える。呼び出し側は具体型 `C` から

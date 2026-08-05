@@ -8,7 +8,11 @@ const plan = "version\t1\nmodule\t0\t0\tdep.vibe\nmodule\t1\t1\tmain.vibe\ndep\t
 
 const sourceHash = "a".repeat(64);
 const artifactHash = "b".repeat(64);
-const closureHash = createHash("sha256").update(`0\t0\troot.vibe\t1\t${sourceHash}\t`).digest("hex");
+function closureDigest(modules) {
+  return createHash("sha256").update(modules.map((module) => `${module.index}\t${module.rank}\t${module.path}\t${module.bytes}\t${module.sha256}\t${module.dependencies.join("\u0000")}`).join("\n")).digest("hex");
+}
+
+const closureHash = closureDigest([{ index: 0, rank: 0, path: "root.vibe", dependencies: [], bytes: 1, sha256: sourceHash }]);
 
 function available(id) {
   const roots = {
@@ -26,8 +30,8 @@ function available(id) {
       module_count: 1,
       total_bytes: 1,
       sha256: closureHash,
-      modules: [{ index: 0, rank: 0, path: "root.vibe", dependencies: [], bytes: 1, sha256: sourceHash, category: "benchmark_root", manifest_annotation: "not-listed" }],
-      category_breakdown: { benchmark_root: { modules: 1, bytes: 1 } },
+      modules: [{ index: 0, rank: 0, path: "root.vibe", dependencies: [], bytes: 1, sha256: sourceHash, category: "other", manifest_annotation: "not-listed" }],
+      category_breakdown: { other: { modules: 1, bytes: 1 } },
     },
     artifacts: { raw_bytes: 1, gzip_bytes: 1, brotli_bytes: 1, sha256: artifactHash, imports: [], repeated_sha256: [artifactHash, artifactHash], repeated_artifacts_equal: true },
     timings: { build_ms: [1, 2], wasm_compile_ms: [1, 2], wasm_instantiate_ms: [1, 2], direct_entry_ms: [1, 2], unsupported: {} },
@@ -110,4 +114,22 @@ test("report parser rejects widened reports and unavailable zero metrics", () =>
     { module: "a", name: "z", kind: "function" },
   ];
   assert.throws(() => parseCheckerBrowserBaselineReport(JSON.stringify(unsortedImports)), /noncanonical Wasm import order/);
+  const mislabeledCategory = report();
+  mislabeledCategory.cases[0].module_plan.modules[0].category = "codegen";
+  mislabeledCategory.cases[0].module_plan.category_breakdown = { codegen: { modules: 1, bytes: 1 } };
+  assert.throws(() => parseCheckerBrowserBaselineReport(JSON.stringify(mislabeledCategory)), /module category mismatch/);
+  const contaminatedChecker = report();
+  const checkerClosure = contaminatedChecker.cases[1].module_plan;
+  checkerClosure.modules[0].path = "lib/@vibe/compiler/codegen/contamination.vibe";
+  checkerClosure.modules[0].category = "codegen";
+  checkerClosure.category_breakdown = { codegen: { modules: 1, bytes: 1 } };
+  checkerClosure.sha256 = closureDigest(checkerClosure.modules);
+  assert.throws(() => parseCheckerBrowserBaselineReport(JSON.stringify(contaminatedChecker)), /current_checker closure includes codegen source/);
+  const fullCompilerCodegen = report();
+  const fullCompilerClosure = fullCompilerCodegen.cases[2].module_plan;
+  fullCompilerClosure.modules[0].path = "lib/@vibe/compiler/codegen/allowed.vibe";
+  fullCompilerClosure.modules[0].category = "codegen";
+  fullCompilerClosure.category_breakdown = { codegen: { modules: 1, bytes: 1 } };
+  fullCompilerClosure.sha256 = closureDigest(fullCompilerClosure.modules);
+  assert.deepEqual(parseCheckerBrowserBaselineReport(JSON.stringify(fullCompilerCodegen)), fullCompilerCodegen);
 });

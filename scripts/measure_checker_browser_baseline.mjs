@@ -161,6 +161,12 @@ function category(path) {
   return "other";
 }
 
+function assertCurrentCheckerNoCodegenClosure(caseId, modules) {
+  if (caseId !== "current_checker") return;
+  const codegenModule = modules.find((module) => category(module.path) === "codegen");
+  if (codegenModule) fail(`current_checker closure includes codegen source: ${codegenModule.path}`);
+}
+
 function digestClosure(plan, planPath) {
   const annotations = sourceManifestAnnotations();
   const categories = {};
@@ -248,7 +254,9 @@ function planCase(stage2, definition, workdir) {
     const detail = `${result.stderr ?? ""}${result.stdout ?? ""}`.trim();
     throw new Error(`VIBE_MODULE_PLAN failed (${result.status ?? "signal"}): ${detail || "no sidecar"}`);
   }
-  return { planPath, closure: digestClosure(parseModulePlan(readFileSync(planPath, "utf8")), planPath) };
+  const closure = digestClosure(parseModulePlan(readFileSync(planPath, "utf8")), planPath);
+  assertCurrentCheckerNoCodegenClosure(definition.id, closure.modules);
+  return { planPath, closure };
 }
 
 function buildCase(stage2, definition, workdir, count) {
@@ -400,6 +408,7 @@ export function parseCheckerBrowserBaselineReport(text) {
         if (module.index !== moduleIndex) fail(`noncanonical module index for ${item.id}`);
         nonnegative(module.rank, `${item.id} module rank`); positive(module.bytes, `${item.id} module bytes`);
         for (const key of ["path", "category", "manifest_annotation"]) nonempty(module[key], `${item.id} module ${key}`);
+        if (module.category !== category(module.path)) fail(`module category mismatch for ${item.id}: ${module.path}`);
         digest(module.sha256, `${item.id} module sha256`);
         if (modulePaths.has(module.path)) fail(`duplicate module path for ${item.id}`);
         modulePaths.set(module.path, module.rank);
@@ -410,6 +419,7 @@ export function parseCheckerBrowserBaselineReport(text) {
         computedCategories[module.category].bytes += module.bytes;
       }
       validateCanonicalPlan(item.module_plan.modules, `report module plan ${item.id}`);
+      assertCurrentCheckerNoCodegenClosure(item.id, item.module_plan.modules);
       if (computedBytes !== item.module_plan.total_bytes) fail(`source byte total mismatch for ${item.id}`);
       const closureIdentity = item.module_plan.modules.map((module) => `${module.index}\t${module.rank}\t${module.path}\t${module.bytes}\t${module.sha256}\t${module.dependencies.join("\u0000")}`).join("\n");
       if (sha256(closureIdentity) !== item.module_plan.sha256) fail(`closure digest mismatch for ${item.id}`);
