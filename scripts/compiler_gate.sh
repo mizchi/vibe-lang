@@ -9098,4 +9098,69 @@ fi
 rm -rf "$witresdir"
 echo "[compiler-gate] @vibe/wit_runtime Result projection ok"
 
+# --- #819: per-block `__test_*` exports + isolated invocation -----------------
+# A `__no_entry__` test build exports one `__test_<name>` per `test {}` block
+# (alongside the `__bench_<name>` exports that already existed), and the runner
+# does NOT pre-run `_start` for those names -- `_start` IS the loop over every
+# block, so pre-running it would make one failing block fail every per-block
+# invoke. This is what gives merged builds (#819) per-block failure attribution
+# and a per-block timeout; scripts/unit_test_runner.sh uses it to name the
+# trapping block instead of reporting a bare file-level trap.
+pbdir="_build/_gate_per_block_test"
+rm -rf "$pbdir"; mkdir -p "$pbdir"
+cat > "$pbdir/pb_test.vibe" <<'PBEOF'
+test "alpha_ok" {
+  let x = 1 + 1
+  if x != 2 { throw("bad alpha") }
+}
+
+test "beta_fails" {
+  throw("boom beta")
+}
+
+test "gamma_ok" {
+  let y = 3
+  if y != 3 { throw("bad gamma") }
+}
+PBEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pbdir/pb_test.vibe" "$pbdir/pb.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$pbdir/pb.wasm" ]; then
+  echo "[compiler-gate] FAIL: per-block test fixture did not compile (#819)" >&2
+  cat "$pbdir/pb.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+pbexports="$(node -e '
+  const m = new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));
+  for (const e of WebAssembly.Module.exports(m)) {
+    if (e.kind === "function" && e.name.startsWith("__test_")) console.log(e.name);
+  }
+' "$pbdir/pb.wasm" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ' || true)"
+if [ "$pbexports" != "__test_alpha_ok __test_beta_fails __test_gamma_ok " ]; then
+  echo "[compiler-gate] FAIL: expected one __test_<name> export per test block, got: '$pbexports' (#819)" >&2
+  exit 1
+fi
+# Isolation: the passing blocks must pass even though a sibling block traps.
+# Before #819 this failed, because the runner ran `_start` (every block) first.
+for pbname in __test_alpha_ok __test_gamma_ok; do
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+       --invoke "$pbname" "$pbdir/pb.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: $pbname trapped -- a per-block invoke is running its siblings (#819)" >&2
+    exit 1
+  fi
+done
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+     --invoke __test_beta_fails "$pbdir/pb.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: __test_beta_fails did not trap -- per-block invoke is not running the body (#819)" >&2
+  exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+     --invoke _start "$pbdir/pb.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: _start did not trap on a file with a failing block (#819)" >&2
+  exit 1
+fi
+rm -rf "$pbdir"
+echo "[compiler-gate] per-block __test_* exports + isolated invoke ok"
+
 echo "[compiler-gate] ok"
