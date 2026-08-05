@@ -3800,20 +3800,51 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if Array::length(args) == 1 {
             match Array::get(args, 0) {
               ECall(op_callee, opargs, _) => {
-                // #640 Stage 2: `throw(x)` now parses to this exact shape
-                // (perform Error::Throw(x)). Preserve EThrow's historical
-                // typing verbatim: the payload is NOT type-checked (EThrow fell
-                // to check_expr's catch-all) and the value is CtUnknown (a
-                // wildcard — `throw` sits in any expression position). Running
-                // the generic perform path instead would newly check the ~970
-                // existing throw payloads and yield a fresh var, changing
-                // pinned checker behavior.
+                // #640 Stage 2: `throw(x)` parses to this exact shape
+                // (perform Error::Throw(x)), and that carve-out preserved
+                // EThrow's historical typing verbatim: CtUnknown as the value
+                // AND no look at the payload at all.
+                //
+                // #1464: only the FIRST half is still wanted. Skipping the
+                // payload meant every type error inside a `throw(...)` was
+                // invisible -- measured, all of these compiled:
+                //
+                //   suberror AppError(String)
+                //   throw(AppError("boom", 1))   arity
+                //   throw(AppError(1))           payload type
+                //   throw(f("x", 1))             any call, at any depth
+                //
+                // while the same expressions OUTSIDE a throw were rejected,
+                // and `perform Log::Emit(f("x", 1))` (a user effect) was
+                // rejected too. So this was `Error::Throw` alone, not `perform`
+                // and not CtUnknown-parameter builtins.
+                //
+                // The payload is now checked; the RESULT stays CtUnknown, which
+                // is the half the carve-out was really protecting -- `throw`
+                // sits in any expression position, so yielding a fresh var
+                // would change typing at all ~970 throw sites. Nothing is
+                // unified against a declared signature: `Error` is core
+                // ambient and has no TDEffect, so the payload is checked on its
+                // own terms and no further.
                 let is_error_throw = match op_callee {
                   EIdent(op_qname0, _) => is_exception_throw_operation(op_qname0),
                   _ => false
                 }
                 if is_error_throw {
-                  (CtUnknown, s, c)
+                  let throw_parent_depth = typed_occurrence_capture_frame_depth(capture)
+                  typed_occurrence_capture_enter_virtual_child(capture, 1, 1 + Array::length(opargs))
+                  typed_occurrence_capture_skip_children(capture, 1)
+                  let mut ts = s
+                  let mut tc = c
+                  let mut ti = 0
+                  while ti < Array::length(opargs) {
+                    let (_, ns, nc) = check_expr_capture(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
+                    ts = ns
+                    tc = nc
+                    ti = ti + 1
+                  }
+                  typed_occurrence_capture_restore_frame_depth(capture, throw_parent_depth)
+                  (CtUnknown, ts, tc)
                 } else {
                   // The op call is perform's outer argument (child 1), and
                   // its callee is its own child 0. We check only op arguments,
