@@ -27,7 +27,7 @@ src="$WORK_DIR/single_invoke_probe.vibex"
 cat > "$src" <<'EOF'
 import @vibe/prelude { stdout_write }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("SINGLE_INVOKE_PROBE_MARKER\n")
 }
 EOF

@@ -2011,7 +2011,7 @@ async function main() {
         httpWorkerCall("close", { handle });
         return 0n;
       },
-      // `sleep(Int) -> Unit with { Async }` -- mirrors runtime/viberun's
+      // `sleep(Int) -> Unit with Async` -- mirrors runtime/viberun's
       // `vibe.sleep` host import (see that impl's comment for why this is a
       // plain blocking sleep, not a true async/wasip3 one). Atomics.wait on
       // a throwaway SharedArrayBuffer blocks this thread synchronously,

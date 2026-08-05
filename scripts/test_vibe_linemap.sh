@@ -54,7 +54,7 @@ CLI_WASM="$TC_DIR/lib/vibe-cli.wasm"
 # mirroring test_vibe_break_interior.sh's layout (line 2 = bare-literal
 # let, breakable only via the #644 ELet statement-offset fallback).
 P="$WORK/p.vibex"
-printf 'fn main with { Stdout } {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
+printf 'fn main with Stdout {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
 OUT="$WORK/p.wasm"
 env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_DEBUG_BREAK=1 VIBE_WASM_NAMES=1 \
   "$VIBERUN" "$CLI_WASM" "$P" "$OUT" main >"$WORK/compile.log" 2>&1
@@ -114,7 +114,7 @@ fi
 # knew its exact line; every OTHER frame just repeated the function's start
 # line). `t.vibex`'s division is on line 4, while `main` declares on line 1.
 T="$WORK/t.vibex"
-printf 'fn main with { Stdout } {\n  let a = 1\n  let b = a + 2\n  let z = 10 / (b - 3)\n  Stdout::write_stream("\\{z}\\n")\n}\n' > "$T"
+printf 'fn main with Stdout {\n  let a = 1\n  let b = a + 2\n  let z = 10 / (b - 3)\n  Stdout::write_stream("\\{z}\\n")\n}\n' > "$T"
 trap_out="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$T:99" "$T" 2>&1 || true)"
 if printf '%s' "$trap_out" | grep -qF "frame: main (t.vibex:4)"; then
   ok "uncaught trap annotates the CALLER frame with its actual line (t.vibex:4), not just main's declaration line"

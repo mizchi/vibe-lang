@@ -572,12 +572,12 @@ vibe is **pure by default**. Semantic effects, including `Error`, are tracked in
 the type system. An empty row excludes escaping `Error`, but does not guarantee
 termination or exclude panic, Wasm trap, or resource exhaustion (ADR-0073).
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
-missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
-`hint:` line suggesting the exact `with ...` row to declare (#639). That
-diagnostic text is quoted verbatim from the checker
-(`checker_effects.vibe`), which still spells its effect sets with braces —
-it is compiler OUTPUT, not source you write, and #1429's braceless row
-syntax does not change it.
+missing { Fs } (declared { Error }, requires { Error, Fs })`) with a `hint:`
+line suggesting the exact row to declare (`hint: add 'with Error + Fs' to
+'f'`, #639). The braces in that message render effect SETS, not source
+syntax — which is why they survived #1429 while the `hint:` line, being
+something you paste into your code, moved to the braceless spelling with
+everything else.
 
 ### Failure-carrying pipeline
 

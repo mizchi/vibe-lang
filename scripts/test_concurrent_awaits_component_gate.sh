@@ -113,7 +113,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_async_concurrent_awaits
 }
 
-fn main() -> Unit with { Error, Fs } {
+fn main() -> Unit with Error + Fs {
   let bytes = comp_emit_component_wasm_async_concurrent_awaits("run", 121)
   Fs::write_bytes("_build/bench/selfhost_concurrent_awaits_component/generated.component.wasm", bytes)
 }

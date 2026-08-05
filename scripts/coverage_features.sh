@@ -112,12 +112,12 @@ EOF
 
 emit effects <<'EOF'
 effect Logger { log: (String) -> Unit }
-let greet: (String) -> Int with { Logger } = (name) -> {
+let greet: (String) -> Int with Logger = (name) -> {
   Logger::log(name)
   String::length(name)
 }
 suberror MyErr(Int)
-let risky: (Int) -> Int with { Error } = (x) -> {
+let risky: (Int) -> Int with Error = (x) -> {
   if x < 0 { throw(MyErr(x)) } else { x * 2 }
 }
 export let main: () -> Int = () -> {

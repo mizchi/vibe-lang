@@ -4,7 +4,7 @@
 # The stream sibling of test_named_hostfutures_component_gate.sh: a `.vibe`
 # program
 #
-#   let run: () -> Int with { Async } = () -> {
+#   let run: () -> Int with Async = () -> {
 #     let s = host_stream_named("body")
 #     let mut sum = 0
 #     let mut b = host_stream_next(s)
@@ -125,7 +125,7 @@ check_component_header() {
 # a suspending call.
 SRC="$OUT_DIR/stream_sum.vibe"
 cat >"$SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let mut sum = 0
   let mut b = host_stream_next(s)
@@ -175,7 +175,7 @@ echo "[named-hoststreams-component-gate] stream path: 42 (all bytes delivered, e
 # imports.
 FOR_SRC="$OUT_DIR/stream_for.vibe"
 cat >"$FOR_SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let mut sum = 0
   for b in host_stream_named("body") {
     sum = sum + b
@@ -209,7 +209,7 @@ let drain = (s: HostStream) -> Int {
   sum
 }
 
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   drain(host_stream_named("body"))
 }
 EOF
@@ -234,7 +234,7 @@ PROJ_SRC="$OUT_DIR/stream_for_proj.vibe"
 cat >"$PROJ_SRC" <<'EOF'
 struct Holder { s: HostStream }
 
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let h = Holder::{ s: host_stream_named("body") }
   let mut sum = 0
   for b in h.s {
@@ -268,7 +268,7 @@ let drain = (h: Holder) -> Int {
   sum
 }
 
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   drain(Holder::{ s: host_stream_named("body") })
 }
 EOF
@@ -314,7 +314,7 @@ echo "[named-hoststreams-component-gate] delayed path: 42 in ${ELAPSED_MS}ms (>=
 # --- the mixed future + stream fixture ---------------------------------------
 MIXED_SRC="$OUT_DIR/mixed.vibe"
 cat >"$MIXED_SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let f = host_future_named("price")
   let s = host_stream_named("body")
   let a = host_stream_next(s)
@@ -355,7 +355,7 @@ NESTED_SRC="$OUT_DIR/nested.vibe"
 cat >"$NESTED_SRC" <<'EOF'
 struct Holder { s: HostStream }
 
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let h = Holder::{ s: host_stream_named("body") }
   let a = host_stream_next(h.s)
   let b = host_stream_next(h.s)
@@ -395,7 +395,7 @@ echo "[named-hoststreams-component-gate] record-nested path: 42 (collector trave
 # sum would not be 42.
 CLOSE_SRC="$OUT_DIR/stream_close.vibe"
 cat >"$CLOSE_SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let a = host_stream_next(s)
   let b = host_stream_next(s)

@@ -59,10 +59,10 @@ function eq(a, b, name) { ok(JSON.stringify(a) === JSON.stringify(b), name, `${J
   ok(ex.calls.some((c) => c.caller === "walk" && c.callee === "walk"), "recursive call attributed to the rec fn");
 }
 
-// --- effect-annotated signatures: body is the lambda, not `with { E }` -------
+// --- effect-annotated signatures: body is the lambda, not `with E` -------
 {
   const ex = extractFile(
-    "export let run: (String) -> Unit with { Process } = (cmd) -> {\n  exec(cmd)\n  log(cmd)\n}\nlet exec = (c: String) -> Unit with { Process } => 0\n");
+    "export let run: (String) -> Unit with Process = (cmd) -> {\n  exec(cmd)\n  log(cmd)\n}\nlet exec = (c: String) -> Unit with Process => 0\n");
   const run = ex.symbols.find((s) => s.name === "run");
   ok(run && run.kind === KIND.Function, "effectful let is a Function");
   const runCalls = ex.calls.filter((c) => c.caller === "run").map((c) => c.callee).sort();

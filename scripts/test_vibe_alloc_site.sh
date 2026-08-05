@@ -53,7 +53,7 @@ let light = (n: Int) -> String {
   while j < n { t = String::concat(t, "y"); j = j + 1 }
   t
 }
-fn main with { Stdout } {
+fn main with Stdout {
   let a = heavy(300)
   let b = light(50)
   Stdout::write_stream("\{String::length(a) + String::length(b)}\n")
@@ -94,7 +94,7 @@ printf '%s\n' "$site_err" | grep -qE "vibe::allocsite fn=heavy line=[0-9]+ " \
 #    attributed — to the enclosing function. dbg_line-based attribution missed
 #    this; dbg_break (per function entry) catches it.
 cat > "$proj/inline.vibex" <<'EOF'
-fn main with { } {
+fn main with () {
   let mut s = ""
   let mut i = 0
   while i < 200 { s = String::concat(s, "zzzz"); i = i + 1 }

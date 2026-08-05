@@ -108,10 +108,10 @@ const DECL_RE =
   /(^|\n)[ \t]*(export[ \t]+)?(let|struct|enum|trait|module|type)[ \t]+(?:(?:mut|rec)[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)/g;
 
 // The first top-level `=` at/after `from` that binds a `let` (skipping any inside
-// (), [], {} — e.g. a `(...) -> T with { E }` signature — and the compound
+// (), [], {} — e.g. a `(...) -> T with E` signature — and the compound
 // operators ==, =>, <=, >=, !=, :=). Returns its index, or -1 if none before the
 // next top-level declaration. This separates a let's TYPE annotation from its
-// VALUE, so the body brace is searched in the value, not in a `with { E }` set.
+// VALUE, so the body brace is searched in the value, not in a `with E` set.
 function findBindingEq(mask, from) {
   let depth = 0;
   for (let i = from; i < mask.length; i++) {
@@ -136,7 +136,7 @@ function declKind(keyword, mask, eqPos) {
     case "let": {
       // Function iff the VALUE (after the binding `=`) is a lambda `( ... ) ->`,
       // optionally with a leading `[T]` type-param list. eqPos isolates the value
-      // from the type annotation, so a `(...) -> T with { E } = ...` signature
+      // from the type annotation, so a `(...) -> T with E = ...` signature
       // doesn't fool the scan.
       if (eqPos < 0) return KIND.Variable;
       let i = eqPos + 1;
@@ -165,7 +165,7 @@ function extractFile(text) {
     const nameStart = m.index + m[0].length - name.length;
     const nameEnd = nameStart + name.length;
     // For a let, find the binding `=` so the body brace is searched in the VALUE,
-    // not in a type-annotation `... with { E }` set. Other decls have no `=`.
+    // not in a type-annotation `... with E` set. Other decls have no `=`.
     const eqPos = keyword === "let" ? findBindingEq(mask, nameEnd) : -1;
     const kind = declKind(keyword, mask, eqPos);
     // Body span: the first `{` on/after the value (let) or the name (aggregate),

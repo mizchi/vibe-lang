@@ -56,7 +56,7 @@ export enum EffectError {
   EEEffectfulCallOutsideEffect(String);
   EEPerformUndeclaredEffect(String, String);
   // #639: effect-row mismatch with the EXPECTED vs ACTUAL rows rendered as a
-  // set difference plus a fix-it hint for the `with { ... }` annotation.
+  // set difference plus a fix-it hint for the `with` row annotation.
   // Fields (all pre-rendered ", "-joined label lists, deterministic order):
   // (enclosing fn name or "" when unnamed, missing labels (sorted),
   //  declared row (source order, "" when no row), required row (sorted union)).
@@ -83,10 +83,35 @@ export enum EffectError {
 // `throw` to `perform Error::Throw`); EEEffectfulCallOutsideEffect stays --
 // check_async_effects_expr still reports it for async primitives.
 
+/// #1429: render a stored row as the SOURCE spelling the reader must type.
+/// Rows are stored comma-joined; the syntax is `+`-separated. Every `hint:`
+/// below hands the reader something to paste into their code, so it has to go
+/// through here -- a hint that suggests `with { Error, Fs }` is telling them
+/// to write syntax the compiler is migrating away from (and, once the braced
+/// form is removed, syntax it rejects outright).
+///
+/// The set-valued parts of the message (`missing { .. }`, `requires { .. }`)
+/// deliberately keep braces: those render a SET difference, not source.
+fn row_as_source(row: String) -> String {
+  let parts = String::split(row, ", ")
+  let n = Array::length(parts)
+  let mut acc = ""
+  let mut i = 0
+  while i < n {
+    acc = if i == 0 {
+      Array::get(parts, i)
+    } else {
+      String::concat(acc, String::concat(" + ", Array::get(parts, i)))
+    }
+    i = i + 1
+  }
+  acc
+}
+
 export fn effect_error_to_string(err: EffectError) -> String {
   match err {
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
-    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`")))),
+    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with` row or wrap in a `handle`")))),
     // #639: expected-vs-actual effect rows as a set difference, then ONE
     // deterministic fix-it hint line targeting the enclosing declaration
     // (for a call-site leak that is the CALLER, not the callee).
@@ -97,16 +122,16 @@ export fn effect_error_to_string(err: EffectError) -> String {
         "effect row mismatch"
       }
       let detail = if String::length(declared) > 0 {
-        String::concat(" (declared with { ", String::concat(declared, String::concat(" }, requires { ", String::concat(required, " })"))))
+        String::concat(" (declared { ", String::concat(declared, String::concat(" }, requires { ", String::concat(required, " })"))))
       } else {
         String::concat(" (no 'with' clause, requires { ", String::concat(required, " })"))
       }
       let hint = if String::length(fname) == 0 {
-        String::concat("\nhint: add 'with { ", String::concat(required, " }' to the enclosing function"))
+        String::concat("\nhint: add 'with ", String::concat(row_as_source(required), "' to the enclosing function"))
       } else if String::length(declared) == 0 {
-        String::concat("\nhint: declare 'fn ", String::concat(fname, String::concat("(...) -> T with { ", String::concat(required, " }'"))))
+        String::concat("\nhint: declare 'fn ", String::concat(fname, String::concat("(...) -> T with ", String::concat(row_as_source(required), "'"))))
       } else {
-        String::concat("\nhint: add 'with { ", String::concat(required, String::concat(" }' to '", String::concat(fname, "'"))))
+        String::concat("\nhint: add 'with ", String::concat(row_as_source(required), String::concat("' to '", String::concat(fname, "'"))))
       }
       String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
     },
@@ -439,7 +464,7 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
     },
     EForIn(_, _, iter, _) => match afe_async_iterand(iter, env, locals) {
       Some(tn) => if !in_async {
-        Array::push(errors, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with { Async }` or wrap the loop in a handler for it)")))
+        Array::push(errors, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with Async` or wrap the loop in a handler for it)")))
       } else {
         ()
       },
@@ -549,7 +574,7 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
 //# perform-discipline enforcement (#626 criterion 1)
 //
 // `perform EffName::Op(..)` may only occur where `EffName` is in scope: either
-// the enclosing function/lambda declares it in `with { ... }`, or the perform
+// the enclosing function/lambda declares it in `with` row, or the perform
 // is inside a `handle` (which discharges it). Otherwise it is a type error —
 // "performing an undeclared effect". This realizes the first acceptance
 // criterion of #626 (the checker formerly accepted undeclared performs because
@@ -561,9 +586,9 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
 // declines to flag the (rarer) perform-of-a-different-effect-inside-a-handle
 // case, which full row tracking (#626 criteria 2/4) will cover.
 
-/// Parse a source `with { ... }` annotation into the canonical row. This is
+/// Parse a source `with` row annotation into the canonical row. This is
 /// the sole parser for checker effect rows: labels are trimmed and deduped, and
-/// `None` remains structurally different from an explicit `with {}`.
+/// `None` remains structurally different from an explicit `with ()`.
 fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
   match eff {
     // None is structurally distinct from Some([]): it means the row is
@@ -580,7 +605,7 @@ fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
         }
         i = i + 1
       }
-      // Some([]) is an explicitly pure `with {}` row.
+      // Some([]) is an explicitly pure `with ()` row.
       Some(labels)
     }
   }
@@ -613,7 +638,7 @@ fn effect_row_labels(row: Option[Array[String]]) -> Array[String] {
 }
 
 /// Resolve an annotation at a nested lambda boundary. Inferred rows inherit;
-/// explicit rows, including `with {}`, replace the surrounding row.
+/// explicit rows, including `with ()`, replace the surrounding row.
 fn effect_row_inherit(row: Option[Array[String]], surrounding: Array[String]) -> Array[String] {
   match row {
     None => surrounding,
@@ -1292,7 +1317,7 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
 /// with the discharged effects (criterion 2). Order of traversal differs from a
 /// recursive pre-order walk, but the SET of effect errors found is identical, so
 /// the accept/reject decision is unchanged.
-/// The declared effect row of a top-level binding: the signature's `with { ... }`
+/// The declared effect row of a top-level binding: the signature's `with` row
 /// unioned with an EFn body's own effect annotation (`let f = (x) -> { .. } with
 /// { E }`). Used to build the call-graph effect map for transitive enforcement.
 fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
@@ -2763,7 +2788,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       } else {
         // `body` (from SLet/SLetMut) is the closure VALUE bound to
         // entry_name, e.g. `EFn(type_params, bounds, params, ret_ty,
-        // effect, fn_body)` for `fn main with { ... } { ... }` -- checking
+        // effect, fn_body)` for `fn main with <row> { ... }` -- checking
         // the EFn NODE itself would trivially find zero reachable effects
         // (defining a closure performs nothing; only CALLING it would),
         // silently marking every entry cacheable regardless of what it

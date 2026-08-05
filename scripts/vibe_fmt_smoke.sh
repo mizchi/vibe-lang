@@ -252,7 +252,7 @@ fi
 # into an unrelated far-later "unexpected token: with" parse error (the
 # merge-flatten compile step of scripts/generate_bundle.sh).
 cat > "$WORK/return_handle.in.vibe" <<'EOF'
-fn foo() -> Int with { Error } {
+fn foo() -> Int with Error {
   return handle {
     1
   } with Error {

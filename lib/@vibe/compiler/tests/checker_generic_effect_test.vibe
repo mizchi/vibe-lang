@@ -20,7 +20,7 @@ test "a clean generic effect declaration produces no diagnostics (warning retire
 test "perform arity against a generic effect op is checked" {
   // The #1218 hole: `perform State::Get(1, 2, 3)` against `Get() -> S`
   // passed silently because generic effects never entered the registry.
-  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet main = () -> Int with { State } {\n  perform State::Get(1, 2, 3)\n}\n"
+  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet main = () -> Int with State {\n  perform State::Get(1, 2, 3)\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   let d = Array::get(diags, 0)
@@ -28,27 +28,27 @@ test "perform arity against a generic effect op is checked" {
 }
 
 test "a bare perform of a parameterful generic op is an arity error" {
-  let src = "effect Box[T] {\n  Put(T) -> Unit\n}\n\nlet main = () -> Int with { Box } {\n  perform Box::Put\n  42\n}\n"
+  let src = "effect Box[T] {\n  Put(T) -> Unit\n}\n\nlet main = () -> Int with Box {\n  perform Box::Put\n  42\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, 0), "perform Box::Put expects 1 argument(s), got 0"))
 }
 
-test "with { State[Int] } row items parse and check" {
-  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet read_it = () -> Int with { State[Int] } {\n  perform State::Get()\n}\n\nlet main = () -> Int {\n  handle {\n    read_it()\n  } with State {\n    Get => resume(7);\n    Put(_v) => resume(())\n  }\n}\n"
+test "with State[Int] row items parse and check" {
+  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet read_it = () -> Int with State[Int] {\n  perform State::Get()\n}\n\nlet main = () -> Int {\n  handle {\n    read_it()\n  } with State {\n    Get => resume(7);\n    Put(_v) => resume(())\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
 
 test "a row instantiation of a non-generic effect is rejected" {
-  let src = "effect Log {\n  Emit(Int) -> Unit\n}\n\nlet f = () -> Int with { Log[Int] } {\n  42\n}\n\nlet main = () -> Int {\n  f()\n}\n"
+  let src = "effect Log {\n  Emit(Int) -> Unit\n}\n\nlet f = () -> Int with Log[Int] {\n  42\n}\n\nlet main = () -> Int {\n  f()\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, 0), "effect Log declares no type parameters"))
 }
 
 test "a multi-argument row instantiation is rejected at parse" {
-  let src = "effect Pair[A, B] {\n  Mk(A, B) -> Unit\n}\n\nlet f = () -> Int with { Pair[Int, String] } {\n  42\n}\n\nlet main = () -> Int {\n  f()\n}\n"
+  let src = "effect Pair[A, B] {\n  Mk(A, B) -> Unit\n}\n\nlet f = () -> Int with Pair[Int, String] {\n  42\n}\n\nlet main = () -> Int {\n  f()\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, 0), "exactly one type argument"))
@@ -126,7 +126,7 @@ test "two performs of one generic effect at conflicting types are rejected" {
 // accept a fn value whose row drops `Fs` entirely.
 
 test "a row instantiated twice does not match a row carrying an extra effect" {
-  let src = "effect State[S] {\n  Get() -> S\n}\n\nfn needs_two(f: () -> Int with { State[Int], State[String] }) -> Int {\n  f()\n}\n\nfn both() -> Int with { State, Fs } {\n  42\n}\n\nlet main = () -> Int {\n  needs_two(both)\n}\n"
+  let src = "effect State[S] {\n  Get() -> S\n}\n\nfn needs_two(f: () -> Int with State[Int] + State[String]) -> Int {\n  f()\n}\n\nfn both() -> Int with State + Fs {\n  42\n}\n\nlet main = () -> Int {\n  needs_two(both)\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
 }

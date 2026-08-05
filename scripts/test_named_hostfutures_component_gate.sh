@@ -4,7 +4,7 @@
 # The generalization of test_hostfuture_source_component_gate.sh's single
 # anonymous `get-future`: a `.vibe` program
 #
-#   let run: () -> Int with { Async } = () -> {
+#   let run: () -> Int with Async = () -> {
 #     let a = host_future_named("price")
 #     let b = host_future_named("qty")
 #     await(a) + await(b)
@@ -119,7 +119,7 @@ compile_fixture() {
 # measures.
 SRC="$OUT_DIR/named_await.vibe"
 cat >"$SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let a = host_future_named("price")
   let b = host_future_named("qty")
   await(a) + await(b)
@@ -205,7 +205,7 @@ fn make_cell() -> Future[Int] {
   r.p
 }
 
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   await(make_cell())
 }
 EOF
@@ -245,7 +245,7 @@ echo "[named-hostfutures-component-gate] shadowed builtin: no 'price' import res
 # --- control: one name imports only that name --------------------------------
 CTRL_SRC="$OUT_DIR/single_named_await.vibe"
 cat >"$CTRL_SRC" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   await(host_future_named("price"))
 }
 EOF

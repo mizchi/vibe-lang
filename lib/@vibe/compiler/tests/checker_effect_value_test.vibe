@@ -18,19 +18,19 @@ import ./checker_parity_test_support.vibe {
 // variables (#885 — undecidable without call-site row unification).
 
 test "939 repro: effectful fn value into a pure HOF parameter is rejected" {
-  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with { Logger } { perform Logger::Log(\"hi\")\n  x }\nfn apply_pure(f: (Int) -> Int, x: Int) -> Int { f(x) }\nfn main() -> Int { handle { apply_pure(eff, 1) } with Logger { Log(_m) => resume(()) } }"))
+  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with Logger { perform Logger::Log(\"hi\")\n  x }\nfn apply_pure(f: (Int) -> Int, x: Int) -> Int { f(x) }\nfn main() -> Int { handle { apply_pure(eff, 1) } with Logger { Log(_m) => resume(()) } }"))
 }
 
 test "939: effectful fn value behind a pure let annotation is rejected" {
-  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with { Logger } { perform Logger::Log(\"hi\")\n  x }\nfn main() -> Int { let g: (Int) -> Int = eff\n  g(1) }"))
+  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with Logger { perform Logger::Log(\"hi\")\n  x }\nfn main() -> Int { let g: (Int) -> Int = eff\n  g(1) }"))
 }
 
 test "939: effectful fn value inside a pure-typed array is rejected" {
-  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with { Logger } { perform Logger::Log(\"hi\")\n  x }\nfn main() -> Int { let arr: Array[(Int) -> Int] = [eff]\n  Array::length(arr) }"))
+  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with Logger { perform Logger::Log(\"hi\")\n  x }\nfn main() -> Int { let arr: Array[(Int) -> Int] = [eff]\n  Array::length(arr) }"))
 }
 
 test "939: effectful fn value into a pure struct field is rejected" {
-  assert(check_source_err("effect Logger { Log(String) -> Unit }\nstruct S { f: (Int) -> Int }\nfn eff(x: Int) -> Int with { Logger } { perform Logger::Log(\"hi\")\n  x }\nfn main() -> Int { let s = S::{ f: eff }\n  0 }"))
+  assert(check_source_err("effect Logger { Log(String) -> Unit }\nstruct S { f: (Int) -> Int }\nfn eff(x: Int) -> Int with Logger { perform Logger::Log(\"hi\")\n  x }\nfn main() -> Int { let s = S::{ f: eff }\n  0 }"))
 }
 
 /// Codex P1 on #978: at CtFn PARAMETER positions the unsafe direction
@@ -39,19 +39,19 @@ test "939: effectful fn value into a pure struct field is rejected" {
 /// the callee invokes the effectful callback with no handler. The walk now
 /// recurses into parameters with expected/actual swapped.
 test "939 review: pure-callback fn into an effectful-callback slot is rejected (contravariance)" {
-  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with { Logger } { perform Logger::Log(\"hi\")\n  x }\nfn apply_pure(f: (Int) -> Int, x: Int) -> Int { f(x) }\nfn main() -> Int {\n  let h: ((Int) -> Int with { Logger }, Int) -> Int = apply_pure\n  h(eff, 1)\n}"))
+  assert(check_source_err("effect Logger { Log(String) -> Unit }\nfn eff(x: Int) -> Int with Logger { perform Logger::Log(\"hi\")\n  x }\nfn apply_pure(f: (Int) -> Int, x: Int) -> Int { f(x) }\nfn main() -> Int {\n  let h: ((Int) -> Int with Logger, Int) -> Int = apply_pure\n  h(eff, 1)\n}"))
 }
 
 test "939 review: effectful-callback fn into a pure-callback slot stays accepted" {
   // The swap makes the pure side the label-free one: safe (the callee
   // tolerates MORE than the slot advertises).
-  assert(check_source_ok("effect Logger { Log(String) -> Unit }\nfn apply_eff(f: (Int) -> Int with { Logger }, x: Int) -> Int with { Logger } { f(x) }\nfn inc(x: Int) -> Int { x + 1 }\nfn main() -> Int {\n  let g: ((Int) -> Int, Int) -> Int with { Logger } = apply_eff\n  handle { g(inc, 1) } with Logger { Log(_m) => resume(()) }\n}"))
+  assert(check_source_ok("effect Logger { Log(String) -> Unit }\nfn apply_eff(f: (Int) -> Int with Logger, x: Int) -> Int with Logger { f(x) }\nfn inc(x: Int) -> Int { x + 1 }\nfn main() -> Int {\n  let g: ((Int) -> Int, Int) -> Int with Logger = apply_eff\n  handle { g(inc, 1) } with Logger { Log(_m) => resume(()) }\n}"))
 }
 
 test "939: pure fn value into an EFFECTFUL slot stays accepted (subsumption)" {
-  assert(check_source_ok("effect Logger { Log(String) -> Unit }\nfn inc(x: Int) -> Int { x + 1 }\nfn main() -> Int { let h: (Int) -> Int with { Logger } = inc\n  0 }"))
+  assert(check_source_ok("effect Logger { Log(String) -> Unit }\nfn inc(x: Int) -> Int { x + 1 }\nfn main() -> Int { let h: (Int) -> Int with Logger = inc\n  0 }"))
 }
 
-test "939: `with { Error }` value into a pure slot stays accepted (exempt)" {
-  assert(check_source_ok("fn risky(x: Int) -> Int with { Error } { if x < 0 { throw(\"neg\") } else x }\nfn main() -> Int { let g: (Int) -> Int = risky\n  0 }"))
+test "939: `with Error` value into a pure slot stays accepted (exempt)" {
+  assert(check_source_ok("fn risky(x: Int) -> Int with Error { if x < 0 { throw(\"neg\") } else x }\nfn main() -> Int { let g: (Int) -> Int = risky\n  0 }"))
 }
