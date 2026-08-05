@@ -158,6 +158,8 @@ fn hello() -> Unit with Stdout { stdout_write("hi\n") }
 // The braced `with { A, B }` was accepted through the migration and is now a
 // named parse error. `vibe fmt` rewrites it for you (the formatter is a
 // token-level pass, so it converts source the compiler no longer accepts).
+// (`effectset X = { A, B }` keeps its braces — that is a set literal on the
+// right of `=`, not a row.)
 // `+` rather than `,` because once the braces are gone a comma cannot be told
 // apart from an enclosing list's comma: in `fn g(cb: (Int) -> Int with A, x: Int)`
 // the `x` is either a second label or the next parameter. `+` starts neither a
@@ -848,6 +850,27 @@ let apply: [T](f~: (T) -> T with e, x~: T) -> T with e = (f~, x~) -> {
   f(x)
 }
 ```
+
+### resource 宣言 (ADR-0075 Phase 2 / #1343)
+
+```vibe skip
+resource Posts: S3::Bucket
+```
+
+executable が binding を要求する **logical resource identity** の宣言。
+resource を作るわけではなく、値でも型でもなく、physical name も credential
+も持たない (それらは host adapter 側、ADR-0075)。resource kind パラメータを
+**名前で** instantiate する (`S3::Read[Posts]`) ための宣言。
+
+- kind は**修飾パス** (`Owner::Kind`) 必須 — 裸の名前は型と区別できず、
+  resource kind は型ではない
+- `resource` は**文脈キーワード**: 直後が識別子のときだけ宣言。
+  `let resource = 1` / `resource(x)` はそのまま使える
+- 名前は一度だけ。**singleton kind (`Process::Root`) の resource は宣言
+  できない** — 住人は `Process::Root` 自身ただ一つなので、別名は同じ
+  process への alias にしかならない
+- `export` できない (ADR-0075 は `.vibex` root 限定。再利用モジュールは
+  resource 名ではなく resource **kind パラメータ**で抽象化する)
 
 ## Module System
 

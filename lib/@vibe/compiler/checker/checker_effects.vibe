@@ -9,15 +9,18 @@ import @vibe/compiler/core {
   TypeExpr,
   canonical_builtin_name,
   canonical_exception_effect_name,
+  entry_cache_safe_effects,
   env_lookup,
   exception_effect_labels_equal,
   exception_kinds_compatible,
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_children,
+  is_core_ambient_effect,
   is_exception_effect_name,
   is_exception_label,
   is_exception_throw_operation,
+  test_bench_ambient_effects,
   type_name_has_async_iterator_impl
 }
 
@@ -1126,9 +1129,12 @@ fn builtin_call_effect(name: String) -> Option[String] {
     let normalized = canonical_builtin_name(name)
     match lookup_builtin(normalized) {
       Some(ty) => match ty {
-        CtFn(_, _, Some(eff)) => if is_exception_effect_name(eff) {
-          None
-        } else if eff == "Async" {
+        // #1343 (ADR-0094 実装順 1): `Error`/`Exception[K]` (441 site の
+        // throw discipline) と `Async` (合成許容、async pass が扱う) は
+        // ADR-0084 の core ambient — この二項判定は
+        // core/effect_taxonomy.vibe の `is_core_ambient_effect` が唯一の
+        // 定義になった。
+        CtFn(_, _, Some(eff)) => if is_core_ambient_effect(eff) {
           None
         } else {
           Some(eff)
@@ -2043,58 +2049,11 @@ fn error_row_checked() -> Bool {
   Array::length(error_row_mode_cell) > 0 && Array::get(error_row_mode_cell, 0) == 1
 }
 
-fn test_bench_ambient_effects() -> Array[String] {
-  [
-    // #865: "Stderr" added alongside "Stdout" -- same ambient-host-handler
-    // reasoning (a test/bench block runs under the runtime host, which
-    // implements Stderr::write_stream/write_char just like Stdout's).
-    //
-    // #944 (checked-Error stage B): "Error" is ambient in test/bench
-    // blocks by the same boundary reasoning -- `assert` itself is
-    // implemented as a throw, and a failing test IS an escaping Error the
-    // test runner catches and reports (the block is an entry-like
-    // boundary, exactly ADR-0073's entry-boundary-A shape). Requiring
-    // every test block to spell `with Error` would annotate the
-    // mechanism the runner already owns.
-    // #1343: この集合を operation 粒度へ絞れるか実測した (#1359 で builtin
-    // 経路に operation 認可が通ったので技術的には可能)。**結論: 今のところ
-    // 絞れる項目は無い** — 8つすべてがコーパスから実際に要求されている。
-    // 以下は各項目の根拠。
-    //
-    // Fs と Env は operation 列挙しても狭まらない — 実際に使われている
-    // operation は
-    // Fs::write_bytes(218) / mkdir_p(70) / exists(45) / read_file(37) /
-    // read_bytes(31) / write_file(23) / stat_token(13) / remove(13) /
-    // readdir(10) / mkdir(2)、Env は get / args_len / args_get の全3種で、
-    // 列挙しても権限は狭まらず row が長くなるだけ。よって bare のまま残す。
-    //
-    // "Stdin" も残す。当初 `Stdin::` の直接呼び出しを grep して「使用 0 件」
-    // と判断し削除したが、**バッテリーが 4 ファイルの失敗で反証した**
-    // (console/example_io_test, console/io_test, console/stdin_stream_test,
-    // prelude/io_test)。これらは `Stdin::` を直接書かず、`with Stdin` を
-    // 宣言したラッパー関数 (lib/@vibe/console の read_line 等) 経由で
-    // **推移的に**要求する。直接呼び出しの grep では捕まらない。
-    //
-    // "Process" (= `sh` / `sh_lines` = 任意コマンド実行) は本来ここで最も
-    // 絞りたいもので、実使用も 7 ファイルしかない。ただし外すには受け皿が
-    // 要る: `sh` は非修飾 builtin なので operation 綴りが無く (row に
-    // `Process::sh` とは書けない)、残る退避手段は `handle { .. } with
-    // Process { Run(_) => resume(0) }` という **意味を持たない** vacuous
-    // handler (Process に effect 宣言が無いので arm 名は一切検査されず、
-    // codegen で消える) だけ。7 ファイルに無意味な構文を撒くことになるので
-    // 見送った。正しい機構は test ブロック自身が row を宣言できるようにする
-    // こと (`test "name" with Process { .. }`) だが、STest への row 追加は
-    // 97 箇所・約20ファイルに波及するため別スライスとする。
-    "Fs",
-    "Env",
-    "Stdin",
-    "Stdout",
-    "Stderr",
-    "Process",
-    "Profiler",
-    "Error"
-  ]
-}
+// #1343 (ADR-0094 実装順 1): test/bench の ambient 集合はここのリテラルでは
+// なく core/effect_taxonomy.vibe の表から派生する
+// (`test_bench_ambient_effects`)。各項目を operation 粒度へ絞れない実測の
+// 根拠 (Fs/Env の使用 operation 分布、Stdin の推移的要求、Process に退避先の
+// 綴りが無いこと) も表側のコメントへ移した。
 
 fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
   match stmt {
@@ -2750,12 +2709,10 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
   match entry_body {
     None => false,
     Some(body) => {
-      let cache_safe_row = [
-        "Stdout",
-        "Error",
-        "Exception",
-        "Async"
-      ]
+      // #1343 (ADR-0094 実装順 1): `[Stdout, Error, Exception, Async]` の
+      // リテラルではなく core/effect_taxonomy.vibe の表から派生する
+      // (cache_safe 列)。各項目の根拠も表側のコメントにある。
+      let cache_safe_row = entry_cache_safe_effects()
       // Codex review, PR #1215: belt-and-suspenders on top of the
       // reachable-effects walk below. That walk shares check_perform_
       // effects_expr_tx's own limitation (also present, unchanged, in the

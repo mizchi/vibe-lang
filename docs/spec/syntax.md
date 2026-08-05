@@ -595,9 +595,16 @@ Rules:
   `with { A, B }` was the pre-#1429 spelling. It was accepted alongside the
   new one while the tree was converted -- both parsed to the same row, so
   nothing after the parser could tell them apart -- and is now rejected by
-  name. `vibe fmt` still rewrites it: the formatter normalizes rows at the
-  TOKEN level, so it converts source the compiler no longer accepts, which
-  makes it the migration path for code outside this repository.
+  name. The parser had to take both for the length of the migration because
+  the bootstrap rule ([bootstrap.md](../bootstrap.md)) requires the seed to
+  understand a spelling before the compiler's own source may use it. `vibe
+  fmt` still rewrites it: the formatter normalizes rows at the TOKEN level, so
+  it converts source the compiler no longer accepts, which makes it the
+  migration path for code outside this repository.
+
+  `effectset` keeps its braced member list (`effectset FsAll = { Fs::read_file,
+  Fs::write_file }`) -- that `{ .. }` is a set literal on the right of `=`, not
+  a `with` row, and it never had a braceless spelling to collapse into.
 
   The separator is `+`, not `,`, because a comma cannot be told apart from an
   enclosing list's comma once the braces are gone: in `((Int) -> Int with A, B)`
@@ -617,6 +624,47 @@ Rules:
   context. On a top-level declaration the two already agree: a declaration with
   no `with` clause is checked as empty, so performing an undeclared effect in
   one is a compile error.
+
+## Resource Declarations
+
+```vibe skip
+resource Posts: S3::Bucket
+```
+
+ADR-0075 Phase 2 (#1343). Declares a nominal **logical resource identity** the
+executable requires a binding for. It is not the resource's creation, declares
+neither a value nor a type, and deliberately carries no physical name or
+credential -- ADR-0075 keeps those on the host adapter, out of guest source.
+It exists so a resource kind parameter can be instantiated by NAME
+(`S3::Read[Posts]`).
+
+The kind must be a **qualified path** (`Owner::Kind`). A bare name would be
+indistinguishable from a type, and a resource kind is not a type.
+
+`resource` is a **contextual keyword**: it starts a declaration only when an
+identifier follows it, so `let resource = 1` / `resource = f()` /
+`resource(x)` keep meaning what they did. (`effect` and `effectset` claim
+their word unconditionally; this one does not, because `resource` is a far
+more plausible variable name.)
+
+Two identity rules are enforced:
+
+* a name may be declared once -- including against the predeclared resources,
+  so a program cannot shadow the ambient process root;
+* nothing may be declared of a **singleton** kind. `Process::Root` is the one
+  singleton today: its single inhabitant is `Process::Root` itself, so
+  `resource Home : Process::Root` would be a second name for the same process.
+
+A `resource` declaration cannot be `export`ed: ADR-0075 puts it at the
+`.vibex` root only, and a reusable module abstracts over a resource KIND
+parameter rather than naming a resource. (The `.vibex`-root restriction itself
+is not yet enforced -- the checker does not know whether it is looking at an
+entry file or a library module.)
+
+Kind names are not themselves checked against a registry: there is no
+resource-kind declaration syntax yet, so `S3::Bucket` has nowhere to be
+declared. The qualified-path requirement is the only well-formedness rule a
+kind carries today.
 
 ## Tests, Examples And Benches
 

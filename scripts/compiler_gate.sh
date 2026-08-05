@@ -9098,4 +9098,265 @@ fi
 rm -rf "$witresdir"
 echo "[compiler-gate] @vibe/wit_runtime Result projection ok"
 
+echo "[compiler-gate] 91/91 resource declarations enforce logical identity (ADR-0075 / #1343)"
+# ADR-0075 Phase 2: `resource Posts : S3::Bucket` declares a LOGICAL resource
+# identity the executable requires a binding for. The rules that matter are
+# about identity, so the gate checks that two spellings which would give one
+# thing two names are both rejected, and that an ordinary declaration compiles.
+#
+# `Process::Root` is the singleton kind (ADR-0094's default for every host
+# capability): its one inhabitant is itself, so a program declaring another
+# resource of that kind would be aliasing the process under a second name --
+# ADR-0075's alias check exists to catch exactly that, and rejecting it at the
+# declaration is cheaper than detecting the alias at bind time.
+resdir="_build/_gate_resource_decl"
+rm -rf "$resdir"; mkdir -p "$resdir"
+res_case() {
+  # res_case <name> <expect: ok|err> <source> [substring the .diag must contain]
+  local rname="$1" expect="$2" rsrc="$3" rneedle="${4:-}"
+  printf '%s' "$rsrc" > "$resdir/$rname.vibe"
+  rm -f "$resdir/$rname.wasm" "$resdir/$rname.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$resdir/$rname.vibe" "$resdir/$rname.wasm" main >/dev/null 2>&1 || true
+  if [ "$expect" = "ok" ]; then
+    if [ ! -s "$resdir/$rname.wasm" ]; then
+      echo "[compiler-gate] FAIL: resource case '$rname' should compile but did not (ADR-0075/#1343)" >&2
+      cat "$resdir/$rname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  else
+    if [ -s "$resdir/$rname.wasm" ]; then
+      echo "[compiler-gate] FAIL: resource case '$rname' should be rejected but compiled (ADR-0075/#1343)" >&2
+      exit 1
+    fi
+    if [ -n "$rneedle" ] && ! grep -q -- "$rneedle" "$resdir/$rname.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: resource case '$rname' rejected without naming '$rneedle' (ADR-0075/#1343):" >&2
+      cat "$resdir/$rname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  fi
+}
+res_case basic ok 'resource Posts : S3::Bucket
+
+fn main {
+  println("ok")
+}
+'
+res_case unqualified err 'resource Posts : Bucket
+
+fn main {
+  println("ok")
+}
+' 'must be qualified'
+res_case duplicate err 'resource Posts : S3::Bucket
+resource Posts : S3::Table
+
+fn main {
+  println("ok")
+}
+' 'already declared'
+res_case singleton err 'resource Home : Process::Root
+
+fn main {
+  println("ok")
+}
+' 'singleton'
+res_case exported err 'export resource Posts : S3::Bucket
+
+fn main {
+  println("ok")
+}
+' 'cannot be exported'
+# `resource` stays an ordinary identifier: the declaration form needs an
+# identifier right after the word, which no expression can have at statement
+# position, so nothing that used the name breaks.
+res_case as_name ok 'let resource = 1
+
+fn main {
+  println("ok")
+}
+'
+rm -rf "$resdir"
+echo "[compiler-gate] resource declaration identity rules ok"
+
+echo "[compiler-gate] 92/92 fixtures/typecheck verdicts match expected.tsv (#138)"
+# These 61 fixtures came with `.diag` snapshots of the RETIRED MoonBit host's
+# rendered diagnostic. No current path emits that shape, no harness read them,
+# and every one was stale -- so they were documentation of an expectation
+# nothing checked. fixtures/typecheck/expected.tsv replaces them with a verdict
+# plus a message substring, and this section is the harness they never had.
+#
+# Running them turned out to matter: 13 fixtures the old snapshots said were
+# REJECTED now compile (see the `debt-accepts` rows). Those are checks the
+# compiler no longer performs, and nothing else in this gate covers them.
+# They are locked at today's behaviour so the debt cannot grow silently, and
+# the gate FAILS if one starts being rejected again -- promote the row then.
+tcdir="_build/_gate_typecheck_fixtures"
+rm -rf "$tcdir"; mkdir -p "$tcdir"
+# `__no_entry__`: a fixture without a `main` would otherwise fail on "entry
+# `main` not found" and count as rejected without its actual check ever having
+# run -- measured, that masked 4 of the 13 lost checks.
+tc_names="$(grep -v '^#' fixtures/typecheck/expected.tsv | cut -f1)"
+# One compile each (~250ms), fanned out -- serially this section would be ~15s.
+printf '%s\n' $tc_names | xargs -P "$(nproc 2>/dev/null || echo 4)" -I{} env \
+  ROOT_DIR="$ROOT_DIR" stage2_wasm="$stage2_wasm" tcdir="$tcdir" \
+  bash -c 'VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/typecheck/{}.vibe" "$tcdir/{}.wasm" __no_entry__ >/dev/null 2>&1 || true'
+tc_fail=0
+tc_debt=0
+while IFS=$'\t' read -r tcname tcstatus tcneedle; do
+  case "$tcname" in ''|'#'*) continue ;; esac
+  if [ -s "$tcdir/$tcname.wasm" ]; then tcact="ok"; else tcact="reject"; fi
+  tcdiag="$(head -1 "$tcdir/$tcname.wasm.diag" 2>/dev/null || true)"
+  case "$tcstatus" in
+    ok) tcwant="ok" ;;
+    debt-accepts) tcwant="ok"; tc_debt=$((tc_debt + 1)) ;;
+    reject) tcwant="reject" ;;
+    debt-rejects) tcwant="reject"; tc_debt=$((tc_debt + 1)) ;;
+    *) echo "[compiler-gate] FAIL: unknown status '$tcstatus' for $tcname in fixtures/typecheck/expected.tsv" >&2; exit 1 ;;
+  esac
+  if [ "$tcact" != "$tcwant" ]; then
+    case "$tcstatus" in
+      debt-accepts)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is REJECTED again -- the lost check is back. Promote its row in expected.tsv from 'debt-accepts' to 'reject' with the new message (#138)." >&2 ;;
+      debt-rejects)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe COMPILES again. Promote its row in expected.tsv from 'debt-rejects' to 'ok' (#138)." >&2 ;;
+      *)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe expected '$tcwant', got '$tcact' (#138)" >&2 ;;
+    esac
+    [ -n "$tcdiag" ] && echo "    diag: $tcdiag" >&2
+    tc_fail=1
+  elif [ "$tcwant" = "reject" ] && [ -n "$tcneedle" ]; then
+    case "$tcdiag" in
+      *"$tcneedle"*) ;;
+      *)
+        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is rejected, but not for the recorded reason (#138)" >&2
+        echo "    expected substring: $tcneedle" >&2
+        echo "    actual:             $tcdiag" >&2
+        tc_fail=1 ;;
+    esac
+  fi
+done < fixtures/typecheck/expected.tsv
+if [ "$tc_fail" -ne 0 ]; then
+  exit 1
+fi
+rm -rf "$tcdir"
+echo "[compiler-gate] typecheck fixtures ok ($(printf '%s\n' $tc_names | wc -l | tr -d ' ') fixtures, $tc_debt known debt)"
+
+# --- #819: per-block `__test_*` exports + isolated invocation -----------------
+# A `__no_entry__` test build exports one `__test_<name>` per `test {}` block
+# (alongside the `__bench_<name>` exports that already existed), and the runner
+# does NOT pre-run `_start` for those names -- `_start` IS the loop over every
+# block, so pre-running it would make one failing block fail every per-block
+# invoke. This is what gives merged builds (#819) per-block failure attribution
+# and a per-block timeout; scripts/unit_test_runner.sh uses it to name the
+# trapping block instead of reporting a bare file-level trap.
+pbdir="_build/_gate_per_block_test"
+rm -rf "$pbdir"; mkdir -p "$pbdir"
+cat > "$pbdir/pb_test.vibe" <<'PBEOF'
+test "alpha_ok" {
+  let x = 1 + 1
+  if x != 2 { throw("bad alpha") }
+  println("from alpha")
+}
+
+test "beta_fails" {
+  throw("boom beta")
+}
+
+test "gamma_ok" {
+  let y = 3
+  if y != 3 { throw("bad gamma") }
+  println("from gamma")
+}
+PBEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pbdir/pb_test.vibe" "$pbdir/pb.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$pbdir/pb.wasm" ]; then
+  echo "[compiler-gate] FAIL: per-block test fixture did not compile (#819)" >&2
+  cat "$pbdir/pb.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+pbexports="$(node -e '
+  const m = new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));
+  for (const e of WebAssembly.Module.exports(m)) {
+    if (e.kind === "function" && e.name.startsWith("__test_")) console.log(e.name);
+  }
+' "$pbdir/pb.wasm" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ' || true)"
+if [ "$pbexports" != "__test_alpha_ok __test_beta_fails __test_gamma_ok " ]; then
+  echo "[compiler-gate] FAIL: expected one __test_<name> export per test block, got: '$pbexports' (#819)" >&2
+  exit 1
+fi
+# Isolation: the passing blocks must pass even though a sibling block traps.
+# Before #819 this failed, because the runner ran `_start` (every block) first.
+for pbname in __test_alpha_ok __test_gamma_ok; do
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+       --invoke "$pbname" "$pbdir/pb.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: $pbname trapped -- a per-block invoke is running its siblings (#819)" >&2
+    exit 1
+  fi
+done
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+     --invoke __test_beta_fails "$pbdir/pb.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: __test_beta_fails did not trap -- per-block invoke is not running the body (#819)" >&2
+  exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+     --invoke _start "$pbdir/pb.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: _start did not trap on a file with a failing block (#819)" >&2
+  exit 1
+fi
+
+# --- #141: batched per-block invokes -----------------------------------------
+# `--invoke-batch-dir` runs every `--invoke` target in ONE process and keeps
+# their outputs apart: target i's stdout/stderr/status land in
+# `<dir>/<i>.{out,err,rc}`, 1-based in flag order. That separation is the whole
+# point -- both callers (scripts/vibe_md.vibex's doctest blocks,
+# unit_test_runner.sh's failure attribution) need EACH target's own output, so
+# a plain repeated `--invoke` (which concatenates everything into one stream)
+# cannot serve them.
+pbbatch="$pbdir/batch"
+VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke-batch-dir "$pbbatch" \
+  --invoke __test_alpha_ok --invoke __test_beta_fails --invoke __test_gamma_ok \
+  "$pbdir/pb.wasm" >/dev/null 2>&1 && pbbatch_rc=0 || pbbatch_rc=$?
+if [ "$pbbatch_rc" -eq 0 ]; then
+  echo "[compiler-gate] FAIL: --invoke-batch-dir exited 0 with a failing target (#141)" >&2
+  exit 1
+fi
+for pbslot in 1 2 3; do
+  if [ ! -f "$pbbatch/$pbslot.rc" ]; then
+    echo "[compiler-gate] FAIL: --invoke-batch-dir wrote no $pbslot.rc -- a failing target aborted the batch (#141)" >&2
+    exit 1
+  fi
+done
+pbrcs="$(cat "$pbbatch/1.rc" "$pbbatch/2.rc" "$pbbatch/3.rc" | tr '\n' ' ')"
+if [ "$pbrcs" != "0 1 0 " ]; then
+  echo "[compiler-gate] FAIL: expected batch statuses '0 1 0 ', got '$pbrcs' (#141)" >&2
+  exit 1
+fi
+# Each target's stdout is its OWN, not the concatenation -- this is what the
+# doctest harness compares against a block's ```output.
+if [ "$(cat "$pbbatch/1.out")" != "from alpha" ] || [ -s "$pbbatch/2.out" ] \
+   || [ "$(cat "$pbbatch/3.out")" != "from gamma" ]; then
+  echo "[compiler-gate] FAIL: batch stdout is not split per target (#141):" >&2
+  for pbslot in 1 2 3; do echo "  $pbslot.out: $(cat "$pbbatch/$pbslot.out")" >&2; done
+  exit 1
+fi
+# stderr is split the same way: the trap diagnostics belong to the target that
+# trapped, and do not leak into a passing sibling's report. (What that
+# diagnostic SAYS is a separate, pre-existing limit -- a thrown string reaches
+# the host as an opaque `WebAssembly.Exception` on the single-invoke path too,
+# so this asserts attribution, not message quality.)
+if [ ! -s "$pbbatch/2.err" ] || [ -s "$pbbatch/1.err" ] || [ -s "$pbbatch/3.err" ]; then
+  echo "[compiler-gate] FAIL: batch stderr is not split per target (#141)" >&2
+  for pbslot in 1 2 3; do echo "  $pbslot.err: $(cat "$pbbatch/$pbslot.err")" >&2; done
+  exit 1
+fi
+rm -rf "$pbdir"
+echo "[compiler-gate] per-block __test_* exports + isolated invoke + batch ok"
+
 echo "[compiler-gate] ok"

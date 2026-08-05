@@ -1,0 +1,318 @@
+// #1445: interpolating a value reached through a BINDING.
+//
+// #1392 closed the literal-at-the-interpolation-site cases
+// (`fixtures/interp_show_derive.vibe` pins those as one digit each). What
+// stayed broken was the same value reached through a name, which is how it is
+// usually written -- and the split made the bug hard to see, because the two
+// spellings of the same value disagreed:
+//
+//   "\{(1, 2)}"                -> "(1, 2)"   already worked
+//   let t = (1, 2); "\{t}"     -> "240"      the raw pointer, #1445
+//
+// #139 closed the rest of it: the shape record is now RECURSIVE (a nested
+// tuple/array element used to record only its head name, so `(0, (1, p))`
+// printed `(0, 268)`), and any constructor-cased callee records its payload
+// rather than only `Some`/`Ok`/`Err`, which is what gives a USER enum's
+// pattern binder a type.
+//
+// STILL OPEN: a value reached through a generic parameter (`fn f[T: Show](x:
+// T) -> String { "\{x}" }`). That one is not a missing shape record -- there
+// is no shape, because `T` is whatever the caller instantiated. It needs the
+// Show dictionary to carry a renderer, i.e. method-bearing traits
+// (docs/method-bearing-traits-plan.md), not another sentinel here.
+//
+// This is a separate file rather than more digits on interp_show_derive.vibe
+// because that fixture's weight is already 1e16 and vibe's Int literal ceiling
+// is 2^61-1 (~2.3e18) -- two more digits and the encoding overflows. Per-block
+// `test { }` attribution (#819) names the failing case directly anyway, which
+// is what the digit scheme was emulating.
+
+struct P {
+  x: Int
+} derive (Show)
+
+enum E2 {
+  A;
+  B(Int)
+} derive (Show)
+
+enum Wrap {
+  W0;
+  W1(P);
+  W2(Int, P)
+} derive (Show)
+
+fn opt_param(o: Option[P]) -> String {
+  match o {
+    Some(v) => "\{v}",
+    None => "none"
+  }
+}
+
+fn tuple_param(t: (Int, P)) -> String {
+  "\{t}"
+}
+
+fn nested_tuple_param(t: (Int, (Int, P))) -> String {
+  "\{t}"
+}
+
+fn array_param(a: Array[P]) -> String {
+  "\{a}"
+}
+
+test "#1445: a tuple through a variable renders structurally" {
+  let t = (1, 2)
+  assert_eq("\{t}", "(1, 2)")
+  // and agrees with the literal spelling, which is the asymmetry #1445 is about
+  assert_eq("\{t}", "\{(1, 2)}")
+}
+
+test "#1445: a tuple through a variable renders its struct elements" {
+  // The element TYPE comes from the binding site, not the head name -- this is
+  // what distinguishes the fix from just knowing "it is a tuple".
+  let p = P::{
+    x: 7
+  }
+  let t = (1, p)
+  assert_eq("\{t}", "(1, P { x: 7 })")
+}
+
+test "#1445: a 3-tuple through a variable keeps arity and order" {
+  let p = P::{
+    x: 3
+  }
+  let t = (1, "two", p)
+  assert_eq("\{t}", "(1, two, P { x: 3 })")
+}
+
+test "#1445: an array through a variable renders structurally" {
+  let a = [
+    1,
+    2
+  ]
+  assert_eq("\{a}", "[1, 2]")
+  assert_eq("\{a}", "\{[1, 2]}")
+}
+
+test "#1445: an array through a variable renders its struct elements" {
+  let pa = P::{
+    x: 1
+  }
+  let pb = P::{
+    x: 2
+  }
+  let a = [pa, pb]
+  assert_eq("\{a}", "[P { x: 1 }, P { x: 2 }]")
+}
+
+test "#1445: an array binding renders element count from the runtime length" {
+  // The expansion is a loop over `Array::length`, not an unrolled join over
+  // the literal's elements, so a value pushed after the binding shows up.
+  let a = [
+    1
+  ]
+  Array::push(a, 2)
+  Array::push(a, 3)
+  assert_eq("\{a}", "[1, 2, 3]")
+}
+
+test "#1445: a pattern binder gets its type from the scrutinee's annotation" {
+  let p = P::{
+    x: 4
+  }
+  assert_eq(opt_param(Some(p)), "P { x: 4 }")
+  assert_eq(opt_param(None), "none")
+}
+
+test "#1445: a pattern binder gets its type from a let-bound constructor" {
+  let p = P::{
+    x: 5
+  }
+  let o = Some(p)
+  let rendered = match o {
+    Some(v) => "\{v}",
+    None => "none"
+  }
+  assert_eq(rendered, "P { x: 5 }")
+}
+
+test "#1445: an Array PARAMETER annotation renders too" {
+  // `seed_var_types` already recorded `Array[P]`'s element type for dictionary
+  // synthesis (#1199); nothing read it at an interpolation site until now.
+  let p = P::{
+    x: 6
+  }
+  let ps = [p]
+  assert_eq(array_param(ps), "[P { x: 6 }]")
+}
+
+test "a tuple PARAMETER annotation was already structural (pinning it)" {
+  // NOT a #1445 regression -- measured working before the fix, including
+  // NESTED tuples, because an annotated parameter reaches a real TypeExpr
+  // rather than this pass's flat name list. Pinned so the #1445 sentinel
+  // cannot quietly divert these to the weaker renderer.
+  let p = P::{
+    x: 6
+  }
+  assert_eq(tuple_param((5, p)), "(5, P { x: 6 })")
+  assert_eq(nested_tuple_param((5, (7, p))), "(5, (7, P { x: 6 }))")
+}
+
+test "#1445: scalars and already-working shapes are unchanged" {
+  let n = 42
+  let s = "str"
+  let b = true
+  let e = B(3)
+  assert_eq("\{n}", "42")
+  assert_eq("\{s}", "str")
+  assert_eq("\{b}", "true")
+  assert_eq("\{e}", "B(3)")
+  let o = Some(7)
+  assert_eq("\{o}", "Some(7)")
+}
+
+//# #139: shapes that NEST, and user-enum payloads
+
+test "#139: a nested tuple renders all the way down" {
+  // The one-name-per-element record (`__tupshape$`) was exactly one level
+  // deep: element 1 was "Tuple" and the renderer had nowhere to go, so this
+  // printed `(0, 268)`. The recursive shape (`(Int,(Int,P))`) is what carries
+  // the inner arity and element types.
+  let p = P::{
+    x: 2
+  }
+  let inner = (1, p)
+  let outer = (0, inner)
+  assert_eq("\{outer}", "(0, (1, P { x: 2 }))")
+  // and the same written as one literal, which must agree
+  assert_eq("\{(0, (1, p))}", "(0, (1, P { x: 2 }))")
+}
+
+test "#139: an array of tuples renders its elements structurally" {
+  let a = [
+    (1, P::{
+      x: 3
+    })
+  ]
+  assert_eq("\{a}", "[(1, P { x: 3 })]")
+}
+
+test "#139: a tuple containing an array renders the array" {
+  let t = (1, [
+    P::{
+      x: 4
+    }
+  ])
+  assert_eq("\{t}", "(1, [P { x: 4 }])")
+}
+
+test "#139: an array of arrays renders both levels" {
+  let aa = [
+    [
+      1,
+      2
+    ],
+    [
+      3
+    ]
+  ]
+  assert_eq("\{aa}", "[[1, 2], [3]]")
+}
+
+test "#139: a USER enum's single payload types its pattern binder" {
+  // ctor_payload_bind used to accept only Some/Ok/Err by name. Any
+  // constructor-cased callee records its payload now, which is what a
+  // user enum needs -- `Option` was never special here, it was just the one
+  // spelling that had been listed.
+  let w = W1(P::{
+    x: 5
+  })
+  let rendered = match w {
+    W0 => "none",
+    W1(p) => "\{p}",
+    W2(_, p) => "\{p}"
+  }
+  assert_eq(rendered, "P { x: 5 }")
+}
+
+test "#139: a MULTI-field enum payload types each binder by slot" {
+  let w = W2(9, P::{
+    x: 6
+  })
+  let rendered = match w {
+    W0 => "none",
+    W1(_) => "one",
+    W2(n, p) => "\{n}/\{p}"
+  }
+  assert_eq(rendered, "9/P { x: 6 }")
+}
+
+test "#139: a COMPOSITE enum payload keeps its shape through the binder" {
+  let w = W2(1, P::{
+    x: 7
+  })
+  let t = (0, w)
+  // the enum value itself renders via derive(Show); the point here is that
+  // wrapping it in a tuple binding does not lose that.
+  assert_eq("\{t}", "(0, W2(1, P { x: 7 }))")
+}
+
+test "#139: already-working shapes are unchanged" {
+  let t = (1, 2)
+  let a = [
+    1,
+    2
+  ]
+  assert_eq("\{t}", "(1, 2)")
+  assert_eq("\{a}", "[1, 2]")
+  let o = Some(3)
+  assert_eq("\{o}", "Some(3)")
+}
+
+//# Shadowing must not resurrect a stale shape (Codex review on PR #1465)
+
+test "#1465: rebinding a tuple name to a scalar drops the tuple shape" {
+  // `lookup_var_type` returns the LAST match so a shadowing rebind wins
+  // (#760(4)) -- but `__shape$x` is a DIFFERENT key from `x`, so the old
+  // shape survived the rebind and the interpolation still expanded a tuple.
+  // Measured before the fix: this printed "(0, 0)". Silently wrong output,
+  // no trap.
+  let x = (1, 2)
+  assert_eq("\{x}", "(1, 2)")
+  let x = 3
+  assert_eq("\{x}", "3")
+}
+
+test "#1465: rebinding an array name to a scalar drops the array shape" {
+  // Same bug through the other sentinel; printed "[]" before the fix.
+  let a = [
+    1,
+    2
+  ]
+  assert_eq("\{a}", "[1, 2]")
+  let a = 7
+  assert_eq("\{a}", "7")
+}
+
+test "#1465: rebinding to a DIFFERENT composite uses the new shape" {
+  // The clear-on-rebind must not overshoot: the new binding's own shape has
+  // to win, not just cancel the old one.
+  let v = (1, 2)
+  assert_eq("\{v}", "(1, 2)")
+  let v = [
+    9
+  ]
+  assert_eq("\{v}", "[9]")
+  let v = (1, 2, 3)
+  assert_eq("\{v}", "(1, 2, 3)")
+}
+
+test "#1465: a shadowed name nested inside another shape is not stale either" {
+  // infer_shape resolves an element that is a NAME through the same records,
+  // so the rule has to hold there too or the outer tuple gets a stale inner.
+  let inner = (1, 2)
+  let inner = 5
+  let outer = (0, inner)
+  assert_eq("\{outer}", "(0, 5)")
+}

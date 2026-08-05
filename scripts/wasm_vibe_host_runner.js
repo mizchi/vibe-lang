@@ -90,7 +90,7 @@ function toU32(value) {
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--daemon] [--invoke <name>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
+    "usage: node scripts/wasm_vibe_host_runner.js [--daemon] [--invoke <name>]... [--invoke-batch-dir <dir>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
   );
 }
 
@@ -102,10 +102,19 @@ function parseArgs(argv) {
   let benchWarmup = 0;
   let benchSetup = null;
   let daemon = false;
+  let invokeBatchDir = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--daemon") {
       daemon = true;
+      continue;
+    }
+    if (arg === "--invoke-batch-dir") {
+      if (i + 1 >= argv.length) {
+        throw new Error("--invoke-batch-dir requires a directory");
+      }
+      invokeBatchDir = argv[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--invoke") {
@@ -161,7 +170,7 @@ function parseArgs(argv) {
   if (invokes.length === 0) {
     invokes.push("_start");
   }
-  return { daemon, invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup };
+  return { daemon, invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup, invokeBatchDir };
 }
 
 function parsePositiveIntEnv(name) {
@@ -1667,6 +1676,7 @@ async function main() {
     benchCount,
     benchWarmup,
     benchSetup,
+    invokeBatchDir,
   } = parseArgs(process.argv.slice(2));
   let passthroughArgs = initialPassthroughArgs.slice();
   passthroughArgsGlobal = passthroughArgs;
@@ -2585,9 +2595,23 @@ async function main() {
     // Outputs are byte-identical for cli_main either way (verified); skip the
     // pre-start for both known single-entry names. VIBE_FORCE_RUN_INIT=1
     // restores the old (double-invoking) behavior for debugging.
+    //
+    // #819: `__test_<name>` / `__bench_<name>` are the per-block exports of a
+    // `__no_entry__` test/bench build, and there `_start` IS the loop over all
+    // of those blocks -- pre-running it would run EVERY block before the one
+    // being invoked (a failing sibling would fail every per-block invoke, and
+    // a merged N-file module would run the whole battery N times). There is no
+    // module init to lose: a test module's `_start` contains only that loop,
+    // and top-level non-function bindings are lazily-initialized thunk globals,
+    // not a start-section side effect. The Rust runner's `--bench` mode already
+    // calls these exports directly with env=0 (runtime/viberun/src/main.rs);
+    // this makes the JS runner's `--invoke` agree.
+    const isPerBlockExport =
+      invoke.startsWith("__test_") || invoke.startsWith("__bench_");
     const skipRunInit =
       process.env.VIBE_SKIP_RUN_INIT === "1" ||
-      ((invoke === "cli_main" || invoke === "main") && process.env.VIBE_FORCE_RUN_INIT !== "1");
+      ((invoke === "cli_main" || invoke === "main" || isPerBlockExport) &&
+        process.env.VIBE_FORCE_RUN_INIT !== "1");
     let resolvedEnv = 0;
     if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
       if (!didInitStart) {
@@ -2767,6 +2791,15 @@ async function main() {
   };
 
   const emitResult = (invoke, result, isSelfhost) => {
+    // #819: a per-block `__test_`/`__bench_` entry is "run this block", not
+    // "evaluate this and report the value" -- codegen gives every one of them
+    // the same `ESeq(body, EInt(0))` shape, so the result is a constant 0 that
+    // carries no information. Printing it would append a stray `0` line to the
+    // block's own stdout, which the doctest harness compares against the
+    // embedded ```output block. `_start` doesn't print it either.
+    if (invoke.startsWith("__test_") || invoke.startsWith("__bench_")) {
+      return;
+    }
     if (typeof result === "bigint") {
       // Check if the result is a tagged object (could be Bytes from selfbuild)
       if (
@@ -2836,6 +2869,80 @@ async function main() {
     const elapsedUs = Number(process.hrtime.bigint() - profileStartNs) / 1000;
     writeProfileRequest(profileRequest, elapsedUs);
     return { result, isSelfhost, elapsedUs };
+  };
+
+  // #819/#141: run EVERY `--invoke` target in one process, keeping each one's
+  // output separate.
+  //
+  // The doctest harness compiles a doc's blocks into a single module (#819)
+  // and then invoked one `__test_<block>` export per block -- one node process
+  // each, ~61ms of process+instantiate overhead apiece that has nothing to do
+  // with the block. `--invoke` was always repeatable, but a plain repeat
+  // concatenates every target's stdout into one stream, and the harness has to
+  // compare EACH block's stdout against its own ```output. So the split is the
+  // whole feature: target i's stdout, stderr and status land in
+  // `<dir>/<i>.{out,err,rc}`, 1-based in flag order.
+  //
+  // Files rather than in-band delimiters on purpose: a block's stdout is
+  // arbitrary doc output, so any marker line could legitimately appear inside
+  // it and there is no escaping layer to lean on.
+  //
+  // Sequential invokes share one instance, which is exactly what `_start` does
+  // for a test module (it loops over every `test_*` export in the same
+  // instance), so this is the established semantics rather than a new one. A
+  // failing target does NOT stop the batch -- its `rc` is 1 and the next one
+  // runs -- but a target that dies hard enough to take the process with it
+  // simply leaves later `.rc` files absent, which callers read as "not run"
+  // and fall back to running those alone.
+  const runInvokeBatch = (args, dir) => {
+    passthroughArgs = args.slice();
+    passthroughArgsGlobal = passthroughArgs;
+    fs.mkdirSync(dir, { recursive: true });
+    const originalStdoutWrite = process.stdout.write;
+    const originalStderrWrite = process.stderr.write;
+    let anyFailed = false;
+    for (let i = 0; i < invokes.length; i += 1) {
+      let out = "";
+      let err = "";
+      const capture = (append) => (chunk, encoding, callback) => {
+        if (typeof encoding === "function") {
+          callback = encoding;
+        }
+        append(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+        if (typeof callback === "function") {
+          callback();
+        }
+        return true;
+      };
+      let rc = 0;
+      process.stdout.write = capture((t) => {
+        out += t;
+      });
+      process.stderr.write = capture((t) => {
+        err += t;
+      });
+      try {
+        const { result, isSelfhost } = invokeExport(invokes[i]);
+        // A per-block export carries no result (emitResult returns early for
+        // `__test_`/`__bench_`); for anything else this keeps batch mode's
+        // stdout the same as a single-invoke run's.
+        emitResult(invokes[i], result, isSelfhost);
+      } catch (e) {
+        rc = 1;
+        err += `${decodeExceptionMessage(e)}\n`;
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+        process.stderr.write = originalStderrWrite;
+      }
+      const slot = String(i + 1);
+      fs.writeFileSync(path.join(dir, `${slot}.out`), out);
+      fs.writeFileSync(path.join(dir, `${slot}.err`), err);
+      fs.writeFileSync(path.join(dir, `${slot}.rc`), `${rc}\n`);
+      if (rc !== 0) {
+        anyFailed = true;
+      }
+    }
+    return anyFailed;
   };
 
   const decodeExceptionMessage = (err) => {
@@ -2953,7 +3060,20 @@ async function main() {
   };
 
   if (daemon) {
+    if (invokeBatchDir !== null) {
+      throw new Error("--daemon cannot be combined with --invoke-batch-dir");
+    }
     await runDaemon();
+    return;
+  }
+
+  if (invokeBatchDir !== null) {
+    if (benchCount !== null) {
+      throw new Error("--invoke-batch-dir cannot be combined with --bench-count");
+    }
+    const anyFailed = runInvokeBatch(passthroughArgs, invokeBatchDir);
+    emitWasmMemoryStats("run");
+    process.exitCode = anyFailed ? 1 : 0;
     return;
   }
 

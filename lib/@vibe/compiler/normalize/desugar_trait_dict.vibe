@@ -1751,6 +1751,380 @@ fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, 
   }
 }
 
+// ---- #1445: shapes that survive a BINDING ----
+//
+// #1392 slice 2 rendered a tuple/array/Option/Result written literally at the
+// interpolation site, and slice 1 rendered a `derive(Show)` value. What stayed
+// broken is the same value reached through a NAME:
+//
+//   "\{(1, 2)}"                 -> "(1, 2)"     already worked
+//   let t = (1, 2); "\{t}"      -> "228"        the raw pointer, #1445
+//
+// The head name alone (`infer_arg_type_name` returns "Tuple"/"Array") gives
+// neither arity nor element types, and a local `let`'s type annotation is not
+// in the AST (`ELet` has no annotation field, only `SLet` does), so there is no
+// TypeExpr to hand `show_for_typed`. But the BINDING SITE has the shape in
+// front of it -- `let t = (1, 2)` is a tuple literal right there -- so the
+// shape is recorded then and looked up at the interpolation site, exactly the
+// way `array_elem_bind` already records a let-bound array's element type.
+//
+// Two sentinel KEYS (not values), same `$`-in-the-key trick as
+// `array_elem_key`: `$` is not a valid identifier character, so no real source
+// name can collide.
+
+/// `__tupshape$<name>` -> the tuple's per-element type names, comma-joined.
+/// An element whose type this pass could not infer contributes an EMPTY entry,
+/// so arity is always exactly `commas + 1` and a partially-inferable tuple
+/// still renders (the unknown elements just fall back to `__to_string`).
+fn tuple_shape_key(pname: String) -> String {
+  String::concat("__tupshape$", pname)
+}
+
+/// A constructor name, by the language's own convention: vibe functions and
+/// variables are snake_case (lowercase), so an uppercase first letter is what
+/// distinguishes `B(p)` from `helper(p)` without a constructor table.
+fn starts_upper(sname: String) -> Bool {
+  if String::length(sname) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(sname, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+/// `__ctorpayi$<Ctor>$<i>$<name>` -> the shape of slot `i` of `<name>`'s
+/// multi-field `<Ctor>` payload (#139). Arity 1 keeps the unindexed key below.
+fn ctor_payload_idx_key(pname: String, ctor: String, idx: Int) -> String {
+  String::concat("__ctorpayi$", String::concat(ctor, String::concat("$", String::concat(__to_string(idx), String::concat("$", pname)))))
+}
+
+/// `__ctorpay$<Ctor>$<name>` -> the payload type of `<name>`'s `<Ctor>` arm.
+/// `Option[P]` records `Some -> P`; `Result[T, E]` records `Ok -> T` and
+/// `Err -> E`. Read when a `match` scrutinises that variable, so the arm's
+/// binder gets a type (#1445 cause 3: a pattern binder is otherwise absent
+/// from `var_types` entirely).
+fn ctor_payload_key(pname: String, ctor: String) -> String {
+  String::concat("__ctorpay$", String::concat(ctor, String::concat("$", pname)))
+}
+
+fn push_all_var_types(out: Array[(String, String)], var_types: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(var_types) {
+    Array::push(out, Array::get(var_types, i))
+    i = i + 1
+  }
+}
+
+/// Split a `tuple_shape_key` value back into its per-element type names.
+/// Written by hand rather than via `String::split` because an EMPTY element
+/// (an uninferable one) must survive as an empty entry -- it is what keeps the
+/// entry count equal to the tuple's arity.
+fn tuple_shape_parts(sentinel: String) -> Array[String] {
+  let out = empty_str_array()
+  let mut rest = sentinel
+  let mut go = true
+  while go {
+    let comma = String::index_of(rest, ",")
+    if comma < 0 {
+      Array::push(out, rest)
+      go = false
+    } else {
+      Array::push(out, String::substring(rest, 0, comma))
+      rest = String::substring(rest, comma + 1, String::length(rest))
+    }
+  }
+  out
+}
+
+/// #1445: record a let-bound TUPLE literal's shape. Sibling of
+/// `array_elem_bind` -- same "only a bare literal RHS" scope, for the same
+/// reason (this is a syntax-directed pass, not type inference).
+fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match val {
+    ETuple(items) => if Array::length(items) > 0 {
+      let mut acc = ""
+      let mut i = 0
+      while i < Array::length(items) {
+        let tn = match infer_arg_type_name(Array::get(items, i), struct_sets, var_types, fn_returns) {
+          Some(t) => t,
+          None => ""
+        }
+        acc = if i == 0 {
+          tn
+        } else {
+          String::concat(acc, String::concat(",", tn))
+        }
+        i = i + 1
+      }
+      let out = array_empty()
+      push_all_var_types(out, var_types)
+      Array::push(out, (tuple_shape_key(name), acc))
+      out
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
+/// #1445: record a let-bound `Some(e)` / `Ok(e)` / `Err(e)`'s payload type, so
+/// a later `match` on that variable can type its binder. The parameter-side
+/// counterpart lives in `seed_var_types`, which has a real `TypeExpr`
+/// (`Option[P]`) to read the payload off.
+fn ctor_payload_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match val {
+    ECall(callee, cargs, _) => match callee {
+      EIdent(cn, _) => if Array::length(cargs) >= 1 && starts_upper(cn) {
+        let out = array_empty()
+        push_all_var_types(out, var_types)
+        let mut i = 0
+        let mut wrote = false
+        while i < Array::length(cargs) {
+          let sh = infer_shape(Array::get(cargs, i), struct_sets, var_types, fn_returns)
+          if String::length(sh) == 0 {
+            ()
+          } else {
+            // Arity 1 keeps the plain key, so the `Option`/`Result` entries
+            // seed_var_types writes from a real TypeExpr stay interchangeable
+            // with these.
+            let key = if Array::length(cargs) == 1 {
+              ctor_payload_key(name, cn)
+            } else {
+              ctor_payload_idx_key(name, cn, i)
+            }
+            Array::push(out, (key, sh))
+            wrote = true
+          }
+          i = i + 1
+        }
+        if wrote {
+          out
+        } else {
+          var_types
+        }
+      } else {
+        var_types
+      },
+      _ => var_types
+    },
+    _ => var_types
+  }
+}
+
+// ---- #1445 (#139): shapes that NEST ----
+//
+// `tuple_shape_key` records one type NAME per element, which is exactly one
+// level deep: an element that is itself a tuple or an array records the head
+// name ("Tuple" / "Array") and the renderer has nowhere to go from there, so
+// `let outer = (0, (1, p))` printed `(0, 268)`. Same for `[(1, p)]` and
+// `(1, [p])`.
+//
+// The fix is a recursive SHAPE STRING, recorded under its own sentinel so the
+// existing `__tupshape$` / `__arrelem$` entries keep their exact meaning for
+// their other consumers (call-site dict synthesis reads `__arrelem$`, and its
+// value has to stay a bare type name):
+//
+//   ""              unknown -- render through the ordinary `__to_string`
+//   Name            a plain type name (Int, String, P, ...)
+//   (s1,s2,...)     a tuple of those shapes
+//   [s]             an array of that shape
+//
+// Nesting is why the parts cannot be recovered with `String::split(",")`:
+// `Int,(Int,P)` has a comma inside the second element. `shape_split` tracks
+// bracket depth instead.
+
+fn shape_key(pname: String) -> String {
+  String::concat("__shape$", pname)
+}
+
+fn shape_is_composite(sh: String) -> Bool {
+  String::starts_with(sh, "(") || String::starts_with(sh, "[")
+}
+
+/// Split a tuple shape's INNER text (`s1,s2,...`, no outer parens) on
+/// top-level commas only.
+fn shape_split(inner: String) -> Array[String] {
+  let out = empty_str_array()
+  let n = String::length(inner)
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(inner, i)
+    if c == 40 || c == 91 {
+      depth = depth + 1
+    } else if c == 41 || c == 93 {
+      depth = depth - 1
+    } else if c == 44 && depth == 0 {
+      Array::push(out, String::substring(inner, start, i))
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::push(out, String::substring(inner, start, n))
+  out
+}
+
+/// The text between a composite shape's outer brackets.
+fn shape_inner(sh: String) -> String {
+  String::substring(sh, 1, String::length(sh) - 1)
+}
+
+/// The shape of an expression, as deep as this syntax-directed pass can see.
+/// A literal tuple/array recurses; a NAME resolves through whatever the
+/// binding site recorded for it (its own shape first, then the older
+/// per-element / per-tuple sentinels, so a value bound before this function
+/// existed still resolves); anything else falls back to the head type name.
+fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match e {
+    ETuple(items) => if Array::length(items) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      while i < Array::length(items) {
+        let sub = infer_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      String::concat(acc, ")")
+    },
+    // The first element stands for all of them: this pass has no unifier, and
+    // a heterogeneous array literal does not type-check anyway.
+    EArray(items) => if Array::length(items) == 0 {
+      ""
+    } else {
+      String::concat("[", String::concat(infer_shape(Array::get(items, 0), struct_sets, var_types, fn_returns), "]"))
+    },
+    EIdent(n, _) => match lookup_var_type(var_types, shape_key(n)) {
+      // Same rule as interp_expand's: a recorded empty is an answer ("not
+      // composite"), so fall through to the head name rather than to the
+      // older sentinels.
+      Some(sh) => if String::length(sh) == 0 {
+        match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+          Some(t) => t,
+          None => ""
+        }
+      } else {
+        sh
+      },
+      None => match lookup_var_type(var_types, tuple_shape_key(n)) {
+        Some(sentinel) => String::concat("(", String::concat(sentinel, ")")),
+        None => match array_elem_type_of(var_types, n) {
+          Some(elem) => String::concat("[", String::concat(elem, "]")),
+          None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+            Some(t) => t,
+            None => ""
+          }
+        }
+      }
+    },
+    _ => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+      Some(t) => t,
+      None => ""
+    }
+  }
+}
+
+/// Record a binding's recursive shape, when there is one worth recording. A
+/// plain name adds nothing the existing entries do not already carry, so only
+/// composites are stored.
+fn shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let sh = infer_shape(val, struct_sets, var_types, fn_returns)
+  let out = array_empty()
+  push_all_var_types(out, var_types)
+  // ALWAYS record, even for a non-composite binding (recording ""). Skipping
+  // those would leave a SHADOWED name's old shape as the live answer:
+  // `extend_var_types` appends and `lookup_var_type` returns the LAST match
+  // (#760(4)), but `__shape$x` is a different KEY from `x`, so rebinding `x`
+  // never overwrote it. Measured before this: `let x = (1, 2); let x = 3;
+  // "\{x}"` printed `(0, 0)`, and the array case printed `[]` -- silently
+  // wrong output, no trap (Codex review on PR #1465).
+  //
+  // The empty entry is not just "no shape": interp_expand treats a RECORDED
+  // empty as "this binding is not composite, stop" rather than falling
+  // through to the older per-tuple / per-element sentinels, which have the
+  // same staleness and which this pass does not rewrite (they are read by
+  // call-site dict synthesis too, so appending empties there would change
+  // #1199's behaviour).
+  Array::push(out, (shape_key(name), sh))
+  out
+}
+
+/// #1445: every binding-site shape record, applied in one place so `ELet` and
+/// `ELetMut` cannot drift apart.
+fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let a = array_elem_bind(var_types, name, val, struct_sets, fn_returns)
+  let b = tuple_shape_bind(a, name, val, struct_sets, fn_returns)
+  let c = ctor_payload_bind(b, name, val, struct_sets, fn_returns)
+  // LAST: infer_shape reads the sentinels the three above just wrote, so a
+  // binding whose elements are themselves named bindings resolves in one pass.
+  shape_bind(c, name, val, struct_sets, fn_returns)
+}
+
+/// #1445 cause 3: the var-type environment for ONE match arm's body.
+///
+/// A pattern binder never entered `var_types`, so anything reached through one
+/// fell to the pointer heuristic. When the scrutinee is a bare NAME whose
+/// `<Ctor>` payload type was recorded -- by `seed_var_types` off an
+/// `Option[P]` / `Result[T, E]` annotation, or by `ctor_payload_bind` off a
+/// let-bound `Some(..)` -- a single-binder `PCtor` arm gives that type to its
+/// binder.
+///
+/// Deliberately narrow: only `PCtor(c, [PBind(v)])` over a named scrutinee.
+/// Nested patterns, tuple payloads and multi-field constructors would each
+/// need their own payload decomposition, and this pass has one type name per
+/// (variable, ctor) to work with -- widening it is what a real typed AST is
+/// for, not more sentinels. Everything not matched here behaves exactly as
+/// before.
+fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  match scrut {
+    EIdent(sname, _) => match p {
+      PCtor(cn, sub) => {
+        let n = Array::length(sub)
+        let mut acc = var_types
+        let mut i = 0
+        while i < n {
+          match Array::get(sub, i) {
+            PBind(v) => {
+              let key = if n == 1 {
+                ctor_payload_key(sname, cn)
+              } else {
+                ctor_payload_idx_key(sname, cn, i)
+              }
+              match lookup_var_type(acc, key) {
+                Some(sh) => if shape_is_composite(sh) {
+                  // A composite payload goes in as a SHAPE, so the arm body's
+                  // interpolation takes the recursive path rather than the
+                  // head-name one.
+                  let out = array_empty()
+                  push_all_var_types(out, acc)
+                  Array::push(out, (shape_key(v), sh))
+                  acc = out
+                } else {
+                  acc = extend_var_types(acc, v, Some(sh))
+                },
+                None => ()
+              }
+            },
+            _ => ()
+          }
+          i = i + 1
+        }
+        acc
+      },
+      _ => var_types
+    },
+    _ => var_types
+  }
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -1789,8 +2163,35 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
             TyName(elem) => Array::push(out, (array_elem_key(pname), elem)),
             _ => ()
           }
+        } else if tn == "Option" && Array::length(targs) == 1 {
+          // #1445 cause 3: `o: Option[P]` -- the HEAD alone ("Option") is what
+          // reaches `var_types`, so a `match o { Some(v) => "\{v}" }` had no
+          // type for `v` at all and fell to the ADR-0058 pointer heuristic.
+          // The annotation still has `P` right here; record it against the
+          // ctor so the match arm can bind it.
+          match Array::get(targs, 0) {
+            TyName(pay) => Array::push(out, (ctor_payload_key(pname, "Some"), pay)),
+            _ => ()
+          }
+        } else if tn == "Result" && Array::length(targs) == 2 {
+          match Array::get(targs, 0) {
+            TyName(okty) => Array::push(out, (ctor_payload_key(pname, "Ok"), okty)),
+            _ => ()
+          }
+          match Array::get(targs, 1) {
+            TyName(errty) => Array::push(out, (ctor_payload_key(pname, "Err"), errty)),
+            _ => ()
+          }
+        } else {
+          ()
         }
       },
+      // #1445: a tuple ANNOTATION (`t: (Int, P)`) deliberately records
+      // NOTHING here. Measured: an annotated tuple parameter already renders
+      // structurally, and it renders NESTED tuples too (`(Int, (Int, P))` ->
+      // `(5, (7, P { x: 6 }))`) -- it goes through a real TypeExpr, so it
+      // beats the flat per-element name list this pass's sentinel can carry.
+      // Recording the sentinel would only divert those to a weaker renderer.
       _ => ()
     }
     i = i + 1
@@ -3089,6 +3490,164 @@ fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String,
   concat2(acc, EString(close_s))
 }
 
+/// #1445: render a variable whose binding site recorded a TUPLE shape
+/// (`tuple_shape_key`). The expansion destructures the variable rather than
+/// re-evaluating any element expression -- the tuple is already built, and
+/// the binding's RHS may not even be in scope here.
+///
+///   let t = (1, p)   ->   match t { (a, b) => "(" ++ show(a) ++ ", " ++ show(b) ++ ")" }
+///
+/// Each binder is rendered through `interp_render_sub`, with its recorded
+/// element type pushed into `var_types` first -- that is what lets a
+/// `derive(Show)` struct inside the tuple render structurally instead of
+/// falling to the pointer heuristic. An element whose type was not inferable
+/// at the binding site carries an empty entry and simply renders through the
+/// ordinary `__to_string`, exactly as it does today.
+fn interp_expand_var_tuple(name: String, elem_types: Array[String], derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
+  let n = Array::length(elem_types)
+  let pats = array_empty()
+  let binders = empty_str_array()
+  let mut i = 0
+  while i < n {
+    let v = show_tmp_name()
+    Array::push(pats, PBind(v))
+    Array::push(binders, v)
+    i = i + 1
+  }
+  let mut acc = EString("(")
+  let mut k = 0
+  while k < n {
+    let v = Array::get(binders, k)
+    let et = Array::get(elem_types, k)
+    let vt = if String::length(et) == 0 {
+      var_types
+    } else {
+      extend_var_types(var_types, v, Some(et))
+    }
+    let piece = interp_render_sub(EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, vt, fn_returns)
+    acc = if k == 0 {
+      concat2(acc, piece)
+    } else {
+      concat2(concat2(acc, EString(", ")), piece)
+    }
+    k = k + 1
+  }
+  EMatch(EIdent(name, -1), Array::slice([
+    (PTuple(pats), concat2(acc, EString(")")))
+  ], 0, 1))
+}
+
+/// #1445: render a variable known to hold an `Array[T]` (its element type was
+/// recorded under `array_elem_key` by `array_elem_bind` or `seed_var_types`).
+///
+/// The loop is emitted INLINE rather than as a call to a monomorphic
+/// `__arr_to_string__<key>` helper. `gen_arr_to_string_fn` builds that helper
+/// for `derive`d fields, but emitting one from here would mean driving helper
+/// COLLECTION from interpolation sites in `desugar_derives` -- a second pass
+/// has to have already decided which helpers exist by the time this one runs.
+/// The loop body is the same shape as that helper's, so nothing is duplicated
+/// conceptually; it is just placed where the type is known.
+///
+/// The element is rendered by re-entering the rewrite on `Array::get(name, i)`
+/// -- `infer_arg_type_name` already resolves that shape through
+/// `array_elem_type_of`, so a `derive(Show)` element renders structurally
+/// without any extra plumbing here.
+fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
+  let iv = String::concat(show_tmp_name(), "_i")
+  let av = String::concat(show_tmp_name(), "_acc")
+  let elem_piece = interp_render_sub(ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent(name, -1),
+    EIdent(iv, -1)
+  ], 0, 2), -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0)), EString(""), EString(", "))
+  let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
+  let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1)), EUnit))
+  let len_call = ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent(name, -1)
+  ], 0, 1), -1)
+  let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call), body)
+  ELetMut(iv, EInt(0), ELetMut(av, EString("["), ESeq(loop_e, concat2(EIdent(av, -1), EString("]"))), -1), -1)
+}
+
+/// #1445 (#139): render `sub` given its recursive SHAPE.
+///
+/// The tuple case destructures with a `match` so no element expression is
+/// re-evaluated; the array case binds each element to a name inside the loop,
+/// which is what lets a NESTED composite element recurse (an element reached
+/// as `Array::get(a, i)` has no name for `var_types` to key on).
+fn interp_render_shaped(sub: Expr, sh: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
+  if shape_is_composite(sh) {
+    interp_expand_shape(sub, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  } else if String::length(sh) == 0 {
+    interp_render_sub(sub, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  } else {
+    match sub {
+      EIdent(v, _) => interp_render_sub(sub, derived_only, gens, traits, struct_sets, dict_binds, extend_var_types(var_types, v, Some(sh)), fn_returns),
+      _ => interp_render_sub(sub, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }
+  }
+}
+
+/// #1445 (#139): the tuple / array expansion for a composite shape. Supersedes
+/// interp_expand_var_tuple / interp_expand_var_array for anything that nests;
+/// those two stay for the shapes recorded by the older sentinels alone.
+fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
+  if String::starts_with(sh, "(") {
+    let parts = shape_split(shape_inner(sh))
+    let n = Array::length(parts)
+    let pats = array_empty()
+    let binders = empty_str_array()
+    let mut i = 0
+    while i < n {
+      let v = show_tmp_name()
+      Array::push(pats, PBind(v))
+      Array::push(binders, v)
+      i = i + 1
+    }
+    let mut acc = EString("(")
+    let mut k = 0
+    while k < n {
+      let piece = interp_render_shaped(EIdent(Array::get(binders, k), -1), Array::get(parts, k), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      acc = if k == 0 {
+        concat2(acc, piece)
+      } else {
+        concat2(concat2(acc, EString(", ")), piece)
+      }
+      k = k + 1
+    }
+    EMatch(subject, Array::slice([
+      (PTuple(pats), concat2(acc, EString(")")))
+    ], 0, 1))
+  } else {
+    // Array. The subject is read twice (length + per-index get), so it must be
+    // a name; anything else is bound once first.
+    let elem_sh = shape_inner(sh)
+    let nm = match subject {
+      EIdent(n, _) => n,
+      _ => show_tmp_name()
+    }
+    let iv = String::concat(show_tmp_name(), "_i")
+    let av = String::concat(show_tmp_name(), "_acc")
+    let ev = show_tmp_name()
+    let elem_piece = ELet(ev, ECall(EIdent("Array::get", -1), Array::slice([
+      EIdent(nm, -1),
+      EIdent(iv, -1)
+    ], 0, 2), -1), interp_render_shaped(EIdent(ev, -1), elem_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
+    let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0)), EString(""), EString(", "))
+    let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
+    let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1)), EUnit))
+    let len_call = ECall(EIdent("Array::length", -1), Array::slice([
+      EIdent(nm, -1)
+    ], 0, 1), -1)
+    let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call), body)
+    let inner = ELetMut(iv, EInt(0), ELetMut(av, EString("["), ESeq(loop_e, concat2(EIdent(av, -1), EString("]"))), -1), -1)
+    match subject {
+      EIdent(_, _) => inner,
+      _ => ELet(nm, subject, inner, -1)
+    }
+  }
+}
+
 /// `ctor_name(<rendered payload>)`.
 fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
   concat2(EString(String::concat(ctor, "(")), concat2(interp_render_sub(payload, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")")))
@@ -3136,7 +3695,33 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(Stri
     EIdent(n, _) => if n == "None" && head == "Option" {
       Some(EString("None"))
     } else {
-      interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      // #1445: a tuple or array reached through a NAME. The shape came from
+      // the binding site (tuple_shape_bind / array_elem_bind) or from a
+      // parameter annotation (seed_var_types), which is what the head name
+      // alone could never supply.
+      // #139: the recursive shape first -- it is the only one that can carry
+      // a nested tuple/array. The two older sentinels still answer for a
+      // binding shape_bind declined to record (a PARAMETER annotation, which
+      // seeds them directly and never goes through bind_shapes).
+      match lookup_var_type(var_types, shape_key(n)) {
+        // A RECORDED shape is the binding site's answer, empty or not: an
+        // empty one means the innermost binding of `n` is not a tuple/array,
+        // so the older sentinels (which a shadowing rebind does not clear)
+        // must NOT be consulted. Only a name with no record at all -- a
+        // parameter, seeded directly by seed_var_types -- falls through.
+        Some(sh) => if shape_is_composite(sh) {
+          Some(interp_expand_shape(EIdent(n, -1), sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+        } else {
+          interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        },
+        None => match lookup_var_type(var_types, tuple_shape_key(n)) {
+          Some(sentinel) => Some(interp_expand_var_tuple(n, tuple_shape_parts(sentinel), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+          None => match array_elem_type_of(var_types, n) {
+            Some(_) => Some(interp_expand_var_array(n, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+            None => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          }
+        }
+      }
     },
     ECall(callee, cargs, _) => match callee {
       EIdent(cn, _) => if Array::length(cargs) == 1 && ((head == "Option" && cn == "Some") || (head == "Result" && (cn == "Ok" || cn == "Err"))) {
@@ -3515,14 +4100,14 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -3533,7 +4118,14 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        // #1445 cause 3: a pattern binder was absent from `var_types`
+        // entirely, so `match o { Some(v) => "\{v}" }` rendered `v` through
+        // the ADR-0058 pointer heuristic even when `o`'s payload type was
+        // known. When the scrutinee is a NAME whose payload type was recorded
+        // (`ctor_payload_key`, from a parameter annotation or a let-bound
+        // `Some(..)`), the arm's binder gets that type for its body.
+        let arm_vars = arm_binder_var_types(scrut, p, var_types)
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)

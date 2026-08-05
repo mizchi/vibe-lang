@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, is_exception_effect_name
+  Expr, Stmt, TypeExpr, is_core_ambient_effect, is_exception_effect_name
 }
 
 import @vibe/core {
@@ -568,13 +568,26 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
         let mut ri = 0
         while ri < Array::length(resolved) {
           let rname = Array::get(resolved, ri)
-          // ADR-0089 Decision 5 (#1218): `Async` is THE builtin suspension
-          // effect (D1) -- it surfaces as the export's `async func` lifting
-          // mode, never as a world import (even when the program carries a
-          // transparent local `effect Async { .. }` declaration, #752).
-          if rname == "Async" {
+          // ADR-0084's CORE AMBIENT class never becomes a world import:
+          // `Error`/`Exception[K]` are vibe-internal control flow (an
+          // escaping throw is a component trap, not a capability), and
+          // `Async` is THE builtin suspension effect (ADR-0089 Decision 5,
+          // #1218) -- it surfaces as the export's `async func` lifting mode
+          // (even when the program carries a transparent local `effect Async
+          // { .. }` declaration, #752).
+          //
+          // #1343 (ADR-0094 実装順 1): この `rname == "Async" ||
+          // is_exception_effect_name(rname)` の二項判定は
+          // core/effect_taxonomy.vibe の `is_core_ambient_effect` に寄せた
+          // (checker 側の builtin_call_effect と同じ規則の重複だった)。
+          // **wit_gen の分類の反転 -- 下の `def_idx < 0` が「`effect X {..}`
+          // 宣言があれば interface、無ければ host capability」という
+          // ADR-0084 と逆の規則になっている件 (#1143 のねじれ) -- は
+          // ADR-0094 実装順 4 で直す。挙動変更を分離するため、ここでは
+          // 触っていない。**
+          if is_core_ambient_effect(rname) {
             ()
-          } else if !is_exception_effect_name(rname) && !wit_array_contains(used_effects, rname) {
+          } else if !wit_array_contains(used_effects, rname) {
             Array::push(used_effects, rname)
           } else {
             ()

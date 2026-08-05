@@ -1004,3 +1004,71 @@ test "#1429: an empty braceless row is a located error, not a silent empty row" 
   assert(String::starts_with(dangling, "ERROR: "))
   assert(String::contains(dangling, "effect name"))
 }
+
+//# ADR-0075 Phase 2: `resource` declarations (#1343 実装順 2)
+
+test "#1343: `resource Name : Owner::Kind` parses and round-trips" {
+  let printed = handle {
+    print_program(parse_program(lex("resource Posts : S3::Bucket\n")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(printed, "resource Posts: S3::Bucket"))
+}
+
+test "#1343: an UNQUALIFIED resource kind is rejected by name" {
+  // A bare name here would be indistinguishable from a type, and ADR-0075 is
+  // explicit that a resource kind is not a type.
+  let bare = handle {
+    let _ = parse_program(lex("resource Posts : Bucket\n"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(bare, "ERROR: "))
+  assert(String::contains(bare, "qualified"))
+}
+
+test "#1343: a QUALIFIED resource name says which side takes the path" {
+  let swapped = handle {
+    let _ = parse_program(lex("resource S3::Posts : Bucket\n"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(swapped, "ERROR: "))
+  assert(String::contains(swapped, "resource KIND"))
+}
+
+test "#1343: a `resource` declaration cannot be exported" {
+  // ADR-0075 puts it at the `.vibex` root only; a reusable module abstracts
+  // over a resource KIND parameter instead of naming a resource.
+  let exported = handle {
+    let _ = parse_program(lex("export resource Posts : S3::Bucket\n"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(exported, "ERROR: "))
+  assert(String::contains(exported, "cannot be exported"))
+}
+
+test "#1343: `resource` is still an ordinary identifier" {
+  // The declaration form needs `<Ident> :` after the word, so a statement
+  // that merely BEGINS with `resource` keeps meaning what it did. `effect`
+  // and `effectset` claim their word unconditionally; this one does not.
+  let asname = handle {
+    let _ = parse_program(lex("let resource = 1\nlet n = resource + 1\n"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(asname == "ok")
+  let called = handle {
+    let _ = parse_program(lex("let resource = (x) -> { x }\nlet y = resource(1)\n"))
+    "ok"
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(called == "ok")
+}
