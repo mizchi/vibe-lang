@@ -39,7 +39,7 @@ effect operation を、次の三分類で扱う。
 host preflight の前に型エラーとする。これは通常の関数の row を制限しない。
 
 既存 builtin の source compatibility は保つ。Phase 1 では、既存の
-`with { Fs }` と `Fs::read_file(...)` を暗黙 singleton resource
+`with Fs` と `Fs::read_file(...)` を暗黙 singleton resource
 `Fs[Process::Root]` として内部表現に lower する。明示 resource syntax は
 Phase 2 以降の追加であり、この ADR では構文を決めない。
 
@@ -158,7 +158,7 @@ Implementation sequence 1–4 と compiler fixture は引き続き必要であ�
 | 期待する契約 | ADR-0075 は `main` の closed/exact row と host preflight を要求する | entry row は host が解決可能でなければならない |
 | 実装観測 | `loader/loader.vibe` は `.vibex` の形と explicit row を検証するが、exact operation-row equality は後続 phase と明記している | 本 ADR は直ちに checker を変更しない |
 | 実装観測 | `checker_effects.vibe` は effect を文字列ラベルで追跡し、`Error` / `Async` を特別扱いしている | effect class/resource kind metadata が先行条件である |
-| 回帰ガード候補 | `main with { Logger }` は reject、`main with { Fs }` と `main with { Error }` は accept | Phase 3 の fixture と compiler gate に固定する |
+| 回帰ガード候補 | `main with Logger` は reject、`main with Fs` と `main with Error` は accept | Phase 3 の fixture と compiler gate に固定する |
 | 形式モデル | taxonomy-level requirement、entry/host/spawn 判定、handler discharge を Lean で定義した | ADR の意味論は machine-checked。checker 対応は未証明 |
 | metadata classifier | exactly-one metadata lookup と argument shape から complete row を分類し、unknown/duplicate/malformed を fail-closed にした | 実装 metadata はこの contract に対応させる |
 | Oracle corpus | 正負15ケースを Lean から TSV に生成し、stale snapshot を `formal-check` で拒否する | contract の回帰ガードは自動化済み。selfhost differential は metadata API 待ち |

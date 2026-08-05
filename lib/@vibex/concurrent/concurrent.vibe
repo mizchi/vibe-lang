@@ -27,10 +27,10 @@
 //     snapshots (single-heap: callers must send immutable values),
 //     Task::yield. (Async rows on the blocking API landed for the
 //     suspendable lane: Sender::send_wait / Receiver::recv_wait, with a
-//     concrete `with { Async }` row. #1181 made TaskGroup/Channel/Sender/
+//     concrete `with Async` row. #1181 made TaskGroup/Channel/Sender/
 //     Receiver row-polymorphic in `e` so spawned tasks can use effects
 //     beyond Error, which widened the stack-driving Sender::send /
-//     Receiver::recv / TaskHandle::join from row-free to `with { e }` -- a
+//     Receiver::recv / TaskHandle::join from row-free to `with e` -- a
 //     row VARIABLE. Callers inside an Async-carrying spawn_suspend closure
 //     literal must use the `_wait` primitives instead: the ADR-0076
 //     suspend/CPS lowering pass (inline_direct_perform.vibe,
@@ -65,7 +65,7 @@
 //
 // 追記31 UPDATE (closure-CPS ABI landed): `TaskGroup::spawn_suspend`
 // moves the handle site INSIDE the library — the caller passes a plain
-// `() -> T with { Async } { ... }` closure (explicit row annotation
+// `() -> T with Async { ... }` closure (explicit row annotation
 // required, #761) and never writes handle boilerplate. The legacy
 // run-to-completion `spawn` keeps its deferred-FIFO semantics unchanged.
 // Channel blocking for suspendable tasks landed on the same machinery:
@@ -817,7 +817,7 @@ export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -
 /// Send: returns once the message is linearized (buffered, deposited for a
 /// committed receiver, or consumed by a receiver we drove). THROWS `Closed`
 /// on a closed channel (#1324: was `Err(Closed)` in a Result return). Blocking with no runnable task traps (deadlock).
-/// Row-polymorphic (`with { e }`, #1181) -- ineligible as a callee inside
+/// Row-polymorphic (`with e`, #1181) -- ineligible as a callee inside
 /// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
 /// lowering rejects row-variable callees); use `Sender::send_wait` there.
 export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with Exception[SendError] + e {
@@ -930,7 +930,7 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
 /// Receive: Some(message) in linearization order, or None once the
 /// channel is closed and drained. Blocks by driving ready tasks;
 /// blocking with no runnable task traps (deadlock).
-/// Row-polymorphic (`with { e }`, #1181) -- ineligible as a callee inside
+/// Row-polymorphic (`with e`, #1181) -- ineligible as a callee inside
 /// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
 /// lowering rejects row-variable callees); use `Receiver::recv_wait` there.
 export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with e {
@@ -1019,7 +1019,7 @@ effect Async {
 
 /// Spawn a SUSPENDABLE task: the handle site lives INSIDE the library
 /// (closure-CPS ABI, ADR-0076 追記31 Vertical B) — the caller passes a
-/// plain `() -> T with { Async }` body and never writes the handle
+/// plain `() -> T with Async` body and never writes the handle
 /// boilerplate. The body runs eagerly to its first suspend (adopt
 /// semantics: the cell starts Running, never enters the drive_one queue);
 /// mid-body suspends park the continuation for pump/pump_all/wake.
@@ -1477,7 +1477,7 @@ fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
 //# Blocking channel ops (suspend-based)
 
 // Channel blocking for SUSPENDABLE tasks (ADR-0076 追記31 closure-CPS の
-// 続きスライス): `with { Async }` の row を持つ send/recv。バッファに
+// 続きスライス): `with Async` の row を持つ send/recv。バッファに
 // 空きがない / メッセージがない間は `perform Async::Suspend(0)` で park
 // し、pump/pump_all のラウンドロビンで再開されるたびに再検査する
 // (suspend lowering は loop spine 非対応なので、リトライは自己再帰 —

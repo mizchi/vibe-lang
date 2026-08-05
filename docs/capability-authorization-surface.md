@@ -14,7 +14,7 @@ ADR-0085(`Exception[E]`)。背景・選択肢の比較は
 ADR-0084 は effect operation を capability effect(resource kind を持ち host/provider
 が解決する)、algebraic effect(in-process handler で discharge する)、core ambient
 effect(言語予約の `Exception[E]`、移行中は `Error`)の三分類にすることを決めたが、
-**表面構文は意図的に未決のまま残していた**。現状の単一 `with { ... }` 行では、
+**表面構文は意図的に未決のまま残していた**。現状の単一 `with ...` 行では、
 シグネチャを読んだだけでは「環境から解決される権限」と「プログラム内で handler が
 解決する抽象」が区別できず、監査面(どの関数がどの外部権限を要求するか)が
 構文上見えない。
@@ -40,17 +40,17 @@ ADR-0043(`--allow-*`/`--deny-*`/`--profile`、未実装)はこのうち (2) を�
 
 ## Decision
 
-### 1. `with {A} allows {C}` — 検査付き糖衣
+### 1. `with A allows C` — 検査付き糖衣
 
 関数シグネチャと関数型の effect row を、2つの句に分けて書けるようにする。
 
-- 意味論は**単一 row のまま**とする。`with {A} allows {C}` は正規化 row `A ∪ C`
+- 意味論は**単一 row のまま**とする。`with A allows C` は正規化 row `A ∪ C`
   へ脱糖し、ADR-0071 の正規化・`Rreq ⊆ Rdecl` 包含・contract hash・WIT projection
   は句の綴りに一切依存しない。同じ集合を裸 `with`、分割形、effectset 経由で
   綴った関数は byte-identical な contract hash / WIT を生成する。
 - 分割述語は ADR-0084 の三分類に従う: **`allows` 句には capability effect のみ**、
   **`with` 句には algebraic effect・core ambient effect(`Error`/`Exception[E]`)・
-  row 変数のみ**を書ける。違反(`allows { Logger }` 等)は分類根拠を示す型エラー。
+  row 変数のみ**を書ける。違反(`allows Logger` 等)は分類根拠を示す型エラー。
 - `.vibex` の `main` は追加規則を持つ: `with` 句は core ambient のみ、`allows` 句は
   capability のみ。これは ADR-0084 の entry row 規則の句ごとの再表現である。
 - 糖衣は**型位置でも一様に使える**(高階関数パラメータ、型 alias、trait method
@@ -63,7 +63,7 @@ ADR-0043(`--allow-*`/`--deny-*`/`--profile`、未実装)はこのうち (2) を�
   appear in allows`)。fix-it は effectset の分割を提案するだけで、自動分割・
   自動移動はしない(ADR-0071 の「複数 consumer の権限を広げる fix-it を出さない」
   方針と一貫)。
-- **row 変数**は `with` 句のみに書ける。`allows { e }` はエラーとする — `allows` は
+- **row 変数**は `with` 句のみに書ける。`allows e` はエラーとする — `allows` は
   「全要素が静的に既知の capability OperationRef である」という約束であり、変数は
   それを満たせない。row 変数が混在集合へ実体化されることは従来どおり許す
   (意味論は単一 row であり、実体化先の具体 operation は呼び出し側の宣言 row で
@@ -172,25 +172,25 @@ checked failure として観測される)。静的にはリソース単位、動
   が裸 `with` のまま残っていたら **warning + 分割形への fix-it**。
 - builtin retrofit Phase 5(ADR-0043 統合フェーズ)の時点で: capability を含む
   `main` は**分割形を必須**とする。
-- row が core ambient のみの `main`(`fn main with { Error }`)は書くものが無いので
+- row が core ambient のみの `main`(`fn main with Error`)は書くものが無いので
   裸 `with` のままで恒久的に合法。通常関数はゲートの対象外(Decision 1)。
 
 ## Grammar sketch
 
 ```vibe skip
 // 分割シグネチャ: with = algebraic/core-ambient, allows = capability
-fn load_config() -> Config with { Logger, Exception[IoError] } allows { Fs::Read[Cfg] } {
+fn load_config() -> Config with Logger + Exception[IoError] allows Fs::Read[Cfg] {
   perform Logger::Log("loading")
   parse(perform Fs[Cfg]::read_file("config.json"))
 }
 
 // 型位置でも一様
-fn with_retry(op: () -> Bytes with { Logger } allows { Fs::read_file }) -> Bytes { ... }
+fn with_retry(op: () -> Bytes with Logger allows Fs::read_file) -> Bytes { ... }
 
 // Optional capability ('?' は capability item のみ、effectset 参照にも分配される)
 effectset Fs::Read = { Fs::read_file, Fs::read_bytes }
 
-fn maybe_use_cache() -> String allows { Fs::Read[CacheDir]? } {
+fn maybe_use_cache() -> String allows Fs::Read[CacheDir]? {
   match perform? Fs[CacheDir]::read_file("cache.json") {
     Ok(bytes)  => Bytes::to_string(bytes)
     Failed(_)  => compute_fresh()   // 権限はあったが操作自体が失敗
@@ -202,7 +202,7 @@ fn maybe_use_cache() -> String allows { Fs::Read[CacheDir]? } {
 enum Attempt[T, E] { NotGranted, Failed(E), Ok(T) }
 
 // .vibex main: with 句は core ambient のみ、allows 句は capability のみ
-fn main with { Exception[IoError] } allows { Fs::Read[CacheDir]?, Stdout } {
+fn main with Exception[IoError] allows Fs::Read[CacheDir]? + Stdout {
   Stdout::write_stream(maybe_use_cache())
 }
 ```
@@ -257,7 +257,7 @@ fn main with { Exception[IoError] } allows { Fs::Read[CacheDir]?, Stdout } {
    (`runtime/vibe` launcher、viberun / node runner の contract 駆動 import 注入、
    TTY prompt、非 TTY デフォルト)。
 5. **main gating warning**(ADR-0084 Phase 3 と同時、fixture:
-   `main with { Fs }` → warning + fix-it)。
+   `main with Fs` → warning + fix-it)。
 6. **分割形必須化 + ADR-0043 flag 配線 + const-fold DCE**(retrofit Phase 5)。
    linear / wasm-gc 両 backend で DCE 挙動が一致することを differential gate で固定。
 

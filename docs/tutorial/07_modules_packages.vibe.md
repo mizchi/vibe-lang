@@ -45,7 +45,7 @@ import ./support/mathx.vibe {
   triple
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("triple(14) = \{triple(14)}\n")
 }
 ```
@@ -68,7 +68,7 @@ import @vibe/core {
   hex_encode, sha1
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("length(sha1(\"vibe\")) = \{String::length(sha1("vibe"))}\n")
   stdout_write("hex_encode(\"hi\") = \{hex_encode("hi")}\n")
 }

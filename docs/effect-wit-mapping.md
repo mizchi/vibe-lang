@@ -9,7 +9,7 @@
 >
 > **Async / future / stream (2026-08-01, implemented):** the
 > [ADR-0089](wasip3-effect-alignment.md) Decision 5 mapping is now the
-> implementation: `Future[T]` → `future<T'>`, an export `with { Async }` →
+> implementation: `Future[T]` → `future<T'>`, an export `with Async` →
 > `async func` (with `Async` never surfacing as an import — it is the
 > suspension effect, realized by the async lift the step-4 composition
 > emits), and `stream<u8>` only for the nominal host-owned boundary-stream
@@ -29,7 +29,7 @@ The world surface is defined by the **entry file's exported functions**:
 
 | vibe | WIT |
 |---|---|
-| `export let f: (A) -> B [with { E, .. }] = ...` | `export <kebab f>: func(...)` |
+| `export let f: (A) -> B [with E + ..] = ...` | `export <kebab f>: func(...)` |
 | effect `E` named in an exported signature's `with` row, declared via `effect E { Op(Args) -> Ret; ... }` | `import <kebab E>: interface { <kebab Op>: func(...) -> ...; }` |
 | effect named in a `with` row **without** a declaration (host capability: `Fs`, `Env`, ...) | comment marker `// host capability effect 'E' (provided by the vibe runtime; no WIT mapping yet)` |
 | `Error` | never surfaces (vibe-internal control flow; an escaping throw is a component trap, not a capability) |
@@ -85,7 +85,7 @@ component instance, spec §3.3).
 ### Fallible exports: `@vibe/wit_runtime`
 
 **An `Exception[E]` row does not project to `result<T, E>`.** Since #1324 the
-idiomatic fallible signature is `fn f(..) -> T with { Exception[E] }`, but the
+idiomatic fallible signature is `fn f(..) -> T with Exception[E]`, but the
 WIT signature is built from the RETURN TYPE alone and exception labels are
 filtered out of the world imports (same rule as `Error` above). A row-carrying
 export therefore renders as plain `T`, and an escaping throw stays a component
@@ -99,7 +99,7 @@ inside, and convert once, in the export body:
 ```vibe
 import @vibe/wit_runtime { Result }
 
-fn parse_port(s: String) -> Int with { Exception[String] } {
+fn parse_port(s: String) -> Int with Exception[String] {
   if String::length(s) == 0 { throw("empty port") }
   8080
 }
@@ -133,11 +133,11 @@ effect HttpReq {
   Header(String) -> String
 }
 
-export let route: (String) -> String with { HttpReq, Error } = (prefix) -> { ... }
+export let route: (String) -> String with HttpReq + Error = (prefix) -> { ... }
 
 export let handler = (method: String, url: String, headers: String, body: String) -> String { ... }
 
-export let stats: (Int, Bool) -> Array[Int] with { Fs } = (n, flag) -> { ... }
+export let stats: (Int, Bool) -> Array[Int] with Fs = (n, flag) -> { ... }
 ```
 
 renders as

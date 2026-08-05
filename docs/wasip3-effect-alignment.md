@@ -42,7 +42,7 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
 | Coroutine(`Yielded(x, resume)` を返す) | **動作(制約付き)** | first-class `resume` を **ADT payload に格納して handle の外へ返し、driver ループで Done まで再入**する資料 p69-75 の形がそのまま通ることを新規に pin。[fixtures/effect_talk_coroutine_status_test.vibe](../fixtures/effect_talk_coroutine_status_test.vibe)。制約: one-shot(2回目は trap、gate 50)、suspend body は spine 形状のみ、linear backend のみ |
 | Handler switch(非スコープ再開、資料 p76) | **不可(診断あり)** | 格納された継続には元の driver が lexically 焼き付いており、新しい `handle ... with Yield { ... }` の下で呼んでも**新 handler は無視されて元の arm に配送され続ける**(実測: log=[101,102])。**#1347 (2026-08-02) で silent ではなくなった** — checker が「発火しえない handle」として reject する(下記)。[fixtures/err_handler_switch_dead_handle.vibe](../fixtures/err_handler_switch_dead_handle.vibe)、compiler_gate 83 |
 | 高階エフェクト: 純粋 block(`Span(String, () -> Int)`) | **動作** | operation の関数型パラメータ + arm からの block 呼び出しは通り、span の開始/終了 pairing を arm に閉じ込められる(資料 p86 の startSpan/endSpan 誤用問題は構造的に起きない)。[fixtures/effect_talk_tracing_span_test.vibe](../fixtures/effect_talk_tracing_span_test.vibe) |
-| 高階エフェクト: effectful block(資料 p87 の本丸) | **不可(仕様として非対応)** | `Span(String, () -> Int with { Log })` + 外側 `handle .. with Log` は、arm 経由で呼ばれる closure が evidence migration から見えず reject(invalid module にはならない)。**#1347 (2026-08-02) で診断文を専用化** — 汎用文言は「handle の body を restructure せよ」と言っていたが、原因は operation の**シグネチャ**側にあり body の書き換えでは直せない。現在は原因の operation を名指しし、非対応であることを明示する: ``effect 'Log' cannot be compiled here: operation `Tracing::Span` takes a block whose own row carries 'Log' ... Higher-order effects (an operation parameterised by an EFFECTFUL block) are not supported``。[fixtures/err_higher_order_effectful_block.vibe](../fixtures/err_higher_order_effectful_block.vibe)、compiler_gate 84。Provider effect(資料 p89)も同じ壁 |
+| 高階エフェクト: effectful block(資料 p87 の本丸) | **不可(仕様として非対応)** | `Span(String, () -> Int with Log)` + 外側 `handle .. with Log` は、arm 経由で呼ばれる closure が evidence migration から見えず reject(invalid module にはならない)。**#1347 (2026-08-02) で診断文を専用化** — 汎用文言は「handle の body を restructure せよ」と言っていたが、原因は operation の**シグネチャ**側にあり body の書き換えでは直せない。現在は原因の operation を名指しし、非対応であることを明示する: ``effect 'Log' cannot be compiled here: operation `Tracing::Span` takes a block whose own row carries 'Log' ... Higher-order effects (an operation parameterised by an EFFECTFUL block) are not supported``。[fixtures/err_higher_order_effectful_block.vibe](../fixtures/err_higher_order_effectful_block.vibe)、compiler_gate 84。Provider effect(資料 p89)も同じ壁 |
 | 分散 Tracing として | **部分的に可** | 純粋 block 形 + mut セル(State)+ handler での backend 切り替えまでは今日書ける。block が Fs/Http を伴う実用形は上記の高階ギャップに依存する |
 
 ### 横断ギャップ(実測で確定)
@@ -54,7 +54,7 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
    `State[Int]` とは書けなかった(parse error)。**現在**: generic effect
    も registry に登録され、perform/handle site が使用箇所ごとに fresh
    inference vars で instantiate した signature に対して検査する(handle
-   は式ごとに 1 instantiation を全 arm で共有)。`with { State[Int] }` も
+   は式ごとに 1 instantiation を全 arm で共有)。`with State[Int]` も
    parse する(型引数1個のみ、containment は base 名比較の v1)。残るのは
    row 包含での `State[Int]`/`State[String]` の区別(ADR-0071 の
    `OperationRef = (OperationId, NormalizedEffectArguments)` 正規化の完全形)
@@ -74,7 +74,7 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
    vacuous erasure が意図的に消しているサイト) を、(c) が無いと
    `http_e2e_test` の client-only `Http` handle を誤検出する。
    到達判定は #885/#1361 の overlay を参照するので、row 付き
-   パラメータ・注釈つきローカル (`let f: () -> T with { E } = ..`) 経由で
+   パラメータ・注釈つきローカル (`let f: () -> T with E = ..`) 経由で
    perform に届く body は対象外 — 実装中に `TaskGroup::spawn_suspend` と
    `fixtures/effect_crossfn_test.vibe` で実際に踏んで修正した。
    **動的検出は安価な代替にならない**: 継続を呼んだ時点で「今 E を担当する
@@ -100,7 +100,7 @@ JSPI(ブラウザ)。
 
 row 上の位置づけを明確にする: **`Async::Suspend` は ADR-0075 に従い source
 semantic row に現れる通常の operation である**(だからこそ Decision 5 の
-「`with { Async }` を持つ export → `async func`」という WIT 射影が定義できる)。
+「`with Async` を持つ export → `async func`」という WIT 射影が定義できる)。
 **row に現れないのは backend の選択**(pump / waitable-set / JSPI)という
 lowering 詳細であり、backend を替えても source の row は変わらない。
 ADR-0068 の「Async は non-transitive(色付け回避)」は backend 選択の
@@ -144,7 +144,7 @@ boundary handle が nominal であるべきという理由で変わらない。)
 ### 5. WIT 生成のマッピング
 
 `wit_gen.vibe` に3マッピングを追加する(現状 `Async` はコメント fallback):
-`Future[T] → future<T'>`、`with { Async }` を持つ export → `async func`、
+`Future[T] → future<T'>`、`with Async` を持つ export → `async func`、
 そして stream は **Decision 4 の境界規則と整合させるため、`stream<T'>` へ
 写像するのは nominal な boundary-stream handle(`ByteStream` 等、host が
 producer 端を所有する型)に限る**。一般の guest 産 AsyncIter 値が component
@@ -272,7 +272,7 @@ trampoline を将来 `wasi:http/service` の
    `comp_emit_component_wasm_async_hostfuture` (memhost メモリ + 値渡し
    i64 adapter で vfs 式 shim/fixup 循環を回避、u32 lift)、wrap は
    compiled core の `vibe.host_future_get` import sniff で自動 route。
-   実測: `let run: () -> Int with { Async } = () -> { let f =
+   実測: `let run: () -> Int with Async = () -> { let f =
    host_future_get(); await(f) }` が 300ms producer delay で 42 を
    ~313ms (gate = `test_hostfuture_source_component_gate.sh`)。
    **resolve→直接 wake の waiter list も landed (spec §3.15、意味論不変)**:
@@ -282,7 +282,7 @@ trampoline を将来 `wasi:http/service` の
    poll round が登録付きになり `Future::resolve` が直接 wake する。
    notify 漏れは once-per-progress の fallback valve で poll に縮退し、
    deadlock trap は保存 (安全弁が意味論不変を構成的に保証)。
-   **Decision 5 (wit_gen async) も landed**: `with { Async }` export →
+   **Decision 5 (wit_gen async) も landed**: `with Async` export →
    `async func` (Async は import に出さない — async lift で実現される
    suspension effect)、`Future[T]` → `future<T'>`、nominal `ByteStream` →
    `stream<u8>`。一般 `Stream[T]`/guest 産 AsyncIter は Decision 4 の
@@ -311,7 +311,7 @@ trampoline を将来 `wasi:http/service` の
    **Decision 3 の named host streams も landed (spec §3.18)**: D3 終端
    probe (§3.17) の実測を受けて、`host_stream_named("body") ->
    Stream[Int]` (pure、cell `[3, handle]`) + `host_stream_next(s) -> Int
-   with { Async }` (1 byte / -1 = EOS、EOS 後は cell を閉じて以後 -1) が
+   with Async` (1 byte / -1 = EOS、EOS 後は cell を閉じて以後 -1) が
    実ソースで動く。lowering は §3.16 と同型で park が「future 1本ごと」
    から「read 1回ごと」に変わる: read は `Suspend(handle + 2048)` (予約
    stream 帯 — future 帯 [2, 1025] と handle 上限 1023 で構成的に不交) で

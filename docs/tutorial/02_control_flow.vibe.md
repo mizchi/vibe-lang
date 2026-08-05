@@ -9,7 +9,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let v = if 1 < 2 {
     "yes"
   } else {
@@ -48,7 +48,7 @@ fn find_first_neg(arr: Array[Int]) -> Int {
   return -1
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}\n")
   stdout_write("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}\n")
 }
@@ -69,7 +69,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 {
       break acc
@@ -114,7 +114,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let r = loop (i = 0, acc = 0) {
     if i >= 3 {
       break (acc, i)
@@ -138,7 +138,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let doubled = for x in [
     1,
     2,
@@ -186,7 +186,7 @@ fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [
     1,

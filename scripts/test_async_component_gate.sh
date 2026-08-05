@@ -2,7 +2,7 @@
 # Async-component regression gate (#821 Step 0 restoration).
 #
 # Verifies the WASI p3 async vertical documented in docs/spec/wasi-p3-async.md:
-# a `.vibe` entry `run : () -> Int with { Async }` compiled by the selfhost
+# a `.vibe` entry `run : () -> Int with Async` compiled by the selfhost
 # compiler (single-source path, entry name "run") is wrapped into a Component
 # Model async component and returns 42 under wasmtime with the p3 RC flags.
 # Also asserts the wrap does NOT leak into ordinary builds (a non-async entry
@@ -62,12 +62,12 @@ WT_FLAGS="${VIBE_ASYNC_GATE_WASMTIME_FLAGS:--W exceptions=y -W concurrency-suppo
 
 write_fixtures() {
   cat >"$OUT_DIR/await.vibe" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   await(Future::ready(42))
 }
 EOF
   cat >"$OUT_DIR/stream.vibe" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = Stream::once(20)
   let m = Stream::map(s, (x) -> { x * 2 })
   let f = Stream::filter(m, (x) -> { x > 10 })
@@ -75,7 +75,7 @@ let run: () -> Int with { Async } = () -> {
 }
 EOF
   cat >"$OUT_DIR/option.vibe" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let a = match await(Stream::next(Stream::once(40))) {
     Some(v) => v,
     None => 0
@@ -92,18 +92,18 @@ let run: () -> Int with { Async } = () -> {
 }
 EOF
   cat >"$OUT_DIR/body.vibe" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   await(Stream::fold(String::to_bytes("*"), 0, (acc, b) -> { acc + b }))
 }
 EOF
   cat >"$OUT_DIR/roundtrip.vibe" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = Stream::to_string(String::to_bytes("42"))
   if s == "42" { 42 } else { 0 }
 }
 EOF
   cat >"$OUT_DIR/forawait.vibe" <<'EOF'
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = Stream::once(42)
   let mut sum = 0
   for x in s {

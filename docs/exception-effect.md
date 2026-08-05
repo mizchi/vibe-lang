@@ -11,7 +11,7 @@ taxonomy)。
 > **実装状況 (2026-08-02, #1344):** typed `Exception[E]` の row は
 > **checker に入った**。`throw(v)` は `Exception[typeof(v)]` を要求し、
 > `Exception[E1]` は `Exception[E2]` を authorize も discharge もしない。
-> `with { Exception[E] }` / `handle .. with Exception[E]` /
+> `with Exception[E]` / `handle .. with Exception[E]` /
 > `effectset { Exception[A], Exception[B] }` がすべて通る。
 > 何が検査され、何がまだ gradual なのかは
 > [実装状況 (Phase 3)](#実装状況-phase-3) を読むこと。
@@ -169,7 +169,7 @@ exhaustiveness では起きない (kind が分からない payload は enum の 
 ## Compatibility and migration
 
 移行中は `Error` を `Exception[String]` の compatibility alias として扱う。
-既存の `throw("message")`、`with { Error }`、`handle ... with Error` の payload
+既存の `throw("message")`、`with Error`、`handle ... with Error` の payload
 shape と entry diagnostic は維持する。
 
 1. **Phase 0**: typed exception identity と exact-kind handler の Lean model を
@@ -198,7 +198,7 @@ compiler source を移行する前に、seed compiler と stage2/stage3 fixpoint
 そうしていない。`Error` は kind を持たない ERASED な exception row である。**
 
 理由は #786 である。既存コードは `throw(KeyInvalid("x"))` のような suberror
-値を **plain な `with { Error }` の下で** 投げており、その数は数百に及ぶ。
+値を **plain な `with Error` の下で** 投げており、その数は数百に及ぶ。
 `Error` を `Exception[String]` と定義すると、この throw はすべて
 `missing { Exception[KeyInvalid] }` になる。移行の初手が既存コードベースの
 全面書き換えを要求する、という順序は成立しない。
@@ -206,7 +206,7 @@ compiler source を移行する前に、seed compiler と stage2/stage3 fixpoint
 そこで実装上の `Error` は **どの kind とも compatible な最弱の label** とした
 (`exception_kinds_compatible`, core/exception_effect.vibe)。両方向に効く:
 
-- 宣言側が erased (`with { Error }`) → どの kind の throw も authorize する。
+- 宣言側が erased (`with Error`) → どの kind の throw も authorize する。
   これが既存コード無変更の根拠。
 - 要求側が erased (payload の kind が解決できない throw) → どの
   `Exception[K]` 宣言でも authorize される。これが gradual 側。
@@ -227,7 +227,7 @@ annotated parameter は follow-up で閉じた。pattern binder と field 射影
 
 #1344 で入ったもの:
 
-- `with { Exception[E] }` の row 検査 (`decl_authorizes_effect`,
+- `with Exception[E]` の row 検査 (`decl_authorizes_effect`,
   checker/checker_effects.vibe)。`Exception[E]` は #1340 の
   「base 名で比較する instantiation 非依存 v1」から **明示的に除外** されて
   いる (`row_base_membership`) — そうしないと `State[Int] ~ State[String]`
@@ -426,8 +426,8 @@ regression lock:
 
 1. `Result[T, E]` を捨てられるのは、失敗の型 `E` が row 側で表現できる
    ようになった後である。Phase 3 以前の `Error` は payload が実質 String
-   だったので、`Result[T, ParseError]` を `with { Error }` に置き換えると
-   `E` の情報が消えた。今は `with { Exception[ParseError] }` が同じ情報を
+   だったので、`Result[T, ParseError]` を `with Error` に置き換えると
+   `E` の情報が消えた。今は `with Exception[ParseError]` が同じ情報を
    持つので、置き換えが情報を落とさない。
 2. `Result` を返していたコードは失敗値を local binding に持って回してから
    返すことが多く (`let e = ...; Err(e)`)、それを throw に直すと

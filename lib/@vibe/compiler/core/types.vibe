@@ -594,7 +594,7 @@ fn int_array_has(arr: Array[Int], v: Int) -> Bool {
 fn is_effect_var_name(name: String) -> Bool {
   let len = String::length(name)
   if len == 1 {
-    // a source-level effect variable: a single lowercase letter (`with { e }`)
+    // a source-level effect variable: a single lowercase letter (`with e`)
     String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
   } else if len >= 2 {
     // a FRESH effect variable minted by `instantiate` (`$N`): no real effect
@@ -748,6 +748,26 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
   }
 }
 
+/// #1429: render a stored effect row in the SOURCE spelling. Rows are stored
+/// comma-joined; the syntax is `+`-separated. Only for text a reader may
+/// copy back into their code -- the contract engine's own signature strings
+/// (contract.vibe's fn_sig_text) deliberately stay braced, see the note there.
+fn row_to_source_spelling(row: String) -> String {
+  let parts = String::split(row, ", ")
+  let n = Array::length(parts)
+  let mut acc = ""
+  let mut i = 0
+  while i < n {
+    acc = if i == 0 {
+      Array::get(parts, i)
+    } else {
+      String::concat(acc, String::concat(" + ", Array::get(parts, i)))
+    }
+    i = i + 1
+  }
+  acc
+}
+
 export fn type_to_string(ty: Type) -> String {
   match ty {
     CtInt => "Int",
@@ -822,7 +842,10 @@ export fn type_to_string(ty: Type) -> String {
       let ret_text = type_to_string(ret)
       let base = String::concat("(", String::concat(joined, String::concat(") -> ", ret_text)))
       match effect_name {
-        Some(name) => String::concat(base, String::concat(" with {", String::concat(name, "}"))),
+        // #1429: this text lands in type-mismatch messages, so it has to be
+        // the spelling the reader would type. Rows are stored comma-joined;
+        // the syntax is `+`-separated.
+        Some(name) => String::concat(base, String::concat(" with ", row_to_source_spelling(name))),
         None => base
       }
     }
@@ -947,7 +970,7 @@ fn int_int_lookup_or(pairs: Array[(Int, Int)], key: Int, fallback: Int, i: Int) 
 }
 
 /// #626 criterion 4: collect the distinct effect-VARIABLE names appearing in a
-/// type scheme body (lone `with { e }` annotations), so `instantiate` can mint a
+/// type scheme body (lone `with e` annotations), so `instantiate` can mint a
 /// fresh variable per use site and effect polymorphism survives unification.
 fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
   match t {
@@ -1270,7 +1293,7 @@ fn option_string_equal(left: Option[String], right: Option[String]) -> Bool {
   }
 }
 
-/// #626 criterion 3: an effect annotation `with { A, B }` is an unordered SET,
+/// #626 criterion 3: an effect annotation `with A + B` is an unordered SET,
 /// but `collect_effect_names` joins it source-order into one string ("A, B"),
 /// so `{ A, B }` and `{ B, A }` serialize to different strings. Split the
 /// comma-separated annotation back into its labels (trimmed, deduplicated) so
@@ -1306,7 +1329,7 @@ fn effect_label_list(eff: Option[String]) -> Array[String] {
 
 /// #1340 (ADR-0071): a generic instantiation label (`State[Int]`) compares
 /// by its base effect name in row set-equality — mixing spellings
-/// (`with { State }` vs `with { State[Int] }`) must not fail fn-type
+/// (`with State` vs `with State[Int]`) must not fail fn-type
 /// unification. For bracketless labels this is exact equality, so
 /// pre-#1340 rows are unchanged. Instantiation-precise row identity is the
 /// remaining ADR-0071 OperationRef-normalization work.
@@ -1316,7 +1339,7 @@ fn effect_label_list(eff: Option[String]) -> Array[String] {
 /// must stay distinct here or the two rows unify and check_assignable never
 /// reaches its dropped-label report. The ERASED spellings (`Error`,
 /// `Exception`, and either one's `::Throw`) all normalize to `Error`, which is
-/// what keeps `with { Error }` and `with { Exception }` interchangeable exactly
+/// what keeps `with Error` and `with Exception` interchangeable exactly
 /// as the #1279 bridge made them. An erased row and a kinded row do differ
 /// here, but that only routes them into check_assignable's structural retry,
 /// where effect_row_dropped tolerates them (an erased label is kind-compatible

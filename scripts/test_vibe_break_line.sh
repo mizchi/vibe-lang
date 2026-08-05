@@ -61,7 +61,7 @@ proj="$WORK/proj"; mkdir -p "$proj"
 # helper (declared on line 1) called by main (declared on line 2).
 cat > "$proj/prog.vibex" <<'EOF'
 export let helper = (x: Int) -> Int { x * 2 }
-fn main with { Stdout } { Stdout::write_stream("\{helper(21)}\n") }
+fn main with Stdout { Stdout::write_stream("\{helper(21)}\n") }
 EOF
 
 # 1. Plain `vibe run` is unaffected: prints 42, emits NO breakpoint output.

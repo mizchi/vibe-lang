@@ -107,7 +107,7 @@ resolution and override rules.
 Declare external function signatures without implementation.
 
 ```vibe
-extern let %parse_json: (String) -> Json with { Error }
+extern let %parse_json: (String) -> Json with Error
 ```
 
 `extern` symbols use `%`-prefixed reserved names to avoid collisions.

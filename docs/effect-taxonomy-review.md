@@ -10,7 +10,7 @@
 
 ## 背景
 
-vibe の `effect` / `with { }` 構文は [Koka](https://koka-lang.github.io/koka/doc/book.html#sec-effect-types)
+vibe の `effect` / `with ()` 構文は [Koka](https://koka-lang.github.io/koka/doc/book.html#sec-effect-types)
 を参考にした代数的エフェクト(抽象・DI 用途、例: ジェネレータの `Yield`)
 を志向して設計されたが、実際の実装は [Deno](https://docs.deno.com/runtime/fundamentals/security/)
 由来の「権限としての Effect」(`Fs` / `Env` / `Process` / `HttpServer` など
@@ -130,7 +130,7 @@ resource 宣言として扱える。
 ```vibe skip
 resource DatabaseUrl : Env::Key = "DATABASE_URL"
 
-fn connect_db() -> Option[String] with { Env::Read[DatabaseUrl] } {
+fn connect_db() -> Option[String] with Env::Read[DatabaseUrl] {
   perform Env[DatabaseUrl]::get()
 }
 ```
@@ -308,13 +308,13 @@ effect Exception[E] { Throw(E) -> Nothing }
 type IoError    { NotFound(String), PermissionDenied(String) }
 type ParseError { UnexpectedToken(String, Int), Eof }
 
-fn read_config() -> Bytes with { Exception[IoError] } { ... }
-fn parse_config(bytes: Bytes) -> Config with { Exception[ParseError] } { ... }
+fn read_config() -> Bytes with Exception[IoError] { ... }
+fn parse_config(bytes: Bytes) -> Config with Exception[ParseError] { ... }
 
 // Java の「複数の例外型をまとめて宣言する」は effectset の union で表現する
 effectset ConfigErrors = { Exception[IoError], Exception[ParseError] }
 
-fn load_config() -> Config with { ConfigErrors } {
+fn load_config() -> Config with ConfigErrors {
   let bytes = read_config()      // Exception[IoError] ⊆ ConfigErrors
   parse_config(bytes)            // Exception[ParseError] ⊆ ConfigErrors
 }
@@ -365,8 +365,8 @@ enum exhaustiveness は vibe checker が保持する。
 > **superseded (2026-07-31, ADR-0089)**: 上記のうち「(1) suspend を row から
 > 外す」は [ADR-0089](wasip3-effect-alignment.md) Decision 1 で**不採用**に
 > なった。`Async::Suspend` は ADR-0075 / ADR-0068(concurrency.md は既に
-> `with { Async::suspend }` を全編で row 追跡している)に従い **row に現れる
-> 通常の operation** とし、`with { Async }` export → `async func` の WIT
+> `with Async::suspend` を全編で row 追跡している)に従い **row に現れる
+> 通常の operation** とし、`with Async` export → `async func` の WIT
 > 射影(同 Decision 5)の前提にする。row に現れないのは backend 選択
 > (in-guest pump / `waitable-set.wait` / JSPI)という lowering 詳細であり、
 > ADR-0068 の「色付け回避」はこの backend 非伝播として維持する。
@@ -376,7 +376,7 @@ enum exhaustiveness は vibe checker が保持する。
 ## 動的フォールバック許可(Deno 風の permission request との違い)
 
 > **carved out**: 本節の Optional capability(`Fs::Read[X]?`)・`perform?`・
-> `Attempt` 案は、表面構文(`with {A} allows {C}` 糖衣)とあわせて
+> `Attempt` 案は、表面構文(`with A allows C` 糖衣)とあわせて
 > [ADR-0088](capability-authorization-surface.md) として決着した。ADR-0088 は
 > 本節の「mid-run prompt 不採用」を維持したうえで、**instantiate 直前の
 > preflight TUI prompt**(main の1命令目より前に、host が provide 可能で
@@ -394,7 +394,7 @@ Optional な権限も含めて BindingLock の時点(apply フェーズ)で1回�
 ままである。
 
 ```vibe skip
-fn maybe_use_cache() -> String with { Fs::Read[CacheDir]? } {
+fn maybe_use_cache() -> String with Fs::Read[CacheDir]? {
   match perform? Fs[CacheDir]::read_file("cache.json") {
     Ok(bytes)  => Bytes::to_string(bytes)
     Failed(_)  => compute_fresh()   // 権限はあったが操作自体が失敗
@@ -402,7 +402,7 @@ fn maybe_use_cache() -> String with { Fs::Read[CacheDir]? } {
   }
 }
 
-fn main with { Fs::Read[CacheDir]?, Stdout[Process::Root] } {
+fn main with Fs::Read[CacheDir]? + Stdout[Process::Root] {
   Stdout::write_stream(maybe_use_cache())
 }
 ```
@@ -488,9 +488,9 @@ DCE)→ apply(BindingLock)→ instantiate(preflight prompt)の最も早い
 - **Phase 1(最重要・安全)**: `builtins_fs.vibe`/`builtins_system.vibe`
   (Env/Process)/`builtins_net.vibe`(HttpServer)を内部表現だけ
   resource-kind 付きに retrofit する。表面構文(`perform
-  Fs::read_file(...)`、`with { Fs }`)は無変更とし、resource 引数省略時
+  Fs::read_file(...)`、`with Fs`)は無変更とし、resource 引数省略時
   は暗黙に `Fs[Process::Root]` へ展開する sugar として扱う(ADR-0071 が
-  `with { Env }` を全 operation の shorthand にしたのと同じ形の拡張を
+  `with Env` を全 operation の shorthand にしたのと同じ形の拡張を
   resource 軸でもう一段行うだけ)。この段階でソース側の変更は不要。
 - **Phase 2**: `Fs[SrcTree]::read_file` 等の明示形をオプトインで追加する。
 - **Phase 3**: `main` の row 規則(capability + core ambient effect の
@@ -569,7 +569,7 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   `effect Stdout[_: Process::Root]`) を採用し、内部は `TDEffect` の第4
   スロットへ。`CtFn` の row スロットは広げず、builtin には `TDEffect` を
   合成しない。実装順の前提として ADR-0075 Phase 2 が先。
-  なお表面構文のうち **row の分割(`with {A} allows {C}` 糖衣)・Optional
+  なお表面構文のうち **row の分割(`with A allows C` 糖衣)・Optional
   grade(`?`)・`perform?`/`Attempt`・解決ラダー(build/apply/instantiate
   preflight)は [ADR-0088](capability-authorization-surface.md) で決着済み**。
   これで capability 表面の未決項目はすべて解消し、**残るのは実装のみ**

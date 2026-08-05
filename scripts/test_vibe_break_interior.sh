@@ -39,7 +39,7 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail + 1)); }
 #   line 3: let b = a + 2   (identifier-led -> breakable)
 #   line 4: let c = b + 3   (identifier-led -> breakable)
 P="$WORK/p.vibex"
-printf 'fn main with { Stdout } {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
+printf 'fn main with Stdout {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
 
 # 0. (#644) break at line 2, a bare-literal `let a = 1`. The literal value
 #    carries no offset of its own; the ELet statement offset (the `let`
@@ -111,7 +111,7 @@ fi
 #      — the per-file provenance + `vibe.dbgfiles` table disambiguate colliding
 #      line numbers across files.
 printf 'export let compute = (n: Int) -> Int {\n  let doubled = n + n\n  let plused = doubled + 5\n  plused\n}\n' > "$WORK/helper.vibe"
-printf 'import ./helper.vibe { compute }\nfn main with { Stdout } {\n  let r = compute(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main.vibex"
+printf 'import ./helper.vibe { compute }\nfn main with Stdout {\n  let r = compute(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main.vibex"
 outh="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "helper.vibe:3" "$WORK/main.vibex" 2>&1 || true)"
 if printf '%s' "$outh" | grep -qF "breakpoint hit: helper.vibe:3"; then
   ok "multi-file: interior line in an IMPORTED module (helper.vibe:3) pauses"

@@ -4,9 +4,9 @@
 
 ## Type Contract
 
-- `Http::listen(port: Int) -> Int with { Net }`
-- `Http::accept(server_handle: Int) -> Int with { Net }`
-- `Http::respond(request_handle: Int, status: Int, headers: String, body: String) -> Unit with { Net }`
+- `Http::listen(port: Int) -> Int with Net`
+- `Http::accept(server_handle: Int) -> Int with Net`
+- `Http::respond(request_handle: Int, status: Int, headers: String, body: String) -> Unit with Net`
 
 補足:
 

@@ -77,11 +77,11 @@ lower しても、以下の意味論を保つ。
 > `Err(Closed)` / `Err(Cancelled)` という綴りで書かれているが、**`Result` は
 > #1324 で言語からも prelude からも削除された**。実装済みの
 > `@vibex/concurrent` は既に row ベースへ移行しており
-> (`-> T with { Exception[TaskError], e }`)、対応表は下の実装ノート
+> (`-> T with Exception[TaskError] + e`)、対応表は下の実装ノート
 > 「`Result` → 型付き `Exception[E]`」(#1324 slice 1 / slice 2) にある。
 > 本節の綴りは提案当時の記録としてそのまま残す — v0.4.0 の目標 surface 自体を
 > row ベースへ書き直すのは #1324 のスコープ外の設計作業。読むときは
-> `-> Result[T, E]` を `-> T with { Exception[E] }`、`Err(x)` を `throw(x)`、
+> `-> Result[T, E]` を `-> T with Exception[E]`、`Err(x)` を `throw(x)`、
 > `match .. { Ok(v) => .., Err(e) => .. }` を
 > `handle { .. } with Exception[E] { Throw(e) => .. }` と読み替えること。
 
@@ -91,7 +91,7 @@ effect Async {
 }
 
 effect Spawn[r] {
-  spawn[T: Send, e](() -> T with { e }) -> Task[r, T]
+  spawn[T: Send, e](() -> T with e) -> Task[r, T]
   cancel[T](Task[r, T]) -> Unit
 }
 
@@ -118,19 +118,19 @@ enum ChannelConfigError {
 // NOTE: 以下は v0.4.0 の提案 surface（region-bound `Task[r, T]` + `Spawn[r]`）で
 // あり、#1227 で撤去した eager prototype の `Task::spawn` とは別物。名前は同じ
 // だが型も意味論も異なる——現時点でコンパイルできる API ではない。
-Task::spawn: [T: Send] (() -> T with { e })
-  -> Task[r, T] with { Spawn[r]::spawn }
+Task::spawn: [T: Send] (() -> T with e)
+  -> Task[r, T] with Spawn[r]::spawn
 Task::join: (Task[r, T])
-  -> Result[T, TaskError] with { Async::suspend }
-Task::cancel: (Task[r, T]) -> Unit with { Spawn[r]::cancel }
-Task::yield: () -> Unit with { Async::suspend }
+  -> Result[T, TaskError] with Async::suspend
+Task::cancel: (Task[r, T]) -> Unit with Spawn[r]::cancel
+Task::yield: () -> Unit with Async::suspend
 
 Channel::bounded: [T: Send] (Nursery[r], Int)
   -> Result[(Sender[r, T], Receiver[r, T]), ChannelConfigError]
 Sender::send: (Sender[r, T], T)
-  -> Result[Unit, SendError] with { Async::suspend }
+  -> Result[Unit, SendError] with Async::suspend
 Receiver::recv: (Receiver[r, T])
-  -> Option[T] with { Async::suspend }
+  -> Option[T] with Async::suspend
 ```
 
 `nursery { n => body }` は fresh な region `r` と `Nursery[r]` を導入し、
@@ -708,11 +708,11 @@ suspendable task の第一スライスを実装した:
   canonical shape、concurrent.vibe の Suspendable tasks 節) と、
   **`TaskGroup::spawn_suspend(g, f)`** — closure-CPS ABI (ADR-0076
   追記31 Vertical B) の着地で handle site が library 内部へ移り、caller
-  は `() -> T with { Async } { ... }` の plain closure を渡すだけに
+  は `() -> T with Async { ... }` の plain closure を渡すだけに
   なった (suspend する literal には明示 row 注釈が必要、#761)。
 - **channel の mid-body blocking も着地**: `Sender::send_wait`
-  (#1324 slice 2 で `with { Exception[SendError], Async }`) /
-  `Receiver::recv_wait` (`with { Async }`)。バッファ満杯の send は
+  (#1324 slice 2 で `with Exception[SendError] + Async`) /
+  `Receiver::recv_wait` (`with Async`)。バッファ満杯の send は
   deposit → suspend → 消費 (pend_consumed) を自己再帰で待ち、空の recv
   は suspend → 再検査 (loop spine 非対応のためリトライは再帰 — 3b の
   再帰 clone がそのまま処理する)。capacity-0 rendezvous も同経路。
@@ -726,7 +726,7 @@ suspendable task の第一スライスを実装した:
   共有する。**#1181 追記**: `TaskGroup`/`Channel`/`Sender`/`Receiver` が
   `e` について row-polymorphic 化されたことに伴い、`Sender::send`/
   `Receiver::recv`/`TaskHandle::join` の宣言 row は row-free から
-  `with { e }`(row 変数)へ変わった。ADR-0076 の suspend/CPS lowering
+  `with e`(row 変数)へ変わった。ADR-0076 の suspend/CPS lowering
   (`inline_direct_perform.vibe` の `scps_calls_ok`/`scps_row_has_var`) は
   row 変数を持つ callee を常に保守的に拒否するため、`Async` を持つ
   `spawn_suspend` closure literal の**内側**から呼ぶ場合は引き続き
@@ -824,7 +824,7 @@ choose する fresh var を返す `instantiate` しかなく、型に scope タ�
   import rename、higher-order wrapper はこの一致をすり抜けて `r` が
   普通の unifiable `CtVar` になる(escape 検査が一切走らない)。一度、
   文字列一致の代わりに callee の**構造的な形**(`(body: (TaskGroup[r]) ->
-  T with {e}) -> Result[T, TaskError] with {e}`)で一致させる修正を試みたが、
+  T with e) -> Result[T, TaskError] with e`)で一致させる修正を試みたが、
   コンパイラ自身のソース中の無関係な 1 引数呼び出しに誤爆し unit battery
   20 ファイルが実行時 trap で regress した(`TaskError` が実際には
   `CtEnum("TaskError")` に解決される — `CtNamed` だと決め打っていた
@@ -955,11 +955,11 @@ ADR-0085 の型付き `Exception[E]` (#1344) を受けて、`@vibex/concurrent` 
 
 | API | 旧 | 新 |
 | --- | --- | --- |
-| `TaskGroup::run` | `-> Result[T, TaskError] with { e }` | `-> T with { Exception[TaskError], e }` |
-| `TaskHandle::join` | `-> Result[T, TaskError] with { e }` | `-> T with { Exception[TaskError], e }` |
-| `Channel::bounded` | `-> Result[(Sender, Receiver), ChannelConfigError]` | `-> (Sender, Receiver) with { Exception[ChannelConfigError] }` |
-| `Sender::send` | `-> Result[Unit, SendError] with { e }` | `-> Unit with { Exception[SendError], e }` |
-| `Parallel::map` | `-> Result[Array[U], TaskError] with { e }` | `-> Array[U] with { Exception[TaskError], e }` |
+| `TaskGroup::run` | `-> Result[T, TaskError] with e` | `-> T with Exception[TaskError] + e` |
+| `TaskHandle::join` | `-> Result[T, TaskError] with e` | `-> T with Exception[TaskError] + e` |
+| `Channel::bounded` | `-> Result[(Sender, Receiver), ChannelConfigError]` | `-> (Sender, Receiver) with Exception[ChannelConfigError]` |
+| `Sender::send` | `-> Result[Unit, SendError] with e` | `-> Unit with Exception[SendError] + e` |
+| `Parallel::map` | `-> Result[Array[U], TaskError] with e` | `-> Array[U] with Exception[TaskError] + e` |
 
 失敗を観測したい呼び出し側は
 `handle { .. } with Exception[TaskError] { Throw(e) => .. }` を書く。
@@ -973,7 +973,7 @@ suspend lowering が row 変数 callee を拒否する (`scps_calls_ok`)。
 は `Result` のまま据え置いた。ADR-0076 の suspend lowering が **CPS 分割
 された callee の中で実行された `throw` を正しく伝播しない** — task を abort
 せず、呼び出し元に garbage 値を返す — ためで、`main` 上で計測して確認した
-(この #1324 の変更前): `fn pw(x) -> Int with { Error, Async } { perform
+(この #1324 の変更前): `fn pw(x) -> Int with Error + Async { perform
 Async::Suspend(0); throw(Failed("boom")) }` を `spawn_suspend` の body から
 呼ぶと、group は成功終了し `join` は 699 を返した。この3本を throw 化すると
 「閉じた channel」「cancel された sibling」が観測可能な結果から静かな破損に
@@ -981,7 +981,7 @@ Async::Suspend(0); throw(Failed("boom")) }` を `spawn_suspend` の body から
 
 `Result` を返す `TaskHandle::join` に依存していた fixture 群
 (`region_ok_*.vibe`、`err_spawnable_capture_*.vibe` ほか) は throw 版へ
-更新済み。エントリが throw を素通しするため `with { Error }` の row 付与が
+更新済み。エントリが throw を素通しするため `with Error` の row 付与が
 必要になった点に注意。
 
 **同時に踏んだ checker のバグ (修正済み)**: `unify` の `CtUnknown` 節が
@@ -1031,9 +1031,9 @@ variant の名前であって pattern-match できる `SendError` ではない�
 
 | API | 旧 | 新 |
 | --- | --- | --- |
-| `Sender::send_wait` | `-> Result[Unit, SendError] with { Async }` | `-> Unit with { Exception[SendError], Async }` |
+| `Sender::send_wait` | `-> Result[Unit, SendError] with Async` | `-> Unit with Exception[SendError] + Async` |
 | `conc_send_wait_consumed` (internal) | 同上 | 同上 |
-| `TaskHandle::result_wait` | `-> Result[T, TaskError] with { Async }` | `-> T with { Exception[TaskError], Async }` |
+| `TaskHandle::result_wait` | `-> Result[T, TaskError] with Async` | `-> T with Exception[TaskError] + Async` |
 
 **呼び出し側の意味論が変わる点**: suspend-class の closure literal は
 `handle` を含められない (CPS clone の適格性規則) ので、`spawn_suspend` の
@@ -1047,7 +1047,7 @@ awaiter" がこの経路 (`Failed("Cancelled")` まで variant が届くこと) 
 している。
 
 row 注釈も更新が要る: これらを呼ぶ `spawn_suspend` closure literal は
-`() -> T with { Async }` では足りず `with { Async, Error }` になる
+`() -> T with Async` では足りず `with Async + Error` になる
 (bracketed な `Exception[E]` ラベル自体は row 変数ではないので、
 `scps_calls_ok` の適格性判定には影響しない)。
 

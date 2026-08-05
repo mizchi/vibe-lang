@@ -3,7 +3,7 @@
 ## sh / sh_lines
 
 ```vibe
-let demo: () -> Array[String] with { Process } = () -> {
+let demo: () -> Array[String] with Process = () -> {
   // Execute command; returns the captured output (String)
   let out = sh("echo hello")
 
@@ -16,7 +16,7 @@ let demo: () -> Array[String] with { Process } = () -> {
 Both require the `{Process}` effect:
 
 ```vibe
-let run: () -> Unit with { Process } = () -> {
+let run: () -> Unit with Process = () -> {
   let _ = sh("echo hello")   // sh returns String; discard it in a Unit fn
 }
 
@@ -83,7 +83,7 @@ POSIX-style command substitution within shell commands:
 Shell pipes work within `sh_lines()` strings:
 
 ```vibe
-let pipes: () -> Array[String] with { Process } = () -> {
+let pipes: () -> Array[String] with Process = () -> {
   let a = sh_lines("echo hello | cat")
   let b = sh_lines("printf 'a\\nb\\nc' | sort -r")
   sh_lines("seq 1 10 | head -3")
@@ -95,7 +95,7 @@ let pipes: () -> Array[String] with { Process } = () -> {
 The vibe `|>` pipe operator can chain shell results with vibe functions:
 
 ```vibe
-let count_txt: () -> Int with { Process } = () -> {
+let count_txt: () -> Int with Process = () -> {
   sh_lines("ls /tmp")
   |> Array::filter((s) -> { String::contains(s, ".txt") })
   |> Array::length

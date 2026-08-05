@@ -213,6 +213,25 @@ vibe fmt <file...>
 vibe fmt --dry-run <file...>
 ```
 
+`.vpkg` package contracts are formatted too, through a separate path
+(`format_vpkg`, #1435). A `.vpkg` file is two languages stacked: the header
+(`name = @scope/pkg`, `version = x.y.z`, `description =` + `#|` block,
+`deps = { @scope/dep : x.y.z }`, `generated_hash =`) is **not** vibe syntax --
+`@scope/pkg` is not an expression -- so it goes through a dedicated writer
+that canonicalizes key order, value spacing, the two-space continuation
+indent and the deps sort order. Everything below the header is ordinary
+bodyless vibe and goes through the same CST formatter as any `.vibe` file.
+
+The boundary is not a heuristic: it mirrors the line classification in
+`scan_package_header` (`lib/@vibe/compiler/contract/contract.vibe`), the
+loader's own scanner, so a line the loader would not treat as a directive
+always falls into the declaration region. If the header is malformed in a way
+that makes the split unsafe -- an unterminated `deps = {`, a deps entry with
+no `:`, or a key spelling the loader does not recognize such as `name  =` --
+the formatter leaves the file **completely untouched** rather than guess. The
+loader rejects such a file anyway, with a better message than a formatter
+could give.
+
 ### normalize
 
 Canonicalize a source file via the in-compiler normalize engine (#882):

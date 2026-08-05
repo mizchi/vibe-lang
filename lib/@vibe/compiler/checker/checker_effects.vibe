@@ -56,7 +56,7 @@ export enum EffectError {
   EEEffectfulCallOutsideEffect(String);
   EEPerformUndeclaredEffect(String, String);
   // #639: effect-row mismatch with the EXPECTED vs ACTUAL rows rendered as a
-  // set difference plus a fix-it hint for the `with { ... }` annotation.
+  // set difference plus a fix-it hint for the `with` row annotation.
   // Fields (all pre-rendered ", "-joined label lists, deterministic order):
   // (enclosing fn name or "" when unnamed, missing labels (sorted),
   //  declared row (source order, "" when no row), required row (sorted union)).
@@ -83,10 +83,35 @@ export enum EffectError {
 // `throw` to `perform Error::Throw`); EEEffectfulCallOutsideEffect stays --
 // check_async_effects_expr still reports it for async primitives.
 
+/// #1429: render a stored row as the SOURCE spelling the reader must type.
+/// Rows are stored comma-joined; the syntax is `+`-separated. Every `hint:`
+/// below hands the reader something to paste into their code, so it has to go
+/// through here -- a hint that suggests `with { Error, Fs }` is telling them
+/// to write syntax the compiler is migrating away from (and, once the braced
+/// form is removed, syntax it rejects outright).
+///
+/// The set-valued parts of the message (`missing { .. }`, `requires { .. }`)
+/// deliberately keep braces: those render a SET difference, not source.
+fn row_as_source(row: String) -> String {
+  let parts = String::split(row, ", ")
+  let n = Array::length(parts)
+  let mut acc = ""
+  let mut i = 0
+  while i < n {
+    acc = if i == 0 {
+      Array::get(parts, i)
+    } else {
+      String::concat(acc, String::concat(" + ", Array::get(parts, i)))
+    }
+    i = i + 1
+  }
+  acc
+}
+
 export fn effect_error_to_string(err: EffectError) -> String {
   match err {
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
-    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`")))),
+    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with` row or wrap in a `handle`")))),
     // #639: expected-vs-actual effect rows as a set difference, then ONE
     // deterministic fix-it hint line targeting the enclosing declaration
     // (for a call-site leak that is the CALLER, not the callee).
@@ -97,16 +122,16 @@ export fn effect_error_to_string(err: EffectError) -> String {
         "effect row mismatch"
       }
       let detail = if String::length(declared) > 0 {
-        String::concat(" (declared with { ", String::concat(declared, String::concat(" }, requires { ", String::concat(required, " })"))))
+        String::concat(" (declared { ", String::concat(declared, String::concat(" }, requires { ", String::concat(required, " })"))))
       } else {
         String::concat(" (no 'with' clause, requires { ", String::concat(required, " })"))
       }
       let hint = if String::length(fname) == 0 {
-        String::concat("\nhint: add 'with { ", String::concat(required, " }' to the enclosing function"))
+        String::concat("\nhint: add 'with ", String::concat(row_as_source(required), "' to the enclosing function"))
       } else if String::length(declared) == 0 {
-        String::concat("\nhint: declare 'fn ", String::concat(fname, String::concat("(...) -> T with { ", String::concat(required, " }'"))))
+        String::concat("\nhint: declare 'fn ", String::concat(fname, String::concat("(...) -> T with ", String::concat(row_as_source(required), "'"))))
       } else {
-        String::concat("\nhint: add 'with { ", String::concat(required, String::concat(" }' to '", String::concat(fname, "'"))))
+        String::concat("\nhint: add 'with ", String::concat(row_as_source(required), String::concat("' to '", String::concat(fname, "'"))))
       }
       String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
     },
@@ -122,12 +147,12 @@ export fn effect_error_to_string(err: EffectError) -> String {
 //
 // This pass enforces ONLY the `Async` effect, and only
 // for async PRIMITIVES — the builtins `await(..)` / `sleep(..)` / `Stream::next`
-// whose type carries `with { Async }`, including the `await(..)` the async
+// whose type carries `with Async`, including the `await(..)` the async
 // desugar injects over a Future-returning iterator. A primitive must appear
-// inside a function/lambda annotated `with { Async }`.
+// inside a function/lambda annotated `with Async`.
 //
 // Crucially it does NOT propagate to user functions that merely COMPOSE async
-// work: calling a `with { Async }` helper (e.g. `async_iter_collect`) from a
+// work: calling a `with Async` helper (e.g. `async_iter_collect`) from a
 // sync context is allowed (await is the identity on the synchronous backend,
 // and on a real async backend the value/Future mismatch is a separate type
 // error). Only env-absent BUILTIN primitives are checked, so the compiler /
@@ -140,7 +165,7 @@ fn effect_opt_is_async(eff: Option[String]) -> Bool {
 
 /// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
 /// A name bound in `env` (a user/prelude function) is intentionally NOT treated
-/// as a primitive even if its type is `with { Async }`.
+/// as a primitive even if its type is `with Async`.
 fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
   match env_lookup(env, name) {
     Some(_) => false,
@@ -407,7 +432,7 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) 
   match afe_expr_head_name(iter, env, locals) {
     // #1341: the p3 host stream is async by construction and has no
     // AsyncIterator impl to find -- its read primitive is the scalar
-    // `host_stream_next(s) -> Int with { Async }`, and the desugar builds the
+    // `host_stream_next(s) -> Int with Async`, and the desugar builds the
     // loop on that read directly (build_host_stream_for). The loop therefore
     // parks once per byte, so the enclosing row must carry `Async` for exactly
     // the reason #1358 gave for trait-based async iterators.
@@ -439,7 +464,7 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
     },
     EForIn(_, _, iter, _) => match afe_async_iterand(iter, env, locals) {
       Some(tn) => if !in_async {
-        Array::push(errors, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with { Async }` or wrap the loop in a handler for it)")))
+        Array::push(errors, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with Async` or wrap the loop in a handler for it)")))
       } else {
         ()
       },
@@ -549,7 +574,7 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
 //# perform-discipline enforcement (#626 criterion 1)
 //
 // `perform EffName::Op(..)` may only occur where `EffName` is in scope: either
-// the enclosing function/lambda declares it in `with { ... }`, or the perform
+// the enclosing function/lambda declares it in `with` row, or the perform
 // is inside a `handle` (which discharges it). Otherwise it is a type error —
 // "performing an undeclared effect". This realizes the first acceptance
 // criterion of #626 (the checker formerly accepted undeclared performs because
@@ -561,9 +586,9 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
 // declines to flag the (rarer) perform-of-a-different-effect-inside-a-handle
 // case, which full row tracking (#626 criteria 2/4) will cover.
 
-/// Parse a source `with { ... }` annotation into the canonical row. This is
+/// Parse a source `with` row annotation into the canonical row. This is
 /// the sole parser for checker effect rows: labels are trimmed and deduped, and
-/// `None` remains structurally different from an explicit `with {}`.
+/// `None` remains structurally different from an explicit `with ()`.
 fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
   match eff {
     // None is structurally distinct from Some([]): it means the row is
@@ -580,7 +605,7 @@ fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
         }
         i = i + 1
       }
-      // Some([]) is an explicitly pure `with {}` row.
+      // Some([]) is an explicitly pure `with ()` row.
       Some(labels)
     }
   }
@@ -613,7 +638,7 @@ fn effect_row_labels(row: Option[Array[String]]) -> Array[String] {
 }
 
 /// Resolve an annotation at a nested lambda boundary. Inferred rows inherit;
-/// explicit rows, including `with {}`, replace the surrounding row.
+/// explicit rows, including `with ()`, replace the surrounding row.
 fn effect_row_inherit(row: Option[Array[String]], surrounding: Array[String]) -> Array[String] {
   match row {
     None => surrounding,
@@ -622,7 +647,7 @@ fn effect_row_inherit(row: Option[Array[String]], surrounding: Array[String]) ->
 }
 
 /// A single lowercase letter is an effect VARIABLE (polymorphic row tail in the
-/// current representation): a function declaring `with { e }` may perform any
+/// current representation): a function declaring `with e` may perform any
 /// effect, so treat such a declaration as authorizing everything.
 fn label_is_effect_var(name: String) -> Bool {
   String::length(name) == 1 && String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
@@ -691,7 +716,7 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
     // compares generic row items by their base name (the
     // instantiation-insensitive #1340 v1, where `State[Int]` and
     // `State[String]` are interchangeable) -- reaching it would let
-    // `with { Exception[ParseError] }` authorize an `IoError` throw and erase
+    // `with Exception[ParseError]` authorize an `IoError` throw and erase
     // the one guarantee typed exceptions exist to give. For BRACKETLESS rows
     // the reorder is inert: the old order could only have matched here when
     // some declared label already shared the base `Error`, which the exact
@@ -724,11 +749,11 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
 
 /// A DIRECT `perform EffName::Op` is authorized if the declared row names
 /// either the whole effect (`EffName`) or, per ADR-0071's operation-level row
-/// items, the exact operation (`EffName::Op`) itself -- e.g. `with { Ask::Get
-/// }` must authorize a bare `perform Ask::Get` in the same function, exactly
-/// as it already authorizes a transitive call to a callee declaring `{
-/// Ask::Get }` (that check compares the full qualified label directly,
-/// without stripping to the base effect name).
+/// items, the exact operation (`EffName::Op`) itself -- e.g. `with Ask::Get`
+/// must authorize a bare `perform Ask::Get` in the same function, exactly as
+/// it already authorizes a transitive call to a callee declaring the same
+/// item (that check compares the full qualified label directly, without
+/// stripping to the base effect name).
 fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
   if decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name) {
     true
@@ -1054,10 +1079,10 @@ fn throw_report_label(op_name: String, required: String, declared: Array[String]
 /// its effect and behaves exactly as before.
 ///
 /// Without this, host capabilities had NO granularity below the whole effect:
-/// `with { Fs::read_file }` was rejected with `missing { Fs }` because the
+/// `with Fs::read_file` was rejected with `missing { Fs }` because the
 /// builtin path only ever compared the bare label, even though ADR-0071 made
 /// the operation the row's minimal unit and `perform Eff::Op` already honored
-/// it. That is what forced coarse rows like `with { Http }` (serve + outbound
+/// it. That is what forced coarse rows like `with Http` (serve + outbound
 /// request + request-field reads in one grant).
 fn builtin_call_op_label(name: String, eff: String) -> String {
   let normalized = canonical_builtin_name(name)
@@ -1234,7 +1259,7 @@ fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[St
 /// name is semantically equivalent to discharging every one of its qualified
 /// operation names. But the DOWNSTREAM containment check
 /// (decl_authorizes_effect) does exact string-label matching: a handled
-/// body that transitively calls a function declaring `with { Ask::Get }`
+/// body that transitively calls a function declaring `with Ask::Get`
 /// (operation-level, not the bare effect) previously reported that specific
 /// requirement as still missing even though the handle plainly covers it --
 /// "Ask" != "Ask::Get" as strings, and the discharge list only ever
@@ -1292,7 +1317,7 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
 /// with the discharged effects (criterion 2). Order of traversal differs from a
 /// recursive pre-order walk, but the SET of effect errors found is identical, so
 /// the accept/reject decision is unchanged.
-/// The declared effect row of a top-level binding: the signature's `with { ... }`
+/// The declared effect row of a top-level binding: the signature's `with` row
 /// unioned with an EFn body's own effect annotation (`let f = (x) -> { .. } with
 /// { E }`). Used to build the call-graph effect map for transitive enforcement.
 fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
@@ -1366,7 +1391,7 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
 }
 
 /// #885 (split off from #838, originally scoped out at #626): a function-typed
-/// PARAMETER (a callback, e.g. `f: (T) -> T with { e }`) is a call-graph leaf
+/// PARAMETER (a callback, e.g. `f: (T) -> T with e`) is a call-graph leaf
 /// exactly like a named top-level function, but `fn_names`/`fn_effs` above is
 /// built ONLY from top-level `SLet`/`SLetMut` bindings, so invoking a callback
 /// PARAMETER directly (`f(x)` inside the wrapper that owns `f`) was invisible to
@@ -1389,16 +1414,16 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
 /// exemption globally broke `generic_effect_matrix_ok_passthrough_pure.vibe`.
 /// The callback-parameter case is different in kind: the row variable and the
 /// declared effect being compared live in the SAME function signature (the
-/// parameter's `with { e }` and the enclosing function's own `with { e }` are
+/// parameter's `with e` and the enclosing function's own `with e` are
 /// the identical token by construction — no cross-call-site instantiation is
 /// involved), so a literal-name check here is sound, not a naive shortcut.
-/// #1361: a LOCAL `let f = () -> T with { E } { .. }` is a call-graph leaf just
+/// #1361: a LOCAL `let f = () -> T with E { .. }` is a call-graph leaf just
 /// like a top-level function or a callback PARAMETER (#885), but NEITHER table
 /// knew about it: `fn_names`/`fn_effs` is built only from top-level SLet/SLetMut
 /// bindings, and `build_param_overlay` only from function-typed parameters. So
 /// `f()` leaked nothing into the enclosing body, while the closure's own body
 /// satisfied its own declared row (the EFn arm's `effect_row_inherit`) — a
-/// function declaring `with { Stdout }` could reach `Env` through a local
+/// function declaring `with Stdout` could reach `Env` through a local
 /// closure with no diagnostic at all, and file_entry_cacheable /
 /// file_tests_cacheable consequently judged such an entry cacheable (its stdout
 /// varies with the environment, so the doctest cache replayed a stale run).
@@ -1407,7 +1432,7 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
 /// the caller declares it or a `handle` discharges it.
 ///
 /// Only a literal `EFn` value is registered. An ANNOTATED local binding
-/// (`let f: () -> T with { E } = ..`) is desugared to an ascription call
+/// (`let f: () -> T with E = ..`) is desugared to an ascription call
 /// (`((__asc: T) -> __asc)(e)`, ascribe_wrap) before this walk runs, so its row
 /// is not visible here — that shape keeps the old, permissive behavior rather
 /// than being half-checked.
@@ -1468,7 +1493,7 @@ fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[Stri
   (names, effs)
 }
 
-/// A `let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> { f(x) }`
+/// A `let apply: [T](f: (T) -> T with e, x: T) -> T = (f, x) -> { f(x) }`
 /// binding (separate top-level type annotation + untyped lambda) parses to an
 /// `EFn` whose OWN `params` carry no per-parameter `TypeExpr` at all (the types
 /// live only on the `SLet`'s `ty` field). `build_param_overlay` needs real
@@ -1476,7 +1501,7 @@ fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[Stri
 /// fills in each untyped `EFn` parameter from `ty`'s `TyFn` parameter list at
 /// the SAME position — the two lists describe the same signature, so positional
 /// pairing is exact. An `EFn` parameter that already carries its own inline
-/// type (the `[T](f: (T) -> T with { e }, ...)` generic-literal spelling used
+/// type (the `[T](f: (T) -> T with e, ...)` generic-literal spelling used
 /// elsewhere in this file) is left untouched; `ty` is consulted only to fill
 /// gaps, never to override.
 fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] {
@@ -1504,7 +1529,7 @@ fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Optio
 }
 
 /// Transitive effect enforcement (#626): a call to a user function `G` that
-/// declares `with { E }` leaks E into the caller unless the caller declares E or
+/// declares `with E` leaks E into the caller unless the caller declares E or
 /// the call is under a `handle ... with E`. Combined with the DIRECT discipline
 /// (every function that itself performs/invokes an effectful builtin must declare
 /// it — already enforced), this propagates effect requirements up the call graph
@@ -1554,7 +1579,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // un-annotated throw sites). `throw(x)` now parses to
                     // `perform Error::Throw(x)`, so without this exemption
                     // every one of those sites would newly require
-                    // `with { Error }`.
+                    // `with Error`.
                     // Codex review (PR #1161): report the qualified
                     // operation (`op_name`, e.g. "Ask::Get"), not the
                     // stripped base effect name -- per docs/effectset.md's
@@ -1594,9 +1619,9 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
               match builtin_call_effect(name) {
                 Some(eff) => {
                   // #1343: authorize at OPERATION granularity as well as by the
-                  // bare effect. `with { Fs }` keeps working unchanged (the
+                  // bare effect. `with Fs` keeps working unchanged (the
                   // effect check is tried first and is what every existing row
-                  // relies on); `with { Fs::read_file }` now also authorizes,
+                  // relies on); `with Fs::read_file` now also authorizes,
                   // giving host capabilities the minimal-permission granularity
                   // ADR-0071 defined and `perform Eff::Op` already had. Strictly
                   // a widening -- nothing that compiled before can start failing.
@@ -1639,8 +1664,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   let teff = Array::get(callee_effs, ti)
                   // #1343 (Codex P1 on PR #1359): `decl_authorizes_op`, not
                   // `decl_authorizes_effect` -- once a callee can declare an
-                  // OPERATION row (`with { Fs::read_file }`), a caller holding
-                  // the WHOLE effect (`with { Fs }`) must authorize it. The
+                  // OPERATION row (`with Fs::read_file`), a caller holding
+                  // the WHOLE effect (`with Fs`) must authorize it. The
                   // effect-only check compared labels literally, so the bare
                   // `Fs` failed to cover `Fs::read_file` and calling such a
                   // callee was rejected. decl_authorizes_op tries the base
@@ -1666,7 +1691,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // e.g. `f(x)` inside the wrapper that declares `f: (T) -> T with
             // { e }` — leaks `f`'s declared row into this context exactly like
             // a named function call above, but UNLIKE that case a row-variable
-            // label here is NOT exempted: the parameter's `with { e }` and the
+            // label here is NOT exempted: the parameter's `with e` and the
             // enclosing function's own declared row live in the SAME
             // signature, so the token `e` denotes the identical variable in
             // both places (no cross-call-site instantiation to resolve), and
@@ -1707,7 +1732,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         }
       },
       EFn(_, _, params, _, effect, body) => {
-        // #761: an EXPLICITLY-annotated lambda (`(x) -> { .. } with { E }`) is
+        // #761: an EXPLICITLY-annotated lambda (`(x) -> { .. } with E`) is
         // checked against its own row E. An UN-annotated lambda's effect row is
         // INFERRED, not declared, so checking its body against an empty row is
         // wrong — it wrongly rejected an inline effectful lambda passed to a HOF
@@ -1990,7 +2015,7 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
 /// that reaches a host effect still correctly counts as impure/non-cacheable.
 /// #944 (ADR-0073 implementation bridge): checked-Error mode. The accepted
 /// owner decision makes `Error::Throw` a fully checked semantic operation
-/// (direct throw and `with { Error }` callees propagate to the caller's
+/// (direct throw and `with Error` callees propagate to the caller's
 /// row; discharge via `handle ... with Error`). Stage A landed this
 /// opt-in (`VIBE_CHECK_ERROR_ROW=1`, default off, preserving the old
 /// exemption byte-for-byte) while the tree still carried hundreds of
@@ -2032,7 +2057,7 @@ fn test_bench_ambient_effects() -> Array[String] {
     // implemented as a throw, and a failing test IS an escaping Error the
     // test runner catches and reports (the block is an entry-like
     // boundary, exactly ADR-0073's entry-boundary-A shape). Requiring
-    // every test block to spell `with { Error }` would annotate the
+    // every test block to spell `with Error` would annotate the
     // mechanism the runner already owns.
     // #1343: この集合を operation 粒度へ絞れるか実測した (#1359 で builtin
     // 経路に operation 認可が通ったので技術的には可能)。**結論: 今のところ
@@ -2049,7 +2074,7 @@ fn test_bench_ambient_effects() -> Array[String] {
     // "Stdin" も残す。当初 `Stdin::` の直接呼び出しを grep して「使用 0 件」
     // と判断し削除したが、**バッテリーが 4 ファイルの失敗で反証した**
     // (console/example_io_test, console/io_test, console/stdin_stream_test,
-    // prelude/io_test)。これらは `Stdin::` を直接書かず、`with { Stdin }` を
+    // prelude/io_test)。これらは `Stdin::` を直接書かず、`with Stdin` を
     // 宣言したラッパー関数 (lib/@vibe/console の read_line 等) 経由で
     // **推移的に**要求する。直接呼び出しの grep では捕まらない。
     //
@@ -2061,7 +2086,7 @@ fn test_bench_ambient_effects() -> Array[String] {
     // handler (Process に effect 宣言が無いので arm 名は一切検査されず、
     // codegen で消える) だけ。7 ファイルに無意味な構文を撒くことになるので
     // 見送った。正しい機構は test ブロック自身が row を宣言できるようにする
-    // こと (`test "name" with { Process } { .. }`) だが、STest への row 追加は
+    // こと (`test "name" with Process { .. }`) だが、STest への row 追加は
     // 97 箇所・約20ファイルに波及するため別スライスとする。
     "Fs",
     "Env",
@@ -2095,7 +2120,7 @@ export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
 
 /// #812: seed the transitive call-graph map with the checker ENV's bindings.
 /// fn_names/fn_effs was built from the CURRENT module's top-level statements
-/// only, so a caller could invoke an IMPORTED `with { Fs }` function without
+/// only, so a caller could invoke an IMPORTED `with Fs` function without
 /// declaring Fs and reach the filesystem at runtime — while the identical
 /// shape with a local callee was rejected. An imported binding's CtFn carries
 /// its declared effect row in the env; add every effect-bearing env binding
@@ -2339,7 +2364,7 @@ fn dh_labels_may_be(labels: Array[String], ename: String) -> Bool {
 }
 
 /// Does this type annotation mention a function row carrying `ename`? An
-/// ANNOTATED local binding (`let apply: (String) -> String with { Transform }
+/// ANNOTATED local binding (`let apply: (String) -> String with Transform
 /// = (s) -> { .. }`) is desugared to an ascription call before this walk runs
 /// (`((__asc: T) -> __asc)(e)`, ascribe_wrap), so its row survives only in the
 /// ascription lambda's PARAMETER annotation -- see fixtures/effect_crossfn_test
@@ -2394,7 +2419,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // top-level bindings, and the #885/#1361 overlay of function-typed
       // PARAMETERS and row-declaring local closures in scope. The overlay is
       // what spares `TaskGroup::spawn_suspend`, whose handled body's only
-      // callee is its own `f: () -> T with { Async, Error }` parameter.
+      // callee is its own `f: () -> T with Async + Error` parameter.
       ECall(EIdent(nm, _), _, _) => match lookup_fn_effs(fn_names, fn_effs, nm) {
         Some(effs) => dh_labels_may_be(effs, ename),
         None => match lookup_fn_effs(ov_names, ov_effs, nm) {
@@ -2543,7 +2568,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
 /// DECLARED as `f~` but CALLED as `f()`, so the overlay key must be the base
 /// name or the lookup misses. fixtures/effect_inline_lambda_literal_labeled_
 /// arg.vibe is exactly that shape: its handled body's only callee is the
-/// labeled parameter `f~: () -> Int with { Log }`.
+/// labeled parameter `f~: () -> Int with Log`.
 fn dh_param_base_name(n: String) -> String {
   let ln = String::length(n)
   if ln > 0 {
@@ -2633,7 +2658,7 @@ fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs
 /// A direct `sh`/`sh_lines` call IS surfaced: builtin_call_effect special-cases
 /// these two unqualified builtins to `Process` (they lower to real host imports),
 /// so a test that shells out is correctly treated as impure/non-cacheable, the
-/// same as `sh` reached through a user function declaring `with { Process }`.
+/// same as `sh` reached through a user function declaring `with Process`.
 /// Conservative otherwise: an effect the type system does not surface here stays
 /// invisible, but it never marks a genuinely-impure test cacheable.
 export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
@@ -2739,7 +2764,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       // effects_expr_tx's own limitation (also present, unchanged, in the
       // established `vibe test` cache via file_tests_cacheable above): a
       // LOCAL closure defined inside the body is checked under its OWN
-      // declared row (so an inner `with { Env }` satisfies itself and never
+      // declared row (so an inner `with Env` satisfies itself and never
       // surfaces as an error at this call site), and a row-POLYMORPHIC
       // callee's effect-VARIABLE labels are deliberately treated as "leaks
       // nothing" here (real call-site row-variable instantiation tracking
@@ -2752,7 +2777,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       // entry's OWN declared row names anything outside the safe set. A
       // real top-level `main` is never itself row-polymorphic, so this is a
       // cheap, purely-additive net that catches the common/direct case
-      // (`fn main with { Stdout, Env } { ... }`) even in scenarios the
+      // (`fn main with Stdout + Env { ... }`) even in scenarios the
       // deeper walk alone would miss.
       let declared_ok = match entry_declared {
         None => true,
@@ -2763,7 +2788,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       } else {
         // `body` (from SLet/SLetMut) is the closure VALUE bound to
         // entry_name, e.g. `EFn(type_params, bounds, params, ret_ty,
-        // effect, fn_body)` for `fn main with { ... } { ... }` -- checking
+        // effect, fn_body)` for `fn main with <row> { ... }` -- checking
         // the EFn NODE itself would trivially find zero reachable effects
         // (defining a closure performs nothing; only CALLING it would),
         // silently marking every entry cacheable regardless of what it
@@ -2789,8 +2814,8 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
 /// #1343: each row label is reduced to its EFFECT name before the lookup.
 /// Once operation-level rows became expressible for host capabilities
 /// (#1359), an entry declaring the STRICTLY NARROWER
-/// `with { Stdout::write_stream }` would otherwise fail this exact-string
-/// test and be judged un-cacheable, while the broader `with { Stdout }`
+/// `with Stdout::write_stream` would otherwise fail this exact-string
+/// test and be judged un-cacheable, while the broader `with Stdout`
 /// passed -- i.e. tightening a row would lose the #819/#1214 doctest cache.
 /// `effect_name_of_op` only strips a `::` suffix (and canonicalizes the
 /// exception aliases), so a row variable stays a row variable and an

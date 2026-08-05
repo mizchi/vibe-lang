@@ -125,7 +125,7 @@ lowering 戦略は `EPerform`/`EHandle` を消費する差し替え可能な pas
 初稿ではここを「呼び出し経路上に row variable が無ければ handler はコンパイル
 時に一意に決まり、evidence は完全に消える」と書いたが、これは誤りだった。
 `fixtures/effect_higher_order_swap.vibe` を精査すると反例になる: `compute`
-(effect row は `with { Env }` — row variable を一切含まない具体的な row) は
+(effect row は `with Env` — row variable を一切含まない具体的な row) は
 `with_ten(compute)` と `with_hundred(compute)` の**両方**から呼ばれ、
 呼び出し先ごとに**異なる**handler がインストールされる。つまり「row variable
 が無いこと」は handler の一意性を全く保証しない — 一意性は「その関数の
@@ -518,7 +518,7 @@ Phase 3 でも再利用できる。
    `:919-931`) を持つからで、呼び出し側は「どの具体型か」だけを
    `infer_arg_type_name` で静的に決めれば、あとは固定レイアウトの
    struct を合成できる。一方 effect row 変数 `e` は、呼び出し箇所ごとに
-   **異なる、時には複数 effect の集合**(`with { e }` の実体化先が
+   **異なる、時には複数 effect の集合**(`with e` の実体化先が
    `Ask` のときも `Ask, Fs` のときもある) に束縛されうるため、
    「row 変数用の固定レイアウト struct」という型自体が存在しない —
    trait dict の struct 版パターンをそのまま流用できない。
@@ -768,7 +768,7 @@ error_mix.vibe + compiler_gate.sh 40w で回帰を固定 -- この fixture は
 
 **追記 6 (2026-07-23, 「追記 4」の根本原因を特定・修正)**: 「追記 4」で
 未確定のまま残していた分岐内呼び出しクラッシュの根本原因を、
-`compile_call.vibe` に一時的な debug throw (`with { Error }` を既に
+`compile_call.vibe` に一時的な debug throw (`with Error` を既に
 宣言している既存関数なので `print`/`Stdout` を新たに要求せず安全に
 埋め込めた) を仕込んで実際に計装し、特定した。
 
@@ -1191,7 +1191,7 @@ fixture で pin している。検証は今回も migration-plan probe で
 
 module doc comment の「Not attempted here」節に残っていた
 「effectset-expanded rows」を検証目的で試したところ、単純な
-whole-effect alias (`effectset AskAll = { Ask }`、`with { AskAll }`)
+whole-effect alias (`effectset AskAll = { Ask }`、`with AskAll`)
 ですら **一度も migrate されていなかった** ことが判明した
 (temporary migration-plan probe で `plans` が空であることをまず確認、
 その後に理由を追跡 -- 「推測ではなく先に空であることを直接確認してから
@@ -1482,7 +1482,7 @@ shape this pass targets") -- が、ここでの「nested」は実際には
 関わらず) が `VIBE_BACKEND=gc` で依然失敗することが判明した。
 
 原因: `let never_called = () -> Int { perform Ask::Get }` は明示的な
-`with {...}` 注釈を持たない -- AST 上 `eff` フィールドは空のまま
+`with ...` 注釈を持たない -- AST 上 `eff` フィールドは空のまま
 (チェッカーは内部で row を推論するが、node には書き戻さない)。
 `dlh_hoist_expr` (`desugar_trait_dict.vibe`、#786 の capture-free
 lambda-lifting) はこのクロージャをトップレベルへ昇格する際、空の
@@ -1644,8 +1644,8 @@ wrapper 特殊化 (#1015) を積み重ねて Int/String/Bool/Float だけ個別�
 
 追記23 の row-polymorphism 調査中、row 多相とは無関係の、より基礎的な
 実バグを発見・修正した (commit `1c4aa64`)。let 束縛を一切経由しない
-inline なラムダリテラル (`(() -> Int with { Log } { perform ...; 42 })()`
-のような即時呼び出し (IIFE)、あるいは `with_log(() -> Int with { Log }
+inline なラムダリテラル (`(() -> Int with Log { perform ...; 42 })()`
+のような即時呼び出し (IIFE)、あるいは `with_log(() -> Int with Log
 { perform ...; 42 })` のように「呼び出しサイトの ARGUMENT 位置」に直接
 書かれたラムダリテラル) が effect を perform すると、コンパイル時に
 不正な wasm (`invalid signature index`) を生成するか、実行時に
@@ -1690,7 +1690,7 @@ stage2==stage3 self-host fixpoint ビルドの両方で検証済み。
 「自前の handle 内で不透明なクロージャ型パラメータを呼ぶ」形が未カバー
 
 selfhost `vibe lsp` (#1077) のドッグフーディングで、`lsp_run_with_handler`
-の元設計 (`body: () -> Json with { Lsp }` を受け取り
+の元設計 (`body: () -> Json with Lsp` を受け取り
 `handle { body() } with Lsp {...}` する関数) が実 wasmtime 下でのみ
 `indirect call type mismatch` で trap する事象が見つかった (Node
 dev-runner では通ってしまっていた)。#1077 では `lsp_run_with_handler` を
@@ -1703,7 +1703,7 @@ effect Ask {
   Get -> Int
 }
 
-let run_with_handler = (f: () -> Int with { Ask }) -> Int {
+let run_with_handler = (f: () -> Int with Ask) -> Int {
   handle {
     f()
   } with Ask {
@@ -1713,19 +1713,19 @@ let run_with_handler = (f: () -> Int with { Ask }) -> Int {
 
 export let main = () -> Int {
   let base = 100
-  let a = () -> Int with { Ask } { perform Ask::Get + base }
-  let b = () -> Int with { Ask } { perform Ask::Get + base + 1 }
+  let a = () -> Int with Ask { perform Ask::Get + base }
+  let b = () -> Int with Ask { perform Ask::Get + base + 1 }
   run_with_handler(a) + run_with_handler(b)
 }
 // want: 285
 ```
 
 **この repro は #1075 で pin 済みの `effect_local_closure_by_value_hof_general.vibe`
-(`apply_twice`) 系とは別モノ**: `apply_twice` は自分自身が `with { Ask }`
+(`apply_twice`) 系とは別モノ**: `apply_twice` は自分自身が `with Ask`
 という row を持つ「needing 関数」で、`edp_own_closure_params`
 (#1075、`inline_direct_perform.vibe`) がその closure 型パラメータへの
 呼び出しを、他の needing 関数への呼び出しと同様に dict 転送対象として
-扱える。一方 `run_with_handler` は `with { Ask }` を一切持たない —
+扱える。一方 `run_with_handler` は `with Ask` を一切持たない —
 自分の中で `handle ... with Ask` を確立し、そこで **完結して discharge
 する** 関数であり、`edp_needing_names` の判定基準 (row 文字列に対象
 effect を含むか) では最初から「needing」に分類されない。したがって
@@ -1980,7 +1980,7 @@ double compilation を per-effect enum で実装:
    **concrete row が E を含まず row 変数も持たない** top-level 関数
    (unhandled な E perform が f から到達可能なら checker が f の row に
    E か row 変数を強制する — だから concrete E-free row は E を perform
-   できない)。row 変数 (`with { e }`) を持つ non-needing callee は
+   できない)。row 変数 (`with e`) を持つ non-needing callee は
    closure 引数経由で E を注入されうるので hard error のまま (これが
    3b の残 TODO マーカー)。loop / let mut spine 上の suspend も未対応
    (→ #1230 / 追記36 で対応済み)。
@@ -2120,7 +2120,7 @@ suspend_cps_pass 内の AST 変換で完結する:
    無ければ従来通り併存可 (3b の dual-entry が吸収する)。
 5. **@vibex/concurrent への接続**: `TaskGroup::spawn(g, f)` を
    suspendable に差し替え (handle site を spawn 内部へ移動、
-   f: `() -> T with { Async }` param 経由の needing call が 3. の (α))。
+   f: `() -> T with Async` param 経由の needing call が 3. の (α))。
    adoption-site handle 制約 (追記30) はこれで解消。channel の mid-body
    blocking は同じ機構で spawn の後に続ける。
 
@@ -2147,7 +2147,7 @@ pin、(ii) spawn 2 本の mid-body interleave (suspend_test の spawn 版)、
   (`effect_resume_call_bubbling` trap で発覚)。literal split は
   「式位置の literal」に限る。
 - **suspend する closure literal には明示 row 注釈が必須**:
-  `() -> T with { E } { ... }`。#761 により無注釈 lambda の effect は
+  `() -> T with E { ... }`。#761 により無注釈 lambda の effect は
   enclosing の declared row へ継承 (誤検出回避のための既定) されるため、
   literal 自身の row に封じ込めるには注釈で宣言する。注釈なしだと
   enclosing fn の row mismatch として checker が弾く (安全側)。
@@ -2230,13 +2230,13 @@ frontier 付き replay loop の第一級消費者は以下だけ:
    `eff_reserve` 領域を削除する。~~ 削除済み。`is_error` 単発経路は Error
    の実装として存続。**非 Error handle が migration をすり抜けて live に
    残ることは hard error** (evidence vector 表現は引き続き本 vertical の
-   範囲外 — row 変数 `with { e }` の callee は今も不適格要因)。
+   範囲外 — row 変数 `with e` の callee は今も不適格要因)。
 
 ### 追記33 (2026-07-25): channel blocking スライスと desugar 内部
 primitive の safe-mut 追加
 
 `@vibex/concurrent` の `Sender::send_wait` / `Receiver::recv_wait`
-(`with { Async }`、deposit → suspend → 自己再帰リトライ) を closure-CPS
+(`with Async`、deposit → suspend → 自己再帰リトライ) を closure-CPS
 機構の上に実装した (docs/concurrency.md 実装ノート参照)。compiler 側の
 変更は 1 点だけ: `scps_is_safe_mut_builtin` に parser desugar の内部
 primitive **`__set_field`** (`o.f = v` の脱糖先) と **`__index`**
@@ -2289,7 +2289,7 @@ edp に適用すれば、既存の dict-param 機構 (trait dict と同形の先
    fallback 禁止 — scps の規約整合ガードと同型)。row-E closure 値が
    存在しないプログラムは従来の proof-directed 動作のまま
    (`evidence_dict_needing_shadowed_by_local` の negative pin は不変)。
-5. row 変数 (`with { e }`) は据え置き (evidence vector 表現は後続、本文
+5. row 変数 (`with e`) は据え置き (evidence vector 表現は後続、本文
    529-549 の決定通り)。
 
 **やらないこと (調査で棄却)**: env slot 方式 (Option B) は creation 時に
@@ -2554,7 +2554,7 @@ checker はこれを弾かない。closure リテラル内の `perform` は **�
 通常の body 書き換えに渡すと、ラッパ **内側** の呼び出しに dict が前置され、
 外に出るのは「evidence を閉じ込めた row-free arity の closure」になる。
 両側の arity が一致し、受け側は何も知らなくていい。手で
-`f: (x: Int) -> Int with { Async }` と書いたときに起きることと同じ結果を、
+`f: (x: Int) -> Int with Async` と書いたときに起きることと同じ結果を、
 注釈なしで得る。
 
 捕まえる evidence が **escape 地点でスコープにあるもの** で正しいのは、
@@ -2600,7 +2600,7 @@ literal が壊れていた。`scps_split_tail` の `tail_needing` 分岐は「cl
 なる:
 
 ```text
-() -> Int with { Yield } { callee(1) }
+() -> Int with Yield { callee(1) }
   ==> () -> { __scps_cps_Yield_callee(1) }
 ```
 
@@ -2641,7 +2641,7 @@ literal の body がちょうど `f()` (f は自身の E-row param) なら原理
 
 edp の eligibility (`edp_has_unsafe_construct`) は **callee が bare
 `EIdent` でない call を無条件に opaque とみなす**。`ECall(EDot(..))` を弾く
-ための fallback だが、**IIFE** — `(() -> Int with { E } { .. })()` — も同じ
+ための fallback だが、**IIFE** — `(() -> Int with E { .. })()` — も同じ
 形なので巻き込まれる。追記34 V2 が replay を撤去した後、これは「その effect
 全体が migration 不能」= hard error を意味する。
 
@@ -2654,16 +2654,16 @@ evidence が前置される。**問題はその発火条件が `dlh_has_perform(
 と判定され、無名のまま残っていた。
 
 ```vibe
-fn bump0() -> Int with { Async } { let w = perform Async::Suspend(1)  w + 100 }
-handle { (() -> Int with { Async } { bump0() })() } with Async { .. }
+fn bump0() -> Int with Async { let w = perform Async::Suspend(1)  w + 100 }
+handle { (() -> Int with Async { bump0() })() } with Async { .. }
 ```
 
 **この形をユーザは普通 IIFE として書かない**。`dtpw_inline_trivial_wrappers`
 (#1070) が作る:
 
 ```vibe
-fn apply0(f: () -> Int with { Async }) -> Int with { Async } { f() }
-handle { apply0(() -> Int with { Async } { bump0() }) } with Async { .. }
+fn apply0(f: () -> Int with Async) -> Int with Async { f() }
+handle { apply0(() -> Int with Async { bump0() }) } with Async { .. }
 ```
 
 `apply0` は body が「自分の唯一の param への同アリティ直接呼び出し」ちょうど
