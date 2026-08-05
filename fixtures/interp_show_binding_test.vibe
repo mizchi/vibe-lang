@@ -9,6 +9,18 @@
 //   "\{(1, 2)}"                -> "(1, 2)"   already worked
 //   let t = (1, 2); "\{t}"     -> "240"      the raw pointer, #1445
 //
+// #139 closed the rest of it: the shape record is now RECURSIVE (a nested
+// tuple/array element used to record only its head name, so `(0, (1, p))`
+// printed `(0, 268)`), and any constructor-cased callee records its payload
+// rather than only `Some`/`Ok`/`Err`, which is what gives a USER enum's
+// pattern binder a type.
+//
+// STILL OPEN: a value reached through a generic parameter (`fn f[T: Show](x:
+// T) -> String { "\{x}" }`). That one is not a missing shape record -- there
+// is no shape, because `T` is whatever the caller instantiated. It needs the
+// Show dictionary to carry a renderer, i.e. method-bearing traits
+// (docs/method-bearing-traits-plan.md), not another sentinel here.
+//
 // This is a separate file rather than more digits on interp_show_derive.vibe
 // because that fixture's weight is already 1e16 and vibe's Int literal ceiling
 // is 2^61-1 (~2.3e18) -- two more digits and the encoding overflows. Per-block
@@ -22,6 +34,12 @@ struct P {
 enum E2 {
   A;
   B(Int)
+} derive (Show)
+
+enum Wrap {
+  W0;
+  W1(P);
+  W2(Int, P)
 } derive (Show)
 
 fn opt_param(o: Option[P]) -> String {
@@ -152,4 +170,102 @@ test "#1445: scalars and already-working shapes are unchanged" {
   assert_eq("\{e}", "B(3)")
   let o = Some(7)
   assert_eq("\{o}", "Some(7)")
+}
+
+//# #139: shapes that NEST, and user-enum payloads
+
+test "#139: a nested tuple renders all the way down" {
+  // The one-name-per-element record (`__tupshape$`) was exactly one level
+  // deep: element 1 was "Tuple" and the renderer had nowhere to go, so this
+  // printed `(0, 268)`. The recursive shape (`(Int,(Int,P))`) is what carries
+  // the inner arity and element types.
+  let p = P::{
+    x: 2
+  }
+  let inner = (1, p)
+  let outer = (0, inner)
+  assert_eq("\{outer}", "(0, (1, P { x: 2 }))")
+  // and the same written as one literal, which must agree
+  assert_eq("\{(0, (1, p))}", "(0, (1, P { x: 2 }))")
+}
+
+test "#139: an array of tuples renders its elements structurally" {
+  let a = [
+    (1, P::{
+      x: 3
+    })
+  ]
+  assert_eq("\{a}", "[(1, P { x: 3 })]")
+}
+
+test "#139: a tuple containing an array renders the array" {
+  let t = (1, [
+    P::{
+      x: 4
+    }
+  ])
+  assert_eq("\{t}", "(1, [P { x: 4 }])")
+}
+
+test "#139: an array of arrays renders both levels" {
+  let aa = [
+    [
+      1,
+      2
+    ],
+    [
+      3
+    ]
+  ]
+  assert_eq("\{aa}", "[[1, 2], [3]]")
+}
+
+test "#139: a USER enum's single payload types its pattern binder" {
+  // ctor_payload_bind used to accept only Some/Ok/Err by name. Any
+  // constructor-cased callee records its payload now, which is what a
+  // user enum needs -- `Option` was never special here, it was just the one
+  // spelling that had been listed.
+  let w = W1(P::{
+    x: 5
+  })
+  let rendered = match w {
+    W0 => "none",
+    W1(p) => "\{p}",
+    W2(_, p) => "\{p}"
+  }
+  assert_eq(rendered, "P { x: 5 }")
+}
+
+test "#139: a MULTI-field enum payload types each binder by slot" {
+  let w = W2(9, P::{
+    x: 6
+  })
+  let rendered = match w {
+    W0 => "none",
+    W1(_) => "one",
+    W2(n, p) => "\{n}/\{p}"
+  }
+  assert_eq(rendered, "9/P { x: 6 }")
+}
+
+test "#139: a COMPOSITE enum payload keeps its shape through the binder" {
+  let w = W2(1, P::{
+    x: 7
+  })
+  let t = (0, w)
+  // the enum value itself renders via derive(Show); the point here is that
+  // wrapping it in a tuple binding does not lose that.
+  assert_eq("\{t}", "(0, W2(1, P { x: 7 }))")
+}
+
+test "#139: already-working shapes are unchanged" {
+  let t = (1, 2)
+  let a = [
+    1,
+    2
+  ]
+  assert_eq("\{t}", "(1, 2)")
+  assert_eq("\{a}", "[1, 2]")
+  let o = Some(3)
+  assert_eq("\{o}", "Some(3)")
 }
