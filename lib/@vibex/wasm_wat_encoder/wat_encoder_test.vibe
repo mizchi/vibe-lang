@@ -220,6 +220,81 @@ test "f64 const" {
   assert(find_export(bytes, "f"))
 }
 
+// 上の "f64 const" は magic / セクション順 / export の有無しか見ておらず、
+// **オペランドのバイト列が丸ごと誤っていても通る**。f64 のビットパターンを
+// 62-bit tagged な `Int` 1 つで運んでいた旧実装 (`make_i64` /
+// `Double::to_i64_bits`) が長く放置されたのはこれが理由なので、出てくる
+// 8 バイトそのものを固定する。
+//
+// 注: subnormal (例 1.5e-323) はここでは扱わない。`parse_decimal_double` が
+// 誤った値を返す**別の既存バグ**で、hi/lo 化の前後で挙動が変わらないことは
+// 確認済み。
+fn f64_operand(bytes: Bytes) -> Array[Int] {
+  let out: Array[Int] = [
+  ]
+  let mut i = 0
+  while i + 8 < Bytes::length(bytes) {
+    if Bytes::get(bytes, i) == 0x44 {
+      let mut k = 0
+      while k < 8 {
+        Array::push(out, Bytes::get(bytes, i + 1 + k))
+        k = k + 1
+      }
+      i = Bytes::length(bytes)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn assert_f64_operand(wat: String, want: Array[Int]) -> Unit {
+  let got = f64_operand(compile(wat))
+  assert(Array::length(got) == 8)
+  let mut i = 0
+  while i < 8 {
+    assert(Array::get(got, i) == Array::get(want, i))
+    i = i + 1
+  }
+}
+
+test "f64.const emits the IEEE-754 little-endian bit pattern" {
+  // 1.0 = 0x3FF0000000000000. 値が Int の上限 (2^61-1) の約 2 倍あるので、
+  // 1 つの Int で運ぼうとすると必ず壊れる。
+  assert_f64_operand("(module (func (export \"f\") (result f64) f64.const 1.0))", [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    240,
+    63
+  ])
+  // -2.0 = 0xC000000000000000 (符号 bit が立ち、上位側だけが非ゼロ)
+  assert_f64_operand("(module (func (export \"f\") (result f64) f64.const -2.0))", [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    192
+  ])
+  // inf は上位側だけのケース
+  assert_f64_operand("(module (func (export \"f\") (result f64) f64.const inf))", [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    240,
+    127
+  ])
+}
+
 test "f32 const" {
   let bytes = compile("(module (func (export \"f\") (result f32) f32.const 1.5))")
   assert(check_magic(bytes))

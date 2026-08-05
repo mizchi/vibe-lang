@@ -45,10 +45,6 @@ fn is_digit(c: Int) -> Bool {
   (c >= 48) && (c <= 57)
 }
 
-fn make_i64(hi: Int, lo: Int) -> Int {
-  (hi<<32)|lo
-}
-
 fn tok_text(src: String, tokens: Array[(Int, Int, Int)], idx: Int) -> String {
   let (_, s, e) = Array::get(tokens, idx)
   String::substring(src, s, e)
@@ -315,15 +311,17 @@ fn write_f32_le(buf: Bytes, bits: Int) -> Unit {
   Bytes::push(buf, (bits>>24)&0xFF)
 }
 
-fn write_f64_le(buf: Bytes, bits: Int) -> Unit {
-  Bytes::push(buf, bits&0xFF)
-  Bytes::push(buf, (bits>>8)&0xFF)
-  Bytes::push(buf, (bits>>16)&0xFF)
-  Bytes::push(buf, (bits>>24)&0xFF)
-  Bytes::push(buf, (bits>>32)&0xFF)
-  Bytes::push(buf, (bits>>40)&0xFF)
-  Bytes::push(buf, (bits>>48)&0xFF)
-  Bytes::push(buf, (bits>>56)&0xFF)
+/// little-endian の 8 バイト。上位/下位を別々の `Int` で受け取る
+/// (parse_f64_bits の doc comment 参照 — 64 bit は 1 つの `Int` に入らない)。
+fn write_f64_le(buf: Bytes, hi: Int, lo: Int) -> Unit {
+  Bytes::push(buf, lo&0xFF)
+  Bytes::push(buf, (lo>>8)&0xFF)
+  Bytes::push(buf, (lo>>16)&0xFF)
+  Bytes::push(buf, (lo>>24)&0xFF)
+  Bytes::push(buf, hi&0xFF)
+  Bytes::push(buf, (hi>>8)&0xFF)
+  Bytes::push(buf, (hi>>16)&0xFF)
+  Bytes::push(buf, (hi>>24)&0xFF)
 }
 
 fn decode_string(s: String) -> String {
@@ -565,18 +563,30 @@ fn parse_decimal_double(s: String) -> Option[Double] {
   }
 }
 
-fn parse_f64_bits(s: String) -> Int {
+/// f64 のビットパターンは 64 bit だが、vibe の `Int` は 62-bit tagged
+/// (上限 2^61-1 = 2,305,843,009,213,693,951) なので **1 つの `Int` には入らない**。
+/// 例えば `1.0` のパターン 0x3FF0000000000000 = 4,607,182,418,800,017,408 は
+/// 上限の約 2 倍あり、詰めようとすると黙って壊れる。
+///
+/// 以前はここが単一の `Int` を返しており、`make_i64(hi, lo) = (hi<<32)|lo` も
+/// `Double::to_i64_bits` も同じ理由で誤った値を出していた (`f64.const 1.0` が
+/// 誤ったバイト列を吐いていた — wat_encoder_test の "f64 const" は magic と
+/// セクション順と export の有無しか見ていなかったので素通りしていた)。
+///
+/// 32 bit ずつの対で返す。これは `Double::to_i64_bits_lo` / `_hi` が存在する
+/// 理由そのもの (ADR-0055 Blocker-2) で、どちらの半分も `Int` に収まる。
+fn parse_f64_bits(s: String) -> (Int, Int) {
   if s == "nan" {
-    make_i64(0x7FF80000, 0)
+    (0x7FF80000, 0)
   }
   else if s == "-nan" {
-    make_i64(0xFFF80000, 0)
+    (0xFFF80000, 0)
   }
   else if s == "inf" {
-    make_i64(0x7FF00000, 0)
+    (0x7FF00000, 0)
   }
   else if s == "-inf" {
-    make_i64(0xFFF00000, 0)
+    (0xFFF00000, 0)
   }
   else {
     let mut clean = ""
@@ -591,7 +601,7 @@ fn parse_f64_bits(s: String) -> Int {
     }
     let parsed = parse_decimal_double(clean)
     match parsed {
-      Some(v) => Double::to_i64_bits(v),
+      Some(v) => (Double::to_i64_bits_hi(v), Double::to_i64_bits_lo(v)),
       None => {
         // Malformed f64 literal: the tokenizer only emits float tokens for
         // forms that `parse_decimal_double` should accept (nan/inf/signed-nan/
@@ -599,7 +609,7 @@ fn parse_f64_bits(s: String) -> Int {
         // means the input is not a valid numeric literal; trap loudly rather
         // than silently emit zero bytes.
         assert(false)
-        0
+        (0, 0)
       },
     }
   }
@@ -790,12 +800,18 @@ fn decode_string_bytes(s: String) -> Bytes {
   }
 }
 
-fn f64_bits_to_f32_bits(bits: Int) -> Int {
-  let sign = (bits>>63)&1
-  let exp64 = (bits>>52)&0x7FF
-  let frac64 = bits&0xFFFFFFFFFFFFF
+/// hi/lo の 32 bit 対から f32 のビットパターンを作る。
+/// f64 の 52 bit 仮数は hi の下位 20 bit と lo の 32 bit にまたがる:
+///   frac64 の bit 32..51 = hi の bit 0..19
+///   frac64 の bit  0..31 = lo
+/// f32 の 23 bit 仮数は frac64 >> 29 なので、hi 側 20 bit が bit 3..22 へ、
+/// lo の最上位 3 bit が bit 0..2 へ落ちる。
+fn f64_bits_to_f32_bits(hi: Int, lo: Int) -> Int {
+  let sign = (hi>>31)&1
+  let exp64 = (hi>>20)&0x7FF
+  let frac_hi = hi&0xFFFFF
   if exp64 == 0x7FF {
-    if frac64 == 0 {
+    if frac_hi == 0 && lo == 0 {
       (sign<<31)|0x7F800000
     } else {
       (sign<<31)|0x7FC00000
@@ -804,7 +820,7 @@ fn f64_bits_to_f32_bits(bits: Int) -> Int {
     sign<<31
   } else {
     let exp32 = exp64 - 1023 + 127
-    let frac32 = (frac64>>29)&0x7FFFFF
+    let frac32 = ((frac_hi<<3)|((lo>>29)&7))&0x7FFFFF
     if exp32 >= 255 {
       (sign<<31)|0x7F800000
     } else if exp32 <= 0 {
@@ -829,7 +845,8 @@ fn parse_f32_bits(s: String) -> Int {
     0xFF800000
   }
   else {
-    f64_bits_to_f32_bits(parse_f64_bits(s))
+    let (f_hi, f_lo) = parse_f64_bits(s)
+    f64_bits_to_f32_bits(f_hi, f_lo)
   }
 }
 
@@ -1756,8 +1773,8 @@ fn emit_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], pos
         Bytes::push(buf, 0x44)
         let next = pos + 1
         if next < end_pos {
-          let bits = parse_f64_bits(tok_text(src, tokens, next))
-          write_f64_le(buf, bits)
+          let (bits_hi, bits_lo) = parse_f64_bits(tok_text(src, tokens, next))
+          write_f64_le(buf, bits_hi, bits_lo)
           next + 1
         } else {
           next
