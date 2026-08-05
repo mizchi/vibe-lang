@@ -173,10 +173,16 @@ claim.
 narrow, default-off check-only experiment. TDRE4 aliases the exact logical
 `ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,
 byte-exact owner source, `resolution_env_seed()`, and every `(path, canonical
-TypeEnv-v3 transport text)` row in the full `dep_envs` array in consumed order.
-It does not narrow that table to declared dependencies or replace exact transport
-text with a compact fingerprint. It validates and republishes the decoded
-environment under the ordinary conservative fingerprint. It does not use the
+TypeEnv-v3 transport text)` row in the exact ordered resolved direct-dependency
+projection. The coordinator retains the full accumulated environment cache only
+for graph coordination and upsert; it projects each `deps` occurrence in order,
+preserves duplicate paths and first-match cache lookup, and fails closed if any
+resolved row is missing. The same projected array is passed to `check_module`
+and to TDRE4 lookup/publication, so ambient non-direct cache mutations are
+semantically irrelevant and avoid quadratic canonical serialization. TDRE4 does
+not replace exact transport text with a compact fingerprint. It validates and
+republishes the decoded environment under the ordinary conservative fingerprint.
+It does not use the
 trace-only `vibe-module-interface:v2` observation as a production key, and
 malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and targets
 fall back to a full check. The alias remains incompatible with the incremental
@@ -197,10 +203,13 @@ fingerprint, and exact canonical target text. Reuse reads the raw target,
 strictly decodes it, requires an exact canonical re-encode, and verifies the
 three-way alias/witness/target binding. Publication order is target, witness,
 alias; diagnosed or failed modules publish none of those rows. The production
-oracle covers hidden trait/impl and ambient non-direct `dep_envs` changes,
-valid-but-wrong targets, cross-splicing, missing/malformed/stale entries,
-diagnostic non-publication, and multi-level reuse. The public experimental flag
-and default-off behavior are unchanged.
+oracle covers natural dependency transport changes (public signatures,
+traits, and impls), sidecar-integrity corruption of dependency rows/order,
+ambient non-direct cache irrelevance, valid-but-wrong targets, cross-splicing,
+missing/malformed/stale entries, diagnostic non-publication, and multi-level
+reuse. Focused checker tests cover package/directory candidate selection,
+reexports, duplicate paths/order, first-match cache shadowing, and missing-row
+failure. The public experimental flag and default-off behavior are unchanged.
 
 ## Artifact boundaries
 

@@ -264,6 +264,35 @@ fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
   cache
 }
 
+/// Project the coordinator's accumulated environment cache onto exactly the
+/// resolved direct dependency sequence that the module header produced.
+///
+/// Order and duplicate paths are preserved verbatim. lookup_env_cache's
+/// first-match rule is intentional: it is the same rule build_import_env uses,
+/// so a duplicate cache path cannot select one interface while TDRE4 keys a
+/// different one. A missing row is an infrastructure error, never EnvEmpty:
+/// continuing would let an unreadable dependency silently weaken checking.
+fn project_exact_dependency_envs(deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> Array[(String, TypeEnv)] with Exception {
+  let projected = array_empty()
+  let mut i = 0
+  while i < Array::length(deps) {
+    let dep_path = Array::get(deps, i)
+    match lookup_env_cache(full_cache, dep_path) {
+      Some(dep_env) => Array::push(projected, (dep_path, dep_env)),
+      None => throw(String::concat("type_db: missing resolved dependency environment: ", dep_path))
+    }
+    i = i + 1
+  }
+  projected
+}
+
+/// Test-only semantic seam: production projects with the same helper and then
+/// gives this exact table to build_import_env through ModuleJob.dep_envs.
+export fn projected_import_env_for_test(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
+  let dep_envs = project_exact_dependency_envs(deps, full_cache)
+  build_import_env(parse_program_with_path(path, source), dir_of_path(path), dep_envs)
+}
+
 fn build_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
   let mut acc = compact_string_fingerprint(source)
   let mut i = 0
@@ -1621,10 +1650,11 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 }
 
 /// Exact logical input to check_module: canonical owner path, byte-exact owner
-/// source, resolution authority, and every entry of ModuleJob.dep_envs in its
-/// actual array order. dep_envs is intentionally not narrowed to declared deps:
-/// build_import_env consumes the whole table and first-match shadowing makes
-/// ambient entries and their order checker-visible.
+/// source, resolution authority, and every resolved direct dependency row of
+/// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
+/// this table once with project_exact_dependency_envs and gives the same value
+/// to both check_module and TDRE4 lookup/publication, so ambient coordinator
+/// cache rows are neither checker-visible nor part of this canonical text.
 fn typing_dependency_transport_input_key(path: String, source: String, dep_envs: Array[(String, TypeEnv)]) -> String {
   let out = StringBuilder::new()
   StringBuilder::push(out, "vibe-typing-dependency-transport-env:v4")
@@ -2390,10 +2420,14 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
   } else {
-    let import_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
+    // Keep the accumulated cache as coordinator state, but expose exactly the
+    // resolved dependency sequence to the checker and TDRE4. Construct this
+    // once: lookup, check, and publication must describe the same value.
+    let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
+    let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
     let reused_env = if experimental_typing_dependency_env_reuse_enabled() {
       if typing_dependency_env_reuse_is_eligible(dep_fps) {
-        let input_key = typing_dependency_transport_input_key(path, source, import_env_cache)
+        let input_key = typing_dependency_transport_input_key(path, source, projected_dep_envs)
         match load_typing_dependency_env_reuse_target(input_key) {
           Some((target_fingerprint, target_text, target_env)) => Some((input_key, target_fingerprint, target_text, target_env)),
           None => None
@@ -2412,7 +2446,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
         store_persistent_type_env(fingerprint, target_env)
         publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
         write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
-        let next_env_cache = upsert_env_cache(import_env_cache, path, target_env)
+        let next_env_cache = upsert_env_cache(coordinated_env_cache, path, target_env)
         let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
         (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
       },
@@ -2422,10 +2456,10 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
           source: source,
           deps: deps,
           dep_fps: dep_fps,
-          dep_envs: import_env_cache
+          dep_envs: projected_dep_envs
         }
         let outcome = check_module(job)
-        commit_module_outcome(rdb, import_env_cache, dep_source_cache, parse_count + 1, job, outcome)
+        commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome)
       }
     }
   }
