@@ -8835,7 +8835,11 @@ echo "[compiler-gate] 86/86 string interpolation renders derive(Show) structural
 # shapes (slice 2) whenever it can resolve the argument. The fixture returns
 # one DIGIT per case, 1 = ok, so a partial regression names itself by which
 # digit went to zero -- see the fixture header for the mapping. This exact
-# program returned 1 before #1392 and 11111 with slice 1 alone.
+# program returned 1 before #1392 and 11111 with slice 1 alone. The top two
+# digits are the spelled-out `to_string(v)`: prelude defines it as an
+# unconditional `__to_string(x)`, so it kept printing the pointer decimal after
+# interpolation was already fixed. They live in this fixture so a change that
+# fixes one spelling and breaks the other cannot pass.
 showdir="_build/_gate_interp_show"
 rm -rf "$showdir"; mkdir -p "$showdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/interp_show_derive.vibe > "$showdir/show.vibe"
@@ -8848,8 +8852,8 @@ if [ ! -s "$showdir/show.wasm" ]; then
   exit 1
 fi
 show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>/dev/null | tail -1)"
-if [ "$show_out" != "11111111111111" ]; then
-  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11111111111111) (#1392)" >&2
+if [ "$show_out" != "1111111111111111" ]; then
+  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 1111111111111111) (#1392)" >&2
   exit 1
 fi
 rm -rf "$showdir"

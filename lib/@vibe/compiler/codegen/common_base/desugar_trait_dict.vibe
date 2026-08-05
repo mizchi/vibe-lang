@@ -2767,6 +2767,104 @@ fn is_interp_to_string_call(callee: Expr, args: Array[Expr]) -> Bool {
   }
 }
 
+// ---- #1392: the same rendering for an explicit `to_string(v)` ----
+//
+// prelude's `to_string[T: Show](x: T) -> String { __to_string(x) }`
+// (builtin_traits.vibe) requires the bound and then calls the ADR-0058 runtime
+// heuristic unconditionally -- there is nothing to dispatch on, so it rendered
+// every aggregate as a pointer decimal exactly as bare interpolation used to.
+// That left #1392's asymmetry: after slices 1 and 2, `"\{v}"` renders
+// structurally but the spelled-out `to_string(v)` still does not.
+//
+// Its body IS `__to_string(x)`, so treating a call to it as that call is
+// INLINING, not a semantic change -- which makes both slices apply to
+// `to_string(v)` for free. What it is NOT is `Show` dispatch: inside a generic
+// `f[T: Show](x: T) { to_string(x) }` the argument's type is a variable,
+// nothing resolves, and the call stands as it does today. Real dispatch needs
+// `Show` to become a method-bearing trait AND this pass to see impls across
+// module boundaries (`collect_method_traits` reads only THIS program's stmts,
+// and prelude is a separate module), which is #1392's own remaining slice.
+//
+// The shim is recognized BY ITS BODY, not by the name `to_string` and not by
+// the `Show` bound, because neither survives to this point: the module merge
+// renames imported bindings (import_alias_rewrite.vibe) and
+// `strip_generic_type_params` erases every type parameter AND bound before
+// codegen, so the merged prelude shim arrives here as a plain one-parameter
+// `(x) -> { __to_string(x) }`.
+//
+// The body is also the whole soundness argument, which is why losing the bound
+// costs nothing: a function whose entire body is `__to_string` of its own sole
+// parameter computes exactly what `__to_string` computes, so replacing a call
+// to it with that call is an identity. That holds for a user-written
+// `fn dump(x) { __to_string(x) }` as much as for prelude's, and both should
+// render the same -- #1392's point is that the pointer decimal was never the
+// intent. A user `to_string` that does anything else has a different body, is
+// never in this set, and keeps its call sites untouched.
+let dtd_show_shims: Array[String] = array_empty()
+
+/// `__to_string(<pname>)` and nothing else -- the shim's whole body.
+fn is_bare_to_string_of(body: Expr, pname: String) -> Bool {
+  match body {
+    ECall(bc, ba, _) => if Array::length(ba) == 1 {
+      match bc {
+        EIdent(cn, _) => if cn == "__to_string" {
+          match Array::get(ba, 0) {
+            EIdent(an, _) => an == pname,
+            _ => false
+          }
+        } else {
+          false
+        },
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// A one-parameter function whose body is just `__to_string` of that
+/// parameter -- i.e. a pass-through whose call is interchangeable with the
+/// call it wraps.
+fn is_show_shim_value(v: Expr) -> Bool {
+  match v {
+    EFn(_, _, ps, _, _, body) => if Array::length(ps) == 1 {
+      let (pn, _) = Array::get(ps, 0)
+      is_bare_to_string_of(body, pn)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// Refreshed at each `desugar_trait_dicts` entry. Empty (so nothing is
+/// rewritten) whenever the shim's own definition is not part of the program
+/// being compiled -- the conservative direction.
+fn collect_show_shims(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dtd_show_shims, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => if is_show_shim_value(value) {
+        Array::push(dtd_show_shims, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn is_show_shim_call(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(n, _) => Array::length(args) == 1 && str_array_contains(dtd_show_shims, n),
+    _ => false
+  }
+}
+
 /// The `T::to_string` that should render `arg`, or "" when this pass cannot
 /// resolve one and the `__to_string` call must stay as it is.
 ///
@@ -2975,7 +3073,7 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       // inside the else-if chain below so the resolvers run at most once per
       // call site. Slice 1 (the argument's type names a `T::to_string`) wins
       // over slice 2 (the argument is, or is headed by, a wrapper).
-      let interp_repl = if is_interp_to_string_call(callee, args) {
+      let interp_repl = if is_interp_to_string_call(callee, args) || is_show_shim_call(callee, args) {
         let show_target = interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
         if show_target != "" {
           Some(ECall(EIdent(show_target, -1), Array::slice([
@@ -7826,6 +7924,9 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Error {
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
   let gimpl_types = collect_generic_impl_types(stmts)
+  // #1392: the `Show`-bounded `__to_string` pass-throughs in THIS program, so a
+  // spelled-out `to_string(v)` renders like `"\{v}"` does. See dtd_show_shims.
+  collect_show_shims(stmts)
   let gens = build_gens(stmts, traits, gimpl_types)
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
   let toplevel_vars = collect_toplevel_anon_records(stmts, struct_sets)

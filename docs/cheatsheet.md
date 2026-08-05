@@ -44,6 +44,8 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // される (`"\{Some(p)}"` -> `Some(P { .. })`)。
                                // 型が解決できない値、および変数越しの
                                // タプル/配列はまだ生ポインタの10進数 (#1392)
+                               // prelude の `to_string(v)` も同じ描画になる
+                               // (補間と同じ書き換えを call site で受ける)
 let c: Char = 'A'              // char code (Int alias)
 let b: Bool = true
 let u: Unit = ()
@@ -453,7 +455,10 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)
 // derive(Default) -> T::default()
 // (Eq は marker: 構造的 `==` は T::equals として常に生成される)
-// #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ
+// #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ。prelude の
+// `to_string(v)` も同じ (body が `__to_string(x)` そのものの 1 引数 pass-through
+// は call site で inline され、補間と同じ書き換えを受ける) — ただし
+// `f[T: Show](x) { to_string(x) }` の内側は型が変数なので従来どおり
 
 trait Eq
 trait Ord: Eq                              // supertrait
