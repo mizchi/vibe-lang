@@ -42,6 +42,39 @@
 #     ADR-0094's 実測 5: a row label is not checked to name a real effect
 #     either). Do not "restore" a Ref escape check to close these.
 #
+#   polymorphic_recursion_unsupported  was debt-accepts; reclassified `ok`. The
+#     retired host could not do polymorphic recursion; the selfhost compiler
+#     can. Verified by RUNNING it, not just compiling it:
+#       let rec depth = [T](x: T, n: Int) -> Int {
+#         if n == 0 { 0 } else { 1 + depth([x], n - 1) }
+#       }
+#       depth(7, 3)   ==> 3
+#     "Restoring" this rejection would remove a capability the compiler has.
+#
+#   suberror_generic_error_bound_raise_ok  was debt-rejects ("should compile");
+#     reclassified `reject`. There is NO `Error` trait in the selfhost compiler
+#     -- `[E: Error]` names an undefined trait, and rejecting it is right.
+#     ADR-0085 replaced the trait-bound design: the exception kind rides the
+#     ROW (`Exception[E]`), not a bound on the payload type. (The diagnostic
+#     could be clearer -- "no impl `Error` for `AppError`" reads as a missing
+#     impl rather than an unknown trait -- but that is separate work.)
+#
+#   suberror_raise_non_error_type  still debt-accepts, same root cause: with no
+#     `Error` trait there is nothing to bound a throw's payload with. Whether
+#     throws are bounded AT ALL is an open ADR-0085 question, not a lost check
+#     to restore.
+#
+#   generic_effect_{missing_caller_effect,matrix_fail_missing_effect_at_caller}
+#     are GENUINE lost checks, and worse than the fixtures suggest. The obvious
+#     hypothesis -- that the row leaks because `Error` is row-transparent -- was
+#     tested and is WRONG. Swapping `Error` for a capability or a user effect
+#     leaks identically (both measured, both compile):
+#       let apply = [T](f: (x: T) -> T with e, x: T) -> T with e { f(x) }
+#       let boom  = (x: Int) -> Int with Fs { x }     // and with Ask
+#       let run   = (x: Int) -> Int { apply(boom, x) }   // no row required!
+#     So a function whose generic effect variable instantiates to a CAPABILITY
+#     claims a pure row. That is a permission leak, not just a bookkeeping gap.
+#
 # name	status	needle
 duplicate_enum_ctor	reject	duplicate ctor: A
 duplicate_discard_decl_ok	ok	
@@ -79,7 +112,7 @@ parse_import_trailing_comma	ok
 parse_int_min_literal_boundary	reject	IntLiteralOverflow: integer literal exceeds Int::max_value (2305843009213693951)
 parse_let_annotation_colon	ok	
 parse_loop_expr	ok	
-polymorphic_recursion_unsupported	debt-accepts	type: polymorphic recursion is unsupported
+polymorphic_recursion_unsupported	ok	
 property_access_ambiguous_function_vs_field	ok	
 scoped_ref_param_decl_forbidden	debt-accepts	type: scoped Ref[T] cannot escape: function parameter
 scoped_ref_param_nested_decl_forbidden	debt-accepts	type: scoped Ref[T] cannot escape: function parameter
@@ -88,7 +121,7 @@ suberror_brace_payload_type_mismatch	reject	argument type mismatch for Parse: ex
 suberror_brace_raise_ok	ok	
 suberror_brace_zero_payload_raise_ok	ok	
 suberror_duplicate_ctor	reject	duplicate ctor: Io
-suberror_generic_error_bound_raise_ok	debt-rejects	no impl `Error` for `AppError`
+suberror_generic_error_bound_raise_ok	reject	no impl `Error` for `AppError`
 suberror_generic_try_catch_ok	ok	
 suberror_mixed_error_types_raise_ok	ok	
 suberror_raise_ctor_arity_mismatch	reject	function arity mismatch for AppError: expected 1 args, got 2
