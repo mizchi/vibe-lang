@@ -815,6 +815,77 @@ test "#1429: `with ()` is the empty row and `with {}` is rejected" {
   assert(String::contains(braces, "removed in #1429"))
 }
 
+//# #1345 / ADR-0088: the `allows` clause
+
+test "#1345: `allows` folds into the single row" {
+  // ADR-0088 decision 1: the split is a checked audit surface, not a second
+  // row representation, so `with A allows C` and `with A + C` are the SAME
+  // row and produce byte-identical output.
+  let split = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit allows Cfg::Read = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  let flat = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit + Cfg::Read = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(split, "ERROR: "))
+  assert(split == flat)
+  // The corollary, and a known gap: the printer cannot render the clause
+  // back, so `vibe normalize` ERASES it. Pinned here so that whoever adds
+  // AST-level preservation sees this assertion flip.
+  assert(!String::contains(split, "allows"))
+}
+
+test "#1345: `with () allows C` is the capability-only row" {
+  let out = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with () allows Cfg::Read = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(out, "ERROR: "))
+  assert(String::contains(out, "with Cfg::Read"))
+}
+
+test "#1345: `allows` works in type position too" {
+  // ADR-0088: the sugar is uniform across signature and type positions --
+  // there is one row grammar, not a declaration-only spelling.
+  let out = handle {
+    print_program(parse_program(lex("let g: ((Int) -> Int with Log::Emit allows Cfg::Read, Int) -> Int = (f, x) -> { f(x) }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(out, "ERROR: "))
+  assert(String::contains(out, "with Log::Emit + Cfg::Read"))
+}
+
+test "#1345: `allows` is contextual, not reserved" {
+  // ADR-0088 chose a contextual keyword so user code keeping a binding named
+  // `allows` does not break. It is recognized only directly after a row.
+  let out = handle {
+    print_program(parse_program(lex("let allows = 7\nlet use_it = () -> { allows }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(!String::starts_with(out, "ERROR: "))
+  assert(String::contains(out, "let allows = 7"))
+}
+
+test "#1345: the `?` grade suffix does NOT parse yet" {
+  // Deliberately absent: the checker compares row items as opaque labels, so
+  // `Cfg::Read?` would be a different effect from `Cfg::Read` and a function
+  // declaring the Optional form would be told to declare BOTH. `?` ships with
+  // the slice that gives it meaning (strict grade matching / `perform?`).
+  let out = handle {
+    print_program(parse_program(lex("let f: (Int) -> Int with () allows Cfg::Read? = (x) -> { x }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(out, "ERROR: "))
+}
+
 test "#1429: a parenthesized non-empty row is rejected by name" {
   // Accepting `with (A + B)` would put the brackets-or-not choice straight
   // back into the language under different punctuation, so it is a named
