@@ -98,9 +98,23 @@ capability の「無ければフォールバックする」要求を、row item 
 ### 3. `perform?` と `Attempt[T, E]`
 
 - `perform? Fs[CacheDir]::read_file(p)` は
-  `Attempt[T, E] = NotGranted | Failed(E) | Ok(T)` を返す。`T` は operation の宣言
-  結果型。`Attempt` は `lib/@vibe/core` の**通常の閉じた enum** であり、compiler
-  magic は「`perform?` がこれを返す」ことだけ。
+  `Attempt[T, E] = NotGranted | Errored(E) | Granted(T)` を返す。`T` は operation
+  の宣言結果型。`Attempt` は `lib/@vibe/core` の**通常の閉じた enum** であり、
+  compiler magic は「`perform?` がこれを返す」ことだけ。
+- **綴りの訂正 (#1345 実装時, 2026-08-05)**: 本 ADR は当初この型を
+  `NotGranted | Failed(E) | Ok(T)` と定めていたが、`Ok` と `Failed` は**どちらも
+  既に別 enum の constructor** だった — `Ok` は `@vibe/wit_runtime` の
+  `Result[T, E]`(WIT `result<T,E>` への射影。#1324 が残した唯一の綴り)、`Failed`
+  は `@vibex/concurrent` の `TaskError`。constructor は merge 済みプログラム全体で
+  グローバルなので、名前を再利用すると1ファイル内で静かに隠れるのではなく、
+  **両方を import するすべてのプログラムでもう一方の constructor を別型に
+  すり替える**。実測: `Result` を import した状態で `Ok(T)` を宣言すると
+  `fn r() -> Result[Int, String] { Ok(7) }` が
+  `expected Result[Int, String], got Attempt[Int, ?t3]` で落ちる。`@vibe/core` は
+  それらとの併用を避けられる package ではないため、成功 arm を `Granted`、失敗
+  arm を `Errored` へ改名した。`NotGranted` は衝突が無くそのまま。
+  (この「診断なしにすり替わる」挙動自体は #1078 の ctor 衝突ゲートが同一ファイル内
+  しか見ていない取りこぼしで、別途追跡する価値がある。)
 - v1 は `E = String`(現 `Error = Exception[String]` の payload)に固定する。
   ADR-0085 の typed `Exception[E]` が row の実表現に入った後、operation が宣言する
   exception kind へ一般化する。この結合は移行順序の制約として明記する。

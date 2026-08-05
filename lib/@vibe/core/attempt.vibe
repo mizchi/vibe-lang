@@ -1,0 +1,86 @@
+//# @vibe/core/attempt — the result of an OPTIONAL capability operation
+//# (ADR-0088 decision 3, #1345).
+//#
+//# `perform? Fs::read_file(p)` returns `Attempt[T, E]`. There is no compiler
+//# magic in the type itself: it is an ordinary closed enum, and the only thing
+//# the compiler knows is that `perform?` produces one. That is deliberate --
+//# the authorization model should be readable as plain data.
+//#
+//# Three outcomes, not two, because "no authority" and "had authority and the
+//# operation failed" are different facts and callers routinely want different
+//# fallbacks for them:
+//#
+//#   NotGranted   the capability was not granted for this run, so the
+//#                operation never ran. Resolved once, before main starts
+//#                (ADR-0088 decision 4), and constant for the whole run.
+//#   Errored(e)   the capability WAS granted, the operation ran and failed.
+//#   Granted(v)   the capability was granted and the operation succeeded.
+//#
+//# NAMING (deviation from ADR-0088, recorded there too): the ADR spells this
+//# `NotGranted | Failed(E) | Ok(T)`. Both `Ok` and `Failed` are already enum
+//# constructors elsewhere in the tree -- `Ok` in @vibe/wit_runtime's
+//# `Result[T, E]` (the WIT `result<T,E>` projection, the one spelling #1324
+//# kept) and `Failed` in @vibex/concurrent's `TaskError`. Constructors are
+//# global across the merged program, so reusing either name would not shadow
+//# quietly in one file; it would silently retype the OTHER enum's constructor
+//# for every program that imports both. Measured: declaring `Ok(T)` beside an
+//# imported `Result` makes `fn r() -> Result[Int, String] { Ok(7) }` fail with
+//# `expected Result[Int, String], got Attempt[Int, ?t3]` -- and @vibe/core is
+//# not a package a program can avoid pairing with those.
+//#
+//# `E` is fixed to `String` at the use site for now (ADR-0088: v1 pins it to
+//# the current `Error = Exception[String]` payload); the type itself is
+//# generic so the eventual per-operation exception kind (ADR-0085) needs no
+//# change here.
+
+//# Types
+
+export enum Attempt[T, E] {
+  NotGranted;
+  Errored(E);
+  Granted(T)
+}
+
+//# Functions
+
+/// The value if the operation was granted AND succeeded, else `fallback`.
+/// The common shape: one fallback for "no authority" and "it broke alike".
+export fn Attempt::unwrap_or[T, E](a: Attempt[T, E], fallback: T) -> T {
+  match a {
+    Granted(v) => v,
+    Errored(_) => fallback,
+    NotGranted => fallback
+  }
+}
+
+/// True only for `Granted`. `Errored` is NOT success -- the capability was
+/// available, the operation was not.
+export fn Attempt::is_granted[T, E](a: Attempt[T, E]) -> Bool {
+  match a {
+    Granted(_) => true,
+    Errored(_) => false,
+    NotGranted => false
+  }
+}
+
+/// True when the capability itself was withheld for this run. Distinct from
+/// `is_granted`'s negation, which also covers a granted-but-failed operation:
+/// a caller that wants to report "run me with --allow-fs" must be able to tell
+/// those apart.
+export fn Attempt::is_not_granted[T, E](a: Attempt[T, E]) -> Bool {
+  match a {
+    NotGranted => true,
+    Errored(_) => false,
+    Granted(_) => false
+  }
+}
+
+/// `Some(v)` for `Granted`, `None` otherwise -- for callers that do not care
+/// WHY the value is absent.
+export fn Attempt::to_option[T, E](a: Attempt[T, E]) -> Option[T] {
+  match a {
+    Granted(v) => Some(v),
+    Errored(_) => None,
+    NotGranted => None
+  }
+}
