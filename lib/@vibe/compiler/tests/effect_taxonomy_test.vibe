@@ -1,0 +1,169 @@
+//# Imports
+
+// #1343 / ADR-0094 実装順 1: ADR-0084 の三分類 metadata
+// (lib/@vibe/compiler/core/effect_taxonomy.vibe) と、そこから派生する二つの
+// リストのロック。
+//
+// この slice は **表面挙動不変** が要件なので、派生リストが吸収前のリテラル列
+// (`test_bench_ambient_effects` の 8 要素、`file_entry_cacheable` の
+// `cache_safe_row` 4 要素) と**要素順まで一致**することを固定する。分類の
+// 意味 (何が capability で何が core ambient か) はここが唯一の定義なので、
+// それ自体もここで pin する。
+import @vibe/compiler/core {
+  effect_class,
+  effect_class_algebraic,
+  effect_class_capability,
+  effect_class_core_ambient,
+  effect_default_resource_kind,
+  entry_cache_safe_effects,
+  is_capability_effect,
+  is_core_ambient_effect,
+  taxonomy_effect_names,
+  test_bench_ambient_effects
+}
+
+import @vibe/compiler/codegen {
+  verify_effect_taxonomy_coverage
+}
+
+//# Misc
+
+fn join_row(labels: Array[String]) -> String {
+  String::join(labels, ",")
+}
+
+test "effect_class: host capabilities" {
+  assert_eq(effect_class("Fs"), "capability")
+  assert_eq(effect_class("Env"), "capability")
+  assert_eq(effect_class("Stdin"), "capability")
+  assert_eq(effect_class("Stdout"), "capability")
+  assert_eq(effect_class("Stderr"), "capability")
+  assert_eq(effect_class("Process"), "capability")
+  assert_eq(effect_class("Profiler"), "capability")
+  assert_eq(effect_class("Http"), "capability")
+  assert_eq(effect_class("Socket"), "capability")
+  assert_eq(effect_class("Llm"), "capability")
+  assert(is_capability_effect("Fs"))
+  assert(not(is_capability_effect("Error")))
+}
+
+test "effect_class: core ambient" {
+  // ADR-0084 の第三カテゴリ。`Exception[K]` は表に行が無くても
+  // is_exception_label 経由で core ambient になる (kind ごとに行を足す
+  // わけにいかないので、そこだけ述語で拾う)。
+  assert_eq(effect_class("Error"), "core_ambient")
+  assert_eq(effect_class("Exception"), "core_ambient")
+  assert_eq(effect_class("Exception[IoError]"), "core_ambient")
+  assert_eq(effect_class("Error::Throw"), "core_ambient")
+  assert_eq(effect_class("Exception[IoError]::Throw"), "core_ambient")
+  assert_eq(effect_class("Async"), "core_ambient")
+  assert(is_core_ambient_effect("Async"))
+  assert(not(is_core_ambient_effect("Fs")))
+}
+
+test "effect_class: unknown labels are algebraic" {
+  // ADR-0094 Decision 4: 表に無い名前 = resource パラメータを持たない
+  // user effect。row ラベルが実在の effect を指すかは今のところ検査されない
+  // (ADR-0094 の実測 5) ので、存在しないラベルも同じ扱いになる。
+  assert_eq(effect_class("Ask"), "algebraic")
+  assert_eq(effect_class("State"), "algebraic")
+  assert_eq(effect_class("Frobnicate"), "algebraic")
+  assert(not(is_capability_effect("Ask")))
+  assert(not(is_core_ambient_effect("Ask")))
+}
+
+test "effect_class: operation and instantiation labels reduce to the effect" {
+  // ADR-0071 の operation 粒度 (`Fs::read_file`) と #1340 の generic
+  // instantiation (`State[Int]`) は、どちらも base effect 名で分類される。
+  assert_eq(effect_class("Fs::read_file"), "capability")
+  assert_eq(effect_class("Http::request"), "capability")
+  assert_eq(effect_class("State[Int]"), "algebraic")
+  assert_eq(effect_class("Ask::Get"), "algebraic")
+}
+
+test "class name accessors match effect_class output" {
+  assert_eq(effect_class_capability(), effect_class("Fs"))
+  assert_eq(effect_class_core_ambient(), effect_class("Async"))
+  assert_eq(effect_class_algebraic(), effect_class("Ask"))
+}
+
+test "test/bench ambient row is unchanged by the taxonomy refactor" {
+  // 吸収前の checker_effects.vibe のリテラル列そのもの。要素順込みで固定する
+  // — この slice は表面挙動不変が要件。
+  assert_eq(join_row(test_bench_ambient_effects()), "Fs,Env,Stdin,Stdout,Stderr,Process,Profiler,Error")
+}
+
+test "entry cache-safe row is unchanged by the taxonomy refactor" {
+  // 吸収前の file_entry_cacheable の cache_safe_row そのもの。
+  assert_eq(join_row(entry_cache_safe_effects()), "Stdout,Error,Exception,Async")
+}
+
+test "network and external-service capabilities are NOT test/bench ambient" {
+  // 宣言なしで踏ませない側。ambient 集合に混ざると `with Http` を書かない
+  // test が黙ってネットワークに出られるようになる。
+  let ambient = test_bench_ambient_effects()
+  assert(not(array_has_str(ambient, "Http")))
+  assert(not(array_has_str(ambient, "Socket")))
+  assert(not(array_has_str(ambient, "Llm")))
+  assert(not(array_has_str(ambient, "Async")))
+}
+
+test "only Stdout is cache-safe among capabilities" {
+  // #819 の doctest キャッシュにとって stdout は entry の産物。他の
+  // capability が混ざると、byte-identical な wasm の出力が実行ごとに
+  // 変わりうるのにキャッシュされてしまう。
+  let safe = entry_cache_safe_effects()
+  let mut i = 0
+  while i < Array::length(safe) {
+    let name = Array::get(safe, i)
+    if is_capability_effect(name) {
+      assert_eq(name, "Stdout")
+    } else {
+      assert(is_core_ambient_effect(name))
+    }
+    i = i + 1
+  }
+}
+
+test "capabilities carry a default resource kind, core ambient does not" {
+  // ADR-0094 Decision 5 の受け皿。`resource` 宣言 (ADR-0075 Phase 2) が
+  // 未実装なので `Process::Root` はまだ検査には使われていないが、列が
+  // 空になっていないことは pin しておく。
+  let names = taxonomy_effect_names()
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if is_capability_effect(name) {
+      assert_eq(effect_default_resource_kind(name), "Process::Root")
+    } else {
+      assert_eq(effect_default_resource_kind(name), "")
+    }
+    i = i + 1
+  }
+  assert_eq(effect_default_resource_kind("Fs::read_file"), "Process::Root")
+  // 表に無い名前は "" (user effect には既定 resource kind が無い)。
+  assert_eq(effect_default_resource_kind("Ask"), "")
+}
+
+test "every builtin registry effect label has a taxonomy row" {
+  // drift guard: 新しい host builtin が新しい effect 名を持ち込んだのに
+  // 表への追加を忘れると、その capability は黙って `algebraic` に化ける
+  // (= in-process の handler で discharge できる effect として扱われる)。
+  // builtin_registry.vibe の verify_effect_taxonomy_coverage が名前付きで
+  // 落とす。
+  verify_effect_taxonomy_coverage()
+}
+
+fn array_has_str(arr: Array[String], needle: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == needle {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}

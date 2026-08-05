@@ -215,11 +215,37 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**
    `builtins_net.vibe` の `HttpServer`/`HttpClient`/`HttpIncoming` は
    **provider ラベルではなく `Http::*` operation 上の effectset** へ寄せる
    (provider 軸は `Http` に統一)。
-1. **(構文不要・最小)** registry のメタデータ列 + `effect_class` の導入。
-   散在する host-effect リテラル列
-   (`test_bench_ambient_effects`、`cache_safe_row`、`wit_gen` の暗黙規則) を
-   この単一の source of truth に寄せる。表面挙動は不変、`wit_gen` の反転は
-   この段では**直さない** (挙動変更を分離するため)。
+1. **(着地済み、#1343)** 分類 metadata + `effect_class` の導入。
+   `lib/@vibe/compiler/core/effect_taxonomy.vibe` が
+   `(effect 名, class, 既定 resource kind, test/bench ambient か, entry
+   キャッシュ安全か)` の表を持ち、そこから
+   `effect_class` / `is_core_ambient_effect` / `is_capability_effect` /
+   `effect_default_resource_kind` と、二つの派生リストを提供する。
+
+   **Decision 3 の「`registry_typed_rows` に列を足す」からは実装時に外れた** —
+   registry の行は **operation 単位** (`Fs::read_file` / `Fs::write_file` /
+   ...) なので、class 列を足すと同じ `Fs` の分類が 19 行に複製され、行ごとに
+   食い違う。分類は effect の属性なので effect 名で引ける独立した表にし、
+   registry 側のラベルが全部その表に載っていることを
+   `verify_effect_taxonomy_coverage` (builtin_registry.vibe、
+   `verify_lane_builtins` と同じ形の drift guard) で照合する構成にした。
+   置き場所が `core/` なのは、consumer の checker と `wit_gen` が両方とも
+   `@vibe/compiler/core` を既に import しているから (checker →
+   codegen/common_base の向きに依存を増やさない)。
+
+   吸収したリテラル列: `test_bench_ambient_effects` (8 要素)、
+   `file_entry_cacheable` の `cache_safe_row` (4 要素)、および
+   `is_exception_effect_name(x) || x == "Async"` という core ambient の
+   二項判定 (checker の `builtin_call_effect` と `wit_gen` に重複していた)。
+   派生リストは**要素順まで**吸収前と同一で、表面挙動は不変
+   (`tests/effect_taxonomy_test.vibe` が pin)。`wit_gen` の反転はこの段では
+   **直していない** (挙動変更を分離するため)。
+
+   **drift guard の範囲**: registry の行だけ。host effect ラベルは
+   `checker/builtins_*.vibe` の if-chain にも散在しており (上記「現状の実測
+   1」)、そちらは配列として列挙できないので照合できない — 現に `Llm` は
+   `builtins_system.vibe` にしか存在せず guard が触れない。registry へ
+   寄せる作業 (#415 B-2 の続き) が進むほどカバー率が上がる。
 2. ADR-0075 Phase 2: `resource X : Kind = <literal>` 宣言と `Process::Root`
    singleton kind。
 3. parser: `parse_type_params_list` に bound と `_` を追加。`TDEffect` の

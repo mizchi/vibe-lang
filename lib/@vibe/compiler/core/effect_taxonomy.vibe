@@ -1,0 +1,306 @@
+//# Effect taxonomy — ADR-0084 の三分類の single source of truth (#1343)
+//
+// ADR-0094 (docs/resource-kind-parameters.md) の実装順 1。
+//
+// ADR-0084 は effect を **capability / algebraic / core ambient** の三つに
+// 分ける。ADR-0094 Decision 3/4 が、その判定を
+//
+//   - **builtin には `TDEffect` を合成しない** (合成すると
+//     `effect_is_declared` が host effect にも true を返し、#813/#828 の
+//     handler arm 網羅性検査が「実行されない vacuous handler」を弾き始める)
+//   - **「module-local に宣言されているか」でも判定しない** (import された
+//     user effect が builtin と区別できず、wit_gen の反転を再生産する)
+//   - 代わりに **metadata 表**から引く
+//
+// と決めた。この表がその metadata である。
+//
+// ## なぜ builtin registry の列ではなく独立した表なのか
+//
+// 分類は **operation ではなく effect の属性**である。
+// `codegen/common_base/builtin_registry.vibe` の行は operation 単位
+// (`Fs::read_file` / `Fs::write_file` / ...) なので、そこへ class 列を足すと
+// 同じ `Fs` の分類が 19 行に複製され、行ごとに食い違える。effect 名で引ける
+// 表を一つ置き、registry 側の `Some("Fs")` ラベルが全部この表に載っている
+// ことを test で照合する (tests/effect_taxonomy_test.vibe) 方が、
+// source of truth として壊れにくい。
+//
+// core/ に置いてあるのは、consumer が checker (`checker_effects.vibe`) と
+// `wit_gen.vibe` の両方で、どちらも `@vibe/compiler/core` を既に import して
+// いるから (checker → codegen/common_base の向きに依存を増やさない)。
+//
+// ## この表が吸収した散在リテラル列
+//
+// - `test_bench_ambient_effects` (checker_effects.vibe) — test/bench ブロックが
+//   宣言なしで踏める effect
+// - `cache_safe_row` (checker_effects.vibe の `file_entry_cacheable`) —
+//   #819 doctest の実行キャッシュを無効にしない effect
+// - `is_exception_effect_name(x) || x == "Async"` という「core ambient か」の
+//   二項判定 (checker_effects.vibe の `builtin_call_effect`、wit_gen.vibe の
+//   world import 収集)
+//
+// ## この段でやらないこと
+//
+// ADR-0094 実装順 1 は **表面挙動不変**。`wit_gen` の分類の反転
+// (「`effect X {...}` 宣言があれば interface、無ければ host capability」という
+// ADR-0084 と逆の規則、#1143 のねじれの実体) は実装順 4 で直す —
+// 挙動変更を分離するため、ここでは触らない。
+// resource kind パラメータの**宣言側構文** (`effect Fs[R: Fs::Root]`) も
+// 実装順 2〜3 で、`resource` 宣言 (ADR-0075 Phase 2) が入ってから。
+// ここの `default_resource_kind` 列はその受け皿を先に用意しているだけで、
+// まだ誰も検査には使っていない。
+
+import ./exception_effect.vibe {
+  is_exception_label
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Effect classes
+
+/// 権限。wasm 境界を越え、host provider が実装する (ADR-0084)。
+export fn effect_class_capability() -> String {
+  "capability"
+}
+
+/// 抽象・DI。in-process で handler が discharge する (ADR-0084)。
+export fn effect_class_algebraic() -> String {
+  "algebraic"
+}
+
+/// 言語予約。main の row を素通りできる (`Error` / `Exception[E]` / `Async`)。
+export fn effect_class_core_ambient() -> String {
+  "core_ambient"
+}
+
+//# The table
+
+/// `(effect 名, class, 既定 resource kind, test/bench ambient か, entry
+/// キャッシュ安全か)`。
+///
+/// **並び順は capability → core ambient**。この順序で filter した結果が、
+/// 吸収前の二つのリテラル列と**要素順まで一致**する
+/// (`test_bench_ambient_effects` / `entry_cache_safe_effects` の doc 参照)。
+///
+/// module-level `let` = 一度だけ初期化される memo cell
+/// (fixtures/module_let_memo_test.vibe)。`effect_class` は effect row を
+/// 歩くたびに引かれるので、13 行のタプル配列を毎回組み直すのは無駄。
+///
+/// `default_resource_kind` は ADR-0094 Decision 5 の「Phase 1 では resource
+/// 引数を暗黙にし、省略時は既定 singleton へ展開する」の既定値。ADR-0075
+/// Phase 2 (`resource` 宣言) が未実装なので `Process::Root` はまだどこにも
+/// 宣言が無い名前であり、この列は**まだ検査に使われていない** (受け皿)。
+/// core ambient は権限ではないので resource kind を持たない ("")。
+let effect_taxonomy_rows: Array[(String, String, String, Bool, Bool)] = [
+  // --- capability (host provider が実装する権限) ---
+  //
+  // test/bench ambient の 8 項目については、#1343 で「operation 粒度へ
+  // 絞れるか」を実測済み (#1359 で builtin 経路に operation 認可が通ったので
+  // 技術的には可能)。**結論: 今のところ絞れる項目は無い**。根拠は
+  // checker_effects.vibe の test_bench_ambient_effects の doc に移していない
+  // — ここが唯一の定義なので、そのまま以下に置く。
+  //
+  // Fs / Env: operation 列挙しても狭まらない。実使用は
+  //   Fs::write_bytes(218) / mkdir_p(70) / exists(45) / read_file(37) /
+  //   read_bytes(31) / write_file(23) / stat_token(13) / remove(13) /
+  //   readdir(10) / mkdir(2)、Env は get / args_len / args_get の全 3 種。
+  //   列挙しても権限は狭まらず row が長くなるだけ。
+  // Stdin: 当初「`Stdin::` の直接呼び出しが 0 件」と判断して外したが、
+  //   **バッテリーが 4 ファイルの失敗で反証した** (console/example_io_test,
+  //   console/io_test, console/stdin_stream_test, prelude/io_test)。これらは
+  //   `with Stdin` を宣言したラッパー (lib/@vibe/console の read_line 等)
+  //   経由で**推移的に**要求する — 直接呼び出しの grep では捕まらない。
+  // Stdout / Stderr: test/bench ブロックはランタイム host の下で走るので
+  //   ambient handler がある (#865 で Stderr を Stdout と同列に追加)。
+  // Process (= `sh` / `sh_lines` = 任意コマンド実行): 本来ここで最も絞りたく、
+  //   実使用も 7 ファイルしかない。ただし外すには受け皿が要る — `sh` は
+  //   非修飾 builtin なので operation 綴りが無く (row に `Process::sh` とは
+  //   書けない)、残る退避手段は意味を持たない vacuous handler だけ。正しい
+  //   機構は test ブロック自身が row を宣言できるようにすること
+  //   (`test "name" with Process { .. }`) だが、STest への row 追加は
+  //   97 箇所・約 20 ファイルに波及するため別スライス。
+  ("Fs", "capability", "Process::Root", true, false),
+  ("Env", "capability", "Process::Root", true, false),
+  ("Stdin", "capability", "Process::Root", true, false),
+  // Stdout だけ cache-safe: #819 の doctest キャッシュにとって stdout は
+  // entry の**産物** (キャッシュが保存し ```output ブロックと比較する当の値)
+  // であって、隠れた非決定性の源ではない。
+  ("Stdout", "capability", "Process::Root", true, true),
+  ("Stderr", "capability", "Process::Root", true, false),
+  ("Process", "capability", "Process::Root", true, false),
+  ("Profiler", "capability", "Process::Root", true, false),
+  // 以下は test/bench ambient ではない — ネットワーク・外部サービスは
+  // 宣言なしで踏ませない。
+  ("Http", "capability", "Process::Root", false, false),
+  ("Socket", "capability", "Process::Root", false, false),
+  ("Llm", "capability", "Process::Root", false, false),
+  // --- core ambient (言語予約、main の row を素通りできる) ---
+  //
+  // `Error` は test/bench ambient: `assert` 自体が throw で実装されており、
+  // 失敗した test は runner が捕まえて報告する escaping Error そのもの
+  // (ADR-0073 の entry-boundary-A の形)。すべての test ブロックに
+  // `with Error` を書かせるのは runner が既に所有している機構の再宣言。
+  // cache-safe でもある: throw した entry は呼び出し側のキャッシュ書き込み
+  // 経路に到達しない (run_one_block は `_start` 成功時しかキャッシュしない)。
+  ("Error", "core_ambient", "", true, true),
+  // `Exception` (erased spelling) と `Exception[K]` は `is_exception_label`
+  // 経由で core ambient と判定されるので、この行は**派生リストのため**に
+  // だけ存在する (`cache_safe_row` の綴りを保つ)。
+  ("Exception", "core_ambient", "", false, true),
+  // ADR-0089: `Async` は backend 選択であって権限ではない。合成であり
+  // host 非決定性の源そのものではないので cache-safe。
+  ("Async", "core_ambient", "", false, true)
+]
+
+//# Lookups
+
+/// row ラベルから effect 名を取り出す。`Fs::read_file` → `Fs`
+/// (ADR-0071 の operation 粒度)、`State[Int]` → `State` (#1340 の generic
+/// instantiation)。どちらでもないラベルはそれ自身。
+///
+/// 例外ラベル (`Exception[IoError]::Throw` 等) はここへ来る前に
+/// `is_exception_label` で捌かれるので、`::` と `[` の出現順は気にしなくてよい。
+fn taxonomy_effect_name(label: String) -> String {
+  let ci = String::index_of(label, "::")
+  let head = if ci > 0 {
+    String::substring(label, 0, ci)
+  } else {
+    label
+  }
+  let bi = String::index_of(head, "[")
+  if bi > 0 {
+    String::substring(head, 0, bi)
+  } else {
+    head
+  }
+}
+
+fn taxonomy_row_index(name: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(effect_taxonomy_rows) {
+    let (rname, _, _, _, _) = Array::get(effect_taxonomy_rows, i)
+    if rname == name {
+      found = i
+      i = Array::length(effect_taxonomy_rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// ADR-0084 の三分類。ADR-0094 Decision 4 のとおり **metadata 由来**で、
+/// 「module-local に宣言されているか」では判定しない。
+///
+/// 表に無い名前は `algebraic` — 「resource パラメータを持たない user
+/// effect」がまさにそれで、`with Frobnicate` のような未知ラベルも
+/// (row ラベルが実在の effect を指すかは今のところ検査されない、ADR-0094 の
+/// 実測 5) 同じ扱いになる。resource パラメータを持つ user effect を
+/// capability と分類するのは実装順 3 (`param_kinds` スロット) から。
+export fn effect_class(label: String) -> String {
+  if is_exception_label(label) {
+    "core_ambient"
+  } else {
+    let idx = taxonomy_row_index(taxonomy_effect_name(label))
+    if idx < 0 {
+      "algebraic"
+    } else {
+      let (_, class, _, _, _) = Array::get(effect_taxonomy_rows, idx)
+      class
+    }
+  }
+}
+
+/// `Error` / `Exception[K]` / `Async` — main の row を素通りでき、
+/// 権限としては数えない effect。
+///
+/// 吸収前は `is_exception_effect_name(x) || x == "Async"` という二項判定が
+/// checker_effects.vibe と wit_gen.vibe に別々に書かれていた。
+export fn is_core_ambient_effect(label: String) -> Bool {
+  effect_class(label) == "core_ambient"
+}
+
+/// host provider が実装する権限 effect か。
+export fn is_capability_effect(label: String) -> Bool {
+  effect_class(label) == "capability"
+}
+
+/// ADR-0094 Decision 5: resource 引数省略時に展開される既定 singleton。
+/// 表に無い名前と core ambient は ""。
+///
+/// **まだ検査には使われていない** — `resource` 宣言 (ADR-0075 Phase 2) が
+/// 入るまで `Process::Root` はどこにも宣言が無い名前。
+export fn effect_default_resource_kind(label: String) -> String {
+  let idx = taxonomy_row_index(taxonomy_effect_name(label))
+  if idx < 0 {
+    ""
+  } else {
+    let (_, _, kind, _, _) = Array::get(effect_taxonomy_rows, idx)
+    kind
+  }
+}
+
+/// 表に載っている effect 名の全列挙。registry の `Some("Fs")` ラベルが
+/// 全部ここに載っていることを照合する drift guard (tests/) 用。
+export fn taxonomy_effect_names() -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(effect_taxonomy_rows) {
+    let (name, _, _, _, _) = Array::get(effect_taxonomy_rows, i)
+    Array::push(out, name)
+    i = i + 1
+  }
+  out
+}
+
+//# Derived rows
+
+/// `test {}` / `bench {}` ブロックが宣言なしで踏める effect
+/// (checker_effects.vibe の `check_perform_effects_stmt_tx`)。
+///
+/// 表の順に filter するので `[Fs, Env, Stdin, Stdout, Stderr, Process,
+/// Profiler, Error]` — 吸収前のリテラル列と要素順まで同じ。
+/// 各項目を絞れない根拠は `effect_taxonomy_rows` のコメント参照。
+///
+/// 呼ぶたびに新しい配列を作る (memo cell を共有して返さない) — 受け取り側は
+/// これを declared row として effect walk に渡すので、共有配列を返すと
+/// 将来の呼び出し側の破壊的変更が表を汚す。
+export fn test_bench_ambient_effects() -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(effect_taxonomy_rows) {
+    let (name, _, _, ambient, _) = Array::get(effect_taxonomy_rows, i)
+    if ambient {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// entry (`fn main`) を #819 の doctest 実行キャッシュに載せてよい effect
+/// (checker_effects.vibe の `file_entry_cacheable`)。
+///
+/// 表の順に filter するので `[Stdout, Error, Exception, Async]` — 吸収前の
+/// リテラル列と要素順まで同じ。ここに無い effect
+/// (Fs / Env / Http / Process / Socket / user effect / ...) が到達可能なら、
+/// byte-identical な wasm でも実行ごとに stdout が変わりうるのでキャッシュ
+/// 不可。
+export fn entry_cache_safe_effects() -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(effect_taxonomy_rows) {
+    let (name, _, _, _, cache_safe) = Array::get(effect_taxonomy_rows, i)
+    if cache_safe {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
