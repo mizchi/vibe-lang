@@ -2585,9 +2585,23 @@ async function main() {
     // Outputs are byte-identical for cli_main either way (verified); skip the
     // pre-start for both known single-entry names. VIBE_FORCE_RUN_INIT=1
     // restores the old (double-invoking) behavior for debugging.
+    //
+    // #819: `__test_<name>` / `__bench_<name>` are the per-block exports of a
+    // `__no_entry__` test/bench build, and there `_start` IS the loop over all
+    // of those blocks -- pre-running it would run EVERY block before the one
+    // being invoked (a failing sibling would fail every per-block invoke, and
+    // a merged N-file module would run the whole battery N times). There is no
+    // module init to lose: a test module's `_start` contains only that loop,
+    // and top-level non-function bindings are lazily-initialized thunk globals,
+    // not a start-section side effect. The Rust runner's `--bench` mode already
+    // calls these exports directly with env=0 (runtime/viberun/src/main.rs);
+    // this makes the JS runner's `--invoke` agree.
+    const isPerBlockExport =
+      invoke.startsWith("__test_") || invoke.startsWith("__bench_");
     const skipRunInit =
       process.env.VIBE_SKIP_RUN_INIT === "1" ||
-      ((invoke === "cli_main" || invoke === "main") && process.env.VIBE_FORCE_RUN_INIT !== "1");
+      ((invoke === "cli_main" || invoke === "main" || isPerBlockExport) &&
+        process.env.VIBE_FORCE_RUN_INIT !== "1");
     let resolvedEnv = 0;
     if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
       if (!didInitStart) {

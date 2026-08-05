@@ -7000,15 +7000,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     }
     exi = exi + 1
   }
-  // Per-block bench: export each `__bench_<name>` function so the runner's
-  // `--bench` mode can time benchmark blocks individually (instead of running the
-  // whole `_start`). Only `__no_entry__` test/bench builds populate test_fn_names,
-  // so normal builds (incl. the compiler self-compile) are byte-identical. The
-  // wasm index of a user function at user-index `j` is `j + func_offset`.
+  // Per-block test/bench: export each `__test_<name>` / `__bench_<name>` function
+  // so a runner can invoke one block at a time (instead of running the whole
+  // `_start`, which loops over every block). This is what gives merged builds
+  // (#819) per-block failure attribution and a per-block timeout -- once N files
+  // share one module, `_start` has no granularity left unless each block is
+  // separately addressable. Only `__no_entry__` test/bench builds populate
+  // test_fn_names, so normal builds (incl. the compiler self-compile) are
+  // byte-identical. The wasm index of a user function at user-index `j` is
+  // `j + func_offset`.
   let mut bxi = 0
   while bxi < Array::length(test_fn_names) {
     let bname = Array::get(test_fn_names, bxi)
-    if String::starts_with(bname, "__bench_") && !array_contains_str(all_export_names, bname) {
+    let bexportable = String::starts_with(bname, "__bench_") ||
+    String::starts_with(bname, "__test_")
+    if bexportable && !array_contains_str(all_export_names, bname) {
       let mut bj = 0
       let mut bfound = 0 - 1
       while bj < num_user_funcs {

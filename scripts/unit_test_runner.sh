@@ -206,6 +206,39 @@ unit_out_store() {
           "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm"
 }
 
+# --- failure attribution: WHICH `test {}` block trapped? ----------------------
+# `_start` runs every block in the file, so a trap says the FILE failed but not
+# which block. #819 exports one `__test_<name>` per block, and the runner skips
+# its pre-invoke `_start` for those names, so each can be run in isolation.
+# Only invoked ON FAILURE, so the passing path (the overwhelming majority) pays
+# nothing. Sequential isolated re-runs are not identical to one `_start` pass --
+# a block that only trips after a sibling mutated shared module state will not
+# reproduce alone -- so an inconclusive pass says so rather than guessing.
+attribute_block_failure() {
+  local wasm="$1"
+  local names
+  names="$(node -e '
+    const m = new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));
+    for (const e of WebAssembly.Module.exports(m)) {
+      if (e.kind === "function" && e.name.startsWith("__test_")) console.log(e.name);
+    }
+  ' "$wasm" 2>/dev/null)" || return 0
+  [ -n "$names" ] || return 0
+  local failed=""
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" \
+         --invoke "$n" "$wasm" >/dev/null 2>&1; then
+      failed="$failed ${n#__test_}"
+    fi
+  done <<< "$names"
+  if [ -n "$failed" ]; then
+    LAST_DIAG="test block(s) trapped:$failed"
+  else
+    LAST_DIAG="(test assertion trapped at runtime; no single block reproduces it in isolation)"
+  fi
+}
+
 # --- compile + run one test file; 0 = pass, 1 = fail --------------------------
 # A heavy file can trap the compiler with no diagnostic (the bump-heap hits a
 # guard page mid-compile) — that's a nondeterministic heap-marginal OOM, not a
@@ -225,6 +258,7 @@ run_one() {
         rm -f "$cout"; return 0
       fi
       LAST_DIAG="(test assertion trapped at runtime)"
+      attribute_block_failure "$cout"
       rm -f "$cout"; return 1
     fi
   fi
@@ -249,6 +283,7 @@ run_one() {
         rm -f "$out" "$out.diag"; return 0
       fi
       LAST_DIAG="(test assertion trapped at runtime)"
+      attribute_block_failure "$out"
       rm -f "$out" "$out.diag"; return 1
     fi
     if [ -s "$out.diag" ]; then
@@ -491,7 +526,7 @@ else
     fi
     return 0
   }
-  export -f unit_worker run_one unit_out_key unit_out_store
+  export -f unit_worker run_one unit_out_key unit_out_store attribute_block_failure
   # strict_cache_tail: tests that assert on the DEFAULT persistent-cache
   # root's own semantics (cache_underlying_env_override_test exercises the
   # VIBE_BUILD_CACHE_DIR override itself; the persistent_* trio asserts
