@@ -1,0 +1,155 @@
+// #1445: interpolating a value reached through a BINDING.
+//
+// #1392 closed the literal-at-the-interpolation-site cases
+// (`fixtures/interp_show_derive.vibe` pins those as one digit each). What
+// stayed broken was the same value reached through a name, which is how it is
+// usually written -- and the split made the bug hard to see, because the two
+// spellings of the same value disagreed:
+//
+//   "\{(1, 2)}"                -> "(1, 2)"   already worked
+//   let t = (1, 2); "\{t}"     -> "240"      the raw pointer, #1445
+//
+// This is a separate file rather than more digits on interp_show_derive.vibe
+// because that fixture's weight is already 1e16 and vibe's Int literal ceiling
+// is 2^61-1 (~2.3e18) -- two more digits and the encoding overflows. Per-block
+// `test { }` attribution (#819) names the failing case directly anyway, which
+// is what the digit scheme was emulating.
+
+struct P {
+  x: Int
+} derive (Show)
+
+enum E2 {
+  A;
+  B(Int)
+} derive (Show)
+
+fn opt_param(o: Option[P]) -> String {
+  match o {
+    Some(v) => "\{v}",
+    None => "none"
+  }
+}
+
+fn tuple_param(t: (Int, P)) -> String {
+  "\{t}"
+}
+
+fn nested_tuple_param(t: (Int, (Int, P))) -> String {
+  "\{t}"
+}
+
+fn array_param(a: Array[P]) -> String {
+  "\{a}"
+}
+
+test "#1445: a tuple through a variable renders structurally" {
+  let t = (1, 2)
+  assert_eq("\{t}", "(1, 2)")
+  // and agrees with the literal spelling, which is the asymmetry #1445 is about
+  assert_eq("\{t}", "\{(1, 2)}")
+}
+
+test "#1445: a tuple through a variable renders its struct elements" {
+  // The element TYPE comes from the binding site, not the head name -- this is
+  // what distinguishes the fix from just knowing "it is a tuple".
+  let p = P::{
+    x: 7
+  }
+  let t = (1, p)
+  assert_eq("\{t}", "(1, P { x: 7 })")
+}
+
+test "#1445: a 3-tuple through a variable keeps arity and order" {
+  let p = P::{
+    x: 3
+  }
+  let t = (1, "two", p)
+  assert_eq("\{t}", "(1, two, P { x: 3 })")
+}
+
+test "#1445: an array through a variable renders structurally" {
+  let a = [
+    1,
+    2
+  ]
+  assert_eq("\{a}", "[1, 2]")
+  assert_eq("\{a}", "\{[1, 2]}")
+}
+
+test "#1445: an array through a variable renders its struct elements" {
+  let pa = P::{
+    x: 1
+  }
+  let pb = P::{
+    x: 2
+  }
+  let a = [pa, pb]
+  assert_eq("\{a}", "[P { x: 1 }, P { x: 2 }]")
+}
+
+test "#1445: an array binding renders element count from the runtime length" {
+  // The expansion is a loop over `Array::length`, not an unrolled join over
+  // the literal's elements, so a value pushed after the binding shows up.
+  let a = [
+    1
+  ]
+  Array::push(a, 2)
+  Array::push(a, 3)
+  assert_eq("\{a}", "[1, 2, 3]")
+}
+
+test "#1445: a pattern binder gets its type from the scrutinee's annotation" {
+  let p = P::{
+    x: 4
+  }
+  assert_eq(opt_param(Some(p)), "P { x: 4 }")
+  assert_eq(opt_param(None), "none")
+}
+
+test "#1445: a pattern binder gets its type from a let-bound constructor" {
+  let p = P::{
+    x: 5
+  }
+  let o = Some(p)
+  let rendered = match o {
+    Some(v) => "\{v}",
+    None => "none"
+  }
+  assert_eq(rendered, "P { x: 5 }")
+}
+
+test "#1445: an Array PARAMETER annotation renders too" {
+  // `seed_var_types` already recorded `Array[P]`'s element type for dictionary
+  // synthesis (#1199); nothing read it at an interpolation site until now.
+  let p = P::{
+    x: 6
+  }
+  let ps = [p]
+  assert_eq(array_param(ps), "[P { x: 6 }]")
+}
+
+test "a tuple PARAMETER annotation was already structural (pinning it)" {
+  // NOT a #1445 regression -- measured working before the fix, including
+  // NESTED tuples, because an annotated parameter reaches a real TypeExpr
+  // rather than this pass's flat name list. Pinned so the #1445 sentinel
+  // cannot quietly divert these to the weaker renderer.
+  let p = P::{
+    x: 6
+  }
+  assert_eq(tuple_param((5, p)), "(5, P { x: 6 })")
+  assert_eq(nested_tuple_param((5, (7, p))), "(5, (7, P { x: 6 }))")
+}
+
+test "#1445: scalars and already-working shapes are unchanged" {
+  let n = 42
+  let s = "str"
+  let b = true
+  let e = B(3)
+  assert_eq("\{n}", "42")
+  assert_eq("\{s}", "str")
+  assert_eq("\{b}", "true")
+  assert_eq("\{e}", "B(3)")
+  let o = Some(7)
+  assert_eq("\{o}", "Some(7)")
+}

@@ -1751,6 +1751,173 @@ fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, 
   }
 }
 
+// ---- #1445: shapes that survive a BINDING ----
+//
+// #1392 slice 2 rendered a tuple/array/Option/Result written literally at the
+// interpolation site, and slice 1 rendered a `derive(Show)` value. What stayed
+// broken is the same value reached through a NAME:
+//
+//   "\{(1, 2)}"                 -> "(1, 2)"     already worked
+//   let t = (1, 2); "\{t}"      -> "228"        the raw pointer, #1445
+//
+// The head name alone (`infer_arg_type_name` returns "Tuple"/"Array") gives
+// neither arity nor element types, and a local `let`'s type annotation is not
+// in the AST (`ELet` has no annotation field, only `SLet` does), so there is no
+// TypeExpr to hand `show_for_typed`. But the BINDING SITE has the shape in
+// front of it -- `let t = (1, 2)` is a tuple literal right there -- so the
+// shape is recorded then and looked up at the interpolation site, exactly the
+// way `array_elem_bind` already records a let-bound array's element type.
+//
+// Two sentinel KEYS (not values), same `$`-in-the-key trick as
+// `array_elem_key`: `$` is not a valid identifier character, so no real source
+// name can collide.
+
+/// `__tupshape$<name>` -> the tuple's per-element type names, comma-joined.
+/// An element whose type this pass could not infer contributes an EMPTY entry,
+/// so arity is always exactly `commas + 1` and a partially-inferable tuple
+/// still renders (the unknown elements just fall back to `__to_string`).
+fn tuple_shape_key(pname: String) -> String {
+  String::concat("__tupshape$", pname)
+}
+
+/// `__ctorpay$<Ctor>$<name>` -> the payload type of `<name>`'s `<Ctor>` arm.
+/// `Option[P]` records `Some -> P`; `Result[T, E]` records `Ok -> T` and
+/// `Err -> E`. Read when a `match` scrutinises that variable, so the arm's
+/// binder gets a type (#1445 cause 3: a pattern binder is otherwise absent
+/// from `var_types` entirely).
+fn ctor_payload_key(pname: String, ctor: String) -> String {
+  String::concat("__ctorpay$", String::concat(ctor, String::concat("$", pname)))
+}
+
+fn push_all_var_types(out: Array[(String, String)], var_types: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(var_types) {
+    Array::push(out, Array::get(var_types, i))
+    i = i + 1
+  }
+}
+
+/// Split a `tuple_shape_key` value back into its per-element type names.
+/// Written by hand rather than via `String::split` because an EMPTY element
+/// (an uninferable one) must survive as an empty entry -- it is what keeps the
+/// entry count equal to the tuple's arity.
+fn tuple_shape_parts(sentinel: String) -> Array[String] {
+  let out = empty_str_array()
+  let mut rest = sentinel
+  let mut go = true
+  while go {
+    let comma = String::index_of(rest, ",")
+    if comma < 0 {
+      Array::push(out, rest)
+      go = false
+    } else {
+      Array::push(out, String::substring(rest, 0, comma))
+      rest = String::substring(rest, comma + 1, String::length(rest))
+    }
+  }
+  out
+}
+
+/// #1445: record a let-bound TUPLE literal's shape. Sibling of
+/// `array_elem_bind` -- same "only a bare literal RHS" scope, for the same
+/// reason (this is a syntax-directed pass, not type inference).
+fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match val {
+    ETuple(items) => if Array::length(items) > 0 {
+      let mut acc = ""
+      let mut i = 0
+      while i < Array::length(items) {
+        let tn = match infer_arg_type_name(Array::get(items, i), struct_sets, var_types, fn_returns) {
+          Some(t) => t,
+          None => ""
+        }
+        acc = if i == 0 {
+          tn
+        } else {
+          String::concat(acc, String::concat(",", tn))
+        }
+        i = i + 1
+      }
+      let out = array_empty()
+      push_all_var_types(out, var_types)
+      Array::push(out, (tuple_shape_key(name), acc))
+      out
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
+/// #1445: record a let-bound `Some(e)` / `Ok(e)` / `Err(e)`'s payload type, so
+/// a later `match` on that variable can type its binder. The parameter-side
+/// counterpart lives in `seed_var_types`, which has a real `TypeExpr`
+/// (`Option[P]`) to read the payload off.
+fn ctor_payload_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match val {
+    ECall(callee, cargs, _) => match callee {
+      EIdent(cn, _) => if Array::length(cargs) == 1 && (cn == "Some" || cn == "Ok" || cn == "Err") {
+        match infer_arg_type_name(Array::get(cargs, 0), struct_sets, var_types, fn_returns) {
+          Some(pty) => {
+            let out = array_empty()
+            push_all_var_types(out, var_types)
+            Array::push(out, (ctor_payload_key(name, cn), pty))
+            out
+          },
+          None => var_types
+        }
+      } else {
+        var_types
+      },
+      _ => var_types
+    },
+    _ => var_types
+  }
+}
+
+/// #1445: every binding-site shape record, applied in one place so `ELet` and
+/// `ELetMut` cannot drift apart.
+fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let a = array_elem_bind(var_types, name, val, struct_sets, fn_returns)
+  let b = tuple_shape_bind(a, name, val, struct_sets, fn_returns)
+  ctor_payload_bind(b, name, val, struct_sets, fn_returns)
+}
+
+/// #1445 cause 3: the var-type environment for ONE match arm's body.
+///
+/// A pattern binder never entered `var_types`, so anything reached through one
+/// fell to the pointer heuristic. When the scrutinee is a bare NAME whose
+/// `<Ctor>` payload type was recorded -- by `seed_var_types` off an
+/// `Option[P]` / `Result[T, E]` annotation, or by `ctor_payload_bind` off a
+/// let-bound `Some(..)` -- a single-binder `PCtor` arm gives that type to its
+/// binder.
+///
+/// Deliberately narrow: only `PCtor(c, [PBind(v)])` over a named scrutinee.
+/// Nested patterns, tuple payloads and multi-field constructors would each
+/// need their own payload decomposition, and this pass has one type name per
+/// (variable, ctor) to work with -- widening it is what a real typed AST is
+/// for, not more sentinels. Everything not matched here behaves exactly as
+/// before.
+fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  match scrut {
+    EIdent(sname, _) => match p {
+      PCtor(cn, sub) => if Array::length(sub) == 1 {
+        match Array::get(sub, 0) {
+          PBind(v) => match lookup_var_type(var_types, ctor_payload_key(sname, cn)) {
+            Some(pty) => extend_var_types(var_types, v, Some(pty)),
+            None => var_types
+          },
+          _ => var_types
+        }
+      } else {
+        var_types
+      },
+      _ => var_types
+    },
+    _ => var_types
+  }
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -1789,8 +1956,35 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
             TyName(elem) => Array::push(out, (array_elem_key(pname), elem)),
             _ => ()
           }
+        } else if tn == "Option" && Array::length(targs) == 1 {
+          // #1445 cause 3: `o: Option[P]` -- the HEAD alone ("Option") is what
+          // reaches `var_types`, so a `match o { Some(v) => "\{v}" }` had no
+          // type for `v` at all and fell to the ADR-0058 pointer heuristic.
+          // The annotation still has `P` right here; record it against the
+          // ctor so the match arm can bind it.
+          match Array::get(targs, 0) {
+            TyName(pay) => Array::push(out, (ctor_payload_key(pname, "Some"), pay)),
+            _ => ()
+          }
+        } else if tn == "Result" && Array::length(targs) == 2 {
+          match Array::get(targs, 0) {
+            TyName(okty) => Array::push(out, (ctor_payload_key(pname, "Ok"), okty)),
+            _ => ()
+          }
+          match Array::get(targs, 1) {
+            TyName(errty) => Array::push(out, (ctor_payload_key(pname, "Err"), errty)),
+            _ => ()
+          }
+        } else {
+          ()
         }
       },
+      // #1445: a tuple ANNOTATION (`t: (Int, P)`) deliberately records
+      // NOTHING here. Measured: an annotated tuple parameter already renders
+      // structurally, and it renders NESTED tuples too (`(Int, (Int, P))` ->
+      // `(5, (7, P { x: 6 }))`) -- it goes through a real TypeExpr, so it
+      // beats the flat per-element name list this pass's sentinel can carry.
+      // Recording the sentinel would only divert those to a weaker renderer.
       _ => ()
     }
     i = i + 1
@@ -3089,6 +3283,85 @@ fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String,
   concat2(acc, EString(close_s))
 }
 
+/// #1445: render a variable whose binding site recorded a TUPLE shape
+/// (`tuple_shape_key`). The expansion destructures the variable rather than
+/// re-evaluating any element expression -- the tuple is already built, and
+/// the binding's RHS may not even be in scope here.
+///
+///   let t = (1, p)   ->   match t { (a, b) => "(" ++ show(a) ++ ", " ++ show(b) ++ ")" }
+///
+/// Each binder is rendered through `interp_render_sub`, with its recorded
+/// element type pushed into `var_types` first -- that is what lets a
+/// `derive(Show)` struct inside the tuple render structurally instead of
+/// falling to the pointer heuristic. An element whose type was not inferable
+/// at the binding site carries an empty entry and simply renders through the
+/// ordinary `__to_string`, exactly as it does today.
+fn interp_expand_var_tuple(name: String, elem_types: Array[String], derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
+  let n = Array::length(elem_types)
+  let pats = array_empty()
+  let binders = empty_str_array()
+  let mut i = 0
+  while i < n {
+    let v = show_tmp_name()
+    Array::push(pats, PBind(v))
+    Array::push(binders, v)
+    i = i + 1
+  }
+  let mut acc = EString("(")
+  let mut k = 0
+  while k < n {
+    let v = Array::get(binders, k)
+    let et = Array::get(elem_types, k)
+    let vt = if String::length(et) == 0 {
+      var_types
+    } else {
+      extend_var_types(var_types, v, Some(et))
+    }
+    let piece = interp_render_sub(EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, vt, fn_returns)
+    acc = if k == 0 {
+      concat2(acc, piece)
+    } else {
+      concat2(concat2(acc, EString(", ")), piece)
+    }
+    k = k + 1
+  }
+  EMatch(EIdent(name, -1), Array::slice([
+    (PTuple(pats), concat2(acc, EString(")")))
+  ], 0, 1))
+}
+
+/// #1445: render a variable known to hold an `Array[T]` (its element type was
+/// recorded under `array_elem_key` by `array_elem_bind` or `seed_var_types`).
+///
+/// The loop is emitted INLINE rather than as a call to a monomorphic
+/// `__arr_to_string__<key>` helper. `gen_arr_to_string_fn` builds that helper
+/// for `derive`d fields, but emitting one from here would mean driving helper
+/// COLLECTION from interpolation sites in `desugar_derives` -- a second pass
+/// has to have already decided which helpers exist by the time this one runs.
+/// The loop body is the same shape as that helper's, so nothing is duplicated
+/// conceptually; it is just placed where the type is known.
+///
+/// The element is rendered by re-entering the rewrite on `Array::get(name, i)`
+/// -- `infer_arg_type_name` already resolves that shape through
+/// `array_elem_type_of`, so a `derive(Show)` element renders structurally
+/// without any extra plumbing here.
+fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
+  let iv = String::concat(show_tmp_name(), "_i")
+  let av = String::concat(show_tmp_name(), "_acc")
+  let elem_piece = interp_render_sub(ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent(name, -1),
+    EIdent(iv, -1)
+  ], 0, 2), -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0)), EString(""), EString(", "))
+  let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
+  let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1)), EUnit))
+  let len_call = ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent(name, -1)
+  ], 0, 1), -1)
+  let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call), body)
+  ELetMut(iv, EInt(0), ELetMut(av, EString("["), ESeq(loop_e, concat2(EIdent(av, -1), EString("]"))), -1), -1)
+}
+
 /// `ctor_name(<rendered payload>)`.
 fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Error {
   concat2(EString(String::concat(ctor, "(")), concat2(interp_render_sub(payload, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")")))
@@ -3136,7 +3409,17 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(Stri
     EIdent(n, _) => if n == "None" && head == "Option" {
       Some(EString("None"))
     } else {
-      interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      // #1445: a tuple or array reached through a NAME. The shape came from
+      // the binding site (tuple_shape_bind / array_elem_bind) or from a
+      // parameter annotation (seed_var_types), which is what the head name
+      // alone could never supply.
+      match lookup_var_type(var_types, tuple_shape_key(n)) {
+        Some(sentinel) => Some(interp_expand_var_tuple(n, tuple_shape_parts(sentinel), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+        None => match array_elem_type_of(var_types, n) {
+          Some(_) => Some(interp_expand_var_array(n, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+          None => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        }
+      }
     },
     ECall(callee, cargs, _) => match callee {
       EIdent(cn, _) => if Array::length(cargs) == 1 && ((head == "Option" && cn == "Some") || (head == "Result" && (cn == "Ok" || cn == "Err"))) {
@@ -3515,14 +3798,14 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -3533,7 +3816,14 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        // #1445 cause 3: a pattern binder was absent from `var_types`
+        // entirely, so `match o { Some(v) => "\{v}" }` rendered `v` through
+        // the ADR-0058 pointer heuristic even when `o`'s payload type was
+        // known. When the scrutinee is a NAME whose payload type was recorded
+        // (`ctor_payload_key`, from a parameter annotation or a let-bound
+        // `Some(..)`), the arm's binder gets that type for its body.
+        let arm_vars = arm_binder_var_types(scrut, p, var_types)
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
