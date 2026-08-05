@@ -27,6 +27,8 @@ import @vibe/compiler/core {
   env_bind,
   env_flat_bindings,
   env_lookup_flat,
+  normalize_path,
+  resolution_env_seed,
   resolve_import_path,
   resolve_import_path_candidates,
   str_lt
@@ -1548,48 +1550,14 @@ let parse_memo_paths: Array[String] = [
   Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
 }
 
-// The sidecar wire format is intentionally independent from the TypeEnv v3
-// envelope: `TDRE3` followed by two strict decimal length-delimited strings
-// (typing-input key, target conservative fingerprint). It is an alias to an
-// existing artifact, never a CheckedProgram or typed-IR transport.
-//
-// TDRE eligibility is a separate, versioned witness keyed by the ordinary
-// conservative module fingerprint. The v3 transport is complete for TypeEnv
-// variants, including trait/impl state, so source exclusion is no longer
-// necessary; publication still requires an already validated witness chain.
-let typing_dependency_env_reuse_eligibility_v3_text = "TDRE-ELIGIBILITY-3"
-
-fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with Fs {
-  let marker_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
-  if Fs::exists(marker_path) {
-    Fs::read_file(marker_path) == typing_dependency_env_reuse_eligibility_v3_text
-  } else {
-    false
-  }
-}
-
-/// Eligibility is transitively witnessed by successful v3 TypeEnv commits.
-/// The input key below fingerprints those complete direct dependency transports,
-/// including trait definitions and impls; an absent/malformed witness fails
-/// closed before any alias lookup.
-fn typing_dependency_env_reuse_is_eligible(_path: String, _source: String, dep_fps: Array[(String, String)]) -> Bool with Exception + Fs {
-  let mut i = 0
-  let mut deps_eligible = true
-  while deps_eligible && i < Array::length(dep_fps) {
-    let (_dep_path, dep_fingerprint) = Array::get(dep_fps, i)
-    if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
-      ()
-    } else {
-      deps_eligible = false
-    }
-    i = i + 1
-  }
-  deps_eligible
-}
-
-fn publish_typing_dependency_env_reuse_eligibility(fingerprint: String) -> Unit with Fs {
-  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), typing_dependency_env_reuse_eligibility_v3_text)
-}
+// TDRE4 is deliberately independent from the TypeEnv v3 envelope and from
+// every production artifact/cache identity. Both v4 envelopes use strict
+// decimal length-delimited fields and bind the logical checker input, target
+// conservative fingerprint, and exact canonical TypeEnv-v3 transport text.
+// The target text is intentionally not replaced by a compact fingerprint:
+// cache corruption must not turn a fingerprint collision into checker reuse.
+let typing_dependency_env_reuse_alias_v4_tag = "TDRE4A"
+let typing_dependency_env_reuse_witness_v4_tag = "TDRE4W"
 
 fn typing_reuse_segment(text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
@@ -1624,52 +1592,26 @@ fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
   }
 }
 
-fn typing_dependency_transport_input_key(source: String, deps: Array[String], env_cache: Array[(String, TypeEnv)]) -> Option[String] {
-  let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v3")
-  StringBuilder::push(out, typing_reuse_segment(source))
-  StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(deps))))
-  let mut i = 0
-  let mut complete = true
-  while complete && i < Array::length(deps) {
-    let dep_path = Array::get(deps, i)
-    match lookup_env_cache(env_cache, dep_path) {
-      Some(dep_env) => {
-        // This is the exact complete TypeEnv v3 text transported through
-        // persistent_env_codec, not the trace-only module-interface:v2 value.
-        let transport_env_fingerprint = compact_string_fingerprint(persistent_type_env_cache_text(dep_env))
-        StringBuilder::push(out, typing_reuse_segment(dep_path))
-        StringBuilder::push(out, typing_reuse_segment(transport_env_fingerprint))
-      },
-      None => {
-        complete = false
-      }
-    }
-    i = i + 1
-  }
-  if complete {
-    Some(StringBuilder::freeze(out))
-  } else {
-    None
-  }
+fn typing_dependency_reuse_binding_text(tag: String, input_key: String, target_fingerprint: String, target_text: String) -> String {
+  String::concat(tag, String::concat(typing_reuse_segment(input_key), String::concat(typing_reuse_segment(target_fingerprint), typing_reuse_segment(target_text))))
 }
 
-fn typing_dependency_env_reuse_sidecar_text(input_key: String, target_fingerprint: String) -> String {
-  String::concat("TDRE3", String::concat(typing_reuse_segment(input_key), typing_reuse_segment(target_fingerprint)))
-}
-
-fn parse_typing_dependency_env_reuse_sidecar(text: String, expected_input_key: String) -> Option[String] {
-  if !String::starts_with(text, "TDRE3") {
+fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(String, String, String)] {
+  if !String::starts_with(text, tag) {
     None
   } else {
-    match parse_typing_reuse_segment(text, 5) {
+    match parse_typing_reuse_segment(text, String::length(tag)) {
       Some((input_key, after_input)) =>
       match parse_typing_reuse_segment(text, after_input) {
-        Some((target_fingerprint, end)) =>
-        if input_key == expected_input_key && end == String::length(text) && String::length(target_fingerprint) > 0 {
-          Some(target_fingerprint)
-        } else {
-          None
+        Some((target_fingerprint, after_target)) =>
+        match parse_typing_reuse_segment(text, after_target) {
+          Some((target_text, end)) =>
+          if end == String::length(text) && String::length(input_key) > 0 && String::length(target_fingerprint) > 0 && String::length(target_text) > 0 {
+            Some((input_key, target_fingerprint, target_text))
+          } else {
+            None
+          },
+          None => None
         },
         None => None
       },
@@ -1678,41 +1620,140 @@ fn parse_typing_dependency_env_reuse_sidecar(text: String, expected_input_key: S
   }
 }
 
-fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String, TypeEnv)] with Exception + Fs {
-  let sidecar_path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
-  if !Fs::exists(sidecar_path) {
+/// Exact logical input to check_module: canonical owner path, byte-exact owner
+/// source, resolution authority, and every entry of ModuleJob.dep_envs in its
+/// actual array order. dep_envs is intentionally not narrowed to declared deps:
+/// build_import_env consumes the whole table and first-match shadowing makes
+/// ambient entries and their order checker-visible.
+fn typing_dependency_transport_input_key(path: String, source: String, dep_envs: Array[(String, TypeEnv)]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v4")
+  StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
+  StringBuilder::push(out, typing_reuse_segment(source))
+  StringBuilder::push(out, typing_reuse_segment(resolution_env_seed()))
+  StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(dep_envs))))
+  let mut i = 0
+  while i < Array::length(dep_envs) {
+    let (dep_path, dep_env) = Array::get(dep_envs, i)
+    StringBuilder::push(out, typing_reuse_segment(dep_path))
+    StringBuilder::push(out, typing_reuse_segment(persistent_type_env_cache_text(dep_env)))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Decode untrusted target bytes strictly and require the decoder's canonical
+/// v3 re-encoding to equal both the raw file and the binding's exact text.
+/// parse_persistent_type_env accepts normalized line endings for ordinary cache
+/// compatibility; this additional equality makes the experimental lane strict.
+fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[TypeEnv] with Fs {
+  let target_path = persistent_type_env_cache_path(target_fingerprint)
+  if !Fs::exists(target_path) {
     None
   } else {
-    match parse_typing_dependency_env_reuse_sidecar(Fs::read_file(sidecar_path), input_key) {
-      Some(target_fingerprint) =>
-      if typing_dependency_env_reuse_eligibility_is_valid(target_fingerprint) {
-        // A referenced target is untrusted cache text. Its decoder may throw
-        // for a truncated/malformed row; an alias miss must instead take the
-        // ordinary full-check path.
-        let loaded = handle {
-          load_persistent_type_env(target_fingerprint)
-        } with Exception {
-          Throw(_) => None
-        }
-        match loaded {
-          Some(target_env) => Some((target_fingerprint, target_env)),
+    handle {
+      let raw_target_text = Fs::read_file(target_path)
+      match parse_persistent_type_env(raw_target_text) {
+        Some(target_env) => {
+          let canonical_target_text = persistent_type_env_cache_text(target_env)
+          if raw_target_text == canonical_target_text && raw_target_text == expected_target_text {
+            Some(target_env)
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    } with Exception {
+      Throw(_) => None
+    }
+  }
+}
+
+fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(String, String)] with Fs {
+  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
+  if !Fs::exists(witness_path) {
+    None
+  } else {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v4_tag) {
+      Some((input_key, target_fingerprint, target_text)) =>
+      if target_fingerprint != fingerprint {
+        None
+      } else {
+        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint, target_text) {
+          Some(_) => Some((input_key, target_text)),
           None => None
         }
-      } else {
-        None
       },
       None => None
     }
   }
 }
 
-fn write_typing_dependency_env_reuse_sidecar(source: String, deps: Array[String], env_cache: Array[(String, TypeEnv)], target_fingerprint: String) -> Unit with Fs {
-  match typing_dependency_transport_input_key(source, deps, env_cache) {
-    Some(input_key) => Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), typing_dependency_env_reuse_sidecar_text(input_key, target_fingerprint)),
-    // A missing direct-dependency transport environment is never a partial
-    // key: simply omit the experimental alias and retain conservative reuse.
-    None => ()
+fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with Fs {
+  match typing_dependency_env_reuse_witness_binding(fingerprint) {
+    Some(_) => true,
+    None => false
   }
+}
+
+/// Eligibility is transitively witnessed by successful canonical TypeEnv-v3
+/// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
+/// closed before the alias lookup.
+fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
+  let mut i = 0
+  let mut deps_eligible = true
+  while deps_eligible && i < Array::length(dep_fps) {
+    let (_dep_path, dep_fingerprint) = Array::get(dep_fps, i)
+    if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
+      ()
+    } else {
+      deps_eligible = false
+    }
+    i = i + 1
+  }
+  deps_eligible
+}
+
+fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Fs {
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v4_tag, input_key, fingerprint, target_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
+}
+
+fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String, String, TypeEnv)] with Fs {
+  let sidecar_path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
+  if !Fs::exists(sidecar_path) {
+    None
+  } else {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v4_tag) {
+      Some((alias_input_key, target_fingerprint, target_text)) =>
+      if alias_input_key != input_key {
+        None
+      } else {
+        // Validate the raw target before consulting the separately published
+        // witness. Only an exact three-way alias/witness/target binding reuses.
+        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint, target_text) {
+          Some(target_env) =>
+          match typing_dependency_env_reuse_witness_binding(target_fingerprint) {
+            Some((witness_input_key, witness_target_text)) =>
+            if witness_input_key == input_key && witness_target_text == target_text {
+              Some((target_fingerprint, target_text, target_env))
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Fs {
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v4_tag, input_key, target_fingerprint, target_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 
 fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Fs {
@@ -2084,13 +2125,15 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity) => {
       store_persistent_type_env(fingerprint, checked_env)
-      // The TypeEnv commit comes first. Every direct conservative dependency
-      // marker must already be validated before this module may publish its
-      // witness and alias; each dependency witness was itself published under
-      // that rule, establishing the transitive v3 TypeEnv commit chain.
-      if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(path, job.source, job.dep_fps) {
-        publish_typing_dependency_env_reuse_eligibility(fingerprint)
-        write_typing_dependency_env_reuse_sidecar(job.source, job.deps, job.dep_envs, fingerprint)
+      // Publish in commit order: canonical target first, bound witness second,
+      // alias last. Diagnosed/thrown checks never enter this Checked arm. Keep
+      // the extra canonical target text and input serialization wholly inside
+      // the enabled, transitively eligible experimental lane.
+      if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(job.dep_fps) {
+        let input_key = typing_dependency_transport_input_key(path, job.source, job.dep_envs)
+        let target_text = persistent_type_env_cache_text(checked_env)
+        publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
+        write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
       } else {
         ()
       }
@@ -2348,25 +2391,27 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
   } else {
     let import_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
-    let reused_env = if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(path, source, dep_fps) {
-      match typing_dependency_transport_input_key(source, deps, import_env_cache) {
-        Some(input_key) => load_typing_dependency_env_reuse_target(input_key),
-        None => None
+    let reused_env = if experimental_typing_dependency_env_reuse_enabled() {
+      if typing_dependency_env_reuse_is_eligible(dep_fps) {
+        let input_key = typing_dependency_transport_input_key(path, source, import_env_cache)
+        match load_typing_dependency_env_reuse_target(input_key) {
+          Some((target_fingerprint, target_text, target_env)) => Some((input_key, target_fingerprint, target_text, target_env)),
+          None => None
+        }
+      } else {
+        None
       }
     } else {
       None
     }
     match reused_env {
-      Some((_target_fingerprint, target_env)) => {
+      Some((input_key, _target_fingerprint, target_text, target_env)) => {
         // Preserve the ordinary conservative fingerprint path for every later
-        // consumer; this only avoids recomputing an already validated typing
-        // result whose dependency transport inputs are identical. The alias is
-        // itself a successful TypeEnv commit, so publish this conservative
-        // fingerprint's transitive eligibility witness afterwards as well;
-        // otherwise a multi-level consumer would correctly fail closed.
+        // consumer. Commit this target first, then its exact bound witness, and
+        // only then the alias, so torn publication always fails closed.
         store_persistent_type_env(fingerprint, target_env)
-        publish_typing_dependency_env_reuse_eligibility(fingerprint)
-        write_typing_dependency_env_reuse_sidecar(source, deps, import_env_cache, fingerprint)
+        publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
+        write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
         let next_env_cache = upsert_env_cache(import_env_cache, path, target_env)
         let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
         (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
