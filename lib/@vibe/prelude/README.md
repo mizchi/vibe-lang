@@ -48,13 +48,13 @@ Boundary enforcement is active in:
 
 `vibe/prelude` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
 
-- pure modules (`pure-primitive`, `pure-data`) は `with {...}` を持たない。
+- pure modules (`pure-primitive`, `pure-data`) は `with` row を持たない。
 - runtime bridge (`effect-boundary`) は host builtin への薄い委譲に限定し、effect を明示する。
 - effect の種類は責務に合わせる:
-  - file/path: `with {Fs}` / `with {Env}`
-  - network: `with {Net}`
-  - stdio: `with {Stdin}` / `with {Stdout}`
-  - async runtime: `with {Async}`
+  - file/path: `with Fs` / `with Env`
+  - network: `with Net`
+  - stdio: `with Stdin` / `with Stdout`
+  - async runtime: `with Async`
 - 新規 API を追加する場合、pure 変換ロジックは pure module に置き、effect module には混在させない。
 - 実験 API は runtime wrapper 側へ隔離し、必要な unstable flag をドキュメントに明記する。
 

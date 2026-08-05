@@ -225,7 +225,7 @@ test "parse higher-order effect function type annotation" {
   // Regression: function types can appear as parenthesized parameter types
   // inside another function type, with an effect variable on both levels.
   let ok = handle {
-    let _ = parse_program(lex("let apply: [e]((Int) -> Int with { e }, Int) -> Int with { e } = (f, x) -> { f(x) }\n0"))
+    let _ = parse_program(lex("let apply: [e]((Int) -> Int with e, Int) -> Int with e = (f, x) -> { f(x) }\n0"))
     "ok"
   } with Error {
     Throw(_) => "threw"
@@ -234,7 +234,7 @@ test "parse higher-order effect function type annotation" {
 }
 
 test "parse higher-order effect function type annotation with trailing comma" {
-  let source = "let chain: [e](\n  (Int) -> Int with { e },\n  (Int) -> Int with { e },\n  Int,\n) -> Int with { e } = (f, g, x) -> { add(f(x), g(x)) }\n0"
+  let source = "let chain: [e](\n  (Int) -> Int with e,\n  (Int) -> Int with e,\n  Int,\n) -> Int with e = (f, g, x) -> { add(f(x), g(x)) }\n0"
   let ok = handle {
     let _ = parse_program(lex(source))
     "ok"
@@ -644,7 +644,7 @@ test "#1283: a guard else that only throws gets its own message" {
   // likely to be made first, since let-else did accept it. So it must not fall
   // into the generic message.
   let thrown = handle {
-    let _ = parse_program(lex("let f: (Option[Int]) -> Int with { Error } = (o) -> { guard o is Some(v) else { throw(\"none\") }\n  v }\nf(Some(1))"))
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int with Error = (o) -> { guard o is Some(v) else { throw(\"none\") }\n  v }\nf(Some(1))"))
     "ok"
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
@@ -772,41 +772,47 @@ test "#819: `example` is a reserved word, escapable as r#example" {
 
 //# #1429: effect-row spellings
 
-test "#1429: all three row spellings normalize to the same row" {
-  // The braced and braceless forms are indistinguishable after parsing --
-  // that is the property that lets them coexist across the bootstrap bump.
-  // The printer emits the BRACELESS form for both (#1429 step 3), so a
-  // round-trip of either spelling produces byte-identical output.
+test "#1429: the braced row is rejected by name" {
+  // The braced form was accepted through the migration and is now gone. The
+  // rejection names the replacement AND `vibe fmt`, because a reader who hits
+  // "expected an effect name" has no way to learn that the syntax moved.
   let braced = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with { Error, Fs } = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
+  assert(String::starts_with(braced, "ERROR: "))
+  assert(String::contains(braced, "removed in #1429"))
+  assert(String::contains(braced, "with A + B"))
+  assert(String::contains(braced, "vibe fmt"))
+}
+
+test "#1429: the braceless row parses and round-trips" {
   let braceless = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with Error + Fs = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(!String::starts_with(braced, "ERROR: "))
-  assert(braced == braceless)
-  assert(String::contains(braced, "with Error + Fs"))
-  assert(!String::contains(braced, "with {"))
+  assert(!String::starts_with(braceless, "ERROR: "))
+  assert(String::contains(braceless, "with Error + Fs"))
+  assert(!String::contains(braceless, "with {"))
 }
 
-test "#1429: `with ()` is the same row as the legacy `with {}`" {
+test "#1429: `with ()` is the empty row and `with {}` is rejected" {
   let parens = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with () = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
+  assert(!String::starts_with(parens, "ERROR: "))
+  assert(String::contains(parens, "with ()"))
   let braces = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with {} = (x) -> { x }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(!String::starts_with(parens, "ERROR: "))
-  assert(parens == braces)
-  assert(String::contains(parens, "with ()"))
+  assert(String::starts_with(braces, "ERROR: "))
+  assert(String::contains(braces, "removed in #1429"))
 }
 
 test "#1429: a parenthesized non-empty row is rejected by name" {
