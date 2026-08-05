@@ -14,7 +14,7 @@ const validTrace = {
   source_groups_fingerprint_kind: "build_source_groups_fingerprint(source_groups)",
   production_artifact_input_fingerprint: "30:3:4",
   production_artifact_input_fingerprint_kind: "build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)",
-  compiler_cache_version_tag: "v16|cg-example",
+  compiler_cache_version_tag: "v17|cg-example",
   compiler_cache_version_tag_kind: "persistent_cache_version_tag()",
   effective_config: { checked_error_row_mode: "checked", diagnostics_mode: "fail-fast", dep_order_seed: "0", target: "wasi", memory: "bump", dce_mode: "no-dce", strip_stage: "pre-strip", instrumentation: "uninstrumented" },
   dependency_plan: { fingerprint: "40:5:6", fingerprint_kind: "compact_string_fingerprint(vibe-artifact-input-dependency-plan:v1 length-prefixed planned order/ranks/dependency occurrences)", module_count: 2, edge_occurrence_count: 1 },

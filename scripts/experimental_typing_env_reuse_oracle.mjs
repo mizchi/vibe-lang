@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-// Isolated production E2E oracle for the opt-in dependency transport-env
-// typing reuse slice. It intentionally reads telemetry only; trace-only
-// module-interface observations are rejected by the experiment and are never
-// used to establish a production reuse key here.
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// Production E2E oracle for default-on check-only TDRE4 TypeEnv reuse. The
+// explicit disable flag is the conservative control. Trace-only observations
+// force reuse off and are never used to establish a production reuse key.
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, isAbsolute } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -33,6 +32,10 @@ function privateEdit(project) {
 
 function publicEdit(project) {
   writeFileSync(join(project, "helper.vibe"), "export fn value() -> String { \"two\" }\n");
+}
+
+function privateStringEdit(project) {
+  writeFileSync(join(project, "helper.vibe"), "export fn value() -> String { let ignored = 1\n\"three\" }\n");
 }
 
 function makeChainProject(project) {
@@ -119,7 +122,8 @@ function check(stage2, project, cache, gate, name, allowFailure = false, extraEn
       // force a full check rather than exercise reuse.
       VIBE_HOME: join(project, ".home"),
       VIBE_PREOPEN_DIR: project,
-      ...(gate ? { VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1" } : {}),
+      VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: gate ? "" : "1",
+      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
       ...extraEnv,
     },
   });
@@ -132,6 +136,27 @@ function check(stage2, project, cache, gate, name, allowFailure = false, extraEn
   } catch (error) {
     fail(`${name} omitted output or telemetry: ${error.message}`);
   }
+}
+
+function compile(stage2, project, cache, enabled, name) {
+  const out = `${name}.wasm`;
+  const result = spawnSync("bash", [join(root, "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main", stage2, "app.vibe", out, "main"], {
+    cwd: project,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      VIBE_BUILD_CACHE_DIR: cache,
+      VIBE_FS_COMPILE: "1",
+      VIBE_RC: "0",
+      VIBE_IMPORT_ABI: "raw",
+      VIBE_HOME: join(project, ".home"),
+      VIBE_PREOPEN_DIR: project,
+      VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: enabled ? "" : "1",
+      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
+    },
+  });
+  if (result.status !== 0) fail(`${name} failed: ${(result.stderr || result.stdout).trim()}`);
+  return readFileSync(join(project, out));
 }
 
 function expectCounts(name, actual, rechecked, reused, planned = 2) {
@@ -238,19 +263,30 @@ function compactFingerprint(source) {
   return `${source.length}:${h1}:${h2}`;
 }
 
-// Derive the exact referenced TypeEnv filename from the target conservative
-// fingerprint, mirroring @vibe/cache stable_cache_path. This avoids corrupting
-// another module's env and makes the malformed-target case non-vacuous.
-function referencedAppTargetEnv(stage2, cache, target) {
+function stageCodegenFingerprint(stage2) {
   // The stage compiler's bundled fingerprint can be one generation behind the
   // checkout's freshly regenerated source fingerprint, so read its adjacent
   // flattened module source rather than assuming the working-tree value.
   const stageSource = readFileSync(join(dirname(stage2), "cli_adapter_module_source.vibe"), "utf8");
   const codegen = stageSource.match(/codegen_fingerprint[\s\S]{0,200}?"([0-9a-f]{16})"/)?.[1];
   if (!codegen) fail("could not read stage compiler codegen fingerprint");
-  const version = `v16|cg-${codegen}`;
-  const token = compactFingerprint(`persistent-cache-${version}|${target}`).replaceAll(":", "_");
-  const path = join(cache, `vibe_selfhost_type_env_v3_${token}.tsv`);
+  return codegen;
+}
+
+function stableCachePath(cache, version, prefix, seed, suffix) {
+  const token = compactFingerprint(`persistent-cache-${version}|${seed}`).replaceAll(":", "_");
+  return join(cache, `vibe_${prefix}_${token}${suffix}`);
+}
+
+function typeEnvPath(stage2, cache, target, major = "v17") {
+  return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v3", target, ".tsv");
+}
+
+// Derive the exact referenced TypeEnv filename from the target conservative
+// fingerprint, mirroring @vibe/cache stable_cache_path. This avoids corrupting
+// another module's env and makes the malformed-target case non-vacuous.
+function referencedAppTargetEnv(stage2, cache, target) {
+  const path = typeEnvPath(stage2, cache, target);
   try { readFileSync(path, "utf8"); }
   catch { fail("referenced app TypeEnv missing before corruption"); }
   return path;
@@ -266,6 +302,7 @@ function expectTraceLaneRejected(stage2, project, cache) {
       ...process.env,
       VIBE_BUILD_CACHE_DIR: cache,
       VIBE_CHECK_ONLY: "1",
+      VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "",
       VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1",
       VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: trace,
       VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "trace-lane-rejection",
@@ -274,9 +311,75 @@ function expectTraceLaneRejected(stage2, project, cache) {
       VIBE_PREOPEN_DIR: project,
     },
   });
-  if (result.status === 0) fail("trace lane unexpectedly accepted experimental reuse");
-  const diag = readFileSync(join(project, `${out}.diag`), "utf8");
-  if (!diag.includes("does not support VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")) fail("trace lane rejection diagnostic changed");
+  if (result.status === 0) fail("trace lane unexpectedly accepted explicit legacy reuse");
+  const diagPath = join(project, `${out}.diag`);
+  const diagnostic = `${result.stderr || ""}\n${result.stdout || ""}\n${existsSync(diagPath) ? readFileSync(diagPath, "utf8") : ""}`;
+  if (!diagnostic.includes("does not support VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")) fail("trace lane rejection diagnostic changed");
+}
+
+function traceForcedOff(stage2, project, cache) {
+  const beforeAliases = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v4").length;
+  const beforeWitnesses = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v4").length;
+  const result = check(stage2, project, cache, true, "trace-forced-off", false, {
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "trace-forced-off.json",
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "trace-forced-off",
+  });
+  expectCounts("ordinary trace forced off", result.telemetry, 2, 0);
+  if (!existsSync(join(project, "trace-forced-off.json"))) fail("ordinary trace omitted observation sidecar");
+  if (bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v4").length !== beforeAliases ||
+      bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v4").length !== beforeWitnesses) {
+    fail("observation-only trace published TDRE4 state");
+  }
+  return result.telemetry;
+}
+
+function expectInvalidEnvRejected(stage2, project, cache, variable, value) {
+  const out = `invalid-${variable}.out`;
+  const result = spawnSync("bash", [join(root, "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main", stage2, "app.vibe", out], {
+    cwd: project,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      VIBE_BUILD_CACHE_DIR: cache,
+      VIBE_CHECK_ONLY: "1",
+      VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "",
+      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
+      VIBE_IMPORT_ABI: "raw",
+      VIBE_HOME: join(project, ".home-invalid-env"),
+      VIBE_PREOPEN_DIR: project,
+      [variable]: value,
+    },
+  });
+  if (result.status === 0) fail(`${variable}=${value} unexpectedly accepted`);
+  const diagPath = join(project, `${out}.diag`);
+  const diagnostic = `${result.stderr || ""}\n${result.stdout || ""}\n${existsSync(diagPath) ? readFileSync(diagPath, "utf8") : ""}`;
+  if (!diagnostic.includes(variable)) fail(`${variable} rejection omitted strict diagnostic`);
+}
+
+function expectV16Isolation(stage2, work) {
+  const project = join(work, "v16-isolation-project");
+  const currentCache = join(work, "v16-isolation-current-cache");
+  const oldCache = join(work, "v16-isolation-old-cache");
+  makeProject(project);
+  check(stage2, project, currentCache, true, "v16-source-cold");
+  mkdirSync(oldCache, { recursive: true });
+  const oldVersion = `v16|cg-${stageCodegenFingerprint(stage2)}`;
+  for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_v4")) {
+    const text = readFileSync(path, "utf8");
+    const binding = parseBinding(text, "TDRE4A");
+    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_v4", binding.input, ".txt"), text);
+    writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v16"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
+  }
+  for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_eligibility_v4")) {
+    const text = readFileSync(path, "utf8");
+    const binding = parseBinding(text, "TDRE4W");
+    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_eligibility_v4", binding.target, ".txt"), text);
+    writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v16"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
+  }
+  if (bindingFiles(oldCache, "selfhost_typing_dependency_env_reuse_v4").length === 0) fail("v16 isolation fixture omitted valid old aliases");
+  const isolated = check(stage2, project, oldCache, true, "v16-isolated-default");
+  expectCounts("v16 namespace isolation", isolated.telemetry, 2, 0);
+  return isolated.telemetry;
 }
 
 function run(stage2) {
@@ -296,7 +399,19 @@ function run(stage2) {
     if (coldOff.output !== coldOn.output) fail("cold gate-off/on output mismatch");
 
     const warmOn = check(stage2, onProject, onCache, true, "warm-on");
-    expectCounts("warm on", warmOn.telemetry, 0, 2);
+    expectCounts("warm default-on", warmOn.telemetry, 0, 2);
+    const legacyCompat = check(stage2, onProject, onCache, true, "legacy-compat", false, {
+      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1",
+    });
+    expectCounts("legacy 1 compatibility no-op", legacyCompat.telemetry, 0, 2);
+
+    const compileControlProject = join(work, "compile-control-project");
+    const compileDefaultProject = join(work, "compile-default-project");
+    makeProject(compileControlProject);
+    makeProject(compileDefaultProject);
+    const compileControl = compile(stage2, compileControlProject, join(work, "compile-control-cache"), false, "compile-control");
+    const compileDefault = compile(stage2, compileDefaultProject, join(work, "compile-default-cache"), true, "compile-default");
+    if (!compileControl.equals(compileDefault)) fail("FS compile default-on/explicit-disable output mismatch");
 
     privateEdit(offProject);
     privateEdit(onProject);
@@ -312,8 +427,15 @@ function run(stage2) {
     const publicOn = check(stage2, onProject, onCache, true, "public-on");
     expectCounts("public gate off", publicOff.telemetry, 2, 0);
     expectCounts("public gate on", publicOn.telemetry, 2, 0);
-    if (publicOff.output !== publicOn.output) fail("public edit gate-off/on output mismatch");
+    if (publicOff.output !== publicOn.output) fail("public edit control/default output mismatch");
+    privateStringEdit(onProject);
+    const traceForcedOffTelemetry = traceForcedOff(stage2, onProject, onCache);
+    const postTraceDefault = check(stage2, onProject, onCache, true, "post-trace-default");
+    expectCounts("normal check after trace resets default policy", postTraceDefault.telemetry, 0, 2);
     expectTraceLaneRejected(stage2, onProject, onCache);
+    expectInvalidEnvRejected(stage2, onProject, onCache, "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE", "true");
+    expectInvalidEnvRejected(stage2, onProject, onCache, "VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE", "0");
+    const v16Isolation = expectV16Isolation(stage2, work);
 
     const malformedProject = join(work, "malformed-target-project");
     const malformedCache = join(work, "malformed-target-cache");
@@ -546,9 +668,20 @@ function run(stage2) {
 
     console.log(JSON.stringify({
       schema: 1,
-      scenario: "experimental-typing-dependency-transport-env-reuse",
-      private_body: { gate_off: privateOff.telemetry, gate_on: privateOn.telemetry },
-      public_interface: { gate_off: publicOff.telemetry, gate_on: publicOn.telemetry },
+      scenario: "production-typing-dependency-transport-env-reuse",
+      default_policy: {
+        cold: coldOn.telemetry,
+        warm: warmOn.telemetry,
+        legacy_compatibility: legacyCompat.telemetry,
+        explicit_disable_control: coldOff.telemetry,
+        trace_forced_off: traceForcedOffTelemetry,
+        post_trace_default: postTraceDefault.telemetry,
+        v16_namespace_isolation: v16Isolation,
+        conservative_compile_output_parity: true,
+        invalid_env_diagnostics: true,
+      },
+      private_body: { explicit_disable: privateOff.telemetry, default_on: privateOn.telemetry },
+      public_interface: { explicit_disable: publicOff.telemetry, default_on: publicOn.telemetry },
       malformed_target_fallback: malformedTargetFallback.telemetry,
       missing_target_fallback: missingTargetFallback.telemetry,
       stale_target_fallback: staleTargetFallback.telemetry,

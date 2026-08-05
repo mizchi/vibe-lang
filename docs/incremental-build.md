@@ -167,10 +167,23 @@ trait definitions and method-generic rows, but remains a narrow environment
 transport, not a complete clean/warm typed artifact or lossless `CheckedProgram`
 claim.
 
-## Experimental dependency transport-environment typing reuse
+## Dependency transport-environment typing reuse
 
-`VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE=1` enables a deliberately
-narrow, default-off check-only experiment. TDRE4 aliases the exact logical
+TDRE4 TypeEnv reuse is enabled by default for the `vibe check` filesystem
+check-only lane. Build, codegen, LSP, and direct FS typecheck consumers remain
+conservative pending a compact exact-publication design: publishing the current
+exact TDRE4A/TDRE4W texts on a fresh selfcompile exceeds the signed 2 GiB guest
+heap boundary, while the conservative compile lane remains near 1.11 GB.
+`VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` is the strict emergency opt-out for
+check-only reuse;
+any other nonempty value is rejected. The legacy
+`VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE` spelling accepts only empty or
+`1` and is otherwise a compatibility no-op. An ordinary incremental
+invalidation trace automatically forces reuse off so the trace stays
+observation-only. For compatibility, explicitly combining legacy `1` with an
+invalidation trace remains rejected.
+
+TDRE4 aliases the exact logical
 `ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,
 byte-exact owner source, `resolution_env_seed()`, and every `(path, canonical
 TypeEnv-v3 transport text)` row in the exact ordered resolved direct-dependency
@@ -190,10 +203,11 @@ invalidation trace lane so the two identities cannot be confused.
 
 The v3 TypeEnv codec round-trips every current `TypeEnv` variant, including
 trait definitions, impls, generic impl bounds, trait-header parameters,
-positional method-generic binders/bounds, and method `TypeExpr` metadata. TDRE4
-keeps that TypeEnv-v3 envelope and production cache namespace v16 unchanged;
-only its experimental alias and eligibility-witness namespaces and `TDRE4A` /
-`TDRE4W` envelopes are new. A sidecar is still only an alias to a conservative
+positional method-generic binders/bounds, and method `TypeExpr` metadata. The
+production-default promotion bumps the global persistent cache namespace from
+v16 to v17 because reuse policy changed. It keeps the TypeEnv-v3 envelope,
+TDRE4 alias and eligibility-witness namespaces, and `TDRE4A` / `TDRE4W`
+envelopes unchanged. A sidecar is still only an alias to a conservative
 TypeEnv commit, not a `CheckedProgram` or lossless typed-IR transport.
 
 A witness is published only after that module's canonical TypeEnv-v3 target and
@@ -209,7 +223,10 @@ ambient non-direct cache irrelevance, valid-but-wrong targets, cross-splicing,
 missing/malformed/stale entries, diagnostic non-publication, and multi-level
 reuse. Focused checker tests cover package/directory candidate selection,
 reexports, duplicate paths/order, first-match cache shadowing, and missing-row
-failure. The public experimental flag and default-off behavior are unchanged.
+failure. The production oracle treats the default check environment as
+reuse-on and uses the explicit disable flag as its conservative control. It
+also covers trace forced-off behavior, strict environment diagnostics,
+conservative compile output parity, and isolation from v16 entries.
 
 ## Artifact boundaries
 
@@ -624,7 +641,7 @@ separate `changed`/`unchanged` observation rather than being treated as the
 exported interface. The current consumer decision must still be `rechecked` and
 is reported as `conservative_rechecked`; this is a record of current
 conservative behavior, not a new reuse rule. This classifier does not change
-trace schema 6, cache namespace v16, TypeEnv-v3/TDRE4 transport, production
+trace schema 6, cache namespace v17, TypeEnv-v3/TDRE4 transport, production
 artifact reuse, or default-gate wiring; it strengthens the existing observation gate's assertions.
 
 For this comparison, `source_fingerprint` is ingestion telemetry only;
@@ -699,7 +716,7 @@ context evidence is explicit trace-only extra filesystem work after the
 ordinary production compile. Because it is a post-compile recollection, the
 sidecar is not an atomic snapshot of the bytes used to produce the wasm; a
 concurrent filesystem or resolution-context change may describe a later
-snapshot. It never changes cache namespace `v16`, artifact
+snapshot. It never changes cache namespace `v17`, artifact
 fingerprints, artifact lookup/store/reuse decisions, interface-v2, TypeEnv-v3,
 TDRE4, or trace schema 6. A separately named shadow fingerprint uses a versioned,
 fixed-order, length-prefixed `vibe-artifact-input-observation:v2` preimage and

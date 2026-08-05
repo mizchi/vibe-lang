@@ -383,7 +383,30 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
   }
 }
 
+fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
+  let disable = Env::get("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE")
+  let legacy = Env::get("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE")
+  let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+  if disable != "" && disable != "1" {
+    throw("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE must be exactly 1 when set")
+  } else if legacy != "" && legacy != "1" {
+    throw("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE must be empty or exactly 1")
+  } else if legacy == "1" && invalidation_trace_out != "" {
+    // Preserve the experimental lane's strict rejection for callers that
+    // explicitly request that compatibility spelling. Without it, tracing
+    // remains observation-only by forcing production reuse off below.
+    throw("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE does not support VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+  } else {
+    set_experimental_typing_dependency_env_reuse_enabled(disable != "1" && invalidation_trace_out == "")
+  }
+}
+
 export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
+  // Reset the process-wide TDRE4 cell before every invocation. Only the
+  // check-only branch may enable it after strict policy validation below;
+  // build/codegen lanes stay conservative, and a prior check in a long-lived
+  // instance cannot leak its policy into a later invocation.
+  set_experimental_typing_dependency_env_reuse_enabled(false)
   // #944 (ADR-0073 stage B): checked-Error row discipline is ON by
   // default -- `Exception::Throw` propagates to the caller's row like any
   // other effect, dischargeable via `handle .. with Exception`.
@@ -759,27 +782,17 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   } else ()
   if Env::get("VIBE_CHECK_ONLY") == "1" {
     return handle {
-      // The sidecar is opt-in so ordinary `vibe check` remains output- and
-      // work-compatible. The counters cover only the db_typecheck_fs walk
+      // TDRE4 is production-default only for the proven check/edit-cycle lane.
+      // This call also resets policy on every check-only invocation, including
+      // strict opt-out and observation-only trace runs.
+      configure_typing_dependency_env_reuse_policy()
+      // Telemetry remains opt-in even though TDRE4 reuse is now the default
+      // for this check-only lane. The counters cover only the db_typecheck_fs walk
       // inside check_linked_file; the second linked inline-wasm validation is
       // intentionally outside this incremental-cache telemetry boundary.
       let telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
       let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
       let invalidation_trace_nonce = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
-      let experimental_typing_dependency_env_reuse = Env::get("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE")
-      if experimental_typing_dependency_env_reuse != "" && experimental_typing_dependency_env_reuse != "1" {
-        throw("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE must be exactly 1 when enabled")
-      } else {
-        ()
-      }
-      // The invalidation trace is deliberately observation-only and has its
-      // own interface identity. Keep this experimental production reuse lane
-      // separate so no trace schema/value becomes a cache key by accident.
-      if experimental_typing_dependency_env_reuse == "1" && invalidation_trace_out != "" {
-        throw("VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE does not support VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
-      } else {
-        ()
-      }
       if telemetry_out != "" {
         // Never leave a previous successful run looking like telemetry for a
         // failed check. The sidecar is published only after check_linked_file.
@@ -818,7 +831,6 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // This has no cache behavior: it only makes the successful walk carry
       // a canonical public-interface observation into the requested sidecar.
       set_incremental_interface_trace_enabled(invalidation_trace_out != "")
-      set_experimental_typing_dependency_env_reuse_enabled(experimental_typing_dependency_env_reuse == "1")
       let _ = check_linked_file(input_path)
       if telemetry_out != "" {
         Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
