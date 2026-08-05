@@ -32,6 +32,7 @@ import @vibe/compiler/core {
   export_plan_renames_for,
   import_value_rename_locals,
   namespace_private_value_stmts,
+  resolution_env_seed,
   resolve_import_path,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep
@@ -56,7 +57,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/loader {
-  collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
+  artifact_input_trace_resolution_context_fingerprint_fs, collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
 
 import @vibe/compiler/checker {
@@ -65,6 +66,7 @@ import @vibe/compiler/checker {
 
 import @vibe/compiler/runtime {
   TypeDb,
+  artifact_input_trace_dependency_plan_evidence_fs,
   db_grouped_merged_source,
   db_load_artifact,
   db_module_source,
@@ -82,7 +84,9 @@ import @vibe/compiler/cache {
   build_file_compile_wasi_artifact_fingerprint_for_entry_path,
   build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path,
   build_source_groups_fingerprint,
+  compact_string_fingerprint,
   load_persistent_artifact,
+  persistent_cache_version_tag_for_observation,
   store_persistent_artifact
 }
 
@@ -795,25 +799,59 @@ fn artifact_input_trace_json_string(text: String) -> String {
   StringBuilder::freeze(out)
 }
 
+fn artifact_input_trace_push_length_prefixed(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+/// Composite observation identity. Its fixed-order, length-prefixed preimage
+/// is intentionally separate from every production cache/reuse identity.
+fn artifact_input_trace_shadow_fingerprint(production_fingerprint: String, source_groups_fingerprint: String, compiler_cache_version_tag: String, checked_error_row_mode: String, diagnostics_mode: String, dep_order_seed: String, dependency_plan_fingerprint: String, resolution_seed: String, resolution_context_fingerprint: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-artifact-input-observation:v2\n")
+  artifact_input_trace_push_length_prefixed(out, production_fingerprint)
+  artifact_input_trace_push_length_prefixed(out, source_groups_fingerprint)
+  artifact_input_trace_push_length_prefixed(out, compiler_cache_version_tag)
+  artifact_input_trace_push_length_prefixed(out, checked_error_row_mode)
+  artifact_input_trace_push_length_prefixed(out, diagnostics_mode)
+  artifact_input_trace_push_length_prefixed(out, dep_order_seed)
+  artifact_input_trace_push_length_prefixed(out, "wasi")
+  artifact_input_trace_push_length_prefixed(out, "bump")
+  artifact_input_trace_push_length_prefixed(out, "no-dce")
+  artifact_input_trace_push_length_prefixed(out, "pre-strip")
+  artifact_input_trace_push_length_prefixed(out, "uninstrumented")
+  artifact_input_trace_push_length_prefixed(out, dependency_plan_fingerprint)
+  artifact_input_trace_push_length_prefixed(out, resolution_seed)
+  artifact_input_trace_push_length_prefixed(out, resolution_context_fingerprint)
+  compact_string_fingerprint(StringBuilder::freeze(out))
+}
+
 /// Observation-only wrapper for the file_compile persistent pre-strip WASI
-/// bump lane. It receives metadata from the cached compile's own persistent
-/// lookup; it neither alters keys/formats nor chooses reuse.
-/// Callers must select this only for `mode == "no-dce"` and VIBE_RC=0.
-export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, entry_name: String, mode: String, run_nonce: String) -> (Bytes, String) with Error + Fs {
+/// bump lane. Production compilation/lookup happens first and is unchanged.
+/// The graph/context reads below are trace-only extra I/O and never select
+/// cache namespaces, lookup/store keys, or reuse decisions.
+export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, entry_name: String, mode: String, run_nonce: String, checked_error_row_mode: String, diagnostics_mode: String, dep_order_seed: String) -> (Bytes, String) with Error + Fs {
   if mode != "no-dce" {
     throw("artifact-input trace only supports file_compile WASI no-dce")
   } else if run_nonce == "" {
     throw("artifact-input trace requires a non-empty run nonce")
+  } else if (checked_error_row_mode != "checked" && checked_error_row_mode != "unchecked") || (diagnostics_mode != "all" && diagnostics_mode != "fail-fast") {
+    throw("artifact-input trace received invalid effective compile configuration")
   } else {
     let persistent_artifact_kind = "file-compile-wasi"
-    // This is the same unprofiled cached production path used by ordinary
-    // compilation. Its one lookup that returns bytes (or reaches compilation)
-    // supplies all observation fields, avoiding trace-only reads or lookups.
-    let (bytes, _, source_groups_fingerprint, artifact_input_fingerprint, persistent_lookup) = compile_file_fs_mode_cached_observed(db_new(), entry_path, entry_name, mode)
+    let (bytes, _, source_groups_fingerprint, production_artifact_input_fingerprint, persistent_lookup) = compile_file_fs_mode_cached_observed(db_new(), entry_path, entry_name, mode)
+    // Exact existing authorities, intentionally outside production work.
+    let source_groups = collect_source_groups_fs(entry_path)
+    let resolution_context_fingerprint = artifact_input_trace_resolution_context_fingerprint_fs(entry_path, source_groups)
+    let (dependency_plan_fingerprint, dependency_plan_module_count, dependency_plan_edge_occurrence_count) = artifact_input_trace_dependency_plan_evidence_fs(entry_path)
+    let resolution_seed = resolution_env_seed()
+    let compiler_cache_version_tag = persistent_cache_version_tag_for_observation()
+    let shadow_artifact_input_fingerprint = artifact_input_trace_shadow_fingerprint(production_artifact_input_fingerprint, source_groups_fingerprint, compiler_cache_version_tag, checked_error_row_mode, diagnostics_mode, dep_order_seed, dependency_plan_fingerprint, resolution_seed, resolution_context_fingerprint)
     let out = StringBuilder::new()
-    StringBuilder::push(out, "{\"schema\":1,\"run_nonce\":")
+    StringBuilder::push(out, "{\"schema\":2,\"run_nonce\":")
     StringBuilder::push(out, artifact_input_trace_json_string(run_nonce))
-    StringBuilder::push(out, ",\"scope_disclaimer\":\"observation-only file_compile persistent pre-strip WASI bump lane; not a production cache key, format, or reuse decision\",\"compile_lane\":\"file_compile.persistent_pre_strip_wasi_cached_bump\",\"persistent_artifact_kind\":")
+    StringBuilder::push(out, ",\"scope_disclaimer\":\"observation-only file_compile persistent pre-strip WASI bump lane; trace-only graph/context work; not a production cache key, format, or reuse decision\",\"compile_lane\":\"file_compile.persistent_pre_strip_wasi_cached_bump\",\"persistent_artifact_kind\":")
     StringBuilder::push(out, artifact_input_trace_json_string(persistent_artifact_kind))
     StringBuilder::push(out, ",\"entry\":{\"path\":")
     StringBuilder::push(out, artifact_input_trace_json_string(entry_path))
@@ -823,9 +861,29 @@ export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, e
     StringBuilder::push(out, artifact_input_trace_json_string(mode))
     StringBuilder::push(out, "},\"source_groups_fingerprint\":")
     StringBuilder::push(out, artifact_input_trace_json_string(source_groups_fingerprint))
-    StringBuilder::push(out, ",\"source_groups_fingerprint_kind\":\"build_source_groups_fingerprint(source_groups)\",\"artifact_input_fingerprint\":")
-    StringBuilder::push(out, artifact_input_trace_json_string(artifact_input_fingerprint))
-    StringBuilder::push(out, ",\"artifact_input_fingerprint_kind\":\"build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)\",\"persistent_lookup\":")
+    StringBuilder::push(out, ",\"source_groups_fingerprint_kind\":\"build_source_groups_fingerprint(source_groups)\",\"production_artifact_input_fingerprint\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(production_artifact_input_fingerprint))
+    StringBuilder::push(out, ",\"production_artifact_input_fingerprint_kind\":\"build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)\",\"compiler_cache_version_tag\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(compiler_cache_version_tag))
+    StringBuilder::push(out, ",\"compiler_cache_version_tag_kind\":\"persistent_cache_version_tag()\",\"effective_config\":{\"checked_error_row_mode\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(checked_error_row_mode))
+    StringBuilder::push(out, ",\"diagnostics_mode\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(diagnostics_mode))
+    StringBuilder::push(out, ",\"dep_order_seed\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(dep_order_seed))
+    StringBuilder::push(out, ",\"target\":\"wasi\",\"memory\":\"bump\",\"dce_mode\":\"no-dce\",\"strip_stage\":\"pre-strip\",\"instrumentation\":\"uninstrumented\"},\"dependency_plan\":{\"fingerprint\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(dependency_plan_fingerprint))
+    StringBuilder::push(out, ",\"fingerprint_kind\":\"compact_string_fingerprint(vibe-artifact-input-dependency-plan:v1 length-prefixed planned order/ranks/dependency occurrences)\",\"module_count\":")
+    StringBuilder::push(out, __to_string(dependency_plan_module_count))
+    StringBuilder::push(out, ",\"edge_occurrence_count\":")
+    StringBuilder::push(out, __to_string(dependency_plan_edge_occurrence_count))
+    StringBuilder::push(out, "},\"resolution\":{\"env_seed\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(resolution_seed))
+    StringBuilder::push(out, ",\"env_seed_kind\":\"resolution_env_seed()\",\"context_fingerprint\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(resolution_context_fingerprint))
+    StringBuilder::push(out, ",\"context_fingerprint_kind\":\"persistent_resolution_context_fingerprint_fs(entry_path, grouped_source_paths(source_groups))\"},\"shadow_artifact_input_fingerprint\":")
+    StringBuilder::push(out, artifact_input_trace_json_string(shadow_artifact_input_fingerprint))
+    StringBuilder::push(out, ",\"shadow_artifact_input_fingerprint_kind\":\"compact_string_fingerprint(vibe-artifact-input-observation:v2 fixed-order length-prefixed components)\",\"persistent_lookup\":")
     StringBuilder::push(out, artifact_input_trace_json_string(persistent_lookup))
     StringBuilder::push(out, "}")
     (bytes, StringBuilder::freeze(out))

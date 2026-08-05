@@ -2774,7 +2774,45 @@ fn module_plan_data_fs(entry_path: String) -> (Array[String], Array[Int], Array[
     k = k + 1
   }
   (order, ranks, ordered_deps, ordered_sources)
-} export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with Error + Fs {
+}
+
+fn artifact_input_trace_push_length_prefixed(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+/// Exact module-plan evidence for the artifact-input observation sidecar.
+/// This deliberately reruns module_plan_data_fs after the production compile:
+/// it preserves planned order/ranks and every declared dependency occurrence
+/// (including duplicates), but never feeds a cache or reuse decision.
+export fn artifact_input_trace_dependency_plan_evidence_fs(entry_path: String) -> (String, Int, Int) with Error + Fs {
+  let (order, ranks, ordered_deps, _) = module_plan_data_fs(entry_path)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-artifact-input-dependency-plan:v1\n")
+  artifact_input_trace_push_length_prefixed(out, __to_string(Array::length(order)))
+  let mut edge_occurrence_count = 0
+  let mut module_index = 0
+  while module_index < Array::length(order) {
+    // Fixed positional fields make this a canonical encoding of the actual
+    // planned graph, not the source-group collection order.
+    artifact_input_trace_push_length_prefixed(out, __to_string(module_index))
+    artifact_input_trace_push_length_prefixed(out, Array::get(order, module_index))
+    artifact_input_trace_push_length_prefixed(out, __to_string(Array::get(ranks, module_index)))
+    let deps = Array::get(ordered_deps, module_index)
+    artifact_input_trace_push_length_prefixed(out, __to_string(Array::length(deps)))
+    let mut dep_index = 0
+    while dep_index < Array::length(deps) {
+      artifact_input_trace_push_length_prefixed(out, Array::get(deps, dep_index))
+      edge_occurrence_count = edge_occurrence_count + 1
+      dep_index = dep_index + 1
+    }
+    module_index = module_index + 1
+  }
+  (compact_string_fingerprint(StringBuilder::freeze(out)), Array::length(order), edge_occurrence_count)
+}
+
+export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with Error + Fs {
   let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs(entry_path)
   let buf = StringBuilder::new()
   StringBuilder::push(buf, "version\t1\n")
