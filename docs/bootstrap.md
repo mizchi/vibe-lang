@@ -267,6 +267,43 @@ commit され続けるのは `bootstrap/seed/compiler.wasm` だけ (これも実
 13MB の1行 bundle が diff に出ないようにするためと、衝突したときに
 何千個もの conflict marker ではなく whole-file conflict にするため。
 
+### AST printer を変えたら regenerate は1回では収束しない (#1429 step 3)
+
+`_cli_adapter_module_source.vibe` は **1世代前の flatten 済みスナップショット**
+で、次の flatten の入力になる (`generate_bundle.sh` はこれを seed で
+コンパイルした一時バイナリで現在の source を読む)。flatten は宣言を
+`print_program` 経由で書き出すので、**`lib/@vibe/parser/printer.vibe` の出力を
+変えると、その変更はスナップショット連鎖を1 pass につき1世代しか進まない**。
+
+つまり `generate_bundle.sh` を1回走らせただけでは:
+
+- 新しい printer を含む source から作られた**スナップショット**は更新される
+- しかし同じ pass で作られた**bundle** はまだ*古い*スナップショット由来
+
+という食い違いが残り、`compiler_gate.sh` の 1-2/3 (bundle + module-source
+sync) が `drift detected; regenerate .../cli_adapter_bundle.vibe` で落ちる。
+build が rc=0 で通ることは「変更が焼き込まれた」証拠にならない。
+
+**動かなくなるまで繰り返すこと。** #1429 step 3 (printer の effect row を
+braceless 化) では **3 pass** で収束した:
+
+```bash
+for i in 1 2 3 4; do
+  before=$(md5sum lib/@vibe/compiler/*.vibe lib/@vibe/compiler/cache/codegen_fingerprint.vibe | md5sum)
+  VIBE_REGEN_MODULE_SOURCE=1 \
+    VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+    bash scripts/generate_bundle.sh
+  after=$(md5sum lib/@vibe/compiler/*.vibe lib/@vibe/compiler/cache/codegen_fingerprint.vibe | md5sum)
+  [ "$before" = "$after" ] && { echo "converged at pass $i"; break; }
+done
+```
+
+printer の**出力**しか変えていないなら bootstrap bump は不要 —
+必要になるのは seed が読めない**新しい syntax** を compiler source 自体が
+使い始めるときだけ。#1429 step 3 では seed
+(`effect-row-spellings-2026-08-04`) がすでに braceless row を parse できる
+ことを直接 probe して確認した上で、bump なしで通している。
+
 ### bootstrap bump の手順 (更新版)
 
 `seed-release.yml` は **tag push ではなく `workflow_dispatch`** で手動起動する

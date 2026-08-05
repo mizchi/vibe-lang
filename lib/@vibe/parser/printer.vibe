@@ -32,6 +32,32 @@ fn join(arr: Array[String], sep: String) -> String {
   }
 }
 
+/// #1429: render an effect row in the braceless `+`-separated spelling, with
+/// the leading space, ready to splice after a return type.
+///
+///   Some("Error, Fs")  ->  " with Error + Fs"
+///   Some("")           ->  " with ()"        the explicitly empty row
+///
+/// Rows are stored comma-joined (`"\{acc}, \{item}"` in parser_base.vibe's
+/// collect_effect_names / collect_effect_names_plus), and an item can never
+/// itself contain a comma -- collect_row_item_targs THROWS on one ("a generic
+/// effect row item takes exactly one type argument for now") -- so splitting
+/// on ", " recovers exactly the items with no bracket-depth tracking.
+///
+/// Every `with` emission in this file goes through here. Before #1429 the
+/// three sites each spelled `" with { " ++ e ++ " }"` inline, which is how
+/// they stayed on the braced form after the parser and the CST formatter had
+/// both moved: `vibe fmt` printed `with Error` while `vibe normalize` (this
+/// printer) printed `with { Error }`, so running both on one file flipped the
+/// spelling back and forth.
+fn print_effect_row(e: String) -> String {
+  if String::length(e) == 0 {
+    " with ()"
+  } else {
+    String::concat(" with ", join(String::split(e, ", "), " + "))
+  }
+}
+
 /// Render a parser generic binder in parameter declaration order. Bounds are
 /// keyed by parameter name in the AST; scan them in AST order so the printer is
 /// deterministic without making an unrelated semantic ordering decision.
@@ -276,7 +302,7 @@ export fn print_type_expr(ty: TypeExpr) -> String {
       }
       let base = String::concat("(", String::concat(join(parts, ", "), String::concat(") -> ", print_type_expr(ret))))
       match effect_name {
-        Some(name) => String::concat(base, String::concat(" with { ", String::concat(name, " }"))),
+        Some(name) => String::concat(base, print_effect_row(name)),
         None => base
       }
     },
@@ -463,7 +489,7 @@ export fn print_expr(e: Expr) -> String {
       let ret_str = match ret_ty {
         Some(rt) => {
           let eff_str = match effect {
-            Some(e) => String::concat(" with { ", String::concat(e, " }")),
+            Some(e) => print_effect_row(e),
             None => ""
           }
           String::concat(") -> ", String::concat(print_type_expr(rt), String::concat(eff_str, String::concat(" { ", String::concat(print_expr(body), " }")))))
@@ -548,7 +574,7 @@ export fn print_stmt(s: Stmt) -> String {
       String::concat(p, String::concat(r, String::concat(print_name(name), String::concat(t, String::concat(" = ", print_annotated_let_value(ty_opt, val))))))
     },
     // ADR-0064 (#727): a preserved `fn` declaration —
-    //   fn name[T](x: Int) -> R with { E } where { requires: c, ensures: c } { body }
+    //   fn name[T](x: Int) -> R with E where { requires: c, ensures: c } { body }
     // Only produced by the *_preserving parse entry points; the default
     // pipeline lowers SFnDecl to SLet before printing ever matters.
     SFnDecl(exported, name, fn_value, reqs, enss) => {
@@ -568,7 +594,7 @@ export fn print_stmt(s: Stmt) -> String {
             None => "()"
           }
           let eff_str = match effect {
-            Some(e) => String::concat(" with { ", String::concat(e, " }")),
+            Some(e) => print_effect_row(e),
             None => ""
           }
           let where_str = if Array::length(reqs) == 0 && Array::length(enss) == 0 {
