@@ -38,6 +38,7 @@ test "effect_class: host capabilities" {
   assert_eq(effect_class("Stdin"), "capability")
   assert_eq(effect_class("Stdout"), "capability")
   assert_eq(effect_class("Stderr"), "capability")
+  assert_eq(effect_class("Console"), "capability")
   assert_eq(effect_class("Process"), "capability")
   assert_eq(effect_class("Profiler"), "capability")
   assert_eq(effect_class("Http"), "capability")
@@ -88,14 +89,15 @@ test "class name accessors match effect_class output" {
 }
 
 test "test/bench ambient row is unchanged by the taxonomy refactor" {
-  // 吸収前の checker_effects.vibe のリテラル列そのもの。要素順込みで固定する
-  // — この slice は表面挙動不変が要件。
-  assert_eq(join_row(test_bench_ambient_effects()), "Fs,Env,Stdin,Stdout,Stderr,Process,Profiler,Error")
+  // 吸収前の checker_effects.vibe のリテラル列 + #1461 の `Exception`。
+  // 要素順込みで固定する。`Error` と `Exception` は同じ erased ラベルの
+  // 二つの綴りで、この列は名前で突き合わされるので両方載せる。
+  assert_eq(join_row(test_bench_ambient_effects()), "Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Error,Exception")
 }
 
 test "entry cache-safe row is unchanged by the taxonomy refactor" {
   // 吸収前の file_entry_cacheable の cache_safe_row そのもの。
-  assert_eq(join_row(entry_cache_safe_effects()), "Stdout,Error,Exception,Async")
+  assert_eq(join_row(entry_cache_safe_effects()), "Stdout,Console,Error,Exception,Async")
 }
 
 test "network and external-service capabilities are NOT test/bench ambient" {
@@ -108,16 +110,18 @@ test "network and external-service capabilities are NOT test/bench ambient" {
   assert(not(array_has_str(ambient, "Async")))
 }
 
-test "only Stdout is cache-safe among capabilities" {
+test "only the tty capability is cache-safe" {
   // #819 の doctest キャッシュにとって stdout は entry の産物。他の
   // capability が混ざると、byte-identical な wasm の出力が実行ごとに
   // 変わりうるのにキャッシュされてしまう。
+  // #1460: `Console` は `Stdout` を含む統合 capability なので同じ側。
+  // 「tty へ書く capability だけ」という不変条件は変わっていない。
   let safe = entry_cache_safe_effects()
   let mut i = 0
   while i < Array::length(safe) {
     let name = Array::get(safe, i)
     if is_capability_effect(name) {
-      assert_eq(name, "Stdout")
+      assert(name == "Stdout" || name == "Console")
     } else {
       assert(is_core_ambient_effect(name))
     }

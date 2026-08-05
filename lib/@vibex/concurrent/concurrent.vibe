@@ -15,7 +15,7 @@
 //   implemented — deferred spawn, FIFO deterministic dispatch, join
 //     idempotence on stable terminal outcomes, cancel-before-dispatch,
 //     cancel idempotence, fail-fast sibling cancel + first-observed
-//     failure as the task group result, child Error::Throw -> Failed
+//     failure as the task group result, child Exception::Throw -> Failed
 //     conversion, recoverable child failure as a Result *value*, bounded
 //     MPMC channel (capacity 0 = rendezvous, NegativeCapacity), per-sender
 //     FIFO, close on last Sender release, group-close closes endpoints,
@@ -72,7 +72,7 @@
 // Sender::send_wait / Receiver::recv_wait (bottom of this file) suspend
 // instead of stack-driving, so the producer-overflows-capacity shape the
 // header above calls out now works with plain spawn_suspend closures.
-// Fail-fast is integrated with the suspendable lane too: an Error::Throw
+// Fail-fast is integrated with the suspendable lane too: an Exception::Throw
 // escaping a spawn_suspend body (settle leg OR a resumed leg on the
 // pump's stack) converts to Failed and auto-cancels parked siblings
 // (conc_fail_cell).
@@ -180,7 +180,7 @@ export struct TaskHandle[rg, e, T] {
 // #1392 slice 3: `derive(Show)` so a throw of one of these carries a rendered
 // message through the exception side channel. The renderer is chosen at the
 // THROW site (where the payload's static type is known); an erased
-// `with Error { Throw(m) => .. }` arm -- which is what the task runner below
+// `with Exception { Throw(m) => .. }` arm -- which is what the task runner below
 // is -- binds `m` at `CtUnknown` and can never resolve one itself.
 export enum TaskError {
   Failed(String);
@@ -382,7 +382,7 @@ fn conc_clear_direct_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
   any
 }
 
-/// #1374: render the payload of an exception caught by an ERASED `with Error`
+/// #1374: render the payload of an exception caught by an ERASED `with Exception`
 /// arm, given the kind `__exn_kind()` reports for the throw now unwinding.
 ///
 /// ADR-0085's runtime carries ONE abortive tag with no kind, and the erased
@@ -635,7 +635,7 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T wi
 
 /// Deferred spawn: the child is queued Ready and does NOT run here (the
 /// eager builtin prototype is out of contract). The thunk may throw —
-/// an Error::Throw reaching the child boundary becomes Failed(msg) and
+/// an Exception::Throw reaching the child boundary becomes Failed(msg) and
 /// triggers fail-fast. Spawning into a task group that is no longer Open
 /// (closing/closed, or cancelling after a sibling failure) traps.
 ///
@@ -647,7 +647,7 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T wi
 /// (see its field comment) rather than fixed, so a nursery that spawns
 /// nothing beyond `{ Error }` still requires no extra capability from its
 /// caller.
-export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Error + e) -> TaskHandle[rg, e, T] {
+export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Exception + e) -> TaskHandle[rg, e, T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{
     value: None
@@ -661,7 +661,7 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
       rc.value = Some(v)
       cell.status = 2
       conc_notify_waiters(cell)
-    } with Error {
+    } with Exception {
       Throw(payload) => {
         // #1372 review (Codex P1) / #1374: `payload` is not necessarily a
         // String -- see conc_exn_message.
@@ -896,7 +896,7 @@ export struct Parallel {
   tag: Int
 }
 
-export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with Error + e) -> Array[U] with Exception[TaskError] + e {
+export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with Exception + e) -> Array[U] with Exception[TaskError] + e {
   let len = Array::length(xs)
   let hb = ArrayBuilder::new()
   let mut i = 0
@@ -907,7 +907,7 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
     // attributed to Parallel::map's own perform set (map's own row comes
     // from driving the scheduler, not from performing these itself — see
     // TaskGroup::spawn's #1181 comment).
-    let thunk: () -> U with Error + e = () -> {
+    let thunk: () -> U with Exception + e = () -> {
       f(x)
     }
     let t = TaskGroup::spawn(n, thunk)
@@ -1027,7 +1027,7 @@ effect Async {
 /// (the literal is CPS-split for Async) and this body bubbles the steps
 /// it returns, so `f()` below is a needing call through a closure value —
 /// the exact shape 3c could not express lexically.
-export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Async + Error) -> TaskHandle[rg, e, T] {
+export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Async + Exception) -> TaskHandle[rg, e, T] {
   let h = TaskGroup::adopt(n)
   // Running-task tracking (direct-wake waiter registration, ADR-0089
   // #1218): the initial leg runs on this stack — blocking helpers called
@@ -1059,7 +1059,7 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
         SParked
       }
     }
-  } with Error {
+  } with Exception {
     Throw(msg) => {
       // Error escaping the first (settle) leg: Failed conversion +
       // fail-fast, exactly like spawn's runner. The Async handle is
@@ -1153,7 +1153,7 @@ export fn TaskHandle::park_kind[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> T
     // handler — without this it would unwind straight out of pump_all.
     let step = handle {
       k(rv)
-    } with Error {
+    } with Exception {
       Throw(msg) => {
         // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
         conc_fail_cell(grp, cell, conc_exn_message("\{msg}", __exn_kind()))
@@ -1503,7 +1503,7 @@ fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
 ///    FIXED in #1371, pinned by suspend_test.vibe's "CPS-split callee
 ///    results" section.
 /// 2. These carry ENUM payloads (`Closed`, `Cancelled`) and the erased
-///    `with Error` handler in the task runner funnels them through
+///    `with Exception` handler in the task runner funnels them through
 ///    `fail_msg: String`. #1374 stopped that from reading as a raw pointer
 ///    but recorded only the payload's TYPE, so `Closed` arrived as
 ///    `<SendError>` and the VARIANT -- the thing a caller switches on --

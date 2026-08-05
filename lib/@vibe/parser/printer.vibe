@@ -35,7 +35,7 @@ fn join(arr: Array[String], sep: String) -> String {
 /// #1429: render an effect row in the braceless `+`-separated spelling, with
 /// the leading space, ready to splice after a return type.
 ///
-///   Some("Error, Fs")  ->  " with Error + Fs"
+///   Some("Error, Fs")  ->  " with Exception + Fs"
 ///   Some("")           ->  " with ()"        the explicitly empty row
 ///
 /// Rows are stored comma-joined (`"\{acc}, \{item}"` in parser_base.vibe's
@@ -47,7 +47,7 @@ fn join(arr: Array[String], sep: String) -> String {
 /// Every `with` emission in this file goes through here. Before #1429 the
 /// three sites each spelled `" with { " ++ e ++ " }"` inline, which is how
 /// they stayed on the braced form after the parser and the CST formatter had
-/// both moved: `vibe fmt` printed `with Error` while `vibe normalize` (this
+/// both moved: `vibe fmt` printed `with Exception` while `vibe normalize` (this
 /// printer) printed `with { Error }`, so running both on one file flipped the
 /// spelling back and forth.
 fn print_effect_row(e: String) -> String {
@@ -232,9 +232,14 @@ fn infer_handle_effect_name_from_pat(pat: Pat) -> Option[String] {
   }
 }
 
+/// The effect a `handle` block names, recovered from its arm patterns. The
+/// fallback is the erased exception effect: an arm spelled `Throw(m) => ..`
+/// carries no effect name, and that shape only ever means the abortive
+/// exception handler. #1461 moved the fallback spelling from `Error` to the
+/// canonical `Exception`.
 fn infer_handle_effect_name(arms: Array[(Pat, Expr)]) -> String {
   let mut i = 0
-  let mut effect_name = "Error"
+  let mut effect_name = "Exception"
   let mut found = false
   while i < Array::length(arms) && !found {
     let (pat, _) = Array::get(arms, i)
@@ -444,15 +449,25 @@ export fn print_expr(e: Expr) -> String {
     ECall(callee, args, _) => match callee {
       EIdent("perform", _) => if Array::length(args) == 1 {
         // #640 Stage 2: re-sugar the parser's `throw(x)` desugar (`perform
-        // Error::Throw(x)` shape) back to `throw(x)`. This keeps print
+        // Exception::Throw(x)` shape) back to `throw(x)`. This keeps print
         // round-trips stable for the ubiquitous `throw(` spelling and keeps
         // the regenerated flat module source seed-compatible (the committed
         // seed predates the Stage-1 tag-2 routing of the perform spelling).
-        // The explicit no-call `perform Error::Throw` (EIdent op) keeps its
-        // perform rendering below.
+        // The explicit no-call `perform Exception::Throw` (EIdent op) keeps
+        // its perform rendering below.
+        //
+        // #1461: BOTH spellings re-sugar. The desugar now synthesizes the
+        // canonical `Exception::Throw`, but a source file that spells the
+        // perform out by hand as `Error::Throw` must still print back as
+        // `throw(x)` -- and, load-bearing right now, so must an AST coming
+        // from the committed seed, which predates the flip. This is the one
+        // exact-string comparison on the label; it cannot call
+        // is_exception_throw_operation because @vibe/parser must not depend
+        // on the compiler package (same reason parser_base.vibe spells out
+        // is_core_ambient_effect_name).
         let resugar = match Array::get(args, 0) {
           ECall(op_callee, op_args, _) => match op_callee {
-            EIdent(op_name, _) => if op_name == "Error::Throw" && Array::length(op_args) == 1 {
+            EIdent(op_name, _) => if (op_name == "Exception::Throw" || op_name == "Error::Throw") && Array::length(op_args) == 1 {
               Some(Array::get(op_args, 0))
             } else {
               None

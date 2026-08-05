@@ -5,10 +5,15 @@
 //
 // The label grammar this module recognizes:
 //
-//   Error                      erased alias (any kind)      -- legacy spelling
-//   Exception                  erased alias (any kind)      -- #1279 bridge
+//   Exception                  erased (any kind)            -- CANONICAL
+//   Error                      erased (any kind)            -- accepted alias
 //   Exception[IoError]         KINDED (#1344, ADR-0085 Phase 3)
 //   <any of the above>::Throw  the operation label of that effect
+//
+// #1461 flipped the canonical erased spelling from `Error` to `Exception`.
+// `Error` is still accepted on input everywhere it was, but nothing the
+// checker stores or prints uses it any more. Removing it from the grammar
+// entirely is the last step of that migration and needs a seed bump first.
 //
 // The KIND is the static type of the thrown payload. Two kinded labels with
 // different kinds are different row elements: `Exception[IoError]` neither
@@ -17,7 +22,7 @@
 // **`Error` is the ERASED exception row, not `Exception[String]`.** ADR-0085's
 // migration section calls `Error` a compatibility alias *of* `Exception[String]`;
 // that reading cannot hold while #786 (`throw(KeyInvalid("x"))` under a plain
-// `with Error`) is live, because a String-kinded row would reject every
+// `with Exception`) is live, because a String-kinded row would reject every
 // suberror throw in the existing codebase. So the implementation reads the
 // alias as kind-erased -- strictly WEAKER than any kinded label, compatible
 // with all of them. See docs/exception-effect.md ("`Error` の意味").
@@ -46,12 +51,17 @@ export fn is_exception_effect_name(name: String) -> Bool {
 }
 
 /// Canonical checker/codegen row label. The two ERASED spellings collapse to
-/// `Error` (the pinned label every existing row and diagnostic uses); a KINDED
-/// label is already canonical and must survive verbatim -- collapsing it would
-/// erase exactly the information the row check exists to compare.
+/// `Exception` (#1461: the one spelling the language keeps -- it is also the
+/// stem of the KINDED form, so `Exception` / `Exception[IoError]` read as one
+/// family where `Error` / `Exception[IoError]` did not); a KINDED label is
+/// already canonical and must survive verbatim -- collapsing it would erase
+/// exactly the information the row check exists to compare.
+///
+/// `Error` stays ACCEPTED as an input spelling (is_exception_effect_name), it
+/// is simply no longer what the checker stores or any diagnostic prints.
 export fn canonical_exception_effect_name(name: String) -> String {
   if name == "Error" || name == "Exception" {
-    "Error"
+    "Exception"
   } else {
     name
   }
@@ -64,7 +74,7 @@ export fn is_exception_operation_name(name: String) -> Bool {
 }
 
 /// True for an operation name that lowers to the shared abortive exception tag.
-/// Kind-insensitive on purpose: `Exception[IoError]::Throw` and `Error::Throw`
+/// Kind-insensitive on purpose: `Exception[IoError]::Throw` and `Exception::Throw`
 /// are the same runtime transfer, so every codegen/analysis caller of this
 /// predicate keeps treating them as one operation.
 export fn is_exception_throw_operation(name: String) -> Bool {
@@ -79,7 +89,7 @@ export fn is_exception_throw_handler_name(name: String) -> Bool {
 }
 
 /// True for a row label naming the exception effect, in either the bare-effect
-/// (`Error`, `Exception[E]`) or the qualified-operation (`Error::Throw`) form.
+/// (`Error`, `Exception[E]`) or the qualified-operation (`Exception::Throw`) form.
 export fn is_exception_label(label: String) -> Bool {
   is_exception_effect_name(label) || is_exception_operation_name(label)
 }
@@ -100,7 +110,7 @@ export fn exception_label_kind(label: String) -> String {
 /// `required_kind`? "" (erased) is compatible with everything in BOTH
 /// directions:
 ///
-/// - declared erased: `with Error` keeps authorizing every throw, which is
+/// - declared erased: `with Exception` keeps authorizing every throw, which is
 ///   what makes this whole change purely additive for existing code.
 /// - required erased: the throw site could not resolve its payload's static
 ///   type (see throw_payload_kind, checker_effects.vibe), so demanding an exact
@@ -124,9 +134,10 @@ export fn exception_effect_labels_equal(left: String, right: String) -> Bool {
 
 /// The row label a `throw` of payload kind `kind` requires.
 ///
-/// An empty (unresolved) kind keeps the erased `Error::Throw` spelling, so the
-/// pinned diagnostic text for the pervasive un-annotated throw sites is
-/// unchanged. A resolved kind produces the BARE effect label `Exception[K]`
+/// An empty (unresolved) kind produces the erased `Exception::Throw` spelling
+/// (#1461 -- `Exception::Throw` before the canonical flip), which is what the
+/// pervasive un-annotated throw sites report. A resolved kind produces the
+/// BARE effect label `Exception[K]`
 /// rather than an operation label: ADR-0071's operation granularity exists so
 /// a fix-it grants one operation instead of a whole effect, and `Exception[E]`
 /// declares exactly one operation, so there is nothing to narrow. It also has
@@ -136,7 +147,7 @@ export fn exception_effect_labels_equal(left: String, right: String) -> Bool {
 /// label that does not parse.
 export fn exception_throw_label_for_kind(kind: String) -> String {
   if String::length(kind) == 0 {
-    "Error::Throw"
+    "Exception::Throw"
   } else {
     String::concat("Exception[", String::concat(kind, "]"))
   }

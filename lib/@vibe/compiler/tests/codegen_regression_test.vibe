@@ -45,13 +45,13 @@ test "wasi: let-rec with let binding in body" {
 }
 
 test "wasi: lex_string pattern (simplified)" {
-  let source = "let lex_str: (String, Int, Int) -> (String, Int) with Error = (s, len, start) -> {\n  let rec scan: (Int, Int, String) -> (String, Int) with Error = (idx, start, acc) -> {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = String::char_code_at(s, idx)\n    if c == 34 {\n      let chunk = s[start:idx];\n      (String::concat(acc, chunk), idx + 1)\n    } else if c == 92 {\n      let chunk = s[start:idx]\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = String::char_code_at(s, next)\n      let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid escape\")\n      scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(start + 1, start + 1, \"\")\n}\nlet main: () -> Int = () -> {\n  let (result, _) = lex_str(\"\\\"hi\\\"\", 4, 0);\n  String::length(result)\n}"
+  let source = "let lex_str: (String, Int, Int) -> (String, Int) with Exception = (s, len, start) -> {\n  let rec scan: (Int, Int, String) -> (String, Int) with Exception = (idx, start, acc) -> {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = String::char_code_at(s, idx)\n    if c == 34 {\n      let chunk = s[start:idx];\n      (String::concat(acc, chunk), idx + 1)\n    } else if c == 92 {\n      let chunk = s[start:idx]\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = String::char_code_at(s, next)\n      let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid escape\")\n      scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(start + 1, start + 1, \"\")\n}\nlet main: () -> Int = () -> {\n  let (result, _) = lex_str(\"\\\"hi\\\"\", 4, 0);\n  String::length(result)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: let with else-throw" {
-  let source = "let f: (Int) -> Int with Error = (x) -> {\n  let chunk = 10\n  let escaped = if x == 1 { 20 } else throw(\"err\")\n  chunk + escaped\n}\nlet main: () -> Int = () -> {\n  f(1)\n}"
+  let source = "let f: (Int) -> Int with Exception = (x) -> {\n  let chunk = 10\n  let escaped = if x == 1 { 20 } else throw(\"err\")\n  chunk + escaped\n}\nlet main: () -> Int = () -> {\n  f(1)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -75,13 +75,13 @@ test "wasi: closure let-in-else-if with recursive call" {
 }
 
 test "wasi: closure let-escaped-if-throw then recursive" {
-  let source = "let f: (String, Int) -> Int = (s, len) -> {\n  let rec scan: (Int, Int) -> Int with Error = (idx, acc) -> {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { 30 } else throw(\"invalid\")\n        scan(next, acc + chunk + escaped)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main: () -> Int = () -> {\n  f(\"bn\", 2)\n}"
+  let source = "let f: (String, Int) -> Int = (s, len) -> {\n  let rec scan: (Int, Int) -> Int with Exception = (idx, acc) -> {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 97 {\n        let chunk = 10\n        chunk + acc\n      } else if c == 98 {\n        let chunk = 20\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { 30 } else throw(\"invalid\")\n        scan(next, acc + chunk + escaped)\n      } else scan(idx + 1, acc)\n    }\n  }\n  scan(0, 0)\n}\nlet main: () -> Int = () -> {\n  f(\"bn\", 2)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: closure with String::concat in recursive call" {
-  let source = "let f: (String, Int) -> String with Error = (s, len) -> {\n  let rec scan: (Int, Int, String) -> String with Error = (idx, start, acc) -> {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 97 {\n        let chunk = s[start:idx]\n        String::concat(acc, chunk)\n      } else if c == 98 {\n        let chunk = s[start:idx]\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { \"N\" } else throw(\"invalid\")\n        scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main: () -> Int = () -> {\n  String::length(f(\"bna\", 3))\n}"
+  let source = "let f: (String, Int) -> String with Exception = (s, len) -> {\n  let rec scan: (Int, Int, String) -> String with Exception = (idx, start, acc) -> {\n    if idx >= len { acc }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 97 {\n        let chunk = s[start:idx]\n        String::concat(acc, chunk)\n      } else if c == 98 {\n        let chunk = s[start:idx]\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { \"N\" } else throw(\"invalid\")\n        scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main: () -> Int = () -> {\n  String::length(f(\"bna\", 3))\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
@@ -165,13 +165,13 @@ test "wasi: closure let-then-tuple-return" {
 }
 
 test "wasi: closure with tuple return only" {
-  let source = "let f: (String, Int) -> (String, Int) with Error = (s, len) -> {\n  let rec scan: (Int, Int, String) -> (String, Int) with Error = (idx, start, acc) -> {\n    if idx >= len { throw(\"unterminated\") }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 34 {\n        let chunk = s[start:idx];\n        (String::concat(acc, chunk), idx + 1)\n      } else if c == 98 {\n        let chunk = s[start:idx]\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid\")\n        scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main: () -> Int = () -> {\n  let (result, _) = f(\"\\\"hi\\\"\", 4, 0);\n  String::length(result)\n}"
+  let source = "let f: (String, Int) -> (String, Int) with Exception = (s, len) -> {\n  let rec scan: (Int, Int, String) -> (String, Int) with Exception = (idx, start, acc) -> {\n    if idx >= len { throw(\"unterminated\") }\n    else {\n      let c = String::char_code_at(s, idx)\n      if c == 34 {\n        let chunk = s[start:idx];\n        (String::concat(acc, chunk), idx + 1)\n      } else if c == 98 {\n        let chunk = s[start:idx]\n        let next = idx + 1\n        let esc = String::char_code_at(s, next)\n        let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid\")\n        scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n      } else scan(idx + 1, start, acc)\n    }\n  }\n  scan(0, 0, \"\")\n}\nlet main: () -> Int = () -> {\n  let (result, _) = f(\"\\\"hi\\\"\", 4, 0);\n  String::length(result)\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }
 
 test "wasi: closure with guard-throw no else" {
-  let source = "let f: (String, Int) -> String with Error = (s, len) -> {\n  let rec scan: (Int, Int, String) -> String with Error = (idx, start, acc) -> {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = String::char_code_at(s, idx)\n    if c == 97 {\n      let chunk = s[start:idx]\n      String::concat(acc, chunk)\n    } else if c == 98 {\n      let chunk = s[start:idx]\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = String::char_code_at(s, next)\n      let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid\")\n      scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(0, 0, \"\")\n}\nlet main: () -> Int = () -> {\n  String::length(f(\"\\\"hi\\\"\", 4, 0))\n}"
+  let source = "let f: (String, Int) -> String with Exception = (s, len) -> {\n  let rec scan: (Int, Int, String) -> String with Exception = (idx, start, acc) -> {\n    if idx >= len {\n      throw(\"unterminated\")\n    }\n    let c = String::char_code_at(s, idx)\n    if c == 97 {\n      let chunk = s[start:idx]\n      String::concat(acc, chunk)\n    } else if c == 98 {\n      let chunk = s[start:idx]\n      let next = idx + 1\n      if next >= len {\n        throw(\"unterminated escape\")\n      }\n      let esc = String::char_code_at(s, next)\n      let escaped = if esc == 110 { String::from_char_code(10) } else throw(\"invalid\")\n      scan(next + 1, next + 1, String::concat(String::concat(acc, chunk), escaped))\n    } else scan(idx + 1, start, acc)\n  }\n  scan(0, 0, \"\")\n}\nlet main: () -> Int = () -> {\n  String::length(f(\"\\\"hi\\\"\", 4, 0))\n}"
   let bytes = compile_wasi(source, "main")
   assert_wasm(bytes)
 }

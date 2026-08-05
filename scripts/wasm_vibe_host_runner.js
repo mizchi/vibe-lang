@@ -2521,6 +2521,41 @@ async function main() {
       return 0n;
     },
   };
+  // #1460 Phase 1: `Console` is the merged tty capability that replaces
+  // Stdin/Stdout/Stderr.
+  //
+  // This module serves the PERFORM lowering only (`perform Console::WriteStream`),
+  // which does name its import module after the effect. The linear backend --
+  // the default one, and the path `vibe build --release` takes -- imports
+  // `vibe.stdout_write_stream` instead: module "vibe", field derived from the
+  // operation, effect label absent. So merging the three effects is not an ABI
+  // change for it, and `Console::*` reuses the existing imports (see the note
+  // in linked_compile.vibe). The legacy Stdin/Stdout modules below stay for
+  // wasm the committed seed produced.
+  const consoleModule = {
+    ReadStream(maxBytesTagged) {
+      return stdinModule.ReadStream(maxBytesTagged);
+    },
+    ReadChar() {
+      return stdinModule.ReadChar();
+    },
+    WriteStream(strTagged) {
+      return stdoutModule.WriteStream(strTagged);
+    },
+    WriteChar(codeTagged) {
+      return stdoutModule.WriteChar(codeTagged);
+    },
+    WriteErrStream(strTagged) {
+      const str = decodeStringArg(instanceRef, strTagged);
+      process.stderr.write(str);
+      return 0n;
+    },
+    WriteErrChar(codeTagged) {
+      const code = decodeHostInt(codeTagged);
+      process.stderr.write(String.fromCharCode(code));
+      return 0n;
+    },
+  };
   const profilerModule = {
     NowUs(_envTagged) {
       return encodeHostInt(profileNowUs());
@@ -2538,6 +2573,7 @@ async function main() {
       Profiler: profilerModule,
       Stdin: stdinModule,
       Stdout: stdoutModule,
+      Console: consoleModule,
       wasi_snapshot_preview1: wasiModule,
       "wasi:cli/stdout@0.2.0": preview2CliStreamsHost["wasi:cli/stdout@0.2.0"],
       "wasi:cli/stderr@0.2.0": preview2CliStreamsHost["wasi:cli/stderr@0.2.0"],

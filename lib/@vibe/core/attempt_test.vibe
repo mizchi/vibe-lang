@@ -1,0 +1,48 @@
+//# Imports
+
+import ./attempt.vibe {
+  Attempt, Attempt::is_granted, Attempt::is_not_granted, Attempt::to_option, Attempt::unwrap_or
+}
+
+//# Tests
+
+test "Attempt: unwrap_or falls back for both non-success arms" {
+  let g: Attempt[Int, String] = Granted(7)
+  assert_eq(Attempt::unwrap_or(g, 0), 7)
+  let e: Attempt[Int, String] = Errored("boom")
+  assert_eq(Attempt::unwrap_or(e, 0), 0)
+  let n: Attempt[Int, String] = NotGranted
+  assert_eq(Attempt::unwrap_or(n, 0), 0)
+}
+
+test "Attempt: `Errored` is not success and not `NotGranted`" {
+  // The three-arm shape only earns its keep if callers can tell "no
+  // authority" from "had authority, operation failed" -- a program that
+  // wants to print "re-run with --allow-fs" must not do so on a read error.
+  let e: Attempt[Int, String] = Errored("io")
+  assert(!Attempt::is_granted(e))
+  assert(!Attempt::is_not_granted(e))
+  let n: Attempt[Int, String] = NotGranted
+  assert(!Attempt::is_granted(n))
+  assert(Attempt::is_not_granted(n))
+  let g: Attempt[Int, String] = Granted(1)
+  assert(Attempt::is_granted(g))
+  assert(!Attempt::is_not_granted(g))
+}
+
+test "Attempt: to_option collapses both failure arms" {
+  match Attempt::to_option(Granted(3)) {
+    Some(v) => assert_eq(v, 3),
+    None => assert(false)
+  }
+  let e: Attempt[Int, String] = Errored("x")
+  match Attempt::to_option(e) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  let n: Attempt[Int, String] = NotGranted
+  match Attempt::to_option(n) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
