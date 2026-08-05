@@ -22,16 +22,19 @@ bash scripts/check_builtin_parity.sh
 # Static check, so it runs here with the other pre-build checks.
 bash scripts/check_inline_builtin_capture.sh
 
-echo "[compiler-gate] 1-2/3 bundle + module-source sync (via seed, combined)"
-# One generate_bundle.sh pass checks both the three bundles and the flat
-# module source (VIBE_CHECK_BUNDLES_TOO=1) — the previous separate
-# check_bundle_sync.sh step re-ran the same ~25s generation a second time.
-VIBE_CHECK_BUNDLES_TOO=1 bash scripts/check_module_source_sync.sh
+echo "[compiler-gate] 1-2/3 generated compiler artifacts"
+# This used to be a SYNC CHECK: regenerate the five artifacts into a temp dir
+# and assert the committed copies matched byte for byte. The artifacts are no
+# longer committed (see scripts/ensure_generated.sh), so the same generation
+# now simply produces them -- identical work, minus a failure mode that could
+# only ever mean "someone forgot to run the regen".
+#
+# Warm (fingerprint unchanged since the last run) this is ~1s.
+bash scripts/ensure_generated.sh
 
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
-# The sync check above just proved the committed flat module source is
-# byte-identical to what generate_bundle.sh would regenerate, so feed it to
-# the selfbuild directly instead of paying a third ~25s regeneration.
+# ensure_generated just wrote the flat module source from the current tree, so
+# feed it to the selfbuild directly rather than paying a second generation.
 VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
   bash scripts/generations.sh build --stage3
 
@@ -8832,7 +8835,11 @@ echo "[compiler-gate] 86/86 string interpolation renders derive(Show) structural
 # shapes (slice 2) whenever it can resolve the argument. The fixture returns
 # one DIGIT per case, 1 = ok, so a partial regression names itself by which
 # digit went to zero -- see the fixture header for the mapping. This exact
-# program returned 1 before #1392 and 11111 with slice 1 alone.
+# program returned 1 before #1392 and 11111 with slice 1 alone. The top two
+# digits are the spelled-out `to_string(v)`: prelude defines it as an
+# unconditional `__to_string(x)`, so it kept printing the pointer decimal after
+# interpolation was already fixed. They live in this fixture so a change that
+# fixes one spelling and breaks the other cannot pass.
 showdir="_build/_gate_interp_show"
 rm -rf "$showdir"; mkdir -p "$showdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/interp_show_derive.vibe > "$showdir/show.vibe"
@@ -8845,8 +8852,8 @@ if [ ! -s "$showdir/show.wasm" ]; then
   exit 1
 fi
 show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>/dev/null | tail -1)"
-if [ "$show_out" != "11111111111111" ]; then
-  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11111111111111) (#1392)" >&2
+if [ "$show_out" != "11111111111111111" ]; then
+  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11111111111111111) (#1392)" >&2
   exit 1
 fi
 rm -rf "$showdir"

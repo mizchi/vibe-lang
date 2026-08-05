@@ -258,28 +258,26 @@ pkf run test-local -- --profile scheduled
 pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + operation gates
 ```
 
-## 生成物のマージコンフリクト
+## 生成物 (ビルド時生成、非 tracked)
 
 `lib/@vibe/compiler/` の5つの生成物 (`compiler_sources_bundle.vibe`,
 `cli_adapter_bundle.vibe`, `selfbuild_runtime_entry_bundle.vibe`,
 `_cli_adapter_module_source.vibe`, `cache/codegen_fingerprint.vibe`) は
-compiler source の決定的な関数なので、compiler source に触る PR 同士は
-**必ず** この5ファイル全部で衝突する。どちらの側も正しくない —
-merge 後の source から regenerate したものだけが正しい。
+**git 管理下から外れた**。(pinned seed, compiler source) の決定的な関数なので、
+必要なときに `scripts/ensure_generated.sh` が作る。
 
 ```bash
-bash scripts/resolve_generated_conflicts.sh   # 生成物だけ捨てて regenerate + stage
-git rebase --continue                          # または git commit
+bash scripts/ensure_generated.sh          # fingerprint が動いていれば再生成、でなければ ~1s の no-op
+bash scripts/ensure_generated.sh --check  # 生成せずに鮮度だけ判定 (stale なら exit 1)
 ```
 
-手書きファイルの衝突が残っている間はスクリプトは何もせず失敗する。
+`pkf run test` / `release-check` / CI shard / SessionStart hook から自動で
+呼ばれるので、通常は意識しなくてよい。
 
-**commit が複数ある rebase では衝突が commit ごとに起きるので、最初の衝突で
-regenerate しても最終 tree は直らない**。rebase 完了後に tip を regenerate:
-
-```bash
-bash scripts/resolve_generated_conflicts.sh --regen   # 衝突不要。tree から regenerate
-```
+以前はこの5つが tracked だったため、compiler source に触る PR 同士が**必ず**
+全部で衝突し、しかもどちらの側も正しくない (merge 後の source から regenerate
+したものだけが正しい) という状態だった。`resolve_generated_conflicts.sh` は
+その後始末専用のスクリプトで、tracking をやめたので一緒に削除した。
 
 詳細は [docs/bootstrap.md](docs/bootstrap.md).
 

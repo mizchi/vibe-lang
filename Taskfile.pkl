@@ -193,19 +193,17 @@ local lintTrackedExperimentNames =
   scriptTask("lint-tracked-experiment-names", "scripts/lint_tracked_experiment_names.sh")
 local testLintTrackedExperimentNames =
   scriptTask("test-lint-tracked-experiment-names", "scripts/lint_tracked_experiment_names_test.sh")
-local checkSelfhostBundleSync = scriptTask("check-bundle-sync", "scripts/check_bundle_sync.sh")
-local checkSelfhostModuleSourceSync =
-  scriptTask("check-module-source-sync", "scripts/check_module_source_sync.sh")
+// The bundles and the flat module source are no longer committed, so there is
+// nothing to check them AGAINST -- `ensure-generated` produces them instead.
+// (Was: check-bundle-sync + check-module-source-sync, which regenerated the
+// same artifacts purely to diff them against the tracked copies.)
 local checkSelfhostPortableBoundary =
   scriptTask("check-portable-boundary", "scripts/check_portable_boundary.sh")
 local checkVibeFmt = scriptTask("check-vibe-fmt", "scripts/check_vibe_fmt.sh")
 local checkMethodStyleNaming =
   scriptTask("check-method-naming", "scripts/lint_method_style_naming.sh")
-local testSelfhostBundleSync = scriptTask("test-bundle-sync", "scripts/check_bundle_sync_test.sh")
 local testGenerateSelfhostBundle =
   scriptTask("test-generate-bundle", "scripts/generate_bundle_test.sh")
-local testResolveGeneratedConflicts =
-  scriptTask("test-resolve-generated-conflicts", "scripts/resolve_generated_conflicts_test.sh")
 
 // Uncached: it typechecks against whatever stage2 was last built, so a cache
 // hit keyed on sources alone would let a stale pass stand in for a real one.
@@ -410,6 +408,19 @@ local ensureSeed = new Task {
   acceptsArgs = true
   cache = false
   inputs { "scripts/ensure_seed.sh"; "scripts/fetch_compiler.sh"; "bootstrap/seed.json" }
+}
+
+local ensureGenerated = new Task {
+  name = "ensure-generated"
+  description =
+    "regenerate the five generated compiler artifacts if the (seed, source) fingerprint moved (no-op otherwise)"
+  cmd = "bash scripts/ensure_generated.sh $@"
+  acceptsArgs = true
+  // Uncached on purpose: the script does its own fingerprinting and is ~1s
+  // warm, and a pkfire cache hit here would be a second staleness oracle to
+  // keep in agreement with the first.
+  cache = false
+  inputs { "scripts/ensure_generated.sh"; "scripts/generate_bundle.sh" }
 }
 
 local selfhostGeneration = new Task {
@@ -939,14 +950,10 @@ tasks {
   testLintArchitecture
   lintTrackedExperimentNames
   testLintTrackedExperimentNames
-  checkSelfhostBundleSync
-  checkSelfhostModuleSourceSync
   checkSelfhostPortableBoundary
   checkVibeFmt
   checkMethodStyleNaming
-  testSelfhostBundleSync
   testGenerateSelfhostBundle
-  testResolveGeneratedConflicts
   checkOffbuildTypecheck
   testSelfhostAsyncComponent
   testSpawnedFutureComponent
@@ -989,6 +996,7 @@ tasks {
   releaseTagPreflight
   fetchCompiler
   ensureSeed
+  ensureGenerated
   selfhostGeneration
   selfhostGenerationSeedInfo
   selfhostGenerationStatus

@@ -34,6 +34,27 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
+      - name: Generated compiler artifacts (fingerprint)
+        # The five generated artifacts are build outputs, not tracked files
+        # (scripts/ensure_generated.sh). Their fingerprint is a pure function of
+        # (seed, compiler source), so it also keys the stage2 cache below --
+        # which is what the committed flat module source used to do via
+        # hashFiles.
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -54,7 +75,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _build/_ci_shard_gen
-          key: stage2-v1-${{ hashFiles('bootstrap/seed.json', 'lib/@vibe/compiler/_cli_adapter_module_source.vibe', 'scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
       - name: Build stage2 from committed flat module source
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |

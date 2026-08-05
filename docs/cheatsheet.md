@@ -44,6 +44,8 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // される (`"\{Some(p)}"` -> `Some(P { .. })`)。
                                // 型が解決できない値、および変数越しの
                                // タプル/配列はまだ生ポインタの10進数 (#1392)
+                               // prelude の `to_string(v)` も同じ描画になる
+                               // (補間と同じ書き換えを call site で受ける)
 let c: Char = 'A'              // char code (Int alias)
 let b: Bool = true
 let u: Unit = ()
@@ -453,7 +455,10 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)
 // derive(Default) -> T::default()
 // (Eq は marker: 構造的 `==` は T::equals として常に生成される)
-// #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ
+// #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ。prelude の
+// `to_string(v)` も同じ (body が `__to_string(x)` そのものの 1 引数 pass-through
+// は call site で inline され、補間と同じ書き換えを受ける) — ただし
+// `f[T: Show](x) { to_string(x) }` の内側は型が変数なので従来どおり
 
 trait Eq
 trait Ord: Eq                              // supertrait
@@ -895,6 +900,40 @@ vibe test dir/            # run all tests in directory (examples run too)
 **Array**: `Array::length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`, `concat`
 
 **Map**: `Map::get`, `has_key`, `keys`, `values`, `set`
+
+**Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
+`push` は償却 O(1)):
+
+| 関数 | 意味 | backend |
+|---|---|---|
+| `Bytes::new()` | 空バッファ (初期容量 64) | linear / gc |
+| `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | 長さ・要素 | linear / gc |
+| `Bytes::push(b, v)` | 1バイト追加 (償却 O(1)) | linear / gc |
+| `Bytes::append(dst, src)` | **一括連結。`memory.copy` 1発** | linear / gc |
+| `Bytes::concat(a, b)` | 新しいバッファを返す連結 | linear / gc |
+| `Bytes::slice(b, start, end)` | 部分列 | linear / gc |
+| `Bytes::blit(dst, src, dst_off, len)` | **範囲コピー。`memory.copy` 1発** | linear / gc |
+| `Bytes::fill(b, off, len)` | **範囲埋め。`memory.fill` 1発** | linear / gc |
+| `Bytes::from_array(a)` / `to_array(b)` | `Array[Int]` との変換 (**コピーが入る**) | linear / gc |
+
+> バイト列を組み立てるループで `Bytes::push` を回すより、まとまった範囲は
+> `Bytes::append` / `Bytes::blit` に置き換えるほうが速い — どちらも
+> `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
+> するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
+
+**SIMD スキャン** (`Bytes` / `String` 上を 16 バイト単位で走査。linear / gc 両対応):
+
+| 関数 | 意味 |
+|---|---|
+| `simd_skip_ws(buf, pos, len) -> Int` | 空白でない最初の位置 |
+| `simd_scan_alnum(buf, pos, len) -> Int` | 識別子バイトの終端位置 |
+| `simd_scan_alnum_str(s, pos, len) -> Int` | 同上の `String` 版 |
+
+> SIMD は linear memory 上でのみ成立する。`v128.load` はメモリアドレスを取る
+> 命令で、wasm-gc の配列はアドレス可能なメモリではないため、`(array i8)` から
+> v128 へ一括ロードする命令が存在しない。**バイト処理を速くしたいデータは
+> linear memory (= `Bytes`) に置くこと。** `Bytes` は gc backend でも linear
+> memory 上にあるので、これらは両レーンで同じように使える。
 
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->

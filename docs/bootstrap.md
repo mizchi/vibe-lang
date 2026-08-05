@@ -91,7 +91,7 @@ bootstrap bump は最低限、以下を満たす。
 - 新 seed を stage0 に据えて回した generation で `stage3 == stage2`。
   自分自身を再生産する seed なら `stage0 == stage1 == stage2 == stage3` に
   なる (fixpoint) — bump 候補としてはこれが最も強い状態。
-- `VIBE_CHECK_BUNDLES_TOO=1 scripts/check_module_source_sync.sh` が ok。
+- `bash scripts/ensure_generated.sh --force` が通り、その後 `--check` が ok。
 - `scripts/check_vibe_fmt.sh` が clean。
 - unit battery (`scripts/unit_test_runner.sh`) が green。
 
@@ -220,38 +220,48 @@ _cli_adapter_module_source.vibe
 cache/codegen_fingerprint.vibe
 ```
 
-5つとも compiler source の決定的な関数なので、**compiler source に触る PR が
-2本あれば必ずこの5ファイル全部で衝突する** — 片方が merge された瞬間にもう
-片方が `dirty` になるのはこれが理由。ただしこの衝突は「どちらを採るか」の
-問題ではない。正しい内容はどちらの側でもなく、merge 後の source から
-regenerate したものだけ。
+5つとも (pinned seed, compiler source) の決定的な関数で、**git 管理下に無い**。
+必要なときに `scripts/ensure_generated.sh` が作る。
 
 ```bash
-# merge / rebase が止まったら
-bash scripts/resolve_generated_conflicts.sh
-git rebase --continue     # または git commit
+bash scripts/ensure_generated.sh                      # stale なら再生成、でなければ ~1s の no-op
+bash scripts/ensure_generated.sh --check              # 生成せず鮮度判定のみ (stale なら exit 1)
+bash scripts/ensure_generated.sh --print-fingerprint  # CI の cache key 用
 ```
 
-**commit が複数ある rebase では、生成物に触る commit ごとに別々に衝突する** —
-最初の衝突で regenerate しても、あとの commit が自分の (rebase 前の) コピーを
-持ち込むので最終 tree は直らない。#1276 がこれで CI を落とした。rebase が
-終わったあとに tip をもう一度 regenerate すること:
+鮮度は fingerprint = sha256(seed wasm + manifest + 全ライブラリ `.vibe`) で
+判定し、`lib/@vibe/compiler/.generated.stamp` に記録する。生成前に stamp を
+消すので、中断した実行が「半端な成果物を current と称する」ことはない。
 
-```bash
-bash scripts/resolve_generated_conflicts.sh --regen
-git commit          # または git commit --amend
-```
+**bootstrap の循環は無い。** かつて flatten ツールは commit 済みの
+`_cli_adapter_module_source.vibe` を seed でコンパイルして作っていた
+(だから成果物自身が入力になっていた) が、pinned seed は live tree の import を
+自分で解決して merged program を印字できる (`VIBE_EMIT_MERGED_SOURCE`)。
+今は seed の3パス (flatten → emit-module-source → compile) でツールを立ち上げ、
+そのツール = **現在の source の merge 機構**で最終的な flatten を行う。seed の
+flatten を最終出力に使わないのは、それが一世代古く、`merge_sources.vibe` 等を
+編集しても次の seed bump まで反映されない (しかも出力は妥当なままなので気づけ
+ない) から。この切り替え時に、seed だけから作った5成果物が従来の commit 済み
+コピーと **byte-identical** であることを確認している。
 
-`--regen` は衝突を必要とせず、現在の tree から regenerate して stage する
-(生成前に `check_vibe_fmt.sh` で lint し、未整形なら止まる)。
-これを飛ばした tip を検出するのは `scripts/check_module_source_sync.sh`。
+### なぜ tracking をやめたか
 
-このスクリプトは生成物だけを捨てて regenerate し直して stage する。
-手書きファイルの衝突が残っている間は「未解決の tree を artifact に焼き込む」
-ことになるので何もせず失敗する — そちらを先に解決すること。regenerate の
-前に変更済み source を `vibe_fmt.sh` にかけるのもスクリプト側でやる
-(bundle は source text をそのまま埋め込むので、generate してから format
-すると bundle drift として gate に出る)。
+- compiler source に触る PR が2本あれば**必ず**5ファイル全部で衝突し、
+  しかも正しい内容はどちらの側でもなく merge 後の source から regenerate した
+  ものだけだった。専用の後始末スクリプト (`resolve_generated_conflicts.sh`) が
+  必要で、複数 commit の rebase では tip でもう一度回す必要があり、#1276 は
+  それを飛ばして CI を落とした。
+- packfile の約30% (1.6GB 中 476MB) がこの履歴だった (直近200 commit 中159)。
+- 「commit 済みコピーを黙って優先する」経路があり、regenerate を忘れた source
+  編集が**その編集を含まないコンパイラ**を生んでも成功と報告された。
+- CI はどのみち生成していた — commit 済みコピーと一致することを確認するためだけに
+  (`check_module_source_sync.sh`)。比較をやめて生成するだけにすれば、同じ仕事から
+  この失敗モードが消える。
+
+commit され続けるのは `bootstrap/seed/compiler.wasm` だけ (これも実体は
+`bootstrap/seed.json` の pin から `ensure_seed.sh` が取得する)。これは還元
+不可能 — チェーン全体の出発点となる不動点そのもの。
+
 
 `.gitattributes` はこの5ファイルを `-diff linguist-generated` にしている。
 13MB の1行 bundle が diff に出ないようにするためと、衝突したときに

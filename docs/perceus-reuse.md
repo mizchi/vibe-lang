@@ -209,7 +209,7 @@ drop を払う形になる。
    でない限り committed 版を優先する。stage1/stage2 はそこから bootstrap
    するので、compiler source を編集して `generations.sh build` しても
    **変更が artifact に入らないまま「ビルドが通った」ように見える**。
-   `bash scripts/resolve_generated_conflicts.sh --regen` を使う(5生成物を
+   `bash scripts/ensure_generated.sh --force` を使う(5生成物を
    すべて regenerate。lib/ が未整形だと止まるので先に
    `bash scripts/vibe_fmt.sh <file>`)。
 2. **`compiler_gate.sh` は arity/型エラーを取りこぼす**。gate は bundle
@@ -365,7 +365,7 @@ heap に 105MB の余裕がある状態で起きる = free list の壊れた nex
 ### bisect harness の sed 残骸が生成物として commit されていた
 
 `bisect_sites.sh` / `bisect_lines.sh` は sed で call site を `-1` に潰し、
-`resolve_generated_conflicts.sh --regen` で生成物を作り直してからビルドし、
+`scripts/ensure_generated.sh` で生成物を作り直してからビルドし、
 最後に `git checkout -- lib/@vibe/compiler` で戻す。この戻しが効かないまま
 commit した結果、**手書き source と生成物が食い違う commit が2つできていた**:
 
@@ -386,10 +386,10 @@ out-line ではなく **bl_half2 構成がビルドされ、通ってしまう**
 `84b771ed`〜`97c7b559` は生成物が一致していたので、**前節の bisect 表と
 「潰した仮説」は有効**。
 
-`pkf run test` の `scripts/check_module_source_sync.sh` はこの食い違いを
+`pkf run test` の `scripts/ensure_generated.sh` はこの食い違いを
 検出する gate だが、この WIP 群は gate を通していなかった。**探索用に
 source を機械的に書き換える harness を使うときは、commit 前に必ず
-`pkf run test` か最低でも `check_module_source_sync.sh` を通すこと。**
+`pkf run test` か最低でも `ensure_generated.sh` を通すこと。**
 
 ### `VIBE_RC=shadow` は selfcompile 規模では使えない (heap と shadow 表が重なる)
 
