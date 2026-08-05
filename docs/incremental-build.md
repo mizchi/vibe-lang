@@ -444,6 +444,21 @@ the source `STrait` to canonicalize trait methods. The provenance is now also
 retained in `EnvTraitDef` and the TypeEnv v3 transport, but no full checked
 artifact exists yet. The transport remains TypeEnv-only—not a `CheckedProgram`,
 typed IR, exported interface, cache key, or reuse decision.
+
+These observation identities have intentionally different authorities.
+`vibe-module-interface:v2` covers only the exported API surface. In particular,
+`SImpl` has no exported/public bit, so impl declarations are excluded from that
+interface identity rather than being silently treated as public declarations.
+Impl bounds and targets are module-visible trait-resolution state and are
+observed by the complete persistent TypeEnv v3 transport identity instead.
+Neither identity establishes final linked-artifact freshness: the current
+runnable-artifact lane continues to use its whole resolved source-group input
+identity and compile configuration. Consequently an impl-only edit is expected
+to preserve `interface_fingerprint`, change
+`persistent_type_env_transport_fingerprint`, and invalidate linked artifacts
+through their existing source-group identity. This distinction does not promote
+either observation into a production key or reuse decision.
+
 The token-stream, interface, checked-environment, and transport reconstructions
 are not charged to the existing TypeDb `parse_operations` counter, so the `rechecked`/`reused`
 report remains the current conservative cache-path observation rather than a
@@ -560,10 +575,12 @@ attest checker success or provenance. The artifact remains payload- and
 type-free, post-desugar/artifact-local rather than source- or edit-stable, and
 is not connected to full checked bodies, typed IR, imports, interfaces, traces,
 caches, or reuse policy.
-A trait/impl regression proves an impl-bound edit changes the
+Trait/impl regressions prove impl-bound and impl-target edits change the
 complete persistent TypeEnv v3 transport observation while leaving the
-value-only checked-env observation unchanged; it makes no exported-interface
-stability assertion.
+exported-interface observation unchanged; the bound case also leaves the
+value-only checked-env observation unchanged. Exported type derives,
+trait-supertrait edges, effect operation signatures, and effectset members are
+separately covered by clean/warm interface-v2 parity and sensitivity checks.
 An external
 executable shadow planner treats source changes as ingestion telemetry, derives
 owner typing invalidation from canonical token-stream implementation changes
