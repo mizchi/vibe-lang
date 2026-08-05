@@ -9,7 +9,7 @@
 // prefix validation path without changing normal compiler semantics.
 
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -28,6 +28,35 @@ function fail(message, result) {
   if (result?.stdout) message += `\nstdout: ${result.stdout}`;
   if (result?.stderr) message += `\nstderr: ${result.stderr}`;
   throw new Error(message);
+}
+
+function statTokenInputs(path) {
+  const stat = statSync(path, { bigint: true });
+  return { ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs };
+}
+
+function sameStatTokenInputs(left, right) {
+  return left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs;
+}
+
+function mutateSameSizeInPlace(path, needleText, replacementText) {
+  const needle = Buffer.from(needleText, "utf8");
+  const replacement = Buffer.from(replacementText, "utf8");
+  assert.equal(replacement.length, needle.length, "adversarial mutation must preserve byte size");
+  const before = readFileSync(path);
+  const offset = before.indexOf(needle);
+  assert.ok(offset >= 0, `adversarial mutation marker not found: ${needleText}`);
+  assert.equal(before.indexOf(needle, offset + 1), -1, `adversarial mutation marker must be unique: ${needleText}`);
+  const fd = openSync(path, "r+");
+  try {
+    assert.equal(writeSync(fd, replacement, 0, replacement.length, offset), replacement.length, "complete in-place mutation write");
+  } finally {
+    closeSync(fd);
+  }
+  const after = readFileSync(path);
+  assert.equal(after.length, before.length, "adversarial mutation must preserve file size");
+  assert.notDeepEqual(after, before, "adversarial mutation must change file content");
+  return { before, after };
 }
 
 function main() {
@@ -146,7 +175,8 @@ function main() {
     const contract = join(pkg, "index.vpkg");
     const contractBytes = readFileSync(contract);
     const oldMtimeMs = statSync(contract).mtimeMs;
-    utimesSync(contract, 2_000_000_000, 2_000_000_000);
+    const controlledMtimeSeconds = 2_000_000_000;
+    utimesSync(contract, controlledMtimeSeconds, controlledMtimeSeconds);
     assert.deepEqual(readFileSync(contract), contractBytes, "metadata-only case must not change contract bytes");
     assert.notEqual(statSync(contract).mtimeMs, oldMtimeMs, "metadata-only case must change the stat token");
     const metadataChanged = check("metadata-changed", { stampEnabled: true, cacheDir: gateOnCache });
@@ -164,6 +194,47 @@ function main() {
     assert.ok(malformed.telemetry.stamp_malformed > 0, "malformed stamp must fail closed");
     assert.ok(malformed.telemetry.source_read_calls > 0 && malformed.telemetry.hash_calls > 0 && malformed.telemetry.stamp_publications > 0, "malformed stamp must re-read/hash and republish");
 
+    // A metadata token is not a content identity. Mutate a unique comment in
+    // place (preserving inode and size), then restore the controlled mtime used
+    // by the stamp above. Some filesystems cannot reproduce the exact mtime
+    // token input; report that capability explicitly rather than weakening the
+    // assertion. Where all token inputs are equal, changed bytes must produce a
+    // stamp hit with no source/hash fallback. That is direct evidence that this
+    // experimental hint cannot be production authority.
+    const adversarialBeforeTokenInputs = statTokenInputs(contract);
+    const adversarialMutation = mutateSameSizeInPlace(contract, "// API ", "// api ");
+    utimesSync(contract, controlledMtimeSeconds, controlledMtimeSeconds);
+    const adversarialRestoredTokenInputs = statTokenInputs(contract);
+    let sameTokenAdversary;
+    if (sameStatTokenInputs(adversarialBeforeTokenInputs, adversarialRestoredTokenInputs)) {
+      const observation = check("same-token-content-changed", { stampEnabled: true, cacheDir: gateOnCache });
+      assert.ok(observation.telemetry.stamp_hits >= 1, "equal metadata token with changed content must demonstrate a stamp hit");
+      assert.equal(observation.telemetry.stamp_misses, 0, "equal metadata token must not take the mismatch fallback");
+      assert.equal(observation.telemetry.source_read_calls, 0, "same-token stamp hit must skip fingerprint-boundary source reads");
+      assert.equal(observation.telemetry.hash_calls, 0, "same-token stamp hit must skip fingerprint-boundary hashes");
+      assert.deepEqual(observation.outputBytes, malformed.outputBytes, "same-token non-semantic mutation output bytes");
+      assert.equal(observation.outputText, malformed.outputText, "same-token non-semantic mutation output text");
+      compareSuccessfulIncrementalInvalidationTraces(malformed.trace, observation.trace);
+      sameTokenAdversary = { capability: "reproduced", telemetry: observation.telemetry };
+    } else {
+      sameTokenAdversary = {
+        capability: "skipped",
+        reason: "filesystem did not reproduce the exact inode/size/mtimeNs stat-token inputs after mtime restoration",
+        before: {
+          ino: adversarialBeforeTokenInputs.ino.toString(),
+          size: adversarialBeforeTokenInputs.size.toString(),
+          mtime_ns: adversarialBeforeTokenInputs.mtimeNs.toString(),
+        },
+        restored: {
+          ino: adversarialRestoredTokenInputs.ino.toString(),
+          size: adversarialRestoredTokenInputs.size.toString(),
+          mtime_ns: adversarialRestoredTokenInputs.mtimeNs.toString(),
+        },
+      };
+      console.error(`ingestion-stamp-oracle: SKIP same-token adversary: ${sameTokenAdversary.reason}`);
+    }
+    assert.notDeepEqual(adversarialMutation.after, adversarialMutation.before, "same-token adversary changed source bytes");
+
     // A content token change is also a miss even if the source edit is non-semantic.
     writeFileSync(contract, `${readFileSync(contract, "utf8")}\n// token-change oracle\n`);
     const tokenChanged = check("token-changed", { stampEnabled: true, cacheDir: gateOnCache });
@@ -176,6 +247,7 @@ function main() {
       gate_on_warm: gateOnWarm.telemetry,
       metadata_changed: metadataChanged.telemetry,
       malformed: malformed.telemetry,
+      same_token_content_changed: sameTokenAdversary,
       token_changed: tokenChanged.telemetry,
     }));
   } finally {

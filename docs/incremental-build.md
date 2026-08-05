@@ -146,8 +146,15 @@ The opt-in persistent ingestion-stamp oracle similarly uses isolated gate-off
 and gate-on cache histories for a copied package. It proves only that unchanged
 and metadata-token-miss successful checks have equal observed invalidation
 traces (apart from the freshness nonce) and equal check output bytes/text. It
-retains malformed and content-token fallback checks. This does not remove the
-trusted stat-token limitation, and it does not prove artifact equivalence.
+retains malformed and content-token fallback checks. It also performs a
+same-size in-place content mutation and restores the prior mtime: when the host
+filesystem reproduces the exact inode/size/mtime token inputs, the oracle
+requires the changed bytes to produce a stamp hit with no fingerprint-boundary
+read or hash. Platforms that cannot reproduce the exact token report an
+explicit capability skip. This adversarial evidence means metadata-token
+equality is not a content identity and the stamp is unsafe as production
+authority; it remains default-off and opt-in only. The oracle still does not
+prove artifact equivalence.
 
 ## Trait generic provenance (bounded Phase 3)
 
