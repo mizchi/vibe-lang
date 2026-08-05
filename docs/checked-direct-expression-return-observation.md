@@ -30,3 +30,26 @@ The decoder is strict and accepts canonical length-delimited rows (including
 zero rows) only. Decoded payloads attest neither a successful checker run nor
 canonical-type or full typed-IR semantics; the artifact is not a cache/reuse,
 import, interface, or trace contract.
+
+## Expression-kind direct-return artifact v1
+
+`CheckedExpressionKindDirectReturnArtifact` is a separate opaque, opt-in,
+complete-or-none join built **only** from one
+`CheckedDirectExpressionReturnObservation`. Its rows are exactly
+`(statement_path, expression_path, closed_expr_constructor_kind,
+canonical_direct_return_type_text)` in the shared retained post-desugar
+preorder. The builder walks that observation's embedded
+`checked_program.checked_stmts` with the shared structural authority, then
+requires count and coordinate equality for every direct-return row before it
+copies the authority kind and canonicalizes raw types with that same run's
+`final_subst`. Missing, duplicate, unmapped, or misaligned rows fail closed;
+it never combines independently decoded artifacts or checker runs.
+
+The exact marker is
+`vibe-checked-expression-kind-direct-return-artifact:v1\n`. The strict,
+length-delimited codec accepts only canonical counts, lengths, paths, and one
+of the 33 closed `Expr` constructor tags; type text itself remains arbitrary
+opaque exact text. Zero rows are canonical. Decoded bytes attest neither
+checker success nor canonical type semantics, universal expression typing,
+full typed IR, provenance, binding/resolution, source identity, diagnostics,
+cache/reuse/import/interface/trace.
