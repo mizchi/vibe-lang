@@ -404,12 +404,30 @@ function run(stage2) {
     }
     plannerCases.public_interface_edit = checkPlannerCase("public_interface_edit", privateEdit, publicEdit);
 
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect Logger { Info(String) -> Unit }\nexport effect Audit { Record(String) -> Unit }\nexport fn announce(message: String) -> Unit with Logger { let _ = message\n() }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const publicFunctionLogger = check("public_function_logger");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect Logger { Info(String) -> Unit }\nexport effect Audit { Record(String) -> Unit }\nexport fn announce(message: String) -> Unit with Audit { let _ = message\n() }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const publicFunctionAudit = check("public_function_audit");
+    if (interfaceOwnersChanged(publicFunctionLogger, publicFunctionAudit).join(",") !== "library") fail("exported function effect edit did not change the interface identity");
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport type PublicAlias = Int\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const publicAliasInt = check("public_alias_int");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport type PublicAlias = String\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const publicAliasString = check("public_alias_string");
+    if (interfaceOwnersChanged(publicAliasInt, publicAliasString).join(",") !== "library") fail("exported type alias edit did not change the interface identity");
+
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct PublicShape { value: Int }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const publicTypeAdd = check("public_type_add");
     if (interfaceOwnersChanged(publicEdit, publicTypeAdd).join(",") !== "library") fail("exported type addition did not change the interface identity");
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct PublicShape { value: String }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const publicTypeLayout = check("public_type_layout_edit");
     if (interfaceOwnersChanged(publicTypeAdd, publicTypeLayout).join(",") !== "library") fail("exported type layout edit did not change the interface identity");
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct DerivedShape { value: Int } derive(Eq)\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const publicDeriveEq = check("public_derive_eq");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct DerivedShape { value: Int } derive(Eq, Show)\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const publicDeriveShow = check("public_derive_show");
+    if (interfaceOwnersChanged(publicDeriveEq, publicDeriveShow).join(",") !== "library") fail("exported type derive edit did not change the interface identity");
 
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport fn generic_identity[T](value: T) -> T { value }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const genericValueT = check("generic_value_t");
@@ -457,27 +475,52 @@ function run(stage2) {
     const traitFreeName = check("trait_free_name");
     if (interfaceOwnersChanged(traitScopedSignature, traitFreeName).join(",") !== "library") fail("free nominal type name did not remain distinct in trait interface identity");
 
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait ParentA { parent_a(Int) -> Int }\nexport trait ParentB { parent_b(Int) -> Int }\nexport trait Child: ParentA { child(Int) -> Int }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitSuperA = check("trait_super_a");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait ParentA { parent_a(Int) -> Int }\nexport trait ParentB { parent_b(Int) -> Int }\nexport trait Child: ParentB { child(Int) -> Int }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const traitSuperB = check("trait_super_b");
+    if (interfaceOwnersChanged(traitSuperA, traitSuperB).join(",") !== "library") fail("exported trait supertrait edit did not change interface identity");
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect Logger { Info(String) -> Unit }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const effectString = check("effect_operation_string");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect Logger { Info(Int) -> Unit }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const effectInt = check("effect_operation_int");
+    if (interfaceOwnersChanged(effectString, effectInt).join(",") !== "library") fail("exported effect operation signature edit did not change interface identity");
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect Ask { Get -> Int; Put(Int) -> Unit }\nexport effectset AskAll = { Ask::Get }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const effectsetGet = check("effectset_get");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect Ask { Get -> Int; Put(Int) -> Unit }\nexport effectset AskAll = { Ask::Get, Ask::Put }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const effectsetGetPut = check("effectset_get_put");
+    if (interfaceOwnersChanged(effectsetGet, effectsetGetPut).join(",") !== "library") fail("exported effectset member edit did not change interface identity");
+
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Eq] Eq for Option[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const implBoundEq = check("impl_bound_eq");
     if (implementationOwnersChanged(traitBoundEq, implBoundEq).join(",") !== "library") fail("impl generic bound addition did not change token-stream implementation identity");
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Show] Eq for Option[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const implBoundShow = check("impl_bound_show");
     if (implementationOwnersChanged(implBoundEq, implBoundShow).join(",") !== "library") fail("impl generic bound edit did not change token-stream implementation identity");
+    if (interfaceOwnersChanged(implBoundEq, implBoundShow).length !== 0) fail("impl-bound edit changed the exported interface identity even though impls have no export surface bit");
     if (checkedEnvOwnersChanged(implBoundEq, implBoundShow).length !== 0) fail("impl-bound edit changed the value-only checked environment identity");
     if (persistentTypeEnvTransportOwnersChanged(implBoundEq, implBoundShow).join(",") !== "library") {
       fail("impl-bound edit did not change the complete persistent TypeEnv transport identity")
     }
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Show] Eq for Array[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const implTargetArray = check("impl_target_array");
+    if (interfaceOwnersChanged(implBoundShow, implTargetArray).length !== 0) fail("impl-target edit changed the exported interface identity even though impls have no export surface bit");
+    if (persistentTypeEnvTransportOwnersChanged(implBoundShow, implTargetArray).join(",") !== "library") {
+      fail("impl-target edit did not change the complete persistent TypeEnv transport identity")
+    }
 
     writeFileSync(join(project, "app.vibe"), "import ./base.vibe { base_value }\nimport ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\nbase_value(0) }\n");
     const planEdit = check("dependency_plan_edit");
-    if (sourceOwnersChanged(implBoundShow, planEdit).join(",") !== "app") fail("dependency-plan edit source delta drift");
-    if (implementationOwnersChanged(implBoundShow, planEdit).join(",") !== "app") fail("dependency-plan edit implementation delta drift");
+    if (sourceOwnersChanged(implTargetArray, planEdit).join(",") !== "app") fail("dependency-plan edit source delta drift");
+    if (implementationOwnersChanged(implTargetArray, planEdit).join(",") !== "app") fail("dependency-plan edit implementation delta drift");
     if (JSON.stringify(decisionsByName(planEdit)) !== JSON.stringify({ base: "reused", library: "reused", app: "rechecked" })) {
       fail("dependency-plan edit current decision drift");
     }
     const appDependencies = moduleByName(planEdit, "app").direct_dependencies.map((path) => basename(path));
     if (appDependencies.join(",") !== "base.vibe,library.vibe") fail("dependency-plan trace did not record the added base import in declaration order");
-    plannerCases.dependency_plan_edit = checkPlannerCase("dependency_plan_edit", implBoundShow, planEdit);
+    plannerCases.dependency_plan_edit = checkPlannerCase("dependency_plan_edit", implTargetArray, planEdit);
 
     // Integration regressions for the renderer: JSON requires every U+0000–
     // U+001F control character to be escaped, and POSIX paths may contain TAB.
