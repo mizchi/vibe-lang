@@ -63,8 +63,12 @@ test "is_exception_effect_name accepts both erased spellings and kinded ones" {
 }
 
 test "canonical_exception_effect_name collapses erased spellings but never a kind" {
-  assert(eq(canonical_exception_effect_name("Exception"), "Error"))
-  assert(eq(canonical_exception_effect_name("Error"), "Error"))
+  // #1461: the erased pair collapses to `Exception`, not `Error`. Both
+  // directions are asserted because the flip is exactly the direction of this
+  // collapse -- an implementation that stopped collapsing at all would still
+  // satisfy only one of these two lines.
+  assert(eq(canonical_exception_effect_name("Exception"), "Exception"))
+  assert(eq(canonical_exception_effect_name("Error"), "Exception"))
   // Collapsing this would erase exactly what the row check compares.
   assert(eq(canonical_exception_effect_name("Exception[IoError]"), "Exception[IoError]"))
   assert(eq(canonical_exception_effect_name("Fs"), "Fs"))
@@ -131,11 +135,11 @@ test "the erased Error row still authorizes a suberror throw (#786 unchanged)" {
   assert(eq(Array::length(checked_diags(src)), 0))
 }
 
-test "a row naming no exception label keeps the pinned Error::Throw diagnostic" {
+test "a row naming no exception label reports the erased Exception::Throw requirement" {
   let src = "let boom = () -> Int with Stdout {\n  throw(\"x\")\n}\n\nlet main = () -> Int with Stdout {\n  handle {\n    boom()\n  } with Error {\n    Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Error::Throw }"))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception::Throw }"))
 }
 
 test "an effectset union of exception kinds authorizes both" {
