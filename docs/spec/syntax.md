@@ -585,16 +585,19 @@ Rules:
 - Function effects appear after return type: `-> T with Effect`.
 - Effect row variables such as `with e` are accepted in polymorphic
   higher-order signatures.
-- The effect row has three accepted spellings, and #1429 is migrating the
-  language from the third to the first. All three parse to the same row, so
-  nothing after the parser -- checker, codegen, printer, contract hash --
-  observes which was written:
+- The effect row has one spelling, plus one for the empty row:
 
   | spelling | |
   | --- | --- |
-  | `with A + B` | braceless, `+`-separated. The form being migrated **to** |
+  | `with A + B` | the row |
   | `with ()` | the explicitly empty row |
-  | `with { A, B }` | braced, comma-separated. The form being migrated **from** |
+
+  `with { A, B }` was the pre-#1429 spelling. It was accepted alongside the
+  new one while the tree was converted -- both parsed to the same row, so
+  nothing after the parser could tell them apart -- and is now rejected by
+  name. `vibe fmt` still rewrites it: the formatter normalizes rows at the
+  TOKEN level, so it converts source the compiler no longer accepts, which
+  makes it the migration path for code outside this repository.
 
   The separator is `+`, not `,`, because a comma cannot be told apart from an
   enclosing list's comma once the braces are gone: in `((Int) -> Int with A, B)`
