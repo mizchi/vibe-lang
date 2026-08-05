@@ -131,6 +131,14 @@ let effect_taxonomy_rows: Array[(String, String, String, Bool, Bool)] = [
   // であって、隠れた非決定性の源ではない。
   ("Stdout", "capability", "Process::Root", true, true),
   ("Stderr", "capability", "Process::Root", true, false),
+  // #1460 Phase 1: `Console` は上の三つの stream effect を一本化したもので、
+  // 同じ ambient-host-handler の理屈でここに載る (test/bench ブロックは
+  // ランタイム host の下で走り、host は Console::write_stream 以下を
+  // Stdout のものと同じ実装で提供する)。cache-safe なのも Stdout と同じ
+  // 理由 — tty への書き出しは compile の**入力**ではないので、キャッシュ
+  // した結果を誤りにしようがない。両方の綴りが宣言できる間は Stdout を
+  // 置き換えず並べておく。
+  ("Console", "capability", "Process::Root", true, true),
   ("Process", "capability", "Process::Root", true, false),
   ("Profiler", "capability", "Process::Root", true, false),
   // 以下は test/bench ambient ではない — ネットワーク・外部サービスは
@@ -299,8 +307,8 @@ export fn taxonomy_effect_names() -> Array[String] {
 /// (checker_effects.vibe の `check_perform_effects_stmt_tx`)。
 ///
 /// 表の順に filter するので `[Fs, Env, Stdin, Stdout, Stderr, Process,
-/// Profiler, Error, Exception]` — 吸収前のリテラル列に #1461 の
-/// `Exception` を足したもの (両方の erased 綴りを載せる)。
+/// Profiler, Error, Exception]` — 吸収前のリテラル列に #1460 の `Console`
+/// と #1461 の `Exception` を足したもの (どちらも旧綴りと並べて載せる)。
 /// 各項目を絞れない根拠は `effect_taxonomy_rows` のコメント参照。
 ///
 /// 呼ぶたびに新しい配列を作る (memo cell を共有して返さない) — 受け取り側は
@@ -324,8 +332,8 @@ export fn test_bench_ambient_effects() -> Array[String] {
 /// entry (`fn main`) を #819 の doctest 実行キャッシュに載せてよい effect
 /// (checker_effects.vibe の `file_entry_cacheable`)。
 ///
-/// 表の順に filter するので `[Stdout, Error, Exception, Async]` — 吸収前の
-/// リテラル列と要素順まで同じ。ここに無い effect
+/// 表の順に filter するので `[Stdout, Console, Error, Exception, Async]` —
+/// 吸収前のリテラル列に #1460 の `Console` を足したもの。ここに無い effect
 /// (Fs / Env / Http / Process / Socket / user effect / ...) が到達可能なら、
 /// byte-identical な wasm でも実行ごとに stdout が変わりうるのでキャッシュ
 /// 不可。

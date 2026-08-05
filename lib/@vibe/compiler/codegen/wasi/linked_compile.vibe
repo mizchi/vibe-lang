@@ -3604,20 +3604,27 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // sleep). All gated on use so non-users reserve no import (fixpoint-safe) —
   // the compiler's own build uses none, so its bytes are unchanged. Revives the
   // io stdlib whose read/print/println/write_char helpers call these builtins.
-  let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream")
+  // #1460 Phase 1: the `Console::*` spellings share these imports rather than
+  // reserving their own. The linear host ABI is `vibe.<snake_name>` -- the
+  // module is the literal "vibe" and the field comes from the operation, so
+  // it never carried the effect label and merging Stdin/Stdout/Stderr into
+  // `Console` is a source-and-checker rename with NO ABI consequence. Reusing
+  // the imports also keeps the compiler's own bytes unchanged while both name
+  // sets are live, which is what makes the pre-seed-bump build a fixpoint.
+  let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream") || Map::has_key(used_builtin_names, "Console::read_stream")
   // #929: the println/print BUILTIN lowering (compile_call.vibe) synthesizes
   // calls onto these two imports when no source-provided println/print is
   // merged, so their use also gates the imports in. collect_used_builtin_names
   // only counts FREE names -- a program using @vibe/io's (or its own) println
   // fn does not trip this, exactly matching the lowering's cc_ft_has guard.
   let used_print_builtin = Map::has_key(used_builtin_names, "println") || Map::has_key(used_builtin_names, "print")
-  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream") || used_print_builtin
-  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char") || used_print_builtin
+  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream") || Map::has_key(used_builtin_names, "Console::write_stream") || used_print_builtin
+  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char") || Map::has_key(used_builtin_names, "Console::write_char") || used_print_builtin
   // #865: `Stderr::write_stream(s) -> Unit` / `Stderr::write_char(c) -> Unit`
   // (`vibe.stderr_write_stream` / `vibe.stderr_write_char (i64) -> ()`, void
   // like stdout's), same shapes/gating as the Stdout pair above.
-  let need_stderr_write_stream_builtin = Map::has_key(used_builtin_names, "Stderr::write_stream")
-  let need_stderr_write_char_builtin = Map::has_key(used_builtin_names, "Stderr::write_char")
+  let need_stderr_write_stream_builtin = Map::has_key(used_builtin_names, "Stderr::write_stream") || Map::has_key(used_builtin_names, "Console::write_err_stream")
+  let need_stderr_write_char_builtin = Map::has_key(used_builtin_names, "Stderr::write_char") || Map::has_key(used_builtin_names, "Console::write_err_char")
   // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
   // `resolve_path` host import — resolve a path to absolute against the process
   // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
@@ -4614,6 +4621,17 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         // #1227: row-free sibling, same host import.
         "sleep_blocking" => sleep_idx,
         "Stdin::read_char" => stdin_read_char_idx,
+        // #1460 Phase 1: the merged `Console` capability lowers onto the very
+        // same host imports as the three effects it replaces -- the precedent
+        // is `Profiler::now_us` / `Profiler::NowUs` above, two builtin names
+        // sharing one index. The stderr pair is spelled apart here because one
+        // effect cannot own two `write_stream` operations.
+        "Console::read_stream" => stdin_read_stream_idx,
+        "Console::read_char" => stdin_read_char_idx,
+        "Console::write_stream" => stdout_write_stream_idx,
+        "Console::write_char" => stdout_write_char_idx,
+        "Console::write_err_stream" => stderr_write_stream_idx,
+        "Console::write_err_char" => stderr_write_char_idx,
         // ADR-0089 step 4: raw halves of host_future_get (component adapter
         // imports, see the registry rows' comment).
         "vibe_hf_get_raw" => hf_get_idx,
