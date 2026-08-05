@@ -43,7 +43,7 @@ cd "$ROOT_DIR"
 
 CALL_SRC="lib/@vibe/compiler/codegen/expr/compile_call.vibe"
 ANALYSIS_SRC="lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe"
-REGISTRY_SRC="lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe"
+REGISTRY_SRC="lib/@vibe/compiler/core/builtin_registry.vibe"
 ALLOWLIST="scripts/inline_builtin_capture_allowlist.txt"
 
 for f in "$CALL_SRC" "$ANALYSIS_SRC" "$REGISTRY_SRC"; do
