@@ -665,7 +665,7 @@ fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[
 /// depth of the flattened module source ("unknown name" on every later
 /// reference, tuple/mut/plain-Int alike), while reads through an
 /// already-in-scope array provably survive (meta_i32 itself is one).
-fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int, iw_extra_cell: Array[Int]) -> Unit with Error {
+fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int, iw_extra_cell: Array[Int]) -> Unit with Exception {
   Array::set(iw_extra_cell, 0, 0)
   Array::set(iw_extra_cell, 1, 0)
   Array::set(iw_extra_cell, 2, 0)
@@ -759,16 +759,16 @@ fn lc_row_has_error(eff: Option[String]) -> Bool {
 
 /// #944 (ADR-0073 stage C): the runtime outermost Error handler. When the
 /// ENTRY function's own declared row carries `Error` (`fn main with
-/// { Error }` is allowed under checked-Error), an escaping `Error::Throw`
+/// { Error }` is allowed under checked-Error), an escaping `Exception::Throw`
 /// must become a diagnosed, unsuccessful process outcome -- not a raw
 /// `WebAssembly.Exception` leaking past the entry into the host. Rewrites
 /// the entry function's body, post-check/pre-codegen, into
 ///
-///   handle { <body> } with Error {
+///   handle { <body> } with Exception {
 ///     Throw(msg) => { Stderr::...(diagnostic); 1 }
 ///   }
 ///
-/// so the existing (well-exercised) `with Error` handle lowering does all
+/// so the existing (well-exercised) `with Exception` handle lowering does all
 /// the work -- no new codegen. The arm never resumes (Error is
 /// non-resumable, #640), so replay semantics are irrelevant here. Entries
 /// with no `Error` in their row are untouched: under default-on checked
@@ -784,7 +784,7 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
       SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name && lc_row_has_error(eff) {
         // #1372 review (Codex P1): the bound payload is NOT necessarily a
         // String. ADR-0085's runtime carries a single abortive tag with no
-        // kind, so this erased `Error::Throw` arm also catches every typed
+        // kind, so this erased `Exception::Throw` arm also catches every typed
         // `Exception[E]` -- including the `TaskError` that #1324's
         // `TaskGroup::run` throws. Writing that enum pointer straight to
         // `Stderr::write_stream` decoded it as a packed `(ptr<<32)|len`
@@ -849,7 +849,7 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
           EString("\n")
         ], -1), EInt(1)))), -1), -1)
         let wrapped = EHandle(body, [
-          (PCtor("Error::Throw", [
+          (PCtor("Exception::Throw", [
             PBind("__entry_err_msg")
           ]), diag)
         ])
@@ -2877,7 +2877,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   }
 }
 
-export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Error {
+export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
   // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.
   let za_msg = zero_alloc_check(stmts)
@@ -7424,13 +7424,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   bytebuf_to_bytes(out)
 }
 
-export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Error {
+export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
   compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
-export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Error {
+export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
   compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
@@ -7465,7 +7465,7 @@ export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: 
 /// planned lambda base.
 ///
 /// Test/gate only; it compiles the program three times.
-export fn compile_wasi_module_sliced_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Error {
+export fn compile_wasi_module_sliced_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let whole = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
   let probe = codegen_body_cache_new()
   let _probe_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), probe, 0, 0 - 1)
@@ -7507,7 +7507,7 @@ export fn compile_wasi_module_sliced_impl(stmts: Array[Stmt], entry_name: String
   sliced
 }
 
-export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Error {
+export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let harvest = codegen_body_cache_new()
   let compiled = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), harvest, 0, 0 - 1)
   let replayed = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), harvest, codegen_body_cache_new(), 0, 0 - 1)
@@ -7535,27 +7535,27 @@ export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: Stri
   replayed
 }
 
-export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Error {
+export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
   compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// Coverage build (#cov): compile with function-level hit instrumentation +
 /// `vibe_cov` custom section. Same as compile_wasi_module_with_sources_impl but
 /// with coverage enabled.
-export fn compile_wasi_module_with_sources_coverage_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Error {
+export fn compile_wasi_module_with_sources_coverage_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
   compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// Trace build (debugger / DAP P1 groundwork): compile with function-call
 /// execution-trace instrumentation + `vibe.trace` custom section. Same as
 /// compile_wasi_module_with_sources_impl but with debug_trace enabled.
-export fn compile_wasi_module_with_sources_trace_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Error {
+export fn compile_wasi_module_with_sources_trace_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
   compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
 /// instrumentation at each user function entry. Same as
 /// compile_wasi_module_with_sources_impl but with debug_break enabled.
-export fn compile_wasi_module_with_sources_break_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv) -> Bytes with Error {
+export fn compile_wasi_module_with_sources_break_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv) -> Bytes with Exception {
   compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, prov, codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
