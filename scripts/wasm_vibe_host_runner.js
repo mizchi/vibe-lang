@@ -2781,6 +2781,15 @@ async function main() {
   };
 
   const emitResult = (invoke, result, isSelfhost) => {
+    // #819: a per-block `__test_`/`__bench_` entry is "run this block", not
+    // "evaluate this and report the value" -- codegen gives every one of them
+    // the same `ESeq(body, EInt(0))` shape, so the result is a constant 0 that
+    // carries no information. Printing it would append a stray `0` line to the
+    // block's own stdout, which the doctest harness compares against the
+    // embedded ```output block. `_start` doesn't print it either.
+    if (invoke.startsWith("__test_") || invoke.startsWith("__bench_")) {
+      return;
+    }
     if (typeof result === "bigint") {
       // Check if the result is a tagged object (could be Bytes from selfbuild)
       if (

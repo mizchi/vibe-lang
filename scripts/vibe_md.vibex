@@ -37,6 +37,12 @@
 //   ```vibe        compile-check only (entry __no_entry__)         [default]
 //   ```vibe run    compile (entry main) + execute; stdout captured
 //   ```vibe skip   excluded from verification
+//   ```vibe run standalone
+//                  a `run` block kept OUT of the merged module (#819) and
+//                  compiled on its own. Use it when a block must not share a
+//                  compilation with its siblings; the merged path already
+//                  opts out automatically for anything it cannot express
+//                  (see the "#819: merged compile" section below).
 //
 // #819 content-addressed cache: a ```vibe run block always compiles (its
 // own tiny source may import stdlib/support files whose content this tool
@@ -727,6 +733,205 @@ fn pad2(n: Int) -> String {
   }
 }
 
+// ---------- #819: merged compile ----------
+//
+// The measured cost of a doc run is compilation, not execution: on
+// docs/tutorial/*.vibe.md (28 runnable blocks) a cold pass took ~11.0s and a
+// fully cache-warm pass still took ~8.7s, because the output cache (#1214)
+// only skips the EXECUTE step -- every block was still compiled from scratch.
+// Merging the blocks of one .md into ONE module turns N compiles into 1.
+//
+// The three design questions #819 left open, and what this answers:
+//
+//   * namespacing -- every tutorial block declares its own `main` (and often
+//     its own `add`/`fact`/...), so a naive text concatenation would collide
+//     immediately. Instead each block is written out as its own .vibe FILE and
+//     the driver imports them, which hands the whole problem to the module
+//     system's existing per-module mangling (`main_exp_..._b01_vibe`). No
+//     renaming pass of our own, and no new collision rules to specify.
+//   * ordering / cross-block dependencies -- blocks stay independent modules,
+//     so a block can NOT see the previous block's definitions. That matches
+//     the corpus (every block re-imports what it needs and is compilable on
+//     its own, which is also what makes it a good doc example). A doc that
+//     wants to build on an earlier block opts that block out; making later
+//     blocks implicitly see earlier ones would require exporting every
+//     top-level name and would change what a block means when read in
+//     isolation.
+//   * opt-out -- ```vibe run standalone``` keeps a block on its own compile.
+//     `new_block` already classifies any `run`-prefixed argument as mode
+//     "run" and `Block.open_line` retains the full fence line, so this needs
+//     no parser change.
+//
+// Per-block failure attribution survives merging because codegen exports one
+// `__test_<name>` per `test {}` block and the runner invokes it without
+// pre-running `_start` (also #819) -- so each block still runs alone, in its
+// own process, and its stdout is its own.
+//
+// The output cache is deliberately NOT used on the merged path: its key is
+// sha256(the block's own compiled wasm), which no longer exists once N blocks
+// share one module, and its soundness gate (VIBE_ENTRY_TESTMETA_OUT reporting
+// whether `main`'s reachable effects are Stdout/Error/Async) is per-entry.
+// The cache bought ~2.1s of execute time; merging removes ~8s of compile
+// time, so the merged path is well ahead without it. VIBE_MD_NO_MERGE=1
+// restores the per-block compile.
+
+fn merge_disabled() -> Bool with Env {
+  String::trim(Env::get("VIBE_MD_NO_MERGE")) == "1"
+}
+
+/// True when `line` is the top-level declaration head of a Unit-returning
+/// `main` (`fn main {`, `fn main with Stdout {`). A `->` on the line means a
+/// declared return type: `_start` prints such an entry's Int via print_int,
+/// while the merged `test {}` wrapper would drop it, so those blocks stay on
+/// the standalone path rather than silently losing a line of output.
+fn is_unit_main_head(line: String) -> Bool {
+  if !String::starts_with(line, "fn main") {
+    false
+  } else if String::contains(line, "->") {
+    false
+  } else {
+    let rest = String::trim(String::substring(line, 7, String::length(line)))
+    String::starts_with(rest, "{") || String::starts_with(rest, "with")
+  }
+}
+
+/// Index of the block's Unit-`main` declaration line, or -1.
+fn block_unit_main_line(blk: Block) -> Int {
+  let n = Array::length(blk.code_lines)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < n {
+    if found < 0 && is_unit_main_head(Array::get(blk.code_lines, i)) {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn block_mergeable(blk: Block) -> Bool {
+  blk.mode == "run" && !String::contains(blk.open_line, "standalone") && block_unit_main_line(blk) >= 0
+}
+
+/// The block's own source with its `main` exported, so the merged driver can
+/// import it. Nothing else about the block is rewritten.
+fn block_source_exported(blk: Block) -> String {
+  let idx = block_unit_main_line(blk)
+  let n = Array::length(blk.code_lines)
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    let line = Array::get(blk.code_lines, i)
+    if i == idx {
+      ArrayBuilder::push(b, "export \{line}")
+    } else {
+      ArrayBuilder::push(b, line)
+    }
+    i = i + 1
+  }
+  join_lines(ArrayBuilder::freeze(b))
+}
+
+fn merge_test_name(block_no: Int) -> String {
+  "b\{pad2(block_no)}"
+}
+
+fn merge_src_path(md_dir: String, base: String, block_no: Int) -> String {
+  "\{md_dir}/.vibe_md_merge_\{base}_\{merge_test_name(block_no)}.vibe"
+}
+
+fn merge_driver_path(md_dir: String, base: String) -> String {
+  "\{md_dir}/.vibe_md_merge_\{base}.vibe"
+}
+
+fn merge_wasm_path(md_dir: String, base: String) -> String {
+  "\{md_dir}/.vibe_md_merge_\{base}.wasm"
+}
+
+/// Writes one .vibe per mergeable block plus the driver that imports them all
+/// and wraps each in a `test {}` block (which codegen turns into an exported
+/// `__test_<name>`).
+fn write_merged_sources(md_dir: String, base: String, blocks: Array[Block], nos: Array[Int]) -> Unit with Fs {
+  let k = Array::length(nos)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < k {
+    let no = Array::get(nos, i)
+    let name = merge_test_name(no)
+    Fs::write_file(merge_src_path(md_dir, base, no), block_source_exported(Array::get(blocks, i)))
+    StringBuilder::push(sb, "import ./.vibe_md_merge_\{base}_\{name}.vibe {\n  main as \{name}_main\n}\n")
+    i = i + 1
+  }
+  StringBuilder::push(sb, "\n")
+  let mut j = 0
+  while j < k {
+    let name = merge_test_name(Array::get(nos, j))
+    StringBuilder::push(sb, "test \"\{name}\" {\n  \{name}_main()\n}\n\n")
+    j = j + 1
+  }
+  Fs::write_file(merge_driver_path(md_dir, base), StringBuilder::freeze(sb))
+}
+
+/// One compile for the whole file. Returns false on any failure, in which
+/// case every block falls back to its own standalone compile -- a merged
+/// compile error names the merged driver, not the offending block, so the
+/// fallback is also how a real error gets attributed.
+fn compile_merged(cwd: String, compiler: String, md_dir: String, base: String) -> Bool with Process + Env + Fs {
+  let src = merge_driver_path(md_dir, base)
+  let out = merge_wasm_path(md_dir, base)
+  let timeout_secs = md_timeout_secs()
+  let cmd = "timeout \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} '__no_entry__'"
+  let cr = sh_capture(cmd)
+  cr.exit_code == 0 && file_nonempty(out)
+}
+
+fn run_merged_block(cwd: String, md_path: String, md_dir: String, base: String, blk: Block, block_no: Int, mode: String) -> BlockResult with Fs + Process + Env {
+  let label = "\{md_path}:\{blk.start_line}"
+  let timeout_secs = md_timeout_secs()
+  let target = "__test_\{merge_test_name(block_no)}"
+  let run_cmd = "timeout \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke \{shq(target)} \{shq(merge_wasm_path(md_dir, base))}"
+  let rr = sh_capture(run_cmd)
+  if rr.exit_code != 0 {
+    let reason = if rr.exit_code == 124 {
+      "timeout after \{timeout_secs}s"
+    } else {
+      first_nonblank_line(rr.stderr)
+    }
+    let shown = if reason == "" {
+      "runtime failure"
+    } else {
+      reason
+    }
+    BlockResult::{ label: label, status: "FAIL", reason: "[run] \{shown}" }
+  } else {
+    blk.has_actual_stdout = true
+    blk.actual_stdout = normalize_trailing_newline(rr.stdout)
+    if mode == "write" {
+      BlockResult::{ label: label, status: "WROTE", reason: "" }
+    } else {
+      BlockResult::{ label: label, status: "PENDING_OUTPUT_CHECK", reason: "" }
+    }
+  }
+}
+
+fn cleanup_merged(md_dir: String, base: String, nos: Array[Int]) -> Unit with Fs {
+  let k = Array::length(nos)
+  let mut i = 0
+  while i < k {
+    let p = merge_src_path(md_dir, base, Array::get(nos, i))
+    if Fs::exists(p) {
+      Fs::remove(p)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let out = merge_wasm_path(md_dir, base)
+  cleanup_one(merge_driver_path(md_dir, base), out, "\{out}.diag")
+}
+
 // ---------- top-level per-file processing ----------
 
 struct FileOutcome {
@@ -766,6 +971,37 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
   let base = sanitize_base(basename_no_ext(md_path))
   let results = ArrayBuilder::new()
   let n = Array::length(tokens)
+  // #819 pass 1: which blocks join the merged module. Two or more, otherwise
+  // merging costs an extra driver compile to save nothing.
+  let mb = ArrayBuilder::new()
+  let mn = ArrayBuilder::new()
+  let mut p1 = 0
+  let mut p1_no = 0
+  while p1 < n {
+    match Array::get(tokens, p1) {
+      TBlock(blk) => if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
+        p1_no = p1_no + 1
+        if block_mergeable(blk) {
+          ArrayBuilder::push(mb, blk)
+          ArrayBuilder::push(mn, p1_no)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      },
+      TText(_) => ()
+    }
+    p1 = p1 + 1
+  }
+  let merged_blocks = ArrayBuilder::freeze(mb)
+  let merged_nos = ArrayBuilder::freeze(mn)
+  let merged_ok = if Array::length(merged_nos) >= 2 && !merge_disabled() {
+    write_merged_sources(md_dir, base, merged_blocks, merged_nos)
+    compile_merged(cwd, compiler, md_dir, base)
+  } else {
+    false
+  }
   let mut i = 0
   let mut block_no = 0
   while i < n {
@@ -774,7 +1010,11 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
         if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
           block_no = block_no + 1
           let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(block_no)}_L\{blk.start_line}"
-          let r = run_one_block(cwd, compiler, md_path, md_dir, scratch_name, blk, mode)
+          let r = if merged_ok && array_contains_int(merged_nos, block_no) {
+            run_merged_block(cwd, md_path, md_dir, base, blk, block_no, mode)
+          } else {
+            run_one_block(cwd, compiler, md_path, md_dir, scratch_name, blk, mode)
+          }
           if r.status == "PENDING_OUTPUT_CHECK" {
             let expected_opt = if blk.paired_output >= 0 {
               match Array::get(tokens, blk.paired_output) {
@@ -805,6 +1045,7 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
     }
     i = i + 1
   }
+  cleanup_merged(md_dir, base, merged_nos)
   FileOutcome::{ tokens: tokens, results: ArrayBuilder::freeze(results) }
 }
 
