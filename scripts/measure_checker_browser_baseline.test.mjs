@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { parseCheckerBrowserBaselineReport, parseModulePlan } from "./measure_checker_browser_baseline.mjs";
+import { isolatedCompilerEnvironment, parseCheckerBrowserBaselineReport, parseModulePlan } from "./measure_checker_browser_baseline.mjs";
 
 const plan = "version\t1\nmodule\t0\t0\tdep.vibe\nmodule\t1\t1\tmain.vibe\ndep\t1\tdep.vibe\n";
 
@@ -50,6 +50,16 @@ function report() {
     ],
   };
 }
+
+test("compiler subprocess environment rejects inherited adapter modes", () => {
+  assert.deepEqual(
+    isolatedCompilerEnvironment(
+      { VIBE_FS_COMPILE: "1", VIBE_RC: "0" },
+      { PATH: "/bin", VIBE_MODULE_PLAN: "1", VIBE_CHECK_ONLY: "1", VIBE_CFG: "inherited" },
+    ),
+    { PATH: "/bin", VIBE_FS_COMPILE: "1", VIBE_RC: "0" },
+  );
+});
 
 test("module plan accepts canonical ingested-source sidecar ordering", () => {
   assert.deepEqual(parseModulePlan(plan), [

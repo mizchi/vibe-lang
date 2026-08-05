@@ -208,11 +208,19 @@ function relativeToRoot(path) {
   return isAbsolute(path) ? relative(root, path) : path;
 }
 
+export function isolatedCompilerEnvironment(overrides, inherited = process.env) {
+  const environment = {};
+  for (const [name, value] of Object.entries(inherited)) {
+    if (!name.startsWith("VIBE_")) environment[name] = value;
+  }
+  return { ...environment, ...overrides };
+}
+
 function compilerCall(stage2, args, env) {
   const result = spawnSync("bash", [runner, "--invoke", "cli_main", stage2, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: isolatedCompilerEnvironment(env),
   });
   if (result.error) fail(`could not start supplied compiler: ${result.error.message}`);
   return result;
