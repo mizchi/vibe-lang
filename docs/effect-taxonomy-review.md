@@ -493,9 +493,14 @@ DCE)→ apply(BindingLock)→ instantiate(preflight prompt)の最も早い
   host-effect リテラル列 (test/bench ambient 8 要素、doctest キャッシュ
   安全 4 要素、core ambient の二項判定) をこの表に寄せた。表面挙動は
   不変で、`default_resource_kind` 列はまだ検査に使われていない受け皿。
-- **Phase 0**: ADR-0075 Phase 2(`resource` 宣言/resolution、未着手)を
-  先に着地させる。`Process::Root` のような singleton resource kind を
-  特別扱いとして追加する。
+- **Phase 0(着地済み、#1343 実装順 2)**: ADR-0075 Phase 2 の
+  `resource Name : Owner::Kind` 宣言を AST (`SResource`) / parser /
+  printer / checker に入れ、`Process::Root` を singleton resource kind
+  として `core/effect_taxonomy.vibe` に置いた
+  (`predeclared_resources` / `is_singleton_resource_kind`)。singleton は
+  住人がそれ自身ただ一つなので、その kind の resource 宣言は「process に
+  二つ目の名前を与える alias」として拒否する。詳細は
+  [ADR-0094](resource-kind-parameters.md) の実装順 2。
 - **Phase 1(最重要・安全)**: `builtins_fs.vibe`/`builtins_system.vibe`
   (Env/Process)/`builtins_net.vibe`(HttpServer)を内部表現だけ
   resource-kind 付きに retrofit する。表面構文(`perform
@@ -579,7 +584,8 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   既存の型パラメータリストに bound を書く形 (`effect Fs[R: Fs::Root]` /
   `effect Stdout[_: Process::Root]`) を採用し、内部は `TDEffect` の第4
   スロットへ。`CtFn` の row スロットは広げず、builtin には `TDEffect` を
-  合成しない。実装順の前提として ADR-0075 Phase 2 が先。
+  合成しない。実装順の前提だった ADR-0075 Phase 2 は #1343 実装順 2 で
+  着地済み。
   なお表面構文のうち **row の分割(`with A allows C` 糖衣)・Optional
   grade(`?`)・`perform?`/`Attempt`・解決ラダー(build/apply/instantiate
   preflight)は [ADR-0088](capability-authorization-surface.md) で決着済み**。

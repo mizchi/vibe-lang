@@ -52,10 +52,11 @@ effect を **resource kind パラメータの有無**で型レベルに区別す
    分類 (宣言された algebraic effect こそ境界に出てはいけない) と逆。これが
    #1143 の「ねじれ」の実体で、**checker 側の表現を変えても自動的には直らない**
    (wit_gen 自身の規則を差し替える必要がある)。
-7. **ADR-0075 Phase 2 (`resource X : Kind = ...` 宣言) は未実装**。
+7. **ADR-0075 Phase 2 (`resource` 宣言) は未実装**。
    parser / AST / `TypeDef` のいずれにも resource 宣言は無い
    (`@vibex/wasm_wit_parser` の `TDResource` は WIT IDL 用の別物)。
    したがって `Process::Root` には現状いかなる表現も無い。
+   → **実装順 2 で着地 (#1343)**。下記「実装順 2」参照。
 
 ## Decision
 
@@ -205,9 +206,10 @@ effect_class(name) -> Capability | Algebraic | CoreAmbient
 
 ## 実装順 (#1343 のチェックボックスへの対応)
 
-Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**なので、
-`Fs::Root` のような kind 名を書けるようになるのは先である。したがって
-**最初に実装できるのは構文ではなく分類 metadata** である。
+Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が当初**未着手**
+だったので、`Fs::Root` のような kind 名を書けるようになるのは先だった。
+したがって**最初に実装できたのは構文ではなく分類 metadata** である
+(実装順 1)。実装順 2 で `resource` 宣言が入り、この前提は解けている。
 
 0. **(着地済み、#1343)** builtin 呼び出し経路に consumer 軸を通す —
    `with Fs::read_file` / `with Http::request` が builtin を認可する。
@@ -246,8 +248,48 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**
    1」)、そちらは配列として列挙できないので照合できない — 現に `Llm` は
    `builtins_system.vibe` にしか存在せず guard が触れない。registry へ
    寄せる作業 (#415 B-2 の続き) が進むほどカバー率が上がる。
-2. ADR-0075 Phase 2: `resource X : Kind = <literal>` 宣言と `Process::Root`
-   singleton kind。
+2. **(着地済み、#1343)** ADR-0075 Phase 2: `resource Name : Owner::Kind`
+   宣言と `Process::Root` singleton kind。
+
+   AST に `SResource(name, kind)` を追加し (`lib/@vibe/ast/index.vpkg`)、
+   parser・printer・checker を通した。`Process::Root` は
+   `core/effect_taxonomy.vibe` の `predeclared_resources` /
+   `is_singleton_resource_kind` として在り、既に同ファイルの
+   `default_resource_kind` 列が指していた名前に**初めて実体**が付いた。
+
+   **`= <literal>` は実装しなかった** — 本 ADR 初稿のこの行は ADR-0075 の
+   surface を略記したものだが、ADR-0075 の決定本文は
+   `resource Posts : S3::Bucket` であり、かつ「physical name / credential を
+   guest に渡さない」を明示している。`= <literal>` は physical name を guest
+   ソースに書く形にしかならないので、ADR-0075 の surface をそのまま採った。
+
+   採った検査は**同一性の 2 規則だけ**:
+   - 名前は一度だけ宣言できる (predeclared を含む)
+   - **singleton kind (`Process::Root`) の resource は宣言できない** —
+     住人は `Process::Root` 自身ただ一つなので、`resource Home :
+     Process::Root` は process に二つ目の名前を与える alias になる
+     (ADR-0075 の alias 検査が bind 時に捕まえる対象を、宣言時に前倒しで
+     弾く)
+
+   kind 名そのものは registry と照合**しない** — resource kind の宣言構文が
+   まだ無いので、ADR-0075 自身の例である `S3::Bucket` を宣言できる場所が
+   無い。parser の「kind は `Owner::Kind` の修飾パスであること」だけが今の
+   well-formedness 規則である。
+
+   `resource` は**文脈キーワード**で、`effect`/`effectset` と違い無条件に
+   その語を取らない (`resource` は変数名としてずっとありそうなので)。宣言と
+   認めるのは直後が識別子のときだけ — 文の位置で識別子が 2 つ並ぶ式は無い
+   ので、この 1 トークン先読みは heuristic ではなく厳密である。
+
+   綴りは `resource Posts: S3::Bucket` (コロン前に空白なし) を canonical と
+   する。CST formatter (`fmt/format.vibe`) は他の注釈と同じ規則をここにも
+   適用するので、printer が ` : ` を出すと `vibe normalize` と `vibe fmt` が
+   綴りを取り合う (#1429 で実際に起きた形)。
+
+   **`.vibex` root 限定は未強制** — checker は自分が entry file を見ている
+   のかライブラリモジュールを見ているのかを知らない。`export resource` は
+   拒否する (ライブラリが resource 名を公開する道は塞いだ) が、非 entry
+   モジュールの private な `resource` 宣言は今のところ通る。
 3. parser: `parse_type_params_list` に bound と `_` を追加。`TDEffect` の
    `param_kinds` スロット追加と registration。**同一単位で消費側3関数
    (`effect_tparams` / `effect_fresh_targs` / `subst_type_params`) を

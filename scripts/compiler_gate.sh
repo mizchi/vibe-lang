@@ -9098,6 +9098,88 @@ fi
 rm -rf "$witresdir"
 echo "[compiler-gate] @vibe/wit_runtime Result projection ok"
 
+echo "[compiler-gate] 91/91 resource declarations enforce logical identity (ADR-0075 / #1343)"
+# ADR-0075 Phase 2: `resource Posts : S3::Bucket` declares a LOGICAL resource
+# identity the executable requires a binding for. The rules that matter are
+# about identity, so the gate checks that two spellings which would give one
+# thing two names are both rejected, and that an ordinary declaration compiles.
+#
+# `Process::Root` is the singleton kind (ADR-0094's default for every host
+# capability): its one inhabitant is itself, so a program declaring another
+# resource of that kind would be aliasing the process under a second name --
+# ADR-0075's alias check exists to catch exactly that, and rejecting it at the
+# declaration is cheaper than detecting the alias at bind time.
+resdir="_build/_gate_resource_decl"
+rm -rf "$resdir"; mkdir -p "$resdir"
+res_case() {
+  # res_case <name> <expect: ok|err> <source> [substring the .diag must contain]
+  local rname="$1" expect="$2" rsrc="$3" rneedle="${4:-}"
+  printf '%s' "$rsrc" > "$resdir/$rname.vibe"
+  rm -f "$resdir/$rname.wasm" "$resdir/$rname.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$resdir/$rname.vibe" "$resdir/$rname.wasm" main >/dev/null 2>&1 || true
+  if [ "$expect" = "ok" ]; then
+    if [ ! -s "$resdir/$rname.wasm" ]; then
+      echo "[compiler-gate] FAIL: resource case '$rname' should compile but did not (ADR-0075/#1343)" >&2
+      cat "$resdir/$rname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  else
+    if [ -s "$resdir/$rname.wasm" ]; then
+      echo "[compiler-gate] FAIL: resource case '$rname' should be rejected but compiled (ADR-0075/#1343)" >&2
+      exit 1
+    fi
+    if [ -n "$rneedle" ] && ! grep -q -- "$rneedle" "$resdir/$rname.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: resource case '$rname' rejected without naming '$rneedle' (ADR-0075/#1343):" >&2
+      cat "$resdir/$rname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  fi
+}
+res_case basic ok 'resource Posts : S3::Bucket
+
+fn main {
+  println("ok")
+}
+'
+res_case unqualified err 'resource Posts : Bucket
+
+fn main {
+  println("ok")
+}
+' 'must be qualified'
+res_case duplicate err 'resource Posts : S3::Bucket
+resource Posts : S3::Table
+
+fn main {
+  println("ok")
+}
+' 'already declared'
+res_case singleton err 'resource Home : Process::Root
+
+fn main {
+  println("ok")
+}
+' 'singleton'
+res_case exported err 'export resource Posts : S3::Bucket
+
+fn main {
+  println("ok")
+}
+' 'cannot be exported'
+# `resource` stays an ordinary identifier: the declaration form needs an
+# identifier right after the word, which no expression can have at statement
+# position, so nothing that used the name breaks.
+res_case as_name ok 'let resource = 1
+
+fn main {
+  println("ok")
+}
+'
+rm -rf "$resdir"
+echo "[compiler-gate] resource declaration identity rules ok"
+
 # --- #819: per-block `__test_*` exports + isolated invocation -----------------
 # A `__no_entry__` test build exports one `__test_<name>` per `test {}` block
 # (alongside the `__bench_<name>` exports that already existed), and the runner

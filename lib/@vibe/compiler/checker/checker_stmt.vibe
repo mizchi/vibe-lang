@@ -28,6 +28,8 @@ import @vibe/compiler/core {
   env_flat_bindings,
   env_lookup_flat,
   generalize,
+  is_singleton_resource_kind,
+  predeclared_resources,
   resolve_builtin,
   sort_perm_by_names,
   subst_apply,
@@ -581,6 +583,61 @@ fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array
   (es_names, es_members_list, ed_names, ed_ops_list)
 }
 
+/// ADR-0075 Phase 2 / ADR-0094 実装順 2 (#1343): validate the `resource Name :
+/// Kind` declarations in one statement list.
+///
+/// Two rules, both about IDENTITY -- a resource declaration names a logical
+/// thing the executable requires a binding for, so two declarations must not
+/// be able to name the same thing under different names, nor one thing twice:
+///
+///   * a name may be declared once. The predeclared resources
+///     (`Process::Root`) count as already-declared, so a program cannot
+///     shadow the ambient process root with its own.
+///   * a SINGLETON kind (`Process::Root`) already has its one inhabitant, so
+///     nothing may be declared of it. `resource Home : Process::Root` would
+///     be a second name for the one process, which ADR-0075's alias check
+///     exists to prevent -- rejecting it at the declaration is cheaper than
+///     detecting the alias at bind time.
+///
+/// Kind names themselves are NOT checked against a registry: there is no
+/// resource-kind declaration syntax yet, so `S3::Bucket` (ADR-0075's own
+/// example) has nowhere to be declared. The parser's qualified-path
+/// requirement is the only well-formedness rule the kind carries today.
+fn resource_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
+  let seen = array_empty()
+  let pre = predeclared_resources()
+  let mut p = 0
+  while p < Array::length(pre) {
+    let (pname, _) = Array::get(pre, p)
+    Array::push(seen, pname)
+    p = p + 1
+  }
+  let mut i = from_idx
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SResource(rname, rkind) => {
+        // String::concat rather than `\{}` interpolation: this module imports
+        // @vibe/compiler/core, whose `__to_string(Int)` is what the
+        // interpolation desugar resolves to here, so a String hole is a type
+        // error. Same reason every other diagnostic in this file is built by
+        // concat.
+        if es_string_array_contains(seen, rname) {
+          Array::push(errors, String::concat("resource '", String::concat(rname, "' is already declared -- a logical resource identity is declared once (ADR-0075)")))
+        } else {
+          Array::push(seen, rname)
+        }
+        if is_singleton_resource_kind(rkind) {
+          Array::push(errors, String::concat("resource kind '", String::concat(rkind, String::concat("' is a singleton: its one inhabitant is '", String::concat(rkind, String::concat("' itself, so declaring '", String::concat(rname, "' of it would be a second name for the same thing (ADR-0075)")))))))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 /// ADR-0071 step 3 (#755) row expansion: recursively expand `name` into leaf
 /// labels (ordinary effect/operation names -- not further-expandable
 /// effectset names) via es_names/es_members_list, appending each freshly
@@ -1033,6 +1090,10 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   // (step 3's row-expansion pass) via es_collect_tables so both walks stay
   // in sync from one implementation.
   let (es_names, es_members_list, ed_names, ed_ops_list) = es_collect_tables(stmts, idx)
+  // ADR-0075 Phase 2 (#1343): resource identity rules need the WHOLE list
+  // (duplicate detection), so they run here rather than in the SResource arm
+  // below -- which is why that arm has nothing left to do.
+  resource_decl_errors(stmts, idx, errors)
   // #942 (Codex P2 on #969): if any top-level declaration in this statement
   // list binds the name `resume` (fn/let — fn decls are lowered to SLet
   // before the checker — let-pattern, extern let, or an import), codegen's

@@ -331,6 +331,52 @@ fn parse_effectset_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt
   (SEffectSet(exported, name, members), next)
 }
 
+/// True when the tokens at `pos` (just past the word `resource`) start a
+/// resource declaration -- i.e. an identifier follows.
+///
+/// One token of lookahead, and it is exact rather than heuristic: at STATEMENT
+/// position no expression can be two adjacent identifiers. A `resource` used
+/// as an ordinary name is always followed by an operator, a delimiter, or
+/// nothing (`resource = f()`, `resource(x)`, `resource + 1`), never by another
+/// identifier. `effect`/`effectset` claim their word unconditionally; this one
+/// does not, because `resource` is a far more plausible variable name.
+///
+/// Deliberately does NOT also require the `:`, so that `resource S3::Posts :
+/// Bucket` (name and kind swapped) still reaches parse_resource_stmt and gets
+/// its own diagnostic instead of a generic expression-parse error.
+fn is_resource_decl_head(tokens: Array[Token], pos: Int) -> Bool {
+  match peek(tokens, pos) {
+    TIdent(_) => true,
+    _ => false
+  }
+}
+
+/// ADR-0075 Phase 2 (#1343 実装順 2): `resource Posts : S3::Bucket`.
+///
+/// The kind must be QUALIFIED (`Owner::Kind`). That is not cosmetic: an
+/// unqualified name here would be indistinguishable from a type, and ADR-0075
+/// is explicit that a resource kind is not a type and a resource name is not a
+/// `String` to be authority-checked. The qualified form makes every kind read
+/// as belonging to some provider (`S3::Bucket`, `Process::Root`).
+fn parse_resource_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Error {
+  let name = match peek(tokens, pos) {
+    TIdent(n) => n,
+    _ => throw("expected a resource name after 'resource'")
+  }
+  match peek(tokens, pos + 1) {
+    TDoubleColon => throw("a resource NAME is unqualified (`resource Posts : S3::Bucket`) -- the qualified path goes after the ':' and names the resource KIND (ADR-0075)"),
+    _ => ()
+  }
+  let cp = expect_tk(tokens, pos + 1, ":")
+  let (kind, end) = parse_binding_name(tokens, cp)
+  if !String::contains(kind, "::") {
+    throw("resource kind '\{kind}' must be qualified as `Owner::Kind` (e.g. `S3::Bucket`, `Process::Root`) -- an unqualified name would be indistinguishable from a type, and a resource kind is not a type (ADR-0075)")
+  } else {
+    ()
+  }
+  (SResource(name, kind), end)
+}
+
 fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Error {
   match peek(tokens, pos) {
     TLet => parse_let_stmt(tokens, starts, pos + 1, true),
@@ -343,6 +389,8 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stm
       parse_effect_stmt(tokens, pos + 1, true)
     } else if ident_name == "effectset" {
       parse_effectset_stmt(tokens, pos + 1, true)
+    } else if ident_name == "resource" && is_resource_decl_head(tokens, pos + 1) {
+      throw("a `resource` declaration cannot be exported: ADR-0075 puts it at the `.vibex` root only, and a reusable module abstracts over a resource KIND parameter instead of naming a resource")
     } else {
       throw(String::concat("unexpected token in export: ", ident_name))
     },
@@ -411,7 +459,20 @@ fn parse_extern_let_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Err
 /// codegen should use `parse_stmt` / `parse_program*` below, which lower
 /// SFnDecl to the legacy SLet shape.
 export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Error {
-  let head = peek(tokens, pos)
+  let raw_head = peek(tokens, pos)
+  // #1343: rewrite `resource` to a name no identifier can have UNLESS it
+  // starts a declaration, so the dispatch below routes `resource = f()` /
+  // `resource(x)` to its expression arm unchanged. Done on the token rather
+  // than as an extra arm because that arm is a ~60-line block of
+  // assignment-operator handling with no way to fall through into it.
+  let head = match raw_head {
+    TIdent(hn) => if hn == "resource" && !is_resource_decl_head(tokens, pos + 1) {
+      TIdent("")
+    } else {
+      raw_head
+    },
+    _ => raw_head
+  }
   match head {
     TLet => parse_let_stmt(tokens, starts, pos + 1, false),
     TExport => match peek(tokens, pos + 1) {
@@ -434,6 +495,7 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
     TIdent(name) => match name {
       "effect" => parse_effect_stmt(tokens, pos + 1, false),
       "effectset" => parse_effectset_stmt(tokens, pos + 1, false),
+      "resource" => parse_resource_stmt(tokens, pos + 1),
       "extern" => parse_extern_let_stmt(tokens, pos + 1),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
