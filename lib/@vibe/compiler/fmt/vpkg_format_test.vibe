@@ -100,6 +100,24 @@ test "vpkg: formatting is idempotent" {
   assert(format_vpkg(once) == once)
 }
 
+test "#1429: normalize_effect_rows still converts the spelling the parser removed" {
+  // Lives here rather than in parser_test.vibe because it is a FORMATTER
+  // property and pulling @vibe/compiler/fmt into a parser test just to assert
+  // it would be the wrong dependency.
+  //
+  // #1429 removed `with { A, B }` from the grammar -- parse_effect_row throws
+  // on it by name. normalize_effect_rows is kept anyway, and that is the
+  // point: it is a TOKEN-level pass, so it rewrites source the compiler no
+  // longer accepts, which makes `vibe fmt` the migration path for code
+  // outside this repository. This assertion is what stops the next reader
+  // deleting it as dead code.
+  let converted = format_script("let f: (Int) -> Int with { Error, Fs } = (x) -> { x }\n")
+  assert(String::contains(converted, "with Error + Fs"))
+  assert(!String::contains(converted, "with {"))
+  let empty = format_script("let g: () -> Int with {} = () -> { 1 }\n")
+  assert(String::contains(empty, "with ()"))
+}
+
 test "format_source dispatches on the .vpkg extension" {
   let src = "name = @vibe/parser\nversion = 0.1.0\n\ngenerated_hash =\n\nfn f() -> Int\n"
   assert(format_source("lib/@vibe/parser/index.vpkg", src) == format_vpkg(src))

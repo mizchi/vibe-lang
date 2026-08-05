@@ -14,7 +14,7 @@ pkf run run -- test examples/syntax.vibe
 
 ## Language Features
 
-- `effects.vibe`: `with { Error }` / `handle { ... } with Error { ... }`
+- `effects.vibe`: `with Error` / `handle { ... } with Error { ... }`
 - `async.vibe`: `await` and async effect combinations
 - `perform_handle.vibe`: `perform Effect::Op(...)` + `handle` による多層エフェクト/回復パターン
 - `effect_demo.vibe`: effect 宣言を名前で共有する複数関数パターン (#752)

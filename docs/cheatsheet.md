@@ -152,11 +152,12 @@ fn fact(n: Int) -> Int {
 fn identity[T](x: T) -> T { x }                // generic
 fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
 fn hello() -> Unit with Stdout { stdout_write("hi\n") }
-// #1429: the effect row has three accepted spellings while the migration runs.
-// They parse to the SAME row — nothing after the parser can tell them apart.
-//   with A + B      braceless, `+`-separated   (migrating TO this one)
+// #1429: the effect row has exactly one spelling, plus one for the empty row.
+//   with A + B      the row
 //   with ()         the explicitly empty row
-//   with { A, B }   braced, comma-separated    (migrating FROM)
+// The braced `with { A, B }` was accepted through the migration and is now a
+// named parse error. `vibe fmt` rewrites it for you (the formatter is a
+// token-level pass, so it converts source the compiler no longer accepts).
 // `+` rather than `,` because once the braces are gone a comma cannot be told
 // apart from an enclosing list's comma: in `fn g(cb: (Int) -> Int with A, x: Int)`
 // the `x` is either a second label or the next parameter. `+` starts neither a

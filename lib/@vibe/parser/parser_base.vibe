@@ -926,26 +926,37 @@ fn collect_effect_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (St
 }
 
 /// #1429: parse the effect row that follows `with`. `pos` is the token AFTER
-/// the `with` keyword. Three spellings are accepted:
+/// the `with` keyword. There is now exactly ONE spelling, plus a spelling for
+/// the empty row:
 ///
-///   with A + B      braceless, `+`-separated  (the spelling being migrated TO)
+///   with A + B      the row
 ///   with ()         the explicitly empty row
-///   with { A, B }   braced, comma-separated   (the spelling being migrated FROM)
 ///
-/// All three normalize to the same comma-joined internal string, so nothing
-/// downstream of the parser -- checker, codegen, printer, contract hash --
-/// observes which one was written. That is what lets the two spellings coexist
-/// across the bootstrap bump: the compiler source keeps the braced form (so the
-/// committed bundles and the seed stay byte-stable) while the new form becomes
-/// parseable, and only then can the tree be converted.
+/// The braced `with { A, B }` was accepted through the migration and is now
+/// REJECTED by name. Both were parsed into the same comma-joined internal
+/// string, so nothing downstream ever observed the difference -- which is what
+/// let them coexist while the tree was converted, and why removing one costs
+/// nothing but the error below.
+///
+/// The rejection is a named diagnostic rather than "expected an effect name",
+/// because the reader of that generic message has no way to know the syntax
+/// moved. It also names `vibe fmt` as the fix: the CST formatter still carries
+/// normalize_effect_rows, which rewrites the braced row at the TOKEN level, so
+/// it converts source this parser no longer accepts. That is deliberate -- the
+/// formatter is the migration path for code outside this repository.
 ///
 /// `()` is the empty row and NOTHING else: a parenthesised non-empty row is
 /// rejected rather than accepted as a second grouping syntax, because allowing
 /// it would put the brace-vs-no-brace choice straight back into the language
 /// under different punctuation.
+///
+/// NOTE: `effectset Name = { A, B }` still uses braces and still shares
+/// collect_effect_names' item grammar. Whether that brace should follow the row
+/// is deliberately UNDECIDED -- an `effectset` is a declaration of a set, not a
+/// row, so the two are not obviously the same question.
 fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Error {
   match peek(tokens, pos) {
-    TLBrace => collect_effect_names(tokens, pos + 1, ""),
+    TLBrace => throw("the braced effect row `with { A, B }` was removed in #1429 -- write `with A + B` (and `with ()` for the empty row). `vibe fmt` rewrites the old spelling for you."),
     TLParen => match peek(tokens, pos + 1) {
       TRParen => ("", pos + 2),
       _ => throw("`with (` spells the EMPTY effect row `with ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `with A + B` (#1429)")
@@ -985,7 +996,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
     }
   }
   // The optional effect row after a function type's return (#1429: `with
-  // A + B`, `with ()`, or the legacy `with { E1, E2 }`).
+  // A + B`, or `with ()` for the empty row).
   let parse_effect_suffix: (Array[Token], Int) -> (Option[String], Int) with Error = (tokens, rn) -> {
     match peek(tokens, rn) {
       TWith => {
