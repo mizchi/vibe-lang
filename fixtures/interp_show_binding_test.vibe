@@ -269,3 +269,50 @@ test "#139: already-working shapes are unchanged" {
   let o = Some(3)
   assert_eq("\{o}", "Some(3)")
 }
+
+//# Shadowing must not resurrect a stale shape (Codex review on PR #1465)
+
+test "#1465: rebinding a tuple name to a scalar drops the tuple shape" {
+  // `lookup_var_type` returns the LAST match so a shadowing rebind wins
+  // (#760(4)) -- but `__shape$x` is a DIFFERENT key from `x`, so the old
+  // shape survived the rebind and the interpolation still expanded a tuple.
+  // Measured before the fix: this printed "(0, 0)". Silently wrong output,
+  // no trap.
+  let x = (1, 2)
+  assert_eq("\{x}", "(1, 2)")
+  let x = 3
+  assert_eq("\{x}", "3")
+}
+
+test "#1465: rebinding an array name to a scalar drops the array shape" {
+  // Same bug through the other sentinel; printed "[]" before the fix.
+  let a = [
+    1,
+    2
+  ]
+  assert_eq("\{a}", "[1, 2]")
+  let a = 7
+  assert_eq("\{a}", "7")
+}
+
+test "#1465: rebinding to a DIFFERENT composite uses the new shape" {
+  // The clear-on-rebind must not overshoot: the new binding's own shape has
+  // to win, not just cancel the old one.
+  let v = (1, 2)
+  assert_eq("\{v}", "(1, 2)")
+  let v = [
+    9
+  ]
+  assert_eq("\{v}", "[9]")
+  let v = (1, 2, 3)
+  assert_eq("\{v}", "(1, 2, 3)")
+}
+
+test "#1465: a shadowed name nested inside another shape is not stale either" {
+  // infer_shape resolves an element that is a NAME through the same records,
+  // so the rule has to hold there too or the outer tuple gets a stale inner.
+  let inner = (1, 2)
+  let inner = 5
+  let outer = (0, inner)
+  assert_eq("\{outer}", "(0, 5)")
+}

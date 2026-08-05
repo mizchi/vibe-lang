@@ -2003,7 +2003,17 @@ fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: 
       String::concat("[", String::concat(infer_shape(Array::get(items, 0), struct_sets, var_types, fn_returns), "]"))
     },
     EIdent(n, _) => match lookup_var_type(var_types, shape_key(n)) {
-      Some(sh) => sh,
+      // Same rule as interp_expand's: a recorded empty is an answer ("not
+      // composite"), so fall through to the head name rather than to the
+      // older sentinels.
+      Some(sh) => if String::length(sh) == 0 {
+        match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+          Some(t) => t,
+          None => ""
+        }
+      } else {
+        sh
+      },
       None => match lookup_var_type(var_types, tuple_shape_key(n)) {
         Some(sentinel) => String::concat("(", String::concat(sentinel, ")")),
         None => match array_elem_type_of(var_types, n) {
@@ -2027,14 +2037,24 @@ fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: 
 /// composites are stored.
 fn shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let sh = infer_shape(val, struct_sets, var_types, fn_returns)
-  if shape_is_composite(sh) {
-    let out = array_empty()
-    push_all_var_types(out, var_types)
-    Array::push(out, (shape_key(name), sh))
-    out
-  } else {
-    var_types
-  }
+  let out = array_empty()
+  push_all_var_types(out, var_types)
+  // ALWAYS record, even for a non-composite binding (recording ""). Skipping
+  // those would leave a SHADOWED name's old shape as the live answer:
+  // `extend_var_types` appends and `lookup_var_type` returns the LAST match
+  // (#760(4)), but `__shape$x` is a different KEY from `x`, so rebinding `x`
+  // never overwrote it. Measured before this: `let x = (1, 2); let x = 3;
+  // "\{x}"` printed `(0, 0)`, and the array case printed `[]` -- silently
+  // wrong output, no trap (Codex review on PR #1465).
+  //
+  // The empty entry is not just "no shape": interp_expand treats a RECORDED
+  // empty as "this binding is not composite, stop" rather than falling
+  // through to the older per-tuple / per-element sentinels, which have the
+  // same staleness and which this pass does not rewrite (they are read by
+  // call-site dict synthesis too, so appending empties there would change
+  // #1199's behaviour).
+  Array::push(out, (shape_key(name), sh))
+  out
 }
 
 /// #1445: every binding-site shape record, applied in one place so `ELet` and
@@ -3684,7 +3704,16 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(Stri
       // binding shape_bind declined to record (a PARAMETER annotation, which
       // seeds them directly and never goes through bind_shapes).
       match lookup_var_type(var_types, shape_key(n)) {
-        Some(sh) => Some(interp_expand_shape(EIdent(n, -1), sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+        // A RECORDED shape is the binding site's answer, empty or not: an
+        // empty one means the innermost binding of `n` is not a tuple/array,
+        // so the older sentinels (which a shadowing rebind does not clear)
+        // must NOT be consulted. Only a name with no record at all -- a
+        // parameter, seeded directly by seed_var_types -- falls through.
+        Some(sh) => if shape_is_composite(sh) {
+          Some(interp_expand_shape(EIdent(n, -1), sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+        } else {
+          interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        },
         None => match lookup_var_type(var_types, tuple_shape_key(n)) {
           Some(sentinel) => Some(interp_expand_var_tuple(n, tuple_shape_parts(sentinel), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
           None => match array_elem_type_of(var_types, n) {

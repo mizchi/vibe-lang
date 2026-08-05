@@ -343,23 +343,6 @@ fn array_contains_int(arr: Array[Int], v: Int) -> Bool {
   found
 }
 
-/// 1-based position of `v` in `arr`, or 0 when absent. The 1-based result is
-/// deliberate: it doubles as the `--invoke-batch-dir` slot number (#141), and
-/// 0 is then both "not merged" and "no slot".
-fn array_index_of_int(arr: Array[Int], v: Int) -> Int {
-  let mut i = 0
-  let mut found = 0
-  while i < Array::length(arr) {
-    if found == 0 && Array::get(arr, i) == v {
-      found = i + 1
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
 fn join_lines(lines: Array[String]) -> String {
   let n = Array::length(lines)
   if n == 0 {
@@ -898,13 +881,6 @@ fn merge_wasm_path(md_dir: String, base: String) -> String {
   "\{md_dir}/.vibe_md_merge_\{base}.wasm"
 }
 
-/// Where the batched run (#141) drops each block's stdout/stderr/status.
-/// Keyed by `md_dir` + `base` like every other scratch path here, so the
-/// per-doc workers scripts/vibe_md.sh runs in parallel never share one.
-fn merge_batch_dir(md_dir: String, base: String) -> String {
-  "\{md_dir}/.vibe_md_batch_\{base}"
-}
-
 /// Writes one .vibe per mergeable block plus the driver that imports them all
 /// and wraps each in a `test {}` block (which codegen turns into an exported
 /// `__test_<name>`).
@@ -942,58 +918,38 @@ fn compile_merged(cwd: String, compiler: String, md_dir: String, base: String) -
   cr.exit_code == 0 && file_nonempty(out)
 }
 
-/// #141: run EVERY merged block in ONE runner process.
+/// Run one merged block, in its OWN runner process.
 ///
-/// Merging (#819) already made the whole doc a single compile, but each block
-/// was still its own `--invoke` -- and therefore its own node process,
-/// ~61ms of startup + instantiate that has nothing to do with the block.
-/// `--invoke-batch-dir` (scripts/wasm_vibe_host_runner.js) accepts the
-/// repeated `--invoke` flags this always allowed and writes target i's
-/// stdout/stderr/status to `<dir>/<i>.{out,err,rc}` instead of merging them
-/// into one stream, which is the one thing that stopped a plain repeat from
-/// working here: each block's stdout has to be compared against its OWN
-/// ```output block.
+/// #141 batched all of a doc's blocks through one `--invoke-batch-dir`
+/// process. That was REVERTED here (Codex review on PR #1465) and the batch
+/// mode kept only for scripts/unit_test_runner.sh, where sharing an instance
+/// is what `_start` does anyway and is therefore a fidelity gain.
 ///
-/// Blocks stay independent MODULES inside the merged driver (see
-/// write_merged_sources), so running them back-to-back in one instance does
-/// not let one block see another's definitions -- and it is what `_start`
-/// does for any test module anyway.
+/// Here it is a fidelity LOSS. Blocks are independent modules inside the
+/// merged driver, so one cannot see another's definitions -- but two blocks
+/// that IMPORT the same module share that module's lazily-initialized
+/// top-level `let` cells within a single instance. A block that mutates such
+/// state before printing could then change a later block's stdout, and in
+/// `write` mode the harness would record that as the block's expected
+/// ```output. A doctest block's contract is "this is a standalone program",
+/// so the per-block instance is part of what is being checked.
 ///
-/// The `timeout` now bounds the whole batch rather than one block. A batch
-/// that blows it leaves the remaining `.rc` files absent, and every block
-/// without one falls back to its own standalone compile+run with the full
-/// per-block deadline -- slower than before for that doc, but never a wrong
-/// verdict.
-fn run_merged_batch(cwd: String, md_dir: String, base: String, nos: Array[Int]) -> Unit with Process + Env {
-  let dir = merge_batch_dir(md_dir, base)
-  let _ = sh_capture("rm -rf \{shq(dir)}")
-  let sb = StringBuilder::new()
-  StringBuilder::push(sb, "timeout \{md_timeout_secs()} env VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke-batch-dir \{shq(dir)}")
-  let k = Array::length(nos)
-  let mut i = 0
-  while i < k {
-    StringBuilder::push(sb, " --invoke \{shq("__test_\{merge_test_name(Array::get(nos, i))}")}")
-    i = i + 1
-  }
-  StringBuilder::push(sb, " \{shq(merge_wasm_path(md_dir, base))}")
-  // A nonzero exit just means SOME block failed; the per-slot files carry the
-  // verdicts, so there is nothing to branch on here.
-  let _ = sh_capture(StringBuilder::freeze(sb))
-}
-
-/// True once the batch has produced a verdict for this slot. A missing file
-/// is the fallback signal (batch timeout, or a trap that took the process
-/// down before later slots ran).
-fn batch_slot_ready(md_dir: String, base: String, slot: Int) -> Bool with Fs {
-  Fs::exists("\{merge_batch_dir(md_dir, base)}/\{slot}.rc")
-}
-
-fn run_merged_block(md_path: String, md_dir: String, base: String, blk: Block, slot: Int, mode: String) -> BlockResult with Fs {
+/// The cost of reverting is small and was measured: the DEFAULT parallel path
+/// (one process per doc, scripts/vibe_md.sh) is unchanged at ~4.2s, because
+/// its wall is set by the slowest doc's compile chain rather than by invoke
+/// count. Only `VIBE_MD_JOBS=1` loses, 5.97s -> 6.99s.
+fn run_merged_block(cwd: String, md_path: String, md_dir: String, base: String, blk: Block, block_no: Int, mode: String) -> BlockResult with Fs + Process + Env {
   let label = "\{md_path}:\{blk.start_line}"
-  let dir = merge_batch_dir(md_dir, base)
-  let rc = String::trim(Fs::read_file("\{dir}/\{slot}.rc"))
-  if rc != "0" {
-    let reason = first_nonblank_line(Fs::read_file("\{dir}/\{slot}.err"))
+  let timeout_secs = md_timeout_secs()
+  let target = "__test_\{merge_test_name(block_no)}"
+  let run_cmd = "timeout \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke \{shq(target)} \{shq(merge_wasm_path(md_dir, base))}"
+  let rr = sh_capture(run_cmd)
+  if rr.exit_code != 0 {
+    let reason = if rr.exit_code == 124 {
+      "timeout after \{timeout_secs}s"
+    } else {
+      first_nonblank_line(rr.stderr)
+    }
     let shown = if reason == "" {
       "runtime failure"
     } else {
@@ -1002,7 +958,7 @@ fn run_merged_block(md_path: String, md_dir: String, base: String, blk: Block, s
     BlockResult::{ label: label, status: "FAIL", reason: "[run] \{shown}" }
   } else {
     blk.has_actual_stdout = true
-    blk.actual_stdout = normalize_trailing_newline(Fs::read_file("\{dir}/\{slot}.out"))
+    blk.actual_stdout = normalize_trailing_newline(rr.stdout)
     if mode == "write" {
       BlockResult::{ label: label, status: "WROTE", reason: "" }
     } else {
@@ -1011,8 +967,8 @@ fn run_merged_block(md_path: String, md_dir: String, base: String, blk: Block, s
   }
 }
 
-fn cleanup_merged(md_dir: String, base: String, nos: Array[Int]) -> Unit with Fs + Process {
-  let _ = sh_capture("rm -rf \{shq(merge_batch_dir(md_dir, base))}")
+
+fn cleanup_merged(md_dir: String, base: String, nos: Array[Int]) -> Unit with Fs {
   let k = Array::length(nos)
   let mut i = 0
   while i < k {
@@ -1094,12 +1050,7 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
   let merged_nos = ArrayBuilder::freeze(mn)
   let merged_ok = if Array::length(merged_nos) >= 2 && !merge_disabled() {
     write_merged_sources(md_dir, base, merged_blocks, merged_nos)
-    if compile_merged(cwd, compiler, md_dir, base) {
-      run_merged_batch(cwd, md_dir, base, merged_nos)
-      true
-    } else {
-      false
-    }
+    compile_merged(cwd, compiler, md_dir, base)
   } else {
     false
   }
@@ -1111,9 +1062,8 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
         if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
           block_no = block_no + 1
           let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(block_no)}_L\{blk.start_line}"
-          let slot = array_index_of_int(merged_nos, block_no)
-          let r = if merged_ok && slot > 0 && batch_slot_ready(md_dir, base, slot) {
-            run_merged_block(md_path, md_dir, base, blk, slot, mode)
+          let r = if merged_ok && array_contains_int(merged_nos, block_no) {
+            run_merged_block(cwd, md_path, md_dir, base, blk, block_no, mode)
           } else {
             run_one_block(cwd, compiler, md_path, md_dir, scratch_name, blk, mode)
           }
