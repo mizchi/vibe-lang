@@ -21,7 +21,7 @@ let greeting: (String) -> String = (name) -> {
   "hello \{name}"
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write(greeting("world"))
 }
 
@@ -33,8 +33,8 @@ test "greeting" {
 ## Entry Point
 
 A `.vibex` executable root contains exactly one non-exported
-`fn main with { ... } { ... }`. It takes no parameters, returns `Unit`, and its
-closed effect row is explicit (`with { }` for a pure entry). The top level is
+`fn main with ... { ... }`. It takes no parameters, returns `Unit`, and its
+closed effect row is explicit (`with ()` for a pure entry). The top level is
 declarations-only, and statements/side effects live in `main`. A `.vibex` file
 cannot be imported. When you `vibe build`, `main` is lowered to the generated
 WASM `_start` ABI entry point.
@@ -42,7 +42,7 @@ WASM `_start` ABI entry point.
 ```vibe
 import ./lib/@vibe/prelude/io.vibe { stdout_write }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("1 + 2 = \{1 + 2}\n")
 }
 ```

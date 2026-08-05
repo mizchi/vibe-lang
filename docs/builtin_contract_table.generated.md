@@ -11,7 +11,7 @@ Sources:
 - `src/codegen/wasm_codegen_builtin_names.mbt`
 
 Legend:
-- `required effects` is the effect-set contract (`with {...}` requirement).
+- `required effects` is the effect-set contract (`with ...` requirement).
 - `- (do required)` means no effect-set requirement, but current checker
   requires an effect-allowed context (`do { ... }` or effectful function body).
 - `compiled` tracks the current public execution surface backed by WASM codegen.

@@ -18,7 +18,7 @@ Building the runner from source needs `git`, `bash`, and `cargo`; pass
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
 . "$HOME/.vibe/env"   # or restart the shell — ~/.vibe/bin is the PATH entry
 vibe version
-echo 'fn main with { Stdout } { Stdout::write_stream("42\\n") }' > hello.vibex
+echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
@@ -30,7 +30,7 @@ to update the compiler independently of the runner.
 ```vibe
 // Effect-typed error handling: failure travels in the effect row, not in the
 // return type, so the success value flows straight through to the caller.
-fn safe_div(a: Int, b: Int) -> Int with { Exception[String] } {
+fn safe_div(a: Int, b: Int) -> Int with Exception[String] {
   match b {
     0 => throw("division by zero"),
     _ => a / b
@@ -44,7 +44,7 @@ fn Point::manhattan(p: Point) -> Int {
   p.x + p.y
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   // `handle` is where the row is discharged — no per-call unwrapping.
   let result = handle {
     safe_div(10, 2) + Point::manhattan(Point::{ x: 3, y: 4 })
@@ -66,7 +66,7 @@ cannot drift apart.
 
 ## Features
 
-- Type inference with row-polymorphic effects (`with {Async}`, `with {Error}`)
+- Type inference with row-polymorphic effects (`with Async`, `with Error`)
 - Pattern matching and destructuring, including struct/record forms
 - Module system with import/export, `.vibei` package contracts
 - Async/await syntax (runtime gate: `--unstable-async`)

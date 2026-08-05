@@ -15,10 +15,10 @@ vibe ランタイムは pure 関数の結果を content-addressed cache に保�
 
 ### 問題
 
-`purity_for_let` が関数の `effects` 宣言を無視していた (`effects=_`)。これにより `with { Fs }` のような effect 付き関数でも、body が pure なら関数全体が pure と判定された。
+`purity_for_let` が関数の `effects` 宣言を無視していた (`effects=_`)。これにより `with Fs` のような effect 付き関数でも、body が pure なら関数全体が pure と判定された。
 
 ```vibe
-export let exists: (String) -> Bool with { Fs } = (path) -> {
+export let exists: (String) -> Bool with Fs = (path) -> {
   do { Fs::exists(path) }
 }
 ```

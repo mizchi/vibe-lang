@@ -334,12 +334,12 @@ let found = match Array::find([1, 2, 3], (x) -> { x > 1 }) {
 
 ## Effects
 
-Functions declare required effects with `with { ... }`.
+Functions declare required effects with `with ...`.
 
 ```vibe
 // sh / sh_lines require the Process effect; sh returns the captured
 // output (String), so discard it explicitly in a Unit function
-let run: () -> Unit with { Process } = () -> {
+let run: () -> Unit with Process = () -> {
   let _ = sh("echo hello")
 }
 ```
@@ -348,16 +348,16 @@ let run: () -> Unit with { Process } = () -> {
 
 ```vibe
 // stub stages so the example is self-contained
-fn parse_id(raw: String) -> Int with { Exception[String] } { 1 }
-fn validate_id(id: Int) -> Int with { Exception[String] } { id }
-fn load_user(id: Int) -> Int with { Exception[String] } { id }
+fn parse_id(raw: String) -> Int with Exception[String] { 1 }
+fn validate_id(id: Int) -> Int with Exception[String] { id }
+fn load_user(id: Int) -> Int with Exception[String] { id }
 
-fn fetch_user(raw: String) -> Int with { Exception[String] } {
+fn fetch_user(raw: String) -> Int with Exception[String] {
   raw |> parse_id |> validate_id |> load_user
 }
 
 // Boundary helper when you need local Error handling
-let safe_div: (Int, Int) -> Int with { Error } = (a, b) -> {
+let safe_div: (Int, Int) -> Int with Error = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
@@ -370,7 +370,7 @@ let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 Effect-polymorphic functions propagate callee effects via `{ e }`.
 
 ```vibe
-let apply: [T, U]((T) -> U with { e }, T) -> U with { e } = (f, x) -> {
+let apply: [T, U]((T) -> U with e, T) -> U with e = (f, x) -> {
   f(x)
 }
 
@@ -389,12 +389,12 @@ suberror AppError {
   InvalidInput(Int)
 }
 
-let risky: () -> Int with { Error } = () -> {
+let risky: () -> Int with Error = () -> {
   throw(NotFound("missing"))
 }
 
 // #1324: the failure rides the row; the boundary is a `handle` at the edge.
-fn lookup_user(raw: String) -> String with { Exception[AppError] } {
+fn lookup_user(raw: String) -> String with Exception[AppError] {
   if raw == "" { throw(NotFound("missing")) } else { raw }
 }
 
@@ -413,7 +413,7 @@ effect Ask {
   Question(Int) -> Int
 }
 
-let ask_once: () -> Int with { Ask } = () -> {
+let ask_once: () -> Int with Ask = () -> {
   perform Ask::Question(41)
 }
 
@@ -431,7 +431,7 @@ Requires `--unstable-async` flag.
 
 <!-- doctest-skip: `yield` は現行 build path 未サポート (--unstable-async gated の experimental 例) -->
 ```vibe skip
-let delayed: () -> Int with { Async } = () -> {
+let delayed: () -> Int with Async = () -> {
   yield
   42
 }

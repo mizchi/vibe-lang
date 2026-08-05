@@ -27,11 +27,11 @@ test "test name" {
   // body
 }
 
-test "test name" with { Exception, Fs } {
+test "test name" with Exception + Fs {
   // body
 }
 
-example "example name" for Array::get with { Exception } {
+example "example name" for Array::get with Exception {
   let xs = [10, 20]
   assert_eq(Array::get(xs, 0), 10)
 }
@@ -57,13 +57,13 @@ capability を宣言しなければならない。
 
 ```vibe
 // OK
-test "pure" with { Exception } { assert_eq(1, 1) }
+test "pure" with Exception { assert_eq(1, 1) }
 
 // OK
-test "reads fixture" with { Exception, Fs } { /* ... */ }
+test "reads fixture" with Exception + Fs { /* ... */ }
 
 // Error: an explicit test/example effect row must include Exception
-test "invalid" with {} { assert_eq(1, 1) }
+test "invalid" with () { assert_eq(1, 1) }
 ```
 
 この規則により、test の failure / early-exit 経路も declaration から読める。
@@ -81,7 +81,7 @@ capability である。
 下げるため、`DevEnv` を定義済み development capability bundle とする。
 
 ```vibe
-test "local integration" with { Exception, DevEnv } {
+test "local integration" with Exception + DevEnv {
   // development fixture を使う
 }
 ```

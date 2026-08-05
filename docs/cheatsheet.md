@@ -13,7 +13,7 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 // checker reports `unknown function: String::stdout_write`).
 import ./lib/@vibe/prelude/io.vibe { stdout_write }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("hello world\n")
 }
 ```
@@ -573,7 +573,11 @@ the type system. An empty row excludes escaping `Error`, but does not guarantee
 termination or exclude panic, Wasm trap, or resource exhaustion (ADR-0073).
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
 missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
-`hint:` line suggesting the exact `with { ... }` row to declare (#639).
+`hint:` line suggesting the exact `with ...` row to declare (#639). That
+diagnostic text is quoted verbatim from the checker
+(`checker_effects.vibe`), which still spells its effect sets with braces —
+it is compiler OUTPUT, not source you write, and #1429's braceless row
+syntax does not change it.
 
 ### Failure-carrying pipeline
 
@@ -582,11 +586,11 @@ missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
 
 <!-- doctest-skip: `...` ellipsis による意図的省略 (パイプライン形の提示) -->
 ```vibe skip
-fn parse_id(raw: String) -> Int with { Exception[String] } { ... }
-fn validate_id(id: Int) -> Int with { Exception[String] } { ... }
-fn load_user(id: Int) -> String with { Exception[String] } { ... }
+fn parse_id(raw: String) -> Int with Exception[String] { ... }
+fn validate_id(id: Int) -> Int with Exception[String] { ... }
+fn load_user(id: Int) -> String with Exception[String] { ... }
 
-fn fetch_user(raw: String) -> String with { Exception[String] } {
+fn fetch_user(raw: String) -> String with Exception[String] {
   raw |> parse_id |> validate_id |> load_user
 }
 
@@ -661,7 +665,7 @@ opt |> tap_some((v) -> stdout_write("got \{v}\n"))
 ### Error boundary (`throw` / `handle`)
 
 ```vibe
-let risky: (Int) -> Int with { Error } = (x) -> {
+let risky: (Int) -> Int with Error = (x) -> {
   if x == 0 { throw("division by zero") }
   100 / x
 }
@@ -676,8 +680,8 @@ arm 内の `resume(...)` は checker がエラーにする。
 Stage 2 (#640) で `throw(x)` は parse 時に `perform Error::Throw(x)` へ脱糖され、
 両綴りはパイプライン全体で単一の内部表現になった（printer は `throw(x)` に
 再糖衣する）。`perform Error::Throw(x)` は effect-row 上も `throw` と同じ扱いで、
-現在の関数が `with { Error }` を宣言するか、囲む `handle Error` で放電する必要が
-ある。`fn main with { Error }` から escape した Error は runtime 最外周で診断付きの
+現在の関数が `with Error` を宣言するか、囲む `handle Error` で放電する必要が
+ある。`fn main with Error` から escape した Error は runtime 最外周で診断付きの
 異常終了へ変換される。
 
 ### Typed exceptions (`Exception[E]`, ADR-0085 / #1344)
@@ -695,7 +699,7 @@ enum ParseError {
 }
 
 // この関数が投げうるのは IoError だけ、と row が言う
-let read_cfg: () -> Int with { Exception[IoError] } = () -> {
+let read_cfg: () -> Int with Exception[IoError] = () -> {
   throw(NotFound("cfg"))
 }
 
@@ -714,7 +718,7 @@ let n = handle { read_cfg() } with Exception[IoError] { Throw(_e) => 0 }
 - `Exception[IoError]` は `Exception[ParseError]` を authorize も discharge も
   しない。row に無い kind を投げると `missing { Exception[IoError] }`。
 - **`Error` / `Exception` (bracket なし) は全 kind と compatible** な erased
-  綴り。既存の `with { Error }` は今までどおり何でも投げられるし、erased な
+  綴り。既存の `with Error` は今までどおり何でも投げられるし、erased な
   `handle .. with Error` は kind 付きの throw も捕まえる。
 - payload の kind が解決できない throw (例: `throw(e)` の `e` が local
   binding) は erased 扱いになり、どの `Exception[K]` でも通る (gradual)。
@@ -759,12 +763,12 @@ effect Logger {
   Log(String) -> Unit
 }
 
-let greet: (String) -> Unit with { Logger } = (name) -> {
+let greet: (String) -> Unit with Logger = (name) -> {
   perform Logger::Log("hello \{name}")
 }
 
 // the handler arm calls stdout_write, so the executable entry carries Stdout
-fn main with { Stdout } {
+fn main with Stdout {
   handle { greet("world") } with Logger {
     Log(msg) => {
       stdout_write(msg)
@@ -782,7 +786,7 @@ fn main with { Stdout } {
 > 上限は消滅)。代償として、handle body から届く perform は migration が
 > 静的に追える形 (直接 perform / named top-level fn 呼び出し /
 > row 注釈付き closure literal / let 束縛の local closure) に限られる —
-> 追えない形 (row 変数 `with { e }` の callee 経由など) の非 Error handle
+> 追えない形 (row 変数 `with e` の callee 経由など) の非 Error handle
 > は **compile error** になる ("replay engine was removed")。
 
 **`resume` は arm 内で第一級の one-shot 値** (ADR-0076 Phase 3a, #817):
@@ -812,17 +816,17 @@ let/seq/tail/分岐 tail に直接現れる必要がある。**concrete な row 
 対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
 再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
 向けに無変更)。それ以外に呼べるのは perform / pure builtin / ctor /
-「concrete row が対象 effect を含まない関数」。row 変数 (`with { e }`)
+「concrete row が対象 effect を含まない関数」。row 変数 (`with e`)
 付き callee・loop 内の perform は compile error。同じ継続の 2 回目の
 呼び出しは stderr 診断つきで trap する。post-processing は値経由
 (`let k = resume  let r = k(v)  r + 7`) で書く。
 
 **closure 値経由の suspend も可** (closure-CPS ABI, ADR-0076 追記31):
-`fn run_with(f: () -> Int with { E }) -> Int { handle { f() } with E
+`fn run_with(f: () -> Int with E) -> Int { handle { f() } with E
 {...} }` のように、suspend する body を **closure 引数**として渡せる
 (handle site を library 側に置ける — `TaskGroup::spawn_suspend` が
 この形)。suspend する closure literal には**明示 row 注釈が必要**:
-`() -> Int with { E } { ... }` (無注釈 lambda の effect は enclosing の
+`() -> Int with E { ... }` (無注釈 lambda の effect は enclosing の
 row へ継承されるため、#761)。同じ effect を「resume 値参照の handler」
 と「tail-resumptive handler」で混在させたまま closure を step-compile
 するプログラムは compile error (規約整合ガード)。
@@ -839,7 +843,7 @@ path` と reject する (#814)。非 tail 継続は evidence-passing handler 移
 ### Effect polymorphism
 
 ```vibe
-let apply: [T](f~: (T) -> T with { e }, x~: T) -> T with { e } = (f~, x~) -> {
+let apply: [T](f~: (T) -> T with e, x~: T) -> T with e = (f~, x~) -> {
   f(x)
 }
 ```
@@ -938,18 +942,18 @@ vibe test dir/            # run all tests in directory (examples run too)
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->
 ```vibe skip
-stdout_write(s)    // with { Stdout }
-stdin_read_line()  // with { Stdin }
-sh("ls -la")       // with { Stdout } - shell command
+stdout_write(s)    // with Stdout
+stdin_read_line()  // with Stdin
+sh("ls -la")       // with Stdout - shell command
 sh_lines("ls")     // -> Array[String]
 ```
 
 **Profiling** (require `Profiler` effect; linear backend only; use the
 direct-call surface — unhandled `perform` throws):
-<!-- doctest-skip: effect context (with { Profiler }) 無しの直接呼び出し例 -->
+<!-- doctest-skip: effect context (with Profiler) 無しの直接呼び出し例 -->
 ```vibe skip
-Profiler::now_us()      // with { Profiler } - elapsed µs (wall clock)
-Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
+Profiler::now_us()      // with Profiler - elapsed µs (wall clock)
+Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
                         // (bytes allocated); deltas attribute allocation the
                         // way now_us deltas attribute time (heap never shrinks)
 ```
@@ -961,7 +965,7 @@ Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
 <!-- doctest-skip: 未定義名 (read_config / parse / process / risky / xs / parse_int 等) を参照するイディオム断片 -->
 ```vibe skip
 // Failure composition: the row carries it, so stages just chain
-// (fn read_config() -> Config with { Exception[String] } etc.)
+// (fn read_config() -> Config with Exception[String] etc.)
 let result = read_config() |> parse |> process
 
 // Boundary at the edge
@@ -1126,6 +1130,16 @@ enforce しない (fixtures/contract_* の最小契約テストを壊さない�
 戻しできる — 自己参照 (書き込んだ値が次の計算の入力に混ざる) を避けるため、
 ハッシュ計算は常にその index.vpkg 自身の `generated_hash` 行を空白化した
 上で行われ、再実行しても同じ値になる (idempotent)。
+
+ヘッダの綴りは **フォーマッタが正規化し、CI が enforce する** (#1435)。
+`bash scripts/vibe_fmt.sh <index.vpkg>` / `pkf run fmt` がキーの順序
+(`name` → `version` → `main` → `description` → `deps` → `require` → 空行 →
+`generated_hash`)、`= ` の後の空白、`#|` と dep 行の 2 スペース字下げ、
+`@scope/dep : x.y.z` の空白、deps の名前順ソートを揃える。ヘッダは vibe
+構文ではないので `.vibe` 用の CST formatter は通さず、専用の writer が
+書き出す (境界判定は `scan_package_header` の行分類をそのまま写したもの)。
+ヘッダが loader にとって不正な形の場合、フォーマッタはファイルに一切
+触らない — 詳細は [docs/cli-commands.md](cli-commands.md) の `fmt` 節。
 
 ---
 

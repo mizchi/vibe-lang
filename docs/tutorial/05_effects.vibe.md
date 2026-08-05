@@ -2,7 +2,7 @@
 
 前章: [04 Option](04_option.vibe.md)
 
-vibe は**純粋がデフォルト**。副作用は型の `with { ... }` 行 (effect row) で
+vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect row) で
 宣言し、呼び出し側は `handle` で境界を引くまで伝播する。
 
 ## Exception 境界 — perform / handle
@@ -18,14 +18,14 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn risky(x: Int) -> Int with { Exception } {
+fn risky(x: Int) -> Int with Exception {
   if x == 0 {
     perform Exception::Throw("division by zero")
   }
   100 / x
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let safe = handle {
     risky(0)
   } with Exception {
@@ -68,11 +68,11 @@ effect Ask {
   Value(String) -> Int
 }
 
-fn answer_of(q: String) -> Int with { Ask } {
+fn answer_of(q: String) -> Int with Ask {
   perform Ask::Value(q) + 1
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   // handler が resume(v) で perform 地点に値を返す (one-shot tail-resumptive)
   let v = handle {
     answer_of("life")
@@ -102,11 +102,11 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn apply_twice(f~: (Int) -> Int with { e }, x~: Int) -> Int with { e } {
+fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}\n")
 }
 ```

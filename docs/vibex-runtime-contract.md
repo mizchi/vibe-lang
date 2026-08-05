@@ -106,7 +106,7 @@ AWS SDK、Http、proxy、in-memory mock のいずれでも実装できる。S3 �
 canonical entry は次の形である。
 
 ```vibe skip
-fn main with { S3::Read[Posts], Stdout::write } {
+fn main with S3::Read[Posts] + Stdout::write {
   ...
 }
 ```
@@ -144,11 +144,11 @@ effectset S3::Read[B] = {
   S3[B]::get_object,
 }
 
-fn load[B: S3::Bucket]() -> Bytes with { S3::Read[B] } {
+fn load[B: S3::Bucket]() -> Bytes with S3::Read[B] {
   perform S3[B]::get_object("posts.json")
 }
 
-fn main with { S3::Read[Posts], Stdout::write } {
+fn main with S3::Read[Posts] + Stdout::write {
   Stdout::write(load[Posts]())
 }
 ```
@@ -244,7 +244,7 @@ BindingLock {
 `fork_requires ⊆ requires` を必須 invariant とする。resource identity、operation
 identity、provider ABI/version、target world version は contract hash に入れる。
 
-> **拡張 (2026-07-31, ADR-0088)**: Optional capability(`allows { Fs::Read[X]? }`)
+> **拡張 (2026-07-31, ADR-0088)**: Optional capability(`allows Fs::Read[X]?`)
 > の導入に伴い、`BindingLock` には `optional_resolution: Map[OperationRef,
 > Granted | NotGranted]` が加わる(apply 時に一回だけ確定する参照テーブル。
 > `perform?` は実行中これを引くだけの純粋参照)。`Entry.requires` の起動判定は

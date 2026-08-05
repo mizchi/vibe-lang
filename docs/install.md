@@ -39,7 +39,7 @@ Then:
 
 ```bash
 vibe version
-echo 'fn main with { Stdout } { Stdout::write_stream("42\\n") }' > hello.vibex
+echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
@@ -149,7 +149,7 @@ vibe fetch                     # downloads into ./deps/, writes vibe.lock
 ```vibe
 import ./deps/mathlib.vibe { add }        # single-file dep
 import ./deps/mymod/index.vibe { thing }  # git dep (vendored as a directory)
-fn main with { Stdout } { Stdout::write_stream("\{add(40, 2)}\n") }
+fn main with Stdout { Stdout::write_stream("\{add(40, 2)}\n") }
 ```
 
 `vibe fetch` records each dep's resolved identity in `vibe.lock` for

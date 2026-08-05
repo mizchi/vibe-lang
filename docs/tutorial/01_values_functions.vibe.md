@@ -15,7 +15,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let x: Int = 42
   // 62-bit tagged。リテラル上限 2^61-1
   let d: Double = 3.14
@@ -58,7 +58,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let y = {
     let mut v = 0
     v += 1
@@ -125,7 +125,7 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   stdout_write("add(1, 2) = \{add(1, 2)}\n")
   stdout_write("fact(5) = \{fact(5)}\n")
   stdout_write("identity(7) = \{identity(7)}\n")
@@ -150,7 +150,7 @@ import @vibe/prelude {
   stdout_write
 }
 
-fn main with { Stdout } {
+fn main with Stdout {
   let xs = [
     1,
     2,

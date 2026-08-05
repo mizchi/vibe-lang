@@ -53,9 +53,9 @@ Flix の region はこの3つを1つの機構で与える形であり、vibe に
 ### 3. effect row 統合(Flix の `\ r`)
 
 - region の可変メモリに触れる関数は row に `r` を書く:
-  `fn fill(l: MutList[Int, r]) -> Unit with { r }`。
+  `fn fill(l: MutList[Int, r]) -> Unit with r`。
 - 正規化は ADR-0071 が予約済みの **region 引数 kind** を使い、effect 変数
-  (`with { e }`)とは別 kind として扱う(effectset.md の「resource
+  (`with e`)とは別 kind として扱う(effectset.md の「resource
   identity と nursery/borrow region を混同しない」を維持)。
 - `region r { ... }` の終端で `r` は**必ず discharge** される(Flix と
   同じ)。したがって `main` の row に region が残ることはなく、ADR-0084 の

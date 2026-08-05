@@ -56,13 +56,13 @@ async モデルへ寄せていくための設計判断と段階プランを定�
 
 ### 2.2 構文
 
-vibe には `fn` キーワードが無く、関数は `let f: (A) -> B with { E } = (x) -> {}`
-形式で副作用は effect row (`with { E }`) で表現する。したがって **`async`
+vibe には `fn` キーワードが無く、関数は `let f: (A) -> B with E = (x) -> {}`
+形式で副作用は effect row (`with E`) で表現する。したがって **`async`
 キーワードは導入しない**。代わりに:
 
 - **`await` は effectful な操作**で、`Async` effect を帯びる。`throw`→`Error`
   / `perform Eff::Op`→`Eff` と同じ扱い。「async 関数」= **effect row に
-  `Async` を持つ関数**（`with { Async }`）であり、特別な宣言構文ではない。
+  `Async` を持つ関数**（`with Async`）であり、特別な宣言構文ではない。
   `await(f)` は `Future[T]` を待って `T` を得る。
 - `Async` を持つ計算を非 `Async` 文脈で使うと、既存の effect-escape チェック
   (`checker_effects.vibe` の `EEEffectfulCallOutsideEffect`) がエラーにする。
@@ -92,7 +92,7 @@ front-end は **lexer/parser/AST/core-Type の変更ゼロ**で着地した:
   `ECall(EIdent("await"), [f])` として既存 parser でそのまま通る。
 - checker builtin として登録（`lib/@vibe/compiler/checker/builtins_async.vibe`、
   `lookup_builtin` 経由）:
-  - `await : (Future[T]) -> T with { Async }`（`throw` と同型、effect=`Async`）
+  - `await : (Future[T]) -> T with Async`（`throw` と同型、effect=`Async`）
   - `Future::ready : (T) -> Future[T]`（pure、テスト用に future を構築）
 - `Future[T]` は `CtNamed("Future", [..])` で構造的に表現（core `Type` enum
   非変更）。要素型は他 builtin と同様 `CtUnknown`（gradual）。
@@ -116,11 +116,11 @@ WASI 0.3 の `stream<T>` を、vibe の `Iterator`（ADR-0044）と**同じコ�
 形**で扱う pull ベースの async 列として言語に取り込む。sync の `Iterator::*` と
 同形の API で、`next` が `Future` を返し `fold` が `Async` を帯びる点だけが違う:
 
-- `Stream::next : (Stream[T]) -> Future[Option[T]] with { Async }`（`None` で終端）
+- `Stream::next : (Stream[T]) -> Future[Option[T]] with Async`（`None` で終端）
 - `Stream::empty : () -> Stream[T]` / `Stream::once : (T) -> Stream[T]`（pure）
 - `Stream::map : (Stream[T], (T)->U) -> Stream[U]`（lazy, pure）
 - `Stream::filter : (Stream[T], (T)->Bool) -> Stream[T]`（lazy, pure）
-- `Stream::fold : (Stream[T], A, (A,T)->A) -> Future[A] with { Async }`
+- `Stream::fold : (Stream[T], A, (A,T)->A) -> Future[A] with Async`
 - `ByteStream = Stream[Int]` が WASI `stream<u8>` / HTTP body に直結。
 - `for x in s { ... }`（`s.next()` を `await` するループへ desugar）は M1a の
   `await` と同じく後続（front-end は builtin 呼び出しで先行）。
@@ -144,11 +144,11 @@ WASI 0.3 の `stream<T>` を、vibe の `Iterator`（ADR-0044）と**同じコ�
 > 動く並行 surface は `lib/@vibex/concurrent`（`TaskGroup::spawn_suspend` /
 > `TaskHandle::join` / `sleep_wait`）。以下は撤去された surface の記録。
 
-- ~~`Task::spawn : (() -> T with { Async }) -> Task[T] with { Async }`~~ — 子タスク生成
-- ~~`Task::join : (Task[T]) -> T with { Async }`~~ — 結果を待つ
-- ~~`Task::cancel : (Task[T]) -> Unit with { Async }`~~ — キャンセル要求
-- ~~`Task::race : (Task[T], Task[T]) -> T with { Async }`~~ — 先着、敗者は cancel
-- ~~`Task::timeout : (Int, () -> T with { Async }) -> Option[T] with { Async }`~~
+- ~~`Task::spawn : (() -> T with Async) -> Task[T] with Async`~~ — 子タスク生成
+- ~~`Task::join : (Task[T]) -> T with Async`~~ — 結果を待つ
+- ~~`Task::cancel : (Task[T]) -> Unit with Async`~~ — キャンセル要求
+- ~~`Task::race : (Task[T], Task[T]) -> T with Async`~~ — 先着、敗者は cancel
+- ~~`Task::timeout : (Int, () -> T with Async) -> Option[T] with Async`~~
   — 期限切れで `None`（内側 task を cancel）
 
 この surface の `spawn` は child lifetime を型に持たず、`race` の loser
@@ -183,7 +183,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   「join = identity」「cancel = drop して Unit」「race = 先行 task の値」という
   同期セマンティクスへ lower（`compile_call.vibe`）。`Task::spawn` は 0 引数
   closure（thunk）を `call_indirect`（closure type 9）で呼ぶ。`await` /
-  `Future::ready` と同じ系列で、async component（`with { Async }`）に包まれ
+  `Future::ready` と同じ系列で、async component（`with Async`）に包まれ
   wasmtime 45 上で実行可能だった。**#1227 でこの lowering ごと撤去し**、
   `test_async_component_gate.sh` の Task entry も外した（`option` entry の
   `Task::timeout` は `Stream::next(Stream::once(1))` に差し替え、合計 42 を維持）。
@@ -240,7 +240,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   iterand の型（`C::next` の戻りが `Future` か）だけで決まっており構文
   マーカーは情報を足していなかった**ため、#1350 で `for await` と
   `__await_iter` マーカーを撤去し `for` に統合した（iteration が suspend
-  しうることは effect row `with { Async }` が既に語る — ADR-0089 D1 が
+  しうることは effect row `with Async` が既に語る — ADR-0089 D1 が
   `sleep` から関数色付けを外したのと同じ理由）。eager Stream model では
   `Stream[T]` は実行時 `Array[T]` なので `EForIn`（tag 18 =
   `Array::length`/`Array::get` ループ）へそのまま lower される。checker の
@@ -444,7 +444,7 @@ emit すべき正確なバイト列（wasmtime 45 で検証済み）。`componen
 **フラグ**: `-W concurrency-support=y -W component-model-async=y
 -W component-model-async-stackful=y`。
 
-最初の縦串 PoC は await 無し（`() -> Int with { Async }` の body が定数 / 純粋
+最初の縦串 PoC は await 無し（`() -> Int with Async` の body が定数 / 純粋
 計算）で `task.return` 経路を通し、その後 `await(Future::ready(x))` → 単一
 `future.read` ブロックへ広げる。
 
@@ -499,11 +499,11 @@ env-alias, tramp) / async functype / alias tramp.run / async lift / export）。
 ### 3.5 M1b-2c orchestration（landed）+ M1b-2d（WASI import 配線）
 
 `compile_source_wasi_only`（cli adapter 経路 `selfbuild_cli_args_entry` が通る
-universal な source-compile）に、entry が `() -> Int with { Async }`（name
+universal な source-compile）に、entry が `() -> Int with Async`（name
 "run"、no params）であることを **AST の TyFn effect 注釈から検出**して
 `comp_emit_component_wasm_async_trampolined` で包む hook を追加。
 
-**実測（stage1 selfhost compiler、`let run: () -> Int with { Async } = () -> { 42 }`）**:
+**実測（stage1 selfhost compiler、`let run: () -> Int with Async = () -> { 42 }`）**:
 - 出力が **component**（magic `0d 00 01 00`）になり `wasm-tools validate` OK。
 - 非 async entry（`run : () -> Int`）は **plain core module のまま**（無回帰）。
 - ただし wasmtime 実行は instantiate で失敗: main core module が
@@ -526,7 +526,7 @@ universal な source-compile）に、entry が `() -> Int with { Async }`（name
 -W component-model-async-stackful=y`。
 
 **実測結果**: stage1 selfhost compiler が
-`let run: () -> Int with { Async } = () -> { 42 }` をコンパイル → component
+`let run: () -> Int with Async = () -> { 42 }` をコンパイル → component
 （`wasm-tools validate` OK）→ wasmtime 45 で **42 を返す**。M1（async front-end）
 〜 M1b（codegen + orchestration）の縦串が `.vibe` ソースから実機実行まで完成。
 
@@ -1029,7 +1029,7 @@ viberun 上で 42 を返す（producer delay 300ms で実測 ~313ms —
 wall clock が genuine park/wake の証明）:
 
 ```vibe
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let f = host_future_get()
   await(f)
 }
@@ -1154,7 +1154,7 @@ hooks mode で異なる schedule を通るが観測結果は不変。
 1 名前」であることに合わせた形。
 
 ```vibe
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let a = host_future_named("price")
   let b = host_future_named("qty")
   await(a) + await(b)      // 2本が同時に in-flight
@@ -1238,13 +1238,13 @@ bump で encoding が変わったら「終わらない reader」ではなく gat
 **このスライスで landed したのはここまで**（probe + viberun の host stream
 import + gate）。残りの Decision 3 = guest surface
 （`host_stream_named(name) -> ByteStream` / `ByteStream::next(s) -> Int
-with { Async }`）、`Suspend` の stream 帯と entry boundary の settle arm、
+with Async`）、`Suspend` の stream 帯と entry boundary の settle arm、
 per-name `stream<u8>` component import を出す composer、AsyncIter/`for await`
 への接続。設計は §3.16 の named host futures と同型で、park が「future 1本
 ごと」から「read 1回ごと」に変わる点だけが違う。
 → **guest surface / stream 帯 / composer は §3.18 で landed**。`for await`
 という別綴りは **#1350 で削除済み** — iteration の suspend 可能性は effect
-row（`with { Async }`）が既に語っており、構文レベルの `await` マーカーは
+row（`with Async`）が既に語っており、構文レベルの `await` マーカーは
 二重表現だったため、素の `for` に一本化した（同期/非同期の選択は iterand の
 型だけで決まる）。**`for` からの消費は #1341 で landed**（§3.18.2）。残るは
 一般 `Stream::next`（`Future[Option[T]]` protocol）と eager `Stream[T]`
@@ -1280,7 +1280,7 @@ wrap され、viberun（`VIBE_ASYNC_STREAMS="body=10|15|17"`）上で **42** を
 返す:
 
 ```vibe
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let mut sum = 0
   let mut b = host_stream_next(s)
@@ -1297,7 +1297,7 @@ lowering は §3.16 の named host futures と同型で、park が「future 1本
 
 1. **surface**: `host_stream_named: (String) -> Stream[Int]`（pure。名前は
    §3.16 と同じ string-literal + component-label 検証）と
-   `host_stream_next: (Stream[Int]) -> Int with { Async }`（次の byte
+   `host_stream_next: (Stream[Int]) -> Int with Async`（次の byte
    0-255、writer が居なくなったら -1。以後の read は cell 側で latch されて
    -1 のまま）。§3.17 の予告した `ByteStream::next` ではなく
    `host_stream_next` の綴りにしたのは、eager な `Stream[Int]`
@@ -1358,7 +1358,7 @@ D3 の「AsyncIter への接続」の最初のスライス。**着手前に測�
 決めた**:
 
 ```vibe skip
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let mut sum = 0
   for b in s { sum = sum + b }
@@ -1378,7 +1378,7 @@ cell の2語（state 3 + handle 1）を足していた。**診断も trap も出
 **表現ごとに別の名前型を与える**こと:
 
 - `host_stream_named(name) -> HostStream`（`Stream[Int]` ではない）
-- `host_stream_next(HostStream) -> Int with { Async }`
+- `host_stream_next(HostStream) -> Int with Async`
 - `host_stream_close(HostStream) -> Unit`
 
 これで eager 用の `Stream::map` / `Stream::fold` / `Stream::to_string` を
@@ -1461,7 +1461,7 @@ surface は `host_stream_close: (Stream[Int]) -> Unit`。**`Async` は付かな�
 boundary settle arm も要らず、注入 fn `__hs_close` が adapter を直接呼ぶ。
 
 ```vibe
-let run: () -> Int with { Async } = () -> {
+let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let a = host_stream_next(s)
   let b = host_stream_next(s)
@@ -1644,11 +1644,11 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **M0** | wasmtime 45.0.2 bump、P3 WIT 文字列を `rc-2026-03-15` に統一、ADR-0012 更新 + 本 spec 起票 | done |
 | **M0.1** | wasmtime 46.0.1 / ratified `wasi:http@0.3.0` cutover（#821）: vendored WIT 再取得、adapter/gate の pin 更新、CI wasmtime pin を 45.x→46.0.1、45.x leg は async-only の compat leg に縮小（§5.1） | done |
-| **M1a** | async front-end: `await` builtin (`(Future[T]) -> T with { Async }`) + `Future::ready` + `Future[T]`=CtNamed、effect-escape 検証。lexer/parser/core-Type 非変更 | done |
+| **M1a** | async front-end: `await` builtin (`(Future[T]) -> T with Async`) + `Future::ready` + `Future[T]`=CtNamed、effect-escape 検証。lexer/parser/core-Type 非変更 | done |
 | **M1b-1** | codegen emitter（component 側）: `comp_emit_component_wasm_async` + `task.return` canon + async lift + async functype。byte-exact verified（test 10/10） | done |
 | **M1b-2a** | アプローチ確定（**trampoline 方式**、`linked_compile` 無改修）を実測（`cm_async_trampoline_probe.wat` が wasmtime 45 で 42）。2-module 合成の exact byte blueprint 確定 | done |
 | **M1b-2b** | emitter 実装: `comp_generate_async_trampoline` + `comp_emit_component_wasm_async_trampolined`（2-module 合成）+ byte test | 未着手 |
-| **M1b-2c** | orchestration: `compile_source_wasi_only` が entry の `() -> Int with { Async }`（name="run"）を AST から検出し、core wasm を `comp_emit_component_wasm_async_trampolined` で包む。selfhost compiler（stage1）で `.vibe` → **component を出力**（magic 0d 00 01 00、`wasm-tools validate` OK）、非 async は plain core のまま（無回帰） | done |
+| **M1b-2c** | orchestration: `compile_source_wasi_only` が entry の `() -> Int with Async`（name="run"）を AST から検出し、core wasm を `comp_emit_component_wasm_async_trampolined` で包む。selfhost compiler（stage1）で `.vibe` → **component を出力**（magic 0d 00 01 00、`wasm-tools validate` OK）、非 async は plain core のまま（無回帰） | done |
 | **M1b-2d** | 真の run: fd_write stub module を component に同梱し main の instantiation に供給、entry の `(param i64)->i64` 規約に合わせ trampoline が dummy i64 引数で呼ぶよう修正、wasmtime に exceptions flag。**縦串完成: selfhost が `.vibe` async entry → async component → wasmtime 45 で 42 を返す** | **done** |
 | **M1b-2e** | 回帰保護 gate（`test-async-component`）＋ CI 配線 | done |
 | **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
@@ -1670,11 +1670,11 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **ADR-0089 step 2 (future.*/stream.*)** | `future.new/read/write/drop-*` と `stream.new/read/write/drop-*` の canon emitter + `(future u32)`/`(stream u8)` 型 section + 固定シェイプ `comp_emit_component_wasm_future_value`/`comp_emit_component_wasm_stream_value`（self-contained 単一 task の read/write rendezvous、§3.12）。probe（`future_value/component.wat`・`stream_value/component.wat`、wasmtime 47 実測 42）→ byte-exact 移植。gate = `test_future_value_component_gate.sh`/`test_stream_value_component_gate.sh`（wasmtime CLI 直駆動、`more-async-builtins` flag） | done（#1218） |
 | **ADR-0089 step 4 (実ソース await → waitable)** | 実 `.vibe` ソースの `await` を component 経路へ配線（§3.14）: `host_future_get() -> Future[Int]`（cell state 2 = waitable）→ 拡張 `__aw_poll` の `Suspend(handle + 2)` → entry boundary `__entry_settle` → adapter の `future.read`/`waitable-set.wait`。`comp_emit_component_wasm_async_hostfuture`（memhost + 値渡し i64 adapter、u32 lift、wrap は core import sniff で自動 route）。gate = `test_hostfuture_source_component_gate.sh`（viberun 駆動、42 + wall >= 0.8×delay + p1 routing control） | done（#1218） |
 | **ADR-0089 resolve→direct wake** | in-guest poll モデルの O(rounds×awaiters) 最適化（§3.15、意味論不変）: waiter list + `direct_wait` skip + 完了 notify（library）、`__aw_wait`/`__aw_notify_resolve` hooks の auto-link（compiler）、once-per-progress の fallback valve で notify 漏れは poll に縮退・deadlock trap は保存 | done（#1218） |
-| **ADR-0089 Decision 5 (wit_gen async)** | `with { Async }` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
+| **ADR-0089 Decision 5 (wit_gen async)** | `with Async` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
 | **ADR-0089 (c) (named host futures)** | host import async の一般化（§3.16）: `host_future_named("x") -> Future[Int]`（string literal 必須、label 検証）→ 名前ごとの core import `vibe.host_future_get$x` → 名前ごとの component import `x: func() -> future<u32>` + adapter getter。wait 半分と `future.read`/`drop-readable` canon は共有、1名（匿名）のときの index 配置は step 4 と同一。並行性は adapter の **eager read**（getter が `future.read` を発行、wait は park と回収のみ）で成立する。viberun は `VIBE_ASYNC_FUTURES` で任意名を link。gate = `test_named_hostfutures_component_gate.sh`（42 = 40+2、wall が `[0.8×P, 0.9×(P+Q))` で overlap 実証、単一名 control） | done（#1218） |
 | **ADR-0089 D3 (終端 probe)** | host 供給 `stream<u8>` を1バイトずつ読む probe（§3.17）で「終端は `amount 0 / code 1` を read が inline に返す」を wasmtime 47 実測、viberun に `VIBE_ASYNC_STREAMS` の host stream import を追加。gate = `test_host_stream_value_probe_gate.sh`（42 = 10+15+17 を pin） | done（#1218） |
 | **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for`/`Stream::next` をそのループへ lower | guest surface + Suspend stream 帯 + composer + 明示 close（§3.18 / §3.18.1: `host_stream_named`/`host_stream_next`/`host_stream_close` の実ソースが `stream.read` + `waitable-set.wait` で終端まで読み、部分消費した readable end も解放できる。gate = `test_named_hoststreams_component_gate.sh`）は done。残り2件: (a) `for`/`Stream::next`（AsyncIter protocol）をこの read へ lower する接続、(b) 実 provider = `wasi:http` incoming-body（**serve composition と host-stream composition の統合が必要** — §3.19 に構造的な理由と3点の作業分解） |
-| **ADR-0089 D3 (named host streams)** | 実ソースの host stream 読み（§3.18）: `host_stream_named("body") -> Stream[Int]`（string literal 必須、cell `[3, handle]`）+ `host_stream_next -> Int with { Async }`（1 byte / -1 = EOS、EOS 後は latch）→ `Suspend(handle + 2048)`（予約 stream 帯）→ boundary の `vibe_hs_read_raw` settle → adapter の per-read `stream.read` + park（eager read はしない — per-read park と衝突する）→ per-name component import `<name>: func() -> stream<u8>`。future との混在は 1 composition を共有、hf-only 出力はバイト不変 | done（#1218） |
+| **ADR-0089 D3 (named host streams)** | 実ソースの host stream 読み（§3.18）: `host_stream_named("body") -> Stream[Int]`（string literal 必須、cell `[3, handle]`）+ `host_stream_next -> Int with Async`（1 byte / -1 = EOS、EOS 後は latch）→ `Suspend(handle + 2048)`（予約 stream 帯）→ boundary の `vibe_hs_read_raw` settle → adapter の per-read `stream.read` + park（eager read はしない — per-read park と衝突する）→ per-name component import `<name>: func() -> stream<u8>`。future との混在は 1 composition を共有、hf-only 出力はバイト不変 | done（#1218） |
 | **ADR-0089 D3 (明示 close)** | 部分消費した host stream の readable end を解放する surface（§3.18.1）: `host_stream_close: (Stream[Int]) -> Unit`（**`Async` 無し** — `stream.drop-readable` は block しない）→ 注入 fn `__hs_close` が adapter を直接呼ぶ（perform も予約帯も boundary settle arm も不要）。冪等性は cell の state word が担保（1 handle への二重 drop は host 側 trap なので load-bearing）。**use で gate** し、drain するだけの program は close import も adapter func も持たない = 既存 stream composition はバイト不変。gate = close lane（5 bytes 中 2 bytes 読んで close → 再 close → close 後 read で 42 + .wat の import/export 検査） | done（#1218） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |

@@ -6,7 +6,7 @@
 旧 builtin effect          新 algebraic effect
 ───────────────           ──────────────────
 Fs::read_file(path)       perform Fs::ReadFile(path)
-with { Net }              with { HttpServer }
+with Net              with HttpServer
 throw("msg")              perform Error::Throw("msg")
 ```
 
@@ -23,8 +23,8 @@ throw("msg")              perform Error::Throw("msg")
 
 ```vibe
 // 新しいモジュールを書くとき:
-// ❌ 旧: with { Net } + Http::request(...)
-// ✅ 新: with { HttpClient } + perform HttpClient::Request(...)
+// ❌ 旧: with Net + Http::request(...)
+// ✅ 新: with HttpClient + perform HttpClient::Request(...)
 
 // 理由: テスト容易性、最小権限
 ```
@@ -34,12 +34,12 @@ throw("msg")              perform Error::Throw("msg")
 ### Phase 0 (現在): 共存
 - 旧 builtin: 本番コード
 - 新 effect: テスト用 mock、P3 HTTP handler
-- `with { Net }` と `with { HttpServer }` は別物として共存
+- `with Net` と `with HttpServer` は別物として共存
 
 ### Phase 1: Sugar 統一
 - `Fs::read_file(path)` を内部的に `perform Fs::ReadFile(path)` に desugar
   (Error::Throw と同様のアプローチ)
-- `with { Net }` を `with { HttpServer, HttpClient, Socket, Fs, Process }` の sugar に
+- `with Net` を `with HttpServer + HttpClient + Socket + Fs + Process` の sugar に
 - 既存コードは変更不要（互換 sugar で吸収）
 
 ### Phase 2: codegen 統一
@@ -49,7 +49,7 @@ throw("msg")              perform Error::Throw("msg")
 
 ### Phase 3: 旧 builtin 廃止
 - codemod: `Fs::read_file(path)` → `perform Fs::ReadFile(path)`
-- `with { Net }` → `with { HttpServer, ... }` の明示指定を推奨
+- `with Net` → `with HttpServer + ...` の明示指定を推奨
 - 旧構文は deprecated warning
 
 ## 移行の判断指標
