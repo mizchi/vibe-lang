@@ -582,6 +582,55 @@ syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
 everything else.
 
+### Effect classes and how operations are spelled (#1458)
+
+Effects fall into four classes (ADR-0084 + #1458; the table lives in
+`lib/@vibe/compiler/core/effect_taxonomy.vibe`, which is the single definition
+the checker and `wit_gen` both read):
+
+| class | who discharges it | varies with grants | members |
+|---|---|---|---|
+| capability | host / provider, outside the wasm boundary | yes | `Fs` `Http` `Socket` `Env` `Console` `Stdin` `Stdout` `Stderr` `Process` `Profiler` `Llm` |
+| algebraic | a `handle` inside your program | n/a | `Log` `State` `Ask` … — anything not in the table |
+| core ambient | nobody; the entry boundary turns it into a diagnosed failure | n/a | `Exception[E]` (`Error` is a migration alias) |
+| runtime | the runtime itself | n/a | `Async` |
+
+**Naming.** Effect NAMES are CamelCase, without exception. Operations come in
+two spellings, and which one you see tells you which track you are on:
+
+```vibe
+// Track A -- capability builtin: `Effect::snake_case`, called as a plain
+// function. No `perform`. The row carries the effect label.
+fn read_config() -> String with Fs {
+  Fs::read_file("config.toml")
+}
+
+// Track B -- algebraic effect operation: CamelCase, performed and handled.
+effect Log {
+  Emit(String) -> Unit
+}
+
+fn greet() -> Unit with Log {
+  perform Log::Emit("hi")
+}
+```
+
+Operations are CamelCase because an effect performs an **algebraic record**:
+`Log::Emit` is a constructor, not a function, so it follows the constructor
+convention rather than the `snake_case` rule that governs variables and
+functions. Capability builtins are the other way round — they really are
+functions (that is the point: outside your core logic, code should read as
+**colourless functions** and let the row carry the colour), so they are
+`snake_case`.
+
+`Fs`, `Env` and `Profiler` currently carry BOTH tracks — `perform Fs::ReadFile(p)`
+against `lib/@vibe/fs/fs_effect.vibe`, and `Fs::read_file(p)` against the
+builtin registry — under the same row label `Fs`. That coexistence is
+deliberate and stays: use the builtin when you just want the operation done,
+and the declared effect when you want to intercept it with a `handle`.
+Collapsing the two into one spelling is possible but has not been decided
+(#1458 item 3).
+
 ### Failure-carrying pipeline
 
 > **推奨は `throw` + `Exception[E]` row** (ADR-0085 / #1324)。失敗は返り値では

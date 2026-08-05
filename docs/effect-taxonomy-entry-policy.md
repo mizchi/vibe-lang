@@ -21,7 +21,14 @@ contract は満たせない。反対に `Fs` のような capability を `main` 
 
 ## Decision
 
-effect operation を、次の三分類で扱う。
+effect operation を、次の四分類で扱う（`runtime effect` は #1458 の追加）。
+
+| 分類 | 誰が discharge するか | 許諾で揺れるか | メンバー |
+|---|---|---|---|
+| **capability effect** | host / provider (wasm 境界の外) | 揺れる | Fs, Http, Socket, Env, Console, Stdin, Stdout, Stderr, Process, Profiler, Llm |
+| **algebraic effect** | プログラム内の `handle` | 無関係 | Log, State, Ask, ParseRecur, … (表に無い名前はすべてここ) |
+| **core ambient effect** | 誰も discharge しない (entry が abortive に処理する) | 無関係 | Exception[E] / Error |
+| **runtime effect** | runtime そのもの | 無関係 | Async |
 
 1. **capability effect** は resource kind parameter を持つ effect である。
    host/provider が binding を解決し、residual WIT contract に投影する。例えば
@@ -30,13 +37,28 @@ effect operation を、次の三分類で扱う。
    である。これは in-process の handler/DI 用であり、`.vibex` の `main` に
    到達する前に `handle` で discharge しなければならない。
 3. **core ambient effect** は言語予約の少数の effect である。ADR-0085 の
-   typed `Exception[E]`（移行中は checked `Error`）が該当する。これは entry
+   typed `Exception[E]`（`Error` は移行中の alias）が該当する。これは entry
    boundary の runtime handler が diagnosed failure へ変換するため、`main` の
    row に残ることを許可する。
+4. **runtime effect** (#1458) は runtime が駆動する effect である。今日の
+   唯一のメンバーは `Async` で、ADR-0089 Decision 5 のとおり **backend の
+   選択であって権限ではない**。`main` の row に残ることを許可する。
 
-`.vibex` の `main` の残余 row は capability effect と core ambient effect
-だけを含めてよい。row に algebraic effect が残るプログラムは、WIT 生成や
-host preflight の前に型エラーとする。これは通常の関数の row を制限しない。
+   core ambient と分けたのは分類の正確さのためだけではない。両者は「row を
+   素通りする」点では同じだが、**理由が逆**である — core ambient は誰も
+   discharge しないから残ってよく、runtime は runtime が discharge するから
+   残ってよい。`Async` を core ambient に混ぜていた間、checker と wit_gen の
+   両方に「`Error` と `Async` は同じ理由でここに居る」と読めるコメントが
+   書かれていた。
+
+   実装上、「権限として数えない」ことだけを見たい呼び出し側 (checker の
+   `builtin_call_effect`、wit_gen の world import 収集) は、二クラスの和を
+   取る `is_row_transparent_effect` を使う。
+
+`.vibex` の `main` の残余 row は capability effect・core ambient effect・
+runtime effect を含めてよい。row に algebraic effect が残るプログラムは、
+WIT 生成や host preflight の前に型エラーとする。これは通常の関数の row を
+制限しない。
 
 既存 builtin の source compatibility は保つ。Phase 1 では、既存の
 `with Fs` と `Fs::read_file(...)` を暗黙 singleton resource
@@ -53,7 +75,7 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
   既存ソースの一括変更や bootstrap bump は不要である。
 - `Fs` / `Env` / `Process` / `Stdout` / `HttpServer` の resource-kind
   retrofit が完了するまでは、この entry row 検査を有効化しない。現在の
-  string-label checker だけでは三分類を表現できないためである。
+  string-label checker だけでは分類を表現できないためである。
 
 ## Non-goals
 
