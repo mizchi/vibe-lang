@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, is_exception_throw_operation, sort_perm_by_names, str_lt
+  Expr, Pat, Stmt, TypeExpr, expr_children, is_exception_throw_operation, sort_perm_by_names, str_lt
 }
 
 import @vibe/core {
@@ -2839,15 +2839,142 @@ fn is_show_shim_value(v: Expr) -> Bool {
   }
 }
 
+/// Every name this program binds LOCALLY, anywhere: `let`, `let mut`, `let rec`,
+/// lambda parameters, `for` binders, loop parameters, and pattern binders in
+/// `match`/`handle`/`let`-pattern arms.
+///
+/// #1443 review (Codex P2): the shim set is matched by NAME at a call site, and
+/// a name is not a binding. A local that SHADOWS a top-level shim -- a
+/// parameter `dump: (Int) -> String` where the module also defines
+/// `dump(x) { __to_string(x) }` -- would have its calls rewritten to
+/// `T::to_string(..)`, silently bypassing the function the caller passed in.
+///
+/// Discriminating properly means threading scope through `rewrite_expr`, which
+/// has dozens of recursive call sites. This is the conservative alternative: a
+/// shim whose name is bound locally ANYWHERE in the program is dropped from the
+/// set entirely, so no call site of that name is touched. It costs the rewrite
+/// in a program that happens to bind the name elsewhere (nothing renders worse
+/// than before), and it cannot mis-target one. The merged prelude shim is
+/// unaffected -- `import_alias_rewrite` gives it a suffixed name
+/// (`to_string_exp_lib__vibe_prelude_builtin_traits_vibe`) that no local binds.
+fn collect_pat_binders(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_pat_binders(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_pat_binders(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      collect_pat_binders(a, out)
+      collect_pat_binders(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        collect_pat_binders(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn collect_arm_binders(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    collect_pat_binders(p, out)
+    i = i + 1
+  }
+}
+
+/// Binder names introduced by THIS node. Recursion is `expr_children`, which
+/// already covers every sub-expression of every form (including match/handle
+/// arm bodies and loop initializers), so a new binding form added to `Expr`
+/// shows up here as a missing case rather than as a silently skipped subtree.
+fn collect_expr_binders(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    ELet(n, _, _, _) => Array::push(out, n),
+    ELetRec(n, _, _) => Array::push(out, n),
+    ELetMut(n, _, _, _) => Array::push(out, n),
+    EForIn(n, idx, _, _) => {
+      Array::push(out, n)
+      match idx {
+        Some(iname) => Array::push(out, iname),
+        None => ()
+      }
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        Array::push(out, pn)
+        i = i + 1
+      }
+    },
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        Array::push(out, pn)
+        i = i + 1
+      }
+    },
+    EMatch(_, arms) => collect_arm_binders(arms, out),
+    EHandle(_, arms) => collect_arm_binders(arms, out),
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut i = 0
+  while i < Array::length(kids) {
+    collect_expr_binders(Array::get(kids, i), out)
+    i = i + 1
+  }
+}
+
+fn collect_local_binder_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, value) => collect_expr_binders(value, out),
+      SLetMut(_, _, value) => collect_expr_binders(value, out),
+      SLetPat(p, value) => {
+        collect_pat_binders(p, out)
+        collect_expr_binders(value, out)
+      },
+      SExpr(e) => collect_expr_binders(e, out),
+      STest(_, e) => collect_expr_binders(e, out),
+      SBench(_, e) => collect_expr_binders(e, out),
+      SExample(_, e) => collect_expr_binders(e, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Refreshed at each `desugar_trait_dicts` entry. Empty (so nothing is
 /// rewritten) whenever the shim's own definition is not part of the program
 /// being compiled -- the conservative direction.
 fn collect_show_shims(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_show_shims, 0)
+  let shadowed = collect_local_binder_names(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, value) => if is_show_shim_value(value) {
+      SLet(_, _, name, _, value) => if is_show_shim_value(value) && !str_array_contains(shadowed, name) {
         Array::push(dtd_show_shims, name)
       } else {
         ()

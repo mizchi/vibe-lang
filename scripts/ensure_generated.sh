@@ -87,6 +87,14 @@ compute_fingerprint() {
     bash "$SCRIPT_DIR/ensure_seed.sh" >&2
     sha256sum "$SEED" 2>/dev/null || echo "MISSING $SEED"
     sha256sum "$MANIFEST" 2>/dev/null || echo "MISSING $MANIFEST"
+    # #1443 review (Codex P2): the GENERATOR is an input too. Without it, editing
+    # generate_bundle.sh leaves the fingerprint unmoved, so an already-stamped
+    # tree (or a warm CI cache) skips regeneration and keeps bundles the old
+    # generator produced -- the same stale-artifact failure this script exists to
+    # remove, just relocated. This file counts as well: it decides what gets
+    # hashed and how the artifacts are produced.
+    sha256sum "$SCRIPT_DIR/generate_bundle.sh" 2>/dev/null || echo "MISSING generate_bundle.sh"
+    sha256sum "${BASH_SOURCE[0]}" 2>/dev/null || echo "MISSING ensure_generated.sh"
     # Column 2 of the manifest is the path, relative to $COMPILER_DIR, with
     # ../../../ meaning repo root (see generate_bundle.sh).
     #
