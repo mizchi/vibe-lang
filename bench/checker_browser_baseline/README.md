@@ -44,7 +44,12 @@ manifest paths are resolved under `lib/@vibe/compiler/`; the annotation is only
 an exact-path label, not closure authority. Categories separately expose
 `codegen`, `checker_core_and_model`, `checker_artifact`, and
 `checker_observation` source contribution, but none of those path-based groups
-claims that an extracted checker engine already exists.
+claims that an extracted checker engine already exists. `current_checker` has
+an additional strict closure invariant: no module categorized as `codegen`
+(including `codegen/` and `perceus/` sources) is allowed. The collector rejects
+such a plan before building, and report validation rejects a contaminated
+`current_checker` report. This invariant deliberately does not apply to the
+`full_compiler` case, whose whole-compiler closure necessarily contains codegen.
 
 Each build has its own temporary `VIBE_BUILD_CACHE_DIR` and disables the
 persistent artifact cache. The supplied compiler is used for both plan and
