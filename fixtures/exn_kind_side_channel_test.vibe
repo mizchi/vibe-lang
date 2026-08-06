@@ -3,7 +3,7 @@
 // ADR-0085 lowers every exception spelling to ONE abortive Wasm tag with no
 // kind discriminator, and the erased `Error` spelling is deliberately
 // compatible with every kind (that is what kept #1344 additive over #786's
-// suberror throws). So an erased `handle { .. } with Error { Throw(m) => .. }`
+// suberror throws). So an erased `handle { .. } with Exception { Throw(m) => .. }`
 // arm also catches a typed `Exception[E]` throw, and `m`'s static type there is
 // `CtUnknown` -- using it as a String type-checks and then reads an enum
 // pointer as a packed `(ptr<<32)|len` string. Measured on the #1372 review: a
@@ -31,7 +31,7 @@ test "an erased arm sees the typed kind of an enum payload" {
   let k = handle {
     throw(Bang(7))
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(k, "Boom")
@@ -41,7 +41,7 @@ test "a String payload reports String, so the sinks keep printing it verbatim" {
   let k = handle {
     throw("boom")
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(k, "String")
@@ -51,7 +51,7 @@ test "an Int payload reports Int" {
   let k = handle {
     throw(42)
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(k, "Int")
@@ -63,7 +63,7 @@ test "a struct-literal payload reports its struct name" {
       n: 1
     })
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(k, "Wrapped")
@@ -81,13 +81,13 @@ test "a nested throw does not leak its kind to the outer arm" {
     let inner = handle {
       throw(Bang(1))
       ""
-    } with Error {
+    } with Exception {
       Throw(_) => __exn_kind()
     }
     assert_eq(inner, "Boom")
     throw("outer")
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(k, "String")
@@ -97,13 +97,13 @@ test "two throws in sequence each report their own kind" {
   let first = handle {
     throw(Second("x"))
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   let second = handle {
     throw(Bang(2))
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(first, "Other")
@@ -122,7 +122,7 @@ test "an unresolvable payload reports the empty kind, never a guess" {
   let k = handle {
     throw(f(1))
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(k, "")
@@ -134,7 +134,7 @@ test "an unresolved throw clears the previous throw's kind" {
   let first = handle {
     throw(Bang(3))
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(first, "Boom")
@@ -144,7 +144,7 @@ test "an unresolved throw clears the previous throw's kind" {
   let second = handle {
     throw(g(1))
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(second, "")
@@ -166,7 +166,7 @@ fn exn_kind_recovering_payload() -> String {
   handle {
     throw(Bang(1))
     "unreachable"
-  } with Error {
+  } with Exception {
     Throw(_) => "outer"
   }
 }
@@ -175,7 +175,7 @@ test "a payload that internally handles a throw does not lose its own kind" {
   let k = handle {
     throw(exn_kind_recovering_payload())
     ""
-  } with Error {
+  } with Exception {
     Throw(_) => __exn_kind()
   }
   assert_eq(k, "String")
@@ -190,7 +190,7 @@ test "the outer payload survives an inner handled throw" {
   let m = handle {
     throw(exn_kind_recovering_payload())
     ""
-  } with Error {
+  } with Exception {
     Throw(msg) => msg
   }
   assert_eq(m, "outer")
