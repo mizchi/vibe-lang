@@ -10,6 +10,7 @@ import ./parser_base.vibe {
   empty_fields,
   empty_import_items,
   expect_tk,
+  has_qualified_pattern_refs,
   parse_binding_name,
   parse_derive_names,
   parse_effect_stmt,
@@ -800,11 +801,12 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
 /// paths and `reorder_type_decls_first` are index-based), and omitted entirely
 /// when the parse saw no qualified pattern.
 fn attach_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[Stmt] {
-  let refs = take_qualified_pattern_refs()
-  if Array::length(refs) == 0 {
+  // Emptiness first: the drain allocates even when it has nothing to hand
+  // back, and a program with no qualified pattern is the common case.
+  if has_qualified_pattern_refs() {
+    Array::push(stmts, SQualifiedPatternRefs(take_qualified_pattern_refs()))
     stmts
   } else {
-    Array::push(stmts, SQualifiedPatternRefs(refs))
     stmts
   }
 }
@@ -1179,7 +1181,11 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
   // which never type-checks, so there is no marker to attach the qualified
   // pattern refs to -- drop them rather than let them outlive this parse and
   // be reported against some later file's enums.
-  let _dropped_qualified_pattern_refs = take_qualified_pattern_refs()
+  if has_qualified_pattern_refs() {
+    let _dropped = take_qualified_pattern_refs()
+  } else {
+    ()
+  }
   (ArrayBuilder::freeze(b), ArrayBuilder::freeze(span_start), ArrayBuilder::freeze(span_end))
 }
 
