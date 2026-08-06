@@ -2307,7 +2307,7 @@ cat > "$pfdir/bad_row_single.vibe" <<'EOF'
 let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
-let mid: (String) -> String with Error = (p) -> {
+let mid: (String) -> String with Exception = (p) -> {
   leaf(p)
 }
 export let _start: () -> Int = () -> { 42 }
@@ -2318,9 +2318,12 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$pfdir/bad_row_single.wasm" ]; then
   echo "[compiler-gate] FAIL: partially-declared transitive effect call compiled (#639)" >&2; exit 1
 fi
-# #1461: the fixture still DECLARES `with Error`; the diagnostic reports the
-# canonical `Exception`. That asymmetry is the point of the flip and is what
-# this assertion pins -- the alias keeps parsing, it just stops being printed.
+# #1461: the fixture used to DECLARE `with Error` while the diagnostic reported
+# the canonical `Exception` -- an asymmetry that was the point of Step 1's flip,
+# and what this assertion pinned. The final stage retired the alias as a
+# spelling, so the fixture now declares `Exception` too and the asymmetry is
+# gone. The assertion text is unchanged: it always read `declared { Exception }`,
+# because the canonical name is what gets printed either way.
 if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared { Exception }, requires { Exception, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
@@ -2367,7 +2370,7 @@ fi
 # local callee was rejected. The env-seeded row closes the module boundary.
 mkdir -p "$pfdir/sub"
 cat > "$pfdir/sub/helper.vibe" <<'EOF'
-export let read_it: (String) -> String with Error + Fs = (p) -> {
+export let read_it: (String) -> String with Exception + Fs = (p) -> {
   Fs::read_file(p)
 }
 EOF
@@ -2383,7 +2386,7 @@ EOF
 cat > "$pfdir/good_import_transitive.vibe" <<'EOF'
 import ./sub/helper.vibe { read_it }
 
-let g: (String) -> String with Error + Fs = (p) -> {
+let g: (String) -> String with Exception + Fs = (p) -> {
   read_it(p)
 }
 export let _start: () -> Int = () -> { 42 }
@@ -2740,42 +2743,42 @@ echo "[compiler-gate] 27e/27 Error-as-perform equivalence + non-resumability (#6
 edir="_build/_gate_error_perform"
 rm -rf "$edir"; mkdir -p "$edir"
 cat > "$edir/via_perform.vibe" <<'EOF'
-let safe = () -> Int with Error {
+let safe = () -> Int with Exception {
   perform Error::Throw("fail")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+  handle { safe() } with Exception { Throw(msg) => String::length(msg) }
 }
 EOF
 cat > "$edir/via_throw.vibe" <<'EOF'
-let safe = () -> Int with Error {
+let safe = () -> Int with Exception {
   throw("fail")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+  handle { safe() } with Exception { Throw(msg) => String::length(msg) }
 }
 EOF
 cat > "$edir/bad_resume_arm.vibe" <<'EOF'
-let risky = () -> Int with Error {
+let risky = () -> Int with Exception {
   throw("boom")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { risky() } with Error { Throw(_m) => resume(0) }
+  handle { risky() } with Exception { Throw(_m) => resume(0) }
 }
 EOF
 # Codex P2 on #933: the rejection walk's catch-all used to end at EBreak /
 # ELoop (and EMap/ESpread/ELabeledArg/EContinue/ERecord), so a resume tucked
 # into `loop { break resume(0) }` reached codegen's meaningless tag-1 path.
 cat > "$edir/bad_resume_loop.vibe" <<'EOF'
-let risky = () -> Int with Error {
+let risky = () -> Int with Exception {
   throw("boom")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { risky() } with Error { Throw(_m) => loop { break resume(0) } }
+  handle { risky() } with Exception { Throw(_m) => loop { break resume(0) } }
 }
 EOF
 for v in via_perform via_throw; do
@@ -6018,7 +6021,7 @@ echo "[compiler-gate] 44b/44 checked-Error row discipline default-on (#944 stage
 g944dir="_build/_gate_944"
 rm -rf "$g944dir"; mkdir -p "$g944dir"
 cat > "$g944dir/leak.vibe" <<'EOF'
-fn boom(x: Int) -> Int with Error {
+fn boom(x: Int) -> Int with Exception {
   if x == 0 {
     throw("zero")
   }
@@ -6034,7 +6037,7 @@ export let main = () -> Int {
 }
 EOF
 cat > "$g944dir/discharged.vibe" <<'EOF'
-fn boom(x: Int) -> Int with Error {
+fn boom(x: Int) -> Int with Exception {
   if x == 0 {
     throw("zero")
   }
@@ -6044,7 +6047,7 @@ fn boom(x: Int) -> Int with Error {
 export let main = () -> Int {
   handle {
     boom(1)
-  } with Error {
+  } with Exception {
     Throw(_) => 0
   }
 }
@@ -8786,7 +8789,7 @@ let boom = () -> Int with Exception[IoError] + Exception[ParseError] {
 let main = () -> Int {
   handle {
     boom()
-  } with Error {
+  } with Exception {
     Throw(_e) => 42
   }
 }
@@ -8884,12 +8887,12 @@ enum AppError {
   Cancelled
 } derive (Show)
 
-let _start = () -> Int with Error {
+let _start = () -> Int with Exception {
   throw(Failed("io"))
 }
 VIBEEOF
 cat > "$exnmsgdir/plain.vibe" <<'VIBEEOF'
-let _start = () -> Int with Error {
+let _start = () -> Int with Exception {
   throw("plain message")
 }
 VIBEEOF
@@ -8898,7 +8901,7 @@ enum NoShow {
   Bang(Int)
 }
 
-let _start = () -> Int with Error {
+let _start = () -> Int with Exception {
   throw(Bang(5))
 }
 VIBEEOF
@@ -8946,7 +8949,7 @@ let _start = () -> Int {
   println("interp=\{Bang(1)}")
   handle {
     throw(Bang(1))
-  } with Error {
+  } with Exception {
     Throw(_m) => 7
   }
 }

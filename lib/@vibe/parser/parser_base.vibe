@@ -891,16 +891,47 @@ fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String,
 /// #1429: one effect-row item -- `Name`, `Name::Op`, or `Name[T, ..]`. Split
 /// out of collect_effect_names so the braced and braceless spellings read the
 /// same item grammar rather than drifting apart.
+/// #1461 final stage: `Error` is no longer a spelling. It was the original name
+/// of the core ambient exception effect and rode along as an accepted alias
+/// through the migration; ADR-0085 made `Exception` the one name, and every row
+/// in this tree was converted. Rejecting it here retires the alias at the only
+/// place a SOURCE row label is produced.
+///
+/// This is a SURFACE rejection and nothing more. `is_exception_effect_name`
+/// still answers true for the label internally, the taxonomy table still
+/// carries its row, and `printer.vibe` still re-sugars both spellings -- a
+/// pinned seed from before the bump prints `Error`, and re-sugar must keep
+/// reading it. What changes is only what a `.vibe` file may say.
+///
+/// Named, like #1429's braced-row rejection, for the same reason: a reader who
+/// gets "expected an effect name" has no way to learn that the name moved. It
+/// points at `vibe fmt` for the same reason too -- the CST formatter rewrites
+/// the label at the token level, so it converts source this parser no longer
+/// accepts, which is the migration path for code outside this repository.
+fn reject_retired_effect_label(name: String) -> Unit with Exception {
+  if name == "Error" {
+    throw("`Error` was retired as an effect spelling in #1461 -- write `Exception` (or `Exception[Kind]` for a typed row). `vibe fmt` rewrites the old spelling for you.")
+  } else {
+    ()
+  }
+}
+
 fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
   match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TDoubleColon => match peek(tokens, pos + 2) {
-        TIdent(member) =>
-        (String::concat(name, String::concat("::", member)), pos + 3),
-        _ => throw("expected qualified operation name after '::' in effect row")
-      },
-      TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(name, "[")),
-      _ => (name, pos + 1)
+    TIdent(name) => {
+      // Covers every shape the label can take: bare (`Error`), qualified
+      // (`Error::Throw`), and applied (`Error[IoError]`) -- the check is on the
+      // HEAD, which all three share.
+      reject_retired_effect_label(name)
+      match peek(tokens, pos + 1) {
+        TDoubleColon => match peek(tokens, pos + 2) {
+          TIdent(member) =>
+          (String::concat(name, String::concat("::", member)), pos + 3),
+          _ => throw("expected qualified operation name after '::' in effect row")
+        },
+        TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(name, "[")),
+        _ => (name, pos + 1)
+      }
     },
     _ => throw("expected an effect name in the effect row after 'with'")
   }

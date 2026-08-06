@@ -124,7 +124,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_async_spawned_future
 }
 
-fn main() -> Unit with Error + Fs {
+fn main() -> Unit with Exception + Fs {
   let bytes = comp_emit_component_wasm_async_spawned_future("run", 121)
   Fs::write_bytes("_build/bench/selfhost_spawned_future_component/generated.component.wasm", bytes)
 }
