@@ -442,6 +442,19 @@ type Pair = (Int, Int)                   // alias
 enum Color { Red; Green; Blue } derive(Eq)
 enum Shape { Circle(Int); Rect(Int, Int) }
 
+// Constructors can be spelled bare or qualified, in expressions AND in
+// patterns; both forms mean the same variant (#742/#672).
+let c = Color::Red                        // == Red
+let s = Shape::Circle(3)                  // == Circle(3)
+match s { Shape::Circle(r) => r; _ => 0 }
+// The qualifier is CHECKED (#1455): `Shape::Red` is an error ("enum `Shape`
+// has no variant `Red`"), in a pattern as well as in an expression. It does
+// NOT disambiguate two enums that share a variant name, though — that
+// collision is rejected at declaration time instead (#1078).
+// Imported enums work the same way, including parameterized ones:
+//   import ./m.vibe { Attempt, Good }
+//   let a = Attempt::Good(7)
+
 struct Point { x: Int; y: Int } derive(Eq, Ord, Show)
 let p = Point::{ x: 1, y: 2 }
 let px = p.x                              // field access

@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_expr, check_pattern, pat_has_unsupported_or_binding
+  check_expr, check_pattern, check_qualified_pattern_refs, pat_has_unsupported_or_binding
 }
 
 //# Functions
@@ -353,4 +353,68 @@ test "#951: plain non-binding or-pattern arm still type-checks (regression guard
   ])
   let errors = check_with_errors(expr, EnvEmpty, empty_defs())
   assert(Array::length(errors) == 0)
+}
+
+//# #1455 step 3: qualified variant pattern validation
+
+/// Two enums that share no variant names, so a swapped qualifier is always a
+/// genuine error rather than an accidental hit.
+fn two_enum_defs() -> Array[TypeDef] {
+  [
+    TDEnum("Color", array_empty(), [
+      ("Red", array_empty()),
+      ("Green", array_empty())
+    ]),
+    TDEnum("Shape", array_empty(), [
+      ("Circle", [
+        CtInt
+      ])
+    ])
+  ]
+}
+
+fn qualified_ref_errors(refs: Array[(String, String)], defs: Array[TypeDef]) -> Array[String] {
+  let errors = array_empty()
+  check_qualified_pattern_refs(refs, defs, errors)
+  errors
+}
+
+test "#1455: a qualifier that owns the variant is accepted" {
+  let errors = qualified_ref_errors([
+    ("Color", "Red"),
+    ("Color", "Green"),
+    ("Shape", "Circle")
+  ], two_enum_defs())
+  assert_eq(Array::length(errors), 0)
+}
+
+test "#1455: a qualifier naming the WRONG enum is rejected" {
+  // The whole point of step 3: `Shape::Red` parses to the same PCtor("Red")
+  // that the bare spelling does, so nothing downstream can catch it.
+  let errors = qualified_ref_errors([
+    ("Shape", "Red")
+  ], two_enum_defs())
+  assert_eq(Array::length(errors), 1)
+  assert(any_error_contains(errors, "enum `Shape` has no variant `Red`"))
+}
+
+test "#1455: a qualifier that is not an enum at all stays silent" {
+  // Handle-arm operation patterns (`Fs::ReadFile(p)`) reach the log through
+  // the same parser branch, and so do entries left behind by a parse-only
+  // path whose module this compilation never sees. Neither may fire.
+  let errors = qualified_ref_errors([
+    ("Fs", "ReadFile"),
+    ("SomeOtherModule", "Whatever")
+  ], two_enum_defs())
+  assert_eq(Array::length(errors), 0)
+}
+
+test "#1455: every bad pair is reported, not just the first" {
+  let errors = qualified_ref_errors([
+    ("Color", "Circle"),
+    ("Shape", "Green")
+  ], two_enum_defs())
+  assert_eq(Array::length(errors), 2)
+  assert(any_error_contains(errors, "enum `Color` has no variant `Circle`"))
+  assert(any_error_contains(errors, "enum `Shape` has no variant `Green`"))
 }

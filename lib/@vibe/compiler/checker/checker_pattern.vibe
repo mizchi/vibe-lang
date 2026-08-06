@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup
+  Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef
 }
 
 import @vibe/core {
@@ -43,6 +43,55 @@ fn find_ctor_in_defs(defs: Array[TypeDef], ctor_name: String) -> Option[(String,
     }
   }
   go_defs(0)
+}
+
+/// Validate the `Enum::Variant` pattern qualifiers the parser recorded on its
+/// side channel (#1455 step 3), appending one error per bad pair.
+///
+/// `refs` is the drained `(qualifier, variant)` log; `defs` is the enum table
+/// the checker has just finished building for this compilation.
+///
+/// A pair is only ever an error when the qualifier names an enum that is
+/// actually in `defs` and that enum does not own the variant. Everything else
+/// stays silent, deliberately:
+///
+///   - `Fs::ReadFile(p)` in a `with Fs` arm reaches the log too (handle-arm op
+///     patterns parse through the same branch). `Fs` is an effect, not an
+///     enum, so it never resolves here.
+///   - A pair left over from a parse-only path (`vibe fmt`, an LSP buffer that
+///     was never type-checked) names an enum this compilation cannot see.
+///
+/// Position: like the other constructor-pattern diagnostics in this file the
+/// message carries no offset -- `Pat` has no span slot to hang one on.
+export fn check_qualified_pattern_refs(refs: Array[(String, String)], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let n = Array::length(refs)
+  let mut i = 0
+  while i < n {
+    let (qualifier, variant) = Array::get(refs, i)
+    match find_typedef(defs, qualifier) {
+      Some(TDEnum(ename, _, variants)) => {
+        let vlen = Array::length(variants)
+        let mut vi = 0
+        let mut owns = false
+        while vi < vlen {
+          let (vname, _) = Array::get(variants, vi)
+          if vname == variant {
+            owns = true
+          } else {
+            ()
+          }
+          vi = vi + 1
+        }
+        if owns {
+          ()
+        } else {
+          Array::push(errors, String::concat("enum `", String::concat(ename, String::concat("` has no variant `", String::concat(variant, String::concat("` (in pattern `", String::concat(ename, String::concat("::", String::concat(variant, "`)")))))))))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
 }
 
 /// True if `pat` binds at least one variable, at any nesting depth (through
