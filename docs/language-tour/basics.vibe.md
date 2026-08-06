@@ -87,27 +87,33 @@ let swap: [A, B](A, B) -> (B, A) = (a, b) -> { (b, a) }
 
 ## Labeled Arguments
 
-```vibe skip
-// #1500: `z?: Int` binds `z` as `Int`, not `Option[Int]`, so the match below
-// is rejected as non-exhaustive. The block documents the intended behavior;
-// un-skip it when #1500 is decided.
-// y~ : required labeled argument (caller must use y = ...)
-// z? : optional argument (receives Option[T])
-let f: (Int, y~: String, z?: Int) -> String = (x, y~, z?) -> {
-  let suffix = match z { Some(v) => Int::to_string(v), None => "none" }
-  "\{y}-\{suffix}"
-}
-// f(1, y = "ok")          => "ok-none"
-// f(1, y = "ok", z = 10)  => "ok-10"
+`x~` marks a required labeled parameter. A call is either ALL positional or
+ALL labeled -- mixing the two is rejected.
 
-let g: (Int, y?: Int) -> Int = (x, y?) -> {
-  match y {
-    Some(v) => x + v,
-    None => x,
-  }
+```vibe
+// y~ : required labeled argument (the caller writes y = ...)
+let f: (x~: Int, y~: String) -> String = (x~, y~) -> {
+  "\{y}-\{x}"
 }
-// g(1)         => 1
-// g(1, y = 5)  => 6
+
+export let call_f: () -> String = () -> {
+  f(x = 1, y = "ok")   // => "ok-1"
+}
+```
+
+`x?` parses, but the optional-argument SEMANTICS are not implemented (#1500).
+Today a `?` parameter behaves exactly like a required one:
+
+```vibe
+// `value` is bound as `Int`, NOT `Option[Int]`, and the caller may not omit it
+// (`g(x = 1)` is `function arity mismatch for g: expected 2 args, got 1`).
+let g: (x~: Int, value?: Int) -> Int = (x~, value?) -> {
+  x + value
+}
+
+export let call_g: () -> Int = () -> {
+  g(x = 1, value = 5)   // => 6
+}
 ```
 
 ## Control Flow

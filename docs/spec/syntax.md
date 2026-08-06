@@ -200,21 +200,28 @@ Labeled arguments:
 
 ```vibe
 let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
-f(x=1, y=2)
-
-let g: (value?: Int) -> Int = (value?) -> {
-  match value {
-    Some(v) => v,
-    None => 0,
-  }
-}
-g()
-g(value=1)
+export let two: () -> Int = () -> { f(x = 1, y = 2) }
 ```
 
-`x~` is a required labeled parameter. `x?` is an optional labeled parameter;
-inside the function body it is bound as `Option[T]`. Default values in parameter
-lists are not part of the current surface syntax.
+`x~` is a required labeled parameter. A call site is either ALL positional or
+ALL labeled; mixing them is rejected ("call to f mixes positional and labeled
+arguments"). Default values in parameter lists are not part of the current
+surface syntax.
+
+`x?` is accepted by the parser as an optional-parameter marker, but **the
+semantics are not implemented** (#1500). Measured against the current
+compiler, a `?` parameter is indistinguishable from a required one:
+
+- omitting the argument is `function arity mismatch` -- `g()` against
+  `(value?: Int) -> Int` reports `expected 1 args, got 0`
+- inside the body the parameter is bound at its written type `T`, not
+  `Option[T]`, so `value + 1` type-checks and
+  `match value { Some(v) => .., None => .. }` is rejected as non-exhaustive
+
+The checker strips the trailing `?` from the parameter NAME
+(`param_base_name`, checker.vibe) and does nothing else with it. This section
+previously specified the `Option[T]` binding and an omissible call; that
+described an intended design, not the implementation.
 
 ### Type Aliases
 
