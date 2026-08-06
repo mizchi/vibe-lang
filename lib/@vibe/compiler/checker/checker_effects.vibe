@@ -2119,11 +2119,20 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           ei = ei + 1
         }
       },
-      ERecord(_, fields, _) => {
+      ERecord(rec_sname, fields, _) => {
         let mut fi = 0
         while fi < Array::length(fields) {
-          let (_, fval) = Array::get(fields, fi)
-          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs, kinds))
+          let (fname, fval) = Array::get(fields, fi)
+          // #1451: a closure LITERAL stored into a field whose declared type
+          // carries a row may use that row -- the row belongs to the stored
+          // VALUE, not to the function assembling the record. Widened for the
+          // literal only: any OTHER field expression (a call that performs, say)
+          // keeps the enclosing `declared` and stays checked as before.
+          let field_declared = match fval {
+            EFn(_, _, _, _, _, _) => labels_union(declared, struct_field_rows_for(rec_sname, fname)),
+            _ => declared
+          }
+          Array::push(stack, (fval, field_declared, in_handle, ov_names, ov_effs, kinds))
           fi = fi + 1
         }
       },
@@ -2259,6 +2268,73 @@ fn current_ret_fn_rows() -> Array[String] {
     Array::get(ret_fn_rows_cell, 0)
   } else {
     array_empty()
+  }
+}
+
+/// #1451 (struct-field position): rows declared by a STRUCT FIELD's type, keyed
+/// `Struct::field`. Same defect as the return position and the same cause -- a
+/// closure literal stored into
+/// `struct Box { run: (String) -> Unit with Log::Emit }` carries no row of its
+/// own, so its perform was charged to the function BUILDING the record, which
+/// only assembles a closure and never performs it.
+///
+/// The walker is a flat stack loop with no access to the program's type
+/// declarations, so the table is built once per program (from every `SStruct`)
+/// and read by the `ERecord` arm -- the same module-cell shape as
+/// `ret_fn_rows_cell` above, for the same reason. Only fields whose type
+/// actually declares a row get an entry, so the common program adds nothing.
+let struct_field_rows_cell = array_empty()
+
+fn struct_field_key(sname: String, fname: String) -> String {
+  String::concat(sname, String::concat("::", fname))
+}
+
+fn build_struct_field_rows(stmts: Array[Stmt]) -> Unit {
+  let keys = array_empty()
+  let rows = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, fields, _, _, _) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, fi)
+          let out = array_empty()
+          ret_fn_row_labels_into(fty, out)
+          if Array::length(out) > 0 {
+            Array::push(keys, struct_field_key(sname, fname))
+            Array::push(rows, out)
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::truncate(struct_field_rows_cell, 0)
+  Array::push(struct_field_rows_cell, (keys, rows))
+}
+
+fn struct_field_rows_for(sname: String, fname: String) -> Array[String] {
+  if Array::length(struct_field_rows_cell) == 0 || String::length(sname) == 0 {
+    array_empty()
+  } else {
+    let (keys, rows) = Array::get(struct_field_rows_cell, 0)
+    let want = struct_field_key(sname, fname)
+    let mut found = array_empty()
+    let mut i = 0
+    while i < Array::length(keys) {
+      if Array::get(keys, i) == want {
+        found = Array::get(rows, i)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
   }
 }
 
@@ -2492,6 +2568,9 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
   let fn_param_effs = no_param_effs()
   build_perform_fn_effs(stmts, fn_names, fn_effs, fn_param_effs)
   seed_env_fn_effs(env, fn_names, fn_effs, fn_param_effs)
+  // #1451: struct FIELD rows, for closure literals stored into a field whose
+  // declared type carries one (see build_struct_field_rows).
+  build_struct_field_rows(stmts)
   // ADR-0085 Phase 3 (#1344): rebuild the `throw` payload-kind table from the
   // same checked env, so a typed `Exception[K]` row can be compared against
   // what each throw site actually throws.

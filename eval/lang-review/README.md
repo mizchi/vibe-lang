@@ -13,7 +13,7 @@ AI レビューエージェント (subagent) に文法・意味論・型シス�
 ```
 eval/lang-review/
   README.md      # 本ファイル (回し方)
-  rubric.md      # 評価軸 (7 dimensions) + スコア定義 + レビュアープロンプト
+  rubric.md      # 評価軸 (8 dimensions) + スコア定義 + レビュアープロンプト
   tasks/         # writability タスクセット (仕様。レビュアーがゼロから書く)
   golden/        # 各タスクの検証済み解答 + 期待出力 (ラウンドの副産物)
   run_golden.sh  # golden が現行コンパイラで compile+run+出力一致するか検証
