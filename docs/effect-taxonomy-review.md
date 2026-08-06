@@ -482,21 +482,18 @@ DCE)→ apply(BindingLock)→ instantiate(preflight prompt)の最も早い
 `Fs`/`Env`/`Process`/`Stdout`/`HttpServer` を resource-kind 形へ移行する
 ための段階計画。
 
-- **Phase -1(着地済み、#1343)**: 分類 metadata。
-  `lib/@vibe/compiler/core/effect_taxonomy.vibe` が
-  `(effect 名, class, 既定 resource kind, test/bench ambient か, entry
-  キャッシュ安全か)` の表を持ち、ADR-0084 の三分類
-  (`effect_class` / `is_core_ambient_effect` / `is_capability_effect`) と
-  `effect_default_resource_kind` を提供する。Phase 0 の前提 (`resource`
-  宣言) が未着手なので**構文より先に実装できるのがこれ**、という
-  [ADR-0094](resource-kind-parameters.md) 実装順 1。散在していた
-  host-effect リテラル列 (test/bench ambient 8 要素、doctest キャッシュ
-  安全 4 要素、core ambient の二項判定) をこの表に寄せた。表面挙動は
-  不変で、`default_resource_kind` 列はまだ検査に使われていない受け皿。
+- **Phase -1(着地済み、#1496)**: standard provider / entry-execution
+  policy metadata. `lib/@vibe/compiler/core/standard_effect_policy.vibe` holds
+  `(label, provider default resource kind, test/bench default, entry cache
+  safe)` rows. Its narrow predicates describe standard host providers,
+  entry-boundary exceptions, and runtime scheduling; ordinary user effects
+  have no policy record. The existing test/bench defaults, doctest cache-safe
+  row, and entry/runtime filtering remain byte-for-byte behaviorally unchanged.
+  This implementation policy is not the prospective taxonomy/admission model.
 - **Phase 0(着地済み、#1343 実装順 2)**: ADR-0075 Phase 2 の
   `resource Name : Owner::Kind` 宣言を AST (`SResource`) / parser /
   printer / checker に入れ、`Process::Root` を singleton resource kind
-  として `core/effect_taxonomy.vibe` に置いた
+  として `core/standard_effect_policy.vibe` に置いた
   (`predeclared_resources` / `is_singleton_resource_kind`)。singleton は
   住人がそれ自身ただ一つなので、その kind の resource 宣言は「process に
   二つ目の名前を与える alias」として拒否する。詳細は
