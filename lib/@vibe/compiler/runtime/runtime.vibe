@@ -121,10 +121,10 @@ fn wrap_db(state: TypeDbState) -> TypeDb {
   TypeDb(state)
 }
 
-fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Error {
+fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
   handle {
     parse_program(lex(source))
-  } with Error {
+  } with Exception {
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
 }
@@ -449,7 +449,7 @@ fn compact_string_fingerprint(source: String) -> String {
   String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
-fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with Error + Fs {
+fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with Exception + Fs {
   Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
 }
 
@@ -514,7 +514,7 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array
   go(0, empty_strings())
 }
 
-fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Error {
+fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
     if cached_source == source {
@@ -539,7 +539,7 @@ fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, Strin
   }
 }
 
-fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Error + Fs {
+fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + Fs {
   match load_persistent_dep_list(path, source) {
     Some(deps) => (deps, upsert_string_pair(dep_source_cache, path, source), parse_count),
     None => {
@@ -549,7 +549,7 @@ fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], p
   }
 }
 
-fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Error + Fs {
+fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + Fs {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
     if cached_source == source {
@@ -564,7 +564,7 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
   }
 }
 
-fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error {
+fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception {
   if contains_str(stack, path) {
     throw(String::concat("type_db: import cycle detected at ", path))
   } else {
@@ -583,7 +583,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
         // O(N²) over the deps list. Mutating in place is safe because
         // `dep_acc` flows linearly down the recursion (one path, no
         // sibling branches that need the old prefix).
-        let rec resolve_nested: (Int, Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) -> (Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error = (i, dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count) -> {
+        let rec resolve_nested: (Int, Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) -> (Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception = (i, dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count) -> {
           if i >= dlen {
             (dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count)
           } else {
@@ -629,7 +629,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
   }
 }
 
-export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Error {
+export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint(rdb, env_cache, dep_source_cache, parse_count, path, empty_strings())
@@ -638,7 +638,7 @@ export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Error {
   }
 }
 
-export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Error + Fs {
+export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Exception + Fs {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path)
@@ -647,7 +647,7 @@ export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Error + Fs {
   }
 }
 
-export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Error {
+export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Exception {
   let checked = db_typecheck(db, path)
   match unwrap_db(checked) {
     TypeDbState(rdb, _, _, _, _, _, _, _, _, _) =>
@@ -684,7 +684,7 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Error {
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -719,7 +719,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
 
 /// #716: parse every source once and expose (paths, stmts) for the export-
 /// rename plan; the merge itself reuses the parsed statements.
-fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Error {
+fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Exception {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let mut si = 0
@@ -735,7 +735,7 @@ fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Arra
 /// One (sub)list of sources merged under a whole-program rename plan.
 /// `collision_sources` spans the whole program so a collision-def import that
 /// crosses a group boundary still resolves.
-fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with Error {
+fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with Exception {
   let merged = empty_stmt_array()
   let source_count = Array::length(sources)
   let mut si = 0
@@ -770,7 +770,7 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
   print_program(merged)
 }
 
-fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with Error {
+fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with Exception {
   let (file_paths, file_stmts) = parse_merge_sources(sources)
   let plan_entry = if entry_path == "" {
     if Array::length(file_paths) > 0 {
@@ -802,7 +802,7 @@ fn join_group_sources(group_sources: Array[String]) -> String {
   StringBuilder::freeze(buf)
 }
 
-export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with Error {
+export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let merge_fingerprint = build_merge_fingerprint(_entry_path, sources)
@@ -819,7 +819,7 @@ export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(Stri
   }
 }
 
-export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with Error {
+export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       // Keep per-group results in side buffers, then append cache misses
@@ -906,7 +906,7 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
   }
 }
 
-fn build_module_source(source: String) -> String with Error {
+fn build_module_source(source: String) -> String with Exception {
   let stmts = parse_program(lex(source))
   let filtered = empty_stmt_array()
   let mut i = 0
@@ -929,7 +929,7 @@ fn build_module_source(source: String) -> String with Error {
   print_program(filtered)
 }
 
-export fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with Error {
+export fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let module_cache_key = "module-source"
@@ -967,7 +967,7 @@ fn bytes_to_hex_digit(n: Int) -> String {
   }
 }
 
-fn nibble_from_hex_char(c: Int) -> Int with Error {
+fn nibble_from_hex_char(c: Int) -> Int with Exception {
   if c >= 48 && c <= 57 {
     c - 48
   } else if c >= 97 && c <= 102 {
@@ -997,7 +997,7 @@ fn bytes_to_hex(bytes: Bytes) -> String {
   StringBuilder::freeze(buf)
 }
 
-fn hex_to_bytes(hex: String) -> Bytes with Error {
+fn hex_to_bytes(hex: String) -> Bytes with Exception {
   let len = String::length(hex)
   if len % 2 != 0 {
     throw("invalid hex length")
@@ -1014,7 +1014,7 @@ fn hex_to_bytes(hex: String) -> Bytes with Error {
   }
 }
 
-export fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with Error {
+export fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with Exception {
   match unwrap_db(db) {
     TypeDbState(_, _, _, _, _, artifact_cache, _, _, _, _) =>
     match lookup_source_cache(artifact_cache, artifact_cache_key(kind, entry_name), fingerprint) {

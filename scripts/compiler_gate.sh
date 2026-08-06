@@ -73,8 +73,9 @@ echo "[compiler-gate] 3aa/3 incremental invalidation observation oracle"
 VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 
 # 3ab. #1379 opt-in metadata-only ingestion stamp: isolated equivalent cache
-# histories prove observed successful-check invalidation/output equivalence,
-# while retaining malformed/token-change fallback coverage.
+# histories prove observed successful-check invalidation/output equivalence and
+# an exact-token same-size mutation demonstrates the trusted-stat limitation
+# where the filesystem supports it, while retaining fallback coverage.
 echo "[compiler-gate] 3ab/3 persistent ingestion stamp observed-check equivalence oracle"
 node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 
@@ -2313,11 +2314,14 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$pfdir/bad_row_single.wasm" ]; then
   echo "[compiler-gate] FAIL: partially-declared transitive effect call compiled (#639)" >&2; exit 1
 fi
-if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared { Error }, requires { Error, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+# #1461: the fixture still DECLARES `with Error`; the diagnostic reports the
+# canonical `Exception`. That asymmetry is the point of the flip and is what
+# this assertion pins -- the alias keeps parsing, it just stops being printed.
+if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared { Exception }, requires { Exception, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-if ! grep -qF "hint: add 'with Error + Fs' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+if ! grep -qF "hint: add 'with Exception + Fs' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the add-form fix-it hint (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
 fi
@@ -6058,7 +6062,7 @@ if [ -s "$g944dir/leak_on.wasm" ]; then
   echo "[compiler-gate] FAIL: default-on checked-Error mode did not reject the row-less caller (#944)" >&2
   exit 1
 fi
-if ! grep -q "missing { Error }" "$g944dir/leak_on.wasm.diag" 2>/dev/null; then
+if ! grep -q "missing { Exception }" "$g944dir/leak_on.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: checked-Error rejection diag missing the row-mismatch message (#944)" >&2
   cat "$g944dir/leak_on.wasm.diag" 2>/dev/null >&2 || true
   exit 1

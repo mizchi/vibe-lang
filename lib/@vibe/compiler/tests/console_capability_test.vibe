@@ -1,0 +1,69 @@
+//# Imports
+
+// #1460 Phase 1: the `Console` capability -- one effect covering the three tty
+// streams, replacing Stdin/Stdout/Stderr.
+//
+// Phase 1 only TEACHES the compiler `Console`; lib/ still uses the legacy
+// three, and both name sets are live until the seed bump (see the note on the
+// registry entries in core/builtin_registry.vibe). So the property that needs
+// pinning here is not just "Console works" but "Console and the legacy three
+// are SEPARATE labels while they coexist" -- if they ever silently authorized
+// each other, the Phase 3 sweep would be free to leave rows half-converted and
+// nothing would notice.
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+fn diags(src: String) -> Array[String] with Exception {
+  collect_all_diagnostics(src)
+}
+
+fn ok(src: String) -> Bool with Exception {
+  Array::length(diags(src)) == 0
+}
+
+//# Tests
+
+test "every Console operation resolves" {
+  // A name the registry does not carry reports `unknown name`, so this is the
+  // registry/declaration wiring for all six at once. The stderr pair is
+  // spelled apart because one effect cannot own two `write_stream`.
+  assert(ok("fn f() -> Unit with Console {\n  Console::write_stream(\"x\")\n}\n"))
+  assert(ok("fn f() -> Unit with Console {\n  Console::write_char(65)\n}\n"))
+  assert(ok("fn f() -> Unit with Console {\n  Console::write_err_stream(\"x\")\n}\n"))
+  assert(ok("fn f() -> Unit with Console {\n  Console::write_err_char(66)\n}\n"))
+  assert(ok("fn f() -> String with Console {\n  Console::read_stream(8)\n}\n"))
+  assert(ok("fn f() -> Int with Console {\n  Console::read_char()\n}\n"))
+}
+
+test "Console is a checked capability, not an ambient one" {
+  // Without the row it is a row mismatch like any other capability -- the
+  // point being that adding `Console` to the capability list did not make it
+  // exempt from the row discipline.
+  let d = diags("fn f() -> Unit {\n  Console::write_stream(\"x\")\n}\n")
+  assert(Array::length(d) == 1)
+  assert(String::contains(Array::get(d, 0), "Console"))
+}
+
+test "Console and the legacy stream effects do not authorize each other" {
+  // The migration property. `Console` is its own label until Phase 3 removes
+  // the legacy three, so a row must name the one whose operation it calls.
+  assert(!ok("fn f() -> Unit with Stdout {\n  Console::write_stream(\"x\")\n}\n"))
+  assert(!ok("fn f() -> Unit with Console {\n  Stdout::write_stream(\"x\")\n}\n"))
+  assert(!ok("fn f() -> Unit with Stderr {\n  Console::write_err_stream(\"x\")\n}\n"))
+  assert(!ok("fn f() -> Unit with Console {\n  Stderr::write_stream(\"x\")\n}\n"))
+  // ...and the legacy spellings still work on their own, unchanged.
+  assert(ok("fn f() -> Unit with Stdout {\n  Stdout::write_stream(\"x\")\n}\n"))
+  assert(ok("fn f() -> Unit with Stderr {\n  Stderr::write_stream(\"x\")\n}\n"))
+}
+
+test "one Console row covers reads and writes on all three streams" {
+  // What merging the effects BUYS, and what it costs: a function touching
+  // stdin, stdout and stderr declares one capability instead of three -- and
+  // by the same token a caller granting `Console` can no longer grant write
+  // without also granting read. That trade is the decision, so it is pinned.
+  assert(ok("fn f() -> Int with Console {\n  Console::write_stream(\"o\")\n  Console::write_err_stream(\"e\")\n  Console::read_char()\n}\n"))
+}

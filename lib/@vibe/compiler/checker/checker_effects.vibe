@@ -16,10 +16,10 @@ import @vibe/compiler/core {
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_children,
-  is_core_ambient_effect,
   is_exception_effect_name,
   is_exception_label,
   is_exception_throw_operation,
+  is_row_transparent_effect,
   test_bench_ambient_effects,
   type_name_has_async_iterator_impl
 }
@@ -80,7 +80,7 @@ export enum EffectError {
 // and was only reachable from two unit-test harnesses, which now exercise the
 // live entry points instead. EEThrowOutsideEffect went with it (its only
 // constructor was that walk's EThrow arm, dead since #640 Stage 2 desugared
-// `throw` to `perform Error::Throw`); EEEffectfulCallOutsideEffect stays --
+// `throw` to `perform Exception::Throw`); EEEffectfulCallOutsideEffect stays --
 // check_async_effects_expr still reports it for async primitives.
 
 /// #1429: render a stored row as the SOURCE spelling the reader must type.
@@ -1039,7 +1039,7 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
 }
 
 /// The row label a `throw` requires: the typed `Exception[K]::Throw` when the
-/// payload's kind is resolvable, and the pinned erased `Error::Throw`
+/// payload's kind is resolvable, and the pinned erased `Exception::Throw`
 /// otherwise. Non-exception operations pass through untouched.
 fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)]) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
@@ -1051,7 +1051,7 @@ fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(Stri
 
 /// Which spelling of the missing label to REPORT. A row that names no
 /// exception label at all is the pre-#1344 "this function cannot throw" case,
-/// and its diagnostic stays byte-identical (`missing { Error::Throw }`); the
+/// and its diagnostic stays byte-identical (`missing { Exception::Throw }`); the
 /// typed spelling is surfaced only once the row is already speaking in kinds,
 /// where it is the actionable fix-it.
 fn throw_report_label(op_name: String, required: String, declared: Array[String]) -> String {
@@ -1134,7 +1134,7 @@ fn builtin_call_effect(name: String) -> Option[String] {
         // ADR-0084 の core ambient — この二項判定は
         // core/effect_taxonomy.vibe の `is_core_ambient_effect` が唯一の
         // 定義になった。
-        CtFn(_, _, Some(eff)) => if is_core_ambient_effect(eff) {
+        CtFn(_, _, Some(eff)) => if is_row_transparent_effect(eff) {
           None
         } else {
           Some(eff)
@@ -1580,9 +1580,9 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // (`teff != "Error"`) and builtin_call_effect's Error
                     // carve-out — the throw row is pervasive (~970
                     // un-annotated throw sites). `throw(x)` now parses to
-                    // `perform Error::Throw(x)`, so without this exemption
+                    // `perform Exception::Throw(x)`, so without this exemption
                     // every one of those sites would newly require
-                    // `with Error`.
+                    // `with Exception`.
                     // Codex review (PR #1161): report the qualified
                     // operation (`op_name`, e.g. "Ask::Get"), not the
                     // stripped base effect name -- per docs/effectset.md's
@@ -2017,9 +2017,9 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
 /// is judged separately by file_tests_cacheable (empty declared row), so a test
 /// that reaches a host effect still correctly counts as impure/non-cacheable.
 /// #944 (ADR-0073 implementation bridge): checked-Error mode. The accepted
-/// owner decision makes `Error::Throw` a fully checked semantic operation
-/// (direct throw and `with Error` callees propagate to the caller's
-/// row; discharge via `handle ... with Error`). Stage A landed this
+/// owner decision makes `Exception::Throw` a fully checked semantic operation
+/// (direct throw and `with Exception` callees propagate to the caller's
+/// row; discharge via `handle ... with Exception`). Stage A landed this
 /// opt-in (`VIBE_CHECK_ERROR_ROW=1`, default off, preserving the old
 /// exemption byte-for-byte) while the tree still carried hundreds of
 /// row-less throw sites (#640 measured ~970); stage B annotated those and
@@ -2375,7 +2375,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // top-level bindings, and the #885/#1361 overlay of function-typed
       // PARAMETERS and row-declaring local closures in scope. The overlay is
       // what spares `TaskGroup::spawn_suspend`, whose handled body's only
-      // callee is its own `f: () -> T with Async + Error` parameter.
+      // callee is its own `f: () -> T with Async + Exception` parameter.
       ECall(EIdent(nm, _), _, _) => match lookup_fn_effs(fn_names, fn_effs, nm) {
         Some(effs) => dh_labels_may_be(effs, ename),
         None => match lookup_fn_effs(ov_names, ov_effs, nm) {

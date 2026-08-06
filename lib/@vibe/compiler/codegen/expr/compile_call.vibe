@@ -396,7 +396,7 @@ export fn cc_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
 /// this, `eq(int, int)` falls through to the generic bound `eq` whose
 /// `looks_like_string`/str_eq fallback reads OOB on ints resembling fat-pointers
 /// (#678 residual) — e.g. leb128's `eq(val, 0)` trapped under RC (#705).
-fn cc_arg_is_scalarish(e: Expr) -> Bool with Error {
+fn cc_arg_is_scalarish(e: Expr) -> Bool with Exception {
   let t = expr_tag(e)
   if t == 0 || t == 1 {
     true
@@ -434,7 +434,7 @@ fn cc_slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
   result
 }
 
-fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Error {
+fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   // fbox (#797): mirror of expr_is_floatish's EDot tuple-projection case --
   // `t.N` on a tracked tuple-literal binding recurses into the backing
   // ETuple element via the #724 agg log.
@@ -623,7 +623,7 @@ fn cc_ft_first_idx(ft: FuncTable, name: String) -> Int {
 /// exactly matching what the actual call emission dispatches to. Name sets
 /// mirror the checker's declared types (checker/checker.vibe
 /// direct_builtin_return / core/builtin_registry.vibe).
-export fn cc_builtin_call_ret_kind(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Int with Error {
+export fn cc_builtin_call_ret_kind(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Int with Exception {
   if expr_tag(e) == 8 {
     let bcallee = get_ecall_callee(e)
     if is_eident(bcallee) {
@@ -663,7 +663,7 @@ export fn cc_builtin_call_ret_kind(e: Expr, local_names: Array[String], ctx: Com
 /// runtime string-pointer heuristic — which misreads the packed empty-string
 /// encoding 0 (e.g. `String::join([], sep)`, ptr 0 / len 0) as Int 0 and
 /// printed "0" for a perfectly legal empty string.
-export fn cc_expr_is_stringish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Error {
+export fn cc_expr_is_stringish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
   if tag == 3 {
     true
@@ -766,7 +766,7 @@ export fn cc_expr_is_stringish(e: Expr, local_names: Array[String], ctx: Compile
 /// lookup does not). A bool bound to a local and then interpolated is covered
 /// by the kind-3 slot log. Never fires for an integer expression, so the
 /// pervasive `__to_string(<int>)` calls (lengths, offsets, ids) are untouched.
-fn cc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Error {
+fn cc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
   if tag == 1 {
     true
@@ -944,7 +944,7 @@ fn cc_bmask_has(mask: Int, i: Int) -> Bool {
 /// `Array::get(vals, i)` un-retained, and once `vals` died the map's entry
 /// pointed at freed memory (ctor match on `Map::get` then read garbage).
 /// Expects the freshly compiled arg on the wasm stack; leaves it there.
-fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: Int, ctx: CompileCtx) -> Int with Error {
+fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: Int, ctx: CompileCtx) -> Int with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
   if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
     // #706 leak follow-up: a loop-borrowed trigger needs the epilogue's
@@ -969,7 +969,7 @@ fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: 
 /// operators are never float or string). Bare idents are deliberately excluded:
 /// a per-slot "is int" log is unsound because slots are reused across scopes
 /// without updating it. Covers `"\{1 << 40}"` and integer-literal interpolation.
-fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Error {
+fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
   if tag == 0 {
     true
@@ -1125,7 +1125,7 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
 /// - `MutList::empty(r)` allocates a fresh growable array, ignoring the
 ///   region token argument. The token is not evaluated: by construction it
 ///   is the pure region binder ident the parser emitted.
-export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Error) -> Int with Error {
+export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     ce(buf, ECall(Array::get(args, 0), [
       EInt(0)
@@ -1140,7 +1140,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
   }
 }
 
-fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Error) -> Int with Error {
+fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) {
     let fname0 = canonical_builtin_name(get_eident_name(callee))
     // Stream[T] (docs/spec/wasi-p3-async.md §2.4) is backed by the eager Array
@@ -2297,10 +2297,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ""
       }
-      // #640: `perform Error::Throw(x)` IS `throw(x)`. `Error` is never in
+      // #640: `perform Exception::Throw(x)` IS `throw(x)`. `Error` is never in
       // ctx.effect_names (linked_compile.vibe excludes it), so the generic
       // lowering below would assign it the out-of-range fallback tag 3+n and
-      // a `with Error` handler (which catches tag 2, the EThrow tag — see
+      // a `with Exception` handler (which catches tag 2, the EThrow tag — see
       // compile_expr_tail6.vibe) would never see it. Emit the exact EThrow
       // sequence instead (compile payload, throw tag 2), skipping the
       // perform-counter/memo-region machinery — Error is non-resumable.
@@ -4756,7 +4756,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       nl
     }
-    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep") {
+    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" ||
+    // #1460: the `Console` spellings share the imports, so they inherit the
+    // gap too -- they are registered into the func table the same way, with
+    // no shim. Caught by running the probe rather than by a type error: the
+    // tagged byte is invisible output (write_char(65) sends 130, a control
+    // character), so the calls looked like silent no-ops.
+    fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream") {
       // #930: same raw-ABI shim shape as the #705 Fs::exists family and the
       // #865 vibe_process_exit_raw case above -- these three were registered
       // straight into the func table (linked_compile's name->import map) with
@@ -4774,7 +4780,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_const(buf, 1)
       emit_i64_shr_s(buf)
       emit_call(buf, hi_idx)
-      if fname == "Stdin::read_stream" {
+      // The read half returns a packed string; the write halves are void and
+      // need the Unit 0 pushed for them. #1460 keeps both spellings of the
+      // read on the value-returning side.
+      if fname == "Stdin::read_stream" || fname == "Console::read_stream" {
         ()
       } else {
         emit_i64_const(buf, 0)

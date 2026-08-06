@@ -1,6 +1,7 @@
 //# Imports
 
-// #1343 / ADR-0094 実装順 1: ADR-0084 の三分類 metadata
+// #1343 / ADR-0094 実装順 1: ADR-0084 の分類 metadata (#1458 で
+// `runtime` が加わり四分類)
 // (lib/@vibe/compiler/core/effect_taxonomy.vibe) と、そこから派生する二つの
 // リストのロック。
 //
@@ -14,10 +15,13 @@ import @vibe/compiler/core {
   effect_class_algebraic,
   effect_class_capability,
   effect_class_core_ambient,
+  effect_class_runtime,
   effect_default_resource_kind,
   entry_cache_safe_effects,
   is_capability_effect,
   is_core_ambient_effect,
+  is_row_transparent_effect,
+  is_runtime_effect,
   is_singleton_resource_kind,
   predeclared_resources,
   process_root_resource_kind,
@@ -38,6 +42,7 @@ test "effect_class: host capabilities" {
   assert_eq(effect_class("Stdin"), "capability")
   assert_eq(effect_class("Stdout"), "capability")
   assert_eq(effect_class("Stderr"), "capability")
+  assert_eq(effect_class("Console"), "capability")
   assert_eq(effect_class("Process"), "capability")
   assert_eq(effect_class("Profiler"), "capability")
   assert_eq(effect_class("Http"), "capability")
@@ -56,9 +61,36 @@ test "effect_class: core ambient" {
   assert_eq(effect_class("Exception[IoError]"), "core_ambient")
   assert_eq(effect_class("Error::Throw"), "core_ambient")
   assert_eq(effect_class("Exception[IoError]::Throw"), "core_ambient")
-  assert_eq(effect_class("Async"), "core_ambient")
-  assert(is_core_ambient_effect("Async"))
   assert(not(is_core_ambient_effect("Fs")))
+  // #1458: `Async` は第四カテゴリへ移った。core ambient ではない。
+  assert(not(is_core_ambient_effect("Async")))
+}
+
+test "effect_class: runtime (#1458)" {
+  // 第四カテゴリ。row を素通りする点は core ambient と同じだが、
+  // discharge するのは runtime であって「誰も discharge しない」ではない。
+  // 今日の唯一のメンバー。
+  assert_eq(effect_class("Async"), "runtime")
+  assert_eq(effect_class_runtime(), effect_class("Async"))
+  assert(is_runtime_effect("Async"))
+  assert(not(is_runtime_effect("Error")))
+  assert(not(is_runtime_effect("Fs")))
+  assert(not(is_runtime_effect("Ask")))
+}
+
+test "#1458: row-transparent is the union the call sites actually want" {
+  // checker_effects の builtin_call_effect と wit_gen は「権限として数えない
+  // か」だけを見ており、discharge するのが誰かは問うていない。#1458 で
+  // クラスが二つに割れたので、その二つの和がこの述語。両方の呼び出し側の
+  // 挙動が不変であることは、この和が分割前の core_ambient と一致すること
+  // で担保される。
+  assert(is_row_transparent_effect("Error"))
+  assert(is_row_transparent_effect("Exception"))
+  assert(is_row_transparent_effect("Exception[IoError]"))
+  assert(is_row_transparent_effect("Async"))
+  assert(not(is_row_transparent_effect("Fs")))
+  assert(not(is_row_transparent_effect("Console")))
+  assert(not(is_row_transparent_effect("Ask")))
 }
 
 test "effect_class: unknown labels are algebraic" {
@@ -83,19 +115,21 @@ test "effect_class: operation and instantiation labels reduce to the effect" {
 
 test "class name accessors match effect_class output" {
   assert_eq(effect_class_capability(), effect_class("Fs"))
-  assert_eq(effect_class_core_ambient(), effect_class("Async"))
+  assert_eq(effect_class_core_ambient(), effect_class("Error"))
+  assert_eq(effect_class_runtime(), effect_class("Async"))
   assert_eq(effect_class_algebraic(), effect_class("Ask"))
 }
 
 test "test/bench ambient row is unchanged by the taxonomy refactor" {
-  // 吸収前の checker_effects.vibe のリテラル列そのもの。要素順込みで固定する
-  // — この slice は表面挙動不変が要件。
-  assert_eq(join_row(test_bench_ambient_effects()), "Fs,Env,Stdin,Stdout,Stderr,Process,Profiler,Error")
+  // 吸収前の checker_effects.vibe のリテラル列 + #1461 の `Exception`。
+  // 要素順込みで固定する。`Error` と `Exception` は同じ erased ラベルの
+  // 二つの綴りで、この列は名前で突き合わされるので両方載せる。
+  assert_eq(join_row(test_bench_ambient_effects()), "Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Error,Exception")
 }
 
 test "entry cache-safe row is unchanged by the taxonomy refactor" {
   // 吸収前の file_entry_cacheable の cache_safe_row そのもの。
-  assert_eq(join_row(entry_cache_safe_effects()), "Stdout,Error,Exception,Async")
+  assert_eq(join_row(entry_cache_safe_effects()), "Stdout,Console,Error,Exception,Async")
 }
 
 test "network and external-service capabilities are NOT test/bench ambient" {
@@ -108,24 +142,27 @@ test "network and external-service capabilities are NOT test/bench ambient" {
   assert(not(array_has_str(ambient, "Async")))
 }
 
-test "only Stdout is cache-safe among capabilities" {
+test "only the tty capability is cache-safe" {
   // #819 の doctest キャッシュにとって stdout は entry の産物。他の
   // capability が混ざると、byte-identical な wasm の出力が実行ごとに
   // 変わりうるのにキャッシュされてしまう。
+  // #1460: `Console` は `Stdout` を含む統合 capability なので同じ側。
+  // 「tty へ書く capability だけ」という不変条件は変わっていない。
   let safe = entry_cache_safe_effects()
   let mut i = 0
   while i < Array::length(safe) {
     let name = Array::get(safe, i)
     if is_capability_effect(name) {
-      assert_eq(name, "Stdout")
+      assert(name == "Stdout" || name == "Console")
     } else {
-      assert(is_core_ambient_effect(name))
+      // #1458: 非 capability 側は core ambient と runtime (`Async`) の二つ。
+      assert(is_row_transparent_effect(name))
     }
     i = i + 1
   }
 }
 
-test "capabilities carry a default resource kind, core ambient does not" {
+test "capabilities carry a default resource kind, the others do not" {
   // ADR-0094 Decision 5 の受け皿。`resource` 宣言 (ADR-0075 Phase 2) が
   // 未実装なので `Process::Root` はまだ検査には使われていないが、列が
   // 空になっていないことは pin しておく。

@@ -71,9 +71,22 @@ export fn effect_class_algebraic() -> String {
   "algebraic"
 }
 
-/// 言語予約。main の row を素通りできる (`Error` / `Exception[E]` / `Async`)。
+/// 言語予約。main の row を素通りできる (`Error` / `Exception[E]`)。
 export fn effect_class_core_ambient() -> String {
   "core_ambient"
+}
+
+/// #1458: runtime が駆動する effect。放電不要で grant でも揺れない点は
+/// core ambient と同じだが、**理由が違う** — core ambient は「entry が
+/// abortive に処理するので誰も discharge しない」、runtime は「runtime
+/// そのものが discharge する」。今日の唯一のメンバーは `Async`
+/// (ADR-0089 Decision 5: backend の選択であって権限ではない)。
+///
+/// 分けたのは分類の正確さのためだけではない。`Async` を core ambient に
+/// 混ぜていた間、checker と wit_gen の両方に「`Error` と `Async` は同じ
+/// 理由でここに居る」と読めるコメントが書かれていた。実際の理由は違う。
+export fn effect_class_runtime() -> String {
+  "runtime"
 }
 
 //# The table
@@ -131,6 +144,14 @@ let effect_taxonomy_rows: Array[(String, String, String, Bool, Bool)] = [
   // であって、隠れた非決定性の源ではない。
   ("Stdout", "capability", "Process::Root", true, true),
   ("Stderr", "capability", "Process::Root", true, false),
+  // #1460 Phase 1: `Console` は上の三つの stream effect を一本化したもので、
+  // 同じ ambient-host-handler の理屈でここに載る (test/bench ブロックは
+  // ランタイム host の下で走り、host は Console::write_stream 以下を
+  // Stdout のものと同じ実装で提供する)。cache-safe なのも Stdout と同じ
+  // 理由 — tty への書き出しは compile の**入力**ではないので、キャッシュ
+  // した結果を誤りにしようがない。両方の綴りが宣言できる間は Stdout を
+  // 置き換えず並べておく。
+  ("Console", "capability", "Process::Root", true, true),
   ("Process", "capability", "Process::Root", true, false),
   ("Profiler", "capability", "Process::Root", true, false),
   // 以下は test/bench ambient ではない — ネットワーク・外部サービスは
@@ -150,10 +171,19 @@ let effect_taxonomy_rows: Array[(String, String, String, Bool, Bool)] = [
   // `Exception` (erased spelling) と `Exception[K]` は `is_exception_label`
   // 経由で core ambient と判定されるので、この行は**派生リストのため**に
   // だけ存在する (`cache_safe_row` の綴りを保つ)。
-  ("Exception", "core_ambient", "", false, true),
+  //
+  // #1461: test/bench ambient は `Error` と同じ true。この列は要求ラベルと
+  // **名前で**突き合わされ、その比較の多くは alias-aware だが全部ではない
+  // (契約適合検査は row を逐語比較する)。両方の綴りを載せておけば
+  // canonical がどちらであっても問いが消える — 費用は配列 1 要素。
+  ("Exception", "core_ambient", "", true, true),
+  // --- runtime (#1458) ---
+  //
   // ADR-0089: `Async` は backend 選択であって権限ではない。合成であり
-  // host 非決定性の源そのものではないので cache-safe。
-  ("Async", "core_ambient", "", false, true)
+  // host 非決定性の源そのものではないので cache-safe。#1458 で core ambient
+  // から分離した — row を素通りする点は同じだが、`Error` が「誰も
+  // discharge しない」のに対し `Async` は「runtime が discharge する」。
+  ("Async", "runtime", "", false, true)
 ]
 
 //# Lookups
@@ -216,13 +246,33 @@ export fn effect_class(label: String) -> String {
   }
 }
 
-/// `Error` / `Exception[K]` / `Async` — main の row を素通りでき、
-/// 権限としては数えない effect。
+/// `Error` / `Exception[K]` — entry が abortive に処理するので誰も
+/// discharge しない effect。
 ///
-/// 吸収前は `is_exception_effect_name(x) || x == "Async"` という二項判定が
-/// checker_effects.vibe と wit_gen.vibe に別々に書かれていた。
+/// #1458 で `Async` はここから外れて `runtime` になった。両方をまとめて
+/// 見たい呼び出し側は `is_row_transparent_effect` を使うこと。
 export fn is_core_ambient_effect(label: String) -> Bool {
   effect_class(label) == "core_ambient"
+}
+
+/// `Async` — runtime が discharge する effect (#1458)。
+export fn is_runtime_effect(label: String) -> Bool {
+  effect_class(label) == "runtime"
+}
+
+/// row を素通りする二クラス (core ambient + runtime) のどちらかか。
+///
+/// **これが実際の呼び出し側が欲しい述語**。checker_effects.vibe の
+/// `builtin_call_effect` (要求 row に載せない) と wit_gen.vibe (world import
+/// にしない) は、どちらも「権限として数えない」ことだけを見ており、
+/// discharge するのが誰かは問うていない。吸収前は
+/// `is_exception_effect_name(x) || x == "Async"` という二項判定が両方に
+/// 別々に書かれていて、#1343 でいったん `is_core_ambient_effect` に寄せた
+/// もの — #1458 でクラスが二つに割れたので、**述語のほうを二クラスの和に
+/// する**。呼び出し側の挙動は不変。
+export fn is_row_transparent_effect(label: String) -> Bool {
+  let class = effect_class(label)
+  class == "core_ambient" || class == "runtime"
 }
 
 /// host provider が実装する権限 effect か。
@@ -294,7 +344,8 @@ export fn taxonomy_effect_names() -> Array[String] {
 /// (checker_effects.vibe の `check_perform_effects_stmt_tx`)。
 ///
 /// 表の順に filter するので `[Fs, Env, Stdin, Stdout, Stderr, Process,
-/// Profiler, Error]` — 吸収前のリテラル列と要素順まで同じ。
+/// Profiler, Error, Exception]` — 吸収前のリテラル列に #1460 の `Console`
+/// と #1461 の `Exception` を足したもの (どちらも旧綴りと並べて載せる)。
 /// 各項目を絞れない根拠は `effect_taxonomy_rows` のコメント参照。
 ///
 /// 呼ぶたびに新しい配列を作る (memo cell を共有して返さない) — 受け取り側は
@@ -318,8 +369,8 @@ export fn test_bench_ambient_effects() -> Array[String] {
 /// entry (`fn main`) を #819 の doctest 実行キャッシュに載せてよい effect
 /// (checker_effects.vibe の `file_entry_cacheable`)。
 ///
-/// 表の順に filter するので `[Stdout, Error, Exception, Async]` — 吸収前の
-/// リテラル列と要素順まで同じ。ここに無い effect
+/// 表の順に filter するので `[Stdout, Console, Error, Exception, Async]` —
+/// 吸収前のリテラル列に #1460 の `Console` を足したもの。ここに無い effect
 /// (Fs / Env / Http / Process / Socket / user effect / ...) が到達可能なら、
 /// byte-identical な wasm でも実行ごとに stdout が変わりうるのでキャッシュ
 /// 不可。

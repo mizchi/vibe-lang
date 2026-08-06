@@ -49,7 +49,7 @@ mkdir -p "$CACHE_DIR"
 start_ns=$(date +%s%N)
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_WASM_MEMORY_STATS=1 VIBE_BUILD_CACHE_DIR="$CACHE_DIR" \
-  node scripts/wasm_vibe_host_runner.js --invoke cli_main "$STAGE2" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   "$INPUT" "$OUT_WASM" __no_entry__ 2>"$STATS_FILE"
 end_ns=$(date +%s%N)
 wall_ms=$(( (end_ns - start_ns) / 1000000 ))

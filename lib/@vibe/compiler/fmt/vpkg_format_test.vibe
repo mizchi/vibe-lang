@@ -43,6 +43,10 @@ test "vpkg: the declaration region still goes through format_script" {
   // `with { Error }` is the pre-#1429 spelling; normalize_effect_rows in
   // format_script rewrites it. That it applies here is the point -- the
   // declarations are ordinary bodyless vibe.
+  // #1461: the label stays `Error`. normalize_effect_rows is a TOKEN pass --
+  // it removes the braces and nothing else. Renaming the erased exception
+  // effect is a checker-level canonicalization, and the formatter must not
+  // reach into it, or `vibe fmt` would start rewriting identifiers.
   let src = "name = @vibe/x\nversion = 0.0.1\n\ngenerated_hash =\n\nfn f() -> Int with { Error }\n"
   let want = "name = @vibe/x\nversion = 0.0.1\n\ngenerated_hash =\n\nfn f() -> Int with Error\n"
   assert(format_vpkg(src) == want)
@@ -112,6 +116,7 @@ test "#1429: normalize_effect_rows still converts the spelling the parser remove
   // outside this repository. This assertion is what stops the next reader
   // deleting it as dead code.
   let converted = format_script("let f: (Int) -> Int with { Error, Fs } = (x) -> { x }\n")
+  // The label is untouched (#1461): this pass debraces, it does not rename.
   assert(String::contains(converted, "with Error + Fs"))
   assert(!String::contains(converted, "with {"))
   let empty = format_script("let g: () -> Int with {} = () -> { 1 }\n")

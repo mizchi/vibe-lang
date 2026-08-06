@@ -135,6 +135,28 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   // need to declare `with Stdout`).
   ("Stderr::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Stderr")), true, false, true),
   ("Stderr::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Stderr")), true, false, true),
+  // #1460 Phase 1: the `Console` capability -- one effect covering the three
+  // tty streams, replacing Stdin/Stdout/Stderr. Both name sets are live here
+  // ON PURPOSE and only for the length of the migration:
+  //
+  //   the committed seed knows ONLY the legacy three, and the seed is what
+  //   compiles this file. So the compiler must learn `Console` in a build the
+  //   seed can still produce, that build becomes the next seed, and only THEN
+  //   can lib/ (this file included) move to `Console::*`. Deleting the legacy
+  //   entries in the same commit that adds these would make the compiler
+  //   unbuildable from its own seed.
+  //
+  // The stderr pair cannot keep its operation spelling once the effects
+  // merge -- `Console::write_stream` is already taken by stdout -- so the
+  // error side is named apart rather than disambiguated by effect.
+  //
+  // Phase 3 removes the six legacy entries above and this comment with them.
+  ("Console::read_stream", CtFn(reg_p1(CtInt), CtString, Some("Console")), true, false, true),
+  ("Console::read_char", CtFn(reg_p0(), CtInt, Some("Console")), true, false, true),
+  ("Console::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Console")), true, false, true),
+  ("Console::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Console")), true, false, true),
+  ("Console::write_err_stream", CtFn(reg_p1(CtString), CtUnit, Some("Console")), true, false, true),
+  ("Console::write_err_char", CtFn(reg_p1(CtInt), CtUnit, Some("Console")), true, false, true),
   ("resolve_path", CtFn(reg_p1(CtString), CtString, None), true, false, false),
   ("Fs::remove", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true),
   ("Fs::mkdir_p", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true),
@@ -409,7 +431,7 @@ export fn lookup_registry_builtin(name: String) -> Option[Type] {
 /// 実測 1)、そちらは配列として列挙できないのでここからは照合できない —
 /// 現に `Llm` は builtins_system.vibe だけに存在し、この guard は触れない。
 /// registry へ寄せる作業 (B-2 の続き) が進むほどカバー率は上がる。
-export fn verify_effect_taxonomy_coverage() -> Unit with Error {
+export fn verify_effect_taxonomy_coverage() -> Unit with Exception {
   let rows = builtin_registry_typed()
   let mut i = 0
   while i < Array::length(rows) {
@@ -430,7 +452,7 @@ export fn verify_effect_taxonomy_coverage() -> Unit with Error {
 /// arrays agree with the registry. Called by each backend builder right after
 /// it finishes its registration pushes; throws with a named diff on any
 /// drift. O(n^2) over ~100 entries at compile start — noise next to a parse.
-export fn verify_lane_builtins(lane: String, names: Array[String], param_counts: Array[Int], returns: Array[Int]) -> Unit with Error {
+export fn verify_lane_builtins(lane: String, names: Array[String], param_counts: Array[Int], returns: Array[Int]) -> Unit with Exception {
   let is_gc = lane == "gc"
   let reg = builtin_registry()
   // 1. every registered name must have a matching registry row

@@ -27,6 +27,8 @@ import @vibe/compiler/core {
   env_bind,
   env_flat_bindings,
   env_lookup_flat,
+  normalize_path,
+  resolution_env_seed,
   resolve_import_path,
   resolve_import_path_candidates,
   str_lt
@@ -237,7 +239,7 @@ fn upsert_env_cache(cache: Array[(String, TypeEnv)], path: String, env: TypeEnv)
   cache
 }
 
-fn ensure_env_cache_for_path(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], path: String) -> Array[(String, TypeEnv)] with Error + Fs {
+fn ensure_env_cache_for_path(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], path: String) -> Array[(String, TypeEnv)] with Exception + Fs {
   match lookup_env_cache(env_cache, path) {
     Some(_) => env_cache,
     None =>
@@ -252,7 +254,7 @@ fn ensure_env_cache_for_path(rdb: RippleDb, env_cache: Array[(String, TypeEnv)],
   }
 }
 
-fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], paths: Array[String]) -> Array[(String, TypeEnv)] with Error + Fs {
+fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], paths: Array[String]) -> Array[(String, TypeEnv)] with Exception + Fs {
   let mut cache = env_cache
   let mut i = 0
   while i < Array::length(paths) {
@@ -260,6 +262,35 @@ fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
     i = i + 1
   }
   cache
+}
+
+/// Project the coordinator's accumulated environment cache onto exactly the
+/// resolved direct dependency sequence that the module header produced.
+///
+/// Order and duplicate paths are preserved verbatim. lookup_env_cache's
+/// first-match rule is intentional: it is the same rule build_import_env uses,
+/// so a duplicate cache path cannot select one interface while TDRE4 keys a
+/// different one. A missing row is an infrastructure error, never EnvEmpty:
+/// continuing would let an unreadable dependency silently weaken checking.
+fn project_exact_dependency_envs(deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> Array[(String, TypeEnv)] with Exception {
+  let projected = array_empty()
+  let mut i = 0
+  while i < Array::length(deps) {
+    let dep_path = Array::get(deps, i)
+    match lookup_env_cache(full_cache, dep_path) {
+      Some(dep_env) => Array::push(projected, (dep_path, dep_env)),
+      None => throw(String::concat("type_db: missing resolved dependency environment: ", dep_path))
+    }
+    i = i + 1
+  }
+  projected
+}
+
+/// Test-only semantic seam: production projects with the same helper and then
+/// gives this exact table to build_import_env through ModuleJob.dep_envs.
+export fn projected_import_env_for_test(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
+  let dep_envs = project_exact_dependency_envs(deps, full_cache)
+  build_import_env(parse_program_with_path(path, source), dir_of_path(path), dep_envs)
 }
 
 fn build_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
@@ -502,9 +533,12 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = [
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// This opt-in aliases only an exact v3 decoded TypeEnv when every direct
-// dependency transport environment is unchanged. It is not a CheckedProgram
-// or typed-IR transport; v3 retains the TypeEnv trait/impl chain only.
+// TDRE4 aliases only an exact v3 decoded TypeEnv when every direct dependency
+// transport environment is unchanged. It is not a CheckedProgram or typed-IR
+// transport; v3 retains the TypeEnv trait/impl chain only. The empty cell is
+// conservative for direct FS consumers. The CLI check-only lane explicitly
+// enables production reuse after validating its per-invocation policy; build,
+// codegen, and other FS consumers remain off pending compact publication.
 let experimental_typing_dependency_env_reuse_enabled_cell = array_empty()
 
 export fn set_experimental_typing_dependency_env_reuse_enabled(enabled: Bool) -> Unit {
@@ -1214,7 +1248,7 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
 /// successful parse is repeated here only for the opt-in observation path so a
 /// malformed or incomplete stream fails closed. This is deliberately
 /// provisional syntax identity, not normalized typed IR.
-fn incremental_implementation_identity(source: String) -> String with Error {
+fn incremental_implementation_identity(source: String) -> String with Exception {
   let (tokens, starts, ends) = lex_with_offsets(source)
   let _ = parse_program_located(tokens, starts, source)
   let out = StringBuilder::new()
@@ -1236,7 +1270,7 @@ export fn incremental_trait_generic_provenance_markers_for_test(header_params: A
   String::concat(interface_bracketed(interface_trait_header_malformed_rows(header_params), ";"), String::concat(interface_bracketed(interface_trait_generic_malformed_rows(method_params, generic_bounds), ";"), interface_bracketed(interface_surplus_method_generic_rows(method_count, method_gens), ";")))
 }
 
-fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Error {
+fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Exception {
   let stmts = parse_program_with_path("<incremental-interface-observation>", source)
   let out = StringBuilder::new()
   StringBuilder::push(out, "vibe-module-interface:v2\n")
@@ -1267,7 +1301,7 @@ fn incremental_interface_identity(source: String, env: TypeEnv) -> String with E
 /// checker. The existing canonical Type serializer alpha-normalizes quantified
 /// variables and sorts/deduplicates bounds and effects. This is not the
 /// persistent TypeEnv codec and is never read by a cache lookup.
-fn incremental_checked_env_identity(env: TypeEnv) -> String with Error {
+fn incremental_checked_env_identity(env: TypeEnv) -> String with Exception {
   let bindings = env_flat_bindings(env)
   let raw_names = array_empty()
   let mut b = 0
@@ -1311,7 +1345,7 @@ fn incremental_persistent_type_env_transport_identity(env: TypeEnv) -> String {
   compact_string_fingerprint(persistent_type_env_cache_text(env))
 }
 
-fn incremental_trace_observe_checked_env(path: String, source: String, env: TypeEnv) -> Unit with Error {
+fn incremental_trace_observe_checked_env(path: String, source: String, env: TypeEnv) -> Unit with Exception {
   incremental_interface_trace_observe(path, incremental_interface_identity(source, env), incremental_checked_env_identity(env), incremental_persistent_type_env_transport_identity(env))
 }
 
@@ -1363,7 +1397,7 @@ fn incremental_trace_json_string(text: String) -> String {
 /// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
 /// observation throws rather than emitting a partial or stale sidecar.
-export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: String) -> String with Error + Fs {
+export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: String) -> String with Exception + Fs {
   if String::length(run_nonce) == 0 {
     throw("incremental invalidation trace requires a non-empty run nonce")
   } else {
@@ -1490,7 +1524,7 @@ fn dep_visit_order(n: Int) -> Array[Int] {
 let parse_memo_paths: Array[String] = [
 ] let parse_memo_sources: Array[String] = [
 ] let parse_memo_stmts: Array[Array[Stmt]] = [
-] export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Error {
+] export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
   let n = Array::length(parse_memo_paths)
   let mut i = 0
   let mut hit = -1
@@ -1514,7 +1548,7 @@ let parse_memo_paths: Array[String] = [
       // offset at -1, so located type errors fell back to a first-occurrence scan.
       let (tokens, starts, _ends) = lex_with_offsets(source)
       parse_program_located(tokens, starts, source)
-    } with Error {
+    } with Exception {
       Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
     }
     // Bound the memo. It is process-wide, and `vibe --daemon` (the #906
@@ -1544,52 +1578,20 @@ let parse_memo_paths: Array[String] = [
     Array::push(parse_memo_stmts, parsed)
     Array::slice(parsed, 0, Array::length(parsed))
   }
-} fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with Error + Fs {
-  Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
+} fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Exception + Fs {
+  let text = persistent_type_env_cache_text(env)
+  Fs::write_file(persistent_type_env_cache_path(fingerprint), text)
+  text
 }
 
-// The sidecar wire format is intentionally independent from the TypeEnv v3
-// envelope: `TDRE3` followed by two strict decimal length-delimited strings
-// (typing-input key, target conservative fingerprint). It is an alias to an
-// existing artifact, never a CheckedProgram or typed-IR transport.
-//
-// TDRE eligibility is a separate, versioned witness keyed by the ordinary
-// conservative module fingerprint. The v3 transport is complete for TypeEnv
-// variants, including trait/impl state, so source exclusion is no longer
-// necessary; publication still requires an already validated witness chain.
-let typing_dependency_env_reuse_eligibility_v3_text = "TDRE-ELIGIBILITY-3"
-
-fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with Fs {
-  let marker_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
-  if Fs::exists(marker_path) {
-    Fs::read_file(marker_path) == typing_dependency_env_reuse_eligibility_v3_text
-  } else {
-    false
-  }
-}
-
-/// Eligibility is transitively witnessed by successful v3 TypeEnv commits.
-/// The input key below fingerprints those complete direct dependency transports,
-/// including trait definitions and impls; an absent/malformed witness fails
-/// closed before any alias lookup.
-fn typing_dependency_env_reuse_is_eligible(_path: String, _source: String, dep_fps: Array[(String, String)]) -> Bool with Error + Fs {
-  let mut i = 0
-  let mut deps_eligible = true
-  while deps_eligible && i < Array::length(dep_fps) {
-    let (_dep_path, dep_fingerprint) = Array::get(dep_fps, i)
-    if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
-      ()
-    } else {
-      deps_eligible = false
-    }
-    i = i + 1
-  }
-  deps_eligible
-}
-
-fn publish_typing_dependency_env_reuse_eligibility(fingerprint: String) -> Unit with Fs {
-  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), typing_dependency_env_reuse_eligibility_v3_text)
-}
+// TDRE4 is deliberately independent from the TypeEnv v3 envelope and from
+// every production artifact/cache identity. Both v4 envelopes use strict
+// decimal length-delimited fields and bind the logical checker input, target
+// conservative fingerprint, and exact canonical TypeEnv-v3 transport text.
+// The target text is intentionally not replaced by a compact fingerprint:
+// cache corruption must not turn a fingerprint collision into checker reuse.
+let typing_dependency_env_reuse_alias_v4_tag = "TDRE4A"
+let typing_dependency_env_reuse_witness_v4_tag = "TDRE4W"
 
 fn typing_reuse_segment(text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
@@ -1624,52 +1626,26 @@ fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
   }
 }
 
-fn typing_dependency_transport_input_key(source: String, deps: Array[String], env_cache: Array[(String, TypeEnv)]) -> Option[String] {
-  let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v3")
-  StringBuilder::push(out, typing_reuse_segment(source))
-  StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(deps))))
-  let mut i = 0
-  let mut complete = true
-  while complete && i < Array::length(deps) {
-    let dep_path = Array::get(deps, i)
-    match lookup_env_cache(env_cache, dep_path) {
-      Some(dep_env) => {
-        // This is the exact complete TypeEnv v3 text transported through
-        // persistent_env_codec, not the trace-only module-interface:v2 value.
-        let transport_env_fingerprint = compact_string_fingerprint(persistent_type_env_cache_text(dep_env))
-        StringBuilder::push(out, typing_reuse_segment(dep_path))
-        StringBuilder::push(out, typing_reuse_segment(transport_env_fingerprint))
-      },
-      None => {
-        complete = false
-      }
-    }
-    i = i + 1
-  }
-  if complete {
-    Some(StringBuilder::freeze(out))
-  } else {
-    None
-  }
+fn typing_dependency_reuse_binding_text(tag: String, input_key: String, target_fingerprint: String, target_text: String) -> String {
+  String::concat(tag, String::concat(typing_reuse_segment(input_key), String::concat(typing_reuse_segment(target_fingerprint), typing_reuse_segment(target_text))))
 }
 
-fn typing_dependency_env_reuse_sidecar_text(input_key: String, target_fingerprint: String) -> String {
-  String::concat("TDRE3", String::concat(typing_reuse_segment(input_key), typing_reuse_segment(target_fingerprint)))
-}
-
-fn parse_typing_dependency_env_reuse_sidecar(text: String, expected_input_key: String) -> Option[String] {
-  if !String::starts_with(text, "TDRE3") {
+fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(String, String, String)] {
+  if !String::starts_with(text, tag) {
     None
   } else {
-    match parse_typing_reuse_segment(text, 5) {
+    match parse_typing_reuse_segment(text, String::length(tag)) {
       Some((input_key, after_input)) =>
       match parse_typing_reuse_segment(text, after_input) {
-        Some((target_fingerprint, end)) =>
-        if input_key == expected_input_key && end == String::length(text) && String::length(target_fingerprint) > 0 {
-          Some(target_fingerprint)
-        } else {
-          None
+        Some((target_fingerprint, after_target)) =>
+        match parse_typing_reuse_segment(text, after_target) {
+          Some((target_text, end)) =>
+          if end == String::length(text) && String::length(input_key) > 0 && String::length(target_fingerprint) > 0 && String::length(target_text) > 0 {
+            Some((input_key, target_fingerprint, target_text))
+          } else {
+            None
+          },
+          None => None
         },
         None => None
       },
@@ -1678,41 +1654,141 @@ fn parse_typing_dependency_env_reuse_sidecar(text: String, expected_input_key: S
   }
 }
 
-fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String, TypeEnv)] with Error + Fs {
-  let sidecar_path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
-  if !Fs::exists(sidecar_path) {
+/// Exact logical input to check_module: canonical owner path, byte-exact owner
+/// source, resolution authority, and every resolved direct dependency row of
+/// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
+/// this table once with project_exact_dependency_envs and gives the same value
+/// to both check_module and TDRE4 lookup/publication, so ambient coordinator
+/// cache rows are neither checker-visible nor part of this canonical text.
+fn typing_dependency_transport_input_key(path: String, source: String, dep_envs: Array[(String, TypeEnv)]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v4")
+  StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
+  StringBuilder::push(out, typing_reuse_segment(source))
+  StringBuilder::push(out, typing_reuse_segment(resolution_env_seed()))
+  StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(dep_envs))))
+  let mut i = 0
+  while i < Array::length(dep_envs) {
+    let (dep_path, dep_env) = Array::get(dep_envs, i)
+    StringBuilder::push(out, typing_reuse_segment(dep_path))
+    StringBuilder::push(out, typing_reuse_segment(persistent_type_env_cache_text(dep_env)))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Decode untrusted target bytes strictly and require the decoder's canonical
+/// v3 re-encoding to equal both the raw file and the binding's exact text.
+/// parse_persistent_type_env accepts normalized line endings for ordinary cache
+/// compatibility; this additional equality makes the experimental lane strict.
+fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[TypeEnv] with Fs {
+  let target_path = persistent_type_env_cache_path(target_fingerprint)
+  if !Fs::exists(target_path) {
     None
   } else {
-    match parse_typing_dependency_env_reuse_sidecar(Fs::read_file(sidecar_path), input_key) {
-      Some(target_fingerprint) =>
-      if typing_dependency_env_reuse_eligibility_is_valid(target_fingerprint) {
-        // A referenced target is untrusted cache text. Its decoder may throw
-        // for a truncated/malformed row; an alias miss must instead take the
-        // ordinary full-check path.
-        let loaded = handle {
-          load_persistent_type_env(target_fingerprint)
-        } with Error {
-          Throw(_) => None
-        }
-        match loaded {
-          Some(target_env) => Some((target_fingerprint, target_env)),
+    handle {
+      let raw_target_text = Fs::read_file(target_path)
+      match parse_persistent_type_env(raw_target_text) {
+        Some(target_env) => {
+          let canonical_target_text = persistent_type_env_cache_text(target_env)
+          if raw_target_text == canonical_target_text && raw_target_text == expected_target_text {
+            Some(target_env)
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    } with Exception {
+      Throw(_) => None
+    }
+  }
+}
+
+fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(String, String)] with Fs {
+  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
+  if !Fs::exists(witness_path) {
+    None
+  } else {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v4_tag) {
+      Some((input_key, target_fingerprint, target_text)) =>
+      if target_fingerprint != fingerprint {
+        None
+      } else {
+        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint, target_text) {
+          Some(_) => Some((input_key, target_text)),
           None => None
         }
-      } else {
-        None
       },
       None => None
     }
   }
 }
 
-fn write_typing_dependency_env_reuse_sidecar(source: String, deps: Array[String], env_cache: Array[(String, TypeEnv)], target_fingerprint: String) -> Unit with Fs {
-  match typing_dependency_transport_input_key(source, deps, env_cache) {
-    Some(input_key) => Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), typing_dependency_env_reuse_sidecar_text(input_key, target_fingerprint)),
-    // A missing direct-dependency transport environment is never a partial
-    // key: simply omit the experimental alias and retain conservative reuse.
-    None => ()
+fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with Fs {
+  match typing_dependency_env_reuse_witness_binding(fingerprint) {
+    Some(_) => true,
+    None => false
   }
+}
+
+/// Eligibility is transitively witnessed by successful canonical TypeEnv-v3
+/// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
+/// closed before the alias lookup.
+fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
+  let mut i = 0
+  let mut deps_eligible = true
+  while deps_eligible && i < Array::length(dep_fps) {
+    let (_dep_path, dep_fingerprint) = Array::get(dep_fps, i)
+    if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
+      ()
+    } else {
+      deps_eligible = false
+    }
+    i = i + 1
+  }
+  deps_eligible
+}
+
+fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Fs {
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v4_tag, input_key, fingerprint, target_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
+}
+
+fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String, String, TypeEnv)] with Fs {
+  let sidecar_path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
+  if !Fs::exists(sidecar_path) {
+    None
+  } else {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v4_tag) {
+      Some((alias_input_key, target_fingerprint, target_text)) =>
+      if alias_input_key != input_key {
+        None
+      } else {
+        // Validate the raw target before consulting the separately published
+        // witness. Only an exact three-way alias/witness/target binding reuses.
+        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint, target_text) {
+          Some(target_env) =>
+          match typing_dependency_env_reuse_witness_binding(target_fingerprint) {
+            Some((witness_input_key, witness_target_text)) =>
+            if witness_input_key == input_key && witness_target_text == target_text {
+              Some((target_fingerprint, target_text, target_env))
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Fs {
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v4_tag, input_key, target_fingerprint, target_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 
 fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Fs {
@@ -2028,7 +2104,7 @@ export enum ModuleOutcome {
 }
 /// Pure module check. No Fs: the dependency environments it needs are
 /// already values inside the job.
-export fn check_module(job: ModuleJob) -> ModuleOutcome with Error {
+export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
@@ -2063,7 +2139,7 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Error {
       ""
     }
     Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity)
-  } with Error {
+  } with Exception {
     Throw(msg) => Diagnosed(job.path, [
       String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
     ])
@@ -2071,7 +2147,7 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Error {
 }
 /// Coordinator-owned commit. Every filesystem and accumulator write for a
 /// module happens here and nowhere else.
-fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error + Fs {
+fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   match outcome {
     // Diagnostics are values as far as the worker is concerned, but the
     // driver still fails fast on the first one so the observable behaviour
@@ -2083,14 +2159,18 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       throw(String::concat(job.path, ": type error"))
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity) => {
-      store_persistent_type_env(fingerprint, checked_env)
-      // The TypeEnv commit comes first. Every direct conservative dependency
-      // marker must already be validated before this module may publish its
-      // witness and alias; each dependency witness was itself published under
-      // that rule, establishing the transitive v3 TypeEnv commit chain.
-      if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(path, job.source, job.dep_fps) {
-        publish_typing_dependency_env_reuse_eligibility(fingerprint)
-        write_typing_dependency_env_reuse_sidecar(job.source, job.deps, job.dep_envs, fingerprint)
+      // Serialize the TypeEnv once. Production-default TDRE4 publication binds
+      // the exact same text as the conservative target; serializing it a second
+      // time materially inflates fresh selfcompile heap without adding evidence.
+      let target_text = store_persistent_type_env(fingerprint, checked_env)
+      // Publish in commit order: canonical target first, bound witness second,
+      // alias last. Diagnosed/thrown checks never enter this Checked arm. Keep
+      // the extra canonical target text and input serialization wholly inside
+      // the enabled, transitively eligible experimental lane.
+      if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(job.dep_fps) {
+        let input_key = typing_dependency_transport_input_key(path, job.source, job.dep_envs)
+        publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
+        write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
       } else {
         ()
       }
@@ -2146,7 +2226,7 @@ fn job_dir_path(dir: String, name: String) -> String {
 /// other row. There is deliberately no `fingerprint` row for the job's OWN
 /// identity: that is check_module's output (via build_fingerprint), never
 /// an input a caller could get wrong or fail to keep in sync.
-fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) with Error {
+fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) with Exception {
   let lines = String::split(normalize_persistent_cache_text(job_text), "\n")
   let len = Array::length(lines)
   let deps = empty_stack()
@@ -2210,7 +2290,7 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   } else {
     (path, deps, dep_fps)
   }
-} export fn run_module_job_dir(dir: String) -> Unit with Error + Fs {
+} export fn run_module_job_dir(dir: String) -> Unit with Exception + Fs {
   let (path, deps, dep_fps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
   let source = Fs::read_file(job_dir_path(dir, "source.vibe"))
   let dep_envs = array_empty()
@@ -2252,7 +2332,7 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   // the coordinator treats as fatal rather than as a compiler diagnostic.
   let outcome = handle {
     check_module(job)
-  } with Error {
+  } with Exception {
     Throw(msg) => Diagnosed(path, [
       msg
     ])
@@ -2289,7 +2369,7 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
 /// conflict: the path is content-addressed, and a checker producing two
 /// different envs for one fingerprint would already violate the
 /// jobs=1/2/4 byte-identity gate elsewhere.
-fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Error {
+fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exception {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
   let rows = array_empty()
   let mut i = 0
@@ -2315,7 +2395,7 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Err
     i = i + 1
   }
   rows
-} export fn run_publish_env_cache_dir(dir: String) -> Unit with Error + Fs {
+} export fn run_publish_env_cache_dir(dir: String) -> Unit with Exception + Fs {
   let rows = parse_publish_manifest_rows(Fs::read_file(job_dir_path(dir, "manifest.txt")))
   let mut i = 0
   let len = Array::length(rows)
@@ -2334,7 +2414,7 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Err
 /// below carries the real inputs check_module needs to compute (and thereby
 /// cross-check) that identical fingerprint itself, the same way a worker
 /// would -- one canonical computation, not a value trusted from the caller.
-fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error + Fs {
+fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     if incremental_interface_trace_enabled() {
       match load_persistent_type_env(fingerprint) {
@@ -2347,27 +2427,33 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
   } else {
-    let import_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
-    let reused_env = if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(path, source, dep_fps) {
-      match typing_dependency_transport_input_key(source, deps, import_env_cache) {
-        Some(input_key) => load_typing_dependency_env_reuse_target(input_key),
-        None => None
+    // Keep the accumulated cache as coordinator state, but expose exactly the
+    // resolved dependency sequence to the checker and TDRE4. Construct this
+    // once: lookup, check, and publication must describe the same value.
+    let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
+    let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
+    let reused_env = if experimental_typing_dependency_env_reuse_enabled() {
+      if typing_dependency_env_reuse_is_eligible(dep_fps) {
+        let input_key = typing_dependency_transport_input_key(path, source, projected_dep_envs)
+        match load_typing_dependency_env_reuse_target(input_key) {
+          Some((target_fingerprint, target_text, target_env)) => Some((input_key, target_fingerprint, target_text, target_env)),
+          None => None
+        }
+      } else {
+        None
       }
     } else {
       None
     }
     match reused_env {
-      Some((_target_fingerprint, target_env)) => {
+      Some((input_key, _target_fingerprint, target_text, target_env)) => {
         // Preserve the ordinary conservative fingerprint path for every later
-        // consumer; this only avoids recomputing an already validated typing
-        // result whose dependency transport inputs are identical. The alias is
-        // itself a successful TypeEnv commit, so publish this conservative
-        // fingerprint's transitive eligibility witness afterwards as well;
-        // otherwise a multi-level consumer would correctly fail closed.
-        store_persistent_type_env(fingerprint, target_env)
-        publish_typing_dependency_env_reuse_eligibility(fingerprint)
-        write_typing_dependency_env_reuse_sidecar(source, deps, import_env_cache, fingerprint)
-        let next_env_cache = upsert_env_cache(import_env_cache, path, target_env)
+        // consumer. Commit this target first, then its exact bound witness, and
+        // only then the alias, so torn publication always fails closed.
+        Fs::write_file(persistent_type_env_cache_path(fingerprint), target_text)
+        publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
+        write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
+        let next_env_cache = upsert_env_cache(coordinated_env_cache, path, target_env)
         let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
         (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
       },
@@ -2377,10 +2463,10 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
           source: source,
           deps: deps,
           dep_fps: dep_fps,
-          dep_envs: import_env_cache
+          dep_envs: projected_dep_envs
         }
         let outcome = check_module(job)
-        commit_module_outcome(rdb, import_env_cache, dep_source_cache, parse_count + 1, job, outcome)
+        commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome)
       }
     }
   }
@@ -2410,7 +2496,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     i = i + 1
   }
   out
-} fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Error + Fs {
+} fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + Fs {
   match load_persistent_dep_list(path, source) {
     Some(deps) => (deps, upsert_string_pair(dep_source_cache, path, source), parse_count),
     None => {
@@ -2418,7 +2504,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
       (deps, upsert_string_pair(dep_source_cache, path, source), next_parse_count)
     }
   }
-} fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Error + Fs {
+} fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + Fs {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
     if cached_source == source {
@@ -2451,7 +2537,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
 /// A module left OUT of `edges` -- missing, or short-circuited -- is a leaf
 /// to plan_module_order (mo_deps_of), which is what makes those arms terminal
 /// for scheduling as well as for the walk.
-fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Error + Fs {
+fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Exception + Fs {
   let leaf_fps = empty_dep_fps()
   let plan_diags: Array[(String, String)] = [
   ]
@@ -2502,7 +2588,7 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
               let plan_raised = empty_stack()
               let (deps_raw, _, next_pc) = handle {
                 resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
-              } with Error {
+              } with Exception {
                 Throw(msg) => {
                   Array::push(plan_raised, msg)
                   (empty_stack(), scratch_cache, pc)
@@ -2565,7 +2651,7 @@ fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Opt
 }
 /// The leaf-fingerprint arm: a module whose persistent leaf cache is valid is
 /// recorded with no deps at all and needs no checking.
-fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error + Fs {
+fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   if incremental_interface_trace_enabled() {
     match load_persistent_type_env(leaf_fingerprint) {
       Some(cached_env) => incremental_trace_observe_checked_env(path, source, cached_env),
@@ -2583,7 +2669,7 @@ fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
 /// already has a fingerprint. Folds the dependency fingerprints in
 /// DECLARATION order (build_fingerprint folds them as a sequence, not a set),
 /// then either reuses the cached fingerprint or checks and commits.
-fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error + Fs {
+fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   write_persistent_dep_list_if_missing(path, source, deps)
   let dlen = Array::length(deps)
   let dep_fps = empty_dep_fps()
@@ -2631,7 +2717,7 @@ fn dep_source_cache_is_current(dep_source_cache: Array[(String, String)], path: 
 /// through dependencies IN SEQUENCE (dep[1] received dep[0]'s output
 /// RippleDb), so siblings could not be dispatched independently no matter
 /// what the host could do.
-fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error + Fs {
+fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   match ripple_get_source(rdb, path) {
     None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
     Some(source) => {
@@ -2720,7 +2806,7 @@ fn module_plan_index_of(items: Array[String], p: String) -> Int {
 /// and check_module parses that text -- never the raw bytes. Deriving deps
 /// from one and handing back the other is #1168's exact bug, so both come
 /// off the same `ingested` string here.
-fn module_plan_data_fs(entry_path: String) -> (Array[String], Array[Int], Array[Array[String]], Array[String]) with Error + Fs {
+fn module_plan_data_fs(entry_path: String) -> (Array[String], Array[Int], Array[Array[String]], Array[String]) with Exception + Fs {
   // `paths` doubles as the BFS queue: discovery pushes to it, `qi` walks it.
   let paths: Array[String] = [
   ]
@@ -2786,7 +2872,7 @@ fn artifact_input_trace_push_length_prefixed(out: StringBuilder, text: String) -
 /// This deliberately reruns module_plan_data_fs after the production compile:
 /// it preserves planned order/ranks and every declared dependency occurrence
 /// (including duplicates), but never feeds a cache or reuse decision.
-export fn artifact_input_trace_dependency_plan_evidence_fs(entry_path: String) -> (String, Int, Int) with Error + Fs {
+export fn artifact_input_trace_dependency_plan_evidence_fs(entry_path: String) -> (String, Int, Int) with Exception + Fs {
   let (order, ranks, ordered_deps, _) = module_plan_data_fs(entry_path)
   let out = StringBuilder::new()
   StringBuilder::push(out, "vibe-artifact-input-dependency-plan:v1\n")
@@ -2812,7 +2898,7 @@ export fn artifact_input_trace_dependency_plan_evidence_fs(entry_path: String) -
   (compact_string_fingerprint(StringBuilder::freeze(out)), Array::length(order), edge_occurrence_count)
 }
 
-export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with Error + Fs {
+export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with Exception + Fs {
   let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs(entry_path)
   let buf = StringBuilder::new()
   StringBuilder::push(buf, "version\t1\n")
@@ -3007,7 +3093,7 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
 /// that matters: it is exactly the choice a parallel coordinator makes
 /// differently from run to run, and scripts/dep_order_oracle.sh asserts the
 /// compiled output is byte-identical across seeds regardless.
-export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error + Fs {
+export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
   // #1239 step 4(A): an import cycle is rejected HERE -- before a single
   // module is checked, committed, or written to the persistent cache --
@@ -3081,7 +3167,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
         let raised = empty_stack()
         let (fp, next_db, next_envc, next_dsc, next_pc) = handle {
           step_module_fs(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m)
-        } with Error {
+        } with Exception {
           Throw(msg) => {
             Array::push(raised, msg)
             (String::concat("diagnosed:", m), cur_db, cur_envc, cur_dsc, cur_pc)
@@ -3272,7 +3358,7 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
       let outcome = handle {
         let _ = compile_inline_wat(fn_name, wat, pnames)
         None
-      } with Error {
+      } with Exception {
         Throw(msg) => Some(msg)
       }
       match outcome {
@@ -3297,7 +3383,7 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
 /// located) type error. Identical (position, message) pairs are deduped.
 /// Returns [] when the source lexes, parses, and checks cleanly.
 /// Foundation for `vibe check` / LSP multi-diagnostic reporting.
-export fn collect_all_diagnostics(source: String) -> Array[String] with Error {
+export fn collect_all_diagnostics(source: String) -> Array[String] with Exception {
   let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(source)
   if Array::length(lex_err_msgs) > 0 {
     // Report ONLY the lexer errors: the recovered token stream has holes, so
@@ -3387,7 +3473,7 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Error {
             extra
           }
         }
-      } with Error {
+      } with Exception {
         Throw(msg) => [
           locate_type_error(source, msg)
         ]

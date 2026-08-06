@@ -63,7 +63,7 @@ generated_hash =
 // scripts/unit_test_runner.sh (full run), not just assumed.
 //
 // `export let`-bound functions: module_source.vibe's two exports are
-// `export let name: (Params) -> Ret with Error = (params) -> { .. }`
+// `export let name: (Params) -> Ret with Exception = (params) -> { .. }`
 // bindings, not `export fn`. No other already-migrated vpkg contract had
 // this exact shape (checked via `grep -rn '^export let .*-> .* with '`;
 // the pattern used to end in `with {` — #1429 removed the braces)
@@ -73,7 +73,7 @@ generated_hash =
 // `apply_generic_fn_annotation` (lib/@vibe/parser/parser_expr.vibe) injects
 // the let annotation's declared return type and effect row into the
 // lambda's own `EFn` node when the lambda itself doesn't specify them, so
-// the contract can declare both plain `fn name(params) -> Ret with Error`
+// the contract can declare both plain `fn name(params) -> Ret with Exception`
 // below exactly like every `export fn` — no special contract syntax needed.
 //
 // No exported types besides `TypeDb`: TypeEnv/Stmt/Type/Expr (../core) are
@@ -122,18 +122,18 @@ fn db_parse_count(db: TypeDb) -> Int
 fn db_merge_count(db: TypeDb) -> Int
 fn db_module_source_count(db: TypeDb) -> Int
 fn db_codegen_count(db: TypeDb) -> Int
-fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Error
-fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Error + Fs
-fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Error
-fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with Error
-fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with Error
-fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with Error
-fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with Error
+fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Exception
+fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Exception + Fs
+fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Exception
+fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with Exception
+fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with Exception
+fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with Exception
+fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with Exception
 fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> TypeDb
 
 // --- module_source.vibe
-fn build_module_source_from_source(source: String, entry_name: String) -> String with Error
-fn build_funcmap_from_source(source: String) -> String with Error
+fn build_module_source_from_source(source: String, entry_name: String) -> String with Exception
+fn build_funcmap_from_source(source: String) -> String with Exception
 
 // --- type_at.vibe
 fn type_at_source(source: String, line: Int, col: Int) -> String
@@ -146,25 +146,25 @@ fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int, Int)]
 fn doc_at_source(source: String, line: Int, col: Int) -> String
 
 // --- symbol_spans.vibe
-fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with Error
+fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with Exception
 
 // --- typecheck_fs.vibe
 fn locate_type_error(source: String, msg: String) -> String
-fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Error + Fs
+fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs
 // #1100: memoized located lex+parse shared by the typecheck walk and the
 // merge (see typecheck_fs.vibe). Returns a fresh top-level statement array
 // on every call -- check_program mutates its argument in place.
-fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Error
+fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception
 // #1239 step 4(D): the whole import graph, and its canonical rank order,
 // from ONE compiler process -- the host-side parallel pre-warm used to spawn
 // a VIBE_LIST_DEPS call per module to build the same DAG. Returns the
 // manifest text plus each planned module's INGESTED source, positionally in
 // the manifest's order. See typecheck_fs.vibe for the format and for why
 // both come off the same ingest step.
-fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with Error + Fs
+fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with Exception + Fs
 // Trace-only exact graph evidence from module_plan_data_fs. The fingerprint
 // preimage preserves planned module order/ranks and dependency occurrences.
-fn artifact_input_trace_dependency_plan_evidence_fs(entry_path: String) -> (String, Int, Int) with Error + Fs
+fn artifact_input_trace_dependency_plan_evidence_fs(entry_path: String) -> (String, Int, Int) with Exception + Fs
 // #906 Phase 0: permute each node's dependency VISIT order (0 = identity,
 // the production default). Makes "visit order cannot change the output"
 // testable before any real parallelism exists -- see typecheck_fs.vibe.
@@ -181,14 +181,19 @@ fn set_collect_module_diagnostics(on: Bool) -> Unit
 // the row format and scripts/scheduler_trace_oracle.sh for the checks.
 fn set_scheduler_trace_path(path: String) -> Unit
 // Incremental typecheck work counters and successful-check observation sidecar.
-// Disabled by default; these do not change or persist production cache keys.
+// Telemetry/interface tracing remain default-off observations. TDRE4 TypeEnv
+// reuse is production-default only for CLI check-only; its setter resets
+// per-invocation policy and does not widen reuse beyond existing validation.
 fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit
 fn set_incremental_interface_trace_enabled(enabled: Bool) -> Unit
 fn set_experimental_typing_dependency_env_reuse_enabled(enabled: Bool) -> Unit
 fn incremental_typecheck_telemetry_json() -> String
-fn incremental_invalidation_trace_json(entry_path: String, run_nonce: String) -> String with Error + Fs
+fn incremental_invalidation_trace_json(entry_path: String, run_nonce: String) -> String with Exception + Fs
 // Test-only seam for malformed transparent STrait provenance.
 fn incremental_trait_generic_provenance_markers_for_test(header_params: Array[String], method_params: Array[String], generic_bounds: Array[(String, Array[String])], method_count: Int, method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> String
+// Test-only semantic seam for the exact dependency projection used by
+// ModuleJob.dep_envs and TDRE4. Throws when a resolved dependency row is absent.
+fn projected_import_env_for_test(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception
 // #906 Phase 1: the module job / outcome seam. `check_module` is the unit a
 // Phase 2 worker will receive; it takes no `Fs` row because every
 // dependency environment it needs is already a value inside the job, and
@@ -198,12 +203,10 @@ fn incremental_trait_generic_provenance_markers_for_test(header_params: Array[St
 // caller when they land in the same commit.
 // Defined transparently here rather than as an opaque handle (perceus/
 // PerceusAction precedent): the field layout IS the worker contract.
-// dep_envs is the driver's resolved environment table -- the doc's
-// contract is "ordered direct-dependency interfaces", and this is a
-// superset (the whole cache), because build_import_env resolves import
-// paths against it and narrowing changes which entry an import binds to.
-// Narrowing to the direct deps is a prerequisite for real worker
-// isolation, not for this seam.
+// dep_envs is exactly the driver's ordered resolved direct-dependency
+// projection. The coordinator keeps its full accumulated cache separately;
+// check_module and TDRE4 consume the same projected array so ambient rows
+// cannot affect either import resolution or the logical reuse key.
 // `fingerprint` is deliberately NOT a field here. An earlier cut had the
 // caller supply one, which check_module simply echoed back into `Checked`
 // without ever consulting it -- a purely decorative field that made every
@@ -226,12 +229,12 @@ struct ModuleJob {
 // outside the package inspects it yet. Phase 2's driver will need either
 // accessors or a real variant declaration here.
 opaque type ModuleOutcome
-fn check_module(job: ModuleJob) -> ModuleOutcome with Error
+fn check_module(job: ModuleJob) -> ModuleOutcome with Exception
 // #906 Phase 2: the worker transport entry. `dir` is a job directory and
 // is the worker's ENTIRE filesystem sandbox -- see typecheck_fs.vibe for
 // its layout and for why the job's `path` row must be the module's logical
 // path rather than the materialized temp file.
-fn run_module_job_dir(dir: String) -> Unit with Error + Fs
+fn run_module_job_dir(dir: String) -> Unit with Exception + Fs
 // #906 Phase 2 (real-build wiring): the batch counterpart to
 // run_module_job_dir. A host-side parallel pre-warm driver runs many workers
 // against private job-dir sandboxes, then makes ONE call here with a
@@ -246,19 +249,19 @@ fn run_module_job_dir(dir: String) -> Unit with Error + Fs
 // simply absent from the manifest; the always-run serial fallback rechecks
 // them and produces the identical diagnostic, so correctness never depends
 // on this call succeeding.
-fn run_publish_env_cache_dir(dir: String) -> Unit with Error + Fs
+fn run_publish_env_cache_dir(dir: String) -> Unit with Exception + Fs
 fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String]
-fn collect_all_diagnostics(source: String) -> Array[String] with Error
+fn collect_all_diagnostics(source: String) -> Array[String] with Exception
 
 // --- persistent_env_codec.vibe
 fn persistent_dep_list_text(deps: Array[String]) -> String
-fn load_persistent_dep_list(path: String, source: String) -> Option[Array[String]] with Error + Fs
-fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Error + Fs
+fn load_persistent_dep_list(path: String, source: String) -> Option[Array[String]] with Exception + Fs
+fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Exception + Fs
 // #906 Phase 2: the decode half of the above, split out so a dependency's
 // environment can be reconstituted from TEXT. A worker cannot look its own
 // dependencies up in the cache -- the key derives from the whole
 // transitive source snapshot -- so the driver hands them over as values.
-fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Error
+fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Exception
 fn persistent_type_env_cache_text(env: TypeEnv) -> String
-fn load_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with Error + Fs
+fn load_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with Exception + Fs
 fn persistent_leaf_fingerprint_text(fingerprint: String) -> String

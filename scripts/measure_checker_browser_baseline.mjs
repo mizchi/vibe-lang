@@ -13,18 +13,24 @@ import { performance } from "node:perf_hooks";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runner = join(root, "scripts/run_wasm_vibe_host_runner.sh");
-const schema = 1;
+const schema = 2;
 const caseDefinitions = [
   { id: "parser_only", root: "bench/checker_browser_baseline/parser_only.vibe", entry: "main" },
   { id: "current_checker", root: "bench/checker_browser_baseline/current_checker.vibe", entry: "main" },
+  { id: "checker_engine_only", root: "bench/checker_browser_baseline/checker_engine_only.vibe", entry: "main" },
+  { id: "checker_engine_plus_artifacts", root: "bench/checker_browser_baseline/checker_engine_plus_artifacts.vibe", entry: "main" },
   // This is the compiler's actual self-host CLI root. The failed facade-only
   // experiment is intentionally not a benchmark root: it is not buildable.
   { id: "full_compiler", root: "lib/@vibe/compiler/cli_adapter.vibe", entry: "cli_main" },
 ];
 const unavailableDefinitions = [
-  ["checker_engine_only", "No supported isolated checker-engine root or ABI exists; this baseline does not extract one."],
-  ["checker_engine_plus_artifacts", "No supported isolated checker-engine-plus-artifacts entry exists; this baseline does not infer one from imports."],
   ["full_compiler_check", "The full compiler CLI exposes no supported isolated direct check invocation ABI; host imports and CLI argument ABI are not fabricated."],
+];
+const checkerArtifactsPrefix = "lib/@vibe/compiler/checker/artifacts/";
+const checkerArtifactsContract = `${checkerArtifactsPrefix}index.vpkg`;
+const invokedArtifactSources = [
+  `${checkerArtifactsPrefix}checked_effect_set_artifact.vibe`,
+  `${checkerArtifactsPrefix}checked_effect_set_observation.vibe`,
 ];
 
 function fail(message) {
@@ -149,22 +155,63 @@ function sourceManifestAnnotations() {
 
 function category(path) {
   if (path.startsWith("bench/checker_browser_baseline/")) return "benchmark_root";
+  // Classify the extracted child before the broader checker prefix. These
+  // categories describe path ownership, not inferred symbol reachability.
+  if (path === checkerArtifactsContract) return "checker_artifacts_contract";
+  if (path.startsWith(checkerArtifactsPrefix)) {
+    if (path.endsWith("_artifact.vibe")) return "checker_artifacts_artifact";
+    if (path.endsWith("_observation.vibe")) return "checker_artifacts_observation";
+    return "checker_artifacts_support";
+  }
   if (path.startsWith("lib/@vibe/compiler/checker/")) {
     if (path.endsWith("_artifact.vibe")) return "checker_artifact";
     if (path.endsWith("_observation.vibe")) return "checker_observation";
     return "checker_core_and_model";
   }
   if (path.startsWith("lib/@vibe/compiler/codegen/") || path.startsWith("lib/@vibe/compiler/perceus/")) return "codegen";
+  if (path.startsWith("lib/@vibe/compiler/runtime/")) return "runtime";
+  if (path.startsWith("lib/@vibe/compiler/cache/")) return "cache";
+  if (path.startsWith("lib/@vibe/compiler/loader/")) return "loader";
   if (path.startsWith("lib/@vibe/parser/")) return "parser";
   if (path.startsWith("lib/@vibe/compiler/")) return "compiler_other";
   if (path.startsWith("lib/@vibe/")) return "stdlib_other";
   return "other";
 }
 
-function assertCurrentCheckerNoCodegenClosure(caseId, modules) {
-  if (caseId !== "current_checker") return;
-  const codegenModule = modules.find((module) => category(module.path) === "codegen");
-  if (codegenModule) fail(`current_checker closure includes codegen source: ${codegenModule.path}`);
+function forbiddenEngineOwnership(path) {
+  for (const ownership of ["codegen", "perceus", "runtime", "cache", "loader"]) {
+    if (path.startsWith(`lib/@vibe/compiler/${ownership}/`)) return ownership;
+  }
+  return undefined;
+}
+
+function validateDeclaredRoot(rootPath, modules, label) {
+  const occurrences = modules.filter((module) => module.path === rootPath).length;
+  if (occurrences !== 1) fail(`${label} must contain declared root exactly once: ${rootPath}`);
+}
+
+/** Enforce case-specific ownership policies on live and serialized closures. */
+export function validateCaseClosure(caseId, modules) {
+  if (caseId === "current_checker") {
+    const codegenModule = modules.find((module) => category(module.path) === "codegen");
+    if (codegenModule) fail(`current_checker closure includes codegen source: ${codegenModule.path}`);
+    return;
+  }
+  if (caseId !== "checker_engine_only" && caseId !== "checker_engine_plus_artifacts") return;
+  for (const module of modules) {
+    const forbidden = forbiddenEngineOwnership(module.path);
+    if (forbidden) fail(`${caseId} closure includes forbidden ${forbidden} source: ${module.path}`);
+    if (caseId === "checker_engine_only" && module.path.startsWith(checkerArtifactsPrefix)) {
+      fail(`checker_engine_only closure includes checker artifacts child source: ${module.path}`);
+    }
+  }
+  if (caseId === "checker_engine_plus_artifacts") {
+    const paths = new Set(modules.map((module) => module.path));
+    if (!paths.has(checkerArtifactsContract)) fail(`checker_engine_plus_artifacts closure is missing child contract: ${checkerArtifactsContract}`);
+    for (const source of invokedArtifactSources) {
+      if (!paths.has(source)) fail(`checker_engine_plus_artifacts closure is missing invoked artifact source: ${source}`);
+    }
+  }
 }
 
 function digestClosure(plan, planPath) {
@@ -255,7 +302,8 @@ function planCase(stage2, definition, workdir) {
     throw new Error(`VIBE_MODULE_PLAN failed (${result.status ?? "signal"}): ${detail || "no sidecar"}`);
   }
   const closure = digestClosure(parseModulePlan(readFileSync(planPath, "utf8")), planPath);
-  assertCurrentCheckerNoCodegenClosure(definition.id, closure.modules);
+  validateDeclaredRoot(definition.root, closure.modules, `${definition.id} module plan`);
+  validateCaseClosure(definition.id, closure.modules);
   return { planPath, closure };
 }
 
@@ -419,7 +467,8 @@ export function parseCheckerBrowserBaselineReport(text) {
         computedCategories[module.category].bytes += module.bytes;
       }
       validateCanonicalPlan(item.module_plan.modules, `report module plan ${item.id}`);
-      assertCurrentCheckerNoCodegenClosure(item.id, item.module_plan.modules);
+      validateDeclaredRoot(item.root.path, item.module_plan.modules, `report module plan ${item.id}`);
+      validateCaseClosure(item.id, item.module_plan.modules);
       if (computedBytes !== item.module_plan.total_bytes) fail(`source byte total mismatch for ${item.id}`);
       const closureIdentity = item.module_plan.modules.map((module) => `${module.index}\t${module.rank}\t${module.path}\t${module.bytes}\t${module.sha256}\t${module.dependencies.join("\u0000")}`).join("\n");
       if (sha256(closureIdentity) !== item.module_plan.sha256) fail(`closure digest mismatch for ${item.id}`);

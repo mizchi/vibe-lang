@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, is_core_ambient_effect, is_exception_effect_name
+  Expr, Stmt, TypeExpr, is_exception_effect_name, is_row_transparent_effect
 }
 
 import @vibe/core {
@@ -92,7 +92,7 @@ fn wit_is_unit_type(ty: TypeExpr) -> Bool {
 }
 
 /// vibe TypeExpr -> WIT type text. Throws on types with no WIT mapping.
-export fn wit_type_text(ty: TypeExpr) -> String with Error {
+export fn wit_type_text(ty: TypeExpr) -> String with Exception {
   match ty {
     TyName(name) => {
       if name == "Int" {
@@ -166,7 +166,7 @@ export fn wit_type_text(ty: TypeExpr) -> String with Error {
 /// `func(name: ty, ...) -> ret` text for a signature. Unit return omits `->`.
 /// `is_async` (ADR-0089 Decision 5, #1218) prefixes `async` -- the P3
 /// async-lifted function type an `with Async` export projects to.
-fn wit_func_text_of(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr, is_async: Bool) -> String with Error {
+fn wit_func_text_of(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr, is_async: Bool) -> String with Exception {
   let sb = StringBuilder::new()
   if is_async {
     StringBuilder::push(sb, "async ")
@@ -197,7 +197,7 @@ fn wit_func_text_of(param_names: Array[String], param_types: Array[TypeExpr], re
   StringBuilder::freeze(sb)
 }
 
-fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr) -> String with Error {
+fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr) -> String with Exception {
   wit_func_text_of(param_names, param_types, ret, false)
 }
 
@@ -339,7 +339,7 @@ fn wit_type_is_string(ty: TypeExpr) -> Bool {
 
 /// Validate the entry file's `handler` export against the serve contract,
 /// with a teaching error when it does not fit.
-export fn validate_serve_handler(entry_stmts: Array[Stmt]) -> Unit with Error {
+export fn validate_serve_handler(entry_stmts: Array[Stmt]) -> Unit with Exception {
   let contract = "serve: expected `export let handler = (method: String, url: String, headers: String, body: String) -> String`"
   match wit_boundary_signature(entry_stmts, "handler") {
     None => throw(String::concat(contract, " (no exported `handler` with a full type annotation found)")),
@@ -524,7 +524,7 @@ fn wit_resolve_effect_names_into(label: String, es_names: Array[String], es_memb
   }
 }
 
-export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt], world_name: String) -> String with Error {
+export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt], world_name: String) -> String with Exception {
   let eff_names = array_empty()
   let eff_ops = array_empty()
   wit_collect_effect_defs(effect_stmts, eff_names, eff_ops)
@@ -568,24 +568,26 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
         let mut ri = 0
         while ri < Array::length(resolved) {
           let rname = Array::get(resolved, ri)
-          // ADR-0084's CORE AMBIENT class never becomes a world import:
-          // `Error`/`Exception[K]` are vibe-internal control flow (an
-          // escaping throw is a component trap, not a capability), and
-          // `Async` is THE builtin suspension effect (ADR-0089 Decision 5,
-          // #1218) -- it surfaces as the export's `async func` lifting mode
-          // (even when the program carries a transparent local `effect Async
-          // { .. }` declaration, #752).
+          // Neither ROW-TRANSPARENT class becomes a world import, for two
+          // different reasons: `Error`/`Exception[K]` (core ambient) are
+          // vibe-internal control flow -- an escaping throw is a component
+          // trap, not a capability -- while `Async` (runtime, #1458) is THE
+          // builtin suspension effect (ADR-0089 Decision 5, #1218), which
+          // surfaces as the export's `async func` lifting mode rather than as
+          // an import (even when the program carries a transparent local
+          // `effect Async { .. }` declaration, #752).
           //
           // #1343 (ADR-0094 実装順 1): この `rname == "Async" ||
           // is_exception_effect_name(rname)` の二項判定は
-          // core/effect_taxonomy.vibe の `is_core_ambient_effect` に寄せた
-          // (checker 側の builtin_call_effect と同じ規則の重複だった)。
+          // core/effect_taxonomy.vibe へ寄せた (checker 側の
+          // builtin_call_effect と同じ規則の重複だった)。#1458 で
+          // `is_row_transparent_effect` に名前が付いた。
           // **wit_gen の分類の反転 -- 下の `def_idx < 0` が「`effect X {..}`
           // 宣言があれば interface、無ければ host capability」という
           // ADR-0084 と逆の規則になっている件 (#1143 のねじれ) -- は
           // ADR-0094 実装順 4 で直す。挙動変更を分離するため、ここでは
           // 触っていない。**
-          if is_core_ambient_effect(rname) {
+          if is_row_transparent_effect(rname) {
             ()
           } else if !wit_array_contains(used_effects, rname) {
             Array::push(used_effects, rname)

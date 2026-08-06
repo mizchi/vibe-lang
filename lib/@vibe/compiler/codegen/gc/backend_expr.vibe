@@ -278,7 +278,7 @@ fn gc_is_ctor_expr(e: Expr, ctx: CompileCtxGc) -> Bool {
 /// Structural equality for two tuples (gc layout: raw even ptr, element i at
 /// ptr+i*8, no header). Ported from the linear emit_tuple_struct_eq; leaves a
 /// raw i64 0/1. `cefn` is compile_expr_gc, threaded to avoid a forward ref.
-fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Error) -> Int with Error {
+fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
   Array::push(local_names, "__gceqa")
   let bptr = next_local + 1
@@ -309,7 +309,7 @@ fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_nam
 /// by content there). The generic `eq` builtin compares ctor POINTERS — fresh
 /// allocations are never bit-equal, which made the gc-compiled checker's
 /// `Some(av) == rb` effect-row comparison (unify_effects) always false.
-fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Error) -> Int with Error {
+fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
   Array::push(local_names, "__gcceqa")
   let bptr = next_local + 1
@@ -412,7 +412,7 @@ fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names
 /// literals get structural comparison, provably-scalar operands a raw i64.eq,
 /// everything else the generic `eq` builtin (bit-equal fast path + string
 /// content fall-back). Mirrors the linear lane's emit_eq_value routing.
-fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Error) -> Int with Error {
+fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let lhs_is_tuple = match lhs {
     ETuple(_) => true,
     _ => false
@@ -561,7 +561,7 @@ fn gc_native_array_children_are_safe(expr: Expr, name: String) -> Bool {
 /// i64 fallback for an ELet after its name has already been pushed into
 /// `local_names`. Keeping it separate makes the native-literal branch above
 /// unable to accidentally feed a reference to the legacy local.set path.
-fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Error) -> Int with Error {
+fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   let local_idx = next_local
   if gc_expr_is_floatish(value, local_names, ctx) {
     Array::push(ctx.gc_float_locals, local_idx)
@@ -626,8 +626,8 @@ fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[St
   ce(buf, body, local_names, nl, ld)
 }
 
-fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Error {
-  let ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Error = (b, e, ln, nl, d) -> {
+fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
+  let ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception = (b, e, ln, nl, d) -> {
     compile_expr_gc(b, e, ln, nl, ctx, d)
   }
   match expr {
@@ -1603,7 +1603,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           _ => ()
         }
         if !hpat_ok {
-          throw("GC codegen: only `with Error` or `with Exception` abortive Throw handlers are supported (algebraic effect handlers need the linear backend)")
+          throw("GC codegen: only `with Exception` abortive Throw handlers are supported (the `Error` alias included; algebraic effect handlers need the linear backend)")
         }
         emit_block_i64(buf)
         emit_block_i64(buf)
