@@ -1,7 +1,7 @@
 //# Standard host-provider and entry-execution policy regression coverage (#1496)
 //
-// The policy table preserves current decisions and derived-row order without
-// assigning ordinary source effects an inherent string class.
+// Independent policy owners preserve current decisions and derived-row order
+// without assigning ordinary source effects an inherent string class.
 import @vibe/compiler/core {
   entry_cache_safe_effects,
   has_standard_effect_policy,
@@ -77,8 +77,17 @@ test "operations and instantiations resolve through standard policy" {
   assert(has_standard_host_provider("Fs::read_file"))
   assert(has_standard_host_provider("Http::request"))
   assert(is_entry_boundary_exception("Exception[IoError]::Throw"))
+  assert(has_standard_effect_policy("Error[Int]"))
+  // Preserve the arbitrary-string compatibility view even though malformed
+  // labels are not valid entry-boundary exceptions.
+  assert(has_standard_effect_policy("Exception["))
+  assert(not(is_entry_boundary_exception("Exception[")))
   assert(not(has_standard_effect_policy("State[Int]")))
   assert(not(has_standard_effect_policy("Ask::Get")))
+}
+
+test "standard policy names preserve full established order" {
+  assert_eq(join_row(standard_effect_policy_names()), "Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Http,Socket,Llm,Error,Exception,Async")
 }
 
 test "test and bench default row order is unchanged" {
@@ -111,19 +120,22 @@ test "only standard output providers are entry cache-safe" {
   }
 }
 
-test "standard provider resource defaults are unchanged" {
-  let names = standard_effect_policy_names()
-  let mut i = 0
-  while i < Array::length(names) {
-    let name = Array::get(names, i)
-    if has_standard_host_provider(name) {
-      assert_eq(standard_provider_default_resource_kind(name), "Process::Root")
-    } else {
-      assert_eq(standard_provider_default_resource_kind(name), "")
-    }
-    i = i + 1
-  }
+test "standard provider resource defaults preserve every provider" {
+  assert_eq(standard_provider_default_resource_kind("Fs"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Env"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Stdin"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Stdout"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Stderr"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Console"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Process"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Profiler"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Http"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Socket"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Llm"), "Process::Root")
   assert_eq(standard_provider_default_resource_kind("Fs::read_file"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Error"), "")
+  assert_eq(standard_provider_default_resource_kind("Exception"), "")
+  assert_eq(standard_provider_default_resource_kind("Async"), "")
   assert_eq(standard_provider_default_resource_kind("Ask"), "")
 }
 
@@ -153,10 +165,21 @@ test "Process::Root remains the singleton provider default" {
   assert(not(is_singleton_resource_kind("S3::Bucket")))
 }
 
-test "the predeclared resource remains Process::Root of its own kind" {
+test "returned policy arrays are fresh and mutation-isolated" {
+  let names = standard_effect_policy_names()
+  Array::set(names, 0, "changed")
+  assert_eq(join_row(standard_effect_policy_names()), "Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Http,Socket,Llm,Error,Exception,Async")
+  let defaults = test_bench_default_effects()
+  Array::set(defaults, 0, "changed")
+  assert_eq(join_row(test_bench_default_effects()), "Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Error,Exception")
+  let cache_safe = entry_cache_safe_effects()
+  Array::set(cache_safe, 0, "changed")
+  assert_eq(join_row(entry_cache_safe_effects()), "Stdout,Console,Error,Exception,Async")
   let pre = predeclared_resources()
-  assert_eq(Array::length(pre), 1)
-  let (rname, rkind) = Array::get(pre, 0)
+  Array::set(pre, 0, ("changed", "changed"))
+  let fresh_pre = predeclared_resources()
+  assert_eq(Array::length(fresh_pre), 1)
+  let (rname, rkind) = Array::get(fresh_pre, 0)
   assert_eq(rname, process_root_resource_kind())
   assert_eq(rkind, process_root_resource_kind())
 }

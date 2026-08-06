@@ -597,12 +597,14 @@ everything else.
 
 ### Standard provider and entry-execution policy (#1496)
 
-The compiler keeps a small policy table at
-`lib/@vibe/compiler/core/standard_effect_policy.vibe`. It records only the
-standard host providers and entry/runtime handling that the current runner
-needs; it does **not** assign a source-language effect class. An ordinary user
-effect such as `Log`, `State`, or `Ask` has no standard policy record and is
-handled solely by its declarations and `handle` expressions.
+The compiler keeps independent private policy owners at
+`lib/@vibe/compiler/core/standard_effect_policy.vibe`: host-provider resource
+defaults, ordered test/bench defaults, ordered entry-cache-safe labels, and
+predicates for entry-boundary exceptions and runtime-scheduled `Async`. They
+record only the standard execution behavior the current runner needs; they do
+**not** assign a source-language effect class. An ordinary user effect such as
+`Log`, `State`, or `Ask` has no standard policy record and is handled solely by
+its declarations and `handle` expressions.
 
 | policy | execution owner | current standard labels |
 |---|---|---|
@@ -610,8 +612,8 @@ handled solely by its declarations and `handle` expressions.
 | entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception[E]` (`Error` is a migration alias) |
 | runtime scheduling policy | runtime itself | `Async` |
 
-The same table supplies test/bench defaults and entry-cache safety in their
-existing order. Checker row filtering and WIT import filtering use only the
+The ordered default and cache-safe owners preserve their existing output.
+Checker row filtering and WIT import filtering use only the predicate-based
 entry/runtime policy; WIT mapping and handler behavior are unchanged.
 
 **Naming.** Effect names are CamelCase. A standard provider builtin is a plain
