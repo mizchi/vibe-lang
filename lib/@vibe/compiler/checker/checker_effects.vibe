@@ -16,11 +16,11 @@ import @vibe/compiler/core {
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_children,
+  is_entry_runtime_managed_effect,
   is_exception_effect_name,
   is_exception_label,
   is_exception_throw_operation,
-  is_row_transparent_effect,
-  test_bench_ambient_effects,
+  test_bench_default_effects,
   type_name_has_async_iterator_impl
 }
 
@@ -1129,12 +1129,12 @@ fn builtin_call_effect(name: String) -> Option[String] {
     let normalized = canonical_builtin_name(name)
     match lookup_builtin(normalized) {
       Some(ty) => match ty {
-        // #1343 (ADR-0094 実装順 1): `Error`/`Exception[K]` (441 site の
-        // throw discipline) と `Async` (合成許容、async pass が扱う) は
-        // ADR-0084 の core ambient — この二項判定は
-        // core/effect_taxonomy.vibe の `is_core_ambient_effect` が唯一の
-        // 定義になった。
-        CtFn(_, _, Some(eff)) => if is_row_transparent_effect(eff) {
+        // Standard entry/runtime execution handles `Error`/`Exception[K]`
+        // (entry-boundary exception policy) and `Async` (runtime scheduling),
+        // so builtin calls carrying either label add no checker row
+        // requirement. core/standard_effect_policy.vibe is the single
+        // behavior-preserving definition.
+        CtFn(_, _, Some(eff)) => if is_entry_runtime_managed_effect(eff) {
           None
         } else {
           Some(eff)
@@ -2246,9 +2246,9 @@ fn error_row_checked() -> Bool {
   Array::length(error_row_mode_cell) > 0 && Array::get(error_row_mode_cell, 0) == 1
 }
 
-// #1343 (ADR-0094 実装順 1): test/bench の ambient 集合はここのリテラルでは
-// なく core/effect_taxonomy.vibe の表から派生する
-// (`test_bench_ambient_effects`)。各項目を operation 粒度へ絞れない実測の
+// Test/bench default rows are derived from core/standard_effect_policy.vibe
+// (`test_bench_default_effects`) rather than a local literal. Each item's
+// existing operation-granularity evidence is retained in the policy table.
 // 根拠 (Fs/Env の使用 operation 分布、Stdin の推移的要求、Process に退避先の
 // 綴りが無いこと) も表側のコメントへ移した。
 
@@ -2256,8 +2256,8 @@ fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: A
   match stmt {
     SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_param_effs),
     SLetMut(name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_param_effs),
-    STest(_, body) => check_perform_effects_expr_tx_in("", body, test_bench_ambient_effects(), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
-    SBench(_, body) => check_perform_effects_expr_tx_in("", body, test_bench_ambient_effects(), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
+    STest(_, body) => check_perform_effects_expr_tx_in("", body, test_bench_default_effects(), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
+    SBench(_, body) => check_perform_effects_expr_tx_in("", body, test_bench_default_effects(), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
     SExpr(e) => check_perform_effects_expr_tx_in("", e, effect_row_labels(effect_row_parse(None)), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
     _ => array_empty()
   }
@@ -2920,9 +2920,10 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
   match entry_body {
     None => false,
     Some(body) => {
-      // #1343 (ADR-0094 実装順 1): `[Stdout, Error, Exception, Async]` の
-      // リテラルではなく core/effect_taxonomy.vibe の表から派生する
-      // (cache_safe 列)。各項目の根拠も表側のコメントにある。
+      // Entry-cache-safe labels are derived from
+      // core/standard_effect_policy.vibe in existing order. Their policy
+      // decisions, including provider output and entry/runtime handling, are
+      // unchanged.
       let cache_safe_row = entry_cache_safe_effects()
       // Codex review, PR #1215: belt-and-suspenders on top of the
       // reachable-effects walk below. That walk shares check_perform_

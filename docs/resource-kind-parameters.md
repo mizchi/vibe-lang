@@ -159,43 +159,42 @@ TDEffect(name, ops, params, param_kinds)
   generic instantiation と同じく**ラベル本文**に載せる (`"Fs[SrcTree]"`)。
   `row_label_base` が既にこの形を扱える。
 
-### 3. builtin は registry のメタデータ列で分類する (`TDEffect` を作らない)
+### 3. builtin は標準 provider policy を使う (`TDEffect` を作らない)
 
 builtin effect に `TDEffect` を合成する案は**採らない**。理由は
 **checker 側の副作用**である — `effect_is_declared` が builtin に対して
 `true` を返すようになると、#813/#828 の handler arm 検証と perform 検証が
 host effect にも一斉に効き始める: `handle body with Fs { ... }` の arm 名 /
 payload arity / **網羅性**が検査対象になり、部分的な `with Fs` handler は
-`non-exhaustive handler` で reject される。しかし ADR-0088 が記録したとおり
-**builtin operation は host import 直呼びに lower され、その handler arm は
-そもそも実行されない** (vacuous-handle elimination)。実行されないコードを
-新たに型検査して既存プログラムを弾くことになるため、これは retrofit の
-Phase 1 (「表面無変更・既存プログラム無破壊」) と両立しない。
+`non-exhaustive handler` で reject される。しかし builtin operation は host
+import 直呼びに lower され、その handler arm はそもそも実行されない
+(vacuous-handle elimination)。実行されないコードを新たに型検査して既存
+プログラムを弾くことになるため、これは retrofit の Phase 1 と両立しない。
 
-> **訂正 (Codex review on PR #1355)**: 初稿はここで「合成すると `wit_gen` が
-> 全 host effect に WIT interface を生成し始める」と書いていたが、これは
-> 誤りだった。`wit_gen` は `SEffectDef` (AST) だけを見ており `TDEffect` も
-> `effect_is_declared` も参照しない (上記「現状の実測 6」)。両者は結合して
-> いないので、`TDEffect` を合成しても `wit_gen` の挙動は変わらない。逆に
-> **#1143 のねじれは wit_gen 自身の規則を差し替えないと直らない** (実装順 4)。
+> **訂正 (Codex review on PR #1355)**: `TDEffect` の合成は `wit_gen` の
+> 挙動を変えない。`wit_gen` は `SEffectDef` (AST) だけを見ており、#1143 の
+> ねじれは wit_gen 自身の規則を差し替えないと直らない。
 
-代わりに `registry_typed_rows` に **effect class + 既定 resource kind** の列を
-足し、`builtins_*.vibe` の if-chain 側は既存の `Some("Fs")` のままとする
-(ラベルは変えない)。分類はラベル名から metadata を引く一段の参照にする。
+現在の compiler は `registry_typed_rows` に列を足さず、effect 名で引ける
+`core/standard_effect_policy.vibe` の標準 provider / entry-execution policy を
+使う。registry は operation 単位なので、provider metadata を列として複製
+しない。これは current execution policy であり、ordinary user effect の
+semantic class を決めるものではない。
 
-### 4. 三分類の判定は metadata 由来にする (「宣言されているか」では判定しない)
+### 4. 将来の admission model は current policy と分離する
 
-```
-effect_class(name) -> Capability | Algebraic | CoreAmbient
-```
+ADR-0084 の capability/algebraic/core-ambient admission model と
+`formal/VibeFormal/Effect/Taxonomy*.lean` は prospective であり、現在の
+string-label registry と対応付けない。現在の policy lookup は次だけを
+提供する:
 
-- `CoreAmbient`: `Error` / `Exception[E]` (既存 `is_exception_effect_name`)、
-  および `Async` (ADR-0089 で backend 選択であって権限ではないと整理済み)。
-- `Capability`: registry metadata が capability と宣言しているもの、または
-  resource パラメータを持つ user effect。
-- `Algebraic`: resource パラメータを持たない user effect。
-- **module-local に `TDEffect` があるか否かで分類してはならない** — import
-  された user effect が builtin と区別できず、`wit_gen` の反転を再生産する。
+- standard host provider の有無と既定 resource kind
+- `Error` / `Exception[E]` の entry-boundary exception handling
+- `Async` の runtime scheduling
+- test/bench default と entry cache-safe の既存リスト
+
+module-local に `TDEffect` があるかどうかは、standard policy を決める根拠に
+してはならない。
 
 ### 5. resource 引数は Phase 1 では**暗黙**とし、表面構文を変えない
 
@@ -217,45 +216,28 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が当初**未�
    `builtins_net.vibe` の `HttpServer`/`HttpClient`/`HttpIncoming` は
    **provider ラベルではなく `Http::*` operation 上の effectset** へ寄せる
    (provider 軸は `Http` に統一)。
-1. **(着地済み、#1343)** 分類 metadata + `effect_class` の導入。
-   `lib/@vibe/compiler/core/effect_taxonomy.vibe` が
-   `(effect 名, class, 既定 resource kind, test/bench ambient か, entry
-   キャッシュ安全か)` の表を持ち、そこから
-   `effect_class` / `is_core_ambient_effect` / `is_capability_effect` /
-   `effect_default_resource_kind` と、二つの派生リストを提供する。
+1. **(着地済み、#1496)** standard provider / entry-execution policy。
+   `lib/@vibe/compiler/core/standard_effect_policy.vibe` has
+   `(label, provider default resource kind, test/bench default, entry cache
+   safe)` rows and narrow behavior predicates. It retains the existing
+   test/bench default order, entry-cache-safe order, and entry/runtime
+   filtering without assigning ordinary effects a string class.
 
-   **Decision 3 の「`registry_typed_rows` に列を足す」からは実装時に外れた** —
-   registry の行は **operation 単位** (`Fs::read_file` / `Fs::write_file` /
-   ...) なので、class 列を足すと同じ `Fs` の分類が 19 行に複製され、行ごとに
-   食い違う。分類は effect の属性なので effect 名で引ける独立した表にし、
-   registry 側のラベルが全部その表に載っていることを
-   `verify_effect_taxonomy_coverage` (builtin_registry.vibe、
-   `verify_lane_builtins` と同じ形の drift guard) で照合する構成にした。
-   置き場所が `core/` なのは、consumer の checker と `wit_gen` が両方とも
-   `@vibe/compiler/core` を既に import しているから (checker →
-   codegen/common_base の向きに依存を増やさない)。
+   Registry rows are **operation** keyed, so provider policy remains in this
+   label-keyed table rather than being copied to every operation. The
+   `verify_standard_effect_policy_coverage` guard verifies that every registry
+   effect label has policy metadata. Its scope remains registry rows only;
+   checker if-chains are not enumerable. WIT's declaration/provider inversion
+   is intentionally unchanged in this slice.
 
-   吸収したリテラル列: `test_bench_ambient_effects` (8 要素)、
-   `file_entry_cacheable` の `cache_safe_row` (4 要素)、および
-   `is_exception_effect_name(x) || x == "Async"` という core ambient の
-   二項判定 (checker の `builtin_call_effect` と `wit_gen` に重複していた)。
-   派生リストは**要素順まで**吸収前と同一で、表面挙動は不変
-   (`tests/effect_taxonomy_test.vibe` が pin)。`wit_gen` の反転はこの段では
-   **直していない** (挙動変更を分離するため)。
-
-   **drift guard の範囲**: registry の行だけ。host effect ラベルは
-   `checker/builtins_*.vibe` の if-chain にも散在しており (上記「現状の実測
-   1」)、そちらは配列として列挙できないので照合できない — 現に `Llm` は
-   `builtins_system.vibe` にしか存在せず guard が触れない。registry へ
-   寄せる作業 (#415 B-2 の続き) が進むほどカバー率が上がる。
 2. **(着地済み、#1343)** ADR-0075 Phase 2: `resource Name : Owner::Kind`
    宣言と `Process::Root` singleton kind。
 
    AST に `SResource(name, kind)` を追加し (`lib/@vibe/ast/index.vpkg`)、
    parser・printer・checker を通した。`Process::Root` は
-   `core/effect_taxonomy.vibe` の `predeclared_resources` /
+   `core/standard_effect_policy.vibe` の `predeclared_resources` /
    `is_singleton_resource_kind` として在り、既に同ファイルの
-   `default_resource_kind` 列が指していた名前に**初めて実体**が付いた。
+   provider default resource kind 列が指していた名前に**初めて実体**が付いた。
 
    **`= <literal>` は実装しなかった** — 本 ADR 初稿のこの行は ADR-0075 の
    surface を略記したものだが、ADR-0075 の決定本文は
@@ -297,7 +279,11 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が当初**未�
    宣言された resource へ解決して kind 一致を検査する。分岐を欠くと
    `Fs[SrcTree]` と `Fs[AnythingElse]` が単一化して kind 検査が無効化される
    (Codex review on PR #1356)。
-4. `wit_gen` を `effect_class` 起点に切り替える (#1143 のねじれ解消)。
+4. `wit_gen` の entry/runtime-managed filtering は
+   `is_entry_runtime_managed_effect` に切り替え済み。ただしこれは既存判断の
+   名前を policy として明確化しただけで、`def_idx < 0` による
+   declaration/provider 判定の反転 (#1143) は未解決。#1496 の explicit
+   provider binding inventory 後に別スライスで修正する。
 5. main の closed row 検査 (ADR-0084 Phase 3、warning から)。ADR-0088
    Decision 5 の段階ゲートに接続。
 6. Phase 5 enforce + `Entry.requires ⊆ ComposedHost.provides` の preflight。

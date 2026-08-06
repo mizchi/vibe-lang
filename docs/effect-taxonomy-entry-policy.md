@@ -8,6 +8,12 @@ Related: #1218, ADR-0071(effectset), ADR-0075(`.vibex` runtime contract),
 ADR-0073(checked `Error`), ADR-0068(concurrency)。背景と選択肢は
 [effect-taxonomy-review.md](effect-taxonomy-review.md) を参照。
 
+> **Prospective model boundary (#1496):** This proposed ADR and the formal
+> `formal/VibeFormal/Effect/Taxonomy*.lean` model describe a future semantic
+> admission model. They are not the current compiler registry. Today,
+> `core/standard_effect_policy.vibe` stores only standard host-provider and
+> entry-execution policy metadata; it does not classify ordinary source effects.
+
 ## Context
 
 vibe の effect row は、現在は `Fs`、`Env`、`Error`、`Async`、ユーザー定義
@@ -51,9 +57,9 @@ effect operation を、次の四分類で扱う（`runtime effect` は #1458 の
    両方に「`Error` と `Async` は同じ理由でここに居る」と読めるコメントが
    書かれていた。
 
-   実装上、「権限として数えない」ことだけを見たい呼び出し側 (checker の
-   `builtin_call_effect`、wit_gen の world import 収集) は、二クラスの和を
-   取る `is_row_transparent_effect` を使う。
+   This is prospective admission-model terminology. In the current compiler,
+   checker row filtering and WIT import filtering instead use the narrow
+   `is_entry_runtime_managed_effect` execution-policy predicate.
 
 `.vibex` の `main` の残余 row は capability effect・core ambient effect・
 runtime effect を含めてよい。row に algebraic effect が残るプログラムは、

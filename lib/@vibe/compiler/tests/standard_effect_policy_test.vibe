@@ -1,0 +1,162 @@
+//# Standard host-provider and entry-execution policy regression coverage (#1496)
+//
+// The policy table preserves current decisions and derived-row order without
+// assigning ordinary source effects an inherent string class.
+import @vibe/compiler/core {
+  entry_cache_safe_effects,
+  has_standard_effect_policy,
+  has_standard_host_provider,
+  is_entry_boundary_exception,
+  is_entry_runtime_managed_effect,
+  is_runtime_scheduled_effect,
+  is_singleton_resource_kind,
+  predeclared_resources,
+  process_root_resource_kind,
+  standard_effect_policy_names,
+  standard_provider_default_resource_kind,
+  test_bench_default_effects,
+  verify_standard_effect_policy_coverage
+}
+
+fn join_row(labels: Array[String]) -> String {
+  String::join(labels, ",")
+}
+
+test "standard host-provider labels preserve coverage" {
+  assert(has_standard_host_provider("Fs"))
+  assert(has_standard_host_provider("Env"))
+  assert(has_standard_host_provider("Stdin"))
+  assert(has_standard_host_provider("Stdout"))
+  assert(has_standard_host_provider("Stderr"))
+  assert(has_standard_host_provider("Console"))
+  assert(has_standard_host_provider("Process"))
+  assert(has_standard_host_provider("Profiler"))
+  assert(has_standard_host_provider("Http"))
+  assert(has_standard_host_provider("Socket"))
+  assert(has_standard_host_provider("Llm"))
+  assert(not(has_standard_host_provider("Error")))
+}
+
+test "entry-boundary exception policy covers erased and qualified labels" {
+  assert(is_entry_boundary_exception("Error"))
+  assert(is_entry_boundary_exception("Exception"))
+  assert(is_entry_boundary_exception("Exception[IoError]"))
+  assert(is_entry_boundary_exception("Error::Throw"))
+  assert(is_entry_boundary_exception("Exception[IoError]::Throw"))
+  assert(not(is_entry_boundary_exception("Fs")))
+  assert(not(is_entry_boundary_exception("Async")))
+}
+
+test "runtime scheduling policy remains Async-only" {
+  assert(is_runtime_scheduled_effect("Async"))
+  assert(is_runtime_scheduled_effect("Async::Suspend"))
+  assert(not(is_runtime_scheduled_effect("Error")))
+  assert(not(is_runtime_scheduled_effect("Fs")))
+  assert(not(is_runtime_scheduled_effect("Ask")))
+}
+
+test "entry and runtime management preserves checker and WIT filtering" {
+  assert(is_entry_runtime_managed_effect("Error"))
+  assert(is_entry_runtime_managed_effect("Exception"))
+  assert(is_entry_runtime_managed_effect("Exception[IoError]"))
+  assert(is_entry_runtime_managed_effect("Async"))
+  assert(not(is_entry_runtime_managed_effect("Fs")))
+  assert(not(is_entry_runtime_managed_effect("Console")))
+  assert(not(is_entry_runtime_managed_effect("Ask")))
+}
+
+test "ordinary effects have no standard policy metadata" {
+  assert(not(has_standard_effect_policy("Ask")))
+  assert(not(has_standard_effect_policy("State")))
+  assert(not(has_standard_effect_policy("Frobnicate")))
+  assert(not(has_standard_host_provider("Ask")))
+  assert(not(is_entry_runtime_managed_effect("Ask")))
+}
+
+test "operations and instantiations resolve through standard policy" {
+  assert(has_standard_host_provider("Fs::read_file"))
+  assert(has_standard_host_provider("Http::request"))
+  assert(is_entry_boundary_exception("Exception[IoError]::Throw"))
+  assert(not(has_standard_effect_policy("State[Int]")))
+  assert(not(has_standard_effect_policy("Ask::Get")))
+}
+
+test "test and bench default row order is unchanged" {
+  assert_eq(join_row(test_bench_default_effects()), "Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Error,Exception")
+}
+
+test "entry cache-safe row order is unchanged" {
+  assert_eq(join_row(entry_cache_safe_effects()), "Stdout,Console,Error,Exception,Async")
+}
+
+test "network and external-service providers are not test or bench defaults" {
+  let defaults = test_bench_default_effects()
+  assert(not(array_has_str(defaults, "Http")))
+  assert(not(array_has_str(defaults, "Socket")))
+  assert(not(array_has_str(defaults, "Llm")))
+  assert(not(array_has_str(defaults, "Async")))
+}
+
+test "only standard output providers are entry cache-safe" {
+  let safe = entry_cache_safe_effects()
+  let mut i = 0
+  while i < Array::length(safe) {
+    let name = Array::get(safe, i)
+    if has_standard_host_provider(name) {
+      assert(name == "Stdout" || name == "Console")
+    } else {
+      assert(is_entry_runtime_managed_effect(name))
+    }
+    i = i + 1
+  }
+}
+
+test "standard provider resource defaults are unchanged" {
+  let names = standard_effect_policy_names()
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if has_standard_host_provider(name) {
+      assert_eq(standard_provider_default_resource_kind(name), "Process::Root")
+    } else {
+      assert_eq(standard_provider_default_resource_kind(name), "")
+    }
+    i = i + 1
+  }
+  assert_eq(standard_provider_default_resource_kind("Fs::read_file"), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Ask"), "")
+}
+
+test "builtin registry effect labels have standard policy metadata" {
+  verify_standard_effect_policy_coverage()
+}
+
+fn array_has_str(arr: Array[String], needle: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == needle {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "Process::Root remains the singleton provider default" {
+  assert_eq(process_root_resource_kind(), "Process::Root")
+  assert_eq(standard_provider_default_resource_kind("Fs"), process_root_resource_kind())
+  assert_eq(standard_provider_default_resource_kind("Http"), process_root_resource_kind())
+  assert(is_singleton_resource_kind(process_root_resource_kind()))
+  assert(not(is_singleton_resource_kind("S3::Bucket")))
+}
+
+test "the predeclared resource remains Process::Root of its own kind" {
+  let pre = predeclared_resources()
+  assert_eq(Array::length(pre), 1)
+  let (rname, rkind) = Array::get(pre, 0)
+  assert_eq(rname, process_root_resource_kind())
+  assert_eq(rkind, process_root_resource_kind())
+}

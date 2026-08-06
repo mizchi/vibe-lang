@@ -595,30 +595,36 @@ syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
 everything else.
 
-### Effect classes and how operations are spelled (#1458)
+### Standard provider and entry-execution policy (#1496)
 
-Effects fall into four classes (ADR-0084 + #1458; the table lives in
-`lib/@vibe/compiler/core/effect_taxonomy.vibe`, which is the single definition
-the checker and `wit_gen` both read):
+The compiler keeps a small policy table at
+`lib/@vibe/compiler/core/standard_effect_policy.vibe`. It records only the
+standard host providers and entry/runtime handling that the current runner
+needs; it does **not** assign a source-language effect class. An ordinary user
+effect such as `Log`, `State`, or `Ask` has no standard policy record and is
+handled solely by its declarations and `handle` expressions.
 
-| class | who discharges it | varies with grants | members |
-|---|---|---|---|
-| capability | host / provider, outside the wasm boundary | yes | `Fs` `Http` `Socket` `Env` `Console` `Stdin` `Stdout` `Stderr` `Process` `Profiler` `Llm` |
-| algebraic | a `handle` inside your program | n/a | `Log` `State` `Ask` … — anything not in the table |
-| core ambient | nobody; the entry boundary turns it into a diagnosed failure | n/a | `Exception[E]` (`Error` is a migration alias) |
-| runtime | the runtime itself | n/a | `Async` |
+| policy | execution owner | current standard labels |
+|---|---|---|
+| host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` `Stdin` `Stdout` `Stderr` `Process` `Profiler` `Llm` |
+| entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception[E]` (`Error` is a migration alias) |
+| runtime scheduling policy | runtime itself | `Async` |
 
-**Naming.** Effect NAMES are CamelCase, without exception. Operations come in
-two spellings, and which one you see tells you which track you are on:
+The same table supplies test/bench defaults and entry-cache safety in their
+existing order. Checker row filtering and WIT import filtering use only the
+entry/runtime policy; WIT mapping and handler behavior are unchanged.
+
+**Naming.** Effect names are CamelCase. A standard provider builtin is a plain
+`Effect::snake_case` function call; a declared operation is CamelCase and is
+emitted with `perform`:
 
 ```vibe
-// Track A -- capability builtin: `Effect::snake_case`, called as a plain
-// function. No `perform`. The row carries the effect label.
+// Standard provider builtin. No `perform`; the row carries `Fs`.
 fn read_config() -> String with Fs {
   Fs::read_file("config.toml")
 }
 
-// Track B -- algebraic effect operation: CamelCase, performed and handled.
+// Declared operation, performed and handled in the program.
 effect Log {
   Emit(String) -> Unit
 }
@@ -628,21 +634,14 @@ fn greet() -> Unit with Log {
 }
 ```
 
-Operations are CamelCase because an effect performs an **algebraic record**:
-`Log::Emit` is a constructor, not a function, so it follows the constructor
-convention rather than the `snake_case` rule that governs variables and
-functions. Capability builtins are the other way round — they really are
-functions (that is the point: outside your core logic, code should read as
-**colourless functions** and let the row carry the colour), so they are
-`snake_case`.
+Declared operations use CamelCase because `Log::Emit` is a constructor-like
+operation record, not a function. Standard provider builtins are functions, so
+they use `snake_case` and leave the row to carry the execution requirement.
 
-`Fs`, `Env` and `Profiler` currently carry BOTH tracks — `perform Fs::ReadFile(p)`
-against `lib/@vibe/fs/fs_effect.vibe`, and `Fs::read_file(p)` against the
-builtin registry — under the same row label `Fs`. That coexistence is
-deliberate and stays: use the builtin when you just want the operation done,
-and the declared effect when you want to intercept it with a `handle`.
-Collapsing the two into one spelling is possible but has not been decided
-(#1458 item 3).
+`Fs`, `Env`, and `Profiler` currently expose both a declared-operation surface
+and standard provider builtins under the same row label. This coexistence is
+intentional: use the builtin for the host operation and a declaration when a
+program needs to intercept it with `handle`.
 
 ### Failure-carrying pipeline
 
