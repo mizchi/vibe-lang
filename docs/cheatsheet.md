@@ -446,7 +446,7 @@ enum Shape { Circle(Int); Rect(Int, Int) }
 // patterns; both forms mean the same variant (#742/#672).
 let c = Color::Red                        // == Red
 let s = Shape::Circle(3)                  // == Circle(3)
-match s { Shape::Circle(r) => r; _ => 0 }
+let r = match s { Shape::Circle(r) => r, _ => 0 }
 // The qualifier is CHECKED (#1455): `Shape::Red` is an error ("enum `Shape`
 // has no variant `Red`"), in a pattern as well as in an expression. It does
 // NOT disambiguate two enums that share a variant name, though — that
