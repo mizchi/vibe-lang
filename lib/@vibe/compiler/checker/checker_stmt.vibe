@@ -43,6 +43,10 @@ import ./checker.vibe {
   check_assignable,
   check_expr,
   check_expr_capture,
+  decode_enum_def_variants,
+  encode_enum_def_variants,
+  enum_def_env_name,
+  enum_def_env_target,
   fn_return_env_name,
   is_array_builder_ty,
   is_region_tagged_ty,
@@ -898,13 +902,165 @@ fn duplicate_ctor_errors(kind: String, name: String, variants: Array[(String, Ar
   }
 }
 
+/// Every enum declared by THIS statement list. #1455 uses it to keep an
+/// imported enum from shadowing a same-named local one: `find_typedef` is
+/// first-match-wins and the seeded entries sit at the front of `defs`.
+/// `SSuberror` is included because it registers constructors the same way an
+/// enum does, and `SModule` bodies are walked because they check against the
+/// same flat `defs` -- an enum declared inside one is just as local.
+fn local_enum_names(stmts: Array[Stmt], variant_names: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SModule(_, _, body) => {
+        let nested = local_enum_names(body, variant_names)
+        let mut ni = 0
+        while ni < Array::length(nested) {
+          Array::push(out, Array::get(nested, ni))
+          ni = ni + 1
+        }
+      },
+      SEnum(_, name, _, variants, _) => {
+        Array::push(out, name)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(variant_names, vname)
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, name, variants) => {
+        Array::push(out, name)
+        let mut si = 0
+        while si < Array::length(variants) {
+          let (sname, _) = Array::get(variants, si)
+          Array::push(variant_names, sname)
+          si = si + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1455: rebuild a `TDEnum` in this module's `defs` for every monomorphic
+/// enum an imported module published under `enum_def_env_name`. Returns the
+/// index at which this module's OWN declarations start, which #1078's
+/// collision check needs (see `find_other_enum_declaring_variant`).
+///
+/// Seeding happens once, before checking, rather than at each `SImport`, so an
+/// imported enum is visible from the first statement on, exactly like the
+/// constructor bindings it belongs to. A consequence is that
+/// `import ./m { E as F }` registers the enum under `E`: the alias is only
+/// known to `bind_stmt_imports`, and the dependency's constructors already
+/// arrive under their original names, so following them keeps the two
+/// consistent. Renaming the type is left out of this slice.
+///
+/// A candidate is DROPPED when any of its variant names is already declared
+/// locally, or by another candidate. Both `find_ctor_in_defs` and
+/// `find_typedef` are first-match-wins over one flat `defs`, so registering
+/// two enums that share a constructor name would silently decide which one a
+/// bare `Mk(..)` pattern means -- the exact hazard #1078 rejects WITHIN a
+/// unit. Across a module boundary the shadowing is legitimate (the local
+/// binding wins, and that code compiles today), so the conservative move is
+/// to leave the ambiguous enum unregistered and keep today's behaviour for
+/// it rather than to guess or to reject. This also keeps the invariant #1078
+/// relies on -- no two enums in `defs` share a variant name -- true of the
+/// seeded entries too.
+fn seed_imported_enum_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> Int {
+  let claimed_variants = array_empty()
+  let local_names = local_enum_names(stmts, claimed_variants)
+  let bindings = env_flat_bindings(initial_env)
+  // Pass 1: the candidates, deduped by enum name. `env_flat_bindings` lists
+  // the most recent binding first, so the first carrier seen for a name is
+  // the one whose constructors the env actually resolves to.
+  let cand_names = array_empty()
+  let cand_variants = array_empty()
+  let mut i = 0
+  while i < Array::length(bindings) {
+    let (bname, bty) = Array::get(bindings, i)
+    match enum_def_env_target(bname) {
+      Some(ename) => if es_string_array_contains(local_names, ename) || es_string_array_contains(cand_names, ename) {
+        ()
+      } else {
+        match decode_enum_def_variants(bty) {
+          Some(variants) => {
+            Array::push(cand_names, ename)
+            Array::push(cand_variants, variants)
+          },
+          None => ()
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  // Pass 2: a variant name claimed more than once disqualifies every
+  // candidate that claims it, so the outcome does not depend on which
+  // candidate happened to be seen first.
+  let contested = array_empty()
+  let mut ci = 0
+  while ci < Array::length(cand_names) {
+    let variants = Array::get(cand_variants, ci)
+    let mut vi = 0
+    while vi < Array::length(variants) {
+      let (vname, _) = Array::get(variants, vi)
+      if es_string_array_contains(claimed_variants, vname) {
+        Array::push(contested, vname)
+      } else {
+        Array::push(claimed_variants, vname)
+      }
+      vi = vi + 1
+    }
+    ci = ci + 1
+  }
+  let mut ri = 0
+  while ri < Array::length(cand_names) {
+    let ename = Array::get(cand_names, ri)
+    let variants = Array::get(cand_variants, ri)
+    let mut ok = true
+    let mut vi2 = 0
+    while vi2 < Array::length(variants) {
+      let (vname, _) = Array::get(variants, vi2)
+      if es_string_array_contains(contested, vname) {
+        ok = false
+      } else {
+        ()
+      }
+      vi2 = vi2 + 1
+    }
+    if ok {
+      Array::push(defs, TDEnum(ename, array_empty(), variants))
+      Array::push(type_def_binders, array_empty())
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  Array::length(defs)
+}
+
 /// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
 /// declares a variant named `vname`, or None. Used to reject bare-name
 /// constructor collisions at declaration time -- see the SEnum arm's
 /// comment for why last-registered-wins shadowing makes these silently
 /// wrong rather than merely ambiguous.
-fn find_other_enum_declaring_variant(defs: Array[TypeDef], enum_name: String, vname: String) -> Option[String] {
-  let mut i = 0
+///
+/// #1455: the scan starts at `local_defs_start`, so only enums declared by
+/// THIS unit collide. Shadowing an imported constructor is ordinary,
+/// already-working code (the local binding wins); the collision #1078 is
+/// about only arises when both declarations land in one compiled unit via
+/// the merge/flatten lane, where both are local.
+///
+/// `seed_imported_enum_defs` already drops any imported enum whose variant
+/// names clash with a locally declared one, so there should be nothing here
+/// for an unscoped scan to find; the bound is what makes that a guarantee
+/// rather than a coincidence of the two scans agreeing.
+fn find_other_enum_declaring_variant(defs: Array[TypeDef], local_defs_start: Int, enum_name: String, vname: String) -> Option[String] {
+  let mut i = local_defs_start
   let mut found = None
   while i < Array::length(defs) {
     match Array::get(defs, i) {
@@ -1016,7 +1172,7 @@ fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
   out
 }
 
-fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> (TypeEnv, Subst, Int) {
+fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
@@ -1392,7 +1548,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           // miscompile). Two unrelated packages only meet in one unit via
           // the merge/flatten lane, which is exactly how #1078 was hit
           // (@vibe/json's RpcMessage vs another merged package).
-          match find_other_enum_declaring_variant(defs, name, vname) {
+          match find_other_enum_declaring_variant(defs, local_defs_start, name, vname) {
             Some(other) => Array::push(errors, String::concat(String::concat(String::concat(String::concat("constructor name collision: ", vname), " is declared by both "), other), String::concat(" and ", String::concat(name, " in the same compiled unit; bare constructor references are ambiguous (qualified construction is not supported) -- rename one variant")))),
             None => ()
           }
@@ -1426,6 +1582,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             _ => ()
           }
           ci2 = ci2 + 1
+        }
+        // #1455: publish this enum's variant list so a module that imports it
+        // can rebuild the TDEnum (see `enum_def_env_name`). Monomorphic only:
+        // `resolved_variants` for a parameterized enum holds this
+        // compilation's `CtVar` ids, which are meaningless to an importer.
+        if param_len == 0 {
+          env1 = env_bind(env1, enum_def_env_name(name), encode_enum_def_variants(resolved_variants))
+        } else {
+          ()
         }
         // #672: pre-bind the generated structural `E::equals` (every enum gets
         // one) so `==` dispatch call sites resolve at check time.
@@ -1643,7 +1808,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SModule(_, _, body) => {
         // `statement_path` is None in ordinary checking, so nested modules
         // recurse without allocating retained path state.
-        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, s, c, errors, tytab, statement_path, capture, role_lane_capture)
+        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture)
         // Preserve the historical checker flow when this opt-in observation is
         // absent. The root observation alone needs nested substitutions to
         // canonicalize its nested raw types; module bindings remain lexical.
@@ -2494,7 +2659,10 @@ fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_
 /// signature; production result APIs use the provenance-aware internal helper.
 export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
   let ignored_type_def_binders = array_empty()
-  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, s, c, errors, tytab, None, None, None)
+  // #1455: this compatibility entry point is handed a caller-owned `defs`
+  // that never contains seeded imported enums, so every declaration in it is
+  // local and the #1078 scan starts at 0.
+  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, 0, s, c, errors, tytab, None, None, None)
 }
 
 /// Run the production whole-program check and retain every successful output
@@ -2556,7 +2724,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
       None => None
     }
   }
-  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
+  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   // #1081 step 3 Phase B (Codex review, PR #1151): `let mut` capture
@@ -2820,6 +2988,10 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       desugar_labeled_args(stmts)
       let empty_defs = array_empty()
       let type_def_binders = array_empty()
+      // #1455: register the imported monomorphic enums BEFORE checking, so
+      // `Enum::Variant`, exhaustiveness and pattern-payload checking all see
+      // the same `TDEnum`s a same-file declaration would have produced.
+      let local_defs_start = seed_imported_enum_defs(stmts, initial_env, empty_defs, type_def_binders)
       let cached_env = env_cache(initial_env)
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env
@@ -2840,7 +3012,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
           None => None
         }
       }
-      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
+      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
       // #1090 review: the FS typecheck path (every file with imports) went
       // through here and never enforced trait bounds, so `[T: Send]` on an
       // imported generic fn was silently bypassed. Enforce the Send bound
