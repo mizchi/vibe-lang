@@ -38,7 +38,8 @@ declarations.vibe  (SSoT, 人間が編集)
 
 ### declarations.vibe 構文
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented
 // lib/@vibe/compiler/builtins/declarations.vibe
 
 //# Array
@@ -112,7 +113,8 @@ TypeTag (1 byte):
 
 ### デコーダー (vibe 実装, ~50行)
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented
 let decode_builtin_table = (bytes: Bytes) -> Array[BuiltinDecl] {
   let pos = [4]  // skip magic
   let version = Bytes::get(bytes, Array::get(pos, 0))
@@ -187,7 +189,8 @@ warning: builtin 'Set::from_array' declared but no codegen handler registered
 
 #### 実装
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented
 // checker 起動時
 let declared = decode_builtin_table(builtin_table_bytes)
 let registered = codegen_handler_names()  // codegen が提供する name set

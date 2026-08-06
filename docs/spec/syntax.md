@@ -84,7 +84,8 @@ literals only where the parser is expecting that literal head.
 
 ### Literals
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 42
 0xFF
 1.5f
@@ -178,7 +179,8 @@ Compatibility:
 
 ### Functions And Lambdas
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 (x) -> { x + 1 }
 (x, y) -> { x + y }
 x -> x * 2
@@ -188,7 +190,8 @@ _ + _
 
 Function types:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 () -> Int
 (Int, String) -> Bool
 (Int) -> Int with Exception
@@ -324,7 +327,8 @@ programs.
 
 ## Imports And Exports
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program (the `./lib.vibe` it imports is illustrative)
 import ./lib.vibe { foo, bar as baz }
 import ./lib.vibe { type Pair, trait Show, foo }
 import ./lib.vibe { Int }
@@ -355,7 +359,8 @@ workflow — is not syntax and is specified once, in
 
 ### Blocks
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 {
   let x = 1
   let y = 2
@@ -365,7 +370,8 @@ workflow — is not syntax and is specified once, in
 
 ### Control Flow
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 if cond { a } else { b }
 
 match value {
@@ -418,7 +424,8 @@ Rules:
 
 ### Calls, Fields, Indexing
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 f(x)
 f(x=1, y=2)
 Array::map(xs, _ * 2)
@@ -439,7 +446,8 @@ a field must be invoked as `(obj.callback)(args)`.
 
 ### Collections
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 [1, 2, 3]
 (1, "two", true)
 record { x: 1, y: 2 }
@@ -454,7 +462,8 @@ literal reports a located parse error naming the replacement.
 
 ### Effects And Error Boundaries
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 throw("message")
 risky()?
 
@@ -492,7 +501,8 @@ Precedence is high to low.
 
 Assignments are statements, not expressions:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 x = value
 x += 1
 x -= 1
@@ -503,7 +513,8 @@ x %= 2
 
 ## Pipe
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 x |> f
 x |> f(a, b)
 x |> f |> g
@@ -514,7 +525,8 @@ arr |> Array::length
 
 ## Patterns
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 _
 x
 42
@@ -529,7 +541,8 @@ A | B
 
 Match-arm guards:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 match x {
   v if v > 0 => v,
   _ => 0,
@@ -538,7 +551,8 @@ match x {
 
 Destructuring:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 let (a, b) = pair
 let record { x, y } = rec
 guard opt is Some(v) else { return -1 }
@@ -563,7 +577,8 @@ of the function.
 
 ## Types
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 Int
 Float
 Double
@@ -687,13 +702,10 @@ kind carries today.
 
 ## Tests, Examples And Benches
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 test "arithmetic" {
   assert_eq(1 + 1, 2)
-}
-
-test smoke_case {
-  assert(true)
 }
 
 example "adding two numbers" {
@@ -705,8 +717,11 @@ bench "hot path" {
 }
 ```
 
-Quoted and bare test names are accepted. Quoted names are preferred in public
-examples.
+The test name is a STRING literal. A bare identifier
+(`test smoke_case { .. }`) is rejected -- `expected test name string` -- so the
+name is always quoted. This section said both forms were accepted until it was
+measured against the compiler; nothing was checking it, because docs/spec/ was
+outside the doctest list.
 
 `example "name" { .. }` (#819) is a documentation example. It is compiled and
 RUN exactly like a test -- that is the point of the form: a doc sample that
