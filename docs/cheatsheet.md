@@ -1184,16 +1184,42 @@ handle of effect 'Ask' cannot be compiled: the site is not eligible for
 evidence-passing migration (ADR-0076) ...
 ```
 
-実測した境界 — 効くのは **handle がどこにあるか × handled body の形**の2軸で、
-`ask_once` を `fn` で宣言したか `let` lambda で宣言したかは**無関係**:
+実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level
+`let` にあるか `fn` の中にあるかは**無関係**で、`ask_once` を `fn` で宣言したか
+`let` lambda で宣言したかも**無関係**:
 
-| handle の位置 | handled body | 結果 |
-|---|---|---|
-| top-level `let` | `handle { ask_once() }` 素の呼び出し | ok |
-| top-level `let` | `handle { add(1, ask_once()) }` 引数の中 | **NG** |
-| `fn` の中 | `handle { add(1, ask_once()) }` 引数の中 | ok |
+| handled body が呼ぶもの | 結果 |
+|---|---|
+| `handle { ask_once() }` — 直接 perform する関数 | ok |
+| `handle { bump(ask_once()) }` — `bump` が top-level `fn` | ok |
+| `handle { bump(ask_once()) }` — `bump` が**ローカルのクロージャ** | **NG** |
 
-**迷ったら handle を関数の中に置く** — 上の3行すべてを満たす唯一の形。
+エラー文が列挙している適格な形がそのまま規則 — 直接 `perform`、**名前付き
+top-level 関数**の呼び出し、row 注釈付きクロージャリテラル。
+
+**迷ったら handled body から呼ぶものを top-level `fn` に出す。**
+
+(この表は当初 lang-review r3 で「handle の位置が効く」と誤って記録し、r4 の
+再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
+どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
+
+### capability builtin の呼び出しは arity も引数型も検査されない (#1513)
+
+**通ったことを正しさの証拠にしないこと。** これは compile も実行も成功して
+garbage を出す:
+
+```vibe skip
+// doctest-skip: this is the silent miscompile the section documents
+Stdout::write_stream(42)      // Int を String の位置に — 診断なし、実行も成功
+Stdout::write_stream()        // 0 引数 — 診断なし、不正な wasm を吐く
+```
+
+未検査: `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file`。
+検査あり: `Array::*` / `String::*` / `Bytes::*` / `Profiler::now_us` および
+ユーザー定義関数 (`function arity mismatch ...` がスパン付きで出る)。
+
+capability かどうかでは分かれない — checker の fast path に載っているかどうか。
+host import が絡む呼び出しで挙動が変なときは、まず引数の数と型を目で確認する。
 
 ### 区切り文字は文脈で違う
 

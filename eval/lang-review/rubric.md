@@ -1,7 +1,8 @@
 # 評価 rubric
 
-7 dimension、各 1–5。**ラウンド間で不変に保つ** (追加は可、既存の定義変更は
-不可 — 変えるとスコア推移が比較不能になる)。
+8 dimension、各 1–5。**ラウンド間で不変に保つ** (追加は可、既存の定義変更は
+不可 — 変えるとスコア推移が比較不能になる)。8軸目 `repair_convergence` は
+r4 で追加した (r1–r3 には値が無い)。
 
 ## スコアの一般定義
 
@@ -57,6 +58,22 @@ effect (Fs/Env/...) の transitive 強制、`Error`/`Async` の設計判断の
 妨げていないかを評価する。「未実装」は減点しない — **妨げる設計**
 (後から直せない前提の混入) を減点する。
 
+### 8. repair_convergence (診断駆動修復の収束性) — r4 追加
+
+**新しい言語なので初回コンパイルが通らないのは前提**。測るのはそこではなく、
+落ちた**後**に収束できるか — コンパイラの出力だけを読んで、正しい編集に
+どれだけ正確にたどり着けるか。diagnostics (6) が「メッセージの質」を人間視点で
+見るのに対し、こちらは**修復ループが閉じるか**を固定コーパスで実測する。
+
+`eval/lang-review/repair/` の各ケースを、診断のテキストだけから 0–4 点で採点し
+(L 位置 0/1 + A 実行可能性 0/1 + C 収束 0/2)、**score = 1 + mean** とする。
+定義と実測表は `eval/lang-review/repair/README.md`。コーパスは tasks と同じく
+ラウンド間で固定する (追加は可、変更は不可)。
+
+この軸だけが**診断が出ないこと**を直接減点できる: 型検査を通り抜けて別フェーズで
+落ちる欠陥・黙って誤ったコードを吐く欠陥は、他の 7 軸のどの観測モードからも
+「問題なし」に見える (r3 の観測モード所見を参照)。
+
 ## レビュアープロンプト (subagent に与える)
 
 共通ヘッダ (全レビュアー):
@@ -85,6 +102,12 @@ effect (Fs/Env/...) の transitive 強制、`Error`/`Async` の設計判断の
   major finding)。ADR の型健全性系列 (docs/adr.md の 0066 近辺の長大
   エントリ) を参照して既知の残穴 (generic struct field 等) の現状も確認。
   effect の宣言漏れ・放電・transitive 強制もプローブする。
+- **repair** — 担当: repair_convergence。
+  `eval/lang-review/repair/*/broken.vibe` を1件ずつコンパイルし、**診断だけを
+  読んで** (broken.vibe の意図も fixed.vibe も見ずに) 修復を試みる。診断が出ない
+  ケースがあることに注意 — 「compile が通った」で正しいと判断しないこと。
+  各ケースを L/A/C で採点し、`repair/README.md` の表を更新する。新しいケースを
+  足すのは可 (既存の変更は不可)。ラチェットは `bash eval/lang-review/run_repair.sh`。
 - **concurrency** — 担当: concurrency_readiness。
   docs/adr.md の ADR-0012 (Task/Stream)・ADR-0055 (RC/値表現)・
   ADR-0068 (並行設計原則)、TODO/#488 系を読み、Go channel / Elixir 軽量

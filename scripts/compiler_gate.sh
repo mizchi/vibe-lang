@@ -7472,6 +7472,14 @@ if ! bash eval/lang-review/run_golden.sh; then
   echo "[compiler-gate] FAIL: eval/lang-review/run_golden.sh -- the golden corpus context-pack bundles no longer compiles/runs as claimed" >&2
   exit 1
 fi
+# r4: the repair corpus is the measurement the `repair_convergence` score rests
+# on (rubric dimension 8). It is a TWO-WAY ratchet -- a diagnostic that stops
+# firing, whose wording drifts, OR that starts firing on a case recorded as
+# silent all fail here, because each of those invalidates the recorded score.
+if ! bash eval/lang-review/run_repair.sh; then
+  echo "[compiler-gate] FAIL: eval/lang-review/run_repair.sh -- the diagnostics the repair_convergence score was measured against changed; re-score in eval/lang-review/repair/README.md" >&2
+  exit 1
+fi
 ctxpackdir="_build/_gate_ctxpack"
 rm -rf "$ctxpackdir"; mkdir -p "$ctxpackdir"
 bash scripts/gen_context_pack.sh "$ROOT_DIR" > "$ctxpackdir/a.md"
