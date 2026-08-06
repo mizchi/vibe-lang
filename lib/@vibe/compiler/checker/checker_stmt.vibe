@@ -31,6 +31,8 @@ import @vibe/compiler/core {
   env_cache,
   env_flat_bindings,
   env_lookup_flat,
+  find_enum_typedef,
+  find_typedef,
   generalize,
   is_singleton_resource_kind,
   predeclared_resources,
@@ -1104,7 +1106,55 @@ fn seed_imported_enum_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array
     }
     ri = ri + 1
   }
+  seed_import_alias_defs(stmts, defs, type_def_binders)
   (Array::length(defs), next_c)
+}
+
+/// #1502: `import ./m { E as F }` registers `F` as a `TDAlias` of `E`, so the
+/// constructor qualifier can be spelled with the name this module actually
+/// bound (`F::Mk`). Before this the alias was known only to
+/// `bind_stmt_imports`, and `F::Mk` failed with `unknown name` while the
+/// unaliased `E::Mk` worked -- a surprise, since `F` is usable everywhere else
+/// (type annotations, and the bare constructors, which arrive under their
+/// ORIGINAL names and so need no renaming).
+///
+/// Runs after the enum seeding above so `orig` is resolvable whether it is a
+/// local enum or one that seeding just introduced. Registration is skipped
+/// when `alias` already names a type -- a genuine conflict belongs to whatever
+/// declared that name, not to this convenience.
+///
+/// `type_def_binders` is index-aligned with `defs`, so each alias pushes an
+/// empty binder row -- exactly what the `STypeAlias` arm does for a written
+/// `type` alias. Omitting it would misalign every typedef registered after
+/// this point.
+fn seed_import_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (orig, alias_opt) = Array::get(items, j)
+          match alias_opt {
+            Some(alias) => match find_enum_typedef(defs, orig) {
+              Some(_) => match find_typedef(defs, alias) {
+                Some(_) => (),
+                None => {
+                  Array::push(defs, TDAlias(alias, array_empty(), CtEnum(orig)))
+                  Array::push(type_def_binders, array_empty())
+                }
+              },
+              None => ()
+            },
+            None => ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
 }
 
 /// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
