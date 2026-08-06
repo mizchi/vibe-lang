@@ -1,0 +1,117 @@
+//# Focused pure tests for compiler-internal TDRE5 canonical record framing.
+
+import @vibe/compiler/runtime {
+  typing_dependency_record_decode_internal, typing_dependency_record_encode_internal
+}
+
+fn tdre5_fields_equal(actual: Array[String], expected: Array[String]) -> Bool {
+  if Array::length(actual) != Array::length(expected) {
+    false
+  } else {
+    let mut equal = true
+    let mut i = 0
+    while equal && i < Array::length(expected) {
+      equal = Array::get(actual, i) == Array::get(expected, i)
+      i = i + 1
+    }
+    equal
+  }
+}
+
+fn tdre5_assert_decoded(decoded: Option[Array[String]], expected: Array[String], encoded: String, tag: String) -> Unit {
+  match decoded {
+    Some(fields) => {
+      assert(tdre5_fields_equal(fields, expected))
+      assert(typing_dependency_record_encode_internal(tag, fields) == encoded)
+    },
+    None => assert(false)
+  }
+}
+
+fn tdre5_assert_rejected(text: String, expected_tag: String, expected_fields: Int) -> Unit {
+  match typing_dependency_record_decode_internal(text, expected_tag, expected_fields) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "TDRE5 canonical records round-trip empty and opaque special fields across every tag" {
+  let empty: Array[String] = [
+  ]
+  let empty_tags = [
+    "TDEO5",
+    "TDI5",
+    "TDRA5",
+    "TDC5",
+    "TDREW5"
+  ]
+  let mut empty_i = 0
+  while empty_i < Array::length(empty_tags) {
+    let tag = Array::get(empty_tags, empty_i)
+    let encoded = typing_dependency_record_encode_internal(tag, empty)
+    tdre5_assert_decoded(typing_dependency_record_decode_internal(encoded, tag, 0), empty, encoded, tag)
+    empty_i = empty_i + 1
+  }
+  let fields = [
+    "",
+    ":left[right]",
+    "line one\nline two\r\n",
+    "日本語🙂",
+    "TDEO5/TDI5/TDRA5/TDC5/TDREW5"
+  ]
+  let tags = [
+    "TDEO5",
+    "TDI5",
+    "TDRA5",
+    "TDC5",
+    "TDREW5"
+  ]
+  let mut i = 0
+  while i < Array::length(tags) {
+    let tag = Array::get(tags, i)
+    let encoded = typing_dependency_record_encode_internal(tag, fields)
+    tdre5_assert_decoded(typing_dependency_record_decode_internal(encoded, tag, 5), fields, encoded, tag)
+    i = i + 1
+  }
+}
+
+test "TDRE5 decoder rejects wrong tags arity counts and noncanonical decimals" {
+  assert(typing_dependency_record_encode_internal("TDRE5", [
+  ]) == "")
+  tdre5_assert_rejected("TDRE50[]", "TDRE5", 0)
+  tdre5_assert_rejected("0[]", "", 0)
+  let tdeo = typing_dependency_record_encode_internal("TDEO5", [
+    "x"
+  ])
+  tdre5_assert_rejected(tdeo, "TDI5", 1)
+  tdre5_assert_rejected(tdeo, "TDEO5", 0)
+  tdre5_assert_rejected("TDEO50[]", "TDREW5", 0)
+  tdre5_assert_rejected("TDEO500[]", "TDEO5", 0)
+  tdre5_assert_rejected("TDEO5-1[]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO5+1[0:]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO5 1[0:]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO5[]", "TDEO5", 0)
+  tdre5_assert_rejected("TDEO51[01:x]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO51[00:]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO51[-1:x]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO51[+1:x]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO51[ 1:x]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO51[:x]", "TDEO5", 1)
+  tdre5_assert_rejected("TDEO52[0:]", "TDEO5", 2)
+  tdre5_assert_rejected("TDEO51[0:0:x]", "TDEO5", 1)
+}
+
+test "TDRE5 decoder rejects overflow truncation missing delimiters brackets and trailing data" {
+  tdre5_assert_rejected("", "TDC5", 0)
+  tdre5_assert_rejected("TDC", "TDC5", 0)
+  tdre5_assert_rejected("TDC52305843009213693951[]", "TDC5", 0)
+  tdre5_assert_rejected("TDC51[2305843009213693951:x]", "TDC5", 1)
+  tdre5_assert_rejected("TDC51[3:ab]", "TDC5", 1)
+  tdre5_assert_rejected("TDC51[0:", "TDC5", 1)
+  tdre5_assert_rejected("TDC51[1x]", "TDC5", 1)
+  tdre5_assert_rejected("TDC51{1:x}", "TDC5", 1)
+  tdre5_assert_rejected("TDC51[1:x", "TDC5", 1)
+  tdre5_assert_rejected("TDC51[1:x}", "TDC5", 1)
+  tdre5_assert_rejected("TDC51[1:x]trailing", "TDC5", 1)
+  tdre5_assert_rejected("TDC50[]\n", "TDC5", 0)
+}
