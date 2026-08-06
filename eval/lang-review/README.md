@@ -91,3 +91,33 @@ bash scripts/run_wasm_vibe_host_runner.sh --invoke _start path/to/prog.wasm
 
 スコアは 1–5 (定義は rubric.md)。ラウンド間で **同じ rubric・同じ tasks**
 で比較する。
+
+## 観測モードについて (r3 で追加)
+
+r1/r2 は writability レビュアーが `tasks/` の仕様からゼロ書きして compile する
+経路だけで測った。r3 で分かったのは、**この経路では原理的に見えない欠陥がある**
+ということ:
+
+1. **compile を通り抜ける欠陥** — `handle` の適格性制約 (#1511) は `vibe check`
+   が通り codegen で落ちる。レビュアーが型検査で確認していたら「問題なし」と
+   報告する
+2. **既存コードの保守でしか出ない摩擦** — 綴りの移行への追随、API 変更への
+   追随、docs と実装の乖離 (#1505, #1506)
+3. **書けないもの** — capability を要求する test (#1508) は「タスクにしなかった
+   から出なかった」だけだった
+
+なので `reviewer` フィールドは writability / semantics / type-soundness /
+concurrency に加えて **`maintenance-session`** を取る (r3 がこれ): 1 セッション
+分の実在の保守作業中に踏んだ friction をそのまま所見にする形。rubric と tasks を
+変えないので、スコアはラウンド間で比較可能なまま。
+
+**所見を書くときは実測値を添える** — 「〜のはず」ではなく、現行 stage2 に何を
+食わせて何が返ったか。r3 では最初に立てた仮説を2つ外してから境界を確定させた
+(`handle` の適格性は「top-level か否か」でも「引数の中に nest しているか」でも
+なく、両者の相互作用だった)。
+
+## tasks に golden の無いものがある場合
+
+`tasks/11_*`〜`13_*` は **現在の言語では解けない**ことが所見なので golden が
+無い。`run_golden.sh` は `golden/*.vibe` だけを見るので gate は緑のまま。
+解けるようになった時点で golden を作る。
