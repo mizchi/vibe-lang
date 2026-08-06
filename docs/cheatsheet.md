@@ -1203,6 +1203,24 @@ top-level 関数**の呼び出し、row 注釈付きクロージャリテラル�
 再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
 どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
 
+### 補間できるのは Show を持つ型だけ (#1445)
+
+宣言済みの struct / enum を `\{x}` に入れるには **`derive(Show)` か手書きの
+`fn T::to_string(v) -> String`** が要る。無いとコンパイルエラー:
+
+```
+cannot interpolate a value of type `F`: it has no Show renderer
+-- add `derive(Show)` to `F`, or define `fn F::to_string(v) -> String` (#1445)
+```
+
+以前は黙って**ポインタの10進数**を出していた (`"\{f}"` → `288`)。型は分かって
+いるのだから、それは missing `derive(Show)` であって「描画できない値」では
+ないため、エラーにした。
+
+スカラ (`Int`/`String`/...)、`Option`/`Result`/tuple/`Array`、型が解決できない
+値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
+のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
+
 ### capability builtin の呼び出しは arity も引数型も検査されない (#1513)
 
 **通ったことを正しさの証拠にしないこと。** これは compile も実行も成功して
