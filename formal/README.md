@@ -47,7 +47,7 @@ passing, and compiler-to-Wasm simulation are also out of scope for Phase 1.
   concrete undeclared `Fs` operation, preserving a negative witness.
 
 This is a policy model for #944, not yet the full Vibe type-and-effect calculus.
-ADR-0073 decides that explicit `with Error` is a semantic row element, but
+ADR-0073 decides that explicit `with Exception` is a semantic row element, but
 the higher-order typing and subtyping proofs remain coupled to #939. The model
 also abstracts from payload types, divergence, traps, stack unwinding,
 finalizers, and backend exception representation.

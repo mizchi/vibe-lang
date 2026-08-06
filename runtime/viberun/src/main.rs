@@ -1329,7 +1329,7 @@ fn run(args: Vec<String>) -> Result<i32> {
             // the configured wasm stack. wasmtime raises this as a graceful
             // `Trap::StackOverflow` ("call stack exhausted") rather than a host
             // crash, but nothing inside the compiled program's own
-            // `handle {...} with Error {...}` can intercept it -- it used to
+            // `handle {...} with Exception {...}` can intercept it -- it used to
             // surface here as an ordinary trap message, which `vibe
             // check`/`vibe diagnostics`'s `>/dev/null 2>&1 || true` wrapper
             // silently swallowed into "clean". Write the same `.diag` sidecar

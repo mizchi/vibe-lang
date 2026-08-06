@@ -186,7 +186,7 @@ checked failure として観測される)。静的にはリソース単位、動
   が裸 `with` のまま残っていたら **warning + 分割形への fix-it**。
 - builtin retrofit Phase 5(ADR-0043 統合フェーズ)の時点で: capability を含む
   `main` は**分割形を必須**とする。
-- row が core ambient のみの `main`(`fn main with Error`)は書くものが無いので
+- row が core ambient のみの `main`(`fn main with Exception`)は書くものが無いので
   裸 `with` のままで恒久的に合法。通常関数はゲートの対象外(Decision 1)。
 
 ## Grammar sketch

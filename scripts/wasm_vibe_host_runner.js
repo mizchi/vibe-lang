@@ -3193,7 +3193,7 @@ main().catch((err) => {
   // #946(4): a pathologically deep expression (e.g. thousands of chained
   // `+`) recurses the checker (itself compiled to wasm) past the native call
   // stack. That blows up the whole wasm instance -- nothing inside the
-  // compiled program's own `handle {...} with Error {...}` can intercept a
+  // compiled program's own `handle {...} with Exception {...}` can intercept a
   // host-level stack overflow, so it used to surface as a raw uncaught-
   // exception crash dump, which the `vibe check`/`vibe diagnostics` shell
   // wrappers (`>/dev/null 2>&1 || true`) silently swallowed into "clean".

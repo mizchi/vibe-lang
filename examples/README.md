@@ -5,7 +5,7 @@ This directory contains runnable examples of vibe language features.
 ## Recommended Entry Point
 
 - `basics.vibe`: minimal language tutorial (fundamentals)
-- `syntax.vibe`: advanced syntax tour (Generics/Struct/Error/wasm types)
+- `syntax.vibe`: advanced syntax tour (Generics/Struct/Exception/wasm types)
 
 ```bash
 pkf run run -- test examples/basics.vibe
@@ -14,7 +14,7 @@ pkf run run -- test examples/syntax.vibe
 
 ## Language Features
 
-- `effects.vibe`: `with Error` / `handle { ... } with Error { ... }`
+- `effects.vibe`: `with Exception` / `handle { ... } with Exception { ... }`
 - `async.vibe`: `await` and async effect combinations
 - `perform_handle.vibe`: `perform Effect::Op(...)` + `handle` による多層エフェクト/回復パターン
 - `effect_demo.vibe`: effect 宣言を名前で共有する複数関数パターン (#752)

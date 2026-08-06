@@ -130,3 +130,45 @@ test "#1455: a program with no qualified pattern carries no marker" {
   let refs = qualified_pattern_refs_of(parse_program(lex("enum Color { Red; Green }\nfn f(c: Color) -> Int { match c { Red => 1, Green => 2 } }")))
   assert_eq(Array::length(refs), 0)
 }
+
+// #1461 retired `Error` as an effect spelling; #1501 extended the rejection
+// from row items to the handled-effect name. Before #1501 the two positions
+// disagreed -- `with Error` in a signature was a parse error while
+// `handle .. with Error { .. }` compiled -- and nothing tested either one, so
+// the asymmetry was invisible. These pin all four cases: reject in both
+// positions, and DON'T reject the two spellings that are not row labels.
+
+test "parse_program: `Error` is rejected as a row label" {
+  let result = handle {
+    let _ = parse_program(lex("fn f() -> Int with Error { throw(\"x\") }"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "`Error` was retired as an effect spelling in #1461"))
+}
+
+test "parse_program: `Error` is rejected as a handled-effect name (#1501)" {
+  let result = handle {
+    let _ =
+    parse_program(lex("fn g() -> Int { handle { 1 } with Error { Throw(_) => 0 } }"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "`Error` was retired as an effect spelling in #1461"))
+}
+
+test "parse_program: `Exception` is accepted in both positions" {
+  let src = "fn f() -> Int with Exception { throw(\"x\") }\nfn g() -> Int { handle { f() } with Exception { Throw(_) => 0 } }"
+  let stmts = parse_program(lex(src))
+  assert(Array::length(stmts) == 2)
+}
+
+test "parse_program: `perform Error::Throw` stays legal (operation qualifier)" {
+  // Not a row item: it names the operation the runtime dispatches, so the
+  // #1461 retirement deliberately does not reach it.
+  let tokens = lex("fn f() -> Int with Exception { perform Error::Throw(\"x\") }")
+  let stmts = parse_program(tokens)
+  assert(Array::length(stmts) == 1)
+}

@@ -133,7 +133,7 @@ effect HttpReq {
   Header(String) -> String
 }
 
-export let route: (String) -> String with HttpReq + Error = (prefix) -> { ... }
+export let route: (String) -> String with HttpReq + Exception = (prefix) -> { ... }
 
 export let handler = (method: String, url: String, headers: String, body: String) -> String { ... }
 

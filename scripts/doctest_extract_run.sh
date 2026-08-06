@@ -38,6 +38,18 @@
 #   DOCTEST_WORKDIR  scratch dir for extracted sources / wasm (default _build/doctest/<pid>)
 #   DOCTEST_KEEP=1   keep the work dir (default: removed on exit)
 #   DOCTEST_TIMEOUT  per-block compile/run timeout in seconds (default 120)
+#   DOCTEST_REQUIRE_STAGE2=1
+#                    refuse to fall back to the committed seed; exit 2 instead.
+#                    Set this wherever the run is meant to GATE (CI). The seed
+#                    is the previous bootstrap tag, so it accepts syntax the
+#                    current compiler has removed -- a seed-driven doctest
+#                    reports green on docs that no longer compile. That is not
+#                    hypothetical: it is how the #1429 braced row and the #1461
+#                    `Error` row spelling survived in examples/, docs/,
+#                    bench/, playground/ and `vibe new`'s scaffold until the
+#                    seed bump to console-exception-rowvar-2026-08-06 moved the
+#                    seed past them and the breakage surfaced all at once
+#                    (#1497).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,10 +74,25 @@ if [ -z "$stage2" ]; then
   done
   if [ -z "$stage2" ]; then
     # NOTE: docs document the CURRENT language; the committed seed (previous
-    # bootstrap tag) may be too old to compile them. Prefer a built stage2
-    # (or pass DOCTEST_STAGE2 explicitly).
+    # bootstrap tag) may be too old to compile them -- and, worse, too OLD in
+    # the other direction: it still accepts syntax the current compiler has
+    # removed, so it reports green on rotted docs. Prefer a built stage2 (or
+    # pass DOCTEST_STAGE2 explicitly), and refuse the fallback outright when
+    # the caller says this run is a gate.
     stage2="bootstrap/seed/compiler.wasm"
   fi
+fi
+# Checked on the RESOLVED path, not just on the fallback branch: a caller that
+# pins DOCTEST_STAGE2 (as the CI step does, to avoid picking a stale generation)
+# would otherwise skip the branch entirely, and pointing DOCTEST_STAGE2 at the
+# seed by hand would silently downgrade the gate to the previous bootstrap
+# tag's grammar.
+if [ "${DOCTEST_REQUIRE_STAGE2:-0}" = "1" ] && [ "$stage2" = "bootstrap/seed/compiler.wasm" ]; then
+  echo "doctest: resolved compiler is the committed seed and DOCTEST_REQUIRE_STAGE2=1." >&2
+  echo "doctest: refusing it -- the seed is the PREVIOUS bootstrap tag and still accepts" >&2
+  echo "doctest: syntax the current compiler has removed, so it reports green on rotted docs." >&2
+  echo "doctest: build a stage2 first (bash scripts/compiler_gate.sh) or point DOCTEST_STAGE2 at one." >&2
+  exit 2
 fi
 if [ ! -s "$stage2" ]; then
   echo "doctest: compiler wasm not found: $stage2" >&2

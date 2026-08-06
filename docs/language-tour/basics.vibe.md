@@ -87,24 +87,33 @@ let swap: [A, B](A, B) -> (B, A) = (a, b) -> { (b, a) }
 
 ## Labeled Arguments
 
-```vibe
-// y~ : required labeled argument (caller must use y = ...)
-// z? : optional argument (receives Option[T])
-let f: (Int, y~: String, z?: Int) -> String = (x, y~, z?) -> {
-  let suffix = match z { Some(v) => Int::to_string(v), None => "none" }
-  "\{y}-\{suffix}"
-}
-// f(1, y = "ok")          => "ok-none"
-// f(1, y = "ok", z = 10)  => "ok-10"
+`x~` marks a required labeled parameter. A call is either ALL positional or
+ALL labeled -- mixing the two is rejected.
 
-let g: (Int, y?: Int) -> Int = (x, y?) -> {
-  match y {
-    Some(v) => x + v,
-    None => x,
-  }
+```vibe
+// y~ : required labeled argument (the caller writes y = ...)
+let f: (x~: Int, y~: String) -> String = (x~, y~) -> {
+  "\{y}-\{x}"
 }
-// g(1)         => 1
-// g(1, y = 5)  => 6
+
+export let call_f: () -> String = () -> {
+  f(x = 1, y = "ok")   // => "ok-1"
+}
+```
+
+`x?` parses, but the optional-argument SEMANTICS are not implemented (#1500).
+Today a `?` parameter behaves exactly like a required one:
+
+```vibe
+// `value` is bound as `Int`, NOT `Option[Int]`, and the caller may not omit it
+// (`g(x = 1)` is `function arity mismatch for g: expected 2 args, got 1`).
+let g: (x~: Int, value?: Int) -> Int = (x~, value?) -> {
+  x + value
+}
+
+export let call_g: () -> Int = () -> {
+  g(x = 1, value = 5)   // => 6
+}
 ```
 
 ## Control Flow
@@ -356,12 +365,12 @@ fn fetch_user(raw: String) -> Int with Exception[String] {
   raw |> parse_id |> validate_id |> load_user
 }
 
-// Boundary helper when you need local Error handling
-let safe_div: (Int, Int) -> Int with Error = (a, b) -> {
+// Boundary helper when you need local exception handling
+let safe_div: (Int, Int) -> Int with Exception = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
-let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
+let result = handle { safe_div(8, 0) } with Exception { Throw(_) => -1 }
 // => -1
 ```
 
@@ -389,7 +398,7 @@ suberror AppError {
   InvalidInput(Int)
 }
 
-let risky: () -> Int with Error = () -> {
+let risky: () -> Int with Exception = () -> {
   throw(NotFound("missing"))
 }
 
@@ -398,9 +407,9 @@ fn lookup_user(raw: String) -> String with Exception[AppError] {
   if raw == "" { throw(NotFound("missing")) } else { raw }
 }
 
-let result = handle { lookup_user("42") } with Error { Throw(_) => "guest" }
+let result = handle { lookup_user("42") } with Exception { Throw(_) => "guest" }
 
-let fallback = handle { risky() } with Error { Throw(_) => -1 }
+let fallback = handle { risky() } with Exception { Throw(_) => -1 }
 // => -1
 ```
 
@@ -417,12 +426,17 @@ let ask_once: () -> Int with Ask = () -> {
   perform Ask::Question(41)
 }
 
-let result = handle {
-  add(1, ask_once())
-} with Ask {
-  Question(v) => resume(add(v, 1))
+// ADR-0076: the handle lives inside a function. A `handle` in a TOP-LEVEL
+// `let` is not eligible for the evidence-passing migration, so
+// `let result = handle { .. } with Ask { .. }` fails to compile.
+fn answered() -> Int {
+  handle {
+    add(1, ask_once())
+  } with Ask {
+    Question(v) => resume(add(v, 1))
+  }
 }
-// => 43
+// answered() => 43
 ```
 
 ### async (experimental)

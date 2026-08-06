@@ -46,8 +46,8 @@ compiler's own entry point rather than arbitrary user programs.
 
 ## The contract
 
-`export fn cli_main() -> Int with Error + Fs + Env + Stdin + Stdout`
-(`lib/@vibe/compiler/cli_adapter.vibe`) is the row that matters. `Error`
+`export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout`
+(`lib/@vibe/compiler/cli_adapter.vibe`) is the row that matters. `Exception`
 never crosses the host boundary (vibe-internal control flow — an escaping
 throw is a component trap, not a host capability), matching the rule
 `wit_gen.vibe` already applies to user programs. The other four map to
