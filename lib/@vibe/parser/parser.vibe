@@ -10,6 +10,7 @@ import ./parser_base.vibe {
   empty_fields,
   empty_import_items,
   expect_tk,
+  has_qualified_pattern_refs,
   parse_binding_name,
   parse_derive_names,
   parse_effect_stmt,
@@ -25,6 +26,7 @@ import ./parser_base.vibe {
   peek,
   skip_braced_body,
   skip_derive,
+  take_qualified_pattern_refs,
   tk_name
 }
 
@@ -782,11 +784,38 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
   ArrayBuilder::freeze(b)
 }
 
+/// #1455 step 3: fold the qualified-variant-pattern log this parse produced
+/// into a trailing `SQualifiedPatternRefs` marker, so the pairs travel WITH the
+/// statement array instead of sitting in parser state.
+///
+/// That placement is what makes the check survive two things a process-global
+/// log did not. `runtime/typecheck_fs.vibe`'s `parse_program_with_path`
+/// memoizes statements by `(path, exact source)` and hands out a copy WITHOUT
+/// re-running the parser, so a re-check would have found an already-drained
+/// log and skipped validation silently; and a parse whose module is never
+/// type-checked (`vibe fmt`, an LSP buffer) would have left its pairs for some
+/// later, unrelated check to report against its own enums. Draining here ends
+/// the log's life at the end of the parse that filled it.
+///
+/// Appended LAST so no existing statement index moves (the checker's capture
+/// paths and `reorder_type_decls_first` are index-based), and omitted entirely
+/// when the parse saw no qualified pattern.
+fn attach_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[Stmt] {
+  // Emptiness first: the drain allocates even when it has nothing to hand
+  // back, and a program with no qualified pattern is the common case.
+  if has_qualified_pattern_refs() {
+    Array::push(stmts, SQualifiedPatternRefs(take_qualified_pattern_refs()))
+    stmts
+  } else {
+    stmts
+  }
+}
+
 /// Default program entry: `fn` declarations lowered to the legacy SLet shape
 /// (where-contracts desugared to runtime asserts) — the exact pre-#727
 /// output, so every checker/codegen consumer is unchanged.
 export fn parse_program(tokens: Array[Token]) -> Array[Stmt] with Exception {
-  expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving(tokens)))
+  attach_qualified_pattern_refs(expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving(tokens))))
 }
 
 /// Like parse_program but, on a syntax error, prefixes the message with the
@@ -914,7 +943,7 @@ export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source
       }
     }
   }
-  expand_top_level_pattern_lets(ArrayBuilder::freeze(b))
+  attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b)))
 }
 
 /// True when `t` is a resynchronization point for `parse_program_recovering`:
@@ -1100,7 +1129,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
       }
     }
   }
-  (expand_top_level_pattern_lets(ArrayBuilder::freeze(b)), ArrayBuilder::freeze(diags))
+  (attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b))), ArrayBuilder::freeze(diags))
 }
 
 /// Like `parse_program`, but also returns per top-level statement its source
@@ -1147,6 +1176,15 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         pos = next
       }
     }
+  }
+  // #1455 step 3: this entry feeds editor tooling (spans, symbols, type-at),
+  // which never type-checks, so there is no marker to attach the qualified
+  // pattern refs to -- drop them rather than let them outlive this parse and
+  // be reported against some later file's enums.
+  if has_qualified_pattern_refs() {
+    let _dropped = take_qualified_pattern_refs()
+  } else {
+    ()
   }
   (ArrayBuilder::freeze(b), ArrayBuilder::freeze(span_start), ArrayBuilder::freeze(span_end))
 }
