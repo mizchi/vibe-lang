@@ -22,7 +22,7 @@ cannot be imported. When you `vibe build`, `main` is lowered to the generated
 WASM `_start` ABI entry point.
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 

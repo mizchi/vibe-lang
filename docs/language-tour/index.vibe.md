@@ -15,7 +15,7 @@ vibe check file.vibe     # Type check
 ## Hello World
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 let greeting: (String) -> String = (name) -> {
   "hello \{name}"
@@ -40,7 +40,7 @@ cannot be imported. When you `vibe build`, `main` is lowered to the generated
 WASM `_start` ABI entry point.
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 fn main with Stdout {
   stdout_write("1 + 2 = \{1 + 2}\n")

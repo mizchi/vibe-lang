@@ -87,7 +87,10 @@ let swap: [A, B](A, B) -> (B, A) = (a, b) -> { (b, a) }
 
 ## Labeled Arguments
 
-```vibe
+```vibe skip
+// #1500: `z?: Int` binds `z` as `Int`, not `Option[Int]`, so the match below
+// is rejected as non-exhaustive. The block documents the intended behavior;
+// un-skip it when #1500 is decided.
 // y~ : required labeled argument (caller must use y = ...)
 // z? : optional argument (receives Option[T])
 let f: (Int, y~: String, z?: Int) -> String = (x, y~, z?) -> {
@@ -417,12 +420,17 @@ let ask_once: () -> Int with Ask = () -> {
   perform Ask::Question(41)
 }
 
-let result = handle {
-  add(1, ask_once())
-} with Ask {
-  Question(v) => resume(add(v, 1))
+// ADR-0076: the handle lives inside a function. A `handle` in a TOP-LEVEL
+// `let` is not eligible for the evidence-passing migration, so
+// `let result = handle { .. } with Ask { .. }` fails to compile.
+fn answered() -> Int {
+  handle {
+    add(1, ask_once())
+  } with Ask {
+    Question(v) => resume(add(v, 1))
+  }
 }
-// => 43
+// answered() => 43
 ```
 
 ### async (experimental)

@@ -535,10 +535,10 @@ functions.
 Current forms:
 
 ```vibe
-import ./lib/@vibe/prelude/int.vibe { type Int }             // also imports Int::*
-import ./lib/@vibe/prelude/int.vibe { Int }                  // namespace activation
-import ./lib/@vibe/prelude/int.vibe { Int::to_string }       // single member
-import ./lib/@vibe/prelude/int.vibe { Int::to_string as int_to_string }
+import @vibe/prelude { type Int }             // also imports Int::*
+import @vibe/prelude { Int }                  // namespace activation
+import @vibe/prelude { Int::to_string }       // single member
+import @vibe/prelude { Int::to_string as int_to_string }
 ```
 
 Rules:
@@ -568,7 +568,7 @@ Rules:
 - `SymbolRef`: symbol pointer.
 
 Notes:
-- `PathRef` is unquoted (`import ./lib/@vibe/prelude/string.vibe { ... }`).
+- `PathRef` is unquoted (`import ./lib/@vibe/some_local_module.vibe { ... }`).
 - `import` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
 
 Dependency resolution is Nix-like: path inputs are handled as typed path objects

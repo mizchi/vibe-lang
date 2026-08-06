@@ -11,7 +11,7 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 ```vibe
 // `stdout_write` is a prelude helper, not a builtin — import it (otherwise the
 // checker reports `unknown function: String::stdout_write`).
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 fn main with Stdout {
   stdout_write("hello world\n")
@@ -141,7 +141,7 @@ note above); reach for `ArrayBuilder` (build-then-freeze accumulation) or
 ## Functions
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }   // for hello() below
+import @vibe/prelude { stdout_write }   // for hello() below
 
 // Top-level named functions: `fn` (#727, ADR-0064). Full annotations
 // required (param types + return type); recursion needs no `rec`.
@@ -813,7 +813,7 @@ suberror InvalidInput(Int, String)   // tuple payload only
 ### User-defined effects (algebraic)
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 effect Logger {
   Log(String) -> Unit
@@ -1171,7 +1171,7 @@ subdirectory source は direct root からの relative import/export で到達�
 契約本体 (bodyless `fn`/`type`) の前に置く、`name`/`version`/`description`/
 `deps`/`main`/`generated_hash` のディレクティブ行:
 
-```vibe
+```vpkg
 name = @scope/pkg
 version = x.y.z
 main = true          // 任意。パースのみ、意味づけは未実装 (予約)

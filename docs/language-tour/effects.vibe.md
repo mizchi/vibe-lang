@@ -106,12 +106,17 @@ let ask_once: () -> Int with Ask = () -> {
   perform Ask::Question(41)
 }
 
-let result = handle {
-  add(1, ask_once())
-} with Ask {
-  Question(v) => resume(add(v, 1))
+// ADR-0076: the handle lives inside a function. A `handle` in a TOP-LEVEL
+// `let` is not eligible for the evidence-passing migration, so
+// `let result = handle { .. } with Ask { .. }` fails to compile.
+fn answered() -> Int {
+  handle {
+    add(1, ask_once())
+  } with Ask {
+    Question(v) => resume(add(v, 1))
+  }
 }
-// => 43
+// answered() => 43
 ```
 
 - `perform Effect::Op(...)` requires `{ Effect }` in the effect set
