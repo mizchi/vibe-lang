@@ -8871,8 +8871,8 @@ if [ ! -s "$showdir/show.wasm" ]; then
   exit 1
 fi
 show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>/dev/null | tail -1)"
-if [ "$show_out" != "11111111111111111" ]; then
-  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11111111111111111) (#1392)" >&2
+if [ "$show_out" != "1111111111111111111" ]; then
+  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 1111111111111111111) (#1392)" >&2
   exit 1
 fi
 rm -rf "$showdir"

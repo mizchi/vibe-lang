@@ -2238,6 +2238,66 @@ fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)])
   }
 }
 
+/// #1445 残件: a TypeExpr rendered in the SHAPE language documented above
+/// `shape_key` (`Name` / `(s1,s2)` / `[s]`). Returns "" for anything the shape
+/// language cannot spell -- `Option[P]` and `Result[T, E]` among them, which is
+/// correct: those resolve through the per-ctor payload entries instead, and a
+/// bogus shape would divert them to a renderer that cannot handle a wrapper.
+fn texpr_shape(te: TypeExpr) -> String {
+  match te {
+    TyName(n) => n,
+    TyApp(tn, targs) => if tn == "Array" && Array::length(targs) == 1 {
+      let inner = texpr_shape(Array::get(targs, 0))
+      if String::length(inner) == 0 {
+        ""
+      } else {
+        String::concat("[", String::concat(inner, "]"))
+      }
+    } else {
+      ""
+    },
+    TyTuple(elems) => if Array::length(elems) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      let mut ok = true
+      while i < Array::length(elems) {
+        let sub = texpr_shape(Array::get(elems, i))
+        if String::length(sub) == 0 {
+          ok = false
+        } else {
+          ()
+        }
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      if ok {
+        String::concat(acc, ")")
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+/// Record one constructor payload's shape against `pname`, skipping the entry
+/// entirely when the payload type has no shape (rather than recording "", which
+/// downstream reads as a definite "not composite").
+fn seed_ctor_payload(out: Array[(String, String)], pname: String, ctor: String, payload: TypeExpr) -> Unit {
+  let sh = texpr_shape(payload)
+  if String::length(sh) == 0 {
+    ()
+  } else {
+    Array::push(out, (ctor_payload_key(pname, ctor), sh))
+  }
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -2282,19 +2342,17 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
           // type for `v` at all and fell to the ADR-0058 pointer heuristic.
           // The annotation still has `P` right here; record it against the
           // ctor so the match arm can bind it.
-          match Array::get(targs, 0) {
-            TyName(pay) => Array::push(out, (ctor_payload_key(pname, "Some"), pay)),
-            _ => ()
-          }
+          //
+          // #1445 残件: recorded as a SHAPE, not a bare name, so a payload that
+          // is itself a container resolves too. `o: Option[Array[P]]` records
+          // `[P]`; `arm_binder_var_types` already routes a composite payload to
+          // the recursive renderer. Measured before this: that binder printed a
+          // pointer decimal while `Option[P]` rendered fine -- the `TyName`-only
+          // match silently recorded nothing for the nested case.
+          seed_ctor_payload(out, pname, "Some", Array::get(targs, 0))
         } else if tn == "Result" && Array::length(targs) == 2 {
-          match Array::get(targs, 0) {
-            TyName(okty) => Array::push(out, (ctor_payload_key(pname, "Ok"), okty)),
-            _ => ()
-          }
-          match Array::get(targs, 1) {
-            TyName(errty) => Array::push(out, (ctor_payload_key(pname, "Err"), errty)),
-            _ => ()
-          }
+          seed_ctor_payload(out, pname, "Ok", Array::get(targs, 0))
+          seed_ctor_payload(out, pname, "Err", Array::get(targs, 1))
         } else {
           ()
         }
@@ -3770,25 +3828,48 @@ fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[(St
 /// whose payload type it does not know. The match is emitted over the REWRITTEN
 /// argument (evaluated once, as the scrutinee), and the payload is rendered by
 /// the ordinary path.
+/// #1445 残件: the payload binder of a SYNTHESIZED `Option`/`Result` arm.
+///
+/// `interp_expand_by_head` builds `match x { Some(v) => .. }` itself, so `v` is
+/// a fresh temp that appears in no binding site and had no entry in
+/// `var_types` -- the payload fell to the ADR-0058 pointer heuristic even
+/// though the payload TYPE was recorded against `x` (`let op = Some(p)` ->
+/// `ctor_payload_bind`, or `o: Option[P]` -> `seed_var_types`). Measured:
+/// `let op = Some(p); "\{op}"` printed `Some(260)` while the inline
+/// `"\{Some(p)}"` printed `Some(P { x: 1 })`.
+///
+/// A USER-written `match op { Some(v) => "\{v}" }` already resolved, through
+/// `arm_binder_var_types`. This is the same shape -- a `PCtor` arm over a named
+/// scrutinee -- so it reuses that function verbatim rather than restating the
+/// lookup, and inherits its composite-payload handling for free.
+fn interp_ctor_arm_var_types(arg: Expr, ctor: String, binder: String, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  arm_binder_var_types(arg, PCtor(ctor, Array::slice([
+    PBind(binder)
+  ], 0, 1)), var_types)
+}
+
 fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   if head == "Option" {
     let v = show_tmp_name()
+    let vt_some = interp_ctor_arm_var_types(arg, "Some", v, var_types)
     Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Some", Array::slice([
         PBind(v)
-      ], 0, 1)), interp_wrap1("Some", EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      ], 0, 1)), interp_wrap1("Some", EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_some, fn_returns)),
       (PCtor("None", array_empty()), EString("None"))
     ], 0, 2)))
   } else if head == "Result" {
     let ov = show_tmp_name()
     let ev = show_tmp_name()
+    let vt_ok = interp_ctor_arm_var_types(arg, "Ok", ov, var_types)
+    let vt_err = interp_ctor_arm_var_types(arg, "Err", ev, var_types)
     Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Ok", Array::slice([
         PBind(ov)
-      ], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      ], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_ok, fn_returns)),
       (PCtor("Err", Array::slice([
         PBind(ev)
-      ], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+      ], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_err, fn_returns))
     ], 0, 2)))
   } else {
     None
