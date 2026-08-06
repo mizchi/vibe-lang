@@ -147,7 +147,7 @@ export let main = () -> Int {
 EOF
 
 write_probe effect_throw_handle <<'EOF'
-let risky: (Int) -> Int with Error = (x) -> {
+let risky: (Int) -> Int with Exception = (x) -> {
   if x == 0 {
     throw("zero")
   }
@@ -156,7 +156,7 @@ let risky: (Int) -> Int with Error = (x) -> {
 export let main = () -> Int {
   handle {
     risky(0)
-  } with Error {
+  } with Exception {
     Throw(_) => 42
   }
 }

@@ -2409,8 +2409,57 @@ fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
   out
 }
 
+/// #1461: rewrite the retired effect label `Error` to `Exception` inside effect
+/// ROWS, at the token level.
+///
+/// This is the fix-it the parser's retirement message points at, and it exists
+/// for the same reason `normalize_effect_rows` above does: the parser rejects
+/// the old spelling, so only a pass that never parses can convert source
+/// written against an older vibe.
+///
+/// Runs AFTER `normalize_effect_rows` so it also catches labels freed from a
+/// braced row in the same format: `with { Error, Fs }` has already become
+/// `with Error + Fs` by the time this sees it.
+///
+/// Row position is recognized structurally rather than by tracking the row
+/// grammar: a label is renamed only where a row ITEM can begin -- directly
+/// after `with`, after the contextual `allows`, or after a `+` -- skipping
+/// trivia. That is deliberately narrower than the real grammar and it is what
+/// keeps the pass safe. `Error` is still a live TYPE name (the throwable trait,
+/// `impl Error for ..`), and none of its uses sit in any of those three
+/// positions; a textual rewrite, or one that renamed every `Error` token,
+/// would have corrupted all of them.
+fn normalize_retired_effect_labels(toks: Array[LTok]) -> Array[LTok] {
+  let out = Array::slice([
+    LTok::{
+      kind: k_none, text: ""
+    }
+  ], 0, 0)
+  let n = Array::length(toks)
+  let mut i = 0
+  let mut item_start = false
+  while i < n {
+    let t = Array::get(toks, i)
+    if item_start && t.kind == k_name && t.text == "Error" {
+      Array::push(out, LTok::{
+        kind: k_name, text: "Exception"
+      })
+    } else {
+      Array::push(out, t)
+    }
+    if t.kind == k_ws || t.kind == k_newline || t.kind == k_comment {
+      // Trivia does not end an item position -- `with\n  Error` is still a row.
+      ()
+    } else {
+      item_start = t.kind == k_with || t.kind == k_plus || (t.kind == k_name && t.text == "allows")
+    }
+    i = i + 1
+  }
+  out
+}
+
 export fn format_script(src: String) -> String {
-  format_tokens(normalize_effect_rows(reorder_import_lists(lex_lossless(src))), 2)
+  format_tokens(normalize_retired_effect_labels(normalize_effect_rows(reorder_import_lists(lex_lossless(src)))), 2)
 }
 
 //# ======================================================================
