@@ -27,6 +27,39 @@ function atomicWriteFileSync(filePath, data, encoding) {
     throw e;
   }
 }
+
+// Publish UTF-8 text without ever replacing an existing path. A same-directory
+// O_EXCL temp plus hard link gives no-replace atomic publication on filesystems
+// that support links. Existing regular files are accepted only when their raw
+// bytes exactly match; every I/O, unsupported, symlink, or nonregular case
+// fails closed. This is intentionally separate from atomicWriteFileSync:
+// immutable cache publication must never have last-writer-wins semantics.
+function publishImmutableTextSync(filePath, content) {
+  const data = Buffer.from(content, "utf8");
+  const tmp =
+    filePath + ".immutable-tmp-" + process.pid + "-" + Math.random().toString(36).slice(2, 12);
+  try {
+    fs.writeFileSync(tmp, data, { flag: "wx" });
+    try {
+      fs.linkSync(tmp, filePath);
+      return true;
+    } catch (e) {
+      if (e.code !== "EEXIST") return false;
+      try {
+        if (!fs.lstatSync(filePath).isFile()) return false;
+        return Buffer.compare(fs.readFileSync(filePath), data) === 0;
+      } catch (_) {
+        return false;
+      }
+    }
+  } catch (_) {
+    return false;
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch (_) {}
+  }
+}
 const readline = require("node:readline");
 
 // Backs the tcp_connect/tcp_read/tcp_write/tcp_close and
@@ -2169,6 +2202,11 @@ async function main() {
         atomicWriteFileSync(filePath, content, "utf8");
         return 0n;
       },
+      fs_publish_immutable_text(pathTagged, contentTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        const content = decodeStringArg(instanceRef, contentTagged);
+        return encodeHostBool(publishImmutableTextSync(filePath, content));
+      },
       fs_write_bytes(pathTagged, bytesTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         const bytes = decodeHostBytes(instanceRef, bytesTagged);
@@ -2442,6 +2480,9 @@ async function main() {
     },
     WriteFile(pathTagged, contentTagged) {
       return vibeModule.fs_write_file(pathTagged, contentTagged);
+    },
+    PublishImmutableText(pathTagged, contentTagged) {
+      return vibeModule.fs_publish_immutable_text(pathTagged, contentTagged);
     },
     WriteBytes(pathTagged, bytesTagged) {
       return vibeModule.fs_write_bytes(pathTagged, bytesTagged);
@@ -3147,6 +3188,7 @@ async function main() {
   }
 }
 
+if (require.main === module) {
 main().catch((err) => {
   // #946(4): a pathologically deep expression (e.g. thousands of chained
   // `+`) recurses the checker (itself compiled to wasm) past the native call
@@ -3251,3 +3293,6 @@ main().catch((err) => {
   console.error(err && err.stack ? err.stack : String(err));
   process.exit(1);
 });
+}
+
+module.exports = { publishImmutableTextSync };

@@ -22,6 +22,10 @@ bash scripts/check_builtin_parity.sh
 # Static check, so it runs here with the other pre-build checks.
 bash scripts/check_inline_builtin_capture.sh
 
+# Capability-only gate for the future TDRE5 immutable cache publisher. The
+# builtin remains unused by compiler source until the bootstrap seed is bumped.
+node scripts/test_immutable_publish_plumbing.js
+
 echo "[compiler-gate] 1-2/3 generated compiler artifacts"
 # This used to be a SYNC CHECK: regenerate the five artifacts into a temp dir
 # and assert the committed copies matched byte for byte. The artifacts are no
