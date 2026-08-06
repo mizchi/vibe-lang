@@ -160,6 +160,78 @@ fn empty_pats() -> Array[Pat] {
   ], 0, 0)
 }
 
+//# Qualified variant pattern side channel (#1455 step 3)
+
+/// Every `Enum::Variant` seen in pattern position, as `(qualifier, variant)`.
+///
+/// `parse_pattern` lowers `Color::Red` to the SAME `PCtor("Red", ..)` the bare
+/// spelling produces (see the #742 note there), so nothing downstream can tell
+/// the two apart -- and nothing ever checks that `Color` actually owns `Red`.
+/// `Zzz::Mk(n)` type-checks and compiles today.
+///
+/// Carrying the qualifier inside `Pat` instead would put a qualified name in
+/// front of the ~80 sites that read a `PCtor` name (codegen's ctor table,
+/// exhaustiveness, perceus, DCE, the trait-dict desugar); every one of them
+/// would have to unqualify, and a missed one is a silent miscompile rather
+/// than a build error. Recording the pair out of band keeps the AST the parser
+/// produces byte-identical to before this channel existed, and leaves the
+/// membership check to the checker, which already builds the enum table.
+let qualified_pattern_refs: Array[(String, String)] = Array::slice([
+  ("", "")
+], 0, 0)
+
+/// Record one `qualifier::variant` pattern occurrence.
+///
+/// Deduped on push. The log is normally drained by the checker, but a
+/// parse-only consumer (`vibe fmt`, an LSP that never type-checks the buffer)
+/// leaves its entries behind, so growth has to be bounded by the number of
+/// DISTINCT pairs rather than by the number of occurrences.
+fn note_qualified_pattern_ref(qualifier: String, variant: String) -> Unit {
+  let n = Array::length(qualified_pattern_refs)
+  let mut i = 0
+  let mut seen = false
+  while i < n {
+    let (q, v) = Array::get(qualified_pattern_refs, i)
+    if q == qualifier && v == variant {
+      seen = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if seen {
+    ()
+  } else {
+    Array::push(qualified_pattern_refs, (qualifier, variant))
+  }
+}
+
+/// Drain the log recorded since the last drain.
+///
+/// Consume-and-clear, and the checker drains BEFORE it walks the program:
+/// a check that throws part way through must not leave its own entries behind
+/// for the next, unrelated check to re-report. Entries that survive a
+/// parse-only path stay inert because the validator only fires when the
+/// qualifier names an enum that is actually in scope for the compilation doing
+/// the checking.
+export fn take_qualified_pattern_refs() -> Array[(String, String)] {
+  let n = Array::length(qualified_pattern_refs)
+  let out = Array::slice(qualified_pattern_refs, 0, n)
+  Array::truncate(qualified_pattern_refs, 0)
+  out
+}
+
+/// True when this parse recorded at least one qualified variant pattern.
+///
+/// The overwhelmingly common program has none, and `take_qualified_pattern_refs`
+/// allocates a fresh array even to hand back an empty one -- once per parse,
+/// which parser_bench saw as allocation drift on inputs containing no qualified
+/// pattern at all (parse_deep_binop_chain +1.80%, parse_wide_match +1.42%, both
+/// back to +-0 once callers check this first and skip the drain).
+export fn has_qualified_pattern_refs() -> Bool {
+  Array::length(qualified_pattern_refs) > 0
+}
+
 let mode_block = 20
 
 let mode_match = 22
@@ -371,9 +443,17 @@ fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
               // unqualified, and handle-arm dispatch re-prefixes the effect
               // name onto a bare op pattern, so `Fs::ReadFile(p)` in a
               // `with Fs` arm also lands on the same name it does today.
+              //
+              // #1455 step 3: dropping it also dropped the only chance to
+              // check that the qualifier owns the variant, so the pair goes
+              // to the side channel above on its way out. Handle-arm op
+              // patterns come through here too (`Fs::ReadFile(p)` records
+              // `("Fs", "ReadFile")`); the checker ignores a qualifier that
+              // does not name an enum, which is what makes that harmless.
               TIdent(vname) => {
                 let vc = String::char_code_at(vname, 0)
                 if vc >= 65 && vc <= 90 {
+                  note_qualified_pattern_ref(name, vname)
                   match peek(tokens, pos + 3) {
                     TLParen => {
                       let (args, end) = parse_pats_until_rparen(tokens, pos + 4);

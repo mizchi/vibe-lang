@@ -237,10 +237,18 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
 /// the env but whose variant list only reaches this module through
 /// `enum_def_env_name`.
 ///
-/// Parameterized enums keep the `env_lookup` path: their `TDEnum` payloads
-/// carry the declaring compilation's `CtVar` ids and the `CtForAll` binders
-/// that quantify them live in `type_def_binders`, not here.
-fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]) -> Option[Type] {
+/// A PARAMETERIZED enum is built from the `Enum::__variants__` carrier rather
+/// than from the `TDEnum`, because the `TDEnum`'s payloads carry the declaring
+/// compilation's `CtVar` ids and the `CtForAll` binders that quantify them live
+/// in `type_def_binders`, which this function cannot reach and which does not
+/// cross a module boundary anyway. The carrier stores the NAME-parameterized
+/// payloads, so the scheme can be rebuilt here from binder ids of our own:
+/// `c` is the caller's next-fresh counter, and the caller instantiates the
+/// result immediately, which renames every binder again (`instantiate` steps
+/// its own counter past any binder id it sees, so ids minted here cannot be
+/// captured). Falling back to `env_lookup(env, member)` when the carrier is
+/// missing keeps the pre-#1455 behaviour for anything this cannot reconstruct.
+fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef], c: Int) -> Option[Type] {
   let idx = String::index_of(name, "::")
   if idx < 0 {
     None
@@ -270,7 +278,7 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
               Some(CtFn(payloads, CtEnum(ename), None))
             }
           } else {
-            env_lookup(env, member)
+            resolve_qualified_parameterized_ctor(ename, params, member, env, c)
           }
         } else {
           None
@@ -278,6 +286,65 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
       },
       _ => None
     }
+  }
+}
+
+/// The parameterized half of `resolve_qualified_ctor_ident`: rebuild
+/// `Enum::Variant`'s `CtForAll` scheme from the carrier's name-parameterized
+/// payloads, binding the enum's formals to fresh ids starting at `c`.
+fn resolve_qualified_parameterized_ctor(ename: String, params: Array[String], member: String, env: TypeEnv, c: Int) -> Option[Type] {
+  match env_lookup(env, enum_def_env_name(ename)) {
+    Some(carrier) => match decode_enum_def(carrier) {
+      Some((carrier_params, carrier_variants)) => {
+        // The carrier and the `TDEnum` must agree on the arity, or the
+        // substitution below would leave a formal unbound. They disagree only
+        // if the two were written by different declarations of the same name,
+        // which is exactly when guessing is wrong.
+        if Array::length(carrier_params) != Array::length(params) {
+          env_lookup(env, member)
+        } else {
+          let param_var_ids = array_empty()
+          let param_var_types = array_empty()
+          let mut pi = 0
+          while pi < Array::length(carrier_params) {
+            Array::push(param_var_ids, c + pi)
+            Array::push(param_var_types, CtVar(c + pi))
+            pi = pi + 1
+          }
+          let result_ty = CtNamed(ename, param_var_types)
+          let mut found = false
+          let mut payloads = array_empty()
+          let mut vi = 0
+          while vi < Array::length(carrier_variants) {
+            let (vname, vtypes) = Array::get(carrier_variants, vi)
+            if vname == member {
+              found = true
+              payloads = vtypes
+            } else {
+              ()
+            }
+            vi = vi + 1
+          }
+          if found {
+            let subst_payloads = for pt in payloads {
+              subst_type_params(pt, carrier_params, param_var_types)
+            }
+            let ctor_ty = if Array::length(subst_payloads) == 0 {
+              result_ty
+            } else {
+              CtFn(subst_payloads, result_ty, None)
+            }
+            Some(CtForAll(param_var_ids, array_empty(), ctor_ty))
+          } else {
+            // The `TDEnum` says the variant exists but the carrier does not
+            // list it. Do not invent a scheme for it.
+            None
+          }
+        }
+      },
+      None => env_lookup(env, member)
+    },
+    None => env_lookup(env, member)
   }
 }
 
@@ -1623,11 +1690,15 @@ export fn fn_return_env_name(name: String) -> String {
 /// (`match b { Mk(n) => String::concat(n, "!") }` compiles with `n : Int`).
 /// Rebuilding the `TDEnum` in the importing module's `defs` closes all three.
 ///
-/// Parameterized enums are deliberately NOT carried. Their payload types hold
-/// `CtVar` ids allocated by the DECLARING compilation's fresh-id counter (the
-/// binders live in `type_def_binders`, not in the `TDEnum`), so the ids mean
-/// nothing in the importing unit; re-binding them needs fresh binders here,
-/// which is a separate change. They keep today's `env_lookup` behaviour.
+/// Parameterized enums ride the same carrier. What blocked them at first was
+/// that a `TDEnum`'s payload types hold `CtVar` ids allocated by the DECLARING
+/// compilation's fresh-id counter, with the binders that quantify them in
+/// `type_def_binders` rather than in the `TDEnum` -- so the ids mean nothing in
+/// the importing unit. The carrier therefore stores the enum's formals by NAME
+/// alongside NAME-parameterized payloads (`encode_enum_def`), and the importing
+/// side rebinds them to ids of its own: `seed_imported_enum_defs` for the
+/// `TDEnum` it registers, `resolve_qualified_ctor_ident` for the `CtForAll`
+/// scheme it hands a qualified reference.
 ///
 /// The name is `Enum::__variants__` rather than a fresh `__enumdef__:Enum`
 /// prefix so the carrier needs no transport code of its own: an importing
@@ -1655,14 +1726,44 @@ export fn enum_def_env_target(binding_name: String) -> Option[String] {
   }
 }
 
+/// The reserved leading entry that carries a parameterized enum's formal
+/// parameter names. `__params__` is not a legal variant name, so a decoder can
+/// tell it apart from a variant by name alone, and a monomorphic enum simply
+/// omits it -- its encoding is byte-identical to the one that existed before
+/// parameterized enums rode this carrier at all.
+fn enum_def_params_marker() -> String {
+  "__params__"
+}
+
 /// Variant list -> `Type`, so the carrier rides the existing `TypeEnv` instead
 /// of adding a `TypeEnv` or `Type` variant: every `match` over those (plus the
 /// persistent-env transport identity and the canonical checked-state walks)
 /// would otherwise have to grow a case for a value that is pure provenance.
 /// One variant becomes `CtNamed(vname, payloads)`; the whole list becomes
 /// `CtNamed("__variants__", entries)`, which no source type can spell.
-export fn encode_enum_def_variants(variants: Array[(String, Array[Type])]) -> Type {
+///
+/// `params` names the enum's formal type parameters and is empty for a
+/// monomorphic enum. The payload types written here must be the
+/// NAME-parameterized form (`CtNamed("T", [])` where the declaration said `T`),
+/// NOT the `CtVar`-substituted form the `TDEnum` stores: a `CtVar` id only
+/// means anything paired with the binder list that quantifies it, and the
+/// binder list lives in the declaring compilation's `type_def_binders`, which
+/// does not cross the module boundary. Names do cross, and the importing side
+/// re-substitutes its own fresh ids (see `seed_imported_enum_defs` and
+/// `resolve_qualified_ctor_ident`).
+export fn encode_enum_def(params: Array[String], variants: Array[(String, Array[Type])]) -> Type {
   let entries = array_empty()
+  if Array::length(params) > 0 {
+    let param_entries = array_empty()
+    let mut pi = 0
+    while pi < Array::length(params) {
+      Array::push(param_entries, CtNamed(Array::get(params, pi), array_empty()))
+      pi = pi + 1
+    }
+    Array::push(entries, CtNamed(enum_def_params_marker(), param_entries))
+  } else {
+    ()
+  }
   let mut i = 0
   while i < Array::length(variants) {
     let (vname, payloads) = Array::get(variants, i)
@@ -1672,18 +1773,38 @@ export fn encode_enum_def_variants(variants: Array[(String, Array[Type])]) -> Ty
   CtNamed("__variants__", entries)
 }
 
-/// Inverse of `encode_enum_def_variants`. Returns None rather than a partial
-/// list if the shape is not exactly what the encoder writes -- a half-decoded
-/// variant list would register a `TDEnum` that silently loses constructors.
-export fn decode_enum_def_variants(ty: Type) -> Option[Array[(String, Array[Type])]] {
+/// Monomorphic shorthand for `encode_enum_def`.
+export fn encode_enum_def_variants(variants: Array[(String, Array[Type])]) -> Type {
+  encode_enum_def(array_empty(), variants)
+}
+
+/// Inverse of `encode_enum_def`, as `(params, variants)`. Returns None rather
+/// than a partial list if the shape is not exactly what the encoder writes -- a
+/// half-decoded variant list would register a `TDEnum` that silently loses
+/// constructors.
+export fn decode_enum_def(ty: Type) -> Option[(Array[String], Array[(String, Array[Type])])] {
   match ty {
     CtNamed(head, entries) => if head == "__variants__" {
+      let params = array_empty()
       let out = array_empty()
       let mut ok = true
       let mut i = 0
       while i < Array::length(entries) {
         match Array::get(entries, i) {
-          CtNamed(vname, payloads) => Array::push(out, (vname, payloads)),
+          CtNamed(vname, payloads) => if vname == enum_def_params_marker() {
+            let mut pi = 0
+            while pi < Array::length(payloads) {
+              match Array::get(payloads, pi) {
+                CtNamed(pname, _) => Array::push(params, pname),
+                _ => {
+                  ok = false
+                }
+              }
+              pi = pi + 1
+            }
+          } else {
+            Array::push(out, (vname, payloads))
+          },
           _ => {
             ok = false
           }
@@ -1691,7 +1812,7 @@ export fn decode_enum_def_variants(ty: Type) -> Option[Array[(String, Array[Type
         i = i + 1
       }
       if ok {
-        Some(out)
+        Some((params, out))
       } else {
         None
       }
@@ -1699,6 +1820,14 @@ export fn decode_enum_def_variants(ty: Type) -> Option[Array[(String, Array[Type
       None
     },
     _ => None
+  }
+}
+
+/// `decode_enum_def` keeping only the variant list.
+export fn decode_enum_def_variants(ty: Type) -> Option[Array[(String, Array[Type])]] {
+  match decode_enum_def(ty) {
+    Some((_, variants)) => Some(variants),
+    None => None
   }
 }
 
@@ -3834,7 +3963,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             }
             (mty, s, c)
           },
-          None => match resolve_qualified_ctor_ident(name, env, defs) {
+          None => match resolve_qualified_ctor_ident(name, env, defs, c) {
             Some(ct) => {
               let (ti, c1, new_bounds) = instantiate(ct, c)
               let nblen = Array::length(new_bounds)

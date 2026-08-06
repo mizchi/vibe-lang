@@ -1,0 +1,139 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Type, types_equal
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/checker {
+  decode_enum_def, encode_enum_def, enum_def_env_name, enum_def_env_target
+}
+
+//# Functions
+
+/// `Attempt[T] { Good(T); Bad(String) }` in the NAME-parameterized form the
+/// carrier stores -- `CtNamed("T", [])` where the declaration said `T`.
+fn attempt_variants() -> Array[(String, Array[Type])] {
+  [
+    ("Good", [
+      CtNamed("T", array_empty())
+    ]),
+    ("Bad", [
+      CtString
+    ])
+  ]
+}
+
+fn hue_variants() -> Array[(String, Array[Type])] {
+  [
+    ("Crimson", array_empty()),
+    ("Cerulean", array_empty())
+  ]
+}
+
+fn join_commas(items: Array[String]) -> String {
+  let b = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(items) {
+    if i > 0 {
+      StringBuilder::push(b, ",")
+    } else {
+      ()
+    }
+    StringBuilder::push(b, Array::get(items, i))
+    i = i + 1
+  }
+  StringBuilder::freeze(b)
+}
+
+fn variant_names(variants: Array[(String, Array[Type])]) -> String {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(variants) {
+    match Array::get(variants, i) {
+      (vname, _) => Array::push(names, vname)
+    }
+    i = i + 1
+  }
+  join_commas(names)
+}
+
+//# Misc
+
+test "#1455: a monomorphic enum round-trips with no params" {
+  let encoded = encode_enum_def(array_empty(), hue_variants())
+  match decode_enum_def(encoded) {
+    Some((params, variants)) => {
+      assert_eq(Array::length(params), 0)
+      assert_eq(variant_names(variants), "Crimson,Cerulean")
+    },
+    None => assert(false)
+  }
+}
+
+test "#1455: a monomorphic encoding is byte-identical to the pre-params one" {
+  // The `__params__` marker entry is omitted entirely when there are no
+  // formals, so a carrier written by this encoder is the same `Type` the
+  // #1490 encoder wrote. Anything that reads a cached env from before this
+  // change keeps decoding.
+  let encoded = encode_enum_def(array_empty(), hue_variants())
+  let expected = CtNamed("__variants__", [
+    CtNamed("Crimson", array_empty()),
+    CtNamed("Cerulean", array_empty())
+  ])
+  assert(types_equal(encoded, expected))
+}
+
+test "#1455: a parameterized enum round-trips its formals" {
+  let encoded = encode_enum_def([
+    "T"
+  ], attempt_variants())
+  match decode_enum_def(encoded) {
+    Some((params, variants)) => {
+      assert_eq(join_commas(params), "T")
+      assert_eq(variant_names(variants), "Good,Bad")
+      // The payload has to survive as the NAME form; a `CtVar` here would mean
+      // the declaring compilation's id leaked across the boundary.
+      match Array::get(variants, 0) {
+        (_, payloads) => assert(types_equal(Array::get(payloads, 0), CtNamed("T", array_empty())))
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "#1455: the params marker is not mistaken for a variant" {
+  let encoded = encode_enum_def([
+    "K",
+    "V"
+  ], hue_variants())
+  match decode_enum_def(encoded) {
+    Some((params, variants)) => {
+      assert_eq(join_commas(params), "K,V")
+      assert_eq(Array::length(variants), 2)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1455: a non-carrier type decodes to None" {
+  match decode_enum_def(CtNamed("Attempt", array_empty())) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "#1455: the carrier binding name round-trips" {
+  assert_eq(enum_def_env_name("Attempt"), "Attempt::__variants__")
+  match enum_def_env_target(enum_def_env_name("Attempt")) {
+    Some(target) => assert_eq(target, "Attempt"),
+    None => assert(false)
+  }
+  match enum_def_env_target("Attempt::equals") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
