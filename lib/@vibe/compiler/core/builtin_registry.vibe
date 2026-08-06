@@ -4,11 +4,11 @@ import ./types.vibe {
   Type
 }
 
-// #1343: the ADR-0084 classification table is a sibling in this package now
-// (builtin_registry.vibe moved core-ward), so the drift guard below reads it
-// directly instead of through the @vibe/compiler/core facade.
-import ./effect_taxonomy.vibe {
-  effect_class
+// Standard host-provider and entry-execution policy is a sibling in this
+// package, so the drift guard below reads it directly instead of through the
+// @vibe/compiler/core facade.
+import ./standard_effect_policy.vibe {
+  has_standard_effect_policy
 }
 
 import @vibe/core {
@@ -414,36 +414,24 @@ export fn lookup_registry_builtin(name: String) -> Option[Type] {
   found
 }
 
-/// #1343 (ADR-0094 実装順 1): この registry の行が担ぐ effect ラベルが、
-/// すべて `core/effect_taxonomy.vibe` の分類表に載っていることを照合する。
+/// Every registry effect label must have standard provider or entry-execution
+/// policy metadata. The registry is operation-keyed while this policy is
+/// label-keyed, so this guard prevents a new host builtin from silently
+/// missing its standard execution policy.
 ///
-/// ADR-0094 Decision 3/4 は「builtin の分類は metadata 表から引く」と決めた
-/// が、表と registry は別ファイルなので、**新しい host builtin が新しい
-/// effect 名を持ち込んだとき表への追加を忘れられる**。その場合
-/// `effect_class` は既定の `algebraic` を返す — つまり host capability が
-/// 黙って「in-process の algebraic effect」に化ける。分類だけを見る後続
-/// フェーズ (ADR-0094 実装順 4 の wit_gen、実装順 5 の main closed row 検査)
-/// はそれを検出できないので、ここで名前付きで落とす。
-///
-/// `verify_lane_builtins` と同じ形の drift guard で、同じく
-/// tests/ から呼ばれる (tests/effect_taxonomy_test.vibe)。O(rows) の
-/// 文字列照合1本なので、追加コストは実質ゼロ。
-///
-/// **カバー範囲はこの registry の行だけ**。host effect ラベルは
-/// `checker/builtins_*.vibe` の if-chain にも散在しており (ADR-0094 の
-/// 実測 1)、そちらは配列として列挙できないのでここからは照合できない —
-/// 現に `Llm` は builtins_system.vibe だけに存在し、この guard は触れない。
-/// registry へ寄せる作業 (B-2 の続き) が進むほどカバー率は上がる。
-export fn verify_effect_taxonomy_coverage() -> Unit with Exception {
+/// The guard intentionally covers registry rows only; labels still present in
+/// checker if-chains cannot be enumerated here. It is called from
+/// tests/standard_effect_policy_test.vibe and follows `verify_lane_builtins`.
+export fn verify_standard_effect_policy_coverage() -> Unit with Exception {
   let rows = builtin_registry_typed()
   let mut i = 0
   while i < Array::length(rows) {
     let (name, ty, _, _, _) = Array::get(rows, i)
     match ty {
-      CtFn(_, _, Some(eff)) => if effect_class(eff) == "algebraic" {
-        throw("effect taxonomy drift: builtin '\{name}' carries the effect label '\{eff}', which has no row in lib/@vibe/compiler/core/effect_taxonomy.vibe -- it therefore classifies as 'algebraic' (an in-process, handler-discharged effect) instead of a host capability (#1343, ADR-0094). Add a row to effect_taxonomy_rows.")
-      } else {
+      CtFn(_, _, Some(eff)) => if has_standard_effect_policy(eff) {
         ()
+      } else {
+        throw("standard effect policy drift: builtin '\{name}' carries effect label '\{eff}', which has no standard policy in lib/@vibe/compiler/core/standard_effect_policy.vibe. Add its provider or entry-execution policy row.")
       },
       _ => ()
     }
