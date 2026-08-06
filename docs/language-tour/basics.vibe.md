@@ -356,12 +356,12 @@ fn fetch_user(raw: String) -> Int with Exception[String] {
   raw |> parse_id |> validate_id |> load_user
 }
 
-// Boundary helper when you need local Error handling
-let safe_div: (Int, Int) -> Int with Error = (a, b) -> {
+// Boundary helper when you need local exception handling
+let safe_div: (Int, Int) -> Int with Exception = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
-let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
+let result = handle { safe_div(8, 0) } with Exception { Throw(_) => -1 }
 // => -1
 ```
 
@@ -389,7 +389,7 @@ suberror AppError {
   InvalidInput(Int)
 }
 
-let risky: () -> Int with Error = () -> {
+let risky: () -> Int with Exception = () -> {
   throw(NotFound("missing"))
 }
 
@@ -398,9 +398,9 @@ fn lookup_user(raw: String) -> String with Exception[AppError] {
   if raw == "" { throw(NotFound("missing")) } else { raw }
 }
 
-let result = handle { lookup_user("42") } with Error { Throw(_) => "guest" }
+let result = handle { lookup_user("42") } with Exception { Throw(_) => "guest" }
 
-let fallback = handle { risky() } with Error { Throw(_) => -1 }
+let fallback = handle { risky() } with Exception { Throw(_) => -1 }
 // => -1
 ```
 

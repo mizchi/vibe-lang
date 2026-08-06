@@ -66,7 +66,7 @@ cannot drift apart.
 
 ## Features
 
-- Type inference with row-polymorphic effects (`with Async`, `with Error`)
+- Type inference with row-polymorphic effects (`with Async`, `with Exception`)
 - Pattern matching and destructuring, including struct/record forms
 - Module system with import/export, `.vibei` package contracts
 - Async/await syntax (runtime gate: `--unstable-async`)

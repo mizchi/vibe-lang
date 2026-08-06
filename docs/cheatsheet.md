@@ -406,7 +406,7 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
 > `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the
 > continuation's fallthrough, which is why it must diverge. `return` is the
 > only accepted divergence form for now; `throw` is deliberately not accepted
-> yet (ADR-0073 pins `Error::Throw` as non-resumable, but the checker's
+> yet (ADR-0073 pins `Exception::Throw` as non-resumable, but the checker's
 > explicit abortive-effect judgement is deferred). For a fall-through *value*
 > fallback, use `if e is PAT { .. } else { .. }` or an explicit `match`.
 >
@@ -571,12 +571,12 @@ let w_check = {
 
 ## Effects (core concept)
 
-vibe is **pure by default**. Semantic effects, including `Error`, are tracked in
-the type system. An empty row excludes escaping `Error`, but does not guarantee
+vibe is **pure by default**. Semantic effects, including `Exception`, are tracked
+in the type system. An empty row excludes an escaping exception, but does not guarantee
 termination or exclude panic, Wasm trap, or resource exhaustion (ADR-0073).
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
-missing { Fs } (declared { Error }, requires { Error, Fs })`) with a `hint:`
-line suggesting the exact row to declare (`hint: add 'with Error + Fs' to
+missing { Fs } (declared { Exception }, requires { Exception, Fs })`) with a `hint:`
+line suggesting the exact row to declare (`hint: add 'with Exception + Fs' to
 'f'`, #639). The braces in that message render effect SETS, not source
 syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
@@ -594,7 +594,7 @@ handled solely by its declarations and `handle` expressions.
 | policy | execution owner | current standard labels |
 |---|---|---|
 | host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` `Stdin` `Stdout` `Stderr` `Process` `Profiler` `Llm` |
-| entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception[E]` (`Error` is a migration alias) |
+| entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception` / `Exception[E]` (`Error` was retired as a row spelling in #1461) |
 | runtime scheduling policy | runtime itself | `Async` |
 
 The same table supplies test/bench defaults and entry-cache safety in their
@@ -716,29 +716,34 @@ opt |> tap_some((v) -> stdout_write("got \{v}\n"))
 ### Error boundary (`throw` / `handle`)
 
 ```vibe
-let risky: (Int) -> Int with Error = (x) -> {
+let risky: (Int) -> Int with Exception = (x) -> {
   if x == 0 { throw("division by zero") }
   100 / x
 }
 
 // handle catches the effect
-let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
+let safe = handle { risky(0) } with Exception { Throw(msg) => -1 }
 ```
 
-`throw(x)` は `perform Error::Throw(x)` と等価 (#640)。`Error` は再開不能
-(non-resumable) — `Error` arm の値がそのまま handle の結果になるため、
+`throw(x)` は `perform Exception::Throw(x)` と等価 (#640)。`Exception` は再開不能
+(non-resumable) — `Throw` arm の値がそのまま handle の結果になるため、
 arm 内の `resume(...)` は checker がエラーにする。
-Stage 2 (#640) で `throw(x)` は parse 時に `perform Error::Throw(x)` へ脱糖され、
+Stage 2 (#640) で `throw(x)` は parse 時に `perform Exception::Throw(x)` へ脱糖され、
 両綴りはパイプライン全体で単一の内部表現になった（printer は `throw(x)` に
-再糖衣する）。`perform Error::Throw(x)` は effect-row 上も `throw` と同じ扱いで、
-現在の関数が `with Error` を宣言するか、囲む `handle Error` で放電する必要が
-ある。`fn main with Error` から escape した Error は runtime 最外周で診断付きの
-異常終了へ変換される。
+再糖衣する）。`perform Exception::Throw(x)` は effect-row 上も `throw` と同じ扱いで、
+現在の関数が `with Exception` を宣言するか、囲む `handle .. with Exception` で
+放電する必要がある。`fn main with Exception` から escape した例外は runtime
+最外周で診断付きの異常終了へ変換される。
+
+なお **effect row 上の `Error` は #1461 で退役した** — `with Error` は parse
+error になり、`vibe fmt` が `with Exception` へ書き換える。`perform
+Error::Throw` のような operation 修飾子は row 項目ではないので、この退役の
+対象外で今も通る。
 
 ### Typed exceptions (`Exception[E]`, ADR-0085 / #1344)
 
-`Error` は kind を持たない erased な例外 row。失敗の**型**を row に出したい
-ときは `Exception[E]` と書く。`E` は投げる値の静的型。
+bracket なしの `Exception` は kind を持たない erased な例外 row。失敗の**型**を
+row に出したいときは `Exception[E]` と書く。`E` は投げる値の静的型。
 
 ```vibe
 enum IoError {
@@ -768,9 +773,9 @@ let n = handle { read_cfg() } with Exception[IoError] { Throw(_e) => 0 }
 
 - `Exception[IoError]` は `Exception[ParseError]` を authorize も discharge も
   しない。row に無い kind を投げると `missing { Exception[IoError] }`。
-- **`Error` / `Exception` (bracket なし) は全 kind と compatible** な erased
-  綴り。既存の `with Error` は今までどおり何でも投げられるし、erased な
-  `handle .. with Error` は kind 付きの throw も捕まえる。
+- **bracket なしの `Exception` は全 kind と compatible** な erased 綴り。
+  `with Exception` は今までどおり何でも投げられるし、erased な
+  `handle .. with Exception` は kind 付きの throw も捕まえる。
 - payload の kind が解決できない throw (例: `throw(e)` の `e` が local
   binding) は erased 扱いになり、どの `Exception[K]` でも通る (gradual)。
   検出漏れはあるが誤検出はしない。
@@ -837,7 +842,7 @@ fn main with Stdout {
 > 上限は消滅)。代償として、handle body から届く perform は migration が
 > 静的に追える形 (直接 perform / named top-level fn 呼び出し /
 > row 注釈付き closure literal / let 束縛の local closure) に限られる —
-> 追えない形 (row 変数 `with e` の callee 経由など) の非 Error handle
+> 追えない形 (row 変数 `with e` の callee 経由など) の非 Exception handle
 > は **compile error** になる ("replay engine was removed")。
 
 **`resume` は arm 内で第一級の one-shot 値** (ADR-0076 Phase 3a, #817):
@@ -1041,7 +1046,7 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
 let result = read_config() |> parse |> process
 
 // Boundary at the edge
-let value = handle { risky(0) } with Error { Throw(_) => default_value }
+let value = handle { risky(0) } with Exception { Throw(_) => default_value }
 
 // Builder pattern
 let arr = {

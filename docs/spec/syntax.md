@@ -191,7 +191,7 @@ Function types:
 ```vibe
 () -> Int
 (Int, String) -> Bool
-(Int) -> Int with Error
+(Int) -> Int with Exception
 [T](T) -> T
 [T: Eq + Ord](T) -> Bool
 ```
@@ -453,7 +453,7 @@ risky()?
 
 perform Logger::Log("hello")
 
-handle { risky() } with Error {
+handle { risky() } with Exception {
   Throw(msg) => -1
 }
 
@@ -573,7 +573,7 @@ Map[K, V]
 Option[T]
 (Int, String)
 (Int, String) -> Bool
-() -> Int with Error
+() -> Int with Exception
 [T](T) -> T
 [T: Eq + Ord](T) -> Bool
 ```

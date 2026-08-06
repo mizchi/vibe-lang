@@ -72,13 +72,13 @@ const HASH_CODE_KEY = "code";
 const PRESETS: Preset[] = [
   {
     id: "effects-error",
-    source: `let safe_div = (a: Int, b: Int) -> Int with { Error } {
+    source: `let safe_div = (a: Int, b: Int) -> Int with Exception {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
 export let _start = () -> Int {
-  let ok = handle { safe_div(12, 3) } with Error { Throw(_) => -1 }
-  let err = handle { safe_div(12, 0) } with Error { Throw(_) => -1 }
+  let ok = handle { safe_div(12, 3) } with Exception { Throw(_) => -1 }
+  let err = handle { safe_div(12, 0) } with Exception { Throw(_) => -1 }
   ok + err
 }`,
   },
@@ -120,12 +120,12 @@ export let _start = () -> Int {
   InvalidInput(Int)
 }
 
-let risky = () -> Int with { Error } {
+let risky = () -> Int with Exception {
   throw(NotFound("missing"))
 }
 
 export let _start = () -> Int {
-  handle { risky() } with Error { Throw(_) => -1 }
+  handle { risky() } with Exception { Throw(_) => -1 }
 }`,
   },
 ];

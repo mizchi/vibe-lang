@@ -981,7 +981,7 @@ Async::Suspend(0); throw(Failed("boom")) }` を `spawn_suspend` の body から
 
 `Result` を返す `TaskHandle::join` に依存していた fixture 群
 (`region_ok_*.vibe`、`err_spawnable_capture_*.vibe` ほか) は throw 版へ
-更新済み。エントリが throw を素通しするため `with Error` の row 付与が
+更新済み。エントリが throw を素通しするため `with Exception` の row 付与が
 必要になった点に注意。
 
 **同時に踏んだ checker のバグ (修正済み)**: `unify` の `CtUnknown` 節が
@@ -1000,7 +1000,7 @@ Async::Suspend(0); throw(Failed("boom")) }` を `spawn_suspend` の body から
 **失敗メッセージの表現 (#1374)**: `TaskGroup::spawn` の runner と suspend
 lane の2つの Error boundary は、どれも payload を `fail_msg: String` に
 流し込む。ADR-0085 の runtime は kind を出さないので、これらの **erased な
-`with Error` arm は typed な `Exception[E]` の throw も捕まえ**、enum
+`with Exception` arm は typed な `Exception[E]` の throw も捕まえ**、enum
 ポインタが String として保存されていた (計測: `String::length` が 2129)。
 #1374 の kind side channel が入ったので、3箇所とも `conc_exn_message` を
 通す:
@@ -1047,7 +1047,7 @@ awaiter" がこの経路 (`Failed("Cancelled")` まで variant が届くこと) 
 している。
 
 row 注釈も更新が要る: これらを呼ぶ `spawn_suspend` closure literal は
-`() -> T with Async` では足りず `with Async + Error` になる
+`() -> T with Async` では足りず `with Async + Exception` になる
 (bracketed な `Exception[E]` ラベル自体は row 変数ではないので、
 `scps_calls_ok` の適格性判定には影響しない)。
 

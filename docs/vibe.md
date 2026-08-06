@@ -17,7 +17,7 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 ## Goals
 
 - POSIX sh superset with a clear syntactic split.
-- Pure by default; semantic effects including `Error` are explicit
+- Pure by default; semantic effects including `Exception` are explicit
   (`with ...`) and can be locally discharged with effect handlers.
 - Content-addressed functions (Git blob compatible) with Unison-style aliases.
 - Incremental pipeline: CST -> AST -> monomorphized AST -> canonical S-expression -> hash.
@@ -64,16 +64,17 @@ Documented but excluded from standard tutorial:
 ## Effects
 
 Semantic effects are explicit in function signatures and validated by effect
-compatibility plus handler matching. `Error` is checked and propagates like
+compatibility plus handler matching. `Exception` is checked and propagates like
 other operation requirements under ADR-0073.
 
 ADR-0073 and the Lean model are the specification Oracle. Since #944 the
-checker enforces the Error row by default: a direct `throw`/`perform
-Error::Throw`, a call to a `with Error` function, and an Error-rowed
-callback parameter all require the caller to declare or `handle` Error.
-An entry declared `with Error` gets a runtime boundary handler: an
+checker enforces the exception row by default: a direct `throw`/`perform
+Exception::Throw`, a call to a `with Exception` function, and an
+Exception-rowed callback parameter all require the caller to declare or
+`handle` it.
+An entry declared `with Exception` gets a runtime boundary handler: an
 escaping Throw becomes `vibe: uncaught error: <msg>` on stderr and an
-unsuccessful (1) entry result. Remaining #944 tail: the builtin-call Error
+unsuccessful (1) entry result. Remaining #944 tail: the builtin-call exception
 carve-out (sub-decision) and the temporary `VIBE_CHECK_ERROR_ROW=0` opt-out.
 
 ```
@@ -86,14 +87,14 @@ Rules:
 - Effect signature requirement:
   a function's declared effects must be a superset of the effects used inside.
   (`with ...` is the capability contract.)
-- Checked Error requirement:
-  `throw(x)`, `perform Error::Throw(x)`, and calls to a function annotated with
-  `with Error` require the caller to declare or handle `Error`.
+- Checked exception requirement:
+  `throw(x)`, `perform Exception::Throw(x)`, and calls to a function annotated
+  with `with Exception` require the caller to declare or handle `Exception`.
 - Handler requirement:
   effects can be localized by `handle` arms that pattern-match the handled
   operation/error payload.
 - `with ()` is optional; omission means no semantic effect requirement,
-  including no escaping `Error`. It does not guarantee termination or exclude
+  including no escaping `Exception`. It does not guarantee termination or exclude
   panic, Wasm trap, or resource exhaustion.
 - `do` is not part of the current surface syntax.
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
@@ -121,26 +122,26 @@ let run: () -> Unit with Stdout = () -> { sh("ls") }
 // error: missing effect declaration for direct effectful builtin call
 let run: () -> Unit = () -> { sh("ls") }
 
-// error: Error propagates transitively
-let fail: (String) -> Int with Error = (msg) -> { throw(msg) }
+// error: the exception row propagates transitively
+let fail: (String) -> Int with Exception = (msg) -> { throw(msg) }
 let g: (String) -> Int = (msg) -> { fail(msg) }
 
-// ok: caller propagates Error explicitly
-let g2: (String) -> Int with Error = (msg) -> { fail(msg) }
+// ok: caller propagates the exception row explicitly
+let g2: (String) -> Int with Exception = (msg) -> { fail(msg) }
 
 // ok: effect is localized by handler pattern
 let g3: (String) -> Int = (msg) -> {
-  handle { fail(msg) } with Error { Throw(_) => 0 }
+  handle { fail(msg) } with Exception { Throw(_) => 0 }
 }
 ```
 
 ### Error model (effect-row-first, current policy)
 
-- `Error` is checked: direct throws and transitive calls require declaration or
-  handling. An empty effect row excludes escaping `Error`, but not divergence
+- `Exception` is checked: direct throws and transitive calls require declaration
+  or handling. An empty effect row excludes an escaping exception, but not divergence
   or runtime traps.
-- `fn main with Error` is allowed; the runtime boundary converts an
-  escaping Error into a diagnosed unsuccessful process outcome.
+- `fn main with Exception` is allowed; the runtime boundary converts an
+  escaping exception into a diagnosed unsuccessful process outcome.
 - The standard error model is the **effect row**: a fallible function returns
   its success type and declares the failure in its row —
   `fn f(..) -> T with Exception[E]`. There is no built-in `Result[T, E]`
@@ -226,7 +227,7 @@ Rules:
 > error today, as its comment says. (Scope note: this covers the callback's
 > OWN declaring function; unifying a row variable against the concrete effect
 > a specific *call site's* argument instantiates it with — e.g. detecting that
-> `apply(risky, 1)` needs `{Error}` when `apply` itself correctly declares
+> `apply(risky, 1)` needs `{Exception}` when `apply` itself correctly declares
 > `with e` — still needs real call-site effect-row unification and remains
 > open.)
 
@@ -889,7 +890,7 @@ Rules:
 - Runtime execution for `yield` is gated by `--unstable-async`
   (disabled by default in CLI entrypoints).
 - Result-first policy remains canonical for application/core flows.
-- Error boundary syntax is `handle { ... } with Error { Throw(_) => ... }`.
+- Error boundary syntax is `handle { ... } with Exception { Throw(_) => ... }`.
 
 ## Test blocks (MoonBit-style)
 

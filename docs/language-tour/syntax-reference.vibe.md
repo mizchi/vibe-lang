@@ -63,7 +63,7 @@ let counter = {
 fn add(x: Int, y: Int) -> Int { x + y }
 fn fact(n: Int) -> Int { if n < 2 { 1 } else { n * fact(n - 1) } }
 fn identity[T](x: T) -> T { x }
-fn risky() -> Int with Error { throw("fail") }
+fn risky() -> Int with Exception { throw("fail") }
 fn labeled(x~: Int, y~: Int) -> Int { x + y }
 export fn doubled(x: Int) -> Int { x * 2 }
 
@@ -85,7 +85,7 @@ let inc: (Int) -> Int = (x) -> { x + 1 }
 let identity: [T](T) -> T = (x) -> { x }
 
 // With effect
-let risky: () -> Int with Error = () -> { throw("fail") }
+let risky: () -> Int with Exception = () -> { throw("fail") }
 
 // With trait bounds
 let show: [T: Show](T) -> T = (x) -> { x }
@@ -320,7 +320,7 @@ Option[T]
 
 // Function type
 (Int, String) -> Bool
-() -> Int with Error
+() -> Int with Exception
 
 // Tuple type
 (Int, String, Bool)
@@ -345,8 +345,8 @@ let load_user: (Int) -> String with Exception[String] = (id) -> { ... }
 raw |> parse_id |> load_user
 
 // Error boundary
-let f: () -> Int with Error = () -> { throw("fail") }
-handle { f() } with Error { Throw(msg) => -1 }
+let f: () -> Int with Exception = () -> { throw("fail") }
+handle { f() } with Exception { Throw(msg) => -1 }
 
 // User-defined effect
 effect Ask { Question(Int) -> Int }
