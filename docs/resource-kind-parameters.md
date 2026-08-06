@@ -217,11 +217,12 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が当初**未�
    **provider ラベルではなく `Http::*` operation 上の effectset** へ寄せる
    (provider 軸は `Http` に統一)。
 1. **(着地済み、#1496)** standard provider / entry-execution policy。
-   `lib/@vibe/compiler/core/standard_effect_policy.vibe` has
-   `(label, provider default resource kind, test/bench default, entry cache
-   safe)` rows and narrow behavior predicates. It retains the existing
-   test/bench default order, entry-cache-safe order, and entry/runtime
-   filtering without assigning ordinary effects a string class.
+   `lib/@vibe/compiler/core/standard_effect_policy.vibe` has independent
+   private owners for `(label, provider default resource kind)`, ordered
+   test/bench defaults, and ordered entry-cache-safe labels, plus narrow
+   predicates for `Exception` and `Async` entry/runtime behavior. They retain
+   the existing output/order and entry/runtime filtering without assigning
+   ordinary effects a string class.
 
    Registry rows are **operation** keyed, so provider policy remains in this
    label-keyed table rather than being copied to every operation. The
