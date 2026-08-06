@@ -784,7 +784,18 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
     // normalizes an alias head in a constructor reference; without the type
     // side in step, `Att2` resolves only as far as `Att` and `Att2::Good`
     // reaches codegen still qualified.
-    STypeAlias(exported, name, params, target) => STypeAlias(exported, name, params, rewrite_alias_type_expr(target, am)),
+    // The alias's own formals are BOUND names, so they are dropped from the
+    // map before the target is rewritten -- the same discipline the expression
+    // arms above apply with `aliasidx_without_name` / `aliasidx_without_params`.
+    // With `import { Hue as T }` in scope, `type Box[T] = T` must keep its `T`.
+    //
+    // Note this does NOT by itself make that program correct: the checker's own
+    // `STypeAlias` arm resolves the target against a `defs` where the import
+    // already bound `T`, and captures it there. That capture predates this
+    // rewrite (verified by A/B against origin/main, which has no type-side
+    // rewrite at all) and is tracked separately -- what this guard buys is that
+    // the rewrite is not a SECOND, independent source of the same bug.
+    STypeAlias(exported, name, params, target) => STypeAlias(exported, name, params, rewrite_alias_type_expr(target, aliasidx_without_names(am, params))),
     _ => stmt
   }
 }
