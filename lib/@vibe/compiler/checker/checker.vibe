@@ -220,11 +220,26 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
 }
 
 /// Resolve a qualified constructor reference `Enum::Variant` (e.g. `Color::Red`,
-/// `Sh::Circle`) to the bare variant's constructor type. The bare variant name
-/// is already bound in `env` by the SEnum case; we only confirm `head` names a
-/// known enum that actually owns `member` (so unrelated `T::method` names fall
-/// through to the `unknown name` path). Returns the polymorphic env type as-is;
-/// callers instantiate it exactly like a bare ident. (#672 qualified ctors.)
+/// `Sh::Circle`) to the variant's constructor type, confirming that `head`
+/// names a known enum that actually owns `member` (so unrelated `T::method`
+/// names fall through to the `unknown name` path). Callers instantiate the
+/// result exactly like a bare ident. (#672 qualified ctors.)
+///
+/// #1455: for a MONOMORPHIC enum the constructor type is built from `head`'s
+/// own `TDEnum` rather than looked up under the BARE variant name. The old
+/// `env_lookup(env, member)` made the qualifier purely cosmetic: it confirmed
+/// ownership and then took whatever the flat, last-registered-wins env had
+/// under `member`, so `A::Mk` and `B::Mk` resolved to the same type and a
+/// qualified reference could not disambiguate anything. Building from the
+/// `TDEnum` reproduces exactly what the SEnum arm binds for a local enum
+/// (`CtEnum(name)` nullary, `CtFn(payloads, CtEnum(name), None)` otherwise)
+/// and additionally works for an IMPORTED enum, whose bare constructors are in
+/// the env but whose variant list only reaches this module through
+/// `enum_def_env_name`.
+///
+/// Parameterized enums keep the `env_lookup` path: their `TDEnum` payloads
+/// carry the declaring compilation's `CtVar` ids and the `CtForAll` binders
+/// that quantify them live in `type_def_binders`, not here.
 fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]) -> Option[Type] {
   let idx = String::index_of(name, "::")
   if idx < 0 {
@@ -233,20 +248,30 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
     let head = String::substring(name, 0, idx)
     let member = String::substring(name, idx + 2, String::length(name))
     match find_typedef(defs, head) {
-      Some(TDEnum(_, _, variants)) => {
+      Some(TDEnum(ename, params, variants)) => {
         let mut found = false
+        let mut payloads = array_empty()
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, _) = Array::get(variants, vi)
+          let (vname, vtypes) = Array::get(variants, vi)
           if vname == member {
             found = true
+            payloads = vtypes
           } else {
             ()
           }
           vi = vi + 1
         }
         if found {
-          env_lookup(env, member)
+          if Array::length(params) == 0 {
+            if Array::length(payloads) == 0 {
+              Some(CtEnum(ename))
+            } else {
+              Some(CtFn(payloads, CtEnum(ename), None))
+            }
+          } else {
+            env_lookup(env, member)
+          }
         } else {
           None
         }
@@ -1583,6 +1608,98 @@ fn ascription_lambda_ann(callee: Expr) -> Option[TypeExpr] {
 
 export fn fn_return_env_name(name: String) -> String {
   String::concat("__fn_ret__:", name)
+}
+
+/// #1455: the side-channel binding that carries a MONOMORPHIC enum's variant
+/// list across a module boundary, the way `fn_return_env_name` carries a
+/// function's return type. The checker's cross-module transport is the flat
+/// `TypeEnv`, so an importing module sees each exported constructor as a bare
+/// `Mk : (Int) -> Box` binding and nothing that says which enum owns `Mk`.
+/// Three separate symptoms all come from that one missing edge:
+/// `Box::Mk(..)` cannot resolve (`resolve_qualified_ctor_ident` finds no
+/// `TDEnum` for `Box`), a non-exhaustive `match` cannot name the variants it
+/// is missing, and `find_ctor_in_defs` falls through to `bind_unknown`, so an
+/// imported enum's pattern payloads bind `CtUnknown` and are never checked
+/// (`match b { Mk(n) => String::concat(n, "!") }` compiles with `n : Int`).
+/// Rebuilding the `TDEnum` in the importing module's `defs` closes all three.
+///
+/// Parameterized enums are deliberately NOT carried. Their payload types hold
+/// `CtVar` ids allocated by the DECLARING compilation's fresh-id counter (the
+/// binders live in `type_def_binders`, not in the `TDEnum`), so the ids mean
+/// nothing in the importing unit; re-binding them needs fresh binders here,
+/// which is a separate change. They keep today's `env_lookup` behaviour.
+///
+/// The name is `Enum::__variants__` rather than a fresh `__enumdef__:Enum`
+/// prefix so the carrier needs no transport code of its own: an importing
+/// module's env is NOT the dependency's whole env, it is built name by name
+/// from the import list, and `bind_enum_constructor_companions`
+/// (runtime/typecheck_fs.vibe and runtime/runtime.vibe both have a copy)
+/// already pulls across every dependency binding spelled `Enum::`, which is
+/// how `Enum::equals` and the derive signatures reach an importer. Riding
+/// that rule means the carrier arrives on every path that already carries
+/// constructors, and cannot be forgotten by one of them.
+export fn enum_def_env_name(name: String) -> String {
+  String::concat(name, "::__variants__")
+}
+
+/// The enum a binding produced by `enum_def_env_name` describes, or None for
+/// an ordinary binding.
+export fn enum_def_env_target(binding_name: String) -> Option[String] {
+  let suffix = "::__variants__"
+  let slen = String::length(suffix)
+  let blen = String::length(binding_name)
+  if blen > slen && String::ends_with(binding_name, suffix) {
+    Some(String::substring(binding_name, 0, blen - slen))
+  } else {
+    None
+  }
+}
+
+/// Variant list -> `Type`, so the carrier rides the existing `TypeEnv` instead
+/// of adding a `TypeEnv` or `Type` variant: every `match` over those (plus the
+/// persistent-env transport identity and the canonical checked-state walks)
+/// would otherwise have to grow a case for a value that is pure provenance.
+/// One variant becomes `CtNamed(vname, payloads)`; the whole list becomes
+/// `CtNamed("__variants__", entries)`, which no source type can spell.
+export fn encode_enum_def_variants(variants: Array[(String, Array[Type])]) -> Type {
+  let entries = array_empty()
+  let mut i = 0
+  while i < Array::length(variants) {
+    let (vname, payloads) = Array::get(variants, i)
+    Array::push(entries, CtNamed(vname, payloads))
+    i = i + 1
+  }
+  CtNamed("__variants__", entries)
+}
+
+/// Inverse of `encode_enum_def_variants`. Returns None rather than a partial
+/// list if the shape is not exactly what the encoder writes -- a half-decoded
+/// variant list would register a `TDEnum` that silently loses constructors.
+export fn decode_enum_def_variants(ty: Type) -> Option[Array[(String, Array[Type])]] {
+  match ty {
+    CtNamed(head, entries) => if head == "__variants__" {
+      let out = array_empty()
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(entries) {
+        match Array::get(entries, i) {
+          CtNamed(vname, payloads) => Array::push(out, (vname, payloads)),
+          _ => {
+            ok = false
+          }
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(out)
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
 }
 
 /// #938: the ArrayBuilder container type — `CtNamed("ArrayBuilder", [elem])`,

@@ -9363,4 +9363,153 @@ fi
 rm -rf "$pbdir"
 echo "[compiler-gate] per-block __test_* exports + isolated invoke + batch ok"
 
+echo "[compiler-gate] 93/93 an imported enum's variants reach the importing module (#1455)"
+# #1455: the checker's cross-module transport is the flat TypeEnv, so an
+# importing module used to see an imported enum's CONSTRUCTORS but nothing
+# that said which enum owned them. That one missing edge produced three
+# separate wrong behaviours, and this section locks all three plus the two
+# collision cases the fix had to leave alone.
+#
+# Each case is a two-file program: `dep.vibe` declares the enums, `<name>.vibe`
+# imports them. One file would not exercise anything -- a same-file
+# declaration always registered its TDEnum.
+endir="_build/_gate_enum_import"
+rm -rf "$endir"; mkdir -p "$endir"
+cat > "$endir/dep.vibe" <<'ENUMDEP'
+export enum Box {
+  Mk(Int);
+  Nil
+}
+
+export enum Attempt[T] {
+  Got(T);
+  Missed
+}
+
+export enum Paint {
+  Red;
+  Blue
+}
+ENUMDEP
+en_case() {
+  # en_case <name> <expect: ok|err> <source> [substring the .diag must contain]
+  local ename="$1" expect="$2" esrc="$3" eneedle="${4:-}"
+  printf '%s' "$esrc" > "$endir/$ename.vibe"
+  rm -f "$endir/$ename.wasm" "$endir/$ename.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$endir/$ename.vibe" "$endir/$ename.wasm" main >/dev/null 2>&1 || true
+  if [ "$expect" = "ok" ]; then
+    if [ ! -s "$endir/$ename.wasm" ]; then
+      echo "[compiler-gate] FAIL: enum-import case '$ename' should compile but did not (#1455)" >&2
+      cat "$endir/$ename.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  else
+    if [ -s "$endir/$ename.wasm" ]; then
+      echo "[compiler-gate] FAIL: enum-import case '$ename' should be rejected but compiled (#1455)" >&2
+      exit 1
+    fi
+    if [ -n "$eneedle" ] && ! grep -q -- "$eneedle" "$endir/$ename.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: enum-import case '$ename' rejected without naming '$eneedle' (#1455):" >&2
+      cat "$endir/$ename.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  fi
+}
+# 1. `Box::Mk` resolves. This used to be `unknown name: Box::Mk`, which made
+#    #1455's "require the qualified spelling" plan unimplementable: there was
+#    no way to WRITE a qualified reference to an imported constructor.
+en_case qualified ok 'import ./dep.vibe { Box, Mk, Nil }
+
+fn main {
+  let b = Box::Mk(7)
+  let r = match b {
+    Mk(n) => n,
+    Nil => 0
+  }
+  println(__to_string(r))
+}
+'
+# 2. The payload is TYPE-CHECKED. Without the TDEnum, find_ctor_in_defs fell
+#    through to bind_unknown and bound every sub-pattern CtUnknown, so this
+#    compiled with an Int `n` handed to a String parameter. That is the silent
+#    one: a hole in checking, not a message-quality complaint.
+en_case payload_checked err 'import ./dep.vibe { Box, Mk, Nil }
+
+fn main {
+  let b = Mk(7)
+  match b {
+    Mk(n) => println(String::concat(n, "!")),
+    Nil => println("")
+  }
+}
+' 'String::concat'
+# 3. Exhaustiveness can NAME the missing variant. Before, the enum definition
+#    was unknown here, so the check was skipped entirely and an unhandled
+#    variant trapped at runtime instead.
+en_case exhaustive err 'import ./dep.vibe { Box, Mk }
+
+fn main {
+  let b = Mk(7)
+  let r = match b {
+    Mk(n) => n
+  }
+  println(__to_string(r))
+}
+' 'variant `Nil` of enum Box'
+# 4. A parameterized enum is deliberately NOT carried across the boundary (its
+#    payload types hold the declaring compilation'"'"'s CtVar ids), so it keeps
+#    working exactly as before rather than regressing.
+en_case parameterized ok 'import ./dep.vibe { Attempt, Got, Missed }
+
+fn main {
+  let a = Got(3)
+  let r = match a {
+    Got(v) => v,
+    Missed => 0
+  }
+  println(__to_string(r))
+}
+'
+# 5. A local enum that reuses an imported constructor NAME still compiles.
+#    This is the case that forced the variant-collision guard in
+#    seed_imported_enum_defs: `find_ctor_in_defs` is first-match-wins over one
+#    flat `defs`, so registering Paint would have made the `Red` arm resolve
+#    to Paint and retyped the whole match. Shadowing an imported constructor
+#    is ordinary code -- the local binding wins -- so the seeded enum has to
+#    step aside rather than take it over.
+en_case shadow_import ok 'import ./dep.vibe { Paint, Red, Blue }
+
+enum Color {
+  Red;
+  Green
+}
+
+fn main {
+  let c = Red
+  match c {
+    Red => println("red"),
+    Green => println("green")
+  }
+}
+'
+# 6. ...but the collision #1078 is actually about -- two enums in ONE unit,
+#    where the flat last-registered-wins env silently points a bare `Mk` at
+#    the wrong signature -- is still rejected.
+en_case collide_local err 'enum A {
+  Mk(Int)
+}
+
+enum B {
+  Mk(String)
+}
+
+fn main {
+  println("unreachable")
+}
+' 'constructor name collision'
+rm -rf "$endir"
+echo "[compiler-gate] imported enum variant lists ok"
+
 echo "[compiler-gate] ok"
