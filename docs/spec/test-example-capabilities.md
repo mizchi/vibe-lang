@@ -22,7 +22,8 @@ capability を宣言可能にする。Markdown fence の任意スクリプトを
 
 ## 構文
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented -- `test ".." with <row>` is rejected today
 test "test name" {
   // body
 }
@@ -55,7 +56,8 @@ capability を宣言しなければならない。
 `with` を書く場合、row は完全に明示する。`Exception` を省略することは
 エラーとする。
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented -- `test ".." with <row>` is rejected today
 // OK
 test "pure" with Exception { assert_eq(1, 1) }
 
@@ -80,7 +82,8 @@ capability である。
 開発用 fixture や integration test で capability をすべて個別列挙する負担を
 下げるため、`DevEnv` を定義済み development capability bundle とする。
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented -- `test ".." with <row>` is rejected today
 test "local integration" with Exception + DevEnv {
   // development fixture を使う
 }

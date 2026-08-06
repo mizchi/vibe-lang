@@ -9,7 +9,8 @@ REPL/shell で値を表示するために各型に `to_string` を実装する�
 
 ### 1. to_string は通常の関数
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented
 // prelude/show.vibe
 let Int::to_string = (n: Int) -> String { ... }
 let Array::to_string = (arr: Array[T]) -> String { ... }
@@ -28,7 +29,8 @@ let Option::to_string = (opt: Option[T]) -> String { ... }
 
 ### 3. show_value ヘルパー
 
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented
 // コンパイラが自動生成する show_value 関数
 // REPL モードでのみバンドルに含まれる
 let show_value = (tagged: Int) -> String {

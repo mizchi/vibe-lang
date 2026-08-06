@@ -84,7 +84,8 @@ cat data.csv |> from_csv |> where age > 30
 ```
 
 posix preprocessor が `ls . |> where is_dir` を以下に変換:
-```vibe
+```vibe skip
+// doctest-skip: design sketch: the syntax below is not implemented (preprocessor output sketch)
 Fs::readdir(".") |> where_entry(e -> e.is_dir)
 ```
 

@@ -1279,7 +1279,8 @@ clock 下限 = park の実在)の両方を pin する。adapter 側の反映は 
 wrap され、viberun（`VIBE_ASYNC_STREAMS="body=10|15|17"`）上で **42** を
 返す:
 
-```vibe
+```vibe skip
+// doctest-skip: needs an Async-row entry + component adapter; not runnable standalone
 let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let mut sum = 0
@@ -1460,7 +1461,8 @@ surface は `host_stream_close: (Stream[Int]) -> Unit`。**`Async` は付かな�
 `stream.drop-readable` は block しない canon call なので park も予約帯も
 boundary settle arm も要らず、注入 fn `__hs_close` が adapter を直接呼ぶ。
 
-```vibe
+```vibe skip
+// doctest-skip: needs an Async-row entry + component adapter; not runnable standalone
 let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let a = host_stream_next(s)
