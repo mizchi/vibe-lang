@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, is_exception_effect_name, is_row_transparent_effect
+  Expr, Stmt, TypeExpr, is_entry_runtime_managed_effect, is_exception_effect_name
 }
 
 import @vibe/core {
@@ -568,26 +568,19 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
         let mut ri = 0
         while ri < Array::length(resolved) {
           let rname = Array::get(resolved, ri)
-          // Neither ROW-TRANSPARENT class becomes a world import, for two
-          // different reasons: `Error`/`Exception[K]` (core ambient) are
-          // vibe-internal control flow -- an escaping throw is a component
-          // trap, not a capability -- while `Async` (runtime, #1458) is THE
-          // builtin suspension effect (ADR-0089 Decision 5, #1218), which
-          // surfaces as the export's `async func` lifting mode rather than as
-          // an import (even when the program carries a transparent local
-          // `effect Async { .. }` declaration, #752).
+          // Standard entry/runtime handling produces no WIT world import.
+          // `Error`/`Exception[K]` escape through the entry boundary as a
+          // component trap rather than a provider requirement; `Async`
+          // surfaces through the export's `async func` lifting mode instead.
+          // core/standard_effect_policy.vibe centralizes this unchanged
+          // behavior for the checker and WIT generator.
           //
-          // #1343 (ADR-0094 実装順 1): この `rname == "Async" ||
-          // is_exception_effect_name(rname)` の二項判定は
-          // core/effect_taxonomy.vibe へ寄せた (checker 側の
-          // builtin_call_effect と同じ規則の重複だった)。#1458 で
-          // `is_row_transparent_effect` に名前が付いた。
-          // **wit_gen の分類の反転 -- 下の `def_idx < 0` が「`effect X {..}`
-          // 宣言があれば interface、無ければ host capability」という
-          // ADR-0084 と逆の規則になっている件 (#1143 のねじれ) -- は
-          // ADR-0094 実装順 4 で直す。挙動変更を分離するため、ここでは
-          // 触っていない。**
-          if is_row_transparent_effect(rname) {
+          // The deferred declaration-versus-provider inversion below
+          // (`def_idx < 0`) is intentionally unchanged: a declared `effect
+          // X { .. }` still maps to an interface while an undeclared label is
+          // treated as a host capability. This slice does not alter WIT
+          // mapping, provider selection, or handler semantics.
+          if is_entry_runtime_managed_effect(rname) {
             ()
           } else if !wit_array_contains(used_effects, rname) {
             Array::push(used_effects, rname)
