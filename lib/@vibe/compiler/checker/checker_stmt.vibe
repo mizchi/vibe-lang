@@ -16,14 +16,6 @@ import ./checker_pattern.vibe {
   check_qualified_pattern_refs
 }
 
-// #1455 step 3: the parser records `Enum::Variant` pattern qualifiers out of
-// band (see parser_base.vibe) because `Pat` has nowhere to put them that the
-// rest of the pipeline could not misread. This is the only place that drains
-// the log.
-import @vibe/parser {
-  take_qualified_pattern_refs
-}
-
 import @vibe/compiler/core {
   Expr,
   Pat,
@@ -949,6 +941,32 @@ fn local_enum_names(stmts: Array[Stmt], variant_names: Array[String]) -> Array[S
           let (sname, _) = Array::get(variants, si)
           Array::push(variant_names, sname)
           si = si + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Gather every `(qualifier, variant)` pair the parser recorded for this
+/// program, from the `SQualifiedPatternRefs` markers its parse appended.
+///
+/// A merged/linked unit concatenates several modules' statement arrays, so
+/// there can be more than one marker; all of them describe patterns that this
+/// compilation is about to check, and all of them are validated against the
+/// same finished enum table.
+fn collect_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SQualifiedPatternRefs(refs) => {
+        let mut ri = 0
+        while ri < Array::length(refs) {
+          Array::push(out, Array::get(refs, ri))
+          ri = ri + 1
         }
       },
       _ => ()
@@ -2735,11 +2753,11 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   desugar_railway_binds(stmts)
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
-  // #1455 step 3: drain the parser's qualified-pattern log HERE, before any
-  // work that can throw. Validating it needs the enum table, which only exists
-  // after check_stmts_with_binders below, but a check that throws in between
-  // must not leave its own entries behind for the next, unrelated check.
-  let qualified_pattern_refs = take_qualified_pattern_refs()
+  // #1455 step 3: the `Enum::Variant` pattern qualifiers the parser folded into
+  // a trailing `SQualifiedPatternRefs` marker (see attach_qualified_pattern_refs).
+  // Collected up front; validating them needs the enum table, which only exists
+  // once check_stmts_with_binders below has run.
+  let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
   // #1001: mixed positional/labeled argument-mode validation. Must run BEFORE
   // desugar_labeled_args below — it silently strips a label that already
   // matches its own declared position, which erases the only evidence that a
@@ -3044,8 +3062,8 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       desugar_railway_binds(stmts)
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)
-      // #1455 step 3: drain before anything that can throw (see check_program).
-      let qualified_pattern_refs = take_qualified_pattern_refs()
+      // #1455 step 3: see check_program.
+      let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
       // #1001: mixed argument-mode validation before desugar (see check_program).
       check_labeled_arg_names_stmts(stmts, frozen_errors, true)
       // #986: reorder fully-labeled calls before checking (see check_program).
