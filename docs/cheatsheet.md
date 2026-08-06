@@ -750,10 +750,20 @@ Stage 2 (#640) で `throw(x)` は parse 時に `perform Exception::Throw(x)` へ
 放電する必要がある。`fn main with Exception` から escape した例外は runtime
 最外周で診断付きの異常終了へ変換される。
 
-なお **effect row 上の `Error` は #1461 で退役した** — `with Error` は parse
-error になり、`vibe fmt` が `with Exception` へ書き換える。`perform
-Error::Throw` のような operation 修飾子は row 項目ではないので、この退役の
-対象外で今も通る。
+なお **effect の綴りとしての `Error` は退役した** (#1461, #1501)。`Error` が
+effect を名指す位置は2つあり、どちらも parse error になる:
+
+```
+fn f() -> Int with Error { .. }              // row 項目        -> parse error
+handle { .. } with Error { Throw(_) => .. }  // handle する effect 名 -> parse error
+```
+
+どちらも `vibe fmt` が `Exception` へ書き換える (formatter は token 単位なので、
+パーサがもう受理しないソースも変換できる)。
+
+一方 **`perform Error::Throw(x)` は今も通る** — operation 修飾子は row 項目では
+なく、runtime が dispatch する operation を名指しているだけで、そこに row を
+綴っているわけではないため。
 
 ### Typed exceptions (`Exception[E]`, ADR-0085 / #1344)
 

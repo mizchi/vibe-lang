@@ -606,6 +606,18 @@ Rules:
   Fs::write_file }`) -- that `{ .. }` is a set literal on the right of `=`, not
   a `with` row, and it never had a braceless spelling to collapse into.
 
+- The exception effect is spelled `Exception`. `Error` was its name through the
+  ADR-0085 migration and is now rejected by name (#1461, #1501) in BOTH places
+  a source effect name appears -- a row item (`-> T with Error`) and the handled
+  effect (`handle { .. } with Error { .. }`). #1461 covered only the first, so
+  for one release the two positions disagreed while `vibe fmt` rewrote both;
+  #1501 closed that. `vibe fmt` remains the migration path, on the same
+  token-level argument as the braced row above.
+
+  `perform Error::Throw(x)` is unaffected and stays legal. An operation
+  qualifier is not a row item: it names the operation the runtime dispatches,
+  and no row is being spelled there.
+
   The separator is `+`, not `,`, because a comma cannot be told apart from an
   enclosing list's comma once the braces are gone: in `((Int) -> Int with A, B)`
   the `B` is either a second label or a second tuple element, and in
