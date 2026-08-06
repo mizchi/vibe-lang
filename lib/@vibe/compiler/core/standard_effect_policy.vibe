@@ -1,13 +1,13 @@
-//# Standard effect policy — standard host-provider and entry-execution metadata (#1496)
+//# Standard effect policy — independent standard execution owners (#1496)
 //
-// This table records execution policy for the standard labels the compiler
-// recognizes. It does not classify source-language effects: ordinary user
-// effects simply have no standard policy record.
+// The compiler recognizes a small set of standard host providers plus
+// entry-boundary exception and runtime scheduling behavior. These owners do
+// not classify source-language effects: ordinary user effects simply have no
+// standard policy metadata.
 //
-// The checker and WIT generator share the entry/runtime-managed predicate,
-// while test/bench defaults and entry-cache safety are derived in table order.
-// WIT declaration-versus-provider behavior, resource lowering, and handler
-// semantics intentionally remain unchanged in this behavior-preserving slice.
+// Each private owner below records one concern only. WIT declaration-versus-
+// provider behavior, resource lowering, and handler semantics intentionally
+// remain unchanged in this behavior-preserving slice.
 
 import ./exception_effect.vibe {
   is_exception_label
@@ -17,36 +17,45 @@ import @vibe/core {
   array_empty
 }
 
-//# Standard policy table
+//# Independent standard execution owners
 
-/// `(label, provider default resource kind, test/bench default, entry cache
-/// safe)`. The order preserves all existing derived-row output.
-///
-/// A nonempty resource kind records that the standard host provider uses the
-/// process-root default. `Error`, `Exception`, and `Async` instead record
-/// entry-boundary or runtime execution policy and therefore have no provider
-/// resource kind.
-let standard_effect_policy_rows: Array[(String, String, Bool, Bool)] = [
-  // Standard host-provider labels. Test and bench run with the first eight
-  // providers below; network and external-service providers remain explicit.
-  ("Fs", "Process::Root", true, false),
-  ("Env", "Process::Root", true, false),
-  ("Stdin", "Process::Root", true, false),
-  // Stdout and Console are entry output, not hidden nondeterministic input.
-  ("Stdout", "Process::Root", true, true),
-  ("Stderr", "Process::Root", true, false),
-  ("Console", "Process::Root", true, true),
-  ("Process", "Process::Root", true, false),
-  ("Profiler", "Process::Root", true, false),
-  ("Http", "Process::Root", false, false),
-  ("Socket", "Process::Root", false, false),
-  ("Llm", "Process::Root", false, false),
-  // Entry-boundary exception policy. Exception[K] is recognized dynamically
-  // below, while this erased row preserves existing derived-row spelling.
-  ("Error", "", true, true),
-  ("Exception", "", true, true),
-  // Runtime scheduling policy. Async is not a host-provider label.
-  ("Async", "", false, true)
+/// `(label, default resource kind)` for standard host providers, in the
+/// established provider order. Every current provider uses the process root.
+let standard_host_provider_resource_defaults: Array[(String, String)] = [
+  ("Fs", "Process::Root"),
+  ("Env", "Process::Root"),
+  ("Stdin", "Process::Root"),
+  ("Stdout", "Process::Root"),
+  ("Stderr", "Process::Root"),
+  ("Console", "Process::Root"),
+  ("Process", "Process::Root"),
+  ("Profiler", "Process::Root"),
+  ("Http", "Process::Root"),
+  ("Socket", "Process::Root"),
+  ("Llm", "Process::Root")
+]
+
+/// Effects supplied by test and bench execution, in established order.
+let test_bench_default_effect_labels: Array[String] = [
+  "Fs",
+  "Env",
+  "Stdin",
+  "Stdout",
+  "Stderr",
+  "Console",
+  "Process",
+  "Profiler",
+  "Error",
+  "Exception"
+]
+
+/// Effects allowed in the entry execution cache, in established order.
+let entry_cache_safe_effect_labels: Array[String] = [
+  "Stdout",
+  "Console",
+  "Error",
+  "Exception",
+  "Async"
 ]
 
 //# Lookups
@@ -68,14 +77,14 @@ fn standard_policy_effect_name(label: String) -> String {
   }
 }
 
-fn standard_effect_policy_row_index(name: String) -> Int {
+fn standard_host_provider_index(name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
-  while i < Array::length(standard_effect_policy_rows) {
-    let (rname, _, _, _) = Array::get(standard_effect_policy_rows, i)
-    if rname == name {
+  while i < Array::length(standard_host_provider_resource_defaults) {
+    let (provider_name, _) = Array::get(standard_host_provider_resource_defaults, i)
+    if provider_name == name {
       found = i
-      i = Array::length(standard_effect_policy_rows)
+      i = Array::length(standard_host_provider_resource_defaults)
     } else {
       i = i + 1
     }
@@ -86,31 +95,26 @@ fn standard_effect_policy_row_index(name: String) -> Int {
 /// True when a label has standard provider or entry-execution metadata.
 /// `Exception[K]` is covered by the standard entry-boundary exception policy.
 export fn has_standard_effect_policy(label: String) -> Bool {
-  if is_exception_label(label) {
-    true
-  } else {
-    standard_effect_policy_row_index(standard_policy_effect_name(label)) >= 0
-  }
+  has_standard_host_provider(label)
+  || is_entry_runtime_managed_effect(label)
+  // Retains the old arbitrary-string normalization of erased aliases,
+  // including malformed generic stems such as `Exception[`.
+  || standard_policy_effect_name(label) == "Error"
+  || standard_policy_effect_name(label) == "Exception"
 }
 
 /// True only for labels supplied by a standard host provider.
 export fn has_standard_host_provider(label: String) -> Bool {
-  let idx = standard_effect_policy_row_index(standard_policy_effect_name(label))
-  if idx < 0 {
-    false
-  } else {
-    let (_, resource_kind, _, _) = Array::get(standard_effect_policy_rows, idx)
-    resource_kind != ""
-  }
+  standard_host_provider_index(standard_policy_effect_name(label)) >= 0
 }
 
 /// The standard host provider's default resource kind, or `""` when none.
 export fn standard_provider_default_resource_kind(label: String) -> String {
-  let idx = standard_effect_policy_row_index(standard_policy_effect_name(label))
+  let idx = standard_host_provider_index(standard_policy_effect_name(label))
   if idx < 0 {
     ""
   } else {
-    let (_, resource_kind, _, _) = Array::get(standard_effect_policy_rows, idx)
+    let (_, resource_kind) = Array::get(standard_host_provider_resource_defaults, idx)
     resource_kind
   }
 }
@@ -152,48 +156,41 @@ export fn predeclared_resources() -> Array[(String, String)] {
   out
 }
 
-/// All labels with standard policy metadata, in table order.
+/// All labels with standard policy metadata, in the established order.
 export fn standard_effect_policy_names() -> Array[String] {
   let out = array_empty()
   let mut i = 0
-  while i < Array::length(standard_effect_policy_rows) {
-    let (name, _, _, _) = Array::get(standard_effect_policy_rows, i)
+  while i < Array::length(standard_host_provider_resource_defaults) {
+    let (name, _) = Array::get(standard_host_provider_resource_defaults, i)
     Array::push(out, name)
     i = i + 1
   }
+  // Exception and Async policy is predicate-based; these erased spellings
+  // retain this exported API's established output.
+  Array::push(out, "Error")
+  Array::push(out, "Exception")
+  Array::push(out, "Async")
   out
 }
 
 //# Derived entry policy
 
-/// Effects test and bench execution supplies by default, in existing order.
-export fn test_bench_default_effects() -> Array[String] {
+fn copied_labels(labels: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
-  while i < Array::length(standard_effect_policy_rows) {
-    let (name, _, default_for_test_bench, _) = Array::get(standard_effect_policy_rows, i)
-    if default_for_test_bench {
-      Array::push(out, name)
-    } else {
-      ()
-    }
+  while i < Array::length(labels) {
+    Array::push(out, Array::get(labels, i))
     i = i + 1
   }
   out
 }
 
+/// Effects test and bench execution supplies by default, in existing order.
+export fn test_bench_default_effects() -> Array[String] {
+  copied_labels(test_bench_default_effect_labels)
+}
+
 /// Effects allowed in the entry execution cache, in existing order.
 export fn entry_cache_safe_effects() -> Array[String] {
-  let out = array_empty()
-  let mut i = 0
-  while i < Array::length(standard_effect_policy_rows) {
-    let (name, _, _, cache_safe) = Array::get(standard_effect_policy_rows, i)
-    if cache_safe {
-      Array::push(out, name)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
+  copied_labels(entry_cache_safe_effect_labels)
 }

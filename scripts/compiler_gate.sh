@@ -9461,9 +9461,12 @@ fn main {
   println(__to_string(r))
 }
 ' 'variant `Nil` of enum Box'
-# 4. A parameterized enum is deliberately NOT carried across the boundary (its
-#    payload types hold the declaring compilation'"'"'s CtVar ids), so it keeps
-#    working exactly as before rather than regressing.
+# 4. A PARAMETERIZED enum crosses the boundary too (#1455 follow-up). The
+#    carrier stores the enum'"'"'s formals plus NAME-parameterized payloads
+#    (`CtNamed("T", [])`), not the declaring compilation'"'"'s CtVar ids, so the
+#    importer can rebind `T` to ids of its own. Before that, `Attempt::Got`
+#    was `unknown name` -- resolve_qualified_ctor_ident fell back to a flat
+#    env_lookup that could not see the imported scheme.
 en_case parameterized ok 'import ./dep.vibe { Attempt, Got, Missed }
 
 fn main {
@@ -9473,6 +9476,78 @@ fn main {
     Missed => 0
   }
   println(__to_string(r))
+}
+'
+en_case parameterized_qualified ok 'import ./dep.vibe { Attempt, Got, Missed }
+
+fn main {
+  let a = Attempt::Got(3)
+  let r = match a {
+    Attempt::Got(v) => v,
+    Attempt::Missed => 0
+  }
+  println(__to_string(r))
+}
+'
+# 4b. The rebuilt scheme has to stay GENERIC. If the formal were bound to a
+#     shared, non-quantified var, the second instantiation in one module would
+#     unify against the first and the String use would be a type error.
+en_case parameterized_two_instances ok 'import ./dep.vibe { Attempt, Got, Missed }
+
+fn first() -> Int {
+  match Attempt::Got(3) {
+    Got(v) => v,
+    Missed => 0
+  }
+}
+
+fn second() -> String {
+  match Attempt::Got("s") {
+    Got(v) => v,
+    Missed => ""
+  }
+}
+
+fn main {
+  println(String::concat(__to_string(first()), second()))
+}
+'
+# 4c. #1455 step 3: the qualifier is CHECKED. `parse_pattern` lowers
+#     `Attempt::Missed` to the same PCtor("Missed") the bare spelling produces,
+#     so a swapped qualifier used to be accepted silently -- the parser now
+#     records the pair on a side channel and the checker validates it against
+#     the enum table (checker_pattern.vibe::check_qualified_pattern_refs).
+#     `Box` is a real enum here, just not the one that owns `Missed`.
+en_case pattern_qualifier_wrong_enum err 'import ./dep.vibe { Attempt, Box, Got, Missed }
+
+fn main {
+  let a = Got(3)
+  let r = match a {
+    Got(v) => v,
+    Box::Missed => 0
+  }
+  println(__to_string(r))
+}
+' 'enum `Box` has no variant `Missed`'
+# 4d. ...and a qualifier that is not an enum stays silent, which is what keeps
+#     handle-arm operation patterns (`Log::Emit(m)`) working: they reach the
+#     same side channel through the same parser branch.
+en_case pattern_qualifier_effect_arm ok 'effect Log {
+  Emit(String) -> Unit
+}
+
+fn shout(s: String) -> String with Log {
+  perform Log::Emit(s)
+  s
+}
+
+fn main {
+  let r = handle {
+    shout("hi")
+  } with Log {
+    Log::Emit(m) => resume(m)
+  }
+  println(r)
 }
 '
 # 5. A local enum that reuses an imported constructor NAME still compiles.

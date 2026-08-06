@@ -483,13 +483,13 @@ DCE)→ apply(BindingLock)→ instantiate(preflight prompt)の最も早い
 ための段階計画。
 
 - **Phase -1(着地済み、#1496)**: standard provider / entry-execution
-  policy metadata. `lib/@vibe/compiler/core/standard_effect_policy.vibe` holds
-  `(label, provider default resource kind, test/bench default, entry cache
-  safe)` rows. Its narrow predicates describe standard host providers,
-  entry-boundary exceptions, and runtime scheduling; ordinary user effects
-  have no policy record. The existing test/bench defaults, doctest cache-safe
-  row, and entry/runtime filtering remain byte-for-byte behaviorally unchanged.
-  This implementation policy is not the prospective taxonomy/admission model.
+  policy metadata. `lib/@vibe/compiler/core/standard_effect_policy.vibe` owns
+  provider resource defaults, test/bench defaults, and entry-cache-safe labels
+  independently; `Exception` entry-boundary and `Async` runtime handling are
+  narrow predicates. Ordinary user effects have no policy record. The existing
+  test/bench defaults, doctest cache-safe row, and entry/runtime filtering
+  remain byte-for-byte behaviorally unchanged. This implementation policy is
+  not the prospective taxonomy/admission model.
 - **Phase 0(着地済み、#1343 実装順 2)**: ADR-0075 Phase 2 の
   `resource Name : Owner::Kind` 宣言を AST (`SResource`) / parser /
   printer / checker に入れ、`Process::Root` を singleton resource kind
