@@ -40,6 +40,7 @@
 |---|---|---|---|
 | `Fs` | `vibe::fs_read_file` | `(path: i64) -> i64` | ファイル読込（戻り値は packed string）|
 | `Fs` | `vibe::fs_write_file` | `(path: i64, content: i64) -> ()` | テキスト書込 |
+| `Fs` | `vibe::fs_publish_immutable_text` | `(path: i64, content: i64) -> i64` | immutable text publication（tagged Bool） |
 | `Fs` | `vibe::fs_write_bytes` | `(path: i64, bytes: i64) -> ()` | バイト書込 |
 | `Fs` | `vibe::fs_exists` | `(path: i64) -> i64` | 真偽（tagged）|
 | `Fs` | `vibe::fs_stat_token` | `(path: i64) -> i64` | stat トークン |
@@ -49,6 +50,12 @@
 注:
 - **Process / Shell / Http エフェクトは現行 runner の `vibe::*` には未実装**。これらを使う
   プログラムを動かすには ABI 拡張（`vibe::proc_*` 等）か component path が要る。
+- `Fs::publish_immutable_text(path, content) -> Bool with Fs` は final path が
+  不在のときだけ exact UTF-8 bytes を atomically publish する。既存 regular file の
+  raw bytes が同じなら `true`、異なれば `false`。losing writer は overwrite せず、
+  I/O・unsupported filesystem・symlink/nonregular target は fail closed。official
+  Node/Rust runners use an exclusive same-directory temp followed by atomic hard-link
+  (no-replace); temp cleanup is best effort.
 - `__moonbit_fs_unstable::*` / `__moonbit_sys_unstable::*` / `spectest::*` は
   **コンパイラ wasm（`vibe-cli.wasm`）専用**の externref ベース runtime であり、
   **ユーザ生成物の import には現れない**。混同しないこと。

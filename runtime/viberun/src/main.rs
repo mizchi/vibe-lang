@@ -2146,6 +2146,44 @@ fn vibe_atomic_write(path: &str, data: &[u8]) -> Result<()> {
     }
 }
 
+// Atomically publish UTF-8 text iff the final path is absent. A same-directory
+// create_new temp plus hard_link is the portable no-replace operation available
+// to this core-wasm runner: the winner links its complete temp; losers never
+// overwrite and only succeed when the existing regular file has identical raw
+// UTF-8 bytes. All I/O, unsupported-filesystem, symlink, and nonregular cases
+// fail closed. Durability/fsync is deliberately outside this publication ABI.
+fn vibe_publish_immutable_text(path: &str, data: &[u8]) -> bool {
+    let counter = VIBE_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = format!("{path}.immutable-tmp-{}-{counter}", std::process::id());
+    let published = (|| {
+        let mut temp = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .ok()?;
+        temp.write_all(data).ok()?;
+        drop(temp);
+        match fs::hard_link(&tmp, path) {
+            Ok(()) => Some(true),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let metadata = fs::symlink_metadata(path).ok()?;
+                if !metadata.file_type().is_file() {
+                    return Some(false);
+                }
+                Some(
+                    fs::read(path)
+                        .map(|existing| existing == data)
+                        .unwrap_or(false),
+                )
+            }
+            Err(_) => Some(false),
+        }
+    })()
+    .unwrap_or(false);
+    let _ = fs::remove_file(&tmp);
+    published
+}
+
 // Prepare the opt-in telemetry sidecar before the guest can run. A stale file
 // is removed even when the nonce is invalid, so callers cannot accidentally
 // accept an old observation after this invocation fails closed.
@@ -2588,6 +2626,18 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             let path = vibe_read_packed_str(&mut caller, path)?;
             let content = vibe_read_packed_str(&mut caller, content)?;
             vibe_atomic_write(&path, content.as_bytes())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_publish_immutable_text",
+        |mut caller: Caller<'_, HostState>, path: i64, content: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let content = vibe_read_packed_str(&mut caller, content)?;
+            Ok(i64::from(vibe_publish_immutable_text(
+                &path,
+                content.as_bytes(),
+            )))
         },
     )?;
     linker.func_wrap(
@@ -4297,6 +4347,85 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publish_immutable_text_is_no_replace_and_byte_exact() {
+        let dir = std::env::temp_dir().join(format!(
+            "viberun-publish-immutable-test-{}-{}",
+            std::process::id(),
+            VIBE_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("published.txt");
+        let target_text = target.to_string_lossy().into_owned();
+
+        assert!(vibe_publish_immutable_text(
+            &target_text,
+            "hello ☃".as_bytes()
+        ));
+        assert!(vibe_publish_immutable_text(
+            &target_text,
+            "hello ☃".as_bytes()
+        ));
+        assert!(!vibe_publish_immutable_text(&target_text, b"different"));
+        assert_eq!(fs::read(&target).unwrap(), "hello ☃".as_bytes());
+
+        let equal_target = dir.join("equal.txt").to_string_lossy().into_owned();
+        let equal_barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let equal_threads: Vec<_> = (0..8)
+            .map(|_| {
+                let path = equal_target.clone();
+                let barrier = equal_barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    vibe_publish_immutable_text(&path, "same 日本語\n".as_bytes())
+                })
+            })
+            .collect();
+        assert!(equal_threads
+            .into_iter()
+            .all(|thread| thread.join().unwrap()));
+        assert_eq!(fs::read(&equal_target).unwrap(), "same 日本語\n".as_bytes());
+
+        let unequal_target = dir.join("unequal.txt").to_string_lossy().into_owned();
+        let unequal_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let unequal_threads: Vec<_> = [b"alpha\n".as_slice(), b"beta\n".as_slice()]
+            .into_iter()
+            .map(|data| {
+                let path = unequal_target.clone();
+                let barrier = unequal_barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    vibe_publish_immutable_text(&path, data)
+                })
+            })
+            .collect();
+        assert_eq!(
+            unequal_threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .filter(|won| *won)
+                .count(),
+            1
+        );
+        let unequal_bytes = fs::read(&unequal_target).unwrap();
+        assert!(unequal_bytes == b"alpha\n" || unequal_bytes == b"beta\n");
+
+        assert!(!vibe_publish_immutable_text(
+            &dir.to_string_lossy(),
+            b"not-a-file"
+        ));
+        #[cfg(unix)]
+        {
+            let symlink = dir.join("symlink.txt");
+            std::os::unix::fs::symlink(&target, &symlink).unwrap();
+            assert!(!vibe_publish_immutable_text(
+                &symlink.to_string_lossy(),
+                "hello ☃".as_bytes()
+            ));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn host_fs_scope_sidecar_is_versioned_and_has_only_host_import_counters() {

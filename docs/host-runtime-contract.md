@@ -89,15 +89,18 @@ packages):
 | `stat-token` | `loader/loader.vibe`, `core/module_graph_path.vibe` (under the imported `loader` package) |
 | `readdir` | `loader/loader.vibe`, `loader/header_cache.vibe` (same package) |
 
-The other eleven round-1 ops — `read-bytes`, `is-dir`, `is-file`, `remove`,
-`mkdir`, `mkdir-p`, `chdir`, `getcwd`, `copy`, `append`, `rename` — either
-have zero real call sites anywhere in the compiler's own source, or (in
-`remove`'s case) a real call site that isn't reachable from `cli_main`.
+The other twelve ops — `read-bytes`, `is-dir`, `is-file`, `remove`,
+`mkdir`, `mkdir-p`, `chdir`, `getcwd`, `copy`, `append`, `rename`, and
+`publish-immutable-text` — either have zero real call sites anywhere in the
+compiler's own source, or (in `remove`'s case) a real call site that isn't
+reachable from `cli_main`. `publish-immutable-text` is intentionally
+registered for a future immutable cache publisher but has no compiler-source
+call site, so it cannot change the seed-built compiler's reachable imports.
 They're recognized builtin names (the checker accepts them when a *user*
-program calls them via `import Fs`/`lib/@vibe/fs`), but `cli_main` never
-invokes any of them itself. `env`/`stdin`/`stdout` were untouched by any
-round (already tag-consistent with their builtin-table signatures,
-`lookup_io_a`/`lookup_io_b` in `checker/builtins_system.vibe`).
+program calls them), but `cli_main` never invokes any of them itself.
+`env`/`stdin`/`stdout` were untouched by any round (already tag-consistent
+with their builtin-table signatures, `lookup_io_a`/`lookup_io_b` in
+`checker/builtins_system.vibe`).
 
 Types follow `wit_type_text`'s existing mapping (`Int` → `s64`, `Bool` →
 `bool`, `String` → `string`, `Bytes` → `list<u8>`, `Unit` → omitted return
@@ -112,7 +115,7 @@ that viberun actually registers three of them (`fs_is_dir`, `fs_is_file`,
 `fs_read_bytes`, confirmed at lines ~1791-1835), it just doesn't register
 the other seven (`fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/`fs_getcwd`/`fs_copy`/
 `fs_append`/`fs_rename`). Whichever runner implements how many of them is
-moot for this contract either way: `cli_main` reaches none of the eleven
+moot for this contract either way: `cli_main` reaches none of the now-twelve
 excluded ops, so neither viberun's partial coverage nor the Node runner's
 full coverage of them matters — that surface serves *user-program*
 `lib/@vibe/fs` usage (via the general-purpose `--wit` path), not something
@@ -142,9 +145,9 @@ env var and path-shape convention.
 contract's six `fs` ops (`read-file`/`write-file`/`write-bytes`/`exists`/
 `stat-token`/`readdir`), `env`/`stdin`/`stdout` in full, plus `Process`/`sh`
 and a debugger-only surface `cli_main` doesn't use. It also happens to
-implement all eleven of the excluded-from-this-contract-but-still-a-real-builtin
+implement all twelve of the excluded-from-this-contract-but-still-a-real-builtin
 ops (`is_dir`/`is_file`/`read_bytes`/`mkdir`/`mkdir_p`/`chdir`/`getcwd`/
-`copy`/`append`/`rename`/`remove`) — full parity with
+`copy`/`append`/`rename`/`remove`/`publish_immutable_text`) — full parity with
 `scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` on the `Fs` surface
 as of #1220 (originally `remove`/`is_dir`/`is_file` from #901, `read_bytes`
 from #632, and `rename`/`mkdir`/`mkdir_p`/`chdir`/`getcwd`/`copy`/`append`
