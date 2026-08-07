@@ -4558,9 +4558,18 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // `__arr_equals__<key>` helper (emitted by desugar_derives), since the
         // runtime `eq` would identity-compare the array. Opaque array-typed
         // operands (no literal in scope) are left as `==` (documented residual).
+        // #1526: a literal on either side answers first (it is exact and needs
+        // no environment); an operand reached through a NAME answers next, from
+        // the element type recorded at its binding site. The helper this
+        // resolves to is generated because the emission was RECORDED, not
+        // because a second walk predicted the same thing -- see
+        // `arr_eq_needed_record`.
         let arr_elem = match infer_earray_elem_type(l) {
           Some(t) => Some(t),
-          None => infer_earray_elem_type(r)
+          None => match infer_earray_elem_type(r) {
+            Some(t) => Some(t),
+            None => eq_var_array_elem(l, r, var_types)
+          }
         }
         if empty_l || empty_r {
           let other = if empty_l {
@@ -4581,6 +4590,10 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         } else {
           match arr_elem {
             Some(elem) => {
+              // #1526: record before emitting -- this is one of the two sites
+              // that can reference a `__arr_equals__<key>` helper, and the
+              // recorded set is what generates them (see arr_eq_needed_record).
+              arr_eq_needed_record(elem)
               let call = ECall(EIdent(arr_equals_name(elem), -1), [
                 rl,
                 rr
@@ -5154,6 +5167,84 @@ fn arr_equals_name(t: TypeExpr) -> String {
   String::concat("__arr_equals__", type_key(t))
 }
 
+// ---- #1526: the emitted set of `__arr_equals__<key>` helpers ----
+//
+// Which helpers a program needs is decided TWICE, by two separate walks:
+//
+//   1. `collect_bare_array_eq_keys` (run from `desugar_derives`) PREDICTS the
+//      set and generates the helpers.
+//   2. the `==` rewrite in `rewrite_expr` (and `eq_for_typed`) EMITS the calls.
+//
+// The two agreed only because they ran the same literal-only inference. (1) is
+// handed nothing but `stmts` -- no `var_types` -- so it cannot see an operand's
+// element type when the operand is reached through a NAME; (2) runs inside the
+// rewrite, where the binding environment IS available, and it stayed
+// deliberately blind to it to keep the two in step. That is the coupling that
+// made `let a = [1, 2]; let c = [1, 2]; a == c` compare by identity: teaching
+// the rewrite to use `var_types` (which it can) would have emitted calls the
+// prediction never generated -- `undefined variable (local):
+// __arr_equals__Int @call` -- so neither half could move alone.
+//
+// So generation stops being a prediction. The two sites that BUILD a call
+// record what they built, and `emit_recorded_arr_equals` generates exactly that
+// set after the rewrite has run. `desugar_derives`' own generation stays as a
+// head start (it also covers struct/enum fields, which no `==` site mentions);
+// the post-rewrite pass skips anything already produced. With emission as the
+// source of truth, the rewrite is free to resolve element types however well it
+// can -- see `eq_var_array_elem`.
+let dtd_arr_eq_needed: Array[TypeExpr] = empty_type_exprs()
+
+let dtd_arr_eq_needed_keys: Array[String] = empty_str_array()
+
+/// Reset at each `desugar_trait_dicts` entry, BEFORE `desugar_derives` runs.
+fn arr_eq_needed_reset() -> Unit {
+  Array::truncate(dtd_arr_eq_needed, 0)
+  Array::truncate(dtd_arr_eq_needed_keys, 0)
+}
+
+/// Record that a call to `__arr_equals__<key>` for element type `t` was emitted.
+/// Called from the two (only) sites that build such a call, so the recorded set
+/// is by construction the set the output references.
+fn arr_eq_needed_record(t: TypeExpr) -> Unit {
+  let k = type_key(t)
+  if str_array_contains(dtd_arr_eq_needed_keys, k) {
+    ()
+  } else {
+    Array::push(dtd_arr_eq_needed_keys, k)
+    Array::push(dtd_arr_eq_needed, t)
+  }
+}
+
+/// #1526: generate every recorded `__arr_equals__<key>` helper that does not
+/// already exist. Runs AFTER the rewrite loop, since that is what produces the
+/// calls.
+///
+/// The loop re-reads `Array::length` each turn on purpose: `gen_arr_equals_fn`
+/// builds its body through `eq_for_typed`, which records the nested element
+/// types it in turn calls (`Array[Array[Int]]` -> `Array[Int]`), so appending
+/// to the list while walking it IS the worklist closure. It terminates because
+/// `arr_eq_needed_record` dedups by type key and each nested type is strictly
+/// shallower.
+///
+/// The generated statements are appended after the rewrite and so are not
+/// themselves rewritten. They need no rewriting: `gen_arr_equals_fn` emits
+/// already-lowered code (`Array::get` / `Array::length` / a type-directed
+/// element comparison), which is what the pre-existing helpers reduce to as
+/// well.
+fn emit_recorded_arr_equals(stmts: Array[Stmt]) -> Unit {
+  let known_types = collect_decl_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(dtd_arr_eq_needed) {
+    let et = Array::get(dtd_arr_eq_needed, i)
+    if top_level_fn_exists(stmts, arr_equals_name(et)) {
+      ()
+    } else {
+      Array::push(stmts, gen_arr_equals_fn(et, known_types))
+    }
+    i = i + 1
+  }
+}
+
 /// Structural equality match for two Option operands whose element type is NOT
 /// statically known here (bare `==` dispatch on Option-typed variables). Some
 /// payloads compare with `==` (correct for scalars); a None matches a None.
@@ -5310,6 +5401,8 @@ fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String])
       ], 0, 1))
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
+      // #1526: the second (and last) site that references a helper.
+      arr_eq_needed_record(Array::get(args, 0))
       ECall(EIdent(arr_equals_name(Array::get(args, 0)), -1), Array::slice([
         lhs,
         rhs
@@ -5799,6 +5892,36 @@ fn is_empty_array_lit(e: Expr) -> Bool {
   match e {
     EArray(elems) => Array::length(elems) == 0,
     _ => false
+  }
+}
+
+/// #1526: the element type of an array operand reached through a NAME.
+///
+/// `infer_earray_elem_type` below only reads an array LITERAL, so the moment an
+/// array was bound to a name the bare `==` fell back to the runtime `eq`, which
+/// identity-compares -- `let a = [1, 2]; let c = [1, 2]; a == c` was `false`.
+/// The element type is not missing, though: `array_elem_bind` already records
+/// it for a let-bound array literal and `seed_var_types` for an `Array[T]`
+/// parameter, both under `array_elem_key` (#1199, for call-site dict
+/// synthesis). This just reads that back at the comparison site.
+///
+/// Scope is exactly what those two record -- a name whose element type this
+/// pass never inferred (an array returned by a function, an empty literal)
+/// still gets the identity `eq`, the documented #695 residual.
+fn eq_var_array_elem(l: Expr, r: Expr, var_types: Array[(String, String)]) -> Option[TypeExpr] {
+  match eq_operand_elem_name(l, var_types) {
+    Some(n) => Some(TyName(n)),
+    None => match eq_operand_elem_name(r, var_types) {
+      Some(n) => Some(TyName(n)),
+      None => None
+    }
+  }
+}
+
+fn eq_operand_elem_name(e: Expr, var_types: Array[(String, String)]) -> Option[String] {
+  match e {
+    EIdent(name, _) => array_elem_type_of(var_types, name),
+    _ => None
   }
 }
 
@@ -9168,6 +9291,8 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // the throw-site render can only ever name a renderer generated for THIS
   // program.
   derived_renderers_reset()
+  // #1526: same reason -- the recorded set must describe THIS run's output.
+  arr_eq_needed_reset()
   desugar_derives(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
@@ -9212,6 +9337,10 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
     Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns, toplevel_vars))
     i = i + 1
   }
+  // #1526: the rewrite above is what emits `__arr_equals__<key>` calls, so it
+  // is what decides which helpers exist. Anything `desugar_derives` could not
+  // predict (an operand reached through a name) is generated here.
+  emit_recorded_arr_equals(stmts)
   // #1374: append the cell only for a program that actually reads or writes it,
   // so a throw-free program's output is unchanged.
   if Array::get(dtd_exn_kind_state, 1) == 1 {
