@@ -34,7 +34,7 @@ nix run github:mizchi/pkfire -- list
 go install github.com/mizchi/pkfire/cmd/pkf@latest
 ```
 
-CI uses the `mizchi/pkfire@v0.10.0` composite action via
+CI uses the `mizchi/pkfire@v0.14.2` composite action via
 `.github/actions/setup-vibe` (set `pkfire: 'true'` on the caller). Pass
 `pkfire-cache: 'true'` to also hydrate `~/.cache/pkfire`.
 
