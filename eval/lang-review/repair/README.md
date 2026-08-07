@@ -113,11 +113,34 @@ line:col に解決して文言からは剥がす)、対象の3つの throw が�
 
 mean = 33/10 = 3.3 → **repair_convergence = 4.3** (r4 3.6 → #1513 で 4.0 → 4.3)。
 
-**05 / 08 は据え置き** — こちらは「位置が一切付かない」C カテゴリで、原因が別。
-効果パス側のエラーは `EffectError` が offset を持たず、compile 経路の
-`emit_compile_diag` が `locate_type_error` を呼ばない。後者を配線するには
-offset がどのソース基準かを決める必要があり、merged 複数ファイルコンパイルでは
-一意でない。誤った位置は位置無しより悪いので、別スライスとして #1514 に残す。
+## 更新: #1514 の C カテゴリ (05 — 位置が一切付かなかった)
+
+当初「merged 複数ファイルでは offset の基準ソースが一意でない」と判断して降りたが、
+**実装を読んだらそうではなかった**。`compile_source_wasi_only(source, entry)` は
+ソース文字列そのものを受け取り、`check_program` はそれを lex した AST を見る —
+つまり offset の基準は呼び出し側が持っている `source` で確定している。
+
+塞いだのは2つ:
+
+1. `EEEffectRowMismatch` に**呼び出しサイトの offset** を持たせた。walker の
+   `ECall(callee, args, _)` arm がその場で offset を捨てていただけ
+2. `emit_compile_diag_located` を足し、compile 経路で ` [@off=N]` を解決する
+
+2 は**マーカーを持つメッセージだけ**に適用する。マーカーが無ければ
+`locate_type_error` の first-occurrence ヒューリスティックに落ちて、もっともらしい
+別の行を指しうる — 既存の全メッセージを黙って変える危険があるので、
+「自分がどこから来たか述べている診断」だけが位置を得る。
+
+| # | 位置 (before → after) | L | 計 |
+|---|---|---|---|
+| 05 | なし → **`line 2:3`** (effect を要求している呼び出しそのもの) | 0 → **1** | 3 → **4** |
+
+mean = 34/10 = 3.4 → **repair_convergence = 4.4**。
+
+**08 は据え置き** — こちらは codegen (`inline_direct_perform.vibe`) が投げる
+ADR-0076 のエラーで、位置の出どころが `EHandle(body, arms)`。この AST ノードは
+**offset フィールドを持たない**ので、付けるには EHandle を構築/分解している
+全箇所に触る必要がある。別スライスとして #1514 に残す。
 
 **ラチェットは位置の改善では落ちない** (`diag.grep` は文言だけを見る)。この表の
 更新は手動 — 位置は「文言が変わっていないのに質が上がる」唯一の軸なので、
