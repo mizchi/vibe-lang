@@ -732,22 +732,31 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
         done = true
       },
       TEof => throw("unexpected eof in block"),
+      // #1525: a block-local `enum` used to be DISCARDED here and replaced by
+      // one `let <Variant> = <index>` per nullary variant. No type and no
+      // constructors were created, so:
+      //
+      //   * `match c { Red|Green => .., _ => .. }` matched NOTHING -- `Red` in
+      //     pattern position is a `PCtor`, and there was no such constructor,
+      //     so every value silently took the `_` arm (and trapped when there
+      //     was no `_` arm to take)
+      //   * a payload variant was dropped entirely (`unknown name: A`)
+      //   * only "declare it, then use a variant as a bare value" worked, and
+      //     that worked because the variant WAS a plain Int
+      //
+      // Rejecting is the honest lowering: the local form never had constructor
+      // semantics to begin with, nothing in the repo used it, and the silent
+      // `match` failure is exactly the defect class the repair corpus exists to
+      // keep out. Hoisting to top level instead would make one function's local
+      // type visible to the whole file and collide across functions, which is a
+      // language decision, not a parser fix (noted on #1525).
       TEnum => {
-        let (enum_stmt, enum_end) = parse_enum_stmt(tokens, p + 1, false)
-        match enum_stmt {
-          SEnum(_, _, _, variants, _) => {
-            let mut vi = 0
-            while vi < Array::length(variants) {
-              let (vname, vfields) = Array::get(variants, vi)
-              if Array::length(vfields) == 0 {
-                ArrayBuilder::push(steps, StepLet(vname, EInt(vi), -1))
-              }
-              vi = vi + 1
-            }
-          },
-          _ => ()
+        let (enum_stmt, _) = parse_enum_stmt(tokens, p + 1, false)
+        let ename = match enum_stmt {
+          SEnum(_, n, _, _, _) => n,
+          _ => "the enum"
         }
-        p = enum_end
+        throw("a block-local `enum` declaration is not supported -- move `\{ename}` to the top level and refer to it from here. Inside a block it had no constructors at all: `match` against them matched nothing (silently taking the `_` arm, or trapping without one). #1525 at #\{p}")
       },
       TStruct => {
         let (_, struct_end) = parse_struct_stmt(tokens, p + 1, false)
