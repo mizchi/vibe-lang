@@ -9605,4 +9605,108 @@ fn main {
 rm -rf "$endir"
 echo "[compiler-gate] imported enum variant lists ok"
 
+echo "[compiler-gate] 94/94 importing a name the dependency does not export is a CHECK error (#1521)"
+# #1521: `bind_import_names_from_cache` bound CtUnknown for an imported name
+# the dependency does not export. CtUnknown unifies with anything, so every
+# USE of that name typechecked -- `vibe check` said ok -- and the program
+# died in codegen with `undefined variable (ident): X`, naming no file and
+# no line. Worse than having no diagnostic: the import SUPPRESSED the
+# `unknown name` the same code gets without it.
+#
+# The negatives are the point of this section, not padding. Two earlier
+# attempts at this check passed their positives while silently breaking
+# valid code (or while wired into a lane `vibe check` never runs), so every
+# shape that must stay clean is pinned right next to the shapes that must
+# fail.
+uidir="_build/_gate_unresolved_import"
+rm -rf "$uidir"; mkdir -p "$uidir"
+cat > "$uidir/dep.vibe" <<'UIDEP'
+export enum Hue {
+  Crimson;
+  Cerulean
+}
+
+export fn hue_rank(h: Hue) -> Int {
+  match h {
+    Crimson => 0
+    Cerulean => 1
+  }
+}
+UIDEP
+ui_case() {
+  # ui_case <name> <expect: ok|err> <source>
+  local uname="$1" uexpect="$2" usrc="$3"
+  printf '%s' "$usrc" > "$uidir/$uname.vibe"
+  rm -f "$uidir/$uname.wasm" "$uidir/$uname.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$uidir/$uname.vibe" "$uidir/$uname.wasm" _start >/dev/null 2>&1 || true
+  if [ "$uexpect" = "ok" ]; then
+    if [ ! -s "$uidir/$uname.wasm" ]; then
+      echo "[compiler-gate] FAIL: unresolved-import case '$uname' should compile but did not (#1521)" >&2
+      cat "$uidir/$uname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  else
+    if [ -s "$uidir/$uname.wasm" ]; then
+      echo "[compiler-gate] FAIL: unresolved-import case '$uname' compiled; the bogus import was not caught (#1521)" >&2
+      exit 1
+    fi
+    if ! grep -q "is not exported by" "$uidir/$uname.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: unresolved-import case '$uname' was rejected by something OTHER than the #1521 check" >&2
+      cat "$uidir/$uname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  fi
+}
+# 1. The reported shape: a value import that does not exist, and is used.
+ui_case bogus_used err 'import ./dep.vibe { no_such_fn }
+
+export let _start = () -> Int { no_such_fn(1) }
+'
+# 2. Reported even when UNUSED. The pre-existing "never used" warning fires
+#    here too, but "unused" is not "no such name" -- the import is still wrong.
+ui_case bogus_unused err 'import ./dep.vibe { no_such_fn }
+
+export let _start = () -> Int { 1 }
+'
+# 3. An alias does not launder it: the ORIGINAL name is what must exist.
+ui_case bogus_aliased err 'import ./dep.vibe { no_such_fn as f }
+
+export let _start = () -> Int { f(1) }
+'
+# 4-6. Every valid shape stays clean: plain value + type + constructor,
+#      the same through aliases, and constructors imported on their own.
+ui_case good_plain ok 'import ./dep.vibe { hue_rank, Hue, Crimson }
+
+export let _start = () -> Int { hue_rank(Crimson) }
+'
+ui_case good_aliased ok 'import ./dep.vibe { hue_rank as r, Hue as T, Crimson }
+
+fn pick() -> T { T::Crimson }
+
+export let _start = () -> Int { r(pick()) }
+'
+ui_case good_ctors ok 'import ./dep.vibe { Hue, Crimson, Cerulean }
+
+export let _start = () -> Int {
+  match Cerulean {
+    Crimson => 0
+    Cerulean => 1
+  }
+}
+'
+# 7. The DELIBERATE gap, pinned so a later change to it is a visible decision
+#    rather than a surprise: an uppercase name is not reported. A struct or a
+#    type alias is not a value binding at all (it lives in `defs`, which the
+#    dependency-environment cache does not carry), so "absent" cannot be told
+#    apart from "not exported" for uppercase names. Closing this needs the
+#    dependency's type definitions, not a tweak here.
+ui_case bogus_uppercase_not_reported ok 'import ./dep.vibe { Hue, NoSuchType }
+
+export let _start = () -> Int { 1 }
+'
+rm -rf "$uidir"
+echo "[compiler-gate] unresolved import names ok"
+
 echo "[compiler-gate] ok"

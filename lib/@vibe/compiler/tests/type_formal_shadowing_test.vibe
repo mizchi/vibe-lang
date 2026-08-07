@@ -33,6 +33,29 @@ import ./qualified_ctor_enum_support.vibe {
 
 //# Types
 
+/// A trait HEADER formal. The signature is stored raw and only resolved when a
+/// bounded call `B::unwrap(..)` is typed, so this one leaks through a different
+/// path than the four below (`resolve_trait_method_ident`, not the `SStmt`
+/// binders).
+trait Boxed[T] {
+  unwrap(Self) -> T
+}
+
+/// A METHOD-level formal on a trait with no header params of its own -- the
+/// binder comes from `method_gens`, not from the trait header.
+trait Applier {
+  apply[T](Self, T) -> T
+}
+
+/// `IntBox` is declared FIRST among this file's structs on purpose: a bounded
+/// call `B::unwrap(b)` miscompiles ("not enough arguments on the stack for
+/// call") whenever the impl's target is not the file's first struct (#1529 --
+/// a separate, pre-existing codegen bug, reproduced identically on a pre-#1512
+/// compiler). Move `Cell` above this and the file stops instantiating.
+struct IntBox {
+  v: Int
+}
+
 /// The reported case. `Box[Int]` must be `Int`, not `Hue`.
 type Box[T] = T
 
@@ -92,6 +115,27 @@ fn hue_name(h: T) -> String {
   }
 }
 
+impl Boxed for IntBox {
+  unwrap(self) -> Int {
+    self.v
+  }
+}
+
+impl Applier for IntBox {
+  apply(self, x: Int) -> Int {
+    self.v + x
+  }
+}
+
+/// `B::unwrap` resolves the trait's stored signature at THIS call site.
+fn unwrap_via_trait[B: Boxed](b: B) -> Int {
+  B::unwrap(b)
+}
+
+fn apply_via_trait[A: Applier](a: A, x: Int) -> Int {
+  A::apply(a, x)
+}
+
 //# Tests
 
 test "type alias formal shadows an import alias" {
@@ -127,6 +171,18 @@ test "struct formal shadows an import alias" {
     v: 7
   }
   assert_eq(c.v, 7)
+}
+
+test "trait header formal shadows an import alias" {
+  assert_eq(unwrap_via_trait(IntBox::{
+    v: 7
+  }), 7)
+}
+
+test "trait method formal shadows an import alias" {
+  assert_eq(apply_via_trait(IntBox::{
+    v: 7
+  }, 5), 12)
 }
 
 test "an unshadowed import alias is still the imported type" {
