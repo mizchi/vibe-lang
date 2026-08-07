@@ -69,36 +69,53 @@ export fn lookup_builtin(name: String) -> Option[Type] {
   let normalized = canonical_builtin_name(name)
   match lookup_registry_builtin(normalized) {
     Some(t) => Some(t),
-    None => match lookup_array(normalized) {
+    None => lookup_builtin_fallback(normalized)
+  }
+}
+
+/// The per-lane `lookup_*` chain, consulted only when the central registry
+/// (`core/builtin_registry.vibe`) has no checker-visible row for the name.
+///
+/// #1520: split out of `lookup_builtin` so a test can ask "which builtins are
+/// declared TWICE?" -- the registry short-circuits this chain, so a lane table
+/// that still carries an entry for a registry-backed name is a shadowed second
+/// declaration that nothing reads and nothing checks. That is exactly the
+/// state `eq` was in: `builtins_misc.vibe::lookup_eq` says `(Int, Int) -> Bool`
+/// while the registry (corrected in #1519) says `(?, ?) -> Bool`, and the
+/// disagreement was invisible because only the registry is ever consulted.
+///
+/// Takes an ALREADY-normalized name (`canonical_builtin_name`), like the lane
+/// lookups it delegates to.
+export fn lookup_builtin_fallback(normalized: String) -> Option[Type] {
+  match lookup_array(normalized) {
+    Some(t) => Some(t),
+    None => match lookup_fixed_array(normalized) {
       Some(t) => Some(t),
-      None => match lookup_fixed_array(normalized) {
+      None => match lookup_frozen_array(normalized) {
         Some(t) => Some(t),
-        None => match lookup_frozen_array(normalized) {
+        None => match lookup_array_builder(normalized) {
           Some(t) => Some(t),
-          None => match lookup_array_builder(normalized) {
+          None => match lookup_string1(normalized) {
             Some(t) => Some(t),
-            None => match lookup_string1(normalized) {
+            None => match lookup_string2(normalized) {
               Some(t) => Some(t),
-              None => match lookup_string2(normalized) {
+              None => match lookup_string_builder(normalized) {
                 Some(t) => Some(t),
-                None => match lookup_string_builder(normalized) {
+                None => match lookup_bytes(normalized) {
                   Some(t) => Some(t),
-                  None => match lookup_bytes(normalized) {
+                  None => match lookup_simd(normalized) {
                     Some(t) => Some(t),
-                    None => match lookup_simd(normalized) {
+                    None => match lookup_map(normalized) {
                       Some(t) => Some(t),
-                      None => match lookup_map(normalized) {
+                      None => match lookup_io(normalized) {
                         Some(t) => Some(t),
-                        None => match lookup_io(normalized) {
+                        None => match lookup_fs(normalized) {
                           Some(t) => Some(t),
-                          None => match lookup_fs(normalized) {
+                          None => match lookup_net(normalized) {
                             Some(t) => Some(t),
-                            None => match lookup_net(normalized) {
+                            None => match lookup_misc(normalized) {
                               Some(t) => Some(t),
-                              None => match lookup_misc(normalized) {
-                                Some(t) => Some(t),
-                                None => lookup_async(normalized)
-                              }
+                              None => lookup_async(normalized)
                             }
                           }
                         }
