@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildShadowDecisionDiffArtifact,
+  buildShadowDecisionDiffCase,
   classifyPrivateDependencyEditExternallyUnchanged,
   compareObservedInvalidation,
   compareSuccessfulIncrementalInvalidationTraces,
   parseIncrementalInvalidationTrace,
+  parseShadowDecisionDiffArtifact,
   planObservedTypingInvalidation,
 } from "./incremental_invalidation_oracle.mjs";
 
@@ -297,6 +300,79 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
       pattern,
       name,
     );
+  }
+});
+
+test("shadow decision diff records per-module decisions and the visible residual", () => {
+  const before = plannerTrace();
+  const privateAfter = plannerTrace({
+    source: { "/p/library.vibe": "source:library:private-edit" },
+    implementation: { "/p/library.vibe": "implementation:library:private-edit" },
+    rechecked: ["/p/library.vibe", "/p/app.vibe"],
+  });
+  assert.deepEqual(buildShadowDecisionDiffCase("private_body_edit", before, privateAfter), {
+    case: "private_body_edit",
+    modules: [
+      { path: "/p/base.vibe", shadow_decision: "typing_reusable", compiler_decision: "reused", classification: "agreement_reuse" },
+      { path: "/p/library.vibe", shadow_decision: "recheck_required", compiler_decision: "rechecked", classification: "agreement_recheck" },
+      { path: "/p/app.vibe", shadow_decision: "typing_reusable", compiler_decision: "rechecked", classification: "conservative_over_invalidation" },
+    ],
+    conservative_over_invalidation: ["/p/app.vibe"],
+  });
+
+  // A missing required recheck must fail before publication, never become a row.
+  const underInvalidated = plannerTrace({
+    implementation: { "/p/library.vibe": "implementation:library:public-edit" },
+    iface: { "/p/library.vibe": "interface:library:changed" },
+    rechecked: ["/p/library.vibe"],
+  });
+  assert.throws(
+    () => buildShadowDecisionDiffCase("public_interface_edit", before, underInvalidated),
+    /missing required recheck for \/p\/app\.vibe/,
+  );
+});
+
+test("shadow decision diff artifact aggregates totals and round-trips its strict parser", () => {
+  const before = plannerTrace();
+  const privateAfter = plannerTrace({
+    source: { "/p/library.vibe": "source:library:private-edit" },
+    implementation: { "/p/library.vibe": "implementation:library:private-edit" },
+    rechecked: ["/p/library.vibe", "/p/app.vibe"],
+  });
+  const noOpAfter = plannerTrace();
+  const artifact = buildShadowDecisionDiffArtifact(
+    [
+      buildShadowDecisionDiffCase("no_op", before, noOpAfter),
+      buildShadowDecisionDiffCase("private_body_edit", before, privateAfter),
+    ],
+    { scenario: "three-module-incremental-invalidation", stage2_sha256: "a".repeat(64) },
+  );
+  assert.deepEqual(artifact.totals, {
+    agreement_recheck: 1,
+    agreement_reuse: 4,
+    conservative_over_invalidation: 1,
+  });
+  assert.deepEqual(parseShadowDecisionDiffArtifact(JSON.stringify(artifact)), artifact);
+
+  const mutations = [
+    ["schema", (a) => { a.schema = "shadow_diff"; }, /unsupported schema/],
+    ["version", (a) => { a.version = 2; }, /unsupported version/],
+    ["sha", (a) => { a.stage2_sha256 = "not-a-sha"; }, /invalid stage2_sha256/],
+    ["scope note", (a) => { a.scope_note = "observation only"; }, /dishonest scope_note/],
+    ["extra key", (a) => { a.extra = true; }, /unexpected shadow decision diff keys/],
+    ["duplicate case", (a) => { a.cases.push(structuredClone(a.cases[0])); }, /duplicate case name/],
+    ["inconsistent classification", (a) => { a.cases[1].modules[2].classification = "agreement_recheck"; }, /classification inconsistent/],
+    ["published missing recheck", (a) => {
+      a.cases[1].modules[1].shadow_decision = "recheck_required";
+      a.cases[1].modules[1].compiler_decision = "reused";
+    }, /published missing required recheck/],
+    ["residual drift", (a) => { a.cases[1].conservative_over_invalidation = []; }, /residual summary drift/],
+    ["totals drift", (a) => { a.totals.agreement_reuse = 5; }, /totals drift for agreement_reuse/],
+  ];
+  for (const [name, mutate, pattern] of mutations) {
+    const mutated = structuredClone(artifact);
+    mutate(mutated);
+    assert.throws(() => parseShadowDecisionDiffArtifact(JSON.stringify(mutated)), pattern, name);
   }
 });
 
