@@ -2638,6 +2638,42 @@ fn fn_type_return_head() -> String {
   "->"
 }
 
+/// Does the fn_returns table record `fname` with return head `want` ANYWHERE,
+/// not just at its leftmost entry?
+///
+/// #1491: `fn_return_type` answers "what does the FIRST `fname` entry return",
+/// which silently loses every later duplicate. Constructor names are not
+/// unique across enums -- two enums in one merged compile can both declare
+/// `Red` -- so asking "is `Red` a variant of `Color`" through the first-match
+/// helper answers about whichever enum happened to sort first (`Paint`), and
+/// `Color::Red` fails the `qual_ctor_member` gate. The table already holds
+/// BOTH entries; only the lookup was lossy. Duplicates are adjacent because
+/// the table is sorted by name, so the run scan below is O(#duplicates).
+fn fn_returns_has_type(fn_returns: Array[(String, String)], fname: String, want: String) -> Bool {
+  let start = fn_returns_find(fn_returns, fname)
+  if start < 0 {
+    false
+  } else {
+    let mut i = start
+    let mut found = false
+    let mut done = false
+    while !done && i < Array::length(fn_returns) {
+      let (n, rt) = Array::get(fn_returns, i)
+      if n == fname {
+        if rt == want {
+          found = true
+          done = true
+        } else {
+          i = i + 1
+        }
+      } else {
+        done = true
+      }
+    }
+    found
+  }
+}
+
 fn fn_return_type(fn_returns: Array[(String, String)], fname: String) -> Option[String] {
   let idx = fn_returns_find(fn_returns, fname)
   if idx < 0 {
@@ -3014,13 +3050,16 @@ fn qual_ctor_member(head: String, member: String, struct_sets: Array[(String, Ar
   // `undefined variable (ident): C::Red`. A non-alias head resolves to itself.
   let head = resolve_alias_head(fn_returns, head)
   if struct_set_has(struct_sets, head) {
-    match fn_return_type(fn_returns, member) {
-      Some(en) => if en == head {
-        Some(member)
-      } else {
-        None
-      },
-      None => None
+    // #1491: ask whether `member` is recorded as a constructor of THIS enum,
+    // not what `member`'s first table entry returns. Constructor names collide
+    // across enums (`enum Color { Red }` next to an imported `enum Paint
+    // { Red }`), and the first-match form answered about the wrong enum, left
+    // the name qualified, and handed codegen -- whose ctor table is keyed
+    // unqualified -- `undefined variable (ident): Color::Red`.
+    if fn_returns_has_type(fn_returns, member, head) {
+      Some(member)
+    } else {
+      None
     }
   } else {
     None

@@ -1,0 +1,68 @@
+//# #1491: a LOCAL enum's qualified constructor still resolves when an IMPORTED
+// enum happens to declare a variant of the same name.
+//
+// `Tone::Crimson` below is unambiguous by construction -- the qualifier names
+// the enum. It still failed, and only at codegen:
+//
+//     undefined variable (ident): Tone::Crimson | locals=[__env,]
+//
+// The unqualify in `desugar_trait_dict.vibe` (codegen's constructor table is
+// keyed by the BARE variant name, so `E::V` has to become `V` before it gets
+// there) asked "what does `Crimson` return" through a first-match lookup over
+// a table that holds every top-level name in the merged compile. Constructor
+// names are not unique across enums, so with `Hue` imported the answer was
+// `Hue` -- not the `Tone` the qualifier asked about -- the gate failed, the
+// name stayed qualified, and codegen had no entry for it. Both entries were
+// already in the table; only the lookup was lossy.
+//
+// The type checker accepted all of this, so nothing surfaced until `vibe
+// build`, with a message naming no file and no line.
+//
+// NOT covered here (a separate, deliberate limitation): qualifying the
+// IMPORTED enum in this same file -- `Hue::Cerulean` -- is rejected by the
+// checker with `unknown name`. `seed_imported_enum_defs` drops an imported
+// enum from `defs` entirely when any of its variant names is also declared
+// locally, to preserve #1078's "no two enums in defs share a variant name"
+// invariant. That is a design decision #1455 step 5 has to revisit, not a
+// regression this file should lock.
+
+//# Imports
+
+import ./qualified_ctor_enum_support.vibe {
+  Cerulean, Crimson, Hue
+}
+
+//# Types
+
+/// `Crimson` collides with the imported `Hue`'s variant of the same name.
+enum Tone {
+  Crimson;
+  Muted
+}
+
+//# Functions
+
+fn tone_rank(t: Tone) -> Int {
+  match t {
+    Crimson => 0
+    Muted => 1
+  }
+}
+
+fn hue_rank(h: Hue) -> Int {
+  match h {
+    Crimson => 10
+    Cerulean => 11
+  }
+}
+
+//# Tests
+
+test "a local qualified ctor survives a colliding imported variant name" {
+  assert_eq(tone_rank(Tone::Crimson), 0)
+  assert_eq(tone_rank(Tone::Muted), 1)
+}
+
+test "the imported enum still works under its own bare constructors" {
+  assert_eq(hue_rank(Cerulean), 11)
+}
