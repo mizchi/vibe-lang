@@ -1516,7 +1516,8 @@ for fx in \
   fixtures/derive_default_test.vibe \
   fixtures/derive_hash_test.vibe \
   fixtures/eq_array_option_fields.vibe \
-  fixtures/bool_interp_test.vibe; do
+  fixtures/bool_interp_test.vibe \
+  fixtures/shadow_scope_test.vibe; do
   fxout="_build/_gate_derive_ext_$(basename "${fx%.vibe}").wasm"
   rm -f "$fxout" "$fxout.diag"
   # ADR-0069: these are test-block suites with no `_start` of their own — the
