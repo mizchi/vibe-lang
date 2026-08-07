@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   is_exception_label,
   is_exception_throw_handler_name,
   is_exception_throw_operation,
+  registry_builtin_arity,
   resolve_builtin,
   subst_add_bound,
   subst_apply,
@@ -2124,7 +2125,16 @@ fn builtin_fixed_arity(name: String) -> Int {
   } else if name == "FixedArray::blit" {
     5
   } else {
-    0 - 1
+    // #1513: fall back to the central registry rather than growing this list.
+    // The chain above predates the registry and covers the pure container /
+    // string builtins; every HOST builtin (`Stdout::*`, `Env::*`, `Stdin::*`,
+    // `Fs::*`, `sh`, `sleep`, ...) declares its parameters there and was
+    // therefore arity-UNCHECKED here -- `Stdout::write_stream()` compiled and
+    // emitted a module the host rejected at load time, and
+    // `Fs::read_file("a", "b")` did the same. Returns -1 for a non-registry
+    // name, so anything this pass genuinely cannot see stays tolerated exactly
+    // as before.
+    registry_builtin_arity(name)
   }
 }
 
