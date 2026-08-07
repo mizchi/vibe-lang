@@ -229,6 +229,34 @@ VIBE_RUNNER=$PWD/runtime/viberun/target/release/viberun \
 > `*_test.vibe` しか拾わない。設計が採用されたら `lib/` へ移してバッテリで
 > ロックする。
 
+### 3.5 backend: linear だけでなく wasm-gc でも動く
+
+`bench/tracing/trace_effect_shapes_test.vibe` は **`VIBE_TEST_BACKEND=gc`
+でも全 test が pass する。** 第一級 `resume` を値として保存する suspend 形も
+別 probe で確認した。
+
+この文書の初版は「代数 effect handler は linear backend のみ、
+`gc/backend_expr.vibe` は `with Exception` のスタブだけ」と書いていた。**誤り。**
+ADR-0076 の Context 節 (2026-07-22、Phase 3 着地前の状態を記述) と、
+`gc/backend_expr.vibe` の `EHandle` 分岐に残っていた古いコメントを
+そのまま引いていた。
+
+実際の構造は、effect の lowering が **codegen より前**にあり、両 backend で
+共有されていること:
+
+```
+lib/@vibe/compiler/codegen/gc/backend_body.vibe:411
+  inline_direct_performs(stmts)
+  let edp_errs = evidence_dict_pass(stmts, entry_name)
+```
+
+`gc/backend_expr.vibe` の `EHandle` 分岐 (`try_table`) は、これらのパスが
+**消しきれなかった** handle の受け皿であって、migration の失敗は
+`evidence_dict_pass` の `edp_errs` が報告する。tail-resumptive にせよ
+suspend-CPS にせよ、codegen に届く前に消えている。
+
+したがって **`Trace` は gc backend でも使える。**
+
 ## 4. 分散トレーシングへの写像
 
 | vibe | OTel |
@@ -300,9 +328,7 @@ custom section が `linked_compile.vibe:3441` で同じ構造の領域を予約�
   決定的な数値であり、ゲートに使える。span の heap delta はその内訳である。
 - **span の粒度は人が決める。** 段1 でどこに span を置くかはこの文書では
   決めていない (フェーズ境界から始めるのが自然)。
-- **wasm-gc backend は対象外。** 代数 effect handler は linear backend のみ
-  (`gc/backend_expr.vibe` は `with Exception` のスタブだけ)。
-  `VIBE_TEST_BACKEND=gc` の test/bench では `Trace` は使えない。
+
 
 ## 8. 副産物: ドキュメントとの食い違い
 
@@ -319,7 +345,13 @@ probe を書く過程で cheatsheet と実測が合わない点が3つ出た。�
    "handled body calls a local closure" はまさにその形で**コンパイルも実行も通った**。
    その後の修正で通るようになったのか、元の再現に自分が写しそこねた差異が
    あるのかは切り分けていない — 表を直す前に再測定が要る。
-3. **「loop 内の perform は compile error」は tail-resumptive には当てはまらない。**
+3. **`gc/backend_expr.vibe` の `EHandle` コメントが、削除済みの機構を根拠に
+   していた** — 「algebraic user effects still need the linear backend's memo
+   machinery」の memo/replay engine は ADR-0076 追記34 V2 で物理削除済み。
+   ADR-0076 の Context 節も Phase 3 着地前の記述のまま。この2つが
+   「wasm-gc では代数 effect が使えない」という誤解の出所で、初版の
+   この文書もそれを引き写していた (§3.5)。コメントは本 PR で修正した。
+4. **「loop 内の perform は compile error」は tail-resumptive には当てはまらない。**
    この記述は first-class resume (suspend CPS) の制約リストの中にあるが、
    読むと一般則に見える。上のテストの "perform inside a while loop" は
    tail-resumptive な handler で
