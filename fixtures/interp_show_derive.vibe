@@ -22,6 +22,8 @@
 //  1e14 prelude `to_string(<enum>)`   -- the spelled-out call, not interpolation
 //  1e15 prelude `to_string(<struct>)`
 //  1e16 a LOCAL that shadows a pass-through shim still wins over the rewrite
+//  1e17 an Option holding a STRUCT, through a variable        (#1445 残件)
+//  1e18 a nested container payload reached through a match binder (#1445 残件)
 //
 // #1443 review (Codex P2): 1e16 is the shadowing case. The rewrite matches the
 // shim by NAME, and a name is not a binding -- a parameter called `dump` in a
@@ -35,7 +37,13 @@
 // fixture rather than a separate one so that a change which fixes one spelling
 // and breaks the other cannot pass.
 //
-// Want 11111111111111111.
+// #1445 残件: 1e17/1e18 are the two sub-cases that survived the #1392 slices.
+// Both are the same root cause -- a payload whose type is recorded against the
+// SCRUTINEE never reached the binder that renders it. Measured before the fix:
+// 1e17 printed `Some(260)` (while the inline `Some(p)` printed correctly, which
+// is what made it look fixed) and 1e18 printed a bare pointer decimal.
+//
+// Want 1111111111111111111.
 import @vibe/prelude {
   to_string
 }
@@ -72,6 +80,24 @@ fn via_shadow(dump_p: (P) -> String, v: P) -> String {
   dump_p(v)
 }
 
+/// #1445 残件: the Option is held in a VARIABLE. The inline `"\{Some(p)}"`
+/// spelling already worked, so 1e17 checks BOTH in one digit -- a fix that
+/// repairs one and breaks the other cannot pass.
+fn show_opt_struct_var(p: P) -> String {
+  let op = Some(p)
+  "\{op}"
+}
+
+/// #1445 残件: the payload type lives on the ANNOTATION here, and it is a
+/// container -- the pre-fix seeding only recorded a bare `TyName` payload, so
+/// this binder had no type at all.
+fn show_nested_payload(o: Option[Array[P]]) -> String {
+  match o {
+    Some(vs) => "\{vs}",
+    None => "none"
+  }
+}
+
 fn bit(ok: Bool, weight: Int) -> Int {
   if ok {
     weight
@@ -88,11 +114,11 @@ let _start = () -> Int {
   let o = Some(7)
   bit("\{1}" == "1" && "\{true}" == "true" && "\{"s"}" == "s", 1) + bit("\{p}" == "P { x: 1, y: 2 }", 10) + bit("\{e}" == "B(3)", 100) + bit("\{A}" == "A", 1000) + bit(show_param(B(9)) == "B(9)", 10000) + bit("\{Some(1)}" == "Some(1)", 100000) + bit("\{None}" == "None", 1000000) + bit("\{Some(P::{ x: 1, y: 2 })}" == "Some(P { x: 1, y: 2 })", 10000000) + bit("\{o}" == "Some(7)", 100000000) + bit("\{Ok(3)}" == "Ok(3)", 1000000000) + bit("\{Err("bad")}" == "Err(bad)", 10000000000) + bit("\{(1, "a", true)}" == "(1, a, true)", 100000000000) + bit("\{[1, 2, 3]}" == "[1, 2, 3]", 1000000000000) + bit("\{Some(Some(5))}" == "Some(Some(5))", 10000000000000) + bit(to_string(e) == "B(3)", 100000000000000) + bit(to_string(p) == "P { x: 1, y: 2 }", 1000000000000000) + bit(via_shadow((_q: P) -> String {
     "CUSTOM"
-  }, p) == "CUSTOM", 10000000000000000)
+  }, p) == "CUSTOM", 10000000000000000) + bit("\{Some(p)}" == "Some(P { x: 1, y: 2 })" && show_opt_struct_var(p) == "Some(P { x: 1, y: 2 })", 100000000000000000) + bit(show_nested_payload(Some([p])) == "[P { x: 1, y: 2 }]", 1000000000000000000)
 }
 _start()
 
 __DATA__
 {
-  "last": "11111111111111111"
+  "last": "1111111111111111111"
 }

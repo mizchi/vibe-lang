@@ -1169,6 +1169,129 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 `VIBE_RC=shadow vibe build app.vibe` compiles on the Perceus RC path with **shadow-liveness instrumentation**: every freed heap block is marked in a shadow byte table, and the FIRST `rc_dup`/`rc_drop` touching a freed block executes `unreachable` — a deterministic trap at the faulting operation, instead of free-list corruption that crashes later at an unrelated location ("moving target", see issue #715). Debug-only: adds a memory pad + per-dup/drop checks. Normal builds (`VIBE_RC=1`/unset) are byte-identical to before this feature.
 
+## 落とし穴 (measured, not folklore)
+
+判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
+仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### `handle` は型検査を通っても**コンパイルできない**ことがある
+
+`vibe check` は codegen まで行かないので、この失敗は**型検査では見えない**。
+`vibe build` / `vibe test` / doctest まで行って初めて出る:
+
+```
+handle of effect 'Ask' cannot be compiled: the site is not eligible for
+evidence-passing migration (ADR-0076) ...
+```
+
+実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level
+`let` にあるか `fn` の中にあるかは**無関係**で、`ask_once` を `fn` で宣言したか
+`let` lambda で宣言したかも**無関係**:
+
+| handled body が呼ぶもの | 結果 |
+|---|---|
+| `handle { ask_once() }` — 直接 perform する関数 | ok |
+| `handle { bump(ask_once()) }` — `bump` が top-level `fn` | ok |
+| `handle { bump(ask_once()) }` — `bump` が**ローカルのクロージャ** | **NG** |
+
+エラー文が列挙している適格な形がそのまま規則 — 直接 `perform`、**名前付き
+top-level 関数**の呼び出し、row 注釈付きクロージャリテラル。
+
+**迷ったら handled body から呼ぶものを top-level `fn` に出す。**
+
+(この表は当初 lang-review r3 で「handle の位置が効く」と誤って記録し、r4 の
+再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
+どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
+
+### 補間できるのは Show を持つ型だけ (#1445)
+
+宣言済みの struct / enum を `\{x}` に入れるには **`derive(Show)` か手書きの
+`fn T::to_string(v) -> String`** が要る。無いとコンパイルエラー:
+
+```
+cannot interpolate a value of type `F`: it has no Show renderer
+-- add `derive(Show)` to `F`, or define `fn F::to_string(v) -> String` (#1445)
+```
+
+以前は黙って**ポインタの10進数**を出していた (`"\{f}"` → `288`)。型は分かって
+いるのだから、それは missing `derive(Show)` であって「描画できない値」では
+ないため、エラーにした。
+
+スカラ (`Int`/`String`/...)、`Option`/`Result`/tuple/`Array`、型が解決できない
+値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
+のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
+
+### capability builtin の呼び出しは arity も引数型も検査されない (#1513)
+
+**通ったことを正しさの証拠にしないこと。** これは compile も実行も成功して
+garbage を出す:
+
+```vibe skip
+// doctest-skip: this is the silent miscompile the section documents
+Stdout::write_stream(42)      // Int を String の位置に — 診断なし、実行も成功
+Stdout::write_stream()        // 0 引数 — 診断なし、不正な wasm を吐く
+```
+
+未検査: `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file`。
+検査あり: `Array::*` / `String::*` / `Bytes::*` / `Profiler::now_us` および
+ユーザー定義関数 (`function arity mismatch ...` がスパン付きで出る)。
+
+capability かどうかでは分かれない — checker の fast path に載っているかどうか。
+host import が絡む呼び出しで挙動が変なときは、まず引数の数と型を目で確認する。
+
+### 区切り文字は文脈で違う
+
+```vibe skip
+// doctest-skip: shows both separators side by side, including the rejected one
+enum Shape { Circle(Int); Rect(Int, Int) }        // 宣言メンバは ;
+let r = match s { Circle(r) => r, _ => 0 }        // match arm は ,
+```
+
+`,` を宣言メンバの区切りに使うのは 0.3.0 で削除済み。逆に match arm を `;` で
+区切ると `unexpected in pattern: ;`。この cheatsheet 自身がこの2行を並べて
+説明している場所で間違えていた (#1506 で修正)。
+
+### top-level に裸の式は置けない (ADR-0069)
+
+```vibe skip
+// doctest-skip: the first form is the ADR-0069 rejection this section documents
+let c = add(1, 2)
+c                                  // NG: top-level expressions are not allowed
+let main = () -> Int { c }         // ok
+```
+
+### test / bench
+
+```vibe skip
+// doctest-skip: every NG line here is a form the parser rejects on purpose
+test "name" { .. }        // ok  — 名前は文字列リテラル必須
+test name { .. }          // NG: expected test name string
+test "n" with Fs { .. }   // NG: expected { but got with — effect row は書けない
+```
+
+row を書けない帰結として、**`Http` / `Socket` / `Llm` を実際に呼ぶ test / bench
+は書けない** (#1508)。これらは test/bench の ambient row に入っておらず、足す
+手段が無い。`handle { .. } with Http { _ => () }` は通るが、それは effect を
+**放電**する — 実際の呼び出しをハンドラで置換するので mock にしかならない。
+
+### 引数
+
+```vibe skip
+// doctest-skip: call fragments, including the rejected positional/labeled mix
+f(x = 1, y = 2)     // ok  — 全部 labeled
+f(1, 2)             // ok  — 全部 positional
+f(1, y = 2)         // NG: mixes positional and labeled arguments
+```
+
+`x?` (optional) は**パーサが受理するだけで semantics は未実装** (#1500)。
+省略すると `arity mismatch`、body 内では `Option[T]` ではなく `T` に束縛される。
+
+### `Error` は effect の綴りとしては退役、operation 修飾子としては生存
+
+上の "Error boundary" 節を参照。row 位置 (`with Error`) と handle する effect 名
+(`handle .. with Error`) はどちらも parse error、`perform Error::Throw(x)` は
+今も通る。
+
 ## File Conventions
 
 | File | Purpose |
