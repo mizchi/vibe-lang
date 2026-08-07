@@ -24,6 +24,52 @@ The first implementation step is measurement. It must not change cache keys or
 claim file-level code generation is safe. Generated compiler bundles are neither
 benchmark inputs to edit cases nor files that the benchmark may update.
 
+## Roadmap invariants
+
+These hold across every phase of the production roadmap (#1379). They are
+constraints on *how* a slice may be built, not a list of work items; changing one
+is an ADR-sized decision, not a slice-sized one.
+
+**Identity**
+
+- A physical file is an ingestion/cache shard. Type checking and codegen reuse are
+  keyed on the **semantic module**, and eventually the declaration SCC — not on the
+  file.
+- **mtime is a hint, never a semantic identity.** Its only job is to let the
+  compiler skip *recomputing* a content identity. A stat-token match may reuse a
+  previously computed source fingerprint; it may not stand in for one.
+- **Git commit/author/last-modified dates are never content identity.** For a
+  tracked clean file, the blob OID is the strong identity candidate; dirty and
+  untracked files fall back to stat + content hash. Behavior outside a Git
+  repository must be identical.
+- Do not conflate `source_fingerprint`, `implementation_fingerprint`,
+  `interface_fingerprint`, `checked_env_fingerprint`, normalized typed-IR
+  identity, and artifact-input identity. They answer different questions and
+  invalidate on different edits.
+
+**Safety**
+
+- A **missing required recheck is a failure.** Conservative over-invalidation is
+  permitted but must be *visible* — reported as residual, never silently accepted
+  as conformance.
+- The Lean model covers cache-key eligibility and required invalidation. It does
+  not claim to prove the compiler's semantics; the current over-invalidation is
+  not evidence of planner conformance.
+- Publish an artifact only after a successful computation. Failure, cancellation,
+  and crash publish nothing — no artifacts, no diagnostics.
+- Malformed, truncated, stale, or torn cache state fails closed to a cold full
+  check. Never implicitly upgrade an older transport.
+
+**Process**
+
+- Switching from observation to production reuse is staged: shadow first, then
+  feature-flagged, then default — with cold/warm parity and the oracle bridge
+  green before each step.
+- Benchmarks and oracles use a temporary workdir and an isolated cache. They never
+  edit a tracked fixture while running.
+- Do not paper over missing provenance in a full trait observation by reparsing
+  and reprinting source.
+
 ## User-visible KPI contract
 
 Measure these endpoints separately:

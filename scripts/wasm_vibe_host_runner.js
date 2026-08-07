@@ -412,6 +412,23 @@ function allocHostBuffer(instance, size, align = 8) {
   return alignedPtr;
 }
 
+// A vibe string/bytes value is the fat pointer `(ptr << 32) | len` carried in an
+// i64. The JS-API hands an i64 to the host as a SIGNED BigInt, so as soon as the
+// guest allocates past 2 GiB the pointer's bit 31 is set, bit 63 of the packed
+// value is set, and an arithmetic `>> 32n` yields a NEGATIVE pointer. Reinterpret
+// the whole word as unsigned first: below 2 GiB this is the identity, above it it
+// is the difference between working and `string range out of bounds`.
+//
+// This is load-bearing for real workloads, not a theoretical edge: an FS-mode
+// compile of the whole CLI (`scripts/build_cli_core.sh`) with a COLD type-env
+// cache peaks around 2.6-2.7 GiB, and died on the very last write (the
+// `.funcmap` sidecar) after having produced a correct 22 MB wasm. A warm cache
+// stays under 2 GiB, which is why it reads as flaky.
+function unpackFatPointer(packed) {
+  const bits = BigInt.asUintN(64, packed);
+  return { ptr: Number(bits >> 32n), len: Number(bits & 0xffffffffn) };
+}
+
 function decodeTaggedString(instance, tagged) {
   if (typeof tagged !== "bigint") {
     throw new Error(`expected tagged string bigint, got ${typeof tagged}`);
@@ -435,8 +452,7 @@ function decodeTaggedString(instance, tagged) {
     }
   }
 
-  const ptr = Number(tagged >> 32n);
-  const len = Number(tagged & 0xffffffffn);
+  const { ptr, len } = unpackFatPointer(tagged);
   const start = ptr;
   const end = start + len;
   if (start < 0 || end < start) {
@@ -456,8 +472,7 @@ function decodeSelfhostPackedString(instance, packed) {
     throw new Error("missing exported memory for selfhost string decode");
   }
   const mem = new Uint8Array(instance.exports.memory.buffer);
-  const ptr = Number(packed >> 32n);
-  const len = Number(packed & 0xffffffffn);
+  const { ptr, len } = unpackFatPointer(packed);
   const start = ptr;
   const end = start + len;
   if (start < 0 || len < 0 || end < start || end > mem.length) {
@@ -474,8 +489,7 @@ function decodeSelfhostPackedBytes(instance, packed) {
     throw new Error("missing exported memory for selfhost bytes decode");
   }
   const mem = new Uint8Array(instance.exports.memory.buffer);
-  const ptr = Number(packed >> 32n);
-  const len = Number(packed & 0xffffffffn);
+  const { ptr, len } = unpackFatPointer(packed);
   const end = ptr + len;
   if (ptr < 0 || len < 0 || end < ptr || end > mem.length) {
     throw new Error(`selfhost bytes range out of bounds: ${ptr}..${end}`);

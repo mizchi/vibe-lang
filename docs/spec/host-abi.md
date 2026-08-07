@@ -36,6 +36,20 @@
 値表現は **vibe tagged i64**。packed string / bytes は引数 i64 が linear memory 上の領域を指し、
 ホストは export された `memory` 経由で読み書きする（エンコードは runtime / `vibe_read_packed_str` 参照）。
 
+> **packed 値のポインタは unsigned 32-bit である。** fat pointer は
+> `(ptr << 32) | len` で、guest の heap が 2 GiB を越えると `ptr` の bit 31 が
+> 立ち、i64 全体の bit 63 が立つ。JS の WebAssembly API は i64 を**符号付き**
+> BigInt として渡すので、ホスト側が `packed >> 32n`（算術シフト）で取り出すと
+> **負のポインタ**になり `string range out of bounds` で落ちる。ホストは必ず
+> 64-bit を unsigned に読み直してから上位 32 bit を取ること
+> (`scripts/wasm_vibe_host_runner.js` の `unpackFatPointer`)。2 GiB 未満では
+> 恒等なので、この誤りは**大きな入力でだけ再現する**。
+>
+> 実例: FS モードで CLI 全体をコンパイルすると、type-env cache が cold のとき
+> guest heap のピークが 2.6〜2.7 GiB に達し、**正しい 22 MB の wasm を出力し
+> 終えた後**、最後の `.funcmap` sidecar の書き込みでこれを踏んでいた。cache が
+> warm だと 2 GiB を越えないので通る — flaky に見えるのはこのため。
+
 | effect | import | signature | 意味 |
 |---|---|---|---|
 | `Fs` | `vibe::fs_read_file` | `(path: i64) -> i64` | ファイル読込（戻り値は packed string）|
