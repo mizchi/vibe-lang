@@ -4206,6 +4206,9 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       // function literally named `__try_bind`/`__try_op` with the wrong shape
       // (handled by `try_sentinel` returning None) takes the generic path.
       let try_kind = try_sentinel(callee, args)
+      // #1571: this arm sees every call site, so it is where the program is
+      // observed to need the `inspect` body appended (emit_inspect_fn_if_needed).
+      note_inspect_call(callee, args)
       // #1392: the interpolation replacement, computed once here rather than
       // inside the else-if chain below so the resolvers run at most once per
       // call site. Slice 1 (the argument's type names a `T::to_string`) wins
@@ -4955,6 +4958,89 @@ fn top_level_fn_exists(stmts: Array[Stmt], fname: String) -> Bool {
     }
   }
   found
+}
+
+// ---- #1571: `inspect` without an import ----
+//
+// `inspect(value, content)` is the inline-snapshot assertion `vibe test
+// --update` rewrites. It lived only in lib/@vibe/core/assert.vibe, so using it
+// meant importing it -- and a file compiled in a SINGLE-FILE lane (no import
+// resolution) could not use it at all. That blocked moving fixtures off
+// `__DATA__`: 5 of compiler_gate.sh's 21 wasm-gc sites compile their fixture
+// that way.
+//
+// It is registered as a builtin name for the CHECKER (core/builtin_registry.vibe)
+// and its body is APPENDED here when a program calls it without defining or
+// importing its own -- the same record-then-emit shape as `__arr_equals__`
+// above, and for the same reason: the walk that sees the call sites is the one
+// that knows whether the function is needed.
+//
+// The emitted body is the library one verbatim, so the two spellings cannot
+// drift in meaning:
+//
+//   let actual = __to_string(value)
+//   if actual == content { () }
+//   else { println("inspect mismatch:\n  actual:   " ++ actual
+//                  ++ "\n  expected: " ++ content); assert_true(false) }
+//
+// The "inspect mismatch:" / "actual:" / "expected:" wording is load-bearing --
+// inspect_update.vibe parses it to find the stale literal to patch.
+let dtd_inspect_used = [
+  0
+]
+
+fn inspect_used_reset() -> Unit {
+  Array::set(dtd_inspect_used, 0, 0)
+}
+
+/// Note a call to a bare 2-argument `inspect`. Called from `rewrite_expr`'s
+/// ECall arm, which visits every call site in the program.
+fn note_inspect_call(callee: Expr, args: Array[Expr]) -> Unit {
+  match callee {
+    EIdent(n, _) => if n == "inspect" && Array::length(args) == 2 {
+      Array::set(dtd_inspect_used, 0, 1)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// `let inspect = (value, content: String) -> Unit { ... }` -- the library
+/// function's body, synthesized. `value` is left unannotated: `__to_string`
+/// takes anything, and an annotation would need a type parameter this
+/// statement-level synthesis has no reason to introduce.
+fn gen_inspect_fn() -> Stmt {
+  let actual = EIdent("__ins_actual", -1)
+  let content = EIdent("__ins_content", -1)
+  let msg = concat2(EString("inspect mismatch:\n  actual:   "), concat2(actual, concat2(EString("\n  expected: "), content)))
+  let report = ESeq(ECall(EIdent("println", -1), Array::slice([
+    msg
+  ], 0, 1), -1), ECall(EIdent("assert_true", -1), Array::slice([
+    EBool(false)
+  ], 0, 1), -1))
+  let body = ELet("__ins_actual", ECall(EIdent("__to_string", -1), Array::slice([
+    EIdent("__ins_value", -1)
+  ], 0, 1), -1), EIf(EBinOp("==", actual, content), EUnit, report), -1)
+  let params = Array::slice([
+    ("__ins_value", None),
+    ("__ins_content", Some(TyName("String")))
+  ], 0, 2)
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, "inspect", None, EFn(no_tp, no_tb, params, Some(TyUnit), None, body))
+}
+
+/// Append the `inspect` body when this program called it and has none of its
+/// own. An imported or user-defined `inspect` wins: `top_level_fn_exists`
+/// covers both, since imports are flattened into top-level statements before
+/// this pass runs.
+fn emit_inspect_fn_if_needed(stmts: Array[Stmt]) -> Unit {
+  if Array::get(dtd_inspect_used, 0) == 1 && !top_level_fn_exists(stmts, "inspect") {
+    Array::push(stmts, gen_inspect_fn())
+  } else {
+    ()
+  }
 }
 
 fn concat2(a: Expr, b: Expr) -> Expr {
@@ -9386,6 +9472,8 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   derived_renderers_reset()
   // #1526: same reason -- the recorded set must describe THIS run's output.
   arr_eq_needed_reset()
+  // #1571: likewise for the `inspect` body.
+  inspect_used_reset()
   desugar_derives(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
@@ -9434,6 +9522,8 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // is what decides which helpers exist. Anything `desugar_derives` could not
   // predict (an operand reached through a name) is generated here.
   emit_recorded_arr_equals(stmts)
+  // #1571: same shape -- the rewrite walk above is what observed the calls.
+  emit_inspect_fn_if_needed(stmts)
   // #1374: append the cell only for a program that actually reads or writes it,
   // so a throw-free program's output is unchanged.
   if Array::get(dtd_exn_kind_state, 1) == 1 {

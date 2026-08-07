@@ -53,10 +53,6 @@ if len(rows) < 90:
 reg_lin = {n for n, l, g, v in rows if l == "true"}
 reg_gc = {n for n, l, g, v in rows if g == "true"}
 neither = sorted(n for n, l, g, v in rows if l == "false" and g == "false")
-if neither:
-    print(f"[builtin-parity] FAIL: registry rows claiming NEITHER lane "
-          f"(dead rows?): {', '.join(neither)}", file=sys.stderr)
-    sys.exit(1)
 
 served_lin = lin_cs | reg_lin
 served_gc = gc_cs | reg_gc
@@ -68,7 +64,7 @@ for ln, line in enumerate(open(CLASSIFICATION), 1):
     if not line.strip() or line.startswith("#"):
         continue
     parts = line.rstrip("\n").split("\t")
-    if len(parts) < 4 or parts[1] not in ("linear-only", "gc-only"):
+    if len(parts) < 4 or parts[1] not in ("linear-only", "gc-only", "synthesized"):
         print(f"[builtin-parity] FAIL: malformed classification row at "
               f"{CLASSIFICATION}:{ln}: {line.rstrip()}", file=sys.stderr)
         sys.exit(1)
@@ -79,9 +75,33 @@ for ln, line in enumerate(open(CLASSIFICATION), 1):
         sys.exit(1)
     classified.add(key)
 
-unclassified = sorted(actual - classified)
-stale = sorted(classified - actual)
+# #1571: a row can legitimately claim NEITHER codegen lane -- `inspect` is
+# served by a function body that desugar_trait_dicts APPENDS to the program
+# (gen_inspect_fn), so by codegen time it is an ordinary call to an ordinary
+# top-level function and no dispatch arm exists or should exist. That used to
+# be rejected outright as a dead row, which is the right default: a registry
+# row with no implementation anywhere type-checks calls that then fail at
+# codegen. So the exemption is a two-way ratchet like the rest of this file --
+# a `synthesized` row must still claim neither lane, and a row claiming neither
+# lane must be listed.
+synth_classified = {n for n, lane in classified if lane == "synthesized"}
+unlisted_neither = sorted(set(neither) - synth_classified)
+stale_synth = sorted(synth_classified - set(neither))
+
+lane_classified = {(n, lane) for n, lane in classified if lane != "synthesized"}
+unclassified = sorted(actual - lane_classified)
+stale = sorted(lane_classified - actual)
 ok = True
+if unlisted_neither:
+    ok = False
+    print("[builtin-parity] FAIL: registry rows claiming NEITHER lane with no "
+          f"`synthesized` row in {CLASSIFICATION} (dead rows?): "
+          f"{', '.join(unlisted_neither)}", file=sys.stderr)
+if stale_synth:
+    ok = False
+    print("[builtin-parity] FAIL: `synthesized` classification rows whose "
+          "registry row now claims a codegen lane (remove them from "
+          f"{CLASSIFICATION}): {', '.join(stale_synth)}", file=sys.stderr)
 if unclassified:
     ok = False
     print("[builtin-parity] FAIL: unclassified single-lane builtins "
@@ -98,7 +118,8 @@ if stale:
         print(f"  {n}  ({lane})", file=sys.stderr)
 if not ok:
     sys.exit(1)
-print(f"[builtin-parity] ok: linear serves {len(served_lin)}, gc serves "
+print(f"[builtin-parity] ok: {len(synth_classified)} desugar-synthesized, "
+      f"linear serves {len(served_lin)}, gc serves "
       f"{len(served_gc)}, both {len(served_lin & served_gc)}, classified "
       f"divergence {len(actual)} (linear-only "
       f"{len(served_lin - served_gc)}, gc-only {len(served_gc - served_lin)})")
