@@ -411,19 +411,68 @@ critical path:
   平らになる。回帰テストの3番目がこれをロックしている。
 - **rc も記録する。** 失敗した span を落とすと、赤いビルドが短いビルドに見える。
 
+### 5.7 バッテリ全体も1本のトレースになった
+
+`unit_test_runner.sh` の `run_one` を span で包んだ。`xargs -P` の worker は
+それぞれ別プロセスなので `VIBE_TRACEPARENT` を継承し、バッテリ span の下の
+**きょうだい**として並ぶ。
+
+```bash
+VIBE_TRACE_OUT=/tmp/battery.ndjson bash scripts/trace_span.sh "unit battery" \
+  bash scripts/unit_test_runner.sh
+node scripts/trace_report.mjs /tmp/battery.ndjson --top 12
+```
+
+**541 span / 1トレース** (テストファイル538 + ステージ2 + root)。
+
+```
+ 420893.2  272429.6  unit battery
+  36676.3   36676.3    stage0(seed) -> stage1
+  33271.7   33271.7    stage1 -> stage2
+  ...
+
+slowest 12 by self time:
+ 272429.6  unit battery
+  46937.7  test lib/@vibe/compiler/tests/s5_wasm_test.vibe
+  36676.3  stage0(seed) -> stage1
+  33271.7  stage1 -> stage2
+  24610.1  test lib/@vibe/compiler/tests/s5_entry_test.vibe
+  12520.6  test lib/@vibe/compiler/tests/codegen_heap_e2e_test.vibe
+   3256.7  test lib/@vibe/compiler/tests/module_loader_collect_sources_test.vibe
+```
+
+2つの読み:
+
+1. **538ファイル中2つ (`s5_wasm_test` / `s5_entry_test`) で 71.5 秒**、
+   3番目以降とは1桁違う。バッテリを速くする話はここから始まる。
+2. **421秒のうち 272秒 (65%) が、どの子 span の中にもない。**
+   §5.6 で bootstrap ビルドの 48% が同じように「どのステージにも入っていない」
+   と出たのと同じ場所 — flat source の準備・bundle 生成・discovery・cache 暖機
+   である。**2つの独立な計測が同じ穴を指している。**
+
+> self 時間の読み方: 並列 fan-out では子の wall の**合計**は親を超えるので、
+> `trace_report.mjs` は子の区間の**和集合**を引いている。したがって
+> 「self = どの子 span も走っていなかった時間」であって、
+> 「親自身の CPU 時間」ではない。
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |
 |---|---|---|
-| 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 | **着地済み (§5.6)**。`generations.sh` に配線。`unit_test_runner.sh` / doctest fan-out は次 |
+| 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 | **着地済み (§5.6 / §5.7)**。`generations.sh` のステージ hop + `unit_test_runner.sh` の per-file。doctest fan-out が残り |
 | 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える | **§5.5 で試して拒否された。handle 適格性の拡張が先** |
 | 2 | `vibe bench` が bench ブロックごとに span 内訳を出す | 要 (runner) |
 | 3 | `span {}` スコープ構文 (§2.2 の脱糖。`throw` → `perform Exception::Throw` と同じ層) | 要 (parser/desugar のみ) |
 | 4 | OTLP エクスポータ | 不要 |
 
-段0 は §5.6 で着地した。残る fan-out (`unit_test_runner.sh`、doctest) を
-同じ `trace_span.sh` で包めば CI バッテリ全体が1本のトレースになる — これも
-コンパイラ変更は要らない。段1 は §5.5 の適格性が解けるまで止まっている。
+段0 は §5.6 / §5.7 で着地した (`generations.sh` のステージ hop と
+`unit_test_runner.sh` の per-file)。残るのは doctest fan-out。
+段1 は §5.5 の適格性が解けるまで止まっている。
+
+**段0 だけで、次に手を入れる場所が2つ specific に出た** — 538ファイル中2つが
+バッテリの1/6を占めていること (§5.7)、そして bootstrap でもバッテリでも
+「どのフェーズにも属さない」時間が半分前後あること (§5.6 の 48%、
+§5.7 の 65%) である。
 
 ## 7. この設計が引き受けていないこと
 
