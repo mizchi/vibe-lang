@@ -158,6 +158,8 @@ vibe type-at file.vibe <line> <col>
 vibe binding-at file.vibe <line> <col>
 
 # 全 diagnostics (parse error 全件 + 型エラー)。空出力 = clean
+# ただし単一ファイル解析で import を辿らない → import のあるファイルでは
+# 「未定義」の誤検知を出す。import があるなら `vibe check` で判定すること
 vibe diagnostics file.vibe
 
 # closure に捕獲されて escape する `let mut` (NAME START END / 行)。
@@ -165,6 +167,13 @@ vibe diagnostics file.vibe
 # 空出力 = ファイル中の `let mut` は全部ただの local
 vibe escapes file.vibe
 ```
+
+> **`vibe diagnostics` は import を解決しない。** `import ./dep.vibe { Hue as T }`
+> のあるファイルは、正しくても `unknown name: T::Crimson` を返す。空出力が意味
+> するのは「**単体ファイルとして** clean」であって「コンパイルが通る」ではない。
+> **import があるファイルの可否は `vibe check`** で見る (diagnostics はエディタの
+> バッファ単位フィードバック用で、そこでは正しい道具)。逆向きの穴 — export されて
+> いない名前の import — は**両方とも見逃し**、codegen まで落ちない (#1521)。
 
 ### `vibe lsp` - Language Server
 
@@ -209,6 +218,8 @@ completion / signature help を提供する。詳細は
 - `pkf run release-check` — full gate (fmt + info + check + test + operation gates)。
 - `pkf run test-local` — 変更影響範囲のテストのみ (fast inner loop、flaker 経由)。
 - 単一ファイルの型検査 / 診断は `vibe diagnostics <file.vibe>`（空出力 = clean）。
+  **import を辿らないので、import のあるファイルは `vibe check <file.vibe>` で
+  判定すること** — diagnostics は import 由来の名前を「未定義」と誤検知する。
 - selfhost の CST-token formatter は実装済み (`lib/@vibe/compiler/fmt/format.vibe`,
   #854/#1138) — `bash scripts/vibe_fmt.sh [--check|--stdout] <file>` で
   直接使える。`pkf run fmt` (`scripts/vibe_fmt_apply.sh`) は `lib/**/*.vibe`

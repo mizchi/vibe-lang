@@ -206,6 +206,30 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
+### optional 引数 `z?` (#1500)
+
+`z?` は**省略できる**引数。宣言した型が `T` でも、body で受け取るのは
+`Option[T]`（省略された場合に何かを渡す必要があるため）。呼び出し側は
+素の値を書けばよく、`Some(..)` は desugar が付ける。
+
+```vibe
+fn greet(name: String, times?: Int) -> String {
+  let n = match times {
+    Some(v) => v,
+    None => 1
+  }
+  "\{name} x\{n}"
+}
+
+let a = greet("hi")        // => "hi x1"
+let b = greet("hi", 3)     // => "hi x3"
+```
+
+- 省略できるのは**末尾の** optional 引数だけ。必須引数を落とすのは従来どおり
+  arity エラー
+- 関数型でも `(String, times?: Int) -> String` と書ける (この位置は
+  `Option[Int]` として記録される)
+
 ### Lambda shorthand
 
 <!-- doctest-skip: 未定義名 (xs) を参照する構文提示の断片 -->
@@ -481,13 +505,58 @@ trait Ord: Eq                              // supertrait
 export open trait Show                     // extensible outside module
 
 impl Eq for Int
-impl [T: Eq] Eq for Array[T]              // conditional impl
+impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には使えない (下記)
 
 // `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
 // trait: `[T: Send]` accepts primitives, tuples, Option/Result, and
 // immutable structs/enums built from Send parts; Array/Bytes, closures,
 // and `mut`-field structs are rejected. `impl Send for X` is an error.
 ```
+
+### marker trait の impl は container には効かない (#1503)
+
+**メソッドを持たない trait (marker trait) の impl は、`Array` / `Bytes` の
+ような container に対して bound として使えない。** 宣言自体は通るが、
+その型を bound 付きの関数へ渡すと拒否される:
+
+```vibe skip
+trait Eq                      // メソッド無し = marker trait
+impl [T: Eq] Eq for Array[T]  // 宣言は通る
+
+fn keep[T: Eq](x: T) -> T { x }
+let bad = keep([1, 2, 3])     // reject される
+```
+
+理由は marker trait の**ディスパッチ先**にある。marker trait は builtin の
+`==` / `<` に落ちるが、**裸の `Array` / `Bytes` に対する `==` は参照等価**
+(`[1, 2] == [1, 2]` は `false`、#1526) なので、この impl を認めると
+`==` が黙って間違った答えを返す。診断がその旨を述べる。
+
+container に対して効かせたいなら **trait にメソッドを持たせる** —
+メソッドがあれば witness dictionary 経由でディスパッチするので、
+concrete (`impl M for Array[Int]`) でも generic (`impl [T] M for Array[T]`)
+でも解決する:
+
+```vibe
+trait Measured {
+  measure(Self) -> Int
+}
+
+impl [T] Measured for Array[T] {
+  measure(self) -> Int { Array::length(self) }
+}
+
+fn keep[T: Measured](x: T) -> T { x }
+let ok = keep([1, 2, 3])
+```
+
+> #1503 以前は、**concrete な impl (`impl M for Array[Int]`) が method-bearing
+> trait でも解決しなかった**。パーサが `for` の後ろの `[Int]` を捨てるため、
+> 環境には `Array` という頭だけが残る。今は generic 版と同じく**コンストラクタで
+> 照合する**ので両方の綴りが同じ挙動になる。裏を返すと、
+> `impl M for Array[Int]` は今のところ `Array[String]` にも効く
+> (パーサが型引数を保持していないため) — 特定の instantiation だけに
+> 絞る書き方はまだ無い。
 
 ## Collections
 
@@ -1180,8 +1249,10 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 `vibe build` / `vibe test` / doctest まで行って初めて出る:
 
 ```
-handle of effect 'Ask' cannot be compiled: the site is not eligible for
-evidence-passing migration (ADR-0076) ...
+handle of effect 'Ask' cannot be compiled here. Every perform this handle
+covers has to be statically visible to it, so the handled body may only:
+perform directly, call a named top-level `fn`, or call a closure literal that
+carries an effect row annotation. ...
 ```
 
 実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level
