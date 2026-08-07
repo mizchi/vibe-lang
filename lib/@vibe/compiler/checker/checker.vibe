@@ -6562,13 +6562,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         Some(te) => {
           let resolved = resolve_type_expr(te, defs)
           let resolved_ret = resolve_tparams_in(resolved, fn_env)
-          match unify(bt, resolved_ret, s2) {
-            Some(ns) => (subst_apply(ns, resolved_ret), ns),
-            None => {
-              Array::push(errors, String::concat("return type mismatch: expected ", String::concat(type_to_string(resolved_ret), String::concat(", got ", type_to_string(bt)))))
-              (CtUnknown, s2)
-            }
-          }
+          // #1451: check_assignable, not a raw `unify`, so the IMPLICIT
+          // tail-expression return follows the same rules as an EXPLICIT
+          // `return e` -- the EReturn arm already calls check_assignable with
+          // this exact label, so the two spellings of the same return disagreed.
+          //
+          // A closure LITERAL always synthesizes a PURE row (`CtFn(.., None)`):
+          // its row is not written at the literal, and the latent row is charged
+          // by the separate effect pass. A raw unify treats `None` vs
+          // `Some(row)` as a conflict (effect_names_compatible: "None (pure) vs
+          // Some(concrete) differ in set size"), so EVERY function returning an
+          // effectful function value was rejected -- including through Array /
+          // tuple / Option, since the mismatch is nested:
+          //   fn make() -> (String) -> Unit with Log::Emit {
+          //     (s) -> { perform Log::Emit(s) }        // expected .. got (?t0) -> ()
+          //   }
+          // check_assignable's structural retry tolerates exactly the
+          // pure->effectful direction and still reports the UNSOUND one (an
+          // effectful value flowing into a pure-typed slot) via
+          // effect_row_dropped, so this loosens nothing that was load-bearing.
+          let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", 0 - 1)
+          (subst_apply(ns, resolved_ret), ns)
         },
         None => (subst_apply(s2, bt), s2)
       }

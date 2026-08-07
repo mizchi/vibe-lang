@@ -57,6 +57,15 @@ fn net_three_params(a: Type, b: Type, c: Type) -> Array[Type] {
   arr
 }
 
+fn net_four_params(a: Type, b: Type, c: Type, d: Type) -> Array[Type] {
+  let arr = net_no_params()
+  Array::push(arr, a)
+  Array::push(arr, b)
+  Array::push(arr, c)
+  Array::push(arr, d)
+  arr
+}
+
 fn lookup_http_close(name: String) -> Option[Type] {
   if name == "Http::close" {
     Some(CtFn(net_one_param(CtUnknown), CtUnit, Some("Http")))
@@ -78,9 +87,26 @@ fn lookup_http_listen(name: String) -> Option[Type] {
   else None
 }
 
+/// #1505: this said TWO params while every other declaration of the same
+/// builtin says FOUR -- `builtins/declarations.vibe`
+/// (`declare Http::request(String, String, String, String) -> Int`), the
+/// viberun host import (`|method: i64, url: i64, headers: i64, body: i64|`,
+/// runtime/viberun/src/main.rs), the Node runner
+/// (`http_request(methodTagged, urlTagged, headersTagged, bodyTagged)`) and
+/// `lib/@vibe/http/http.vibe`'s `vibe_http_request_raw(method, url, headers,
+/// body)`. The checker was the outlier and it is the one that decides, so
+/// `Http::request("GET", url, "", "")` -- the shape the runtime actually
+/// takes -- reported `expected 2 args, got 4` and no caller of the full form
+/// could type-check.
+///
+/// The return stays `CtUnknown`: it is an opaque response handle, and every
+/// consumer below (`Http::response_status` / `response_body` /
+/// `response_header` / `close`) takes `CtUnknown`. `declarations.vibe` spells
+/// it `Int` because that file has no opaque-handle type; narrowing the
+/// checker to `Int` would leak the representation into user programs.
 fn lookup_http_request(name: String) -> Option[Type] {
   if name == "Http::request" {
-    Some(CtFn(net_two_params(CtString, CtString), CtUnknown, Some("Http")))
+    Some(CtFn(net_four_params(CtString, CtString, CtString, CtString), CtUnknown, Some("Http")))
   }
   else None
 }
