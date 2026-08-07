@@ -146,6 +146,36 @@ ADR-0076 のエラーで、位置の出どころが `EHandle(body, arms)`。こ�
 更新は手動 — 位置は「文言が変わっていないのに質が上がる」唯一の軸なので、
 自動検出の対象外にしてある。
 
+## 更新: #1513 の後半 (10 が silent → 診断あり)
+
+arity に続いて**引数の型**も塞いだ。`builtin_first_arg_head` /
+`builtin_arg_head_rest` という手書きの表 (Array / String / Bytes / FixedArray
+しかカバーしていない) を、中央レジストリのパラメータ型へフォールバックさせた。
+手書きの表は entry がある位置で勝つので、既に検査されていたものは verdict が
+変わらない。
+
+| # | ケース | 診断 | L | A | C | 計 |
+|---|---|---|---|---|---|---|
+| 10 | `Stdout::write_stream(42)` | `line 2:3-23: argument type mismatch for Stdout::write_stream: receiver type Int` | **1** | **1** | **2** | **4** (was 0) |
+
+mean = 38/10 = 3.8 → **repair_convergence = 4.8**。
+
+レジストリの型を head-kind 比較に落とすとき、`CtChar` は `CtInt` に畳む。
+`Char` はこの言語では `Int` の別名 (lexer が char リテラルを `TInt` で出すので
+`'A' == 65`、`core/types.vibe` の `char_int_compatible` が両方向に unify を許す)
+であり、head 比較が `unify` の作らない区別を作ってはいけない。畳まないと
+レジストリで `CtChar` と書かれた `Char::to_int` が `Char::to_int('A')` を弾き、
+逆に `CtChar` の値 (`Char::from_int(65)`) が `CtInt` と書かれた
+`Stdout::write_char` に渡せなくなる (実際に prelude の `char.vibe` が落ちた)。
+
+**コーパスから silent ケースが無くなった。** 09/10 は「診断が出ないこと」を測る
+ために置いた2件で、どちらも塞がった。今後 silent 種別が見つかったら**新しい
+ケースとして追加する**(既存の変更は不可) — この2件は「かつて診断が無かった」
+記録として、診断ありのケースのまま残る。
+
+`type_soundness` を 4.0 → 3.0 に下げた理由 (rubric 4 の定義そのままの silent
+miscompile) はこれで解消したので、次ラウンドの見直し対象。
+
 ### 09/10 の範囲 (実測) — #1513
 
 `direct_call_return` の fast path (`checker.vibe`、#626 の seed ヒープ制約で
