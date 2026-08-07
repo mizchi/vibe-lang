@@ -107,6 +107,14 @@ VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3ad/3 shadow interface-reuse observation oracle"
 VIBE_RC=0 node scripts/shadow_interface_reuse_oracle.mjs "$stage2_wasm"
 
+# 3ae. #1549 import-boundary fixtures: dependency trait definitions and impls
+# flow through import assembly (value-only env_flat_bindings boundary closed
+# for the state the TypeEnv carries), and user-trait bounds are enforced on
+# the FS/import path with single-module parity. Struct/enum/alias/effect
+# declarations remain out of the transported TypeEnv (#1550).
+echo "[compiler-gate] 3ae/3 import boundary (trait/impl propagation) fixtures"
+bash scripts/check_import_boundary.sh "$stage2_wasm"
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that

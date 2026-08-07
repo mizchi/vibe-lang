@@ -26,9 +26,12 @@ import @vibe/compiler/core {
   TypeEnv,
   bsearch_leftmost,
   dir_of_path,
+  env_append_dep_impls,
+  env_append_dep_impls_renamed,
   env_bind,
   env_flat_bindings,
   env_lookup_flat,
+  env_trait_def_named,
   normalize_path,
   resolution_env_seed,
   resolve_import_path,
@@ -193,6 +196,20 @@ fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, T
 /// therefore reported here, with the same message as a name that never
 /// existed: from the importer's side those are the same fact, "the
 /// dependency does not export this name".
+///
+/// #1549: the published dependency environment also carries trait
+/// definitions and impls (restrict_env_to_export_surface keeps those nodes
+/// wholesale; TDRE4's v3 transport preserves them), but this assembly used
+/// to project only `env_flat_bindings` — the value-only boundary. The core
+/// helpers close it for the state the environment actually carries: an
+/// imported trait NAME rebinds the dependency's `EnvTraitDef` into the
+/// consumer environment (same declaration-order shadowing as values), and a
+/// dependency's impls flow with the import statement itself — impls have no
+/// name to import, and the dependency's own environment already contains its
+/// dependencies' impls, so this is the transitive closure the merged build
+/// lane sees. Struct/enum/alias definitions and effect declarations are NOT
+/// in the TypeEnv at all; closing that half of the boundary needs the module
+/// typing artifact (#1550) and is out of this slice.
 fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
@@ -240,10 +257,35 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
           with_name
         }
       }
-      bind_names(j + 1, with_companions)
+      // #1549: an imported trait name carries its definition, not just a
+      // value binding. The rebind places the dependency's EnvTraitDef on the
+      // consumer chain under the imported (possibly aliased) name with the
+      // same declaration-order shadowing values get.
+      let with_trait = if starts_with_upper(name) {
+        match env_trait_def_named(dep_env, name) {
+          Some((supers, marker, methods, header_params, method_gens)) => {
+            let with_def = EnvTraitDef(bound_name, supers, marker, methods, with_companions, header_params, method_gens)
+            // An aliased trait needs the dependency's impls of it relabeled
+            // to the alias, or its bounds would find no impl (#1549).
+            if bound_name == name {
+              with_def
+            } else {
+              env_append_dep_impls_renamed(with_def, dep_env, name, bound_name)
+            }
+          },
+          None => with_companions
+        }
+      } else {
+        with_companions
+      }
+      bind_names(j + 1, with_trait)
     }
   }
-  bind_names(0, acc)
+  // Impls flow with the import statement itself: they have no importable
+  // name, and the dependency's environment already includes its own
+  // dependencies' impls, so this matches the merged build lane's transitive
+  // visibility (#1549).
+  env_append_dep_impls(bind_names(0, acc), dep_env)
 }
 
 fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {

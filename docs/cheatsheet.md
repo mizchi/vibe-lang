@@ -1415,6 +1415,20 @@ f(1, y = 2)         // NG: mixes positional and labeled arguments
 (`handle .. with Error`) はどちらも parse error、`perform Error::Throw(x)` は
 今も通る。
 
+### match arm の body に裸の代入を置けるのは現行コンパイラだけ (seed は拒否)
+
+`EnvBind(_, _, rest) => cursor = rest` のような**brace なしの代入 arm** は
+現行 stage2 では通るが、pinned seed (console-exception-rowvar-2026-08-06) は
+`unexpected in pattern: =` で拒否する — arm 式を `cursor` で読み終えた後の
+`=` を次 arm のパターン開始として読むため。compiler source 自体に書くと
+`generate_bundle` の bootstrap pass 1 (seed flatten) が落ちる (#1549 実測)。
+compiler source では `=> { cursor = rest }` と brace で包むこと。
+
+```vibe skip
+// seed が拒否する形 (現行 stage2 のみ受理) — compiler source では使わない
+match e { EnvBind(_, _, rest) => cursor = rest, _ => () }
+```
+
 ## File Conventions
 
 | File | Purpose |

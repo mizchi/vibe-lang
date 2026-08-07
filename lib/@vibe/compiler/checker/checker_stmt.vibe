@@ -1739,8 +1739,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           env_eq
         }
+        // #1549: `derive(Show)` also registers `impl Show for E` (see the
+        // struct arm and the #694 Hash precedent).
         let env_show = if struct_derives_has(enum_derives, "Show") || struct_derives_has(enum_derives, "Hash") {
-          env_bind(env_ord, String::concat(name, "::to_string"), CtFn([
+          let env_show_base = if struct_derives_has(enum_derives, "Show") {
+            EnvTraitImpl("Show", ctor_result_type, env_ord)
+          } else {
+            env_ord
+          }
+          env_bind(env_show_base, String::concat(name, "::to_string"), CtFn([
             ctor_result_type
           ], CtString, None))
         } else {
@@ -1858,8 +1865,17 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           env1
         }
+        // #1549: `derive(Show)` also registers `impl Show for T`, mirroring the
+        // #694 Hash precedent -- with user-trait bounds now enforced on the
+        // FS/import path, `to_string`'s `[T: Show]` bound must be satisfied
+        // by the derive that generates the witness.
         let env3 = if struct_derives_has(derives, "Show") || struct_derives_has(derives, "Hash") {
-          env_bind(env2, String::concat(name, "::to_string"), CtFn([
+          let env_show_base = if struct_derives_has(derives, "Show") {
+            EnvTraitImpl("Show", CtStruct(name), env2)
+          } else {
+            env2
+          }
+          env_bind(env_show_base, String::concat(name, "::to_string"), CtFn([
             CtStruct(name)
           ], CtString, None))
         } else {
@@ -2087,20 +2103,13 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
 /// satisfy its bounds. Unresolved (still-polymorphic) vars are inherited by the
 /// caller, not violated, so they are skipped. One `no impl `Trait` for `Type``
 /// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
+/// Enforced on the single-module path and, since #1549, on the FS/import
+/// path too: import assembly now propagates dependency trait definitions and
+/// impls into the entry file's TypeEnv, so a cross-module
+/// `impl Hash for String` is visible and user-trait bounds no longer
+/// false-positive there (the earlier send_only carve-out existed for exactly
+/// that invisibility).
 fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
-  check_program_bounds_impl(env, s, defs, errors, false)
-}
-
-/// send_only: the FS/import path (check_program_with_env) checks ONLY the
-/// compiler-judged `Send` bound. User-trait bounds cannot be enforced there
-/// yet: imported files' `impl` declarations are not propagated into the
-/// entry file's TypeEnv, so a cross-module `impl Hash for String` would be
-/// invisible and every such bound would false-positive (found empirically:
-/// builtin_traits_test / iterator_test / to_string_bool_param_test).
-/// `Send` needs no user impls — its structural judgment plus the seeded
-/// primitive impls are complete in any env — so it is safe to enforce
-/// everywhere.
-fn check_program_bounds_impl(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String], send_only: Bool) -> Unit {
   let pairs = collect_subst_bounds_pairs(s)
   let n = Array::length(pairs)
   let mut i = 0
@@ -2115,14 +2124,12 @@ fn check_program_bounds_impl(env: TypeEnv, s: Subst, defs: Array[TypeDef], error
         let mut bi = 0
         while bi < bn {
           let b = Array::get(bounds, bi)
-          // ADR-0068: `Send` is judged structurally from the type
-          // definitions (type_send_ok), not from user impls.
           let sat = if b == "" {
             true
           } else if b == "Send" {
+            // ADR-0068: `Send` is judged structurally from the type
+            // definitions (type_send_ok), not from user impls.
             type_send_ok(env, s, defs, resolved)
-          } else if send_only {
-            true
           } else {
             type_implements_trait(env, s, resolved, b)
           }
@@ -3182,10 +3189,13 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
       // #1090 review: the FS typecheck path (every file with imports) went
       // through here and never enforced trait bounds, so `[T: Send]` on an
-      // imported generic fn was silently bypassed. Enforce the Send bound
-      // here (send_only — see check_program_bounds_impl for why user-trait
-      // bounds cannot be enforced on this path yet).
-      check_program_bounds_impl(env, final_s, empty_defs, frozen_errors, true)
+      // imported generic fn was silently bypassed. It then enforced ONLY the
+      // structural Send bound: dependency `impl` declarations did not reach
+      // this env, so any user-trait bound would have false-positived.
+      // #1549 propagates dependency trait definitions and impls through
+      // import assembly (build_import_env), so user-trait bounds are now
+      // enforced on this path exactly like the single-module path.
+      check_program_bounds(env, final_s, empty_defs, frozen_errors)
       collect_async_effect_errors(expanded_stmts, env, frozen_errors)
       // #1081 step 3 Phase B (Codex review, PR #1151): see check_program's
       // matching call for why this runs whole-program rather than per

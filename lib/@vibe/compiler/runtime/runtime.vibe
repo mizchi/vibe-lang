@@ -13,9 +13,12 @@ import @vibe/compiler/core {
   collect_import_alias_collision_refs,
   collect_import_value_renames,
   dir_of_path,
+  env_append_dep_impls,
+  env_append_dep_impls_renamed,
   env_bind,
   env_flat_bindings,
   env_lookup_flat,
+  env_trait_def_named,
   export_plan_fingerprint_text,
   export_plan_renames_for,
   import_value_rename_locals,
@@ -386,10 +389,31 @@ fn bind_import_names_from_cache(acc: TypeEnv, resolved: String, names: Array[(St
           with_name
         }
       }
-      bind_names(j + 1, with_companions)
+      // #1549: same trait-definition rebind as the FS check lane
+      // (runtime/typecheck_fs.vibe) -- the two import assemblies must not
+      // diverge on what a dependency's environment contributes.
+      let with_trait = if starts_with_upper(name) {
+        match env_trait_def_named(dep_env, name) {
+          Some((supers, marker, methods, header_params, method_gens)) => {
+            let with_def = EnvTraitDef(bound_name, supers, marker, methods, with_companions, header_params, method_gens)
+            // An aliased trait needs the dependency's impls of it relabeled
+            // to the alias, or its bounds would find no impl (#1549).
+            if bound_name == name {
+              with_def
+            } else {
+              env_append_dep_impls_renamed(with_def, dep_env, name, bound_name)
+            }
+          },
+          None => with_companions
+        }
+      } else {
+        with_companions
+      }
+      bind_names(j + 1, with_trait)
     }
   }
-  bind_names(0, acc)
+  // #1549: impls flow with the import statement itself (see the FS lane).
+  env_append_dep_impls(bind_names(0, acc), dep_env)
 }
 
 fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {

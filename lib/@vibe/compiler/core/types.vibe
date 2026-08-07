@@ -2433,3 +2433,258 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
     type_implements_check_super(env, env, s, trait_name, resolved)
   }
 }
+
+//# #1549: import-assembly helpers shared by the FS check lane
+//# (runtime/typecheck_fs.vibe) and the in-memory TypeDb lane
+//# (runtime/runtime.vibe). The dependency's checked TypeEnv carries trait
+//# definitions and impls; projecting only env_flat_bindings at the import
+//# boundary silently dropped them, so cross-module trait misuse checked ok
+//# and failed (or miscompiled) later. Struct/enum/alias definitions and
+//# effect declarations are not in the TypeEnv at all -- that half of the
+//# boundary needs the module typing artifact (#1550).
+export fn env_trait_def_named(env: TypeEnv, wanted: String) -> Option[(Array[String], Bool, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(String, Array[String], Array[(String, Array[String])])])] {
+  let mut cursor = env
+  let mut found = None
+  let mut walking = true
+  while walking {
+    match cursor {
+      EnvEmpty => {
+        walking = false
+      },
+      EnvBind(_, _, rest) => {
+        cursor = rest
+      },
+      EnvTraitDef(name, supers, marker, methods, rest, header_params, method_gens) => if name == wanted {
+        found = Some((supers, marker, methods, header_params, method_gens))
+        walking = false
+      } else {
+        cursor = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cursor = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cursor = rest
+      },
+      EnvFlat(_) => {
+        walking = false
+      },
+      EnvCached(_, _, rest) => {
+        cursor = rest
+      }
+    }
+  }
+  found
+}
+
+/// Rebind every impl recorded in the dependency environment onto `acc`,
+/// oldest-first so the consumer chain preserves the dependency's own
+/// first-match order among its impls. Duplicate (trait, target) rows across
+/// several imported dependencies are benign for resolution (first match wins)
+/// but are deduplicated against rows already on `acc` to keep transported
+/// consumer environments from growing quadratically along import chains.
+export fn env_append_dep_impls(acc: TypeEnv, dep_env: TypeEnv) -> TypeEnv {
+  let concrete = array_empty()
+  let generic = array_empty()
+  let mut cursor = dep_env
+  let mut walking = true
+  while walking {
+    match cursor {
+      EnvEmpty => {
+        walking = false
+      },
+      EnvBind(_, _, rest) => {
+        cursor = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cursor = rest
+      },
+      EnvTraitImpl(trait_name, target, rest) => {
+        Array::push(concrete, (trait_name, target))
+        cursor = rest
+      },
+      EnvTraitImplGen(trait_name, tparams, tbounds, target, rest) => {
+        Array::push(generic, (trait_name, tparams, tbounds, target))
+        cursor = rest
+      },
+      EnvFlat(_) => {
+        walking = false
+      },
+      EnvCached(_, _, rest) => {
+        cursor = rest
+      }
+    }
+  }
+  let mut out = acc
+  // The walks above collected newest-first; pushing back-to-front preserves
+  // the dependency's internal precedence on the consumer chain.
+  let mut ci = Array::length(concrete) - 1
+  while ci >= 0 {
+    let (trait_name, target) = Array::get(concrete, ci)
+    if env_has_concrete_impl(out, trait_name, target) {
+      ()
+    } else {
+      out = EnvTraitImpl(trait_name, target, out)
+    }
+    ci = ci - 1
+  }
+  let mut gi = Array::length(generic) - 1
+  while gi >= 0 {
+    let (trait_name, tparams, tbounds, target) = Array::get(generic, gi)
+    if env_has_generic_impl(out, trait_name, target) {
+      ()
+    } else {
+      out = EnvTraitImplGen(trait_name, tparams, tbounds, target, out)
+    }
+    gi = gi - 1
+  }
+  out
+}
+
+fn env_has_concrete_impl(env: TypeEnv, wanted_trait: String, wanted_target: Type) -> Bool {
+  let mut cursor = env
+  let mut found = false
+  let mut walking = true
+  while walking {
+    match cursor {
+      EnvEmpty => {
+        walking = false
+      },
+      EnvBind(_, _, rest) => {
+        cursor = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cursor = rest
+      },
+      EnvTraitImpl(trait_name, target, rest) => if trait_name == wanted_trait && type_equal_for_impl_dedupe(target, wanted_target) {
+        found = true
+        walking = false
+      } else {
+        cursor = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cursor = rest
+      },
+      EnvFlat(_) => {
+        walking = false
+      },
+      EnvCached(_, _, rest) => {
+        cursor = rest
+      }
+    }
+  }
+  found
+}
+
+fn env_has_generic_impl(env: TypeEnv, wanted_trait: String, wanted_target: Type) -> Bool {
+  let mut cursor = env
+  let mut found = false
+  let mut walking = true
+  while walking {
+    match cursor {
+      EnvEmpty => {
+        walking = false
+      },
+      EnvBind(_, _, rest) => {
+        cursor = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cursor = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cursor = rest
+      },
+      EnvTraitImplGen(trait_name, _, _, target, rest) => if trait_name == wanted_trait && type_equal_for_impl_dedupe(target, wanted_target) {
+        found = true
+        walking = false
+      } else {
+        cursor = rest
+      },
+      EnvFlat(_) => {
+        walking = false
+      },
+      EnvCached(_, _, rest) => {
+        cursor = rest
+      }
+    }
+  }
+  found
+}
+
+/// Structural identity for impl deduplication only. `type_to_string` is a
+/// deterministic printer, so equal text always means the same impl row; a
+/// binder-renamed generic target may print differently and survive as a
+/// duplicate, which resolution's first-match rule tolerates. Conservative in
+/// the right direction: dedupe never drops a semantically distinct impl.
+fn type_equal_for_impl_dedupe(left: Type, right: Type) -> Bool {
+  type_to_string(left) == type_to_string(right)
+}
+
+/// #1549: an aliased trait import (`import ./dep.vibe { Greet as Salute }`)
+/// rebinds the definition under the alias, but impl rows still carry the
+/// dependency's original trait name, so a `[T: Salute]` bound would find no
+/// impl. Copy the dependency's impls OF THAT TRAIT onto the consumer chain
+/// relabeled to the alias. Dedupe mirrors env_append_dep_impls.
+export fn env_append_dep_impls_renamed(acc: TypeEnv, dep_env: TypeEnv, original_name: String, alias_name: String) -> TypeEnv {
+  let concrete = array_empty()
+  let generic = array_empty()
+  let mut cursor = dep_env
+  let mut walking = true
+  while walking {
+    match cursor {
+      EnvEmpty => {
+        walking = false
+      },
+      EnvBind(_, _, rest) => {
+        cursor = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cursor = rest
+      },
+      EnvTraitImpl(trait_name, target, rest) => {
+        if trait_name == original_name {
+          Array::push(concrete, target)
+        } else {
+          ()
+        }
+        cursor = rest
+      },
+      EnvTraitImplGen(trait_name, tparams, tbounds, target, rest) => {
+        if trait_name == original_name {
+          Array::push(generic, (tparams, tbounds, target))
+        } else {
+          ()
+        }
+        cursor = rest
+      },
+      EnvFlat(_) => {
+        walking = false
+      },
+      EnvCached(_, _, rest) => {
+        cursor = rest
+      }
+    }
+  }
+  let mut out = acc
+  let mut ci = Array::length(concrete) - 1
+  while ci >= 0 {
+    let target = Array::get(concrete, ci)
+    if env_has_concrete_impl(out, alias_name, target) {
+      ()
+    } else {
+      out = EnvTraitImpl(alias_name, target, out)
+    }
+    ci = ci - 1
+  }
+  let mut gi = Array::length(generic) - 1
+  while gi >= 0 {
+    let (tparams, tbounds, target) = Array::get(generic, gi)
+    if env_has_generic_impl(out, alias_name, target) {
+      ()
+    } else {
+      out = EnvTraitImplGen(alias_name, tparams, tbounds, target, out)
+    }
+    gi = gi - 1
+  }
+  out
+}

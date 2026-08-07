@@ -86,6 +86,20 @@ from_char_code(65)
 - `import <path> { trait Eq }`: `trait`
 - `import <path> { module foo }`: `module` (namespace import)
 
+## trait / impl の import 意味論 (#1549)
+
+- **trait は名前で import する**と、依存側の trait 定義 (メソッド行・supertrait・
+  header binder) が consumer の環境に流れる。alias (`Greet as Salute`) は
+  定義をエイリアス名で束縛し、その trait の impl 行もエイリアス名で複製する。
+- **impl は名前を持たないので import 文そのものに随伴して流れる**。依存の
+  checked 環境は自身の依存の impl も含むため、可視性は推移的 (merge された
+  build lane と同じ答えになる)。
+- これにより FS/import path でも user-trait bound が single-module と同じ
+  規則で検査される (`no impl \`T\` for \`X\``)。
+- struct / enum / type alias / effect 宣言はまだ環境 transport に乗らない
+  (#1550 の module typing artifact で閉じる予定)。cross-module のこれらの
+  誤用は現状 check を素通りし codegen 以降で落ちる。
+
 ## 制約 (現行)
 - `import <path> { module foo::bar }` は未対応 (parse error)。
 - `module` 本体は現状、以下の文のみを想定:
