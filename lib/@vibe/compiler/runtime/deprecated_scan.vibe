@@ -1,0 +1,274 @@
+//# `#deprecated` marker scan (#1262 / ADR-0098 migration tooling).
+//#
+//# A declaration annotated with `#deprecated` (optionally
+//# `#deprecated("use X instead")`) on the line before it marks the declared
+//# name as deprecated. `vibe check` reports every USE of such a name in the
+//# checked file as a non-fatal `warning:` line — the check still passes.
+//#
+//# The scan is TOKEN-level on purpose: it needs no name resolution, works on
+//# any file that lexes, and catches uses in every position (call, type
+//# annotation, import list) with exact line:col from the lexer's offsets.
+//# The trade-offs are documented and accepted for the migration use case
+//# (deprecated aliases live in dependency files, uses live in the checked
+//# file):
+//#
+//#   * a LOCAL binding that shadows a deprecated name still warns (names
+//#     being migrated are `Ns::method`-shaped, where this cannot happen);
+//#   * an `import ... as` alias hides the use (the alias site itself warns);
+//#   * declaration sites themselves are skipped by keyword lookahead
+//#     (`let`/`fn`/`enum`/`struct`/`type` binders), so a file declaring a
+//#     deprecated name does not warn about its own declaration.
+
+//# Imports
+
+import @vibe/compiler/syntax {
+  Token, lex_with_offsets, offset_to_line_col, peek
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Helpers
+
+fn dep_empty_pairs() -> Array[(String, String)] {
+  array_empty()
+}
+
+fn dep_empty_strs() -> Array[String] {
+  array_empty()
+}
+
+/// After `#deprecated`, consume an optional `("message")`.
+/// Returns (next_pos, message).
+fn dep_directive_msg(tokens: Array[Token], j: Int) -> (Int, String) {
+  match peek(tokens, j) {
+    TLParen => match peek(tokens, j + 1) {
+      TString(m) => match peek(tokens, j + 2) {
+        TRParen => (j + 3, m),
+        _ => (j, "")
+      },
+      _ => (j, "")
+    },
+    _ => (j, "")
+  }
+}
+
+fn dep_simple_name(tokens: Array[Token], pos: Int) -> String {
+  match peek(tokens, pos) {
+    TIdent(nm) => nm,
+    _ => ""
+  }
+}
+
+/// `fn` declarations may be method-shaped: `fn Ns::method(...)`.
+fn dep_qualified_name(tokens: Array[Token], pos: Int) -> String {
+  match peek(tokens, pos) {
+    TIdent(a) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(b) => String::concat(a, String::concat("::", b)),
+        _ => a
+      },
+      _ => a
+    },
+    _ => ""
+  }
+}
+
+/// The name declared by the statement starting at `pos0` (skipping a leading
+/// `export`). "" when no recognizable declaration follows the marker — the
+/// marker is then ignored.
+fn dep_decl_name(tokens: Array[Token], pos0: Int) -> String {
+  let mut pos = pos0
+  match peek(tokens, pos) {
+    TExport => {
+      pos = pos + 1
+    }
+    _ => ()
+  }
+  match peek(tokens, pos) {
+    TLet => {
+      let mut q = pos + 1
+      match peek(tokens, q) {
+        TMut => {
+          q = q + 1
+        }
+        TRec => {
+          q = q + 1
+        }
+        _ => ()
+      }
+      dep_simple_name(tokens, q)
+    },
+    TFn => dep_qualified_name(tokens, pos + 1),
+    TEnum => dep_simple_name(tokens, pos + 1),
+    TStruct => dep_simple_name(tokens, pos + 1),
+    TType => dep_simple_name(tokens, pos + 1),
+    TIdent(kw) => if kw == "effect" {
+      dep_simple_name(tokens, pos + 1)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+/// Collect every `#deprecated`-marked declaration as (name, message).
+fn collect_deprecated_decls_tokens(tokens: Array[Token], out: Array[(String, String)]) -> Unit {
+  let n = Array::length(tokens)
+  let mut i = 0
+  while i < n {
+    let is_dep = match Array::get(tokens, i) {
+      THash => match peek(tokens, i + 1) {
+        TIdent(dname) => dname == "deprecated",
+        _ => false
+      },
+      _ => false
+    }
+    if is_dep {
+      let (j, msg) = dep_directive_msg(tokens, i + 2)
+      let name = dep_decl_name(tokens, j)
+      if name != "" {
+        Array::push(out, (name, msg))
+      } else {
+        ()
+      }
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+}
+
+/// Index of `name` in the deprecated list, or -1.
+fn dep_find(deprecated: Array[(String, String)], name: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while found < 0 && i < Array::length(deprecated) {
+    let (dn, _) = Array::get(deprecated, i)
+    if dn == name {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// How many tokens a declaration keyword at `i` binds (keyword + binder
+/// name), so declaration sites do not warn about their own name.
+fn dep_binder_skip(tokens: Array[Token], i: Int) -> Int {
+  match Array::get(tokens, i) {
+    TLet => match peek(tokens, i + 1) {
+      TMut => 3,
+      TRec => 3,
+      _ => 2
+    },
+    TFn => match peek(tokens, i + 2) {
+      TDoubleColon => 4,
+      _ => 2
+    },
+    TEnum => 2,
+    TStruct => 2,
+    TType => 2,
+    _ => 1
+  }
+}
+
+fn dep_warning_line(source: String, offset: Int, name: String, msg: String) -> String {
+  let (line, col) = offset_to_line_col(source, offset)
+  let head = String::concat("warning: line ", String::concat(Int::to_string(line), String::concat(":col ", String::concat(Int::to_string(col), String::concat(": '", String::concat(name, "' is deprecated"))))))
+  if msg == "" {
+    head
+  } else {
+    String::concat(head, String::concat(": ", msg))
+  }
+}
+
+/// Scan `tokens` (with `starts` offsets into `source`) for uses of any
+/// deprecated name; one formatted warning line per use, in source order.
+fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: Array[Int], deprecated: Array[(String, String)]) -> Array[String] {
+  let out = dep_empty_strs()
+  if Array::length(deprecated) == 0 {
+    return out
+  } else {
+    ()
+  }
+  let n = Array::length(tokens)
+  let mut i = 0
+  while i < n {
+    match Array::get(tokens, i) {
+      TLet => {
+        i = i + dep_binder_skip(tokens, i)
+      }
+      TFn => {
+        i = i + dep_binder_skip(tokens, i)
+      }
+      TEnum => {
+        i = i + dep_binder_skip(tokens, i)
+      }
+      TStruct => {
+        i = i + dep_binder_skip(tokens, i)
+      }
+      TType => {
+        i = i + dep_binder_skip(tokens, i)
+      }
+      TIdent(name) => {
+        // combine one `A::b` level so qualified uses match qualified decls
+        let is_qual = match peek(tokens, i + 1) {
+          TDoubleColon => match peek(tokens, i + 2) {
+            TIdent(_) => true,
+            _ => false
+          },
+          _ => false
+        }
+        let full = if is_qual {
+          match peek(tokens, i + 2) {
+            TIdent(b) => String::concat(name, String::concat("::", b)),
+            _ => name
+          }
+        } else {
+          name
+        }
+        let hit = dep_find(deprecated, full)
+        let hit2 = if hit < 0 && is_qual {
+          dep_find(deprecated, name)
+        } else {
+          hit
+        }
+        if hit2 >= 0 {
+          let (dn, dm) = Array::get(deprecated, hit2)
+          Array::push(out, dep_warning_line(source, Array::get(starts, i), dn, dm))
+        } else {
+          ()
+        }
+        if is_qual {
+          i = i + 3
+        } else {
+          i = i + 1
+        }
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+//# Entry point
+
+/// Warnings for every use, in `entry_source`, of a name whose declaration is
+/// marked `#deprecated` in `entry_source` itself or in any of `dep_sources`.
+export fn deprecated_warning_lines(entry_source: String, dep_sources: Array[String]) -> Array[String] with Exception {
+  let deprecated = dep_empty_pairs()
+  let (tokens, starts, _ends) = lex_with_offsets(entry_source)
+  collect_deprecated_decls_tokens(tokens, deprecated)
+  let mut d = 0
+  while d < Array::length(dep_sources) {
+    let (dtokens, _dstarts, _dends) = lex_with_offsets(Array::get(dep_sources, d))
+    collect_deprecated_decls_tokens(dtokens, deprecated)
+    d = d + 1
+  }
+  deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated)
+}

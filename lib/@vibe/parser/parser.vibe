@@ -682,8 +682,10 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt) -> (Array[Stm
 // NOTE: `#cfg` must not be used in the compiler's own source until the seed
 // compiler understands it (docs/selfhost-bootstrap.md bump procedure).
 
-/// Parse the directive after a THash: `cfg(name)` or `cfg_enable(name)`.
-/// Returns (directive_kind, flag_name, next_pos).
+/// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`, or
+/// `deprecated` (#1262 ADR-0098 migration marker; optional `("message")`
+/// argument). Returns (directive_kind, flag_name, next_pos) — for
+/// `deprecated` the middle slot carries the optional message (empty if none).
 fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(dname) => {
@@ -697,6 +699,17 @@ fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) 
             _ => throw("expected flag name in #cfg(...)")
           },
           _ => throw("expected '(' after #cfg")
+        }
+      } else if dname == "deprecated" {
+        match peek(tokens, pos + 1) {
+          TLParen => match peek(tokens, pos + 2) {
+            TString(msg) => match peek(tokens, pos + 3) {
+              TRParen => (dname, msg, pos + 4),
+              _ => throw("expected ')' after #deprecated message")
+            },
+            _ => throw("expected string message in #deprecated(...)")
+          },
+          _ => (dname, "", pos + 1)
         }
       } else {
         throw(String::concat("unknown # directive: ", dname))
@@ -766,7 +779,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
       },
       THash => {
         let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-        if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+        if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
           // enable directive consumed, or active #cfg: keep the next stmt.
           pos = dnext
         } else {
@@ -915,7 +928,7 @@ export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source
       },
       THash => {
         let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-        if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+        if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
           pos = dnext
         } else {
           match peek(tokens, dnext) {
@@ -1038,7 +1051,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
         // recovery machinery below by treating it like a failed statement.
         let cfg_res = handle {
           let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-          if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
             dnext
           } else {
             match peek(tokens, dnext) {
@@ -1182,11 +1195,12 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
       },
       THash => {
         // Module-source (flat source) emission re-emits statement spans; a
-        // #cfg directive sits OUTSIDE its statement's span, so passing it
-        // through would silently change semantics between the original and
-        // the re-emitted source. Refuse loudly instead (the compiler's own
-        // source must not use #cfg until the seed understands it).
-        throw("#cfg directives are not supported in module-source emission")
+        // # directive (#cfg / #deprecated) sits OUTSIDE its statement's span,
+        // so passing it through would silently change semantics between the
+        // original and the re-emitted source. Refuse loudly instead (the
+        // compiler's own source must not use # directives until the seed
+        // understands them).
+        throw("# directives are not supported in module-source emission")
       },
       TImpl => {
         let st = Array::get(starts, pos)
