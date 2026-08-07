@@ -1,5 +1,12 @@
 # 可変状態の制御レビュー: Scala Capture Checking / Flix region / OxCaml `[@zero_alloc]` の vibe 適合性
 
+> **続き**: [side-effect-consolidation.md](side-effect-consolidation.md) が
+> 本文書の推奨順序を実測で検証し直している。要点 —— ADR-0092 Phase 1 の
+> reuse は測定範囲で利得ゼロ〜負(適格形が非適格形より 1.62× 遅く、確保は
+> 0 B/op → 32 KB/op に増える)、`let mut` の速さは `mut` の性質ではなく
+> 「捕獲されないこと」の性質、State effect は捕獲 `let mut` の 2× 圏内で
+> その差は確保ではなく perform dispatch。実装順の再考を提案している。
+
 > **位置づけ**: [effect-taxonomy-review.md](effect-taxonomy-review.md) と同じく
 > ADR ではない設計レビュー文書。可変参照の制御に関する3つの外部設計を、
 > vibe の現状(Perceus RC・`let mut`・TaskGroup region 機構)と突き合わせて
