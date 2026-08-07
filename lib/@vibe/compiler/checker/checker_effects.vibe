@@ -60,7 +60,11 @@ export enum EffectError {
   // Fields (all pre-rendered ", "-joined label lists, deterministic order):
   // (enclosing fn name or "" when unnamed, missing labels (sorted),
   //  declared row (source order, "" when no row), required row (sorted union)).
-  EEEffectRowMismatch(String, String, String, String);
+  // #1514: the 5th field is the CALL SITE's source offset (-1 when unknown),
+  // carried to the renderer as the ` [@off=N]` marker locate_type_error decodes.
+  // Before this the row mismatch had no position at all -- measured as the worst
+  // tier in eval/lang-review/repair (05).
+  EEEffectRowMismatch(String, String, String, String, Int);
   EEAssignImmutable(String);
   // #1347: a `handle ... with E` whose arms are provably dead because the
   // body cannot reach a perform of E and only invokes an opaque value —
@@ -115,7 +119,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
     // #639: expected-vs-actual effect rows as a set difference, then ONE
     // deterministic fix-it hint line targeting the enclosing declaration
     // (for a call-site leak that is the CALLER, not the callee).
-    EEEffectRowMismatch(fname, missing, declared, required) => {
+    EEEffectRowMismatch(fname, missing, declared, required, off) => {
       let head = if String::length(fname) > 0 {
         String::concat("effect row mismatch for '", String::concat(fname, "'"))
       } else {
@@ -133,7 +137,14 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         String::concat("\nhint: add 'with ", String::concat(row_as_source(required), String::concat("' to '", String::concat(fname, "'"))))
       }
-      String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+      let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+      // #1514: marker LAST so the hint line stays the visible tail; the decoder
+      // strips it before the user ever sees the string.
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
     },
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)")),
     EEHandleNeverFires(eff) => {
@@ -1242,10 +1253,10 @@ fn join_labels(xs: Array[String]) -> String {
 /// required effects are absent from the enclosing declaration's row. `missing`
 /// is the set difference (callee requires minus caller declares), rendered
 /// sorted; `required` is the sorted union the fix-it hint suggests declaring.
-fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String]) -> EffectError {
+fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
   let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
   let required = sort_labels(labels_union(declared, missing))
-  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required))
+  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required), off)
 }
 
 /// #626 criterion 2: a `handle ... with E` DISCHARGES E for its body — after
@@ -1760,7 +1771,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
     let (expr, declared, in_handle, ov_names, ov_effs, kinds) = Array::get(stack, n - 1)
     Array::truncate(stack, n - 1)
     match expr {
-      ECall(callee, args, _) => {
+      ECall(callee, args, call_off) => {
         match callee {
           EIdent(name, _) => {
             if name == "perform" && Array::length(args) == 1 {
@@ -1793,7 +1804,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
                       Array::push(errors, make_row_mismatch(fn_name, declared, [
                         throw_report_label(op_name, required_op, declared)
-                      ]))
+                      ], call_off))
                     } else {
                       ()
                     }
@@ -1809,7 +1820,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                     Array::push(errors, make_row_mismatch(fn_name, declared, [
                       op_name
-                    ]))
+                    ], call_off))
                   } else {
                     ()
                   }
@@ -1834,7 +1845,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // perform path follows since Codex review on PR #1161).
                     Array::push(errors, make_row_mismatch(fn_name, declared, [
                       op_label
-                    ]))
+                    ], call_off))
                   } else {
                     ()
                   }
@@ -1911,7 +1922,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   ti = ti + 1
                 }
                 if Array::length(missing) > 0 {
-                  Array::push(errors, make_row_mismatch(fn_name, declared, missing))
+                  Array::push(errors, make_row_mismatch(fn_name, declared, missing, call_off))
                 } else {
                   ()
                 }
@@ -1945,7 +1956,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   pi = pi + 1
                 }
                 if Array::length(missing) > 0 {
-                  Array::push(errors, make_row_mismatch(fn_name, declared, missing))
+                  Array::push(errors, make_row_mismatch(fn_name, declared, missing, call_off))
                 } else {
                   ()
                 }
