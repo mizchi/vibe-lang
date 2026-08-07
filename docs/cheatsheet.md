@@ -26,6 +26,20 @@ vibe check file.vibe       # type check only
 vibe build --release app.vibe  # standalone .wasm
 ```
 
+### CLI は IDE 相当のクエリ面 (方針)
+
+`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
+得るのと同じ意味解析を **CLI から直接**取り出すためのもの。想定する第一の
+読み手は**人間ではなく LLM** なので、行指向 (1件1行) で grep でき、空出力が
+clean を意味し、メッセージは内部用語ではなく「何を書き換えれば直るか」を
+述べる、という形を保つ。
+
+**これは自己改善のループとして運用する** — 使っていて欲しい情報が取れない・
+出力が読めない・判定に使えないと分かったら、ワークアラウンドを覚えるのでは
+なく CLI 側を直すか issue を立てる。詳細と現在わかっている穴は
+[AGENTS.md の Code Navigation 節](../AGENTS.md#code-navigation-important)。
+
 ---
 
 ## Values & Types
@@ -274,10 +288,13 @@ fn same(x: Array[Int], y: Array[Int]) -> Bool {
 }
 ```
 
-要素型が取れない配列は**参照等価に落ちる** — 消去された型変数 (`[T: Eq]` の
-`T`)、関数の戻り値として受けた配列、空リテラル束縛 (`let xs = []`)。
-戻り値経由の配列を比較したいときは、いま確実なのは要素を回すか
-`derive(Eq)` の struct field に入れる方法。
+名前経由が構造比較になるのは**要素がスカラー** (`Int` / `String` / `Bool` /
+`Double` / `Char` / `Bytes` / `Unit`) のときだけ。それ以外は**参照等価に落ちる**
+— 関数の戻り値として受けた配列、空リテラル束縛 (`let xs = []`)、消去された
+型変数 (`fn f[T](x: Array[T])` の `T`)、入れ子の配列、struct/enum 要素。
+リテラルとして書かれていれば入れ子も struct 要素も従来どおり構造比較される
+(`[[1, 2]] == [[1, 2]]`)。名前経由でも効かせたいときは `derive(Eq)` の
+struct field に入れるのが確実。
 
 ## Pipe Operator
 

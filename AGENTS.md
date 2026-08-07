@@ -186,6 +186,35 @@ CI shard では:
 **コード探索は `vibe symbols` / `vibe type-at` / `vibe binding-at` を使う**
 (hover・rename・go-to-def と同じ AST 解析を CLI から直接叩ける)。
 
+### 方針: CLI を LLM 向けの IDE 相当クエリ面として育てる
+
+`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
+得るのと同じ意味解析を **CLI から直接**取り出すためのもの。**想定する第一の
+読み手は人間ではなく LLM** で、次を満たすことを目標にする:
+
+- **行指向で grep できる** — 1件1行、固定フィールド順。整形された箱や
+  カラー装飾を前提にしない
+- **空出力 = clean** — 「問題なし」を出力の有無で判定できる
+- **判定に使える** — 「このファイルはコンパイルが通るか」に CLI 単体で
+  答えられる。答えられないなら、それは診断の穴であって呼び出し側の
+  作法の問題ではない
+- **メッセージが行動可能** — ADR 番号や pass 名など内部用語ではなく、
+  何を書き換えれば直るかを述べる (#1511 の実例)
+
+**これは自己改善のループとして運用する。** 開発中にこれらを使って
+「欲しい情報が取れない」「出力が読めない」「嘘をつく」に当たったら、
+**その場で CLI 側を直すか issue を立てる** — ワークアラウンドを覚えて
+先へ進まない。CLI が答えられない質問はそのまま、LLM がこのリポジトリで
+作業するときのコストとして毎回効いてくる。
+
+現に効いている既知の穴 (どれもこの方針違反として扱う):
+`vibe check` と `vibe diagnostics` が同じ質問に別の答え方をすること
+(**#1567** — 統合提案。import 解決の有無・clean の表現・exit code・
+出力先が全部食い違い、どちらを使うかを呼び出し側が覚えている)、
+型エラーに `line:col` が付かないこと (同 #1567)、
+`vibe symbols` が doc comment を返さないこと (Coding Convention 節)。
+
 ### Editor query primitives — Semantic Code Navigation
 
 ```bash
