@@ -451,3 +451,126 @@ test "cross-module delta recomputation" {
   let db4 = db_typecheck(db3, "a.vibe")
   assert(eq(db_typecheck_count(db4), 5))
 }
+
+/// #1533: the environment a dependency publishes through the FS lane is its
+/// EXPORT SURFACE, not its full checked environment (check_module's
+/// restrict_env_to_export_surface). These four pin both directions: private
+/// and merely-imported names are reported by the #1521 membership check
+/// (same message as a name that never existed), while exported and
+/// re-exported names keep importing cleanly.
+fn export_surface_error(paths: Array[String], entry: String) -> String with Fs {
+  handle {
+    let mut db = db_new()
+    let mut i = 0
+    while i < Array::length(paths) {
+      let p = Array::get(paths, i)
+      db = db_set_source(db, p, Fs::read_file(p))
+      i = i + 1
+    }
+    let _db = db_typecheck_fs(db, entry)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)" {
+  let dir = "/tmp/vibe_compiler_export_surface_private"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x)\n}\n"
+  let main_src = "import ./dep.vibe { private_fn }\nexport let m = private_fn(1)\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (dep_path, dep_fp)
+  ]))
+  let err = export_surface_error([
+    dep_path,
+    main_path
+  ], main_path)
+  assert(String::contains(err, "imported name 'private_fn' is not exported by"))
+}
+
+test "db_typecheck_fs: the exported name from the same module imports cleanly (#1533 control)" {
+  let dir = "/tmp/vibe_compiler_export_surface_public"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x)\n}\n"
+  let main_src = "import ./dep.vibe { public_fn }\nexport let m = public_fn(1)\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (dep_path, dep_fp)
+  ]))
+  let err = export_surface_error([
+    dep_path,
+    main_path
+  ], main_path)
+  assert(err == "")
+}
+
+test "db_typecheck_fs: a pass-through import is not on the middleman's surface (#1533)" {
+  let dir = "/tmp/vibe_compiler_export_surface_passthrough"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let mid_path = String::concat(dir, "/mid.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let dep_src = "export fn public_fn(x: Int) -> Int {\n  x + 1\n}\n"
+  let mid_src = "import ./dep.vibe { public_fn }\n\nexport fn mid_fn(x: Int) -> Int {\n  public_fn(x)\n}\n"
+  let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(1)\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  let mid_fp = build_test_fingerprint(mid_src, [
+    (dep_path, dep_fp)
+  ])
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (mid_path, mid_fp)
+  ]))
+  let err = export_surface_error([
+    dep_path,
+    mid_path,
+    main_path
+  ], main_path)
+  assert(String::contains(err, "imported name 'public_fn' is not exported by"))
+  assert(String::contains(err, "mid.vibe"))
+}
+
+test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 control)" {
+  let dir = "/tmp/vibe_compiler_export_surface_reexport"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let mid_path = String::concat(dir, "/mid.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let dep_src = "export fn public_fn(x: Int) -> Int {\n  x + 1\n}\n"
+  let mid_src = "export ./dep.vibe { public_fn }\n"
+  let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(1)\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  let mid_fp = build_test_fingerprint(mid_src, [
+    (dep_path, dep_fp)
+  ])
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (mid_path, mid_fp)
+  ]))
+  let err = export_surface_error([
+    dep_path,
+    mid_path,
+    main_path
+  ], main_path)
+  assert(err == "")
+}

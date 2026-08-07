@@ -229,6 +229,34 @@ VIBE_RUNNER=$PWD/runtime/viberun/target/release/viberun \
 > `*_test.vibe` しか拾わない。設計が採用されたら `lib/` へ移してバッテリで
 > ロックする。
 
+### 3.5 backend: linear だけでなく wasm-gc でも動く
+
+`bench/tracing/trace_effect_shapes_test.vibe` は **`VIBE_TEST_BACKEND=gc`
+でも全 test が pass する。** 第一級 `resume` を値として保存する suspend 形も
+別 probe で確認した。
+
+この文書の初版は「代数 effect handler は linear backend のみ、
+`gc/backend_expr.vibe` は `with Exception` のスタブだけ」と書いていた。**誤り。**
+ADR-0076 の Context 節 (2026-07-22、Phase 3 着地前の状態を記述) と、
+`gc/backend_expr.vibe` の `EHandle` 分岐に残っていた古いコメントを
+そのまま引いていた。
+
+実際の構造は、effect の lowering が **codegen より前**にあり、両 backend で
+共有されていること:
+
+```
+lib/@vibe/compiler/codegen/gc/backend_body.vibe:411
+  inline_direct_performs(stmts)
+  let edp_errs = evidence_dict_pass(stmts, entry_name)
+```
+
+`gc/backend_expr.vibe` の `EHandle` 分岐 (`try_table`) は、これらのパスが
+**消しきれなかった** handle の受け皿であって、migration の失敗は
+`evidence_dict_pass` の `edp_errs` が報告する。tail-resumptive にせよ
+suspend-CPS にせよ、codegen に届く前に消えている。
+
+したがって **`Trace` は gc backend でも使える。**
+
 ## 4. 分散トレーシングへの写像
 
 | vibe | OTel |
@@ -278,18 +306,173 @@ ring buffer に積んでホストが吸う handler に差し替える (既存の
 custom section が `linked_compile.vibe:3441` で同じ構造の領域を予約している)。
 §2.1 のとおりこれは**1つの handler の実装**であって、インタフェースではない。
 
+## 5.5 実装を試して分かったこと — 段1 は今のところ通らない
+
+2026-08-07、段1 を実際に書いた。`effect Trace` を
+`entry/compiler/file_compile/file_compile.vibe` に置き、
+load / type / bundle / parse / codegen に span を張り、codegen の中に
+内部 span `dce` を1つ入れ、`--profile-tsv` の7要素タプルを span 表に
+置き換えた。**stage2 のビルドは通ったが、CLI 本体
+(`lib/@vibe/cli/main.vibex`) のコンパイルが落ちた。**
+
+```
+handle of effect 'Trace' cannot be compiled here. Every perform this handle
+covers has to be statically visible to it, so the handled body may only:
+perform directly, call a named top-level `fn`, or call a closure literal that
+carries an effect row annotation.
+```
+
+**2つの配置を試して、両方拒否された:**
+
+1. handler を `lib/@vibe/cli/dispatch.vibe` に置き、import した
+   `compile_release_file_mode_traced` を包む
+2. handler を perform の隣 (`file_compile.vibe` 内) に移し、**同一ファイルの
+   named top-level `fn` を直接**包む
+
+2 はエラー文が「許される形」として明示的に列挙している形そのものである。
+つまり**実際の適格性はこの診断文が言うより狭い**。理由はおそらく、migration が
+handled body の関数の**中まで**追う必要があり、
+`compile_file_fs_mode_traced` の中で perform に挟まれて呼ばれている
+`collect_source_groups_fs` / `prepare_file_fs_from_source_groups_persistent_cached` /
+`compile_wasi_module` などのどれかが、追えない形 (local binding 経由・
+row 変数付き callee) を含むため。診断に位置情報が無いので
+(#1511)、どの呼び出しかは二分探索しないと分からない。
+
+**これは §3 の結論を否定しない。** §3 が測ったのは effect 機構のコストで、
+それは今も 5.4ns / アロケーションゼロ / row tax ゼロである。落ちたのは
+**コンパイラという特定のコードベースの呼び出しグラフを migration が
+追いきれない**という別の問題で、#1347-2 と同じ根 (資料 p133 の
+evidence vector) を持つ。
+
+したがって段1 の前提は「言語機能は既にある」から
+**「言語機能はあるが、コンパイラの呼び出しグラフには適用できない」**に
+変わる。次に決めるべきはどちらか:
+
+- **(a) 適格性を広げる** — evidence migration が追える形を増やす。
+  #1347-2 と同じ本体で、重い。
+- **(b) span を適格な位置まで押し下げる** — perform と handler の間に
+  何も挟まない粒度、つまり「大きな実行単位」より細かい単位に span を置き、
+  各所で閉じる。ユーザ指定の粒度方針とは逆向きになる。
+- **(c) 段0 (プロセス単位、ホスト側だけ) を先に出す** — コンパイラ内部に
+  手を入れず、CI の多プロセス像だけ先に得る。§6 の段0 はもともと
+  コンパイラ変更不要なので、これは今日できる。
+
+実装は revert した。span を張った diff 自体は小さく機械的なので、
+(a) が動いたときにそのまま再適用できる。
+
+## 5.6 段0 着地 — 実際のビルドで測った
+
+`scripts/trace_lib.sh` (sourceable) / `scripts/trace_span.sh` (コマンドラッパ) /
+`scripts/trace_report.mjs` (木とクリティカルパスの描画) /
+`scripts/test_trace_spans.sh` (回帰ロック)。`generations.sh` の
+`run_generation_compile` に配線したので、bootstrap の各ステージが span になる。
+**コンパイラは1行も変えていない。**
+
+```bash
+VIBE_TRACE_OUT=/tmp/build.ndjson bash scripts/trace_span.sh "selfhost build" \
+  bash scripts/generations.sh build --out-dir /tmp/gen --stage3
+node scripts/trace_report.mjs /tmp/build.ndjson
+```
+
+実行結果 (このマシン、`--stage3`):
+
+```
+trace 3406b42c66e0697373c6f021fc0b45c3  (4 spans)
+     wall       self  name
+ 195977.0   94536.1  selfhost build
+  32594.7   32594.7    stage0(seed) -> stage1
+  35864.5   35864.5    stage1 -> stage2
+  32981.7   32981.7    stage2 -> stage3
+
+critical path:
+  selfhost build (195977ms) -> stage2 -> stage3 (32982ms)
+```
+
+**196秒のビルドのうち 94.5秒 (48%) が、3つのステージコンパイルのどれにも
+入っていない。** self 時間の列がそれを直接示している。中身は flat source の
+準備・bundle 生成・検証で、これまで誰も測っていなかった — ステージの
+コンパイル時間だけを見ていると存在自体が見えない。
+
+これが段0 だけで出た。次に span を刻むべき場所は、この 94.5 秒の中である。
+
+### 段0 の設計上の判断
+
+- **無効時は string test 1回と `exec` だけ。** `VIBE_TRACE_OUT` 未設定で
+  完全に no-op なので、内側のループに置いたままにできる。
+- **1 span = 1行を終了時に1回だけ append。** begin/end の2行に分けない。
+  並列 fan-out で複数プロセスが同じファイルに書くので、O_APPEND への短い
+  単一 write に収めて行が裂けないようにしている。`trace_report.mjs` は
+  それでも裂けた行を数えて報告する (黙って落とすと、木が完全であるかのように
+  見えてしまう)。
+- **不正な `VIBE_TRACEPARENT` は「無い」として扱い、新しい trace を始める。**
+  伝播すると全 span が誤った trace の下にぶら下がり、分割されるより悪い。
+- **`trace_begin` は値を echo せず変数に代入する。** `tok=$(trace_begin ...)`
+  だと `export VIBE_TRACEPARENT` がサブシェルで起きて子に届かず、木が
+  平らになる。回帰テストの3番目がこれをロックしている。
+- **rc も記録する。** 失敗した span を落とすと、赤いビルドが短いビルドに見える。
+
+### 5.7 バッテリ全体も1本のトレースになった
+
+`unit_test_runner.sh` の `run_one` を span で包んだ。`xargs -P` の worker は
+それぞれ別プロセスなので `VIBE_TRACEPARENT` を継承し、バッテリ span の下の
+**きょうだい**として並ぶ。
+
+```bash
+VIBE_TRACE_OUT=/tmp/battery.ndjson bash scripts/trace_span.sh "unit battery" \
+  bash scripts/unit_test_runner.sh
+node scripts/trace_report.mjs /tmp/battery.ndjson --top 12
+```
+
+**541 span / 1トレース** (テストファイル538 + ステージ2 + root)。
+
+```
+ 420893.2  272429.6  unit battery
+  36676.3   36676.3    stage0(seed) -> stage1
+  33271.7   33271.7    stage1 -> stage2
+  ...
+
+slowest 12 by self time:
+ 272429.6  unit battery
+  46937.7  test lib/@vibe/compiler/tests/s5_wasm_test.vibe
+  36676.3  stage0(seed) -> stage1
+  33271.7  stage1 -> stage2
+  24610.1  test lib/@vibe/compiler/tests/s5_entry_test.vibe
+  12520.6  test lib/@vibe/compiler/tests/codegen_heap_e2e_test.vibe
+   3256.7  test lib/@vibe/compiler/tests/module_loader_collect_sources_test.vibe
+```
+
+2つの読み:
+
+1. **538ファイル中2つ (`s5_wasm_test` / `s5_entry_test`) で 71.5 秒**、
+   3番目以降とは1桁違う。バッテリを速くする話はここから始まる。
+2. **421秒のうち 272秒 (65%) が、どの子 span の中にもない。**
+   §5.6 で bootstrap ビルドの 48% が同じように「どのステージにも入っていない」
+   と出たのと同じ場所 — flat source の準備・bundle 生成・discovery・cache 暖機
+   である。**2つの独立な計測が同じ穴を指している。**
+
+> self 時間の読み方: 並列 fan-out では子の wall の**合計**は親を超えるので、
+> `trace_report.mjs` は子の区間の**和集合**を引いている。したがって
+> 「self = どの子 span も走っていなかった時間」であって、
+> 「親自身の CPU 時間」ではない。
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |
 |---|---|---|
-| 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 (`run_wasm_vibe_host_runner.sh` / `unit_test_runner.sh` / `generations.sh`) | **不要** |
-| 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える。TSV は span 木から生成して `test_cli_core.sh` 互換を保つ | **不要 (言語機能は既にある — §3)** |
+| 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 | **着地済み (§5.6 / §5.7)**。`generations.sh` のステージ hop + `unit_test_runner.sh` の per-file。doctest fan-out が残り |
+| 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える | **§5.5 で試して拒否された。handle 適格性の拡張が先** |
 | 2 | `vibe bench` が bench ブロックごとに span 内訳を出す | 要 (runner) |
 | 3 | `span {}` スコープ構文 (§2.2 の脱糖。`throw` → `perform Exception::Throw` と同じ層) | 要 (parser/desugar のみ) |
 | 4 | OTLP エクスポータ | 不要 |
 
-**段1にコンパイラ変更が要らない**のが今回の実測でいちばん大きい収穫で、
-`effect Trace` の宣言と handler は今日書ける vibe のコードだけで済む。
+段0 は §5.6 / §5.7 で着地した (`generations.sh` のステージ hop と
+`unit_test_runner.sh` の per-file)。残るのは doctest fan-out。
+段1 は §5.5 の適格性が解けるまで止まっている。
+
+**段0 だけで、次に手を入れる場所が2つ specific に出た** — 538ファイル中2つが
+バッテリの1/6を占めていること (§5.7)、そして bootstrap でもバッテリでも
+「どのフェーズにも属さない」時間が半分前後あること (§5.6 の 48%、
+§5.7 の 65%) である。
 
 ## 7. この設計が引き受けていないこと
 
@@ -300,9 +483,7 @@ custom section が `linked_compile.vibe:3441` で同じ構造の領域を予約�
   決定的な数値であり、ゲートに使える。span の heap delta はその内訳である。
 - **span の粒度は人が決める。** 段1 でどこに span を置くかはこの文書では
   決めていない (フェーズ境界から始めるのが自然)。
-- **wasm-gc backend は対象外。** 代数 effect handler は linear backend のみ
-  (`gc/backend_expr.vibe` は `with Exception` のスタブだけ)。
-  `VIBE_TEST_BACKEND=gc` の test/bench では `Trace` は使えない。
+
 
 ## 8. 副産物: ドキュメントとの食い違い
 
@@ -319,7 +500,13 @@ probe を書く過程で cheatsheet と実測が合わない点が3つ出た。�
    "handled body calls a local closure" はまさにその形で**コンパイルも実行も通った**。
    その後の修正で通るようになったのか、元の再現に自分が写しそこねた差異が
    あるのかは切り分けていない — 表を直す前に再測定が要る。
-3. **「loop 内の perform は compile error」は tail-resumptive には当てはまらない。**
+3. **`gc/backend_expr.vibe` の `EHandle` コメントが、削除済みの機構を根拠に
+   していた** — 「algebraic user effects still need the linear backend's memo
+   machinery」の memo/replay engine は ADR-0076 追記34 V2 で物理削除済み。
+   ADR-0076 の Context 節も Phase 3 着地前の記述のまま。この2つが
+   「wasm-gc では代数 effect が使えない」という誤解の出所で、初版の
+   この文書もそれを引き写していた (§3.5)。コメントは本 PR で修正した。
+4. **「loop 内の perform は compile error」は tail-resumptive には当てはまらない。**
    この記述は first-class resume (suspend CPS) の制約リストの中にあるが、
    読むと一般則に見える。上のテストの "perform inside a while loop" は
    tail-resumptive な handler で
