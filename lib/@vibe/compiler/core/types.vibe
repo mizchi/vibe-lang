@@ -2187,20 +2187,42 @@ export fn generalize(s: Subst, ty: Type) -> Type {
   }
 }
 
-fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, trait_name: String, resolved: Type) -> Bool {
+/// Does an impl of some SUBTRAIT of `trait_name` cover `resolved`? (`impl Child
+/// for P` satisfies a `[T: Base]` bound when `trait Child: Base`.)
+///
+/// #1503 follow-up (Codex review on #1528): both halves of this scan were
+/// incomplete in the same way as the direct scan was.
+///
+///   * `EnvTraitImpl` matched only `types_equal` / `struct_impl_target_matches`,
+///     so a concrete impl on a parameterized type (whose target the parser
+///     erased to the bare `CtNamed("Array", [])`) never matched -- the same hole
+///     `concrete_impl_ctor_matches` closes for the direct scan, with the same
+///     method-bearing gate on the BOUND trait (that is the trait the caller
+///     dispatches through).
+///   * `EnvTraitImplGen` was skipped outright, so `impl [T] Child for Array[T]`
+///     could not satisfy `[T: Base]` at all.
+fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> Bool {
   match e2 {
     EnvEmpty => false,
-    EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) {
+    EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (concrete_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full_env, trait_name)) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
       }
-      else type_implements_check_super(rest, full_env, trait_name, resolved)
-    } else type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+      else type_implements_check_super(rest, full_env, s, trait_name, resolved)
+    } else type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvTraitImplGen(itrait, _, bounds, target, rest) => {
+      let head = type_constructor_name(resolved)
+      let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full_env, trait_name) && trait_is_subtrait(full_env, itrait, trait_name) && itrait != trait_name
+      if shape_ok && generic_bounds_hold(full_env, s, bounds, type_args_of(resolved)) {
+        true
+      } else {
+        type_implements_check_super(rest, full_env, s, trait_name, resolved)
+      }
+    },
     EnvFlat(_) => false,
-    EnvCached(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
+    EnvCached(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved)
   }
 }
 
@@ -2337,13 +2359,13 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
     true
   }
   else {
-    let supers = trait_supers(env, trait_name)
-    let slen = Array::length(supers)
-    if slen == 0 {
-      false
-    }
-    else {
-      type_implements_check_super(env, env, trait_name, resolved)
-    }
+    // #1503 follow-up: this used to bail out when the BOUND trait had no
+    // supertraits of its own, which is the wrong question -- what satisfies a
+    // `[T: Base]` bound is an impl of some trait that has `Base` as a super,
+    // and `Base` itself being a root trait is the normal case for that. The
+    // guard made `trait Child: Base` + `impl Child for P` + `[T: Base]` report
+    // `no impl Base for P` for EVERY type, parameterized or not (measured on a
+    // plain struct), i.e. supertrait-satisfied bounds never worked at all.
+    type_implements_check_super(env, env, s, trait_name, resolved)
   }
 }
