@@ -23,6 +23,7 @@ import @vibe/compiler/core {
   Stmt,
   Type,
   TypeEnv,
+  bsearch_leftmost,
   dir_of_path,
   env_bind,
   env_flat_bindings,
@@ -183,13 +184,14 @@ fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, T
 /// unexported `Foo` from a struct-only `Foo`, so the uppercase half of #1521
 /// stays open rather than risk rejecting valid code.
 ///
-/// The other half still open (#1533): this tests membership in the
-/// dependency's CHECKED environment, which binds every top-level `let`/`fn`
-/// whether or not it is exported. `import ./dep.vibe { private_fn }` therefore
-/// passes here and still dies in codegen. Closing it needs the dependency's
-/// export SURFACE -- `interface_public_value_names` computes exactly that from
-/// the dependency's stmts, but only its environment reaches this point, so the
-/// surface has to be published alongside the environment first.
+/// #1533 (closed): this membership test IS the export test for lowercase
+/// names, because the environment a dependency publishes is no longer its
+/// full checked environment -- check_module restricts it to the module's
+/// export surface before it reaches any cache (see
+/// restrict_env_to_export_surface). `import ./dep.vibe { private_fn }` is
+/// therefore reported here, with the same message as a name that never
+/// existed: from the importer's side those are the same fact, "the
+/// dependency does not export this name".
 fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
@@ -1093,6 +1095,71 @@ fn interface_public_value_names(stmts: Array[Stmt]) -> Array[String] {
     i = i + 1
   }
   interface_sorted_unique(names)
+}
+
+/// #1533: the environment a module PUBLISHES to its importers is its export
+/// surface, not its full checked environment. The checked environment binds
+/// every top-level `let`/`fn` -- and, via the import env at its base, every
+/// name the module itself imported -- so testing an import against it let
+/// `import ./dep.vibe { private_fn }` through to die in codegen. Dropping
+/// the non-exported bindings here, at the single point every publication
+/// path flows through (persistent store, env cache, worker env.out, TDRE4),
+/// makes the existing membership check in
+/// bind_import_names_from_cache_collecting the export test itself.
+///
+/// Only lowercase-initial bindings are dropped, and `surface` is
+/// interface_public_value_names -- exported `let`/`fn`, `export { .. }`
+/// lists, and re-export aliases -- which is exactly the set of importable
+/// lowercase names. Uppercase bindings (enum constructors, `T::` companions,
+/// qualified impl methods) are kept wholesale: the value environment cannot
+/// distinguish an unexported `Foo` from a struct-only `Foo`, so their half
+/// of #1521 stays open rather than risk rejecting valid code, and the
+/// companion-binding scan over dep_bindings keeps working unchanged.
+///
+/// Trait nodes ride through untouched; EnvCached wrappers are rebuilt from
+/// the restricted chain (their arrays are acceleration state, same rule as
+/// the serializer's). Persistent-cache staleness is not a concern: the cache
+/// version tag folds in codegen_fingerprint(), so envs published before this
+/// restriction live under different keys.
+fn restrict_env_to_export_surface(surface: Array[String], env: TypeEnv) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, ty, rest) => {
+      let restricted = restrict_env_to_export_surface(surface, rest)
+      if starts_with_upper(name) || bsearch_leftmost(surface, name) >= 0 {
+        EnvBind(name, ty, restricted)
+      } else {
+        restricted
+      }
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, restrict_env_to_export_surface(surface, rest), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, restrict_env_to_export_surface(surface, rest)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, restrict_env_to_export_surface(surface, rest)),
+    EnvFlat(bindings) => {
+      let kept = array_empty()
+      let mut i = 0
+      while i < Array::length(bindings) {
+        let (name, ty) = Array::get(bindings, i)
+        if starts_with_upper(name) || bsearch_leftmost(surface, name) >= 0 {
+          Array::push(kept, (name, ty))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      EnvFlat(kept)
+    },
+    // The wrapper is DROPPED, not rebuilt. Its arrays are acceleration
+    // state (the codec re-derives them via env_cache on both serialize and
+    // parse), and every consumer of a published env either flat-walks the
+    // chain or serializes it, so nothing loses correctness. Rebuilding here
+    // would need core's `env_cache` -- a name this file cannot import: it
+    // collides with the ubiquitous `env_cache` PARAMETERS, and the FS
+    // module lane resolves an import over a same-named local (the merge
+    // lane shadows correctly), while an `as` alias broke the
+    // collect_merged_stmts lane instead. Both are their own bugs.
+    EnvCached(_, _, rest) => restrict_env_to_export_surface(surface, rest)
+  }
 }
 
 fn interface_decl_line(prefix: String, name: String, body: String) -> String {
@@ -2184,10 +2251,16 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
     })
   } else {
     handle {
-      let checked_env = match import_env {
+      let full_checked_env = match import_env {
         EnvEmpty => check_program(stmts),
         _ => check_program_with_env(stmts, import_env)
       }
+      // #1533: what leaves this function is the module's PUBLISHED
+      // environment -- restricted to its export surface -- because every
+      // consumer of `Checked`'s env (env cache, persistent store, worker
+      // transport, TDRE4, trace identities) is a publication path. The full
+      // environment never needs to outlive the check itself.
+      let checked_env = restrict_env_to_export_surface(interface_public_value_names(stmts), full_checked_env)
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {
