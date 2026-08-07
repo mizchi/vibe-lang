@@ -9786,12 +9786,30 @@ for cg_site in \
   "lib/@vibe/compiler/codegen/expr/compile_expr.vibe" \
   "lib/@vibe/compiler/codegen/gc/backend_expr.vibe"
 do
+  # The load-bearing half: the OLD spelling must be gone. Asserting the new
+  # helper "appears in the file" does not do it -- common_base DEFINES the
+  # helper, so it matches whether or not `resolve_local` still calls it, and a
+  # revert there would sail through. (Codex review on PR #1562; the check was
+  # asking a different question from the one it meant, which is the very shape
+  # ARCH011 was added for.)
+  if grep -q '"undefined variable' "$ROOT_DIR/$cg_site"; then
+    echo "[compiler-gate] FAIL: $cg_site raises a bare \"undefined variable\" again" >&2
+    echo "[compiler-gate]       That message names no file, no line, and reads as the user's mistake." >&2
+    grep -n '"undefined variable' "$ROOT_DIR/$cg_site" >&2
+    exit 1
+  fi
   if ! grep -q "codegen_unresolved_name_prefix()" "$ROOT_DIR/$cg_site"; then
     echo "[compiler-gate] FAIL: $cg_site no longer routes its unresolved-name error through the shared wording" >&2
-    echo "[compiler-gate]       (a bare \"undefined variable\" throw is the unactionable form this replaced)" >&2
     exit 1
   fi
 done
+# ...and specifically INSIDE resolve_local, not merely somewhere in the file
+# that declares the helper.
+if ! awk '/^export fn resolve_local\(/,/^}/' "$ROOT_DIR/lib/@vibe/compiler/codegen/common_base/common_base.vibe" \
+  | grep -q "codegen_unresolved_name_prefix()"; then
+  echo "[compiler-gate] FAIL: resolve_local's own error no longer uses the shared wording" >&2
+  exit 1
+fi
 if ! grep -q 'internal compiler error' "$ROOT_DIR/lib/@vibe/compiler/codegen/common_base/common_base.vibe"; then
   echo "[compiler-gate] FAIL: the unresolved-name error no longer identifies itself as a compiler bug" >&2
   exit 1
