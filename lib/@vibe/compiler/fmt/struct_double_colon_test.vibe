@@ -1,0 +1,73 @@
+//# #1505: the struct-literal `::` normalization must not fire on a `{` that
+// opens a BLOCK whose subject is written with a qualifier.
+//
+// `should_insert_struct_double_colon` rewrites `Point { x: 1 }` into the
+// canonical `Point::{ x: 1 }`, and guards that with a lookback for the
+// keywords that put a bare name directly before a block brace (`match`, `if`,
+// `while`, `is`, `trait`, `with`, ...). That lookback was a fixed TWO tokens,
+// which any qualifier defeats: in `match Color::Red {` the two-back token is
+// `::`, so every guard missed and the scrutinee became `match Color::Red::{`
+// -- source the parser then reads as struct-literal fields.
+//
+// The lookback now skips the whole `Name (:: Name)*` run. It skips ONLY a
+// `::`-joined run, never two adjacent names, because several guards key off
+// contextual keywords that lex as plain names -- `export effect TcpSocket {`
+// regressed exactly that way while this was being written.
+
+//# Imports
+
+import ./format.vibe {
+  format_script
+}
+
+//# Functions
+
+fn contains(haystack: String, needle: String) -> Bool {
+  String::index_of(haystack, needle) >= 0
+}
+
+//# Tests
+
+test "a qualified match scrutinee keeps its block brace" {
+  let src = "fn f() -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 0\n  }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "match Color::Red {"))
+  assert(!contains(got, "Color::Red::{"))
+}
+
+test "a qualified if/while subject keeps its block brace" {
+  let src = "fn f() -> Int {\n  while Flag::On {\n    0\n  }\n  1\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "while Flag::On {"))
+  assert(!contains(got, "Flag::On::{"))
+}
+
+test "an unqualified match scrutinee is still guarded" {
+  let src = "fn f() -> Int {\n  match Red {\n    Red => 1\n  }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "match Red {"))
+  assert(!contains(got, "Red::{"))
+}
+
+test "a contextual keyword before the brace is still guarded" {
+  // `effect` / `suberror` lex as plain names, so a lookback that skipped any
+  // name -- rather than only a `::`-joined run -- would step over them.
+  let src = "export effect TcpSocket {\n  Connect(String) -> Int\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "effect TcpSocket {"))
+  assert(!contains(got, "TcpSocket::{"))
+}
+
+test "an already-canonical struct literal survives" {
+  let src = "fn f() -> Point {\n  Point::{ x: 1 }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "Point::{"))
+}
+
+test "formatting is a fixpoint for a qualified scrutinee" {
+  // The corruption was silent precisely because `vibe fmt` rewrote a file that
+  // had been clean, so a second pass must be a no-op.
+  let src = "fn f() -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 0\n  }\n}\n"
+  let once = format_script(src)
+  assert(format_script(once) == once)
+}

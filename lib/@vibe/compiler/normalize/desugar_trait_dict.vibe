@@ -2436,6 +2436,40 @@ fn struct_field_type_key(struct_name: String, field: String) -> String {
   String::concat(struct_name, String::concat(".", field))
 }
 
+/// #1502: reserved `fn_returns` key carrying `type C = Color` as `C -> Color`.
+/// Same trick as `struct_field_type_key` -- this pass has no `TypeDef` table, so
+/// the alias map rides along in the one table every consumer already has. The
+/// `type ` prefix cannot collide with a function or variant name (a space is not
+/// an identifier character).
+fn type_alias_key(alias_name: String) -> String {
+  String::concat("type ", alias_name)
+}
+
+/// Follow `type_alias_key` hops to the name a qualifier ultimately denotes, so
+/// an alias works as a constructor qualifier. `fuel` bounds a cyclic chain
+/// (rejected by the checker; here we only need to not spin).
+fn resolve_alias_head(fn_returns: Array[(String, String)], head: String) -> String {
+  let mut cur = head
+  let mut fuel = 16
+  let mut done = false
+  while !done {
+    if fuel <= 0 {
+      done = true
+    } else {
+      fuel = fuel - 1
+      match fn_return_type(fn_returns, type_alias_key(cur)) {
+        Some(target) => {
+          cur = target
+        },
+        None => {
+          done = true
+        }
+      }
+    }
+  }
+  cur
+}
+
 /// (`Holder.s` -> `HostStream`) for every declared struct field whose
 /// annotation has a head name. Appended to fn_returns so `infer_arg_type_name`
 /// can type a projection (`h.s`).
@@ -2498,6 +2532,38 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
           let (vname, _) = Array::get(variants, vi)
           Array::push(out, (vname, ename))
           vi = vi + 1
+        }
+      },
+      // #1502: `type C = Color` under the reserved `type C` key, so
+      // `qual_ctor_member` can normalize an alias qualifier to the enum it
+      // names. Only a head-bearing target is recorded -- a tuple/fn alias can
+      // never name an enum.
+      STypeAlias(_, aname, _, te) => match te {
+        TyName(n) => {
+          Array::push(out, (type_alias_key(aname), n))
+        },
+        TyApp(n, _) => {
+          Array::push(out, (type_alias_key(aname), n))
+        },
+        _ => ()
+      },
+      // #1502: `import ./m { E as F }` is the same renaming from the other
+      // direction. A BACKSTOP, not the primary path: in the lanes that run
+      // import_alias_rewrite.vibe the head is already rewritten to `E` before
+      // this pass, and the merged stmt list has no `SImport` left to read. It
+      // earns its place for the lanes that skip that rewrite (gc_only.vibe),
+      // where the alias does still reach here.
+      SImport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let (orig, alias_opt) = Array::get(items, ii)
+          match alias_opt {
+            Some(alias) => {
+              Array::push(out, (type_alias_key(alias), orig))
+            },
+            None => ()
+          }
+          ii = ii + 1
         }
       },
       _ => ()
@@ -2941,6 +3007,12 @@ fn extend_var_types(var_types: Array[(String, String)], name: String, inferred: 
 /// that keeps builtin qualified calls like `String::join` / `Array::map` alone
 /// even when a same-named function (`join`/`map`) happens to return that type.
 fn qual_ctor_member(head: String, member: String, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Option[String] {
+  // #1502: an alias qualifier (`type C = Color` -> `C::Red`) is normalized to
+  // the enum it names before the gate. Without this the checker accepts
+  // `C::Red` (it follows `TDAlias`) while this pass leaves the name qualified,
+  // and codegen -- whose ctor table is keyed unqualified -- dies with
+  // `undefined variable (ident): C::Red`. A non-alias head resolves to itself.
+  let head = resolve_alias_head(fn_returns, head)
   if struct_set_has(struct_sets, head) {
     match fn_return_type(fn_returns, member) {
       Some(en) => if en == head {

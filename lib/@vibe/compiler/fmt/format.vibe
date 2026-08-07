@@ -1589,6 +1589,76 @@ fn is_prefix_op(kind: Int, prev_kind: Int) -> Bool {
   }
 }
 
+/// #1505: the token that GOVERNS the qualified path ending just before `end`
+/// (the index of the `{` being considered), skipping trivia and the whole
+/// `Name (:: Name)*` run.
+///
+/// The struct-literal guards below key off the token before the name, but they
+/// read a fixed TWO-token lookback, which any qualifier defeats: in
+/// `match Color::Red {` the two-back token is `::`, not `match`, so every
+/// keyword guard missed and the scrutinee was rewritten to `match Color::Red::{`
+/// -- the same corruption family as the k_is / k_match cases, reachable
+/// whenever the subject is spelled with its enum.
+///
+/// Only a `::`-JOINED run is skipped, never two adjacent names. Several of the
+/// guards key off contextual keywords that lex as plain names (`effect`,
+/// `suberror`, `with`), so a walk that skipped any name would step straight
+/// over them: `export effect TcpSocket {` would report `export` as the
+/// governor and rewrite the declaration header to `effect TcpSocket::{`. That
+/// is the same corruption this function exists to prevent, and it showed up on
+/// 19 files the first time this was written the loose way.
+///
+/// This is a strict generalization: with an unqualified name exactly one token
+/// is skipped, so the result is the old two-token lookback.
+fn skip_fmt_trivia_back(toks: Array[LTok], from: Int) -> Int {
+  let mut j = from
+  let mut going = true
+  while going && j >= 0 {
+    let k = Array::get(toks, j).kind
+    if k == k_ws || k == k_newline || k == k_comment {
+      j = j - 1
+    } else {
+      going = false
+    }
+  }
+  j
+}
+
+fn path_governor(toks: Array[LTok], end: Int) -> LTok {
+  let none_tok = LTok::{
+    kind: k_none, text: ""
+  }
+  let head = skip_fmt_trivia_back(toks, end - 1)
+  if head < 0 {
+    none_tok
+  } else if Array::get(toks, head).kind != k_name {
+    Array::get(toks, head)
+  } else {
+    // One name consumed; keep consuming `:: name` pairs behind it.
+    let mut j = skip_fmt_trivia_back(toks, head - 1)
+    let mut going = true
+    while going {
+      if j < 0 {
+        going = false
+      } else if Array::get(toks, j).kind == k_double_colon {
+        let qual = skip_fmt_trivia_back(toks, j - 1)
+        if qual >= 0 && Array::get(toks, qual).kind == k_name {
+          j = skip_fmt_trivia_back(toks, qual - 1)
+        } else {
+          going = false
+        }
+      } else {
+        going = false
+      }
+    }
+    if j < 0 {
+      none_tok
+    } else {
+      Array::get(toks, j)
+    }
+  }
+}
+
 fn should_insert_struct_double_colon(prev_prev_kind: Int, prev_prev_text: String, prev_kind: Int, prev_text: String, curr_kind: Int, in_type_context: Bool) -> Bool {
   if curr_kind != k_lbrace || in_type_context {
     false
@@ -1920,7 +1990,17 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         i = i + 1
       } else {
         let curr_prefix = is_prefix_op(kind, prev_kind)
-        let insert_double_colon = should_insert_struct_double_colon(prev_prev_kind, prev_prev_text, prev_kind, prev_text, kind, in_type_context)
+        // #1505: the guards want the token governing the whole qualified path,
+        // not the fixed two-token lookback (which is `::` for any qualified
+        // subject). `path_governor` collapses to `prev_prev` for a bare name.
+        let governor = if kind == k_lbrace {
+          path_governor(toks, i)
+        } else {
+          LTok::{
+            kind: prev_prev_kind, text: prev_prev_text
+          }
+        }
+        let insert_double_colon = should_insert_struct_double_colon(governor.kind, governor.text, prev_kind, prev_text, kind, in_type_context)
         let effects_rbrace = kind == k_rbrace && Array::length(container_stack) > 0 &&
         Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects
         if line_has_content && !insert_double_colon &&

@@ -266,6 +266,62 @@ export fn env_bind_all(env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv
   acc
 }
 
+/// #1502: `find_typedef` for callers that want the `TDEnum` a name ultimately
+/// denotes, following `TDAlias` hops. A qualified constructor reference
+/// (`C::Red`, `H::Crimson`) resolves its qualifier through here so an alias
+/// works as a qualifier exactly like the name it aliases; matching `TDEnum`
+/// directly off `find_typedef` is what made `type C = Color` then `C::Red`
+/// report `unknown name`.
+///
+/// A PARAMETERIZED alias resolves to the underlying enum's own `TDEnum`, so the
+/// constructor scheme comes out in the ALIASED enum's formals. For a plain
+/// renaming (`type C[T] = Shape[T]`) that is exactly right. For a partial
+/// application (`type IntShape = Shape[Int]`) it is loose: `IntShape::Wrap`
+/// types as `forall T. (T) -> Shape[T]`, so the alias does not pin `T` the way
+/// the spelling suggests. That is no worse than writing `Shape::Wrap` directly
+/// (both accept `Shape[String]`) and it is not unsound -- the use site still
+/// unifies -- so this slice leaves it. Pinning it needs the alias's own
+/// argument list substituted into the payloads, which is a different change.
+///
+/// `fuel` bounds a cyclic alias chain (`type A = B` / `type B = A`). Such a
+/// program is rejected elsewhere; here we only need to not spin.
+export fn find_enum_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
+  let mut cur = name
+  let mut fuel = 16
+  let mut result = None
+  let mut done = false
+  while !done {
+    if fuel <= 0 {
+      done = true
+    } else {
+      fuel = fuel - 1
+      match find_typedef(defs, cur) {
+        Some(TDEnum(en, eparams, evariants)) => {
+          result = Some(TDEnum(en, eparams, evariants))
+          done = true
+        },
+        // Only a named target can name an enum; anything else (a tuple, a
+        // function type, a builtin) ends the walk with no enum.
+        Some(TDAlias(_, _, target)) => match target {
+          CtEnum(n) => {
+            cur = n
+          },
+          CtNamed(n, _) => {
+            cur = n
+          },
+          _ => {
+            done = true
+          }
+        },
+        _ => {
+          done = true
+        }
+      }
+    }
+  }
+  result
+}
+
 export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
   let len = Array::length(defs)
   let mut i = 0
