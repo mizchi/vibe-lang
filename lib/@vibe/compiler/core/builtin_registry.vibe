@@ -4,11 +4,11 @@ import ./types.vibe {
   Type
 }
 
-// #1343: the ADR-0084 classification table is a sibling in this package now
-// (builtin_registry.vibe moved core-ward), so the drift guard below reads it
-// directly instead of through the @vibe/compiler/core facade.
-import ./effect_taxonomy.vibe {
-  effect_class
+// Standard host-provider and entry-execution policy is a sibling in this
+// package, so the drift guard below reads it directly instead of through the
+// @vibe/compiler/core facade.
+import ./standard_effect_policy.vibe {
+  has_standard_effect_policy
 }
 
 import @vibe/core {
@@ -99,6 +99,9 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   // #795: alias-collision-proof surface for the same import.
   ("vibe_fs_stat_token_raw", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true),
   ("Fs::write_file", CtFn(reg_p2(CtString, CtString), CtUnit, Some("Fs")), true, false, true),
+  // Registered but deliberately unused by compiler sources until the cache
+  // publisher adopts it, preserving seed compatibility.
+  ("Fs::publish_immutable_text", CtFn(reg_p2(CtString, CtString), CtBool, Some("Fs")), true, false, true),
   ("Fs::write_bytes", CtFn(reg_p2(CtString, CtBytes), CtUnit, Some("Fs")), true, false, true),
   ("Fs::read_bytes", CtFn(reg_p1(CtString), CtBytes, Some("Fs")), true, false, true),
   ("vibe_fs_read_dir_raw", CtFn(reg_p1(CtString), CtString, Some("Fs")), true, false, false),
@@ -269,7 +272,16 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("String::substring", CtFn(reg_p3(CtString, CtInt, CtInt), CtString, None), true, true, true),
   ("Array::truncate", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnit, None), true, true, true),
   ("String::join", CtFn(reg_p2(CtArray(CtString), CtString), CtString, None), true, true, true),
-  ("eq", CtFn(reg_p2(CtInt, CtInt), CtBool, None), true, true, true),
+  // #1513: POLYMORPHIC — `eq` is the structural equality builtin and is applied
+  // to enums / structs / strings, not just Int. The `CtInt` placeholder here was
+  // harmless while nothing read these parameter types; once the checker's
+  // fast-path argument check started consulting the registry it turned into a
+  // false rejection (measured: `eq(Color::Red, c)` in
+  // docs/language-tour/basics.vibe.md). `CtUnknown` is what the sibling
+  // polymorphic row `assert_eq` already declares, and head_kind maps it to
+  // "tolerate". Parameter COUNT and return type are unchanged, so the derived
+  // `builtin_registry()` view the codegen lanes read is byte-identical.
+  ("eq", CtFn(reg_p2(CtUnknown, CtUnknown), CtBool, None), true, true, true),
   ("String::ends_with", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
   ("String::last_index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
   ("String::index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
@@ -392,6 +404,72 @@ export fn builtin_registry() -> Array[(String, Int, Int, Bool, Bool)] {
   out
 }
 
+/// #1513: the parameter COUNT of a checker-visible registry row, or -1 when the
+/// name is not one. Split out from `lookup_registry_builtin` because the
+/// checker's direct-call FAST PATH (`checker.vibe::builtin_fixed_arity`)
+/// deliberately avoids `lookup_builtin` -- #626's seed-heap constraint was about
+/// BUILDING nested `CtFn`/`Array` values per call, and this reads the
+/// already-built row without constructing anything.
+///
+/// Before this, that fast path checked arity against a hand-maintained list in
+/// checker.vibe, so `Stdout::write_stream()` / `Fs::read_file("a", "b")` /
+/// `Env::get("A", "B")` were silently unchecked and emitted an invalid module
+/// (measured: the host rejected it at load with `expected 1 elements on the
+/// stack for fallthru`, no source position). Which builtins got checked was the
+/// maintenance state of that list, not a rule of the language.
+export fn registry_builtin_arity(name: String) -> Int {
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(rows) {
+    let (rname, ty, _, _, visible) = Array::get(rows, i)
+    if rname == name && visible {
+      found = match ty {
+        CtFn(params, _, _) => Array::length(params),
+        _ => 0 - 1
+      }
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #1513: the declared type of a checker-visible registry row's parameter `i`,
+/// or None when the name is not a registry row / has no such parameter.
+///
+/// Companion to `registry_builtin_arity`, for the same reason and with the same
+/// cost profile: the checker's direct-call fast path avoids `lookup_builtin`
+/// because #626's seed-heap constraint was about BUILDING nested `CtFn`/`Array`
+/// values per call, and this reads the already-built row.
+///
+/// Returning the TYPE rather than a head kind keeps `head_kind` (and its
+/// tolerate-on-unknown rule) in the checker, which is the only place that knows
+/// what an "unchecked" head means.
+export fn registry_builtin_param_type(name: String, i: Int) -> Option[Type] {
+  let rows = builtin_registry_typed()
+  let mut ri = 0
+  let mut found = None
+  while ri < Array::length(rows) {
+    let (rname, ty, _, _, visible) = Array::get(rows, ri)
+    if rname == name && visible {
+      found = match ty {
+        CtFn(params, _, _) => if i >= 0 && i < Array::length(params) {
+          Some(Array::get(params, i))
+        } else {
+          None
+        },
+        _ => None
+      }
+      ri = Array::length(rows)
+    } else {
+      ri = ri + 1
+    }
+  }
+  found
+}
+
 /// B-2: the checker-facing lookup, consulted FIRST by
 /// checker/builtins.vibe::lookup_builtin. Only checker_visible rows resolve;
 /// codegen-internal names stay invisible to user code.
@@ -411,36 +489,24 @@ export fn lookup_registry_builtin(name: String) -> Option[Type] {
   found
 }
 
-/// #1343 (ADR-0094 実装順 1): この registry の行が担ぐ effect ラベルが、
-/// すべて `core/effect_taxonomy.vibe` の分類表に載っていることを照合する。
+/// Every registry effect label must have standard provider or entry-execution
+/// policy metadata. The registry is operation-keyed while this policy is
+/// label-keyed, so this guard prevents a new host builtin from silently
+/// missing its standard execution policy.
 ///
-/// ADR-0094 Decision 3/4 は「builtin の分類は metadata 表から引く」と決めた
-/// が、表と registry は別ファイルなので、**新しい host builtin が新しい
-/// effect 名を持ち込んだとき表への追加を忘れられる**。その場合
-/// `effect_class` は既定の `algebraic` を返す — つまり host capability が
-/// 黙って「in-process の algebraic effect」に化ける。分類だけを見る後続
-/// フェーズ (ADR-0094 実装順 4 の wit_gen、実装順 5 の main closed row 検査)
-/// はそれを検出できないので、ここで名前付きで落とす。
-///
-/// `verify_lane_builtins` と同じ形の drift guard で、同じく
-/// tests/ から呼ばれる (tests/effect_taxonomy_test.vibe)。O(rows) の
-/// 文字列照合1本なので、追加コストは実質ゼロ。
-///
-/// **カバー範囲はこの registry の行だけ**。host effect ラベルは
-/// `checker/builtins_*.vibe` の if-chain にも散在しており (ADR-0094 の
-/// 実測 1)、そちらは配列として列挙できないのでここからは照合できない —
-/// 現に `Llm` は builtins_system.vibe だけに存在し、この guard は触れない。
-/// registry へ寄せる作業 (B-2 の続き) が進むほどカバー率は上がる。
-export fn verify_effect_taxonomy_coverage() -> Unit with Exception {
+/// The guard intentionally covers registry rows only; labels still present in
+/// checker if-chains cannot be enumerated here. It is called from
+/// tests/standard_effect_policy_test.vibe and follows `verify_lane_builtins`.
+export fn verify_standard_effect_policy_coverage() -> Unit with Exception {
   let rows = builtin_registry_typed()
   let mut i = 0
   while i < Array::length(rows) {
     let (name, ty, _, _, _) = Array::get(rows, i)
     match ty {
-      CtFn(_, _, Some(eff)) => if effect_class(eff) == "algebraic" {
-        throw("effect taxonomy drift: builtin '\{name}' carries the effect label '\{eff}', which has no row in lib/@vibe/compiler/core/effect_taxonomy.vibe -- it therefore classifies as 'algebraic' (an in-process, handler-discharged effect) instead of a host capability (#1343, ADR-0094). Add a row to effect_taxonomy_rows.")
-      } else {
+      CtFn(_, _, Some(eff)) => if has_standard_effect_policy(eff) {
         ()
+      } else {
+        throw("standard effect policy drift: builtin '\{name}' carries effect label '\{eff}', which has no standard policy in lib/@vibe/compiler/core/standard_effect_policy.vibe. Add its provider or entry-execution policy row.")
       },
       _ => ()
     }

@@ -233,7 +233,7 @@ export let main: () -> Int = () -> { wide() + tall() }'
 #      labeled args, pipes, early return) the type-error corpus never reaches. ----
 emit f_suberror 'suberror PBad(String)
 let pfail: (Int) -> Int = (n) -> {
-  handle { if n < 0 { throw(PBad("neg")) } else { n } } with Error { Throw(_) => 0 } }
+  handle { if n < 0 { throw(PBad("neg")) } else { n } } with Exception { Throw(_) => 0 } }
 export let main: () -> Int = () -> { pfail(-1) + pfail(7) }'
 emit f_generic 'let id: [T](T) -> T = (x) -> { x }
 let pair: [A, B](A, B) -> (A, B) = (a, b) -> { (a, b) }

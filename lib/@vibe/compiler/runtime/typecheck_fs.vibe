@@ -162,12 +162,51 @@ fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, T
   out
 }
 
-fn bind_import_names_from_cache(acc: TypeEnv, resolved: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)]) -> TypeEnv {
-  let dep_env = match lookup_env_cache(cache, resolved) {
+/// #1521: an import of a name the dependency does not export binds `CtUnknown`
+/// below, which unifies with anything, so every USE of that name typechecks
+/// and the program only fails in codegen with `undefined variable (ident): X`
+/// -- no file, no line. `unresolved` collects those names so the caller can
+/// turn them into a real diagnostic; pass a throwaway array to opt out.
+///
+/// The `dep_known` guard is load-bearing. A dependency whose environment is
+/// not in this cache -- a `@pkg` import, or an entry not computed yet --
+/// yields `EnvEmpty`, and then EVERY name looks missing. Reporting those is a
+/// false positive on correct code, and it is the failure mode that sank the
+/// two earlier attempts at this check (one keyed off the merged environment,
+/// one off a lane `vibe check` does not use).
+///
+/// Only names the dependency's VALUE environment can speak for are reported:
+/// `starts_with_upper` names may be a struct or a type alias, and those are
+/// not bindings at all -- they live in `defs`, which this cache does not
+/// carry -- so "absent here" does not mean "not exported" for them. Enums and
+/// their constructors DO appear, but there is no way at this point to tell an
+/// unexported `Foo` from a struct-only `Foo`, so the uppercase half of #1521
+/// stays open rather than risk rejecting valid code.
+///
+/// The other half still open (#1533): this tests membership in the
+/// dependency's CHECKED environment, which binds every top-level `let`/`fn`
+/// whether or not it is exported. `import ./dep.vibe { private_fn }` therefore
+/// passes here and still dies in codegen. Closing it needs the dependency's
+/// export SURFACE -- `interface_public_value_names` computes exactly that from
+/// the dependency's stmts, but only its environment reaches this point, so the
+/// surface has to be published alongside the environment first.
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
+  let cached = lookup_env_cache(cache, resolved)
+  let dep_env = match cached {
     Some(e) => e,
     None => EnvEmpty
   }
   let dep_bindings = env_flat_bindings(dep_env)
+  // Whether the dependency was CHECKED, not whether it happens to bind any
+  // values. A module that exports only types or only traits is checked and
+  // cached, and its flat value environment is legitimately empty -- deriving
+  // "known" from the binding count silently switched the check off for
+  // exactly those dependencies, so a bogus import from a trait-only module
+  // went back to failing in codegen (Codex review, PR #1532).
+  let dep_known = match cached {
+    Some(_) => true,
+    None => false
+  }
   let nlen = Array::length(names)
   let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
     if j >= nlen {
@@ -180,7 +219,14 @@ fn bind_import_names_from_cache(acc: TypeEnv, resolved: String, names: Array[(St
       }
       let ty = match env_lookup_flat(dep_bindings, name) {
         Some(t) => t,
-        None => CtUnknown
+        None => {
+          if dep_known && !starts_with_upper(name) {
+            Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
+          } else {
+            ()
+          }
+          CtUnknown
+        }
       }
       let with_name = env_bind(nacc, bound_name, ty)
       let with_companions = match ty {
@@ -198,6 +244,13 @@ fn bind_import_names_from_cache(acc: TypeEnv, resolved: String, names: Array[(St
 }
 
 fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {
+  build_import_env_collecting(stmts, base_dir, cache, array_empty())
+}
+
+/// `build_import_env`, additionally collecting the imported names the
+/// dependency does not export (#1521 -- see
+/// `bind_import_names_from_cache_collecting`).
+fn build_import_env_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
   let len = Array::length(stmts)
   let rec go: (Int, TypeEnv) -> TypeEnv = (i, acc) -> {
     if i >= len {
@@ -206,11 +259,11 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
       let next = match Array::get(stmts, i) {
         SImport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache(acc, resolved, names, cache)
+          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache(acc, resolved, names, cache)
+          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved)
         },
         _ => acc
       }
@@ -2109,7 +2162,14 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
   let stmts = parse_program_with_path(job.path, job.source)
-  let import_env = build_import_env(stmts, dir_of_path(job.path), job.dep_envs)
+  // #1521: importing a name the dependency does not export used to bind
+  // CtUnknown silently, so `vibe check` said ok and `vibe build` died in
+  // codegen with `undefined variable (ident): X` -- no file, no line. The
+  // names are collected during env construction and reported here, before
+  // the body is checked, so the diagnostic names the import rather than
+  // whatever the body happened to do with it.
+  let unresolved_imports = array_empty()
+  let import_env = build_import_env_collecting(stmts, dir_of_path(job.path), job.dep_envs, unresolved_imports)
   // The CANONICAL fingerprint, computed the same way the serial walk
   // computes it (build_fingerprint, same file) from the same inputs: this
   // module's own source and each dependency's fingerprint in declaration
@@ -2118,31 +2178,37 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
   // driver would never look up, which would make a parallel pre-check pass
   // silently do nothing.
   let fingerprint = build_fingerprint(job.source, job.dep_fps)
-  handle {
-    let checked_env = match import_env {
-      EnvEmpty => check_program(stmts),
-      _ => check_program_with_env(stmts, import_env)
+  if Array::length(unresolved_imports) > 0 {
+    Diagnosed(job.path, for msg in unresolved_imports {
+      String::concat(String::concat(job.path, ": "), msg)
+    })
+  } else {
+    handle {
+      let checked_env = match import_env {
+        EnvEmpty => check_program(stmts),
+        _ => check_program_with_env(stmts, import_env)
+      }
+      let interface_identity = if incremental_interface_trace_enabled() {
+        incremental_interface_identity(job.source, checked_env)
+      } else {
+        ""
+      }
+      let checked_env_identity = if incremental_interface_trace_enabled() {
+        incremental_checked_env_identity(checked_env)
+      } else {
+        ""
+      }
+      let persistent_type_env_transport_identity = if incremental_interface_trace_enabled() {
+        incremental_persistent_type_env_transport_identity(checked_env)
+      } else {
+        ""
+      }
+      Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity)
+    } with Exception {
+      Throw(msg) => Diagnosed(job.path, [
+        String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
+      ])
     }
-    let interface_identity = if incremental_interface_trace_enabled() {
-      incremental_interface_identity(job.source, checked_env)
-    } else {
-      ""
-    }
-    let checked_env_identity = if incremental_interface_trace_enabled() {
-      incremental_checked_env_identity(checked_env)
-    } else {
-      ""
-    }
-    let persistent_type_env_transport_identity = if incremental_interface_trace_enabled() {
-      incremental_persistent_type_env_transport_identity(checked_env)
-    } else {
-      ""
-    }
-    Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity)
-  } with Exception {
-    Throw(msg) => Diagnosed(job.path, [
-      String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
-    ])
   }
 }
 /// Coordinator-owned commit. Every filesystem and accumulator write for a

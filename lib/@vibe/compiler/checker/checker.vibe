@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   exception_effect_kind,
   exception_effect_labels_equal,
   expr_children,
+  find_enum_typedef,
   find_typedef,
   fresh_var,
   generalize,
@@ -21,11 +22,13 @@ import @vibe/compiler/core {
   is_exception_label,
   is_exception_throw_handler_name,
   is_exception_throw_operation,
+  registry_builtin_arity,
+  registry_builtin_param_type,
   resolve_builtin,
   subst_add_bound,
   subst_apply,
   subst_bounds_for,
-  trait_method_sig_deep,
+  trait_method_sig_binders_deep,
   type_implements_trait,
   type_name_has_iterator_impl,
   type_to_string,
@@ -49,7 +52,7 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr, subst_type_params
+  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import ./checker_spawnable.vibe {
@@ -194,13 +197,17 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
             }
             if pending {
               let trait_name = Array::get(bounds, bi)
-              match trait_method_sig_deep(env, trait_name, method) {
+              match trait_method_sig_binders_deep(env, trait_name, method) {
                 Some(sig) => {
-                  let (params_te, ret_te) = sig
+                  // #1512: the trait header's params and the method's own
+                  // generics are binders, so they must shadow `defs` —
+                  // otherwise `import { Hue as T }` captures the `T` of
+                  // `trait Boxed[T] { unwrap(Self) -> T }`.
+                  let (params_te, ret_te, binders) = sig
                   let resolved_params = for pte in params_te {
-                    relax_unknown_named(subst_self_in_type(resolve_type_expr(pte, defs), self_ty), defs)
+                    relax_unknown_named(subst_self_in_type(resolve_type_expr_shadowed(pte, defs, binders), self_ty), defs)
                   }
-                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr(ret_te, defs), self_ty), defs)
+                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr_shadowed(ret_te, defs, binders), self_ty), defs)
                   result = Some(CtFn(resolved_params, resolved_ret, None))
                 },
                 None => ()
@@ -220,39 +227,131 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
 }
 
 /// Resolve a qualified constructor reference `Enum::Variant` (e.g. `Color::Red`,
-/// `Sh::Circle`) to the bare variant's constructor type. The bare variant name
-/// is already bound in `env` by the SEnum case; we only confirm `head` names a
-/// known enum that actually owns `member` (so unrelated `T::method` names fall
-/// through to the `unknown name` path). Returns the polymorphic env type as-is;
-/// callers instantiate it exactly like a bare ident. (#672 qualified ctors.)
-fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]) -> Option[Type] {
+/// `Sh::Circle`) to the variant's constructor type, confirming that `head`
+/// names a known enum that actually owns `member` (so unrelated `T::method`
+/// names fall through to the `unknown name` path). Callers instantiate the
+/// result exactly like a bare ident. (#672 qualified ctors.)
+///
+/// #1455: for a MONOMORPHIC enum the constructor type is built from `head`'s
+/// own `TDEnum` rather than looked up under the BARE variant name. The old
+/// `env_lookup(env, member)` made the qualifier purely cosmetic: it confirmed
+/// ownership and then took whatever the flat, last-registered-wins env had
+/// under `member`, so `A::Mk` and `B::Mk` resolved to the same type and a
+/// qualified reference could not disambiguate anything. Building from the
+/// `TDEnum` reproduces exactly what the SEnum arm binds for a local enum
+/// (`CtEnum(name)` nullary, `CtFn(payloads, CtEnum(name), None)` otherwise)
+/// and additionally works for an IMPORTED enum, whose bare constructors are in
+/// the env but whose variant list only reaches this module through
+/// `enum_def_env_name`.
+///
+/// A PARAMETERIZED enum is built from the `Enum::__variants__` carrier rather
+/// than from the `TDEnum`, because the `TDEnum`'s payloads carry the declaring
+/// compilation's `CtVar` ids and the `CtForAll` binders that quantify them live
+/// in `type_def_binders`, which this function cannot reach and which does not
+/// cross a module boundary anyway. The carrier stores the NAME-parameterized
+/// payloads, so the scheme can be rebuilt here from binder ids of our own:
+/// `c` is the caller's next-fresh counter, and the caller instantiates the
+/// result immediately, which renames every binder again (`instantiate` steps
+/// its own counter past any binder id it sees, so ids minted here cannot be
+/// captured). Falling back to `env_lookup(env, member)` when the carrier is
+/// missing keeps the pre-#1455 behaviour for anything this cannot reconstruct.
+fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef], c: Int) -> Option[Type] {
   let idx = String::index_of(name, "::")
   if idx < 0 {
     None
   } else {
     let head = String::substring(name, 0, idx)
     let member = String::substring(name, idx + 2, String::length(name))
-    match find_typedef(defs, head) {
-      Some(TDEnum(_, _, variants)) => {
+    match find_enum_typedef(defs, head) {
+      Some(TDEnum(ename, params, variants)) => {
         let mut found = false
+        let mut payloads = array_empty()
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, _) = Array::get(variants, vi)
+          let (vname, vtypes) = Array::get(variants, vi)
           if vname == member {
             found = true
+            payloads = vtypes
           } else {
             ()
           }
           vi = vi + 1
         }
         if found {
-          env_lookup(env, member)
+          if Array::length(params) == 0 {
+            if Array::length(payloads) == 0 {
+              Some(CtEnum(ename))
+            } else {
+              Some(CtFn(payloads, CtEnum(ename), None))
+            }
+          } else {
+            resolve_qualified_parameterized_ctor(ename, params, member, env, c)
+          }
         } else {
           None
         }
       },
       _ => None
     }
+  }
+}
+
+/// The parameterized half of `resolve_qualified_ctor_ident`: rebuild
+/// `Enum::Variant`'s `CtForAll` scheme from the carrier's name-parameterized
+/// payloads, binding the enum's formals to fresh ids starting at `c`.
+fn resolve_qualified_parameterized_ctor(ename: String, params: Array[String], member: String, env: TypeEnv, c: Int) -> Option[Type] {
+  match env_lookup(env, enum_def_env_name(ename)) {
+    Some(carrier) => match decode_enum_def(carrier) {
+      Some((carrier_params, carrier_variants)) => {
+        // The carrier and the `TDEnum` must agree on the arity, or the
+        // substitution below would leave a formal unbound. They disagree only
+        // if the two were written by different declarations of the same name,
+        // which is exactly when guessing is wrong.
+        if Array::length(carrier_params) != Array::length(params) {
+          env_lookup(env, member)
+        } else {
+          let param_var_ids = array_empty()
+          let param_var_types = array_empty()
+          let mut pi = 0
+          while pi < Array::length(carrier_params) {
+            Array::push(param_var_ids, c + pi)
+            Array::push(param_var_types, CtVar(c + pi))
+            pi = pi + 1
+          }
+          let result_ty = CtNamed(ename, param_var_types)
+          let mut found = false
+          let mut payloads = array_empty()
+          let mut vi = 0
+          while vi < Array::length(carrier_variants) {
+            let (vname, vtypes) = Array::get(carrier_variants, vi)
+            if vname == member {
+              found = true
+              payloads = vtypes
+            } else {
+              ()
+            }
+            vi = vi + 1
+          }
+          if found {
+            let subst_payloads = for pt in payloads {
+              subst_type_params(pt, carrier_params, param_var_types)
+            }
+            let ctor_ty = if Array::length(subst_payloads) == 0 {
+              result_ty
+            } else {
+              CtFn(subst_payloads, result_ty, None)
+            }
+            Some(CtForAll(param_var_ids, array_empty(), ctor_ty))
+          } else {
+            // The `TDEnum` says the variant exists but the carrier does not
+            // list it. Do not invent a scheme for it.
+            None
+          }
+        }
+      },
+      None => env_lookup(env, member)
+    },
+    None => env_lookup(env, member)
   }
 }
 
@@ -1585,6 +1684,160 @@ export fn fn_return_env_name(name: String) -> String {
   String::concat("__fn_ret__:", name)
 }
 
+/// #1455: the side-channel binding that carries a MONOMORPHIC enum's variant
+/// list across a module boundary, the way `fn_return_env_name` carries a
+/// function's return type. The checker's cross-module transport is the flat
+/// `TypeEnv`, so an importing module sees each exported constructor as a bare
+/// `Mk : (Int) -> Box` binding and nothing that says which enum owns `Mk`.
+/// Three separate symptoms all come from that one missing edge:
+/// `Box::Mk(..)` cannot resolve (`resolve_qualified_ctor_ident` finds no
+/// `TDEnum` for `Box`), a non-exhaustive `match` cannot name the variants it
+/// is missing, and `find_ctor_in_defs` falls through to `bind_unknown`, so an
+/// imported enum's pattern payloads bind `CtUnknown` and are never checked
+/// (`match b { Mk(n) => String::concat(n, "!") }` compiles with `n : Int`).
+/// Rebuilding the `TDEnum` in the importing module's `defs` closes all three.
+///
+/// Parameterized enums ride the same carrier. What blocked them at first was
+/// that a `TDEnum`'s payload types hold `CtVar` ids allocated by the DECLARING
+/// compilation's fresh-id counter, with the binders that quantify them in
+/// `type_def_binders` rather than in the `TDEnum` -- so the ids mean nothing in
+/// the importing unit. The carrier therefore stores the enum's formals by NAME
+/// alongside NAME-parameterized payloads (`encode_enum_def`), and the importing
+/// side rebinds them to ids of its own: `seed_imported_enum_defs` for the
+/// `TDEnum` it registers, `resolve_qualified_ctor_ident` for the `CtForAll`
+/// scheme it hands a qualified reference.
+///
+/// The name is `Enum::__variants__` rather than a fresh `__enumdef__:Enum`
+/// prefix so the carrier needs no transport code of its own: an importing
+/// module's env is NOT the dependency's whole env, it is built name by name
+/// from the import list, and `bind_enum_constructor_companions`
+/// (runtime/typecheck_fs.vibe and runtime/runtime.vibe both have a copy)
+/// already pulls across every dependency binding spelled `Enum::`, which is
+/// how `Enum::equals` and the derive signatures reach an importer. Riding
+/// that rule means the carrier arrives on every path that already carries
+/// constructors, and cannot be forgotten by one of them.
+export fn enum_def_env_name(name: String) -> String {
+  String::concat(name, "::__variants__")
+}
+
+/// The enum a binding produced by `enum_def_env_name` describes, or None for
+/// an ordinary binding.
+export fn enum_def_env_target(binding_name: String) -> Option[String] {
+  let suffix = "::__variants__"
+  let slen = String::length(suffix)
+  let blen = String::length(binding_name)
+  if blen > slen && String::ends_with(binding_name, suffix) {
+    Some(String::substring(binding_name, 0, blen - slen))
+  } else {
+    None
+  }
+}
+
+/// The reserved leading entry that carries a parameterized enum's formal
+/// parameter names. `__params__` is not a legal variant name, so a decoder can
+/// tell it apart from a variant by name alone, and a monomorphic enum simply
+/// omits it -- its encoding is byte-identical to the one that existed before
+/// parameterized enums rode this carrier at all.
+fn enum_def_params_marker() -> String {
+  "__params__"
+}
+
+/// Variant list -> `Type`, so the carrier rides the existing `TypeEnv` instead
+/// of adding a `TypeEnv` or `Type` variant: every `match` over those (plus the
+/// persistent-env transport identity and the canonical checked-state walks)
+/// would otherwise have to grow a case for a value that is pure provenance.
+/// One variant becomes `CtNamed(vname, payloads)`; the whole list becomes
+/// `CtNamed("__variants__", entries)`, which no source type can spell.
+///
+/// `params` names the enum's formal type parameters and is empty for a
+/// monomorphic enum. The payload types written here must be the
+/// NAME-parameterized form (`CtNamed("T", [])` where the declaration said `T`),
+/// NOT the `CtVar`-substituted form the `TDEnum` stores: a `CtVar` id only
+/// means anything paired with the binder list that quantifies it, and the
+/// binder list lives in the declaring compilation's `type_def_binders`, which
+/// does not cross the module boundary. Names do cross, and the importing side
+/// re-substitutes its own fresh ids (see `seed_imported_enum_defs` and
+/// `resolve_qualified_ctor_ident`).
+export fn encode_enum_def(params: Array[String], variants: Array[(String, Array[Type])]) -> Type {
+  let entries = array_empty()
+  if Array::length(params) > 0 {
+    let param_entries = array_empty()
+    let mut pi = 0
+    while pi < Array::length(params) {
+      Array::push(param_entries, CtNamed(Array::get(params, pi), array_empty()))
+      pi = pi + 1
+    }
+    Array::push(entries, CtNamed(enum_def_params_marker(), param_entries))
+  } else {
+    ()
+  }
+  let mut i = 0
+  while i < Array::length(variants) {
+    let (vname, payloads) = Array::get(variants, i)
+    Array::push(entries, CtNamed(vname, payloads))
+    i = i + 1
+  }
+  CtNamed("__variants__", entries)
+}
+
+/// Monomorphic shorthand for `encode_enum_def`.
+export fn encode_enum_def_variants(variants: Array[(String, Array[Type])]) -> Type {
+  encode_enum_def(array_empty(), variants)
+}
+
+/// Inverse of `encode_enum_def`, as `(params, variants)`. Returns None rather
+/// than a partial list if the shape is not exactly what the encoder writes -- a
+/// half-decoded variant list would register a `TDEnum` that silently loses
+/// constructors.
+export fn decode_enum_def(ty: Type) -> Option[(Array[String], Array[(String, Array[Type])])] {
+  match ty {
+    CtNamed(head, entries) => if head == "__variants__" {
+      let params = array_empty()
+      let out = array_empty()
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(entries) {
+        match Array::get(entries, i) {
+          CtNamed(vname, payloads) => if vname == enum_def_params_marker() {
+            let mut pi = 0
+            while pi < Array::length(payloads) {
+              match Array::get(payloads, pi) {
+                CtNamed(pname, _) => Array::push(params, pname),
+                _ => {
+                  ok = false
+                }
+              }
+              pi = pi + 1
+            }
+          } else {
+            Array::push(out, (vname, payloads))
+          },
+          _ => {
+            ok = false
+          }
+        }
+        i = i + 1
+      }
+      if ok {
+        Some((params, out))
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// `decode_enum_def` keeping only the variant list.
+export fn decode_enum_def_variants(ty: Type) -> Option[Array[(String, Array[Type])]] {
+  match decode_enum_def(ty) {
+    Some((_, variants)) => Some(variants),
+    None => None
+  }
+}
+
 /// #938: the ArrayBuilder container type — `CtNamed("ArrayBuilder", [elem])`,
 /// the same shape `b: ArrayBuilder[T]` annotations resolve to. Used by the
 /// builder call branches below. #983/#996 (Codex P2): `Map` is deliberately
@@ -1878,7 +2131,63 @@ fn builtin_fixed_arity(name: String) -> Int {
   } else if name == "FixedArray::blit" {
     5
   } else {
-    0 - 1
+    // #1513: fall back to the central registry rather than growing this list.
+    // The chain above predates the registry and covers the pure container /
+    // string builtins; every HOST builtin (`Stdout::*`, `Env::*`, `Stdin::*`,
+    // `Fs::*`, `sh`, `sleep`, ...) declares its parameters there and was
+    // therefore arity-UNCHECKED here -- `Stdout::write_stream()` compiled and
+    // emitted a module the host rejected at load time, and
+    // `Fs::read_file("a", "b")` did the same. Returns -1 for a non-registry
+    // name, so anything this pass genuinely cannot see stays tolerated exactly
+    // as before.
+    registry_builtin_arity(name)
+  }
+}
+
+/// #1513: the expected head kind of builtin `name`'s argument `i`, hand table
+/// FIRST and the central registry as the fallback.
+///
+/// The two hand tables above (`builtin_first_arg_head` /
+/// `builtin_arg_head_rest`) predate the registry and cover Array / String /
+/// Bytes / FixedArray only, so every HOST builtin's arguments were unchecked:
+/// `Stdout::write_stream(42)` compiled AND RAN, printing the pointer as a
+/// decimal. Same shape as the arity gap this issue's first half closed —
+/// "which builtins get checked" was the maintenance state of a list, not a rule.
+///
+/// The hand table wins where it has an entry so nothing already checked can
+/// change verdict (it encodes receiver-position knowledge the registry's
+/// per-parameter types do not, e.g. HOF callbacks deliberately left at 0).
+/// A registry parameter typed `CtUnknown` maps to head 0 = tolerate, which is
+/// how `assert_eq` and friends stay unchecked.
+fn builtin_param_head(name: String, i: Int) -> Int {
+  let hand = if i == 0 {
+    builtin_first_arg_head(name)
+  } else {
+    builtin_arg_head_rest(name, i)
+  }
+  if hand != 0 {
+    hand
+  } else {
+    match registry_builtin_param_type(name, i) {
+      Some(t) => head_fold_char(head_kind(t)),
+      None => 0
+    }
+  }
+}
+
+/// `Char` is an `Int` alias in this language: the lexer emits `TInt` for a char
+/// literal, so `'A' == 65` and `char_int_compatible` (core/types.vibe) lets the
+/// two unify freely in both directions. The head-kind check must not invent a
+/// distinction `unify` does not make, so fold `CtChar`'s head into `CtInt`'s on
+/// both sides of the comparison. Without this the registry's `Char::to_int`
+/// row (declared `CtChar`) rejects `Char::to_int('A')`, and a `CtChar`-typed
+/// value (e.g. `Char::from_int(65)`) is rejected by every builtin whose
+/// registry row spells the slot `CtInt` (`Stdout::write_char`, ...).
+fn head_fold_char(k: Int) -> Int {
+  if k == 5 {
+    1
+  } else {
+    k
   }
 }
 
@@ -3717,7 +4026,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             }
             (mty, s, c)
           },
-          None => match resolve_qualified_ctor_ident(name, env, defs) {
+          None => match resolve_qualified_ctor_ident(name, env, defs, c) {
             Some(ct) => {
               let (ti, c1, new_bounds) = instantiate(ct, c)
               let nblen = Array::length(new_bounds)
@@ -4832,7 +5141,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           match direct_call_return(env, name) {
             Some(ret_ty) => {
               let alen = Array::length(args)
-              let want_head = builtin_first_arg_head(name)
+              let want_head = builtin_param_head(name, 0)
               // Argument-count check (see `builtin_fixed_arity`). `Bytes::new`
               // is special-cased: 0 args = empty growable buffer, 1 arg =
               // length-n zero-filled (MoonBit semantics, linear backend synth).
@@ -4860,7 +5169,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // passes an Int where an Array is required). A non-concrete head
                 // (var / generic / unknown) is tolerated.
                 if ai == 0 && want_head != 0 {
-                  let got_head = head_kind(subst_apply(s2, at))
+                  let got_head = head_fold_char(head_kind(subst_apply(s2, at)))
                   if got_head != 0 && got_head != want_head {
                     Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
                   } else if want_head == 9 && is_stream_named_type(subst_apply(s2, at)) {
@@ -4874,9 +5183,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 } else if ai >= 1 {
                   // Non-receiver argument head check for fixed-signature builtins
                   // (`String::concat("a", 1)`, `String::substring(s, "x", 2)`).
-                  let want_rest = builtin_arg_head_rest(name, ai)
+                  let want_rest = builtin_param_head(name, ai)
                   if want_rest != 0 {
-                    let got_head = head_kind(subst_apply(s2, at))
+                    let got_head = head_fold_char(head_kind(subst_apply(s2, at)))
                     if got_head != 0 && got_head != want_rest {
                       Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(ai), "): ")))), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
                     } else {
@@ -6279,7 +6588,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else raw_name
         let (pt, ns, nc) = match ann {
           Some(te) => {
-            let resolved = resolve_type_expr(te, defs)
+            // #1512: `tparams` shadow `defs`, so `resolve_tparams_in` below
+            // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
+            let resolved = resolve_type_expr_shadowed(te, defs, tparams)
             let pt2 = resolve_tparams_in(resolved, fn_env)
             (pt2, s1, c1)
           },
@@ -6308,21 +6619,35 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // rejected it once the #941 railway-conflict report landed. CtUnknown
       // unifies with anything, so the EReturn check is inert for it.
       let body_env = match ret_ty {
-        Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr(rte, defs), fn_env)),
+        Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env)),
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
       let (bt, s2, c2) = check_expr_capture(body, body_env, defs, s1, c1, errors, tytab, capture, lane)
       let (final_ret, s3) = match ret_ty {
         Some(te) => {
-          let resolved = resolve_type_expr(te, defs)
+          let resolved = resolve_type_expr_shadowed(te, defs, tparams)
           let resolved_ret = resolve_tparams_in(resolved, fn_env)
-          match unify(bt, resolved_ret, s2) {
-            Some(ns) => (subst_apply(ns, resolved_ret), ns),
-            None => {
-              Array::push(errors, String::concat("return type mismatch: expected ", String::concat(type_to_string(resolved_ret), String::concat(", got ", type_to_string(bt)))))
-              (CtUnknown, s2)
-            }
-          }
+          // #1451: check_assignable, not a raw `unify`, so the IMPLICIT
+          // tail-expression return follows the same rules as an EXPLICIT
+          // `return e` -- the EReturn arm already calls check_assignable with
+          // this exact label, so the two spellings of the same return disagreed.
+          //
+          // A closure LITERAL always synthesizes a PURE row (`CtFn(.., None)`):
+          // its row is not written at the literal, and the latent row is charged
+          // by the separate effect pass. A raw unify treats `None` vs
+          // `Some(row)` as a conflict (effect_names_compatible: "None (pure) vs
+          // Some(concrete) differ in set size"), so EVERY function returning an
+          // effectful function value was rejected -- including through Array /
+          // tuple / Option, since the mismatch is nested:
+          //   fn make() -> (String) -> Unit with Log::Emit {
+          //     (s) -> { perform Log::Emit(s) }        // expected .. got (?t0) -> ()
+          //   }
+          // check_assignable's structural retry tolerates exactly the
+          // pure->effectful direction and still reports the UNSOUND one (an
+          // effectful value flowing into a pure-typed slot) via
+          // effect_row_dropped, so this loosens nothing that was load-bearing.
+          let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", 0 - 1)
+          (subst_apply(ns, resolved_ret), ns)
         },
         None => (subst_apply(s2, bt), s2)
       }

@@ -22,6 +22,10 @@ bash scripts/check_builtin_parity.sh
 # Static check, so it runs here with the other pre-build checks.
 bash scripts/check_inline_builtin_capture.sh
 
+# Capability-only gate for the future TDRE5 immutable cache publisher. The
+# builtin remains unused by compiler source until the bootstrap seed is bumped.
+node scripts/test_immutable_publish_plumbing.js
+
 echo "[compiler-gate] 1-2/3 generated compiler artifacts"
 # This used to be a SYNC CHECK: regenerate the five artifacts into a temp dir
 # and assert the committed copies matched byte for byte. The artifacts are no
@@ -2303,7 +2307,7 @@ cat > "$pfdir/bad_row_single.vibe" <<'EOF'
 let leaf: (String) -> String with Fs = (p) -> {
   Fs::read_file(p)
 }
-let mid: (String) -> String with Error = (p) -> {
+let mid: (String) -> String with Exception = (p) -> {
   leaf(p)
 }
 export let _start: () -> Int = () -> { 42 }
@@ -2314,9 +2318,12 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$pfdir/bad_row_single.wasm" ]; then
   echo "[compiler-gate] FAIL: partially-declared transitive effect call compiled (#639)" >&2; exit 1
 fi
-# #1461: the fixture still DECLARES `with Error`; the diagnostic reports the
-# canonical `Exception`. That asymmetry is the point of the flip and is what
-# this assertion pins -- the alias keeps parsing, it just stops being printed.
+# #1461: the fixture used to DECLARE `with Error` while the diagnostic reported
+# the canonical `Exception` -- an asymmetry that was the point of Step 1's flip,
+# and what this assertion pinned. The final stage retired the alias as a
+# spelling, so the fixture now declares `Exception` too and the asymmetry is
+# gone. The assertion text is unchanged: it always read `declared { Exception }`,
+# because the canonical name is what gets printed either way.
 if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared { Exception }, requires { Exception, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
   cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
@@ -2363,7 +2370,7 @@ fi
 # local callee was rejected. The env-seeded row closes the module boundary.
 mkdir -p "$pfdir/sub"
 cat > "$pfdir/sub/helper.vibe" <<'EOF'
-export let read_it: (String) -> String with Error + Fs = (p) -> {
+export let read_it: (String) -> String with Exception + Fs = (p) -> {
   Fs::read_file(p)
 }
 EOF
@@ -2379,7 +2386,7 @@ EOF
 cat > "$pfdir/good_import_transitive.vibe" <<'EOF'
 import ./sub/helper.vibe { read_it }
 
-let g: (String) -> String with Error + Fs = (p) -> {
+let g: (String) -> String with Exception + Fs = (p) -> {
   read_it(p)
 }
 export let _start: () -> Int = () -> { 42 }
@@ -2736,42 +2743,42 @@ echo "[compiler-gate] 27e/27 Error-as-perform equivalence + non-resumability (#6
 edir="_build/_gate_error_perform"
 rm -rf "$edir"; mkdir -p "$edir"
 cat > "$edir/via_perform.vibe" <<'EOF'
-let safe = () -> Int with Error {
+let safe = () -> Int with Exception {
   perform Error::Throw("fail")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+  handle { safe() } with Exception { Throw(msg) => String::length(msg) }
 }
 EOF
 cat > "$edir/via_throw.vibe" <<'EOF'
-let safe = () -> Int with Error {
+let safe = () -> Int with Exception {
   throw("fail")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+  handle { safe() } with Exception { Throw(msg) => String::length(msg) }
 }
 EOF
 cat > "$edir/bad_resume_arm.vibe" <<'EOF'
-let risky = () -> Int with Error {
+let risky = () -> Int with Exception {
   throw("boom")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { risky() } with Error { Throw(_m) => resume(0) }
+  handle { risky() } with Exception { Throw(_m) => resume(0) }
 }
 EOF
 # Codex P2 on #933: the rejection walk's catch-all used to end at EBreak /
 # ELoop (and EMap/ESpread/ELabeledArg/EContinue/ERecord), so a resume tucked
 # into `loop { break resume(0) }` reached codegen's meaningless tag-1 path.
 cat > "$edir/bad_resume_loop.vibe" <<'EOF'
-let risky = () -> Int with Error {
+let risky = () -> Int with Exception {
   throw("boom")
   0
 }
 export let _start: () -> Int = () -> {
-  handle { risky() } with Error { Throw(_m) => loop { break resume(0) } }
+  handle { risky() } with Exception { Throw(_m) => loop { break resume(0) } }
 }
 EOF
 for v in via_perform via_throw; do
@@ -5275,18 +5282,24 @@ echo "[compiler-gate] local effectful closure passed through trivial wrapper ok 
 echo "[compiler-gate] 40aj/40 trivial-wrapper inlining leaves wrapper-as-value references correct (#1070 narrow slice)"
 lcwrvdir="_build/_gate_local_closure_wrapper_referenced_as_value"
 rm -rf "$lcwrvdir"; mkdir -p "$lcwrvdir"
-sed '/^__DATA__$/,$d' fixtures/effect_local_closure_wrapper_referenced_as_value.vibe > "$lcwrvdir/src.vibe"
+# #1571 (first slice): this fixture carries its expectation as an
+# `inspect(main(), "30")` test block rather than a `__DATA__` tail, so it is
+# compiled AS-IS -- no `sed` strip, no temp copy (its `import ../lib/@vibe/core`
+# has to resolve from fixtures/ anyway) -- and the expected value lives beside
+# the code that produces it, updatable with `vibe test --update`. Entry is
+# `__no_entry__`, which synthesizes the test-block runner; a mismatch prints
+# actual vs expected from inside the run, so the output is surfaced on failure.
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$lcwrvdir/src.vibe" "$lcwrvdir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_local_closure_wrapper_referenced_as_value.vibe "$lcwrvdir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$lcwrvdir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe did not compile" >&2
   cat "$lcwrvdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-lcwrv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcwrvdir/out.wasm" 2>&1 | tail -1)"
-if [ "$lcwrv_out" != "30" ]; then
-  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe got '$lcwrv_out' (want 30) -- trivial-wrapper inlining broke a wrapper-as-value reference" >&2
+if ! lcwrv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$lcwrvdir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe tests failed -- trivial-wrapper inlining broke a wrapper-as-value reference" >&2
+  echo "$lcwrv_out" >&2
   exit 1
 fi
 rm -rf "$lcwrvdir"
@@ -6014,7 +6027,7 @@ echo "[compiler-gate] 44b/44 checked-Error row discipline default-on (#944 stage
 g944dir="_build/_gate_944"
 rm -rf "$g944dir"; mkdir -p "$g944dir"
 cat > "$g944dir/leak.vibe" <<'EOF'
-fn boom(x: Int) -> Int with Error {
+fn boom(x: Int) -> Int with Exception {
   if x == 0 {
     throw("zero")
   }
@@ -6030,7 +6043,7 @@ export let main = () -> Int {
 }
 EOF
 cat > "$g944dir/discharged.vibe" <<'EOF'
-fn boom(x: Int) -> Int with Error {
+fn boom(x: Int) -> Int with Exception {
   if x == 0 {
     throw("zero")
   }
@@ -6040,7 +6053,7 @@ fn boom(x: Int) -> Int with Error {
 export let main = () -> Int {
   handle {
     boom(1)
-  } with Error {
+  } with Exception {
     Throw(_) => 0
   }
 }
@@ -6917,7 +6930,10 @@ if [ -s "$v2dir/reject.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_handle_replay_removed compiled (a live unmigratable non-Error handle must be a hard error)" >&2
   exit 1
 fi
-if ! grep -qF "replay engine was removed" "$v2dir/reject.wasm.diag" 2>/dev/null; then
+# #1511 rewrote this message (actionable sentence first, ADR jargon last).
+# Anchor on the identifying phrase rather than the trailing ADR note, which is
+# the part most likely to be reworded again.
+if ! grep -qF "cannot be compiled here" "$v2dir/reject.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: replay-removed reject fixture did not produce the expected diagnostic" >&2
   cat "$v2dir/reject.wasm.diag" 2>/dev/null >&2 || true
   exit 1
@@ -7463,6 +7479,14 @@ echo "[compiler-gate] operation-level fix-it precision ok"
 echo "[compiler-gate] 67/67 vibe context-pack generator (#820 sub-item 3)"
 if ! bash eval/lang-review/run_golden.sh; then
   echo "[compiler-gate] FAIL: eval/lang-review/run_golden.sh -- the golden corpus context-pack bundles no longer compiles/runs as claimed" >&2
+  exit 1
+fi
+# r4: the repair corpus is the measurement the `repair_convergence` score rests
+# on (rubric dimension 8). It is a TWO-WAY ratchet -- a diagnostic that stops
+# firing, whose wording drifts, OR that starts firing on a case recorded as
+# silent all fail here, because each of those invalidates the recorded score.
+if ! bash eval/lang-review/run_repair.sh; then
+  echo "[compiler-gate] FAIL: eval/lang-review/run_repair.sh -- the diagnostics the repair_convergence score was measured against changed; re-score in eval/lang-review/repair/README.md" >&2
   exit 1
 fi
 ctxpackdir="_build/_gate_ctxpack"
@@ -8782,7 +8806,7 @@ let boom = () -> Int with Exception[IoError] + Exception[ParseError] {
 let main = () -> Int {
   handle {
     boom()
-  } with Error {
+  } with Exception {
     Throw(_e) => 42
   }
 }
@@ -8856,8 +8880,8 @@ if [ ! -s "$showdir/show.wasm" ]; then
   exit 1
 fi
 show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>/dev/null | tail -1)"
-if [ "$show_out" != "11111111111111111" ]; then
-  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 11111111111111111) (#1392)" >&2
+if [ "$show_out" != "1111111111111111111" ]; then
+  echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 1111111111111111111) (#1392)" >&2
   exit 1
 fi
 rm -rf "$showdir"
@@ -8880,12 +8904,12 @@ enum AppError {
   Cancelled
 } derive (Show)
 
-let _start = () -> Int with Error {
+let _start = () -> Int with Exception {
   throw(Failed("io"))
 }
 VIBEEOF
 cat > "$exnmsgdir/plain.vibe" <<'VIBEEOF'
-let _start = () -> Int with Error {
+let _start = () -> Int with Exception {
   throw("plain message")
 }
 VIBEEOF
@@ -8894,7 +8918,7 @@ enum NoShow {
   Bang(Int)
 }
 
-let _start = () -> Int with Error {
+let _start = () -> Int with Exception {
   throw(Bang(5))
 }
 VIBEEOF
@@ -8942,7 +8966,7 @@ let _start = () -> Int {
   println("interp=\{Bang(1)}")
   handle {
     throw(Bang(1))
-  } with Error {
+  } with Exception {
     Throw(_m) => 7
   }
 }
@@ -9362,5 +9386,454 @@ if [ ! -s "$pbbatch/2.err" ] || [ -s "$pbbatch/1.err" ] || [ -s "$pbbatch/3.err"
 fi
 rm -rf "$pbdir"
 echo "[compiler-gate] per-block __test_* exports + isolated invoke + batch ok"
+
+echo "[compiler-gate] 93/93 an imported enum's variants reach the importing module (#1455)"
+# #1455: the checker's cross-module transport is the flat TypeEnv, so an
+# importing module used to see an imported enum's CONSTRUCTORS but nothing
+# that said which enum owned them. That one missing edge produced three
+# separate wrong behaviours, and this section locks all three plus the two
+# collision cases the fix had to leave alone.
+#
+# Each case is a two-file program: `dep.vibe` declares the enums, `<name>.vibe`
+# imports them. One file would not exercise anything -- a same-file
+# declaration always registered its TDEnum.
+endir="_build/_gate_enum_import"
+rm -rf "$endir"; mkdir -p "$endir"
+cat > "$endir/dep.vibe" <<'ENUMDEP'
+export enum Box {
+  Mk(Int);
+  Nil
+}
+
+export enum Attempt[T] {
+  Got(T);
+  Missed
+}
+
+export enum Paint {
+  Red;
+  Blue
+}
+ENUMDEP
+en_case() {
+  # en_case <name> <expect: ok|err> <source> [substring the .diag must contain]
+  local ename="$1" expect="$2" esrc="$3" eneedle="${4:-}"
+  printf '%s' "$esrc" > "$endir/$ename.vibe"
+  rm -f "$endir/$ename.wasm" "$endir/$ename.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$endir/$ename.vibe" "$endir/$ename.wasm" main >/dev/null 2>&1 || true
+  if [ "$expect" = "ok" ]; then
+    if [ ! -s "$endir/$ename.wasm" ]; then
+      echo "[compiler-gate] FAIL: enum-import case '$ename' should compile but did not (#1455)" >&2
+      cat "$endir/$ename.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  else
+    if [ -s "$endir/$ename.wasm" ]; then
+      echo "[compiler-gate] FAIL: enum-import case '$ename' should be rejected but compiled (#1455)" >&2
+      exit 1
+    fi
+    if [ -n "$eneedle" ] && ! grep -q -- "$eneedle" "$endir/$ename.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: enum-import case '$ename' rejected without naming '$eneedle' (#1455):" >&2
+      cat "$endir/$ename.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  fi
+}
+# 1. `Box::Mk` resolves. This used to be `unknown name: Box::Mk`, which made
+#    #1455's "require the qualified spelling" plan unimplementable: there was
+#    no way to WRITE a qualified reference to an imported constructor.
+en_case qualified ok 'import ./dep.vibe { Box, Mk, Nil }
+
+fn main {
+  let b = Box::Mk(7)
+  let r = match b {
+    Mk(n) => n,
+    Nil => 0
+  }
+  println(__to_string(r))
+}
+'
+# 2. The payload is TYPE-CHECKED. Without the TDEnum, find_ctor_in_defs fell
+#    through to bind_unknown and bound every sub-pattern CtUnknown, so this
+#    compiled with an Int `n` handed to a String parameter. That is the silent
+#    one: a hole in checking, not a message-quality complaint.
+en_case payload_checked err 'import ./dep.vibe { Box, Mk, Nil }
+
+fn main {
+  let b = Mk(7)
+  match b {
+    Mk(n) => println(String::concat(n, "!")),
+    Nil => println("")
+  }
+}
+' 'String::concat'
+# 3. Exhaustiveness can NAME the missing variant. Before, the enum definition
+#    was unknown here, so the check was skipped entirely and an unhandled
+#    variant trapped at runtime instead.
+en_case exhaustive err 'import ./dep.vibe { Box, Mk }
+
+fn main {
+  let b = Mk(7)
+  let r = match b {
+    Mk(n) => n
+  }
+  println(__to_string(r))
+}
+' 'variant `Nil` of enum Box'
+# 4. A PARAMETERIZED enum crosses the boundary too (#1455 follow-up). The
+#    carrier stores the enum'"'"'s formals plus NAME-parameterized payloads
+#    (`CtNamed("T", [])`), not the declaring compilation'"'"'s CtVar ids, so the
+#    importer can rebind `T` to ids of its own. Before that, `Attempt::Got`
+#    was `unknown name` -- resolve_qualified_ctor_ident fell back to a flat
+#    env_lookup that could not see the imported scheme.
+en_case parameterized ok 'import ./dep.vibe { Attempt, Got, Missed }
+
+fn main {
+  let a = Got(3)
+  let r = match a {
+    Got(v) => v,
+    Missed => 0
+  }
+  println(__to_string(r))
+}
+'
+en_case parameterized_qualified ok 'import ./dep.vibe { Attempt, Got, Missed }
+
+fn main {
+  let a = Attempt::Got(3)
+  let r = match a {
+    Attempt::Got(v) => v,
+    Attempt::Missed => 0
+  }
+  println(__to_string(r))
+}
+'
+# 4b. The rebuilt scheme has to stay GENERIC. If the formal were bound to a
+#     shared, non-quantified var, the second instantiation in one module would
+#     unify against the first and the String use would be a type error.
+en_case parameterized_two_instances ok 'import ./dep.vibe { Attempt, Got, Missed }
+
+fn first() -> Int {
+  match Attempt::Got(3) {
+    Got(v) => v,
+    Missed => 0
+  }
+}
+
+fn second() -> String {
+  match Attempt::Got("s") {
+    Got(v) => v,
+    Missed => ""
+  }
+}
+
+fn main {
+  println(String::concat(__to_string(first()), second()))
+}
+'
+# 4c. #1455 step 3: the qualifier is CHECKED. `parse_pattern` lowers
+#     `Attempt::Missed` to the same PCtor("Missed") the bare spelling produces,
+#     so a swapped qualifier used to be accepted silently -- the parser now
+#     records the pair on a side channel and the checker validates it against
+#     the enum table (checker_pattern.vibe::check_qualified_pattern_refs).
+#     `Box` is a real enum here, just not the one that owns `Missed`.
+en_case pattern_qualifier_wrong_enum err 'import ./dep.vibe { Attempt, Box, Got, Missed }
+
+fn main {
+  let a = Got(3)
+  let r = match a {
+    Got(v) => v,
+    Box::Missed => 0
+  }
+  println(__to_string(r))
+}
+' 'enum `Box` has no variant `Missed`'
+# 4d. ...and a qualifier that is not an enum stays silent, which is what keeps
+#     handle-arm operation patterns (`Log::Emit(m)`) working: they reach the
+#     same side channel through the same parser branch.
+en_case pattern_qualifier_effect_arm ok 'effect Log {
+  Emit(String) -> Unit
+}
+
+fn shout(s: String) -> String with Log {
+  perform Log::Emit(s)
+  s
+}
+
+fn main {
+  let r = handle {
+    shout("hi")
+  } with Log {
+    Log::Emit(m) => resume(m)
+  }
+  println(r)
+}
+'
+# 5. A local enum that reuses an imported constructor NAME still compiles.
+#    This is the case that forced the variant-collision guard in
+#    seed_imported_enum_defs: `find_ctor_in_defs` is first-match-wins over one
+#    flat `defs`, so registering Paint would have made the `Red` arm resolve
+#    to Paint and retyped the whole match. Shadowing an imported constructor
+#    is ordinary code -- the local binding wins -- so the seeded enum has to
+#    step aside rather than take it over.
+en_case shadow_import ok 'import ./dep.vibe { Paint, Red, Blue }
+
+enum Color {
+  Red;
+  Green
+}
+
+fn main {
+  let c = Red
+  match c {
+    Red => println("red"),
+    Green => println("green")
+  }
+}
+'
+# 6. ...but the collision #1078 is actually about -- two enums in ONE unit,
+#    where the flat last-registered-wins env silently points a bare `Mk` at
+#    the wrong signature -- is still rejected.
+en_case collide_local err 'enum A {
+  Mk(Int)
+}
+
+enum B {
+  Mk(String)
+}
+
+fn main {
+  println("unreachable")
+}
+' 'constructor name collision'
+rm -rf "$endir"
+echo "[compiler-gate] imported enum variant lists ok"
+
+echo "[compiler-gate] 94/94 importing a name the dependency does not export is a CHECK error (#1521)"
+# #1521: `bind_import_names_from_cache` bound CtUnknown for an imported name
+# the dependency does not export. CtUnknown unifies with anything, so every
+# USE of that name typechecked -- `vibe check` said ok -- and the program
+# died in codegen with `undefined variable (ident): X`, naming no file and
+# no line. Worse than having no diagnostic: the import SUPPRESSED the
+# `unknown name` the same code gets without it.
+#
+# The negatives are the point of this section, not padding. Two earlier
+# attempts at this check passed their positives while silently breaking
+# valid code (or while wired into a lane `vibe check` never runs), so every
+# shape that must stay clean is pinned right next to the shapes that must
+# fail.
+uidir="_build/_gate_unresolved_import"
+rm -rf "$uidir"; mkdir -p "$uidir"
+cat > "$uidir/dep.vibe" <<'UIDEP'
+export enum Hue {
+  Crimson;
+  Cerulean
+}
+
+export fn hue_rank(h: Hue) -> Int {
+  match h {
+    Crimson => 0
+    Cerulean => 1
+  }
+}
+UIDEP
+ui_case() {
+  # ui_case <name> <expect: ok|err|gap> <source>
+  #   ok  -- compiles
+  #   err -- rejected BY THE #1521 CHECK (diag names the unexported import)
+  #   gap -- rejected, but LATER than the check: a shape #1521 is supposed to
+  #          cover and does not yet. Pinning the phase is the point; `ok` would
+  #          be wrong (no wasm is produced) and `err` would be wrong (the diag
+  #          is codegen's, not the check's), so neither expresses it.
+  local uname="$1" uexpect="$2" usrc="$3"
+  printf '%s' "$usrc" > "$uidir/$uname.vibe"
+  rm -f "$uidir/$uname.wasm" "$uidir/$uname.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$uidir/$uname.vibe" "$uidir/$uname.wasm" _start >/dev/null 2>&1 || true
+  if [ "$uexpect" = "ok" ]; then
+    if [ ! -s "$uidir/$uname.wasm" ]; then
+      echo "[compiler-gate] FAIL: unresolved-import case '$uname' should compile but did not (#1521)" >&2
+      cat "$uidir/$uname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  elif [ "$uexpect" = "gap" ]; then
+    if [ -s "$uidir/$uname.wasm" ]; then
+      echo "[compiler-gate] FAIL: known-gap case '$uname' compiled cleanly; it is supposed to still fail somewhere (#1533)" >&2
+      exit 1
+    fi
+    if grep -q "is not exported by" "$uidir/$uname.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: known-gap case '$uname' is now caught by the #1521 check -- #1533 is fixed." >&2
+      echo "[compiler-gate]       Move this case from 'gap' to 'err' and close #1533." >&2
+      exit 1
+    fi
+  else
+    if [ -s "$uidir/$uname.wasm" ]; then
+      echo "[compiler-gate] FAIL: unresolved-import case '$uname' compiled; the bogus import was not caught (#1521)" >&2
+      exit 1
+    fi
+    if ! grep -q "is not exported by" "$uidir/$uname.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: unresolved-import case '$uname' was rejected by something OTHER than the #1521 check" >&2
+      cat "$uidir/$uname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  fi
+}
+# 1. The reported shape: a value import that does not exist, and is used.
+ui_case bogus_used err 'import ./dep.vibe { no_such_fn }
+
+export let _start = () -> Int { no_such_fn(1) }
+'
+# 2. Reported even when UNUSED. The pre-existing "never used" warning fires
+#    here too, but "unused" is not "no such name" -- the import is still wrong.
+ui_case bogus_unused err 'import ./dep.vibe { no_such_fn }
+
+export let _start = () -> Int { 1 }
+'
+# 3. An alias does not launder it: the ORIGINAL name is what must exist.
+ui_case bogus_aliased err 'import ./dep.vibe { no_such_fn as f }
+
+export let _start = () -> Int { f(1) }
+'
+# 4-6. Every valid shape stays clean: plain value + type + constructor,
+#      the same through aliases, and constructors imported on their own.
+ui_case good_plain ok 'import ./dep.vibe { hue_rank, Hue, Crimson }
+
+export let _start = () -> Int { hue_rank(Crimson) }
+'
+ui_case good_aliased ok 'import ./dep.vibe { hue_rank as r, Hue as T, Crimson }
+
+fn pick() -> T { T::Crimson }
+
+export let _start = () -> Int { r(pick()) }
+'
+ui_case good_ctors ok 'import ./dep.vibe { Hue, Crimson, Cerulean }
+
+export let _start = () -> Int {
+  match Cerulean {
+    Crimson => 0
+    Cerulean => 1
+  }
+}
+'
+# 7. The DELIBERATE gap, pinned so a later change to it is a visible decision
+#    rather than a surprise: an uppercase name is not reported. A struct or a
+#    type alias is not a value binding at all (it lives in `defs`, which the
+#    dependency-environment cache does not carry), so "absent" cannot be told
+#    apart from "not exported" for uppercase names. Closing this needs the
+#    dependency's type definitions, not a tweak here.
+ui_case bogus_uppercase_not_reported ok 'import ./dep.vibe { Hue, NoSuchType }
+
+export let _start = () -> Int { 1 }
+'
+# 8. A dependency that binds NO values is still a checked dependency. Deriving
+#    "known" from the binding count switched the check off for exactly these
+#    (Codex review, PR #1532) -- a trait-only module is cached as an empty
+#    value environment, and a bogus import from it went back to dying in
+#    codegen. `dep_known` now comes from the cache lookup itself.
+cat > "$uidir/traitonly.vibe" <<'UITRAIT'
+export trait Pingable {
+  ping(Self) -> Int
+}
+UITRAIT
+ui_case bogus_from_traitonly err 'import ./traitonly.vibe { no_such_fn }
+
+export let _start = () -> Int { no_such_fn(1) }
+'
+# 9. The OTHER known gap (#1533): membership is tested against the dependency's
+#    checked environment, which binds every top-level fn whether exported or
+#    not, so importing a PRIVATE name is not reported by the check. It still
+#    fails -- but in CODEGEN, which is exactly the failure mode #1521 exists to
+#    remove, so the phase is what has to be pinned. `ok` would be wrong (no
+#    wasm) and `err` would be wrong (the diag is codegen's), hence `gap`: it
+#    asserts the compile fails AND that the #1521 check was not what rejected
+#    it. Fixing #1533 turns this red with an instruction to flip it to `err`.
+cat > "$uidir/privates.vibe" <<'UIPRIV'
+fn private_fn(x: Int) -> Int {
+  x + 1
+}
+
+export fn public_fn(x: Int) -> Int {
+  private_fn(x)
+}
+UIPRIV
+ui_case private_import_gap gap 'import ./privates.vibe { private_fn }
+
+export let _start = () -> Int { private_fn(1) }
+'
+# 10. ...and the public name from that same module still imports cleanly, so
+#     the gap case above is not passing because the module is broken.
+ui_case public_from_mixed_module ok 'import ./privates.vibe { public_fn }
+
+export let _start = () -> Int { public_fn(1) }
+'
+rm -rf "$uidir"
+echo "[compiler-gate] unresolved import names ok"
+
+echo "[compiler-gate] 95/95 a name reaching codegen unresolved says it is a COMPILER bug (#1521/#1491/#1529)"
+# The shared exit of a whole family of defects. #1502, #1510, #1491, #1521,
+# #1529 and #1533 are unrelated in cause -- an alias qualifier, a first-match
+# lookup, a CtUnknown fallback, a struct shape collision -- and every one of
+# them surfaced the same way: the checker accepted the program, and codegen
+# died on a name it could not resolve, with a message naming no file, no line,
+# and `locals=[__env,,__fn_val]` (pass state).
+#
+# The three codegen sites that can raise it now say whose bug it is, in one
+# shared wording so they cannot drift. This section pins that wording, so the
+# next defect in this family arrives as "internal compiler error, report it"
+# rather than as something a user might read as their own mistake.
+#
+# It does NOT try to prove no program reaches those sites -- reaching them IS
+# the open-issue set. What it pins is that arriving there is legible.
+for cg_site in \
+  "lib/@vibe/compiler/codegen/common_base/common_base.vibe" \
+  "lib/@vibe/compiler/codegen/expr/compile_expr.vibe" \
+  "lib/@vibe/compiler/codegen/gc/backend_expr.vibe"
+do
+  # The load-bearing half: the OLD spelling must be gone. Asserting the new
+  # helper "appears in the file" does not do it -- common_base DEFINES the
+  # helper, so it matches whether or not `resolve_local` still calls it, and a
+  # revert there would sail through. (Codex review on PR #1562; the check was
+  # asking a different question from the one it meant, which is the very shape
+  # ARCH011 was added for.)
+  if grep -q '"undefined variable' "$ROOT_DIR/$cg_site"; then
+    echo "[compiler-gate] FAIL: $cg_site raises a bare \"undefined variable\" again" >&2
+    echo "[compiler-gate]       That message names no file, no line, and reads as the user's mistake." >&2
+    grep -n '"undefined variable' "$ROOT_DIR/$cg_site" >&2
+    exit 1
+  fi
+  if ! grep -q "codegen_unresolved_name_prefix()" "$ROOT_DIR/$cg_site"; then
+    echo "[compiler-gate] FAIL: $cg_site no longer routes its unresolved-name error through the shared wording" >&2
+    exit 1
+  fi
+done
+# ...and specifically INSIDE resolve_local, not merely somewhere in the file
+# that declares the helper.
+if ! awk '/^export fn resolve_local\(/,/^}/' "$ROOT_DIR/lib/@vibe/compiler/codegen/common_base/common_base.vibe" \
+  | grep -q "codegen_unresolved_name_prefix()"; then
+  echo "[compiler-gate] FAIL: resolve_local's own error no longer uses the shared wording" >&2
+  exit 1
+fi
+if ! grep -q 'internal compiler error' "$ROOT_DIR/lib/@vibe/compiler/codegen/common_base/common_base.vibe"; then
+  echo "[compiler-gate] FAIL: the unresolved-name error no longer identifies itself as a compiler bug" >&2
+  exit 1
+fi
+# And a normal program must NOT produce it -- the wording lock above is
+# worthless if the message fires on correct code.
+cgdir="_build/_gate_codegen_unresolved"
+rm -rf "$cgdir"; mkdir -p "$cgdir"
+printf 'enum Color {\n  Red;\n  Green\n}\n\nexport let _start = () -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 2\n  }\n}\n' > "$cgdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cgdir/ok.vibe" "$cgdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cgdir/ok.wasm" ]; then
+  echo "[compiler-gate] FAIL: a correct program hit the unresolved-name path" >&2
+  cat "$cgdir/ok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$cgdir"
+echo "[compiler-gate] codegen unresolved-name error is legible ok"
 
 echo "[compiler-gate] ok"

@@ -28,7 +28,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/normalize {
-  lift_match_scrutinees, uniquify_shadowed_bindings
+  lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings
 }
 
 import @vibe/compiler/perceus {
@@ -2891,6 +2891,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // type params are stripped (just below). No-op unless a method-bearing trait
   // is declared, and idempotent if an earlier pipeline stage already desugared.
   desugar_trait_dicts(stmts)
+  // #1262: split eligible tuple-literal `let mut`s (what every `loop (s = ..)`
+  // lowers to) into scalar `let mut`s -- no per-iteration tuple box. Runs on
+  // both linear entries (compile_module has the same call); gc/interp lanes
+  // keep the boxed form, and the rewrite is semantics-preserving so the
+  // cross-lane differential gates still agree.
+  unbox_tuple_loop_params(stmts)
   // Top-level `let f = g` function aliases: retarget references to the final
   // EFn def so calls do not route through the 0-param thunk registration
   // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
@@ -3505,6 +3511,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // same import (lib/@vibe/fs/fs.vibe calls it; see checker/builtins_fs.vibe).
   let need_fs_stat_token_builtin = Map::has_key(used_builtin_names, "Fs::stat_token") || Map::has_key(used_builtin_names, "vibe_fs_stat_token_raw")
   let need_fs_write_file_builtin = Map::has_key(used_builtin_names, "Fs::write_file")
+  // Atomically publish text only when the target is absent. Kept unused by
+  // compiler sources until the future cache-publisher PR adopts it.
+  let need_fs_publish_immutable_text_builtin = Map::has_key(used_builtin_names, "Fs::publish_immutable_text")
   let need_fs_write_bytes_builtin = Map::has_key(used_builtin_names, "Fs::write_bytes")
   // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
   // Fs::write_bytes, a `vibe.fs_read_bytes (i64) -> i64` host import (type 3,
@@ -3720,6 +3729,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     -1
   }
   let fs_write_file_import_idx = if need_fs_write_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_publish_immutable_text_import_idx = if need_fs_publish_immutable_text_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -4165,7 +4181,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let fs_exists_stub_idx = fs_read_file_stub_idx + 1
   let fs_stat_token_stub_idx = fs_exists_stub_idx + 1
   let fs_write_file_stub_idx = fs_stat_token_stub_idx + 1
-  let fs_write_bytes_stub_idx = fs_write_file_stub_idx + 1
+  let fs_publish_immutable_text_stub_idx = fs_write_file_stub_idx + 1
+  let fs_write_bytes_stub_idx = fs_publish_immutable_text_stub_idx + 1
   let eq_idx = fs_write_bytes_stub_idx + 1
   let string_ends_with_idx = eq_idx + 1
   let string_last_index_of_idx = string_ends_with_idx + 1
@@ -4247,6 +4264,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     fs_write_file_import_idx
   } else {
     fs_write_file_stub_idx
+  }
+  let fs_publish_immutable_text_idx = if fs_publish_immutable_text_import_idx >= 0 {
+    fs_publish_immutable_text_import_idx
+  } else {
+    fs_publish_immutable_text_stub_idx
   }
   let fs_write_bytes_idx = if fs_write_bytes_import_idx >= 0 {
     fs_write_bytes_import_idx
@@ -4569,6 +4591,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         // #795: alias-collision-proof name, same import index as Fs::stat_token.
         "vibe_fs_stat_token_raw" => fs_stat_token_idx,
         "Fs::write_file" => fs_write_file_idx,
+        "Fs::publish_immutable_text" => fs_publish_immutable_text_idx,
         "Fs::write_bytes" => fs_write_bytes_idx,
         "Fs::read_bytes" => fs_read_bytes_idx,
         // #729/#730: RAW half of Fs::readdir -- compile_call lowers the surface.
@@ -4874,6 +4897,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(static_fs_stub_body(), 0, 0, 3)
   push_builtin(static_fs_stub_body(), 0, 0, 3)
   push_builtin(static_fs_stub_body(), 0, 0, 3)
+  // Unused publish_immutable_text needs a never-called `(i64,i64)->i64` stub.
+  push_builtin(static_fs_stub_body(), 0, 0, 4)
   push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
   push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
   push_builtin(gen_eq_body(str_eq_idx), 0, 0, 4)
@@ -6434,6 +6459,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 6)
   }
+  if fs_publish_immutable_text_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_publish_immutable_text")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  }
   if fs_write_bytes_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "fs_write_bytes")
@@ -7395,7 +7426,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::set(gen_sec_names, fs_exists_stub_idx - num_imported_funcs, "__rt_stub_b")
   Array::set(gen_sec_names, fs_stat_token_stub_idx - num_imported_funcs, "__rt_stub_c")
   Array::set(gen_sec_names, fs_write_file_stub_idx - num_imported_funcs, "__rt_stub_d")
-  Array::set(gen_sec_names, fs_write_bytes_stub_idx - num_imported_funcs, "__rt_stub_e")
+  Array::set(gen_sec_names, fs_publish_immutable_text_stub_idx - num_imported_funcs, "__rt_stub_e")
+  Array::set(gen_sec_names, fs_write_bytes_stub_idx - num_imported_funcs, "__rt_stub_f")
   Array::set(gen_sec_names, eq_idx - num_imported_funcs, "__rt_eq")
   Array::set(gen_sec_names, string_ends_with_idx - num_imported_funcs, "__rt_string_ends_with")
   Array::set(gen_sec_names, string_last_index_of_idx - num_imported_funcs, "__rt_string_last_index_of")

@@ -93,25 +93,44 @@ fi
 
 # --- 4. pkfire (pkf) -----------------------------------------------------
 # pkf is the canonical task runner (Taskfile.pkl). It is not in nixpkgs, so we
-# install it from the upstream flake. Pinned to the same tag CI uses
-# (mizchi/pkfire@v0.10.0). The github: fetcher hits the rate-limited GitHub API,
-# so use the git+https fetcher which works unauthenticated.
+# install it from the upstream flake, pinned to the same tag CI uses
+# (.github/actions/setup-vibe + pkfire-pkspec.yml — keep the three in sync).
+# The github: fetcher hits the rate-limited GitHub API, so use the git+https
+# fetcher which works unauthenticated.
+#
+# pkfire was rewritten in MoonBit (the flake installs the prebuilt release
+# binary since v0.12); tags up to v0.10.0 built the RETIRED Go implementation.
+# Never pin below v0.12 — a stale pin silently hands every fresh container the
+# Go binary again.
 #
 # IMPORTANT: install into a DEDICATED profile, never the default one. The
 # nix-installer's default profile (~/.nix-profile) is classic-managed and holds
 # the `nix` binary itself; running `nix profile install` against it starts a
 # fresh manifest and would drop `nix` from PATH. A separate profile keeps both.
 NIX="$HOME/.nix-profile/bin/nix"
+PKF_VERSION="0.14.2"
 PKF_PROFILE="$HOME/.nix-profiles/pkfire"
 PKF_BIN="$PKF_PROFILE/bin/pkf"
+# Long-lived containers keep whatever the profile last held (the hook used to
+# skip install when the binary existed). Verify the version and wipe a stale
+# profile so the pin above is the single source of truth. The retired Go build
+# reports "dev", so it always mismatches and gets replaced.
+if [ -x "$PKF_BIN" ]; then
+  PKF_INSTALLED="$("$PKF_BIN" --version 2>/dev/null || true)"
+  if [ "$PKF_INSTALLED" != "$PKF_VERSION" ]; then
+    echo "[session-start] pkf ${PKF_INSTALLED:-unknown} != $PKF_VERSION; replacing stale install ..."
+    rm -f "$PKF_PROFILE"
+    rm -rf "$PKF_PROFILE"-*-link
+  fi
+fi
 if [ -x "$NIX" ] && ! [ -x "$PKF_BIN" ]; then
-  echo "[session-start] installing pkfire (pkf) via nix ..."
-  # nix builds Go modules without a sandbox here; an existing /homeless-shelter
+  echo "[session-start] installing pkfire (pkf) $PKF_VERSION via nix ..."
+  # nix evaluates/builds without a sandbox here; an existing /homeless-shelter
   # breaks the purity check, so clear it before building.
   rm -rf /homeless-shelter 2>/dev/null || true
   mkdir -p "$(dirname "$PKF_PROFILE")"
   "$NIX" profile install --profile "$PKF_PROFILE" \
-    'git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.10.0' \
+    "git+https://github.com/mizchi/pkfire?ref=refs/tags/v$PKF_VERSION" \
     --extra-experimental-features 'nix-command flakes' || \
     echo "[session-start] WARNING: pkf install failed" >&2
 fi

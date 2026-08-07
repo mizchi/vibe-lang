@@ -1,0 +1,191 @@
+//# #1512: a declaration's own type formals SHADOW an import alias of the same
+// name.
+//
+// `import { Hue as T }` binds `T` at module scope. A generic declaration that
+// also spells its formal `T` must still mean its own formal in its own body --
+// the inner binder wins. Before the fix, every generic binder resolved its body
+// against `defs` first, found the import's `T`, and silently retyped the
+// declaration to `Hue`:
+//
+//     type Box[T] = T          =>  Box[Int]      was Hue
+//     fn id[T](x: T) -> T      =>  id(7)         was Hue
+//     enum Wrap[T] { Only(T) } =>  Wrap::Only(7) wanted Hue
+//     struct Cell[T] { v: T }  =>  Cell::{v: 7}  wanted Hue
+//
+// Nothing warned: the declaration typechecked, just as the wrong type, and the
+// error surfaced at the USE site pointing at a type the author never wrote.
+//
+// The type-alias/enum/struct three are a #1510 regression -- `seed_import_alias_defs`
+// registered the alias as a `TDAlias` in `defs`, which is what the formal then
+// lost to. The `fn` case predates it (the formal leaked out rigid instead).
+// Both shapes are locked here.
+//
+// Each declaration below is its own lock: if the shadowing breaks, this file
+// stops typechecking and the suite fails before any assertion runs. The
+// assertions pin the runtime values so a fix that merely silences the checker
+// still has to produce the right code.
+
+//# Imports
+
+import ./qualified_ctor_enum_support.vibe {
+  Cerulean, Crimson, Hue as T
+}
+
+//# Types
+
+/// A trait HEADER formal. The signature is stored raw and only resolved when a
+/// bounded call `B::unwrap(..)` is typed, so this one leaks through a different
+/// path than the four below (`resolve_trait_method_ident`, not the `SStmt`
+/// binders).
+trait Boxed[T] {
+  unwrap(Self) -> T
+}
+
+/// A METHOD-level formal on a trait with no header params of its own -- the
+/// binder comes from `method_gens`, not from the trait header.
+trait Applier {
+  apply[T](Self, T) -> T
+}
+
+/// `IntBox` is declared FIRST among this file's structs on purpose: a bounded
+/// call `B::unwrap(b)` miscompiles ("not enough arguments on the stack for
+/// call") whenever the impl's target is not the file's first struct (#1529 --
+/// a separate, pre-existing codegen bug, reproduced identically on a pre-#1512
+/// compiler). Move `Cell` above this and the file stops instantiating.
+struct IntBox {
+  v: Int
+}
+
+/// The reported case. `Box[Int]` must be `Int`, not `Hue`.
+type Box[T] = T
+
+/// Nested inside a constructor -- the shadow has to reach through `Array[_]`.
+type Boxes[T] = Array[T]
+
+enum Wrap[T] {
+  Only(T);
+  Nothing
+}
+
+struct Cell[T] {
+  v: T
+}
+
+//# Functions
+
+fn unbox(b: Box[Int]) -> Int {
+  b
+}
+
+fn unbox_all(bs: Boxes[Int]) -> Int {
+  let mut total = 0
+  for b in bs {
+    total = total + b
+  }
+  total
+}
+
+fn id[T](x: T) -> T {
+  x
+}
+
+fn first_of[T](xs: Array[T]) -> Array[T] {
+  xs
+}
+
+fn unwrap_or(w: Wrap[Int], fallback: Int) -> Int {
+  match w {
+    Only(v) => v
+    Nothing => fallback
+  }
+}
+
+/// The alias is still a REAL type where nothing shadows it: `T` here is `Hue`,
+/// and a formal spelled differently (`U`) must not disturb it. Without this the
+/// fix could "pass" by breaking import aliases outright.
+fn tag[U](x: U, h: T) -> U {
+  let _ = hue_name(h)
+  x
+}
+
+fn hue_name(h: T) -> String {
+  match h {
+    Crimson => "crimson"
+    Cerulean => "cerulean"
+  }
+}
+
+impl Boxed for IntBox {
+  unwrap(self) -> Int {
+    self.v
+  }
+}
+
+impl Applier for IntBox {
+  apply(self, x: Int) -> Int {
+    self.v + x
+  }
+}
+
+/// `B::unwrap` resolves the trait's stored signature at THIS call site.
+fn unwrap_via_trait[B: Boxed](b: B) -> Int {
+  B::unwrap(b)
+}
+
+fn apply_via_trait[A: Applier](a: A, x: Int) -> Int {
+  A::apply(a, x)
+}
+
+//# Tests
+
+test "type alias formal shadows an import alias" {
+  assert_eq(unbox(7), 7)
+}
+
+test "type alias formal shadows through Array" {
+  assert_eq(unbox_all([
+    1,
+    2,
+    3
+  ]), 6)
+}
+
+test "fn formal shadows an import alias" {
+  assert_eq(id(7), 7)
+}
+
+test "fn formal shadows an import alias through Array" {
+  assert_eq(Array::length(first_of([
+    1,
+    2
+  ])), 2)
+}
+
+test "enum formal shadows an import alias" {
+  assert_eq(unwrap_or(Wrap::Only(7), 0), 7)
+  assert_eq(unwrap_or(Wrap::Nothing, 5), 5)
+}
+
+test "struct formal shadows an import alias" {
+  let c: Cell[Int] = Cell::{
+    v: 7
+  }
+  assert_eq(c.v, 7)
+}
+
+test "trait header formal shadows an import alias" {
+  assert_eq(unwrap_via_trait(IntBox::{
+    v: 7
+  }), 7)
+}
+
+test "trait method formal shadows an import alias" {
+  assert_eq(apply_via_trait(IntBox::{
+    v: 7
+  }, 5), 12)
+}
+
+test "an unshadowed import alias is still the imported type" {
+  assert_eq(hue_name(T::Crimson), "crimson")
+  assert_eq(tag(7, T::Cerulean), 7)
+}

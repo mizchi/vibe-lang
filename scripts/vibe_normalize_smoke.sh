@@ -7,18 +7,25 @@
 # stage2-only behavior — module-block rejection #728, fn rejection #727 —
 # is asserted in compiler_gate.sh step 6 instead.
 #
-# #1429: the fixtures below deliberately keep the BRACED effect row, and that
-# is now load-bearing in BOTH directions:
-#   - the current compiler REJECTS `with { Error }` (the spelling was removed),
-#     so these fixtures are no longer valid input to it;
-#   - this script does not use the current compiler. `vibe normalize` runs
-#     through scripts/vibe_normalize.sh, which drives the COMMITTED SEED, and
-#     the seed still both accepts the braced row and prints it back.
-# So they must stay braced until the seed moves, and must be converted to
-# `with Error` IN THE SAME CHANGE that adopts a seed built from the current
-# source. Converting them earlier breaks this test against the very binary it
-# is meant to pin; converting them later leaves it broken after the bump. The old module-flatten
-# fixture 03 was retired with module blocks, #728.)
+# #1429 + bump to seed console-exception-rowvar-2026-08-06: the fixtures below
+# USED to keep the BRACED effect row (`with { Error }`) deliberately, because
+# this script drives the COMMITTED SEED rather than the current compiler, and
+# the old seed both accepted the braced row and printed it back while the
+# current compiler had already removed the spelling. That note carried an
+# obligation: convert them IN THE SAME CHANGE that adopts a seed built from the
+# current source -- earlier breaks this test against the very binary it pins,
+# later leaves it broken after the bump.
+#
+# That change is this one. The adopted seed is built from post-#1429 source, so
+# it rejects `with { .. }` outright ("the braced effect row was removed in
+# #1429"). The rows below are now written `with Exception` -- #1461's canonical
+# spelling, not the `with Error` the old note predicted, since that issue made
+# `Exception` canonical after the note was written. Either spelling parses; the
+# seed round-trips whichever one it is given VERBATIM (measured: `Error` in ->
+# `Error` out, `Exception` in -> `Exception` out; it does not canonicalize the
+# surface form), which is why input and expected output must carry the SAME
+# spelling. The old module-flatten fixture 03 was retired with module blocks,
+# #728.)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,7 +43,7 @@ impl Eq for Int
 type Alias = Int
 let helper: () -> Int = () -> { 1 }
 export let run: () -> Int = () -> { helper() }
-export let run_io: () -> Int with { Error } = () -> { run() }
+export let run_io: () -> Int with Exception = () -> { run() }
 export { run, run_io }
 EOF
 cat > "$WORK/01.expected.vibe" <<'EOF'
@@ -56,7 +63,7 @@ let helper: () -> Int = () -> { 1 }
 
 export let run: () -> Int = () -> { helper() }
 
-export let run_io: () -> Int with { Error } = () -> { run() }
+export let run_io: () -> Int with Exception = () -> { run() }
 EOF
 
 # Aggregate-only export: `export { run }` is the sole export marker. `run` and

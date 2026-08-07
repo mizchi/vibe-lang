@@ -222,6 +222,14 @@ export fn desugar_stmt(stmt: Stmt) -> Stmt {
     SLetMut(name, ty, body) => SLetMut(name, ty, desugar_expr(body)),
     STest(name, body) => STest(name, desugar_expr(body)),
     SBench(name, body) => SBench(name, desugar_expr(body)),
+    // #1455: this arm was MISSING and nothing caught it -- `Stmt` arrives here
+    // by import, and until an imported enum's variant list reached the
+    // importing module the exhaustiveness check had no definition to check
+    // against and skipped the match entirely. With no catch-all below, a
+    // doctest `example` block reaching this pass trapped at runtime instead of
+    // having its body desugared. `parser_expr.vibe` lowers SExample to STest,
+    // so the body is an ordinary expression and is desugared the same way.
+    SExample(name, body) => SExample(name, desugar_expr(body)),
     SExpr(e) => SExpr(desugar_expr(e)),
     SModule(exported, name, stmts) => SModule(exported, name, for s in stmts {
       desugar_stmt(s)
@@ -242,7 +250,15 @@ export fn desugar_stmt(stmt: Stmt) -> Stmt {
     SLetPat(pat, expr) => SLetPat(pat, desugar_expr(expr)),
     // ADR-0075 Phase 2 (#1343): a resource declaration has no expression to
     // desugar. This match has no catch-all, so the arm is required.
-    SResource(_, _) => stmt
+    SResource(_, _) => stmt,
+    // #1455 step 3: parser bookkeeping (the `Enum::Variant` pattern qualifiers
+    // this parse saw). No expression, nothing to desugar -- and unlike the
+    // qualifier-in-`Pat` design this replaced, passing it through unchanged IS
+    // the right answer for every consumer except check_program. This match has
+    // no catch-all, which is why the variant surfaced here as a build error
+    // rather than being silently dropped.
+    SQualifiedPatternRefs(_) => stmt,
+    STestEffectRows(_) => stmt
   }
 }
 

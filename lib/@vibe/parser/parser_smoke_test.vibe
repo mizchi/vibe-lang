@@ -8,6 +8,10 @@ import ./parser.vibe {
   parse_program
 }
 
+import @vibe/ast {
+  Stmt
+}
+
 //# Tests
 // #881: lib/@vibe/parser had zero direct tests -- every existing check ran
 // indirectly through the compiler's syntax/ shims (tests/parser_*_test.vibe
@@ -49,4 +53,122 @@ test "parse_program: vibex import is rejected" {
     Throw(e) => e
   }
   assert(result == ".vibex is an executable root and cannot be imported: ./tool.vibex")
+}
+
+//# #1455 step 3: the qualified-pattern log lives with the parsed program
+
+/// The `(qualifier, variant)` pairs the parse attached, as `Q::V` strings.
+fn qualified_pattern_refs_of(stmts: Array[Stmt]) -> Array[String] {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SQualifiedPatternRefs(refs) => {
+        let mut ri = 0
+        while ri < Array::length(refs) {
+          let (q, v) = Array::get(refs, ri)
+          Array::push(out, String::concat(q, String::concat("::", v)))
+          ri = ri + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn contains_ref(refs: Array[String], want: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(refs) {
+    if Array::get(refs, i) == want {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn color_program() -> String {
+  "enum Color { Red; Green }\nfn f(c: Color) -> Int { match c { Color::Red => 1, Color::Green => 2 } }"
+}
+
+test "#1455: a qualified variant pattern is recorded on the parsed program" {
+  let refs = qualified_pattern_refs_of(parse_program(lex(color_program())))
+  assert(contains_ref(refs, "Color::Red"))
+  assert(contains_ref(refs, "Color::Green"))
+}
+
+test "#1455: EVERY parse of the same source carries the refs" {
+  // The pairs used to live in a process-global log that the checker drained.
+  // runtime/typecheck_fs.vibe memoizes statements by (path, source) and hands
+  // out a copy WITHOUT re-running the parser, so a second check found an
+  // empty log and skipped validation silently. Riding the statement array is
+  // what makes the second parse -- and a memo replay of the first -- carry the
+  // same pairs as the first.
+  let first = qualified_pattern_refs_of(parse_program(lex(color_program())))
+  let second = qualified_pattern_refs_of(parse_program(lex(color_program())))
+  assert_eq(Array::length(second), Array::length(first))
+  assert(contains_ref(second, "Color::Red"))
+}
+
+test "#1455: one parse's refs do not leak into the next program" {
+  // A parse whose module is never type-checked (`vibe fmt`, an unchecked LSP
+  // buffer) must not leave its pairs for a later, unrelated program to be
+  // validated against.
+  let _first = parse_program(lex(color_program()))
+  let plain = qualified_pattern_refs_of(parse_program(lex("fn g() -> Int { 1 }")))
+  assert_eq(Array::length(plain), 0)
+}
+
+test "#1455: a program with no qualified pattern carries no marker" {
+  let refs = qualified_pattern_refs_of(parse_program(lex("enum Color { Red; Green }\nfn f(c: Color) -> Int { match c { Red => 1, Green => 2 } }")))
+  assert_eq(Array::length(refs), 0)
+}
+
+// #1461 retired `Error` as an effect spelling; #1501 extended the rejection
+// from row items to the handled-effect name. Before #1501 the two positions
+// disagreed -- `with Error` in a signature was a parse error while
+// `handle .. with Error { .. }` compiled -- and nothing tested either one, so
+// the asymmetry was invisible. These pin all four cases: reject in both
+// positions, and DON'T reject the two spellings that are not row labels.
+
+test "parse_program: `Error` is rejected as a row label" {
+  let result = handle {
+    let _ = parse_program(lex("fn f() -> Int with Error { throw(\"x\") }"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "`Error` was retired as an effect spelling in #1461"))
+}
+
+test "parse_program: `Error` is rejected as a handled-effect name (#1501)" {
+  let result = handle {
+    let _ =
+    parse_program(lex("fn g() -> Int { handle { 1 } with Error { Throw(_) => 0 } }"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "`Error` was retired as an effect spelling in #1461"))
+}
+
+test "parse_program: `Exception` is accepted in both positions" {
+  let src = "fn f() -> Int with Exception { throw(\"x\") }\nfn g() -> Int { handle { f() } with Exception { Throw(_) => 0 } }"
+  let stmts = parse_program(lex(src))
+  assert(Array::length(stmts) == 2)
+}
+
+test "parse_program: `perform Error::Throw` stays legal (operation qualifier)" {
+  // Not a row item: it names the operation the runtime dispatches, so the
+  // #1461 retirement deliberately does not reach it.
+  let tokens = lex("fn f() -> Int with Exception { perform Error::Throw(\"x\") }")
+  let stmts = parse_program(tokens)
+  assert(Array::length(stmts) == 1)
 }

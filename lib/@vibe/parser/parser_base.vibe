@@ -160,6 +160,104 @@ fn empty_pats() -> Array[Pat] {
   ], 0, 0)
 }
 
+//# Qualified variant pattern side channel (#1455 step 3)
+
+/// Every `Enum::Variant` seen in pattern position, as `(qualifier, variant)`.
+///
+/// `parse_pattern` lowers `Color::Red` to the SAME `PCtor("Red", ..)` the bare
+/// spelling produces (see the #742 note there), so nothing downstream can tell
+/// the two apart -- and nothing ever checks that `Color` actually owns `Red`.
+/// `Zzz::Mk(n)` type-checks and compiles today.
+///
+/// Carrying the qualifier inside `Pat` instead would put a qualified name in
+/// front of the ~80 sites that read a `PCtor` name (codegen's ctor table,
+/// exhaustiveness, perceus, DCE, the trait-dict desugar); every one of them
+/// would have to unqualify, and a missed one is a silent miscompile rather
+/// than a build error. Recording the pair out of band keeps the AST the parser
+/// produces byte-identical to before this channel existed, and leaves the
+/// membership check to the checker, which already builds the enum table.
+let qualified_pattern_refs: Array[(String, String)] = Array::slice([
+  ("", "")
+], 0, 0)
+
+/// Record one `qualifier::variant` pattern occurrence.
+///
+/// Deduped on push. The log is normally drained by the checker, but a
+/// parse-only consumer (`vibe fmt`, an LSP that never type-checks the buffer)
+/// leaves its entries behind, so growth has to be bounded by the number of
+/// DISTINCT pairs rather than by the number of occurrences.
+fn note_qualified_pattern_ref(qualifier: String, variant: String) -> Unit {
+  let n = Array::length(qualified_pattern_refs)
+  let mut i = 0
+  let mut seen = false
+  while i < n {
+    let (q, v) = Array::get(qualified_pattern_refs, i)
+    if q == qualifier && v == variant {
+      seen = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if seen {
+    ()
+  } else {
+    Array::push(qualified_pattern_refs, (qualifier, variant))
+  }
+}
+
+/// #1508: `(test name, effect row text)` for every `test "n" with A + B { .. }`
+/// / `bench "n" with .. { .. }` this parse saw. Same log-then-fold-into-a-marker
+/// shape as `qualified_pattern_refs` above, and for the same reason: the row has
+/// nowhere to live on `STest` / `SBench` without widening ~200 read sites.
+let test_effect_rows: Array[(String, String)] = Array::slice([
+  ("", "")
+], 0, 0)
+
+///|
+export fn record_test_effect_row(name: String, row: String) -> Unit {
+  Array::push(test_effect_rows, (name, row))
+}
+
+///|
+export fn has_test_effect_rows() -> Bool {
+  Array::length(test_effect_rows) > 0
+}
+
+///|
+export fn take_test_effect_rows() -> Array[(String, String)] {
+  let n = Array::length(test_effect_rows)
+  let out = Array::slice(test_effect_rows, 0, n)
+  Array::truncate(test_effect_rows, 0)
+  out
+}
+
+/// Drain the log recorded since the last drain.
+///
+/// Consume-and-clear, and the checker drains BEFORE it walks the program:
+/// a check that throws part way through must not leave its own entries behind
+/// for the next, unrelated check to re-report. Entries that survive a
+/// parse-only path stay inert because the validator only fires when the
+/// qualifier names an enum that is actually in scope for the compilation doing
+/// the checking.
+export fn take_qualified_pattern_refs() -> Array[(String, String)] {
+  let n = Array::length(qualified_pattern_refs)
+  let out = Array::slice(qualified_pattern_refs, 0, n)
+  Array::truncate(qualified_pattern_refs, 0)
+  out
+}
+
+/// True when this parse recorded at least one qualified variant pattern.
+///
+/// The overwhelmingly common program has none, and `take_qualified_pattern_refs`
+/// allocates a fresh array even to hand back an empty one -- once per parse,
+/// which parser_bench saw as allocation drift on inputs containing no qualified
+/// pattern at all (parse_deep_binop_chain +1.80%, parse_wide_match +1.42%, both
+/// back to +-0 once callers check this first and skip the drain).
+export fn has_qualified_pattern_refs() -> Bool {
+  Array::length(qualified_pattern_refs) > 0
+}
+
 let mode_block = 20
 
 let mode_match = 22
@@ -371,9 +469,17 @@ fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
               // unqualified, and handle-arm dispatch re-prefixes the effect
               // name onto a bare op pattern, so `Fs::ReadFile(p)` in a
               // `with Fs` arm also lands on the same name it does today.
+              //
+              // #1455 step 3: dropping it also dropped the only chance to
+              // check that the qualifier owns the variant, so the pair goes
+              // to the side channel above on its way out. Handle-arm op
+              // patterns come through here too (`Fs::ReadFile(p)` records
+              // `("Fs", "ReadFile")`); the checker ignores a qualifier that
+              // does not name an enum, which is what makes that harmless.
               TIdent(vname) => {
                 let vc = String::char_code_at(vname, 0)
                 if vc >= 65 && vc <= 90 {
+                  note_qualified_pattern_ref(name, vname)
                   match peek(tokens, pos + 3) {
                     TLParen => {
                       let (args, end) = parse_pats_until_rparen(tokens, pos + 4);
@@ -891,16 +997,62 @@ fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String,
 /// #1429: one effect-row item -- `Name`, `Name::Op`, or `Name[T, ..]`. Split
 /// out of collect_effect_names so the braced and braceless spellings read the
 /// same item grammar rather than drifting apart.
+/// #1461 final stage: `Error` is no longer a spelling. It was the original name
+/// of the core ambient exception effect and rode along as an accepted alias
+/// through the migration; ADR-0085 made `Exception` the one name, and every row
+/// in this tree was converted.
+///
+/// Two callers, because a source effect NAME is produced in two places: row
+/// items (`parse_effect_item`, right here) and the handled-effect name in
+/// `handle { .. } with E { .. }` (mode 24, parser_expr_dispatch.vibe). #1461
+/// first landed with only the row-item call, which left `Error` legal in
+/// handler position purely because that path never went through here -- while
+/// `vibe fmt` rewrote BOTH, so the formatter and the parser disagreed about
+/// where the name was still allowed (#1501). Both call it now.
+///
+/// `perform Error::Throw(x)` is deliberately NOT covered: an operation
+/// qualifier is not a row item, it names the operation the runtime dispatches,
+/// and no row is being spelled there.
+///
+/// This is a SURFACE rejection and nothing more. `is_exception_effect_name`
+/// still answers true for the label internally, the taxonomy table still
+/// carries its row, and `printer.vibe` still re-sugars both spellings -- a
+/// pinned seed from before the bump prints `Error`, and re-sugar must keep
+/// reading it. What changes is only what a `.vibe` file may say.
+///
+/// Named, like #1429's braced-row rejection, for the same reason: a reader who
+/// gets "expected an effect name" has no way to learn that the name moved. It
+/// points at `vibe fmt` for the same reason too -- the CST formatter rewrites
+/// the label at the token level, so it converts source this parser no longer
+/// accepts, which is the migration path for code outside this repository.
+/// #1514: `pos` is the LABEL's token index, carried in the ` at #N` side channel
+/// `parse_program_located` decodes (and strips). Without it this reported the
+/// enclosing declaration's start -- `Error` at 6:24 was blamed on `6:1`, the
+/// `fn` keyword. Measured in eval/lang-review/repair/02.
+fn reject_retired_effect_label(name: String, pos: Int) -> Unit with Exception {
+  if name == "Error" {
+    throw("`Error` was retired as an effect spelling in #1461 -- write `Exception` (or `Exception[Kind]` for a typed row). `vibe fmt` rewrites the old spelling for you. at #\{pos}")
+  } else {
+    ()
+  }
+}
+
 fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
   match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TDoubleColon => match peek(tokens, pos + 2) {
-        TIdent(member) =>
-        (String::concat(name, String::concat("::", member)), pos + 3),
-        _ => throw("expected qualified operation name after '::' in effect row")
-      },
-      TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(name, "[")),
-      _ => (name, pos + 1)
+    TIdent(name) => {
+      // Covers every shape the label can take: bare (`Error`), qualified
+      // (`Error::Throw`), and applied (`Error[IoError]`) -- the check is on the
+      // HEAD, which all three share.
+      reject_retired_effect_label(name, pos)
+      match peek(tokens, pos + 1) {
+        TDoubleColon => match peek(tokens, pos + 2) {
+          TIdent(member) =>
+          (String::concat(name, String::concat("::", member)), pos + 3),
+          _ => throw("expected qualified operation name after '::' in effect row")
+        },
+        TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(name, "[")),
+        _ => (name, pos + 1)
+      }
     },
     _ => throw("expected an effect name in the effect row after 'with'")
   }
@@ -975,10 +1127,11 @@ fn collect_effect_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (St
 /// row, so the two are not obviously the same question.
 fn parse_effect_row_base(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
   match peek(tokens, pos) {
-    TLBrace => throw("the braced effect row `with { A, B }` was removed in #1429 -- write `with A + B` (and `with ()` for the empty row). `vibe fmt` rewrites the old spelling for you."),
+    // #1514: blame the `{` itself, not the enclosing declaration's start.
+    TLBrace => throw("the braced effect row `with { A, B }` was removed in #1429 -- write `with A + B` (and `with ()` for the empty row). `vibe fmt` rewrites the old spelling for you. at #\{pos}"),
     TLParen => match peek(tokens, pos + 1) {
       TRParen => ("", pos + 2),
-      _ => throw("`with (` spells the EMPTY effect row `with ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `with A + B` (#1429)")
+      _ => throw("`with (` spells the EMPTY effect row `with ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `with A + B` (#1429) at #\{pos}")
     },
     _ => collect_effect_names_plus(tokens, pos, "")
   }
@@ -1094,7 +1247,7 @@ fn check_split_with_clause_items(row: String) -> Unit with Exception {
   }
 }
 
-fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
   let (row, after_row) = parse_effect_row_base(tokens, pos)
   match peek(tokens, after_row) {
     TIdent(kw) => if kw == "allows" {
@@ -1130,23 +1283,9 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       TComma => match peek(tokens, pos + 1) {
         TRParen|TRBracket => (ArrayBuilder::freeze(b), pos + 1),
         _ => {
-          let ts = match peek(tokens, pos + 1) {
-            TIdent(_) => match peek(tokens, pos + 2) {
-              TColon => pos + 3,
-              TTilde => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              TQuestion => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              _ => pos + 1
-            },
-            _ => pos + 1
-          }
+          let (ts, ts_opt) = labeled_type_start(tokens, pos + 1)
           let (ty, next) = parse_type_impl(tokens, ts, 0)
-          ArrayBuilder::push(b, ty)
+          ArrayBuilder::push(b, optional_param_type(ty, ts_opt))
           type_list_rest(tokens, next, b)
         }
       }
@@ -1188,23 +1327,11 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
         },
         _ => {
           // A first element may be a labeled param (`x: T` / `x~: T` / `x?: T`);
-          // skip the label so the element's TYPE is what gets recorded.
-          let ty_start = match peek(tokens, pos + 1) {
-            TIdent(_) => match peek(tokens, pos + 2) {
-              TColon => pos + 3,
-              TTilde => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              TQuestion => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              _ => pos + 1
-            },
-            _ => pos + 1
-          }
-          let (first, n1) = parse_type_impl(tokens, ty_start, 0)
+          // skip the label so the element's TYPE is what gets recorded. `?`
+          // additionally wraps it in `Option` (#1500).
+          let (ty_start, ty_opt) = labeled_type_start(tokens, pos + 1)
+          let (first_raw, n1) = parse_type_impl(tokens, ty_start, 0)
+          let first = optional_param_type(first_raw, ty_opt)
           let (elems, after) = match peek(tokens, n1) {
             TRParen => ([
               first
@@ -1261,22 +1388,9 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       TLParen => match peek(tokens, pos + 1) {
         TRParen => (TyUnit, pos + 2),
         _ => {
-          let ty_start = match peek(tokens, pos + 1) {
-            TIdent(_) => match peek(tokens, pos + 2) {
-              TColon => pos + 3,
-              TTilde => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              TQuestion => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              _ => pos + 1
-            },
-            _ => pos + 1
-          }
-          let (first, n1) = parse_type_impl(tokens, ty_start, 0)
+          let (ty_start, ty_opt) = labeled_type_start(tokens, pos + 1)
+          let (first_raw, n1) = parse_type_impl(tokens, ty_start, 0)
+          let first = optional_param_type(first_raw, ty_opt)
           match peek(tokens, n1) {
             TRParen => (first, n1 + 1),
             TComma => {
@@ -1327,6 +1441,48 @@ export fn parse_type(tokens: Array[Token], pos: Int) -> (TypeExpr, Int) with Exc
   parse_type_impl(tokens, pos, 0)
 }
 
+/// #1500: where a labeled parameter's TYPE starts inside a function type, and
+/// whether the label carried the `?` (optional) marker.
+///
+/// `x~: T` and `x?: T` both put the type after the label, and every caller used
+/// to just skip to it -- which silently dropped the `?`, so a function TYPE
+/// could not express optionality at all (`(Int, z?: Int) -> String` parsed as
+/// `(Int, Int) -> String`) even though the parameter LIST kept the marker on
+/// the name. Optional parameters are declared as `Option[T]`, so the flag has
+/// to reach the caller for it to wrap.
+///
+/// `p` is the position of the label identifier. Returns `(p, false)` for
+/// anything that is not `label: T` / `label~: T` / `label?: T` -- that is a
+/// bare type, and it starts right where the caller is looking.
+fn labeled_type_start(tokens: Array[Token], p: Int) -> (Int, Bool) {
+  match peek(tokens, p) {
+    TIdent(_) => match peek(tokens, p + 1) {
+      TColon => (p + 2, false),
+      TTilde => match peek(tokens, p + 2) {
+        TColon => (p + 3, false),
+        _ => (p, false)
+      },
+      TQuestion => match peek(tokens, p + 2) {
+        TColon => (p + 3, true),
+        _ => (p, false)
+      },
+      _ => (p, false)
+    },
+    _ => (p, false)
+  }
+}
+
+/// Wrap a labeled parameter's declared type when its label carried `?`.
+fn optional_param_type(ty: TypeExpr, is_optional: Bool) -> TypeExpr {
+  if is_optional {
+    TyApp("Option", [
+      ty
+    ])
+  } else {
+    ty
+  }
+}
+
 fn parse_one_param(tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]), Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
@@ -1345,7 +1501,13 @@ fn parse_one_param(tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]
         match peek(tokens, pos + 2) {
           TColon => {
             let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
-            ((opt_name, Some(ty)), tp)
+            // #1500: an optional parameter is declared `Option[T]`. The body
+            // sees an `Option` (that is what the omitted case has to produce),
+            // and `desugar_optional_args` makes the call site agree -- omitted
+            // slots become `None`, supplied ones `Some(v)`. The `?` used to be
+            // recorded only on the NAME, so the declared type stayed `T` and
+            // the parameter was optional in spelling alone.
+            ((opt_name, Some(optional_param_type(ty, true))), tp)
           },
           _ => ((opt_name, None), pos + 2)
         }
@@ -1891,6 +2053,7 @@ export {
   parse_type_alias_stmt,
   parse_type_impl,
   peek,
+  reject_retired_effect_label,
   skip_derive,
   skip_semi,
   tk_name
@@ -1938,6 +2101,7 @@ export {
   parse_type_alias_stmt,
   parse_type_impl,
   peek,
+  reject_retired_effect_label,
   skip_derive,
   skip_semi,
   tk_name
@@ -1985,6 +2149,7 @@ export {
   parse_type_alias_stmt,
   parse_type_impl,
   peek,
+  reject_retired_effect_label,
   skip_derive,
   skip_semi,
   tk_name

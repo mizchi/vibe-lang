@@ -60,7 +60,8 @@ export ../../normalize {
   desugar_hoist_local_lambdas,
   desugar_labeled_args,
   desugar_array_spread,
-  desugar_trait_dicts
+  desugar_trait_dicts,
+  unbox_tuple_loop_params
 }
 
 //# Types
@@ -1845,9 +1846,26 @@ export fn resolve_local(names: Array[String], name: String, tag: String) -> Int 
     }
   }
   if result < 0 {
-    throw(String::concat(String::concat("undefined variable (local): ", name), String::concat(" @", tag)))
+    // A name reaching codegen unresolved is a CHECKER hole, not a user error:
+    // the checker either bound it or should have rejected it, and everything
+    // between accepted it. Every #1502 / #1510 / #1491 / #1521 / #1529 landed
+    // here, and the message said nothing a reader could act on -- no file, no
+    // line, and `locals=[__env,,__fn_val]` is pass state. Say whose bug it is.
+    throw(String::concat(String::concat(codegen_unresolved_name_prefix(), name), String::concat("` (local, @", String::concat(tag, codegen_unresolved_name_suffix()))))
   }
   result
+}
+
+/// Shared opening of the "a name survived type checking" internal error (see
+/// `resolve_local`). One spelling so the three codegen sites that can raise it
+/// -- linear locals, linear idents, and the gc backend -- cannot drift apart,
+/// and so a gate can pin the whole class by one string.
+export fn codegen_unresolved_name_prefix() -> String {
+  "internal compiler error: `"
+}
+
+export fn codegen_unresolved_name_suffix() -> String {
+  ") reached code generation unresolved. The type checker should have bound or rejected this name, so this is a bug in the compiler and not in your program -- please report the source that triggers it."
 }
 
 export fn emit_i64_store(buf: Bytes, align: Int, offset: Int) -> Unit {
@@ -2001,7 +2019,7 @@ export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_f
   // emitting the same bytes was fine, because only an RC-built binary
   // actually refcounts. Keep the two-instruction form in its own function.
   if dup_fn_idx >= 0 {
-    emit_rc_dup_call(buf, local_idx, dup_fn_idx)
+    emit_rc_dup_tagtest_call(buf, local_idx, dup_fn_idx)
   } else {
     emit_rc_dup_inline(buf, local_idx, rc_shadow)
   }
@@ -2012,6 +2030,40 @@ export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_f
 fn emit_rc_dup_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
   emit_local_get(buf, local_idx)
   emit_call(buf, dup_fn_idx)
+}
+
+/// #1262: the immediate test INLINE, the rest of the guard out-of-line.
+///
+/// `emit_rc_dup_inline`'s FIRST test is `v & 1` -- odd = candidate heap
+/// pointer, even = tagged immediate (`Int` is `value << 1`, so every Int is
+/// even). For an immediate the whole helper is a no-op, yet the pure
+/// out-of-line form pays a full `call` to discover that. Measured cost of
+/// that discovery: **~2.7 ns per dup**, which made a trivial
+/// `fn add2(a: Int, b: Int) -> Int` in a hot loop run **6.4x** slower under
+/// RC than under bump (1052 -> 6750 ns / 1000 iterations) -- while the SAME
+/// call with constant (non-loop-borrowed, hence un-dup'd) arguments cost
+/// 1390 ns under BOTH modes. See docs/side-effect-consolidation.md 2.8.
+///
+/// So: branch on the tag here, call only on the heap path.
+///
+///     local.get v; i64.const 1; i64.and; i32.wrap_i64
+///     if (void)  local.get v; call __rt_rc_dup  end
+///
+/// ~13 B per site against ~5 B for the bare call and 72 B for the full
+/// inline guard -- the third point between the two the size analysis above
+/// compares. The helper re-tests the tag on entry (it is built from
+/// `emit_rc_dup_inline`), so this is a pure fast-path skip: the emitted
+/// semantics are unchanged, including the VIBE_RC=shadow recurrence guard,
+/// which stays inside the helper.
+fn emit_rc_dup_tagtest_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_call(buf, dup_fn_idx)
+  emit_end(buf)
 }
 
 /// The guard expanded in place. Kept as the single definition of what a dup

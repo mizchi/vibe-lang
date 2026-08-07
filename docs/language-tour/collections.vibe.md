@@ -157,7 +157,7 @@ test "json" {
 ## String as Collection
 
 ```vibe
-import ./lib/@vibe/prelude/string.vibe { Lines::parse, Lines::stringify }
+import @vibe/prelude { Lines::parse, Lines::stringify }
 
 test "string as collection" {
   assert(eq(String::length("hello"), 5))

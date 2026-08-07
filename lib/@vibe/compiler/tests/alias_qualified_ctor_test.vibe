@@ -1,0 +1,97 @@
+//# #1502: an ALIAS works as a constructor qualifier, both spellings of alias.
+//
+// Before this, `find_typedef` was matched against `TDEnum` directly at both
+// qualifier sites, so an alias qualifier died in the checker with
+// `unknown name: C::Red` -- while the alias was usable everywhere else (type
+// annotations, bare constructors). Fixing only the checker moved the failure
+// to codegen (`undefined variable (ident): C::Red`), because the unqualify in
+// desugar_trait_dict.vibe and the import-alias rewrite both keyed off the
+// written head; all three are covered here.
+//
+// Reuses the #1455 support module so the import-alias half crosses a real
+// module boundary.
+
+//# Imports
+
+import ./qualified_ctor_enum_support.vibe {
+  Attempt as Att, Bad, Cerulean, Crimson, Good, Hue as H
+}
+
+//# Types
+
+enum Color {
+  Red;
+  Green
+}
+
+/// The written-alias half.
+type C = Color
+
+/// A parameterized alias is a plain renaming: the constructor scheme comes out
+/// in the aliased enum's own formals.
+type Att2[T] = Att[T]
+
+//# Functions
+
+fn color_name(c: Color) -> String {
+  match c {
+    Red => "red"
+    Green => "green"
+  }
+}
+
+fn hue_name(h: H) -> String {
+  match h {
+    Crimson => "crimson"
+    Cerulean => "cerulean"
+  }
+}
+
+fn unwrap(a: Att[Int]) -> Int {
+  match a {
+    Good(v) => v
+    Bad(_) => 0
+  }
+}
+
+//# Tests
+
+test "type alias qualifies a nullary constructor" {
+  assert_eq(color_name(C::Red), "red")
+  assert_eq(color_name(C::Green), "green")
+}
+
+test "type alias qualifies inside a pattern" {
+  let got = match C::Green {
+    Red => 1
+    Green => 0
+  }
+  assert_eq(got, 0)
+}
+
+test "import alias qualifies a nullary constructor" {
+  assert_eq(hue_name(H::Crimson), "crimson")
+  assert_eq(hue_name(H::Cerulean), "cerulean")
+}
+
+test "import alias qualifies inside a pattern" {
+  let got = match H::Cerulean {
+    Crimson => 1
+    Cerulean => 0
+  }
+  assert_eq(got, 0)
+}
+
+test "import alias qualifies a payload constructor of a parameterized enum" {
+  assert_eq(unwrap(Att::Good(7)), 7)
+  assert_eq(unwrap(Att::Bad("x")), 0)
+}
+
+test "alias of an alias resolves through the chain" {
+  assert_eq(unwrap(Att2::Good(9)), 9)
+}
+
+test "the original names keep working alongside the aliases" {
+  assert_eq(color_name(Color::Red), "red")
+  assert_eq(unwrap(Attempt::Good(3)), 3)
+}

@@ -16,7 +16,7 @@ capability effect (`Fs`, `Env`, `Stdin`, `Stdout` など) は、直接の operat
 effectful callee の双方について `with ...` へ推移的に伝播する。一方、#626
 では selfhost 移行コストを理由に `Error` と `Async` の transitive 非強制を採用した。
 
-この例外規則では、`with Error` を持たない関数からも Error が escape する。
+この例外規則では、`with Exception` を持たない関数からも例外が escape する。
 そのため関数型、effect polymorphism、package contract に現れる `Error` row が
 実際の保証にならず、特に高階関数で「直接 call は許可するが同じ関数値の代入は
 どうするか」という不整合が #939 で顕在化した。
@@ -29,13 +29,13 @@ effectful callee の双方について `with ...` へ推移的に伝播する。
 `Error::Throw` は、完全に checked な非再開 semantic effect とする。
 
 - `throw(x)` と `perform Error::Throw(x)` は同じ operation requirement を生成する。
-- Error を直接送出する関数は `with Error` または
-  `with Error::Throw` を宣言しなければならない。
-- `with Error` を持つ callee の requirement は caller へ推移する。caller は
-  Error を宣言するか、`handle ... with Error` で放電する。
+- 例外を直接送出する関数は `with Exception` または
+  `with Exception::Throw` を宣言しなければならない。
+- `with Exception` を持つ callee の requirement は caller へ推移する。caller は
+  `Exception` を宣言するか、`handle ... with Exception` で放電する。
 - 関数値の latent effect に Error を保持する。Error 関数を pure callback として
   渡すことはできない。pure 関数は Error を許す callback slot に渡せる。
-- 明示 `with Error` は高階関数型、subtyping、package contract、contract hash、
+- 明示 `with Exception` は高階関数型、subtyping、package contract、contract hash、
   effect surface diff で意味のある row element とする。
 - 公開関数への Error 追加は effect surface の拡大であり、破壊的変更として扱う。
 - ~~通常の失敗表現には `Result[T, E]` を推奨し、`throw` は adapter / CLI / FFI / test
@@ -51,7 +51,7 @@ effectful callee の双方について `with ...` へ推移的に伝播する。
 
 ## Entry boundary
 
-`fn main with Error { ... }` を許可する。未処理 Error が entry まで到達した場合、
+`fn main with Exception { ... }` を許可する。未処理の例外が entry まで到達した場合、
 runtime が最外周 Error handler となり、診断付きの unsuccessful process outcome へ
 変換する。生の `WebAssembly.Exception` を公開 entry boundary の外へ漏らさない。
 

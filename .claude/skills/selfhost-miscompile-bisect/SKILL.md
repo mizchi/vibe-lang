@@ -54,7 +54,7 @@ flat bundle は namespace が平坦なので、末尾に 0 引数 entry を足�
 
 ```vibe
 // bundle コピーの末尾に追記(commit しない)
-export let probe_check: () -> Int with Error = () -> {
+export let probe_check: () -> Int with Exception = () -> {
   let stmts = parse_program(lex("export let main = () -> Int { 40 + 2 }"))
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)

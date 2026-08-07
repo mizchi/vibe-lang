@@ -22,7 +22,7 @@ cannot be imported. When you `vibe build`, `main` is lowered to the generated
 WASM `_start` ABI entry point.
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 
@@ -155,11 +155,11 @@ fn run(raw: String) -> Int with Exception[String] {
   raw |> parse_id |> load_user
 }
 
-// Boundary helper when you need to localize Error
-let safe_div: (Int, Int) -> Int with Error = (a, b) -> {
+// Boundary helper when you need to localize the exception
+let safe_div: (Int, Int) -> Int with Exception = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
-let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
+let result = handle { safe_div(8, 0) } with Exception { Throw(_) => -1 }
 // => -1
 ```
 

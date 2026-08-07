@@ -142,7 +142,7 @@ Rreq ⊆ Rdecl
 ```
 
 ADR-0073 の `Error::Throw` も通常の semantic operation として `Rreq` に含める。
-明示 `with Error` は高階関数型・subtyping・package contract/hash で意味を持ち、
+明示 `with Exception` は高階関数型・subtyping・package contract/hash で意味を持ち、
 caller は requirement を宣言するか `handle Error` で放電する。
 
 したがって、少ない operation しか要求しない関数は、より広い row を許可する

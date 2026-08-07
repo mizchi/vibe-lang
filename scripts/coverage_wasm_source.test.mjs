@@ -56,7 +56,7 @@ test("isCoverageNoiseLine: handle bridge line is excluded", () => {
   const sourceLines = [
     "let ok = handle {",
     "  run()",
-    "} with Error {",
+    "} with Exception {",
     "  Throw(_) => false;",
     "}",
   ];

@@ -117,6 +117,98 @@ fn collect_method_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String, Ar
   out
 }
 
+/// #1445 原因2 (#1392 slice 3): the SYNTHETIC `Show` witness trait.
+///
+/// `Show` is a marker trait in source. `lib/@vibe/prelude/builtin_traits.vibe`
+/// spells `to_string[T: Show](x: T)`, but no `trait Show { .. }` declaration
+/// exists anywhere and `register_builtin_traits` (checker_trait.vibe) does not
+/// register one, so the bound is vacuous. That has to STAY vacuous: the moment
+/// a trait carries a method the checker enforces its impls, and `to_string` is
+/// a universal function -- a real `trait Show { to_string(Self) -> String }`
+/// turns `to_string(5)` into a hard `no impl 'Show' for 'Int'` (measured).
+///
+/// So the trait is injected HERE and nowhere else. This pass collects traits
+/// from the STATEMENT LIST (`collect_method_traits`); the checker enforces
+/// impls from its OWN env. Injecting into the former and not the latter buys
+/// the dictionary threading with none of the enforcement.
+///
+/// The witness is total by construction -- `build_concrete_dict` falls back to
+/// the ADR-0058 `__to_string` heuristic for a type with no `C::to_string` --
+/// so nothing that compiles today stops compiling, and a value whose type this
+/// pass cannot resolve renders exactly as it does now.
+fn synthetic_show_sigs() -> Array[(String, Array[TypeExpr], TypeExpr)] {
+  [
+    ("to_string", [
+      TyName("Self")
+    ], TyName("String"))
+  ]
+}
+
+fn bounds_mention_show(bounds: Array[(String, Array[String])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bounds) {
+    let (_, trait_list) = Array::get(bounds, i)
+    if str_array_contains(trait_list, "Show") {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Whether this program has a `[T: Show]` bound worth threading a witness for.
+///
+/// The `__to_string` pass-through shims are excluded (`collect_show_shims` must
+/// have run first): they never render THROUGH the witness -- their whole body
+/// is the heuristic -- and threading them would put a hidden dict parameter on
+/// `to_string` itself, i.e. on every one of its call sites in the program.
+/// Without that exclusion the prelude alone would activate this for every
+/// compilation unit.
+fn program_wants_show_dict(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut want = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, bounds, _, _, _, _) => if bounds_mention_show(bounds) && !str_array_contains(dtd_show_shims, fname) {
+          want = true
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  want
+}
+
+/// `collect_method_traits` plus the synthetic `Show` entry when this program
+/// wants it. A program that declares its own method-bearing `trait Show` keeps
+/// that one verbatim -- the injection must never shadow a real declaration.
+fn collect_method_traits_with_show(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
+  let declared = collect_method_traits(stmts)
+  match lookup_trait_sigs(declared, "Show") {
+    Some(_) => declared,
+    None => if program_wants_show_dict(stmts) {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(declared) {
+        Array::push(out, Array::get(declared, i))
+        i = i + 1
+      }
+      Array::push(out, ("Show", synthetic_show_sigs()))
+      out
+    } else {
+      declared
+    }
+  }
+}
+
 // ---- rank-1 method generics (#684) ----
 //
 // A trait method may declare its own type parameters, `m: [X: Show](Self, X) ->
@@ -817,13 +909,18 @@ fn ctor_enum_of_name(fn_returns: Array[(String, String)], name: String) -> Optio
     None => match split_qualified(name) {
       Some(parts) => {
         let (head, member) = parts
-        match fn_return_type(fn_returns, member) {
-          Some(en) => if en == head {
-            Some(en)
-          } else {
-            None
-          },
-          None => None
+        // #1491 (second site): ask whether `member` is a constructor of THIS
+        // enum, not what `member`'s FIRST fn_returns entry returns.
+        // Constructor names collide across enums, so the first-match form
+        // answered about whichever enum sorted first and returned None for a
+        // perfectly good `Color::Green` -- leaving the binding untyped, which
+        // downstream means synth_dicts finds no witness and emits a call short
+        // its dictionary argument. Same defect as `qual_ctor_member`, same
+        // table, same fix.
+        if fn_returns_has_type(fn_returns, member, head) {
+          Some(head)
+        } else {
+          None
         }
       },
       None => None
@@ -1015,7 +1112,22 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       },
       _ => None
     },
-    ERecord(_, fields, _) => {
+    // #1529: when the literal NAMES its struct (`IntBox::{ v: 7 }`), that name
+    // IS the answer. Re-deriving it from the field set picks the first struct
+    // with a matching shape, which is a DIFFERENT type as soon as two structs
+    // share a field set (`struct Plain { v: Int }` next to `struct IntBox
+    // { v: Int }`). The wrong name found no `impl` for the trait, synth_dicts
+    // silently produced nothing, and the call went out one argument short --
+    // surfacing only at instantiate as `not enough arguments on the stack for
+    // call`, naming neither the struct nor the call. Declaration order looked
+    // like the trigger because it decides which same-shaped struct is first.
+    //
+    // Shape matching stays for the ANONYMOUS form (`ERecord("", ..)`, #839
+    // top-level anonymous records and the witness records built by
+    // make_witness_record), where there is no written name to trust.
+    ERecord(rn, fields, _) => if String::length(rn) > 0 && struct_set_has(struct_sets, rn) {
+      Some(rn)
+    } else {
       let names = empty_str_array()
       let mut i = 0
       while i < Array::length(fields) {
@@ -1509,6 +1621,17 @@ fn find_dict_for_trait(dict_binds: Array[(String, String, String, Array[String])
   result
 }
 
+/// #1445: `(__w) -> String { __to_string(__w) }` -- the total fallback member
+/// of a synthetic `Show` witness (see synthetic_show_sigs). Same closure shape
+/// build_concrete_dict already synthesizes for a bounded generic-impl method.
+fn show_fallback_closure() -> Expr {
+  EFn(empty_str_array(), array_empty(), Array::slice([
+    ("__w", None)
+  ], 0, 1), None, None, ECall(EIdent("__to_string", -1), [
+    EIdent("__w", -1)
+  ], -1))
+}
+
 /// The first element of an array-literal receiver (for a bounded generic impl
 /// `impl [T: Bound] Trait for Array`, the element determines T's witness).
 fn first_array_elem(e: Expr) -> Option[Expr] {
@@ -1545,11 +1668,21 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
         let m = Array::get(mnames, mi)
         let qm = String::concat(cname, String::concat("::", m))
         if not(fn_exists(fn_returns, qm)) {
-          // No `cname::m` free function exists — `cname` does not actually
-          // implement `trait_name`. Refuse to fabricate a witness (which would
-          // otherwise silently dispatch to a same-shaped function), so the call
-          // is left unrewritten and fails loudly instead of miscompiling.
-          failed = true
+          // #1445: the SYNTHETIC `Show` witness is total. A type with no
+          // `C::to_string` renders through the ADR-0058 heuristic -- exactly
+          // what it does outside a generic today -- so threading a witness
+          // never turns a compiling program into a failing one. This is the
+          // one trait allowed a fabricated member, and only because its
+          // fallback is the status quo rather than a guess at an impl.
+          if trait_name == "Show" && m == "to_string" {
+            Array::push(recfields, (m, show_fallback_closure()))
+          } else {
+            // No `cname::m` free function exists — `cname` does not actually
+            // implement `trait_name`. Refuse to fabricate a witness (which would
+            // otherwise silently dispatch to a same-shaped function), so the call
+            // is left unrewritten and fails loudly instead of miscompiling.
+            failed = true
+          }
         } else {
           match lookup_gen(gens, qm) {
             Some(threaded) => {
@@ -1709,8 +1842,50 @@ fn array_elem_key(pname: String) -> String {
 /// #1199 bug 1: look up the element type recorded for an Array-typed variable
 /// by `seed_var_types` (function parameters) or `array_elem_bind` (let-bound
 /// array literals).
+///
+/// A recorded EMPTY is a masking entry written by `mask_stale_array_elem`, not
+/// an element type: it means "an inner binding of this name shadowed whatever
+/// the outer one held, and this pass cannot type the new one". Same answer as
+/// no record at all.
 fn array_elem_type_of(var_types: Array[(String, String)], name: String) -> Option[String] {
-  lookup_var_type(var_types, array_elem_key(name))
+  match lookup_var_type(var_types, array_elem_key(name)) {
+    Some(t) => if String::length(t) == 0 {
+      None
+    } else {
+      Some(t)
+    },
+    None => None
+  }
+}
+
+/// Codex P2 on PR #1565: a rebinding this pass cannot type must still MASK the
+/// outer binding's recorded element type. `lookup_var_type` returns the LAST
+/// match, so leaving the shadowed entry as the live answer is a real
+/// miscompile, not just imprecision -- measured before this:
+///
+///   let xs = [P::{ n: 1 }]      // records __arrelem$xs -> "P"
+///   let xs = mk(7)              // Array[Int] from a call: nothing recorded
+///   let ys = mk(9)
+///   xs == ys                    // true (!) -- dispatched __arr_equals__P,
+///                               // whose body reads a `.n` field off raw Ints
+///
+/// This is the same staleness `shape_bind` fixed for `__shape$` (it records
+/// even a non-composite binding for exactly this reason) and explicitly did
+/// NOT rewrite here at the time. #1526 made the entry load-bearing at `==`
+/// sites, so it has to be masked now.
+///
+/// Only writes when there IS a live entry to mask, so the common binding pays
+/// nothing.
+fn mask_stale_array_elem(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
+  match array_elem_type_of(var_types, name) {
+    Some(_) => {
+      let out = array_empty()
+      push_all_var_types(out, var_types)
+      Array::push(out, (array_elem_key(name), ""))
+      out
+    },
+    None => var_types
+  }
 }
 
 /// #1199 follow-up (Codex review on the original fix): the let-bound sibling
@@ -1742,12 +1917,12 @@ fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, 
           Array::push(out, (array_elem_key(name), elemty))
           out
         },
-        None => var_types
+        None => mask_stale_array_elem(var_types, name)
       }
     } else {
-      var_types
+      mask_stale_array_elem(var_types, name)
     },
-    _ => var_types
+    _ => mask_stale_array_elem(var_types, name)
   }
 }
 
@@ -2125,6 +2300,66 @@ fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)])
   }
 }
 
+/// #1445 残件: a TypeExpr rendered in the SHAPE language documented above
+/// `shape_key` (`Name` / `(s1,s2)` / `[s]`). Returns "" for anything the shape
+/// language cannot spell -- `Option[P]` and `Result[T, E]` among them, which is
+/// correct: those resolve through the per-ctor payload entries instead, and a
+/// bogus shape would divert them to a renderer that cannot handle a wrapper.
+fn texpr_shape(te: TypeExpr) -> String {
+  match te {
+    TyName(n) => n,
+    TyApp(tn, targs) => if tn == "Array" && Array::length(targs) == 1 {
+      let inner = texpr_shape(Array::get(targs, 0))
+      if String::length(inner) == 0 {
+        ""
+      } else {
+        String::concat("[", String::concat(inner, "]"))
+      }
+    } else {
+      ""
+    },
+    TyTuple(elems) => if Array::length(elems) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      let mut ok = true
+      while i < Array::length(elems) {
+        let sub = texpr_shape(Array::get(elems, i))
+        if String::length(sub) == 0 {
+          ok = false
+        } else {
+          ()
+        }
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      if ok {
+        String::concat(acc, ")")
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+/// Record one constructor payload's shape against `pname`, skipping the entry
+/// entirely when the payload type has no shape (rather than recording "", which
+/// downstream reads as a definite "not composite").
+fn seed_ctor_payload(out: Array[(String, String)], pname: String, ctor: String, payload: TypeExpr) -> Unit {
+  let sh = texpr_shape(payload)
+  if String::length(sh) == 0 {
+    ()
+  } else {
+    Array::push(out, (ctor_payload_key(pname, ctor), sh))
+  }
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -2169,19 +2404,17 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
           // type for `v` at all and fell to the ADR-0058 pointer heuristic.
           // The annotation still has `P` right here; record it against the
           // ctor so the match arm can bind it.
-          match Array::get(targs, 0) {
-            TyName(pay) => Array::push(out, (ctor_payload_key(pname, "Some"), pay)),
-            _ => ()
-          }
+          //
+          // #1445 残件: recorded as a SHAPE, not a bare name, so a payload that
+          // is itself a container resolves too. `o: Option[Array[P]]` records
+          // `[P]`; `arm_binder_var_types` already routes a composite payload to
+          // the recursive renderer. Measured before this: that binder printed a
+          // pointer decimal while `Option[P]` rendered fine -- the `TyName`-only
+          // match silently recorded nothing for the nested case.
+          seed_ctor_payload(out, pname, "Some", Array::get(targs, 0))
         } else if tn == "Result" && Array::length(targs) == 2 {
-          match Array::get(targs, 0) {
-            TyName(okty) => Array::push(out, (ctor_payload_key(pname, "Ok"), okty)),
-            _ => ()
-          }
-          match Array::get(targs, 1) {
-            TyName(errty) => Array::push(out, (ctor_payload_key(pname, "Err"), errty)),
-            _ => ()
-          }
+          seed_ctor_payload(out, pname, "Ok", Array::get(targs, 0))
+          seed_ctor_payload(out, pname, "Err", Array::get(targs, 1))
         } else {
           ()
         }
@@ -2265,6 +2498,40 @@ fn struct_field_type_key(struct_name: String, field: String) -> String {
   String::concat(struct_name, String::concat(".", field))
 }
 
+/// #1502: reserved `fn_returns` key carrying `type C = Color` as `C -> Color`.
+/// Same trick as `struct_field_type_key` -- this pass has no `TypeDef` table, so
+/// the alias map rides along in the one table every consumer already has. The
+/// `type ` prefix cannot collide with a function or variant name (a space is not
+/// an identifier character).
+fn type_alias_key(alias_name: String) -> String {
+  String::concat("type ", alias_name)
+}
+
+/// Follow `type_alias_key` hops to the name a qualifier ultimately denotes, so
+/// an alias works as a constructor qualifier. `fuel` bounds a cyclic chain
+/// (rejected by the checker; here we only need to not spin).
+fn resolve_alias_head(fn_returns: Array[(String, String)], head: String) -> String {
+  let mut cur = head
+  let mut fuel = 16
+  let mut done = false
+  while !done {
+    if fuel <= 0 {
+      done = true
+    } else {
+      fuel = fuel - 1
+      match fn_return_type(fn_returns, type_alias_key(cur)) {
+        Some(target) => {
+          cur = target
+        },
+        None => {
+          done = true
+        }
+      }
+    }
+  }
+  cur
+}
+
 /// (`Holder.s` -> `HostStream`) for every declared struct field whose
 /// annotation has a head name. Appended to fn_returns so `infer_arg_type_name`
 /// can type a projection (`h.s`).
@@ -2327,6 +2594,38 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
           let (vname, _) = Array::get(variants, vi)
           Array::push(out, (vname, ename))
           vi = vi + 1
+        }
+      },
+      // #1502: `type C = Color` under the reserved `type C` key, so
+      // `qual_ctor_member` can normalize an alias qualifier to the enum it
+      // names. Only a head-bearing target is recorded -- a tuple/fn alias can
+      // never name an enum.
+      STypeAlias(_, aname, _, te) => match te {
+        TyName(n) => {
+          Array::push(out, (type_alias_key(aname), n))
+        },
+        TyApp(n, _) => {
+          Array::push(out, (type_alias_key(aname), n))
+        },
+        _ => ()
+      },
+      // #1502: `import ./m { E as F }` is the same renaming from the other
+      // direction. A BACKSTOP, not the primary path: in the lanes that run
+      // import_alias_rewrite.vibe the head is already rewritten to `E` before
+      // this pass, and the merged stmt list has no `SImport` left to read. It
+      // earns its place for the lanes that skip that rewrite (gc_only.vibe),
+      // where the alias does still reach here.
+      SImport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let (orig, alias_opt) = Array::get(items, ii)
+          match alias_opt {
+            Some(alias) => {
+              Array::push(out, (type_alias_key(alias), orig))
+            },
+            None => ()
+          }
+          ii = ii + 1
         }
       },
       _ => ()
@@ -2399,6 +2698,42 @@ fn fn_exists(fn_returns: Array[(String, String)], fname: String) -> Bool {
 /// behave exactly as they did when function returns had an empty head.
 fn fn_type_return_head() -> String {
   "->"
+}
+
+/// Does the fn_returns table record `fname` with return head `want` ANYWHERE,
+/// not just at its leftmost entry?
+///
+/// #1491: `fn_return_type` answers "what does the FIRST `fname` entry return",
+/// which silently loses every later duplicate. Constructor names are not
+/// unique across enums -- two enums in one merged compile can both declare
+/// `Red` -- so asking "is `Red` a variant of `Color`" through the first-match
+/// helper answers about whichever enum happened to sort first (`Paint`), and
+/// `Color::Red` fails the `qual_ctor_member` gate. The table already holds
+/// BOTH entries; only the lookup was lossy. Duplicates are adjacent because
+/// the table is sorted by name, so the run scan below is O(#duplicates).
+fn fn_returns_has_type(fn_returns: Array[(String, String)], fname: String, want: String) -> Bool {
+  let start = fn_returns_find(fn_returns, fname)
+  if start < 0 {
+    false
+  } else {
+    let mut i = start
+    let mut found = false
+    let mut done = false
+    while !done && i < Array::length(fn_returns) {
+      let (n, rt) = Array::get(fn_returns, i)
+      if n == fname {
+        if rt == want {
+          found = true
+          done = true
+        } else {
+          i = i + 1
+        }
+      } else {
+        done = true
+      }
+    }
+    found
+  }
 }
 
 fn fn_return_type(fn_returns: Array[(String, String)], fname: String) -> Option[String] {
@@ -2770,14 +3105,23 @@ fn extend_var_types(var_types: Array[(String, String)], name: String, inferred: 
 /// that keeps builtin qualified calls like `String::join` / `Array::map` alone
 /// even when a same-named function (`join`/`map`) happens to return that type.
 fn qual_ctor_member(head: String, member: String, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Option[String] {
+  // #1502: an alias qualifier (`type C = Color` -> `C::Red`) is normalized to
+  // the enum it names before the gate. Without this the checker accepts
+  // `C::Red` (it follows `TDAlias`) while this pass leaves the name qualified,
+  // and codegen -- whose ctor table is keyed unqualified -- dies with
+  // `undefined variable (ident): C::Red`. A non-alias head resolves to itself.
+  let head = resolve_alias_head(fn_returns, head)
   if struct_set_has(struct_sets, head) {
-    match fn_return_type(fn_returns, member) {
-      Some(en) => if en == head {
-        Some(member)
-      } else {
-        None
-      },
-      None => None
+    // #1491: ask whether `member` is recorded as a constructor of THIS enum,
+    // not what `member`'s first table entry returns. Constructor names collide
+    // across enums (`enum Color { Red }` next to an imported `enum Paint
+    // { Red }`), and the first-match form answered about the wrong enum, left
+    // the name qualified, and handed codegen -- whose ctor table is keyed
+    // unqualified -- `undefined variable (ident): Color::Red`.
+    if fn_returns_has_type(fn_returns, member, head) {
+      Some(member)
+    } else {
+      None
     }
   } else {
     None
@@ -3420,6 +3764,46 @@ fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(String,
   }
 }
 
+/// #1445: the type name of an interpolated value that is a DECLARED aggregate
+/// with no `Show` renderer, or "" when this site is not that case.
+///
+/// Such a value used to fall through to the ADR-0058 pointer heuristic and print
+/// a decimal -- `enum F { C(Int); D }` (no `derive(Show)`) interpolated as
+/// `"\{f}"` printed `288`. The type is KNOWN here, so this is a missing
+/// `derive(Show)`, not an unknowable shape: silently printing an address is the
+/// worst of the three options (#1445 owner decision: make it an error).
+///
+/// Deliberately narrow -- it fires ONLY when this pass can name a declared
+/// struct/enum (`struct_sets` carries both, #672). An unresolved head, a type
+/// parameter, and every builtin shape keep the old behaviour, because at those
+/// the pass genuinely cannot tell a missing renderer from a shape it simply
+/// cannot see. The `fn_exists` check also keeps the self-recursion case quiet:
+/// inside a generated `T::to_string`, `interp_show_target` suppresses the target
+/// by name, and that is not a missing renderer.
+fn interp_missing_show_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(tn) => if !is_scalar_type_name(tn) && struct_set_has(struct_sets, tn) && !fn_exists(fn_returns, String::concat(tn, "::to_string")) {
+      tn
+    } else {
+      ""
+    },
+    None => ""
+  }
+}
+
+/// #1514 note (measured, not a guess): this message carries NO `line:col`, and
+/// the ` [@off=N]` marker convention does not help here. `locate_type_error`
+/// decodes that marker, but only the TYPECHECK path calls it -- the compile path
+/// writes the thrown string verbatim (`emit_compile_diag` in cli_adapter.vibe,
+/// 11+ call sites, none of which is handed the source text; for a merged
+/// multi-file compile there is not even one obvious source to resolve an offset
+/// against). Emitting the marker anyway just leaks `[@off=135]` into the user's
+/// message, which is worse than no position -- verified by doing it. Wiring the
+/// compile path is #1514's job, not this one's.
+fn interp_missing_show_msg(tn: String) -> String {
+  String::concat("cannot interpolate a value of type `", String::concat(tn, String::concat("`: it has no Show renderer -- add `derive(Show)` to `", String::concat(tn, String::concat("`, or define `fn ", String::concat(tn, "::to_string(v) -> String` (#1445)"))))))
+}
+
 // ---- #1392 slice 2: interpolating a WRAPPER value ----
 //
 // `show_for_typed` already renders `Option`/`Result`/tuple/array structurally,
@@ -3657,25 +4041,48 @@ fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[(St
 /// whose payload type it does not know. The match is emitted over the REWRITTEN
 /// argument (evaluated once, as the scrutinee), and the payload is rendered by
 /// the ordinary path.
+/// #1445 残件: the payload binder of a SYNTHESIZED `Option`/`Result` arm.
+///
+/// `interp_expand_by_head` builds `match x { Some(v) => .. }` itself, so `v` is
+/// a fresh temp that appears in no binding site and had no entry in
+/// `var_types` -- the payload fell to the ADR-0058 pointer heuristic even
+/// though the payload TYPE was recorded against `x` (`let op = Some(p)` ->
+/// `ctor_payload_bind`, or `o: Option[P]` -> `seed_var_types`). Measured:
+/// `let op = Some(p); "\{op}"` printed `Some(260)` while the inline
+/// `"\{Some(p)}"` printed `Some(P { x: 1 })`.
+///
+/// A USER-written `match op { Some(v) => "\{v}" }` already resolved, through
+/// `arm_binder_var_types`. This is the same shape -- a `PCtor` arm over a named
+/// scrutinee -- so it reuses that function verbatim rather than restating the
+/// lookup, and inherits its composite-payload handling for free.
+fn interp_ctor_arm_var_types(arg: Expr, ctor: String, binder: String, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  arm_binder_var_types(arg, PCtor(ctor, Array::slice([
+    PBind(binder)
+  ], 0, 1)), var_types)
+}
+
 fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   if head == "Option" {
     let v = show_tmp_name()
+    let vt_some = interp_ctor_arm_var_types(arg, "Some", v, var_types)
     Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Some", Array::slice([
         PBind(v)
-      ], 0, 1)), interp_wrap1("Some", EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      ], 0, 1)), interp_wrap1("Some", EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_some, fn_returns)),
       (PCtor("None", array_empty()), EString("None"))
     ], 0, 2)))
   } else if head == "Result" {
     let ov = show_tmp_name()
     let ev = show_tmp_name()
+    let vt_ok = interp_ctor_arm_var_types(arg, "Ok", ov, var_types)
+    let vt_err = interp_ctor_arm_var_types(arg, "Err", ev, var_types)
     Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
       (PCtor("Ok", Array::slice([
         PBind(ov)
-      ], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+      ], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_ok, fn_returns)),
       (PCtor("Err", Array::slice([
         PBind(ev)
-      ], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+      ], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_err, fn_returns))
     ], 0, 2)))
   } else {
     None
@@ -3689,6 +4096,24 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(Stri
     Some(h) => h,
     None => ""
   }
+  // #1445 原因2: inside `f[T: Show](v: T)`, `head` is the TYPE PARAMETER `T`,
+  // not a concrete type -- every resolver below is looking for a type this
+  // pass can name, and a type variable is exactly the case where there is
+  // none. But the caller knows: `find_dict_for_method` hits when this function
+  // was threaded a `Show` witness, and the witness carries the renderer the
+  // concrete instantiation chose. Emitting the dict call here rather than
+  // `T::to_string(v)` is deliberate -- this runs INSIDE rewrite_expr, so a
+  // qualified call spelled now would not be revisited by the rewrite that
+  // lowers it.
+  match find_dict_for_method(dict_binds, head, "to_string") {
+    Some(dict_pname) => Some(ECall(EDot(EIdent(dict_pname, -1), "to_string", -1, -1), [
+      arg
+    ], -1)),
+    None => interp_expand_local(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+fn interp_expand_local(arg: Expr, head: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   match arg {
     ETuple(items) => Some(interp_join(items, "(", ", ", ")", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EArray(items) => Some(interp_join(items, "[", ", ", "]", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -3792,7 +4217,20 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           ], 0, 1), off))
         } else {
-          interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          let expanded = interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          // #1445: nothing rendered it structurally AND the type is a declared
+          // aggregate with no renderer -- that is a missing `derive(Show)`, and
+          // falling through here would print a pointer decimal.
+          if interp_has_repl(expanded) {
+            expanded
+          } else {
+            let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
+            if missing == "" {
+              expanded
+            } else {
+              throw(interp_missing_show_msg(missing))
+            }
+          }
         }
       } else {
         None
@@ -4182,9 +4620,18 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // `__arr_equals__<key>` helper (emitted by desugar_derives), since the
         // runtime `eq` would identity-compare the array. Opaque array-typed
         // operands (no literal in scope) are left as `==` (documented residual).
+        // #1526: a literal on either side answers first (it is exact and needs
+        // no environment); an operand reached through a NAME answers next, from
+        // the element type recorded at its binding site. The helper this
+        // resolves to is generated because the emission was RECORDED, not
+        // because a second walk predicted the same thing -- see
+        // `arr_eq_needed_record`.
         let arr_elem = match infer_earray_elem_type(l) {
           Some(t) => Some(t),
-          None => infer_earray_elem_type(r)
+          None => match infer_earray_elem_type(r) {
+            Some(t) => Some(t),
+            None => eq_var_array_elem(l, r, var_types)
+          }
         }
         if empty_l || empty_r {
           let other = if empty_l {
@@ -4205,6 +4652,10 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         } else {
           match arr_elem {
             Some(elem) => {
+              // #1526: record before emitting -- this is one of the two sites
+              // that can reference a `__arr_equals__<key>` helper, and the
+              // recorded set is what generates them (see arr_eq_needed_record).
+              arr_eq_needed_record(elem)
               let call = ECall(EIdent(arr_equals_name(elem), -1), [
                 rl,
                 rr
@@ -4778,6 +5229,84 @@ fn arr_equals_name(t: TypeExpr) -> String {
   String::concat("__arr_equals__", type_key(t))
 }
 
+// ---- #1526: the emitted set of `__arr_equals__<key>` helpers ----
+//
+// Which helpers a program needs is decided TWICE, by two separate walks:
+//
+//   1. `collect_bare_array_eq_keys` (run from `desugar_derives`) PREDICTS the
+//      set and generates the helpers.
+//   2. the `==` rewrite in `rewrite_expr` (and `eq_for_typed`) EMITS the calls.
+//
+// The two agreed only because they ran the same literal-only inference. (1) is
+// handed nothing but `stmts` -- no `var_types` -- so it cannot see an operand's
+// element type when the operand is reached through a NAME; (2) runs inside the
+// rewrite, where the binding environment IS available, and it stayed
+// deliberately blind to it to keep the two in step. That is the coupling that
+// made `let a = [1, 2]; let c = [1, 2]; a == c` compare by identity: teaching
+// the rewrite to use `var_types` (which it can) would have emitted calls the
+// prediction never generated -- `undefined variable (local):
+// __arr_equals__Int @call` -- so neither half could move alone.
+//
+// So generation stops being a prediction. The two sites that BUILD a call
+// record what they built, and `emit_recorded_arr_equals` generates exactly that
+// set after the rewrite has run. `desugar_derives`' own generation stays as a
+// head start (it also covers struct/enum fields, which no `==` site mentions);
+// the post-rewrite pass skips anything already produced. With emission as the
+// source of truth, the rewrite is free to resolve element types however well it
+// can -- see `eq_var_array_elem`.
+let dtd_arr_eq_needed: Array[TypeExpr] = empty_type_exprs()
+
+let dtd_arr_eq_needed_keys: Array[String] = empty_str_array()
+
+/// Reset at each `desugar_trait_dicts` entry, BEFORE `desugar_derives` runs.
+fn arr_eq_needed_reset() -> Unit {
+  Array::truncate(dtd_arr_eq_needed, 0)
+  Array::truncate(dtd_arr_eq_needed_keys, 0)
+}
+
+/// Record that a call to `__arr_equals__<key>` for element type `t` was emitted.
+/// Called from the two (only) sites that build such a call, so the recorded set
+/// is by construction the set the output references.
+fn arr_eq_needed_record(t: TypeExpr) -> Unit {
+  let k = type_key(t)
+  if str_array_contains(dtd_arr_eq_needed_keys, k) {
+    ()
+  } else {
+    Array::push(dtd_arr_eq_needed_keys, k)
+    Array::push(dtd_arr_eq_needed, t)
+  }
+}
+
+/// #1526: generate every recorded `__arr_equals__<key>` helper that does not
+/// already exist. Runs AFTER the rewrite loop, since that is what produces the
+/// calls.
+///
+/// The loop re-reads `Array::length` each turn on purpose: `gen_arr_equals_fn`
+/// builds its body through `eq_for_typed`, which records the nested element
+/// types it in turn calls (`Array[Array[Int]]` -> `Array[Int]`), so appending
+/// to the list while walking it IS the worklist closure. It terminates because
+/// `arr_eq_needed_record` dedups by type key and each nested type is strictly
+/// shallower.
+///
+/// The generated statements are appended after the rewrite and so are not
+/// themselves rewritten. They need no rewriting: `gen_arr_equals_fn` emits
+/// already-lowered code (`Array::get` / `Array::length` / a type-directed
+/// element comparison), which is what the pre-existing helpers reduce to as
+/// well.
+fn emit_recorded_arr_equals(stmts: Array[Stmt]) -> Unit {
+  let known_types = collect_decl_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(dtd_arr_eq_needed) {
+    let et = Array::get(dtd_arr_eq_needed, i)
+    if top_level_fn_exists(stmts, arr_equals_name(et)) {
+      ()
+    } else {
+      Array::push(stmts, gen_arr_equals_fn(et, known_types))
+    }
+    i = i + 1
+  }
+}
+
 /// Structural equality match for two Option operands whose element type is NOT
 /// statically known here (bare `==` dispatch on Option-typed variables). Some
 /// payloads compare with `==` (correct for scalars); a None matches a None.
@@ -4934,6 +5463,8 @@ fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String])
       ], 0, 1))
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
+      // #1526: the second (and last) site that references a helper.
+      arr_eq_needed_record(Array::get(args, 0))
       ECall(EIdent(arr_equals_name(Array::get(args, 0)), -1), Array::slice([
         lhs,
         rhs
@@ -5424,6 +5955,67 @@ fn is_empty_array_lit(e: Expr) -> Bool {
     EArray(elems) => Array::length(elems) == 0,
     _ => false
   }
+}
+
+/// #1526: the element type of an array operand reached through a NAME.
+///
+/// `infer_earray_elem_type` below only reads an array LITERAL, so the moment an
+/// array was bound to a name the bare `==` fell back to the runtime `eq`, which
+/// identity-compares -- `let a = [1, 2]; let c = [1, 2]; a == c` was `false`.
+/// The element type is not missing, though: `array_elem_bind` already records
+/// it for a let-bound array literal and `seed_var_types` for an `Array[T]`
+/// parameter, both under `array_elem_key` (#1199, for call-site dict
+/// synthesis). This just reads that back at the comparison site.
+///
+/// Scope is exactly what those two record -- a name whose element type this
+/// pass never inferred (an array returned by a function, an empty literal)
+/// still gets the identity `eq`, the documented #695 residual.
+fn eq_var_array_elem(l: Expr, r: Expr, var_types: Array[(String, String)]) -> Option[TypeExpr] {
+  match eq_operand_elem_name(l, var_types) {
+    Some(n) => Some(TyName(n)),
+    None => match eq_operand_elem_name(r, var_types) {
+      Some(n) => Some(TyName(n)),
+      None => None
+    }
+  }
+}
+
+fn eq_operand_elem_name(e: Expr, var_types: Array[(String, String)]) -> Option[String] {
+  match e {
+    EIdent(name, _) => match array_elem_type_of(var_types, name) {
+      Some(n) => if eq_elem_name_dispatchable(n) {
+        Some(n)
+      } else {
+        None
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+/// Codex P1 on PR #1565: what `array_elem_key` stores is a bare HEAD NAME, not
+/// a TypeExpr, so it cannot be wrapped in `TyName` and trusted. Two kinds of
+/// entry are not element types at all:
+///
+///   - a head that lost its arguments: a let-bound `[[1, 2]]` records just
+///     "Array", a `[(1, 2)]` just "Tuple". `TyName("Array")` would name a
+///     helper `__arr_equals__Array` whose element comparison degrades to a raw
+///     `==` -- no worse than the identity fallback, but it spends a generated
+///     function to buy nothing.
+///   - an in-scope TYPE VARIABLE: `fn same[T](x: Array[T], y: Array[T])`
+///     records "T". The concrete type is erased, so nothing type-directed can
+///     be resolved from it.
+///
+/// A declared struct/enum name is excluded too, deliberately: `eq_for_typed`
+/// would emit `N::equals`, which only exists when N derives Eq. Routing a
+/// name-reached array there would turn a program that compiles today into an
+/// `undefined variable` -- so this stays at the scalars, which are exactly the
+/// ones `eq_for_typed` compares correctly with no generated dependency. An
+/// array of structs reached through a name keeps the identity `eq` it has
+/// always had.
+fn eq_elem_name_dispatchable(n: String) -> Bool {
+  is_scalar_type_name(n)
 }
 
 fn infer_earray_elem_type(arr: Expr) -> Option[TypeExpr] {
@@ -7564,6 +8156,153 @@ fn collect_fn_param_labels(stmts: Array[Stmt]) -> Array[(String, Array[String])]
 }
 
 ///|
+/// #1500: `fname -> per-parameter "is optional"` flags, consulted by the ECall
+/// arm of `relabel_expr`. A module cell rather than another threaded parameter
+/// because `relabel_expr` recurses from ~30 sites; same shape as the other
+/// per-program tables in this file (`afe_field_types_cell`, `throw_kind_cell`).
+let optional_param_tbl_cell: Array[Array[(String, Array[Bool])]] = array_empty()
+
+///|
+fn optional_param_tbl_set(tbl: Array[(String, Array[Bool])]) -> Unit {
+  Array::truncate(optional_param_tbl_cell, 0)
+  Array::push(optional_param_tbl_cell, tbl)
+}
+
+///|
+fn optional_param_flags(fname: String) -> Option[Array[Bool]] {
+  if Array::length(optional_param_tbl_cell) == 0 {
+    None
+  } else {
+    let tbl = Array::get(optional_param_tbl_cell, 0)
+    let mut i = 0
+    let mut found = None
+    while i < Array::length(tbl) {
+      let (n, flags) = Array::get(tbl, i)
+      if n == fname {
+        found = Some(flags)
+        i = Array::length(tbl)
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+///|
+/// Every top-level function that declares at least one optional (`z?`)
+/// parameter, with one flag per parameter. Functions with no optional
+/// parameter are left out so the ECall arm's lookup misses immediately for
+/// the entire rest of the program.
+fn collect_optional_param_fns(stmts: Array[Stmt]) -> Array[(String, Array[Bool])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, _, params, _, _, _) => {
+          let flags = array_empty()
+          let mut any = false
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pn, _) = Array::get(params, pi)
+            let pl = String::length(pn)
+            let is_opt = pl > 0 && pn[pl - 1: pl] == "?"
+            if is_opt {
+              any = true
+            } else {
+              ()
+            }
+            Array::push(flags, is_opt)
+            pi = pi + 1
+          }
+          if any {
+            Array::push(out, (fname, flags))
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+///|
+/// True when `e` already denotes an `Option` at the syntax level, so a second
+/// run of this pass would not double-wrap. The pass is called exactly once
+/// (checker_stmt.vibe, right after desugar_labeled_args) -- this is a belt for
+/// the case where a future caller adds a second run, matching the "in-place and
+/// idempotent" property the neighbouring desugars document. The cost is that
+/// `f(z = Some(1))` for a `z?: Int?` parameter (an OPTIONAL parameter whose own
+/// type is an Option) is passed through unwrapped; that shape needs an explicit
+/// `Some(Some(1))` today.
+fn opt_arg_already_option(e: Expr) -> Bool {
+  match e {
+    EIdent(n, _) => n == "None",
+    ECall(callee, args, _) => match callee {
+      EIdent(n, _) => n == "Some" && Array::length(args) == 1,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+///|
+/// #1500 call-site lowering: an optional parameter is declared `Option[T]`, so
+/// a supplied argument becomes `Some(v)` and an omitted trailing one becomes
+/// `None`. After this the call has exactly as many arguments as the function
+/// has parameters, which is what makes the ordinary arity check pass -- the
+/// checker never learns about optionality at all.
+///
+/// Leaves the call untouched when the missing arguments are NOT all optional
+/// (a genuinely short call), so the arity diagnostic still fires and still
+/// names the real count.
+fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr] {
+  let np = Array::length(flags)
+  let na = Array::length(args)
+  if na > np {
+    args
+  } else {
+    let mut fillable = true
+    let mut k = na
+    while k < np {
+      if Array::get(flags, k) {
+        ()
+      } else {
+        fillable = false
+      }
+      k = k + 1
+    }
+    if !fillable {
+      args
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < np {
+        if i < na {
+          let a = Array::get(args, i)
+          if Array::get(flags, i) && !opt_arg_already_option(a) {
+            Array::push(out, ECall(EIdent("Some", 0 - 1), [
+              a
+            ], 0 - 1))
+          } else {
+            Array::push(out, a)
+          }
+        } else {
+          Array::push(out, EIdent("None", 0 - 1))
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+///|
 fn lookup_param_labels(tbl: Array[(String, Array[String])], fname: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -7782,7 +8521,20 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       } else {
         rargs
       }
-      ECall(rcallee, final_args, off)
+      // #1500: fill / wrap optional parameters AFTER label reordering, so the
+      // flags line up with declared parameter order.
+      let opt_args = match callee {
+        EIdent(fname, _) => if relabel_shadowed(shadows, fname) {
+          final_args
+        } else {
+          match optional_param_flags(fname) {
+            Some(flags) => optional_fill_args(final_args, flags),
+            None => final_args
+          }
+        },
+        _ => final_args
+      }
+      ECall(rcallee, opt_args, off)
     },
     EBinOp(op, l, r) => EBinOp(op, relabel_expr(l, tbl, shadows), relabel_expr(r, tbl, shadows)),
     EUnaryOp(op, e) => EUnaryOp(op, relabel_expr(e, tbl, shadows)),
@@ -8071,12 +8823,21 @@ fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
 /// expr_has_labeled_arg).
 export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   let tbl = collect_fn_param_labels(stmts)
+  // #1500: optional-parameter call sites are rewritten by the same walk (see
+  // the ECall arm of relabel_expr). Unlike labeled arguments, an omitted
+  // optional argument leaves NO syntactic trace at the call site -- `d(1)` for
+  // `fn d(x: Int, z?: Int)` looks like any other call -- so when the program
+  // declares one, every statement has to be walked, not just the ones
+  // stmt_has_labeled_arg finds.
+  let opt_tbl = collect_optional_param_fns(stmts)
+  optional_param_tbl_set(opt_tbl)
+  let walk_all = Array::length(opt_tbl) > 0
   if Array::length(tbl) == 0 {
     ()
   } else {
     let mut i = 0
     while i < Array::length(stmts) {
-      if stmt_has_labeled_arg(Array::get(stmts, i)) {
+      if walk_all || stmt_has_labeled_arg(Array::get(stmts, i)) {
         Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
       } else {
         ()
@@ -8084,6 +8845,7 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
       i = i + 1
     }
   }
+  optional_param_tbl_set(array_empty())
 }
 
 ///|
@@ -8622,6 +9384,8 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // the throw-site render can only ever name a renderer generated for THIS
   // program.
   derived_renderers_reset()
+  // #1526: same reason -- the recorded set must describe THIS run's output.
+  arr_eq_needed_reset()
   desugar_derives(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
@@ -8629,7 +9393,12 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // rewrites are all no-ops (`gens` empty, sync-`for` classification gated off),
   // and the rewrite pass only classifies the ASYNC for-loop shapes — so it must
   // still run unconditionally (those shapes need no trait machinery, #1350).
-  let traits_raw = collect_method_traits(stmts)
+  // #1392: the `Show`-bounded `__to_string` pass-throughs in THIS program, so a
+  // spelled-out `to_string(v)` renders like `"\{v}"` does. See dtd_show_shims.
+  // #1445: must run BEFORE collect_method_traits_with_show, whose gate excludes
+  // the shims -- see program_wants_show_dict.
+  collect_show_shims(stmts)
+  let traits_raw = collect_method_traits_with_show(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
   // Rank-1 method generics (#684): re-attach each trait method's `[X: Bound]`
@@ -8643,9 +9412,6 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
   let gimpl_types = collect_generic_impl_types(stmts)
-  // #1392: the `Show`-bounded `__to_string` pass-throughs in THIS program, so a
-  // spelled-out `to_string(v)` renders like `"\{v}"` does. See dtd_show_shims.
-  collect_show_shims(stmts)
   let gens = build_gens(stmts, traits, gimpl_types)
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
   let toplevel_vars = collect_toplevel_anon_records(stmts, struct_sets)
@@ -8664,6 +9430,10 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
     Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns, toplevel_vars))
     i = i + 1
   }
+  // #1526: the rewrite above is what emits `__arr_equals__<key>` calls, so it
+  // is what decides which helpers exist. Anything `desugar_derives` could not
+  // predict (an operand reached through a name) is generated here.
+  emit_recorded_arr_equals(stmts)
   // #1374: append the cell only for a program that actually reads or writes it,
   // so a throw-free program's output is unchanged.
   if Array::get(dtd_exn_kind_state, 1) == 1 {

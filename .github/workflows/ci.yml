@@ -122,6 +122,50 @@ jobs:
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
           VIBE_MD_STAGE2="${gen}stage2.wasm" bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md
+      - name: Docs doctest (```vibe blocks)
+        # Compiles every ```vibe block in README.md, the cheatsheet, vibe.md and
+        # the language tour against the freshly-built stage2. This step exists
+        # because its absence had a measured cost: the doctest task was defined
+        # but wired into nothing, so when #1429 removed the braced effect row
+        # and #1461 retired `Error` as a row spelling, only lib/** was migrated
+        # and the docs kept the dead syntax. Nothing noticed until the seed bump
+        # to console-exception-rowvar-2026-08-06 moved the seed past the removal
+        # and 12 doc blocks, examples/, bench/, the playground presets and
+        # `vibe new`'s scaffold all broke at once (#1497).
+        #
+        # DOCTEST_REQUIRE_STAGE2=1 is the load-bearing part: the harness would
+        # otherwise fall back to the committed seed, which is the PREVIOUS
+        # bootstrap tag and still accepts syntax the current compiler rejects.
+        # A seed-driven doctest is exactly the blind spot this step closes, so
+        # it must fail rather than silently pass on the seed.
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          DOCTEST_REQUIRE_STAGE2=1 DOCTEST_STAGE2="${gen}stage2.wasm" \
+            bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md docs/spec/*.md
+      - name: examples/ type-check ratchet
+        # examples/ is the user-facing sample surface and had NOTHING checking
+        # it, so it accumulated two independent classes of rot in silence: the
+        # #1429/#1461 syntax removals (six files) and ordinary type errors that
+        # predate them (two files). scripts/pkfire/examples_smoke.sh does not
+        # cover this -- it compiles four hand-picked files through
+        # _build/dist/selfhost_compiler.wasm, a path the current build layout no
+        # longer produces, and no workflow invokes it.
+        #
+        # Known failures are a printed ratchet, not a silent skip
+        # (scripts/examples_typecheck_known_failures.txt).
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          EXAMPLES_STAGE2="${gen}stage2.wasm" bash scripts/check_examples_typecheck.sh
+      - name: playground preset type-check
+        # playground/src/main.ts embeds its starter programs as TypeScript
+        # template literals, so they are vibe source no vibe tool ever saw. Two
+        # of the four presets carried BOTH dead spellings (`with { Error }` --
+        # braced row removed in #1429, `Error` retired in #1461) and stayed
+        # broken until someone opened the page (#1497). They are the first vibe
+        # a visitor runs, so they are the worst place to leave rot.
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          PLAYGROUND_STAGE2="${gen}stage2.wasm" bash scripts/check_playground_presets.sh
       - name: Stage stage2 for downstream gates (#821)
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"

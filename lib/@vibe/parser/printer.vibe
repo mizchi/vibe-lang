@@ -822,6 +822,11 @@ export fn print_stmt(s: Stmt) -> String {
       String::concat("export ", String::concat(path, String::concat(" { ", String::concat(join(parts, ", "), " }"))))
     },
     SAliasDecl(alias_name, source_path) => String::concat("import ", String::concat(source_path, String::concat(" @", alias_name))),
+    // #1455 step 3: parser bookkeeping, not source. Printing it would put a
+    // node with no surface syntax into `vibe normalize` output and break the
+    // print -> reparse round trip.
+    SQualifiedPatternRefs(_) => "",
+    STestEffectRows(_) => "",
     SLetPat(pat, expr) => String::concat("let ", String::concat(print_pat(pat), String::concat(" = ", print_expr(expr)))),
     SModule(exported, name, stmts) => {
       let parts = for s in stmts {
@@ -880,15 +885,24 @@ export fn print_program(stmts: Array[Stmt]) -> String {
   // the total printed size, which dominates emit-module-source (issue #366).
   let b = ArrayBuilder::new()
   let mut i = 0
+  let mut emitted = 0
   while i < len {
     let stmt_text = print_stmt(Array::get(stmts, i))
-    if i > 0 {
-      let sep = if needs_program_separator(stmt_text) {
-        ";\n"
-      } else "\n"
-      ArrayBuilder::push(b, sep)
+    // #1455 step 3: a statement that prints as nothing (the
+    // SQualifiedPatternRefs marker) must not draw a separator either, or a
+    // parsed-then-printed program would gain a trailing blank line.
+    if stmt_text == "" {
+      ()
+    } else {
+      if emitted > 0 {
+        let sep = if needs_program_separator(stmt_text) {
+          ";\n"
+        } else "\n"
+        ArrayBuilder::push(b, sep)
+      }
+      ArrayBuilder::push(b, stmt_text)
+      emitted = emitted + 1
     }
-    ArrayBuilder::push(b, stmt_text)
     i = i + 1
   }
   String::join(ArrayBuilder::freeze(b), "")

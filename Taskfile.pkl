@@ -845,14 +845,68 @@ local doctest = new Task {
   name = "doctest"
   description = "compile-check ```vibe blocks in docs via the selfhost stage2 doctest harness"
   cmd =
-    "bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md"
+    "bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md docs/spec/*.md"
   // README.md is in the list because it was NOT, and its headline sample rotted
   // unnoticed: #1324 removed `Result` from the language and the sample kept
   // using bare `Ok`/`Err`, so the repo's most-read example failed to compile
   // (`unknown name: Err`) with nothing checking it.
+  //
+  // The task itself then repeated that lesson one level up: it was defined but
+  // wired into NOTHING, so #1429 (braced effect row removed) and #1461 (`Error`
+  // retired as a row spelling) migrated only lib/** and the docs kept the dead
+  // syntax. It surfaced only when the seed bump to
+  // console-exception-rowvar-2026-08-06 moved the seed past the removal (#1497).
+  // It is now a release-check dep AND a compiler-gate CI step, where it runs
+  // with DOCTEST_REQUIRE_STAGE2=1 against the freshly-built stage2.
+  //
   // stage2 resolution depends on _build/selfhost state (falls back to the
-  // committed seed), so skip pkfire caching to avoid stale green.
+  // committed seed), so skip pkfire caching to avoid stale green. The fallback
+  // is why the CI step sets DOCTEST_REQUIRE_STAGE2=1: the seed is the previous
+  // bootstrap tag and still accepts syntax the current compiler rejects, so a
+  // seed-driven run reports green on rotted docs. Locally the fallback stays
+  // permitted -- a dev without a stage2 still gets a useful (if weaker) check.
   cache = false
+}
+
+local doctestGated = new Task {
+  name = "doctest-gated"
+  description =
+    "doctest against a stage2 built for THIS checkout (release-check / CI form; refuses the seed)"
+  cmd =
+    "DOCTEST_REQUIRE_STAGE2=1 bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md docs/spec/*.md"
+  // Plain `doctest` resolves whatever stage2 happens to be lying in _build and
+  // falls back to the committed seed. As a release-check dep that is unsound
+  // twice over: pkfire runs sibling deps concurrently, so it could read a
+  // half-built or stale generation, and the seed fallback is the exact blind
+  // spot that let the #1429/#1461 syntax removals rot the docs unnoticed
+  // (#1497). Depending on `generation` orders the stage2 build first, and
+  // DOCTEST_REQUIRE_STAGE2=1 turns a missing stage2 into a failure instead of
+  // a quiet downgrade to the previous bootstrap tag's grammar.
+  cache = false
+  deps { selfhostGeneration }
+}
+
+local checkExamplesTypecheck = new Task {
+  name = "check-examples-typecheck"
+  description =
+    "type-check every examples/*.vibe against a stage2 built for THIS checkout (ratchet)"
+  cmd = "bash scripts/check_examples_typecheck.sh"
+  // Same rationale as `doctest-gated`: the script needs a stage2 for this
+  // checkout and REFUSES the committed seed (previous bootstrap tag, still
+  // accepts removed syntax), so order the build first rather than race it.
+  cache = false
+  deps { selfhostGeneration }
+}
+
+local checkPlaygroundPresets = new Task {
+  name = "check-playground-presets"
+  description = "type-check the vibe source of every playground preset (embedded in main.ts)"
+  cmd = "bash scripts/check_playground_presets.sh"
+  // Same rationale as `doctest-gated` / `check-examples-typecheck`: needs a
+  // stage2 for this checkout and refuses the committed seed, so order the
+  // build first rather than race it.
+  cache = false
+  deps { selfhostGeneration }
 }
 
 local vibeMdTutorial = new Task {
@@ -914,11 +968,9 @@ local releaseCheck = new Task {
     selfhostOnlyGate
     checkVibeFmt
     checkMethodStyleNaming
-    // NOTE: `doctest` (docs ```vibe compile check) is intentionally NOT yet a
-    // release-check dep — this sandbox cannot evaluate the pkfire graph
-    // (package fetch 403), so the wiring is unverified. Run `pkf run doctest`
-    // standalone or wire it as an independent CI step first; promote to a dep
-    // here once `pkf run release-check` is confirmed green with it.
+    doctestGated
+    checkExamplesTypecheck
+    checkPlaygroundPresets
   }
 }
 
@@ -1050,6 +1102,9 @@ tasks {
   runWasmAsync
   adr
   doctest
+  doctestGated
+  checkExamplesTypecheck
+  checkPlaygroundPresets
   vibeMdTutorial
   vibeMdFmtCheck
   vibeMdFmt

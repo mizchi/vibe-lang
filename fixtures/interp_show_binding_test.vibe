@@ -15,17 +15,28 @@
 // rather than only `Some`/`Ok`/`Err`, which is what gives a USER enum's
 // pattern binder a type.
 //
-// STILL OPEN: a value reached through a generic parameter (`fn f[T: Show](x:
-// T) -> String { "\{x}" }`). That one is not a missing shape record -- there
-// is no shape, because `T` is whatever the caller instantiated. It needs the
-// Show dictionary to carry a renderer, i.e. method-bearing traits
-// (docs/method-bearing-traits-plan.md), not another sentinel here.
+// The generic-parameter case (`fn f[T: Show](x: T) -> String { "\{x}" }`) is
+// closed too, and NOT by another sentinel here -- there is no shape to record,
+// because `T` is whatever the caller instantiated. It goes through the Show
+// dictionary (docs/method-bearing-traits-plan.md components 3+4), with the
+// trait injected only into the desugar pass so the checker never starts
+// enforcing `impl Show` -- see synthetic_show_sigs in
+// lib/@vibe/compiler/normalize/desugar_trait_dict.vibe. The witness is total:
+// a type with no `C::to_string` still renders through the ADR-0058 heuristic,
+// which is what the Int/String blocks below pin.
 //
 // This is a separate file rather than more digits on interp_show_derive.vibe
 // because that fixture's weight is already 1e16 and vibe's Int literal ceiling
 // is 2^61-1 (~2.3e18) -- two more digits and the encoding overflows. Per-block
 // `test { }` attribution (#819) names the failing case directly anyway, which
 // is what the digit scheme was emulating.
+
+// `to_string` is bare-exported by the prelude but not ambient here, and the
+// generic block below pins that the spelled-out call renders like `"\{v}"`
+// does (#1443's symmetry) rather than only the interpolation form.
+import @vibe/prelude {
+  to_string
+}
 
 struct P {
   x: Int
@@ -59,6 +70,50 @@ fn nested_tuple_param(t: (Int, (Int, P))) -> String {
 
 fn array_param(a: Array[P]) -> String {
   "\{a}"
+}
+
+fn generic_interp[T: Show](v: T) -> String {
+  "\{v}"
+}
+
+fn generic_to_string[T: Show](v: T) -> String {
+  to_string(v)
+}
+
+/// A Show-bounded generic that forwards to ANOTHER one. The witness must be
+/// forwarded, not re-synthesized -- inside `generic_forward` the receiver's
+/// type is still the variable `T`, so there is nothing to synthesize from.
+fn generic_forward[T: Show](v: T) -> String {
+  generic_interp(v)
+}
+
+test "#1445: a value reached through a generic parameter renders structurally" {
+  let p = P::{
+    x: 1
+  }
+  assert_eq(generic_interp(p), "P { x: 1 }")
+  assert_eq(generic_to_string(p), "P { x: 1 }")
+  assert_eq(generic_interp(E2::B(3)), "B(3)")
+}
+
+test "#1445: the generic witness is forwarded through a second generic" {
+  let p = P::{
+    x: 2
+  }
+  assert_eq(generic_forward(p), "P { x: 2 }")
+}
+
+test "#1445: a type with no renderer keeps the ADR-0058 heuristic" {
+  // The synthetic Show witness is TOTAL -- this is the fallback member, and
+  // it must stay byte-identical to what the same value prints outside a
+  // generic, or activating the dictionary would be a regression for every
+  // type that does not derive(Show).
+  assert_eq(generic_interp(5), "5")
+  assert_eq(generic_interp("hi"), "hi")
+  // No `Bool` case: `[T: Show]` instantiated at `Bool` is rejected outright
+  // with `no impl 'Show' for 'Bool'` -- measured on the SEED compiler too, so
+  // it predates the witness and is a gap in which primitives
+  // register_builtin_traits gives a `Show` impl, not something this pass sees.
 }
 
 test "#1445: a tuple through a variable renders structurally" {

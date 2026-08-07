@@ -11,7 +11,7 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 ```vibe
 // `stdout_write` is a prelude helper, not a builtin — import it (otherwise the
 // checker reports `unknown function: String::stdout_write`).
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 fn main with Stdout {
   stdout_write("hello world\n")
@@ -25,6 +25,20 @@ vibe test file.vibe        # run tests
 vibe check file.vibe       # type check only
 vibe build --release app.vibe  # standalone .wasm
 ```
+
+### CLI は IDE 相当のクエリ面 (方針)
+
+`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
+得るのと同じ意味解析を **CLI から直接**取り出すためのもの。想定する第一の
+読み手は**人間ではなく LLM** なので、行指向 (1件1行) で grep でき、空出力が
+clean を意味し、メッセージは内部用語ではなく「何を書き換えれば直るか」を
+述べる、という形を保つ。
+
+**これは自己改善のループとして運用する** — 使っていて欲しい情報が取れない・
+出力が読めない・判定に使えないと分かったら、ワークアラウンドを覚えるのでは
+なく CLI 側を直すか issue を立てる。詳細と現在わかっている穴は
+[AGENTS.md の Code Navigation 節](../AGENTS.md#code-navigation-important)。
 
 ---
 
@@ -141,7 +155,7 @@ note above); reach for `ArrayBuilder` (build-then-freeze accumulation) or
 ## Functions
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }   // for hello() below
+import @vibe/prelude { stdout_write }   // for hello() below
 
 // Top-level named functions: `fn` (#727, ADR-0064). Full annotations
 // required (param types + return type); recursion needs no `rec`.
@@ -206,6 +220,30 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
+### optional 引数 `z?` (#1500)
+
+`z?` は**省略できる**引数。宣言した型が `T` でも、body で受け取るのは
+`Option[T]`（省略された場合に何かを渡す必要があるため）。呼び出し側は
+素の値を書けばよく、`Some(..)` は desugar が付ける。
+
+```vibe
+fn greet(name: String, times?: Int) -> String {
+  let n = match times {
+    Some(v) => v,
+    None => 1
+  }
+  "\{name} x\{n}"
+}
+
+let a = greet("hi")        // => "hi x1"
+let b = greet("hi", 3)     // => "hi x3"
+```
+
+- 省略できるのは**末尾の** optional 引数だけ。必須引数を落とすのは従来どおり
+  arity エラー
+- 関数型でも `(String, times?: Int) -> String` と書ける (この位置は
+  `Option[Int]` として記録される)
+
 ### Lambda shorthand
 
 <!-- doctest-skip: 未定義名 (xs) を参照する構文提示の断片 -->
@@ -230,6 +268,37 @@ Array::fold(xs, 0, _ + _)
 | 11-12 | `&&` `\|\|` | short-circuit (desugar to if) |
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
+
+### `Array` の `==` (#1526)
+
+ランタイムの `eq` は型を見ないので、配列の `==` は**コンパイル時に要素型を
+決めて**構造比較へ書き換えられる。要素型が分かる限り構造的:
+
+```vibe
+test "array equality is structural where the element type is known" {
+  let a = [1, 2]
+  let b = [1, 2]
+  assert([1, 2] == [1, 2])   // リテラル
+  assert(a == b)             // let 束縛
+  assert(same([1, 2], [1, 2]))
+}
+
+fn same(x: Array[Int], y: Array[Int]) -> Bool {
+  x == y                     // Array[T] 引数
+}
+```
+
+名前経由が構造比較になるのは**要素がスカラー** (`Int` / `String` / `Bool` /
+`Double` / `Char` / `Bytes` / `Unit`) のときだけ。それ以外は**参照等価に落ちる**
+— 関数の戻り値として受けた配列、空リテラル束縛 (`let xs = []`)、消去された
+型変数 (`fn f[T](x: Array[T])` の `T`)、入れ子の配列、struct/enum 要素。
+リテラルとして書かれていれば入れ子も struct 要素も従来どおり構造比較される
+(`[[1, 2]] == [[1, 2]]`)。名前経由でも効かせたいときは `derive(Eq)` の
+struct field に入れるのが確実。
+
+> **これは途中の状態**。ADR-0097 (#1526) は「`==` は**全文脈で構造的等価**」を
+> 決定済みで、上の残りはそこへ向けた未実装分。文脈で答えが変わること自体が
+> 潰す対象なので、この節の境界を覚えるのではなく、当たったら issue に足すこと。
 
 ## Pipe Operator
 
@@ -406,7 +475,7 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
 > `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the
 > continuation's fallthrough, which is why it must diverge. `return` is the
 > only accepted divergence form for now; `throw` is deliberately not accepted
-> yet (ADR-0073 pins `Error::Throw` as non-resumable, but the checker's
+> yet (ADR-0073 pins `Exception::Throw` as non-resumable, but the checker's
 > explicit abortive-effect judgement is deferred). For a fall-through *value*
 > fallback, use `if e is PAT { .. } else { .. }` or an explicit `match`.
 >
@@ -442,6 +511,19 @@ type Pair = (Int, Int)                   // alias
 enum Color { Red; Green; Blue } derive(Eq)
 enum Shape { Circle(Int); Rect(Int, Int) }
 
+// Constructors can be spelled bare or qualified, in expressions AND in
+// patterns; both forms mean the same variant (#742/#672).
+let c = Color::Red                        // == Red
+let s = Shape::Circle(3)                  // == Circle(3)
+let r = match s { Shape::Circle(r) => r, _ => 0 }
+// The qualifier is CHECKED (#1455): `Shape::Red` is an error ("enum `Shape`
+// has no variant `Red`"), in a pattern as well as in an expression. It does
+// NOT disambiguate two enums that share a variant name, though — that
+// collision is rejected at declaration time instead (#1078).
+// Imported enums work the same way, including parameterized ones:
+//   import ./m.vibe { Attempt, Good }
+//   let a = Attempt::Good(7)
+
 struct Point { x: Int; y: Int } derive(Eq, Ord, Show)
 let p = Point::{ x: 1, y: 2 }
 let px = p.x                              // field access
@@ -468,13 +550,62 @@ trait Ord: Eq                              // supertrait
 export open trait Show                     // extensible outside module
 
 impl Eq for Int
-impl [T: Eq] Eq for Array[T]              // conditional impl
+impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には使えない (下記)
 
 // `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
 // trait: `[T: Send]` accepts primitives, tuples, Option/Result, and
 // immutable structs/enums built from Send parts; Array/Bytes, closures,
 // and `mut`-field structs are rejected. `impl Send for X` is an error.
 ```
+
+### marker trait の impl は container には効かない (#1503)
+
+**メソッドを持たない trait (marker trait) の impl は、`Array` / `Bytes` の
+ような container に対して bound として使えない。** 宣言自体は通るが、
+その型を bound 付きの関数へ渡すと拒否される:
+
+```vibe skip
+trait Eq                      // メソッド無し = marker trait
+impl [T: Eq] Eq for Array[T]  // 宣言は通る
+
+fn keep[T: Eq](x: T) -> T { x }
+let bad = keep([1, 2, 3])     // reject される
+```
+
+理由は marker trait の**ディスパッチ先**にある。marker trait は builtin の
+`==` / `<` に落ちる。`==` が配列を構造的に比較できるのは**要素型が静的に
+分かるとき**だけ (下の「`Array` の `==`」参照) で、`keep[T: Eq]` の中の `T` は
+消去済み — 要素型は無い。つまりこの impl を認めると `==` は参照等価に落ちて
+黙って間違った答えを返す。診断がその旨を述べる。
+
+> このゲートは ADR-0097 (`==` を全文脈で構造的等価に統一) の完了時に**解除
+> される** — 根拠そのものが無くなるため。それまでは上の規則が有効。
+
+container に対して効かせたいなら **trait にメソッドを持たせる** —
+メソッドがあれば witness dictionary 経由でディスパッチするので、
+concrete (`impl M for Array[Int]`) でも generic (`impl [T] M for Array[T]`)
+でも解決する:
+
+```vibe
+trait Measured {
+  measure(Self) -> Int
+}
+
+impl [T] Measured for Array[T] {
+  measure(self) -> Int { Array::length(self) }
+}
+
+fn keep[T: Measured](x: T) -> T { x }
+let ok = keep([1, 2, 3])
+```
+
+> #1503 以前は、**concrete な impl (`impl M for Array[Int]`) が method-bearing
+> trait でも解決しなかった**。パーサが `for` の後ろの `[Int]` を捨てるため、
+> 環境には `Array` という頭だけが残る。今は generic 版と同じく**コンストラクタで
+> 照合する**ので両方の綴りが同じ挙動になる。裏を返すと、
+> `impl M for Array[Int]` は今のところ `Array[String]` にも効く
+> (パーサが型引数を保持していないため) — 特定の instantiation だけに
+> 絞る書き方はまだ無い。
 
 ## Collections
 
@@ -571,41 +702,49 @@ let w_check = {
 
 ## Effects (core concept)
 
-vibe is **pure by default**. Semantic effects, including `Error`, are tracked in
-the type system. An empty row excludes escaping `Error`, but does not guarantee
+vibe is **pure by default**. Semantic effects, including `Exception`, are tracked
+in the type system. An empty row excludes an escaping exception, but does not guarantee
 termination or exclude panic, Wasm trap, or resource exhaustion (ADR-0073).
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
-missing { Fs } (declared { Error }, requires { Error, Fs })`) with a `hint:`
-line suggesting the exact row to declare (`hint: add 'with Error + Fs' to
+missing { Fs } (declared { Exception }, requires { Exception, Fs })`) with a `hint:`
+line suggesting the exact row to declare (`hint: add 'with Exception + Fs' to
 'f'`, #639). The braces in that message render effect SETS, not source
 syntax — which is why they survived #1429 while the `hint:` line, being
 something you paste into your code, moved to the braceless spelling with
 everything else.
 
-### Effect classes and how operations are spelled (#1458)
+### Standard provider and entry-execution policy (#1496)
 
-Effects fall into four classes (ADR-0084 + #1458; the table lives in
-`lib/@vibe/compiler/core/effect_taxonomy.vibe`, which is the single definition
-the checker and `wit_gen` both read):
+The compiler keeps independent private policy owners at
+`lib/@vibe/compiler/core/standard_effect_policy.vibe`: host-provider resource
+defaults, ordered test/bench defaults, ordered entry-cache-safe labels, and
+predicates for entry-boundary exceptions and runtime-scheduled `Async`. They
+record only the standard execution behavior the current runner needs; they do
+**not** assign a source-language effect class. An ordinary user effect such as
+`Log`, `State`, or `Ask` has no standard policy record and is handled solely by
+its declarations and `handle` expressions.
 
-| class | who discharges it | varies with grants | members |
-|---|---|---|---|
-| capability | host / provider, outside the wasm boundary | yes | `Fs` `Http` `Socket` `Env` `Console` `Stdin` `Stdout` `Stderr` `Process` `Profiler` `Llm` |
-| algebraic | a `handle` inside your program | n/a | `Log` `State` `Ask` … — anything not in the table |
-| core ambient | nobody; the entry boundary turns it into a diagnosed failure | n/a | `Exception[E]` (`Error` is a migration alias) |
-| runtime | the runtime itself | n/a | `Async` |
+| policy | execution owner | current standard labels |
+|---|---|---|
+| host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` `Stdin` `Stdout` `Stderr` `Process` `Profiler` `Llm` |
+| entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception` / `Exception[E]` (`Error` was retired as a row spelling in #1461) |
+| runtime scheduling policy | runtime itself | `Async` |
 
-**Naming.** Effect NAMES are CamelCase, without exception. Operations come in
-two spellings, and which one you see tells you which track you are on:
+The ordered default and cache-safe owners preserve their existing output.
+Checker row filtering and WIT import filtering use only the predicate-based
+entry/runtime policy; WIT mapping and handler behavior are unchanged.
+
+**Naming.** Effect names are CamelCase. A standard provider builtin is a plain
+`Effect::snake_case` function call; a declared operation is CamelCase and is
+emitted with `perform`:
 
 ```vibe
-// Track A -- capability builtin: `Effect::snake_case`, called as a plain
-// function. No `perform`. The row carries the effect label.
+// Standard provider builtin. No `perform`; the row carries `Fs`.
 fn read_config() -> String with Fs {
   Fs::read_file("config.toml")
 }
 
-// Track B -- algebraic effect operation: CamelCase, performed and handled.
+// Declared operation, performed and handled in the program.
 effect Log {
   Emit(String) -> Unit
 }
@@ -615,21 +754,14 @@ fn greet() -> Unit with Log {
 }
 ```
 
-Operations are CamelCase because an effect performs an **algebraic record**:
-`Log::Emit` is a constructor, not a function, so it follows the constructor
-convention rather than the `snake_case` rule that governs variables and
-functions. Capability builtins are the other way round — they really are
-functions (that is the point: outside your core logic, code should read as
-**colourless functions** and let the row carry the colour), so they are
-`snake_case`.
+Declared operations use CamelCase because `Log::Emit` is a constructor-like
+operation record, not a function. Standard provider builtins are functions, so
+they use `snake_case` and leave the row to carry the execution requirement.
 
-`Fs`, `Env` and `Profiler` currently carry BOTH tracks — `perform Fs::ReadFile(p)`
-against `lib/@vibe/fs/fs_effect.vibe`, and `Fs::read_file(p)` against the
-builtin registry — under the same row label `Fs`. That coexistence is
-deliberate and stays: use the builtin when you just want the operation done,
-and the declared effect when you want to intercept it with a `handle`.
-Collapsing the two into one spelling is possible but has not been decided
-(#1458 item 3).
+`Fs`, `Env`, and `Profiler` currently expose both a declared-operation surface
+and standard provider builtins under the same row label. This coexistence is
+intentional: use the builtin for the host operation and a declaration when a
+program needs to intercept it with `handle`.
 
 ### Failure-carrying pipeline
 
@@ -717,29 +849,44 @@ opt |> tap_some((v) -> stdout_write("got \{v}\n"))
 ### Error boundary (`throw` / `handle`)
 
 ```vibe
-let risky: (Int) -> Int with Error = (x) -> {
+let risky: (Int) -> Int with Exception = (x) -> {
   if x == 0 { throw("division by zero") }
   100 / x
 }
 
 // handle catches the effect
-let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
+let safe = handle { risky(0) } with Exception { Throw(msg) => -1 }
 ```
 
-`throw(x)` は `perform Error::Throw(x)` と等価 (#640)。`Error` は再開不能
-(non-resumable) — `Error` arm の値がそのまま handle の結果になるため、
+`throw(x)` は `perform Exception::Throw(x)` と等価 (#640)。`Exception` は再開不能
+(non-resumable) — `Throw` arm の値がそのまま handle の結果になるため、
 arm 内の `resume(...)` は checker がエラーにする。
-Stage 2 (#640) で `throw(x)` は parse 時に `perform Error::Throw(x)` へ脱糖され、
+Stage 2 (#640) で `throw(x)` は parse 時に `perform Exception::Throw(x)` へ脱糖され、
 両綴りはパイプライン全体で単一の内部表現になった（printer は `throw(x)` に
-再糖衣する）。`perform Error::Throw(x)` は effect-row 上も `throw` と同じ扱いで、
-現在の関数が `with Error` を宣言するか、囲む `handle Error` で放電する必要が
-ある。`fn main with Error` から escape した Error は runtime 最外周で診断付きの
-異常終了へ変換される。
+再糖衣する）。`perform Exception::Throw(x)` は effect-row 上も `throw` と同じ扱いで、
+現在の関数が `with Exception` を宣言するか、囲む `handle .. with Exception` で
+放電する必要がある。`fn main with Exception` から escape した例外は runtime
+最外周で診断付きの異常終了へ変換される。
+
+なお **effect の綴りとしての `Error` は退役した** (#1461, #1501)。`Error` が
+effect を名指す位置は2つあり、どちらも parse error になる:
+
+```
+fn f() -> Int with Error { .. }              // row 項目        -> parse error
+handle { .. } with Error { Throw(_) => .. }  // handle する effect 名 -> parse error
+```
+
+どちらも `vibe fmt` が `Exception` へ書き換える (formatter は token 単位なので、
+パーサがもう受理しないソースも変換できる)。
+
+一方 **`perform Error::Throw(x)` は今も通る** — operation 修飾子は row 項目では
+なく、runtime が dispatch する operation を名指しているだけで、そこに row を
+綴っているわけではないため。
 
 ### Typed exceptions (`Exception[E]`, ADR-0085 / #1344)
 
-`Error` は kind を持たない erased な例外 row。失敗の**型**を row に出したい
-ときは `Exception[E]` と書く。`E` は投げる値の静的型。
+bracket なしの `Exception` は kind を持たない erased な例外 row。失敗の**型**を
+row に出したいときは `Exception[E]` と書く。`E` は投げる値の静的型。
 
 ```vibe
 enum IoError {
@@ -769,9 +916,9 @@ let n = handle { read_cfg() } with Exception[IoError] { Throw(_e) => 0 }
 
 - `Exception[IoError]` は `Exception[ParseError]` を authorize も discharge も
   しない。row に無い kind を投げると `missing { Exception[IoError] }`。
-- **`Error` / `Exception` (bracket なし) は全 kind と compatible** な erased
-  綴り。既存の `with Error` は今までどおり何でも投げられるし、erased な
-  `handle .. with Error` は kind 付きの throw も捕まえる。
+- **bracket なしの `Exception` は全 kind と compatible** な erased 綴り。
+  `with Exception` は今までどおり何でも投げられるし、erased な
+  `handle .. with Exception` は kind 付きの throw も捕まえる。
 - payload の kind が解決できない throw (例: `throw(e)` の `e` が local
   binding) は erased 扱いになり、どの `Exception[K]` でも通る (gradual)。
   検出漏れはあるが誤検出はしない。
@@ -809,7 +956,7 @@ suberror InvalidInput(Int, String)   // tuple payload only
 ### User-defined effects (algebraic)
 
 ```vibe
-import ./lib/@vibe/prelude/io.vibe { stdout_write }
+import @vibe/prelude { stdout_write }
 
 effect Logger {
   Log(String) -> Unit
@@ -838,7 +985,7 @@ fn main with Stdout {
 > 上限は消滅)。代償として、handle body から届く perform は migration が
 > 静的に追える形 (直接 perform / named top-level fn 呼び出し /
 > row 注釈付き closure literal / let 束縛の local closure) に限られる —
-> 追えない形 (row 変数 `with e` の callee 経由など) の非 Error handle
+> 追えない形 (row 変数 `with e` の callee 経由など) の非 Exception handle
 > は **compile error** になる ("replay engine was removed")。
 
 **`resume` は arm 内で第一級の one-shot 値** (ADR-0076 Phase 3a, #817):
@@ -1042,7 +1189,7 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
 let result = read_config() |> parse |> process
 
 // Boundary at the edge
-let value = handle { risky(0) } with Error { Throw(_) => default_value }
+let value = handle { risky(0) } with Exception { Throw(_) => default_value }
 
 // Builder pattern
 let arr = {
@@ -1140,6 +1287,131 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 `VIBE_RC=shadow vibe build app.vibe` compiles on the Perceus RC path with **shadow-liveness instrumentation**: every freed heap block is marked in a shadow byte table, and the FIRST `rc_dup`/`rc_drop` touching a freed block executes `unreachable` — a deterministic trap at the faulting operation, instead of free-list corruption that crashes later at an unrelated location ("moving target", see issue #715). Debug-only: adds a memory pad + per-dup/drop checks. Normal builds (`VIBE_RC=1`/unset) are byte-identical to before this feature.
 
+## 落とし穴 (measured, not folklore)
+
+判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
+仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### `handle` は型検査を通っても**コンパイルできない**ことがある
+
+`vibe check` は codegen まで行かないので、この失敗は**型検査では見えない**。
+`vibe build` / `vibe test` / doctest まで行って初めて出る:
+
+```
+handle of effect 'Ask' cannot be compiled here. Every perform this handle
+covers has to be statically visible to it, so the handled body may only:
+perform directly, call a named top-level `fn`, or call a closure literal that
+carries an effect row annotation. ...
+```
+
+実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level
+`let` にあるか `fn` の中にあるかは**無関係**で、`ask_once` を `fn` で宣言したか
+`let` lambda で宣言したかも**無関係**:
+
+| handled body が呼ぶもの | 結果 |
+|---|---|
+| `handle { ask_once() }` — 直接 perform する関数 | ok |
+| `handle { bump(ask_once()) }` — `bump` が top-level `fn` | ok |
+| `handle { bump(ask_once()) }` — `bump` が**ローカルのクロージャ** | **NG** |
+
+エラー文が列挙している適格な形がそのまま規則 — 直接 `perform`、**名前付き
+top-level 関数**の呼び出し、row 注釈付きクロージャリテラル。
+
+**迷ったら handled body から呼ぶものを top-level `fn` に出す。**
+
+(この表は当初 lang-review r3 で「handle の位置が効く」と誤って記録し、r4 の
+再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
+どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
+
+### 補間できるのは Show を持つ型だけ (#1445)
+
+宣言済みの struct / enum を `\{x}` に入れるには **`derive(Show)` か手書きの
+`fn T::to_string(v) -> String`** が要る。無いとコンパイルエラー:
+
+```
+cannot interpolate a value of type `F`: it has no Show renderer
+-- add `derive(Show)` to `F`, or define `fn F::to_string(v) -> String` (#1445)
+```
+
+以前は黙って**ポインタの10進数**を出していた (`"\{f}"` → `288`)。型は分かって
+いるのだから、それは missing `derive(Show)` であって「描画できない値」では
+ないため、エラーにした。
+
+スカラ (`Int`/`String`/...)、`Option`/`Result`/tuple/`Array`、型が解決できない
+値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
+のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
+
+### capability builtin の呼び出しは arity も引数型も検査されない (#1513)
+
+**通ったことを正しさの証拠にしないこと。** これは compile も実行も成功して
+garbage を出す:
+
+```vibe skip
+// doctest-skip: this is the silent miscompile the section documents
+Stdout::write_stream(42)      // Int を String の位置に — 診断なし、実行も成功
+Stdout::write_stream()        // 0 引数 — 診断なし、不正な wasm を吐く
+```
+
+未検査: `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file`。
+検査あり: `Array::*` / `String::*` / `Bytes::*` / `Profiler::now_us` および
+ユーザー定義関数 (`function arity mismatch ...` がスパン付きで出る)。
+
+capability かどうかでは分かれない — checker の fast path に載っているかどうか。
+host import が絡む呼び出しで挙動が変なときは、まず引数の数と型を目で確認する。
+
+### 区切り文字は文脈で違う
+
+```vibe skip
+// doctest-skip: shows both separators side by side, including the rejected one
+enum Shape { Circle(Int); Rect(Int, Int) }        // 宣言メンバは ;
+let r = match s { Circle(r) => r, _ => 0 }        // match arm は ,
+```
+
+`,` を宣言メンバの区切りに使うのは 0.3.0 で削除済み。逆に match arm を `;` で
+区切ると `unexpected in pattern: ;`。この cheatsheet 自身がこの2行を並べて
+説明している場所で間違えていた (#1506 で修正)。
+
+### top-level に裸の式は置けない (ADR-0069)
+
+```vibe skip
+// doctest-skip: the first form is the ADR-0069 rejection this section documents
+let c = add(1, 2)
+c                                  // NG: top-level expressions are not allowed
+let main = () -> Int { c }         // ok
+```
+
+### test / bench
+
+```vibe skip
+// doctest-skip: every NG line here is a form the parser rejects on purpose
+test "name" { .. }        // ok  — 名前は文字列リテラル必須
+test name { .. }          // NG: expected test name string
+test "n" with Fs { .. }   // NG: expected { but got with — effect row は書けない
+```
+
+row を書けない帰結として、**`Http` / `Socket` / `Llm` を実際に呼ぶ test / bench
+は書けない** (#1508)。これらは test/bench の ambient row に入っておらず、足す
+手段が無い。`handle { .. } with Http { _ => () }` は通るが、それは effect を
+**放電**する — 実際の呼び出しをハンドラで置換するので mock にしかならない。
+
+### 引数
+
+```vibe skip
+// doctest-skip: call fragments, including the rejected positional/labeled mix
+f(x = 1, y = 2)     // ok  — 全部 labeled
+f(1, 2)             // ok  — 全部 positional
+f(1, y = 2)         // NG: mixes positional and labeled arguments
+```
+
+`x?` (optional) は**パーサが受理するだけで semantics は未実装** (#1500)。
+省略すると `arity mismatch`、body 内では `Option[T]` ではなく `T` に束縛される。
+
+### `Error` は effect の綴りとしては退役、operation 修飾子としては生存
+
+上の "Error boundary" 節を参照。row 位置 (`with Error`) と handle する effect 名
+(`handle .. with Error`) はどちらも parse error、`perform Error::Throw(x)` は
+今も通る。
+
 ## File Conventions
 
 | File | Purpose |
@@ -1167,7 +1439,7 @@ subdirectory source は direct root からの relative import/export で到達�
 契約本体 (bodyless `fn`/`type`) の前に置く、`name`/`version`/`description`/
 `deps`/`main`/`generated_hash` のディレクティブ行:
 
-```vibe
+```vpkg
 name = @scope/pkg
 version = x.y.z
 main = true          // 任意。パースのみ、意味づけは未実装 (予約)

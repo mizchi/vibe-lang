@@ -1,14 +1,27 @@
 # WASI 0.3 (Preview 3) async — 設計と段階移行
 
-Status: **proposed** (ADR-0012 を更新)。最終更新 2026-07-13（wasmtime 46 / ratified `0.3.0` cutover、#821）。
+Status: **proposed** (ADR-0012 を更新)。最終更新 2026-08-07（#1230/#1341 の棚卸しで §2/§6/§7 を現行仕様だけに整理）。
 
 WASI 0.3 は 2026-06-11 に ratify され、`stream<T>` / `future<T>` が Component
 Model の first-class 型として導入された。本ドキュメントは vibe を WASI 0.3 の
-async モデルへ寄せていくための設計判断と段階プランを定める。北極星は
-**`async`/`await` + `Future[T]` + `Stream[T]`**、stream の抽象哲学は
+async モデルへ寄せていくための設計判断を定める。北極星は
+**`Async` effect row + `Future[T]` + AsyncIter**、stream の抽象哲学は
 **既存 `Iterator` に寄せた pull ベース**。
 
-> **言語表面との整合 (2026-07-31)**: `Async` ラベル二重定義の統一、phantom
+### この文書の読み方
+
+| 節 | 中身 | 性質 |
+|---|---|---|
+| §1, §2 | 言語モデル (型・await・stream・effect row) | **現行仕様**。ここだけ読めば今の言語が分かる |
+| §3 | codegen / ABI の実測記録 (§3.1〜§3.19) | **実測ログ**。canon built-in の byte encoding・実機で確かめた制約の source of truth。時系列で積む |
+| §4, §5 | WIT 境界マッピング / バージョン整合 | 現行仕様 |
+| §6, §7 | 現在地・残作業・未解決 | 現行状態 |
+
+着地までの経緯・撤去した surface・当時の見立ては
+[archive/spec/wasi-p3-async-history.md](../archive/spec/wasi-p3-async-history.md)
+へ退避してある。
+
+> **言語表面との整合**: `Async` ラベル二重定義の統一、phantom
 > `Future[T]` の実体化、eager `Stream[T]` の退役と AsyncIter への一本化、
 > `Coroutine`↔`stream` の二層対応、wit_gen の `future<T>`/`stream<T>`/
 > `async func` マッピングは [ADR-0089](../wasip3-effect-alignment.md) が
@@ -39,239 +52,178 @@ async モデルへ寄せていくための設計判断と段階プランを定�
 
 ## 2. 言語モデル
 
-### 2.1 型
+> この節は**現行仕様だけ**を書く。着地までの経緯・撤去した surface・当時の
+> 見立ては [archive/spec/wasi-p3-async-history.md](../archive/spec/wasi-p3-async-history.md)
+> へ退避した (2026-08-07、#1230/#1341 の棚卸し)。実装の現在地は §6、
+> ABI 実測は §3。
 
-- `Future[T]` — 単一の非同期値。`await f : T`。
-- `Stream[T]` — pull ベースの **async iterator**。既存 `Iterator`/`Iterable`
-  (ADR-0044) の形を踏襲する:
+### 2.1 `async` キーワードは無い — `Async` は effect row のラベル
 
-  ```vibe
-  trait AsyncIterator[T] {
-    next(Self) -> Future[Option[T]]   // None で終端
+vibe には `fn` の色付けが無く、副作用は effect row で表す。したがって
+**`async` キーワードは導入しない**。「async 関数」= **row に `Async` を持つ
+関数** (`with Async`) である。
+
+- `await(f)` は `(Future[T]) -> T with Async` の builtin
+  (`checker/builtins_async.vibe`)。予約語ではないので parser 変更は無い
+  (`ECall(EIdent("await"), [f])`)。
+- `Async` を持つ計算を非 `Async` 文脈で使うと effect-escape 検査
+  (`EEEffectfulCallOutsideEffect`) が落とす。
+- `effect Async { Suspend(Int) -> Int }` の**宣言は
+  `lib/@vibex/concurrent/concurrent.vibe`** にあり (#752 の「宣言が契約」方式)、
+  checker builtin の row ラベル `"Async"` と名前で一致する。だから
+  `handle .. with Async` で discharge できる (`TaskGroup::spawn_suspend` が
+  実際にそうしている)。**builtin の nominal row を handler が放電できない
+  という制約は無い** — 一致しているのは名前であって、経路は perform。
+
+### 2.2 `Future[T]` — 2 語セル `[state, payload]`
+
+`Future[T]` は型レベルの phantom ではなく、**実行時に 2 要素配列**である
+(`compile_call.vibe` の `future_ready_expr` 系)。state slot が「まだ解決して
+いない」を持てるので、producer を足すたびに表現を作り直さずに済む。
+
+| state | 意味 | payload | producer |
+|---|---|---|---|
+| 0 | ready | 値 | `Future::ready(x)` / `Stream::next` / `Stream::fold` |
+| 1 | guest 内 pending | 未定 (resolve が書く) | `Future::pending()` |
+| 2 | host future (waitable) | host future handle | `host_future_get()` / `host_future_named("x")` |
+| 3 | host stream セル | readable end の handle | `host_stream_named("x")` |
+
+state 3 を future と別値にしてあるのは、**stream セルを future として await
+できないようにする**ため (逆も同じ)。
+
+`Future::resolve(f, v)` が state 1 のセルを完了させる。**payload を書いてから
+state をクリアする**順序が load-bearing で、逆順だと awaiter が「ready なのに
+値がまだ」を観測しうる。
+
+#### `await` の lowering — codegen ではなく AST パス
+
+`await` は `await_poll_pass` (`codegen/common_base/inline_direct_perform.vibe`)
+が **`__aw_poll(fut)` 呼び出しへ書き換える**。`desugar_trait_dicts` の直後、
+全 effect パスの**前**に走る。`compile_call` で wasm を直接吐く位置は
+`suspend_cps_pass` / `evidence_dict_pass` の後なので、そこで
+`perform Async::Suspend` を出しても discharge する相手がいないため。
+
+```text
+__aw_poll(fut) -> Int with Async:
+  while 0 < Array::get(fut, 0) {
+    let __aw_w = perform Async::Suspend(<payload>)   // or __aw_wait(fut)
+    ()
   }
-  ```
+  Array::get(fut, 1)
+```
 
-  WASI 0.3 の `stream<u8>` は `ByteStream = Stream[Int]`（byte=Int）として
-  露出する。HTTP の request/response body はこの `ByteStream`。
+`Suspend` の payload 帯 (`@vibex/concurrent` の規約 + ADR-0089):
 
-### 2.2 構文
+| payload | 意味 |
+|---|---|
+| 0 | yield |
+| 1 | poll wait (retry) |
+| 負 | sleep debt |
+| handle + 2 | host future の waitable 帯 |
+| handle + 2048 | host stream の read 帯 |
 
-vibe には `fn` キーワードが無く、関数は `let f: (A) -> B with E = (x) -> {}`
-形式で副作用は effect row (`with E`) で表現する。したがって **`async`
-キーワードは導入しない**。代わりに:
+**展開は式の位置ではなく spine へ持ち上げる** (`awp_tail`)。`let a = await(x)`
+は `let __aw_f = x; while ..; let a = Array::get(__aw_f, 1)` になる。式の位置で
+入れ子にすると「ソース構文では書けない形」(`let` の value に `let`+`while`)
+が下流パスへ流れ、複数 await でコンパイラが無限再帰する — 実際に踏んだ
+(#1230)。
 
-- **`await` は effectful な操作**で、`Async` effect を帯びる。`throw`→`Error`
-  / `perform Eff::Op`→`Eff` と同じ扱い。「async 関数」= **effect row に
-  `Async` を持つ関数**（`with Async`）であり、特別な宣言構文ではない。
-  `await(f)` は `Future[T]` を待って `T` を得る。
-- `Async` を持つ計算を非 `Async` 文脈で使うと、既存の effect-escape チェック
-  (`checker_effects.vibe` の `EEEffectfulCallOutsideEffect`) がエラーにする。
-- `for x in s { ... }`（`Stream[T]` の逐次 pull、`s.next()` を `await`
-  するループへ desugar）。`for await` という別綴りは #1350 で廃止 —
-  iteration が suspend しうることは effect row が既に語っており、構文側の
-  `await` マーカーは二重表現だったため。
-- **その `for` 自身が `Async` を要求する** (#1358, 2026-08-02)。注入される
-  `await` は checker より後 (`desugar_trait_dict` の `build_await_iter_for`)
-  なので、検査時点のプログラム中に async primitive は存在しない。したがって
-  この要求は **iterand の型**から読む — `next` が `Future` を返す iterator
-  trait を実装した型なら、囲む row に `Async` が要る
-  (`type_name_has_async_iterator_impl` / `check_async_effects_expr` の EForIn
-  arm)。desugar が await ループを選ぶのと同じビットを見ているので、両者の
-  判定は定義上一致する。iterand の型が解決できないときは何も要求しない
-  (desugar 側も分類できなければ sync ループのままなので対称)。この穴は
-  #1350 が作ったものではなく、`for await` 時代の marker も checker で
-  unwrap されるだけで何も要求していなかった。
+条件は `EBinOp("<")` であって builtin `lt` ではない。evidence migration の
+see-through 走査が `lt` を pure callee として知らないため、`while lt(..)` に
+すると `await` を含む handle が全部 ineligible になる (実測済み)。
 
-実体（状態機械 lowering）は §3 が担い、replay effect handler の上には載せない。
+`waiter_hooks` が立つと round は `__aw_wait(fut)` を通り、resolve 側が直接
+起こす (O(rounds×awaiters) の解消、§3.15)。notify が漏れても once-per-progress
+の fallback valve で poll へ縮退し、deadlock trap は保存される。
 
-#### M1a 実装メモ（landed）
+#### `Future[T]` と `Spawnable` — region を持たせないという決定
 
-front-end は **lexer/parser/AST/core-Type の変更ゼロ**で着地した:
+`TaskGroup::spawn` の capture 検査 (`checker_spawnable.vibe` の
+`sp_spawnable_ok`) は、`TaskGroup[r]` / `TaskHandle[r,_]` / `Sender[r,_]` /
+`Receiver[r,_]` を **同じ nursery の region `r` と一致するときだけ**通す。
+`Future[T]` は **region パラメータを持たず、無条件に通す**。
 
-- `await` は予約語ではないため `await(f)` は通常の呼び出し
-  `ECall(EIdent("await"), [f])` として既存 parser でそのまま通る。
-- checker builtin として登録（`lib/@vibe/compiler/checker/builtins_async.vibe`、
-  `lookup_builtin` 経由）:
-  - `await : (Future[T]) -> T with Async`（`throw` と同型、effect=`Async`）
-  - `Future::ready : (T) -> Future[T]`（pure、テスト用に future を構築）
-- `Future[T]` は `CtNamed("Future", [..])` で構造的に表現（core `Type` enum
-  非変更）。要素型は他 builtin と同様 `CtUnknown`（gradual）。
-- `Async` は open string の effect 名なので effect-escape チェックがそのまま
-  機能する。検証: `checker_async_test.vibe` 6/6、`checker_effects_test.vibe`
-  19/19（無回帰）。bundle 再生成済み（sync OK）。
+> **決定 (実装済み)**: `Future` に region 引数は足さない。現在の poll モデルでは
+> セルは**スケジューラ結合ゼロの共有メモリ**で (await は state slot を再読する
+> だけ、resolve は 2 ストア)、guest は single-threaded なので、`Send` が防ぐ
+> ような cross-nursery hazard が存在しない。
+>
+> **再検討の条件**: セルが**スケジューラから見える waiter list** を持った
+> 時点で、`Future` は region tag を持ち `sp_same_region` 側の分岐へ移る必要が
+> ある。
+>
+> (#1230 の議論では一度「`Future[r, T]` へ arity を増やす」と記録したが、
+> 実装時にこちらを採った。arity を増やしても `Future::pending()` は引数が
+> 無いので `r` が fresh 変数のままで spawn サイトの region と結びつかず、
+> `Sender` のように `TaskGroup` を引数に取る constructor へ作り替えない限り
+> 検査は成立しない — つまり「型引数を 1 本足す」では済まなかった。)
+
+#### suspend lowering の適格性 (ADR-0076)
+
+`await` が `perform` になる以上、await を含むコードは suspend CPS split
+(`scps_*`) の適格性に従う。現在の境界:
+
+- **適格**: let / seq / tail / branch-tail の spine、`while` + `let mut`
+  (#1230 で widening 済み。`let mut x = v` → 1 要素セル、`while` → `let rec`
+  ローカル closure への末尾再帰)
+- **不適格**: ループ内 `break`/`continue`/`return`、`for`/`loop` 形、
+  sequence の HEAD が perform を内側に抱えた複合式、**closure パラメータの
+  呼び出し** (`pred(v)` — `scps_calls_ok` が local closure callee を
+  see-through できない)
+
+最後のものが `lib/@vibe/prelude/async_iter.vibe` の `async_iter_find` /
+`_all` が今も ineligible な理由で、`await(Stream::next(s))` が書けない直接の
+原因でもある。closure param を無条件に許すのは**不健全** — closure literal
+内の `perform` は「リテラルが置かれた関数の row」に字句的に計上されるので、
+「宣言 row が空 ⇒ perform しない」が成り立たない。
 
 ### 2.3 同期 effect との関係
 
-vibe の既存 effect system（`handle`/`perform`/`resume`）は **replay ベース・
-同期**で、`handle` あたり ~16K perform の hard bound を持つ（ADR-0055, #553,
-#556）。長寿命の async stream をこの replay-memo に載せると破綻するため、
-**async は effect handler の replay 機構の上に build しない**。`Async` は
-型レベルの effect row 注釈としてのみ用い、codegen は専用の状態機械 lowering
-（§3）に分岐する。同期 effect（Error/Stdout/HttpRequest 等）の意味論・実装は
-不変。
+同期 effect (`handle`/`perform`/`resume`) は evidence-passing で実装されて
+おり (#817、replay は全廃)、`Async` もその上に乗る。`Async::Suspend` は
+ただの operation で、特別扱いされるのは **payload 帯の意味づけ**と、
+`await_poll_pass` がそれを合成する点だけ。同期 effect の意味論は不変。
 
-### 2.4 `Stream[T]` — async iterator（WASI 0.3 `stream<T>`）
+### 2.4 stream 系の型 — 今 3 つある
 
-WASI 0.3 の `stream<T>` を、vibe の `Iterator`（ADR-0044）と**同じコンビネータ
-形**で扱う pull ベースの async 列として言語に取り込む。sync の `Iterator::*` と
-同形の API で、`next` が `Future` を返し `fold` が `Async` を帯びる点だけが違う:
+north star は **AsyncIter** (`next(Self) -> Future[Option[(T, Self)]]`、
+ADR-0089 Decision 3) への一本化だが、**今日の実装には 3 つの表現が併存する**。
+混同すると静かに壊れるので、区別を明示する:
 
-- `Stream::next : (Stream[T]) -> Future[Option[T]] with Async`（`None` で終端）
-- `Stream::empty : () -> Stream[T]` / `Stream::once : (T) -> Stream[T]`（pure）
-- `Stream::map : (Stream[T], (T)->U) -> Stream[U]`（lazy, pure）
-- `Stream::filter : (Stream[T], (T)->Bool) -> Stream[T]`（lazy, pure）
-- `Stream::fold : (Stream[T], A, (A,T)->A) -> Future[A] with Async`
-- `ByteStream = Stream[Int]` が WASI `stream<u8>` / HTTP body に直結。
-- `for x in s { ... }`（`s.next()` を `await` するループへ desugar）は M1a の
-  `await` と同じく後続（front-end は builtin 呼び出しで先行）。
+| 型 | 実行時表現 | 用途 | 位置づけ |
+|---|---|---|---|
+| `Stream[T]` | `Array[T]` (eager) | `empty`/`once`/`map`/`filter`/`fold`/`next`、`String::to_bytes`/`Stream::to_string` | **legacy**。ADR-0089 D3 で退役予定 |
+| `HostStream` | 2 語セル `[3, handle]` | `host_stream_named`/`host_stream_next`/`host_stream_close` | p3 境界の実体 |
+| AsyncIter | trait (`lib/@vibe/prelude/async_iter.vibe`) | `for x in it` の pull protocol | 目標形、host stream とは未接続 |
 
-**狙い**: sync collection と async stream を**同じ pipeline コード**で書ける
-（effect row が `{}` か `{ Async }` かの差だけ）。`Iterator` の async 兄弟。
+`host_stream_named` の戻り型が `Stream[Int]` **ではない**のは #1341 の実測に
+よる: 同じ静的型だと `for` が array パスを選び、cell の 2 語 (state 3 +
+handle) を足して**それらしい小さい数**を返していた (期待 42 に対し 4)。
+診断も trap も無い最悪の失敗形だったので、**型で分けた**。今は
+`Stream::map` を host stream に適用すると型エラーになる。
 
-### 2.5 `Task[T]` eager prototype と v0.4.0 での置換
+`for x in s { ... }` は iterand の型で eager ループか await ループかが決まる。
+**`for await` という別綴りは #1350 で廃止** — iteration が suspend しうる
+ことは effect row が既に語っており、構文マーカーは二重表現だった。
+その `for` 自身が `Async` を要求するかどうかは **iterand の型**から読む
+(#1358): `next` が `Future` を返す iterator trait を実装した型、または
+`HostStream` なら、囲む row に `Async` が要る。desugar が await ループを
+選ぶのと同じビットを見ているので、両者の判定は定義上一致する。
 
-> **公開意味論の source of truth は
-> [ADR-0068 詳細仕様](../concurrency.md)。** 本節の型は WASI 0.3 lowering を
-> 探索するために先行実装した historical prototype であり、region-bound
-> `Task[r,T]`、nursery、typed channel へ破壊的に置換する。WASI task /
-> `waitable-set` / `future.cancel-*` はその backend lowering として使い、
-> language surface を host primitive に固定しない。
+`ByteStream = Stream[Int]` (WASI `stream<u8>` / HTTP body) は現在 legacy 側
+に属する。p3 の `stream.read` へ繋ぐのは未着手。
 
-> **RETIRED (#1227)**: 以下の5操作は front-end から**撤去済み**。現在
-> `Task::spawn` 等を書くと `unknown name` でコンパイルが落ちる。撤去理由は
-> `spawn` が thunk を即時実行するため `spawn(f); spawn(g)` が常に `f` 完了後に
-> `g` を始めること——並行に見えて黙って直列化し、警告も失敗もしなかった。
-> 動く並行 surface は `lib/@vibex/concurrent`（`TaskGroup::spawn_suspend` /
-> `TaskHandle::join` / `sleep_wait`）。以下は撤去された surface の記録。
+### 2.5 `Task[T]` は撤去済み (#1227)
 
-- ~~`Task::spawn : (() -> T with Async) -> Task[T] with Async`~~ — 子タスク生成
-- ~~`Task::join : (Task[T]) -> T with Async`~~ — 結果を待つ
-- ~~`Task::cancel : (Task[T]) -> Unit with Async`~~ — キャンセル要求
-- ~~`Task::race : (Task[T], Task[T]) -> T with Async`~~ — 先着、敗者は cancel
-- ~~`Task::timeout : (Int, () -> T with Async) -> Option[T] with Async`~~
-  — 期限切れで `None`（内側 task を cancel）
+`Task::spawn`/`join`/`cancel`/`race`/`timeout` は front-end から**撤去済み**で、
+書くと `unknown name` になる。`spawn` が thunk を即時実行していたため
+`spawn(f); spawn(g)` が常に直列化する — 並行に見えて黙って直列化し、警告も
+失敗もしなかったのが理由。
 
-この surface の `spawn` は child lifetime を型に持たず、`race` の loser
-ownership も定義していなかった。v0.4.0 では generative `nursery` が `Spawn[r]` handler
-を設置し、blocking `join` / channel operation が `Async::suspend` を要求する。
-cancel point、failure propagation、handler task-affinity は ADR-0068 に従う。
-
-#### 2.4/2.5 front-end（landed）
-
-M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
-
-**Stream 側（landed、現行）**
-- `Stream[T]` は `CtNamed("Stream", _)` で構造表現（要素型は gradual な
-  `CtUnknown`）。`Future[Option[T]]` は `CtNamed("Future",
-  [CtOption(CtUnknown)])`。
-- builtin は `lib/@vibe/compiler/checker/builtins_async.vibe` の `lookup_stream`
-  （`lookup_builtin` 経由）に登録。suspend / runtime 接触操作
-  （`*::next`/`fold`）は `Async` effect を帯び、effect-escape チェックが
-  そのまま機能する。
-
-**Task 側（RETIRED in #1227、以下は当時の記録）**
-- ~~`Task[T]` は `CtNamed("Task", _)` で構造表現。~~
-- ~~builtin は同ファイルの `lookup_concurrency` に登録。`spawn`/`join`/`cancel`/
-  `race`/`timeout` は `Async` effect を帯びる。~~ 現在
-  `lookup_concurrency` は**無条件に `None` を返す**——これらの名前は
-  `unknown name` になる。
-- 検証: `checker_async_test.vibe` は「登録されている」ことを assert する4
-  テストを、「登録されていない」ことを pin する1テストに置き換えてある
-  （#1227）。`checker_effects_test.vibe` 19/19（無回帰）。
-- **`Task[T]` codegen（synchronous eager model, RETIRED in #1227）**: 単一スレッドの
-  linear backend では「spawn = thunk を即時実行し、Task 値 = 解決済み結果」
-  「join = identity」「cancel = drop して Unit」「race = 先行 task の値」という
-  同期セマンティクスへ lower（`compile_call.vibe`）。`Task::spawn` は 0 引数
-  closure（thunk）を `call_indirect`（closure type 9）で呼ぶ。`await` /
-  `Future::ready` と同じ系列で、async component（`with Async`）に包まれ
-  wasmtime 45 上で実行可能だった。**#1227 でこの lowering ごと撤去し**、
-  `test_async_component_gate.sh` の Task entry も外した（`option` entry の
-  `Task::timeout` は `Stream::next(Stream::once(1))` に差し替え、合計 42 を維持）。
-  checker 側の pin は上の「Task 側（RETIRED）」を参照。
-  - **free-var capture 修正**（撤去前の記録）: inlined async builtin
-    （`await`/`Future::ready`/`Task::spawn|join|cancel|race`）は func table に
-    居ないため、nested lambda
-    body 内で free 変数として捕捉され誤った indirect-apply に lower される
-    バグがあった（`() -> { Task::join(t) }` が `Task::join` を closure 値として
-    capture）。`collect_free_vars_expr` でこれら名前を演算子同様に除外して修正。
-- **`Stream[T]` codegen（eager Array-backed model, landed）**: linear backend
-  では `Stream[T]` を既存の eager Array 機構で表現する。`Stream::map` /
-  `Stream::fold` は同一引数順・同一値表現なので **既存の inline `Array::map` /
-  `Array::fold` lowering をそのまま再利用**（`compile_call` の fname remap）。
-  `Stream::empty` = `array_new`、`Stream::once(x)` = `array_new` + `Array::push`、
-  `Stream::filter` は述語が truthy な要素のみ push する loop を inline emit。
-  gate に Stream entry を追加（empty/once/map/filter/fold → 42、wasmtime 45）。
-  inline builtin の free-var capture 除外に Stream 名も追加。
-- **`Stream::next` codegen（Option 構築, landed）/ `Task::timeout`（RETIRED in
-  #1227）**: いずれも
-  実 `Option` ctor（`Some`/`None` は linear backend で常に tag 0/1 登録済み）を
-  生成する。`compile_call` で **Option 式を AST 合成して `ce` に委譲**し、既存の
-  ctor lowering と `Array::length`/`get`・0 引数 closure 呼び出しを再利用:
-  - `Stream::next(s)` → `let s = …; if 0 < length(s) { Some(s[0]) } else { None }`
-    （eager model では head を peek。`await` が ready future を unwrap）。
-  - ~~`Task::timeout(ms, thunk)` → `Some(thunk())`~~（同期 model では必ず完了、
-    deadline は評価して捨てた）。**#1227 で撤去**。gate の `option` entry は
-    `Stream::next(Stream::once(1))` に差し替えて Some 経路の網羅を維持している。
-  合成式経由なので `match { Some(x) => … None => … }` が正しく動く（gate の
-  Option entry が `Stream::next` の Some/None 両経路を網羅 → 42。timeout 分は
-  #1227 の撤去で外した）。
-- **`String::to_bytes` codegen（ByteStream consume, landed）**: HTTP body を
-  Stream 化する第一歩。`String::to_bytes(s) : Stream[Int]`（= `ByteStream`、
-  WASI 0.3 `stream<u8>`）が文字列のバイト列を eager に Array へ展開し、handler
-  が request body を Stream combinator（map/filter/fold/next）で消費できる。
-  `compile_call` で `let mut arr = []; while i < length(s) { Array::push(arr,
-  char_code_at(s, i)); i = i + 1 }; arr` を AST 合成して `ce` に委譲するため、
-  `String::length`/`char_code_at`（`i32.load8_u` で byte 単位）と loop counter
-  が source と同じ (RC) tagging 規約に従う。gate に body entry を追加（`")"` →
-  map(+1) → filter(>0) → fold(sum) → 42）。
-- **`Stream::to_string` codegen（ByteStream produce, landed）**: response body
-  生成側。`Stream::to_string(bs) : String`（`Stream[Int] -> String`）が byte 列を
-  String へ collect する。`compile_call` で `let mut acc = ""; while i <
-  length(bs) { acc = String::concat(acc, String::from_char_code(bs[i])); i = i +
-  1 }; acc` を AST 合成して `ce` に委譲。アキュムレータの `""` リテラルのため、
-  `linked_compile` が str_table に `""` を**常に seed**するよう修正（`StringBuilder
-  ::freeze` の join separator の潜在的脆弱性も同時に解消）。gate に round-trip
-  entry を追加（body → map → `to_string` → 再度 `to_bytes` → fold → 42）。これで
-  handler が request body を ByteStream で消費し、response body を ByteStream から
-  生成できる（両方向そろった）。
-- **async iterator サーフェス構文（landed → #1350 で `for` に一本化）**:
-  `for x in stream { ... }` で Stream を要素ごとに消費できる。当初は
-  `for await x in stream` という別綴りで導入したが、**同期/非同期の選択は
-  iterand の型（`C::next` の戻りが `Future` か）だけで決まっており構文
-  マーカーは情報を足していなかった**ため、#1350 で `for await` と
-  `__await_iter` マーカーを撤去し `for` に統合した（iteration が suspend
-  しうることは effect row `with Async` が既に語る — ADR-0089 D1 が
-  `sleep` から関数色付けを外したのと同じ理由）。eager Stream model では
-  `Stream[T]` は実行時 `Array[T]` なので `EForIn`（tag 18 =
-  `Array::length`/`Array::get` ループ）へそのまま lower される。checker の
-  `EForIn` は `Stream[T]` でも iterate できる（`CtArray` に加え
-  `CtNamed("Stream", [elem])` を受理し elem を bind）。gate は
-  `String::to_bytes("ABC")` を `for` で sum → 198 − 156 → 42。
-- **streaming ベンチ & `String::join` の O(n) 化（perf, landed）**:
-  `scripts/bench_streaming.sh`（`pkf run bench-streaming`）が stage1 経由で
-  streaming ops を wasm 化し wasmtime で計測する。初回計測（4 KB × 300 iters）で
-  `Stream::to_string` が 1.77s と突出（他 ops は 0.03〜0.06s）。原因は
-  `Stream::to_string` → `String::join(parts, "")` の `String::join` が
-  `acc = concat(acc, piece)` を繰り返す **O(n²)**（毎回 prefix 全体を copy、
-  bump heap に O(n²) のゴミ→4 KB で OOM/OOB リスク）だった。`gen_string_join_body`
-  を **単一確保 + memcpy の O(n)**（pass1 で総 length を合算、一度確保、pass2 で
-  各 piece と separator を memcpy）に書き換え。結果 `to_string` 1.77s→**0.117s
-  (~15×)**、`pipeline` 1.24s→**0.155s (~8×)**。`StringBuilder::freeze`
-  （= `join(parts, "")`）も同経路で高速化。`Stream::to_string` の codegen も
-  acc-concat ループから parts 配列 + 1 回 join へ変更（O(n²)→O(n)）。
-- **M2c-3 stream.read feasibility spike（landed）**: 真の `stream<u8>` canonical
-  built-ins が wasmtime 45 で実行可能なことと最小形を確定（§3.3、
-  `src/x/cm_async/cm_stream_read_probe.wat`）。`stream.new` は base フラグで実行
-  可、`stream.read`/`write` は `-W component-model-more-async-builtins=y` が必須。
-  単一タスク self round-trip は deadlock するため並行 producer が要る、という
-  次スライスの要件も確定。
-- **M2c-3 producer 調査（landed）**: intra-wasm subtask producer は
-  cross-component reentrance trap で不可と確定し、producer は host（HTTP body の
-  readable `stream<u8>`）とする pivot を記録（§3.3.1）。
-- 後続: `component_codegen` に `stream.read` canon emit、host 供給の readable
-  `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループ
-  で消費し `for` / `Stream::next` をそこへ lower。真の subtask spawn
-  （waitable-set / `future.cancel-*` による実並行・キャンセル）（§3.3 / §3.6 / §3.7）。
+動く並行 surface は `lib/@vibex/concurrent` (`TaskGroup::spawn_suspend` /
+`TaskHandle::join` / `sleep_wait`)。公開意味論の source of truth は
+[ADR-0068 詳細仕様](../concurrency.md)。真の subtask spawn
+(waitable-set / `future.cancel-*`) は M-conc-2 として未着手。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -1279,7 +1231,8 @@ clock 下限 = park の実在)の両方を pin する。adapter 側の反映は 
 wrap され、viberun（`VIBE_ASYNC_STREAMS="body=10|15|17"`）上で **42** を
 返す:
 
-```vibe
+```vibe skip
+// doctest-skip: needs an Async-row entry + component adapter; not runnable standalone
 let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let mut sum = 0
@@ -1460,7 +1413,8 @@ surface は `host_stream_close: (Stream[Int]) -> Unit`。**`Async` は付かな�
 `stream.drop-readable` は block しない canon call なので park も予約帯も
 boundary settle arm も要らず、注入 fn `__hs_close` が adapter を直接呼ぶ。
 
-```vibe
+```vibe skip
+// doctest-skip: needs an Async-row entry + component adapter; not runnable standalone
 let run: () -> Int with Async = () -> {
   let s = host_stream_named("body")
   let a = host_stream_next(s)
@@ -1638,55 +1592,53 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
   `cli-install.yml` / `scripts/install_wasmtime_release.sh`）もすべて
   46.0.1 に統一。
 
-## 6. 段階プラン
+## 6. 現在地と残作業
 
-| Stage | 内容 | 状態 |
+> 着地済み stage の全行 (M0 〜 ADR-0089 D3、34 行) は
+> [archive/spec/wasi-p3-async-history.md](../archive/spec/wasi-p3-async-history.md)
+> へ退避した (2026-08-07)。ここには**動いているもの**と**残っているもの**だけを書く。
+> ABI の実測記録は §3 (§3.1〜§3.19) がそのまま source of truth。
+
+### 6.1 動いている縦串 (2026-08-07)
+
+| 縦串 | 実体 | gate |
 |---|---|---|
-| **M0** | wasmtime 45.0.2 bump、P3 WIT 文字列を `rc-2026-03-15` に統一、ADR-0012 更新 + 本 spec 起票 | done |
-| **M0.1** | wasmtime 46.0.1 / ratified `wasi:http@0.3.0` cutover（#821）: vendored WIT 再取得、adapter/gate の pin 更新、CI wasmtime pin を 45.x→46.0.1、45.x leg は async-only の compat leg に縮小（§5.1） | done |
-| **M1a** | async front-end: `await` builtin (`(Future[T]) -> T with Async`) + `Future::ready` + `Future[T]`=CtNamed、effect-escape 検証。lexer/parser/core-Type 非変更 | done |
-| **M1b-1** | codegen emitter（component 側）: `comp_emit_component_wasm_async` + `task.return` canon + async lift + async functype。byte-exact verified（test 10/10） | done |
-| **M1b-2a** | アプローチ確定（**trampoline 方式**、`linked_compile` 無改修）を実測（`cm_async_trampoline_probe.wat` が wasmtime 45 で 42）。2-module 合成の exact byte blueprint 確定 | done |
-| **M1b-2b** | emitter 実装: `comp_generate_async_trampoline` + `comp_emit_component_wasm_async_trampolined`（2-module 合成）+ byte test | 未着手 |
-| **M1b-2c** | orchestration: `compile_source_wasi_only` が entry の `() -> Int with Async`（name="run"）を AST から検出し、core wasm を `comp_emit_component_wasm_async_trampolined` で包む。selfhost compiler（stage1）で `.vibe` → **component を出力**（magic 0d 00 01 00、`wasm-tools validate` OK）、非 async は plain core のまま（無回帰） | done |
-| **M1b-2d** | 真の run: fd_write stub module を component に同梱し main の instantiation に供給、entry の `(param i64)->i64` 規約に合わせ trampoline が dummy i64 引数で呼ぶよう修正、wasmtime に exceptions flag。**縦串完成: selfhost が `.vibe` async entry → async component → wasmtime 45 で 42 を返す** | **done** |
-| **M1b-2e** | 回帰保護 gate（`test-async-component`）＋ CI 配線 | done |
-| **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
-| **M1b-3b** | `await`/`Future::ready` の codegen（ready-future lowering）。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42。当初の identity lowering は #1230 で `Future[T] = [state, payload]`（`state = 0` が ready）へ差し替え済み — pending を足すときに表現を作り直さないため（§3.6 参照） | done |
-| **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |
-| **M1b-3c-1b** | blocking await（host async import）の component_codegen.vibe emitter。待機ループを別関数に括り出した形で、`future.*` canon 無しに動くことを実機検証（§3.8）。byte-exact 検証のみで実 `.vibe` ソースへの配線は対象外。**spawn 相当は「spawn と join の間に観測可能な処理が無い」退化ケースのみ**——真の interleaving spawn は未達（§3.8「実証範囲の限界」） | done（#1230、`comp_emit_component_wasm_async_spawned_future` + `scripts/test_spawned_future_component_gate.sh`） |
-| **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算。**§3.11 で ABI 側の問いは解決**——`waitable-set.wait` の完了順ディスパッチだけで interleave し、別 task も poll executor も `context.get/set` も不要（§3.8 の予測を実機反証、負の対照付き gate で固定）。残るのは **await をまたぐ task 状態の表現＝ADR-0076 の CPS/suspend lowering** のみで、codegen 側に局所化された | mechanics done（#1230、`tools/wasip3_component_probe/interleaved_tasks/` + `scripts/test_interleaved_tasks_probe_gate.sh`）/ emitter・実ソース配線は未着手 |
-| **M1b-3c-3** | **本物の並行 await**（§3.10）: guest の計算は1本のまま、**複数の host 操作を同時に in-flight** にして待つ。canon 集合は M1b-3c-1b から不変——並行性を生むのは「どちらも待ち始める前に両方発行する」という操作順序だけ。`comp_emit_component_wasm_async_concurrent_awaits` + probe + gate（値 84 と **両側の wall-clock** で検証、2×1000ms が 1015ms = 1× スケール）。M1b-3c-1c（guest の計算が2本 interleave）とは別問題で、そちらは未解決のまま | done（#1230） |
-| **M1b-3c-2** | async component を **production runtime が駆動**できるようにする（§3.9）: `runtime/viberun` の wasmtime を 45→47.0.2 bump（同期パスはソース無改修）、component ヘッダ判別 + `instantiate_async`/`run_concurrent`/`call_concurrent`、`get-async` を `func_wrap_concurrent` + 実 suspend する tokio timer で実装。gate が probe 専用 Rust host バイナリ依存を脱却。**副産物**: eager-completion 時に subtask が生成されないのに `subtask.drop` していた実バグを発見・修正（emitter + probe WAT 両方）、gate が blocked/eager 両パスを検証 | done（#1230） |
-| **M-conc-1** | ~~`Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45）~~ | **retired (#1227)** — 黙って直列化するため撤去。動く surface は `lib/@vibex/concurrent` |
-| **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）。M-conc-1 の surface は #1227 で撤去したので、置き換えではなく新規に載せる | 未着手 |
-| **M2a** | `Stream[T]` codegen（eager Array-backed model）: `map`/`fold` を inline `Array::map`/`Array::fold` へ remap、`empty`=`array_new`、`once`=`array_new`+`push`、`filter` を inline loop で emit。gate に Stream entry 追加（empty/once/map/filter/fold → 42、wasmtime 45） | done |
-| **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）: 実 `Some`/`None` ctor を AST 合成して `ce` に委譲。gate の Option entry が Some/None 両経路を網羅（→ 42、wasmtime 45）。併載していた `Task::timeout` 分は #1227 の撤去で `Stream::next(Stream::once(1))` に差し替え | done |
-| **M2c-1** | HTTP body を ByteStream 化（consume）: `String::to_bytes(s) : Stream[Int]`（`ByteStream`）。handler が request body を Stream combinator で消費可能。AST 合成 loop を `ce` に委譲（RC tagging 安全、byte 単位）。gate に body entry 追加（→ 42、wasmtime 45） | done |
-| **M2c-2** | response body 生成 `Stream::to_string`（`Stream[Int] -> String`）: AST 合成 loop を `ce` に委譲。`linked_compile` が `""` を常に str_table へ seed（`StringBuilder::freeze` の脆弱性も解消）。gate に round-trip entry 追加（body → map → to_string → to_bytes → fold → 42）。**handler の request/response body 両方向が ByteStream で扱える** | done |
-| **M2c-3 (surface)** | `for await x in s { ... }` サーフェス構文。**言語仕様: `for await` は pull-only** — iterable は pull closure `() -> Option[T]` を要求し、`None` まで駆動する。eager iteration（Array/`Stream[T]`）は plain `for` を使う（#582）。**selfhost compiler は `await` マーカー自体を pull シグナルとして扱い**、`for await x in s` を parser で `let __pull_next = s; let mut cont = true; while cont { match __pull_next() { Some(x) => body, None => cont = false } }` へ desugar（`build_pull_for_in`、codegen に型情報不要）。マーカー無し `for x in arr` は eager `EForIn`。**host compiler は現状 iterable の型で eager/pull を出し分ける permissive 実装**（`await` マーカーを無視し eager `for await` も許容する）だが、spec 適合プログラム（pull closure のみ `for await`）は host/selfhost で同一挙動。host 側の hard enforcement は ROI 低のため見送り（#582）。gate の for-await entry は pull closure（bytes("ABC") を yield）で → 42 | done |
-| **M2c-3 (spike)** | 真の `stream<u8>` canon built-ins の wasmtime 45 実行可否と最小形を確定（§3.3、`cm_stream_read_probe.wat` → 42）。`stream.read`/`write` は `more-async-builtins` 必須、self round-trip は producer 不在で deadlock | done |
-| **M2c-3 (producer 調査)** | producer を intra-wasm subtask で用意する案を検証 → cross-component reentrance（`cannot enter component instance`）で行き止まり。producer は **host**（HTTP body の readable `stream<u8>`）とする pivot を確定（§3.3.1） | done |
-| **ADR-0089 step 2 (future.*/stream.*)** | `future.new/read/write/drop-*` と `stream.new/read/write/drop-*` の canon emitter + `(future u32)`/`(stream u8)` 型 section + 固定シェイプ `comp_emit_component_wasm_future_value`/`comp_emit_component_wasm_stream_value`（self-contained 単一 task の read/write rendezvous、§3.12）。probe（`future_value/component.wat`・`stream_value/component.wat`、wasmtime 47 実測 42）→ byte-exact 移植。gate = `test_future_value_component_gate.sh`/`test_stream_value_component_gate.sh`（wasmtime CLI 直駆動、`more-async-builtins` flag） | done（#1218） |
-| **ADR-0089 step 4 (実ソース await → waitable)** | 実 `.vibe` ソースの `await` を component 経路へ配線（§3.14）: `host_future_get() -> Future[Int]`（cell state 2 = waitable）→ 拡張 `__aw_poll` の `Suspend(handle + 2)` → entry boundary `__entry_settle` → adapter の `future.read`/`waitable-set.wait`。`comp_emit_component_wasm_async_hostfuture`（memhost + 値渡し i64 adapter、u32 lift、wrap は core import sniff で自動 route）。gate = `test_hostfuture_source_component_gate.sh`（viberun 駆動、42 + wall >= 0.8×delay + p1 routing control） | done（#1218） |
-| **ADR-0089 resolve→direct wake** | in-guest poll モデルの O(rounds×awaiters) 最適化（§3.15、意味論不変）: waiter list + `direct_wait` skip + 完了 notify（library）、`__aw_wait`/`__aw_notify_resolve` hooks の auto-link（compiler）、once-per-progress の fallback valve で notify 漏れは poll に縮退・deadlock trap は保存 | done（#1218） |
-| **ADR-0089 Decision 5 (wit_gen async)** | `with Async` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
-| **ADR-0089 (c) (named host futures)** | host import async の一般化（§3.16）: `host_future_named("x") -> Future[Int]`（string literal 必須、label 検証）→ 名前ごとの core import `vibe.host_future_get$x` → 名前ごとの component import `x: func() -> future<u32>` + adapter getter。wait 半分と `future.read`/`drop-readable` canon は共有、1名（匿名）のときの index 配置は step 4 と同一。並行性は adapter の **eager read**（getter が `future.read` を発行、wait は park と回収のみ）で成立する。viberun は `VIBE_ASYNC_FUTURES` で任意名を link。gate = `test_named_hostfutures_component_gate.sh`（42 = 40+2、wall が `[0.8×P, 0.9×(P+Q))` で overlap 実証、単一名 control） | done（#1218） |
-| **ADR-0089 D3 (終端 probe)** | host 供給 `stream<u8>` を1バイトずつ読む probe（§3.17）で「終端は `amount 0 / code 1` を read が inline に返す」を wasmtime 47 実測、viberun に `VIBE_ASYNC_STREAMS` の host stream import を追加。gate = `test_host_stream_value_probe_gate.sh`（42 = 10+15+17 を pin） | done（#1218） |
-| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for`/`Stream::next` をそのループへ lower | guest surface + Suspend stream 帯 + composer + 明示 close（§3.18 / §3.18.1: `host_stream_named`/`host_stream_next`/`host_stream_close` の実ソースが `stream.read` + `waitable-set.wait` で終端まで読み、部分消費した readable end も解放できる。gate = `test_named_hoststreams_component_gate.sh`）は done。残り2件: (a) `for`/`Stream::next`（AsyncIter protocol）をこの read へ lower する接続、(b) 実 provider = `wasi:http` incoming-body（**serve composition と host-stream composition の統合が必要** — §3.19 に構造的な理由と3点の作業分解） |
-| **ADR-0089 D3 (named host streams)** | 実ソースの host stream 読み（§3.18）: `host_stream_named("body") -> Stream[Int]`（string literal 必須、cell `[3, handle]`）+ `host_stream_next -> Int with Async`（1 byte / -1 = EOS、EOS 後は latch）→ `Suspend(handle + 2048)`（予約 stream 帯）→ boundary の `vibe_hs_read_raw` settle → adapter の per-read `stream.read` + park（eager read はしない — per-read park と衝突する）→ per-name component import `<name>: func() -> stream<u8>`。future との混在は 1 composition を共有、hf-only 出力はバイト不変 | done（#1218） |
-| **ADR-0089 D3 (明示 close)** | 部分消費した host stream の readable end を解放する surface（§3.18.1）: `host_stream_close: (Stream[Int]) -> Unit`（**`Async` 無し** — `stream.drop-readable` は block しない）→ 注入 fn `__hs_close` が adapter を直接呼ぶ（perform も予約帯も boundary settle arm も不要）。冪等性は cell の state word が担保（1 handle への二重 drop は host 側 trap なので load-bearing）。**use で gate** し、drain するだけの program は close import も adapter func も持たない = 既存 stream composition はバイト不変。gate = close lane（5 bytes 中 2 bytes 読んで close → 再 close → close 後 read で 42 + .wat の import/export 検査） | done（#1218） |
-| **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
-| **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
+| async component の生成と実行 | `.vibe` の `() -> Int with Async` entry → async lift + trampoline → wasmtime 47 の production runtime (`runtime/viberun`) が `instantiate_async` / `run_concurrent` で駆動 | `test_async_component_gate.sh` |
+| ready future の await | `Future::ready` / `Stream::next` / `Stream::fold` → `[0, payload]`、`__aw_poll` が slot 1 を読む | 同上 (7 lane) |
+| guest 内 pending future | `Future::pending()` → `[1, _]`、`Future::resolve` が完了、await は poll-wait で park。resolve → direct wake の waiter list 付き (§3.15) | `fixtures/async_future_pending.vibe` |
+| host future の await | `host_future_get()` / `host_future_named("x")` → `[2, handle]` → `Suspend(handle+2)` → boundary settle → adapter の `future.read` + `waitable-set.wait` | `test_hostfuture_source_component_gate.sh` / `test_named_hostfutures_component_gate.sh` |
+| 並行 await | 複数 host 操作を同時に in-flight (2×1000ms が 1015ms) | `test_concurrent_awaits_component_gate.sh` |
+| host stream の読み | `host_stream_named("body")` → `[3, handle]`、`host_stream_next` (1 byte / -1 = EOS) → `Suspend(handle+2048)` → adapter の per-read `stream.read` + park。`host_stream_close` で部分消費した readable end を解放 | `test_named_hoststreams_component_gate.sh` |
+| `for` からの host stream 消費 | iterand の型で await ループを選ぶ (#1366)。`{ Async }` 無しの row は reject | 同上 (`for` lane) |
+| WIT マッピング | `with Async` export → `async func`、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>` | `wit_gen_test` (D5 pin) |
+
+### 6.2 残作業
+
+| 項目 | 内容 | 依存 |
+|---|---|---|
+| **suspend lowering の適格性** (#1536) | closure パラメータ callee (`pred(v)`) が `scps_calls_ok` を通らない。`await(Stream::next(s))` が書けない直接の原因 (§2.2 末尾) | — (ADR-0076 本体) |
+| **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
+| **`ByteStream` の p3 接続** (#1539) | `lib/@vibe/console/byte_stream.vibe` の Stdin closure 版を `stream.read` へ。ADR-0089 は「pull closure の host shim を差し替えるだけ」と設計済み | — |
+| **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
+| **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
+| **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |
+| **M3** | outbound async HTTP client (`Future[Response]` + streaming body)、`wasi:http/service` + `middleware` world | 上の provider |
+| **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 全部 |
 
 ## 7. 未解決事項
 
-- canonical ABI の async 状態機械を codegen で生成する際の frame
-  レイアウト / suspend-resume の具体表現（M1 で確定）。
-- `Async` effect row と既存 effect row 推論の統合（await 透過性、`async fn`
-  の effect 注釈規則）。
-- `T` → canonical `T'` の表現（特に enum/record を `future`/`stream` 要素に
-  する場合）。
-- ~~wasmtime 46 リリース後の ratified `0.3.0` cutover とフラグ撤去のタイミング。~~
-  → resolved: wasmtime 46.0.1 で cutover 済み（#821、§5.1）。RC flag は
-  46 上で無害な no-op として残置（撤去は任意、実害なし）。
+- **await をまたぐ task 状態の表現** (ADR-0076 の CPS/suspend lowering)。
+  §3.11 が「ABI 側に追加機構は要らない」を実機で確定させたので、これは
+  未知ではなく**目標形の分かっている codegen 作業**。現在の `scps` パスが
+  取りこぼす形は §2.2 末尾に列挙してある。
+- `T` → canonical `T'` の表現 (特に enum/record を `future`/`stream` の要素に
+  する場合)。現在の host future/stream は `u32` / `u8` に限られている。
+- eager `Stream[T]` を退役させたあとの `ByteStream` の綴り
+  (nominal 型として残すか、AsyncIter の特殊化にするか)。ADR-0089 Decision 4
+  の boundary 規則 (何が WIT に出られるか) と一体で決める。
+
+> **解決済み**: canonical ABI の frame レイアウト / suspend-resume 表現
+> (§3.7〜§3.11 で確定、stackful lift + `waitable-set.wait` の完了順
+> ディスパッチ)。`Async` effect row と既存 row 推論の統合 (§2.1 —
+> `async` キーワードを導入せず row のラベルにした時点で特別規則は無い)。
+> wasmtime 46 の ratified `0.3.0` cutover (#821、§5.1)。

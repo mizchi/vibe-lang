@@ -16,7 +16,7 @@ import ./checker_trait.vibe {
 
 // #1081 step 3 Phase B: `Spawnable[r]` capture check for `TaskGroup::spawn` /
 // `TaskGroup::spawn_suspend`. Free-variable collection duplicated here
-// (rather than shared with checker_capture.vibe or codegen's own copy) —
+// (rather than shared with codegen's own copy) —
 // this package cannot import the root `@vibe/compiler` package (it is
 // itself a dependency of the root package; importing back would be a
 // package cycle), and codegen's copy lives in yet another separate
@@ -452,12 +452,18 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
 // independent of the captured value's type -- sharing a mutable cell
 // across the spawn boundary is exactly what `Spawnable[r]` exists to
 // forbid. `TypeEnv` (core/types.vibe) carries no mutability flag at all
-// (`EnvBind(String, Type, TypeEnv)`), and `check_mut_capture`/
-// `collect_mut_bindings` (root `@vibe/compiler` package's
-// checker_capture.vibe) already exist for a mutable-capture judgment but
-// are (a) unreachable from this package (see the file-header note above)
-// and (b) never actually wired into any real check today -- exported and
-// unit-tested only. Mutability is a purely SYNTACTIC property of the
+// (`EnvBind(String, Type, TypeEnv)`). A third mutable-capture judgment used
+// to live in the root package's checker_capture.vibe, but it was dead
+// (unreachable from here, never wired into any check, unit-tested only) AND
+// defective -- `collect_mut_bindings` handled only 5 Expr shapes and fell
+// through `_` for the rest, so it never descended into `EFn` and therefore
+// could not observe a closure capture at all; `analyze_captures_with_muts`
+// did not subtract shadowing on `ELet`/params/patterns, the same false
+// positive PR #1152 fixed here. It was removed in #1262 rather than left as
+// a trap for the next person who needs this judgment; the two live ones are
+// this walker and codegen's `is_mut_captured_in` (surfaced as `vibe
+// escapes`, runtime/escape_spans.vibe), which differ on purpose -- see
+// docs/side-effect-consolidation.md 4.5. Mutability is a purely SYNTACTIC property of the
 // SOURCE, though, so no env/Subst lookup is needed at all: walk the raw
 // AST, threading the set of `let mut` names actually VISIBLE at each
 // point (below), and at every nested `TaskGroup::spawn`/`spawn_suspend`

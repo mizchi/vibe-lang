@@ -84,7 +84,8 @@ literals only where the parser is expecting that literal head.
 
 ### Literals
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 42
 0xFF
 1.5f
@@ -178,7 +179,8 @@ Compatibility:
 
 ### Functions And Lambdas
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 (x) -> { x + 1 }
 (x, y) -> { x + y }
 x -> x * 2
@@ -188,10 +190,11 @@ _ + _
 
 Function types:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 () -> Int
 (Int, String) -> Bool
-(Int) -> Int with Error
+(Int) -> Int with Exception
 [T](T) -> T
 [T: Eq + Ord](T) -> Bool
 ```
@@ -200,21 +203,43 @@ Labeled arguments:
 
 ```vibe
 let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
-f(x=1, y=2)
-
-let g: (value?: Int) -> Int = (value?) -> {
-  match value {
-    Some(v) => v,
-    None => 0,
-  }
-}
-g()
-g(value=1)
+export let two: () -> Int = () -> { f(x = 1, y = 2) }
 ```
 
-`x~` is a required labeled parameter. `x?` is an optional labeled parameter;
-inside the function body it is bound as `Option[T]`. Default values in parameter
-lists are not part of the current surface syntax.
+`x~` is a required labeled parameter. A call site is either ALL positional or
+ALL labeled; mixing them is rejected ("call to f mixes positional and labeled
+arguments"). Default values in parameter lists are not part of the current
+surface syntax.
+
+`x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
+the call site may omit it:
+
+```vibe
+fn describe(x: Int, note?: String) -> String {
+  match note {
+    Some(s) => s,
+    None => "none"
+  }
+}
+
+export let a: () -> String = () -> { describe(1) }
+export let b: () -> String = () -> { describe(1, "hi") }
+```
+
+Rules:
+
+- Inside the body the parameter is bound at `Option[T]`, never at `T` — an
+  omitted argument has to produce a value, and `None` is that value.
+- A function TYPE spells it the same way, and means the same thing:
+  `(Int, note?: String) -> String` is `(Int, Option[String]) -> String`.
+- The call site writes the payload, not the `Option`: `describe(1, "hi")`,
+  not `describe(1, Some("hi"))`. `desugar_optional_args` wraps supplied
+  arguments in `Some` and fills omitted trailing ones with `None` before
+  checking, so the ordinary arity check sees a full argument list.
+- Only TRAILING optional parameters may be omitted. A call that is short by a
+  required parameter is still an arity error, and still reports the real count.
+- Labeled and positional supply both work, under the usual all-positional or
+  all-labeled rule: `describe(x = 1, note = "hi")` and `describe(x = 1)`.
 
 ### Type Aliases
 
@@ -261,6 +286,15 @@ impl [T: Eq] Eq for Array[T]
 
 Trait bodies are currently narrow and method-bearing trait support is
 implemented only where covered by checker/codegen tests.
+
+A **marker trait** (one declared with no methods, like `Eq` above) dispatches
+to the builtin `==` / `<`. Those are reference equality on `Array` / `Bytes`
+(a bare `[1, 2] == [1, 2]` is `false`, #1526), so a marker-trait impl on a
+container **is declarable but is not honoured as a bound** — passing an
+`Array` to a `[T: Eq]` parameter is rejected, with a diagnostic that says the
+impl exists and why it was refused. Give the trait a method and the impl
+resolves through the witness dictionary instead, in either spelling
+(`impl M for Array[Int]` or `impl [T] M for Array[T]`). See #1503.
 
 ### Effects
 
@@ -317,7 +351,8 @@ programs.
 
 ## Imports And Exports
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program (the `./lib.vibe` it imports is illustrative)
 import ./lib.vibe { foo, bar as baz }
 import ./lib.vibe { type Pair, trait Show, foo }
 import ./lib.vibe { Int }
@@ -348,7 +383,8 @@ workflow — is not syntax and is specified once, in
 
 ### Blocks
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 {
   let x = 1
   let y = 2
@@ -358,7 +394,8 @@ workflow — is not syntax and is specified once, in
 
 ### Control Flow
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 if cond { a } else { b }
 
 match value {
@@ -411,7 +448,8 @@ Rules:
 
 ### Calls, Fields, Indexing
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 f(x)
 f(x=1, y=2)
 Array::map(xs, _ * 2)
@@ -432,7 +470,8 @@ a field must be invoked as `(obj.callback)(args)`.
 
 ### Collections
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 [1, 2, 3]
 (1, "two", true)
 record { x: 1, y: 2 }
@@ -447,13 +486,14 @@ literal reports a located parse error naming the replacement.
 
 ### Effects And Error Boundaries
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 throw("message")
 risky()?
 
 perform Logger::Log("hello")
 
-handle { risky() } with Error {
+handle { risky() } with Exception {
   Throw(msg) => -1
 }
 
@@ -485,7 +525,8 @@ Precedence is high to low.
 
 Assignments are statements, not expressions:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 x = value
 x += 1
 x -= 1
@@ -496,7 +537,8 @@ x %= 2
 
 ## Pipe
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 x |> f
 x |> f(a, b)
 x |> f |> g
@@ -507,7 +549,8 @@ arr |> Array::length
 
 ## Patterns
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 _
 x
 42
@@ -522,7 +565,8 @@ A | B
 
 Match-arm guards:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 match x {
   v if v > 0 => v,
   _ => 0,
@@ -531,7 +575,8 @@ match x {
 
 Destructuring:
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 let (a, b) = pair
 let record { x, y } = rec
 guard opt is Some(v) else { return -1 }
@@ -556,7 +601,8 @@ of the function.
 
 ## Types
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 Int
 Float
 Double
@@ -573,7 +619,7 @@ Map[K, V]
 Option[T]
 (Int, String)
 (Int, String) -> Bool
-() -> Int with Error
+() -> Int with Exception
 [T](T) -> T
 [T: Eq + Ord](T) -> Bool
 ```
@@ -605,6 +651,18 @@ Rules:
   `effectset` keeps its braced member list (`effectset FsAll = { Fs::read_file,
   Fs::write_file }`) -- that `{ .. }` is a set literal on the right of `=`, not
   a `with` row, and it never had a braceless spelling to collapse into.
+
+- The exception effect is spelled `Exception`. `Error` was its name through the
+  ADR-0085 migration and is now rejected by name (#1461, #1501) in BOTH places
+  a source effect name appears -- a row item (`-> T with Error`) and the handled
+  effect (`handle { .. } with Error { .. }`). #1461 covered only the first, so
+  for one release the two positions disagreed while `vibe fmt` rewrote both;
+  #1501 closed that. `vibe fmt` remains the migration path, on the same
+  token-level argument as the braced row above.
+
+  `perform Error::Throw(x)` is unaffected and stays legal. An operation
+  qualifier is not a row item: it names the operation the runtime dispatches,
+  and no row is being spelled there.
 
   The separator is `+`, not `,`, because a comma cannot be told apart from an
   enclosing list's comma once the braces are gone: in `((Int) -> Int with A, B)`
@@ -668,13 +726,10 @@ kind carries today.
 
 ## Tests, Examples And Benches
 
-```vibe
+```vibe skip
+// doctest-skip: form catalogue: bare surface forms, not a compilable program
 test "arithmetic" {
   assert_eq(1 + 1, 2)
-}
-
-test smoke_case {
-  assert(true)
 }
 
 example "adding two numbers" {
@@ -686,8 +741,11 @@ bench "hot path" {
 }
 ```
 
-Quoted and bare test names are accepted. Quoted names are preferred in public
-examples.
+The test name is a STRING literal. A bare identifier
+(`test smoke_case { .. }`) is rejected -- `expected test name string` -- so the
+name is always quoted. This section said both forms were accepted until it was
+measured against the compiler; nothing was checking it, because docs/spec/ was
+outside the doctest list.
 
 `example "name" { .. }` (#819) is a documentation example. It is compiled and
 RUN exactly like a test -- that is the point of the form: a doc sample that

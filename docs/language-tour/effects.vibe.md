@@ -5,7 +5,7 @@ vibe uses an explicit effect system. Functions declare required effects with `wi
 ## Pure by default
 
 Functions without a `with` row cannot perform semantic effects such as I/O or
-let an `Error` escape. An empty row does not guarantee termination or exclude
+let an exception escape. An empty row does not guarantee termination or exclude
 panic, Wasm trap, or resource exhaustion.
 
 ```vibe
@@ -44,29 +44,29 @@ Rule of thumb:
 
 ### throw / handle boundary
 
-`throw` raises an `Error` effect. `handle` catches it locally at the boundary.
+`throw` raises the `Exception` effect. `handle` catches it locally at the boundary.
 
 ```vibe
-let safe_div: (Int, Int) -> Int with Error = (a, b) -> {
+let safe_div: (Int, Int) -> Int with Exception = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
-let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
+let result = handle { safe_div(8, 0) } with Exception { Throw(_) => -1 }
 // => -1
 ```
 
-Calling a `with Error` function requires the caller to propagate or handle
+Calling a `with Exception` function requires the caller to propagate or handle
 the effect:
 
 ```vibe
-let safe_div: (Int, Int) -> Int with Error = (a, b) -> {
+let safe_div: (Int, Int) -> Int with Exception = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
-let may_raise: (Int) -> Int with Error = (x) -> { safe_div(x, 0) }
+let may_raise: (Int) -> Int with Exception = (x) -> { safe_div(x, 0) }
 
 let safe: (Int) -> Int = (x) -> {
-  handle { safe_div(x, 0) } with Error { Throw(_) => 0 }
+  handle { safe_div(x, 0) } with Exception { Throw(_) => 0 }
 }
 ```
 
@@ -83,11 +83,11 @@ suberror AppError {
 // Single constructor shorthand
 suberror ParseError(String)
 
-let risky: () -> Int with Error = () -> {
+let risky: () -> Int with Exception = () -> {
   throw(NotFound("missing"))
 }
 
-let result = handle { risky() } with Error { Throw(_) => -1 }
+let result = handle { risky() } with Exception { Throw(_) => -1 }
 // => -1
 ```
 
@@ -106,12 +106,17 @@ let ask_once: () -> Int with Ask = () -> {
   perform Ask::Question(41)
 }
 
-let result = handle {
-  add(1, ask_once())
-} with Ask {
-  Question(v) => resume(add(v, 1))
+// ADR-0076: the handle lives inside a function. A `handle` in a TOP-LEVEL
+// `let` is not eligible for the evidence-passing migration, so
+// `let result = handle { .. } with Ask { .. }` fails to compile.
+fn answered() -> Int {
+  handle {
+    add(1, ask_once())
+  } with Ask {
+    Question(v) => resume(add(v, 1))
+  }
 }
-// => 43
+// answered() => 43
 ```
 
 - `perform Effect::Op(...)` requires `{ Effect }` in the effect set
@@ -151,9 +156,9 @@ let bad: [T]((T) -> T with e, T) -> T = (f, x) -> { f(x) }
 ```
 
 ```vibe
-// OK: Error is localized by handle
-let safe: [T]((T) -> T with Error, T) -> T = (f, x) -> {
-  handle { f(x) } with Error { Throw(_) => x }
+// OK: the exception is localized by handle
+let safe: [T]((T) -> T with Exception, T) -> T = (f, x) -> {
+  handle { f(x) } with Exception { Throw(_) => x }
 }
 ```
 
@@ -161,7 +166,7 @@ let safe: [T]((T) -> T with Error, T) -> T = (f, x) -> {
 
 | Effect | Operations |
 |--------|-----------|
-| `Error` | `throw(...)` |
+| `Exception` | `throw(...)` |
 | `Stdout` | `Stdout::write_char(...)`, `Stdout::write_stream(...)` |
 | `Stdin` | `Stdin::read_char()`, `Stdin::read_stream(...)` |
 | `Process` | `sh(...)`, `sh_lines(...)` |

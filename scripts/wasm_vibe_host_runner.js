@@ -27,6 +27,39 @@ function atomicWriteFileSync(filePath, data, encoding) {
     throw e;
   }
 }
+
+// Publish UTF-8 text without ever replacing an existing path. A same-directory
+// O_EXCL temp plus hard link gives no-replace atomic publication on filesystems
+// that support links. Existing regular files are accepted only when their raw
+// bytes exactly match; every I/O, unsupported, symlink, or nonregular case
+// fails closed. This is intentionally separate from atomicWriteFileSync:
+// immutable cache publication must never have last-writer-wins semantics.
+function publishImmutableTextSync(filePath, content) {
+  const data = Buffer.from(content, "utf8");
+  const tmp =
+    filePath + ".immutable-tmp-" + process.pid + "-" + Math.random().toString(36).slice(2, 12);
+  try {
+    fs.writeFileSync(tmp, data, { flag: "wx" });
+    try {
+      fs.linkSync(tmp, filePath);
+      return true;
+    } catch (e) {
+      if (e.code !== "EEXIST") return false;
+      try {
+        if (!fs.lstatSync(filePath).isFile()) return false;
+        return Buffer.compare(fs.readFileSync(filePath), data) === 0;
+      } catch (_) {
+        return false;
+      }
+    }
+  } catch (_) {
+    return false;
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch (_) {}
+  }
+}
 const readline = require("node:readline");
 
 // Backs the tcp_connect/tcp_read/tcp_write/tcp_close and
@@ -379,6 +412,23 @@ function allocHostBuffer(instance, size, align = 8) {
   return alignedPtr;
 }
 
+// A vibe string/bytes value is the fat pointer `(ptr << 32) | len` carried in an
+// i64. The JS-API hands an i64 to the host as a SIGNED BigInt, so as soon as the
+// guest allocates past 2 GiB the pointer's bit 31 is set, bit 63 of the packed
+// value is set, and an arithmetic `>> 32n` yields a NEGATIVE pointer. Reinterpret
+// the whole word as unsigned first: below 2 GiB this is the identity, above it it
+// is the difference between working and `string range out of bounds`.
+//
+// This is load-bearing for real workloads, not a theoretical edge: an FS-mode
+// compile of the whole CLI (`scripts/build_cli_core.sh`) with a COLD type-env
+// cache peaks around 2.6-2.7 GiB, and died on the very last write (the
+// `.funcmap` sidecar) after having produced a correct 22 MB wasm. A warm cache
+// stays under 2 GiB, which is why it reads as flaky.
+function unpackFatPointer(packed) {
+  const bits = BigInt.asUintN(64, packed);
+  return { ptr: Number(bits >> 32n), len: Number(bits & 0xffffffffn) };
+}
+
 function decodeTaggedString(instance, tagged) {
   if (typeof tagged !== "bigint") {
     throw new Error(`expected tagged string bigint, got ${typeof tagged}`);
@@ -402,8 +452,7 @@ function decodeTaggedString(instance, tagged) {
     }
   }
 
-  const ptr = Number(tagged >> 32n);
-  const len = Number(tagged & 0xffffffffn);
+  const { ptr, len } = unpackFatPointer(tagged);
   const start = ptr;
   const end = start + len;
   if (start < 0 || end < start) {
@@ -423,8 +472,7 @@ function decodeSelfhostPackedString(instance, packed) {
     throw new Error("missing exported memory for selfhost string decode");
   }
   const mem = new Uint8Array(instance.exports.memory.buffer);
-  const ptr = Number(packed >> 32n);
-  const len = Number(packed & 0xffffffffn);
+  const { ptr, len } = unpackFatPointer(packed);
   const start = ptr;
   const end = start + len;
   if (start < 0 || len < 0 || end < start || end > mem.length) {
@@ -441,8 +489,7 @@ function decodeSelfhostPackedBytes(instance, packed) {
     throw new Error("missing exported memory for selfhost bytes decode");
   }
   const mem = new Uint8Array(instance.exports.memory.buffer);
-  const ptr = Number(packed >> 32n);
-  const len = Number(packed & 0xffffffffn);
+  const { ptr, len } = unpackFatPointer(packed);
   const end = ptr + len;
   if (ptr < 0 || len < 0 || end < ptr || end > mem.length) {
     throw new Error(`selfhost bytes range out of bounds: ${ptr}..${end}`);
@@ -2169,6 +2216,11 @@ async function main() {
         atomicWriteFileSync(filePath, content, "utf8");
         return 0n;
       },
+      fs_publish_immutable_text(pathTagged, contentTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        const content = decodeStringArg(instanceRef, contentTagged);
+        return encodeHostBool(publishImmutableTextSync(filePath, content));
+      },
       fs_write_bytes(pathTagged, bytesTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         const bytes = decodeHostBytes(instanceRef, bytesTagged);
@@ -2442,6 +2494,9 @@ async function main() {
     },
     WriteFile(pathTagged, contentTagged) {
       return vibeModule.fs_write_file(pathTagged, contentTagged);
+    },
+    PublishImmutableText(pathTagged, contentTagged) {
+      return vibeModule.fs_publish_immutable_text(pathTagged, contentTagged);
     },
     WriteBytes(pathTagged, bytesTagged) {
       return vibeModule.fs_write_bytes(pathTagged, bytesTagged);
@@ -3147,11 +3202,12 @@ async function main() {
   }
 }
 
+if (require.main === module) {
 main().catch((err) => {
   // #946(4): a pathologically deep expression (e.g. thousands of chained
   // `+`) recurses the checker (itself compiled to wasm) past the native call
   // stack. That blows up the whole wasm instance -- nothing inside the
-  // compiled program's own `handle {...} with Error {...}` can intercept a
+  // compiled program's own `handle {...} with Exception {...}` can intercept a
   // host-level stack overflow, so it used to surface as a raw uncaught-
   // exception crash dump, which the `vibe check`/`vibe diagnostics` shell
   // wrappers (`>/dev/null 2>&1 || true`) silently swallowed into "clean".
@@ -3251,3 +3307,6 @@ main().catch((err) => {
   console.error(err && err.stack ? err.stack : String(err));
   process.exit(1);
 });
+}
+
+module.exports = { publishImmutableTextSync };
