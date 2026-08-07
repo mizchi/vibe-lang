@@ -28,7 +28,7 @@ import @vibe/compiler/core {
   subst_add_bound,
   subst_apply,
   subst_bounds_for,
-  trait_method_sig_deep,
+  trait_method_sig_binders_deep,
   type_implements_trait,
   type_name_has_iterator_impl,
   type_to_string,
@@ -197,13 +197,17 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
             }
             if pending {
               let trait_name = Array::get(bounds, bi)
-              match trait_method_sig_deep(env, trait_name, method) {
+              match trait_method_sig_binders_deep(env, trait_name, method) {
                 Some(sig) => {
-                  let (params_te, ret_te) = sig
+                  // #1512: the trait header's params and the method's own
+                  // generics are binders, so they must shadow `defs` —
+                  // otherwise `import { Hue as T }` captures the `T` of
+                  // `trait Boxed[T] { unwrap(Self) -> T }`.
+                  let (params_te, ret_te, binders) = sig
                   let resolved_params = for pte in params_te {
-                    relax_unknown_named(subst_self_in_type(resolve_type_expr(pte, defs), self_ty), defs)
+                    relax_unknown_named(subst_self_in_type(resolve_type_expr_shadowed(pte, defs, binders), self_ty), defs)
                   }
-                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr(ret_te, defs), self_ty), defs)
+                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr_shadowed(ret_te, defs, binders), self_ty), defs)
                   result = Some(CtFn(resolved_params, resolved_ret, None))
                 },
                 None => ()
