@@ -11,8 +11,10 @@ import ./parser_base.vibe {
   empty_import_items,
   expect_tk,
   has_qualified_pattern_refs,
+  has_test_effect_rows,
   parse_binding_name,
   parse_derive_names,
+  parse_effect_row,
   parse_effect_stmt,
   parse_enum_stmt,
   parse_impl_stmt_dispatch,
@@ -24,9 +26,11 @@ import ./parser_base.vibe {
   parse_type,
   parse_type_alias_stmt,
   peek,
+  record_test_effect_row,
   skip_braced_body,
   skip_derive,
   take_qualified_pattern_refs,
+  take_test_effect_rows,
   tk_name
 }
 
@@ -60,10 +64,26 @@ fn empty_names() -> Array[String] {
   ], 0, 0)
 }
 
+/// #1508: `with <row>` between the name and the body widens this test's ambient
+/// effect row (`docs/spec/test-example-capabilities.md`). The row is logged and
+/// folded into a trailing `STestEffectRows` marker rather than stored on
+/// `STest` -- see the marker's declaration in @vibe/ast for why.
+fn parse_test_row_suffix(tokens: Array[Token], name: String, pos: Int) -> Int with Exception {
+  match peek(tokens, pos) {
+    TWith => {
+      let (row, after) = parse_effect_row(tokens, pos + 1)
+      record_test_effect_row(name, row)
+      after
+    },
+    _ => pos
+  }
+}
+
 fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
-      let br = expect_tk(tokens, pos + 1, "{")
+      let after_row = parse_test_row_suffix(tokens, name, pos + 1)
+      let br = expect_tk(tokens, after_row, "{")
       let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
       (STest(name, body), end)
     },
@@ -91,7 +111,8 @@ fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (St
 fn parse_bench_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
-      let br = expect_tk(tokens, pos + 1, "{")
+      let after_row = parse_test_row_suffix(tokens, name, pos + 1)
+      let br = expect_tk(tokens, after_row, "{")
       let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
       (SBench(name, body), end)
     },
@@ -804,11 +825,19 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
 fn attach_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[Stmt] {
   // Emptiness first: the drain allocates even when it has nothing to hand
   // back, and a program with no qualified pattern is the common case.
-  if has_qualified_pattern_refs() {
+  let with_refs = if has_qualified_pattern_refs() {
     Array::push(stmts, SQualifiedPatternRefs(take_qualified_pattern_refs()))
     stmts
   } else {
     stmts
+  }
+  // #1508: same placement rule -- appended LAST so no existing statement index
+  // moves, and omitted entirely when no test declared a row.
+  if has_test_effect_rows() {
+    Array::push(with_refs, STestEffectRows(take_test_effect_rows()))
+    with_refs
+  } else {
+    with_refs
   }
 }
 
@@ -1182,6 +1211,11 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
   // which never type-checks, so there is no marker to attach the qualified
   // pattern refs to -- drop them rather than let them outlive this parse and
   // be reported against some later file's enums.
+  if has_test_effect_rows() {
+    let _dropped_rows = take_test_effect_rows()
+  } else {
+    ()
+  }
   if has_qualified_pattern_refs() {
     let _dropped = take_qualified_pattern_refs()
   } else {

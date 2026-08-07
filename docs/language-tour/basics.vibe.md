@@ -101,20 +101,31 @@ export let call_f: () -> String = () -> {
 }
 ```
 
-`x?` parses, but the optional-argument SEMANTICS are not implemented (#1500).
-Today a `?` parameter behaves exactly like a required one:
+`x?` marks an OPTIONAL parameter (#1500). The caller may omit it, and the body
+receives an `Option[T]` — the declared type of a `?` parameter is `Option[T]`,
+so the omitted case has something to be:
 
 ```vibe
-// `value` is bound as `Int`, NOT `Option[Int]`, and the caller may not omit it
-// (`g(x = 1)` is `function arity mismatch for g: expected 2 args, got 1`).
+// `value` is bound as `Option[Int]`; the caller may omit it entirely.
 let g: (x~: Int, value?: Int) -> Int = (x~, value?) -> {
-  x + value
+  x + match value {
+    Some(v) => v,
+    None => 0
+  }
 }
 
 export let call_g: () -> Int = () -> {
   g(x = 1, value = 5)   // => 6
 }
+
+export let call_g_omitted: () -> Int = () -> {
+  g(x = 1)              // => 1
+}
 ```
+
+Only TRAILING optional parameters may be omitted, and omitting a required one
+is still an arity error. A supplied argument is wrapped for you (`value = 5`,
+not `value = Some(5)`).
 
 ## Control Flow
 
