@@ -11,11 +11,33 @@ struct Point {
   x: Int; y: Int
 }
 
+enum Color {
+  Red;
+  Green;
+  Blue
+}
+
 trait Eq
 
 impl Eq for Int
 
+// Declarable, but NOT usable as a bound (#1503): `Eq` is a marker trait (no
+// methods), so it dispatches to the builtin `==` -- and that is reference
+// equality on `Array` (`[1, 2] == [1, 2]` is `false`). Passing an `Array` to a
+// `[T: Eq]` bound is refused for that reason. `Measured` below is the form that
+// works for a container: give the trait a method and it dispatches through the
+// witness dictionary.
 impl [T: Eq] Eq for Array[T]
+
+trait Measured {
+  measure(Self) -> Int
+}
+
+impl [T] Measured for Array[T] {
+  measure(self) -> Int {
+    Array::length(self)
+  }
+}
 
 // `trait_keep2` / `trait_identity2` below carry a `[T: Eq + Show]` bound and
 // are called with `Int`, so the instance has to exist here the same way the
@@ -78,7 +100,10 @@ fn make_pair[A, B](a: A, b: B) -> (A, B) {
   (a, b)
 }
 
-let map_value = Map::from_pairs([("a", 1), ("b", 2)])
+let map_value = Map::from_pairs([
+  ("a", 1),
+  ("b", 2)
+])
 
 let point_sum = match point {
   Point::{
@@ -99,9 +124,9 @@ let label_call = labeled(1, "ok")
 
 let path_value = path("examples/syntax.vibe")
 
-let pipe_basic = 1|>add(2)|>mul(3)
+let pipe_basic = 1 |> add(2) |> mul(3)
 
-let pipe_ident = "hello"|>String::length
+let pipe_ident = "hello" |> String::length
 
 fn trait_keep[T: Eq](x: T) -> T {
   x
@@ -127,7 +152,8 @@ let built_array = {
 
 let float_value = 1.25f
 
-let float_sum = float_value + 2.0f      // `add` is Int-only; use `+` for Float
+let float_sum = float_value + 2.0f
+// `add` is Int-only; use `+` for Float
 
 let match_guard = match 1 {
   v if lt(v, 2) => 1,
@@ -184,7 +210,11 @@ fn trait_identity[T: Eq](x: T) -> T {
   x
 }
 
-let trait_array = trait_identity([
+fn trait_measured_keep[T: Measured](x: T) -> T {
+  x
+}
+
+let trait_array = trait_measured_keep([
   1,
   2,
   3
@@ -381,13 +411,18 @@ test "Array::reverse" {
 }
 
 test "Map::keys" {
-  let m = Map::from_pairs([("a", 1), ("b", 2)])
+  let m = Map::from_pairs([
+    ("a", 1),
+    ("b", 2)
+  ])
   let k = Map::keys(m)
   assert(Array::length(k) == 2)
 }
 
 test "Map::has_key" {
-  let m = Map::from_pairs([("x", 10)])
+  let m = Map::from_pairs([
+    ("x", 10)
+  ])
   assert(Map::has_key(m, "x"))
   assert(not(Map::has_key(m, "y")))
 }
@@ -421,23 +456,48 @@ test "line_comment" {
 }
 
 test "Array::any" {
-  assert(Array::any([1, 2, 4], x -> x > 3))
-  assert(not(Array::any([1, 2, 3], x -> x > 5)))
+  assert(Array::any([
+    1,
+    2,
+    4
+  ], x -> x > 3))
+  assert(not(Array::any([
+    1,
+    2,
+    3
+  ], x -> x > 5)))
 }
 
 test "Array::all" {
-  assert(Array::all([1, 2, 3], x -> x > 0))
-  assert(not(Array::all([1, 2, 3], x -> x > 1)))
+  assert(Array::all([
+    1,
+    2,
+    3
+  ], x -> x > 0))
+  assert(not(Array::all([
+    1,
+    2,
+    3
+  ], x -> x > 1)))
 }
 
 test "Array::find" {
-  let found = Array::find([1, 2, 3, 4], x -> x > 2)
+  let found = Array::find([
+    1,
+    2,
+    3,
+    4
+  ], x -> x > 2)
   if found is Some(v) {
     assert(v == 3)
   } else {
     assert(false)
   }
-  let not_found = Array::find([1, 2, 3], x -> x > 10)
+  let not_found = Array::find([
+    1,
+    2,
+    3
+  ], x -> x > 10)
   assert(not_found is None)
 }
 
@@ -498,11 +558,10 @@ test "record_shorthand_pat" {
 }
 
 test "or_pattern_enum" {
-  enum Color {
-    Red;
-    Green;
-    Blue
-  }
+  // `Color` is declared at top level on purpose: a FUNCTION-LOCAL `enum`
+  // declaration miscompiles (#1525) -- its constructors match no pattern, so
+  // this test silently took the `_` arm (and trapped without one). The subject
+  // here is the or-pattern, not where the enum is declared.
   let warm: (Color) -> Bool = (c) -> {
     match c {
       Red|Green => true,
@@ -524,8 +583,8 @@ test "or_pattern_int" {
 
 test "method_chain" {
   let s = "hello world"
-  let sub = s|>String::substring(0, 5)
-  assert((sub|>String::length()) == 5)
+  let sub = s |> String::substring(0, 5)
+  assert((sub |> String::length()) == 5)
 }
 
 test "index_array" {
@@ -574,11 +633,15 @@ test "cmp_lte" {
 }
 
 test "arrow_fn_basic" {
-  let double: (Int) -> Int = (x) -> { x + x }
+  let double: (Int) -> Int = (x) -> {
+    x + x
+  }
   assert(double(5) == 10)
 }
 
 test "arrow_fn_no_ret_type" {
-  let inc: (Int) -> Int = (x) -> { x + 1 }
+  let inc: (Int) -> Int = (x) -> {
+    x + 1
+  }
   assert(inc(3) == 4)
 }

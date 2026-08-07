@@ -2058,21 +2058,85 @@ fn struct_impl_target_matches(target: Type, resolved: Type) -> Bool {
   }
 }
 
-fn type_implements_check_env(e: TypeEnv, trait_name: String, resolved: Type) -> Bool {
+/// #1503: a CONCRETE impl on a parameterized type (`impl Show for Array[Int]`)
+/// records only the head name -- `parse_impl_stmt` reads the identifier after
+/// `for` and `skip_bracketed_args` discards `[Int]` -- so the target lands in
+/// the env as the bare `CtNamed("Array", [])`. `types_equal` then never matches
+/// the concrete `CtArray(CtInt)` at the use site and the impl is invisible,
+/// while the GENERIC spelling of the same impl (`impl [T] Show for Array[T]`,
+/// which goes through EnvTraitImplGen) resolves by constructor and works.
+///
+/// Match by constructor here so the two spellings behave identically. Erasing
+/// the type args on the concrete side loses nothing the env ever had: the
+/// parser already threw them away, so `impl Show for Array[Int]` and
+/// `impl Show for Array[String]` are the same declaration today. Narrowing an
+/// impl to one instantiation needs the parser to keep the args first (that is a
+/// separate, larger change; noted on #1503).
+fn concrete_impl_ctor_matches(target: Type, resolved: Type) -> Bool {
+  let head = type_constructor_name(resolved)
+  match target {
+    CtNamed(tname, targs) => Array::length(targs) == 0 && head != "" && tname == head,
+    _ => false
+  }
+}
+
+fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, resolved: Type) -> Bool {
   match e {
     EnvEmpty => false,
-    EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
-    EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_env(rest, trait_name, resolved),
+    EnvBind(_, _, rest) => type_implements_check_env(rest, full, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_env(rest, full, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
-      if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) {
+      // The constructor fallback carries the SAME soundness gate as the generic
+      // path (see trait_is_method_bearing): a marker trait dispatches to the
+      // builtin `==` / `<`, and those are reference equality on `Array` /
+      // `Bytes`, so honouring `impl Eq for Array[Int]` would make `==` silently
+      // wrong on the very type the bound was written for.
+      if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (concrete_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full, trait_name)) {
         true
       }
-      else type_implements_check_env(rest, trait_name, resolved)
-    } else type_implements_check_env(rest, trait_name, resolved),
-    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+      else type_implements_check_env(rest, full, trait_name, resolved)
+    } else type_implements_check_env(rest, full, trait_name, resolved),
+    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, full, trait_name, resolved),
     EnvFlat(_) => false,
-    EnvCached(_, _, rest) => type_implements_check_env(rest, trait_name, resolved)
+    EnvCached(_, _, rest) => type_implements_check_env(rest, full, trait_name, resolved)
   }
+}
+
+/// #1503 diagnostics: an impl for this trait IS declared on the resolved type's
+/// constructor (either spelling), it just did not satisfy the bound. Lets the
+/// bound checker say "declared but not usable, and here is why" instead of the
+/// flatly false `no impl \`Eq\` for \`Array[Int]\`` when the user wrote that
+/// impl three lines above.
+export fn trait_impl_declared_for_ctor(e: TypeEnv, trait_name: String, resolved: Type) -> Bool {
+  let head = type_constructor_name(resolved)
+  if head == "" {
+    false
+  } else {
+    match e {
+      EnvEmpty => false,
+      EnvBind(_, _, rest) => trait_impl_declared_for_ctor(rest, trait_name, resolved),
+      EnvTraitDef(_, _, _, _, rest, _, _) => trait_impl_declared_for_ctor(rest, trait_name, resolved),
+      EnvTraitImpl(tname, target, rest) => if tname == trait_name && type_constructor_name(target) == head {
+        true
+      } else {
+        trait_impl_declared_for_ctor(rest, trait_name, resolved)
+      },
+      EnvTraitImplGen(itrait, _, _, target, rest) => if itrait == trait_name && type_constructor_name(target) == head {
+        true
+      } else {
+        trait_impl_declared_for_ctor(rest, trait_name, resolved)
+      },
+      EnvFlat(_) => false,
+      EnvCached(_, _, rest) => trait_impl_declared_for_ctor(rest, trait_name, resolved)
+    }
+  }
+}
+
+/// #1503 diagnostics: true when `trait_name` is declared with no methods (a
+/// marker trait). Exported so the bound checker can explain the marker-trait
+/// gate; the gate itself lives in trait_is_method_bearing.
+export fn trait_is_marker(env: TypeEnv, trait_name: String) -> Bool {
+  not(trait_is_method_bearing(env, trait_name))
 }
 
 export fn collect_subst_bounds_pairs(s: Subst) -> Array[(Int, Array[String])] {
@@ -2123,20 +2187,42 @@ export fn generalize(s: Subst, ty: Type) -> Type {
   }
 }
 
-fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, trait_name: String, resolved: Type) -> Bool {
+/// Does an impl of some SUBTRAIT of `trait_name` cover `resolved`? (`impl Child
+/// for P` satisfies a `[T: Base]` bound when `trait Child: Base`.)
+///
+/// #1503 follow-up (Codex review on #1528): both halves of this scan were
+/// incomplete in the same way as the direct scan was.
+///
+///   * `EnvTraitImpl` matched only `types_equal` / `struct_impl_target_matches`,
+///     so a concrete impl on a parameterized type (whose target the parser
+///     erased to the bare `CtNamed("Array", [])`) never matched -- the same hole
+///     `concrete_impl_ctor_matches` closes for the direct scan, with the same
+///     method-bearing gate on the BOUND trait (that is the trait the caller
+///     dispatches through).
+///   * `EnvTraitImplGen` was skipped outright, so `impl [T] Child for Array[T]`
+///     could not satisfy `[T: Base]` at all.
+fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> Bool {
   match e2 {
     EnvEmpty => false,
-    EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) {
+    EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (concrete_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full_env, trait_name)) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
       }
-      else type_implements_check_super(rest, full_env, trait_name, resolved)
-    } else type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+      else type_implements_check_super(rest, full_env, s, trait_name, resolved)
+    } else type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvTraitImplGen(itrait, _, bounds, target, rest) => {
+      let head = type_constructor_name(resolved)
+      let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full_env, trait_name) && trait_is_subtrait(full_env, itrait, trait_name) && itrait != trait_name
+      if shape_ok && generic_bounds_hold(full_env, s, bounds, type_args_of(resolved)) {
+        true
+      } else {
+        type_implements_check_super(rest, full_env, s, trait_name, resolved)
+      }
+    },
     EnvFlat(_) => false,
-    EnvCached(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
+    EnvCached(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved)
   }
 }
 
@@ -2144,7 +2230,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, trait_name: Strin
 /// against a concrete type (`Array[Int]` and the impl target `Array` both have
 /// head "Array"). Returns "" for types with no nominal constructor (tuples,
 /// primitives, vars) so they never match a generic impl.
-fn type_constructor_name(ty: Type) -> String {
+export fn type_constructor_name(ty: Type) -> String {
   match ty {
     CtArray(_) => "Array",
     CtOption(_) => "Option",
@@ -2266,20 +2352,20 @@ fn generic_bounds_hold(full: TypeEnv, s: Subst, bounds: Array[(String, Array[Str
 
 export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: String) -> Bool {
   let resolved = subst_apply(s, ty)
-  if type_implements_check_env(env, trait_name, resolved) {
+  if type_implements_check_env(env, env, trait_name, resolved) {
     true
   }
   else if generic_impl_satisfies(env, env, s, trait_name, resolved) {
     true
   }
   else {
-    let supers = trait_supers(env, trait_name)
-    let slen = Array::length(supers)
-    if slen == 0 {
-      false
-    }
-    else {
-      type_implements_check_super(env, env, trait_name, resolved)
-    }
+    // #1503 follow-up: this used to bail out when the BOUND trait had no
+    // supertraits of its own, which is the wrong question -- what satisfies a
+    // `[T: Base]` bound is an impl of some trait that has `Base` as a super,
+    // and `Base` itself being a root trait is the normal case for that. The
+    // guard made `trait Child: Base` + `impl Child for P` + `[T: Base]` report
+    // `no impl Base for P` for EVERY type, parameterized or not (measured on a
+    // plain struct), i.e. supertrait-satisfied bounds never worked at all.
+    type_implements_check_super(env, env, s, trait_name, resolved)
   }
 }
