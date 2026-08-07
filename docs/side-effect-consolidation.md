@@ -705,9 +705,52 @@ lowering (1点)
    なった)。**pass の unit test は、pass を wire する前のコンパイラで
    green にしてから wire する**のが正しい順序だった。
 
-4. 案としての評価は変わらない(surface の 10–28× 差は残っている)。
-   ただし次回は (a) unit test 先行、(b) 2 lane 同時 wiring、
-   (c) bump lane の B/op を唯一の発火判定にする、の3点を守ること。
+4. **[解決済] 真の root cause: `loop` は ELoop に parse されない。**
+   追加調査(AST ダンプ + `parse_loop_primary` の読解)で判明 ——
+   parser がすべての `loop (params)` を parse 時に
+   `let mut <p> = <init>` + `let mut __loop_result` + `while true` に脱糖し、
+   `continue(args)` は `let __ltK = argK; pK = __ltK; continue` に、
+   `let (i, acc) = s` は**単一 arm の tuple EMatch** になる。
+   **ELoop ノードは parser が一切生成しない**(codegen の ELoop ハンドラは
+   死んだレガシー)。初回実装は「AST に存在しないノード」をマッチしていた。
+   前回 3. で「観測汚染」と書いたのも誤診で、プローブに ELetMut アームが
+   無かっただけ。
+
+5. **正しいターゲットは「tuple リテラル初期化の `ELetMut`」**で、再実装して
+   着地した(§6.5)。教訓 (a) unit test 先行 (b) 2 lane 同時 wiring
+   (c) bump lane の heap delta を唯一の発火判定にする、はそのまま有効だった
+   —— 実際 (a) が binder カウントのバグを wire 前に捕まえた。
+
+### 6.5 実装記録: tuple `let mut` unbox(着地)
+
+対象: `ELetMut(s, ETuple(n), body)` で、`s` の全出現が
+単一 arm tuple match(読み)/ `.K` 射影(読み)/ tuple リテラル代入(書き、
+直接または単一使用の `__lt` temp 経由)のもの。書き換えは N 本の scalar
+`let mut` + match→ELet 展開 + 要素ごと代入(直接代入は fresh temp を挟むので
+`s = (s.1, s.0)` の swap も壊れない。`__lt` temp 形は元々代入前に全評価する
+ので、その要素 let をそのまま temp に転用)。
+
+健全性は**出現数の会計**で取る: `utl_count`(全 Expr variant を走査、
+binder 再束縛と closure 言及は poison 値)と `utl_recognized`(認識形のみ
+数える)が一致したときだけ書き換える。認識漏れ・未知の出現が1つでもあれば
+不発 = 常に正しい側に倒れる。
+
+検証(すべて green):
+- unit probe(wire **前**のクリーンコンパイラで実行): 適格3形が発火、
+  非適格(関数へ丸ごと渡す)は不発
+- fixture 8 形の挙動ピン、bench ファイルの test
+- **bump lane heap delta: 16016 → 0 B**(entry lane / `__no_entry__`
+  module lane の両方で確認 —— 教訓 (b)(c) の適用)
+- `pkf run test`(fixpoint)、`rc_corpus_parity` 141/141
+
+効果: **`floor/8_tuple_loop` 12548 → 930 ns / 16016 → 0 B。
+`state/2_loop_param`(931 ns)と完全に同着** —— §6.1 の
+「surface の選択が性能を決めるのをやめさせる」の最初の実例が実測で成立した。
+`loop (s = (0,0))` と `loop (i = 0, acc = 0)` はもう同じコスト。
+
+制限(v1、意図的): enum 値の付け替え(state/4 等)は対象外(FBIP の領分)。
+ネストした同名 `__lt` temp を持つ多重ループは保守的に不発。
+wasm-gc / interp lane は据え置き(意味論保存なので differential gate は一致)。
 
 ---
 

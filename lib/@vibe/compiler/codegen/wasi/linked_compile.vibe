@@ -28,7 +28,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/normalize {
-  lift_match_scrutinees, uniquify_shadowed_bindings
+  lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings
 }
 
 import @vibe/compiler/perceus {
@@ -2891,6 +2891,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // type params are stripped (just below). No-op unless a method-bearing trait
   // is declared, and idempotent if an earlier pipeline stage already desugared.
   desugar_trait_dicts(stmts)
+  // #1262: split eligible tuple-literal `let mut`s (what every `loop (s = ..)`
+  // lowers to) into scalar `let mut`s -- no per-iteration tuple box. Runs on
+  // both linear entries (compile_module has the same call); gc/interp lanes
+  // keep the boxed form, and the rewrite is semantics-preserving so the
+  // cross-lane differential gates still agree.
+  unbox_tuple_loop_params(stmts)
   // Top-level `let f = g` function aliases: retarget references to the final
   // EFn def so calls do not route through the 0-param thunk registration
   // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
