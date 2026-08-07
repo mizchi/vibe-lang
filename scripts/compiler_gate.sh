@@ -5288,18 +5288,24 @@ echo "[compiler-gate] local effectful closure passed through trivial wrapper ok 
 echo "[compiler-gate] 40aj/40 trivial-wrapper inlining leaves wrapper-as-value references correct (#1070 narrow slice)"
 lcwrvdir="_build/_gate_local_closure_wrapper_referenced_as_value"
 rm -rf "$lcwrvdir"; mkdir -p "$lcwrvdir"
-sed '/^__DATA__$/,$d' fixtures/effect_local_closure_wrapper_referenced_as_value.vibe > "$lcwrvdir/src.vibe"
+# #1571 (first slice): this fixture carries its expectation as an
+# `inspect(main(), "30")` test block rather than a `__DATA__` tail, so it is
+# compiled AS-IS -- no `sed` strip, no temp copy (its `import ../lib/@vibe/core`
+# has to resolve from fixtures/ anyway) -- and the expected value lives beside
+# the code that produces it, updatable with `vibe test --update`. Entry is
+# `__no_entry__`, which synthesizes the test-block runner; a mismatch prints
+# actual vs expected from inside the run, so the output is surfaced on failure.
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$lcwrvdir/src.vibe" "$lcwrvdir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_local_closure_wrapper_referenced_as_value.vibe "$lcwrvdir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$lcwrvdir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe did not compile" >&2
   cat "$lcwrvdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-lcwrv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcwrvdir/out.wasm" 2>&1 | tail -1)"
-if [ "$lcwrv_out" != "30" ]; then
-  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe got '$lcwrv_out' (want 30) -- trivial-wrapper inlining broke a wrapper-as-value reference" >&2
+if ! lcwrv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$lcwrvdir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe tests failed -- trivial-wrapper inlining broke a wrapper-as-value reference" >&2
+  echo "$lcwrv_out" >&2
   exit 1
 fi
 rm -rf "$lcwrvdir"
