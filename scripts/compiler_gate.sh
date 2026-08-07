@@ -9837,4 +9837,8 @@ fi
 rm -rf "$cgdir"
 echo "[compiler-gate] codegen unresolved-name error is legible ok"
 
+echo "[compiler-gate] 96/96 host-side tracing spans nest, propagate and record failures (docs/tracing-design.md step 0)"
+bash scripts/test_trace_spans.sh
+echo "[compiler-gate] tracing spans ok"
+
 echo "[compiler-gate] ok"
