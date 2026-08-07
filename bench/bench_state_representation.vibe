@@ -41,6 +41,14 @@ struct Cell {
   mut n: Int
 }
 
+
+struct Cell4 {
+  mut a: Int;
+  mut b: Int;
+  mut c: Int;
+  mut d: Int
+}
+
 effect State {
   Get() -> Int;
   Put(Int) -> Unit
@@ -262,6 +270,111 @@ fn map5_plain(l: IntList) -> IntList {
   map_inc_plain(map_inc_plain(map_inc_plain(map_inc_plain(map_inc_plain(l)))))
 }
 
+
+//# ---- floor/: 「最速の形」との差を、欠けている最適化ごとに分解する
+//#
+//# どれも同じ仕事。違うのは状態と呼び出しの置き場所だけ。1 との差が
+//# そのまま「その形を local に落とすのに必要な最適化」の値段になる。
+
+/// 0. ループ骨格だけ (加算なし)。ハードウェア下限の確認。
+fn floor_empty(n: Int) -> Int {
+  let mut i = 0
+  while i < n {
+    i = i + 1
+  }
+  i
+}
+
+fn add2(a: Int, b: Int) -> Int {
+  a + b
+}
+
+/// 2. 状態は local のまま、加算だけ top-level 関数呼び出しにする。
+///    1 との差 = **ユーザ関数の inline が無い**ことの値段。
+fn floor_direct_call(n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    acc = add2(acc, i)
+    i = i + 1
+  }
+  acc
+}
+
+
+/// 2b. 2 と同じ呼び出し頻度だが引数が定数 —— loop-borrowed でないので
+///     call site の dup が emit されない。2 との差が**そのまま
+///     「scalar 引数への `__rt_rc_dup`」の値段**になる (RC でのみ効く)。
+fn floor_call_const_args(n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    acc = acc + add2(3, 4)
+    i = i + 1
+  }
+  acc
+}
+
+/// 3. 同じ加算を closure 経由で。2 との差 = 間接呼び出しの値段
+///    (捕獲は無いので ref cell は無関係)。
+fn floor_closure_call(n: Int) -> Int {
+  let f = (a: Int, b: Int) -> Int {
+    a + b
+  }
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    acc = f(acc, i)
+    i = i + 1
+  }
+  acc
+}
+
+/// 6. 4 つの状態を struct の mut フィールドに置く。
+fn floor_struct4(n: Int) -> Int {
+  let c = Cell4::{ a: 0, b: 0, c: 0, d: 0 }
+  let mut i = 0
+  while i < n {
+    c.a = c.a + i
+    c.b = c.b + 1
+    c.c = c.c + 2
+    c.d = c.d + 3
+    i = i + 1
+  }
+  c.a + c.b + c.c + c.d
+}
+
+/// 7. 6 と同じ仕事を 4 つの local で。6 との差 = **scalar replacement が
+///    無い**ことの値段 (この struct は関数の外へ一切出ない)。
+fn floor_local4(n: Int) -> Int {
+  let mut a = 0
+  let mut b = 0
+  let mut c = 0
+  let mut d = 0
+  let mut i = 0
+  while i < n {
+    a = a + i
+    b = b + 1
+    c = c + 2
+    d = d + 3
+    i = i + 1
+  }
+  a + b + c + d
+}
+
+/// 8. loop パラメータをタプル 1 個にまとめる。2 個の scalar パラメータ
+///    (state/2) との差 = タプルが箱になっているかどうか。
+fn floor_tuple_loop(n: Int) -> Int {
+  loop (s = (0, 0)) {
+    let (i, acc) = s
+    if i >= n {
+      break acc
+    } else {
+      continue ((i + 1, acc + i))
+    }
+  }
+}
+
 //# Tests
 
 test "state variants all agree" {
@@ -274,6 +387,16 @@ test "state variants all agree" {
   assert_eq(sum_let_mut_captured(100), 4950)
   assert_eq(sum_value_shared(100), 4950)
   assert_eq(sum_value_fused(100), 4950)
+}
+
+test "floor variants all agree" {
+  assert_eq(floor_empty(100), 100)
+  assert_eq(floor_direct_call(100), 4950)
+  assert_eq(floor_call_const_args(100), 700)
+  assert_eq(floor_closure_call(100), 4950)
+  assert_eq(floor_local4(100), 5550)
+  assert_eq(floor_struct4(100), 5550)
+  assert_eq(floor_tuple_loop(100), 4950)
 }
 
 test "fbip variants all agree" {
@@ -347,4 +470,32 @@ bench "fbip/4_list_map5_plain" {
 
 bench "fbip/5_list_map5_fused" {
   let _ = sum_list(map5_fused(build_list(1000)))
+}
+
+bench "floor/0_empty_loop" {
+  let _ = floor_empty(1000)
+}
+
+bench "floor/2_direct_call" {
+  let _ = floor_direct_call(1000)
+}
+
+bench "floor/2b_call_const_args" {
+  let _ = floor_call_const_args(1000)
+}
+
+bench "floor/3_closure_call" {
+  let _ = floor_closure_call(1000)
+}
+
+bench "floor/6_struct4" {
+  let _ = floor_struct4(1000)
+}
+
+bench "floor/7_local4" {
+  let _ = floor_local4(1000)
+}
+
+bench "floor/8_tuple_loop" {
+  let _ = floor_tuple_loop(1000)
 }

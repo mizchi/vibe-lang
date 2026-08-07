@@ -41,9 +41,28 @@
    `Hash-`/`Sorted-` は「可変」と「実装戦略」を同時に背負っていて、
    `ImmutMap` は規則の外にいる。→ §5
 
-5. **#1262 の実装順(ADR-0092 → 0090 → 0091)は根拠が崩れた。**
+5. **最速の形は「状態が wasm local に載っていて RC が触らない形」**
+   (0.74 ns/反復、local は個数を増やしても無料)。他の形との差は
+   **その形固有のコストではなく、まだ書かれていない最適化の値段**。
+   vibe には escape analysis も scalar replacement も unboxing も
+   ユーザ関数 inline も無い。→ §2.7
+
+6. **単一で最大の要因は RC の scalar 引数 dup。** top-level 関数呼び出しは
+   引数が loop-borrowed local のときだけ RC で **6.4×**(1052 → 6750 ns)に
+   なり、定数引数にすると RC=0 と RC=1 が**完全に一致する**(1390/1389)。
+   逆アセンブルすると tagged immediate に対して out-of-line の
+   `__rt_rc_dup` を毎回呼んでいる。**RC の呼び出しペナルティは 100% これ。**
+   codegen が飛ばせないのは local slot の静的型を持っていないから。→ §2.8
+
+7. **収斂は「表面の統一」ではなく「lowering の一点化」。** 非捕獲
+   `let mut` と State effect は別の問題を解いているので表面は分けたまま、
+   **escape しない状態はすべて wasm local に落とす**。surface の選択が
+   性能を決めるのをやめさせる(今は `loop (s = (0,0))` と
+   `loop (i = 0, acc = 0)` が意味は同じで 10–28× 違う)。→ §6
+
+8. **#1262 の実装順(ADR-0092 → 0090 → 0091)は根拠が崩れた。**
    0092 を先頭に置いた理由は「RC default の wall ~1.6–2.1× に即効」
-   だったが、実測は逆を示した。→ §6
+   だったが、実測は逆を示した。→ §7
 
 ---
 
@@ -196,6 +215,104 @@ local read/write に落とす —— メモリ最適化ではなく**ハンド�
 「捕獲されない scalar が wasm local に落ちる」という性質。**
 捕獲された途端に 3.8–4.9× 帯へ落ちる。これが §3 の軸 B がコストを
 決めているという主張の直接の証拠になっている。
+
+---
+
+## 2.7 「最速の形」の確認 —— 下限と、そこまでの差の分解
+
+「収斂させる先」を決めるには、まず**最速の形が何か**と、
+**他の形との差が何に払われているか**を確定する必要がある。
+`floor/*` 群がそれを測る(すべて同じ仕事、置き場所だけが違う)。
+
+| 形 | RC=0 p50 | RC=1 p50 | B/op |
+|---|---|---|---|
+| ループ骨格だけ(加算なし) | 388 ns | 388 ns | 0 |
+| **`let mut` 2 個(= 最速)** | **738** | **740** | 0 |
+| `let mut` 4 個 | 499 | 721 | 0 |
+| top-level 関数呼び出し(定数引数) | 1390 | 1389 | 0 |
+| top-level 関数呼び出し(loop-borrowed 引数) | 1052 | **6750** | 0 |
+| closure 呼び出し | 2061 | 6072 | 0 |
+| `struct` の mut フィールド 4 個 | 2719 | 2753 | 40/48 |
+| `loop` パラメータをタプル 1 個に | 7900 | 21120 | 16016/0 |
+
+読み取れること:
+
+- **最速の形は「状態が wasm local に載っていて RC が触らない形」**。
+  ループ骨格 0.39 ns/反復 + 加算 0.35 ns/反復 = 0.74 ns/反復で、
+  ここはハードウェア下限。**local は個数を増やしても無料**
+  (2 個も 4 個も同じ)。
+- **`struct` の mut フィールドは、フィールド数を増やしてもほぼ同じ値段**
+  (1 個 2604 ns / 4 個 2719 ns)。つまり払っているのはフィールドごとの
+  コストではなく **heap ブロックという固定費**。この struct は関数の外へ
+  一切出ないので、**scalar replacement があれば丸ごと消える**。
+- **`loop (s = (0, 0))` は箱**(16 B/反復)。同じ意味の
+  `loop (i = 0, acc = 0)` は local で 738 ns。**意味が同じで 10–28×**。
+  これは surface の選択が性能を決めてしまっている一番わかりやすい例。
+- **差はどれも「その形固有のコスト」ではなく、欠けている最適化の値段**。
+  vibe には escape analysis も scalar replacement も unboxing も
+  ユーザ関数の inline も無い(`grep` で確認: codegen の "inline" は
+  builtin dispatch と `unbox_float` だけ)。
+
+## 2.8 いちばん大きい単一要因: scalar 引数への `__rt_rc_dup`
+
+上の表で一箇所だけ桁が違う。**top-level 関数呼び出しが、引数が
+loop-borrowed な local のときだけ RC で 6.4× になる**(1052 → 6750)。
+定数引数にすると **RC=0 と RC=1 が完全に一致する**(1390 / 1389)。
+
+逆アセンブルすると理由がそのまま出ている。`add2(acc, i)` の呼び出し前に:
+
+```wasm
+local.get 2 / local.tee 4 / local.get 4 / call __rt_rc_dup   ; acc は Int
+local.get 3 / local.tee 5 / local.get 5 / call __rt_rc_dup   ; i   は Int
+i64.const 0 / call add2
+```
+
+**tagged immediate に対して out-of-line の `__rt_rc_dup` を2回呼んでいる。**
+`Int` は 62-bit tagged なので dup は意味論的に no-op で、
+`__rt_rc_dup` の中身もタグを見て即 return するだけ。それでも関数呼び出し1回分
+(実測 **1 回あたり ~2.2–2.9 ns**)を毎回払う。
+
+分離実測(committed bench の `floor/0` / `floor/2b` / `floor/2`。
+3 者はループ骨格も呼び出し頻度も同じで、**call site の dup の有無だけ**が違う):
+
+| ns/1000反復 | RC=0 | RC=1 | 差分の内訳 |
+|---|---|---|---|
+| `floor/0` 呼び出し無し | 388 | 388 | — |
+| `floor/2b` 呼び出し1回、**dup 無し**(定数引数) | 1390 | **1389** | 呼び出し自体 = +1.0 ns/反復。**RC でも増えない** |
+| `floor/2` 呼び出し1回、**scalar 引数 dup 2 個** | 1052 | **6750** | **dup = +5.4 ns/反復**(1 個 ~2.7 ns) |
+
+(独立モジュールでも同じ: 404 / 1433 / 5919–7323。)
+
+**RC の呼び出しペナルティは、100% が scalar への dup。** 呼び出し規約自体には
+RC のコストが乗っていない。
+
+なぜ codegen が飛ばせないかも、コードのすぐ隣に書いてある —— 
+`compile_call.vibe` の `ts_known_int` の doc comment:
+
+> Bare idents are deliberately excluded: **a per-slot "is int" log is unsound
+> because slots are reused across scopes without updating it.**
+
+つまり **codegen は local slot の静的型を持っていない**。checker は持っている。
+これは §3 で述べる「`TypeEnv` の情報が codegen に届いていない」という
+同じ欠落で、**権限規則と最大の性能改善が同じ配管を待っている**。
+
+### #1262 への含意
+
+issue 内の自前プロファイルは `__rt_rc_dup` を **単独で全 CPU の 38.5%**
+(4195.5 ms)と記録している。その相当部分が scalar への no-op dup であるなら:
+
+- **削減の形は「guard を inline する」ではなく「guard を消す」**。
+  issue で検討・却下された site 選択式 out-line 化は
+  「72 B の inline guard か ~5 B の call か」の二択だったが、
+  **静的に scalar と分かる引数は 0 B**(コードを出さない)で済む。
+  サイズは増えるどころか減る。
+- 出口条件「RC/bump wall 比 ≤1.2×」に対して、FBIP より遥かに近い。
+- 中間案として、型情報が届く前でも
+  **タグ判定だけ inline し、slow path は out-line のまま残す**形が取れる。
+  issue が測った 2 点(全 inline = 72 B/サイト / 全 out-line = ~5 B/サイト)の
+  **間にある第三の点**で、まだ測られていない。判定は immediate かどうかの
+  1 命令 + 分岐で足りるので、全 inline より遥かに安いはず —— ただし
+  ここは推定であって、実測はこれから。
 
 ---
 
@@ -385,7 +502,87 @@ renames + 旧名の deprecated alias。`vibe` は selfhost なので、
 
 ---
 
-## 6. #1262 への差分提案
+## 6. 収斂先: 「最速の形」に全部を寄せる
+
+§2.7 が確定させたこと ——
+
+> **最速の形は「状態が wasm local に載っていて、RC が触らない形」。**
+> 0.74 ns/反復、local は個数を増やしても無料。
+
+そして重要なのは、他の形との差が**その形固有のコストではない**こと。
+どれも「まだ書かれていない最適化の値段」である。
+
+| いまの差 | 値段(RC) | 何を払っているか | 消すのに要るもの |
+|---|---|---|---|
+| scalar 引数の dup | **+2.2–2.9 ns / 引数 / call** | tagged immediate への no-op dup | **codegen が引数の静的型を知る** |
+| ユーザ関数呼び出し | +1.0 ns / call | 呼び出し規約 | inlining |
+| 非 escape struct の mut field | +2.0 ns / 反復 | heap ブロックの固定費 | escape analysis + scalar replacement |
+| 捕獲された `let mut` | +2.9 ns / 反復 | closure env + ref cell | 同上(+ closure inline) |
+| tuple の `loop` パラメータ | +7–21 ns / 反復 | 箱 | unboxing |
+| enum 値の付け替え | +20–33 ns / 反復 | 箱 + RC トラフィック | unboxing / FBIP |
+| State effect | +4.9 ns / 反復 | evidence dispatch | handler inline |
+
+### 6.1 収斂の形
+
+**表面は分岐させたまま、lowering を1点に収斂させる。**
+`let mut` を消して effect に統一する、あるいはその逆、という
+「表面の統一」はやらない —— §2 が示したとおり、非捕獲 `let mut` と
+State effect は**別の問題を解いている**ので、統一すると片方が
+不自然になるだけで速くはならない。
+
+収斂させるのは**下ろし先**のほう:
+
+```
+表面 (§4 の梯子どおり、意味で選ぶ)
+  段0 非捕獲 let mut / loop パラメータ
+  段1 region r { } / 捕獲された let mut
+  段2 effect State + handle
+  段3 host capability
+        │
+        │  ← escape 解析が「この状態は外へ出ない」と言えたものは全部
+        ▼
+lowering (1点)
+  **wasm local**。RC も heap も触らない 0.74 ns/反復の形。
+```
+
+つまり **surface の選択が性能を決めるのをやめさせる**。今は
+`loop (s = (0,0))` と `loop (i = 0, acc = 0)` が意味は同じで 10–28× 違う。
+これは利用者が覚えるべき規則ではなく、実装都合の漏れ
+(CLAUDE.md の「言語ポリシー」がまさに戒めている形)。
+
+### 6.2 収斂の順序 —— 安い順に、同じ配管を敷きながら
+
+4つの最適化はすべて**同じ前提**を要求する: **checker が持っている事実
+(型・escape)が codegen に届いていること**。だから §4 段階1
+(checker 側 escape 述語)は性能側の前提工事でもある。同じ配管が
+権限規則と性能の両方を通す。
+
+| 順 | やること | 得られるもの | 要る配管 |
+|---|---|---|---|
+| 1 | **scalar 引数の dup を消す** | RC の呼び出しペナルティが**丸ごと消える**。サイズは減る | 引数の静的型が codegen に届く |
+| 1'| (1 の代替、型が届く前) **タグ判定だけ inline、slow path は out-line** | 同上の大半。数〜十数 B/サイト | 無し(codegen 内で完結) |
+| 2 | **checker 側 escape 述語**(§4 段階1、診断のみ) | 権限規則の土台 + 3,4 の前提 | `TypeEnv` に可変性/escape |
+| 3 | **scalar replacement**(非 escape struct → local) | struct mut / 捕獲 `let mut` が段0 へ | 2 |
+| 4 | **unboxing**(非 escape tuple/enum → 複数 local) | `loop` の箱が消える。10–28× の surface 差が消える | 2 |
+| 5 | **handler inline**(monomorphic tail-resumptive) | State effect が段0 へ | 2 + inlining |
+
+**1 は今日始められて、単独で最大**(#1262 の出口条件に対して FBIP より
+遥かに近い)。2 は seed 非依存。3–5 は 2 の上に順に積める。
+
+### 6.3 この順序で何が「一つ」になるか
+
+- **性能**: 段0〜段2 のどれで書いても、escape しない限り同じ 0.74 ns/反復。
+  surface は意味で選べるようになる。
+- **権限**: escape する場合だけ row に出る(§4)。escape 解析が
+  「速いか」と「権限が要るか」の**両方の判定を1つで担う**。
+- **重複の解消**: `let mut` の可変性(§1)、region 推論(ADR-0090)、
+  FBIP(ADR-0092)は、いずれも「この値は外へ出るか」への別々の答えだった。
+  1つの解析に寄せると、region は段1 の**構文**、FBIP は unboxing が
+  効かなかった残りに対する**後詰め**、という位置に落ち着く。
+
+---
+
+## 7. #1262 への差分提案
 
 現行の実装順は **ADR-0092(FBIP)→ ADR-0090(region)→ ADR-0091(zero_alloc)** で、
 0092 を先頭に引き上げた根拠は issue 本文いわく
@@ -416,10 +613,13 @@ renames + 旧名の deprecated alias。`vibe` は selfhost なので、
    RC 免除をもたらすので dup/drop を**構造的に**消せる。
 4. §4 の段階1(checker 側 escape 述語)は**どの ADR より前**に置ける。
    3本すべての前提(`TypeEnv` に可変性情報が無い)を直す工事だから。
+5. **その前に、scalar 引数の dup 削除(§2.8 / §6.2 の順1)を単独で置く。**
+   ADR 不要・表面構文なし・bootstrap 不要で、コードサイズは**減る**。
+   出口条件「RC/bump wall 比 ≤1.2×」への距離は FBIP より遥かに近い。
 
 ---
 
-## 7. 未決
+## 8. 未決
 
 - **段0/段1 境界の正確な定義**。`mut_needs_ref_cell` は closure 捕獲だけを見る。
   `struct { mut f }` を関数に渡す形、`Array` を渡す形は今の述語の対象外で、
