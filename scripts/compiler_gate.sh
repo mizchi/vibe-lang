@@ -73,8 +73,14 @@ VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 # checks source/token-stream/interface/checked-env parity without incorporating
 # the new observation into a production cache key, cache format, or reuse
 # decision. Ordinary compiler-source fingerprint invalidation still applies.
+# #1548: the oracle also publishes the shadow planner vs current compiler
+# decision diff into _build/ci-artifacts/ (CI uploads it), keeping the
+# conservative over-invalidation residual visible per run instead of a log line.
 echo "[compiler-gate] 3aa/3 incremental invalidation observation oracle"
-VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
+mkdir -p _build/ci-artifacts
+VIBE_RC=0 \
+  VIBE_SHADOW_DECISION_DIFF_OUT="$ROOT_DIR/_build/ci-artifacts/incremental-shadow-decision-diff.json" \
+  node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 
 # 3ab. #1379 opt-in metadata-only ingestion stamp: isolated equivalent cache
 # histories prove observed successful-check invalidation/output equivalence and
