@@ -286,7 +286,21 @@ gh issue close <number>
 
 # ラベル付き
 gh issue create --title "タイトル" --label bug
+
+# P0 (黙って誤るもの) だけ / 着手可能な blocker だけ
+gh issue list --state open --label P0
+gh issue list --state open --label blocker
 ```
+
+**分類と優先順位の規則は [docs/issue-triage.md](docs/issue-triage.md)。**
+3 軸 (種類 / 優先度 P0-P2 / `blocker`) を独立に付け、着手順はそこから機械的に決まる。
+優先度は**壊れ方の悪質さだけ**で決める (P0 = 黙って誤る、P1 = 落ちる・書けない、
+P2 = 機能追加)。「重要そう」は優先度に入れない。新規起票時は 3 軸を付けるところまでが
+起票の一部。
+
+長い issue は **sub-issue でツリー化**する — 親は現在地と子への索引だけを持ち、
+経緯はコメントに残す。本文にチェックリストを積み上げると、着地した項目が増えるほど
+「次に何をやるか」が読めなくなる。
 
 設計判断は `docs/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
 
