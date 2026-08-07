@@ -5040,12 +5040,25 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let mut pbi = 0
   while pbi < num_user_funcs {
     let pb_stmt = Array::get(stmts, Array::get(fn_stmt_indices, pbi))
+    // Shadow uniquify runs in BOTH lanes now. It was RC-only (#712,
+    // name-keyed RC bookkeeping), but the bump lane needs it for a harder
+    // reason: its codegen never restores `local_names` when an inner binding
+    // scope closes mid-function (a match catch-all arm's binders, a
+    // block-valued `let`'s inner lets), so a later same-name reference
+    // resolved to the DEAD inner slot and read its value — silently wrong,
+    // no diagnostic. Renaming every shadowing binding to a unique name
+    // removes the collision at the source, exactly as #712 did for RC's
+    // name-keyed maps (the pass's own doc already notes it is harmless on
+    // this lane). `lift_match_scrutinees` stays RC-only — it exists for
+    // Perceus drops.
     let pb_expr = if enable_rc {
       let pb_seen: Array[String] = [
       ]
       lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(pb_stmt), Map::new(), uq_shadow_counter, pb_seen), m_scrut_counter)
     } else {
-      get_slet_expr(pb_stmt)
+      let pb_seen: Array[String] = [
+      ]
+      uniquify_shadowed_bindings(get_slet_expr(pb_stmt), Map::new(), uq_shadow_counter, pb_seen)
     }
     Array::push(planned_bodies, pb_expr)
     Array::push(lambda_bases, lambda_base_acc)
