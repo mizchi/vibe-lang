@@ -150,6 +150,24 @@ CI shard では:
 - `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage` がゲートを走らせる
 - `pkf run full-gate` を継続運用判断の主 gate とする
 
+### 方針: 期待値は snapshot に寄せる — `__DATA__` と `.diag` は畳む (#1571)
+
+期待値を持つ仕組みが3つある。**`inspect(value, content)` + `vibe test --update`
+に一本化していく**方針で、新しいテストはこれで書く。
+
+- **`inspect(...)`** — 本命。期待値がソースの中にあり、`vibe test --update`
+  で更新できる (`lib/@vibe/compiler/inspect_update.vibe`)
+- **`__DATA__`** — fixture 末尾の `{"last": "..."}`。723 fixture 中 544 が使用。
+  vibe の構文ではないので、fixture を単体で `vibe test` に食わせられず、
+  `compiler_gate.sh` は**81 箇所で `sed '/^__DATA__$/,$d'` して剥がしている**
+- **`.diag`** — `emit_compile_diag` が `<output_path>.diag` に書く sidecar。
+  診断が stdout に出ないので、中断した実行が残骸を落とす (`a.wasm.diag` /
+  `b.wasm.diag` がリポジトリ root に tracked で残っていた)。stdout へ移す話は
+  #1567 と同じ問題
+
+`fixtures/warnings/*.diag` は逆に**意図的にコミットされた期待出力**なので、
+これも snapshot 側へ寄せる対象。移行は一括ではなく、触った fixture から。
+
 ## Coding Convention
 
 - `///|` は MoonBit (`.mbt`) 時代の block separator 記法。新規コードでは
