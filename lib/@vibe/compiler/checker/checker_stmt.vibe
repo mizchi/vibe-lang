@@ -40,6 +40,9 @@ import @vibe/compiler/core {
   sort_perm_by_names,
   subst_apply,
   trait_defined,
+  trait_impl_declared_for_ctor,
+  trait_is_marker,
+  type_constructor_name,
   type_implements_trait,
   type_to_string
 }
@@ -2050,6 +2053,23 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   (cur_env, cur_s, cur_c)
 }
 
+/// #1503: `no impl `Eq` for `Array[Int]`` is flatly false when the program
+/// declares that impl three lines above -- what actually happened is that the
+/// impl was found and then refused by the marker-trait gate (a marker trait has
+/// no methods, so it dispatches to the builtin `==` / `<`, and those are
+/// REFERENCE equality on `Array` / `Bytes`: a bare `[1, 2] == [1, 2]` is
+/// `false`). Say so, and name the edit that fixes it.
+///
+/// Returns "" when no impl for this trait mentions the type's constructor, i.e.
+/// when "no impl" is the whole truth.
+fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
+  if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
+    String::concat(": an `impl ", String::concat(trait_name, String::concat(" for ", String::concat(type_constructor_name(resolved), String::concat("` IS declared, but `", String::concat(trait_name, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those are REFERENCE equality on `Array` / `Bytes` -- honouring the impl would make the comparison silently wrong. Give `", String::concat(trait_name, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))))))))
+  } else {
+    ""
+  }
+}
+
 /// #641 PR-2: enforce trait bounds. After inference, every bounded type variable
 /// recorded in the final substitution that resolved to a CONCRETE type must
 /// satisfy its bounds. Unresolved (still-polymorphic) vars are inherited by the
@@ -2095,7 +2115,7 @@ fn check_program_bounds_impl(env: TypeEnv, s: Subst, defs: Array[TypeDef], error
             type_implements_trait(env, s, resolved, b)
           }
           if b != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), "`")))))
+            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, b, resolved)))))))
           }
           bi = bi + 1
         }
