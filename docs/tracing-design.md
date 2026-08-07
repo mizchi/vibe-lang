@@ -306,18 +306,72 @@ ring buffer に積んでホストが吸う handler に差し替える (既存の
 custom section が `linked_compile.vibe:3441` で同じ構造の領域を予約している)。
 §2.1 のとおりこれは**1つの handler の実装**であって、インタフェースではない。
 
+## 5.5 実装を試して分かったこと — 段1 は今のところ通らない
+
+2026-08-07、段1 を実際に書いた。`effect Trace` を
+`entry/compiler/file_compile/file_compile.vibe` に置き、
+load / type / bundle / parse / codegen に span を張り、codegen の中に
+内部 span `dce` を1つ入れ、`--profile-tsv` の7要素タプルを span 表に
+置き換えた。**stage2 のビルドは通ったが、CLI 本体
+(`lib/@vibe/cli/main.vibex`) のコンパイルが落ちた。**
+
+```
+handle of effect 'Trace' cannot be compiled here. Every perform this handle
+covers has to be statically visible to it, so the handled body may only:
+perform directly, call a named top-level `fn`, or call a closure literal that
+carries an effect row annotation.
+```
+
+**2つの配置を試して、両方拒否された:**
+
+1. handler を `lib/@vibe/cli/dispatch.vibe` に置き、import した
+   `compile_release_file_mode_traced` を包む
+2. handler を perform の隣 (`file_compile.vibe` 内) に移し、**同一ファイルの
+   named top-level `fn` を直接**包む
+
+2 はエラー文が「許される形」として明示的に列挙している形そのものである。
+つまり**実際の適格性はこの診断文が言うより狭い**。理由はおそらく、migration が
+handled body の関数の**中まで**追う必要があり、
+`compile_file_fs_mode_traced` の中で perform に挟まれて呼ばれている
+`collect_source_groups_fs` / `prepare_file_fs_from_source_groups_persistent_cached` /
+`compile_wasi_module` などのどれかが、追えない形 (local binding 経由・
+row 変数付き callee) を含むため。診断に位置情報が無いので
+(#1511)、どの呼び出しかは二分探索しないと分からない。
+
+**これは §3 の結論を否定しない。** §3 が測ったのは effect 機構のコストで、
+それは今も 5.4ns / アロケーションゼロ / row tax ゼロである。落ちたのは
+**コンパイラという特定のコードベースの呼び出しグラフを migration が
+追いきれない**という別の問題で、#1347-2 と同じ根 (資料 p133 の
+evidence vector) を持つ。
+
+したがって段1 の前提は「言語機能は既にある」から
+**「言語機能はあるが、コンパイラの呼び出しグラフには適用できない」**に
+変わる。次に決めるべきはどちらか:
+
+- **(a) 適格性を広げる** — evidence migration が追える形を増やす。
+  #1347-2 と同じ本体で、重い。
+- **(b) span を適格な位置まで押し下げる** — perform と handler の間に
+  何も挟まない粒度、つまり「大きな実行単位」より細かい単位に span を置き、
+  各所で閉じる。ユーザ指定の粒度方針とは逆向きになる。
+- **(c) 段0 (プロセス単位、ホスト側だけ) を先に出す** — コンパイラ内部に
+  手を入れず、CI の多プロセス像だけ先に得る。§6 の段0 はもともと
+  コンパイラ変更不要なので、これは今日できる。
+
+実装は revert した。span を張った diff 自体は小さく機械的なので、
+(a) が動いたときにそのまま再適用できる。
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |
 |---|---|---|
 | 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 (`run_wasm_vibe_host_runner.sh` / `unit_test_runner.sh` / `generations.sh`) | **不要** |
-| 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える。TSV は span 木から生成して `test_cli_core.sh` 互換を保つ | **不要 (言語機能は既にある — §3)** |
+| 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える | **§5.5 で試して拒否された。handle 適格性の拡張が先** |
 | 2 | `vibe bench` が bench ブロックごとに span 内訳を出す | 要 (runner) |
 | 3 | `span {}` スコープ構文 (§2.2 の脱糖。`throw` → `perform Exception::Throw` と同じ層) | 要 (parser/desugar のみ) |
 | 4 | OTLP エクスポータ | 不要 |
 
-**段1にコンパイラ変更が要らない**のが今回の実測でいちばん大きい収穫で、
-`effect Trace` の宣言と handler は今日書ける vibe のコードだけで済む。
+段0 はコンパイラに一切触らずに CI の多プロセス像を出せるので、**§5.5 で
+段1 が止まった今、実際に着手できるのは段0 である。**
 
 ## 7. この設計が引き受けていないこと
 
