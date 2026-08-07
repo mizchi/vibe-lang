@@ -53,7 +53,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_impl
+  compile_wasi_module_impl, effect_lowering_prelude
 }
 
 import @vibe/compiler/loader {
@@ -469,7 +469,26 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
 /// compile_file_fs_mode already relies on for a real compile's (working)
 /// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
 export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
-  let _ = prepare_file_fs_cached(db_new(), entry_path)
+  let source_groups = collect_source_groups_fs(entry_path)
+  let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  // #1536(c) / #1511(b): after the typecheck passes, run the ADR-0076
+  // effect-lowering eligibility passes (suspend CPS split + evidence-passing
+  // migration) on the SAME merged program a release compile lowers
+  // (build_grouped_merged_stmts over the same source_groups), via the same
+  // shared prelude compile_wasi_module_linked_impl runs — so a handle/suspend
+  // shape codegen would reject is reported here, at `vibe check`, instead of
+  // typechecking cleanly and first failing in codegen. The merged AST is
+  // discarded afterwards (the prelude rewrites it in place); no wasm is
+  // produced. Entry name "main" matches what `vibe build`/`vibe run` compile
+  // with; a program with no `main` simply has no entry-keyed boundary
+  // machinery installed, same as its real compile would.
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  let lowering_errs = effect_lowering_prelude(merged_stmts, "main", array_empty(), array_empty(), array_empty())
+  if Array::length(lowering_errs) > 0 {
+    throw(Array::get(lowering_errs, 0))
+  } else {
+    ()
+  }
   0
 }
 

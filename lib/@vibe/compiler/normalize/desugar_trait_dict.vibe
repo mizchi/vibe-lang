@@ -4118,6 +4118,22 @@ fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Arra
   }
 }
 
+/// #1527: is the interpolated argument a Bool this pass can PROVE from
+/// recorded/declared types? Deliberately excludes the Bool LITERAL (the
+/// codegen classifiers already format it, and skipping it keeps the common
+/// case's lowering untouched); everything else asks `infer_arg_type_name`,
+/// which covers calls to `-> Bool` functions (fn_returns), names bound to
+/// them (var_types), and Bool-typed struct-field projections.
+fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match arg {
+    EBool(_) => false,
+    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(t) => t == "Bool",
+      None => false
+    }
+  }
+}
+
 /// The structural rendering for an interpolated wrapper value, or None when
 /// this pass has no shape to work from and the `__to_string` call must stand.
 fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
@@ -4245,6 +4261,19 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
           Some(ECall(EIdent(show_target, -1), Array::slice([
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           ], 0, 1), off))
+        } else if interp_arg_is_bool(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #1527: a Bool that reaches `"\{...}"` through a CALL or a NAME
+          // whose recorded type is Bool printed `1`/`0` — Bool and Int share
+          // the tagged-int representation, and codegen's boolish classifiers
+          // (cc_expr_is_boolish and its per-backend twins) are syntactic:
+          // they know literals, comparisons and bool-returning BUILTINS, but
+          // not a user fn's declared `-> Bool`. This pass has that type
+          // (fn_returns / var_types / struct field heads), so rewrite the
+          // rendering here, once, for every backend: the `__to_string(arg)`
+          // becomes `if arg { "true" } else { "false" }`. A Bool LITERAL is
+          // excluded — every classifier already answers it, and skipping it
+          // keeps the common case's lowering untouched.
+          Some(EIf(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString("true"), EString("false")))
         } else {
           let expanded = interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           // #1445: nothing rendered it structurally AND the type is a declared

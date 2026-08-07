@@ -3,6 +3,7 @@ set -euo pipefail
 : "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/trace_lib.sh"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 DEFAULT_MANIFEST="$PROJECT_ROOT/bootstrap/seed.json"
 DEFAULT_OUT_ROOT="$PROJECT_ROOT/_build/selfhost/generations"
@@ -403,17 +404,31 @@ run_selfbuild_compile() {
   [ -s "$out" ] || die "$label did not produce output: $out"
 }
 
+# Each stage hop is one span (docs/tracing-design.md step 0). This is the
+# smallest place that makes the bootstrap chain legible as a tree:
+# seed -> stage1 -> stage2 -> stage3 is four full compiles in four processes,
+# and until now the only way to see where the time went was to read timestamps
+# out of the log by eye.
+#
+# trace_begin/trace_end rather than the trace_span.sh wrapper because the work
+# here is a shell FUNCTION, which cannot be exec'd. No-op unless
+# VIBE_TRACE_OUT is set.
 run_generation_compile() {
   local label="$1"
   local compiler="$2"
   local entry="$3"
   local out="$4"
   local compile_entry_name="${5:-}"
+  trace_begin "$label"
+  local tok="$TRACE_TOKEN"
+  local rc=0
   case "$GENERATION_INVOKE_MODE" in
-    cli) run_cli_compile "$label" "$compiler" "$entry" "$out" "$compile_entry_name" ;;
-    selfbuild) run_selfbuild_compile "$label" "$compiler" "$out" ;;
-    *) die "unknown generation invoke mode: $GENERATION_INVOKE_MODE" ;;
+    cli) run_cli_compile "$label" "$compiler" "$entry" "$out" "$compile_entry_name" || rc=$? ;;
+    selfbuild) run_selfbuild_compile "$label" "$compiler" "$out" || rc=$? ;;
+    *) trace_end "$tok" 2; die "unknown generation invoke mode: $GENERATION_INVOKE_MODE" ;;
   esac
+  trace_end "$tok" "$rc"
+  return "$rc"
 }
 
 validate_wasm_if_available() {

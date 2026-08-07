@@ -1582,8 +1582,25 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       nl_r
     },
     EHandle(body, harms) => {
-      // #538: Error-effect handler via try_table (no resume/replay: algebraic
-      // user effects still need the linear backend's memo machinery).
+      // #538: Exception handler via try_table -- abortive, so the continuation
+      // below the handler is gone and only a never-resuming Throw fits here.
+      //
+      // This is NOT "algebraic effects are linear-backend only". The effect
+      // lowering runs BEFORE codegen and is shared: backend_body.vibe calls
+      // inline_direct_performs then evidence_dict_pass on the same statements
+      // both backends compile, and a migration failure is reported by
+      // evidence_dict_pass (edp_errs), not here. A tail-resumptive or
+      // suspend-CPS handler is therefore already gone by the time this arm
+      // runs -- measured: every case in bench/tracing/trace_effect_shapes_test
+      // (perform in a while loop, four call levels down, inside an annotated
+      // closure literal, a stateful handler building a span tree, and a
+      // handler that stores `resume` as a value) passes under
+      // VIBE_TEST_BACKEND=gc.
+      //
+      // The previous wording here ("algebraic user effects still need the
+      // linear backend's memo machinery") named the replay/memo engine that
+      // ADR-0076 追記34 V2 physically deleted, and it is where the mistaken
+      // belief that wasm-gc cannot run user effects came from.
       //   block (result i64)            ;; B_outer: success value
       //     block (result i64)          ;; B_catch: thrown payload
       //       try_table (result i64) [catch tag0 -> label 0]
