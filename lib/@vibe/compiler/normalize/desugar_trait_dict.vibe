@@ -909,13 +909,18 @@ fn ctor_enum_of_name(fn_returns: Array[(String, String)], name: String) -> Optio
     None => match split_qualified(name) {
       Some(parts) => {
         let (head, member) = parts
-        match fn_return_type(fn_returns, member) {
-          Some(en) => if en == head {
-            Some(en)
-          } else {
-            None
-          },
-          None => None
+        // #1491 (second site): ask whether `member` is a constructor of THIS
+        // enum, not what `member`'s FIRST fn_returns entry returns.
+        // Constructor names collide across enums, so the first-match form
+        // answered about whichever enum sorted first and returned None for a
+        // perfectly good `Color::Green` -- leaving the binding untyped, which
+        // downstream means synth_dicts finds no witness and emits a call short
+        // its dictionary argument. Same defect as `qual_ctor_member`, same
+        // table, same fix.
+        if fn_returns_has_type(fn_returns, member, head) {
+          Some(head)
+        } else {
+          None
         }
       },
       None => None
@@ -1107,7 +1112,22 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       },
       _ => None
     },
-    ERecord(_, fields, _) => {
+    // #1529: when the literal NAMES its struct (`IntBox::{ v: 7 }`), that name
+    // IS the answer. Re-deriving it from the field set picks the first struct
+    // with a matching shape, which is a DIFFERENT type as soon as two structs
+    // share a field set (`struct Plain { v: Int }` next to `struct IntBox
+    // { v: Int }`). The wrong name found no `impl` for the trait, synth_dicts
+    // silently produced nothing, and the call went out one argument short --
+    // surfacing only at instantiate as `not enough arguments on the stack for
+    // call`, naming neither the struct nor the call. Declaration order looked
+    // like the trigger because it decides which same-shaped struct is first.
+    //
+    // Shape matching stays for the ANONYMOUS form (`ERecord("", ..)`, #839
+    // top-level anonymous records and the witness records built by
+    // make_witness_record), where there is no written name to trust.
+    ERecord(rn, fields, _) => if String::length(rn) > 0 && struct_set_has(struct_sets, rn) {
+      Some(rn)
+    } else {
       let names = empty_str_array()
       let mut i = 0
       while i < Array::length(fields) {

@@ -85,10 +85,32 @@ if [ ! -s "$findings" ]; then
   exit 0
 fi
 
-echo "architecture-debt lint: found new violations" >&2
+# `warn` is a standing REPORT of shapes worth a second look; only `error`
+# fails the run. Before this both severities exited 1, so `warn` was parsed
+# and validated but behaved identically to `error` -- a declaration nobody
+# read, which is the same class of defect several of these rules look for.
+#
+# The split is what makes a rule adoptable. A shape with dozens of existing
+# matches cannot start as `error` (the allowlist would need an entry per line
+# and would churn on every edit above one), and a fatal warn just gets the
+# whole lint switched off. A rule starts as `warn`, its matches get fixed or
+# justified, and it is promoted to `error` once the count reaches zero.
+error_count=0
+warn_count=0
 while IFS=$'\t' read -r severity rule_id rel_path line_no message issue text; do
   printf '%s:%s: %s %s: %s (%s)\n' \
     "$rel_path" "$line_no" "$severity" "$rule_id" "$message" "$issue" >&2
   printf '  %s\n' "$text" >&2
+  if [ "$severity" = "error" ]; then
+    error_count=$((error_count + 1))
+  else
+    warn_count=$((warn_count + 1))
+  fi
 done < "$findings"
-exit 1
+
+if [ "$error_count" -gt 0 ]; then
+  echo "architecture-debt lint: found new violations ($error_count error, $warn_count warn)" >&2
+  exit 1
+fi
+echo "architecture-debt lint: ok ($warn_count warn -- review, not a failure)"
+exit 0
