@@ -60,7 +60,11 @@ export enum EffectError {
   // Fields (all pre-rendered ", "-joined label lists, deterministic order):
   // (enclosing fn name or "" when unnamed, missing labels (sorted),
   //  declared row (source order, "" when no row), required row (sorted union)).
-  EEEffectRowMismatch(String, String, String, String);
+  // #1514: the 5th field is the CALL SITE's source offset (-1 when unknown),
+  // carried to the renderer as the ` [@off=N]` marker locate_type_error decodes.
+  // Before this the row mismatch had no position at all -- measured as the worst
+  // tier in eval/lang-review/repair (05).
+  EEEffectRowMismatch(String, String, String, String, Int);
   EEAssignImmutable(String);
   // #1347: a `handle ... with E` whose arms are provably dead because the
   // body cannot reach a perform of E and only invokes an opaque value —
@@ -115,7 +119,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
     // #639: expected-vs-actual effect rows as a set difference, then ONE
     // deterministic fix-it hint line targeting the enclosing declaration
     // (for a call-site leak that is the CALLER, not the callee).
-    EEEffectRowMismatch(fname, missing, declared, required) => {
+    EEEffectRowMismatch(fname, missing, declared, required, off) => {
       let head = if String::length(fname) > 0 {
         String::concat("effect row mismatch for '", String::concat(fname, "'"))
       } else {
@@ -133,7 +137,14 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         String::concat("\nhint: add 'with ", String::concat(row_as_source(required), String::concat("' to '", String::concat(fname, "'"))))
       }
-      String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+      let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+      // #1514: marker LAST so the hint line stays the visible tail; the decoder
+      // strips it before the user ever sees the string.
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
     },
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)")),
     EEHandleNeverFires(eff) => {
@@ -1242,10 +1253,10 @@ fn join_labels(xs: Array[String]) -> String {
 /// required effects are absent from the enclosing declaration's row. `missing`
 /// is the set difference (callee requires minus caller declares), rendered
 /// sorted; `required` is the sorted union the fix-it hint suggests declaring.
-fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String]) -> EffectError {
+fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
   let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
   let required = sort_labels(labels_union(declared, missing))
-  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required))
+  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required), off)
 }
 
 /// #626 criterion 2: a `handle ... with E` DISCHARGES E for its body — after
@@ -1602,9 +1613,37 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
 /// (`((__asc: T) -> __asc)(e)`, ascribe_wrap) before this walk runs, so its row
 /// is not visible here — that shape keeps the old, permissive behavior rather
 /// than being half-checked.
-fn local_fn_overlay_labels(val: Expr) -> Array[String] {
+/// #1515: a local binding's row, when the VALUE is a bare NAME rather than a
+/// closure literal — `let f = eff` / `let g = f`, an ALIAS of something that
+/// already carries a row.
+///
+/// The `EFn` arm below (#1361) covers a literal with its own declared row, and
+/// #885's parameter overlay covers a row-carrying parameter, so an alias was the
+/// one shape left where the row vanished: `overlay_bind_local` shadowed the name
+/// out and re-registered nothing, and the walker's `ECall` arm then saw a name in
+/// no table at all and let the call through unchecked. Measured (and reproducing
+/// on the committed seed, so this predates #1451):
+///
+///   fn eff(s: String) -> Unit with Log::Emit { perform Log::Emit(s) }
+///   fn caller() -> Unit { let f = eff; f("boom") }   // compiled clean
+///
+/// while the direct `eff("boom")` and the parameter form were both correctly
+/// rejected. Resolution order matches `lookup_fn_effs`'s own: the OVERLAY first
+/// (an inner binding shadows an outer one), then the top-level call-graph map.
+fn alias_fn_overlay_labels(name: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[String] {
+  match lookup_fn_effs(ov_names, ov_effs, name) {
+    Some(labels) => labels,
+    None => match lookup_fn_effs(fn_names, fn_effs, name) {
+      Some(labels) => labels,
+      None => no_str_labels()
+    }
+  }
+}
+
+fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[String] {
   match val {
     EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
+    EIdent(n, _) => alias_fn_overlay_labels(n, ov_names, ov_effs, fn_names, fn_effs),
     _ => no_str_labels()
   }
 }
@@ -1613,9 +1652,12 @@ fn local_fn_overlay_labels(val: Expr) -> Array[String] {
 /// outer entry of the same name), then re-register it when its value is a
 /// row-declaring closure. The new entry goes FIRST so `lookup_fn_effs`'s
 /// first-match scan finds it.
-fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr) -> (Array[String], Array[Array[String]]) {
+fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr, fn_names: Array[String], fn_effs: Array[Array[String]]) -> (Array[String], Array[Array[String]]) {
   let shadowed = shadow_overlay(names, effs, name)
-  let labels = local_fn_overlay_labels(val)
+  // #1515: resolve an ALIAS against the pre-shadow overlay -- `let f = f`
+  // rebinds to the OUTER `f`, so the lookup must see the entry the shadow is
+  // about to remove.
+  let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs)
   if Array::length(labels) == 0 {
     shadowed
   } else {
@@ -1729,7 +1771,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
     let (expr, declared, in_handle, ov_names, ov_effs, kinds) = Array::get(stack, n - 1)
     Array::truncate(stack, n - 1)
     match expr {
-      ECall(callee, args, _) => {
+      ECall(callee, args, call_off) => {
         match callee {
           EIdent(name, _) => {
             if name == "perform" && Array::length(args) == 1 {
@@ -1762,7 +1804,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
                       Array::push(errors, make_row_mismatch(fn_name, declared, [
                         throw_report_label(op_name, required_op, declared)
-                      ]))
+                      ], call_off))
                     } else {
                       ()
                     }
@@ -1778,7 +1820,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                     Array::push(errors, make_row_mismatch(fn_name, declared, [
                       op_name
-                    ]))
+                    ], call_off))
                   } else {
                     ()
                   }
@@ -1803,7 +1845,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // perform path follows since Codex review on PR #1161).
                     Array::push(errors, make_row_mismatch(fn_name, declared, [
                       op_label
-                    ]))
+                    ], call_off))
                   } else {
                     ()
                   }
@@ -1880,7 +1922,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   ti = ti + 1
                 }
                 if Array::length(missing) > 0 {
-                  Array::push(errors, make_row_mismatch(fn_name, declared, missing))
+                  Array::push(errors, make_row_mismatch(fn_name, declared, missing, call_off))
                 } else {
                   ()
                 }
@@ -1914,7 +1956,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   pi = pi + 1
                 }
                 if Array::length(missing) > 0 {
-                  Array::push(errors, make_row_mismatch(fn_name, declared, missing))
+                  Array::push(errors, make_row_mismatch(fn_name, declared, missing, call_off))
                 } else {
                   ()
                 }
@@ -2013,7 +2055,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // non-recursive), so only the body's overlay needs the new binding
         // shadowed out. #1361: the same place registers a local closure's own
         // declared row, so calling it from the body leaks that row.
-        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
         // #1344 follow-up: the local's payload kind is its initializer's, read
         // in the OUTER scope for the same non-recursive reason.
         let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
@@ -2025,7 +2067,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // reference `name` (self-recursion), so both val and body need the
         // shadow applied -- and, since #1361, the local closure's own row, so a
         // recursive effectful closure is checked against it on both sides.
-        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
+        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
         // A `let rec` value is a function; there is no payload kind to read off
         // it, so the name binds unresolvable on both sides (which is also what
         // stops it resolving through a same-named top-level binding).
@@ -2035,7 +2077,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
       },
       ELetMut(name, val, body, _) => {
         // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
-        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
         // A `mut` binding keeps one type for its whole life (an assignment of a
         // different type is a type error), so its initializer's kind holds for
         // the body just as ELet's does.
@@ -2794,6 +2836,29 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // A nested handle is not analysed for discharge here -- treating it as
       // reaching is the safe direction (it only ever suppresses a report).
       EHandle(_, _) => true,
+      // #1515: a LOCAL binding of a row-carrying value is in neither table
+      // until `overlay_bind_local` registers it, and the generic child walk
+      // below descends with the OUTER overlay -- so `handle { let f = eff;
+      // f(..) }` looked like it reached no perform and was reported dead.
+      // Rebuild the overlay here exactly as `dh_check_expr` does, so the two
+      // halves of the dead-handle judgement share one notion of scope.
+      //
+      // This matters BECAUSE of the row fix in this same change: requiring the
+      // row makes `handle` the other way to satisfy the checker, and that way
+      // was answering with a false "can never fire" (measured on the committed
+      // seed too, so the false positive predates the row fix -- it was just
+      // unreachable while the row was never required).
+      ELet(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs) {
+        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, bn, be)
+      },
+      ELetMut(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs) {
+        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, bn, be)
+      },
+      // `let rec` may reference itself, so both sides see the rebound overlay
+      // (same asymmetry the transitive walk's ELetRec arm keeps).
+      ELetRec(lname, lval, lbody) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs) {
+        (rn, re) => dh_may_reach(lval, ename, fn_names, fn_effs, rn, re) || dh_may_reach(lbody, ename, fn_names, fn_effs, rn, re)
+      },
       _ => false
     }
     if direct {
@@ -2896,16 +2961,16 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     },
     ELet(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val)
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
       dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
     },
     ELetMut(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val)
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
       dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
     },
     ELetRec(name, val, body) => {
-      let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val)
+      let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
       dh_check_expr(val, declared, performed, fn_names, fn_effs, rn, re, errors)
       dh_check_expr(body, declared, performed, fn_names, fn_effs, rn, re, errors)
     },

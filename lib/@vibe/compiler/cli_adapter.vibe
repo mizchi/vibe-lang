@@ -24,6 +24,7 @@ import @vibe/compiler/runtime {
   doc_at_source,
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
+  locate_type_error,
   module_plan_manifest_fs,
   run_module_job_dir,
   run_publish_env_cache_dir,
@@ -314,6 +315,30 @@ fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: Strin
 fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
   Fs::write_file(String::concat(output_path, ".diag"), msg)
   1
+}
+
+/// #1514: the same sidecar, but with the ` [@off=N]` marker resolved to a real
+/// `line:col` against the source the offsets are relative to.
+///
+/// The COMPILE path never located its diagnostics -- only the typecheck path
+/// calls `locate_type_error` -- so every checker diagnostic that reached a user
+/// through `vibe build` / `vibe run` arrived positionless. `source` here is
+/// exactly what `check_program` was run on (the single-source lane passes its
+/// post-`apply_cfg_env` text; the offsets in the marker index into it), so there
+/// is no ambiguity about the basis.
+///
+/// Marker-gated on purpose: with no marker this is byte-identical to
+/// `emit_compile_diag`. `locate_type_error` would otherwise fall through to its
+/// first-occurrence HEURISTIC, which can name a plausible-but-wrong line — worse
+/// than no position at all, and it would silently change every existing
+/// compile-path message. Only a diagnostic that states where it came from gets a
+/// position from this.
+fn emit_compile_diag_located(output_path: String, msg: String, source: String) -> Int with Fs {
+  if String::contains(msg, " [@off=") {
+    emit_compile_diag(output_path, locate_type_error(source, msg))
+  } else {
+    emit_compile_diag(output_path, msg)
+  }
 }
 
 /// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
@@ -1124,10 +1149,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     // ADR-0055 #493 cutover toggle: VIBE_RC=1 compiles on the Perceus RC codegen
     // path (Env::get returns "" when unset, so default stays the bump path). Lets
     // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
+    // #1514: bound OUTSIDE the handle so the `Throw` arm -- a sibling scope, not
+    // the handled body -- can name it when resolving a diagnostic's offset.
+    let source_cfg = apply_cfg_env(source, Env::get("VIBE_CFG"))
     handle {
       let rc_flag = Env::get("VIBE_RC")
-      // #cfg: activate compile-time flags from VIBE_CFG (see apply_cfg_env).
-      let source_cfg = apply_cfg_env(source, Env::get("VIBE_CFG"))
       // #cov: function-level coverage build (same source pipeline, instrumented
       // codegen). Running the produced wasm records which compiler functions ran.
       let bytes = if Env::get("VIBE_COVERAGE") == "1" {
@@ -1156,7 +1182,9 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       profile_memory_mark(mark_memory)
       0
     } with Exception {
-      Throw(msg) => emit_compile_diag(output_path, msg)
+      // #1514: `source_cfg` is the exact text `check_program` ran on, so a
+      // marker-carrying diagnostic can be resolved to line:col here.
+      Throw(msg) => emit_compile_diag_located(output_path, msg, source_cfg)
     }
   }
 }

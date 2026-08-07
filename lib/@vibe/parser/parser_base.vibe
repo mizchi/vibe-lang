@@ -999,9 +999,13 @@ fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String,
 /// points at `vibe fmt` for the same reason too -- the CST formatter rewrites
 /// the label at the token level, so it converts source this parser no longer
 /// accepts, which is the migration path for code outside this repository.
-fn reject_retired_effect_label(name: String) -> Unit with Exception {
+/// #1514: `pos` is the LABEL's token index, carried in the ` at #N` side channel
+/// `parse_program_located` decodes (and strips). Without it this reported the
+/// enclosing declaration's start -- `Error` at 6:24 was blamed on `6:1`, the
+/// `fn` keyword. Measured in eval/lang-review/repair/02.
+fn reject_retired_effect_label(name: String, pos: Int) -> Unit with Exception {
   if name == "Error" {
-    throw("`Error` was retired as an effect spelling in #1461 -- write `Exception` (or `Exception[Kind]` for a typed row). `vibe fmt` rewrites the old spelling for you.")
+    throw("`Error` was retired as an effect spelling in #1461 -- write `Exception` (or `Exception[Kind]` for a typed row). `vibe fmt` rewrites the old spelling for you. at #\{pos}")
   } else {
     ()
   }
@@ -1013,7 +1017,7 @@ fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Excep
       // Covers every shape the label can take: bare (`Error`), qualified
       // (`Error::Throw`), and applied (`Error[IoError]`) -- the check is on the
       // HEAD, which all three share.
-      reject_retired_effect_label(name)
+      reject_retired_effect_label(name, pos)
       match peek(tokens, pos + 1) {
         TDoubleColon => match peek(tokens, pos + 2) {
           TIdent(member) =>
@@ -1097,10 +1101,11 @@ fn collect_effect_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (St
 /// row, so the two are not obviously the same question.
 fn parse_effect_row_base(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
   match peek(tokens, pos) {
-    TLBrace => throw("the braced effect row `with { A, B }` was removed in #1429 -- write `with A + B` (and `with ()` for the empty row). `vibe fmt` rewrites the old spelling for you."),
+    // #1514: blame the `{` itself, not the enclosing declaration's start.
+    TLBrace => throw("the braced effect row `with { A, B }` was removed in #1429 -- write `with A + B` (and `with ()` for the empty row). `vibe fmt` rewrites the old spelling for you. at #\{pos}"),
     TLParen => match peek(tokens, pos + 1) {
       TRParen => ("", pos + 2),
-      _ => throw("`with (` spells the EMPTY effect row `with ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `with A + B` (#1429)")
+      _ => throw("`with (` spells the EMPTY effect row `with ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `with A + B` (#1429) at #\{pos}")
     },
     _ => collect_effect_names_plus(tokens, pos, "")
   }
