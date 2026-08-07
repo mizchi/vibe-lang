@@ -206,6 +206,32 @@ fn note_qualified_pattern_ref(qualifier: String, variant: String) -> Unit {
   }
 }
 
+/// #1508: `(test name, effect row text)` for every `test "n" with A + B { .. }`
+/// / `bench "n" with .. { .. }` this parse saw. Same log-then-fold-into-a-marker
+/// shape as `qualified_pattern_refs` above, and for the same reason: the row has
+/// nowhere to live on `STest` / `SBench` without widening ~200 read sites.
+let test_effect_rows: Array[(String, String)] = Array::slice([
+  ("", "")
+], 0, 0)
+
+///|
+export fn record_test_effect_row(name: String, row: String) -> Unit {
+  Array::push(test_effect_rows, (name, row))
+}
+
+///|
+export fn has_test_effect_rows() -> Bool {
+  Array::length(test_effect_rows) > 0
+}
+
+///|
+export fn take_test_effect_rows() -> Array[(String, String)] {
+  let n = Array::length(test_effect_rows)
+  let out = Array::slice(test_effect_rows, 0, n)
+  Array::truncate(test_effect_rows, 0)
+  out
+}
+
 /// Drain the log recorded since the last drain.
 ///
 /// Consume-and-clear, and the checker drains BEFORE it walks the program:
@@ -1221,7 +1247,7 @@ fn check_split_with_clause_items(row: String) -> Unit with Exception {
   }
 }
 
-fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
   let (row, after_row) = parse_effect_row_base(tokens, pos)
   match peek(tokens, after_row) {
     TIdent(kw) => if kw == "allows" {
