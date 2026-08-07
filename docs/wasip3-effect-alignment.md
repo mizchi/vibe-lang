@@ -310,7 +310,8 @@ trampoline を将来 `wasi:http/service` の
    (mixing guard reject のまま)。
    **Decision 3 の named host streams も landed (spec §3.18)**: D3 終端
    probe (§3.17) の実測を受けて、`host_stream_named("body") ->
-   Stream[Int]` (pure、cell `[3, handle]`) + `host_stream_next(s) -> Int
+   HostStream` (pure、cell `[3, handle]`。当初は `Stream[Int]` だったが
+   #1366 で分離 — 下の follow-up 参照) + `host_stream_next(s) -> Int
    with Async` (1 byte / -1 = EOS、EOS 後は cell を閉じて以後 -1) が
    実ソースで動く。lowering は §3.16 と同型で park が「future 1本ごと」
    から「read 1回ごと」に変わる: read は `Suspend(handle + 2048)` (予約
@@ -345,7 +346,22 @@ trampoline を将来 `wasi:http/service` の
    trap する — adapter は per-handle closed latch (drop を次 read まで
    遅延して handle 再利用の aliasing 窓を塞ぐ形) で吸収。gate に
    delayed lane (42 + wall ≥ 0.8×3×delay = park の実在) を追加。
-   既知の制限: 部分消費した stream の明示 close surface は未提供。
+   **明示 close も landed (spec §3.18.1)**: `host_stream_close:
+   (HostStream) -> Unit` (**`Async` 無し** — `stream.drop-readable` は
+   block しない) が部分消費した readable end を解放する。冪等性は cell の
+   state word が担保する (1 handle への二重 drop は host 側 trap なので
+   load-bearing)。**use で gate** するので、drain するだけの program は
+   close import も adapter func も持たず既存出力はバイト不変。
+   **`for` からの消費も landed (#1366、spec §3.18.2)**: ただし戻り型を
+   `Stream[Int]` から **`HostStream` へ分離した上で**。同一静的型のままだと
+   `for` が eager array パスを選び cell の 2 語を足して**期待 42 に対し 4**
+   を返していた (診断も trap も無い)。型を分けたことで `Stream::map` 等を
+   host stream に適用すると型エラーになる。
+   残り (D3 の続き): eager `Stream[T]` combinator の退役と AsyncIter への
+   一本化 (#1538)、`ByteStream` の p3 接続 (#1539)、`Stream::next` protocol の
+   接続 (#1536 — これは stream 配線ではなく **suspend lowering の適格性**の
+   問題)、実 provider = `wasi:http` incoming-body (#1540 — serve composition と
+   host-stream composition の**統合**であって配線ではない、spec §3.19)。
 
 ## Non-goals
 
