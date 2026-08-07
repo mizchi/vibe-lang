@@ -807,15 +807,49 @@ fn utl_try(name: String, init: Expr, body: Expr, off: Int) -> Option[Expr] {
             }
             i = i + 1
           }
-          // fresh-name check: the scalar names, write temps' scalar names
+          // Fresh-name check over EVERY family the rewrite can synthesize --
+          // the scalar names (`<name>__utlK`), the direct-write temps
+          // (`<name>__w__utlK`), and each write-temp's element names
+          // (`<t>__utlK`) -- against the BODY and the INITIALIZER both.
+          // Checking only `<name>__utlK` against the body let
+          // `let mut s = (0, s__utl0)` (an OUTER s__utl0 read in the init)
+          // rebind the first scalar before the second init read it
+          // (Codex review P1 on #1530).
           let names = utl_names_for(name, n)
+          let gen_names = utl_strings()
+          let mut gj = 0
+          while gj < n {
+            Array::push(gen_names, Array::get(names, gj))
+            Array::push(gen_names, String::concat(name, String::concat("__w__utl", __to_string(gj))))
+            gj = gj + 1
+          }
+          let mut ti = 0
+          while ti < Array::length(temps) {
+            let t = Array::get(temps, ti)
+            let mut tj = 0
+            while tj < n {
+              Array::push(gen_names, String::concat(t, String::concat("__utl", __to_string(tj))))
+              tj = tj + 1
+            }
+            ti = ti + 1
+          }
           let mut fresh_ok = true
           let mut j = 0
-          while j < n {
-            if utl_count(body, Array::get(names, j)) != 0 {
+          while j < Array::length(gen_names) {
+            let g = Array::get(gen_names, j)
+            if utl_count(body, g) != 0 {
               fresh_ok = false
             } else {
               ()
+            }
+            let mut ei = 0
+            while ei < Array::length(elems) {
+              if utl_count(Array::get(elems, ei), g) != 0 {
+                fresh_ok = false
+              } else {
+                ()
+              }
+              ei = ei + 1
             }
             j = j + 1
           }
