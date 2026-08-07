@@ -5,6 +5,7 @@ import @vibe/compiler/cache {
   normalize_persistent_cache_text,
   persistent_dep_list_cache_path,
   persistent_leaf_fingerprint_cache_path,
+  persistent_shadow_interface_reuse_path,
   persistent_type_env_cache_path,
   persistent_typing_dependency_env_reuse_eligibility_path,
   persistent_typing_dependency_env_reuse_sidecar_path
@@ -1911,6 +1912,204 @@ fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerpri
   Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 
+// --- #1548 shadow interface-reuse experiment ------------------------------
+//
+// Observation-only: for every module that reaches finish_typecheck_fs_impl,
+// compute what an exported-interface-keyed reuse policy WOULD have decided,
+// record it next to the production decision, and publish nothing that any
+// production lookup reads. The shadow input identity binds the owner path,
+// byte-exact owner source, resolution seed, and each resolved direct
+// dependency's interface-v2 observation fingerprint — where TDRE4 binds the
+// dependency's complete canonical TypeEnv-v3 transport text. The asymmetry
+// this experiment measures is exactly #1442's: a dependency impl bound/target
+// edit changes the transport identity (TDRE4 miss) but preserves the exported
+// interface identity (shadow hit). The version string below is the shadow
+// identity's own domain; it never appears in a production key.
+let shadow_interface_reuse_input_version = "vibe-shadow-interface-reuse-input:v1"
+let shadow_interface_reuse_record_tag = "SHIF1"
+
+let shadow_interface_reuse_trace_enabled_cell = array_empty()
+// (path, value) rows in walk order; upsert keeps re-visited paths single.
+let shadow_interface_reuse_paths = array_empty()
+let shadow_interface_reuse_production_decisions = array_empty()
+let shadow_interface_reuse_decisions = array_empty()
+let shadow_interface_reuse_key_fingerprints = array_empty()
+// Run-local memo of dependency interface identities: (path, fingerprint).
+// Keyed by path alone because within one walk a path has one checked env.
+let shadow_interface_identity_memo = array_empty()
+
+/// Enable the shadow observation for one check invocation. The CLI calls this
+/// only for VIBE_SHADOW_INTERFACE_REUSE_TRACE_OUT; resetting also clears the
+/// per-run observation rows and the dependency identity memo.
+export fn set_shadow_interface_reuse_trace_enabled(enabled: Bool) -> Unit {
+  Array::truncate(shadow_interface_reuse_trace_enabled_cell, 0)
+  Array::push(shadow_interface_reuse_trace_enabled_cell, enabled)
+  Array::truncate(shadow_interface_reuse_paths, 0)
+  Array::truncate(shadow_interface_reuse_production_decisions, 0)
+  Array::truncate(shadow_interface_reuse_decisions, 0)
+  Array::truncate(shadow_interface_reuse_key_fingerprints, 0)
+  Array::truncate(shadow_interface_identity_memo, 0)
+}
+
+fn shadow_interface_reuse_trace_enabled() -> Bool {
+  if Array::length(shadow_interface_reuse_trace_enabled_cell) > 0 {
+    Array::get(shadow_interface_reuse_trace_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+
+fn shadow_interface_identity_of(rdb: RippleDb, dep_path: String, dep_env: TypeEnv) -> String with Exception {
+  match lookup_string_pair(shadow_interface_identity_memo, dep_path) {
+    Some(cached) => cached,
+    None => {
+      let dep_source = match ripple_get_source(rdb, dep_path) {
+        Some(s) => s,
+        None => throw(String::concat("shadow interface reuse observation: missing dependency source for ", dep_path))
+      }
+      let identity = incremental_interface_identity(dep_source, dep_env)
+      upsert_string_pair(shadow_interface_identity_memo, dep_path, identity)
+      identity
+    }
+  }
+}
+
+/// The shadow logical input. Same segment discipline as the TDRE4 input key,
+/// but each dependency row binds the dependency's exported-interface
+/// observation fingerprint instead of its full canonical transport text.
+fn shadow_interface_reuse_input_key(path: String, source: String, dep_rows: Array[(String, String)]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, shadow_interface_reuse_input_version)
+  StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
+  StringBuilder::push(out, typing_reuse_segment(source))
+  StringBuilder::push(out, typing_reuse_segment(resolution_env_seed()))
+  StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(dep_rows))))
+  let mut i = 0
+  while i < Array::length(dep_rows) {
+    let (dep_path, dep_interface_fingerprint) = Array::get(dep_rows, i)
+    StringBuilder::push(out, typing_reuse_segment(dep_path))
+    StringBuilder::push(out, typing_reuse_segment(dep_interface_fingerprint))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Would the shadow policy have reused here? A record must exist for exactly
+/// this shadow input, parse strictly, echo the key, and its bound conservative
+/// target environment must still decode canonically. Anything less — missing,
+/// malformed, truncated, torn, cross-spliced, or an unreadable target — is a
+/// miss, never an error: miss IS the shadow policy's cold fallback.
+fn shadow_interface_reuse_lookup(shadow_key: String) -> Bool with Fs {
+  let record_path = persistent_shadow_interface_reuse_path(shadow_key)
+  if !Fs::exists(record_path) {
+    false
+  } else {
+    handle {
+      match parse_typing_dependency_reuse_binding(Fs::read_file(record_path), shadow_interface_reuse_record_tag) {
+        Some((record_key, target_fingerprint, owner_interface_fingerprint)) =>
+        if record_key != shadow_key || String::length(owner_interface_fingerprint) == 0 {
+          false
+        } else {
+          let target_path = persistent_type_env_cache_path(target_fingerprint)
+          if !Fs::exists(target_path) {
+            false
+          } else {
+            let raw_target_text = Fs::read_file(target_path)
+            match parse_persistent_type_env(raw_target_text) {
+              Some(target_env) => raw_target_text == persistent_type_env_cache_text(target_env),
+              None => false
+            }
+          }
+        },
+        None => false
+      }
+    } with Exception {
+      Throw(_) => false
+    }
+  }
+}
+
+fn publish_shadow_interface_reuse_record(shadow_key: String, fingerprint: String, owner_interface_fingerprint: String) -> Unit with Fs {
+  let record_text = typing_dependency_reuse_binding_text(shadow_interface_reuse_record_tag, shadow_key, fingerprint, owner_interface_fingerprint)
+  Fs::write_file(persistent_shadow_interface_reuse_path(shadow_key), record_text)
+}
+
+/// One shadow observation for a module the walk just settled. Called only
+/// after the module's conservative TypeEnv target is committed, so the record
+/// published here always binds an existing target. Lookup happens before
+/// publication — a run must not observe its own just-published record as a
+/// hit. The opt-in lane throws on missing inputs rather than degrading: an
+/// unobservable module would make the sidecar silently partial.
+fn shadow_interface_reuse_observe(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], path: String, source: String, deps: Array[String], fingerprint: String, production_decision: String, checked_env: TypeEnv) -> Unit with Exception + Fs {
+  if !shadow_interface_reuse_trace_enabled() {
+    ()
+  } else {
+    let coordinated = ensure_env_cache_for_paths(rdb, env_cache, deps)
+    let projected = project_exact_dependency_envs(deps, coordinated)
+    let dep_rows = array_empty()
+    let mut i = 0
+    while i < Array::length(projected) {
+      let (dep_path, dep_env) = Array::get(projected, i)
+      Array::push(dep_rows, (dep_path, shadow_interface_identity_of(rdb, dep_path, dep_env)))
+      i = i + 1
+    }
+    let shadow_key = shadow_interface_reuse_input_key(path, source, dep_rows)
+    let shadow_decision = if shadow_interface_reuse_lookup(shadow_key) {
+      "hit"
+    } else {
+      "miss"
+    }
+    upsert_string_pair(shadow_interface_reuse_paths, path, path)
+    upsert_string_pair(shadow_interface_reuse_production_decisions, path, production_decision)
+    upsert_string_pair(shadow_interface_reuse_decisions, path, shadow_decision)
+    upsert_string_pair(shadow_interface_reuse_key_fingerprints, path, compact_string_fingerprint(shadow_key))
+    let owner_interface_fingerprint = incremental_interface_identity(source, checked_env)
+    publish_shadow_interface_reuse_record(shadow_key, fingerprint, owner_interface_fingerprint)
+  }
+}
+
+/// Strict successful-check sidecar for the shadow observation. Field order is
+/// fixed and the scope note is part of the format: shadow decisions derive
+/// from the exported-interface observation identity and never influence the
+/// production reuse decision recorded beside them.
+export fn shadow_interface_reuse_trace_json(run_nonce: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "{\"schema\":\"shadow-interface-reuse-trace\",\"version\":1,\"run_nonce\":")
+  StringBuilder::push(out, incremental_trace_json_string(run_nonce))
+  StringBuilder::push(out, ",\"scope_note\":\"shadow decisions derive from the exported-interface observation identity; they are recorded alongside, and never influence, the production reuse decision; missing or malformed shadow state observes as miss; leaf-fingerprint short-circuited modules are outside this observation\"")
+  StringBuilder::push(out, ",\"modules\":[")
+  let mut i = 0
+  while i < Array::length(shadow_interface_reuse_paths) {
+    let (path, _) = Array::get(shadow_interface_reuse_paths, i)
+    if i > 0 {
+      StringBuilder::push(out, ",")
+    } else {
+      ()
+    }
+    StringBuilder::push(out, "{\"path\":")
+    StringBuilder::push(out, incremental_trace_json_string(path))
+    StringBuilder::push(out, ",\"production_decision\":")
+    StringBuilder::push(out, incremental_trace_json_string(match lookup_string_pair(shadow_interface_reuse_production_decisions, path) {
+      Some(d) => d,
+      None => "unrecorded"
+    }))
+    StringBuilder::push(out, ",\"shadow_decision\":")
+    StringBuilder::push(out, incremental_trace_json_string(match lookup_string_pair(shadow_interface_reuse_decisions, path) {
+      Some(d) => d,
+      None => "unrecorded"
+    }))
+    StringBuilder::push(out, ",\"shadow_input_fingerprint\":")
+    StringBuilder::push(out, incremental_trace_json_string(match lookup_string_pair(shadow_interface_reuse_key_fingerprints, path) {
+      Some(f) => f,
+      None => ""
+    }))
+    StringBuilder::push(out, "}")
+    i = i + 1
+  }
+  StringBuilder::push(out, "]}")
+  StringBuilder::freeze(out)
+}
+
 fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Fs {
   let dep_cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
   if !(Fs::exists(dep_cache_path)) {
@@ -2563,6 +2762,18 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     } else {
       ()
     }
+    // #1548 shadow lane: an exact conservative hit still gets a shadow row —
+    // recording only recheck paths would make agreement look like absence.
+    // Loading the env and ensuring dependency envs is opt-in extra work that
+    // the disabled path never pays.
+    if shadow_interface_reuse_trace_enabled() {
+      match load_persistent_type_env(fingerprint) {
+        Some(cached_env) => shadow_interface_reuse_observe(rdb, env_cache, path, source, deps, fingerprint, "reused_conservative", cached_env),
+        None => throw(String::concat("shadow interface reuse observation: unreadable reused environment for ", path))
+      }
+    } else {
+      ()
+    }
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
   } else {
@@ -2592,6 +2803,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
         Fs::write_file(persistent_type_env_cache_path(fingerprint), target_text)
         publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
         write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
+        shadow_interface_reuse_observe(rdb, coordinated_env_cache, path, source, deps, fingerprint, "reused_dependency_transport_alias", target_env)
         let next_env_cache = upsert_env_cache(coordinated_env_cache, path, target_env)
         let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
         (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
@@ -2605,7 +2817,16 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
           dep_envs: projected_dep_envs
         }
         let outcome = check_module(job)
-        commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome)
+        let committed = commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome)
+        // #1548 shadow lane: observe only after commit_module_outcome stored
+        // the conservative target (Diagnosed outcomes threw inside it, so a
+        // failed module never records or publishes a shadow row).
+        match outcome {
+          Checked(_, checked_fingerprint, checked_env, _, _, _) =>
+          shadow_interface_reuse_observe(rdb, coordinated_env_cache, path, source, deps, checked_fingerprint, "rechecked", checked_env),
+          _ => ()
+        }
+        committed
       }
     }
   }

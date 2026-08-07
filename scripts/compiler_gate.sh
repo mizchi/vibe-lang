@@ -96,6 +96,17 @@ node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3ac/3 experimental typing dependency-env reuse oracle"
 VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
 
+# 3ad. #1548 shadow interface-reuse observation: the opt-in check-only lane
+# records what an exported-interface-keyed reuse policy would have decided
+# beside the production decision, without reading any of it back into a
+# production lookup. The isolated oracle proves sidecar request discipline
+# (nonce, stale deletion, trace-lane rejection, publish-after-success), the
+# bounded edit matrix including the #1442 impl-bound TDRE4-miss/shadow-hit
+# asymmetry, fail-closed malformed-record observation, and lane-off/on check
+# output parity.
+echo "[compiler-gate] 3ad/3 shadow interface-reuse observation oracle"
+VIBE_RC=0 node scripts/shadow_interface_reuse_oracle.mjs "$stage2_wasm"
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that

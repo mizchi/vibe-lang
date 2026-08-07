@@ -247,6 +247,34 @@ malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and target
 fall back to a full check. The alias remains incompatible with the incremental
 invalidation trace lane so the two identities cannot be confused.
 
+### Shadow interface-reuse observation (#1548)
+
+`VIBE_SHADOW_INTERFACE_REUSE_TRACE_OUT` + `_NONCE` opt the check-only lane
+into an observation-only shadow experiment: for every module the walk settles
+(leaf-fingerprint short-circuits excluded), the compiler computes what an
+exported-interface-keyed reuse policy would have decided and records it beside
+the production decision (`rechecked` / `reused_conservative` /
+`reused_dependency_transport_alias`). The shadow input identity
+(`vibe-shadow-interface-reuse-input:v1`) binds the owner path, byte-exact
+owner source, resolution seed, and each resolved direct dependency's
+interface-v2 observation fingerprint — where TDRE4 binds the dependency's
+complete canonical TypeEnv-v3 transport text. Its persistent records live in
+their own version-tagged namespace (`selfhost_shadow_interface_reuse_v1`,
+strict `SHIF1` envelope binding the shadow key, the conservative target
+fingerprint, and the owner interface fingerprint); no production lookup reads
+them, and the shadow and production identities never mix as key bytes. A
+missing, malformed, torn, or cross-spliced record — or an unreadable bound
+target — observes as `miss`, never an error: miss is the shadow policy's cold
+fallback. The sidecar is deleted before the check, published only after a
+successful one, and rejects combination with the invalidation trace lane
+(which forces production reuse off, making decisions unrepresentative).
+`scripts/shadow_interface_reuse_oracle.mjs` (compiler gate step 3ad) proves
+the request discipline, the bounded edit matrix — including the #1442
+asymmetry where a dependency impl-bound edit misses TDRE4 but hits the
+interface-keyed shadow — fail-closed malformed-record observation, and
+lane-off/on check output parity. The recorded decisions remain observations;
+no production cache key, format, or reuse decision changes.
+
 The v3 TypeEnv codec round-trips every current `TypeEnv` variant, including
 trait definitions, impls, generic impl bounds, trait-header parameters,
 positional method-generic binders/bounds, and method `TypeExpr` metadata. The

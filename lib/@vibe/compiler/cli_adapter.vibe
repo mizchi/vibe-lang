@@ -35,6 +35,8 @@ import @vibe/compiler/runtime {
   set_incremental_interface_trace_enabled,
   set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
+  set_shadow_interface_reuse_trace_enabled,
+  shadow_interface_reuse_trace_json,
   symbol_spans,
   type_at_source
 }
@@ -456,6 +458,10 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // build/codegen lanes stay conservative, and a prior check in a long-lived
   // instance cannot leak its policy into a later invocation.
   set_experimental_typing_dependency_env_reuse_enabled(false)
+  // Same discipline for the #1548 shadow observation: only the check-only
+  // branch may enable it, so a shadow check in a long-lived instance cannot
+  // leak observation work into a later compile lane's db_typecheck_fs walk.
+  set_shadow_interface_reuse_trace_enabled(false)
   // #944 (ADR-0073 stage B): checked-Error row discipline is ON by
   // default -- `Exception::Throw` propagates to the caller's row like any
   // other effect, dischargeable via `handle .. with Exception`.
@@ -869,6 +875,31 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       } else {
         ()
       }
+      // #1548 shadow interface-reuse experiment: observation-only sidecar
+      // recording what an exported-interface-keyed policy would have decided
+      // beside the production decision. It observes the DEFAULT production
+      // policy, so combining it with the invalidation trace lane (which
+      // forces reuse off) would record unrepresentative decisions — reject.
+      let shadow_interface_trace_out = Env::get("VIBE_SHADOW_INTERFACE_REUSE_TRACE_OUT")
+      let shadow_interface_trace_nonce = Env::get("VIBE_SHADOW_INTERFACE_REUSE_TRACE_NONCE")
+      if shadow_interface_trace_out != "" {
+        // Same stale-sidecar discipline as the invalidation trace: delete
+        // before the check, publish only after success, require a nonce.
+        if Fs::exists(shadow_interface_trace_out) {
+          Fs::remove(shadow_interface_trace_out)
+        } else {
+          ()
+        }
+        if shadow_interface_trace_nonce == "" {
+          throw("VIBE_SHADOW_INTERFACE_REUSE_TRACE_OUT requires VIBE_SHADOW_INTERFACE_REUSE_TRACE_NONCE")
+        } else if invalidation_trace_out != "" {
+          throw("VIBE_SHADOW_INTERFACE_REUSE_TRACE_OUT does not support VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
       if telemetry_out != "" || invalidation_trace_out != "" {
         set_incremental_typecheck_telemetry_enabled(true)
       } else {
@@ -880,6 +911,9 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // This has no cache behavior: it only makes the successful walk carry
       // a canonical public-interface observation into the requested sidecar.
       set_incremental_interface_trace_enabled(invalidation_trace_out != "")
+      // Reset every invocation (like the trace lanes above) so a long-lived
+      // caller cannot leak shadow observations into a later requested check.
+      set_shadow_interface_reuse_trace_enabled(shadow_interface_trace_out != "")
       let _ = check_linked_file(input_path)
       if telemetry_out != "" {
         Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
@@ -888,6 +922,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       }
       if invalidation_trace_out != "" {
         Fs::write_file(invalidation_trace_out, incremental_invalidation_trace_json(input_path, invalidation_trace_nonce))
+      } else {
+        ()
+      }
+      if shadow_interface_trace_out != "" {
+        Fs::write_file(shadow_interface_trace_out, shadow_interface_reuse_trace_json(shadow_interface_trace_nonce))
       } else {
         ()
       }
