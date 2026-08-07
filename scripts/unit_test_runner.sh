@@ -32,6 +32,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+. "$SCRIPT_DIR/trace_lib.sh"
 cd "$ROOT_DIR"
 
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
@@ -269,7 +270,22 @@ attribute_block_failure() {
 # regression, so retry it. Deterministic failures are NOT retried: a real
 # compile error writes a `.diag` sidecar, and a failing test assert traps at
 # runtime — both are stable, so the first observation is final.
+# One span per test file (docs/tracing-design.md step 0). Under `xargs -P`
+# each worker is its own process, so they inherit VIBE_TRACEPARENT from the
+# battery and land as SIBLINGS of each other under it -- which is what makes
+# the parallel fan-out legible as a tree rather than a flat list. Their
+# appends interleave whole lines; see trace_lib.sh on why a span is one line
+# written once.
 run_one() {
+  trace_begin "test $1"
+  local tok="$TRACE_TOKEN"
+  local rc=0
+  run_one_untraced "$@" || rc=$?
+  trace_end "$tok" "$rc"
+  return "$rc"
+}
+
+run_one_untraced() {
   local f="$1"
   if [ "$unit_out_cache_enabled" != "0" ]; then
     local pathkey ckey
@@ -550,7 +566,8 @@ else
     fi
     return 0
   }
-  export -f unit_worker run_one unit_out_key unit_out_store attribute_block_failure
+  export -f unit_worker run_one run_one_untraced unit_out_key unit_out_store attribute_block_failure
+  export -f trace_begin trace_end trace_rand_hex trace_now_ns trace_json_escape
   # strict_cache_tail: tests that assert on the DEFAULT persistent-cache
   # root's own semantics (cache_underlying_env_override_test exercises the
   # VIBE_BUILD_CACHE_DIR override itself; the persistent_* trio asserts

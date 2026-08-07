@@ -591,11 +591,62 @@ PR #1152 が 2 で直したのと同じ false positive を持っていた。
 
 ### 5.3 移行
 
+> **2026-08-07 決定 (ADR-0100): §5.2 の2軸分離を採用。** `ImmutMap` は
+> builtin `Map` への統合を試み、性能上併存が要ると判明したら実装接尾辞
+> `MapHamt` に落とす。
+
 renames + 旧名の deprecated alias。`vibe` は selfhost なので、
 コンパイラ自身の利用箇所が最大の呼び出し元になる。ADR-0082 の子タスクとして
 段階実施(#1140 系列)。**§4 の段階3 より前に着手できる**(独立)。
 
 ---
+
+### 5.4 Builder 族の決着 (2026-08-07, ADR-0101)
+
+`-Builder` も「可変」の一種なので、§5.2 の軸に載せる前に
+**性能上必要かどうかを実測で分けた**(規則:「性能例外は許すが、例外は
+明示的に説明する」— この節がその説明)。n=1000 の蓄積、
+[bench/bench_builder_vs_mut.vibe](../bench/bench_builder_vs_mut.vibe)、
+B/op は VIBE_RC=0 (bump) の値:
+
+| 素材 | Builder | Mut- 相当 | persistent 相当 |
+|---|---|---|---|
+| arr | 17.2µs / 16332 B | `Array::push` 13.6µs / **16332 B(完全一致)** | concat 90ms / 10.8MB |
+| str | **23µs / 17KB** | (可変 String は存在しない) | concat 250µs / 492KB |
+| map | 2.43ms / 71KB | `HashMap` **1.49ms** / 337KB | `Map::set` 133ms / 18MB |
+
+決定:
+
+- **ArrayBuilder / MapBuilder は廃止方向**(deprecated alias で段階移行)。
+  ArrayBuilder は `Array::push` と ns 誤差内・確保量まで同一で、純粋に
+  契約シグナルだけの型だった。MapBuilder は assoc 走査のせいで
+  `HashMap`(→`MutMap`)より 1.6× **遅い**。契約シグナル(持ち続けない・
+  freeze で終端)は、将来の region 束縛 `MutList[T,r]` / `MutMap[K,V,r]`
+  (ADR-0090)が型パラメータとして引き受ける。
+- **StringBuilder は性能例外として維持**。唯一の代替(persistent concat の
+  付け替え)より 10.6× 速く、確保が 29× 少ない。可変 String 型は導入しない
+  ので、これが効率的な文字列蓄積の唯一の手段。Builder 族の規則は
+  「**Builder = 性能例外のために存在する accumulator**」の1文になる。
+- **語彙の再整列**: 現状は動詞 `freeze` が `Frozen-` 型を産まない
+  (最悪例: `ArrayBuilder::freeze -> Array` — freeze の結果が可変)。
+  Builder の終端は **`build`**(`StringBuilder::build() -> String`、
+  型名と動詞が対応)、**`freeze` は Frozen-(persistent+Send)を産む動詞に
+  予約**、Mut- → persistent の非消費変換は **`snapshot`**。
+  既存 `XBuilder::freeze` は deprecated alias。
+
+これで可変性軸の閉じた集合は **∅ / `Mut` / `Frozen` / (性能例外としての)
+`-Builder`** の4位置、対応する動詞は **`snapshot` / `freeze` / `build`** に
+それぞれ固定される。
+
+**配列の最適化誘導先は `FixedArray`**(同決定 (4))。長さが事前に分かる
+最適化対象コードは growable `Array` ではなく固定長 `FixedArray` で書く —
+bounds が静的に既知(成長 realloc なし・bounds check 除去の余地)で、
+長さ不変条件を将来 requires/ensures の形式手法で証明する余地がある
+(`unsafe_set` の正当化を証明に置き換える路線)。zlib / regexp / optimizer /
+perceus のホットパスは既にこの形。使い分けの1行:
+**長さ既知 → `FixedArray`、長さ未知の蓄積 → `Array::push`、
+文字列蓄積 → `StringBuilder`(性能例外)**。cheatsheet への明記は
+rename 作業と同時に行う(FixedArray は現状 cheatsheet 未記載)。
 
 ## 6. 収斂先: 「最速の形」に全部を寄せる
 
@@ -791,14 +842,22 @@ wasm-gc / interp lane は据え置き(意味論保存なので differential gate
 
 ---
 
-## 8. 未決
+## 8. 未決 → 決着 (2026-08-07, ADR-0100)
+
+上2つは ADR-0100 で決着した。決定内容を各項に注記する。
 
 - **段0/段1 境界の正確な定義**。`mut_needs_ref_cell` は closure 捕獲だけを見る。
   `struct { mut f }` を関数に渡す形、`Array` を渡す形は今の述語の対象外で、
   梯子に載せるなら別途定義が要る。**まず捕獲 `let mut` だけで段階1をやる**のが安全。
+  → **決定: closure 捕獲のみを escape とする。** struct mut 渡し・`Array`/`Bytes`
+  渡しは対象外と明文化し、拡張は別決定として起こす。定義が現行述語の実装と
+  一致した状態から出発するので、既存コードの適法性は変わらない。
 - **段2 の綴り**。`effect State` を書かせるのか、`with Mut[c]` のような
   セル名パラメータにするのか。ADR-0075 の resource kind パラメータと
   同じ問題なので、そちらの決着を待てる。
+  → **決定: `with Mut[c]` を新設する。** `effect State` + handler は機構として
+  残るが、権限の綴りはセル名パラメータ付き row atom に寄せる。詳細設計
+  (セル名の kind・スコープ規則、ADR-0075 との整合)は実装前に起こす。
 - **`reads` 相当を持つか**。Verse は `<reads>` を分けるが、vibe で
   read 権限が要るのは host 資源(`Env::Read` / ADR-0075 の path-scoped)だけで、
   in-process の読みに権限を課す動機はまだ実測されていない。**当面は持たない。**

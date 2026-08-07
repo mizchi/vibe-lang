@@ -73,8 +73,14 @@ VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 # checks source/token-stream/interface/checked-env parity without incorporating
 # the new observation into a production cache key, cache format, or reuse
 # decision. Ordinary compiler-source fingerprint invalidation still applies.
+# #1548: the oracle also publishes the shadow planner vs current compiler
+# decision diff into _build/ci-artifacts/ (CI uploads it), keeping the
+# conservative over-invalidation residual visible per run instead of a log line.
 echo "[compiler-gate] 3aa/3 incremental invalidation observation oracle"
-VIBE_RC=0 node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
+mkdir -p _build/ci-artifacts
+VIBE_RC=0 \
+  VIBE_SHADOW_DECISION_DIFF_OUT="$ROOT_DIR/_build/ci-artifacts/incremental-shadow-decision-diff.json" \
+  node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 
 # 3ab. #1379 opt-in metadata-only ingestion stamp: isolated equivalent cache
 # histories prove observed successful-check invalidation/output equivalence and
@@ -9642,13 +9648,14 @@ export fn hue_rank(h: Hue) -> Int {
 }
 UIDEP
 ui_case() {
-  # ui_case <name> <expect: ok|err|gap> <source>
+  # ui_case <name> <expect: ok|err> <source>
   #   ok  -- compiles
   #   err -- rejected BY THE #1521 CHECK (diag names the unexported import)
-  #   gap -- rejected, but LATER than the check: a shape #1521 is supposed to
-  #          cover and does not yet. Pinning the phase is the point; `ok` would
-  #          be wrong (no wasm is produced) and `err` would be wrong (the diag
-  #          is codegen's, not the check's), so neither expresses it.
+  # (A third expectation, `gap`, used to pin the #1533 shape: a private
+  # import that failed in CODEGEN instead of the check. #1533 is fixed --
+  # published dependency environments are restricted to the export surface,
+  # see runtime/typecheck_fs.vibe restrict_env_to_export_surface -- so that
+  # shape is an ordinary `err` now and the expectation is gone.)
   local uname="$1" uexpect="$2" usrc="$3"
   printf '%s' "$usrc" > "$uidir/$uname.vibe"
   rm -f "$uidir/$uname.wasm" "$uidir/$uname.wasm.diag"
@@ -9659,16 +9666,6 @@ ui_case() {
     if [ ! -s "$uidir/$uname.wasm" ]; then
       echo "[compiler-gate] FAIL: unresolved-import case '$uname' should compile but did not (#1521)" >&2
       cat "$uidir/$uname.wasm.diag" 2>/dev/null >&2 || true
-      exit 1
-    fi
-  elif [ "$uexpect" = "gap" ]; then
-    if [ -s "$uidir/$uname.wasm" ]; then
-      echo "[compiler-gate] FAIL: known-gap case '$uname' compiled cleanly; it is supposed to still fail somewhere (#1533)" >&2
-      exit 1
-    fi
-    if grep -q "is not exported by" "$uidir/$uname.wasm.diag" 2>/dev/null; then
-      echo "[compiler-gate] FAIL: known-gap case '$uname' is now caught by the #1521 check -- #1533 is fixed." >&2
-      echo "[compiler-gate]       Move this case from 'gap' to 'err' and close #1533." >&2
       exit 1
     fi
   else
@@ -9744,14 +9741,11 @@ ui_case bogus_from_traitonly err 'import ./traitonly.vibe { no_such_fn }
 
 export let _start = () -> Int { no_such_fn(1) }
 '
-# 9. The OTHER known gap (#1533): membership is tested against the dependency's
-#    checked environment, which binds every top-level fn whether exported or
-#    not, so importing a PRIVATE name is not reported by the check. It still
-#    fails -- but in CODEGEN, which is exactly the failure mode #1521 exists to
-#    remove, so the phase is what has to be pinned. `ok` would be wrong (no
-#    wasm) and `err` would be wrong (the diag is codegen's), hence `gap`: it
-#    asserts the compile fails AND that the #1521 check was not what rejected
-#    it. Fixing #1533 turns this red with an instruction to flip it to `err`.
+# 9. #1533, fixed (was pinned here as a `gap` case): a PRIVATE name is not in
+#    the environment the dependency publishes -- check_module restricts it to
+#    the export surface -- so the membership check reports it exactly like a
+#    name that never existed. From the importer's side those are the same
+#    fact: the dependency does not export it.
 cat > "$uidir/privates.vibe" <<'UIPRIV'
 fn private_fn(x: Int) -> Int {
   x + 1
@@ -9761,15 +9755,38 @@ export fn public_fn(x: Int) -> Int {
   private_fn(x)
 }
 UIPRIV
-ui_case private_import_gap gap 'import ./privates.vibe { private_fn }
+ui_case private_import_reported err 'import ./privates.vibe { private_fn }
 
 export let _start = () -> Int { private_fn(1) }
 '
 # 10. ...and the public name from that same module still imports cleanly, so
-#     the gap case above is not passing because the module is broken.
+#     case 9 is not passing because the module is broken.
 ui_case public_from_mixed_module ok 'import ./privates.vibe { public_fn }
 
 export let _start = () -> Int { public_fn(1) }
+'
+# 11-12. The same rule for PASS-THROUGH names (#1533's other face): a name the
+#     dependency merely imported sits in its checked environment (the import
+#     env is the base of the chain) but is NOT part of its export surface --
+#     importing it from the middleman is an error unless the middleman
+#     re-exports it, which puts the name on the surface for real.
+cat > "$uidir/middleman.vibe" <<'UIMID'
+import ./dep.vibe { hue_rank, Hue, Crimson }
+
+export fn middleman_rank() -> Int {
+  hue_rank(Crimson)
+}
+UIMID
+ui_case passthrough_import_reported err 'import ./middleman.vibe { hue_rank }
+
+export let _start = () -> Int { hue_rank(1) }
+'
+cat > "$uidir/reexporter.vibe" <<'UIREX'
+export ./dep.vibe { hue_rank, Hue, Crimson }
+UIREX
+ui_case reexported_name_ok ok 'import ./reexporter.vibe { hue_rank, Hue, Crimson }
+
+export let _start = () -> Int { hue_rank(Crimson) }
 '
 rm -rf "$uidir"
 echo "[compiler-gate] unresolved import names ok"
@@ -9837,5 +9854,9 @@ if [ ! -s "$cgdir/ok.wasm" ]; then
 fi
 rm -rf "$cgdir"
 echo "[compiler-gate] codegen unresolved-name error is legible ok"
+
+echo "[compiler-gate] 96/96 host-side tracing spans nest, propagate and record failures (docs/tracing-design.md step 0)"
+bash scripts/test_trace_spans.sh
+echo "[compiler-gate] tracing spans ok"
 
 echo "[compiler-gate] ok"

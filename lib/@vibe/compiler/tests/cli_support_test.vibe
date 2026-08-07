@@ -128,3 +128,56 @@ test "check_linked_file: wrong-typed call to an imported function throws (#946 P
   assert(String::contains(msg, "f"))
   assert(msg != "")
 }
+
+/// #1511(b) / #1536(c): a `handle` whose body calls a LOCAL CLOSURE hides the
+/// perform from evidence-passing migration (ADR-0076) — the exact shape the
+/// cheatsheet's 落とし穴 table records as NG. It typechecks, so before this
+/// slice `vibe check` said "ok" and the error first appeared at
+/// build/test/doctest time. check_linked_file now runs the same
+/// effect-lowering prelude codegen runs, so it must throw HERE.
+test "check_linked_file: handle body calling a local closure fails eligibility at check (#1511)" {
+  let path = "/tmp/vibe_cli_support_check_edp_ineligible.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "cannot be compiled here"))
+}
+
+/// The eligible counterpart: the same handle with the perform statically
+/// visible (direct call to a named top-level fn) must keep checking clean —
+/// the new prelude run must not reject programs codegen accepts.
+test "check_linked_file: eligible handle still checks clean (#1511)" {
+  let path = "/tmp/vibe_cli_support_check_edp_eligible.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  handle { ask_once() } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  let rc = check_linked_file(path)
+  assert(rc == 0)
+}
+
+/// #1536(c): the suspend class (an arm capturing `resume` as a value) with a
+/// perform OFF the eligible spine — inside a `for` form (docs/cheatsheet.md
+/// 制約: loop 内の perform は compile error). suspend_cps_pass rejects this at
+/// codegen; check_linked_file must now surface the same error.
+test "check_linked_file: suspend-class handle with perform in a for loop fails at check (#1536)" {
+  let path = "/tmp/vibe_cli_support_check_scps_ineligible.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    for j in [1, 2] {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "suspend class"))
+}
+
+/// The suspend-class counterpart that IS eligible (perform on the let spine,
+/// resume captured as a value) — must keep checking clean.
+test "check_linked_file: eligible suspend-class handle still checks clean (#1536)" {
+  let path = "/tmp/vibe_cli_support_check_scps_eligible.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let a = perform Sus::Suspend(1)\n    a * 10\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  let rc = check_linked_file(path)
+  assert(rc == 0)
+}

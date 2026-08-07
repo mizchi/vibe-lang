@@ -51,7 +51,7 @@ import ./type_db.vibe {
 // would regress every located-diagnostic case check has (scripts/
 // test_located_diagnostics.sh).
 import @vibe/compiler/runtime {
-  check_inline_wasm_fns, locate_type_error
+  check_inline_wasm_fns, deprecated_warning_lines, locate_type_error
 }
 
 // #946(3): re-parse the entry file WITH real char offsets for check_linked_file
@@ -166,6 +166,12 @@ export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (B
 /// expressiveness gaps (parse errors, type errors, genuine unknown names)
 /// WITHOUT the codegen builtin-body-linking confounder that makes the `debug`
 /// mode emit spurious `undefined variable: Ns::method`. No wasm is produced.
+/// #1536(c)/#1511(b): "typecheck only" no longer means blind to effect-lowering
+/// eligibility — check_file_fs_mode below also runs the ADR-0076 prelude
+/// (suspend CPS split + evidence-passing migration, shared verbatim with the
+/// real compile) on the merged program, so a handle/suspend shape codegen
+/// would reject fails here instead of first failing at build/test/doctest.
+/// Still no wasm and no builtin-body linking.
 export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
   // #946(3): parse the entry file OURSELVES first (located + recovering —
   // see the import comment above) so a parse error is reported with an exact
@@ -217,6 +223,32 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
     Throw(msg) => throw(locate_type_error(entry_source, msg))
   }
   0
+}
+
+/// `#deprecated` warnings for a file that already passed check_linked_file
+/// (#1262 / ADR-0101). Markers are collected from the entry file AND every
+/// linked dependency file (the same linked_dep_specs set the debug build
+/// links); uses are reported for the entry file only, as non-fatal
+/// `warning:` lines. A file that fails to parse gets no warnings — the
+/// check itself already failed loudly.
+export fn check_deprecated_warnings(input_path: String) -> Array[String] with Exception + Fs {
+  let entry_source = Fs::read_file(input_path)
+  let (tokens, starts, _ends) = lex_with_offsets(entry_source)
+  let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)
+  if Array::length(parse_diags) > 0 {
+    return array_empty()
+  } else {
+    ()
+  }
+  let dep_sources: Array[String] = array_empty()
+  let (_resolved_type_stmts, _linked_imports, linked_dep_specs) = collect_linked_dep_inputs_for_stmts(input_path, entry_stmts)
+  let mut i = 0
+  while i < Array::length(linked_dep_specs) {
+    let (_module_name, dep_path) = Array::get(linked_dep_specs, i)
+    Array::push(dep_sources, Fs::read_file(dep_path))
+    i = i + 1
+  }
+  deprecated_warning_lines(entry_source, dep_sources)
 }
 
 //# Release wasm stripping (#1100 size)

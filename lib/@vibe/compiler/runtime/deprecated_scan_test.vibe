@@ -1,0 +1,107 @@
+//# `#deprecated` marker scan (#1262 / ADR-0101): declaration markers are
+//# collected from entry + dep sources, uses in the entry warn, declaration
+//# sites and unused markers stay silent.
+
+//# Imports
+
+import ./deprecated_scan.vibe {
+  deprecated_warning_lines
+}
+
+//# Helpers
+
+fn no_deps() -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+fn warn_count(entry: String, deps: Array[String]) -> Int with Exception {
+  Array::length(deprecated_warning_lines(entry, deps))
+}
+
+fn first_warning(entry: String, deps: Array[String]) -> String with Exception {
+  let lines = deprecated_warning_lines(entry, deps)
+  if Array::length(lines) == 0 {
+    ""
+  } else {
+    Array::get(lines, 0)
+  }
+}
+
+fn contains(haystack: String, needle: String) -> Bool {
+  let hl = String::length(haystack)
+  let nl = String::length(needle)
+  let mut i = 0
+  let mut found = false
+  while !found && i + nl <= hl {
+    if String::equals(String::substring(haystack, i, i + nl), needle) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+//# Tests
+
+test "deprecated fn: a use warns, the declaration itself does not" {
+  let src = "#deprecated\nfn old_thing(x: Int) -> Int {\n  x\n}\nfn caller() -> Int {\n  old_thing(1)\n}"
+  assert_eq(warn_count(src, no_deps()), 1)
+  let w = first_warning(src, no_deps())
+  assert(contains(w, "'old_thing' is deprecated"))
+  assert(contains(w, "line 6"))
+}
+
+test "deprecated with message: the message rides along" {
+  let src = "#deprecated(\"use new_thing\")\nfn old_thing() -> Int {\n  1\n}\nfn caller() -> Int {\n  old_thing()\n}"
+  let w = first_warning(src, no_deps())
+  assert(contains(w, "is deprecated: use new_thing"))
+}
+
+test "no marker: no warnings" {
+  let src = "fn plain() -> Int {\n  1\n}\nfn caller() -> Int {\n  plain()\n}"
+  assert_eq(warn_count(src, no_deps()), 0)
+}
+
+test "marked but unused: no warnings" {
+  let src = "#deprecated\nfn old_thing() -> Int {\n  1\n}\nfn caller() -> Int {\n  2\n}"
+  assert_eq(warn_count(src, no_deps()), 0)
+}
+
+test "qualified fn declaration: qualified use warns" {
+  let src = "#deprecated(\"use MutMap::set\")\nfn OldMap::set(x: Int) -> Int {\n  x\n}\nfn caller() -> Int {\n  OldMap::set(1)\n}"
+  assert_eq(warn_count(src, no_deps()), 1)
+  assert(contains(first_warning(src, no_deps()), "'OldMap::set' is deprecated: use MutMap::set"))
+}
+
+test "deprecated enum: a type-annotation use warns" {
+  let src = "#deprecated\nenum OldHue {\n  Red\n}\nfn pick(h: OldHue) -> Int {\n  1\n}"
+  assert_eq(warn_count(src, no_deps()), 1)
+  assert(contains(first_warning(src, no_deps()), "'OldHue' is deprecated"))
+}
+
+test "deprecated let and export let are collected" {
+  let src = "#deprecated\nexport let old_limit = 10\nfn caller() -> Int {\n  old_limit\n}"
+  assert_eq(warn_count(src, no_deps()), 1)
+}
+
+test "marker in a dep source: entry uses warn" {
+  let dep = "#deprecated(\"use fresh\")\nexport fn stale(x: Int) -> Int {\n  x\n}"
+  let entry = "fn caller() -> Int {\n  stale(1) + stale(2)\n}"
+  let deps = no_deps()
+  Array::push(deps, dep)
+  assert_eq(warn_count(entry, deps), 2)
+  assert(contains(first_warning(entry, deps), "'stale' is deprecated: use fresh"))
+}
+
+test "each use warns once, in source order" {
+  let src = "#deprecated\nfn old_thing() -> Int {\n  1\n}\nfn a() -> Int {\n  old_thing()\n}\nfn b() -> Int {\n  old_thing()\n}"
+  assert_eq(warn_count(src, no_deps()), 2)
+}
+
+test "a different name that merely contains the deprecated one is silent" {
+  let src = "#deprecated\nfn old() -> Int {\n  1\n}\nfn old_two() -> Int {\n  2\n}\nfn caller() -> Int {\n  old_two()\n}"
+  assert_eq(warn_count(src, no_deps()), 0)
+}

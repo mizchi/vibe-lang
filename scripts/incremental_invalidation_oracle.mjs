@@ -11,9 +11,16 @@
 // exported-interface fingerprints; none is read by or incorporated into a
 // production cache key here. The normal compiler-source fingerprint still
 // invalidates compiler artifacts after any compiler source change.
+//
+// #1548: VIBE_SHADOW_DECISION_DIFF_OUT=<path> additionally publishes the
+// per-case shadow planner vs current compiler decision diff as a versioned
+// JSON artifact — only after every case succeeded (a failed run deletes the
+// requested path and publishes nothing). CI uploads it so the conservative
+// over-invalidation residual stays visible per run.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -280,6 +287,107 @@ export function compareObservedInvalidation(before, after) {
   return { planned, observed, conservative_over_invalidation: observed.filter((path) => !plannedSet.has(path)) };
 }
 
+const shadowDecisionDiffSchema = "incremental_shadow_decision_diff";
+const shadowDecisionDiffScopeNote = "shadow planner decisions derive from observation-only fingerprints and are not production cache keys or reuse decisions; conservative over-invalidation is the permitted visible residual; a missing required recheck fails the oracle before this artifact is published, so no published row records one";
+
+/// Diff one bounded edit case: the shadow planner's decision against the
+/// current TypeDb decision, per module in trace order. A missing required
+/// recheck is a failure, never a published row (Roadmap invariants).
+export function buildShadowDecisionDiffCase(name, before, after) {
+  const planned = new Set(planObservedTypingInvalidation(before, after));
+  const modules = after.modules.map((module) => {
+    const shadow_decision = planned.has(module.path) ? "recheck_required" : "typing_reusable";
+    const compiler_decision = module.decision;
+    let classification;
+    if (shadow_decision === "recheck_required" && compiler_decision === "rechecked") classification = "agreement_recheck";
+    else if (shadow_decision === "typing_reusable" && compiler_decision === "reused") classification = "agreement_reuse";
+    else if (shadow_decision === "typing_reusable" && compiler_decision === "rechecked") classification = "conservative_over_invalidation";
+    else fail(`shadow decision diff for ${name} would publish a missing required recheck for ${module.path}`);
+    return { path: module.path, shadow_decision, compiler_decision, classification };
+  });
+  return {
+    case: name,
+    modules,
+    conservative_over_invalidation: modules
+      .filter((row) => row.classification === "conservative_over_invalidation")
+      .map((row) => row.path),
+  };
+}
+
+/// Aggregate the per-case diffs into the versioned CI artifact (#1548). The
+/// artifact records current conservative behavior; it is not a reuse rule.
+export function buildShadowDecisionDiffArtifact(cases, { scenario, stage2_sha256 }) {
+  const totals = { agreement_recheck: 0, agreement_reuse: 0, conservative_over_invalidation: 0 };
+  for (const diffCase of cases) {
+    for (const row of diffCase.modules) totals[row.classification] += 1;
+  }
+  return {
+    schema: shadowDecisionDiffSchema,
+    version: 1,
+    scenario,
+    stage2_sha256,
+    scope_note: shadowDecisionDiffScopeNote,
+    cases,
+    totals,
+  };
+}
+
+/// Strict parse of the published diff artifact. Consumers must reject rather
+/// than repair: unknown fields, inconsistent classifications, and total drift
+/// all fail so a torn or hand-edited artifact cannot pass as evidence.
+export function parseShadowDecisionDiffArtifact(text) {
+  let artifact;
+  try {
+    artifact = JSON.parse(text);
+  } catch (error) {
+    fail(`shadow decision diff: invalid JSON (${error.message})`);
+  }
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) fail("shadow decision diff: expected object");
+  exactKeys(artifact, ["schema", "version", "scenario", "stage2_sha256", "scope_note", "cases", "totals"], "shadow decision diff");
+  if (artifact.schema !== shadowDecisionDiffSchema) fail(`shadow decision diff: unsupported schema ${JSON.stringify(artifact.schema)}`);
+  if (artifact.version !== 1) fail(`shadow decision diff: unsupported version ${JSON.stringify(artifact.version)}`);
+  if (typeof artifact.scenario !== "string" || artifact.scenario.length === 0) fail("shadow decision diff: missing scenario");
+  if (typeof artifact.stage2_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(artifact.stage2_sha256)) fail("shadow decision diff: invalid stage2_sha256");
+  if (artifact.scope_note !== shadowDecisionDiffScopeNote) fail("shadow decision diff: dishonest scope_note");
+  if (!Array.isArray(artifact.cases) || artifact.cases.length === 0) fail("shadow decision diff: missing cases");
+  const totals = { agreement_recheck: 0, agreement_reuse: 0, conservative_over_invalidation: 0 };
+  const caseNames = new Set();
+  for (const diffCase of artifact.cases) {
+    if (!diffCase || typeof diffCase !== "object" || Array.isArray(diffCase)) fail("shadow decision diff: invalid case row");
+    exactKeys(diffCase, ["case", "modules", "conservative_over_invalidation"], "shadow decision diff case");
+    if (typeof diffCase.case !== "string" || diffCase.case.length === 0 || caseNames.has(diffCase.case)) fail("shadow decision diff: invalid or duplicate case name");
+    caseNames.add(diffCase.case);
+    if (!Array.isArray(diffCase.modules) || diffCase.modules.length === 0) fail(`shadow decision diff: missing modules for ${diffCase.case}`);
+    const paths = new Set();
+    const residual = [];
+    for (const row of diffCase.modules) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) fail(`shadow decision diff: invalid module row in ${diffCase.case}`);
+      exactKeys(row, ["path", "shadow_decision", "compiler_decision", "classification"], "shadow decision diff module row");
+      if (typeof row.path !== "string" || row.path.length === 0 || paths.has(row.path)) fail(`shadow decision diff: invalid or duplicate module path in ${diffCase.case}`);
+      paths.add(row.path);
+      const expectedClassification =
+        row.shadow_decision === "recheck_required" && row.compiler_decision === "rechecked" ? "agreement_recheck"
+        : row.shadow_decision === "typing_reusable" && row.compiler_decision === "reused" ? "agreement_reuse"
+        : row.shadow_decision === "typing_reusable" && row.compiler_decision === "rechecked" ? "conservative_over_invalidation"
+        : undefined;
+      if (expectedClassification === undefined) fail(`shadow decision diff: published missing required recheck for ${row.path} in ${diffCase.case}`);
+      if (row.classification !== expectedClassification) fail(`shadow decision diff: classification inconsistent with decisions for ${row.path} in ${diffCase.case}`);
+      totals[row.classification] += 1;
+      if (row.classification === "conservative_over_invalidation") residual.push(row.path);
+    }
+    if (JSON.stringify(diffCase.conservative_over_invalidation) !== JSON.stringify(residual)) {
+      fail(`shadow decision diff: residual summary drift for ${diffCase.case}`);
+    }
+  }
+  const actualTotals = artifact.totals;
+  if (!actualTotals || typeof actualTotals !== "object" || Array.isArray(actualTotals)) fail("shadow decision diff: invalid totals");
+  exactKeys(actualTotals, Object.keys(totals), "shadow decision diff totals");
+  for (const [key, value] of Object.entries(totals)) {
+    if (actualTotals[key] !== value) fail(`shadow decision diff: totals drift for ${key}`);
+  }
+  return artifact;
+}
+
 function ownerNames(paths) {
   return paths.map((path) => basename(path).replace(/\.vibe$/, ""));
 }
@@ -394,6 +502,12 @@ function checkOracleCorpus(path) {
 function run(stage2) {
   const invoke = join(root, "scripts/run_wasm_vibe_host_runner.sh");
   if (![stage2, invoke].every(existsSync)) fail("missing stage2 compiler or node host runner");
+  // #1548: delete a previously requested diff artifact before doing any work,
+  // so a failed run can never leave an old diff to be mistaken for this run.
+  const diffOut = process.env.VIBE_SHADOW_DECISION_DIFF_OUT
+    ? resolve(process.cwd(), process.env.VIBE_SHADOW_DECISION_DIFF_OUT)
+    : "";
+  if (diffOut) rmSync(diffOut, { force: true });
   const work = mkdtempSync(join(tmpdir(), "vibe-incremental-invalidation-"));
   const project = join(work, "project");
   const cache = join(work, "cache");
@@ -441,6 +555,11 @@ function run(stage2) {
       return trace;
     };
     const plannerCases = {};
+    const shadowDiffCases = [];
+    const runPlannerCase = (name, before, after) => {
+      plannerCases[name] = checkPlannerCase(name, before, after);
+      shadowDiffCases.push(buildShadowDecisionDiffCase(name, before, after));
+    };
     const baseline = check("cold");
     if (baseline.aggregate_telemetry.modules_rechecked !== 3) fail("cold run did not recheck all modules");
     const noOp = check("no_op");
@@ -448,14 +567,14 @@ function run(stage2) {
     if (implementationOwnersChanged(baseline, noOp).length !== 0) fail("no-op changed an implementation identity");
     if (interfaceOwnersChanged(baseline, noOp).length !== 0) fail("no-op changed an interface identity");
     if (noOp.aggregate_telemetry.modules_rechecked !== 0) fail("no-op was not reused by the current cache");
-    plannerCases.no_op = checkPlannerCase("no_op", baseline, noOp);
+    runPlannerCase("no_op", baseline, noOp);
 
     writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 1 }\n");
     const commentEdit = check("comment_edit");
     if (sourceOwnersChanged(noOp, commentEdit).join(",") !== "library") fail("comment edit source delta drift");
     if (implementationOwnersChanged(noOp, commentEdit).length !== 0) fail("comment edit changed token-stream implementation identity");
     if (interfaceOwnersChanged(noOp, commentEdit).length !== 0) fail("comment edit changed an interface identity");
-    plannerCases.comment_only_edit = checkPlannerCase("comment_only_edit", noOp, commentEdit);
+    runPlannerCase("comment_only_edit", noOp, commentEdit);
 
     writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 2 }\n");
     const privateEdit = check("private_body_edit");
@@ -474,7 +593,7 @@ function run(stage2) {
       "library",
       "app",
     );
-    plannerCases.private_body_edit = checkPlannerCase("private_body_edit", commentEdit, privateEdit);
+    runPlannerCase("private_body_edit", commentEdit, privateEdit);
 
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const publicEdit = check("public_interface_edit");
@@ -484,7 +603,7 @@ function run(stage2) {
     if (JSON.stringify(decisionsByName(publicEdit)) !== JSON.stringify({ base: "reused", library: "rechecked", app: "rechecked" })) {
       fail("public edit current decision drift");
     }
-    plannerCases.public_interface_edit = checkPlannerCase("public_interface_edit", privateEdit, publicEdit);
+    runPlannerCase("public_interface_edit", privateEdit, publicEdit);
 
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect Logger { Info(String) -> Unit }\nexport effect Audit { Record(String) -> Unit }\nexport fn announce(message: String) -> Unit with Logger { let _ = message\n() }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const publicFunctionLogger = check("public_function_logger");
@@ -602,7 +721,7 @@ function run(stage2) {
     }
     const appDependencies = moduleByName(planEdit, "app").direct_dependencies.map((path) => basename(path));
     if (appDependencies.join(",") !== "base.vibe,library.vibe") fail("dependency-plan trace did not record the added base import in declaration order");
-    plannerCases.dependency_plan_edit = checkPlannerCase("dependency_plan_edit", implTargetArray, planEdit);
+    runPlannerCase("dependency_plan_edit", implTargetArray, planEdit);
 
     // Integration regressions for the renderer: JSON requires every U+0000–
     // U+001F control character to be escaped, and POSIX paths may contain TAB.
@@ -616,6 +735,25 @@ function run(stage2) {
     // report (rather than fail on) the current implementation's additional
     // rechecks. This is the intended conservative-over-invalidation record.
     const currentPrivateRechecks = privateEdit.modules.filter((module) => module.decision === "rechecked").map((module) => module.path.replace(/\.vibe$/, ""));
+
+    // #1548: persist the shadow planner vs current compiler decision diff.
+    // Published only after every case above succeeded, atomically via rename,
+    // and strictly re-parsed first so a torn or malformed artifact cannot ship.
+    let shadowDecisionDiff;
+    if (diffOut) {
+      const artifact = buildShadowDecisionDiffArtifact(shadowDiffCases, {
+        scenario: "three-module-incremental-invalidation",
+        stage2_sha256: createHash("sha256").update(readFileSync(stage2)).digest("hex"),
+      });
+      const rendered = `${JSON.stringify(artifact, null, 2)}\n`;
+      parseShadowDecisionDiffArtifact(rendered);
+      mkdirSync(dirname(diffOut), { recursive: true });
+      const partial = `${diffOut}.partial-${process.pid}`;
+      writeFileSync(partial, rendered);
+      renameSync(partial, diffOut);
+      shadowDecisionDiff = { written_to: diffOut, totals: artifact.totals };
+    }
+
     console.log(JSON.stringify({
       schema: 6,
       scenario: "three-module-incremental-invalidation",
@@ -624,6 +762,7 @@ function run(stage2) {
       conservative_over_invalidation: currentPrivateRechecks.filter((name) => name !== "library"),
       private_dependency_classification: privateDependencyClassification,
       planner_cases: plannerCases,
+      ...(shadowDecisionDiff ? { shadow_decision_diff: shadowDecisionDiff } : {}),
       cases: [...traces.keys()],
     }));
   } finally {
