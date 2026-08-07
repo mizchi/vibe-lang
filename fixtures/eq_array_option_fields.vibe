@@ -106,3 +106,61 @@ test "whole-struct equality across all field kinds" {
   let b = Bag::{ items: [1, 2], maybe: Some(7), xs: [Inner::{ n: 3 }], pair: (4, true) }
   assert(a == b)
 }
+
+// #1526: the same structural `==` when the array is reached through a NAME.
+// Only a literal operand used to resolve the element type, so binding the array
+// first silently dropped to the identity-comparing runtime `eq` -- the two
+// spellings below disagreed with the "bare array literal" ones at the top of
+// this file. The element type comes from the binding site (`array_elem_bind`
+// for a let, `seed_var_types` for an `Array[T]` parameter).
+
+test "let-bound arrays: equal compares true" {
+  let a = [1, 2]
+  let b = [1, 2]
+  assert(a == b)
+}
+
+test "let-bound arrays: differing element compares false" {
+  let a = [1, 2]
+  let b = [1, 3]
+  assert(not(a == b))
+  assert(a != b)
+}
+
+test "let-bound arrays: differing length compares false" {
+  let a = [1, 2]
+  let b = [1, 2, 3]
+  assert(not(a == b))
+}
+
+test "let-bound arrays: != on equal arrays is false" {
+  let a = [1, 2]
+  let b = [1, 2]
+  assert(not(a != b))
+}
+
+test "let-bound String arrays: equal compares true" {
+  let a = ["x", "y"]
+  let b = ["x", "y"]
+  assert(a == b)
+  assert(not(a == ["x", "z"]))
+}
+
+test "let-bound array vs literal: equal compares true" {
+  let a = [1, 2]
+  assert(a == [1, 2])
+  assert([1, 2] == a)
+}
+
+test "Array[T] parameters: equal compares true" {
+  assert(arrays_same([1, 2], [1, 2]))
+  assert(not(arrays_same([1, 2], [1, 3])))
+}
+
+//# Functions
+
+/// The `Array[Int]` annotations are what let the comparison inside resolve an
+/// element type at all -- both operands are plain names here.
+fn arrays_same(x: Array[Int], y: Array[Int]) -> Bool {
+  x == y
+}

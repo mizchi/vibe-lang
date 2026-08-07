@@ -255,6 +255,30 @@ Array::fold(xs, 0, _ + _)
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
 
+### `Array` の `==` (#1526)
+
+ランタイムの `eq` は型を見ないので、配列の `==` は**コンパイル時に要素型を
+決めて**構造比較へ書き換えられる。要素型が分かる限り構造的:
+
+```vibe
+test "array equality is structural where the element type is known" {
+  let a = [1, 2]
+  let b = [1, 2]
+  assert([1, 2] == [1, 2])   // リテラル
+  assert(a == b)             // let 束縛
+  assert(same([1, 2], [1, 2]))
+}
+
+fn same(x: Array[Int], y: Array[Int]) -> Bool {
+  x == y                     // Array[T] 引数
+}
+```
+
+要素型が取れない配列は**参照等価に落ちる** — 消去された型変数 (`[T: Eq]` の
+`T`)、関数の戻り値として受けた配列、空リテラル束縛 (`let xs = []`)。
+戻り値経由の配列を比較したいときは、いま確実なのは要素を回すか
+`derive(Eq)` の struct field に入れる方法。
+
 ## Pipe Operator
 
 <!-- doctest-skip: 未定義名 (x / f / g) を参照する構文提示の断片 -->
@@ -528,9 +552,10 @@ let bad = keep([1, 2, 3])     // reject される
 ```
 
 理由は marker trait の**ディスパッチ先**にある。marker trait は builtin の
-`==` / `<` に落ちるが、**裸の `Array` / `Bytes` に対する `==` は参照等価**
-(`[1, 2] == [1, 2]` は `false`、#1526) なので、この impl を認めると
-`==` が黙って間違った答えを返す。診断がその旨を述べる。
+`==` / `<` に落ちる。`==` が配列を構造的に比較できるのは**要素型が静的に
+分かるとき**だけ (下の「`Array` の `==`」参照) で、`keep[T: Eq]` の中の `T` は
+消去済み — 要素型は無い。つまりこの impl を認めると `==` は参照等価に落ちて
+黙って間違った答えを返す。診断がその旨を述べる。
 
 container に対して効かせたいなら **trait にメソッドを持たせる** —
 メソッドがあれば witness dictionary 経由でディスパッチするので、
