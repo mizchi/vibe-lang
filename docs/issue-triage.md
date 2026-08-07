@@ -55,7 +55,7 @@ Phase A が実バグと同じ棚に並んでしまう。
 
 | # | blocker | 内容 |
 |---|---|---|
-| #1526 | | `==` が Array に対して 3 通りの答えを返す（裸=参照 / struct・enum の中=構造的 / tuple の中=参照）。**修正には意味論の決定が先に要る**（下の「オーナー判断待ち」） |
+| #1526 | | `==` が Array に対して 3 通りの答えを返す（裸=参照 / struct・enum の中=構造的 / tuple の中=参照）。**意味論は決定済み: 構造的等価に統一 (ADR-0097)** — あとは実装のみ |
 | #1527 | | 関数から返した `Bool` を補間すると `1` / `0` になる |
 | #1529 | | bounded 呼び出し `B::method(x)` が、impl 対象の struct がファイル内で最初でないと壊れる |
 | #1533 | ✔ | 非 export の名前を import しても検査を素通りする。ADR-0096 (#1455) の import 必須化フェーズの前提 |
@@ -120,7 +120,7 @@ GitHub の sub-issue でツリーを作る。**親は索引、子が作業単位
 | lane | ファイル領域 | 入る issue | 備考 |
 |---|---|---|---|
 | **A. checker/parser** | `lib/@vibe/compiler/checker/`, `parser/` | #1533、#1536(c)+#1511(b) の check 段検出、#1520 提案 3 | |
-| **B. codegen (linear)** | `codegen/expr/compile_call.vibe`, `builtin_bodies/` | #1527、#1529、(#1526 は意味論決定後)、#1538-1 | compile_call は共有点なので lane 内直列 |
+| **B. codegen (linear)** | `codegen/expr/compile_call.vibe`, `builtin_bodies/` | #1527、#1529、#1526 (ADR-0097 決定済み)、#1538-1 | compile_call は共有点なので lane 内直列 |
 | **C. wasm-gc** | `codegen/gc/` | #1541 → #1542 | linear と無衝突は ADR-0095 が構造的に担保 |
 | **D. incremental/cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1548 → #1549 → #1550 | |
 | **E. formal** | `formal/` | #1544、#1545、#1546 | 完全無衝突。3 本とも同時並走可 |
