@@ -9703,6 +9703,38 @@ ui_case bogus_uppercase_not_reported ok 'import ./dep.vibe { Hue, NoSuchType }
 
 export let _start = () -> Int { 1 }
 '
+# 8. A dependency that binds NO values is still a checked dependency. Deriving
+#    "known" from the binding count switched the check off for exactly these
+#    (Codex review, PR #1532) -- a trait-only module is cached as an empty
+#    value environment, and a bogus import from it went back to dying in
+#    codegen. `dep_known` now comes from the cache lookup itself.
+cat > "$uidir/traitonly.vibe" <<'UITRAIT'
+export trait Pingable {
+  ping(Self) -> Int
+}
+UITRAIT
+ui_case bogus_from_traitonly err 'import ./traitonly.vibe { no_such_fn }
+
+export let _start = () -> Int { no_such_fn(1) }
+'
+# 9. The OTHER known gap (#1533), pinned like the uppercase one: membership is
+#    tested against the dependency's checked environment, which binds every
+#    top-level fn whether exported or not, so importing a PRIVATE name is not
+#    reported here. It still fails, just in codegen -- which is what #1521 is
+#    about, hence the follow-up issue rather than a silent omission.
+cat > "$uidir/privates.vibe" <<'UIPRIV'
+fn private_fn(x: Int) -> Int {
+  x + 1
+}
+
+export fn public_fn(x: Int) -> Int {
+  private_fn(x)
+}
+UIPRIV
+ui_case private_import_not_reported ok 'import ./privates.vibe { public_fn }
+
+export let _start = () -> Int { public_fn(1) }
+'
 rm -rf "$uidir"
 echo "[compiler-gate] unresolved import names ok"
 

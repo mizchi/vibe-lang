@@ -182,13 +182,31 @@ fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, T
 /// their constructors DO appear, but there is no way at this point to tell an
 /// unexported `Foo` from a struct-only `Foo`, so the uppercase half of #1521
 /// stays open rather than risk rejecting valid code.
+///
+/// The other half still open (#1533): this tests membership in the
+/// dependency's CHECKED environment, which binds every top-level `let`/`fn`
+/// whether or not it is exported. `import ./dep.vibe { private_fn }` therefore
+/// passes here and still dies in codegen. Closing it needs the dependency's
+/// export SURFACE -- `interface_public_value_names` computes exactly that from
+/// the dependency's stmts, but only its environment reaches this point, so the
+/// surface has to be published alongside the environment first.
 fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
-  let dep_env = match lookup_env_cache(cache, resolved) {
+  let cached = lookup_env_cache(cache, resolved)
+  let dep_env = match cached {
     Some(e) => e,
     None => EnvEmpty
   }
   let dep_bindings = env_flat_bindings(dep_env)
-  let dep_known = Array::length(dep_bindings) > 0
+  // Whether the dependency was CHECKED, not whether it happens to bind any
+  // values. A module that exports only types or only traits is checked and
+  // cached, and its flat value environment is legitimately empty -- deriving
+  // "known" from the binding count silently switched the check off for
+  // exactly those dependencies, so a bogus import from a trait-only module
+  // went back to failing in codegen (Codex review, PR #1532).
+  let dep_known = match cached {
+    Some(_) => true,
+    None => false
+  }
   let nlen = Array::length(names)
   let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
     if j >= nlen {
