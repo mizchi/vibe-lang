@@ -1,0 +1,227 @@
+//# Builder vs 可変ハンドル vs persistent の蓄積コスト (#1262 / ADR-0097 の続き)
+//#
+//# 問い: `-Builder` 族は**性能上必要**か、それとも Mut- 系(または persistent
+//# 系)に統合してよいか。「性能例外は許すが、例外は明示的に説明する」が
+//# 規則なので、その説明をここの実測が担う。
+//#
+//# 3 素材 × 蓄積の持ち方。全 bench は同じ結果を作る(下の agreement test が固定)。
+//#
+//# `arr/*`  — Int 1000 個の配列を作る
+//#   1_builder      ArrayBuilder::push × n → freeze
+//#   2_array_push   `[]` + Array::push (in-place 成長, #1285) — Mut- 相当
+//#   3_concat       Array::concat の付け替え — persistent 相当 (O(n²))
+//#
+//# `str/*`  — 1000 片の文字列を作る (可変 String は存在しないので 2 形)
+//#   1_builder      StringBuilder::push × n → freeze
+//#   2_concat       String::concat の付け替え — persistent 相当 (O(n²))
+//#
+//# `map/*`  — String key 1000 件の map を作る (key 生成コストは全形共通)
+//#   1_builder      MapBuilder::set × n → freeze
+//#   2_hashmap      HashMap::set × n — Mut- 相当 (open addressing)
+//#   3_map_set      Map::set の付け替え — persistent 相当
+//#
+//# 走らせ方:
+//#   VIBE_RC=0 vibe bench bench/bench_builder_vs_mut.vibe --iters 50
+//#   VIBE_RC=1 vibe bench bench/bench_builder_vs_mut.vibe --iters 50
+//# bytes_per_op は VIBE_RC=0 (bump) の値だけを確保量として信用すること
+//# (RC は exact-fit free list が再利用するため)。
+//# tracked_benches.txt には入れない (CI micro bench は < ~30s に保つ)。
+//#
+//# 結果と決定 (2026-08-07): docs/side-effect-consolidation.md §5.4 / ADR-0098。
+//# ArrayBuilder は Array::push と同着 (B/op 完全一致) → 廃止方向。
+//# MapBuilder は HashMap より 1.6× 遅い → 廃止方向。
+//# StringBuilder は persistent concat の 10.6×/確保 1/29 → 性能例外として維持。
+
+//# Imports
+
+import ../lib/@vibe/core {
+  HashMap,
+  HashMap::get,
+  HashMap::new_string,
+  HashMap::set
+}
+
+//# ---- arr/: Int 配列の蓄積
+
+fn arr_via_builder(n: Int) -> Array[Int] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, i)
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+fn arr_via_push(n: Int) -> Array[Int] {
+  let a: Array[Int] = [
+  ]
+  let mut i = 0
+  while i < n {
+    Array::push(a, i)
+    i = i + 1
+  }
+  a
+}
+
+fn arr_via_concat(n: Int) -> Array[Int] {
+  let mut a: Array[Int] = [
+  ]
+  let mut i = 0
+  while i < n {
+    a = Array::concat(a, [
+      i
+    ])
+    i = i + 1
+  }
+  a
+}
+
+//# ---- str/: 文字列の蓄積
+
+fn str_via_builder(n: Int) -> String {
+  let b = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(b, "x")
+    i = i + 1
+  }
+  StringBuilder::freeze(b)
+}
+
+fn str_via_concat(n: Int) -> String {
+  let mut s = ""
+  let mut i = 0
+  while i < n {
+    s = String::concat(s, "x")
+    i = i + 1
+  }
+  s
+}
+
+//# ---- map/: String key の蓄積
+//# key 生成 (Int::to_string) は全形に同じだけ入るので相対比較を汚さない。
+
+fn map_via_builder(n: Int) -> Map[String, Int] {
+  let b = MapBuilder::new()
+  let mut i = 0
+  while i < n {
+    MapBuilder::set(b, Int::to_string(i), i)
+    i = i + 1
+  }
+  MapBuilder::freeze(b)
+}
+
+fn map_via_hashmap(n: Int) -> HashMap[String, Int] {
+  let m = HashMap::new_string()
+  let mut i = 0
+  while i < n {
+    HashMap::set(m, Int::to_string(i), i)
+    i = i + 1
+  }
+  m
+}
+
+fn map_via_set(n: Int) -> Map[String, Int] {
+  let mut m: Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < n {
+    m = Map::set(m, Int::to_string(i), i)
+    i = i + 1
+  }
+  m
+}
+
+//# ---- agreement: 全形が同じものを作っていることの固定
+
+fn arr_sum(a: Array[Int]) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(a) {
+    acc = acc + Array::get(a, i)
+    i = i + 1
+  }
+  acc
+}
+
+test "arr variants agree" {
+  assert_eq(arr_sum(arr_via_builder(100)), 4950)
+  assert_eq(arr_sum(arr_via_push(100)), 4950)
+  assert_eq(arr_sum(arr_via_concat(100)), 4950)
+}
+
+test "str variants agree" {
+  assert_eq(String::length(str_via_builder(100)), 100)
+  assert(String::equals(str_via_builder(100), str_via_concat(100)))
+}
+
+test "map variants agree" {
+  let mb = map_via_builder(100)
+  let hm = map_via_hashmap(100)
+  let ps = map_via_set(100)
+  let mut i = 0
+  let mut ok = true
+  while i < 100 {
+    let k = Int::to_string(i)
+    if Map::has_key(mb, k) {
+      if Map::get(mb, k) != i {
+        ok = false
+      }
+    } else {
+      ok = false
+    }
+    match HashMap::get(hm, k) {
+      Some(v) => {
+        if v != i {
+          ok = false
+        }
+      }
+      None => {
+        ok = false
+      }
+    }
+    if Map::has_key(ps, k) {
+      if Map::get(ps, k) != i {
+        ok = false
+      }
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  assert(ok)
+}
+
+//# ---- benches
+
+bench "arr/1_builder" {
+  let _ = arr_via_builder(1000)
+}
+
+bench "arr/2_array_push" {
+  let _ = arr_via_push(1000)
+}
+
+bench "arr/3_concat" {
+  let _ = arr_via_concat(1000)
+}
+
+bench "str/1_builder" {
+  let _ = str_via_builder(1000)
+}
+
+bench "str/2_concat" {
+  let _ = str_via_concat(1000)
+}
+
+bench "map/1_builder" {
+  let _ = map_via_builder(1000)
+}
+
+bench "map/2_hashmap" {
+  let _ = map_via_hashmap(1000)
+}
+
+bench "map/3_map_set" {
+  let _ = map_via_set(1000)
+}
