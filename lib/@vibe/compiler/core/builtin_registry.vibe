@@ -272,7 +272,16 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("String::substring", CtFn(reg_p3(CtString, CtInt, CtInt), CtString, None), true, true, true),
   ("Array::truncate", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnit, None), true, true, true),
   ("String::join", CtFn(reg_p2(CtArray(CtString), CtString), CtString, None), true, true, true),
-  ("eq", CtFn(reg_p2(CtInt, CtInt), CtBool, None), true, true, true),
+  // #1513: POLYMORPHIC — `eq` is the structural equality builtin and is applied
+  // to enums / structs / strings, not just Int. The `CtInt` placeholder here was
+  // harmless while nothing read these parameter types; once the checker's
+  // fast-path argument check started consulting the registry it turned into a
+  // false rejection (measured: `eq(Color::Red, c)` in
+  // docs/language-tour/basics.vibe.md). `CtUnknown` is what the sibling
+  // polymorphic row `assert_eq` already declares, and head_kind maps it to
+  // "tolerate". Parameter COUNT and return type are unchanged, so the derived
+  // `builtin_registry()` view the codegen lanes read is byte-identical.
+  ("eq", CtFn(reg_p2(CtUnknown, CtUnknown), CtBool, None), true, true, true),
   ("String::ends_with", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
   ("String::last_index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
   ("String::index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
@@ -422,6 +431,40 @@ export fn registry_builtin_arity(name: String) -> Int {
       i = Array::length(rows)
     } else {
       i = i + 1
+    }
+  }
+  found
+}
+
+/// #1513: the declared type of a checker-visible registry row's parameter `i`,
+/// or None when the name is not a registry row / has no such parameter.
+///
+/// Companion to `registry_builtin_arity`, for the same reason and with the same
+/// cost profile: the checker's direct-call fast path avoids `lookup_builtin`
+/// because #626's seed-heap constraint was about BUILDING nested `CtFn`/`Array`
+/// values per call, and this reads the already-built row.
+///
+/// Returning the TYPE rather than a head kind keeps `head_kind` (and its
+/// tolerate-on-unknown rule) in the checker, which is the only place that knows
+/// what an "unchecked" head means.
+export fn registry_builtin_param_type(name: String, i: Int) -> Option[Type] {
+  let rows = builtin_registry_typed()
+  let mut ri = 0
+  let mut found = None
+  while ri < Array::length(rows) {
+    let (rname, ty, _, _, visible) = Array::get(rows, ri)
+    if rname == name && visible {
+      found = match ty {
+        CtFn(params, _, _) => if i >= 0 && i < Array::length(params) {
+          Some(Array::get(params, i))
+        } else {
+          None
+        },
+        _ => None
+      }
+      ri = Array::length(rows)
+    } else {
+      ri = ri + 1
     }
   }
   found
