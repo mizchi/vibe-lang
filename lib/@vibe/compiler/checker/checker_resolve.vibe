@@ -53,24 +53,59 @@ export fn subst_type_params(ty: Type, params: Array[String], args: Array[Type]) 
   }
 }
 
+/// True when `name` is one of the type formals bound by the declaration whose
+/// body we are resolving. See `resolve_type_expr_shadowed`.
+fn is_shadowed_tyvar(shadow: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(shadow) {
+    if Array::get(shadow, i) == name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 export fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type {
+  resolve_type_expr_shadowed(te, defs, array_empty())
+}
+
+/// `resolve_type_expr`, plus the type formals bound by the enclosing
+/// declaration (`shadow`). A name in `shadow` stays a rigid
+/// `CtNamed(name, [])` instead of being looked up in `defs` or the builtins.
+///
+/// #1512: every generic binder resolves its body with this and then maps the
+/// rigid names onto the real variables -- `subst_type_params` against the
+/// binder's formals (enum/struct/alias) or `resolve_tparams_in` against the
+/// binder's env (fn). Both steps look for `CtNamed(<formal>, [])`, so they
+/// silently do nothing if resolution already turned the formal into some other
+/// type. That is exactly what `import ./m { Hue as T }` does to `type Box[T]`:
+/// #1510's `seed_import_alias_defs` registers `T` as a `TDAlias` in `defs`, the
+/// lookup below finds it, and `Box[Int]` becomes `Hue`. A formal is a binder,
+/// so it wins over both `defs` and the builtins -- the shadow check runs first.
+export fn resolve_type_expr_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type {
   match te {
     TyUnit => CtUnit,
-    TyName(name) => match resolve_builtin(name) {
-      Some(t) => t,
-      None => match find_typedef(defs, name) {
-        Some(td) => match td {
-          TDEnum(n, _, _) => CtEnum(n),
-          TDStruct(n, _, _, _) => CtStruct(n),
-          TDAlias(_, _, t) => t,
-          TDEffect(_, _, _) => CtNamed(name, array_empty())
-        },
-        None => CtNamed(name, array_empty())
+    TyName(name) => if is_shadowed_tyvar(shadow, name) {
+      CtNamed(name, array_empty())
+    } else {
+      match resolve_builtin(name) {
+        Some(t) => t,
+        None => match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDEnum(n, _, _) => CtEnum(n),
+            TDStruct(n, _, _, _) => CtStruct(n),
+            TDAlias(_, _, t) => t,
+            TDEffect(_, _, _) => CtNamed(name, array_empty())
+          },
+          None => CtNamed(name, array_empty())
+        }
       }
     },
     TyApp(name, args) => {
       let ra = for a in args {
-        resolve_type_expr(a, defs)
+        resolve_type_expr_shadowed(a, defs, shadow)
       }
       if name == "Array" {
         if Array::length(ra) == 1 {
@@ -82,6 +117,11 @@ export fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type {
           CtOption(Array::get(ra, 0))
         }
         else CtNamed(name, ra)
+      } else if is_shadowed_tyvar(shadow, name) {
+        // `T[X]` where `T` is a formal: higher-kinded application is not
+        // supported, but the head is still the formal's -- never expand it as
+        // whatever `defs` happens to bind that name to.
+        CtNamed(name, ra)
       } else {
         // Expand a parameterized type alias `Foo[A] = Body` applied as `Foo[X]`
         // by substituting its formal params; otherwise it stays nominal.
@@ -96,7 +136,7 @@ export fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type {
     },
     TyTuple(elems) => {
       let r = for e in elems {
-        resolve_type_expr(e, defs)
+        resolve_type_expr_shadowed(e, defs, shadow)
       }
       CtTuple(r)
     },
@@ -105,9 +145,9 @@ export fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type {
         ret
       ], 0, 1)
       let rp = for p in params {
-        resolve_type_expr(p, defs)
+        resolve_type_expr_shadowed(p, defs, shadow)
       }
-      CtFn(rp, resolve_type_expr(Array::get(ret_box, 0), defs), effect_name)
+      CtFn(rp, resolve_type_expr_shadowed(Array::get(ret_box, 0), defs, shadow), effect_name)
     }
   }
 }
