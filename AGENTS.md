@@ -161,6 +161,11 @@ vibe binding-at file.vibe <line> <col>
 # ただし単一ファイル解析で import を辿らない → import のあるファイルでは
 # 「未定義」の誤検知を出す。import があるなら `vibe check` で判定すること
 vibe diagnostics file.vibe
+
+# closure に捕獲されて escape する `let mut` (NAME START END / 行)。
+# = codegen が wasm local ではなく heap ref cell に落とすもの (#1262)。
+# 空出力 = ファイル中の `let mut` は全部ただの local
+vibe escapes file.vibe
 ```
 
 > **`vibe diagnostics` は import を解決しない。** `import ./dep.vibe { Hue as T }`

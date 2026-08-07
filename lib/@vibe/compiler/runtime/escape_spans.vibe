@@ -1,0 +1,263 @@
+//# `vibe escapes` — which `let mut` bindings ESCAPE their declaring scope.
+//#
+//# #1262 / docs/side-effect-consolidation.md 4.4 step 1. vibe's cost model for
+//# mutable state is decided by ONE question, and it is not "is this `mut`":
+//#
+//#   * a `let mut` that no closure captures becomes a plain **wasm local** —
+//#     nobody outside the declaring scope can observe the write, and it is the
+//#     fastest form there is (0.74 ns/iteration, measured);
+//#   * a `let mut` that IS captured becomes a **heap ref cell** shared through
+//#     the closure — 3.8-4.9x the local form, and the write is now observable
+//#     by whoever holds the closure.
+//#
+//# That second case is exactly "writing through an external reference", the
+//# thing the consolidation design wants to require explicit authority for. The
+//# predicate already exists and already decides the lowering
+//# (`mut_needs_ref_cell` -> `is_mut_captured_in`, codegen/common_analysis) —
+//# it was just invisible from the outside. This query makes it observable
+//# WITHOUT changing any typing: nothing here is an error, and no row changes.
+//#
+//# SOURCE OF TRUTH. This deliberately calls codegen's `is_mut_captured_in`
+//# rather than re-deriving the judgment, so the answer is by construction the
+//# one codegen acts on. It therefore inherits that predicate's CONSERVATIVE
+//# direction: `is_mut_captured_in` does not subtract `match`-arm or `for-in`
+//# binder shadowing, so a closure capturing an inner binding that merely
+//# REUSES an outer `let mut`'s name is reported (and boxed) as if it captured
+//# the outer one. Over-reporting here is honest — codegen really does box it,
+//# and that is what a cost/authority query should say. Contrast
+//# `check_spawnable_mut_captures_stmts` (checker/checker_spawnable.vibe),
+//# which is scope-precise BECAUSE it raises a user-facing error where a false
+//# positive would be a wrong diagnostic. The two differ on purpose; see
+//# docs/side-effect-consolidation.md 4.5.
+//#
+//# Output: one `NAME START END` per escaping binding, START/END being char
+//# offsets of the binding's own name (ELetMut carries that offset directly, so
+//# unlike `vibe symbols` this needs no text rescan). Empty output = no `let
+//# mut` in this file escapes, i.e. every one of them is a plain wasm local.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_spans
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  is_mut_captured_in
+}
+
+//# Functions
+
+fn esc_empty_items() -> Array[(String, Int, Int)] {
+  array_empty()
+}
+
+/// True when `source[off]` is NOT an identifier char (or off is out of range).
+/// Same whole-word boundary test symbol_spans.vibe uses.
+fn esc_is_boundary_at(source: String, off: Int) -> Bool {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+
+/// Offset of the binding NAME, given `from` = the offset of its `let` keyword.
+/// ELetMut's Int slot is the `let` token offset (#644, blk_offset_at), not the
+/// name's, so scan forward for the first whole-word occurrence of `name`.
+/// Returns -1 when it cannot be located (or when `from` is the -1 sentinel a
+/// parse without an offsets array produces).
+fn esc_name_off(source: String, name: String, from: Int) -> Int {
+  let nlen = String::length(name)
+  let slen = String::length(source)
+  if from < 0 || nlen == 0 {
+    0 - 1
+  } else {
+    let mut p = from
+    let mut found = 0 - 1
+    while p + nlen <= slen && found < 0 {
+      if String::equals(String::substring(source, p, p + nlen), name) && esc_is_boundary_at(source, p - 1) && esc_is_boundary_at(source, p + nlen) {
+        found = p
+      } else {
+        ()
+      }
+      p = p + 1
+    }
+    found
+  }
+}
+
+fn esc_walk_list(out: Array[(String, Int, Int)], source: String, items: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    esc_walk_expr(out, source, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+fn esc_walk_fields(out: Array[(String, Int, Int)], source: String, fields: Array[(String, Expr)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, e) = Array::get(fields, i)
+    esc_walk_expr(out, source, e)
+    i = i + 1
+  }
+}
+
+fn esc_walk_arms(out: Array[(String, Int, Int)], source: String, arms: Array[(Pat, Expr)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    esc_walk_expr(out, source, body)
+    i = i + 1
+  }
+}
+
+/// Visit every sub-expression, recording each `ELetMut` whose BODY captures it
+/// in a closure. Pure structural recursion: no scope threading is needed here
+/// because the capture judgment itself (`is_mut_captured_in`) handles binder
+/// shadowing internally -- this walk only has to REACH every `ELetMut`.
+fn esc_walk_expr(out: Array[(String, Int, Int)], source: String, expr: Expr) -> Unit {
+  match expr {
+    ELetMut(name, val, body, off) => {
+      if is_mut_captured_in(body, name) {
+        let noff = esc_name_off(source, name, off)
+        if noff >= 0 {
+          Array::push(out, (name, noff, noff + String::length(name)))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      esc_walk_expr(out, source, val)
+      esc_walk_expr(out, source, body)
+    },
+    ELet(_, val, body, _) => {
+      esc_walk_expr(out, source, val)
+      esc_walk_expr(out, source, body)
+    },
+    ELetRec(_, val, body) => {
+      esc_walk_expr(out, source, val)
+      esc_walk_expr(out, source, body)
+    },
+    EAssign(_, val, cont) => {
+      esc_walk_expr(out, source, val)
+      esc_walk_expr(out, source, cont)
+    },
+    EAssignOp(_, _, val, cont) => {
+      esc_walk_expr(out, source, val)
+      esc_walk_expr(out, source, cont)
+    },
+    ESeq(a, b) => {
+      esc_walk_expr(out, source, a)
+      esc_walk_expr(out, source, b)
+    },
+    EIf(c, t, e) => {
+      esc_walk_expr(out, source, c)
+      esc_walk_expr(out, source, t)
+      esc_walk_expr(out, source, e)
+    },
+    EBinOp(_, l, r) => {
+      esc_walk_expr(out, source, l)
+      esc_walk_expr(out, source, r)
+    },
+    EUnaryOp(_, e) => esc_walk_expr(out, source, e),
+    EWhile(c, b) => {
+      esc_walk_expr(out, source, c)
+      esc_walk_expr(out, source, b)
+    },
+    EForIn(_, _, iter, body) => {
+      esc_walk_expr(out, source, iter)
+      esc_walk_expr(out, source, body)
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        esc_walk_expr(out, source, init)
+        i = i + 1
+      }
+      esc_walk_expr(out, source, body)
+    },
+    EMatch(scrut, arms) => {
+      esc_walk_expr(out, source, scrut)
+      esc_walk_arms(out, source, arms)
+    },
+    EHandle(body, arms) => {
+      esc_walk_expr(out, source, body)
+      esc_walk_arms(out, source, arms)
+    },
+    ECall(callee, args, _) => {
+      esc_walk_expr(out, source, callee)
+      esc_walk_list(out, source, args)
+    },
+    EFn(_, _, _, _, _, body) => esc_walk_expr(out, source, body),
+    ETuple(elems) => esc_walk_list(out, source, elems),
+    EArray(elems) => esc_walk_list(out, source, elems),
+    ERecord(_, fields, _) => esc_walk_fields(out, source, fields),
+    EMap(entries) => esc_walk_fields(out, source, entries),
+    EDot(recv, _, _, _) => esc_walk_expr(out, source, recv),
+    ELabeledArg(_, _, e) => esc_walk_expr(out, source, e),
+    EReturn(e) => esc_walk_expr(out, source, e),
+    ESpread(e) => esc_walk_expr(out, source, e),
+    EBreak(opt) => match opt {
+      Some(e) => esc_walk_expr(out, source, e),
+      None => ()
+    },
+    EContinue(args) => esc_walk_list(out, source, args),
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(_, _) => (),
+    EStringInterp(_) => (),
+    EUnit => ()
+  }
+}
+
+fn esc_walk_stmt(out: Array[(String, Int, Int)], source: String, stmt: Stmt) -> Unit {
+  match stmt {
+    SLet(_, _, _, _, body) => esc_walk_expr(out, source, body),
+    SLetMut(_, _, body) => esc_walk_expr(out, source, body),
+    SExpr(e) => esc_walk_expr(out, source, e),
+    STest(_, body) => esc_walk_expr(out, source, body),
+    SBench(_, body) => esc_walk_expr(out, source, body),
+    SExample(_, body) => esc_walk_expr(out, source, body),
+    SLetPat(_, body) => esc_walk_expr(out, source, body),
+    SModule(_, _, inner) => {
+      let mut i = 0
+      while i < Array::length(inner) {
+        esc_walk_stmt(out, source, Array::get(inner, i))
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Every `let mut` in `source` that codegen lowers to a heap ref cell because a
+/// closure captures it, as `(name, start, end)` char offsets of the name.
+/// Propagates a lex/parse Error rather than swallowing it into an empty list --
+/// the caller routes it to the `.diag` sidecar, so "the query failed" stays
+/// distinguishable from "nothing escapes" (same convention as symbol_spans, #946).
+export fn escape_spans(source: String) -> Array[(String, Int, Int)] with Exception {
+  let (tokens, starts, ends) = lex_with_offsets(source)
+  let (stmts, _span_start, _span_end) = parse_program_spans(tokens, starts, ends)
+  let out = esc_empty_items()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    esc_walk_stmt(out, source, Array::get(stmts, i))
+    i = i + 1
+  }
+  out
+}

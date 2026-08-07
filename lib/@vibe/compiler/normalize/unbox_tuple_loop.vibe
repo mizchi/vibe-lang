@@ -1,0 +1,1014 @@
+//# Tuple `let mut` unboxing (#1262, docs/side-effect-consolidation.md 6.2/6.4).
+//#
+//# `loop (s = (0, 0)) { ... }` NEVER reaches codegen as an ELoop: the parser
+//# (parse_loop_primary) lowers every `loop` at parse time into
+//#
+//#   let mut s = (0, 0)
+//#   let mut __loop_result = 0
+//#   while true {
+//#     match s { (i, acc) => ... }              <- `let (i, acc) = s`
+//#     ... let __lt0 = (i + 1, acc + i)
+//#         s = __lt0; continue                  <- `continue ((i+1, acc+i))`
+//#   }
+//#   __loop_result
+//#
+//# so the unbox target is the ELetMut itself: a mutable binding initialized
+//# with a literal tuple, READ only by single-arm tuple matches or `.K`
+//# projections, and WRITTEN only with literal tuples (directly, or through the
+//# single-use `__lt` temps the loop lowering introduces). Split it into N
+//# scalar `let mut`s and the per-iteration tuple allocation disappears --
+//# measured 10-28x between the boxed and scalar spellings of the same loop
+//# (bench_state_representation floor/8 vs state/2).
+//#
+//# ELIGIBILITY (conservative; any unrecognized occurrence of the binding
+//# leaves it alone -- always correct, just slower):
+//#   * init is a literal ETuple of arity 2..8;
+//#   * every occurrence of the name in the body is one of
+//#       read:  `match s { (p0, .., pn-1) => arm }`  (exactly one arm, tuple
+//#              pattern of the same arity, all binds/wildcards)
+//#       read:  `s.K` with K a decimal < arity
+//#       write: `s = <literal tuple of arity n>`
+//#       write: `s = t` where `t` is bound by `let t = <literal tuple>` and
+//#              used EXACTLY once (the loop lowering's `__lt` temps)
+//#   * no binder in the body re-binds the name, and no closure mentions it;
+//#   * the generated names (`<name>__utlK`) occur nowhere in the scope.
+//#
+//# Writes stay interference-safe: a direct tuple write gets fresh per-element
+//# temps (so `s = (s.1, s.0)` still swaps), and the `__lt` temp form already
+//# evaluates the whole tuple before the assignment -- its element lets are
+//# reused as the temps.
+//#
+//# Runs at BOTH linear codegen entries -- compile_wasi_module_linked_impl
+//# (entry compiles) and compile_module (the test/bench `__no_entry__` module
+//# lane) -- because the linear backend genuinely has two drivers (6.4 finding
+//# 1). The wasm-gc/interp lanes are untouched (suspend-CPS precedent); the
+//# rewrite is semantics-preserving so cross-lane differential gates agree.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+fn utl_strings() -> Array[String] {
+  array_empty()
+}
+
+fn utl_has(arr: Array[String], s: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arr) {
+    if String::equals(Array::get(arr, i), s) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Decimal tuple-index field name ("0".."99") or -1.
+fn utl_digit(name: String) -> Int {
+  let len = String::length(name)
+  if len < 1 || len > 2 {
+    0 - 1
+  } else {
+    let mut v = 0
+    let mut ok = true
+    let mut i = 0
+    while i < len {
+      let c = String::char_code_at(name, i)
+      if c >= '0' && c <= '9' {
+        v = v * 10 + (c - '0')
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      v
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// Single-arm tuple destructure of `name`: `match name { (p0..pn-1) => arm }`
+/// with every sub-pattern PBind or PWild. Returns true when `e` is that shape.
+fn utl_is_destr_match(e: Expr, name: String, n: Int) -> Bool {
+  match e {
+    EMatch(scrut, arms) =>
+    match scrut {
+      EIdent(sn, _) => if String::equals(sn, name) && Array::length(arms) == 1 {
+        let (p, _) = Array::get(arms, 0)
+        match p {
+          PTuple(pats) => if Array::length(pats) == n {
+            let mut ok = true
+            let mut i = 0
+            while i < Array::length(pats) {
+              match Array::get(pats, i) {
+                PBind(_) => (),
+                PWild => (),
+                _ => {
+                  ok = false
+                }
+              }
+              i = i + 1
+            }
+            ok
+          } else {
+            false
+          },
+          _ => false
+        }
+      } else {
+        false
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// `e` is exactly `name.K` with K < n: returns K, else -1.
+fn utl_is_proj(e: Expr, name: String, n: Int) -> Int {
+  match e {
+    EDot(base, f, _, _) =>
+    match base {
+      EIdent(bn, _) => if String::equals(bn, name) {
+        let k = utl_digit(f)
+        if k >= 0 && k < n {
+          k
+        } else {
+          0 - 2
+        }
+      } else {
+        0 - 1
+      },
+      _ => 0 - 1
+    },
+    _ => 0 - 1
+  }
+}
+
+/// Count occurrences of `name` as a bare EIdent, an assignment target, or a
+/// binder (binders and closure mentions poison the count with a large value so
+/// the caller's equality test fails). Total over ALL Expr variants.
+fn utl_count(e: Expr, name: String) -> Int {
+  match e {
+    EIdent(x, _) => if String::equals(x, name) {
+      1
+    } else {
+      0
+    },
+    ELet(x, v, b, _) => if String::equals(x, name) {
+      100000 + utl_count(v, name) + utl_count(b, name)
+    } else {
+      utl_count(v, name) + utl_count(b, name)
+    },
+    ELetMut(x, v, b, _) => if String::equals(x, name) {
+      100000 + utl_count(v, name) + utl_count(b, name)
+    } else {
+      utl_count(v, name) + utl_count(b, name)
+    },
+    ELetRec(x, v, b) => if String::equals(x, name) {
+      100000 + utl_count(v, name) + utl_count(b, name)
+    } else {
+      utl_count(v, name) + utl_count(b, name)
+    },
+    EAssign(x, v, c) => (if String::equals(x, name) {
+      1
+    } else {
+      0
+    }) + utl_count(v, name) + utl_count(c, name),
+    EAssignOp(_, x, v, c) => (if String::equals(x, name) {
+      1
+    } else {
+      0
+    }) + utl_count(v, name) + utl_count(c, name),
+    ESeq(a, b) => utl_count(a, name) + utl_count(b, name),
+    EIf(c, t, e2) => utl_count(c, name) + utl_count(t, name) + utl_count(e2, name),
+    EBinOp(_, l, r) => utl_count(l, name) + utl_count(r, name),
+    EUnaryOp(_, x) => utl_count(x, name),
+    EWhile(c, b) => utl_count(c, name) + utl_count(b, name),
+    EForIn(x, ix, it, b) => {
+      let ix_bad = match ix {
+        Some(i2) => String::equals(i2, name),
+        None => false
+      }
+      if String::equals(x, name) || ix_bad {
+        100000
+      } else {
+        utl_count(it, name) + utl_count(b, name)
+      }
+    },
+    ELoop(params, b) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, init) = Array::get(params, i)
+        if String::equals(pn, name) {
+          acc = acc + 100000
+        } else {
+          ()
+        }
+        acc = acc + utl_count(init, name)
+        i = i + 1
+      }
+      acc + utl_count(b, name)
+    },
+    EMatch(s, arms) => {
+      let mut acc = utl_count(s, name)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        if utl_pat_binds(p, name) {
+          acc = acc + 100000
+        } else {
+          acc = acc + utl_count(ab, name)
+        }
+        i = i + 1
+      }
+      acc
+    },
+    EHandle(b, arms) => {
+      let mut acc = utl_count(b, name)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        if utl_pat_binds(p, name) {
+          acc = acc + 100000
+        } else {
+          acc = acc + utl_count(ab, name)
+        }
+        i = i + 1
+      }
+      acc
+    },
+    ECall(c, args, _) => {
+      let mut acc = utl_count(c, name)
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + utl_count(Array::get(args, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    EFn(_, _, ps, _, _, b) => {
+      let mut shadowed = false
+      let mut i = 0
+      while i < Array::length(ps) {
+        let (pn, _) = Array::get(ps, i)
+        if String::equals(pn, name) {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if shadowed {
+        0
+      } else if utl_count(b, name) > 0 {
+        // captured by a closure: poison
+        100000
+      } else {
+        0
+      }
+    },
+    ETuple(xs) => utl_count_list(xs, name),
+    EArray(xs) => utl_count_list(xs, name),
+    ERecord(_, fields, _) => utl_count_fields(fields, name),
+    EMap(entries) => utl_count_fields(entries, name),
+    EDot(b, _, _, _) => utl_count(b, name),
+    ELabeledArg(_, _, x) => utl_count(x, name),
+    EReturn(x) => utl_count(x, name),
+    ESpread(x) => utl_count(x, name),
+    EBreak(opt) => match opt {
+      Some(x) => utl_count(x, name),
+      None => 0
+    },
+    EContinue(args) => utl_count_list(args, name),
+    _ => 0
+  }
+}
+
+fn utl_count_list(items: Array[Expr], name: String) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(items) {
+    acc = acc + utl_count(Array::get(items, i), name)
+    i = i + 1
+  }
+  acc
+}
+
+fn utl_count_fields(fields: Array[(String, Expr)], name: String) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, fe) = Array::get(fields, i)
+    acc = acc + utl_count(fe, name)
+    i = i + 1
+  }
+  acc
+}
+
+fn utl_pat_binds(p: Pat, name: String) -> Bool {
+  match p {
+    PBind(b) => String::equals(b, name),
+    PCtor(_, args) => utl_pats_bind(args, name),
+    PTuple(args) => utl_pats_bind(args, name),
+    POr(a, b) => utl_pat_binds(a, name) || utl_pat_binds(b, name),
+    PStruct(_, fields) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if utl_pat_binds(fp, name) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn utl_pats_bind(pats: Array[Pat], name: String) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(pats) {
+    if utl_pat_binds(Array::get(pats, i), name) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Count only the RECOGNIZED occurrences of `name` (the shapes the rewrite
+/// handles), and collect the write-temp names into `temps`. Anywhere a
+/// recognized shape appears, its own consumed EIdent is NOT double-counted by
+/// recursion (the shape recursion skips it).
+fn utl_recognized(e: Expr, name: String, n: Int, temps: Array[String]) -> Int {
+  if utl_is_destr_match(e, name, n) {
+    match e {
+      EMatch(_, arms) => {
+        let (_, arm) = Array::get(arms, 0)
+        1 + utl_recognized(arm, name, n, temps)
+      },
+      _ => 0
+    }
+  } else {
+    let pk = utl_is_proj(e, name, n)
+    if pk >= 0 {
+      1
+    } else {
+      match e {
+        EAssign(x, v, c) => if String::equals(x, name) {
+          match v {
+            ETuple(xs) => if Array::length(xs) == n {
+              1 + utl_recognized_list(xs, name, n, temps) + utl_recognized(c, name, n, temps)
+            } else {
+              utl_recognized(c, name, n, temps)
+            },
+            EIdent(t, _) => {
+              Array::push(temps, t)
+              1 + utl_recognized(c, name, n, temps)
+            },
+            _ => utl_recognized(v, name, n, temps) + utl_recognized(c, name, n, temps)
+          }
+        } else {
+          utl_recognized(v, name, n, temps) + utl_recognized(c, name, n, temps)
+        },
+        ELet(_, v, b, _) => utl_recognized(v, name, n, temps) + utl_recognized(b, name, n, temps),
+        ELetMut(_, v, b, _) => utl_recognized(v, name, n, temps) + utl_recognized(b, name, n, temps),
+        ELetRec(_, v, b) => utl_recognized(v, name, n, temps) + utl_recognized(b, name, n, temps),
+        EAssignOp(_, _, v, c) => utl_recognized(v, name, n, temps) + utl_recognized(c, name, n, temps),
+        ESeq(a, b) => utl_recognized(a, name, n, temps) + utl_recognized(b, name, n, temps),
+        EIf(c, t, e2) => utl_recognized(c, name, n, temps) + utl_recognized(t, name, n, temps) + utl_recognized(e2, name, n, temps),
+        EBinOp(_, l, r) => utl_recognized(l, name, n, temps) + utl_recognized(r, name, n, temps),
+        EUnaryOp(_, x) => utl_recognized(x, name, n, temps),
+        EWhile(c, b) => utl_recognized(c, name, n, temps) + utl_recognized(b, name, n, temps),
+        EForIn(_, _, it, b) => utl_recognized(it, name, n, temps) + utl_recognized(b, name, n, temps),
+        EMatch(s, arms) => {
+          let mut acc = utl_recognized(s, name, n, temps)
+          let mut i = 0
+          while i < Array::length(arms) {
+            let (_, ab) = Array::get(arms, i)
+            acc = acc + utl_recognized(ab, name, n, temps)
+            i = i + 1
+          }
+          acc
+        },
+        EHandle(b, arms) => {
+          let mut acc = utl_recognized(b, name, n, temps)
+          let mut i = 0
+          while i < Array::length(arms) {
+            let (_, ab) = Array::get(arms, i)
+            acc = acc + utl_recognized(ab, name, n, temps)
+            i = i + 1
+          }
+          acc
+        },
+        ECall(c, args, _) => {
+          let mut acc = utl_recognized(c, name, n, temps)
+          let mut i = 0
+          while i < Array::length(args) {
+            acc = acc + utl_recognized(Array::get(args, i), name, n, temps)
+            i = i + 1
+          }
+          acc
+        },
+        ETuple(xs) => utl_recognized_list(xs, name, n, temps),
+        EArray(xs) => utl_recognized_list(xs, name, n, temps),
+        ERecord(_, fields, _) => {
+          let out: Array[Expr] = [
+          ]
+          let mut i = 0
+          while i < Array::length(fields) {
+            let (_, fe) = Array::get(fields, i)
+            Array::push(out, fe)
+            i = i + 1
+          }
+          utl_recognized_list(out, name, n, temps)
+        },
+        EDot(b, _, _, _) => utl_recognized(b, name, n, temps),
+        ELabeledArg(_, _, x) => utl_recognized(x, name, n, temps),
+        EReturn(x) => utl_recognized(x, name, n, temps),
+        ESpread(x) => utl_recognized(x, name, n, temps),
+        EBreak(opt) => match opt {
+          Some(x) => utl_recognized(x, name, n, temps),
+          None => 0
+        },
+        EContinue(args) => utl_recognized_list(args, name, n, temps),
+        EFn(_, _, _, _, _, _) => 0,
+        _ => 0
+      }
+    }
+  }
+}
+
+fn utl_recognized_list(items: Array[Expr], name: String, n: Int, temps: Array[String]) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(items) {
+    acc = acc + utl_recognized(Array::get(items, i), name, n, temps)
+    i = i + 1
+  }
+  acc
+}
+
+/// Is `t` a valid write-temp for `name` inside `body`: bound exactly once by
+/// `let t = <literal tuple of arity n>` and its only USE is the recognized
+/// `name = t` assignment (utl_count == 1: the binder poisons re-binds, so a
+/// single count means the assignment's read).
+fn utl_temp_ok(body: Expr, t: String, n: Int) -> Bool {
+  utl_temp_binding_count(body, t, n) == 1 && utl_count(body, t) == 100001
+}
+
+/// Count `ELet(t, ETuple(n), _)` binding sites for `t`.
+fn utl_temp_binding_count(e: Expr, t: String, n: Int) -> Int {
+  let own = match e {
+    ELet(x, v, _, _) => if String::equals(x, t) {
+      match v {
+        ETuple(xs) => if Array::length(xs) == n {
+          1
+        } else {
+          0
+        },
+        _ => 0
+      }
+    } else {
+      0
+    },
+    _ => 0
+  }
+  own + utl_temp_binding_children(e, t, n)
+}
+
+fn utl_temp_binding_children(e: Expr, t: String, n: Int) -> Int {
+  match e {
+    ELet(_, v, b, _) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(b, t, n),
+    ELetMut(_, v, b, _) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(b, t, n),
+    ELetRec(_, v, b) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(b, t, n),
+    EAssign(_, v, c) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(c, t, n),
+    EAssignOp(_, _, v, c) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(c, t, n),
+    ESeq(a, b) => utl_temp_binding_count(a, t, n) + utl_temp_binding_count(b, t, n),
+    EIf(c, t2, e2) => utl_temp_binding_count(c, t, n) + utl_temp_binding_count(t2, t, n) + utl_temp_binding_count(e2, t, n),
+    EBinOp(_, l, r) => utl_temp_binding_count(l, t, n) + utl_temp_binding_count(r, t, n),
+    EUnaryOp(_, x) => utl_temp_binding_count(x, t, n),
+    EWhile(c, b) => utl_temp_binding_count(c, t, n) + utl_temp_binding_count(b, t, n),
+    EForIn(_, _, it, b) => utl_temp_binding_count(it, t, n) + utl_temp_binding_count(b, t, n),
+    EMatch(s, arms) => {
+      let mut acc = utl_temp_binding_count(s, t, n)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        acc = acc + utl_temp_binding_count(ab, t, n)
+        i = i + 1
+      }
+      acc
+    },
+    EHandle(b, arms) => {
+      let mut acc = utl_temp_binding_count(b, t, n)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        acc = acc + utl_temp_binding_count(ab, t, n)
+        i = i + 1
+      }
+      acc
+    },
+    ECall(c, args, _) => {
+      let mut acc = utl_temp_binding_count(c, t, n)
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + utl_temp_binding_count(Array::get(args, i), t, n)
+        i = i + 1
+      }
+      acc
+    },
+    EFn(_, _, _, _, _, b) => utl_temp_binding_count(b, t, n),
+    ETuple(xs) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(xs) {
+        acc = acc + utl_temp_binding_count(Array::get(xs, i), t, n)
+        i = i + 1
+      }
+      acc
+    },
+    EArray(xs) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(xs) {
+        acc = acc + utl_temp_binding_count(Array::get(xs, i), t, n)
+        i = i + 1
+      }
+      acc
+    },
+    EDot(b, _, _, _) => utl_temp_binding_count(b, t, n),
+    ELabeledArg(_, _, x) => utl_temp_binding_count(x, t, n),
+    EReturn(x) => utl_temp_binding_count(x, t, n),
+    ESpread(x) => utl_temp_binding_count(x, t, n),
+    EBreak(opt) => match opt {
+      Some(x) => utl_temp_binding_count(x, t, n),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + utl_temp_binding_count(Array::get(args, i), t, n)
+        i = i + 1
+      }
+      acc
+    },
+    _ => 0
+  }
+}
+
+fn utl_names_for(base: String, n: Int) -> Array[String] {
+  let out = utl_strings()
+  let mut i = 0
+  while i < n {
+    Array::push(out, String::concat(base, String::concat("__utl", __to_string(i))))
+    i = i + 1
+  }
+  out
+}
+
+/// Chain `target__K = EIdent(src__K)` assignments ending in `cont`.
+fn utl_assign_chain(names: Array[String], srcs: Array[String], cont: Expr) -> Expr {
+  let mut out = cont
+  let mut i = Array::length(names) - 1
+  while i >= 0 {
+    out = EAssign(Array::get(names, i), EIdent(Array::get(srcs, i), -1), out)
+    i = i - 1
+  }
+  out
+}
+
+/// The rewrite. Only runs after eligibility approved every occurrence, so the
+/// generic arms just rebuild.
+fn utl_rw2(e: Expr, name: String, n: Int, names: Array[String], temps: Array[String]) -> Expr {
+  if utl_is_destr_match(e, name, n) {
+    match e {
+      EMatch(_, arms) => {
+        let (p, arm) = Array::get(arms, 0)
+        let arm2 = utl_rw2(arm, name, n, names, temps)
+        match p {
+          PTuple(pats) => {
+            let mut out = arm2
+            let mut i = Array::length(pats) - 1
+            while i >= 0 {
+              match Array::get(pats, i) {
+                PBind(b) => {
+                  out = ELet(b, EIdent(Array::get(names, i), -1), out, -1)
+                },
+                _ => ()
+              }
+              i = i - 1
+            }
+            out
+          },
+          _ => arm2
+        }
+      },
+      _ => e
+    }
+  } else {
+    let pk = utl_is_proj(e, name, n)
+    if pk >= 0 {
+      EIdent(Array::get(names, pk), -1)
+    } else {
+      match e {
+        // write-temp binding: unbox the temp's elements into scalars
+        ELet(x, v, b, off) => if utl_has(temps, x) {
+          match v {
+            ETuple(xs) => {
+              let tnames = utl_names_for(x, n)
+              let mut out = utl_rw2(b, name, n, names, temps)
+              let mut i = Array::length(xs) - 1
+              while i >= 0 {
+                out = ELet(Array::get(tnames, i), utl_rw2(Array::get(xs, i), name, n, names, temps), out, -1)
+                i = i - 1
+              }
+              out
+            },
+            _ => ELet(x, utl_rw2(v, name, n, names, temps), utl_rw2(b, name, n, names, temps), off)
+          }
+        } else {
+          ELet(x, utl_rw2(v, name, n, names, temps), utl_rw2(b, name, n, names, temps), off)
+        },
+        EAssign(x, v, c) => if String::equals(x, name) {
+          match v {
+            ETuple(xs) => {
+              // fresh per-element temps so `s = (s.1, s.0)` still swaps
+              let fnames = utl_names_for(String::concat(name, "__w"), n)
+              let mut out = utl_assign_chain(names, fnames, utl_rw2(c, name, n, names, temps))
+              let mut i = Array::length(xs) - 1
+              while i >= 0 {
+                out = ELet(Array::get(fnames, i), utl_rw2(Array::get(xs, i), name, n, names, temps), out, -1)
+                i = i - 1
+              }
+              out
+            },
+            EIdent(t, _) => utl_assign_chain(names, utl_names_for(t, n), utl_rw2(c, name, n, names, temps)),
+            _ => EAssign(x, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps))
+          }
+        } else {
+          EAssign(x, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps))
+        },
+        ELetMut(x, v, b, off) => ELetMut(x, utl_rw2(v, name, n, names, temps), utl_rw2(b, name, n, names, temps), off),
+        ELetRec(x, v, b) => ELetRec(x, utl_rw2(v, name, n, names, temps), utl_rw2(b, name, n, names, temps)),
+        EAssignOp(op, x, v, c) => EAssignOp(op, x, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps)),
+        ESeq(a, b) => ESeq(utl_rw2(a, name, n, names, temps), utl_rw2(b, name, n, names, temps)),
+        EIf(c, t, e2) => EIf(utl_rw2(c, name, n, names, temps), utl_rw2(t, name, n, names, temps), utl_rw2(e2, name, n, names, temps)),
+        EBinOp(op, l, r) => EBinOp(op, utl_rw2(l, name, n, names, temps), utl_rw2(r, name, n, names, temps)),
+        EUnaryOp(op, x) => EUnaryOp(op, utl_rw2(x, name, n, names, temps)),
+        EWhile(c, b) => EWhile(utl_rw2(c, name, n, names, temps), utl_rw2(b, name, n, names, temps)),
+        EForIn(x, ix, it, b) => EForIn(x, ix, utl_rw2(it, name, n, names, temps), utl_rw2(b, name, n, names, temps)),
+        EMatch(s, arms) => {
+          let out: Array[(Pat, Expr)] = [
+          ]
+          let mut i = 0
+          while i < Array::length(arms) {
+            let (p, ab) = Array::get(arms, i)
+            Array::push(out, (p, utl_rw2(ab, name, n, names, temps)))
+            i = i + 1
+          }
+          EMatch(utl_rw2(s, name, n, names, temps), out)
+        },
+        EHandle(b, arms) => {
+          let out: Array[(Pat, Expr)] = [
+          ]
+          let mut i = 0
+          while i < Array::length(arms) {
+            let (p, ab) = Array::get(arms, i)
+            Array::push(out, (p, utl_rw2(ab, name, n, names, temps)))
+            i = i + 1
+          }
+          EHandle(utl_rw2(b, name, n, names, temps), out)
+        },
+        ECall(c, args, off) => {
+          let out: Array[Expr] = [
+          ]
+          let mut i = 0
+          while i < Array::length(args) {
+            Array::push(out, utl_rw2(Array::get(args, i), name, n, names, temps))
+            i = i + 1
+          }
+          ECall(utl_rw2(c, name, n, names, temps), out, off)
+        },
+        EFn(a1, a2, ps, rt, nm, b) => EFn(a1, a2, ps, rt, nm, utl_rw2(b, name, n, names, temps)),
+        ETuple(xs) => {
+          let out: Array[Expr] = [
+          ]
+          let mut i = 0
+          while i < Array::length(xs) {
+            Array::push(out, utl_rw2(Array::get(xs, i), name, n, names, temps))
+            i = i + 1
+          }
+          ETuple(out)
+        },
+        EArray(xs) => {
+          let out: Array[Expr] = [
+          ]
+          let mut i = 0
+          while i < Array::length(xs) {
+            Array::push(out, utl_rw2(Array::get(xs, i), name, n, names, temps))
+            i = i + 1
+          }
+          EArray(out)
+        },
+        ERecord(rn, fields, targs) => {
+          let out: Array[(String, Expr)] = [
+          ]
+          let mut i = 0
+          while i < Array::length(fields) {
+            let (fname, fe) = Array::get(fields, i)
+            Array::push(out, (fname, utl_rw2(fe, name, n, names, temps)))
+            i = i + 1
+          }
+          ERecord(rn, out, targs)
+        },
+        EMap(entries) => {
+          let out: Array[(String, Expr)] = [
+          ]
+          let mut i = 0
+          while i < Array::length(entries) {
+            let (k, fe) = Array::get(entries, i)
+            Array::push(out, (k, utl_rw2(fe, name, n, names, temps)))
+            i = i + 1
+          }
+          EMap(out)
+        },
+        EDot(b, f, o1, o2) => EDot(utl_rw2(b, name, n, names, temps), f, o1, o2),
+        ELabeledArg(l1, l2, x) => ELabeledArg(l1, l2, utl_rw2(x, name, n, names, temps)),
+        EReturn(x) => EReturn(utl_rw2(x, name, n, names, temps)),
+        ESpread(x) => ESpread(utl_rw2(x, name, n, names, temps)),
+        EBreak(opt) => match opt {
+          Some(x) => EBreak(Some(utl_rw2(x, name, n, names, temps))),
+          None => EBreak(None)
+        },
+        EContinue(args) => {
+          let out: Array[Expr] = [
+          ]
+          let mut i = 0
+          while i < Array::length(args) {
+            Array::push(out, utl_rw2(Array::get(args, i), name, n, names, temps))
+            i = i + 1
+          }
+          EContinue(out)
+        },
+        _ => e
+      }
+    }
+  }
+}
+
+/// Try to unbox `ELetMut(name, ETuple(n), body)`. Returns the replacement
+/// (the scalar `let mut` chain) or None.
+fn utl_try(name: String, init: Expr, body: Expr, off: Int) -> Option[Expr] {
+  match init {
+    ETuple(elems) => {
+      let n = Array::length(elems)
+      if n < 2 || n > 8 {
+        None
+      } else {
+        let total = utl_count(body, name)
+        let temps = utl_strings()
+        let recognized = utl_recognized(body, name, n, temps)
+        if total != recognized || total == 0 {
+          None
+        } else {
+          // validate the write temps (each exactly-once `let t = <tuple>`)
+          let mut temps_ok = true
+          let mut i = 0
+          while i < Array::length(temps) {
+            if !utl_temp_ok(body, Array::get(temps, i), n) {
+              temps_ok = false
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          // Fresh-name check over EVERY family the rewrite can synthesize --
+          // the scalar names (`<name>__utlK`), the direct-write temps
+          // (`<name>__w__utlK`), and each write-temp's element names
+          // (`<t>__utlK`) -- against the BODY and the INITIALIZER both.
+          // Checking only `<name>__utlK` against the body let
+          // `let mut s = (0, s__utl0)` (an OUTER s__utl0 read in the init)
+          // rebind the first scalar before the second init read it
+          // (Codex review P1 on #1530).
+          let names = utl_names_for(name, n)
+          let gen_names = utl_strings()
+          let mut gj = 0
+          while gj < n {
+            Array::push(gen_names, Array::get(names, gj))
+            Array::push(gen_names, String::concat(name, String::concat("__w__utl", __to_string(gj))))
+            gj = gj + 1
+          }
+          let mut ti = 0
+          while ti < Array::length(temps) {
+            let t = Array::get(temps, ti)
+            let mut tj = 0
+            while tj < n {
+              Array::push(gen_names, String::concat(t, String::concat("__utl", __to_string(tj))))
+              tj = tj + 1
+            }
+            ti = ti + 1
+          }
+          let mut fresh_ok = true
+          let mut j = 0
+          while j < Array::length(gen_names) {
+            let g = Array::get(gen_names, j)
+            if utl_count(body, g) != 0 {
+              fresh_ok = false
+            } else {
+              ()
+            }
+            let mut ei = 0
+            while ei < Array::length(elems) {
+              if utl_count(Array::get(elems, ei), g) != 0 {
+                fresh_ok = false
+              } else {
+                ()
+              }
+              ei = ei + 1
+            }
+            j = j + 1
+          }
+          if temps_ok && fresh_ok {
+            let body2 = utl_rw2(body, name, n, names, temps)
+            let mut out = body2
+            let mut k = n - 1
+            while k >= 0 {
+              out = ELetMut(Array::get(names, k), Array::get(elems, k), out, off)
+              k = k - 1
+            }
+            Some(out)
+          } else {
+            None
+          }
+        }
+      }
+    },
+    _ => None
+  }
+}
+
+/// Bottom-up driver: children first, then this node.
+fn utl_drive(e: Expr) -> Expr {
+  match e {
+    ELetMut(x, v, b, off) => {
+      let v2 = utl_drive(v)
+      let b2 = utl_drive(b)
+      match utl_try(x, v2, b2, off) {
+        Some(replacement) => replacement,
+        None => ELetMut(x, v2, b2, off)
+      }
+    },
+    ELet(x, v, b, off) => ELet(x, utl_drive(v), utl_drive(b), off),
+    ELetRec(x, v, b) => ELetRec(x, utl_drive(v), utl_drive(b)),
+    EAssign(x, v, c) => EAssign(x, utl_drive(v), utl_drive(c)),
+    EAssignOp(op, x, v, c) => EAssignOp(op, x, utl_drive(v), utl_drive(c)),
+    ESeq(a, b) => ESeq(utl_drive(a), utl_drive(b)),
+    EIf(c, t, e2) => EIf(utl_drive(c), utl_drive(t), utl_drive(e2)),
+    EBinOp(op, l, r) => EBinOp(op, utl_drive(l), utl_drive(r)),
+    EUnaryOp(op, x) => EUnaryOp(op, utl_drive(x)),
+    EWhile(c, b) => EWhile(utl_drive(c), utl_drive(b)),
+    EForIn(x, ix, it, b) => EForIn(x, ix, utl_drive(it), utl_drive(b)),
+    EMatch(s, arms) => {
+      let out: Array[(Pat, Expr)] = [
+      ]
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        Array::push(out, (p, utl_drive(ab)))
+        i = i + 1
+      }
+      EMatch(utl_drive(s), out)
+    },
+    EHandle(b, arms) => {
+      let out: Array[(Pat, Expr)] = [
+      ]
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        Array::push(out, (p, utl_drive(ab)))
+        i = i + 1
+      }
+      EHandle(utl_drive(b), out)
+    },
+    ECall(c, args, off) => {
+      let out: Array[Expr] = [
+      ]
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, utl_drive(Array::get(args, i)))
+        i = i + 1
+      }
+      ECall(utl_drive(c), out, off)
+    },
+    EFn(a1, a2, ps, rt, nm, b) => EFn(a1, a2, ps, rt, nm, utl_drive(b)),
+    ETuple(xs) => {
+      let out: Array[Expr] = [
+      ]
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(out, utl_drive(Array::get(xs, i)))
+        i = i + 1
+      }
+      ETuple(out)
+    },
+    EArray(xs) => {
+      let out: Array[Expr] = [
+      ]
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(out, utl_drive(Array::get(xs, i)))
+        i = i + 1
+      }
+      EArray(out)
+    },
+    ERecord(rn, fields, targs) => {
+      let out: Array[(String, Expr)] = [
+      ]
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fe) = Array::get(fields, i)
+        Array::push(out, (fname, utl_drive(fe)))
+        i = i + 1
+      }
+      ERecord(rn, out, targs)
+    },
+    EMap(entries) => {
+      let out: Array[(String, Expr)] = [
+      ]
+      let mut i = 0
+      while i < Array::length(entries) {
+        let (k, fe) = Array::get(entries, i)
+        Array::push(out, (k, utl_drive(fe)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EDot(b, f, o1, o2) => EDot(utl_drive(b), f, o1, o2),
+    ELabeledArg(l1, l2, x) => ELabeledArg(l1, l2, utl_drive(x)),
+    EReturn(x) => EReturn(utl_drive(x)),
+    ESpread(x) => ESpread(utl_drive(x)),
+    EBreak(opt) => match opt {
+      Some(x) => EBreak(Some(utl_drive(x))),
+      None => EBreak(None)
+    },
+    EContinue(args) => {
+      let out: Array[Expr] = [
+      ]
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, utl_drive(Array::get(args, i)))
+        i = i + 1
+      }
+      EContinue(out)
+    },
+    _ => e
+  }
+}
+
+/// Split every eligible tuple `let mut` in `stmts` into scalar `let mut`s,
+/// IN PLACE. Run at both linear codegen entries, after the checker.
+export fn unbox_tuple_loop_params(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let st = Array::get(stmts, i)
+    match st {
+      SLet(a, b, name, ty, body) => Array::set(stmts, i, SLet(a, b, name, ty, utl_drive(body))),
+      SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, utl_drive(body))),
+      SExpr(e) => Array::set(stmts, i, SExpr(utl_drive(e))),
+      STest(name, body) => Array::set(stmts, i, STest(name, utl_drive(body))),
+      SBench(name, body) => Array::set(stmts, i, SBench(name, utl_drive(body))),
+      SLetPat(p, body) => Array::set(stmts, i, SLetPat(p, utl_drive(body))),
+      SModule(exp, name, inner) => {
+        unbox_tuple_loop_params(inner)
+        Array::set(stmts, i, SModule(exp, name, inner))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
