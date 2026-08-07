@@ -26,6 +26,20 @@ vibe check file.vibe       # type check only
 vibe build --release app.vibe  # standalone .wasm
 ```
 
+### CLI は IDE 相当のクエリ面 (方針)
+
+`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
+得るのと同じ意味解析を **CLI から直接**取り出すためのもの。想定する第一の
+読み手は**人間ではなく LLM** なので、行指向 (1件1行) で grep でき、空出力が
+clean を意味し、メッセージは内部用語ではなく「何を書き換えれば直るか」を
+述べる、という形を保つ。
+
+**これは自己改善のループとして運用する** — 使っていて欲しい情報が取れない・
+出力が読めない・判定に使えないと分かったら、ワークアラウンドを覚えるのでは
+なく CLI 側を直すか issue を立てる。詳細と現在わかっている穴は
+[AGENTS.md の Code Navigation 節](../AGENTS.md#code-navigation-important)。
+
 ---
 
 ## Values & Types
@@ -254,6 +268,37 @@ Array::fold(xs, 0, _ + _)
 | 11-12 | `&&` `\|\|` | short-circuit (desugar to if) |
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
+
+### `Array` の `==` (#1526)
+
+ランタイムの `eq` は型を見ないので、配列の `==` は**コンパイル時に要素型を
+決めて**構造比較へ書き換えられる。要素型が分かる限り構造的:
+
+```vibe
+test "array equality is structural where the element type is known" {
+  let a = [1, 2]
+  let b = [1, 2]
+  assert([1, 2] == [1, 2])   // リテラル
+  assert(a == b)             // let 束縛
+  assert(same([1, 2], [1, 2]))
+}
+
+fn same(x: Array[Int], y: Array[Int]) -> Bool {
+  x == y                     // Array[T] 引数
+}
+```
+
+名前経由が構造比較になるのは**要素がスカラー** (`Int` / `String` / `Bool` /
+`Double` / `Char` / `Bytes` / `Unit`) のときだけ。それ以外は**参照等価に落ちる**
+— 関数の戻り値として受けた配列、空リテラル束縛 (`let xs = []`)、消去された
+型変数 (`fn f[T](x: Array[T])` の `T`)、入れ子の配列、struct/enum 要素。
+リテラルとして書かれていれば入れ子も struct 要素も従来どおり構造比較される
+(`[[1, 2]] == [[1, 2]]`)。名前経由でも効かせたいときは `derive(Eq)` の
+struct field に入れるのが確実。
+
+> **これは途中の状態**。ADR-0097 (#1526) は「`==` は**全文脈で構造的等価**」を
+> 決定済みで、上の残りはそこへ向けた未実装分。文脈で答えが変わること自体が
+> 潰す対象なので、この節の境界を覚えるのではなく、当たったら issue に足すこと。
 
 ## Pipe Operator
 
@@ -528,9 +573,13 @@ let bad = keep([1, 2, 3])     // reject される
 ```
 
 理由は marker trait の**ディスパッチ先**にある。marker trait は builtin の
-`==` / `<` に落ちるが、**裸の `Array` / `Bytes` に対する `==` は参照等価**
-(`[1, 2] == [1, 2]` は `false`、#1526) なので、この impl を認めると
-`==` が黙って間違った答えを返す。診断がその旨を述べる。
+`==` / `<` に落ちる。`==` が配列を構造的に比較できるのは**要素型が静的に
+分かるとき**だけ (下の「`Array` の `==`」参照) で、`keep[T: Eq]` の中の `T` は
+消去済み — 要素型は無い。つまりこの impl を認めると `==` は参照等価に落ちて
+黙って間違った答えを返す。診断がその旨を述べる。
+
+> このゲートは ADR-0097 (`==` を全文脈で構造的等価に統一) の完了時に**解除
+> される** — 根拠そのものが無くなるため。それまでは上の規則が有効。
 
 container に対して効かせたいなら **trait にメソッドを持たせる** —
 メソッドがあれば witness dictionary 経由でディスパッチするので、
@@ -1184,7 +1233,7 @@ let run_mode = () -> Int { run() }
 
 Mark a top-level declaration deprecated; `vibe check` then reports every use
 of that name as a **non-fatal `warning:` line on stderr** (the check still
-passes, exit 0). This is the migration tool behind the ADR-0097/0098 renames
+passes, exit 0). This is the migration tool behind the ADR-0100/0101 renames
 (deprecated aliases keep old spellings compiling while warning).
 
 ```vibe

@@ -358,15 +358,76 @@ The model classifies an explicit-only source from a supplied reachability
 witness. It does not yet prove the filesystem loader's recursive graph walk;
 `contract_vpkg_test.vibe` is the current refinement guard for that bridge.
 
+## Verified typing and discipline properties (#1238)
+
+Seven slices of the #1238 roadmap, each modelling a rule the selfhost checker
+already enforces. Every slice carries at least one negative witness — a term
+the rule must reject — so a vacuous model cannot pass.
+
+**Function variance** (`Typing/FunctionVariance.lean`, #939). Effectful
+function values are not implicitly subsumed into pure function types, at any
+nesting depth. The negative witnesses pin both directions: a function taking a
+pure callback cannot stand where an effectful-callback taker is expected
+(reading the argument position covariantly reproduces the #939 bug one level
+down), and a function returning an effectful result cannot stand where a pure
+return is expected. `FnShape` is a recursion independent of the shared `Ty`, so
+the model does not perturb the `Call.lean` / `Oracle.lean` differential data.
+
+**Resume discipline** (`Effect/ResumeDiscipline.lean`, #942, ADR-0050). A
+resume token names an operation *and an activation*. Rejected: resume at top
+level (falls out of `live [] = []`, i.e. "no resume outside a handler"), double
+resume of one token, a token from a different activation, and resume after the
+arm has returned — the last one being the evidence that the scope is a dynamic
+extent, not a lexical one.
+
+**Match exhaustiveness** (`Typing/MatchExhaustive.lean`, #940). Stated by
+*witness* rather than by decision procedure. Rejected: a missing constructor,
+and a gap in a nested position — `Wrap(left)` covers the outer scrutinee
+completely, so a checker that compares only the outer layer calls it exhaustive.
+That is the reason exhaustiveness must recurse.
+
+**Or-pattern binders** (`Typing/OrPatternBinders.lean`, #951). Binder agreement
+is stated through a lookup function, so it does not depend on the order the
+alternatives are written. `agree_representative` shows every alternative agrees
+with one representative, which is what justifies checking the body once in one
+environment and reserving one slot per binder.
+
+**Trait coherence** (`Typing/TraitCoherence.lean`, #952). Stated by membership,
+so it does not depend on table assembly order. Candidate uniqueness implies
+*dictionary* uniqueness — the property elaboration actually relies on. Partial
+table inheritance is one-directional (merging can only add conflicts, never
+repair them), which is why the check must run after the merge.
+
+**Spawn capture** (`Parallel/SpawnCapture.lean`, #1081). Models the implemented
+`TaskGroup` semantics (`checker_spawnable.vibe`'s `sp_spawnable_ok`), **not**
+the `Spawn[r]` capability handler of #818 — that design was closed
+`not_planned`. Rejected: an endpoint from a different nursery, and a non-Send
+value. `endpoint_legality_is_relative` carries what "same-nursery" means: one
+and the same endpoint is legal in its own region and illegal in another.
+
+**Channel delivery** (`Parallel/ChannelDelivery.lean`, #1081). The close
+protocol of the bounded MPMC channel: close does not touch the buffer, a closed
+channel still delivers what it buffered (**`None` means "finished", not
+"closed"**), termination is stable, and an empty-open channel is distinguished
+from an empty-closed one — the former is precisely the state where `recv_wait`
+suspends.
+
+Limits. These are static-rule models; none of them proves the corresponding
+selfhost pass implements the rule. Channel *linearizability* needs a history
+model rather than this state model and is a separate slice. `Future`/`await`
+suspension is not covered here at all.
+
 ## Epistemic status
 
 `lake build --wfail` proves the theorems about these Lean models and rejects
 unfinished `sorry` declarations. It does **not** yet prove every selfhost
 implementation transition. Effect rows need an implementation bridge
 such as a JSON oracle plus differential tests, followed by a simulation proof
-for the evidence-passing lowering planned in issue #817. Parallel compilation
-needs a worker-count/order differential oracle for module results, diagnostics,
-cache entries, and emitted Wasm bytes.
+for the evidence-passing lowering. That lowering is no longer hypothetical —
+#817 landed it (replay retired, evidence passing is what the compiler does
+today), so the simulation now has a concrete implementation to be a simulation
+*of*. Parallel compilation needs a worker-count/order differential oracle for
+module results, diagnostics, cache entries, and emitted Wasm bytes.
 
 ## Check
 

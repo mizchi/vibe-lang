@@ -13,6 +13,47 @@
 > `moonbit-host-final-2026-06-23` (`59ef040`). Migration record:
 > [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md).
 
+## 設計ポリシー (迷ったらここに照らして決める)
+
+設計判断で迷ったら、以下の 3 本柱に照らす。柱同士が衝突したときの優先順位は
+**「黙って誤らない」> 表現の正直さ > 表面の書き味**。ポリシーで決めきれない
+ものは issue にして 3 軸ラベル ([docs/issue-triage.md](docs/issue-triage.md)) を付ける。
+
+**1. モダンな構文、副作用を明示する静的型付け関数型言語** (系譜: Rust /
+MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row で表す。
+**型と診断は LLM の評価ループに最適化する** — 最悪の壊れ方は「黙って誤る」で
+あり triage でも P0 = silent-wrong が「落ちる」より上 (P1)。診断は内部用語
+(pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り —
+ただし以下は**決定済み・実装はこれから** (現在の挙動と混同しないこと):
+`==` の全文脈構造的統一 (ADR-0097, #1526 — **今日はまだ文脈で答えが違う**。
+`70751967` で名前経由も要素型が**スカラーなら**構造的になったが、関数の
+戻り値・入れ子・struct 要素・消去された型変数は参照等価のまま。cheatsheet の
+「`Array` の `==`」に現在の境界がある)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
+#1559)、`Exception` を正として `Error` を 1.0 freeze で deprecated (ADR-0085,
+#1564)。docs のコード例は doctest が現行コンパイラで検査する — 仕様と実装を
+食い違わせない。
+
+**2. wasm 上でセルフホストし、wasm の最新機能を使う**。コンパイラは vibe 製で
+committed seed からビルドする。**内部表現は wasm / WIT と摩擦のない表現に
+寄せる** — 値は tagged i64、String は byte string (byte offset インデックス、
+ADR-0098 — メモリの実態と一致する正直な意味論)、WIT 境界に出られるものは
+nominal 規則で決める (ADR-0089 D4/D5)。継続表現は wasm-gc (型主導参照レーン
+ADR-0095)・stack switching (今日は stackful lift + `waitable-set`、JSPI は
+別 backend)・threads を前提に設計する。マルチスレッドは**当面 shared-nothing**
+(`TaskGroup` + `Send`/region 検査が既にこの形) で、将来の実スレッド化を
+見据えた表現を選ぶ。
+
+**3. Vibe Coding の時代に合わせ、権限と副作用を明示的にコントロールできる**。
+Deno のパーミッション × Koka の effect system: capability は row が運び、
+呼び出し側の式は素の関数呼び出しのまま。認可は build → apply → instantiate の
+**最早フェーズで一回だけ**確定し、run 中 authority 不変 (ADR-0075/0084/0088)。
+Notebook 駆動の開発に合わせた**インクリメンタルビルド** (`vibe check` レーンは
+typing reuse が default-on、semantic module 単位へ拡張中 #1379)。**ビルド時に
+決まる Capability で、対象プラットフォームの wasm runtime 仕様に合わせた
+プログレッシブなコード生成** — `--allow-*` は const-fold + DCE で不許可
+capability のコードを落とし、生成 wasm は要求する feature level を宣言する
+([docs/wasm/feature-levels.md](docs/wasm/feature-levels.md))。
+
 ## vibe 言語リファレンス
 
 vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.md](docs/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
@@ -76,7 +117,9 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 - `*_test.vibe` - Test files (`test { ... }` / `test "name" { ... }` ブロック)
 - `*_bench.vibe` - Benchmark files (`bench { ... }` ブロック)
 - `index.vibe` - パッケージのエントリ (`lib/@vibe/<pkg>/index.vibe`)
-- `index.vibei` - パッケージの契約 interface (bodyless 宣言 + conformance 照合)
+- `index.vpkg` - パッケージの契約 (ヘッダ + bodyless 宣言、境界かつ公開 API。
+  ADR-0070/#1269)。**`index.vibei` は legacy で境界ではなく、リポジトリにも
+  もう存在しない** — 詳細は [docs/adding-modules.md](docs/adding-modules.md)
 - `Taskfile.pkl` - pkfire タスク定義
 
 ### 変更の入れ先
@@ -106,6 +149,24 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
 CI shard では:
 - `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage` がゲートを走らせる
 - `pkf run full-gate` を継続運用判断の主 gate とする
+
+### 方針: 期待値は snapshot に寄せる — `__DATA__` と `.diag` は畳む (#1571)
+
+期待値を持つ仕組みが3つある。**`inspect(value, content)` + `vibe test --update`
+に一本化していく**方針で、新しいテストはこれで書く。
+
+- **`inspect(...)`** — 本命。期待値がソースの中にあり、`vibe test --update`
+  で更新できる (`lib/@vibe/compiler/inspect_update.vibe`)
+- **`__DATA__`** — fixture 末尾の `{"last": "..."}`。723 fixture 中 544 が使用。
+  vibe の構文ではないので、fixture を単体で `vibe test` に食わせられず、
+  `compiler_gate.sh` は**81 箇所で `sed '/^__DATA__$/,$d'` して剥がしている**
+- **`.diag`** — `emit_compile_diag` が `<output_path>.diag` に書く sidecar。
+  診断が stdout に出ないので、中断した実行が残骸を落とす (`a.wasm.diag` /
+  `b.wasm.diag` がリポジトリ root に tracked で残っていた)。stdout へ移す話は
+  #1567 と同じ問題
+
+`fixtures/warnings/*.diag` は逆に**意図的にコミットされた期待出力**なので、
+これも snapshot 側へ寄せる対象。移行は一括ではなく、触った fixture から。
 
 ## Coding Convention
 
@@ -144,6 +205,35 @@ CI shard では:
 
 **コード探索は `vibe symbols` / `vibe type-at` / `vibe binding-at` を使う**
 (hover・rename・go-to-def と同じ AST 解析を CLI から直接叩ける)。
+
+### 方針: CLI を LLM 向けの IDE 相当クエリ面として育てる
+
+`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
+得るのと同じ意味解析を **CLI から直接**取り出すためのもの。**想定する第一の
+読み手は人間ではなく LLM** で、次を満たすことを目標にする:
+
+- **行指向で grep できる** — 1件1行、固定フィールド順。整形された箱や
+  カラー装飾を前提にしない
+- **空出力 = clean** — 「問題なし」を出力の有無で判定できる
+- **判定に使える** — 「このファイルはコンパイルが通るか」に CLI 単体で
+  答えられる。答えられないなら、それは診断の穴であって呼び出し側の
+  作法の問題ではない
+- **メッセージが行動可能** — ADR 番号や pass 名など内部用語ではなく、
+  何を書き換えれば直るかを述べる (#1511 の実例)
+
+**これは自己改善のループとして運用する。** 開発中にこれらを使って
+「欲しい情報が取れない」「出力が読めない」「嘘をつく」に当たったら、
+**その場で CLI 側を直すか issue を立てる** — ワークアラウンドを覚えて
+先へ進まない。CLI が答えられない質問はそのまま、LLM がこのリポジトリで
+作業するときのコストとして毎回効いてくる。
+
+現に効いている既知の穴 (どれもこの方針違反として扱う):
+`vibe check` と `vibe diagnostics` が同じ質問に別の答え方をすること
+(**#1567** — 統合提案。import 解決の有無・clean の表現・exit code・
+出力先が全部食い違い、どちらを使うかを呼び出し側が覚えている)、
+型エラーに `line:col` が付かないこと (同 #1567)、
+`vibe symbols` が doc comment を返さないこと (Coding Convention 節)。
 
 ### Editor query primitives — Semantic Code Navigation
 
@@ -286,7 +376,21 @@ gh issue close <number>
 
 # ラベル付き
 gh issue create --title "タイトル" --label bug
+
+# P0 (黙って誤るもの) だけ / 着手可能な blocker だけ
+gh issue list --state open --label P0
+gh issue list --state open --label blocker
 ```
+
+**分類と優先順位の規則は [docs/issue-triage.md](docs/issue-triage.md)。**
+3 軸 (種類 / 優先度 P0-P2 / `blocker`) を独立に付け、着手順はそこから機械的に決まる。
+優先度は**壊れ方の悪質さだけ**で決める (P0 = 黙って誤る、P1 = 落ちる・書けない、
+P2 = 機能追加)。「重要そう」は優先度に入れない。新規起票時は 3 軸を付けるところまでが
+起票の一部。
+
+長い issue は **sub-issue でツリー化**する — 親は現在地と子への索引だけを持ち、
+経緯はコメントに残す。本文にチェックリストを積み上げると、着地した項目が増えるほど
+「次に何をやるか」が読めなくなる。
 
 設計判断は `docs/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
 
