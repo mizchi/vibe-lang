@@ -76,7 +76,9 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 - `*_test.vibe` - Test files (`test { ... }` / `test "name" { ... }` ブロック)
 - `*_bench.vibe` - Benchmark files (`bench { ... }` ブロック)
 - `index.vibe` - パッケージのエントリ (`lib/@vibe/<pkg>/index.vibe`)
-- `index.vibei` - パッケージの契約 interface (bodyless 宣言 + conformance 照合)
+- `index.vpkg` - パッケージの契約 (ヘッダ + bodyless 宣言、境界かつ公開 API。
+  ADR-0070/#1269)。**`index.vibei` は legacy で境界ではなく、リポジトリにも
+  もう存在しない** — 詳細は [docs/adding-modules.md](docs/adding-modules.md)
 - `Taskfile.pkl` - pkfire タスク定義
 
 ### 変更の入れ先
