@@ -23,6 +23,7 @@ import @vibe/compiler/core {
   is_exception_throw_handler_name,
   is_exception_throw_operation,
   registry_builtin_arity,
+  registry_builtin_param_type,
   resolve_builtin,
   subst_add_bound,
   subst_apply,
@@ -2136,6 +2137,53 @@ fn builtin_fixed_arity(name: String) -> Int {
     // name, so anything this pass genuinely cannot see stays tolerated exactly
     // as before.
     registry_builtin_arity(name)
+  }
+}
+
+/// #1513: the expected head kind of builtin `name`'s argument `i`, hand table
+/// FIRST and the central registry as the fallback.
+///
+/// The two hand tables above (`builtin_first_arg_head` /
+/// `builtin_arg_head_rest`) predate the registry and cover Array / String /
+/// Bytes / FixedArray only, so every HOST builtin's arguments were unchecked:
+/// `Stdout::write_stream(42)` compiled AND RAN, printing the pointer as a
+/// decimal. Same shape as the arity gap this issue's first half closed —
+/// "which builtins get checked" was the maintenance state of a list, not a rule.
+///
+/// The hand table wins where it has an entry so nothing already checked can
+/// change verdict (it encodes receiver-position knowledge the registry's
+/// per-parameter types do not, e.g. HOF callbacks deliberately left at 0).
+/// A registry parameter typed `CtUnknown` maps to head 0 = tolerate, which is
+/// how `assert_eq` and friends stay unchecked.
+fn builtin_param_head(name: String, i: Int) -> Int {
+  let hand = if i == 0 {
+    builtin_first_arg_head(name)
+  } else {
+    builtin_arg_head_rest(name, i)
+  }
+  if hand != 0 {
+    hand
+  } else {
+    match registry_builtin_param_type(name, i) {
+      Some(t) => head_fold_char(head_kind(t)),
+      None => 0
+    }
+  }
+}
+
+/// `Char` is an `Int` alias in this language: the lexer emits `TInt` for a char
+/// literal, so `'A' == 65` and `char_int_compatible` (core/types.vibe) lets the
+/// two unify freely in both directions. The head-kind check must not invent a
+/// distinction `unify` does not make, so fold `CtChar`'s head into `CtInt`'s on
+/// both sides of the comparison. Without this the registry's `Char::to_int`
+/// row (declared `CtChar`) rejects `Char::to_int('A')`, and a `CtChar`-typed
+/// value (e.g. `Char::from_int(65)`) is rejected by every builtin whose
+/// registry row spells the slot `CtInt` (`Stdout::write_char`, ...).
+fn head_fold_char(k: Int) -> Int {
+  if k == 5 {
+    1
+  } else {
+    k
   }
 }
 
@@ -5089,7 +5137,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           match direct_call_return(env, name) {
             Some(ret_ty) => {
               let alen = Array::length(args)
-              let want_head = builtin_first_arg_head(name)
+              let want_head = builtin_param_head(name, 0)
               // Argument-count check (see `builtin_fixed_arity`). `Bytes::new`
               // is special-cased: 0 args = empty growable buffer, 1 arg =
               // length-n zero-filled (MoonBit semantics, linear backend synth).
@@ -5117,7 +5165,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // passes an Int where an Array is required). A non-concrete head
                 // (var / generic / unknown) is tolerated.
                 if ai == 0 && want_head != 0 {
-                  let got_head = head_kind(subst_apply(s2, at))
+                  let got_head = head_fold_char(head_kind(subst_apply(s2, at)))
                   if got_head != 0 && got_head != want_head {
                     Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
                   } else if want_head == 9 && is_stream_named_type(subst_apply(s2, at)) {
@@ -5131,9 +5179,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 } else if ai >= 1 {
                   // Non-receiver argument head check for fixed-signature builtins
                   // (`String::concat("a", 1)`, `String::substring(s, "x", 2)`).
-                  let want_rest = builtin_arg_head_rest(name, ai)
+                  let want_rest = builtin_param_head(name, ai)
                   if want_rest != 0 {
-                    let got_head = head_kind(subst_apply(s2, at))
+                    let got_head = head_fold_char(head_kind(subst_apply(s2, at)))
                     if got_head != 0 && got_head != want_rest {
                       Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(ai), "): ")))), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
                     } else {
