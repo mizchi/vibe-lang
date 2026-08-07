@@ -269,7 +269,7 @@ Array::fold(xs, 0, _ + _)
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
 
-### `Array` の `==` (#1526)
+### `Array` / `Bytes` の `==` (#1526)
 
 ランタイムの `eq` は型を見ないので、配列の `==` は**コンパイル時に要素型を
 決めて**構造比較へ書き換えられる。要素型が分かる限り構造的:
@@ -288,11 +288,42 @@ fn same(x: Array[Int], y: Array[Int]) -> Bool {
 }
 ```
 
-名前経由が構造比較になるのは**要素がスカラー** (`Int` / `String` / `Bool` /
-`Double` / `Char` / `Bytes` / `Unit`) のときだけ。それ以外は**参照等価に落ちる**
-— 関数の戻り値として受けた配列、空リテラル束縛 (`let xs = []`)、消去された
-型変数 (`fn f[T](x: Array[T])` の `T`)、入れ子の配列、struct/enum 要素。
-リテラルとして書かれていれば入れ子も struct 要素も従来どおり構造比較される
+tuple の中の配列も同じ (ADR-0097: 裸 / tuple 内 / struct 内の 3 文脈は同じ
+答えを返す)。tuple は let 束縛 (束縛時に記録した形で降りる) でも注釈付き
+引数でも構造的:
+
+```vibe
+test "arrays inside tuples compare structurally too" {
+  let t1 = ([1, 2], 0)
+  let t2 = ([1, 2], 0)
+  assert(t1 == t2)
+  assert(((1, [2, 3]), "x") == ((1, [2, 3]), "x"))
+}
+```
+
+`Bytes` は**内容の等価** (アドレスではなくバイト列)。裸でも tuple 要素でも
+`derive(Eq)` の struct field でも同じ:
+
+```vibe
+test "Bytes equality is content equality" {
+  let a = Bytes::new()
+  Bytes::push(a, 65)
+  let b = Bytes::new()
+  Bytes::push(b, 65)
+  assert(a == b)
+}
+```
+
+要素型が取れない配列は**参照等価に落ちる** — 消去された型変数 (`[T: Eq]` の
+`T`)、関数の戻り値として受けた配列 (tuple ごと戻した場合も含む)、空リテラル
+束縛 (`let xs = []`)。戻り値経由の配列を比較したいときは、いま確実なのは
+要素を回すか `derive(Eq)` の struct field に入れる方法。
+名前経由の**裸**配列が構造比較になるのは**要素がスカラー** (`Int` / `String` /
+`Bool` / `Double` / `Char` / `Bytes` / `Unit`) のときだけ。それ以外は**参照等価に
+落ちる** — 関数の戻り値として受けた配列 (tuple ごと戻した場合も含む)、空リテラル
+束縛 (`let xs = []`)、消去された型変数 (`fn f[T](x: Array[T])` の `T`)、
+配列の配列 (`[[1, 2]]` を名前経由で)、要素が struct/enum の裸配列。リテラルとして
+書かれていれば入れ子も struct 要素も従来どおり構造比較される
 (`[[1, 2]] == [[1, 2]]`)。名前経由でも効かせたいときは `derive(Eq)` の
 struct field に入れるのが確実。
 

@@ -1049,6 +1049,13 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       EIdent("String::replace", _) => Some("String"),
       EIdent("String::from_char_code", _) => Some("String"),
       EIdent("__to_string", _) => Some("String"),
+      // Bytes-returning builtins (not in fn_returns): Bytes has no literal
+      // syntax, so `let b = Bytes::new()` is how every Bytes value is born --
+      // recording b -> Bytes is what lets a bare `b1 == b2` dispatch to the
+      // structural `__bytes_equals` (#1526) instead of the identity `eq`.
+      EIdent("Bytes::new", _) => Some("Bytes"),
+      EIdent("Bytes::concat", _) => Some("Bytes"),
+      EIdent("Bytes::slice", _) => Some("Bytes"),
       // Map-returning builtins (not in fn_returns): lets `let m2 = Map::set(m,
       // k, v)` record m2 -> Map so a later `m2[k]` takes the #760(3) Map::get
       // rewrite. (A `map { }` literal is already classified as Map above.)
@@ -2420,11 +2427,33 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
         }
       },
       // #1445: a tuple ANNOTATION (`t: (Int, P)`) deliberately records
-      // NOTHING here. Measured: an annotated tuple parameter already renders
-      // structurally, and it renders NESTED tuples too (`(Int, (Int, P))` ->
-      // `(5, (7, P { x: 6 }))`) -- it goes through a real TypeExpr, so it
-      // beats the flat per-element name list this pass's sentinel can carry.
-      // Recording the sentinel would only divert those to a weaker renderer.
+      // NOTHING here for the RENDER sentinels. Measured: an annotated tuple
+      // parameter already renders structurally, and it renders NESTED tuples
+      // too (`(Int, (Int, P))` -> `(5, (7, P { x: 6 }))`) -- it goes through
+      // a real TypeExpr, so it beats the flat per-element name list this
+      // pass's sentinel can carry. Recording those would only divert renders
+      // to a weaker path.
+      //
+      // #1526 (ADR-0097): the `==` dispatch is a different consumer with no
+      // such better path -- a tuple PARAMETER compared with `==` fell to the
+      // codegen's FLAT depth-1 walk (no literal in scope), whose Array
+      // elements identity-compare. Record the annotation's shape under the
+      // eq-only `__eqshape$` sentinel; interp_expand never reads it, so the
+      // measured render behavior above is untouched.
+      // A shape naming one of the fn's own TYPE PARAMETERS is not seeded: it
+      // would key a monomorphic `__arr_equals__<tyvar>` helper on the
+      // parameter's NAME (the Codex P1 class on the bare-`==` path), and the
+      // erased comparison it would compile to is the status quo anyway.
+      Some(TyTuple(tts)) => if ty_mentions_name_in(TyTuple(tts), tparams) {
+        ()
+      } else {
+        let esh = ty_to_eq_shape(TyTuple(tts))
+        if String::length(esh) > 0 {
+          Array::push(out, (eq_shape_key(pname), esh))
+        } else {
+          ()
+        }
+      },
       _ => ()
     }
     i = i + 1
@@ -4728,52 +4757,85 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
                     ], -1)
                   }
                 },
-                None => {
-                  let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
-                    Some(t) => Some(t),
-                    None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
-                  }
-                  match ty {
-                    Some(t) => if struct_set_has(struct_sets, t) {
-                      let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
-                        rl,
-                        rr
-                      ], -1)
-                      if op == "==" {
-                        call
-                      } else {
-                        ECall(EIdent("not", -1), [
-                          call
-                        ], -1)
-                      }
-                    } else if t == "Option" {
-                      // Bare `==` on Option-typed operands (e.g. `let a = None; a == b`)
-                      // dispatches to a structural match; the runtime would otherwise
-                      // identity-compare the heap-allocated nullary `None`. Payloads
-                      // compare with `==` — correct for scalar payloads (the common
-                      // case); an aggregate-payload bare-Option variable is a #695
-                      // residual (route it through a struct field for full recursion).
-                      let eqm = opt_eq_match(rl, rr)
-                      if op == "==" {
-                        eqm
-                      } else {
-                        ECall(EIdent("not", -1), [
-                          eqm
-                        ], -1)
-                      }
-                    } else if t == "Result" {
-                      let eqm = result_eq_match(rl, rr)
-                      if op == "==" {
-                        eqm
-                      } else {
-                        ECall(EIdent("not", -1), [
-                          eqm
-                        ], -1)
-                      }
+                None => match eq_var_shape_dispatch(l, r, struct_sets, var_types, fn_returns) {
+                  // #1526 (ADR-0097): a NAME whose recorded shape mentions an
+                  // Array/Bytes — the tuple-through-a-name comparison whose
+                  // Array elements the codegen walk identity-compared. Any
+                  // other shape stays on the paths below (see
+                  // eq_operand_shape_ty's trigger condition).
+                  Some(st) => {
+                    let call = eq_for_typed(st, rl, rr, dtd_eq_known_types)
+                    if op == "==" {
+                      call
                     } else {
-                      EBinOp(op, rl, rr)
-                    },
-                    None => EBinOp(op, rl, rr)
+                      ECall(EIdent("not", -1), [
+                        call
+                      ], -1)
+                    }
+                  },
+                  None => {
+                    let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+                      Some(t) => Some(t),
+                      None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+                    }
+                    match ty {
+                      Some(t) => if struct_set_has(struct_sets, t) {
+                        let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+                          rl,
+                          rr
+                        ], -1)
+                        if op == "==" {
+                          call
+                        } else {
+                          ECall(EIdent("not", -1), [
+                            call
+                          ], -1)
+                        }
+                      } else if t == "Option" {
+                        // Bare `==` on Option-typed operands (e.g. `let a = None; a == b`)
+                        // dispatches to a structural match; the runtime would otherwise
+                        // identity-compare the heap-allocated nullary `None`. Payloads
+                        // compare with `==` — correct for scalar payloads (the common
+                        // case); an aggregate-payload bare-Option variable is a #695
+                        // residual (route it through a struct field for full recursion).
+                        let eqm = opt_eq_match(rl, rr)
+                        if op == "==" {
+                          eqm
+                        } else {
+                          ECall(EIdent("not", -1), [
+                            eqm
+                          ], -1)
+                        }
+                      } else if t == "Result" {
+                        let eqm = result_eq_match(rl, rr)
+                        if op == "==" {
+                          eqm
+                        } else {
+                          ECall(EIdent("not", -1), [
+                            eqm
+                          ], -1)
+                        }
+                      } else if t == "Bytes" {
+                        // #1526 (ADR-0097): a Bytes-typed operand (annotation or
+                        // recorded binding) — content equality, same helper the
+                        // typed contexts dispatch to.
+                        bytes_eq_needed_record()
+                        let call = ECall(EIdent(bytes_equals_name(), -1), [
+                          rl,
+                          rr
+                        ], -1)
+                        if op == "==" {
+                          call
+                        } else {
+                          ECall(EIdent("not", -1), [
+                            call
+                          ], -1)
+                        }
+                      } else {
+                        EBinOp(op, rl, rr)
+                      },
+                      None => EBinOp(op, rl, rr)
+                    }
                   }
                 }
               }
@@ -5336,6 +5398,111 @@ fn emit_recorded_arr_equals(stmts: Array[Stmt]) -> Unit {
   }
 }
 
+// ---- #1526 (ADR-0097): structural `Bytes` equality ----
+//
+// `Bytes` has no literal syntax, so a `Bytes` operand ALWAYS reaches `==`
+// through a name/call and the runtime `eq` identity-compared it. Same
+// record-then-emit contract as `__arr_equals__<key>`: the sites that build a
+// call record the need, and the helper is generated after the rewrite. One
+// helper suffices (no element-type key: the element is always a byte).
+let dtd_bytes_eq_needed: Array[String] = empty_str_array()
+
+// #1526: per-expansion uid for `eq_for_typed`'s tuple binders (see the TyTuple
+// arm). Deterministic — a counter over a deterministic walk — so the selfhost
+// fixpoint (stage2 == stage3) is unaffected; reset per run anyway so a
+// program's generated names never depend on what compiled before it.
+let dtd_eq_tuple_uid = [
+  0
+]
+
+fn eq_tuple_uid_reset() -> Unit {
+  Array::set(dtd_eq_tuple_uid, 0, 0)
+}
+
+fn eq_tuple_uid_next() -> Int {
+  let v = Array::get(dtd_eq_tuple_uid, 0)
+  Array::set(dtd_eq_tuple_uid, 0, v + 1)
+  v
+}
+
+fn bytes_equals_name() -> String {
+  "__bytes_equals"
+}
+
+fn bytes_eq_needed_reset() -> Unit {
+  Array::truncate(dtd_bytes_eq_needed, 0)
+}
+
+fn bytes_eq_needed_record() -> Unit {
+  if Array::length(dtd_bytes_eq_needed) == 0 {
+    Array::push(dtd_bytes_eq_needed, "Bytes")
+  } else {
+    ()
+  }
+}
+
+/// `let __bytes_equals = (a: Bytes, b: Bytes) -> Bool { ... }` — length check
+/// plus a byte loop, the `gen_arr_equals_fn` shape minus the element-type
+/// recursion (a byte is an Int). Runs after `emit_recorded_arr_equals`, whose
+/// generated bodies can themselves record this need (`Array[Bytes]` elements);
+/// this body records nothing, so one pass closes the worklist.
+fn emit_recorded_bytes_equals(stmts: Array[Stmt]) -> Unit {
+  if Array::length(dtd_bytes_eq_needed) > 0 && !top_level_fn_exists(stmts, bytes_equals_name()) {
+    let len_a = ECall(EIdent("Bytes::length", -1), Array::slice([
+      EIdent("a", -1)
+    ], 0, 1), -1)
+    let len_b = ECall(EIdent("Bytes::length", -1), Array::slice([
+      EIdent("b", -1)
+    ], 0, 1), -1)
+    let byte_a = ECall(EIdent("Bytes::get", -1), Array::slice([
+      EIdent("a", -1),
+      EIdent("__be_i", -1)
+    ], 0, 2), -1)
+    let byte_b = ECall(EIdent("Bytes::get", -1), Array::slice([
+      EIdent("b", -1),
+      EIdent("__be_i", -1)
+    ], 0, 2), -1)
+    let set_false = EIf(EBinOp("!=", byte_a, byte_b), EAssign("__be_ok", EBool(false), EUnit), EUnit)
+    let incr = EAssign("__be_i", EBinOp("+", EIdent("__be_i", -1), EInt(1)), EUnit)
+    let while_loop = EWhile(EBinOp("<", EIdent("__be_i", -1), ECall(EIdent("Bytes::length", -1), Array::slice([
+      EIdent("a", -1)
+    ], 0, 1), -1)), ESeq(set_false, incr))
+    let body_eq = ELetMut("__be_i", EInt(0), ELetMut("__be_ok", EBool(true), ESeq(while_loop, EIdent("__be_ok", -1)), -1), -1)
+    let body = EIf(EBinOp("!=", len_a, len_b), EBool(false), body_eq)
+    let params = Array::slice([
+      ("a", Some(TyName("Bytes"))),
+      ("b", Some(TyName("Bytes")))
+    ], 0, 2)
+    let no_tp = array_empty()
+    let no_tb = array_empty()
+    Array::push(stmts, SLet(false, false, bytes_equals_name(), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body)))
+  } else {
+    ()
+  }
+}
+
+// ---- #1526 (ADR-0097): the `==` rewrite's declared-type list ----
+//
+// The bare-`==` shape dispatch below (`eq_var_shape_dispatch`) can surface
+// USER type names (a struct/enum element of a let-bound tuple), unlike the
+// #825 literal-only inference whose shapes never carry one — so it cannot
+// pass `eq_for_typed` an empty `known_types` (that would identity-compare a
+// struct element the codegen's own tuple walk compares structurally today).
+// Filled once per `desugar_trait_dicts` run; every declared struct/enum has a
+// generated `::equals` (see desugar_derives), so membership here is exactly
+// "a direct `T::equals` call resolves".
+let dtd_eq_known_types: Array[String] = empty_str_array()
+
+fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dtd_eq_known_types, 0)
+  let names = collect_decl_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(dtd_eq_known_types, Array::get(names, i))
+    i = i + 1
+  }
+}
+
 /// Structural equality match for two Option operands whose element type is NOT
 /// statically known here (bare `==` dispatch on Option-typed variables). Some
 /// payloads compare with `==` (correct for scalars); a None matches a None.
@@ -5409,6 +5576,16 @@ fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String])
       ], 0, 1), -1), ECall(EIdent("Double::to_float", -1), Array::slice([
         rhs
       ], 0, 1), -1))
+    } else if n == "Bytes" {
+      // #1526 (ADR-0097): `Bytes` is byte content, not an address — compare it
+      // structurally wherever a declared type says Bytes (struct/enum fields,
+      // tuple elements, Array[Bytes] elements). `is_scalar_type_name` lists
+      // "Bytes", so this must answer before the scalar fallthrough below.
+      bytes_eq_needed_record()
+      ECall(EIdent(bytes_equals_name(), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
     } else if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
         lhs,
@@ -5468,19 +5645,29 @@ fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String])
       EBinOp("==", lhs, rhs)
     },
     TyTuple(ts) => {
+      // #1526: binder names carry a per-expansion uid. A NESTED tuple used to
+      // rebind the same `__teq_l<j>` names, and the outer elements compared
+      // AFTER the nested one then read the clobbered slots on the linear
+      // backend (its match-binding reuses the local of a shadowed name — the
+      // shadow-clobber bug, filed separately): `((1,[2,3]),"x")` compared its
+      // own inner elements against each other and answered false. Unique names
+      // make the emitted compare independent of shadowing semantics.
+      let uid = eq_tuple_uid_next()
+      let lpfx = String::concat(String::concat("__teq_l", idx_str(uid)), "_")
+      let rpfx = String::concat(String::concat("__teq_r", idx_str(uid)), "_")
       let n = Array::length(ts)
       let lpats = array_empty()
       let rpats = array_empty()
       let mut i = 0
       while i < n {
-        Array::push(lpats, PBind(String::concat("__teq_l", idx_str(i))))
-        Array::push(rpats, PBind(String::concat("__teq_r", idx_str(i))))
+        Array::push(lpats, PBind(String::concat(lpfx, idx_str(i))))
+        Array::push(rpats, PBind(String::concat(rpfx, idx_str(i))))
         i = i + 1
       }
       let mut conj = EBool(true)
       let mut j = n - 1
       while j >= 0 {
-        let cmp = eq_for_typed(Array::get(ts, j), EIdent(String::concat("__teq_l", idx_str(j)), -1), EIdent(String::concat("__teq_r", idx_str(j)), -1), known_types)
+        let cmp = eq_for_typed(Array::get(ts, j), EIdent(String::concat(lpfx, idx_str(j)), -1), EIdent(String::concat(rpfx, idx_str(j)), -1), known_types)
         conj = EBinOp("&&", cmp, conj)
         j = j - 1
       }
@@ -6020,6 +6207,211 @@ fn eq_operand_elem_name(e: Expr, var_types: Array[(String, String)]) -> Option[S
       None => None
     },
     _ => None
+  }
+}
+
+// ---- #1526 (ADR-0097): tuple-through-a-NAME `==`, the Array/Bytes arm ----
+//
+// A let-bound tuple already compares structurally at the CODEGEN level: the
+// `==` there drives a recursive walk over the binding's recorded shape
+// literal (compile_expr.vibe, #672/#724), which is why `(P::{x:1}, 0)` /
+// `(1, 2)` bound to names answer correctly in every backend. That walk's
+// Array leaf is the generic runtime `eq`, though — an identity compare — so
+// exactly the tuples that CONTAIN an Array (or Bytes) answered `false` for
+// equal values while the same tuple written as a literal answered `true`
+// (the #825 static dispatch catches literals before codegen ever sees them).
+//
+// So this dispatch deliberately triggers ONLY when the operand's recorded
+// shape mentions an Array or Bytes anywhere: everything else keeps the
+// codegen walk, whose per-element precision (ctor payloads, tracked
+// aliases) a flattened shape string cannot match. Where it does trigger, the
+// comparison routes through `eq_for_typed` with the declared-type list
+// (`dtd_eq_known_types`), so struct/enum elements still take their
+// `::equals` and only genuinely unknown positions fall to raw `==`.
+
+fn eq_shape_key(pname: String) -> String {
+  String::concat("__eqshape$", pname)
+}
+
+/// Does the type mention any of `names` as a bare TyName (a fn's own type
+/// parameters, for the seeding guard below)?
+fn ty_mentions_name_in(t: TypeExpr, names: Array[String]) -> Bool {
+  match t {
+    TyName(n) => str_array_contains(names, n),
+    TyApp(_, args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if ty_mentions_name_in(Array::get(args, i), names) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ts) {
+        if ty_mentions_name_in(Array::get(ts, i), names) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// A parameter ANNOTATION rendered into the recursive shape grammar
+/// (`shape_key`'s: Name / `(s1,..)` / `[s]` / "" unknown). Only shapes this
+/// pass can compare are produced; anything else collapses to "" (unknown).
+fn ty_to_eq_shape(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyTuple(ts) => if Array::length(ts) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      while i < Array::length(ts) {
+        let sub = ty_to_eq_shape(Array::get(ts, i))
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      String::concat(acc, ")")
+    },
+    TyApp(n, args) => if n == "Array" && Array::length(args) == 1 {
+      String::concat("[", String::concat(ty_to_eq_shape(Array::get(args, 0)), "]"))
+    } else {
+      n
+    },
+    _ => ""
+  }
+}
+
+/// A shape string back into the TypeExpr `eq_for_typed` dispatches on. An
+/// unknown position becomes the `__EqUnknown` marker (raw `==`, the status
+/// quo for that position). A bare "Option"/"Result" head keeps its
+/// structural match with unknown payloads — the same upgrade the bare-`==`
+/// name path applies via `opt_eq_match` — while a bare "Array"/"Tuple"/"Map"
+/// head carries nothing to dispatch on and stays unknown.
+fn shape_to_eq_ty(sh: String) -> TypeExpr {
+  if String::length(sh) == 0 {
+    TyName("__EqUnknown")
+  } else if String::starts_with(sh, "(") {
+    let parts = shape_split(shape_inner(sh))
+    let ts = empty_type_exprs()
+    let mut i = 0
+    while i < Array::length(parts) {
+      Array::push(ts, shape_to_eq_ty(Array::get(parts, i)))
+      i = i + 1
+    }
+    TyTuple(ts)
+  } else if String::starts_with(sh, "[") {
+    TyApp("Array", Array::slice([
+      shape_to_eq_ty(shape_inner(sh))
+    ], 0, 1))
+  } else if sh == "Option" {
+    TyApp("Option", Array::slice([
+      TyName("__EqUnknown")
+    ], 0, 1))
+  } else if sh == "Result" {
+    TyApp("Result", Array::slice([
+      TyName("__EqUnknown"),
+      TyName("__EqUnknown")
+    ], 0, 2))
+  } else if sh == "Array" || sh == "Tuple" || sh == "Map" {
+    TyName("__EqUnknown")
+  } else {
+    TyName(sh)
+  }
+}
+
+/// Does the dispatch type mention an Array or Bytes anywhere? This is the
+/// trigger condition: a composite shape WITHOUT one is already compared
+/// correctly by the codegen walk, and re-routing it here could only lose
+/// precision.
+fn ty_mentions_arr_or_bytes(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Bytes",
+    TyApp(n, args) => if n == "Array" {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if ty_mentions_arr_or_bytes(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ts) {
+        if ty_mentions_arr_or_bytes(Array::get(ts, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// The dispatchable shape type of ONE bare-`==` operand reached through a
+/// NAME, or None. Precedence mirrors interp_expand's: the recorded recursive
+/// shape answers first (a recorded EMPTY means "innermost binding is not
+/// composite" and must not fall through to a stale parameter shape — the
+/// shadowing rule from #1465); a parameter's `__eqshape$` (seed_var_types)
+/// answers next; the older per-element sentinels resolve via `infer_shape`
+/// last.
+fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match e {
+    EIdent(n, _) => {
+      let sh = match lookup_var_type(var_types, shape_key(n)) {
+        Some(s) => s,
+        None => match lookup_var_type(var_types, eq_shape_key(n)) {
+          Some(s) => s,
+          None => infer_shape(e, struct_sets, var_types, fn_returns)
+        }
+      }
+      if shape_is_composite(sh) {
+        let t = shape_to_eq_ty(sh)
+        if ty_mentions_arr_or_bytes(t) {
+          Some(t)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+fn eq_var_shape_dispatch(l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match eq_operand_shape_ty(l, struct_sets, var_types, fn_returns) {
+    Some(t) => Some(t),
+    None => eq_operand_shape_ty(r, struct_sets, var_types, fn_returns)
   }
 }
 
@@ -9415,6 +9807,9 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   derived_renderers_reset()
   // #1526: same reason -- the recorded set must describe THIS run's output.
   arr_eq_needed_reset()
+  bytes_eq_needed_reset()
+  eq_tuple_uid_reset()
+  eq_known_types_reset(stmts)
   desugar_derives(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
@@ -9461,8 +9856,11 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   }
   // #1526: the rewrite above is what emits `__arr_equals__<key>` calls, so it
   // is what decides which helpers exist. Anything `desugar_derives` could not
-  // predict (an operand reached through a name) is generated here.
+  // predict (an operand reached through a name) is generated here. Bytes
+  // second: generating an `__arr_equals__` body can record the Bytes need
+  // (`Array[Bytes]` elements), and `__bytes_equals` records nothing back.
   emit_recorded_arr_equals(stmts)
+  emit_recorded_bytes_equals(stmts)
   // #1374: append the cell only for a program that actually reads or writes it,
   // so a throw-free program's output is unchanged.
   if Array::get(dtd_exn_kind_state, 1) == 1 {

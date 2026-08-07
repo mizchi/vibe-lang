@@ -14,6 +14,8 @@ struct Bag {
   pair: (Int, Bool)
 } derive(Eq)
 
+struct Blob { data: Bytes } derive(Eq)
+
 //# Tests
 
 test "bare array literal: equal compares true" {
@@ -157,6 +159,118 @@ test "Array[T] parameters: equal compares true" {
   assert(not(arrays_same([1, 2], [1, 3])))
 }
 
+// #1526 (ADR-0097) slice 2: the TUPLE context. A tuple reached through a name
+// compared its Array/Bytes elements by identity (the codegen walk's generic-eq
+// leaf) while scalar/struct elements already compared structurally -- so the
+// three contexts (bare / tuple 内 / struct 内) disagreed exactly on
+// Array/Bytes. These pin all three to the same answer.
+
+test "three contexts agree: bare / in-tuple / in-struct array" {
+  let bare_l = [1, 2]
+  let bare_r = [1, 2]
+  let tup_l = ([1, 2], 0)
+  let tup_r = ([1, 2], 0)
+  let st_l = Bag::{ items: [1, 2], maybe: None, xs: [], pair: (0, false) }
+  let st_r = Bag::{ items: [1, 2], maybe: None, xs: [], pair: (0, false) }
+  assert(bare_l == bare_r)
+  assert(tup_l == tup_r)
+  assert(st_l == st_r)
+}
+
+test "let-bound tuple with array element: equal true, differing false" {
+  let a = ([1, 2], 0)
+  let b = ([1, 2], 0)
+  let c = ([1, 9], 0)
+  let d = ([1, 2], 5)
+  assert(a == b)
+  assert(not(a == c))
+  assert(not(a == d))
+  assert(a != c)
+}
+
+test "let-bound NESTED tuple with array element" {
+  let a = ((1, [2, 3]), "x")
+  let b = ((1, [2, 3]), "x")
+  let c = ((1, [2, 9]), "x")
+  assert(a == b)
+  assert(not(a == c))
+}
+
+test "nested tuple LITERALS: elements after the nested tuple still compared" {
+  // Pins the binder-uniqueness fix: the nested expansion used to rebind the
+  // outer `__teq_*` names, so on the linear backend the tail element compared
+  // clobbered slots -- `((1,[2,3]),"x") == ((1,[2,3]),"x")` was false and
+  // `((1,2),3) == ((1,2),9)` was TRUE (silently wrong both ways).
+  assert(((1, [2, 3]), "x") == ((1, [2, 3]), "x"))
+  assert(not(((1, [2, 3]), "x") == ((1, [2, 9]), "x")))
+  assert(not(((1, 2), 3) == ((1, 2), 9)))
+}
+
+test "tuple parameters with array element: structural" {
+  assert(tuples_same((1, [2]), (1, [2])))
+  assert(not(tuples_same((1, [2]), (1, [9]))))
+  assert(not(tuples_same((1, [2]), (5, [2]))))
+}
+
+test "tuple with struct element stays structural alongside an array" {
+  let a = (Inner::{ n: 1 }, [2])
+  let b = (Inner::{ n: 1 }, [2])
+  let c = (Inner::{ n: 9 }, [2])
+  assert(a == b)
+  assert(not(a == c))
+}
+
+// #1526 (ADR-0097): Bytes is content, not an address. Same helper in every
+// context (bare, tuple element, struct field).
+
+test "bare Bytes: equal content true, differing false" {
+  let a = Bytes::new()
+  Bytes::push(a, 65)
+  let b = Bytes::new()
+  Bytes::push(b, 65)
+  let c = Bytes::new()
+  Bytes::push(c, 66)
+  assert(a == b)
+  assert(not(a == c))
+  assert(a != c)
+  assert(not(a != b))
+}
+
+test "bare Bytes: differing length false, empty equal" {
+  let a = Bytes::new()
+  Bytes::push(a, 65)
+  let b = Bytes::new()
+  Bytes::push(b, 65)
+  Bytes::push(b, 66)
+  assert(not(a == b))
+  assert(Bytes::new() == Bytes::new())
+}
+
+test "Bytes in a let-bound tuple" {
+  let x1 = Bytes::new()
+  Bytes::push(x1, 7)
+  let x2 = Bytes::new()
+  Bytes::push(x2, 7)
+  let x3 = Bytes::new()
+  Bytes::push(x3, 8)
+  let a = (x1, 0)
+  let b = (x2, 0)
+  let c = (x3, 0)
+  assert(a == b)
+  assert(not(a == c))
+}
+
+test "Bytes struct field: structural via derive(Eq)" {
+  let x1 = Bytes::new()
+  Bytes::push(x1, 9)
+  let x2 = Bytes::new()
+  Bytes::push(x2, 9)
+  let x3 = Bytes::new()
+  Bytes::push(x3, 10)
+  assert(Blob::{ data: x1 } == Blob::{ data: x2 })
+  assert(not(Blob::{ data: x1 } == Blob::{ data: x3 }))
+}
+
 // Codex P1/P2 on PR #1565. What `array_elem_key` records is a bare HEAD NAME,
 // and #1526 made it load-bearing at `==` sites -- so both a STALE entry and an
 // entry that is not really an element type have to be rejected.
@@ -192,6 +306,13 @@ test "an erased element type falls back to reference equality, not a bad helper"
 /// The `Array[Int]` annotations are what let the comparison inside resolve an
 /// element type at all -- both operands are plain names here.
 fn arrays_same(x: Array[Int], y: Array[Int]) -> Bool {
+  x == y
+}
+
+/// The tuple annotation seeds the eq-only `__eqshape$` sentinel
+/// (seed_var_types) -- without it a tuple parameter fell to the codegen's flat
+/// depth-1 walk, whose Array elements identity-compare.
+fn tuples_same(x: (Int, Array[Int]), y: (Int, Array[Int])) -> Bool {
   x == y
 }
 
