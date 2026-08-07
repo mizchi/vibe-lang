@@ -78,6 +78,26 @@ mean = 26/10 = 2.6 → **repair_convergence = 3.6**
   (`expected 1 elements on the stack for fallthru`) がソース位置なしで出る。
   10 は**成功して間違った出力を出す** (silent miscompile)。→ 全項目 0
 
+## 更新: #1513 を塞いだ (09 が silent → 診断あり)
+
+ラチェットが設計どおりこの改善を検出して FAIL し、採点し直しを要求した。上の r4
+表は**そのラウンドの記録として残す**。現行の値は:
+
+| # | ケース | 診断 | L | A | C | 計 |
+|---|---|---|---|---|---|---|
+| 09 | `Stdout::write_stream()` (0引数) | `line 2:3-23: function arity mismatch for Stdout::write_stream: expected 1 args, got 0` | **1** | **1** | **2** | **4** (was 0) |
+
+`line:col-col` のスパン付きで出るので、06/07 と同じ最良の段。
+
+mean = 30/10 = 3.0 → **repair_convergence = 4.0** (r4 の 3.6 から)。
+`type_soundness` の 3.0 も、silent miscompile が1種類消えたので次ラウンドで
+見直す対象になる (スコアの更新はラウンドの仕事なので `scores/` は触っていない)。
+
+**ケース 10 は silent のまま据え置き** — 直したのは arity であって引数の型では
+ない。`Stdout::write_stream(42)` は今も compile も実行も通り garbage を出す。
+ディレクトリ名 `09_silent_builtin_arity` は当初この2つが同じ穴だった経緯の記録
+なので、名前は変えていない。
+
 ### 09/10 の範囲 (実測) — #1513
 
 `direct_call_return` の fast path (`checker.vibe`、#626 の seed ヒープ制約で
