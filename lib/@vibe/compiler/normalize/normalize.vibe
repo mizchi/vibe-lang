@@ -635,8 +635,14 @@ fn fold_expr(expr: Expr) -> Expr {
 /// (#708) -- same shared-counter-cell technique for uniqueness, same complete
 /// per-Expr-variant walk. Unshadowed bindings (the vast majority) are left with
 /// their original name (so debugging/argument-inspection output is unaffected
-/// outside the rare shadowing case). Pure rewrite; gated at the call site to
-/// keep the non-RC backend byte-identical.
+/// outside the rare shadowing case). Pure rewrite.
+///
+/// Runs in BOTH lanes since the shadow-clobber fix: the bump backend never
+/// restores `local_names` when an inner binding scope closes mid-function (a
+/// match catch-all arm's binders, a block-valued `let`'s inner lets), so its
+/// most-recent-first local resolution read a DEAD shadowing slot's value for
+/// a later same-name reference — silently wrong, no diagnostic. With every
+/// shadowing binding renamed, that stale entry can never capture a live name.
 fn fresh_shadow_name(counter: Array[Int], name: String) -> String {
   let n = Array::get(counter, 0)
   Array::set(counter, 0, n + 1)
