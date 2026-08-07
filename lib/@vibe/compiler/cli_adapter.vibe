@@ -83,7 +83,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
-  check_linked_file, strip_executable_wasm_env
+  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env
 }
 
 import @vibe/lsp {
@@ -899,7 +899,20 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       } else {
         ()
       }
-      Fs::write_file(output_path, "ok\n")
+      // #deprecated marker warnings (#1262 / ADR-0101): non-fatal `warning:`
+      // lines BEFORE the final `ok` marker. The launcher forwards them to
+      // stderr and still reports success; an older launcher only tests the
+      // file for non-emptiness, so extra lines stay backward compatible.
+      let dep_warns = check_deprecated_warnings(input_path)
+      let out_text = StringBuilder::new()
+      let mut wi = 0
+      while wi < Array::length(dep_warns) {
+        StringBuilder::push(out_text, Array::get(dep_warns, wi))
+        StringBuilder::push(out_text, "\n")
+        wi = wi + 1
+      }
+      StringBuilder::push(out_text, "ok\n")
+      Fs::write_file(output_path, StringBuilder::freeze(out_text))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)

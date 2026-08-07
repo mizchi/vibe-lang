@@ -1229,6 +1229,30 @@ let run_mode = () -> Int { run() }
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
 - Not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
 
+## Deprecation marker (`#deprecated`)
+
+Mark a top-level declaration deprecated; `vibe check` then reports every use
+of that name as a **non-fatal `warning:` line on stderr** (the check still
+passes, exit 0). This is the migration tool behind the ADR-0100/0101 renames
+(deprecated aliases keep old spellings compiling while warning).
+
+```vibe
+#deprecated("use fresh_thing")
+fn stale_thing(x: Int) -> Int {
+  x + 1
+}
+
+fn caller(n: Int) -> Int {
+  stale_thing(n)   // vibe check: warning: 'stale_thing' is deprecated: use fresh_thing
+}
+```
+
+- Bare `#deprecated` or `#deprecated("message")` — the message rides along in the warning.
+- Works on `fn` (including `fn Ns::method` forms), `let` / `let mut` / `let rec`, `enum`, `struct`, `type`, `effect`; a leading `export` is fine.
+- Markers are collected from the checked file AND its linked dependency files; uses are reported for the checked file only.
+- Detection is token-level (no name resolution): uses in any position warn — calls, type annotations, and the `import { ... }` list itself. An `import ... as` alias hides later uses (the aliasing import line still warns).
+- Like `#cfg`, not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
+
 ## Inline wasm (`= wasm "..."`, linear backend only)
 
 A top-level `fn` may have a raw WAT (S-expression) body instead of a vibe body
