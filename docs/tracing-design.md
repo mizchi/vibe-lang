@@ -360,18 +360,70 @@ evidence vector) を持つ。
 実装は revert した。span を張った diff 自体は小さく機械的なので、
 (a) が動いたときにそのまま再適用できる。
 
+## 5.6 段0 着地 — 実際のビルドで測った
+
+`scripts/trace_lib.sh` (sourceable) / `scripts/trace_span.sh` (コマンドラッパ) /
+`scripts/trace_report.mjs` (木とクリティカルパスの描画) /
+`scripts/test_trace_spans.sh` (回帰ロック)。`generations.sh` の
+`run_generation_compile` に配線したので、bootstrap の各ステージが span になる。
+**コンパイラは1行も変えていない。**
+
+```bash
+VIBE_TRACE_OUT=/tmp/build.ndjson bash scripts/trace_span.sh "selfhost build" \
+  bash scripts/generations.sh build --out-dir /tmp/gen --stage3
+node scripts/trace_report.mjs /tmp/build.ndjson
+```
+
+実行結果 (このマシン、`--stage3`):
+
+```
+trace 3406b42c66e0697373c6f021fc0b45c3  (4 spans)
+     wall       self  name
+ 195977.0   94536.1  selfhost build
+  32594.7   32594.7    stage0(seed) -> stage1
+  35864.5   35864.5    stage1 -> stage2
+  32981.7   32981.7    stage2 -> stage3
+
+critical path:
+  selfhost build (195977ms) -> stage2 -> stage3 (32982ms)
+```
+
+**196秒のビルドのうち 94.5秒 (48%) が、3つのステージコンパイルのどれにも
+入っていない。** self 時間の列がそれを直接示している。中身は flat source の
+準備・bundle 生成・検証で、これまで誰も測っていなかった — ステージの
+コンパイル時間だけを見ていると存在自体が見えない。
+
+これが段0 だけで出た。次に span を刻むべき場所は、この 94.5 秒の中である。
+
+### 段0 の設計上の判断
+
+- **無効時は string test 1回と `exec` だけ。** `VIBE_TRACE_OUT` 未設定で
+  完全に no-op なので、内側のループに置いたままにできる。
+- **1 span = 1行を終了時に1回だけ append。** begin/end の2行に分けない。
+  並列 fan-out で複数プロセスが同じファイルに書くので、O_APPEND への短い
+  単一 write に収めて行が裂けないようにしている。`trace_report.mjs` は
+  それでも裂けた行を数えて報告する (黙って落とすと、木が完全であるかのように
+  見えてしまう)。
+- **不正な `VIBE_TRACEPARENT` は「無い」として扱い、新しい trace を始める。**
+  伝播すると全 span が誤った trace の下にぶら下がり、分割されるより悪い。
+- **`trace_begin` は値を echo せず変数に代入する。** `tok=$(trace_begin ...)`
+  だと `export VIBE_TRACEPARENT` がサブシェルで起きて子に届かず、木が
+  平らになる。回帰テストの3番目がこれをロックしている。
+- **rc も記録する。** 失敗した span を落とすと、赤いビルドが短いビルドに見える。
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |
 |---|---|---|
-| 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 (`run_wasm_vibe_host_runner.sh` / `unit_test_runner.sh` / `generations.sh`) | **不要** |
+| 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 | **着地済み (§5.6)**。`generations.sh` に配線。`unit_test_runner.sh` / doctest fan-out は次 |
 | 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える | **§5.5 で試して拒否された。handle 適格性の拡張が先** |
 | 2 | `vibe bench` が bench ブロックごとに span 内訳を出す | 要 (runner) |
 | 3 | `span {}` スコープ構文 (§2.2 の脱糖。`throw` → `perform Exception::Throw` と同じ層) | 要 (parser/desugar のみ) |
 | 4 | OTLP エクスポータ | 不要 |
 
-段0 はコンパイラに一切触らずに CI の多プロセス像を出せるので、**§5.5 で
-段1 が止まった今、実際に着手できるのは段0 である。**
+段0 は §5.6 で着地した。残る fan-out (`unit_test_runner.sh`、doctest) を
+同じ `trace_span.sh` で包めば CI バッテリ全体が1本のトレースになる — これも
+コンパイラ変更は要らない。段1 は §5.5 の適格性が解けるまで止まっている。
 
 ## 7. この設計が引き受けていないこと
 
