@@ -271,3 +271,42 @@ r6 が直接比較できなくなる。
 足す場合は r6 の仕事として、**10ケース版と11ケース版の両方を報告する**こと。
 コーパスの「追加は可」規則はそのままだが、追加したラウンドは推移が
 二重になる、という運用上の注記。
+
+## 更新: #1514 の A カテゴリ残り (08 — handle 適格性に位置が付いた)
+
+前節の「(a) 位置を付ける (L)」側を塞いだ。EHandle を widening せずに済む形が
+あった: **live handle の body の最初の offset 保持ノード**を指す。body は
+ユーザーコードで、offset は pipeline を通って生き残っている — EHandle 自体が
+offset を持たない事実は「その中身の offset を使う」ことを妨げていなかった。
+
+- `edp_live_handle_offset` (inline_direct_perform.vibe): step-3 の拒否が
+  名指しする effect の最初の live handle site を
+  `edp_collect_handle_sites_expr` (migration planner と同じ matcher) で
+  見つけ、body の first offset を返す。catch-all 等で見つからなければ -1 →
+  マーカーなし → 文言は従来と byte-identical
+- エラー文の末尾に ` [@off=N]` (checker の off_marker と同じ側チャネル) を
+  付け、compile 境界で解決する。**FS-compile lane にも解決を足した**
+  (`emit_compile_diag_located_entry_fs`): entry が依存ゼロ (= closure が
+  その1ファイル) のときだけ entry の ingested text に対して解決し、
+  多ファイルでは解決しない。未解決マーカーは `emit_compile_diag` の
+  チョークポイントで strip するので、**どの境界からも生のマーカーは
+  漏れない** (間違った行を指すくらいなら位置なしに落とす)
+
+実測 (broken.vibe, stage2 b09f159a9e56):
+
+```
+line 9:20: handle of effect 'Ask' cannot be compiled here. ...
+```
+
+`9:20` は handled body の先頭 = このケースでは**不適格な `bump(...)` 呼び出し
+そのもの**。ただしこれは「body の先頭が偶然 culprit」であって、呼び出しが
+複数ある body で culprit が2番目以降なら先頭を指す — 「どの呼び出しか」を
+**名指し**する前節の (b) は依然として別スライス (#1511 の check 段検出と
+同じ機構に載せるのが正しい置き場所)。
+
+| # | L | A | C | 計 |
+|---|---|---|---|---|
+| 08 | **1** | 1 | 1 | **3** (was 2) |
+
+mean = 39/10 = 3.9 → **repair_convergence = 4.9**。残る減点は 08 の C=1
+(culprit callee の名指し) の1点だけ。

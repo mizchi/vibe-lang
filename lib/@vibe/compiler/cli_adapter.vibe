@@ -332,12 +332,36 @@ fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: Strin
   }
 }
 
+/// #1514: remove every unresolved ` [@off=..]` marker from a diagnostic.
+/// The marker is an internal side channel between a throw site and
+/// emit_compile_diag_located / locate_type_error; a boundary that cannot
+/// resolve one (no source basis in scope -- the FS-compile lane's codegen
+/// errors, for one) must strip it rather than leak pass-internal syntax to
+/// the user. Resolved messages never contain the marker, so this is a
+/// no-op on every path that already located.
+fn strip_off_markers(msg: String) -> String {
+  let mut out = msg
+  let mut idx = String::index_of(out, " [@off=")
+  while idx >= 0 {
+    let close = String::index_of(String::substring(out, idx, String::length(out)), "]")
+    if close < 0 {
+      idx = -1
+    } else {
+      out = String::concat(String::substring(out, 0, idx), String::substring(out, idx + close + 1, String::length(out)))
+      idx = String::index_of(out, " [@off=")
+    }
+  }
+  out
+}
+
 /// On a parse/type/codegen error the checker throws a formatted diagnostic
 /// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
 /// the `vibe` launcher can print a real message instead of an opaque wasm trap.
 /// Returns a non-zero exit code. (#594 usability / docs/release-roadmap.md.)
+/// Single choke point for the sidecar write, so unresolved offset markers
+/// are stripped here exactly once (see strip_off_markers above).
 fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
-  Fs::write_file(String::concat(output_path, ".diag"), msg)
+  Fs::write_file(String::concat(output_path, ".diag"), strip_off_markers(msg))
   1
 }
 
@@ -360,6 +384,37 @@ fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
 fn emit_compile_diag_located(output_path: String, msg: String, source: String) -> Int with Fs {
   if String::contains(msg, " [@off=") {
     emit_compile_diag(output_path, locate_type_error(source, msg))
+  } else {
+    emit_compile_diag(output_path, msg)
+  }
+}
+
+/// #1514 (repair case 08): the FS-compile lane's counterpart. This lane has
+/// no single source basis -- module offsets are per-file -- so a marker is
+/// resolved against the (ingested) ENTRY text only when the entry declares
+/// no dependencies, i.e. the compile closure IS that one file and every
+/// offset unambiguously indexes into it. Anything else falls through to
+/// emit_compile_diag, whose strip keeps the marker from leaking. Resolution
+/// failures (unreadable entry, header parse error) fall through the same
+/// way: a missing position is fine, a WRONG position is not.
+fn emit_compile_diag_located_entry_fs(output_path: String, msg: String, input_path: String) -> Int with Fs {
+  if String::contains(msg, " [@off=") {
+    let located = handle {
+      let ingested = ingest_source_text_fs(input_path, Fs::read_file(input_path))
+      let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(input_path, ingested, 0)
+      if Array::length(deps) == 0 {
+        locate_type_error(ingested, msg)
+      } else {
+        ""
+      }
+    } with Exception {
+      Throw(_) => ""
+    }
+    if String::length(located) > 0 {
+      emit_compile_diag(output_path, located)
+    } else {
+      emit_compile_diag(output_path, msg)
+    }
   } else {
     emit_compile_diag(output_path, msg)
   }
@@ -1010,7 +1065,9 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       }
       0
     } with Exception {
-      Throw(msg) => emit_compile_diag(output_path, msg)
+      // #1514: codegen diagnostics can carry an offset marker; resolve it
+      // when the entry is the whole closure, strip it otherwise.
+      Throw(msg) => emit_compile_diag_located_entry_fs(output_path, msg, input_path)
     }
   }
   // #594 `vibe normalize`: canonicalize a source file (module flatten + DCE +

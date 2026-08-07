@@ -1127,12 +1127,17 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   if Array::length(errs) == 0 {
     let bad = edp_first_live_replay_handle(stmts, keep)
     if String::length(bad) > 0 {
+      // #1514 (repair case 08): blame a real position. The marker resolves
+      // to `line:col` inside the offending handle's body at the compile
+      // boundary (emit_compile_diag_located); a boundary that cannot
+      // resolve it strips it instead, so the message never regresses.
+      let bad_marker = edp_off_marker(edp_live_handle_offset(stmts, keep, bad))
       // #1347: when the cause is a higher-order operation (an effect whose
       // operation takes a block carrying this row), say so -- the generic
       // advice below is unactionable for that shape.
       let ho = edp_higher_order_block_owner(effect_defs, bad)
       if String::length(ho) > 0 {
-        Array::push(errs, edp_higher_order_error_msg(bad, ho))
+        Array::push(errs, String::concat(edp_higher_order_error_msg(bad, ho), bad_marker))
       } else {
         // #1511: the actionable sentence comes FIRST. The previous wording led
         // with `not eligible for evidence-passing migration (ADR-0076)` and
@@ -1141,7 +1146,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         // reader had to get past two clauses of it to reach the only advice
         // that acts on their program. The ADR reference is kept, at the end,
         // for the reader who does want the design record.
-        Array::push(errs, String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)"))
+        Array::push(errs, String::concat(String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)"), bad_marker))
       }
     } else {
       ()
@@ -2326,6 +2331,112 @@ fn edp_first_live_replay_handle(stmts: Array[Stmt], keep: Array[Bool]) -> String
     i = i + 1
   }
   found
+}
+
+/// #1514 (repair case 08): first source char-offset reachable inside `e`.
+/// A local mirror of common_extractors' first_offset, duplicated the same
+/// way checker_stmt's top_stmt_expr_off is -- to keep common_base's import
+/// set closed over core (and clear of the import/local-name resolution
+/// hazards a new cross-package edge invites). Only offset-carrying node
+/// kinds matter; everything else descends toward source order or gives up
+/// with -1.
+fn edp_first_body_offset(e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 {
+      off
+    } else {
+      edp_first_body_offset(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      edp_first_body_offset(base)
+    },
+    EBinOp(_, lhs, _) => edp_first_body_offset(lhs),
+    EUnaryOp(_, inner) => edp_first_body_offset(inner),
+    ELet(_, val, _, _) => edp_first_body_offset(val),
+    ELetRec(_, val, _) => edp_first_body_offset(val),
+    ELetMut(_, val, _, _) => edp_first_body_offset(val),
+    EAssign(_, val, _) => edp_first_body_offset(val),
+    EAssignOp(_, _, val, _) => edp_first_body_offset(val),
+    ESeq(first, _) => edp_first_body_offset(first),
+    EIf(cond, _, _) => edp_first_body_offset(cond),
+    EMatch(scrut, _) => edp_first_body_offset(scrut),
+    EReturn(inner) => edp_first_body_offset(inner),
+    _ => -1
+  }
+}
+
+/// #1514 (repair case 08): the source offset to blame for a live replay
+/// handle of effect `ename` -- the first offset-carrying node inside the
+/// first such handle's BODY. EHandle itself carries no offset (widening it
+/// means touching every construction/match site, the reason this stayed
+/// open), but its body is user code and keeps its offsets through the
+/// pipeline, so the located line lands inside the offending `handle { .. }`
+/// block. -1 when nothing matches (e.g. a catch-all handle, whose desc is
+/// not an effect name) -- the caller then simply omits the marker and the
+/// message stays byte-identical to the unlocated form.
+///
+/// The stmt filter mirrors edp_first_live_replay_handle above (same
+/// dead-fn exemption) so the offset describes the same handle the error
+/// names; the per-effect site scan is edp_collect_handle_sites_expr, the
+/// exact matcher the migration planner itself uses.
+fn edp_live_handle_offset(stmts: Array[Stmt], keep: Array[Bool], ename: String) -> Int {
+  let mut i = 0
+  let mut off = -1
+  while i < Array::length(stmts) && off < 0 {
+    let sval_opt = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => {
+        let dead_fn = match expr {
+          EFn(_, _, _, _, _, _) => if i < Array::length(keep) {
+            !Array::get(keep, i)
+          } else {
+            false
+          },
+          _ => false
+        }
+        if dead_fn {
+          None
+        } else {
+          Some(expr)
+        }
+      },
+      SLetMut(_, _, expr) => Some(expr),
+      SExpr(expr) => Some(expr),
+      STest(_, expr) => Some(expr),
+      SBench(_, expr) => Some(expr),
+      _ => None
+    }
+    match sval_opt {
+      Some(sval) => {
+        let sites = array_empty()
+        edp_collect_handle_sites_expr(sval, ename, sites)
+        if Array::length(sites) > 0 {
+          let (body, _) = Array::get(sites, 0)
+          off = edp_first_body_offset(body)
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  off
+}
+
+/// ` [@off=N]` -- the checker's strippable diagnostic-offset side channel
+/// (checker.vibe off_marker), reproduced here because this codegen-side
+/// rejection is located by the same emit_compile_diag_located resolver.
+/// String::concat only (the NUL-miscodegen hazard for `+`/interpolation
+/// noted on the checker's own copy).
+fn edp_off_marker(off: Int) -> String {
+  if off > 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  }
 }
 
 fn edp_nonerror_handle_desc_expr(expr: Expr) -> String {
