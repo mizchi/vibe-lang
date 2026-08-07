@@ -1245,8 +1245,11 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 ### `handle` は型検査を通っても**コンパイルできない**ことがある
 
-`vibe check` は codegen まで行かないので、この失敗は**型検査では見えない**。
-`vibe build` / `vibe test` / doctest まで行って初めて出る:
+適格性は型システムの一部ではないので、この失敗は**型検査そのものでは見えない**。
+ただし **`vibe check` は #1511(b)/#1536(c) 以降、型検査の後に codegen と同じ
+効き方の適格性判定 (ADR-0076 の effect-lowering prelude) を走らせる**ため、
+`vibe check` / `vibe build` / `vibe test` / doctest のどれでも同じエラーが出る
+(`vibe diagnostics` は単一ファイル解析なので対象外):
 
 ```
 handle of effect 'Ask' cannot be compiled here. Every perform this handle

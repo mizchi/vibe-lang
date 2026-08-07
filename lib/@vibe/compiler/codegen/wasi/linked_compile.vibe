@@ -2877,102 +2877,124 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   }
 }
 
-export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
+/// #1536(c) / #1511(b): the ADR-0076 effect-lowering pass prefix of
+/// compile_wasi_module_linked_impl, split out so `vibe check` can run the
+/// EXACT eligibility judgement codegen applies (suspend CPS split +
+/// evidence-passing migration) without producing wasm — sharing the code is
+/// what guarantees check and codegen can never disagree on what is eligible.
+/// Returns the errors instead of throwing; an empty result means every pass
+/// accepted the program and `stmts` now holds the lowered form the rest of
+/// codegen consumes. All of these passes REWRITE `stmts` in place — a
+/// check-lane caller must pass a merged AST it is about to discard.
+/// `iw_names`/`iw_wats` receive the extracted inline-wasm texts (the compile
+/// path emits them later; check discards them).
+export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String]) -> Array[String] with Exception {
+  let errs = lc_fresh_string_array()
   // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.
   let za_msg = zero_alloc_check(stmts)
   if za_msg != "" {
-    throw(za_msg)
+    Array::push(errs, za_msg)
   } else {
-    ()
+    // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
+    // convergence point — runs here on the fully merged program before generic
+    // type params are stripped (just below). No-op unless a method-bearing trait
+    // is declared, and idempotent if an earlier pipeline stage already desugared.
+    desugar_trait_dicts(stmts)
+    // #1262: split eligible tuple-literal `let mut`s (what every `loop (s = ..)`
+    // lowers to) into scalar `let mut`s -- no per-iteration tuple box. Runs on
+    // both linear entries (compile_module has the same call); gc/interp lanes
+    // keep the boxed form, and the rewrite is semantics-preserving so the
+    // cross-lane differential gates still agree.
+    unbox_tuple_loop_params(stmts)
+    // Top-level `let f = g` function aliases: retarget references to the final
+    // EFn def so calls do not route through the 0-param thunk registration
+    // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
+    rewrite_top_level_fn_alias_refs(stmts)
+    // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
+    // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
+    lc_extract_inline_wasm(stmts, iw_names, iw_wats)
+    // #tco: rewrite a top-level function's self-tail-recursive calls into the
+    // same ELetMut/EWhile/EBreak/EContinue shape `loop (...) { continue(...) }`
+    // already lowers to (see self_tail_call.vibe) -- zero wasm call-stack
+    // growth per recursive step instead of an unbounded `call`. No-op unless a
+    // function is directly self-tail-recursive; runs before the borrow/scalar-
+    // return analyses below so they see the rewritten (loop-shaped) body.
+    // #1230 (docs/spec/wasi-p3-async.md M1b-3c): expand `await(f)` into the
+    // suspend-and-retry loop a PENDING future needs. Runs right after
+    // desugar_trait_dicts (which is what produces the `await(..)` call of an
+    // async-iterator `for` loop) and BEFORE every effect pass below, so the
+    // `perform Async::Suspend(1)` it synthesizes is seen by them exactly like a
+    // hand-written one -- lowering `await` inside compile_call, where it used to
+    // live, is past the point where a perform can still be handled.
+    // waiter_hooks (ADR-0089 #1218): when @vibex/concurrent's direct-wake
+    // hooks are callable (linked imports or local defs), poll rounds route
+    // through __aw_wait so a Future::resolve can wake the awaiter directly.
+    await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, linked_imports))
+    rewrite_self_tail_calls(stmts)
+    // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
+    // lc_wrap_entry_error_boundary's doc comment. Runs BEFORE the effect
+    // passes below so the synthesized handle is visible to them like any
+    // hand-written one, and before collect_used_builtin_names so the
+    // diagnostic's Stderr host import is collected.
+    lc_wrap_entry_error_boundary(stmts, entry_name)
+    let async_sleep_boundary_err = lc_inject_async_sleep_boundary(stmts, entry_name)
+    if async_sleep_boundary_err != "" {
+      Array::push(errs, async_sleep_boundary_err)
+    } else {
+      // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
+      // reachable-only-via-tail-resumptive-handler-arms directly into their
+      // handler arm body (single-shot fast path). Conservative: bails out
+      // per-handle whenever the handled body contains anything (nested
+      // `handle`, closures, or calls to named functions) that could hide a
+      // perform outside this direct scan, leaving those to evidence_dict_pass
+      // below (which, since 追記34 V2 removed the replay engine, hard-errors on
+      // any live non-Error handle it cannot migrate).
+      // ADR-0076 Phase 3a (#817, docs/effect-evidence-passing.md 追記27):
+      // depth-0 suspend CPS for handle sites whose arms capture `resume` as a
+      // first-class value (the suspend class -- ADR-0068's Async::suspend
+      // shape). Runs BEFORE the Phase 2 / evidence passes below so they only
+      // ever see the sites this pass left alone (a transformed site has no
+      // EHandle left at all). A triggered-but-ineligible site is a hard
+      // compile error -- a value-referencing arm cannot compile on the replay
+      // path, so silent fallback is not an option.
+      let scps_errs = suspend_cps_pass(stmts)
+      if Array::length(scps_errs) > 0 {
+        Array::push(errs, Array::get(scps_errs, 0))
+      } else {
+        inline_direct_performs(stmts)
+        // ADR-0076 (#817) Phase 3, first slice: evidence-dict threading for the
+        // narrow case Phase 2 above cannot reach on its own -- a handle body that
+        // calls a named top-level function which itself performs the handled
+        // effect (docs/effect-evidence-passing.md "追記 2", evidence_dict_pass's
+        // own doc comment in common_base/inline_direct_perform.vibe -- appended to
+        // that existing cross-file-registered file rather than a new one, to
+        // avoid the bootstrap flatten gotcha documented in docs/effectset.md).
+        // Runs after Phase 2 so it only sees the handles Phase 2 did
+        // not already fully inline; whole-program-conservative and strictly
+        // additive (per-effect all-or-nothing), so it never touches a handle or
+        // function Phase 2 already resolved or that this pass cannot prove safe.
+        let edp_errs = evidence_dict_pass(stmts, entry_name)
+        if Array::length(edp_errs) > 0 {
+          Array::push(errs, Array::get(edp_errs, 0))
+        } else {
+          ()
+        }
+      }
+    }
   }
-  // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
-  // convergence point — runs here on the fully merged program before generic
-  // type params are stripped (just below). No-op unless a method-bearing trait
-  // is declared, and idempotent if an earlier pipeline stage already desugared.
-  desugar_trait_dicts(stmts)
-  // #1262: split eligible tuple-literal `let mut`s (what every `loop (s = ..)`
-  // lowers to) into scalar `let mut`s -- no per-iteration tuple box. Runs on
-  // both linear entries (compile_module has the same call); gc/interp lanes
-  // keep the boxed form, and the rewrite is semantics-preserving so the
-  // cross-lane differential gates still agree.
-  unbox_tuple_loop_params(stmts)
-  // Top-level `let f = g` function aliases: retarget references to the final
-  // EFn def so calls do not route through the 0-param thunk registration
-  // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
-  rewrite_top_level_fn_alias_refs(stmts)
-  // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
-  // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
+  errs
+}
+
+export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
+  // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
+  // effect_lowering_prelude (shared verbatim with `vibe check`); a first
+  // error there is exactly the throw each pass used to raise inline here.
   let iw_names = lc_fresh_string_array()
   let iw_wats = lc_fresh_string_array()
-  lc_extract_inline_wasm(stmts, iw_names, iw_wats)
-  // #tco: rewrite a top-level function's self-tail-recursive calls into the
-  // same ELetMut/EWhile/EBreak/EContinue shape `loop (...) { continue(...) }`
-  // already lowers to (see self_tail_call.vibe) -- zero wasm call-stack
-  // growth per recursive step instead of an unbounded `call`. No-op unless a
-  // function is directly self-tail-recursive; runs before the borrow/scalar-
-  // return analyses below so they see the rewritten (loop-shaped) body.
-  // #1230 (docs/spec/wasi-p3-async.md M1b-3c): expand `await(f)` into the
-  // suspend-and-retry loop a PENDING future needs. Runs right after
-  // desugar_trait_dicts (which is what produces the `await(..)` call of an
-  // async-iterator `for` loop) and BEFORE every effect pass below, so the
-  // `perform Async::Suspend(1)` it synthesizes is seen by them exactly like a
-  // hand-written one -- lowering `await` inside compile_call, where it used to
-  // live, is past the point where a perform can still be handled.
-  // waiter_hooks (ADR-0089 #1218): when @vibex/concurrent's direct-wake
-  // hooks are callable (linked imports or local defs), poll rounds route
-  // through __aw_wait so a Future::resolve can wake the awaiter directly.
-  await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, linked_imports))
-  rewrite_self_tail_calls(stmts)
-  // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
-  // lc_wrap_entry_error_boundary's doc comment. Runs BEFORE the effect
-  // passes below so the synthesized handle is visible to them like any
-  // hand-written one, and before collect_used_builtin_names so the
-  // diagnostic's Stderr host import is collected.
-  lc_wrap_entry_error_boundary(stmts, entry_name)
-  let async_sleep_boundary_err = lc_inject_async_sleep_boundary(stmts, entry_name)
-  if async_sleep_boundary_err != "" {
-    throw(async_sleep_boundary_err)
-  } else {
-    ()
-  }
-  // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
-  // reachable-only-via-tail-resumptive-handler-arms directly into their
-  // handler arm body (single-shot fast path). Conservative: bails out
-  // per-handle whenever the handled body contains anything (nested
-  // `handle`, closures, or calls to named functions) that could hide a
-  // perform outside this direct scan, leaving those to evidence_dict_pass
-  // below (which, since 追記34 V2 removed the replay engine, hard-errors on
-  // any live non-Error handle it cannot migrate).
-  // ADR-0076 Phase 3a (#817, docs/effect-evidence-passing.md 追記27):
-  // depth-0 suspend CPS for handle sites whose arms capture `resume` as a
-  // first-class value (the suspend class -- ADR-0068's Async::suspend
-  // shape). Runs BEFORE the Phase 2 / evidence passes below so they only
-  // ever see the sites this pass left alone (a transformed site has no
-  // EHandle left at all). A triggered-but-ineligible site is a hard
-  // compile error -- a value-referencing arm cannot compile on the replay
-  // path, so silent fallback is not an option.
-  let scps_errs = suspend_cps_pass(stmts)
-  if Array::length(scps_errs) > 0 {
-    throw(Array::get(scps_errs, 0))
-  } else {
-    ()
-  }
-  inline_direct_performs(stmts)
-  // ADR-0076 (#817) Phase 3, first slice: evidence-dict threading for the
-  // narrow case Phase 2 above cannot reach on its own -- a handle body that
-  // calls a named top-level function which itself performs the handled
-  // effect (docs/effect-evidence-passing.md "追記 2", evidence_dict_pass's
-  // own doc comment in common_base/inline_direct_perform.vibe -- appended to
-  // that existing cross-file-registered file rather than a new one, to
-  // avoid the bootstrap flatten gotcha documented in docs/effectset.md).
-  // Runs after Phase 2 so it only sees the handles Phase 2 did
-  // not already fully inline; whole-program-conservative and strictly
-  // additive (per-effect all-or-nothing), so it never touches a handle or
-  // function Phase 2 already resolved or that this pass cannot prove safe.
-  let edp_errs = evidence_dict_pass(stmts, entry_name)
-  if Array::length(edp_errs) > 0 {
-    throw(Array::get(edp_errs, 0))
+  let prelude_errs = effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats)
+  if Array::length(prelude_errs) > 0 {
+    throw(Array::get(prelude_errs, 0))
   } else {
     ()
   }
