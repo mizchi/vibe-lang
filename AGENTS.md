@@ -262,8 +262,12 @@ vibe escapes file.vibe
 > のあるファイルは、正しくても `unknown name: T::Crimson` を返す。空出力が意味
 > するのは「**単体ファイルとして** clean」であって「コンパイルが通る」ではない。
 > **import があるファイルの可否は `vibe check`** で見る (diagnostics はエディタの
-> バッファ単位フィードバック用で、そこでは正しい道具)。逆向きの穴 — export されて
-> いない名前の import — は**両方とも見逃し**、codegen まで落ちない (#1521)。
+> バッファ単位フィードバック用で、そこでは正しい道具)。逆向き — export されて
+> いない名前の import — は `vibe check` が検査時に報告する (#1521/#1533。
+> 依存が publish する環境は export surface に制限されるので、private も
+> 単なる import 素通しも「is not exported by」になる)。`vibe diagnostics` は
+> 単一ファイル解析なのでこちらは今も見えない。大文字名 (struct / type alias)
+> だけは値環境が判定できず、未検出のまま (#1521 の残り半分)。
 
 ### `vibe lsp` - Language Server
 
