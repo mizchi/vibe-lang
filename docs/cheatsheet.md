@@ -206,6 +206,30 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
+### optional 引数 `z?` (#1500)
+
+`z?` は**省略できる**引数。宣言した型が `T` でも、body で受け取るのは
+`Option[T]`（省略された場合に何かを渡す必要があるため）。呼び出し側は
+素の値を書けばよく、`Some(..)` は desugar が付ける。
+
+```vibe
+fn greet(name: String, times?: Int) -> String {
+  let n = match times {
+    Some(v) => v,
+    None => 1
+  }
+  "\{name} x\{n}"
+}
+
+let a = greet("hi")        // => "hi x1"
+let b = greet("hi", 3)     // => "hi x3"
+```
+
+- 省略できるのは**末尾の** optional 引数だけ。必須引数を落とすのは従来どおり
+  arity エラー
+- 関数型でも `(String, times?: Int) -> String` と書ける (この位置は
+  `Option[Int]` として記録される)
+
 ### Lambda shorthand
 
 <!-- doctest-skip: 未定義名 (xs) を参照する構文提示の断片 -->

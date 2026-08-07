@@ -1257,23 +1257,9 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       TComma => match peek(tokens, pos + 1) {
         TRParen|TRBracket => (ArrayBuilder::freeze(b), pos + 1),
         _ => {
-          let ts = match peek(tokens, pos + 1) {
-            TIdent(_) => match peek(tokens, pos + 2) {
-              TColon => pos + 3,
-              TTilde => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              TQuestion => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              _ => pos + 1
-            },
-            _ => pos + 1
-          }
+          let (ts, ts_opt) = labeled_type_start(tokens, pos + 1)
           let (ty, next) = parse_type_impl(tokens, ts, 0)
-          ArrayBuilder::push(b, ty)
+          ArrayBuilder::push(b, optional_param_type(ty, ts_opt))
           type_list_rest(tokens, next, b)
         }
       }
@@ -1315,23 +1301,11 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
         },
         _ => {
           // A first element may be a labeled param (`x: T` / `x~: T` / `x?: T`);
-          // skip the label so the element's TYPE is what gets recorded.
-          let ty_start = match peek(tokens, pos + 1) {
-            TIdent(_) => match peek(tokens, pos + 2) {
-              TColon => pos + 3,
-              TTilde => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              TQuestion => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              _ => pos + 1
-            },
-            _ => pos + 1
-          }
-          let (first, n1) = parse_type_impl(tokens, ty_start, 0)
+          // skip the label so the element's TYPE is what gets recorded. `?`
+          // additionally wraps it in `Option` (#1500).
+          let (ty_start, ty_opt) = labeled_type_start(tokens, pos + 1)
+          let (first_raw, n1) = parse_type_impl(tokens, ty_start, 0)
+          let first = optional_param_type(first_raw, ty_opt)
           let (elems, after) = match peek(tokens, n1) {
             TRParen => ([
               first
@@ -1388,22 +1362,9 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       TLParen => match peek(tokens, pos + 1) {
         TRParen => (TyUnit, pos + 2),
         _ => {
-          let ty_start = match peek(tokens, pos + 1) {
-            TIdent(_) => match peek(tokens, pos + 2) {
-              TColon => pos + 3,
-              TTilde => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              TQuestion => match peek(tokens, pos + 3) {
-                TColon => pos + 4,
-                _ => pos + 1
-              },
-              _ => pos + 1
-            },
-            _ => pos + 1
-          }
-          let (first, n1) = parse_type_impl(tokens, ty_start, 0)
+          let (ty_start, ty_opt) = labeled_type_start(tokens, pos + 1)
+          let (first_raw, n1) = parse_type_impl(tokens, ty_start, 0)
+          let first = optional_param_type(first_raw, ty_opt)
           match peek(tokens, n1) {
             TRParen => (first, n1 + 1),
             TComma => {
@@ -1454,6 +1415,48 @@ export fn parse_type(tokens: Array[Token], pos: Int) -> (TypeExpr, Int) with Exc
   parse_type_impl(tokens, pos, 0)
 }
 
+/// #1500: where a labeled parameter's TYPE starts inside a function type, and
+/// whether the label carried the `?` (optional) marker.
+///
+/// `x~: T` and `x?: T` both put the type after the label, and every caller used
+/// to just skip to it -- which silently dropped the `?`, so a function TYPE
+/// could not express optionality at all (`(Int, z?: Int) -> String` parsed as
+/// `(Int, Int) -> String`) even though the parameter LIST kept the marker on
+/// the name. Optional parameters are declared as `Option[T]`, so the flag has
+/// to reach the caller for it to wrap.
+///
+/// `p` is the position of the label identifier. Returns `(p, false)` for
+/// anything that is not `label: T` / `label~: T` / `label?: T` -- that is a
+/// bare type, and it starts right where the caller is looking.
+fn labeled_type_start(tokens: Array[Token], p: Int) -> (Int, Bool) {
+  match peek(tokens, p) {
+    TIdent(_) => match peek(tokens, p + 1) {
+      TColon => (p + 2, false),
+      TTilde => match peek(tokens, p + 2) {
+        TColon => (p + 3, false),
+        _ => (p, false)
+      },
+      TQuestion => match peek(tokens, p + 2) {
+        TColon => (p + 3, true),
+        _ => (p, false)
+      },
+      _ => (p, false)
+    },
+    _ => (p, false)
+  }
+}
+
+/// Wrap a labeled parameter's declared type when its label carried `?`.
+fn optional_param_type(ty: TypeExpr, is_optional: Bool) -> TypeExpr {
+  if is_optional {
+    TyApp("Option", [
+      ty
+    ])
+  } else {
+    ty
+  }
+}
+
 fn parse_one_param(tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]), Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
@@ -1472,7 +1475,13 @@ fn parse_one_param(tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]
         match peek(tokens, pos + 2) {
           TColon => {
             let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
-            ((opt_name, Some(ty)), tp)
+            // #1500: an optional parameter is declared `Option[T]`. The body
+            // sees an `Option` (that is what the omitted case has to produce),
+            // and `desugar_optional_args` makes the call site agree -- omitted
+            // slots become `None`, supplied ones `Some(v)`. The `?` used to be
+            // recorded only on the NAME, so the declared type stayed `T` and
+            // the parameter was optional in spelling alone.
+            ((opt_name, Some(optional_param_type(ty, true))), tp)
           },
           _ => ((opt_name, None), pos + 2)
         }
