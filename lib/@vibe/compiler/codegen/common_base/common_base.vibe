@@ -1846,9 +1846,26 @@ export fn resolve_local(names: Array[String], name: String, tag: String) -> Int 
     }
   }
   if result < 0 {
-    throw(String::concat(String::concat("undefined variable (local): ", name), String::concat(" @", tag)))
+    // A name reaching codegen unresolved is a CHECKER hole, not a user error:
+    // the checker either bound it or should have rejected it, and everything
+    // between accepted it. Every #1502 / #1510 / #1491 / #1521 / #1529 landed
+    // here, and the message said nothing a reader could act on -- no file, no
+    // line, and `locals=[__env,,__fn_val]` is pass state. Say whose bug it is.
+    throw(String::concat(String::concat(codegen_unresolved_name_prefix(), name), String::concat("` (local, @", String::concat(tag, codegen_unresolved_name_suffix()))))
   }
   result
+}
+
+/// Shared opening of the "a name survived type checking" internal error (see
+/// `resolve_local`). One spelling so the three codegen sites that can raise it
+/// -- linear locals, linear idents, and the gc backend -- cannot drift apart,
+/// and so a gate can pin the whole class by one string.
+export fn codegen_unresolved_name_prefix() -> String {
+  "internal compiler error: `"
+}
+
+export fn codegen_unresolved_name_suffix() -> String {
+  ") reached code generation unresolved. The type checker should have bound or rejected this name, so this is a bug in the compiler and not in your program -- please report the source that triggers it."
 }
 
 export fn emit_i64_store(buf: Bytes, align: Int, offset: Int) -> Unit {

@@ -9766,4 +9766,50 @@ export let _start = () -> Int { public_fn(1) }
 rm -rf "$uidir"
 echo "[compiler-gate] unresolved import names ok"
 
+echo "[compiler-gate] 95/95 a name reaching codegen unresolved says it is a COMPILER bug (#1521/#1491/#1529)"
+# The shared exit of a whole family of defects. #1502, #1510, #1491, #1521,
+# #1529 and #1533 are unrelated in cause -- an alias qualifier, a first-match
+# lookup, a CtUnknown fallback, a struct shape collision -- and every one of
+# them surfaced the same way: the checker accepted the program, and codegen
+# died on a name it could not resolve, with a message naming no file, no line,
+# and `locals=[__env,,__fn_val]` (pass state).
+#
+# The three codegen sites that can raise it now say whose bug it is, in one
+# shared wording so they cannot drift. This section pins that wording, so the
+# next defect in this family arrives as "internal compiler error, report it"
+# rather than as something a user might read as their own mistake.
+#
+# It does NOT try to prove no program reaches those sites -- reaching them IS
+# the open-issue set. What it pins is that arriving there is legible.
+for cg_site in \
+  "lib/@vibe/compiler/codegen/common_base/common_base.vibe" \
+  "lib/@vibe/compiler/codegen/expr/compile_expr.vibe" \
+  "lib/@vibe/compiler/codegen/gc/backend_expr.vibe"
+do
+  if ! grep -q "codegen_unresolved_name_prefix()" "$ROOT_DIR/$cg_site"; then
+    echo "[compiler-gate] FAIL: $cg_site no longer routes its unresolved-name error through the shared wording" >&2
+    echo "[compiler-gate]       (a bare \"undefined variable\" throw is the unactionable form this replaced)" >&2
+    exit 1
+  fi
+done
+if ! grep -q 'internal compiler error' "$ROOT_DIR/lib/@vibe/compiler/codegen/common_base/common_base.vibe"; then
+  echo "[compiler-gate] FAIL: the unresolved-name error no longer identifies itself as a compiler bug" >&2
+  exit 1
+fi
+# And a normal program must NOT produce it -- the wording lock above is
+# worthless if the message fires on correct code.
+cgdir="_build/_gate_codegen_unresolved"
+rm -rf "$cgdir"; mkdir -p "$cgdir"
+printf 'enum Color {\n  Red;\n  Green\n}\n\nexport let _start = () -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 2\n  }\n}\n' > "$cgdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cgdir/ok.vibe" "$cgdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cgdir/ok.wasm" ]; then
+  echo "[compiler-gate] FAIL: a correct program hit the unresolved-name path" >&2
+  cat "$cgdir/ok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$cgdir"
+echo "[compiler-gate] codegen unresolved-name error is legible ok"
+
 echo "[compiler-gate] ok"
