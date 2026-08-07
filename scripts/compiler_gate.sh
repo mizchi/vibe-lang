@@ -9631,7 +9631,13 @@ export fn hue_rank(h: Hue) -> Int {
 }
 UIDEP
 ui_case() {
-  # ui_case <name> <expect: ok|err> <source>
+  # ui_case <name> <expect: ok|err|gap> <source>
+  #   ok  -- compiles
+  #   err -- rejected BY THE #1521 CHECK (diag names the unexported import)
+  #   gap -- rejected, but LATER than the check: a shape #1521 is supposed to
+  #          cover and does not yet. Pinning the phase is the point; `ok` would
+  #          be wrong (no wasm is produced) and `err` would be wrong (the diag
+  #          is codegen's, not the check's), so neither expresses it.
   local uname="$1" uexpect="$2" usrc="$3"
   printf '%s' "$usrc" > "$uidir/$uname.vibe"
   rm -f "$uidir/$uname.wasm" "$uidir/$uname.wasm.diag"
@@ -9642,6 +9648,16 @@ ui_case() {
     if [ ! -s "$uidir/$uname.wasm" ]; then
       echo "[compiler-gate] FAIL: unresolved-import case '$uname' should compile but did not (#1521)" >&2
       cat "$uidir/$uname.wasm.diag" 2>/dev/null >&2 || true
+      exit 1
+    fi
+  elif [ "$uexpect" = "gap" ]; then
+    if [ -s "$uidir/$uname.wasm" ]; then
+      echo "[compiler-gate] FAIL: known-gap case '$uname' compiled cleanly; it is supposed to still fail somewhere (#1533)" >&2
+      exit 1
+    fi
+    if grep -q "is not exported by" "$uidir/$uname.wasm.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: known-gap case '$uname' is now caught by the #1521 check -- #1533 is fixed." >&2
+      echo "[compiler-gate]       Move this case from 'gap' to 'err' and close #1533." >&2
       exit 1
     fi
   else
@@ -9717,11 +9733,14 @@ ui_case bogus_from_traitonly err 'import ./traitonly.vibe { no_such_fn }
 
 export let _start = () -> Int { no_such_fn(1) }
 '
-# 9. The OTHER known gap (#1533), pinned like the uppercase one: membership is
-#    tested against the dependency's checked environment, which binds every
-#    top-level fn whether exported or not, so importing a PRIVATE name is not
-#    reported here. It still fails, just in codegen -- which is what #1521 is
-#    about, hence the follow-up issue rather than a silent omission.
+# 9. The OTHER known gap (#1533): membership is tested against the dependency's
+#    checked environment, which binds every top-level fn whether exported or
+#    not, so importing a PRIVATE name is not reported by the check. It still
+#    fails -- but in CODEGEN, which is exactly the failure mode #1521 exists to
+#    remove, so the phase is what has to be pinned. `ok` would be wrong (no
+#    wasm) and `err` would be wrong (the diag is codegen's), hence `gap`: it
+#    asserts the compile fails AND that the #1521 check was not what rejected
+#    it. Fixing #1533 turns this red with an instruction to flip it to `err`.
 cat > "$uidir/privates.vibe" <<'UIPRIV'
 fn private_fn(x: Int) -> Int {
   x + 1
@@ -9731,7 +9750,13 @@ export fn public_fn(x: Int) -> Int {
   private_fn(x)
 }
 UIPRIV
-ui_case private_import_not_reported ok 'import ./privates.vibe { public_fn }
+ui_case private_import_gap gap 'import ./privates.vibe { private_fn }
+
+export let _start = () -> Int { private_fn(1) }
+'
+# 10. ...and the public name from that same module still imports cleanly, so
+#     the gap case above is not passing because the module is broken.
+ui_case public_from_mixed_module ok 'import ./privates.vibe { public_fn }
 
 export let _start = () -> Int { public_fn(1) }
 '
