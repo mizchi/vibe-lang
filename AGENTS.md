@@ -26,8 +26,10 @@ MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row 
 (pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り —
 ただし以下は**決定済み・実装はこれから** (現在の挙動と混同しないこと):
 `==` の全文脈構造的統一 (ADR-0097, #1526 — 裸 / tuple 内 / struct 内は構造的に
-着地済み。**残る参照等価**: 消去された型変数 (`[T: Eq]` の `T`)・関数戻り値
-経由・空リテラル束縛)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
+着地済み (名前経由の裸配列は要素がスカラーのときのみ、#1569)。**残る参照等価**:
+消去された型変数 (`[T: Eq]` の `T`)・関数戻り値経由・空リテラル束縛・要素型が
+スカラーでない名前経由の裸配列。cheatsheet の「`Array` の `==`」に現在の境界が
+ある)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
 #1559)、`Exception` を正として `Error` を 1.0 freeze で deprecated (ADR-0085,
 #1564)。docs のコード例は doctest が現行コンパイラで検査する — 仕様と実装を
 食い違わせない。
@@ -149,6 +151,24 @@ CI shard では:
 - `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage` がゲートを走らせる
 - `pkf run full-gate` を継続運用判断の主 gate とする
 
+### 方針: 期待値は snapshot に寄せる — `__DATA__` と `.diag` は畳む (#1571)
+
+期待値を持つ仕組みが3つある。**`inspect(value, content)` + `vibe test --update`
+に一本化していく**方針で、新しいテストはこれで書く。
+
+- **`inspect(...)`** — 本命。期待値がソースの中にあり、`vibe test --update`
+  で更新できる (`lib/@vibe/compiler/inspect_update.vibe`)
+- **`__DATA__`** — fixture 末尾の `{"last": "..."}`。723 fixture 中 544 が使用。
+  vibe の構文ではないので、fixture を単体で `vibe test` に食わせられず、
+  `compiler_gate.sh` は**81 箇所で `sed '/^__DATA__$/,$d'` して剥がしている**
+- **`.diag`** — `emit_compile_diag` が `<output_path>.diag` に書く sidecar。
+  診断が stdout に出ないので、中断した実行が残骸を落とす (`a.wasm.diag` /
+  `b.wasm.diag` がリポジトリ root に tracked で残っていた)。stdout へ移す話は
+  #1567 と同じ問題
+
+`fixtures/warnings/*.diag` は逆に**意図的にコミットされた期待出力**なので、
+これも snapshot 側へ寄せる対象。移行は一括ではなく、触った fixture から。
+
 ## Coding Convention
 
 - `///|` は MoonBit (`.mbt`) 時代の block separator 記法。新規コードでは
@@ -186,6 +206,35 @@ CI shard では:
 
 **コード探索は `vibe symbols` / `vibe type-at` / `vibe binding-at` を使う**
 (hover・rename・go-to-def と同じ AST 解析を CLI から直接叩ける)。
+
+### 方針: CLI を LLM 向けの IDE 相当クエリ面として育てる
+
+`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
+得るのと同じ意味解析を **CLI から直接**取り出すためのもの。**想定する第一の
+読み手は人間ではなく LLM** で、次を満たすことを目標にする:
+
+- **行指向で grep できる** — 1件1行、固定フィールド順。整形された箱や
+  カラー装飾を前提にしない
+- **空出力 = clean** — 「問題なし」を出力の有無で判定できる
+- **判定に使える** — 「このファイルはコンパイルが通るか」に CLI 単体で
+  答えられる。答えられないなら、それは診断の穴であって呼び出し側の
+  作法の問題ではない
+- **メッセージが行動可能** — ADR 番号や pass 名など内部用語ではなく、
+  何を書き換えれば直るかを述べる (#1511 の実例)
+
+**これは自己改善のループとして運用する。** 開発中にこれらを使って
+「欲しい情報が取れない」「出力が読めない」「嘘をつく」に当たったら、
+**その場で CLI 側を直すか issue を立てる** — ワークアラウンドを覚えて
+先へ進まない。CLI が答えられない質問はそのまま、LLM がこのリポジトリで
+作業するときのコストとして毎回効いてくる。
+
+現に効いている既知の穴 (どれもこの方針違反として扱う):
+`vibe check` と `vibe diagnostics` が同じ質問に別の答え方をすること
+(**#1567** — 統合提案。import 解決の有無・clean の表現・exit code・
+出力先が全部食い違い、どちらを使うかを呼び出し側が覚えている)、
+型エラーに `line:col` が付かないこと (同 #1567)、
+`vibe symbols` が doc comment を返さないこと (Coding Convention 節)。
 
 ### Editor query primitives — Semantic Code Navigation
 

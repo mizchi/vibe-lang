@@ -1,0 +1,234 @@
+//# Which placements of an algebraic-effect `perform` actually compile today.
+//
+// Backs the table in docs/tracing-design.md §3.4. A Span expressed as an
+// algebraic effect is only usable for tracing a compiler if a `perform` deep
+// inside a phase -- in a loop, several call levels below the handler -- is
+// legal. The cheatsheet's handle-eligibility notes are narrow enough that
+// this was worth measuring rather than reading, and two of the shapes below
+// contradict what those notes say (docs/tracing-design.md §8).
+//
+// NOT in the unit-test battery: scripts/unit_test_runner.sh discovers
+// *_test.vibe under examples/, lib/ and fixtures/ only. This file lives with
+// the bench that produced the cost numbers. Run it directly:
+//
+//   VIBE_RUNNER=$PWD/runtime/viberun/target/release/viberun \
+//   VIBE_CLI_WASM=<stage2.wasm> ./runtime/vibe test \
+//     bench/tracing/trace_effect_shapes_test.vibe
+//
+// If the Trace design (docs/tracing-design.md) is adopted, this moves under
+// lib/ so the battery locks it.
+
+effect Trace {
+  SpanBegin(String) -> Int
+  SpanEnd(Int) -> Unit
+}
+
+fn leaf() -> Int with Trace {
+  let id = perform Trace::SpanBegin("leaf")
+  perform Trace::SpanEnd(id)
+  id
+}
+
+fn mid() -> Int with Trace {
+  leaf() + leaf()
+}
+
+/// A span that ENCLOSES two child spans -- the nesting the tree test asserts.
+fn traced_mid() -> Int with Trace {
+  let id = perform Trace::SpanBegin("mid")
+  let s = leaf() + leaf()
+  perform Trace::SpanEnd(id)
+  s
+}
+
+fn top() -> Int with Trace {
+  mid() + mid()
+}
+
+fn loop_body(n: Int) -> Int with Trace {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    let id = perform Trace::SpanBegin("iter")
+    acc = acc + id
+    perform Trace::SpanEnd(id)
+    i = i + 1
+  }
+  acc
+}
+
+/// What `span "name" { body }` desugars to. NOT a higher-order operation --
+/// begin, run the body under an Exception handler that closes the span and
+/// rethrows, close it again on the normal path. Plain try/finally, using only
+/// constructs that compile today, so the scoped-span sugar does not depend on
+/// higher-order effectful blocks (#1347-2, ADR-0089 Part A).
+fn spanned(n: Int) -> Int with Trace + Exception {
+  let sp = perform Trace::SpanBegin("inner")
+  let r = handle {
+    if n > 0 {
+      n
+    } else {
+      throw("boom")
+    }
+  } with Exception {
+    Throw(e) => {
+      perform Trace::SpanEnd(sp)
+      throw(e)
+    }
+  }
+  perform Trace::SpanEnd(sp)
+  r
+}
+
+/// The same shape one level up, so a throw unwinds through TWO open spans.
+fn spanned_outer(n: Int) -> Int with Trace + Exception {
+  let sp = perform Trace::SpanBegin("outer")
+  let r = handle {
+    spanned(n) + 1
+  } with Exception {
+    Throw(e) => {
+      perform Trace::SpanEnd(sp)
+      throw(e)
+    }
+  }
+  perform Trace::SpanEnd(sp)
+  r
+}
+
+/// Returns "<result>|<trace log>" for one run of the nested spanned pair.
+fn run_spanned(n: Int) -> String {
+  let log: Array[String] = [
+  ]
+  let depth: Array[Int] = [
+    0
+  ]
+  let r = handle {
+    handle {
+      spanned_outer(n)
+    } with Exception {
+      Throw(e) => 0 - 1
+    }
+  } with Trace {
+    SpanBegin(name) => {
+      Array::push(log, "\{Array::get(depth, 0)}>\{name}")
+      Array::set(depth, 0, Array::get(depth, 0) + 1)
+      resume(Array::length(log))
+    };
+    SpanEnd(id) => {
+      Array::set(depth, 0, Array::get(depth, 0) - 1)
+      Array::push(log, "<\{Array::get(depth, 0)}")
+      resume(())
+    }
+  }
+  "\{r}|\{String::join(log, ",")}|\{Array::get(depth, 0)}"
+}
+
+/// Nested spans close in LIFO order and depth returns to 0 on BOTH exits.
+/// The trace log is byte-identical whether the body returns or throws --
+/// which is the whole property a scoped `span {}` has to provide.
+test "spans close on the throw path too" {
+  assert_eq(run_spanned(5), "6|0>outer,1>inner,<1,<0|0")
+  assert_eq(run_spanned(0), "-1|0>outer,1>inner,<1,<0|0")
+}
+
+/// perform inside a named top-level fn, handler one level up.
+test "perform behind a named fn" {
+  let r = handle {
+    leaf()
+  } with Trace {
+    SpanBegin(name) => resume(1);
+    SpanEnd(id) => resume(())
+  }
+  assert_eq(r, 1)
+}
+
+/// perform inside a `while` loop. The cheatsheet lists "loop 内の perform は
+/// compile error", but that constraint belongs to the first-class-resume
+/// (suspend CPS) lane; a tail-resumptive handler like this one is fine.
+test "perform inside a while loop" {
+  let r = handle {
+    loop_body(3)
+  } with Trace {
+    SpanBegin(name) => resume(2);
+    SpanEnd(id) => resume(())
+  }
+  assert_eq(r, 6)
+}
+
+/// Four call levels between the handle and the perform.
+test "perform four call levels down" {
+  let r = handle {
+    top()
+  } with Trace {
+    SpanBegin(name) => resume(3);
+    SpanEnd(id) => resume(())
+  }
+  assert_eq(r, 12)
+}
+
+/// The handled body calls a LOCAL CLOSURE whose argument performs. The
+/// cheatsheet's eligibility table records this exact shape as NG; it compiles
+/// and runs here. Either it was fixed after that table was written, or the
+/// original repro differs in a way this file does not capture -- see
+/// docs/tracing-design.md §8.2 before trusting either statement.
+test "handled body calls a local closure" {
+  let r = handle {
+    let bump = (x: Int) -> {
+      x + 1
+    }
+    bump(leaf())
+  } with Trace {
+    SpanBegin(name) => resume(4);
+    SpanEnd(id) => resume(())
+  }
+  assert_eq(r, 5)
+}
+
+/// perform inside a closure LITERAL carrying an effect row annotation (#761).
+test "perform inside an annotated closure literal" {
+  let r = handle {
+    let f: () -> Int with Trace = () -> {
+      let id = perform Trace::SpanBegin("inner")
+      perform Trace::SpanEnd(id)
+      id
+    }
+    f() + f()
+  } with Trace {
+    SpanBegin(name) => resume(7);
+    SpanEnd(id) => resume(())
+  }
+  assert_eq(r, 14)
+}
+
+/// The one that matters for tracing: a STATEFUL handler that assigns ids and
+/// tracks depth, i.e. builds an actual span tree. `mid` opens at depth 0 and
+/// the two leaves nest at depth 1; depth returns to 0 when the handle exits.
+test "stateful handler builds a span tree" {
+  let names: Array[String] = [
+  ]
+  let depths: Array[Int] = [
+  ]
+  let depth_cell: Array[Int] = [
+    0
+  ]
+  let _ = handle {
+    traced_mid()
+  } with Trace {
+    SpanBegin(name) => {
+      Array::push(names, name)
+      Array::push(depths, Array::get(depth_cell, 0))
+      Array::set(depth_cell, 0, Array::get(depth_cell, 0) + 1)
+      resume(Array::length(names))
+    };
+    SpanEnd(id) => {
+      Array::set(depth_cell, 0, Array::get(depth_cell, 0) - 1)
+      resume(())
+    }
+  }
+  assert_eq(Array::length(names), 3)
+  assert_eq(Array::get(names, 0), "mid")
+  assert_eq(Array::get(depths, 0), 0)
+  assert_eq(Array::get(depths, 1), 1)
+  assert_eq(Array::get(depths, 2), 1)
+  assert_eq(Array::get(depth_cell, 0), 0)
+}
