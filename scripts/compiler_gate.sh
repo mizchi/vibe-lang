@@ -9830,4 +9830,93 @@ fi
 rm -rf "$cgdir"
 echo "[compiler-gate] codegen unresolved-name error is legible ok"
 
+echo "[compiler-gate] 96/96 vibe check rejects effect-lowering-ineligible programs (#1511(b)/#1536(c))"
+# The ADR-0076 handle-eligibility rejection (and the suspend-CPS shape
+# rejections) used to exist only inside the compile pipeline: `vibe check`
+# said ok, `vibe build` died one phase later. check_linked_file now replays
+# the pipeline's rejection prefix (effect_lowering_errors) over the same
+# merged statements a build would compile, so check and build agree.
+ckdir="_build/_gate_check_effect_preflight"
+rm -rf "$ckdir"; mkdir -p "$ckdir"
+check_case() {
+  # check_case <name> <expect: ok|err> <source> [<diag-substring>]
+  local cname="$1" cexpect="$2" csrc="$3" cgrep="${4:-}"
+  printf '%s' "$csrc" > "$ckdir/$cname.vibe"
+  rm -f "$ckdir/$cname.out" "$ckdir/$cname.out.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_CHECK_ONLY=1 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$ckdir/$cname.vibe" "$ckdir/$cname.out" __no_entry__ >/dev/null 2>&1 || true
+  if [ "$cexpect" = "ok" ]; then
+    if [ -s "$ckdir/$cname.out.diag" ]; then
+      echo "[compiler-gate] FAIL: check-preflight case '$cname' should check clean but produced a diag" >&2
+      cat "$ckdir/$cname.out.diag" >&2
+      exit 1
+    fi
+  else
+    if [ ! -s "$ckdir/$cname.out.diag" ]; then
+      echo "[compiler-gate] FAIL: check-preflight case '$cname' should be rejected by vibe check but was not (#1511)" >&2
+      exit 1
+    fi
+    if [ -n "$cgrep" ] && ! grep -qF "$cgrep" "$ckdir/$cname.out.diag"; then
+      echo "[compiler-gate] FAIL: check-preflight case '$cname' diag lacks: $cgrep" >&2
+      cat "$ckdir/$cname.out.diag" >&2
+      exit 1
+    fi
+  fi
+}
+# 1. The #1511 shape (repair case 08): a handle whose body calls through a
+#    LOCAL closure binding. Must be rejected at CHECK time now, with the
+#    ADR-0076 message AND a resolved line:col (the #1514 marker, resolved
+#    against the entry text -- single-file closure).
+check_case handle_local_closure err "effect Ask {
+  Once() -> Int
+}
+fn ask_once() -> Int with Ask {
+  perform Ask::Once()
+}
+fn main with Stdout {
+  let bump = (x: Int) -> Int { x + 1 }
+  let v = handle { bump(ask_once()) } with Ask {
+    Once() => resume(41)
+  }
+  Stdout::write_stream(\"\\{v}\\n\")
+}
+" "cannot be compiled here"
+grep -q "^line " "$ckdir/handle_local_closure.out.diag" || {
+  echo "[compiler-gate] FAIL: check-preflight rejection lost its line:col (#1514 marker resolution)" >&2
+  cat "$ckdir/handle_local_closure.out.diag" >&2
+  exit 1
+}
+# 2. The repaired shape (top-level fn callee) stays check-clean.
+check_case handle_toplevel_fn ok "effect Ask {
+  Once() -> Int
+}
+fn ask_once() -> Int with Ask {
+  perform Ask::Once()
+}
+fn bump(x: Int) -> Int {
+  x + 1
+}
+fn main with Stdout {
+  let v = handle { bump(ask_once()) } with Ask {
+    Once() => resume(41)
+  }
+  Stdout::write_stream(\"\\{v}\\n\")
+}
+"
+# 3. Direct perform in the handled body -- the simplest valid shape -- stays
+#    check-clean, so the preflight cannot be rejecting handles wholesale.
+check_case handle_direct_perform ok "effect Ask {
+  Once() -> Int
+}
+fn main with Stdout {
+  let v = handle { perform Ask::Once() } with Ask {
+    Once() => resume(41)
+  }
+  Stdout::write_stream(\"\\{v}\\n\")
+}
+"
+rm -rf "$ckdir"
+echo "[compiler-gate] check-time effect-lowering preflight ok"
+
 echo "[compiler-gate] ok"

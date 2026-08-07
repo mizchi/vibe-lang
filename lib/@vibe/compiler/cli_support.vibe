@@ -17,7 +17,12 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
-  check_file_fs_mode, compile_file_fs_mode, compile_file_fs_mode_cached, compile_file_fs_mode_cached_profiled, compile_file_fs_mode_profiled
+  check_file_fs_mode,
+  check_file_fs_mode_effect_preflight,
+  compile_file_fs_mode,
+  compile_file_fs_mode_cached,
+  compile_file_fs_mode_cached_profiled,
+  compile_file_fs_mode_profiled
 }
 
 // #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
@@ -212,6 +217,19 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
     match check_inline_wasm_fns(stmts) {
       Some(msg) => throw(locate_type_error(entry_source, msg)),
       None => ()
+    }
+    // #1511(b)/#1536(c): the codegen effect-lowering rejections (ADR-0076
+    // handle eligibility, suspend CPS shapes), replayed at check time on the
+    // same merged statements a build would compile -- `vibe check` used to
+    // say ok and `vibe build` died one phase later on these. Location
+    // follows the entry-text convention above: a marker-carrying rejection
+    // (#1514) blamed in the entry file resolves to line:col, one rooted in a
+    // dependency degrades to the unlocated message.
+    let effect_errs = check_file_fs_mode_effect_preflight(input_path)
+    if Array::length(effect_errs) > 0 {
+      throw(locate_type_error(entry_source, Array::get(effect_errs, 0)))
+    } else {
+      ()
     }
   } with Exception {
     Throw(msg) => throw(locate_type_error(entry_source, msg))

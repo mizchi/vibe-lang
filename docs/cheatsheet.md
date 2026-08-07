@@ -1243,13 +1243,14 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
 
-### `handle` は型検査を通っても**コンパイルできない**ことがある
+### `handle` には適格性制約がある — `vibe check` が検査時に報告する
 
-`vibe check` は codegen まで行かないので、この失敗は**型検査では見えない**。
-`vibe build` / `vibe test` / doctest まで行って初めて出る:
+かつては codegen まで行って初めて出た拒否 (#1511)。今は `vibe check` が
+compile pipeline と同じ判定を検査時に走らせるので (#1511(b)/#1536(c))、
+check / build / test / doctest のどこでも同じ位置付き診断が出る:
 
 ```
-handle of effect 'Ask' cannot be compiled here. Every perform this handle
+line 9:20: handle of effect 'Ask' cannot be compiled here. Every perform this handle
 covers has to be statically visible to it, so the handled body may only:
 perform directly, call a named top-level `fn`, or call a closure literal that
 carries an effect row annotation. ...
@@ -1271,8 +1272,9 @@ top-level 関数**の呼び出し、row 注釈付きクロージャリテラル�
 **迷ったら handled body から呼ぶものを top-level `fn` に出す。**
 
 (この表は当初 lang-review r3 で「handle の位置が効く」と誤って記録し、r4 の
-再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
-どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
+再測定で訂正した。#1511 のコメントに経緯。診断は #1514 で handled body の
+位置 (`line:col`) を指すようになったが、body 内の**どの呼び出し**が不適格かは
+まだ名指ししない — 複数呼び出しがある body ではそこだけ二分探索が要る。)
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 

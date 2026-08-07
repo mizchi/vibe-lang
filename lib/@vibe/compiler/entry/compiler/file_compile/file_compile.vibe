@@ -53,7 +53,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_impl
+  compile_wasi_module_impl, effect_lowering_errors
 }
 
 import @vibe/compiler/loader {
@@ -471,6 +471,84 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
 export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
   let _ = prepare_file_fs_cached(db_new(), entry_path)
   0
+}
+
+/// #1511(b)/#1536(c): does any source in the closure even MENTION an effect
+/// shape? A pure substring scan -- "handle"/"perform"/"await"/"Async" as
+/// text, comments and all -- so it can only over-report (run the preflight
+/// for nothing), never under-report (skip a program the passes would
+/// reject). The preflight below is gated on this so effect-free programs
+/// pay neither the merge parse nor the passes.
+fn source_groups_mention_effect_shapes(source_groups: Array[(String, Array[(String, String)])]) -> Bool {
+  let mut gi = 0
+  let mut found = false
+  while gi < Array::length(source_groups) && !found {
+    let (_, sources) = Array::get(source_groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) && !found {
+      let (_, text) = Array::get(sources, si)
+      if String::contains(text, "handle") || String::contains(text, "perform") || String::contains(text, "await") || String::contains(text, "Async") {
+        found = true
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  found
+}
+
+fn merged_stmts_declare_fn(stmts: Array[Stmt], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if n == name {
+        found = true
+      } else {
+        ()
+      },
+      SFnDecl(_, n, _, _, _) => if n == name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1511(b)/#1536(c): check-time effect-lowering preflight. `vibe check`
+/// stops before codegen, so the ADR-0076 handle-eligibility rejection and
+/// the suspend-CPS shape rejections only ever surfaced from `vibe build` /
+/// `vibe test` -- a program the checker accepted then died one phase later.
+/// This builds the SAME merged statements a build would compile (a fresh
+/// parse, so the pass mutations touch nothing the checker keeps) and replays
+/// the compile pipeline's rejection prefix (effect_lowering_errors,
+/// codegen/wasi) over them.
+///
+/// Entry selection mirrors what a build of this file would do: `main` when
+/// the merged program declares one (the `vibe build`/`run` default), else
+/// the `__no_entry__` test-runner sentinel (test/bench blocks and top-level
+/// exprs are DCE roots on their own, dce.vibe). Verdicts therefore match the
+/// build's -- including its dead-code exemption -- rather than inventing a
+/// stricter check-only liveness.
+export fn check_file_fs_mode_effect_preflight(entry_path: String) -> Array[String] with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  if source_groups_mention_effect_shapes(source_groups) {
+    let merged_stmts = build_grouped_merged_stmts(source_groups)
+    let entry_name = if merged_stmts_declare_fn(merged_stmts, "main") {
+      "main"
+    } else {
+      "__no_entry__"
+    }
+    effect_lowering_errors(merged_stmts, entry_name)
+  } else {
+    array_empty()
+  }
 }
 
 export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {

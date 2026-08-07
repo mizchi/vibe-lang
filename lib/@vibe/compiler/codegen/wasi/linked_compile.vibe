@@ -7479,6 +7479,61 @@ export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String)
   compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
+/// #1511(b) / #1536(c): the codegen-phase effect-lowering REJECTIONS, run as
+/// a check-time analysis with no codegen. `vibe check` said ok while `vibe
+/// build` died on ADR-0076 eligibility (a handle body calling through a
+/// local binding, suspend CPS shapes the split cannot lower) because these
+/// verdicts only existed inside the compile pipeline. This replays exactly
+/// the pipeline PREFIX that produces them -- same passes, same order, same
+/// classifiers -- so a program is rejected here if and only if the default
+/// build lane would reject it (zero drift by construction, at the cost of
+/// running the real passes; callers gate on a cheap source scan).
+///
+/// KEEP IN LOCKSTEP with compile_wasi_module_linked_impl above (its head,
+/// through evidence_dict_pass) and with compile_wasi_module_rc_impl's
+/// elaborate_heap_params prelude (the production-default lane). A pass added
+/// there that can reject a program must be added here, or `vibe check`
+/// silently regresses to "ok" for the new rejection -- which is this
+/// function's whole reason to exist.
+///
+/// `stmts` is MUTATED like any compile (the passes rewrite in place); hand
+/// this function a scratch parse, never statements you still need.
+export fn effect_lowering_errors(stmts_in: Array[Stmt], entry_name: String) -> Array[String] with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  let errs = lc_fresh_string_array()
+  let za_msg = zero_alloc_check(stmts)
+  if za_msg != "" {
+    Array::push(errs, za_msg)
+    return errs
+  } else {
+    ()
+  }
+  desugar_trait_dicts(stmts)
+  unbox_tuple_loop_params(stmts)
+  rewrite_top_level_fn_alias_refs(stmts)
+  let iw_names = lc_fresh_string_array()
+  let iw_wats = lc_fresh_string_array()
+  lc_extract_inline_wasm(stmts, iw_names, iw_wats)
+  await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, array_empty()))
+  rewrite_self_tail_calls(stmts)
+  lc_wrap_entry_error_boundary(stmts, entry_name)
+  let async_sleep_boundary_err = lc_inject_async_sleep_boundary(stmts, entry_name)
+  if async_sleep_boundary_err != "" {
+    Array::push(errs, async_sleep_boundary_err)
+    return errs
+  } else {
+    ()
+  }
+  let scps_errs = suspend_cps_pass(stmts)
+  if Array::length(scps_errs) > 0 {
+    return scps_errs
+  } else {
+    ()
+  }
+  inline_direct_performs(stmts)
+  evidence_dict_pass(stmts, entry_name)
+}
+
 /// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
 export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)

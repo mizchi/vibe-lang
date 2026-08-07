@@ -1101,13 +1101,19 @@ fn load_persistent_sources_cache_if_valid(entry_path: String) -> Option[Array[(S
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    if !(resolution_context_is_valid(resctx, entry_path, source_cache_spec_paths(specs))) {
-      None
-    } else if !(manifest_cache_is_valid(manifest)) {
-      None
-    } else {
-      load_cached_sources_rec(specs, 0, empty_source_specs())
+    // Malformed entry = miss, never an error (same rule and reason as the
+    // group cache's readers below).
+    handle {
+      let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+      if !(resolution_context_is_valid(resctx, entry_path, source_cache_spec_paths(specs))) {
+        None
+      } else if !(manifest_cache_is_valid(manifest)) {
+        None
+      } else {
+        load_cached_sources_rec(specs, 0, empty_source_specs())
+      }
+    } with Exception {
+      Throw(_) => None
     }
   }
 }
@@ -1117,13 +1123,22 @@ fn load_persistent_source_groups_cache_if_valid(entry_path: String) -> Option[Ar
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    if !(resolution_context_is_valid(resctx, entry_path, group_cache_row_paths(rows))) {
-      None
-    } else if !(manifest_cache_is_valid(manifest)) {
-      None
-    } else {
-      load_cached_grouped_sources_rec(rows, 0, empty_grouped_sources())
+    // A cache entry that fails to PARSE is a miss, never an error -- a
+    // malformed row (e.g. a TAB-bearing path persisted before the writer
+    // learned to refuse them, see source_group_cache_field_encodable) must
+    // degrade to a fresh collect, not turn a valid program into a
+    // diagnostic.
+    handle {
+      let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+      if !(resolution_context_is_valid(resctx, entry_path, group_cache_row_paths(rows))) {
+        None
+      } else if !(manifest_cache_is_valid(manifest)) {
+        None
+      } else {
+        load_cached_grouped_sources_rec(rows, 0, empty_grouped_sources())
+      }
+    } with Exception {
+      Throw(_) => None
     }
   }
 }
@@ -1140,23 +1155,29 @@ fn load_persistent_sources_from_group_cache_if_valid(entry_path: String) -> Opti
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    if !(resolution_context_is_valid(resctx, entry_path, group_cache_row_paths(rows))) {
-      None
-    } else if !(manifest_cache_is_valid(manifest)) {
-      None
-    } else {
-      let specs = empty_source_cache_specs()
-      let mut i = 0
-      while i < Array::length(rows) {
-        let (_, path, stat_token_text, source_fingerprint) = Array::get(rows, i)
-        Array::push(specs, (path, stat_token_text, source_fingerprint))
-        i = i + 1
+    // Same malformed-entry-is-a-miss rule as
+    // load_persistent_source_groups_cache_if_valid above.
+    handle {
+      let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+      if !(resolution_context_is_valid(resctx, entry_path, group_cache_row_paths(rows))) {
+        None
+      } else if !(manifest_cache_is_valid(manifest)) {
+        None
+      } else {
+        let specs = empty_source_cache_specs()
+        let mut i = 0
+        while i < Array::length(rows) {
+          let (_, path, stat_token_text, source_fingerprint) = Array::get(rows, i)
+          Array::push(specs, (path, stat_token_text, source_fingerprint))
+          i = i + 1
+        }
+        match load_cached_sources_rec(specs, 0, empty_source_specs()) {
+          Some(sources) => Some((manifest_path_of(manifest), sources)),
+          None => None
+        }
       }
-      match load_cached_sources_rec(specs, 0, empty_source_specs()) {
-        Some(sources) => Some((manifest_path_of(manifest), sources)),
-        None => None
-      }
+    } with Exception {
+      Throw(_) => None
     }
   }
 }
@@ -1166,50 +1187,56 @@ fn load_persistent_source_groups_from_source_list_cache_if_valid(entry_path: Str
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    if !(resolution_context_is_valid(resctx, entry_path, source_cache_spec_paths(specs))) {
-      None
-    } else if !(manifest_cache_is_valid(manifest)) {
-      None
-    } else {
-      match load_cached_sources_rec(specs, 0, empty_source_specs()) {
-        Some(sources) =>
-        match try_load_manifest_rows(entry_path) {
-          Some((base_dir, rows)) => {
-            let groups = build_grouped_sources_from_manifest_rows(base_dir, rows, sources)
-            // #801 bug 2: `sources` comes from the source-LIST cache, a
-            // SEPARATE persistent cache from the group cache being rebuilt
-            // here. Each cache independently passes its own resctx/manifest
-            // validity check, but that does not guarantee the two enumerate
-            // the SAME file set -- e.g. the list cache may have been seeded
-            // via a plain recursive walk (or an older manifest snapshot)
-            // that never reached every manifest-listed group.
-            // build_grouped_sources_from_manifest_rows silently drops any
-            // manifest row with no matching path in `sources`, so a
-            // stale/narrower list cache can make an entire group vanish
-            // with no signal (observed: lib/@vibe/core's vibe_core /
-            // index.vibei group dropped wholesale, 50/51 rows survived).
-            // Cross-validate the reconstruction against the manifest's own
-            // row count before trusting (and persisting) it: a short count
-            // means rows were dropped, so refuse this lane and let the
-            // caller fall through to a fresh manifest collection
-            // (try_collect_manifest_source_groups_fs) that rebuilds the
-            // correct groups directly from disk instead of silently
-            // caching/returning the incomplete graph.
-            if Array::length(flatten_group_sources(groups)) != Array::length(rows) {
-              None
-            } else {
-              Some((manifest_path_of(manifest), groups))
+    // Malformed entry = miss, never an error (same rule and reason as the
+    // group cache's readers below).
+    handle {
+      let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+      if !(resolution_context_is_valid(resctx, entry_path, source_cache_spec_paths(specs))) {
+        None
+      } else if !(manifest_cache_is_valid(manifest)) {
+        None
+      } else {
+        match load_cached_sources_rec(specs, 0, empty_source_specs()) {
+          Some(sources) =>
+          match try_load_manifest_rows(entry_path) {
+            Some((base_dir, rows)) => {
+              let groups = build_grouped_sources_from_manifest_rows(base_dir, rows, sources)
+              // #801 bug 2: `sources` comes from the source-LIST cache, a
+              // SEPARATE persistent cache from the group cache being rebuilt
+              // here. Each cache independently passes its own resctx/manifest
+              // validity check, but that does not guarantee the two enumerate
+              // the SAME file set -- e.g. the list cache may have been seeded
+              // via a plain recursive walk (or an older manifest snapshot)
+              // that never reached every manifest-listed group.
+              // build_grouped_sources_from_manifest_rows silently drops any
+              // manifest row with no matching path in `sources`, so a
+              // stale/narrower list cache can make an entire group vanish
+              // with no signal (observed: lib/@vibe/core's vibe_core /
+              // index.vibei group dropped wholesale, 50/51 rows survived).
+              // Cross-validate the reconstruction against the manifest's own
+              // row count before trusting (and persisting) it: a short count
+              // means rows were dropped, so refuse this lane and let the
+              // caller fall through to a fresh manifest collection
+              // (try_collect_manifest_source_groups_fs) that rebuilds the
+              // correct groups directly from disk instead of silently
+              // caching/returning the incomplete graph.
+              if Array::length(flatten_group_sources(groups)) != Array::length(rows) {
+                None
+              } else {
+                Some((manifest_path_of(manifest), groups))
+              }
+            },
+            None => {
+              let groups = empty_grouped_sources()
+              Array::push(groups, ("recursive", sources))
+              Some((None, groups))
             }
           },
-          None => {
-            let groups = empty_grouped_sources()
-            Array::push(groups, ("recursive", sources))
-            Some((None, groups))
-          }
-        },
-        None => None
+          None => None
+        }
       }
+    } with Exception {
+      Throw(_) => None
     }
   }
 }
@@ -1349,11 +1376,59 @@ export fn load_or_parse_module_header_fs(path: String, source: String, parse_cou
 }
 
 fn store_persistent_sources_cache(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> Unit with Exception + Fs {
-  Fs::write_file(persistent_source_list_cache_path(entry_path), build_persistent_sources_cache_text(entry_path, manifest_path, sources))
+  if source_groups_cache_encodable(manifest_path, [
+    ("sources", sources)
+  ]) {
+    Fs::write_file(persistent_source_list_cache_path(entry_path), build_persistent_sources_cache_text(entry_path, manifest_path, sources))
+  } else {
+    ()
+  }
+}
+
+/// #1511(b) follow-through: can `text` survive a round trip through this
+/// cache's TAB-separated, newline-terminated rows? A path containing a TAB
+/// (POSIX allows it; the incremental-invalidation oracle pins one) wrote a
+/// row with too many fields, and the next reader in the same process threw
+/// "invalid persistent source group cache group row" -- a cache turning a
+/// valid program into an error. Writer side: refuse to persist what cannot
+/// round-trip (the collect result is still returned, only uncached).
+fn source_group_cache_field_encodable(text: String) -> Bool {
+  !String::contains(text, "\t") && !String::contains(text, "\n") && !String::contains(text, "\r")
+}
+
+fn source_groups_cache_encodable(manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> Bool {
+  let mut ok = match manifest_path {
+    Some(p) => source_group_cache_field_encodable(p),
+    None => true
+  }
+  let mut gi = 0
+  while gi < Array::length(groups) && ok {
+    let (group_name, sources) = Array::get(groups, gi)
+    if !source_group_cache_field_encodable(group_name) {
+      ok = false
+    } else {
+      let mut si = 0
+      while si < Array::length(sources) && ok {
+        let (path, _) = Array::get(sources, si)
+        if !source_group_cache_field_encodable(path) {
+          ok = false
+        } else {
+          ()
+        }
+        si = si + 1
+      }
+    }
+    gi = gi + 1
+  }
+  ok
 }
 
 fn store_persistent_source_groups_cache(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> Unit with Exception + Fs {
-  Fs::write_file(persistent_source_group_cache_path(entry_path), build_persistent_source_groups_cache_text(entry_path, manifest_path, groups))
+  if source_groups_cache_encodable(manifest_path, groups) {
+    Fs::write_file(persistent_source_group_cache_path(entry_path), build_persistent_source_groups_cache_text(entry_path, manifest_path, groups))
+  } else {
+    ()
+  }
 }
 
 fn copy_grouped_sources(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] {
