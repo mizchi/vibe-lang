@@ -23,10 +23,13 @@
 MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row で表す。
 **型と診断は LLM の評価ループに最適化する** — 最悪の壊れ方は「黙って誤る」で
 あり triage でも P0 = silent-wrong が「落ちる」より上 (P1)。診断は内部用語
-(pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り
-(実例: `==` は全文脈で構造的 ADR-0097 / 反復は eager `Array::*` と pull
-AsyncIter の 2 層 ADR-0099 / 正の綴りは `Exception` ADR-0085)。docs の
-コード例は doctest が現行コンパイラで検査する — 仕様と実装を食い違わせない。
+(pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り —
+ただし以下は**決定済み・実装はこれから** (現在の挙動と混同しないこと):
+`==` の全文脈構造的統一 (ADR-0097, #1526 — **今日の裸の `Array`/`Bytes` `==` は
+まだ参照等価**)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
+#1559)、`Exception` を正として `Error` を 1.0 freeze で deprecated (ADR-0085,
+#1564)。docs のコード例は doctest が現行コンパイラで検査する — 仕様と実装を
+食い違わせない。
 
 **2. wasm 上でセルフホストし、wasm の最新機能を使う**。コンパイラは vibe 製で
 committed seed からビルドする。**内部表現は wasm / WIT と摩擦のない表現に

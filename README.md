@@ -76,10 +76,13 @@ Verse: effects live in row types (`with Exception + Fs`), not in return-type
 wrappers. Types and diagnostics are tuned for the LLM evaluation loop — the
 worst failure class is *silently wrong* (it outranks "crashes" in triage),
 diagnostics must lead with an actionable edit rather than internal pass names,
-one concept gets exactly one spelling (`==` is structural everywhere,
-ADR-0097; iteration has two layers — eager `Array::*` and pull `AsyncIter` —
-ADR-0099; `Exception` is the canonical spelling, ADR-0085), and every code
-block in the docs is compile-checked against the current compiler.
+one concept gets exactly one spelling, and every code block in the docs is
+compile-checked against the current compiler. The one-spelling rule is being
+applied as decided-but-landing work: `==` becomes structural in every context
+(ADR-0097, #1526 — today bare `Array`/`Bytes` `==` is still reference
+equality), iteration converges on two layers — eager `Array::*` and pull
+`AsyncIter` (ADR-0099, #1559) — and `Exception` is the canonical spelling with
+`Error` deprecated at the 1.0 freeze (ADR-0085, #1564).
 
 **2. Self-hosted on wasm, using wasm's newest capabilities.** The compiler is
 written in vibe and built from a committed seed — no other toolchain. Internal
