@@ -1,0 +1,147 @@
+// #1262: tuple loop-parameter unboxing (normalize/unbox_tuple_loop.vibe).
+// Behavioral pin: every shape here must produce the same value whether or not
+// the rewrite fires (eligible shapes get unboxed at the linear codegen
+// convergence point; ineligible ones must be LEFT ALONE and still work).
+
+fn sum_tuple_loop(n: Int) -> Int {
+  loop (s = (0, 0)) {
+    let (i, acc) = s
+    if i >= n {
+      break acc
+    } else {
+      continue ((i + 1, acc + i))
+    }
+  }
+}
+
+fn sum_tuple_proj(n: Int) -> Int {
+  // direct .0/.1 projections instead of a destructuring let
+  loop (s = (0, 0)) {
+    if s.0 >= n {
+      break s.1
+    } else {
+      continue ((s.0 + 1, s.1 + s.0))
+    }
+  }
+}
+
+fn sum_mixed_params(n: Int) -> Int {
+  // tuple param next to a scalar param: continue arity must stay aligned
+  loop (s = (0, 0), extra = 100) {
+    let (i, acc) = s
+    if i >= n {
+      break acc + extra
+    } else {
+      continue ((i + 1, acc + i), extra)
+    }
+  }
+}
+
+fn sum_nested_tuple(n: Int) -> Int {
+  // ((i, acc), k): outer unbox exposes the inner tuple for the next round
+  loop (s = ((0, 0), 7)) {
+    let (pair, k) = s
+    let (i, acc) = pair
+    if i >= n {
+      break acc + k
+    } else {
+      continue (((i + 1, acc + i), k))
+    }
+  }
+}
+
+fn tuple_id(t: (Int, Int)) -> (Int, Int) {
+  t
+}
+
+fn sum_ineligible_call(n: Int) -> Int {
+  // `s` is passed WHOLE to a function -> must not unbox, must still work
+  loop (s = (0, 0)) {
+    let (i, acc) = tuple_id(s)
+    if i >= n {
+      break acc
+    } else {
+      continue ((i + 1, acc + i))
+    }
+  }
+}
+
+fn sum_ineligible_continue(n: Int) -> Int {
+  // the continue passes a computed tuple, not a literal -> must not unbox
+  loop (s = (0, 0)) {
+    let (i, acc) = s
+    if i >= n {
+      break acc
+    } else {
+      continue (tuple_id((i + 1, acc + i)))
+    }
+  }
+}
+
+fn count_bare_continue(n: Int) -> Int {
+  // a bare `continue` repeats params unchanged; with a tuple param it must
+  // stay correct after the split too (the loop exits via the mut counter)
+  let mut seen = 0
+  loop (s = (n, 1)) {
+    let (limit, mark) = s
+    seen = seen + 1
+    if seen >= limit {
+      break mark + seen
+    } else {
+      continue
+    }
+  }
+}
+
+fn inner_shadow(n: Int) -> Int {
+  // an inner `loop` re-binds the name `s`: the outer param must be left
+  // alone (binder collision bail) and everything still agrees
+  loop (s = (0, 0)) {
+    let (i, acc) = s
+    if i >= n {
+      break acc
+    } else {
+      let inner = loop (s = (i, 0)) {
+        let (j, a2) = s
+        if j >= i + 1 {
+          break a2
+        } else {
+          continue ((j + 1, a2 + 1))
+        }
+      }
+      continue ((i + 1, acc + inner))
+    }
+  }
+}
+
+test "tuple loop param: destructuring-let shape" {
+  assert_eq(sum_tuple_loop(100), 4950)
+}
+
+test "tuple loop param: direct projections" {
+  assert_eq(sum_tuple_proj(100), 4950)
+}
+
+test "tuple loop param: mixed with scalar param" {
+  assert_eq(sum_mixed_params(100), 5050)
+}
+
+test "tuple loop param: nested tuple reaches fixpoint" {
+  assert_eq(sum_nested_tuple(100), 4957)
+}
+
+test "tuple loop param: whole-tuple call is left alone" {
+  assert_eq(sum_ineligible_call(100), 4950)
+}
+
+test "tuple loop param: computed continue is left alone" {
+  assert_eq(sum_ineligible_continue(100), 4950)
+}
+
+test "tuple loop param: bare continue survives the split" {
+  assert_eq(count_bare_continue(5), 6)
+}
+
+test "tuple loop param: inner loop shadowing the name" {
+  assert_eq(inner_shadow(4), 4)
+}

@@ -677,6 +677,40 @@ lowering (1点)
 
 ---
 
+## 6.4 実装記録: tuple loop パラメータ unbox の試行(撤収)
+
+§6.2 の順4を先行して試した(normalize 段の AST 書き換え、conservative な
+適格判定 + `continue` の literal tuple 展開)。**動くところまで持ち込めず
+撤収した**。branch には fixture
+(`fixtures/unbox_tuple_loop_test.vibe` — 適格/非適格 8 形の挙動ピン)だけを
+残している。次に試す人への記録:
+
+1. **linear backend の codegen 入口は 1 つではない。**
+   `compile_wasi_module_linked_impl`(entry 指定コンパイル)と
+   `compile_module_expr`(test/bench の `__no_entry__` module lane)は
+   独立で、desugar の呼び場所も違う。「universal codegen convergence
+   point」というコメントは entry コンパイルの世界での話で、
+   pass は**両方**に(または両者の合流点を作ってから)入れる必要がある。
+
+2. **`bytes_per_op` / `__heap_ptr` delta は RC 下では unbox の証拠にならない。**
+   RC は解放された tuple を exact-fit free list が即座に再利用するので、
+   heap_ptr の前進は net-live のみ = boxed でも 64 B 定数になる。
+   bump(`VIBE_RC=0`)の delta だけが確保の真値。今回この読み違いで
+   「発火した」と一度誤認した。
+
+3. **検証面の汚染: pass 入りコンパイラでプローブをコンパイルすると、
+   プローブ自身が pass の影響下に入る。** pass のバグを疑い始めた時点で、
+   「pass を通っていないコンパイラ」でプローブを建て直さないと
+   観測が信用できなくなる(今回 AST タグの矛盾した観測が出て切り分け不能に
+   なった)。**pass の unit test は、pass を wire する前のコンパイラで
+   green にしてから wire する**のが正しい順序だった。
+
+4. 案としての評価は変わらない(surface の 10–28× 差は残っている)。
+   ただし次回は (a) unit test 先行、(b) 2 lane 同時 wiring、
+   (c) bump lane の B/op を唯一の発火判定にする、の3点を守ること。
+
+---
+
 ## 7. #1262 への差分提案
 
 現行の実装順は **ADR-0092(FBIP)→ ADR-0090(region)→ ADR-0091(zero_alloc)** で、
