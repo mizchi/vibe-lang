@@ -151,19 +151,16 @@ fn build_schedule(msg: String, block_start: Int) -> Bytes {
 
 /// Drive the 80 SHA-1 rounds. `w` is the schedule as `Bytes` (see
 /// `build_schedule`) so each word read is `read_word_bytes(w, i)` —
-/// O(1) lookup, no per-call allocation. The result is returned as a
-/// 5-element `Bytes` buffer (20 bytes) via the same compact write
-/// path the schedule uses, dodging a second tower of `String::concat`
-/// calls.
-fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
+/// O(1) lookup, no per-call allocation. The 5 accumulators are
+/// returned directly as a tuple: an earlier version packed them into
+/// a fresh 5-element `Bytes` buffer (via `push_word_bytes`) only to
+/// have the caller immediately unpack them again with
+/// `read_word_bytes` — a whole growing-buffer allocation per block
+/// (16 of them for a 1KiB message) spent on a round trip nothing
+/// downstream needed.
+fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> (Int, Int, Int, Int, Int) {
   if i >= 80 {
-    let out = Bytes::new()
-    push_word_bytes(out, a)
-    push_word_bytes(out, b)
-    push_word_bytes(out, c)
-    push_word_bytes(out, d)
-    push_word_bytes(out, e)
-    out
+    (a, b, c, d, e)
   } else {
     let f = if i < 20 {
       (b&c)^((b^mask32)&d)
@@ -204,12 +201,12 @@ fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int
     StringBuilder::freeze(sb)
   } else {
     let w = build_schedule(msg, block_idx * 64)
-    let result = process_rounds(0, h0, h1, h2, h3, h4, w)
-    let new_h0 = add32(h0, read_word_bytes(result, 0))
-    let new_h1 = add32(h1, read_word_bytes(result, 1))
-    let new_h2 = add32(h2, read_word_bytes(result, 2))
-    let new_h3 = add32(h3, read_word_bytes(result, 3))
-    let new_h4 = add32(h4, read_word_bytes(result, 4))
+    let (ra, rb, rc, rd, re) = process_rounds(0, h0, h1, h2, h3, h4, w)
+    let new_h0 = add32(h0, ra)
+    let new_h1 = add32(h1, rb)
+    let new_h2 = add32(h2, rc)
+    let new_h3 = add32(h3, rd)
+    let new_h4 = add32(h4, re)
     process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4)
   }
 }
