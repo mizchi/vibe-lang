@@ -1,0 +1,186 @@
+// What an algebraic-effect Span costs, measured rather than assumed.
+// Backs the numbers in docs/tracing-design.md §3.
+//
+//   VIBE_RUNNER=$PWD/runtime/viberun/target/release/viberun \
+//   VIBE_CLI_WASM=<stage2.wasm> ./runtime/vibe bench \
+//     bench/tracing/trace_effect_bench.vibe --iters 200
+//
+// Every loop below runs 10,000 iterations, so divide ns_p50 by 10,000 for a
+// per-iteration figure and by 20,000 for a per-perform one (two performs per
+// iteration). Read these as RATIOS between the rows on one machine, not as
+// absolute numbers -- the rows are constructed to differ in exactly one thing.
+
+effect Trace {
+  SpanBegin(String) -> Int
+  SpanEnd(Int) -> Unit
+}
+
+//# Cost of one perform (perform_10k vs call_10k vs bare_10k)
+
+/// Two performs per iteration, inside a `while` loop, behind a named
+/// top-level fn: the shape a span placed inside a compiler phase has.
+fn hot_perform(n: Int) -> Int with Trace {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    let id = perform Trace::SpanBegin("iter")
+    acc = acc + id
+    perform Trace::SpanEnd(id)
+    i = i + 1
+  }
+  acc
+}
+
+fn sink_begin(name: String) -> Int {
+  String::length(name)
+}
+
+fn sink_end(id: Int) -> Unit {
+  ()
+}
+
+/// The same loop with the same two calls as plain direct calls -- the
+/// capability-builtin shape. perform_10k minus this is the effect mechanism.
+fn hot_call(n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    let id = sink_begin("iter")
+    acc = acc + id
+    sink_end(id)
+    i = i + 1
+  }
+  acc
+}
+
+/// The loop with no instrumentation at all: the floor.
+fn hot_bare(n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    acc = acc + 4
+    i = i + 1
+  }
+  acc
+}
+
+bench "perform_10k" {
+  handle {
+    hot_perform(10000)
+  } with Trace {
+    SpanBegin(name) => resume(String::length(name));
+    SpanEnd(id) => resume(())
+  }
+}
+
+bench "call_10k" {
+  hot_call(10000)
+}
+
+bench "bare_10k" {
+  hot_bare(10000)
+}
+
+//# Cost of merely carrying Trace in a row (rowtax_traced vs rowtax_plain)
+
+// A pass-through chain that performs NOTHING but carries Trace in its row --
+// what instrumenting one leaf costs every caller between it and the handler.
+fn p5t(x: Int) -> Int with Trace {
+  x + 1
+}
+
+fn p4t(x: Int) -> Int with Trace {
+  p5t(x) + 1
+}
+
+fn p3t(x: Int) -> Int with Trace {
+  p4t(x) + 1
+}
+
+fn p2t(x: Int) -> Int with Trace {
+  p3t(x) + 1
+}
+
+fn p1t(x: Int) -> Int with Trace {
+  p2t(x) + 1
+}
+
+fn chain_traced(n: Int) -> Int with Trace {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    acc = acc + p1t(i)
+    i = i + 1
+  }
+  acc
+}
+
+// The identical chain with no row at all.
+fn p5(x: Int) -> Int {
+  x + 1
+}
+
+fn p4(x: Int) -> Int {
+  p5(x) + 1
+}
+
+fn p3(x: Int) -> Int {
+  p4(x) + 1
+}
+
+fn p2(x: Int) -> Int {
+  p3(x) + 1
+}
+
+fn p1(x: Int) -> Int {
+  p2(x) + 1
+}
+
+fn chain_plain(n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    acc = acc + p1(i)
+    i = i + 1
+  }
+  acc
+}
+
+bench "rowtax_traced_10k" {
+  handle {
+    chain_traced(10000)
+  } with Trace {
+    SpanBegin(name) => resume(0);
+    SpanEnd(id) => resume(())
+  }
+}
+
+bench "rowtax_plain_10k" {
+  chain_plain(10000)
+}
+
+//# What the handler does dominates (handler_counting vs handler_timing)
+
+/// Counting handler: no clock read at all.
+bench "handler_counting_10k" {
+  handle {
+    hot_perform(10000)
+  } with Trace {
+    SpanBegin(name) => resume(1);
+    SpanEnd(id) => resume(())
+  }
+}
+
+/// Timing handler: one Profiler::now_us per span boundary. The delta against
+/// handler_counting_10k is the host clock, not the effect mechanism.
+bench "handler_timing_10k" {
+  handle {
+    hot_perform(10000)
+  } with Trace {
+    SpanBegin(name) => resume(Profiler::now_us());
+    SpanEnd(id) => {
+      let t = Profiler::now_us()
+      resume(())
+    }
+  }
+}
