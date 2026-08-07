@@ -13,6 +13,42 @@
 > `moonbit-host-final-2026-06-23` (`59ef040`). Migration record:
 > [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md).
 
+## 設計ポリシー (迷ったらここに照らして決める)
+
+設計判断で迷ったら、以下の 3 本柱に照らす。柱同士が衝突したときの優先順位は
+**「黙って誤らない」> 表現の正直さ > 表面の書き味**。ポリシーで決めきれない
+ものは issue にして 3 軸ラベル ([docs/issue-triage.md](docs/issue-triage.md)) を付ける。
+
+**1. モダンな構文、副作用を明示する静的型付け関数型言語** (系譜: Rust /
+MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row で表す。
+**型と診断は LLM の評価ループに最適化する** — 最悪の壊れ方は「黙って誤る」で
+あり triage でも P0 = silent-wrong が「落ちる」より上 (P1)。診断は内部用語
+(pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り
+(実例: `==` は全文脈で構造的 ADR-0097 / 反復は eager `Array::*` と pull
+AsyncIter の 2 層 ADR-0099 / 正の綴りは `Exception` ADR-0085)。docs の
+コード例は doctest が現行コンパイラで検査する — 仕様と実装を食い違わせない。
+
+**2. wasm 上でセルフホストし、wasm の最新機能を使う**。コンパイラは vibe 製で
+committed seed からビルドする。**内部表現は wasm / WIT と摩擦のない表現に
+寄せる** — 値は tagged i64、String は byte string (byte offset インデックス、
+ADR-0098 — メモリの実態と一致する正直な意味論)、WIT 境界に出られるものは
+nominal 規則で決める (ADR-0089 D4/D5)。継続表現は wasm-gc (型主導参照レーン
+ADR-0095)・stack switching (今日は stackful lift + `waitable-set`、JSPI は
+別 backend)・threads を前提に設計する。マルチスレッドは**当面 shared-nothing**
+(`TaskGroup` + `Send`/region 検査が既にこの形) で、将来の実スレッド化を
+見据えた表現を選ぶ。
+
+**3. Vibe Coding の時代に合わせ、権限と副作用を明示的にコントロールできる**。
+Deno のパーミッション × Koka の effect system: capability は row が運び、
+呼び出し側の式は素の関数呼び出しのまま。認可は build → apply → instantiate の
+**最早フェーズで一回だけ**確定し、run 中 authority 不変 (ADR-0075/0084/0088)。
+Notebook 駆動の開発に合わせた**インクリメンタルビルド** (`vibe check` レーンは
+typing reuse が default-on、semantic module 単位へ拡張中 #1379)。**ビルド時に
+決まる Capability で、対象プラットフォームの wasm runtime 仕様に合わせた
+プログレッシブなコード生成** — `--allow-*` は const-fold + DCE で不許可
+capability のコードを落とし、生成 wasm は要求する feature level を宣言する
+([docs/wasm/feature-levels.md](docs/wasm/feature-levels.md))。
+
 ## vibe 言語リファレンス
 
 vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.md](docs/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。

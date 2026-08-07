@@ -64,11 +64,49 @@ executable doc (#1142): code blocks are compiled and run, and the printed
 output is embedded right in the markdown, so the examples and their results
 cannot drift apart.
 
+## Design policy
+
+Three commitments drive every design decision. When two goals conflict, the
+tiebreak order is: never be silently wrong > honest representation > surface
+convenience. (Agent-facing version with concrete precedents: `AGENTS.md`.)
+
+**1. A modern, statically-typed functional language where side effects are
+explicit.** Syntax and discipline in the lineage of Rust / MoonBit / Koka /
+Verse: effects live in row types (`with Exception + Fs`), not in return-type
+wrappers. Types and diagnostics are tuned for the LLM evaluation loop — the
+worst failure class is *silently wrong* (it outranks "crashes" in triage),
+diagnostics must lead with an actionable edit rather than internal pass names,
+one concept gets exactly one spelling (`==` is structural everywhere,
+ADR-0097; iteration has two layers — eager `Array::*` and pull `AsyncIter` —
+ADR-0099; `Exception` is the canonical spelling, ADR-0085), and every code
+block in the docs is compile-checked against the current compiler.
+
+**2. Self-hosted on wasm, using wasm's newest capabilities.** The compiler is
+written in vibe and built from a committed seed — no other toolchain. Internal
+representations stay friction-free with wasm and WIT rather than hiding them:
+values are tagged i64, `String` is officially a byte string indexed by byte
+offset (ADR-0098 — what the memory actually holds), and what may cross a WIT
+boundary is decided by nominal rules (ADR-0089). Continuations are designed
+against wasm-gc (typed reference lanes, ADR-0095), stack switching (stackful
+lift + `waitable-set` today, JSPI as an alternate backend), and threads —
+concurrency is **shared-nothing** for now (`TaskGroup` + `Send`/region
+checks), with the representation chosen so real threads can land later.
+
+**3. Explicit control of permissions and effects, for the vibe-coding era.**
+Deno-style permissions meet a Koka-style effect system: capabilities travel in
+the effect row, call sites stay plain function calls, and authority is fixed
+at the earliest possible phase (build → apply → instantiate; immutable while
+running — ADR-0075/0084/0088). Incremental build serves notebook-style
+iteration (the `vibe check` lane reuses typing by default). Capabilities
+resolved at build time drive progressive code generation for the target wasm
+runtime: `--allow-*` flags const-fold and dead-code-eliminate ungranted
+capabilities, and emitted binaries declare which wasm feature level they need.
+
 ## Features
 
 - Type inference with row-polymorphic effects (`with Async`, `with Exception`)
 - Pattern matching and destructuring, including struct/record forms
-- Module system with import/export, `.vibei` package contracts
+- Module system with import/export, `.vpkg` package contracts
 - Async/await syntax (runtime gate: `--unstable-async`)
 - Lambda expressions with placeholder shorthand (`_+1`)
 
