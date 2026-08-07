@@ -1249,8 +1249,10 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 `vibe build` / `vibe test` / doctest まで行って初めて出る:
 
 ```
-handle of effect 'Ask' cannot be compiled: the site is not eligible for
-evidence-passing migration (ADR-0076) ...
+handle of effect 'Ask' cannot be compiled here. Every perform this handle
+covers has to be statically visible to it, so the handled body may only:
+perform directly, call a named top-level `fn`, or call a closure literal that
+carries an effect row annotation. ...
 ```
 
 実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level

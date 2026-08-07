@@ -14,5 +14,6 @@ compile+run して確認する** — この帯域には型検査を通り抜け�
 期待出力例: `a=42 b=43 c=43`
 
 > r3 所見 (#1511): 現行コンパイラでは B が
-> `handle of effect 'Ask' cannot be compiled ... (ADR-0076)` で落ちる。
+> `handle of effect 'Ask' cannot be compiled here. ...` で落ちる (#1511 で
+> 文言を書き直したが、拒否される形は変わっていない)。
 > A と C は通る。解けるようになったら golden を作る。

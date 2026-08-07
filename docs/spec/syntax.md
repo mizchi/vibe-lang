@@ -211,20 +211,35 @@ ALL labeled; mixing them is rejected ("call to f mixes positional and labeled
 arguments"). Default values in parameter lists are not part of the current
 surface syntax.
 
-`x?` is accepted by the parser as an optional-parameter marker, but **the
-semantics are not implemented** (#1500). Measured against the current
-compiler, a `?` parameter is indistinguishable from a required one:
+`x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
+the call site may omit it:
 
-- omitting the argument is `function arity mismatch` -- `g()` against
-  `(value?: Int) -> Int` reports `expected 1 args, got 0`
-- inside the body the parameter is bound at its written type `T`, not
-  `Option[T]`, so `value + 1` type-checks and
-  `match value { Some(v) => .., None => .. }` is rejected as non-exhaustive
+```vibe
+fn describe(x: Int, note?: String) -> String {
+  match note {
+    Some(s) => s,
+    None => "none"
+  }
+}
 
-The checker strips the trailing `?` from the parameter NAME
-(`param_base_name`, checker.vibe) and does nothing else with it. This section
-previously specified the `Option[T]` binding and an omissible call; that
-described an intended design, not the implementation.
+export let a: () -> String = () -> { describe(1) }
+export let b: () -> String = () -> { describe(1, "hi") }
+```
+
+Rules:
+
+- Inside the body the parameter is bound at `Option[T]`, never at `T` — an
+  omitted argument has to produce a value, and `None` is that value.
+- A function TYPE spells it the same way, and means the same thing:
+  `(Int, note?: String) -> String` is `(Int, Option[String]) -> String`.
+- The call site writes the payload, not the `Option`: `describe(1, "hi")`,
+  not `describe(1, Some("hi"))`. `desugar_optional_args` wraps supplied
+  arguments in `Some` and fills omitted trailing ones with `None` before
+  checking, so the ordinary arity check sees a full argument list.
+- Only TRAILING optional parameters may be omitted. A call that is short by a
+  required parameter is still an arity error, and still reports the real count.
+- Labeled and positional supply both work, under the usual all-positional or
+  all-labeled rule: `describe(x = 1, note = "hi")` and `describe(x = 1)`.
 
 ### Type Aliases
 

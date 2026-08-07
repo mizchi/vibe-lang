@@ -6924,7 +6924,10 @@ if [ -s "$v2dir/reject.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_handle_replay_removed compiled (a live unmigratable non-Error handle must be a hard error)" >&2
   exit 1
 fi
-if ! grep -qF "replay engine was removed" "$v2dir/reject.wasm.diag" 2>/dev/null; then
+# #1511 rewrote this message (actionable sentence first, ADR jargon last).
+# Anchor on the identifying phrase rather than the trailing ADR note, which is
+# the part most likely to be reworded again.
+if ! grep -qF "cannot be compiled here" "$v2dir/reject.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: replay-removed reject fixture did not produce the expected diagnostic" >&2
   cat "$v2dir/reject.wasm.diag" 2>/dev/null >&2 || true
   exit 1
