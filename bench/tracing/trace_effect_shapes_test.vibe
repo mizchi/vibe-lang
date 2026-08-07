@@ -57,6 +57,80 @@ fn loop_body(n: Int) -> Int with Trace {
   acc
 }
 
+/// What `span "name" { body }` desugars to. NOT a higher-order operation --
+/// begin, run the body under an Exception handler that closes the span and
+/// rethrows, close it again on the normal path. Plain try/finally, using only
+/// constructs that compile today, so the scoped-span sugar does not depend on
+/// higher-order effectful blocks (#1347-2, ADR-0089 Part A).
+fn spanned(n: Int) -> Int with Trace + Exception {
+  let sp = perform Trace::SpanBegin("inner")
+  let r = handle {
+    if n > 0 {
+      n
+    } else {
+      throw("boom")
+    }
+  } with Exception {
+    Throw(e) => {
+      perform Trace::SpanEnd(sp)
+      throw(e)
+    }
+  }
+  perform Trace::SpanEnd(sp)
+  r
+}
+
+/// The same shape one level up, so a throw unwinds through TWO open spans.
+fn spanned_outer(n: Int) -> Int with Trace + Exception {
+  let sp = perform Trace::SpanBegin("outer")
+  let r = handle {
+    spanned(n) + 1
+  } with Exception {
+    Throw(e) => {
+      perform Trace::SpanEnd(sp)
+      throw(e)
+    }
+  }
+  perform Trace::SpanEnd(sp)
+  r
+}
+
+/// Returns "<result>|<trace log>" for one run of the nested spanned pair.
+fn run_spanned(n: Int) -> String {
+  let log: Array[String] = [
+  ]
+  let depth: Array[Int] = [
+    0
+  ]
+  let r = handle {
+    handle {
+      spanned_outer(n)
+    } with Exception {
+      Throw(e) => 0 - 1
+    }
+  } with Trace {
+    SpanBegin(name) => {
+      Array::push(log, "\{Array::get(depth, 0)}>\{name}")
+      Array::set(depth, 0, Array::get(depth, 0) + 1)
+      resume(Array::length(log))
+    };
+    SpanEnd(id) => {
+      Array::set(depth, 0, Array::get(depth, 0) - 1)
+      Array::push(log, "<\{Array::get(depth, 0)}")
+      resume(())
+    }
+  }
+  "\{r}|\{String::join(log, ",")}|\{Array::get(depth, 0)}"
+}
+
+/// Nested spans close in LIFO order and depth returns to 0 on BOTH exits.
+/// The trace log is byte-identical whether the body returns or throws --
+/// which is the whole property a scoped `span {}` has to provide.
+test "spans close on the throw path too" {
+  assert_eq(run_spanned(5), "6|0>outer,1>inner,<1,<0|0")
+  assert_eq(run_spanned(0), "-1|0>outer,1>inner,<1,<0|0")
+}
+
 /// perform inside a named top-level fn, handler one level up.
 test "perform behind a named fn" {
   let r = handle {

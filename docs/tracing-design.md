@@ -100,23 +100,56 @@ capability builtin だと sink はランタイムに焼き付き、切り替え�
 かかるから ring buffer が必須」という前提で書いていたが、§3 の実測で
 perform は host call より1桁安いことが分かったので、その前提は崩れた。
 
-### 2.2 スコープ構文 (将来)
+### 2.2 スコープ構文 `span "name" { body }`
+
+**これは純粋な脱糖で書ける。言語機能の追加は要らない。**
+
+当初この節は「`span` の代数的な解は scoped operation (計算を引数に取る
+operation) だが、higher-order effectful block は #1347-2 で非対応と
+明文化されているので今すぐ書けない」と書いていた。**それは要求を取り違えていた。**
+必要なのは「両方の出口で SpanEnd が走る」ことだけで、それは try/finally であり、
+今の vibe で書ける:
 
 ```vibe
-span "typecheck" { ... }
+span "risky" { body }
+
+// ↓ 脱糖後 (これがそのまま今コンパイルできる形)
+
+let sp = perform Trace::SpanBegin("risky")
+let r = handle { body } with Exception {
+  Throw(e) => {
+    perform Trace::SpanEnd(sp)
+    throw(e)
+  }
+}
+perform Trace::SpanEnd(sp)
+r
 ```
 
-が begin/end へ脱糖できると理想だが、**これは今すぐ書けない**:
+`throw(x)` が parse 時に `perform Exception::Throw(x)` へ脱糖されるのと同じ層
+(#640) で処理できる — **parser/desugar の仕事であって、effect system の
+仕事ではない。**
 
-- `body` が throw したとき SpanEnd が走らない。`Exception` は別の effect なので、
-  begin/end 対では巻き戻せない。
-- 本来の代数的な解は `span` を **scoped operation** (計算を引数に取る operation)
-  にすることだが、higher-order effectful block は #1347-2 で**非対応として
-  明文化されている**。
+実測 (`bench/tracing/trace_effect_shapes_test.vibe` の
+"spans close on the throw path too")。ネストした2つの span を、正常終了と
+throw の両方で通したときの trace log:
 
-現実解は「begin/end 対 + handler 側が深さスタックを持ち、unwind 時に開いたままの
-span を閉じる」。**handler が状態を持てるので handler 側で修復できる**のが、
-ここでも代数形の利点になっている。
+```
+normal: r=6   log=0>outer,1>inner,<1,<0   depth_after=0
+throw:  r=-1  log=0>outer,1>inner,<1,<0   depth_after=0
+```
+
+**log がバイト単位で一致する。** span は LIFO で閉じ、深さは 0 に戻る。
+scoped span に求められる性質はこれで全部満たされている。
+
+scoped operation の方が概念的には綺麗だが、それは
+「evidence を arm 境界を越えて migrate する」ための機構 (資料 p133 の
+evidence vector、ADR-0076 に残っている spine) を必要とする。
+**その機構は span のためには要らない。**
+
+> 残る差: OTel の span には `status` があり、異常終了を記録できる。上の脱糖なら
+> Exception arm の側で `perform Trace::SpanAttr(sp, "status", "error")` を
+> 足すだけでよく、これも脱糖で閉じる。
 
 ## 3. 実測 — 代数 effect にしてよいのか
 
@@ -252,7 +285,7 @@ custom section が `linked_compile.vibe:3441` で同じ構造の領域を予約�
 | 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 (`run_wasm_vibe_host_runner.sh` / `unit_test_runner.sh` / `generations.sh`) | **不要** |
 | 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える。TSV は span 木から生成して `test_cli_core.sh` 互換を保つ | **不要 (言語機能は既にある — §3)** |
 | 2 | `vibe bench` が bench ブロックごとに span 内訳を出す | 要 (runner) |
-| 3 | `span {}` スコープ構文 (§2.2 の throw 巻き戻しを解いてから) | 要 |
+| 3 | `span {}` スコープ構文 (§2.2 の脱糖。`throw` → `perform Exception::Throw` と同じ層) | 要 (parser/desugar のみ) |
 | 4 | OTLP エクスポータ | 不要 |
 
 **段1にコンパイラ変更が要らない**のが今回の実測でいちばん大きい収穫で、
@@ -265,8 +298,8 @@ custom section が `linked_compile.vibe:3441` で同じ構造の領域を予約�
   span 木では (誰かがそこに span を置かない限り) 見えない。両方要る。
 - **`bytes_per_op` は置き換えない。** bench の bytes/op は bump 高水位の差分で
   決定的な数値であり、ゲートに使える。span の heap delta はその内訳である。
-- **throw 越しの SpanEnd (§2.2) は未解決。** handler 側の深さスタック修復で
-  回避する前提で書いてあるが、実測していない。
+- **span の粒度は人が決める。** 段1 でどこに span を置くかはこの文書では
+  決めていない (フェーズ境界から始めるのが自然)。
 - **wasm-gc backend は対象外。** 代数 effect handler は linear backend のみ
   (`gc/backend_expr.vibe` は `with Exception` のスタブだけ)。
   `VIBE_TEST_BACKEND=gc` の test/bench では `Trace` は使えない。
