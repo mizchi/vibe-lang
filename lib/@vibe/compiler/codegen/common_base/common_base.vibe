@@ -2001,7 +2001,7 @@ export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_f
   // emitting the same bytes was fine, because only an RC-built binary
   // actually refcounts. Keep the two-instruction form in its own function.
   if dup_fn_idx >= 0 {
-    emit_rc_dup_call(buf, local_idx, dup_fn_idx)
+    emit_rc_dup_tagtest_call(buf, local_idx, dup_fn_idx)
   } else {
     emit_rc_dup_inline(buf, local_idx, rc_shadow)
   }
@@ -2012,6 +2012,40 @@ export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_f
 fn emit_rc_dup_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
   emit_local_get(buf, local_idx)
   emit_call(buf, dup_fn_idx)
+}
+
+/// #1262: the immediate test INLINE, the rest of the guard out-of-line.
+///
+/// `emit_rc_dup_inline`'s FIRST test is `v & 1` -- odd = candidate heap
+/// pointer, even = tagged immediate (`Int` is `value << 1`, so every Int is
+/// even). For an immediate the whole helper is a no-op, yet the pure
+/// out-of-line form pays a full `call` to discover that. Measured cost of
+/// that discovery: **~2.7 ns per dup**, which made a trivial
+/// `fn add2(a: Int, b: Int) -> Int` in a hot loop run **6.4x** slower under
+/// RC than under bump (1052 -> 6750 ns / 1000 iterations) -- while the SAME
+/// call with constant (non-loop-borrowed, hence un-dup'd) arguments cost
+/// 1390 ns under BOTH modes. See docs/side-effect-consolidation.md 2.8.
+///
+/// So: branch on the tag here, call only on the heap path.
+///
+///     local.get v; i64.const 1; i64.and; i32.wrap_i64
+///     if (void)  local.get v; call __rt_rc_dup  end
+///
+/// ~13 B per site against ~5 B for the bare call and 72 B for the full
+/// inline guard -- the third point between the two the size analysis above
+/// compares. The helper re-tests the tag on entry (it is built from
+/// `emit_rc_dup_inline`), so this is a pure fast-path skip: the emitted
+/// semantics are unchanged, including the VIBE_RC=shadow recurrence guard,
+/// which stays inside the helper.
+fn emit_rc_dup_tagtest_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_call(buf, dup_fn_idx)
+  emit_end(buf)
 }
 
 /// The guard expanded in place. Kept as the single definition of what a dup

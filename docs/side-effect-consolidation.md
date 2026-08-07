@@ -310,9 +310,65 @@ issue 内の自前プロファイルは `__rt_rc_dup` を **単独で全 CPU の
 - 中間案として、型情報が届く前でも
   **タグ判定だけ inline し、slow path は out-line のまま残す**形が取れる。
   issue が測った 2 点(全 inline = 72 B/サイト / 全 out-line = ~5 B/サイト)の
-  **間にある第三の点**で、まだ測られていない。判定は immediate かどうかの
-  1 命令 + 分岐で足りるので、全 inline より遥かに安いはず —— ただし
-  ここは推定であって、実測はこれから。
+  **間にある第三の点**。→ **実装して測った。次節。**
+
+### 2.9 実装: タグ判定だけ inline にする(§6.2 の順1')
+
+`emit_rc_dup_guarded` の out-of-line 側を、`local.get v; call __rt_rc_dup`
+から次に差し替えた(`emit_rc_dup_tagtest_call`):
+
+```wasm
+local.get v; i64.const 1; i64.and; i32.wrap_i64
+if (void)  local.get v; call __rt_rc_dup  end
+```
+
+`emit_rc_dup_inline` の**最初のテストと同じ判定**(`v & 1`: 奇数 =
+heap 候補、偶数 = tagged immediate)を site 側に出し、heap 経路だけ
+helper を呼ぶ。helper は入口で同じタグを再判定する(helper 自身が
+`emit_rc_dup_inline` から生成されている)ので、**意味論は完全に不変** ——
+`VIBE_RC=shadow` の再帰ガードも helper の中にそのまま残る。静的解析は
+一切不要で、健全性は構成的に保証される。
+
+**マイクロベンチ(決定的)**。同一バイナリ内の比で読む
+(バイナリを跨ぐ絶対 ns はコード配置で ±15% 動くため):
+
+| RC=1、min ns/1000反復 | 変更前 | 変更後 |
+|---|---|---|
+| `floor/2b` 呼び出しのみ(dup 無し) | 1341 | 1224 |
+| `floor/2` 呼び出し + scalar dup 2 個 | 6077 | **2101** |
+| **dup 1 個あたり** | **2.37 ns** | **0.44 ns** |
+| `floor/2` ÷ `floor/2b` | 4.53× | **1.72×** |
+
+3 回反復で `floor/2` min = 2101 / 2102 / 2101 —— バイナリ内のばらつきは無視できる。
+
+**サイズ**: 2 サイトの probe で RC 出力 911 → 929 B = **+9 B/サイト**
+(全 inline の +67 B/サイト に対して)。`VIBE_RC=0` の出力は 793 B で
+**バイト単位で不変** —— 変更が RC 経路限定であることの裏付け。
+
+**正しさ**: `rc_corpus_parity` **141/141 (RC worse: 0)**、
+`rc_cutover_readiness` READY(全プログラムで parity + heap bounded)、
+`pkf run test`(stage2==stage3 fixpoint)green。
+
+**selfcompile ratio —— ここは決定的ではない**。同一セッション A/B
+(`selfcompile_kpi_rc_lane.sh 5`、interleaved):
+
+| 形 | paired_ratio | ペアごとの比の分布 |
+|---|---|---|
+| out-line call | 2.605 | 2.06 / 2.60 / 2.61 / 2.89 / 2.97 |
+| tag-test | **2.399** | 1.97 / 2.35 / 2.40 / 2.76 / 3.23 |
+
+中央値は下がったが、**分布は大きく重なっており n=5 では有意ではない**。
+lane 自身のヘッダが警告しているとおり、この runner のドリフトは効果より
+大きい。**マイクロベンチの利得は決定的、selfcompile への効きは方向のみ**
+と読むこと。
+
+理由も推測がつく: **コンパイラの dup は多くが本物の heap 値**
+(String / Array / AST ノード)で、そこではタグ判定は素通りして結局
+helper を呼ぶ。マイクロベンチ(全部 Int)は上限を測っている。
+**同じ理由で、静的型による「dup を完全に消す」版の上限も同じ母集団に
+縛られる** —— 実行される dup のうち immediate の割合が効果を決める。
+その割合の直接計測(baseline バイナリの `__rt_rc_dup` 入口で
+`v & 1` を数える)は未実施で、次にこの軸へ投資するかの判断材料になる。
 
 ---
 
@@ -559,8 +615,8 @@ lowering (1点)
 
 | 順 | やること | 得られるもの | 要る配管 |
 |---|---|---|---|
-| 1 | **scalar 引数の dup を消す** | RC の呼び出しペナルティが**丸ごと消える**。サイズは減る | 引数の静的型が codegen に届く |
-| 1'| (1 の代替、型が届く前) **タグ判定だけ inline、slow path は out-line** | 同上の大半。数〜十数 B/サイト | 無し(codegen 内で完結) |
+| 1 | **scalar 引数の dup を消す** | 残り 0.44 ns/dup も消える。サイズは 1' より減る | 引数の静的型が codegen に届く (= 2 の配管) |
+| 1'| **[実装済]** タグ判定だけ inline、slow path は out-line | dup 1 個 2.37 → **0.44 ns**、+9 B/サイト。selfcompile への効きは方向のみ (§2.9) | 無し(codegen 内で完結) |
 | 2 | **checker 側 escape 述語**(§4 段階1、診断のみ) | 権限規則の土台 + 3,4 の前提 | `TypeEnv` に可変性/escape |
 | 3 | **scalar replacement**(非 escape struct → local) | struct mut / 捕獲 `let mut` が段0 へ | 2 |
 | 4 | **unboxing**(非 escape tuple/enum → 複数 local) | `loop` の箱が消える。10–28× の surface 差が消える | 2 |
