@@ -1757,6 +1757,17 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
   let mut prev_prefix = false
   let mut prev_pipe = false
   let mut prev_line_comment = false
+  // #1507: the token before the start of the `Name (:: Name)*` run ending at
+  // `prev`, tracked alongside the 2-token prev/prev_prev window so
+  // should_insert_struct_double_colon can see past a qualified name's `::`
+  // tokens to the keyword that actually precedes it (e.g. `match` in
+  // `match Color::Red {`). qual_run_active is true while `prev` is the tail
+  // of such a run with at least one `::` in it; for a bare unqualified name
+  // (no `::`) the plain prev_prev already IS this anchor, so callers only
+  // consult the anchor when qual_run_active holds.
+  let mut qual_run_anchor_kind = k_none
+  let mut qual_run_anchor_text = ""
+  let mut qual_run_active = false
   // #628: true while inside an import/export path region (keyword .. `{`), so
   // `/` and `.` separators are emitted without surrounding spaces.
   let mut path_active = false
@@ -1795,6 +1806,9 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       prev_prefix = false
       prev_pipe = false
       path_active = false
+      qual_run_anchor_kind = k_none
+      qual_run_anchor_text = ""
+      qual_run_active = false
       prev_line_comment = String::length(comment_text) >= 2 &&
       String::char_code_at(comment_text, 0) == '/' && String::char_code_at(comment_text, 1) == '/'
       i = i + 1
@@ -1901,6 +1915,9 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         prev_prefix = false
         prev_pipe = false
         path_active = false
+        qual_run_anchor_kind = k_none
+        qual_run_anchor_text = ""
+        qual_run_active = false
         line_has_content = false
       }
       let next_kind = next_non_trivia_kind(toks, i)
@@ -1920,7 +1937,22 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         i = i + 1
       } else {
         let curr_prefix = is_prefix_op(kind, prev_kind)
-        let insert_double_colon = should_insert_struct_double_colon(prev_prev_kind, prev_prev_text, prev_kind, prev_text, kind, in_type_context)
+        // #1507: `prev` may be the tail of a qualified name (`Color::Red`),
+        // in which case the guard needs the anchor before the WHOLE run --
+        // not the raw 2-token prev_prev, which for a run of length >= 2 is
+        // just `::`. For a bare unqualified name qual_run_active is false and
+        // prev_prev is already that anchor, so this is a no-op there.
+        let guard_prev_prev_kind = if prev_kind == k_name && qual_run_active {
+          qual_run_anchor_kind
+        } else {
+          prev_prev_kind
+        }
+        let guard_prev_prev_text = if prev_kind == k_name && qual_run_active {
+          qual_run_anchor_text
+        } else {
+          prev_prev_text
+        }
+        let insert_double_colon = should_insert_struct_double_colon(guard_prev_prev_kind, guard_prev_prev_text, prev_kind, prev_text, kind, in_type_context)
         let effects_rbrace = kind == k_rbrace && Array::length(container_stack) > 0 &&
         Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects
         if line_has_content && !insert_double_colon &&
@@ -2074,6 +2106,23 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
               going = false
             }
           }
+        }
+        if kind == k_name {
+          if prev_kind == k_double_colon && qual_run_active {
+            // continuing an existing run (`A::B::` + this name) -- anchor
+            // from the run's first name stays put.
+            qual_run_active = true
+          } else {
+            // starts a fresh potential run; anchor is where prev_prev would
+            // point today, i.e. the token before this name.
+            qual_run_anchor_kind = prev_kind
+            qual_run_anchor_text = prev_text
+            qual_run_active = true
+          }
+        } else if kind == k_double_colon {
+          qual_run_active = prev_kind == k_name && qual_run_active
+        } else {
+          qual_run_active = false
         }
         prev_prev_kind = prev_kind
         prev_prev_text = prev_text

@@ -1,0 +1,59 @@
+//# Imports
+
+import ./format.vibe {
+  format_script
+}
+
+//# Tests
+// #1507: `should_insert_struct_double_colon` decides whether a `{` after a
+// name is a struct literal (needs `Name::{`) or a block body (bare `{`) by
+// looking 2 tokens back. A qualified scrutinee/subject (`Color::Red`) pushes
+// the real anchor (`match`/`while`/...) 2 tokens further back than that,
+// behind the `::`, so the 2-token guard missed it and corrupted the source.
+// The fix widens the backward lookup to skip the whole `Name (:: Name)*` run.
+
+test "#1507: a qualified match scrutinee keeps a bare block brace" {
+  let src = "enum Color { Red; Green }\n\nfn f() -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 0\n  }\n}\n"
+  let out = format_script(src)
+  assert(String::contains(out, "match Color::Red {"))
+  assert(!String::contains(out, "match Color::Red::{"))
+}
+
+test "#1507: a qualified while subject keeps a bare block brace" {
+  let src = "enum Flag { On; Off }\n\nfn g() -> Int {\n  while Flag::On {\n    0\n  }\n}\n"
+  let out = format_script(src)
+  assert(String::contains(out, "while Flag::On {"))
+  assert(!String::contains(out, "while Flag::On::{"))
+}
+
+test "#1507: an unqualified match scrutinee is untouched (regression guard)" {
+  let src = "fn f(c: Color) -> Int {\n  match c {\n    Red => 1\n    Green => 0\n  }\n}\n"
+  let out = format_script(src)
+  assert(String::contains(out, "match c {"))
+  assert(!String::contains(out, "match c::{"))
+}
+
+test "#1507: a contextual keyword before the brace is not skipped over" {
+  // `effect` is lexed as a plain k_name (`k_name` text "effect"), not a
+  // dedicated keyword kind -- the guard matches on TEXT for it. Widening the
+  // backward reference must not swallow this adjacent name too, or
+  // `export effect TcpSocket {` regresses to `effect TcpSocket::{` (the #1429
+  // incident this guard predates).
+  let src = "export effect TcpSocket {\n}\n"
+  let out = format_script(src)
+  assert(String::contains(out, "effect TcpSocket {"))
+  assert(!String::contains(out, "effect TcpSocket::{"))
+}
+
+test "#1507: an unqualified struct literal is still normalized to canonical form" {
+  let src = "fn h() -> Point {\n  Point { x: 1, y: 2 }\n}\n"
+  let out = format_script(src)
+  assert(String::contains(out, "Point::{"))
+}
+
+test "#1507: formatting a fixed file twice is a no-op" {
+  let src = "enum Color { Red; Green }\n\nfn f() -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 0\n  }\n}\n"
+  let once = format_script(src)
+  let twice = format_script(once)
+  assert(once == twice)
+}
