@@ -52,7 +52,7 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr, subst_type_params
+  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import ./checker_spawnable.vibe {
@@ -6584,7 +6584,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else raw_name
         let (pt, ns, nc) = match ann {
           Some(te) => {
-            let resolved = resolve_type_expr(te, defs)
+            // #1512: `tparams` shadow `defs`, so `resolve_tparams_in` below
+            // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
+            let resolved = resolve_type_expr_shadowed(te, defs, tparams)
             let pt2 = resolve_tparams_in(resolved, fn_env)
             (pt2, s1, c1)
           },
@@ -6613,13 +6615,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // rejected it once the #941 railway-conflict report landed. CtUnknown
       // unifies with anything, so the EReturn check is inert for it.
       let body_env = match ret_ty {
-        Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr(rte, defs), fn_env)),
+        Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env)),
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
       let (bt, s2, c2) = check_expr_capture(body, body_env, defs, s1, c1, errors, tytab, capture, lane)
       let (final_ret, s3) = match ret_ty {
         Some(te) => {
-          let resolved = resolve_type_expr(te, defs)
+          let resolved = resolve_type_expr_shadowed(te, defs, tparams)
           let resolved_ret = resolve_tparams_in(resolved, fn_env)
           // #1451: check_assignable, not a raw `unify`, so the IMPLICIT
           // tail-expression return follows the same rules as an EXPLICIT
