@@ -63,6 +63,15 @@ vibe diagnostics --json <file.vibe>       # same diagnostics as a JSON array of 
   parsed AST (not a line regex) it handles multi-line declarations and
   module-nested symbols and never reports a name that only appears in a string
   or comment.
+- **`diagnostics` analyzes ONE file and does not follow its imports**, so on a
+  file with imports it reports names it cannot see as undefined. A file that is
+  perfectly valid under `vibe check` can come back with `unknown name: T::Crimson`
+  here, purely because `import ./dep.vibe { Hue as T }` was never resolved.
+  Empty output therefore means "clean *as a standalone file*", not "compiles".
+  **To judge a file that imports anything, use `vibe check`** (`vibe diagnostics`
+  stays the right tool for the editor's per-buffer feedback, which is what it
+  exists for). The converse gap — a name imported from a module that does not
+  export it — is missed by BOTH and only surfaces at codegen (#1521).
 - `diagnostics` always exits 0 (it is a *report*, not a pass/fail), so a clean
   file simply yields no output (plain mode) or `[]` (`--json` mode).
   `--json` reuses the same `[@off=N]`-derived offsets `vibe lsp`'s
