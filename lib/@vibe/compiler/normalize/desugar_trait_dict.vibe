@@ -7940,6 +7940,153 @@ fn collect_fn_param_labels(stmts: Array[Stmt]) -> Array[(String, Array[String])]
 }
 
 ///|
+/// #1500: `fname -> per-parameter "is optional"` flags, consulted by the ECall
+/// arm of `relabel_expr`. A module cell rather than another threaded parameter
+/// because `relabel_expr` recurses from ~30 sites; same shape as the other
+/// per-program tables in this file (`afe_field_types_cell`, `throw_kind_cell`).
+let optional_param_tbl_cell: Array[Array[(String, Array[Bool])]] = array_empty()
+
+///|
+fn optional_param_tbl_set(tbl: Array[(String, Array[Bool])]) -> Unit {
+  Array::truncate(optional_param_tbl_cell, 0)
+  Array::push(optional_param_tbl_cell, tbl)
+}
+
+///|
+fn optional_param_flags(fname: String) -> Option[Array[Bool]] {
+  if Array::length(optional_param_tbl_cell) == 0 {
+    None
+  } else {
+    let tbl = Array::get(optional_param_tbl_cell, 0)
+    let mut i = 0
+    let mut found = None
+    while i < Array::length(tbl) {
+      let (n, flags) = Array::get(tbl, i)
+      if n == fname {
+        found = Some(flags)
+        i = Array::length(tbl)
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+///|
+/// Every top-level function that declares at least one optional (`z?`)
+/// parameter, with one flag per parameter. Functions with no optional
+/// parameter are left out so the ECall arm's lookup misses immediately for
+/// the entire rest of the program.
+fn collect_optional_param_fns(stmts: Array[Stmt]) -> Array[(String, Array[Bool])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, _, params, _, _, _) => {
+          let flags = array_empty()
+          let mut any = false
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pn, _) = Array::get(params, pi)
+            let pl = String::length(pn)
+            let is_opt = pl > 0 && pn[pl - 1: pl] == "?"
+            if is_opt {
+              any = true
+            } else {
+              ()
+            }
+            Array::push(flags, is_opt)
+            pi = pi + 1
+          }
+          if any {
+            Array::push(out, (fname, flags))
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+///|
+/// True when `e` already denotes an `Option` at the syntax level, so a second
+/// run of this pass would not double-wrap. The pass is called exactly once
+/// (checker_stmt.vibe, right after desugar_labeled_args) -- this is a belt for
+/// the case where a future caller adds a second run, matching the "in-place and
+/// idempotent" property the neighbouring desugars document. The cost is that
+/// `f(z = Some(1))` for a `z?: Int?` parameter (an OPTIONAL parameter whose own
+/// type is an Option) is passed through unwrapped; that shape needs an explicit
+/// `Some(Some(1))` today.
+fn opt_arg_already_option(e: Expr) -> Bool {
+  match e {
+    EIdent(n, _) => n == "None",
+    ECall(callee, args, _) => match callee {
+      EIdent(n, _) => n == "Some" && Array::length(args) == 1,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+///|
+/// #1500 call-site lowering: an optional parameter is declared `Option[T]`, so
+/// a supplied argument becomes `Some(v)` and an omitted trailing one becomes
+/// `None`. After this the call has exactly as many arguments as the function
+/// has parameters, which is what makes the ordinary arity check pass -- the
+/// checker never learns about optionality at all.
+///
+/// Leaves the call untouched when the missing arguments are NOT all optional
+/// (a genuinely short call), so the arity diagnostic still fires and still
+/// names the real count.
+fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr] {
+  let np = Array::length(flags)
+  let na = Array::length(args)
+  if na > np {
+    args
+  } else {
+    let mut fillable = true
+    let mut k = na
+    while k < np {
+      if Array::get(flags, k) {
+        ()
+      } else {
+        fillable = false
+      }
+      k = k + 1
+    }
+    if !fillable {
+      args
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < np {
+        if i < na {
+          let a = Array::get(args, i)
+          if Array::get(flags, i) && !opt_arg_already_option(a) {
+            Array::push(out, ECall(EIdent("Some", 0 - 1), [
+              a
+            ], 0 - 1))
+          } else {
+            Array::push(out, a)
+          }
+        } else {
+          Array::push(out, EIdent("None", 0 - 1))
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+///|
 fn lookup_param_labels(tbl: Array[(String, Array[String])], fname: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -8158,7 +8305,20 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       } else {
         rargs
       }
-      ECall(rcallee, final_args, off)
+      // #1500: fill / wrap optional parameters AFTER label reordering, so the
+      // flags line up with declared parameter order.
+      let opt_args = match callee {
+        EIdent(fname, _) => if relabel_shadowed(shadows, fname) {
+          final_args
+        } else {
+          match optional_param_flags(fname) {
+            Some(flags) => optional_fill_args(final_args, flags),
+            None => final_args
+          }
+        },
+        _ => final_args
+      }
+      ECall(rcallee, opt_args, off)
     },
     EBinOp(op, l, r) => EBinOp(op, relabel_expr(l, tbl, shadows), relabel_expr(r, tbl, shadows)),
     EUnaryOp(op, e) => EUnaryOp(op, relabel_expr(e, tbl, shadows)),
@@ -8447,12 +8607,21 @@ fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
 /// expr_has_labeled_arg).
 export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   let tbl = collect_fn_param_labels(stmts)
+  // #1500: optional-parameter call sites are rewritten by the same walk (see
+  // the ECall arm of relabel_expr). Unlike labeled arguments, an omitted
+  // optional argument leaves NO syntactic trace at the call site -- `d(1)` for
+  // `fn d(x: Int, z?: Int)` looks like any other call -- so when the program
+  // declares one, every statement has to be walked, not just the ones
+  // stmt_has_labeled_arg finds.
+  let opt_tbl = collect_optional_param_fns(stmts)
+  optional_param_tbl_set(opt_tbl)
+  let walk_all = Array::length(opt_tbl) > 0
   if Array::length(tbl) == 0 {
     ()
   } else {
     let mut i = 0
     while i < Array::length(stmts) {
-      if stmt_has_labeled_arg(Array::get(stmts, i)) {
+      if walk_all || stmt_has_labeled_arg(Array::get(stmts, i)) {
         Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
       } else {
         ()
@@ -8460,6 +8629,7 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
       i = i + 1
     }
   }
+  optional_param_tbl_set(array_empty())
 }
 
 ///|
