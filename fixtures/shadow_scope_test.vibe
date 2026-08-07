@@ -1,0 +1,65 @@
+// Shadow-clobber regression (bump lane): the linear backend never restored
+// `local_names` when an inner binding scope closed mid-function, so a later
+// same-name reference resolved to the DEAD inner slot and silently read its
+// value. Fixed by running uniquify_shadowed_bindings (#712) in both lanes.
+// The RC lane already renamed shadows and always answered these correctly --
+// these tests pin the lanes to the same answers.
+
+//# Tests
+
+test "nested match rebinding the same tuple binders" {
+  match (1, 2) {
+    (a, b) => {
+      let inner = match (30, 40) {
+        (a, b) => a + b
+      }
+      // was: inner + 30 + 40 = 140 on the bump lane
+      assert(inner + a + b == 73)
+    }
+  }
+}
+
+test "block-valued let with an inner shadowing let" {
+  let a = 1
+  let blk = {
+    let a = 200
+    a + 1
+  }
+  // was: blk + 200 = 401 on the bump lane
+  assert(blk + a == 202)
+  assert(a == 1)
+}
+
+test "if-branch let shadow stays correct" {
+  let c = 5
+  let d = if true {
+    let c = 300
+    c + 1
+  } else {
+    0
+  }
+  assert(d + c == 306)
+}
+
+test "match arm let shadow does not leak into code after the match" {
+  let e = 7
+  let f = match 1 {
+    0 => {
+      let e = 400
+      e
+    },
+    _ => 9
+  }
+  assert(f + e == 16)
+}
+
+test "catch-all arm binder does not leak past the match" {
+  let x = 3
+  let y = match (10, 20) {
+    (x, _) => x
+  }
+  // was: the arm's x stayed resolvable after the match on the bump lane
+  assert(y == 10)
+  assert(x == 3)
+  assert(x + y == 13)
+}
