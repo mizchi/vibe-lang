@@ -268,10 +268,21 @@ run_cli_compile() {
   fi
   mkdir -p "$(dirname "$out")"
   echo "[selfhost-gen] $label (invoke cli_main)"
+  # #1553: continuous guest-heap measurement + watch. The bump high-water
+  # (`__heap_ptr`) is byte-deterministic for a fixed (compiler, source) pair,
+  # so unlike wall time it can gate without flakes. The cold self-compile
+  # measured ~2.64 GiB against wasm32's 4 GiB ceiling; the watch fails the
+  # build past VIBE_GENERATION_HEAP_WATCH_BYTES (default 3.5 GiB, 0 disables)
+  # so growth is caught as a red build, not as a mid-compile OOM later.
+  local heap_watch_bytes="${VIBE_GENERATION_HEAP_WATCH_BYTES:-3758096384}"
+  local stats_stderr
+  stats_stderr="$(mktemp)"
+  local compile_rc=0
   (
     cd "$PROJECT_ROOT"
     VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_IMPORT_ABI="$import_abi" \
+      VIBE_WASM_MEMORY_STATS=1 \
       VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_SKIP_RUN_INIT="$skip_run_init" \
@@ -282,7 +293,20 @@ run_cli_compile() {
         "$(rel_path "$entry")" \
         "$(rel_path "$out")" \
         "$compile_entry_name"
-  )
+  ) 2>"$stats_stderr" || compile_rc=$?
+  # The runner's stderr (diagnostics AND the [wasm-memory] stats line) was
+  # captured for parsing; replay it so nothing is swallowed, success or not.
+  cat "$stats_stderr" >&2
+  local heap_ptr
+  heap_ptr="$(grep -o 'heap_ptr=[0-9]*' "$stats_stderr" | tail -n 1 | cut -d= -f2 || true)"
+  rm -f "$stats_stderr"
+  [ "$compile_rc" -eq 0 ] || die "$label failed with exit $compile_rc"
+  if [ -n "$heap_ptr" ]; then
+    echo "[selfhost-gen] heap-watch $label heap_ptr_bytes=$heap_ptr limit_bytes=$heap_watch_bytes"
+    if [ "$heap_watch_bytes" != "0" ] && [ "$heap_ptr" -gt "$heap_watch_bytes" ]; then
+      die "$label guest heap high-water $heap_ptr bytes exceeds the #1553 watch limit $heap_watch_bytes (wasm32 ceiling is 4 GiB; raise VIBE_GENERATION_HEAP_WATCH_BYTES only with a plan to shed allocations)"
+    fi
+  fi
   [ -s "$out" ] || die "$label did not produce output: $out"
 }
 
