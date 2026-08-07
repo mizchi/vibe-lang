@@ -485,6 +485,45 @@ escape する(closure 捕獲)」を答えられるようにする。
 
 **段階2**: 段0/段1 の境界を**エラーにできる**ようにする(opt-in の lint から)。
 
+### 4.5 実装記録: `vibe escapes`(段階1、着地済み)と3つの重複
+
+段階1 は `vibe escapes <file.vibe>` として着地した
+(`lib/@vibe/compiler/runtime/escape_spans.vibe`)。escape する `let mut` を
+`NAME START END`(名前自身のバイトオフセット)で1行ずつ出す。
+**型も row も一切変えず、エラーにもならない** —— 見えなかった判定を
+見えるようにするだけ。
+
+```
+$ vibe escapes bench/bench_state_representation.vibe
+acc 4019 4022      # 25 個の `let mut` のうち escape するのはこの1つだけ
+                   # (= state/7_let_mut_captured の acc)
+```
+
+**source of truth は codegen の `is_mut_captured_in` をそのまま呼ぶ。**
+再導出しないので、答えは構成上「codegen が実際に box するか」と一致する ——
+つまりこのクエリは**コストの問いにも権限の問いにも同じ1つの述語で答える**。
+
+着手して分かったのは、重複が2つではなく**3つ**あったこと:
+
+| | 場所 | 状態 | 誤りの向き |
+|---|---|---|---|
+| 1 | `codegen/common_analysis :: is_mut_captured_in` | live(lowering を決める) | **保守的**: `match` arm / `for-in` の束縛子の shadowing を引かないので、外側の `let mut` と同名の内側束縛を捕獲しても「捕獲」と報告する → 余計に box する(遅いだけで、誤りではない) |
+| 2 | `checker/checker_spawnable :: sp_walk_spawnable_mut` | live(spawn 診断) | **厳密**: false positive がそのまま誤診断になるので、shadowing を正しく引く(PR #1150/#1151/#1152 の3ラウンドで到達) |
+| 3 | `checker_capture.vibe` | **dead** | 自分の unit test 以外から参照ゼロ |
+
+1 と 2 は**意図的に向きが違う**ので統合してはいけない —— lowering は
+「迷ったら box(安全)」、診断は「迷ったら黙る(誤診断を出さない)」が正しい。
+`vibe escapes` は **1 を採用**した: 「codegen が box するか」を答えるべき
+クエリだから、over-report は嘘ではなく事実である。
+
+3 は削除した。dead であるだけでなく**壊れていた**:
+`collect_mut_bindings` は Expr の 5 形しか処理せず残りは `_` に落ちるので
+**`EFn` に降りず、closure 捕獲を原理的に観測できない**。
+`analyze_captures_with_muts` は `ELet`/params/パターンの shadowing を引かず、
+PR #1152 が 2 で直したのと同じ false positive を持っていた。
+「次にこの判定が要る人が踏む罠」として残す価値がないので消した
+(この作業中に実際に踏みかけた)。
+
 **段階3**: ADR-0090 の `region r { }` を段1 の明示形として実装し、
 捕獲 `let mut` を暗黙 region として同じ検査に載せる。
 
@@ -617,7 +656,7 @@ lowering (1点)
 |---|---|---|---|
 | 1 | **scalar 引数の dup を消す** | 残り 0.44 ns/dup も消える。サイズは 1' より減る | 引数の静的型が codegen に届く (= 2 の配管) |
 | 1'| **[実装済]** タグ判定だけ inline、slow path は out-line | dup 1 個 2.37 → **0.44 ns**、+9 B/サイト。selfcompile への効きは方向のみ (§2.9) | 無し(codegen 内で完結) |
-| 2 | **checker 側 escape 述語**(§4 段階1、診断のみ) | 権限規則の土台 + 3,4 の前提 | `TypeEnv` に可変性/escape |
+| 2 | **[実装済]** escape 述語を可視化(`vibe escapes`、§4.5) | 権限規則の土台。重複3件を1件に整理 | 無し(codegen の述語を再利用) |
 | 3 | **scalar replacement**(非 escape struct → local) | struct mut / 捕獲 `let mut` が段0 へ | 2 |
 | 4 | **unboxing**(非 escape tuple/enum → 複数 local) | `loop` の箱が消える。10–28× の surface 差が消える | 2 |
 | 5 | **handler inline**(monomorphic tail-resumptive) | State effect が段0 へ | 2 + inlining |

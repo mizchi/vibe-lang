@@ -159,6 +159,11 @@ vibe binding-at file.vibe <line> <col>
 
 # 全 diagnostics (parse error 全件 + 型エラー)。空出力 = clean
 vibe diagnostics file.vibe
+
+# closure に捕獲されて escape する `let mut` (NAME START END / 行)。
+# = codegen が wasm local ではなく heap ref cell に落とすもの (#1262)。
+# 空出力 = ファイル中の `let mut` は全部ただの local
+vibe escapes file.vibe
 ```
 
 ### `vibe lsp` - Language Server
