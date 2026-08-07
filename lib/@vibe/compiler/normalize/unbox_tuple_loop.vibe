@@ -47,7 +47,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, expr_children
+  Expr, Pat, Stmt
 }
 
 import @vibe/core {
@@ -956,47 +956,6 @@ fn utl_drive(e: Expr) -> Expr {
   }
 }
 
-/// Cheap candidate pre-scan: does `e` contain ANY `let mut` initialized with a
-/// literal tuple? `utl_drive` rebuilds (= re-allocates) the whole expression
-/// tree it walks, and the overwhelming majority of functions have no candidate
-/// at all -- running the driver unconditionally cost +2% selfcompile heap and
-/// a visible wall regression on the perf report. This scan allocates nothing
-/// beyond expr_children's child arrays and lets those functions keep their
-/// original AST untouched.
-fn utl_has_candidate(e: Expr) -> Bool {
-  let is_own = match e {
-    ELetMut(_, v, _, _) => match v {
-      ETuple(xs) => Array::length(xs) >= 2 && Array::length(xs) <= 8,
-      _ => false
-    },
-    _ => false
-  }
-  if is_own {
-    true
-  } else {
-    let kids = expr_children(e)
-    let mut hit = false
-    let mut i = 0
-    while i < Array::length(kids) {
-      if utl_has_candidate(Array::get(kids, i)) {
-        hit = true
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    hit
-  }
-}
-
-fn utl_drive_if_candidate(e: Expr) -> Expr {
-  if utl_has_candidate(e) {
-    utl_drive(e)
-  } else {
-    e
-  }
-}
-
 /// Split every eligible tuple `let mut` in `stmts` into scalar `let mut`s,
 /// IN PLACE. Run at both linear codegen entries, after the checker.
 export fn unbox_tuple_loop_params(stmts: Array[Stmt]) -> Unit {
@@ -1004,12 +963,12 @@ export fn unbox_tuple_loop_params(stmts: Array[Stmt]) -> Unit {
   while i < Array::length(stmts) {
     let st = Array::get(stmts, i)
     match st {
-      SLet(a, b, name, ty, body) => Array::set(stmts, i, SLet(a, b, name, ty, utl_drive_if_candidate(body))),
-      SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, utl_drive_if_candidate(body))),
-      SExpr(e) => Array::set(stmts, i, SExpr(utl_drive_if_candidate(e))),
-      STest(name, body) => Array::set(stmts, i, STest(name, utl_drive_if_candidate(body))),
-      SBench(name, body) => Array::set(stmts, i, SBench(name, utl_drive_if_candidate(body))),
-      SLetPat(p, body) => Array::set(stmts, i, SLetPat(p, utl_drive_if_candidate(body))),
+      SLet(a, b, name, ty, body) => Array::set(stmts, i, SLet(a, b, name, ty, utl_drive(body))),
+      SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, utl_drive(body))),
+      SExpr(e) => Array::set(stmts, i, SExpr(utl_drive(e))),
+      STest(name, body) => Array::set(stmts, i, STest(name, utl_drive(body))),
+      SBench(name, body) => Array::set(stmts, i, SBench(name, utl_drive(body))),
+      SLetPat(p, body) => Array::set(stmts, i, SLetPat(p, utl_drive(body))),
       SModule(exp, name, inner) => {
         unbox_tuple_loop_params(inner)
         Array::set(stmts, i, SModule(exp, name, inner))
