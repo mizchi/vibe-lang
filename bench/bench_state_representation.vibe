@@ -1,0 +1,350 @@
+//# State-representation cost comparison (#1262 の副作用整理)
+//#
+//# 二つのグループがある。
+//#
+//# `state/*` — 同じ sum(0..n-1) を、**反復状態の持ち方だけ**変えて書いた 9 形。
+//#   「`let mut` / struct mut / State effect / 値の付け替え」がそれぞれ
+//#   どれだけ違うのかを、ns と bytes_per_op の両方で出す。
+//#
+//# `fbip/*` — ADR-0092 Phase 1 の drop-guided reuse が **発火する形と
+//#   しない形**の A/B。`map_inc_fused` は ELet + match + 各 PBind 一回消費 +
+//#   同 arity の裸 ctor rebuild という Phase 1 の適格条件をすべて満たし、
+//#   `map_inc_plain` は scrutinee が引数なので ELet が無く発火しない
+//#   (`i32.const 16777217` = `1 | class1<<24` の uniqueness test が
+//#   前者にだけ出ることで確認済み)。同じ仕事の in-place 版が
+//#   `array_inplace`。`*_map5_*` は中間結果を名前に束縛しない形で、
+//#   所有権が渡っているときの reuse 挙動を見る。
+//#
+//# 測定結果と読み方は docs/side-effect-consolidation.md §2。
+//#
+//# 注意: `bytes_per_op` は bump ポインタの前進量なので、**in-place reuse と
+//# exact-fit free list の再利用を区別しない** (fixtures/rc_reuse_match_ctor_test.vibe
+//# の冒頭注記と同じ理由)。区別が要るときは上の uniqueness-test サイト数を見る。
+//#
+//# 走らせ方:
+//#   VIBE_RC=0 vibe bench bench/bench_state_representation.vibe --iters 400
+//#   VIBE_RC=1 vibe bench bench/bench_state_representation.vibe --iters 400
+//# tracked_benches.txt には**入れない** (CI の micro bench は < ~30s に保つ)。
+
+//# Types
+
+enum St {
+  St(Int, Int)
+}
+
+enum IntList {
+  Nil;
+  Cons(Int, IntList)
+}
+
+struct Cell {
+  mut n: Int
+}
+
+effect State {
+  Get() -> Int;
+  Put(Int) -> Unit
+}
+
+//# ---- state/: 反復状態の持ち方
+
+/// 1. 捕獲されない `let mut` — wasm local に落ちる。heap に触れない。
+fn sum_let_mut(n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    acc = acc + i
+    i = i + 1
+  }
+  acc
+}
+
+/// 2. loop パラメータ (scalar のみ) — 1 と同じく local。
+fn sum_loop_param(n: Int) -> Int {
+  loop (i = 0, acc = 0) {
+    if i >= n {
+      break acc
+    } else {
+      continue (i + 1, acc + i)
+    }
+  }
+}
+
+/// 3. struct の `mut` フィールド — heap 1 個 + in-place 書き込み。
+fn sum_struct_mut(n: Int) -> Int {
+  let c = Cell::{ n: 0 }
+  let mut i = 0
+  while i < n {
+    c.n = c.n + i
+    i = i + 1
+  }
+  c.n
+}
+
+/// 4. 値状態を毎回組み直す (match を loop 本体に直書き)。
+fn sum_value_inline(n: Int) -> Int {
+  loop (s = St(0, 0)) {
+    match s {
+      St(i, acc) =>
+        if i >= n {
+          break acc
+        } else {
+          continue (St(i + 1, acc + i))
+        },
+    }
+  }
+}
+
+fn step(s: St) -> St {
+  match s {
+    St(i, acc) => St(i + 1, acc + i),
+  }
+}
+
+/// 5. 4 と同じだが step を関数に出した形。
+fn sum_value_step(n: Int) -> Int {
+  loop (s = St(0, 0), k = 0) {
+    if k >= n {
+      match s {
+        St(_, acc) => break acc,
+      }
+    } else {
+      continue (step(s), k + 1)
+    }
+  }
+}
+
+fn sum_state_effect_body(n: Int) -> Int with State {
+  let mut i = 0
+  while i < n {
+    let acc = perform State::Get()
+    perform State::Put(acc + i)
+    i = i + 1
+  }
+  perform State::Get()
+}
+
+/// 6. State を代数 effect にして tail-resumptive handler で受ける。
+fn sum_state_effect(n: Int) -> Int {
+  let mut cell = 0
+  handle {
+    sum_state_effect_body(n)
+  } with State {
+    Get() => resume(cell);
+    Put(v) => {
+      cell = v
+      resume(())
+    }
+  }
+}
+
+/// 7. 1 と同じ `let mut` を closure に捕獲させた形 — heap ref cell に落ちる。
+///    「`mut` かどうか」ではなく「スコープを出るかどうか」がコストを決めることの対照。
+fn sum_let_mut_captured(n: Int) -> Int {
+  let mut acc = 0
+  let bump = (v: Int) -> Unit {
+    acc = acc + v
+  }
+  let mut i = 0
+  while i < n {
+    bump(i)
+    i = i + 1
+  }
+  acc
+}
+
+/// 8. 5 と同じだが中間状態を全部生かしておく — reuse も free list も効かない。
+fn sum_value_shared(n: Int) -> Int {
+  let sink: Array[St] = []
+  loop (s = St(0, 0), k = 0) {
+    if k >= n {
+      match s {
+        St(_, acc) => break acc,
+      }
+    } else {
+      Array::push(sink, s)
+      continue (step(s), k + 1)
+    }
+  }
+}
+
+fn step_fused(s0: St) -> St {
+  let s = s0
+  match s {
+    St(i, acc) => St(i + 1, acc + i),
+  }
+}
+
+/// 9. 5 を ELet + match の形に書き直したもの。Phase 1 の適格条件を満たし
+///    fusion が発火する (uniqueness test サイトを emit することを確認済み)。
+///    ところが呼び出し側 (loop) が `s` を保持したままなので実行時の
+///    `rc == 1` 判定は毎回外れ、shared フォールバックに落ちる —
+///    5 との差は `let s = s0` の一行だけなのに RC で 1.6x 遅くなり、
+///    確保も 0 B/op -> 32 KB/op に増える。**静的な適格性と動的な一意性が
+///    一致していない**ことの実例 (docs/side-effect-consolidation.md §2.3)。
+fn sum_value_fused(n: Int) -> Int {
+  loop (s = St(0, 0), k = 0) {
+    if k >= n {
+      match s {
+        St(_, acc) => break acc,
+      }
+    } else {
+      continue (step_fused(s), k + 1)
+    }
+  }
+}
+
+//# ---- fbip/: drop-guided reuse が発火する形としない形
+
+fn build_list(n: Int) -> IntList {
+  loop (i = 0, acc = Nil) {
+    if i >= n {
+      break acc
+    } else {
+      continue (i + 1, Cons(i, acc))
+    }
+  }
+}
+
+fn sum_list(l: IntList) -> Int {
+  loop (cur = l, acc = 0) {
+    match cur {
+      Nil => break acc,
+      Cons(x, rest) => continue (rest, acc + x),
+    }
+  }
+}
+
+/// 適格: ELet 束縛の scrutinee / 各 PBind ちょうど一回 / 同 arity の裸 ctor。
+fn map_inc_fused(l0: IntList) -> IntList {
+  let l = l0
+  match l {
+    Nil => Nil,
+    Cons(x, rest) => Cons(x + 1, map_inc_fused(rest)),
+  }
+}
+
+/// 非適格: scrutinee が引数なので ELet が無い。仕事は完全に同じ。
+fn map_inc_plain(l: IntList) -> IntList {
+  match l {
+    Nil => Nil,
+    Cons(x, rest) => Cons(x + 1, map_inc_plain(rest)),
+  }
+}
+
+/// 同じ仕事の in-place 版 (可変配列)。
+fn map_inc_array(a: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(a) {
+    Array::set(a, i, Array::get(a, i) + 1)
+    i = i + 1
+  }
+}
+
+fn build_array(n: Int) -> Array[Int] {
+  let a: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(a, i)
+    i = i + 1
+  }
+  a
+}
+
+/// 中間結果を名前で束縛しない形。入力が一意な一時値になるので
+/// reuse の rc==1 判定が通るはず — 「所有権が渡っているか」で
+/// FBIP が効くかどうかが変わることの対照。
+fn map5_fused(l: IntList) -> IntList {
+  map_inc_fused(map_inc_fused(map_inc_fused(map_inc_fused(map_inc_fused(l)))))
+}
+
+fn map5_plain(l: IntList) -> IntList {
+  map_inc_plain(map_inc_plain(map_inc_plain(map_inc_plain(map_inc_plain(l)))))
+}
+
+//# Tests
+
+test "state variants all agree" {
+  assert_eq(sum_let_mut(100), 4950)
+  assert_eq(sum_loop_param(100), 4950)
+  assert_eq(sum_struct_mut(100), 4950)
+  assert_eq(sum_value_inline(100), 4950)
+  assert_eq(sum_value_step(100), 4950)
+  assert_eq(sum_state_effect(100), 4950)
+  assert_eq(sum_let_mut_captured(100), 4950)
+  assert_eq(sum_value_shared(100), 4950)
+  assert_eq(sum_value_fused(100), 4950)
+}
+
+test "fbip variants all agree" {
+  let l = build_list(100)
+  assert_eq(sum_list(map_inc_fused(l)), 5050)
+  assert_eq(sum_list(map_inc_plain(l)), 5050)
+  assert_eq(sum_list(map5_fused(build_list(100))), 5450)
+  assert_eq(sum_list(map5_plain(build_list(100))), 5450)
+  let a = build_array(100)
+  map_inc_array(a)
+  assert_eq(Array::length(a), 100)
+  assert_eq(Array::get(a, 99), 100)
+}
+
+//# Benches
+
+bench "state/1_let_mut" {
+  let _ = sum_let_mut(1000)
+}
+
+bench "state/2_loop_param" {
+  let _ = sum_loop_param(1000)
+}
+
+bench "state/3_struct_mut" {
+  let _ = sum_struct_mut(1000)
+}
+
+bench "state/4_value_inline" {
+  let _ = sum_value_inline(1000)
+}
+
+bench "state/5_value_step" {
+  let _ = sum_value_step(1000)
+}
+
+bench "state/6_state_effect" {
+  let _ = sum_state_effect(1000)
+}
+
+bench "state/7_let_mut_captured" {
+  let _ = sum_let_mut_captured(1000)
+}
+
+bench "state/8_value_shared" {
+  let _ = sum_value_shared(1000)
+}
+
+bench "state/9_value_fused_shape" {
+  let _ = sum_value_fused(1000)
+}
+
+bench "fbip/1_array_inplace" {
+  let a = build_array(1000)
+  map_inc_array(a)
+}
+
+bench "fbip/2_list_map_plain" {
+  let l = build_list(1000)
+  let _ = sum_list(map_inc_plain(l))
+}
+
+bench "fbip/3_list_map_fused" {
+  let l = build_list(1000)
+  let _ = sum_list(map_inc_fused(l))
+}
+
+bench "fbip/4_list_map5_plain" {
+  let _ = sum_list(map5_plain(build_list(1000)))
+}
+
+bench "fbip/5_list_map5_fused" {
+  let _ = sum_list(map5_fused(build_list(1000)))
+}
