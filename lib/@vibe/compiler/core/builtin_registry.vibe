@@ -395,6 +395,38 @@ export fn builtin_registry() -> Array[(String, Int, Int, Bool, Bool)] {
   out
 }
 
+/// #1513: the parameter COUNT of a checker-visible registry row, or -1 when the
+/// name is not one. Split out from `lookup_registry_builtin` because the
+/// checker's direct-call FAST PATH (`checker.vibe::builtin_fixed_arity`)
+/// deliberately avoids `lookup_builtin` -- #626's seed-heap constraint was about
+/// BUILDING nested `CtFn`/`Array` values per call, and this reads the
+/// already-built row without constructing anything.
+///
+/// Before this, that fast path checked arity against a hand-maintained list in
+/// checker.vibe, so `Stdout::write_stream()` / `Fs::read_file("a", "b")` /
+/// `Env::get("A", "B")` were silently unchecked and emitted an invalid module
+/// (measured: the host rejected it at load with `expected 1 elements on the
+/// stack for fallthru`, no source position). Which builtins got checked was the
+/// maintenance state of that list, not a rule of the language.
+export fn registry_builtin_arity(name: String) -> Int {
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(rows) {
+    let (rname, ty, _, _, visible) = Array::get(rows, i)
+    if rname == name && visible {
+      found = match ty {
+        CtFn(params, _, _) => Array::length(params),
+        _ => 0 - 1
+      }
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 /// B-2: the checker-facing lookup, consulted FIRST by
 /// checker/builtins.vibe::lookup_builtin. Only checker_visible rows resolve;
 /// codegen-internal names stay invisible to user code.
