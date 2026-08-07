@@ -676,6 +676,20 @@ plan with the relational model rows, requires every planned module to appear as
 `rechecked`, and reports additional rechecks as conservative over-invalidation.
 A missing required recheck fails the oracle.
 
+With `VIBE_SHADOW_DECISION_DIFF_OUT=<path>` the oracle additionally publishes
+that comparison as a versioned `incremental_shadow_decision_diff` v1 JSON
+artifact (#1548): per bounded edit case, each module's shadow decision
+(`recheck_required`/`typing_reusable`) against the current compiler decision
+(`rechecked`/`reused`), classified as agreement or
+`conservative_over_invalidation`. A requested stale artifact is deleted before
+the run and the new one is published atomically only after every case
+succeeded, so a failed run leaves nothing; a missing required recheck fails
+the oracle before publication and is never a published row. The gate writes it
+to `_build/ci-artifacts/incremental-shadow-decision-diff.json` and CI uploads
+it, making the over-invalidation residual visible per run. The artifact
+records current conservative behavior only — none of its fields is a
+production cache key or reuse decision.
+
 The existing private body case is also emitted under the explicit observation
 classification `private_dependency_edit_externally_unchanged`. That classifier
 fails closed unless `app` has exactly `library` as its sole direct dependency in
