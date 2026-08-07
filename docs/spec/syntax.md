@@ -288,11 +288,13 @@ Trait bodies are currently narrow and method-bearing trait support is
 implemented only where covered by checker/codegen tests.
 
 A **marker trait** (one declared with no methods, like `Eq` above) dispatches
-to the builtin `==` / `<`. Those are reference equality on `Array` / `Bytes`
-(a bare `[1, 2] == [1, 2]` is `false`, #1526), so a marker-trait impl on a
-container **is declarable but is not honoured as a bound** — passing an
-`Array` to a `[T: Eq]` parameter is rejected, with a diagnostic that says the
-impl exists and why it was refused. Give the trait a method and the impl
+to the builtin `==` / `<`. `==` on `Array` / `Bytes` is rewritten to a
+structural compare **only where the element type is statically known**
+(#1526 / ADR-0097); inside a `[T: Eq]`-bounded function the `T` is erased —
+no element type — so the builtin falls back to reference equality there. A
+marker-trait impl on a container therefore **is declarable but is not
+honoured as a bound** — passing an `Array` to a `[T: Eq]` parameter is
+rejected, with a diagnostic that says the impl exists and why it was refused. Give the trait a method and the impl
 resolves through the witness dictionary instead, in either spelling
 (`impl M for Array[Int]` or `impl [T] M for Array[T]`). See #1503.
 

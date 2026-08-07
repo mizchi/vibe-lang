@@ -25,8 +25,9 @@ MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row 
 あり triage でも P0 = silent-wrong が「落ちる」より上 (P1)。診断は内部用語
 (pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り —
 ただし以下は**決定済み・実装はこれから** (現在の挙動と混同しないこと):
-`==` の全文脈構造的統一 (ADR-0097, #1526 — **今日の裸の `Array`/`Bytes` `==` は
-まだ参照等価**)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
+`==` の全文脈構造的統一 (ADR-0097, #1526 — 裸 / tuple 内 / struct 内は構造的に
+着地済み。**残る参照等価**: 消去された型変数 (`[T: Eq]` の `T`)・関数戻り値
+経由・空リテラル束縛)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
 #1559)、`Exception` を正として `Error` を 1.0 freeze で deprecated (ADR-0085,
 #1564)。docs のコード例は doctest が現行コンパイラで検査する — 仕様と実装を
 食い違わせない。
