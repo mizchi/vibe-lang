@@ -1,0 +1,54 @@
+// #1536 (a), delegation: `pick_any` forwards its own row-free `pred`
+// param into `pick`'s slot (the `async_iter_any` -> `async_iter_find`
+// shape). The inert proof follows the forwarded param to pick_any's own
+// call sites -- which all pass a perform-free literal -- so both clones
+// treat the call through `pred` as a plain call.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let pick = (xs: Array[Int], pred: (x: Int) -> Bool) -> Int with Ask {
+  let mut i = 0
+  let mut out = 0 - 1
+  let mut go = true
+  while go {
+    if i >= Array::length(xs) {
+      go = false
+    } else {
+      let v = Array::get(xs, i)
+      let bumped = perform Ask::Get(v)
+      if pred(bumped) {
+        out = bumped
+        go = false
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+let pick_any = (xs: Array[Int], pred: (x: Int) -> Bool) -> Int with Ask {
+  pick(xs, pred)
+}
+
+let _start = () -> Int {
+  handle {
+    pick_any([
+      1,
+      3,
+      4
+    ], (x: Int) -> Bool {
+      x % 5 == 0
+    })
+  } with Ask {
+    Get(t) => {
+      let k = resume
+      k(t + 1)
+    }
+  }
+}
+_start()
+
+__DATA__
+{"last":"5"}

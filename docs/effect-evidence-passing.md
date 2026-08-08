@@ -2694,6 +2694,45 @@ fixtures: `effect_iife_needing_call.vibe` (素の IIFE、want 142)、
 `effect_trivial_wrapper_needing_call.vibe` (#1070 経由で IIFE になる形、
 want 142)。どちらも修正前の compiler では上記 hard error になることを確認済み。
 
+### 追記40 (2026-08-08): row-free closure param の実引数フロー証明 (#1536 (a) v1)
+
+suspend CPS split が「closure パラメータの呼び出し」を無条件拒否していた件の
+第一スライス。`pred: (x: T) -> Bool` のような **row-free** な関数型 param は
+#761 の字句帰属ゆえに「row が空 ⇒ perform しない」を型からは保証できないが、
+**CPS clone `__scps_cps_E_f` に到達する呼び出しは `f` の by-name call site
+だけ** (値経由の呼び出しは untouched な original を走る) という事実が使える:
+全 by-name site が当該 slot に suspend-inert な値を渡すと証明できれば、clone
+内の `pred(v)` は plain call として健全に受理できる。
+
+- **suspend-inert の判定** (`scps_inert_taint`): perform を 1 つでも含む
+  literal は taint (alias 綴りがあるため effect 単位の照合はせず全 perform を
+  対象にする — 意図的な過剰拒否)。needing 名の参照 (call でも値でも)、
+  `__scps_`/`__Scps` 名前空間への参照 (phase 2 prepass が step 化した機械が
+  引数内にある = suspend する)、不透明 callee、nested handle も taint。
+- **委譲** (`async_iter_any` → `async_iter_find` 転送形): site の実引数が
+  囲む top-level fn 自身の row-free param なら、その slot を再帰的に証明する
+  (`scps_param_slot_inert`、循環は coinductive に inert 扱い)。fn 本体の
+  どこかで同名が再束縛されていたら保守的に降りる。
+- **phase 順序**: この証明は phase 4 (clone 排出) で走るが、phase 3 が
+  suspend 文脈の call site を clone 綴りに書き換え済みなので、site 走査は
+  `f` と `__scps_cps_E_f` の**両方の綴り**を対象にする (片方だけだと taint
+  した引数を見逃す)。
+- **機構**: `sctx` は広げない。証明済み param を clone 内だけ
+  `__scps_inert_<site>_<name>` へ shadow-aware に α-rename する
+  (`scps_rename_ident`) — 両 eligibility walker は `__scps_` prefix を既に
+  受理し、split は needing でも cps-local でもない呼び出しを bubble しない
+  ので、rename だけで plain call 意味論が得られる。未証明 param は従来の
+  `cannot see through` 拒否のまま。
+- **範囲外**: literal param (spawn_suspend closure 自身の param — call site を
+  名前で列挙できない)、row 変数 callee (追記34 の据え置きどおり)、builtin
+  `Stream::next` の retarget (#1536 残件)。
+
+fixtures: `effect_closure_param_inert.vibe` (want 5)、
+`effect_closure_param_inert_transitive.vibe` (委譲形、want 5)、
+`err_effect_closure_param_taint.vibe` (1 site が perform する literal を渡す
+→ 拒否維持)。これで `async_iter_find` / `_any` / `_all` が suspend body から
+呼べる。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

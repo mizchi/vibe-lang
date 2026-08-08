@@ -165,17 +165,28 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
 
 - **適格**: let / seq / tail / branch-tail の spine、`while` + `let mut`
   (#1230 で widening 済み。`let mut x = v` → 1 要素セル、`while` → `let rec`
-  ローカル closure への末尾再帰)
+  ローカル closure への末尾再帰)、**row-free closure パラメータの呼び出しの
+  うち、全 by-name call site の実引数が suspend-inert と証明できるもの**
+  (#1536 (a)。下記)
 - **不適格**: ループ内 `break`/`continue`/`return`、`for`/`loop` 形、
-  sequence の HEAD が perform を内側に抱えた複合式、**closure パラメータの
-  呼び出し** (`pred(v)` — `scps_calls_ok` が local closure callee を
-  see-through できない)
+  sequence の HEAD が perform を内側に抱えた複合式、実引数証明が成立しない
+  closure パラメータの呼び出し、row 変数 callee (`with e`)
 
-最後のものが `lib/@vibe/prelude/async_iter.vibe` の `async_iter_find` /
-`_all` が今も ineligible な理由で、`await(Stream::next(s))` が書けない直接の
-原因でもある。closure param を無条件に許すのは**不健全** — closure literal
-内の `perform` は「リテラルが置かれた関数の row」に字句的に計上されるので、
-「宣言 row が空 ⇒ perform しない」が成り立たない。
+closure param を**無条件に**許すのは不健全 — closure literal 内の `perform`
+は「リテラルが置かれた関数の row」に字句的に計上されるので (#761)、「宣言
+row が空 ⇒ perform しない」が成り立たない。#1536 (a) の受理はそのため
+**実引数フローの証明**に基づく: CPS clone `__scps_cps_E_f` に到達するのは
+`f` の by-name call site だけ (値経由の呼び出しは untouched な original を
+走る) なので、全 by-name site が当該 slot に suspend-inert な値 — perform を
+一切含まず・needing 名を参照せず・不透明 callee を呼ばない closure literal、
+または委譲元 fn 自身の同様に証明済みの row-free param (`async_iter_any` →
+`async_iter_find` の転送形) — を渡すと証明できた slot に限り、clone 内の
+`pred(v)` を plain call として受理する。1 site でも perform する literal を
+渡せば slot 全体が taint し、従来どおり `cannot see through` で拒否される
+(fixtures/err_effect_closure_param_taint.vibe)。これで `async_iter_find` /
+`_any` / `_all` は suspend body から呼べる。`await(Stream::next(s))` は
+別問題 (builtin `Stream::next` が top-level fn ではなく needing 集合に
+乗らない) で、まだ書けない。
 
 ### 2.3 同期 effect との関係
 
