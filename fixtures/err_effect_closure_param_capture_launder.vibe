@@ -1,0 +1,59 @@
+// #1536 (a) negative lock (Codex review on #1602): a candidate literal
+// that CAPTURES a performing closure and launders it into an accepted
+// eff-free helper (`apply1(g, x)` -- g performs, apply1's row is empty)
+// must taint the slot. A captured bare identifier has unknown provenance
+// (here it aliases a closure the prepass step-compiled), so treating the
+// call chain as plain calls would bypass suspension dispatch; only names
+// bound WITHIN the literal are trusted by the inert scan.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn apply1(f: (y: Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+let pick = (xs: Array[Int], pred: (x: Int) -> Bool) -> Int with Ask {
+  let mut i = 0
+  let mut out = 0 - 1
+  let mut go = true
+  while go {
+    if i >= Array::length(xs) {
+      go = false
+    } else {
+      let v = Array::get(xs, i)
+      let bumped = perform Ask::Get(v)
+      if pred(bumped) {
+        out = bumped
+        go = false
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+let _start = () -> Int {
+  handle {
+    let g = (y: Int) -> Int {
+      perform Ask::Get(y)
+    }
+    pick([
+      1,
+      3,
+      4
+    ], (x: Int) -> Bool {
+      apply1(g, x) > 0
+    })
+  } with Ask {
+    Get(t) => {
+      let k = resume
+      k(t + 1)
+    }
+  }
+}
+_start()
+
+__DATA__
+{"error_contains": "cannot see through"}
