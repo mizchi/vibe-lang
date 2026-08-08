@@ -156,11 +156,16 @@ fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
 /// call as `(here: the call to 'X') ... [@off=N:M]`, where N:M index the text
 /// of whichever MODULE the handle lives in. This lane resolves markers against
 /// the ENTRY file's text, which is only correct when the culprit is in the
-/// entry file itself. Verify the span actually spells `X` in `source` before
-/// letting locate_type_error resolve it; on mismatch (a dep-module offset)
-/// strip the marker so the message degrades to unlocated instead of naming a
+/// entry file itself. Verify the span actually spells `X` in `source` — as a
+/// whole identifier, not a slice of a longer one (a dep offset landing inside
+/// the entry's `run_all` must not pass for culprit `run`) — before letting
+/// locate_type_error resolve it; on mismatch (a dep-module offset) strip the
+/// marker so the message degrades to unlocated instead of naming a
 /// plausible-but-wrong entry-file line (worse than no position, per #1445).
-/// Messages without the culprit clause pass through untouched.
+/// Messages without the culprit clause pass through untouched. Residual
+/// (Codex review, PR #1594): a dep offset whose entry-text span coincidentally
+/// spells the same whole identifier still passes — closing that needs the
+/// marker to carry source identity, tracked as a follow-up issue.
 /// Parse a run of ASCII digits as a non-negative Int, or -1 when `s` is empty
 /// or contains any non-digit (local copy of typecheck_fs's parse_offset_digits,
 /// which is module-private there).
@@ -183,6 +188,12 @@ fn parse_marker_digits(s: String) -> Int {
   } else {
     -1
   }
+}
+
+/// True when char code `c` can appear in a vibe identifier (ASCII letter,
+/// digit, or underscore) — used for the whole-identifier boundary check.
+fn marker_ident_char(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
 }
 
 export fn verify_culprit_off_marker(source: String, msg: String) -> String {
@@ -208,7 +219,16 @@ export fn verify_culprit_off_marker(source: String, msg: String) -> String {
       } else {
         let n = parse_marker_digits(String::substring(inner, 0, colon))
         let m = parse_marker_digits(String::substring(inner, colon + 1, String::length(inner)))
-        n >= 0 && m > n && m <= String::length(source) && String::substring(source, n, m) == culprit
+        if n >= 0 && m > n && m <= String::length(source) && String::substring(source, n, m) == culprit {
+          // Whole-identifier boundary: the byte before N / at M must not
+          // extend the identifier, or the "match" is a slice of a longer
+          // name and the basis is not the entry file.
+          let left_ok = n == 0 || !marker_ident_char(String::char_code_at(source, n - 1))
+          let right_ok = m == String::length(source) || !marker_ident_char(String::char_code_at(source, m))
+          left_ok && right_ok
+        } else {
+          false
+        }
       }
       if span_ok {
         msg
