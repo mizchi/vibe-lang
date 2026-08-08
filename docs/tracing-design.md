@@ -473,18 +473,55 @@ trace 7c36551f...  (4 spans)
 self 時間が **94.5秒 → 1.7秒**に落ちた。span 1つが、未説明だった時間の
 ほぼ全部を回収している。
 
-正体は `scripts/generate_bundle.sh` (1,211行の bash) で、コンパイラソースを
-1つの flat module source に畳む処理である。**3つのステージコンパイル
-(23s + 24s) を合わせたよりも長い。** これまで「ビルドが遅い」という話は
-常にコンパイラの codegen の話として扱われてきたが、実際にはビルド時間の
-過半は bash スクリプトだった。
+正体は `scripts/generate_bundle.sh` (1,211行の bash) だった。
+
+**ただし「77秒の bash」は誤りで、span をもう1段刻んで訂正した。**
+その中の `validate_module_source_compiles` は、生成した flat module source を
+**seed で丸ごとコンパイルし直している** (`--invoke cli_main $seed_wasm
+$candidate ...`) — bundle の帳簿仕事ではなく、ステージ hop と同じ実体の
+コンパイルである。span を足すと:
+
+```
+trace ffa885f7...  (5 spans)
+     wall       self  name
+ 115348.1    1144.8  selfhost build
+  69674.4   48497.6    prepare flat source
+  21176.8   21176.8      validate module source (seed compile)
+  21890.1   21890.1    stage0(seed) -> stage1
+  22638.8   22638.8    stage1 -> stage2
+```
+
+**このビルドはコンパイルを3回ではなく4回している** (`--stage3` なら5回)。
+`validate module source` の 21.2秒は stage hop (21.9s / 22.6s) とほぼ同じで、
+これは当然で、同じ規模の入力を同じ seed でコンパイルしているからである。
+`generations.sh` のログにはこの4回目が現れない。
+
+内訳の確定:
+
+| | |
+|---|---|
+| bundle 組み立て (本当に bash) | **48.5秒** |
+| 隠れた4回目のコンパイル | **21.2秒** |
+| stage0→stage1 | 21.9秒 |
+| stage1→stage2 | 22.6秒 |
+
+**48.5秒の bash は、依然として単一項目としてビルド最大**である
+(どの1回のコンパイルよりも長い)。一方 21.2秒の方は bash の問題ではなく
+「同じものを4回コンパイルしている」という構造の問題で、対処法が違う
+(#979 の sticky-failure guard として意図的に入っているので、消すかどうかは
+その趣旨との兼ね合いになる)。
+
+> **これは自分の主張の訂正でもある。** 1つ前の版でここに「77秒の bash」と
+> 書いた。span を1段深く刻んだら 1/3 が別物だった。段0 が返してくれるのは
+> 「どこが遅いか」であって「なぜ遅いか」ではない — 後者は次の span を
+> 置いて初めて出る。
 
 > この結果自体が段0 の投資回収の証拠になっている。§5.6 の時点では
 > 「48% がどこかにある」としか言えず、その先は勘だった。span を1つ、
 > 当たりを付けた場所に置いたら 1回の実行で確定した。
 
-次に見るべきは `generate_bundle.sh` の内部で、bash のループが何回
-サブプロセスを起こしているかである (`while IFS=$'\t' read` が3箇所、
+次に見るべきは残る 48.5秒の中で、`generate_bundle.sh` の bash ループが
+何回サブプロセスを起こしているかである (`while IFS=$'\t' read` が3箇所、
 最内で `sed`/`awk`/`printf` を呼ぶ形)。ここは vibe を一切書かずに
 速くできる可能性が高い。
 

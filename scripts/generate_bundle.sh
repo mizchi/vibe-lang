@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
+. "$PROJECT_ROOT/scripts/trace_lib.sh"
 COMPILER_DIR="${VIBE_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
 MANIFEST="${VIBE_SOURCE_MANIFEST:-$COMPILER_DIR/compiler_sources_manifest.tsv}"
 OUT="${VIBE_BUNDLE_OUT:-$COMPILER_DIR/compiler_sources_bundle.vibe}"
@@ -1009,6 +1010,12 @@ validate_module_source_compiles() {
   rm -f "$check_wasm"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local ok=0
+  # This is a FULL seed compile of the candidate module source -- structurally
+  # the same work as a stage hop, not bundle bookkeeping. It gets its own span
+  # because "prepare flat source is 77s" (docs/tracing-design.md §5.8) reads as
+  # a slow shell script until you see how much of it is this.
+  trace_begin "validate module source (seed compile)"
+  local vtok="$TRACE_TOKEN"
   if (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
     VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
@@ -1018,6 +1025,7 @@ validate_module_source_compiles() {
       ok=1
     fi
   fi
+  trace_end "$vtok" "$(( ok == 1 ? 0 : 1 ))"
   if [ "$ok" != "1" ]; then
     echo "generate_bundle: candidate module source failed to compile (#979 sticky-failure guard) -- leaving any existing $ADAPTER_MODULE_SOURCE_OUT untouched" >&2
     cat "$check_wasm.diag" >&2 2>/dev/null || true
