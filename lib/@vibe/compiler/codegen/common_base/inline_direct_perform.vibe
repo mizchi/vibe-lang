@@ -1114,8 +1114,11 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   // name (fresh `__edpsh_N_<name>`), so edp_drop_shadowed_needing finds
   // nothing to drop and the shadowed-needing class migrates like any
   // other program instead of falling back to the (now removed) replay
-  // engine. See edp_alpha_rename_shadowed's doc comment.
-  edp_alpha_rename_shadowed(stmts, effect_defs, fn_defs)
+  // engine. See edp_alpha_rename_shadowed's doc comment. `user_edpsh` /
+  // `edp_renamed` feed the culprit diagnostic below: only names the walk
+  // actually generated may be un-mangled back to their original spelling.
+  let user_edpsh = empty_str_array()
+  let edp_renamed = edp_alpha_rename_shadowed(stmts, effect_defs, fn_defs, user_edpsh)
   let keep = dce_keep_flags(stmts, [
     entry_name
   ])
@@ -1163,7 +1166,15 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         let li_inert = edp_pure_fn_names(li_fn_defs)
         edp_append_free_host_inert_names(stmts, li_inert)
         let (culprit_raw, culprit_off) = edp_live_handle_opaque_info(stmts, keep, bad, li_inert, li_fn_names)
-        let culprit = edp_unmangle_shadow_name(culprit_raw)
+        // Un-mangle ONLY names the rename walk generated: a user-authored
+        // `__edpsh_0_helper` (in `user_edpsh`, or the walk never ran) must be
+        // reported verbatim -- stripping it would name a `helper` that does
+        // not exist in the source (Codex review, PR #1594).
+        let culprit = if edp_renamed && !edp_str_array_contains(user_edpsh, culprit_raw) {
+          edp_unmangle_shadow_name(culprit_raw)
+        } else {
+          culprit_raw
+        }
         let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects")
         let named = if String::length(culprit) > 0 {
           String::concat(head, String::concat(" (here: the call to '", String::concat(culprit, "')")))
@@ -2223,7 +2234,14 @@ fn edp_ar_expr(expr: Expr, seed: Array[String], env_names: Array[String], env_re
   }
 }
 
-fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+/// Returns true iff the rename walk actually ran (some needing name was
+/// shadowed), and in that case fills `user_prefixed` with every
+/// `__edpsh_`-prefixed name the program contained BEFORE renaming — i.e. the
+/// user-authored ones. edp_ar_fresh never re-issues a name from that census,
+/// so post-rename a prefixed name is compiler-generated iff the walk ran and
+/// the name is NOT in `user_prefixed` (Codex review, PR #1594: culprit
+/// diagnostics must not strip a prefix the user spelled themselves).
+fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], user_prefixed: Array[String]) -> Bool {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -2270,14 +2288,15 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Arr
     ei = ei + 1
   }
   if Array::length(seed) == 0 {
-    ()
+    false
   } else {
     let counter = [
       0
     ]
     // #1119 Codex review (P2): never generate a name the program already
-    // uses -- see edp_ar_fresh's doc comment.
-    let taken = empty_str_array()
+    // uses -- see edp_ar_fresh's doc comment. The same census doubles as
+    // the user-authored-name record for the culprit diagnostic (doc above).
+    let taken = user_prefixed
     edp_collect_prefixed_names(stmts, "__edpsh_", taken)
     let mut i = 0
     while i < Array::length(stmts) {
@@ -2317,6 +2336,7 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Arr
       }
       i = i + 1
     }
+    true
   }
 }
 
@@ -2719,7 +2739,9 @@ fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: Str
 /// `__edpsh_<N>_` prefix that exists nowhere in the user's source; report the
 /// original spelling (the rename preserves the node's offset, and the binder's
 /// source text IS the original name, so the un-mangled spelling and its span
-/// both match the file).
+/// both match the file). The CALLER must gate on the rename census — a name
+/// the user spelled with this prefix themselves goes through verbatim (Codex
+/// review, PR #1594); this helper only does the string surgery.
 fn edp_unmangle_shadow_name(nm: String) -> String {
   let prefix = "__edpsh_"
   if String::index_of(nm, prefix) == 0 {

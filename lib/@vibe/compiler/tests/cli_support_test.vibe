@@ -1,7 +1,7 @@
 //# Imports
 
 import ../cli_support.vibe {
-  compile_release_file_mode, check_linked_file
+  compile_release_file_mode, check_linked_file, verify_culprit_off_marker
 }
 
 import @vibe/core {
@@ -186,6 +186,63 @@ test "check_linked_file: dep-module culprit degrades to unlocated, no marker lea
     Throw(m) => m
   }
   assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(!String::contains(msg, "[@off="))
+}
+
+/// Codex review on PR #1594: the spelling check must match a WHOLE
+/// identifier. A dep-module offset landing where the entry text spells the
+/// culprit as a prefix of a longer name (`run` inside `run_all`) is a basis
+/// mismatch and must degrade, not locate.
+test "verify_culprit_off_marker rejects a span inside a longer identifier (#1594 review)" {
+  let source = "let run_all = 1"
+  let msg = "handle of effect 'Ask' cannot be compiled here (here: the call to 'run') -- fix it. [@off=4:7]"
+  let out = verify_culprit_off_marker(source, msg)
+  assert(!String::contains(out, "[@off="))
+  assert(String::contains(out, "here: the call to 'run'"))
+}
+
+/// The accept counterpart: the same span as a whole identifier keeps the
+/// marker for locate_type_error to render.
+test "verify_culprit_off_marker keeps a whole-identifier span (#1594 review)" {
+  let source = "let run = 1"
+  let msg = "handle of effect 'Ask' cannot be compiled here (here: the call to 'run') -- fix it. [@off=4:7]"
+  let out = verify_culprit_off_marker(source, msg)
+  assert(String::contains(out, "[@off=4:7]"))
+}
+
+/// Codex review on PR #1594: a user-authored callee that happens to spell the
+/// `__edpsh_` mangling prefix must be reported VERBATIM — the alpha-rename
+/// walk never ran here, so stripping the prefix would name a 'bump' that does
+/// not exist in the source. The span verifies against the real spelling, so
+/// the diagnostic also keeps its `line:col`.
+test "check_linked_file: user-authored __edpsh_ culprit is reported verbatim (#1594 review)" {
+  let path = "/tmp/vibe_cli_support_check_edp_user_prefix.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let __edpsh_0_bump = (x: Int) -> Int { x + 1 }\n  handle { __edpsh_0_bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "here: the call to '__edpsh_0_bump'"))
+  assert(String::contains(msg, "line 5:12"))
+  assert(!String::contains(msg, "[@off="))
+}
+
+/// The generated counterpart: a local that SHADOWS a needing fn is renamed to
+/// `__edpsh_0_<name>` by the alpha walk, and the culprit diagnostic must
+/// still un-mangle THAT back to the user's spelling, located at the call.
+test "check_linked_file: generated __edpsh_ culprit still un-mangles (#1594 review)" {
+  let path = "/tmp/vibe_cli_support_check_edp_gen_prefix.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nfn use_it() -> Int with Ask { ask_once() }\nexport fn main() -> Int {\n  let use_it = (x: Int) -> Int { x + 1 }\n  handle { use_it(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "here: the call to 'use_it'"))
+  assert(String::contains(msg, "line 6:12"))
   assert(!String::contains(msg, "[@off="))
 }
 
