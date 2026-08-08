@@ -90,7 +90,17 @@ export enum Subst {
 
 export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
   match env {
-    EnvCached(names_sorted, types_sorted, rest) => EnvCached(names_sorted, types_sorted, EnvBind(name, ty, rest)),
+    // Keeping the cache at the head is only sound while the new binding's
+    // name is NOT in the cached index: env_lookup consults the index first,
+    // so a same-named binding tucked under it would be permanently shadowed
+    // by the older cached entry (#1583 -- an import env is cached before a
+    // function body is checked, and a parameter named like an import then
+    // resolved to the import). Bind shadowing names IN FRONT of the cache.
+    EnvCached(names_sorted, types_sorted, rest) => if bsearch_leftmost(names_sorted, name) >= 0 {
+      EnvBind(name, ty, env)
+    } else {
+      EnvCached(names_sorted, types_sorted, EnvBind(name, ty, rest))
+    },
     _ => EnvBind(name, ty, env)
   }
 }

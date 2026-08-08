@@ -1,7 +1,11 @@
 //# Imports
 
 import @vibe/compiler/loader {
-  check_module
+  check_module, collect_merged_stmts
+}
+
+import @vibe/compiler/syntax {
+  print_program
 }
 
 import @vibe/core {
@@ -131,4 +135,19 @@ test "check_module: non-exported name not imported" {
     None => assert(true),
     _ => assert(true)
   }
+}
+
+test "collect_merged_stmts rewrites `as` aliases to the original name (#1584)" {
+  // The merged flat program only defines `env_probe`; before #1584 the
+  // alias reference `ep(1)` survived the import-dropping merge untouched
+  // and resolved to nothing at runtime (s5_entry_test / s5_wasm_test trap).
+  let dep_src = "export fn env_probe(x: Int) -> Int {\n  x + 1\n}\n"
+  let main_src = "import ./dep.vibe { env_probe as ep }\n\nexport fn use_alias() -> Int {\n  ep(1)\n}\n"
+  let merged = collect_merged_stmts([
+    ("dep.vibe", dep_src),
+    ("main.vibe", main_src)
+  ])
+  let text = print_program(merged)
+  assert(String::contains(text, "env_probe"))
+  assert(!String::contains(text, "ep("))
 }

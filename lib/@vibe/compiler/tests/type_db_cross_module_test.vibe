@@ -546,6 +546,32 @@ test "db_typecheck_fs: a pass-through import is not on the middleman's surface (
   assert(String::contains(err, "mid.vibe"))
 }
 
+test "db_typecheck_fs: a local parameter shadows a same-named import (#1583)" {
+  // The import env is cached (env_cache) before bodies are checked; a
+  // parameter named like an imported value must still shadow it. Before
+  // #1583 the cached import won and `helper + 1` failed with "type
+  // mismatch in '+'" (and the same shape could type-check yet silently
+  // resolve to the import when the types happened to agree).
+  let dir = "/tmp/vibe_compiler_import_param_shadow"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let dep_src = "export fn helper(env: Int) -> Int {\n  env + 100\n}\n"
+  let main_src = "import ./dep.vibe { helper }\n\nfn use_it(helper: Int) -> Int {\n  helper + 1\n}\n\nexport let m = use_it(5) + helper(1)\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (dep_path, dep_fp)
+  ]))
+  let err = export_surface_error([
+    dep_path,
+    main_path
+  ], main_path)
+  assert(err == "")
+}
+
 test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 control)" {
   let dir = "/tmp/vibe_compiler_export_surface_reexport"
   let dep_path = String::concat(dir, "/dep.vibe")

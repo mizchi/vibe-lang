@@ -16,6 +16,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  append_import_alias_rewritten_non_import_stmts,
   contains_path,
   dir_of_path,
   ensure_regular_source_fs,
@@ -2402,6 +2403,12 @@ export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(
 
 /// Given all sources (in dependency order), parse and merge their statements.
 /// Skips SImport, SReExport (already resolved). Keeps all definitions.
+/// #1584: an `import { x as y }` alias must be rewritten back to the
+/// original name before the import statement is dropped — the merged flat
+/// program only defines `x`, so a surviving `y` reference resolves to
+/// nothing and traps at runtime. append_import_alias_rewritten_* is the
+/// same shadow-aware rewrite the production FS merge applies; a file with
+/// no aliases takes its share-the-input fast path.
 export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] with Exception {
   let merged = array_empty()
   let mut si = 0
@@ -2409,17 +2416,7 @@ export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] 
     let (_, src) = Array::get(sources, si)
     // Use lex+parse_program directly (skip resolve_interp_stmt to reduce heap pressure)
     let stmts = parse_program(lex(src))
-    let mut j = 0
-    while j < Array::length(stmts) {
-      let stmt = Array::get(stmts, j)
-      match stmt {
-        SImport(_, _) => (),
-        SReExport(_, _) => (),
-        SAliasDecl(_, _) => (),
-        _ => Array::push(merged, stmt)
-      }
-      j = j + 1
-    }
+    append_import_alias_rewritten_non_import_stmts(merged, stmts)
     si = si + 1
   }
   merged
