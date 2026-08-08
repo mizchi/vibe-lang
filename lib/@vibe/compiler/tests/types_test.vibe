@@ -134,6 +134,24 @@ test "env_bind keeps cached env lookup path" {
   }
 }
 
+test "env_bind shadowing a cached name wins env_lookup (#1583)" {
+  // The cached index holds "x" -> CtInt; a NEWER inner binding of the same
+  // name (a parameter, a let) must shadow it. Before #1583 env_bind tucked
+  // the new binding under the cache head and env_lookup answered from the
+  // index first, so the older cached entry won silently.
+  let base = env_cache(env_bind(EnvEmpty, "x", CtInt))
+  let env = env_bind(base, "x", CtString)
+  match env_lookup(env, "x") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+  // The cached fallback still answers for non-shadowed names.
+  match env_lookup(env_bind(base, "y", CtBool), "x") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
 test "env_bind over cached env remains visible to flat lookup" {
   let base = env_cache(env_bind(EnvEmpty, "x", CtInt))
   let env = env_bind(base, "x", CtString)
