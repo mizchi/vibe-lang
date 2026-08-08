@@ -56,6 +56,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
+# Step-0 tracing (docs/tracing-design.md): no-op unless VIBE_TRACE_OUT is set.
+# One span per markdown file (so extraction cost shows up as the file span's
+# self time) and one per block (so "which doc example is slow" is answerable
+# without instrumenting the compiler). Every block is its own compiler process
+# with a 120s timeout and the loop is SERIAL, so a single pathological block
+# sets the floor for the whole task -- that is the thing worth being able to see.
+. "$SCRIPT_DIR/trace_lib.sh"
+
 if [ $# -lt 1 ]; then
   echo "usage: bash scripts/doctest_extract_run.sh <file.md> [more.md ...]" >&2
   exit 2
@@ -121,11 +129,19 @@ echo "doctest: compiler = $stage2"
 total=0; pass=0; fail=0; skipped=0
 declare -a failures=()
 
+# Run-level root. Without it each file's span has no parent and mints its own
+# trace_id, so the report renders N disconnected trees and the run's total wall
+# -- the number this is for -- is nowhere in the output.
+trace_begin "doctest ($# file(s))"
+run_tok="$TRACE_TOKEN"
+
 for md in "$@"; do
   if [ ! -f "$md" ]; then
     echo "doctest: no such file: $md" >&2
     exit 2
   fi
+  trace_begin "doctest $md"
+  md_tok="$TRACE_TOKEN"
   base="$(basename "$md" .md | tr -c 'A-Za-z0-9_' '_')"
 
   # --- extract ```vibe blocks -> $workdir/${base}_bNN_LLLL.vibe + manifest ---
@@ -177,6 +193,7 @@ PY
 
   if [ ! -s "$manifest" ]; then
     echo "doctest: $md: no \`\`\`vibe blocks found"
+    trace_end "$md_tok" 0
     continue
   fi
 
@@ -188,6 +205,9 @@ PY
       echo "SKIP  $label"
       continue
     fi
+    trace_begin "block $label ($mode)"
+    blk_tok="$TRACE_TOKEN"
+    fail_before="$fail"
     out="${src%.vibe}.wasm"
     entry="__no_entry__"
     if [ "$mode" = "run" ]; then entry="_start"; fi
@@ -238,8 +258,16 @@ PY
       failures+=("$label [compile] ${reason:-compile failure}")
       echo "FAIL  $label ${reason:-compile failure}"
     fi
+    # Record the block's verdict on its span: a tracer that only shows timings
+    # makes a red run look like a slow one.
+    blk_rc=0
+    [ "$fail" -gt "$fail_before" ] && blk_rc=1
+    trace_end "$blk_tok" "$blk_rc"
   done < "$manifest"
+  trace_end "$md_tok" 0
 done
+
+trace_end "$run_tok" "$([ "$fail" -gt 0 ] && echo 1 || echo 0)"
 
 echo
 echo "doctest: $total blocks — $pass pass, $fail fail, $skipped skip"
