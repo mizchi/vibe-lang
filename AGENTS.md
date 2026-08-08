@@ -187,10 +187,19 @@ CI shard では:
 3. **`sed '/^_start()$/d; /^__DATA__$/,$d'`** — 末尾の裸の `_start()` 呼び出し
    と `__DATA__` が対になっている形。両方が 1 つの `inspect` ブロックに畳める
 
-畳めないと分かっているもの: `main` 自身が discharge できない row を宣言して
-いる fixture (`effect_effectset_*` の `with Ask + Ask::Get` — handle が中に
-あっても宣言が要る、というチェッカ要件が理由)、および trap を期待する
-`entry_error_boundary.vibe`。これらは `__DATA__` のまま残す。
+畳めないと分かっているもの (実測で確認済み、`__DATA__` のまま残す):
+
+- **`effect_effectset_*` / `effect_row_operation_item`** — test ブロックは
+  row を書けない (#1508) ので `handle { main() } with Ask { .. }` で包むしか
+  ないが、これは #1511 の handle 適格性で拒否される。**`main` を
+  `export let` から `export fn` に変えても拒否される**点が重要 — 原因は
+  let/fn ではなく、`main` の body 自体が self-discharging な `handle` で
+  あること。なお診断文が挙げる許可形 (「名前付き top-level `fn` を呼ぶ」) は
+  それ自体は本当に通る (直接 `perform` する `fn` を呼ぶ形は compile 通過を
+  確認済み) ので、**この診断の列挙は不完全** — 許可形を満たしていても拒否
+  される場合があることを述べていない (#1591)
+- **`entry_error_boundary.vibe`** — 期待値は値ではなく trap (exit 1 +
+  stderr の診断)。`inspect` で表せる形ではない
 
 ## Coding Convention
 
