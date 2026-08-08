@@ -1356,11 +1356,18 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 (`vibe diagnostics` は単一ファイル解析なので対象外):
 
 ```
-handle of effect 'Ask' cannot be compiled here. Every perform this handle
-covers has to be statically visible to it, so the handled body may only:
-perform directly, call a named top-level `fn`, or call a closure literal that
-carries an effect row annotation. ...
+line 5:12-16: handle of effect 'Ask' cannot be compiled here. Every perform
+this handle covers has to be statically visible to it, so the handled body may
+only: perform directly, call a named top-level `fn`, or call a closure literal
+that carries an effect row annotation. A call through a local binding or a
+closure parameter hides the perform and is what this rejects (here: the call
+to 'bump') ...
 ```
+
+診断は**どの呼び出しが不適格かを名指しし、その `line:col` を指す** (#1514)。
+`line:col` は handle ではなく犯人の呼び出し (上の例では `bump`) の位置。
+複数ファイルで犯人が依存側モジュールにあるときは位置なしに落ちる
+(entry ファイルの誤った行を指すより位置なしを選ぶ)。
 
 実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level
 `let` にあるか `fn` の中にあるかは**無関係**で、`ask_once` を `fn` で宣言したか

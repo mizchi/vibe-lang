@@ -1,7 +1,15 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, dce_keep_flags, is_exception_effect_name, is_exception_throw_handler_name, is_exception_throw_operation
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  dce_keep_flags,
+  expr_children,
+  is_exception_effect_name,
+  is_exception_throw_handler_name,
+  is_exception_throw_operation
 }
 
 import @vibe/core {
@@ -1141,7 +1149,38 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         // reader had to get past two clauses of it to reach the only advice
         // that acts on their program. The ADR reference is kept, at the end,
         // for the reader who does want the design record.
-        Array::push(errs, String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)"))
+        //
+        // #1514 C (repair 08): name WHICH call hides the perform and carry its
+        // source offset as the ` [@off=N:M]` marker (resolved to `line:col` by
+        // the lanes that know the source basis, ALWAYS stripped before a user
+        // sees it). EHandle itself has no offset field, but the offending
+        // CALL does -- and the call is the better edit point anyway. inert /
+        // fn_names are recomputed here (error path only): the erasure and
+        // migration passes above have mutated `stmts` since the vhe_* sets
+        // were built.
+        let li_fn_defs = edp_collect_fn_defs(stmts)
+        let li_fn_names = edp_all_fn_names(li_fn_defs)
+        let li_inert = edp_pure_fn_names(li_fn_defs)
+        edp_append_free_host_inert_names(stmts, li_inert)
+        let (culprit_raw, culprit_off) = edp_live_handle_opaque_info(stmts, keep, bad, li_inert, li_fn_names)
+        let culprit = edp_unmangle_shadow_name(culprit_raw)
+        let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects")
+        let named = if String::length(culprit) > 0 {
+          String::concat(head, String::concat(" (here: the call to '", String::concat(culprit, "')")))
+        } else {
+          head
+        }
+        let full = String::concat(named, " -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)")
+        let marked = if culprit_off >= 0 {
+          if String::length(culprit) > 0 {
+            String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), String::concat(":", String::concat(__to_string(culprit_off + String::length(culprit)), "]")))))
+          } else {
+            String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), "]")))
+          }
+        } else {
+          full
+        }
+        Array::push(errs, marked)
       }
     } else {
       ()
@@ -2328,29 +2367,38 @@ fn edp_first_live_replay_handle(stmts: Array[Stmt], keep: Array[Bool]) -> String
   found
 }
 
+/// The effect desc a `handle`'s arm list claims: the first arm's effect name,
+/// `"<catch-all>"` for a wildcard/binder arm, `""` for an Error handle (or no
+/// arms). Shared by the live-handle check and the #1514 culprit-call locator so
+/// both agree on WHICH handle a given desc refers to.
+fn edp_handle_own_effect_desc(arms: Array[(Pat, Expr)]) -> String {
+  let mut own = ""
+  if Array::length(arms) > 0 {
+    let (p, _) = Array::get(arms, 0)
+    match p {
+      PCtor(qname, _) => if is_exception_throw_operation(qname) {
+        ()
+      } else {
+        own = edp_effect_name_of(qname)
+      },
+      PWild => {
+        own = "<catch-all>"
+      },
+      PBind(_) => {
+        own = "<catch-all>"
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+  own
+}
+
 fn edp_nonerror_handle_desc_expr(expr: Expr) -> String {
   match expr {
     EHandle(body, arms) => {
-      let mut own = ""
-      if Array::length(arms) > 0 {
-        let (p, _) = Array::get(arms, 0)
-        match p {
-          PCtor(qname, _) => if is_exception_throw_operation(qname) {
-            ()
-          } else {
-            own = edp_effect_name_of(qname)
-          },
-          PWild => {
-            own = "<catch-all>"
-          },
-          PBind(_) => {
-            own = "<catch-all>"
-          },
-          _ => ()
-        }
-      } else {
-        ()
-      }
+      let own = edp_handle_own_effect_desc(arms)
       if own == "" {
         let inner = edp_nonerror_handle_desc_expr(body)
         if inner == "" {
@@ -2533,6 +2581,158 @@ fn edp_nonerror_handle_desc_arms(arms: Array[(Pat, Expr)]) -> String {
     i = i + 1
   }
   out
+}
+
+/// --- #1514 C (repair 08): name the call that made a live handle ineligible.
+///
+/// `edp_body_has_opaque_call` answers only Bool, so the live-handle hard error
+/// could say WHAT is rejected (an indirect call) but not WHERE. This trio walks
+/// the same shapes and returns the first offending call as
+/// (found, callee name, source byte offset): the exact edit point. Callee name
+/// is "" when the callee is not a bare identifier (an arbitrary callee
+/// expression); offset is -1 when the node carries none (synthesized AST).
+
+fn edp_first_opaque_call_info(expr: Expr, inert: Array[String], fn_names: Array[String]) -> (Bool, String, Int) {
+  match expr {
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, ioff) => if edp_callee_is_resolvable(nm, inert, fn_names) {
+        edp_first_opaque_call_info_exprs(args, inert, fn_names)
+      } else {
+        (true, nm, if ioff >= 0 {
+          ioff
+        } else {
+          off
+        })
+      },
+      _ => (true, "", off)
+    },
+    _ => edp_first_opaque_call_info_exprs(expr_children(expr), inert, fn_names)
+  }
+}
+
+fn edp_first_opaque_call_info_exprs(es: Array[Expr], inert: Array[String], fn_names: Array[String]) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(es) && !found {
+    let (f, n, o) = edp_first_opaque_call_info(Array::get(es, i), inert, fn_names)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+/// Find the first `handle` whose arm list claims effect `ename` (the desc
+/// edp_first_live_replay_handle just reported) and name the first opaque call
+/// in its BODY. Returns ("", -1) when the handle is found but its body has no
+/// opaque call (it survived for another reason), or when no such handle is in
+/// reachable code (should not happen when called with a live desc).
+fn edp_live_handle_opaque_info_expr(expr: Expr, ename: String, inert: Array[String], fn_names: Array[String]) -> (Bool, String, Int) {
+  match expr {
+    EHandle(body, arms) => if edp_handle_own_effect_desc(arms) == ename {
+      let (_, nm, off) = edp_first_opaque_call_info(body, inert, fn_names)
+      (true, nm, off)
+    } else {
+      edp_live_handle_opaque_info_exprs(expr_children(expr), ename, inert, fn_names)
+    },
+    _ => edp_live_handle_opaque_info_exprs(expr_children(expr), ename, inert, fn_names)
+  }
+}
+
+fn edp_live_handle_opaque_info_exprs(es: Array[Expr], ename: String, inert: Array[String], fn_names: Array[String]) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(es) && !found {
+    let (f, n, o) = edp_live_handle_opaque_info_expr(Array::get(es, i), ename, inert, fn_names)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+/// Stmt-level driver; mirrors edp_first_live_replay_handle's walk order and
+/// its dead-`fn` exemption so it lands on the same handle the desc came from.
+fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: String, inert: Array[String], fn_names: Array[String]) -> (String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => {
+        let dead_fn = match expr {
+          EFn(_, _, _, _, _, _) => if i < Array::length(keep) {
+            !Array::get(keep, i)
+          } else {
+            false
+          },
+          _ => false
+        }
+        if dead_fn {
+          ()
+        } else {
+          let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+          found = f
+          nm = n
+          off = o
+        }
+      },
+      SLetMut(_, _, expr) => {
+        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        found = f
+        nm = n
+        off = o
+      },
+      SExpr(expr) => {
+        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        found = f
+        nm = n
+        off = o
+      },
+      STest(_, expr) => {
+        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        found = f
+        nm = n
+        off = o
+      },
+      SBench(_, expr) => {
+        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        found = f
+        nm = n
+        off = o
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (nm, off)
+}
+
+/// A culprit callee that went through edp_alpha_rename_shadowed carries a
+/// `__edpsh_<N>_` prefix that exists nowhere in the user's source; report the
+/// original spelling (the rename preserves the node's offset, and the binder's
+/// source text IS the original name, so the un-mangled spelling and its span
+/// both match the file).
+fn edp_unmangle_shadow_name(nm: String) -> String {
+  let prefix = "__edpsh_"
+  if String::index_of(nm, prefix) == 0 {
+    let rest = String::substring(nm, String::length(prefix), String::length(nm))
+    let us = String::index_of(rest, "_")
+    if us > 0 {
+      String::substring(rest, us + 1, String::length(rest))
+    } else {
+      nm
+    }
+  } else {
+    nm
+  }
 }
 
 /// Drop any `needing` name whose OWN top-level definition `keep` (from

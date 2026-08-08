@@ -271,3 +271,35 @@ r6 が直接比較できなくなる。
 足す場合は r6 の仕事として、**10ケース版と11ケース版の両方を報告する**こと。
 コーパスの「追加は可」規則はそのままだが、追加したラウンドは推移が
 二重になる、という運用上の注記。
+
+## 更新: #1514 C の残り — 08 が位置と名指しを得た (r5 内更新)
+
+「08 の残り2点は同じ1つの作業で取れる」(上の #1511 (c) 節) を実施した。
+`edp_body_has_opaque_call` (Bool) の隣に、同じ判定で**最初の不適格な呼び出し**を
+`(callee 名, source offset)` で返す walker を足し
+(`edp_first_opaque_call_info` / `edp_live_handle_opaque_info`,
+`inline_direct_perform.vibe`)、エラー文に `(here: the call to 'bump')` と
+` [@off=N:M]` marker を付けた。EHandle 自体は offset を持たないが、**編集位置と
+して正しいのは handle ではなく犯人の呼び出し**なので、AST に手を入れずに済む。
+
+位置の解決は「基準ソースを知っているレーンだけ」が行う:
+
+- **`vibe check`** (`check_linked_file`): entry ソースに対して解決。ただし
+  merged stmts には依存モジュール由来の offset も流れてくるので、
+  `verify_culprit_off_marker` (cli_support.vibe) が **span がその位置に犯人名を
+  実際に綴っているか**を検証してから解決する。不一致 (依存側の offset) は
+  marker を剥がして位置なしに降りる — もっともらしく間違った行を指すのは
+  位置なしより悪い (#1445 の教訓)
+- **FS-compile レーン** (`vibe build/run/test`, この repair ハーネス):
+  `emit_compile_diag_fs_located` (cli_adapter.vibe) が同じ検証付きで解決
+- **single-source レーン** (self-build 用): desugar 後の AST で offset が
+  失われるため名指しのみ・位置なし (marker は `emit_compile_diag` が常に
+  剥がすので生の `[@off=` は漏れない)
+
+| # | 位置 (before → after) | 名指し | L | C | 計 |
+|---|---|---|---|---|---|
+| 08 | なし → **`line 9:20-24`** (犯人の `bump` 呼び出しそのもの) | **`(here: the call to 'bump')`** | 0 → **1** | 1 → **2** | 2 → **4** |
+
+mean = 40/10 = 4.0 → **repair_convergence = 5.0**。コーパス10ケースの減点は
+これで無くなった。以降スコアを動かすには新しい種別の発見が必要 (上の
+「追加候補」節の運用に従う)。

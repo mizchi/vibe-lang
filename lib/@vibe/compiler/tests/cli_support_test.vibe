@@ -147,6 +147,48 @@ test "check_linked_file: handle body calling a local closure fails eligibility a
   assert(String::contains(msg, "cannot be compiled here"))
 }
 
+/// #1514 C (repair 08): the same ineligibility error must now NAME the call
+/// that hides the perform and carry its `line:col` (the culprit `bump` sits at
+/// line 5 col 12 of the source below; the culprit-call marker verifies against
+/// the entry text, then locate_type_error renders the span). The raw ` [@off=`
+/// transport marker must never survive to the reader.
+test "check_linked_file: ineligible handle names the culprit call, located (#1514)" {
+  let path = "/tmp/vibe_cli_support_check_edp_culprit.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(String::contains(msg, "line 5:12"))
+  assert(!String::contains(msg, "[@off="))
+}
+
+/// The culprit-call marker's offsets index the text of whichever MODULE the
+/// handle lives in. When that module is a DEPENDENCY, resolving them against
+/// the entry file would name a plausible-but-wrong entry line — worse than no
+/// position (#1445). verify_culprit_off_marker must detect the basis mismatch
+/// (the span does not spell the culprit in the entry text) and degrade to the
+/// unlocated message: culprit still named, no leaked marker.
+test "check_linked_file: dep-module culprit degrades to unlocated, no marker leak (#1514)" {
+  let base_dir = "/tmp/vibe_cli_support_check_edp_dep_culprit"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\nexport fn main() -> Int { run() }\n"))
+  let msg = handle {
+    let _ = check_linked_file(main_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(!String::contains(msg, "[@off="))
+}
+
 /// The eligible counterpart: the same handle with the perform statically
 /// visible (direct call to a named top-level fn) must keep checking clean —
 /// the new prelude run must not reject programs codegen accepts.
