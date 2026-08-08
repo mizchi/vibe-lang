@@ -29,18 +29,24 @@ import @vibe/core {
 /// 81 pairs in the doubly-indirected call shape sort_perm_by_names actually
 /// uses, 0 disagreements with this loop, on both the seed and stage2.
 ///
-/// It still cannot land, for a different reason: the bundle build round-trips
-/// the compiler's own sources through MERGED SOURCE TEXT.
-/// bootstrap_merge_flatten_tool pass 1 runs the seed with
-/// VIBE_EMIT_MERGED_SOURCE=1 and pass 3 re-compiles the text it emitted, but
-/// the emitted text is POST-DESUGAR: `a < b` on String has already become a
-/// call to `str_lex_diff`, which is a codegen builtin and not a source-level
-/// name. Pass 3 then dies with `unknown name: str_lex_diff`. So compiler
-/// sources may not use String `<` at all until that emitter round-trips --
-/// it currently prints a name it cannot read back.
+/// What blocks it is #1590, and only until the next bootstrap bump. `a < b` on
+/// String desugars to `str_lex_diff(a, b) < 0`, and that builtin was
+/// checker_visible=false in builtin_registry.vibe -- correct only while the
+/// checker runs BEFORE desugar, which it does not in the lane that omits
+/// VIBE_FS_COMPILE=1. bootstrap_merge_flatten_tool pass 3 is exactly that
+/// lane, so the bundle build died with `unknown name: str_lex_diff`. The
+/// registry row is now checker_visible=true and a stage2 built from this tree
+/// compiles the merged module source fine -- but pass 3 runs the PINNED SEED,
+/// which predates the fix and still fails.
 ///
-/// If that is fixed, this body becomes `a < b` and the loop goes away. Two
-/// things to keep when it does. Keep it a FUNCTION with `String` parameters:
+/// (An earlier revision of this comment blamed the merged-source emitter for
+/// printing post-desugar text it could not read back. That was wrong: the
+/// emitted text preserves `(a < b)` verbatim. The failure was always in
+/// compiling it, never in producing it.)
+///
+/// So: after the next seed bump, this body becomes `a < b` and the loop goes
+/// away. Two things to keep when it does. Keep it a FUNCTION with `String`
+/// parameters:
 /// inlining it as `Array::get(xs, i) < Array::get(xs, j)` is #1184, where `<`
 /// on two Array::get results degrades to a LENGTH-FIRST comparison (`"b" <
 /// "ab"` comes out true) and would silently reorder the sort. #1184 is marked
