@@ -1131,8 +1131,15 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
       // operation takes a block carrying this row), say so -- the generic
       // advice below is unactionable for that shape.
       let ho = edp_higher_order_block_owner(effect_defs, bad)
+      let over = edp_over_declared_self_discharger(stmts, fn_defs, bad)
       if String::length(ho) > 0 {
         Array::push(errs, edp_higher_order_error_msg(bad, ho))
+      } else if String::length(over) > 0 {
+        // #1591: the cause is a declared row one level away, so the message
+        // below -- which says the handled body reaches its perform through a
+        // local binding -- would describe a problem this program does not
+        // have, and its advice would change nothing.
+        Array::push(errs, edp_over_declared_error_msg(bad, over))
       } else {
         // #1511: the actionable sentence comes FIRST. The previous wording led
         // with `not eligible for evidence-passing migration (ADR-0076)` and
@@ -2279,6 +2286,59 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Arr
       i = i + 1
     }
   }
+}
+
+/// #1591: two different mistakes reach the same "cannot be compiled here"
+/// error, and they take OPPOSITE fixes -- so the message has to tell them
+/// apart instead of naming one and hoping.
+///
+/// Names a function that DECLARES `ename` in its `with` row while its own
+/// body is a bare `handle ... with ename` (or "" when the program has no such
+/// function). That shape is always rejected, and the declared row is what
+/// does it: the row puts the function in `needing`, and a needing function
+/// whose body is an EHandle is a deliberate eligibility rejection (nested
+/// EHandle -- see edp_row_is_exactly's doc comment for the multi-effect
+/// fixture where the same thing happens on purpose), which sinks migration
+/// for the whole effect. Measured: dropping `ename` from that one row makes
+/// the identical program compile.
+///
+/// So the actionable edit is on the SIGNATURE, one level away from the
+/// handle the error points at -- which is exactly why the generic wording
+/// (restructure the handled body, replace the indirect call with a direct
+/// one) does nothing here. Same class of mistake as #1347's higher-order
+/// message, and handled the same way: name the declaration.
+///
+/// A POSITIVE identification of a construct that is always wrong, not an
+/// "we found no evidence of a perform" -- the latter reads identically for a
+/// body whose perform is merely HIDDEN behind a local alias, and would send
+/// a reader to delete a handler doing real work.
+fn edp_over_declared_self_discharger(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String) -> String {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts, es_names, es_members_list)
+  let declared = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(declared) && found == "" {
+    let nm = Array::get(declared, i)
+    match edp_find_fn_body(stmts, fn_defs, nm) {
+      Some(b) => if edp_body_is_bare_self_discharge(b, ename) {
+        found = nm
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1591: the over-declared-row wording. The edit is on `owner`'s signature,
+/// so the message leads with that and names the function -- the reader is
+/// looking at a `handle` that is fine on its own terms.
+fn edp_over_declared_error_msg(ename: String, owner: String) -> String {
+  String::concat(String::concat(String::concat(String::concat("handle of effect '", ename), "' cannot be compiled here: `"), owner), String::concat(String::concat("` declares '", ename), String::concat(String::concat("' in its `with` row while its own body is a `handle` for '", ename), "'. Handling an effect DISCHARGES it -- a function that handles it does not need it in its row, and declaring it anyway is what makes this uncompilable. Remove it from that row. Callers then need no wrapping `handle` either, since there is nothing left to discharge. (ADR-0076 evidence-passing migration.)")))
 }
 
 /// --- V2 step 3: post-migration live-handle check. ------------------------

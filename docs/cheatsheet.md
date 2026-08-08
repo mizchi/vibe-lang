@@ -1323,6 +1323,31 @@ top-level 関数**の呼び出し、row 注釈付きクロージャリテラル�
 再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
 どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
 
+### 同じ文言で出るが**原因が body に無い**場合がある (#1591 / #1595)
+
+上の表に当てはまらないのに拒否されるときは、**handle ではなく関数の
+シグネチャ**を見る。body で effect を `handle` している関数が、同じ effect を
+`with` row にも書いていると拒否される:
+
+```vibe skip
+// doctest-skip: 拒否される形と、その隣の通る形を並べている
+fn selfd() -> Int with Ask + Ask::Get {   // NG: row が原因
+  handle { read_one() } with Ask { Get => resume(42) }
+}
+
+fn selfd() -> Int {                       // ok: row を消しただけ
+  handle { read_one() } with Ask { Get => resume(42) }
+}
+```
+
+**handle したら row から消える** — 処理した effect は discharge されるので
+宣言する必要がない。宣言すると `needing` に入り、body が `handle` である
+needing 関数は不適格判定に当たって、その effect の migration が**プログラム
+全体で**沈む。包む `handle` の有無とは無関係 (取り除いても拒否される)。
+
+診断はこの原因を名指しする (`` `selfd` declares 'Ask' in its `with` row while
+its own body is a `handle` for 'Ask' ``)。拒否されること自体は #1595。
+
 ### 補間できるのは Show を持つ型だけ (#1445)
 
 宣言済みの struct / enum を `\{x}` に入れるには **`derive(Show)` か手書きの

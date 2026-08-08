@@ -191,13 +191,11 @@ CI shard では:
 
 - **`effect_effectset_*` / `effect_row_operation_item`** — test ブロックは
   row を書けない (#1508) ので `handle { main() } with Ask { .. }` で包むしか
-  ないが、これは #1511 の handle 適格性で拒否される。**`main` を
-  `export let` から `export fn` に変えても拒否される**点が重要 — 原因は
-  let/fn ではなく、`main` の body 自体が self-discharging な `handle` で
-  あること。なお診断文が挙げる許可形 (「名前付き top-level `fn` を呼ぶ」) は
-  それ自体は本当に通る (直接 `perform` する `fn` を呼ぶ形は compile 通過を
-  確認済み) ので、**この診断の列挙は不完全** — 許可形を満たしていても拒否
-  される場合があることを述べていない (#1591)
+  ないが拒否される。**包む `handle` を取り除いても拒否される**ので、原因は
+  包み方ではない — `main` が **body で `Ask` を handle しているのに `with`
+  row にも書いている**ことが原因で、その row を消すだけで同じプログラムが
+  通る (#1595)。診断文はこの原因を名指しするようにした (#1591、
+  `edp_over_declared_self_discharger`)
 - **`entry_error_boundary.vibe`** — 期待値は値ではなく trap (exit 1 +
   stderr の診断)。`inspect` で表せる形ではない
 

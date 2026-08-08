@@ -1,0 +1,48 @@
+// #1591: two different mistakes reach evidence_dict_pass's "cannot be
+// compiled here" error, and they take fixes in different PLACES. This fixture
+// pins the second one, which the generic wording used to describe as
+// something it is not.
+//
+// `selfd` handles `Ask` in its own body -- and also DECLARES it. That row is
+// what breaks the program: it puts `selfd` in `needing`, and a needing
+// function whose body is an EHandle is a deliberate eligibility rejection
+// (nested EHandle), which sinks migration for `Ask` everywhere. Measured:
+// deleting `with Ask + Ask::Get` from `selfd` and nothing else makes the same
+// program compile and run to 42.
+//
+// The old message blamed the handled body for reaching its perform "through a
+// local binding or a closure parameter" and told the reader to make the call
+// direct. There is no indirect call anywhere here, and the edit is on a
+// signature one level away from the handle the error points at -- so the
+// advice changed nothing. Same class of mistake as #1347's higher-order
+// message, and named the same way: the diagnostic now says which function's
+// row to edit.
+//
+// The wrapping `handle` in `main` is kept because it is what a reader
+// actually writes: `selfd`'s declared row forces every caller to discharge
+// it. It is not the cause -- dropping it alone leaves the program rejected.
+//
+// needle: declares 'Ask' in its `with` row while its own body is a `handle`
+effect Ask {
+  Get -> Int
+}
+
+fn read_one() -> Int with Ask::Get {
+  perform Ask::Get
+}
+
+fn selfd() -> Int with Ask + Ask::Get {
+  handle {
+    read_one()
+  } with Ask {
+    Get => resume(42)
+  }
+}
+
+fn main() -> Int {
+  handle {
+    selfd()
+  } with Ask {
+    Get => resume(0)
+  }
+}

@@ -6977,6 +6977,16 @@ if ! grep -qF "cannot be compiled here" "$v2dir/reject.wasm.diag" 2>/dev/null; t
   cat "$v2dir/reject.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1591 added a second message under the same opening phrase. This fixture is
+# the INDIRECT-call shape (`opaque` is a row-variable callee), so it must keep
+# the wording that describes that -- if it ever picks up the vacuous-handle
+# wording instead, the discriminator has gone too far and is telling readers
+# to delete a handler that is doing real work.
+if ! grep -qF "hides the perform" "$v2dir/reject.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the indirect-call reject must keep the indirect-call wording, not #1591's vacuous-handle one" >&2
+  cat "$v2dir/reject.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$v2dir"
 echo "[compiler-gate] replay frontier removal ok"
 
@@ -8767,6 +8777,75 @@ if ! grep -q "Higher-order effects" "$hodir/neg.wasm.diag" 2>/dev/null || ! grep
 fi
 rm -rf "$hodir"
 echo "[compiler-gate] higher-order effect diagnostic ok"
+
+# 84b/84. #1591: the OTHER shape that reaches "cannot be compiled here". A
+# function that DECLARES an effect in its `with` row while its own body is a
+# `handle` for that effect is always rejected -- the row puts it in `needing`,
+# and a needing function whose body is an EHandle is a deliberate eligibility
+# rejection, which sinks migration for the whole effect. Measured: dropping
+# that one row makes the identical program compile.
+#
+# The generic wording blames the handled body for hiding a perform behind a
+# local binding; there is no indirect call here, and the edit is on a
+# signature one level away, so following it changes nothing. Same class as
+# #1347, and named the same way. The two messages must stay distinguishable
+# in BOTH directions: this fixture must name the function, and the indirect
+# fixture (gate 55, err_effect_handle_replay_removed) must keep the
+# indirect-call wording.
+echo "[compiler-gate] 84b/84 an over-declared row on a self-discharging fn names that fn (#1591)"
+cnpdir="_build/_gate_1591"
+rm -rf "$cnpdir"; mkdir -p "$cnpdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/err_handle_covers_no_perform.vibe" "$cnpdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$cnpdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: an over-declared row on a self-discharging fn must still be rejected (#1591)" >&2
+  exit 1
+fi
+if ! grep -qF "declares 'Ask' in its \`with\` row while its own body is a \`handle\`" "$cnpdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the over-declared-row case must name the function and its row, not get the indirect-call wording (#1591)" >&2
+  cat "$cnpdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The advice the message gives has to actually work: take the effect off
+# `selfd`'s row (and then the wrapper has nothing to discharge). Same program
+# otherwise -- if this ever stops compiling, the message is lying.
+cat > "$cnpdir/fixed.vibe" <<'EOF'
+effect Ask {
+  Get -> Int
+}
+
+fn read_one() -> Int with Ask::Get {
+  perform Ask::Get
+}
+
+fn selfd() -> Int {
+  handle {
+    read_one()
+  } with Ask {
+    Get => resume(42)
+  }
+}
+
+fn main() -> Int {
+  selfd()
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cnpdir/fixed.vibe" "$cnpdir/fixed.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$cnpdir/fixed.wasm" ]; then
+  echo "[compiler-gate] FAIL: the edit #1591's message asks for does not compile -- the advice is wrong" >&2
+  cat "$cnpdir/fixed.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cnp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cnpdir/fixed.wasm" 2>&1 | tail -1)"
+if [ "$cnp_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: the #1591 advice compiles but got '$cnp_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$cnpdir"
+echo "[compiler-gate] over-declared self-discharger diagnostic ok"
 
 # 85/85. ADR-0085 typed exceptions (#1344): `throw(v)` requires
 # `Exception[typeof(v)]` in the enclosing row, `Exception[E1]` neither
