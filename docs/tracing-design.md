@@ -588,6 +588,47 @@ trace 2ccd115c...  (11 spans)
 置く前に「なに」を断定した。**span を置くコストは1回あたり数行で、
 ビルド1回分の時間しかかからない。**推測する前に置いた方が速い。
 
+### 5.10 §5.9 の上位2件を読んだ — どちらも重複、判断は不要
+
+**(1) merge-flatten tool は毎回ゼロから作り直している (29.4秒)**
+
+`build_exact_adapter_merged_source` は `bootstrap_merge_flatten_tool` を
+**無条件で**呼ぶ。その中身は3パス:
+
+| pass | 内容 |
+|---|---|
+| 1 | seed が live tree を flatten → `seed_merged` (コンパイラ実行) |
+| 2 | `emit-module-source` で DCE → `seed_modsrc` (host vibe コマンド) |
+| 3 | seed が `seed_modsrc` をコンパイル → `flatten_wasm` (コンパイラ実行) |
+
+そのうえで本体が `flatten_wasm` を `cli_adapter.vibe` に対して走らせる。
+**merged source 1本を得るのにコンパイラを4回叩いている。**
+
+そして pass 3 の冒頭は `rm -f "$flatten_wasm"` である。成果物は
+`_build/merge_flatten_compiler.wasm` に残るのに、**鮮度チェックが無く
+毎回消して作り直す**。この tool は (seed wasm, compiler sources) の
+純粋な関数で、どちらもハッシュできる — `scripts/ensure_generated.sh` が
+生成物5点に対して既にやっているのと同じ形の fingerprint gate が入る。
+
+**(2) adapter bundle を2回書いている (3.8 + 4.0 = 7.8秒)**
+
+`write_adapter_bundle "" ""` を空引数で1回、あとで実引数でもう1回。
+どちらも同じ `$OUT_ADAPTER` に書くので、**1回目の内容は捨てられる**。
+
+1回目が要るのは chicken-and-egg のためと読める — `build_exact_adapter_merged_source`
+が `cli_adapter.vibe` を flatten するとき、`cli_adapter_bundle.vibe` が
+存在して import 解決できる必要がある。つまり**1回目は「在ること」だけが
+要件で、中身は要らない**。フル bundle (bash の `echo` の山) を書く必要はなく、
+最小の妥当な stub で足りるはずである。
+
+両方とも「同じものを2回作っている」だけで、**安全側の重複を外す判断
+(§5.9 の3件目、#979 の guard) とは性質が違う**。合計 ~37秒、ビルドの
+約1/3。
+
+> 本節は診断であって修正ではない。どちらも bootstrap の最も壊れやすい
+> ところを触るので、fingerprint gate も stub 化も、着手するなら
+> `pkf run full-gate` と fixpoint を毎回通しながら進める必要がある。
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |
