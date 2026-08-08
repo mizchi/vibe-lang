@@ -280,3 +280,42 @@ test "check_linked_file: eligible suspend-class handle still checks clean (#1536
   let rc = check_linked_file(path)
   assert(rc == 0)
 }
+
+/// #1536 / #1514 parity: the suspend-side ineligibility error must NAME the
+/// call scps_calls_ok rejected and carry its `line:col`, same as the
+/// handle-side culprit diagnostic (the culprit `bump` sits at line 7 col 5 of
+/// the source below). The raw ` [@off=` transport marker must never survive
+/// to the reader.
+test "check_linked_file: ineligible suspend handle names the culprit call, located (#1536)" {
+  let path = "/tmp/vibe_cli_support_check_scps_culprit.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle {\n    let a = perform Sus::Suspend(1)\n    bump(a)\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "suspend class"))
+  assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(String::contains(msg, "line 7:5"))
+  assert(!String::contains(msg, "[@off="))
+}
+
+/// The Phase 3b clone site (#1536's original victim shape, async_iter_*): a
+/// row-carrying fn called from a suspend body whose OWN body calls its
+/// closure parameter. The error names the fn AND the closure-param call
+/// (`f(a)` at line 5 col 3), located.
+test "check_linked_file: needing-fn closure-param callee names the culprit, located (#1536)" {
+  let path = "/tmp/vibe_cli_support_check_scps_needing_culprit.vibe"
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nfn helper(f: (x: Int) -> Int) -> Int with Sus {\n  let a = perform Sus::Suspend(1)\n  f(a)\n}\nexport fn main() -> Int {\n  handle {\n    helper((x: Int) -> Int { x + 1 })\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "function `helper`"))
+  assert(String::contains(msg, "here: the call to 'f'"))
+  assert(String::contains(msg, "line 5:3"))
+  assert(!String::contains(msg, "[@off="))
+}

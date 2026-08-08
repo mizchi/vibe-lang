@@ -1049,7 +1049,10 @@ let/seq/tail/分岐 tail に直接現れる必要がある。**concrete な row 
 「concrete row が対象 effect を含まない関数」。row 変数 (`with e`)
 付き callee・loop 内の perform は compile error。同じ継続の 2 回目の
 呼び出しは stderr 診断つきで trap する。post-processing は値経由
-(`let k = resume  let r = k(v)  r + 7`) で書く。
+(`let k = resume  let r = k(v)  r + 7`) で書く。see-through できない
+呼び出しで reject されるときの診断は、handle 適格性の診断と同じ形式で
+**どの呼び出しが不適格かを名指しし、その `line:col` を指す**
+(`(here: the call to 'pred')`, #1536/#1514)。
 
 **closure 値経由の suspend も可** (closure-CPS ABI, ADR-0076 追記31):
 `fn run_with(f: () -> Int with E) -> Int { handle { f() } with E

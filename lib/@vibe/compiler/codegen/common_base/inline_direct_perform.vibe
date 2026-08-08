@@ -8981,6 +8981,199 @@ fn scps_fields_calls_ok(fields: Array[(String, Expr)], sctx: (String, Array[Stri
   ok
 }
 
+/// --- #1536 / #1514 parity: name the call scps_calls_ok rejected.
+///
+/// scps_calls_ok answers only Bool, so the suspend-lowering ineligibility
+/// errors could say WHAT kind of callee is rejected but not WHERE. This trio
+/// mirrors its decision structure in lockstep and returns the FIRST rejected
+/// call as (found, callee name, source char offset) -- the edit point. Name
+/// is the bare identifier (or the field name of a method-style callee, whose
+/// fdoff points at the spelled field); "" when the callee has no stable
+/// spelling in source (a computed callee expression, a nested handle).
+/// Offset is -1 when the node carries none (synthesized AST). Keep the
+/// traversal identical to scps_calls_ok: the culprit reported here must be
+/// exactly a call that made it return false, never a call it accepted.
+fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> (Bool, String, Int) {
+  let (eff, _, needing, _, cps_locals) = sctx
+  match e {
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, ioff) => if nm == "perform" && Array::length(args) == 1 {
+        match Array::get(args, 0) {
+          EIdent(_, _) => (false, "", -1),
+          ECall(opc, op_args, _) => match opc {
+            EIdent(_, _) => scps_first_bad_call_info_exprs(op_args, sctx, ctx),
+            _ => (true, nm, scps_pick_off(ioff, off))
+          },
+          _ => (true, nm, scps_pick_off(ioff, off))
+        }
+      } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) || edp_str_array_contains(needing, nm) {
+        scps_first_bad_call_info_exprs(args, sctx, ctx)
+      } else if edp_str_array_contains(cps_locals, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps") {
+        scps_first_bad_call_info_exprs(args, sctx, ctx)
+      } else {
+        let (is_fn, row) = scps_fn_row_of(ctx, nm)
+        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+          scps_first_bad_call_info_exprs(args, sctx, ctx)
+        } else {
+          (true, nm, scps_pick_off(ioff, off))
+        }
+      },
+      EDot(_, field, _, fdoff) => (true, field, fdoff),
+      _ => (true, "", off)
+    },
+    ELet(_, v, b, _) => scps_first_bad_call_info_pair(v, b, sctx, ctx),
+    ELetMut(_, v, b, _) => scps_first_bad_call_info_pair(v, b, sctx, ctx),
+    ELetRec(_, v, b) => scps_first_bad_call_info_pair(v, b, sctx, ctx),
+    ESeq(a, b) => scps_first_bad_call_info_pair(a, b, sctx, ctx),
+    EIf(c, t, el) => {
+      let (f, n, o) = scps_first_bad_call_info_pair(c, t, sctx, ctx)
+      if f {
+        (f, n, o)
+      } else {
+        scps_first_bad_call_info(el, sctx, ctx)
+      }
+    },
+    EMatch(s, arms) => {
+      let mut found = false
+      let mut nm = ""
+      let mut off = -1
+      let (sf, sn, so) = scps_first_bad_call_info(s, sctx, ctx)
+      found = sf
+      nm = sn
+      off = so
+      let mut i = 0
+      while i < Array::length(arms) && !found {
+        let (_, ex) = Array::get(arms, i)
+        let (f, n, o) = scps_first_bad_call_info(ex, sctx, ctx)
+        found = f
+        nm = n
+        off = o
+        i = i + 1
+      }
+      (found, nm, off)
+    },
+    EHandle(_, _) => (true, "", -1),
+    EFn(_, _, _, _, _, b) => scps_first_bad_call_info(b, sctx, ctx),
+    EWhile(c, b) => scps_first_bad_call_info_pair(c, b, sctx, ctx),
+    EForIn(_, _, it, b) => scps_first_bad_call_info_pair(it, b, sctx, ctx),
+    ELoop(pairs, b) => {
+      let mut found = false
+      let mut nm = ""
+      let mut off = -1
+      let mut i = 0
+      while i < Array::length(pairs) && !found {
+        let (_, v) = Array::get(pairs, i)
+        let (f, n, o) = scps_first_bad_call_info(v, sctx, ctx)
+        found = f
+        nm = n
+        off = o
+        i = i + 1
+      }
+      if found {
+        (found, nm, off)
+      } else {
+        scps_first_bad_call_info(b, sctx, ctx)
+      }
+    },
+    EBinOp(_, l, r) => scps_first_bad_call_info_pair(l, r, sctx, ctx),
+    EUnaryOp(_, e2) => scps_first_bad_call_info(e2, sctx, ctx),
+    EAssign(_, v, c) => scps_first_bad_call_info_pair(v, c, sctx, ctx),
+    EAssignOp(_, _, v, c) => scps_first_bad_call_info_pair(v, c, sctx, ctx),
+    EReturn(e2) => scps_first_bad_call_info(e2, sctx, ctx),
+    EDot(o, _, _, _) => scps_first_bad_call_info(o, sctx, ctx),
+    ELabeledArg(_, _, v) => scps_first_bad_call_info(v, sctx, ctx),
+    EBreak(opt) => match opt {
+      Some(e2) => scps_first_bad_call_info(e2, sctx, ctx),
+      None => (false, "", -1)
+    },
+    EContinue(args) => scps_first_bad_call_info_exprs(args, sctx, ctx),
+    ETuple(elems) => scps_first_bad_call_info_exprs(elems, sctx, ctx),
+    EArray(elems) => scps_first_bad_call_info_exprs(elems, sctx, ctx),
+    ERecord(_, fields, _) => scps_first_bad_call_info_fields(fields, sctx, ctx),
+    EMap(fields) => scps_first_bad_call_info_fields(fields, sctx, ctx),
+    ESpread(e2) => scps_first_bad_call_info(e2, sctx, ctx),
+    _ => (false, "", -1)
+  }
+}
+
+fn scps_pick_off(ident_off: Int, call_off: Int) -> Int {
+  if ident_off >= 0 {
+    ident_off
+  } else {
+    call_off
+  }
+}
+
+fn scps_first_bad_call_info_pair(a: Expr, b: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> (Bool, String, Int) {
+  let (f, n, o) = scps_first_bad_call_info(a, sctx, ctx)
+  if f {
+    (f, n, o)
+  } else {
+    scps_first_bad_call_info(b, sctx, ctx)
+  }
+}
+
+fn scps_first_bad_call_info_exprs(es: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(es) && !found {
+    let (f, n, o) = scps_first_bad_call_info(Array::get(es, i), sctx, ctx)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+fn scps_first_bad_call_info_fields(fields: Array[(String, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(fields) && !found {
+    let (_, v) = Array::get(fields, i)
+    let (f, n, o) = scps_first_bad_call_info(v, sctx, ctx)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+/// Render the two culprit fragments for a suspend-lowering ineligibility
+/// error: the human clause ` (here: the call to 'X')` and the ` [@off=N:M]`
+/// transport marker (resolved to `line:col` by the lanes that know the source
+/// basis, ALWAYS stripped before a user sees it -- same contract as the
+/// handle-side #1514 C marker). Either half degrades to "" independently: an
+/// unnamed culprit (computed callee, nested handle) gets no clause, an
+/// offset-less culprit (synthesized AST) gets no marker.
+fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> (String, String) {
+  let (found, nm, off) = scps_first_bad_call_info(e, sctx, ctx)
+  if !found {
+    ("", "")
+  } else {
+    let clause = if String::length(nm) > 0 {
+      String::concat(" (here: the call to '", String::concat(nm, "')"))
+    } else {
+      ""
+    }
+    let marker = if off >= 0 {
+      if String::length(nm) > 0 {
+        String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + String::length(nm)), "]"))))
+      } else {
+        String::concat(" [@off=", String::concat(__to_string(off), "]"))
+      }
+    } else {
+      ""
+    }
+    (clause, marker)
+  }
+}
+
 // --- step constructors.
 
 fn scps_mk_yield(eff: String, opname: String, args: Array[Expr], bind_name: String, cont_body: Expr) -> Expr {
@@ -9766,7 +9959,15 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
     }
     let sctx = (eff, ops_qnames, needing, site, cps_seed)
     if !scps_calls_ok(body, sctx, ctx) {
-      Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable) -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body (#817)")
+      // #1536 / #1514 parity: name the offending call and carry its offset
+      // as the ` [@off=N:M]` marker the located lanes resolve (and every
+      // lane strips), same contract as the handle-side culprit marker.
+      let (culprit_clause, culprit_marker) = scps_culprit_parts(body, sctx, ctx)
+      let mut scps_msg = "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable)"
+      scps_msg = String::concat(scps_msg, culprit_clause)
+      scps_msg = String::concat(scps_msg, " -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body (#817)")
+      scps_msg = String::concat(scps_msg, culprit_marker)
+      Array::push(errs, scps_msg)
       None
     } else {
       let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
@@ -9898,7 +10099,16 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         }
         let sctx = (eff, ops_qnames, needing, site, cps_seed)
         if !scps_calls_ok(fbody, sctx, ctx) {
-          Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but its own body calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee) (#817, ADR-0076 Phase 3b)"))
+          // #1536 / #1514 parity: name the offending call inside `fname`'s
+          // body. The offset indexes the module that defines `fname`, which
+          // may not be the entry file -- verify_culprit_off_marker degrades
+          // a basis mismatch to the unlocated message.
+          let (culprit_clause, culprit_marker) = scps_culprit_parts(fbody, sctx, ctx)
+          let mut scps_msg = String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but its own body calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)")
+          scps_msg = String::concat(scps_msg, culprit_clause)
+          scps_msg = String::concat(scps_msg, " (#817, ADR-0076 Phase 3b)")
+          scps_msg = String::concat(scps_msg, culprit_marker)
+          Array::push(errs, scps_msg)
         } else {
           let (split_ok, split_body) = scps_split_tail(fbody, sctx, ctx, st)
           if !split_ok {
@@ -10537,7 +10747,13 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   }
   let sctx = (eff, ops_qnames, needing, site, cps_seed)
   if !scps_calls_ok(b, sctx, ctx) {
-    Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee) (#817)"))
+    // #1536 / #1514 parity: name the offending call in the literal's body.
+    let (culprit_clause, culprit_marker) = scps_culprit_parts(b, sctx, ctx)
+    let mut scps_msg = String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)")
+    scps_msg = String::concat(scps_msg, culprit_clause)
+    scps_msg = String::concat(scps_msg, " (#817)")
+    scps_msg = String::concat(scps_msg, culprit_marker)
+    Array::push(errs, scps_msg)
     EFn(tps, tbs, params, None, None, b)
   } else {
     let (split_ok, split_body) = scps_split_tail(b, sctx, ctx, st)
