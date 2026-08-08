@@ -4612,10 +4612,9 @@ echo "[compiler-gate] effectset row expansion ok"
 echo "[compiler-gate] 40o/40 effectset cycle + operation-collision detection (ADR-0071 step 2/#755)"
 a71cdir="_build/_gate_effectset_resolver"
 rm -rf "$a71cdir"; mkdir -p "$a71cdir"
-sed '/^__DATA__$/,$d' fixtures/err_effectset_cycle.vibe > "$a71cdir/cycle.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$a71cdir/cycle.vibe" "$a71cdir/cycle.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_effectset_cycle.vibe" "$a71cdir/cycle.wasm" main >/dev/null 2>&1 || true
 if [ -s "$a71cdir/cycle.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effectset_cycle.vibe compiled successfully -- circular effectset references must be rejected" >&2
   exit 1
@@ -4625,10 +4624,9 @@ if ! grep -q "effectset cycle: A -> B -> A" "$a71cdir/cycle.wasm.diag" 2>/dev/nu
   cat "$a71cdir/cycle.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_effectset_operation_collision.vibe > "$a71cdir/collision.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$a71cdir/collision.vibe" "$a71cdir/collision.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_effectset_operation_collision.vibe" "$a71cdir/collision.wasm" main >/dev/null 2>&1 || true
 if [ -s "$a71cdir/collision.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe compiled successfully -- an effectset colliding with an operation name must be rejected" >&2
   exit 1
@@ -6175,10 +6173,9 @@ fi
 #     what it printed before either fix. This is the additivity check: the
 #     overwhelmingly common case must not have moved.
 rm -f "$g944cdir/typed.wasm" "$g944cdir/typed_stderr.txt"
-sed '/^__DATA__$/,$d' fixtures/err_entry_boundary_typed_payload.vibe > "$g944cdir/typed.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$g944cdir/typed.vibe" "$g944cdir/typed.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_entry_boundary_typed_payload.vibe" "$g944cdir/typed.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$g944cdir/typed.wasm" ]; then
   echo "[compiler-gate] FAIL: err_entry_boundary_typed_payload.vibe did not compile (#1372 review)" >&2
   cat "$g944cdir/typed.wasm.diag" 2>/dev/null >&2 || true
@@ -6197,10 +6194,9 @@ fi
 # #1374 additivity: a String payload must print verbatim, exactly as it did
 # before the kind channel existed.
 rm -f "$g944cdir/strp.wasm" "$g944cdir/strp_stderr.txt"
-sed '/^__DATA__$/,$d' fixtures/err_entry_boundary_string_payload.vibe > "$g944cdir/strp.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$g944cdir/strp.vibe" "$g944cdir/strp.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_entry_boundary_string_payload.vibe" "$g944cdir/strp.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$g944cdir/strp.wasm" ]; then
   echo "[compiler-gate] FAIL: err_entry_boundary_string_payload.vibe did not compile (#1374)" >&2
   cat "$g944cdir/strp.wasm.diag" 2>/dev/null >&2 || true
@@ -6469,10 +6465,9 @@ if [ "$send_pos_out" != "42" ]; then
 fi
 send_check_reject() {
   local fixture="$1" needle="$2" tag="$3"
-  sed '/^__DATA__$/,$d' "fixtures/$fixture" > "$senddir/$tag.vibe"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$senddir/$tag.vibe" "$senddir/$tag.wasm" main >/dev/null 2>&1 || true
+    "fixtures/$fixture" "$senddir/$tag.wasm" main >/dev/null 2>&1 || true
   if [ -s "$senddir/$tag.wasm" ]; then
     echo "[compiler-gate] FAIL: $fixture compiled successfully -- must be rejected" >&2
     exit 1
@@ -7126,10 +7121,9 @@ if [ "$region_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: region_ok_basic.vibe got '$region_pos_out' (want 42)" >&2
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_region_escape_return.vibe > "$regiondir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$regiondir/neg.vibe" "$regiondir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_region_escape_return.vibe" "$regiondir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$regiondir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_region_escape_return.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -7195,10 +7189,9 @@ if [ "$spawnable_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: region_ok_spawnable_capture.vibe got '$spawnable_pos_out' (want 42)" >&2
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_spawnable_capture_array.vibe > "$spawnabledir/neg_array.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$spawnabledir/neg_array.vibe" "$spawnabledir/neg_array.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_spawnable_capture_array.vibe" "$spawnabledir/neg_array.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_array.wasm" ]; then
   echo "[compiler-gate] FAIL: err_spawnable_capture_array.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -7208,10 +7201,9 @@ if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_array.wa
   cat "$spawnabledir/neg_array.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_spawnable_capture_cross_region.vibe > "$spawnabledir/neg_cross.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$spawnabledir/neg_cross.vibe" "$spawnabledir/neg_cross.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_spawnable_capture_cross_region.vibe" "$spawnabledir/neg_cross.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_cross.wasm" ]; then
   echo "[compiler-gate] FAIL: err_spawnable_capture_cross_region.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -7221,10 +7213,9 @@ if ! grep -qF 'no impl `Spawnable`' "$spawnabledir/neg_cross.wasm.diag" 2>/dev/n
   cat "$spawnabledir/neg_cross.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_spawnable_capture_letmut.vibe > "$spawnabledir/neg_letmut.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$spawnabledir/neg_letmut.vibe" "$spawnabledir/neg_letmut.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_spawnable_capture_letmut.vibe" "$spawnabledir/neg_letmut.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_letmut.wasm" ]; then
   echo "[compiler-gate] FAIL: err_spawnable_capture_letmut.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -7234,10 +7225,9 @@ if ! grep -qF "no impl \`Spawnable\` for a \`let mut\` binding" "$spawnabledir/n
   cat "$spawnabledir/neg_letmut.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_spawnable_capture_letmut_outer_scope.vibe > "$spawnabledir/neg_letmut_outer.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$spawnabledir/neg_letmut_outer.vibe" "$spawnabledir/neg_letmut_outer.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_spawnable_capture_letmut_outer_scope.vibe" "$spawnabledir/neg_letmut_outer.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_letmut_outer.wasm" ]; then
   echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -7307,10 +7297,9 @@ if [ "$taskgroup_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: region_ok_taskgroup_sugar.vibe got '$taskgroup_pos_out' (want 42)" >&2
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_taskgroup_sugar_region_escape.vibe > "$taskgroupdir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$taskgroupdir/neg.vibe" "$taskgroupdir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_taskgroup_sugar_region_escape.vibe" "$taskgroupdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$taskgroupdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -7374,10 +7363,9 @@ if [ "$frozenarr_send_out" != "42" ]; then
   echo "[compiler-gate] FAIL: send_bound_frozen_array.vibe got '$frozenarr_send_out' (want 42)" >&2
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_type_send_frozen_array_of_array_bound.vibe > "$frozenarrdir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$frozenarrdir/neg.vibe" "$frozenarrdir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_type_send_frozen_array_of_array_bound.vibe" "$frozenarrdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$frozenarrdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_type_send_frozen_array_of_array_bound.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -8367,10 +8355,9 @@ if ! g1340_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_r
   echo "$g1340_out" >&2
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_generic_effect_perform_arity.vibe > "$g1340dir/arity.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$g1340dir/arity.vibe" "$g1340dir/arity.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_generic_effect_perform_arity.vibe" "$g1340dir/arity.wasm" main >/dev/null 2>&1 || true
 if [ -s "$g1340dir/arity.wasm" ]; then
   echo "[compiler-gate] FAIL: err_generic_effect_perform_arity.vibe compiled -- the #1218 generic-effect arity hole is back" >&2
   exit 1
@@ -8380,10 +8367,9 @@ if ! grep -q "perform State::Get expects 0 argument(s), got 3" "$g1340dir/arity.
   cat "$g1340dir/arity.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_generic_effect_row_targ.vibe > "$g1340dir/rowtarg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$g1340dir/rowtarg.vibe" "$g1340dir/rowtarg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_generic_effect_row_targ.vibe" "$g1340dir/rowtarg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$g1340dir/rowtarg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_generic_effect_row_targ.vibe compiled -- a bracketed row item on a non-generic effect must be rejected" >&2
   exit 1
@@ -8495,10 +8481,9 @@ if ! af_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runn
   echo "$af_out" >&2
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_async_for_undeclared.vibe > "$afdir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$afdir/neg.vibe" "$afdir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_async_for_undeclared.vibe" "$afdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$afdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_async_for_undeclared.vibe compiled -- a for loop over a Future-returning iterator must require { Async } (#1358)" >&2
   exit 1
@@ -8604,10 +8589,9 @@ echo "[compiler-gate] async for-loop Async requirement ok"
 echo "[compiler-gate] 82/82 local closure rows leak at the call site (#1361)"
 lcdir="_build/_gate_1361"
 rm -rf "$lcdir"; mkdir -p "$lcdir"
-sed '/^__DATA__$/,$d' fixtures/err_local_closure_effect_leak.vibe > "$lcdir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$lcdir/neg.vibe" "$lcdir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_local_closure_effect_leak.vibe" "$lcdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$lcdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_local_closure_effect_leak.vibe compiled -- a local closure's declared row must leak into its caller (#1361)" >&2
   exit 1
@@ -8668,10 +8652,9 @@ echo "[compiler-gate] local closure row leak ok"
 echo "[compiler-gate] 83/83 a handle that can never fire is rejected (#1347)"
 hsdir="_build/_gate_1347_switch"
 rm -rf "$hsdir"; mkdir -p "$hsdir"
-sed '/^__DATA__$/,$d' fixtures/err_handler_switch_dead_handle.vibe > "$hsdir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$hsdir/neg.vibe" "$hsdir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_handler_switch_dead_handle.vibe" "$hsdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$hsdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_handler_switch_dead_handle.vibe compiled -- the handler-switch no-op is silent again (#1347)" >&2
   exit 1
@@ -8752,10 +8735,9 @@ echo "[compiler-gate] dead-handle rejection ok"
 echo "[compiler-gate] 84/84 higher-order effectful block names the operation (#1347)"
 hodir="_build/_gate_1347_ho"
 rm -rf "$hodir"; mkdir -p "$hodir"
-sed '/^__DATA__$/,$d' fixtures/err_higher_order_effectful_block.vibe > "$hodir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$hodir/neg.vibe" "$hodir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_higher_order_effectful_block.vibe" "$hodir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$hodir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: an operation taking an EFFECTFUL block must still be rejected (#1347)" >&2
   exit 1
@@ -8795,10 +8777,9 @@ if ! exc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_run
   echo "$exc_out" >&2
   exit 1
 fi
-sed '/^__DATA__$/,$d' fixtures/err_exception_kind_mismatch.vibe > "$excdir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$excdir/neg.vibe" "$excdir/neg.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_exception_kind_mismatch.vibe" "$excdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$excdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: with Exception[ParseError] authorized an IoError throw -- exact-kind rows are not enforced (#1344)" >&2
   exit 1
@@ -8814,10 +8795,9 @@ fi
 # invisible to that (untyped) pass, so the throw fell back to the erased
 # `Error::Throw`, which every exception row authorizes. That exempted exactly
 # the shape #1324's migration produces.
-sed '/^__DATA__$/,$d' fixtures/err_exception_local_binder_kind.vibe > "$excdir/neglocal.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$excdir/neglocal.vibe" "$excdir/neglocal.wasm" main >/dev/null 2>&1 || true
+  "fixtures/err_exception_local_binder_kind.vibe" "$excdir/neglocal.wasm" main >/dev/null 2>&1 || true
 if [ -s "$excdir/neglocal.wasm" ]; then
   echo "[compiler-gate] FAIL: a LOCAL binder's throw payload was not kind-checked (#1344 follow-up)" >&2
   exit 1

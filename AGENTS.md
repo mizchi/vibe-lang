@@ -157,9 +157,16 @@ CI shard では:
 
 - **`inspect(...)`** — 本命。期待値がソースの中にあり、`vibe test --update`
   で更新できる (`lib/@vibe/compiler/inspect_update.vibe`)
-- **`__DATA__`** — fixture 末尾の `{"last": "..."}`。723 fixture 中 544 が使用。
+- **`__DATA__`** — fixture 末尾の `{"last": "..."}` / `{"error_contains": "..."}`。
   vibe の構文ではないので、fixture を単体で `vibe test` に食わせられず、
-  `compiler_gate.sh` は**81 箇所で `sed '/^__DATA__$/,$d'` して剥がしている**
+  `compiler_gate.sh` が `sed` で剥がしている (main で 81 箇所 → 現在 24)。
+  **`fixtures/` の `__DATA__` を読む生きた消費者は `compiler_gate.sh` の
+  `sed` だけ**である点が重要 —
+  `scripts/generate_runtime_fixture_tests.mjs` はどの CI job / Taskfile から
+  も呼ばれておらず出力先 `_generated_runtime_fixtures/` も存在しない孤児で、
+  `tests/fixture_real_compile_test.vibe` が読む `lib/@vibe/compiler/fixtures/`
+  も存在しない。つまり gate の `sed` を畳み切れば、残る 500+ の
+  `__DATA__` は消費者ゼロになりまとめて削除できる
 - **`.diag`** — `emit_compile_diag` が `<output_path>.diag` に書く sidecar。
   診断が stdout に出ないので、中断した実行が残骸を落とす (`a.wasm.diag` /
   `b.wasm.diag` がリポジトリ root に tracked で残っていた)。stdout へ移す話は
@@ -167,6 +174,23 @@ CI shard では:
 
 `fixtures/warnings/*.diag` は逆に**意図的にコミットされた期待出力**なので、
 これも snapshot 側へ寄せる対象。移行は一括ではなく、触った fixture から。
+
+移行のパターンは3つに分かれる (残っているものは gate 側の `sed` の形で見分けられる):
+
+1. **`sed '/^__DATA__$/,$d'` の positive** — `__DATA__.last` を
+   `test { inspect(entry(), "...") }` に移し、gate はコンパイルして
+   `--invoke _start` の**終了ステータス**で判定する。gate 側の値比較は消える
+2. **`sed '/^__DATA__$/,$d'` の negative (`err_*`)** — fixture は実行され
+   ないので snapshot する値がない。`__DATA__` は gate が既に grep している
+   診断の二重コピーでしかないので**削除するだけ**でよく、gate は fixture を
+   そのままコンパイルできる
+3. **`sed '/^_start()$/d; /^__DATA__$/,$d'`** — 末尾の裸の `_start()` 呼び出し
+   と `__DATA__` が対になっている形。両方が 1 つの `inspect` ブロックに畳める
+
+畳めないと分かっているもの: `main` 自身が discharge できない row を宣言して
+いる fixture (`effect_effectset_*` の `with Ask + Ask::Get` — handle が中に
+あっても宣言が要る、というチェッカ要件が理由)、および trap を期待する
+`entry_error_boundary.vibe`。これらは `__DATA__` のまま残す。
 
 ## Coding Convention
 
