@@ -352,14 +352,21 @@ prepare_flat_cli_source() {
   local bundle_log="$out_dir/selfhost_bundle_generation.log"
   mkdir -p "$bundle_tmp"
   echo "[selfhost-gen] prepare flat selfhost compiler source" >&2
+  # Both step-0 traces put roughly half the wall clock outside every stage
+  # compile (docs/tracing-design.md §5.6 48%, §5.7 65%). This generator call is
+  # the main suspect, so it gets its own span instead of being guessed at.
+  trace_begin "prepare flat source"
+  local prep_tok="$TRACE_TOKEN"
   if ! VIBE_BUNDLE_OUT="$bundle_tmp/compiler_sources_bundle.vibe" \
     VIBE_ADAPTER_BUNDLE_OUT="$bundle_tmp/cli_adapter_bundle.vibe" \
     VIBE_RUNTIME_ENTRY_BUNDLE_OUT="$bundle_tmp/selfbuild_runtime_entry_bundle.vibe" \
     VIBE_ADAPTER_MODULE_SOURCE_OUT="$out" \
     bash "$generator" >"$bundle_log" 2>&1; then
+    trace_end "$prep_tok" 1
     cat "$bundle_log" >&2
     die "flat selfhost compiler source generation failed"
   fi
+  trace_end "$prep_tok" 0
   [ -s "$out" ] || die "flat selfhost compiler source was not produced: $out"
   printf '%s\n' "$out"
 }
