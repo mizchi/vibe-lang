@@ -1,0 +1,54 @@
+// #1536 (a): a suspend-class handle body may call a needing fn through a
+// ROW-FREE closure param -- when every by-name call site of that fn
+// provably passes a suspend-inert closure in the slot. #761 charges a
+// literal's performs to the ENCLOSING row, so "row-free param => cannot
+// perform" is not free; the proof is argument flow: the CPS clone is only
+// reachable from by-name sites, every site here passes a perform-free
+// literal, so `pred(bumped)` compiles as a plain call inside the clone
+// (no bubble). The pred literal is pure; the suspends all come from
+// `pick` itself, driven synchronously through the resume-value arm.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let pick = (xs: Array[Int], pred: (x: Int) -> Bool) -> Int with Ask {
+  let mut i = 0
+  let mut out = 0 - 1
+  let mut go = true
+  while go {
+    if i >= Array::length(xs) {
+      go = false
+    } else {
+      let v = Array::get(xs, i)
+      let bumped = perform Ask::Get(v)
+      if pred(bumped) {
+        out = bumped
+        go = false
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+let _start = () -> Int {
+  handle {
+    pick([
+      1,
+      3,
+      4
+    ], (x: Int) -> Bool {
+      x % 5 == 0
+    })
+  } with Ask {
+    Get(t) => {
+      let k = resume
+      k(t + 1)
+    }
+  }
+}
+_start()
+
+__DATA__
+{"last":"5"}

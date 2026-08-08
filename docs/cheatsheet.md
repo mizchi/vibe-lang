@@ -1046,7 +1046,12 @@ let/seq/tail/分岐 tail に直接現れる必要がある。**concrete な row 
 対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
 再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
 向けに無変更)。それ以外に呼べるのは perform / pure builtin / ctor /
-「concrete row が対象 effect を含まない関数」。row 変数 (`with e`)
+「concrete row が対象 effect を含まない関数」、そして **row-free な
+closure param 経由の呼び出しのうち、その関数の全 by-name call site が
+perform を含まない closure literal (または委譲元の同様に証明済みの
+param) を渡すと静的に証明できるもの** (#1536 (a) — `async_iter_find`
+の `pred(v)` がこの形。1 site でも perform する literal を渡すと従来
+どおり reject)。row 変数 (`with e`)
 付き callee・loop 内の perform は compile error。同じ継続の 2 回目の
 呼び出しは stderr 診断つきで trap する。post-processing は値経由
 (`let k = resume  let r = k(v)  r + 7`) で書く。see-through できない

@@ -6680,8 +6680,16 @@ scps_check_reject() {
     exit 1
   fi
 }
+# #1536 (a): a row-free closure param whose every by-name call site
+# passes a provably suspend-inert literal is see-through (plain call in
+# the clone; want 5), including the delegation shape (pick_any forwards
+# its own param into pick's slot; want 5). One site passing a PERFORMING
+# literal taints the slot and the rejection stays.
+scps_run_expect "effect_closure_param_inert.vibe" "5" "inertparam"
+scps_run_expect "effect_closure_param_inert_transitive.vibe" "5" "inertdeleg"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
+scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"
 scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail spine" "loopbreak"
 # #1261: an unannotated performing closure is row-backfilled by
 # dlh_hoist_expr and so gets the evidence dict prepended; handing that value

@@ -305,9 +305,13 @@ test "check_linked_file: ineligible suspend handle names the culprit call, locat
 /// row-carrying fn called from a suspend body whose OWN body calls its
 /// closure parameter. The error names the fn AND the closure-param call
 /// (`f(a)` at line 5 col 3), located.
-test "check_linked_file: needing-fn closure-param callee names the culprit, located (#1536)" {
+test "check_linked_file: tainted closure-param callee names the culprit, located (#1536)" {
+  // #1536 (a): a PURE literal in the slot is now accepted (argument-flow
+  // proof), so the rejection coverage needs a tainted site -- the literal
+  // here performs the split effect, which taints the slot and keeps the
+  // see-through error with the same culprit naming and location.
   let path = "/tmp/vibe_cli_support_check_scps_needing_culprit.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nfn helper(f: (x: Int) -> Int) -> Int with Sus {\n  let a = perform Sus::Suspend(1)\n  f(a)\n}\nexport fn main() -> Int {\n  handle {\n    helper((x: Int) -> Int { x + 1 })\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nfn helper(f: (x: Int) -> Int) -> Int with Sus {\n  let a = perform Sus::Suspend(1)\n  f(a)\n}\nexport fn main() -> Int {\n  handle {\n    helper((x: Int) -> Int { perform Sus::Suspend(x) })\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
@@ -319,3 +323,11 @@ test "check_linked_file: needing-fn closure-param callee names the culprit, loca
   assert(String::contains(msg, "line 5:3"))
   assert(!String::contains(msg, "[@off="))
 }
+
+// The ACCEPT side of #1536 (a) (perform-free literal at every site =>
+// clean compile) is deliberately NOT pinned here: the accept path runs
+// the full suspend split + codegen inside the in-harness compiler, which
+// exceeds the unit-test wasm's heap (the reject path above stops at
+// eligibility). Coverage lives in the gate instead --
+// fixtures/effect_closure_param_inert.vibe (+ _transitive) compile AND
+// execute through stage2 in compiler_gate lane 50.

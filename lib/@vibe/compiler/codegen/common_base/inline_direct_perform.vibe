@@ -10046,6 +10046,676 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
   }
 }
 
+// --- #1536 (a): inert closure-param see-through.
+//
+// A ROW-FREE function-typed parameter (`pred: (x: T) -> Bool`) is not
+// automatically safe to call from a CPS clone: #761 charges a closure
+// literal's performs to the ENCLOSING function's row, so "declared row is
+// empty => cannot perform" does not hold for values arriving through a
+// parameter (docs/spec/wasi-p3-async.md §2.2). What IS sound is an
+// argument-flow proof: the clone `__scps_cps_E_f` is only ever invoked
+// from BY-NAME call sites of `f` (a call through a binding that aliases
+// `f` runs the untouched original), so if every by-name site of `f`
+// passes a provably suspend-inert value in that slot -- a closure literal
+// whose body cannot reach a perform of E (no perform at all, no needing
+// name, no opaque callee), or the enclosing top-level fn's own row-free
+// param whose slot is proven the same way (delegation, e.g.
+// `async_iter_any` forwarding `pred` to `async_iter_find`) -- then a call
+// through that parameter inside the clone cannot suspend and compiles as
+// a plain call.
+//
+// Mechanically the proof does NOT widen `sctx`: a proven param is
+// alpha-renamed into the reserved `__scps_inert_<site>_<name>` namespace
+// inside the clone only (shadow-aware, scps_rename_ident), and both
+// scps_calls_ok and scps_first_bad_call_info already accept the
+// `__scps_` prefix, while scps_split_tail treats the call as an ordinary
+// spine element (it is neither a needing call nor a cps-local call), so
+// no bubble is emitted -- exactly the plain-call semantics the proof
+// grants. An unproven param is left alone and keeps today's rejection.
+//
+// Conservative by construction: ANY perform inside a candidate literal
+// taints it (even of an unrelated tail-resumptive effect -- alias
+// spellings make per-effect matching unreliable here), as does any
+// reference to a needing name (call or value), any opaque/method/row-var
+// callee, any nested handle, a labeled/spread argument at a site, a
+// value reference to `f` itself anywhere, or a rebind of the forwarded
+// param name anywhere in the delegating fn's body.
+
+/// Shadow-aware alpha-rename of local name `x` to `nx` in `e` -- reads,
+/// writes and compound-assign targets, stopping at any binder that
+/// shadows `x`. Traversal mirrors scps_cellify.
+fn scps_rename_ident(e: Expr, x: String, nx: String) -> Expr {
+  match e {
+    EIdent(nm, off) => if nm == x {
+      EIdent(nx, off)
+    } else {
+      e
+    },
+    EAssign(nm, v, b) => if nm == x {
+      EAssign(nx, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+    } else {
+      EAssign(nm, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+    },
+    EAssignOp(op, nm, v, b) => if nm == x {
+      EAssignOp(op, nx, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+    } else {
+      EAssignOp(op, nm, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+    },
+    ELet(nm, v, b, off) => ELet(nm, scps_rename_ident(v, x, nx), if nm == x {
+      b
+    } else {
+      scps_rename_ident(b, x, nx)
+    }, off),
+    ELetMut(nm, v, b, off) => ELetMut(nm, scps_rename_ident(v, x, nx), if nm == x {
+      b
+    } else {
+      scps_rename_ident(b, x, nx)
+    }, off),
+    ELetRec(nm, v, b) => if nm == x {
+      e
+    } else {
+      ELetRec(nm, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+    },
+    ESeq(a, b) => ESeq(scps_rename_ident(a, x, nx), scps_rename_ident(b, x, nx)),
+    EIf(c, t, el) => EIf(scps_rename_ident(c, x, nx), scps_rename_ident(t, x, nx), scps_rename_ident(el, x, nx)),
+    EMatch(s, arms) => EMatch(scps_rename_ident(s, x, nx), scps_rename_ident_arms(arms, x, nx)),
+    EHandle(b, arms) => EHandle(scps_rename_ident(b, x, nx), scps_rename_ident_arms(arms, x, nx)),
+    EFn(tps, tbs, params, rt, ef, b) => if scps_params_bind_name(params, x) {
+      e
+    } else {
+      EFn(tps, tbs, params, rt, ef, scps_rename_ident(b, x, nx))
+    },
+    EWhile(c, b) => EWhile(scps_rename_ident(c, x, nx), scps_rename_ident(b, x, nx)),
+    EForIn(nm, idx, it, b) => {
+      let shadowed = nm == x || match idx {
+        Some(inm) => inm == x,
+        None => false
+      }
+      EForIn(nm, idx, scps_rename_ident(it, x, nx), if shadowed {
+        b
+      } else {
+        scps_rename_ident(b, x, nx)
+      })
+    },
+    ELoop(pairs, b) => {
+      let mut shadowed = false
+      let out = scps_empty_pairs()
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (nm, v) = Array::get(pairs, i)
+        if nm == x {
+          shadowed = true
+        } else {
+          ()
+        }
+        Array::push(out, (nm, scps_rename_ident(v, x, nx)))
+        i = i + 1
+      }
+      ELoop(out, if shadowed {
+        b
+      } else {
+        scps_rename_ident(b, x, nx)
+      })
+    },
+    ECall(callee, args, off) => ECall(scps_rename_ident(callee, x, nx), scps_rename_ident_exprs(args, x, nx), off),
+    EBinOp(op, l, r) => EBinOp(op, scps_rename_ident(l, x, nx), scps_rename_ident(r, x, nx)),
+    EUnaryOp(op, a) => EUnaryOp(op, scps_rename_ident(a, x, nx)),
+    EReturn(a) => EReturn(scps_rename_ident(a, x, nx)),
+    EDot(o, f, off, foff) => EDot(scps_rename_ident(o, x, nx), f, off, foff),
+    ELabeledArg(l, m, v) => ELabeledArg(l, m, scps_rename_ident(v, x, nx)),
+    EBreak(opt) => match opt {
+      Some(a) => EBreak(Some(scps_rename_ident(a, x, nx))),
+      None => e
+    },
+    EContinue(args) => EContinue(scps_rename_ident_exprs(args, x, nx)),
+    ETuple(items) => ETuple(scps_rename_ident_exprs(items, x, nx)),
+    EArray(items) => EArray(scps_rename_ident_exprs(items, x, nx)),
+    ERecord(rn, fields, targs) => ERecord(rn, scps_rename_ident_pairs(fields, x, nx), targs),
+    EMap(fields) => EMap(scps_rename_ident_pairs(fields, x, nx)),
+    ESpread(a) => ESpread(scps_rename_ident(a, x, nx)),
+    _ => e
+  }
+}
+
+fn scps_rename_ident_exprs(es: Array[Expr], x: String, nx: String) -> Array[Expr] {
+  let out = array_empty_expr()
+  let mut i = 0
+  while i < Array::length(es) {
+    Array::push(out, scps_rename_ident(Array::get(es, i), x, nx))
+    i = i + 1
+  }
+  out
+}
+
+fn scps_rename_ident_pairs(pairs: Array[(String, Expr)], x: String, nx: String) -> Array[(String, Expr)] {
+  let out = scps_empty_pairs()
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (nm, v) = Array::get(pairs, i)
+    Array::push(out, (nm, scps_rename_ident(v, x, nx)))
+    i = i + 1
+  }
+  out
+}
+
+fn scps_rename_ident_arms(arms: Array[(Pat, Expr)], x: String, nx: String) -> Array[(Pat, Expr)] {
+  let out = scps_empty_arms()
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, ex) = Array::get(arms, i)
+    Array::push(out, (p, if scps_pat_binds_name(p, x) {
+      ex
+    } else {
+      scps_rename_ident(ex, x, nx)
+    }))
+    i = i + 1
+  }
+  out
+}
+
+/// True if ANY binder anywhere in `e` (let / let mut / let rec / closure
+/// param / for / loop / match / handle arm pattern) binds `x`. Used as the
+/// conservative shadow check before trusting a forwarded param name at a
+/// delegating call site.
+fn scps_binds_name(e: Expr, x: String) -> Bool {
+  match e {
+    ELet(nm, v, b, _) => nm == x || scps_binds_name(v, x) || scps_binds_name(b, x),
+    ELetMut(nm, v, b, _) => nm == x || scps_binds_name(v, x) || scps_binds_name(b, x),
+    ELetRec(nm, v, b) => nm == x || scps_binds_name(v, x) || scps_binds_name(b, x),
+    EFn(_, _, params, _, _, b) => scps_params_bind_name(params, x) || scps_binds_name(b, x),
+    EForIn(nm, idx, it, b) => nm == x || match idx {
+      Some(inm) => inm == x,
+      None => false
+    } || scps_binds_name(it, x) || scps_binds_name(b, x),
+    ELoop(pairs, b) => {
+      let mut hit = scps_binds_name(b, x)
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (nm, v) = Array::get(pairs, i)
+        if nm == x || scps_binds_name(v, x) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EMatch(s, arms) => scps_binds_name(s, x) || scps_binds_name_arms(arms, x),
+    EHandle(b, arms) => scps_binds_name(b, x) || scps_binds_name_arms(arms, x),
+    ESeq(a, b) => scps_binds_name(a, x) || scps_binds_name(b, x),
+    EIf(c, t, el) => scps_binds_name(c, x) || scps_binds_name(t, x) || scps_binds_name(el, x),
+    ECall(callee, args, _) => scps_binds_name(callee, x) || scps_binds_name_exprs(args, x),
+    EBinOp(_, l, r) => scps_binds_name(l, x) || scps_binds_name(r, x),
+    EUnaryOp(_, a) => scps_binds_name(a, x),
+    EAssign(_, v, b) => scps_binds_name(v, x) || scps_binds_name(b, x),
+    EAssignOp(_, _, v, b) => scps_binds_name(v, x) || scps_binds_name(b, x),
+    EReturn(a) => scps_binds_name(a, x),
+    EDot(o, _, _, _) => scps_binds_name(o, x),
+    ELabeledArg(_, _, v) => scps_binds_name(v, x),
+    EBreak(opt) => match opt {
+      Some(a) => scps_binds_name(a, x),
+      None => false
+    },
+    EContinue(args) => scps_binds_name_exprs(args, x),
+    ETuple(items) => scps_binds_name_exprs(items, x),
+    EArray(items) => scps_binds_name_exprs(items, x),
+    ERecord(_, fields, _) => scps_binds_name_pairs(fields, x),
+    EMap(fields) => scps_binds_name_pairs(fields, x),
+    ESpread(a) => scps_binds_name(a, x),
+    _ => false
+  }
+}
+
+fn scps_binds_name_exprs(es: Array[Expr], x: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if scps_binds_name(Array::get(es, i), x) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_binds_name_pairs(pairs: Array[(String, Expr)], x: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if scps_binds_name(v, x) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_binds_name_arms(arms: Array[(Pat, Expr)], x: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (p, ex) = Array::get(arms, i)
+    if scps_pat_binds_name(p, x) || scps_binds_name(ex, x) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// True if `e` could reach a suspend of the effect under proof: ANY
+/// perform (per-effect matching is unreliable under alias spellings, so
+/// every perform taints), any reference to a needing name (call OR value
+/// -- a value escape could smuggle a performer), any callee that is not a
+/// pure/safe-mut builtin, a ctor, reserved `__scps_`/`__Scps` machinery,
+/// or a named top-level fn with a concrete eff-free row, or any nested
+/// handle. Nested closure literals are recursed (their row annotation
+/// carrying `eff` also taints -- convention mixing).
+fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  match e {
+    // A needing name (call or value) can suspend; anything in the
+    // reserved __scps_/__Scps namespace means the phase-2 prepass already
+    // step-compiled machinery into this argument (a raw-performing
+    // literal is rewritten BEFORE this proof runs, so the step spelling
+    // is how its suspension is visible here) -- both taint.
+    EIdent(nm, _) => edp_str_array_contains(needing, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps"),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "perform" {
+        true
+      } else if edp_str_array_contains(needing, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps") {
+        true
+      } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) {
+        scps_inert_taint_exprs(args, eff, needing, ctx)
+      } else {
+        let (is_fn, row) = scps_fn_row_of(ctx, nm)
+        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+          scps_inert_taint_exprs(args, eff, needing, ctx)
+        } else {
+          true
+        }
+      },
+      _ => true
+    },
+    EHandle(_, _) => true,
+    EFn(_, _, _, _, ef, b) => match ef {
+      Some(row) => scps_row_contains(ctx, row, eff) || scps_row_has_var(row) || scps_inert_taint(b, eff, needing, ctx),
+      None => scps_inert_taint(b, eff, needing, ctx)
+    },
+    ELet(_, v, b, _) => scps_inert_taint(v, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    ELetMut(_, v, b, _) => scps_inert_taint(v, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    ELetRec(_, v, b) => scps_inert_taint(v, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    ESeq(a, b) => scps_inert_taint(a, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    EIf(c, t, el) => scps_inert_taint(c, eff, needing, ctx) || scps_inert_taint(t, eff, needing, ctx) || scps_inert_taint(el, eff, needing, ctx),
+    EMatch(s, arms) => scps_inert_taint(s, eff, needing, ctx) || scps_inert_taint_arms(arms, eff, needing, ctx),
+    EWhile(c, b) => scps_inert_taint(c, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    EForIn(_, _, it, b) => scps_inert_taint(it, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    ELoop(pairs, b) => scps_inert_taint_pairs(pairs, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    EBinOp(_, l, r) => scps_inert_taint(l, eff, needing, ctx) || scps_inert_taint(r, eff, needing, ctx),
+    EUnaryOp(_, a) => scps_inert_taint(a, eff, needing, ctx),
+    EAssign(_, v, b) => scps_inert_taint(v, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    EAssignOp(_, _, v, b) => scps_inert_taint(v, eff, needing, ctx) || scps_inert_taint(b, eff, needing, ctx),
+    EReturn(a) => scps_inert_taint(a, eff, needing, ctx),
+    EDot(o, _, _, _) => scps_inert_taint(o, eff, needing, ctx),
+    ELabeledArg(_, _, v) => scps_inert_taint(v, eff, needing, ctx),
+    EBreak(opt) => match opt {
+      Some(a) => scps_inert_taint(a, eff, needing, ctx),
+      None => false
+    },
+    EContinue(args) => scps_inert_taint_exprs(args, eff, needing, ctx),
+    ETuple(items) => scps_inert_taint_exprs(items, eff, needing, ctx),
+    EArray(items) => scps_inert_taint_exprs(items, eff, needing, ctx),
+    ERecord(_, fields, _) => scps_inert_taint_pairs(fields, eff, needing, ctx),
+    EMap(fields) => scps_inert_taint_pairs(fields, eff, needing, ctx),
+    ESpread(a) => scps_inert_taint(a, eff, needing, ctx),
+    _ => false
+  }
+}
+
+fn scps_inert_taint_exprs(es: Array[Expr], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if scps_inert_taint(Array::get(es, i), eff, needing, ctx) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_inert_taint_pairs(pairs: Array[(String, Expr)], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if scps_inert_taint(v, eff, needing, ctx) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_inert_taint_arms(arms: Array[(Pat, Expr)], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if scps_inert_taint(ex, eff, needing, ctx) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Is argument `a` (found in a proven-slot position at a by-name call
+/// site) suspend-inert? A closure literal must have a taint-free body and
+/// must not itself declare a row carrying `eff`; a bare identifier is
+/// accepted only as the enclosing top-level fn's own function-typed param
+/// whose slot is (recursively) proven and never rebound anywhere in that
+/// fn's body. Everything else is not provable.
+fn scps_arg_is_inert(a: Expr, has_encl: Bool, encl_params: Array[(String, Option[TypeExpr])], encl_body: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), encl_name: String, visiting: Array[String]) -> Bool {
+  match a {
+    EFn(_, _, _, _, ef, b) => {
+      let row_ok = match ef {
+        Some(row) => !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
+        None => true
+      }
+      row_ok && !scps_inert_taint(b, eff, needing, ctx)
+    },
+    EIdent(an, _) => if has_encl {
+      let mut slot = -1
+      let mut i = 0
+      while i < Array::length(encl_params) {
+        let (pnm, _) = Array::get(encl_params, i)
+        if pnm == an && slot < 0 {
+          slot = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if slot < 0 {
+        false
+      } else if scps_binds_name(encl_body, an) {
+        false
+      } else {
+        scps_param_slot_inert(encl_name, slot, eff, needing, ctx, visiting)
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// True when every occurrence of `fname` in `e` is a by-name call whose
+/// argument in `slot` is suspend-inert -- and `fname` never escapes as a
+/// bare value. Binders shadowing `fname` stop the scan (calls below them
+/// are not calls to the top-level fn).
+fn scps_slot_sites_ok(e: Expr, fname: String, slot: Int, has_encl: Bool, encl_params: Array[(String, Option[TypeExpr])], encl_body: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), encl_name: String, visiting: Array[String]) -> Bool {
+  // Phase 3 has already rewritten suspend-context call sites of `fname`
+  // to its CPS-clone spelling (args preserved) by the time phase 4 runs
+  // this proof, so a site counts under EITHER name -- missing the
+  // rewritten spelling would let a tainted argument through unseen.
+  let cname = scps_clone_name(eff, fname)
+  match e {
+    EIdent(nm, _) => nm != fname && nm != cname,
+    ECall(callee, args, _) => {
+      let head_ok = match callee {
+        EIdent(nm, _) => if nm == fname || nm == cname {
+          let mut shape_ok = slot < Array::length(args)
+          let mut ai = 0
+          while ai < Array::length(args) {
+            match Array::get(args, ai) {
+              ELabeledArg(_, _, _) => {
+                shape_ok = false
+              },
+              ESpread(_) => {
+                shape_ok = false
+              },
+              _ => ()
+            }
+            ai = ai + 1
+          }
+          shape_ok && scps_arg_is_inert(Array::get(args, slot), has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)
+        } else {
+          true
+        },
+        _ => scps_slot_sites_ok(callee, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)
+      }
+      let mut ok = head_ok
+      let mut i = 0
+      while i < Array::length(args) {
+        // Bare-ident args recurse like everything else: EIdent(fname) in
+        // ANY argument position (including a self-call's own slot) is a
+        // value escape and must fail via the EIdent arm.
+        if !scps_slot_sites_ok(Array::get(args, i), fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    },
+    EFn(_, _, params, _, _, b) => if scps_params_bind_name(params, fname) {
+      true
+    } else {
+      scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)
+    },
+    ELet(nm, v, b, _) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && (nm == fname || scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)),
+    ELetMut(nm, v, b, _) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && (nm == fname || scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)),
+    ELetRec(nm, v, b) => if nm == fname {
+      true
+    } else {
+      scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)
+    },
+    ESeq(a, b) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EIf(c, t, el) => scps_slot_sites_ok(c, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(t, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(el, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EMatch(s, arms) => {
+      let mut ok = scps_slot_sites_ok(s, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if scps_pat_binds_name(p, fname) {
+          ()
+        } else if !scps_slot_sites_ok(ex, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    },
+    EHandle(b, arms) => {
+      let mut ok = scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if scps_pat_binds_name(p, fname) {
+          ()
+        } else if !scps_slot_sites_ok(ex, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    },
+    EWhile(c, b) => scps_slot_sites_ok(c, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EForIn(nm, idx, it, b) => {
+      let shadowed = nm == fname || match idx {
+        Some(inm) => inm == fname,
+        None => false
+      }
+      scps_slot_sites_ok(it, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && (shadowed || scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting))
+    },
+    ELoop(pairs, b) => {
+      let mut shadowed = false
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (nm, v) = Array::get(pairs, i)
+        if nm == fname {
+          shadowed = true
+        } else {
+          ()
+        }
+        if !scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok && (shadowed || scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting))
+    },
+    EBinOp(_, l, r) => scps_slot_sites_ok(l, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(r, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EUnaryOp(_, a) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EAssign(_, v, b) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EAssignOp(_, _, v, b) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EReturn(a) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EDot(o, _, _, _) => scps_slot_sites_ok(o, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    ELabeledArg(_, _, v) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EBreak(opt) => match opt {
+      Some(a) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+      None => true
+    },
+    EContinue(args) => scps_slot_sites_ok_exprs(args, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    ETuple(items) => scps_slot_sites_ok_exprs(items, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EArray(items) => scps_slot_sites_ok_exprs(items, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    ERecord(_, fields, _) => scps_slot_sites_ok_pairs(fields, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EMap(fields) => scps_slot_sites_ok_pairs(fields, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    ESpread(a) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    _ => true
+  }
+}
+
+fn scps_slot_sites_ok_exprs(es: Array[Expr], fname: String, slot: Int, has_encl: Bool, encl_params: Array[(String, Option[TypeExpr])], encl_body: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), encl_name: String, visiting: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(es) {
+    if !scps_slot_sites_ok(Array::get(es, i), fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn scps_slot_sites_ok_pairs(pairs: Array[(String, Expr)], fname: String, slot: Int, has_encl: Bool, encl_params: Array[(String, Option[TypeExpr])], encl_body: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), encl_name: String, visiting: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if !scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// Prove param slot `slot` of top-level fn `fname` suspend-inert for
+/// `eff`: the slot's declared type must be function-typed with a row that
+/// is absent, or concrete and eff-free; and every by-name occurrence of
+/// `fname` program-wide must be a call passing an inert value in that
+/// slot. Delegation cycles are handled coinductively: a slot already on
+/// the `visiting` stack contributes no new taint evidence and is treated
+/// as inert within its own proof.
+fn scps_param_slot_inert(fname: String, slot: Int, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), visiting: Array[String]) -> Bool {
+  let key = String::concat(String::concat(fname, "||"), Int::to_string(slot))
+  if edp_str_array_contains(visiting, key) {
+    true
+  } else {
+    let (stmts, _, fn_defs, _, _, _) = ctx
+    let slot_ok = match edp_params_of_fn(stmts, fn_defs, fname) {
+      Some(params) => if slot < Array::length(params) {
+        let (_, pty) = Array::get(params, slot)
+        let prow = scps_ty_row(pty)
+        match pty {
+          Some(TyFn(_, _, _)) => !scps_row_contains(ctx, prow, eff) && !scps_row_has_var(prow),
+          _ => false
+        }
+      } else {
+        false
+      },
+      None => false
+    }
+    if !slot_ok {
+      false
+    } else {
+      let visiting2 = Array::slice(visiting, 0, Array::length(visiting))
+      Array::push(visiting2, key)
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(stmts) {
+        match Array::get(stmts, i) {
+          SLet(_, _, dnm, _, dexpr) => match dexpr {
+            EFn(_, _, dparams, _, _, dbody) => {
+              if !scps_slot_sites_ok(dbody, fname, slot, true, dparams, dbody, eff, needing, ctx, dnm, visiting2) {
+                ok = false
+              } else {
+                ()
+              }
+            },
+            _ => if !scps_slot_sites_ok(dexpr, fname, slot, false, scps_empty_params(), EUnit, eff, needing, ctx, "", visiting2) {
+              ok = false
+            } else {
+              ()
+            }
+          },
+          SLetMut(_, _, mexpr) => if !scps_slot_sites_ok(mexpr, fname, slot, false, scps_empty_params(), EUnit, eff, needing, ctx, "", visiting2) {
+            ok = false
+          } else {
+            ()
+          },
+          SExpr(sexpr) => if !scps_slot_sites_ok(sexpr, fname, slot, false, scps_empty_params(), EUnit, eff, needing, ctx, "", visiting2) {
+            ok = false
+          } else {
+            ()
+          },
+          STest(_, texpr) => if !scps_slot_sites_ok(texpr, fname, slot, false, scps_empty_params(), EUnit, eff, needing, ctx, "", visiting2) {
+            ok = false
+          } else {
+            ()
+          },
+          SBench(_, bexpr) => if !scps_slot_sites_ok(bexpr, fname, slot, false, scps_empty_params(), EUnit, eff, needing, ctx, "", visiting2) {
+            ok = false
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
+}
+
 // --- CPS clone emission (3b). The clone's EFn deliberately carries
 // ret=None and eff=None: the return type is now __ScpsStep_E (an
 // annotation would lie, and codegen ignores it post-check), and the row
@@ -10097,24 +10767,51 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
           }
           cpi = cpi + 1
         }
+        // #1536 (a): a row-free (or concrete eff-free row) function-typed
+        // param whose every by-name call site provably receives a
+        // suspend-inert value is renamed into the reserved __scps_inert_
+        // namespace inside this clone, which both eligibility walkers
+        // already accept and the split leaves as a plain call (see the
+        // inert see-through block above). An unproven param stays as-is
+        // and keeps the existing rejection.
+        let cparams = scps_empty_params()
+        let mut fbody2 = fbody
+        let mut ipi = 0
+        while ipi < Array::length(params) {
+          let (pnm, pty) = Array::get(params, ipi)
+          let prow = scps_ty_row(pty)
+          let in_seed = edp_str_array_contains(cps_seed, pnm)
+          let candidate = match pty {
+            Some(TyFn(_, _, _)) => !in_seed && !scps_row_contains(ctx, prow, eff) && !scps_row_has_var(prow),
+            _ => false
+          }
+          if candidate && scps_param_slot_inert(fname, ipi, eff, needing, ctx, array_empty_str()) {
+            let inm = String::concat(String::concat(scps_local("__scps_inert_", site), "_"), pnm)
+            Array::push(cparams, (inm, pty))
+            fbody2 = scps_rename_ident(fbody2, pnm, inm)
+          } else {
+            Array::push(cparams, (pnm, pty))
+          }
+          ipi = ipi + 1
+        }
         let sctx = (eff, ops_qnames, needing, site, cps_seed)
-        if !scps_calls_ok(fbody, sctx, ctx) {
+        if !scps_calls_ok(fbody2, sctx, ctx) {
           // #1536 / #1514 parity: name the offending call inside `fname`'s
           // body. The offset indexes the module that defines `fname`, which
           // may not be the entry file -- verify_culprit_off_marker degrades
           // a basis mismatch to the unlocated message.
-          let (culprit_clause, culprit_marker) = scps_culprit_parts(fbody, sctx, ctx)
+          let (culprit_clause, culprit_marker) = scps_culprit_parts(fbody2, sctx, ctx)
           let mut scps_msg = String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but its own body calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)")
           scps_msg = String::concat(scps_msg, culprit_clause)
           scps_msg = String::concat(scps_msg, " (#817, ADR-0076 Phase 3b)")
           scps_msg = String::concat(scps_msg, culprit_marker)
           Array::push(errs, scps_msg)
         } else {
-          let (split_ok, split_body) = scps_split_tail(fbody, sctx, ctx, st)
+          let (split_ok, split_body) = scps_split_tail(fbody2, sctx, ctx, st)
           if !split_ok {
             Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a `while` loop carrying `break`/`continue`/`return`, a `for`/`loop` form, nested closures/handles, and nested expression positions are not eligible; a plain `while` + `let mut` spine is, #1230) (#817, ADR-0076 Phase 3b)"))
           } else {
-            Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, params, None, None, split_body)))
+            Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
           }
         }
       },
