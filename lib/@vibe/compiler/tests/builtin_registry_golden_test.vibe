@@ -1,0 +1,156 @@
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/core {
+  Type, builtin_registry_typed
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// #1520 proposal 3: a literal source expression that inhabits `t`, or None
+/// when the type has no closed literal spelling (generic named types,
+/// function-typed parameters, ...). Rows whose parameters are all
+/// constructible get a golden call; the rest are skipped, and the coverage
+/// assert at the bottom keeps the skip set from silently swallowing the
+/// corpus.
+fn literal_for_type(t: Type) -> Option[String] {
+  match t {
+    CtInt => Some("1"),
+    CtDouble => Some("1.0"),
+    CtBool => Some("true"),
+    CtString => Some("\"s\""),
+    CtChar => Some("'a'"),
+    CtUnit => Some("()"),
+    CtBytes => Some("Bytes::new()"),
+    // A polymorphic/unchecked slot accepts anything; Int is the simplest.
+    CtUnknown => Some("1"),
+    CtArray(elem) => match literal_for_type(elem) {
+      Some(inner) => Some(String::concat("[", String::concat(inner, "]"))),
+      None => None
+    },
+    CtOption(elem) => match literal_for_type(elem) {
+      Some(inner) => Some(String::concat("Some(", String::concat(inner, ")"))),
+      None => None
+    },
+    CtTuple(items) => {
+      let mut acc = "("
+      let mut i = 0
+      let mut ok = true
+      while i < Array::length(items) && ok {
+        match literal_for_type(Array::get(items, i)) {
+          Some(inner) => {
+            acc = if i == 0 {
+              String::concat(acc, inner)
+            } else {
+              String::concat(acc, String::concat(", ", inner))
+            }
+          },
+          None => {
+            ok = false
+          }
+        }
+        i = i + 1
+      }
+      if ok && Array::length(items) > 1 {
+        Some(String::concat(acc, ")"))
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+/// The golden call source for one registry row, or None when the row is not
+/// exercisable as a plain pure call: effectful rows need an ambient row this
+/// harness does not provide, and rows with non-literal parameter types have
+/// no closed argument spelling.
+fn golden_call_source(name: String, ty: Type) -> Option[String] {
+  match ty {
+    CtFn(params, _, effect) => match effect {
+      Some(_) => None,
+      None => {
+        let mut args = ""
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(params) && ok {
+          match literal_for_type(Array::get(params, i)) {
+            Some(lit) => {
+              args = if i == 0 {
+                lit
+              } else {
+                String::concat(args, String::concat(", ", lit))
+              }
+            },
+            None => {
+              ok = false
+            }
+          }
+          i = i + 1
+        }
+        if ok {
+          Some(String::concat("let golden_result = ", String::concat(name, String::concat("(", String::concat(args, ")")))))
+        } else {
+          None
+        }
+      }
+    },
+    _ => None
+  }
+}
+
+fn checks_cleanly(source: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    true
+  } with Exception {
+    Throw(_) => false
+  }
+}
+
+//# Misc
+
+test "every constructible registry builtin accepts its golden call (#1520)" {
+  // Proposal 3 of #1520: pin one ACCEPTED call per checker-visible registry
+  // row. A registry row nobody calls can be wrong without anyone noticing
+  // (that was `eq` before #1519, rejected only once a doctest happened to
+  // exercise it); this corpus makes the checker read every constructible row
+  // on every test run. Catches both over-restrictive declarations and
+  // consumer-side normalization gaps (the `Char::to_int` head-fold class),
+  // which the #1523 registry-vs-lane diff cannot see.
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut checked = 0
+  let mut failed = 0
+  while i < Array::length(rows) {
+    let (name, ty, _, _, visible) = Array::get(rows, i)
+    if visible {
+      match golden_call_source(name, ty) {
+        Some(source) => {
+          if checks_cleanly(source) {
+            ()
+          } else {
+            println("golden call rejected for \{name}: \{source}")
+            failed = failed + 1
+          }
+          checked = checked + 1
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(failed == 0)
+  // Guard against the corpus silently shrinking to nothing (e.g. a Type
+  // refactor that makes every parameter non-constructible).
+  assert(checked > 40)
+}
