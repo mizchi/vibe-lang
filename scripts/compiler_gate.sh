@@ -4246,24 +4246,80 @@ echo "[compiler-gate] wasm-gc backend dead needing function filtering ok (105)"
 #       shape; confirmed via direct testing that it failed under
 #       VIBE_BACKEND=gc with "only `with Error`..." before this change.
 echo "[compiler-gate] 40h4/40 wasm-gc backend: self-discharging needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
+# #1571: fixture is an inspect() test-block suite now, compiled AS-IS (no
+# `sed` strip; its import resolves from fixtures/). Its test block wraps the
+# call to the self-discharging `main` in another `handle ... with Ask`,
+# which additionally locks #1595 on the gc lane: the CALL to a
+# self-discharging fn must be inert (edp_append_self_discharging_row_fns),
+# not just the fn itself dropped from `needing`.
 gcselfdir="_build/_gate_gc_self_discharge"
 rm -rf "$gcselfdir"; mkdir -p "$gcselfdir"
-sed '/^__DATA__$/,$d' fixtures/effect_effectset_expansion.vibe > "$gcselfdir/src.vibe"
-VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$gcselfdir/src.vibe" "$gcselfdir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_effectset_expansion.vibe "$gcselfdir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$gcselfdir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe did not compile under VIBE_BACKEND=gc" >&2
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe did not compile under VIBE_BACKEND=gc (self-discharging drop or #1595 call-inertness regressed)" >&2
   cat "$gcselfdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-gcself_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcselfdir/out.wasm" 2>&1 | tail -1)"
-if [ "$gcself_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe under gc got '$gcself_out' (want 42) -- self-discharging needing function filtering regressed" >&2
+if ! gcself_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcselfdir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe under gc test failed (want inspect 42) -- self-discharging needing function filtering regressed" >&2
+  echo "$gcself_out" >&2
   exit 1
 fi
 rm -rf "$gcselfdir"
 echo "[compiler-gate] wasm-gc backend self-discharging needing function filtering ok (42)"
+
+# 40h4b. #1595: a self-discharging fn CALLED FROM another row-carrying fn.
+#        Dropping the callee from `needing` (40h4's fix) alone was
+#        self-defeating for this shape: the drop removed the very
+#        needing-membership that made the CALL to it safe in
+#        edp_has_unsafe_construct, so the caller went ineligible and the
+#        whole effect's migration failed hard ("cannot be compiled here").
+#        The second half (edp_append_self_discharging_row_fns) makes such
+#        calls inert -- mirroring the perform-free class's dual treatment.
+#        Positive: fixtures/effect_self_discharging_callee.vibe (inspect
+#        test block, both backends). Negative:
+#        fixtures/err_effect_self_discharge_arm_reperform.vibe -- a handler
+#        arm that RE-PERFORMS the effect escapes the callee, so that fn is
+#        NOT call-inert; the program must stay a hard error (never a
+#        silently-migrated outer handle blind to the arm's perform), and
+#        the diagnostic must name the callee + the arm re-perform (#1591:
+#        the old enumeration listed only forms this program satisfies).
+echo "[compiler-gate] 40h4b/40 self-discharging callee call-inertness (#1595) + dirty-arm rejection (#1591)"
+sdcdir="_build/_gate_self_discharge_callee"
+rm -rf "$sdcdir"; mkdir -p "$sdcdir"
+for sdc_backend in "" gc; do
+  rm -f "$sdcdir/out.wasm" "$sdcdir/out.wasm.diag"
+  env ${sdc_backend:+VIBE_BACKEND="$sdc_backend"} VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/effect_self_discharging_callee.vibe "$sdcdir/out.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$sdcdir/out.wasm" ]; then
+    echo "[compiler-gate] FAIL: effect_self_discharging_callee.vibe did not compile${sdc_backend:+ under VIBE_BACKEND=$sdc_backend} (#1595 call-inertness regressed)" >&2
+    cat "$sdcdir/out.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! sdc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sdcdir/out.wasm" 2>&1)"; then
+    echo "[compiler-gate] FAIL: effect_self_discharging_callee.vibe test failed${sdc_backend:+ under VIBE_BACKEND=$sdc_backend} (want inspect 42 -- the callee's own handler must win)" >&2
+    echo "$sdc_out" >&2
+    exit 1
+  fi
+done
+rm -f "$sdcdir/rej.wasm" "$sdcdir/rej.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_effect_self_discharge_arm_reperform.vibe "$sdcdir/rej.wasm" main >/dev/null 2>&1 || true
+if [ -s "$sdcdir/rej.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_self_discharge_arm_reperform.vibe compiled -- an arm re-perform escapes the callee, so call-inertness must NOT apply (P0 silent-wrong risk)" >&2
+  exit 1
+fi
+if ! grep -qF "hides a perform from it" "$sdcdir/rej.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effect_self_discharge_arm_reperform.vibe rejection lacks the #1591 culprit diagnostic (want 'hides a perform from it')" >&2
+  cat "$sdcdir/rej.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$sdcdir"
+echo "[compiler-gate] self-discharging callee call-inertness ok (#1595/#1591)"
 
 # 40h5. ADR-0076 (#817) gc-backend follow-up: a local closure literal with
 #       NO explicit `with` annotation (its `eff` field is blank in the
@@ -4545,20 +4601,24 @@ echo "[compiler-gate] handle-replay side-effect corruption regression guard ok (
 #      perform of a DIFFERENT operation of the same effect when only one is
 #      named) is a separate, larger change (step 3), not covered here.
 echo "[compiler-gate] 40m/40 effect row operation-item grammar (ADR-0071 step 1/#755)"
+# #1571: the fixture carries its expectation as an inspect() test block now
+# (compiled AS-IS, no `sed` strip -- its `import ../lib/@vibe/core` resolves
+# from fixtures/); the test-block wrapper also locks #1595's shape (calling
+# the self-discharging `main` from under another `handle` for the same
+# effect).
 a71dir="_build/_gate_effectset_row_item"
 rm -rf "$a71dir"; mkdir -p "$a71dir"
-sed '/^__DATA__$/,$d' fixtures/effect_row_operation_item.vibe > "$a71dir/src.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$a71dir/src.vibe" "$a71dir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_row_operation_item.vibe "$a71dir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$a71dir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_row_operation_item.vibe did not compile (with Effect::op row-item grammar regressed)" >&2
+  echo "[compiler-gate] FAIL: effect_row_operation_item.vibe did not compile (with Effect::op row-item grammar regressed, or #1595 self-discharging call-inertness regressed)" >&2
   cat "$a71dir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-a71_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71dir/out.wasm" 2>&1 | tail -1)"
-if [ "$a71_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: effect_row_operation_item got '$a71_out' (want 42)" >&2
+if ! a71_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$a71dir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_row_operation_item test failed (want inspect 42)" >&2
+  echo "$a71_out" >&2
   exit 1
 fi
 rm -rf "$a71dir"
@@ -4579,20 +4639,21 @@ echo "[compiler-gate] effect row operation-item grammar ok"
 #      validity -- is superseded by this step; see gate 40o below for what
 #      STILL gets rejected.)
 echo "[compiler-gate] 40n/40 effectset row expansion authorizes a transitive call (ADR-0071 step 3/#755)"
+# #1571: fixture is an inspect() test-block suite now, compiled AS-IS (no
+# `sed` strip; its import resolves from fixtures/). See gate 40m's note.
 a71bdir="_build/_gate_effectset_expand"
 rm -rf "$a71bdir"; mkdir -p "$a71bdir"
-sed '/^__DATA__$/,$d' fixtures/effect_effectset_expansion.vibe > "$a71bdir/src.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$a71bdir/src.vibe" "$a71bdir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_effectset_expansion.vibe "$a71bdir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$a71bdir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe did not compile -- effectset row expansion regressed" >&2
   cat "$a71bdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-a71b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71bdir/out.wasm" 2>&1 | tail -1)"
-if [ "$a71b_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: effect_effectset_expansion got '$a71b_out' (want 42)" >&2
+if ! a71b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$a71bdir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion test failed (want inspect 42)" >&2
+  echo "$a71b_out" >&2
   exit 1
 fi
 rm -rf "$a71bdir"
@@ -4654,20 +4715,21 @@ echo "[compiler-gate] effectset cycle + operation-collision detection ok"
 #      fixtures/effect_effectset_param_expansion.vibe, where a callback
 #      parameter's row is JUST an effectset name.
 echo "[compiler-gate] 40p/40 effectset parameter-type row expansion (ADR-0071 step 3/#755)"
+# #1571: fixture is an inspect() test-block suite now, compiled AS-IS (no
+# `sed` strip; its import resolves from fixtures/). See gate 40m's note.
 a71ddir="_build/_gate_effectset_param_expand"
 rm -rf "$a71ddir"; mkdir -p "$a71ddir"
-sed '/^__DATA__$/,$d' fixtures/effect_effectset_param_expansion.vibe > "$a71ddir/src.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$a71ddir/src.vibe" "$a71ddir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_effectset_param_expansion.vibe "$a71ddir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$a71ddir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: effect_effectset_param_expansion.vibe did not compile -- parameter-type effectset expansion regressed" >&2
   cat "$a71ddir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-a71d_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71ddir/out.wasm" 2>&1 | tail -1)"
-if [ "$a71d_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: effect_effectset_param_expansion got '$a71d_out' (want 42)" >&2
+if ! a71d_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$a71ddir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_effectset_param_expansion test failed (want inspect 42)" >&2
+  echo "$a71d_out" >&2
   exit 1
 fi
 rm -rf "$a71ddir"

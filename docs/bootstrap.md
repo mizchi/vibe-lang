@@ -286,6 +286,31 @@ parse できることを確認した上で、bump なしで通している。**�
 > tree を直接解決させ (`VIBE_EMIT_MERGED_SOURCE`)、成果物の tracking もやめた
 > ので、この世代遅れも `drift detected` ゲートも今は存在しない。
 
+### seed lane と desugar-emitted builtins (#1590)
+
+seed が flat module source をコンパイルする lane (`generate_bundle.sh` の
+flatten-tool pass 3 / `validate_module_source_compiles`、`generations.sh` の
+stage1 hop — どれも `VIBE_FS_COMPILE=1` を付けない) では **checker が desugar
+の後に走る**。desugar はソースに存在しない builtin 呼び出しを合成する —
+String の `a < b` は `str_lex_diff(a, b) < 0` に、erased type parameter 上の
+`<`/`>`/`<=`/`>=` と `+` は `__generic_rel_diff` / `__generic_add` になる。
+この3つは builtin_registry で checker_visible=false だったため、この lane
+だけで `unknown name: <builtin>` で死んでいた (通常の `vibe` 呼び出しは
+`VIBE_FS_COMPILE=1` の checker-before-desugar lane なので無事)。
+
+live tree では f89b529 が3行とも checker_visible=true にして修正済み
+(`scripts/compiler_gate.sh` の section 97 が non-FS lane で3形をロックして
+いる)。ただし **pinned seed がこの fix より古い間は、compiler/cli source
+(cli_adapter.vibe から到達する全ファイル) は String `<`/`>`/`<=`/`>=` と
+erased-generic `<`/`+` を書けない** — bundle ビルド時に seed が上記の
+`unknown name` で拒否する。`generate_bundle.sh` はこの失敗を検出すると
+「どの演算子が原因か」を示す actionable な説明を付けて落ちる。
+
+この制約は **f89b529 以降の commit を seed にした次の bootstrap bump で消える**。
+bump したら: `lib/@vibe/compiler/core/sorted_index.vibe` の `str_lt` の
+char-by-char loop を `a < b` に戻し (doc comment がそう指示している)、lib/
+内の同型の手書き比較 loop も同様に畳んでよい。その後この節も削除する。
+
 ### bootstrap bump の手順 (更新版)
 
 `seed-release.yml` は **tag push ではなく `workflow_dispatch`** で手動起動する

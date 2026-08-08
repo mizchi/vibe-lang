@@ -947,6 +947,47 @@ merge_flatten_tool_fingerprint() {
   bash "$helper" --print-fingerprint 2>/dev/null || true
 }
 
+# #1590: when the PINNED SEED compiles the flat module source (flatten-tool
+# pass 3 above, validate_module_source_compiles below, and the stage1 hop in
+# generations.sh), its checker runs AFTER desugar. Desugar synthesizes calls
+# to builtins that are not source-level names -- `a < b` on String becomes
+# `str_lex_diff(a, b) < 0`; `<`/`>`/`<=`/`>=` or `+` on an erased type
+# parameter become `__generic_rel_diff` / `__generic_add` -- so a seed whose
+# registry marks them checker-invisible dies with `unknown name: <builtin>`,
+# a message that never mentions the operator that caused it. The live tree
+# fixed the registry (checker_visible=true, #1590), but the failure keeps
+# this shape for as long as the pinned seed predates that fix, so translate
+# it back to the source-level construct the author actually wrote.
+explain_desugar_builtin_failure() {
+  local diag_file="$1"
+  [ -f "$diag_file" ] || return 0
+  local hit
+  hit="$(grep -oE 'unknown name: (str_lex_diff|__generic_rel_diff|__generic_add|__to_string)' \
+    "$diag_file" 2>/dev/null | head -1)" || true
+  [ -n "$hit" ] || return 0
+  local name="${hit#unknown name: }"
+  local construct
+  case "$name" in
+    str_lex_diff) construct='String `<` / `>` / `<=` / `>=`' ;;
+    __generic_rel_diff) construct='`<` / `>` / `<=` / `>=` on an erased type parameter ([T: Ord])' ;;
+    __generic_add) construct='`+` on an erased type parameter ([T: Add])' ;;
+    __to_string) construct='string interpolation / implicit to-string' ;;
+  esac
+  cat >&2 <<EOF
+
+generate_bundle: '$name' is not a name any source file spells -- the compiler
+itself introduces it when desugaring $construct.
+The pinned seed compiler rejects it in this lane (#1590): its checker runs
+after desugar here and its builtin registry predates the fix that made the
+name checker-visible. Until the next bootstrap bump, compiler/cli sources
+(everything reachable from lib/@vibe/compiler/cli_adapter.vibe) must not use
+$construct.
+For String order comparisons, call a char-by-char helper instead -- e.g.
+str_lt in lib/@vibe/compiler/core/sorted_index.vibe. See #1590 and
+docs/bootstrap.md ("seed lane と desugar-emitted builtins").
+EOF
+}
+
 bootstrap_merge_flatten_tool() {
   local flatten_wasm="$1"
   local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
@@ -1007,6 +1048,7 @@ build_exact_adapter_merged_source() {
   if [ ! -s "$flatten_wasm" ]; then
     echo "generate_bundle: merge-flatten compiler build failed" >&2
     cat "$flatten_wasm.diag" >&2 2>/dev/null || true
+    explain_desugar_builtin_failure "$flatten_wasm.diag"
     echo "--- runner output ---" >&2
     tail -40 "$tool_log" >&2 2>/dev/null || true
     exit 1
@@ -1090,6 +1132,7 @@ validate_module_source_compiles() {
   if [ "$ok" != "1" ]; then
     echo "generate_bundle: candidate module source failed to compile (#979 sticky-failure guard) -- leaving any existing $ADAPTER_MODULE_SOURCE_OUT untouched" >&2
     cat "$check_wasm.diag" >&2 2>/dev/null || true
+    explain_desugar_builtin_failure "$check_wasm.diag"
     echo "--- runner output ---" >&2
     tail -40 "$check_log" >&2 2>/dev/null || true
   fi

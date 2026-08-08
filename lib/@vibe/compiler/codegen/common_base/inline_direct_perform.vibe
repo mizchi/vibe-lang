@@ -1175,23 +1175,59 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         } else {
           culprit_raw
         }
-        let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects")
-        let named = if String::length(culprit) > 0 {
-          String::concat(head, String::concat(" (here: the call to '", String::concat(culprit, "')")))
+        // #1591: when no opaque call exists -- the body really does only
+        // call named top-level `fn`s, the very form the enumeration below
+        // says is allowed -- check for the one named-callee shape that
+        // still breaks static visibility: a callee that discharges this
+        // same effect around its own whole body but RE-PERFORMS it from a
+        // handler arm (see edp_live_handle_dirty_selfdischarge's doc
+        // comment). Name it and say what about it is the problem, instead
+        // of emitting an enumeration this program already satisfies.
+        let (ds_raw, ds_off) = if String::length(culprit_raw) == 0 {
+          edp_live_handle_dirty_selfdischarge(stmts, keep, bad, li_fn_defs)
         } else {
-          head
+          ("", -1)
         }
-        let full = String::concat(named, " -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)")
-        let marked = if culprit_off >= 0 {
-          if String::length(culprit) > 0 {
-            String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), String::concat(":", String::concat(__to_string(culprit_off + String::length(culprit)), "]")))))
+        let ds_nm = if edp_renamed && !edp_str_array_contains(user_edpsh, ds_raw) {
+          edp_unmangle_shadow_name(ds_raw)
+        } else {
+          ds_raw
+        }
+        if String::length(ds_nm) > 0 {
+          let mut ds_head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here: the handled body's call to '")
+          ds_head = String::concat(ds_head, ds_nm)
+          ds_head = String::concat(ds_head, "' hides a perform from it. '")
+          ds_head = String::concat(ds_head, ds_nm)
+          ds_head = String::concat(ds_head, String::concat("' handles ", bad))
+          ds_head = String::concat(ds_head, String::concat(" around its own body, but one of its handler arms performs ", bad))
+          ds_head = String::concat(ds_head, " again -- that re-perform escapes '")
+          ds_head = String::concat(ds_head, ds_nm)
+          ds_head = String::concat(ds_head, "' into this handle's body, where it is not statically visible. Move that perform out of the handler arm (compute the value before the `handle`), or wrap the arm's perform in its own `handle`. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)")
+          let ds_marked = if ds_off >= 0 {
+            String::concat(ds_head, String::concat(" [@off=", String::concat(__to_string(ds_off), String::concat(":", String::concat(__to_string(ds_off + String::length(ds_nm)), "]")))))
           } else {
-            String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), "]")))
+            ds_head
           }
+          Array::push(errs, ds_marked)
         } else {
-          full
+          let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects")
+          let named = if String::length(culprit) > 0 {
+            String::concat(head, String::concat(" (here: the call to '", String::concat(culprit, "')")))
+          } else {
+            head
+          }
+          let full = String::concat(named, " -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)")
+          let marked = if culprit_off >= 0 {
+            if String::length(culprit) > 0 {
+              String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), String::concat(":", String::concat(__to_string(culprit_off + String::length(culprit)), "]")))))
+            } else {
+              String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), "]")))
+            }
+          } else {
+            full
+          }
+          Array::push(errs, marked)
         }
-        Array::push(errs, marked)
       }
     } else {
       ()
@@ -2757,6 +2793,148 @@ fn edp_unmangle_shadow_name(nm: String) -> String {
   }
 }
 
+/// #1591/#1595 follow-up culprit: the live handle's body only calls a named
+/// top-level `fn` -- a shape the ineligibility diagnostic's enumeration says
+/// is allowed -- but that callee's own body is a bare same-effect `handle`
+/// whose handler ARM re-performs the effect. Such a callee is dropped from
+/// `needing` (edp_drop_self_discharging_needing) yet NOT call-inert
+/// (edp_fn_is_self_discharging_inert rejects it for exactly this arm), so
+/// the caller's handle stays ineligible -- and without this scan the error
+/// carried no culprit at all (the call is resolvable, so
+/// edp_first_opaque_call_info finds nothing). Returns (callee name, source
+/// byte offset of the call) or ("", -1). Mirrors
+/// edp_live_handle_opaque_info's walk shape but only needs the first
+/// matching call in the first `ename` handle body.
+fn edp_dirty_selfdischarge_callee_expr(expr: Expr, ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  match expr {
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      edp_dirty_selfdischarge_call_in(body, ename, stmts, fn_defs)
+    } else {
+      edp_dirty_selfdischarge_callee_exprs(expr_children(expr), ename, stmts, fn_defs)
+    },
+    _ => edp_dirty_selfdischarge_callee_exprs(expr_children(expr), ename, stmts, fn_defs)
+  }
+}
+
+fn edp_dirty_selfdischarge_callee_exprs(es: Array[Expr], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(es) && !found {
+    let (f, n, o) = edp_dirty_selfdischarge_callee_expr(Array::get(es, i), ename, stmts, fn_defs)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+/// Inside an `ename` handle's BODY: the first call to a top-level fn whose
+/// own body is a bare same-effect handle with an arm that re-performs.
+fn edp_dirty_selfdischarge_call_in(expr: Expr, ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  match expr {
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, ioff) => if edp_callee_is_dirty_selfdischarge(nm, ename, stmts, fn_defs) {
+        (true, nm, if ioff >= 0 {
+          ioff
+        } else {
+          off
+        })
+      } else {
+        edp_dirty_selfdischarge_call_in_exprs(args, ename, stmts, fn_defs)
+      },
+      _ => edp_dirty_selfdischarge_call_in_exprs(expr_children(expr), ename, stmts, fn_defs)
+    },
+    _ => edp_dirty_selfdischarge_call_in_exprs(expr_children(expr), ename, stmts, fn_defs)
+  }
+}
+
+fn edp_dirty_selfdischarge_call_in_exprs(es: Array[Expr], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(es) && !found {
+    let (f, n, o) = edp_dirty_selfdischarge_call_in(Array::get(es, i), ename, stmts, fn_defs)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+fn edp_callee_is_dirty_selfdischarge(nm: String, ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
+  match edp_find_fn_body(stmts, fn_defs, nm) {
+    Some(body) => match body {
+      EHandle(_, arms) => if edp_handle_matches_effect(arms, ename) {
+        let mut dirty = false
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, ab) = Array::get(arms, ai)
+          if edp_performs_user_effect_expr(ab, ename) {
+            dirty = true
+          } else {
+            ()
+          }
+          ai = ai + 1
+        }
+        dirty
+      } else {
+        false
+      },
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// Stmt-level driver for the dirty self-discharge culprit; same walk order
+/// and dead-`fn` exemption as edp_live_handle_opaque_info.
+fn edp_live_handle_dirty_selfdischarge(stmts: Array[Stmt], keep: Array[Bool], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(stmts) && !found {
+    let expr_opt = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => {
+        let dead_fn = match expr {
+          EFn(_, _, _, _, _, _) => if i < Array::length(keep) {
+            !Array::get(keep, i)
+          } else {
+            false
+          },
+          _ => false
+        }
+        if dead_fn {
+          None
+        } else {
+          Some(expr)
+        }
+      },
+      SLetMut(_, _, expr) => Some(expr),
+      SExpr(expr) => Some(expr),
+      STest(_, expr) => Some(expr),
+      SBench(_, expr) => Some(expr),
+      _ => None
+    }
+    match expr_opt {
+      Some(expr) => {
+        let (f, n, o) = edp_dirty_selfdischarge_callee_expr(expr, ename, stmts, fn_defs)
+        found = f
+        nm = n
+        off = o
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  (nm, off)
+}
+
 /// Drop any `needing` name whose OWN top-level definition `keep` (from
 /// `dce_keep_flags`, computed against the real entry point) marks
 /// unreachable -- a needing function that can never actually run at runtime
@@ -3064,6 +3242,15 @@ fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) -> Arra
 /// qualifies (no ESeq prefix, no wrapping ELet, etc.) -- anything else keeps
 /// the function in `needing` and falls back to the existing (already sound)
 /// conservative treatment, exactly as before this change existed.
+///
+/// #1595: this drop is only HALF of the treatment. Removing the fn from
+/// `needing` also removes the membership that made calls TO it safe in
+/// edp_has_unsafe_construct, so any row-carrying CALLER of a dropped fn
+/// went ineligible and sank the whole effect anyway. The other half is
+/// edp_append_self_discharging_row_fns (calls to such a fn are inert,
+/// appended into `pure_fns` at every safety-scan construction site) --
+/// with the extra arm condition documented on
+/// edp_fn_is_self_discharging_inert.
 fn edp_drop_self_discharging_needing(needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String) -> Array[String] {
   let out = array_empty()
   let mut ni = 0
@@ -3150,6 +3337,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
     // so both views classify these names identically.
     let pf_inert = edp_pure_fn_names(fn_defs)
     edp_append_free_host_inert_names(stmts, pf_inert)
+    edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert)
     edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert)
     let needing_full = array_empty()
     let mut pfi = 0
@@ -3301,6 +3489,7 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
 fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
+  edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
   let es_names = array_empty()
   let es_members_list = array_empty()
@@ -4183,6 +4372,84 @@ fn edp_append_perform_free_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool
   }
 }
 
+/// #1595: a row-E function whose ENTIRE body is a bare `handle {..} with
+/// ename {..}` that its own handler arms cannot leak `ename` out of is
+/// inert to CALL, exactly like a perform-free row fn (see
+/// edp_fn_is_perform_free above): every perform of `ename` reachable
+/// through the call is discharged inside the callee by its own handle
+/// (which edp_collect_handle_sites discovers and migrates independently),
+/// so nothing about the call needs this pass's attention -- no dict to
+/// forward (the callee was dropped from `needing` by
+/// edp_drop_self_discharging_needing for the same reason) and no perform
+/// that could escape into the caller's context. Without this second half,
+/// the drop was self-defeating for any self-discharging fn that had a
+/// CALLER carrying the same row: the drop removed the callee from
+/// `needing`, which removed the very membership that made calls to it safe
+/// in edp_has_unsafe_construct, so the caller went ineligible and sank the
+/// whole effect's migration -- #1595's repro (`main` with row
+/// `Ask + Ask::Get` calling self-discharging `selfd`) is exactly that.
+///
+/// The arm condition is what keeps this narrower than the drop itself: an
+/// arm CAN legally re-perform `ename` (arms run outside their own handle's
+/// coverage, so that perform escapes to the caller), and an arm making a
+/// call this pass cannot resolve could hide the same thing. Either
+/// disqualifies the fn from call-inertness (its callers then stay
+/// ineligible and fail loudly, same as before this change) while the drop
+/// still applies. `resume(...)` stays safe -- a resumed continuation
+/// re-enters the handled body, which the fn's own handle still covers.
+fn edp_fn_is_self_discharging_inert(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String, ename: String, base_inert: Array[String]) -> Bool {
+  match edp_find_fn_body(stmts, fn_defs, nm) {
+    Some(body) => match body {
+      EHandle(_, arms) => if edp_handle_matches_effect(arms, ename) {
+        let mut ok = true
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, ab) = Array::get(arms, ai)
+          if edp_performs_user_effect_expr(ab, ename) || edp_has_unsafe_construct(ab, empty_str_array(), ename, base_inert) {
+            ok = false
+          } else {
+            ()
+          }
+          ai = ai + 1
+        }
+        ok
+      } else {
+        false
+      },
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// #1595: append every self-discharging call-inert row fn (see
+/// edp_fn_is_self_discharging_inert) into `pure_fns`, mirroring
+/// edp_append_perform_free_row_fns' shape -- called at the SAME
+/// construction sites, in the SAME position (after the host-inert append,
+/// before the perform-free append, so a caller whose only row-E reach is
+/// a call to a self-discharging fn is itself classified perform-free and
+/// kept out of `needing` too -- #1595's `main` needs exactly that to keep
+/// its entry arity). Single pass, same-order determinism argument as
+/// edp_fn_is_perform_free's doc comment.
+fn edp_append_self_discharging_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String]) -> Unit {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts, es_names, es_members_list)
+  let candidates = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+  let mut i = 0
+  while i < Array::length(candidates) {
+    let nm = Array::get(candidates, i)
+    if edp_str_array_contains(pure_fns, nm) {
+      ()
+    } else if edp_fn_is_self_discharging_inert(stmts, fn_defs, nm, ename, pure_fns) {
+      Array::push(pure_fns, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 fn edp_append_free_host_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
   let top_names = empty_str_array()
   let mut ti = 0
@@ -4810,6 +5077,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
   } else {
     let pure_fns = edp_pure_fn_names(fn_defs)
     edp_append_free_host_inert_names(stmts, pure_fns)
+    edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns)
     edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
     let es_names = array_empty()
     let es_members_list = array_empty()
@@ -6847,6 +7115,7 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   let dict_tyname = edp_dict_struct_name(ename)
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
+  edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
   let es_names = array_empty()
   let es_members_list = array_empty()

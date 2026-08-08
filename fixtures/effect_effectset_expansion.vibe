@@ -1,3 +1,7 @@
+import ../lib/@vibe/core {
+  inspect
+}
+
 // ADR-0071 step 3 (docs/effectset.md, #755): a VALID `effectset` (no
 // cycle, no operation-name collision) is now accepted and its members are
 // expanded into any `with EffectsetName` row item that references it,
@@ -21,7 +25,9 @@ effect Ask {
   Get -> Int
 }
 
-effectset AskAll = { Ask::Get }
+effectset AskAll = {
+  Ask::Get
+}
 
 let read_one = () -> Int with Ask::Get {
   perform Ask::Get
@@ -39,5 +45,18 @@ export let main = () -> Int with Ask + Ask::Get {
   }
 }
 
-__DATA__
-{"last": "42"}
+test "effectset row expansion authorizes the transitive operation requirement" {
+  // #1571: expectation lives beside the code (updatable via `vibe test
+  // --update`) instead of in a `__DATA__` tail. The wrapping handle is
+  // required because a test block's own row cannot authorize `Ask`, and
+  // `main`'s declared row still names it even though `main` discharges the
+  // effect itself -- so the outer arm can never actually fire (resume(0) is
+  // deliberately NOT the expected value: the inner handler must win). This
+  // exact shape -- calling a self-discharging fn from under another handle
+  // for the same effect -- was rejected before #1595.
+  handle {
+    inspect(main(), "42")
+  } with Ask {
+    Get => resume(0)
+  }
+}
