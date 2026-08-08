@@ -924,10 +924,27 @@ write_runtime_entry_bundle() {
 # fingerprint (empty $want) falls through to the rebuild -- the cache is an
 # optimisation and must never be the reason a build uses a stale tool.
 merge_flatten_tool_fingerprint() {
-  # SCRIPT_DIR for the same reason as the trace_lib.sh source at the top:
-  # ensure_generated.sh ships with this script, but PROJECT_ROOT may be a
-  # synthetic VIBE_PROJECT_ROOT with no scripts/ of its own.
-  bash "$SCRIPT_DIR/ensure_generated.sh" --print-fingerprint 2>/dev/null || true
+  # PROJECT_ROOT here, NOT SCRIPT_DIR -- the opposite of the trace_lib.sh
+  # source at the top of this file, and the distinction is the whole point.
+  # trace_lib.sh is a LIBRARY that ships with this script, so it is
+  # script-relative. This is a FINGERPRINT OF A PROJECT, so it must come from
+  # the project being bundled.
+  #
+  # ensure_generated.sh hardcodes ROOT_DIR="$SCRIPT_DIR/.." and ignores
+  # VIBE_PROJECT_ROOT, so running the host copy against an alternate checkout
+  # keys the stamp to the HOST tree: editing the alternate project's compiler
+  # sources would leave $want unchanged, reuse a stale
+  # merge_flatten_compiler.wasm, and silently emit bundles built with old merge
+  # logic. Wrong answer, no error -- worse than the missing-file abort this
+  # replaced.
+  #
+  # A root with no helper (generate_bundle_test.sh's synthetic projects) yields
+  # an empty fingerprint, and empty $want already disables the cache below
+  # rather than faking a hit: the cache is an optimisation and must never be
+  # the reason a build uses a stale tool.
+  local helper="$PROJECT_ROOT/scripts/ensure_generated.sh"
+  [ -f "$helper" ] || return 0
+  bash "$helper" --print-fingerprint 2>/dev/null || true
 }
 
 bootstrap_merge_flatten_tool() {
