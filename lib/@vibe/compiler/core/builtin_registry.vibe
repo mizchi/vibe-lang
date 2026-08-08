@@ -49,6 +49,34 @@ import @vibe/core {
 // sees those names, and their synthesized types only feed the derived
 // param/returns view.
 
+// #1520 提案2: rows spell the unconstrained type by MEANING, not by the raw
+// constructor, so a reader can tell a deliberately-unchecked position from a
+// placeholder someone forgot to fill in:
+//
+//   - reg_any()     — deliberately POLYMORPHIC: any value type is legal at this
+//                     position and the checker's head-kind compare tolerates it
+//                     (`eq` / `assert_eq`, container element types).
+//   - reg_opaque(k) — an internal HANDLE with no checker-type representation
+//                     (builder objects, Map). `k` names the handle kind for the
+//                     reader; the value is ignored.
+//   - bare CtUnknown — not allowed in rows. It reads as "not written yet",
+//                     which is exactly how the #1519 `eq`-declared-as-CtInt
+//                     class of lie stayed invisible: nothing distinguished a
+//                     row nobody had thought about from a row deliberately
+//                     left open.
+//
+// All three produce the same runtime value (CtUnknown) — this is documentation
+// the type system cannot express, enforced by review + the golden positive
+// corpus (builtin_registry_golden_test.vibe), not by the checker.
+fn reg_any() -> Type {
+  CtUnknown
+}
+
+fn reg_opaque(kind: String) -> Type {
+  let _ = kind
+  CtUnknown
+}
+
 fn reg_p0() -> Array[Type] {
   array_empty()
 }
@@ -259,29 +287,29 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("String::length", CtFn(reg_p1(CtString), CtInt, None), true, true, true),
   ("String::equals", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
   ("String::concat", CtFn(reg_p2(CtString, CtString), CtString, None), true, true, true),
-  ("array_new", CtFn(reg_p0(), CtArray(CtUnknown), None), true, true, true),
-  ("Array::length", CtFn(reg_p1(CtArray(CtUnknown)), CtInt, None), true, true, true),
-  ("Array::get", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnknown, None), true, true, true),
-  ("Array::push", CtFn(reg_p2(CtArray(CtUnknown), CtUnknown), CtUnit, None), true, true, true),
-  ("Array::push_all", CtFn(reg_p2(CtArray(CtUnknown), CtArray(CtUnknown)), CtUnit, None), true, true, true),
-  ("Array::set", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtUnknown), CtUnit, None), true, true, true),
+  ("array_new", CtFn(reg_p0(), CtArray(reg_any()), None), true, true, true),
+  ("Array::length", CtFn(reg_p1(CtArray(reg_any())), CtInt, None), true, true, true),
+  ("Array::get", CtFn(reg_p2(CtArray(reg_any()), CtInt), reg_any(), None), true, true, true),
+  ("Array::push", CtFn(reg_p2(CtArray(reg_any()), reg_any()), CtUnit, None), true, true, true),
+  ("Array::push_all", CtFn(reg_p2(CtArray(reg_any()), CtArray(reg_any())), CtUnit, None), true, true, true),
+  ("Array::set", CtFn(reg_p3(CtArray(reg_any()), CtInt, reg_any()), CtUnit, None), true, true, true),
   ("Double::to_int", CtFn(reg_p1(CtDouble), CtInt, None), true, true, true),
   ("Int::to_double", CtFn(reg_p1(CtInt), CtDouble, None), true, true, true),
   ("String::char_code_at", CtFn(reg_p2(CtString, CtInt), CtInt, None), true, true, true),
   ("String::from_char_code", CtFn(reg_p1(CtInt), CtString, None), true, true, true),
   ("String::substring", CtFn(reg_p3(CtString, CtInt, CtInt), CtString, None), true, true, true),
-  ("Array::truncate", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnit, None), true, true, true),
+  ("Array::truncate", CtFn(reg_p2(CtArray(reg_any()), CtInt), CtUnit, None), true, true, true),
   ("String::join", CtFn(reg_p2(CtArray(CtString), CtString), CtString, None), true, true, true),
   // #1513: POLYMORPHIC — `eq` is the structural equality builtin and is applied
   // to enums / structs / strings, not just Int. The `CtInt` placeholder here was
   // harmless while nothing read these parameter types; once the checker's
   // fast-path argument check started consulting the registry it turned into a
   // false rejection (measured: `eq(Color::Red, c)` in
-  // docs/language-tour/basics.vibe.md). `CtUnknown` is what the sibling
+  // docs/language-tour/basics.vibe.md). `reg_any()` is what the sibling
   // polymorphic row `assert_eq` already declares, and head_kind maps it to
   // "tolerate". Parameter COUNT and return type are unchanged, so the derived
   // `builtin_registry()` view the codegen lanes read is byte-identical.
-  ("eq", CtFn(reg_p2(CtUnknown, CtUnknown), CtBool, None), true, true, true),
+  ("eq", CtFn(reg_p2(reg_any(), reg_any()), CtBool, None), true, true, true),
   ("String::ends_with", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
   ("String::last_index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
   ("String::index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
@@ -290,25 +318,25 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("String::split", CtFn(reg_p2(CtString, CtString), CtArray(CtString), None), true, true, true),
   ("String::trim", CtFn(reg_p1(CtString), CtString, None), true, true, true),
   ("compiler_sources", CtFn(reg_p0(), CtString, None), true, false, false),
-  ("ArrayBuilder::new", CtFn(reg_p0(), CtUnknown, None), true, true, true),
-  ("ArrayBuilder::push", CtFn(reg_p2(CtUnknown, CtUnknown), CtUnit, None), true, true, true),
-  ("ArrayBuilder::freeze", CtFn(reg_p1(CtUnknown), CtArray(CtUnknown), None), true, true, true),
+  ("ArrayBuilder::new", CtFn(reg_p0(), reg_opaque("ArrayBuilder"), None), true, true, true),
+  ("ArrayBuilder::push", CtFn(reg_p2(reg_opaque("ArrayBuilder"), reg_any()), CtUnit, None), true, true, true),
+  ("ArrayBuilder::freeze", CtFn(reg_p1(reg_opaque("ArrayBuilder")), CtArray(reg_any()), None), true, true, true),
   // #906: FrozenArray[T] -- a checker-only phantom-type wrapper over
   // Array[T]'s exact same runtime layout (same technique as ArrayBuilder
   // just above: from_array/to_array are pure identity casts, get/length
   // alias Array::get/Array::length's own bodies -- see
   // gc/backend_body.vibe and wasi/linked_compile.vibe). checker.vibe's
-  // FrozenArray::* ECall branches refine these CtUnknown-shaped rows with
+  // FrozenArray::* ECall branches refine these reg_any()-shaped rows with
   // the real per-call-site element type; these rows exist so both codegen
   // lanes' func-table registration (which is DRIVEN by this registry, #415
   // B-1) has a row to loop over and so a bare reference to the name (not a
   // direct call) still resolves to a sane function type.
-  ("FrozenArray::from_array", CtFn(reg_p1(CtArray(CtUnknown)), CtNamed("FrozenArray", reg_p1(CtUnknown)), None), true, true, true),
-  ("FrozenArray::get", CtFn(reg_p2(CtNamed("FrozenArray", reg_p1(CtUnknown)), CtInt), CtUnknown, None), true, true, true),
-  ("FrozenArray::length", CtFn(reg_p1(CtNamed("FrozenArray", reg_p1(CtUnknown))), CtInt, None), true, true, true),
-  ("FrozenArray::to_array", CtFn(reg_p1(CtNamed("FrozenArray", reg_p1(CtUnknown))), CtArray(CtUnknown), None), true, true, true),
-  ("Array::slice", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtInt), CtArray(CtUnknown), None), true, true, true),
-  ("Array::concat", CtFn(reg_p2(CtArray(CtUnknown), CtArray(CtUnknown)), CtArray(CtUnknown), None), true, true, true),
+  ("FrozenArray::from_array", CtFn(reg_p1(CtArray(reg_any())), CtNamed("FrozenArray", reg_p1(reg_any())), None), true, true, true),
+  ("FrozenArray::get", CtFn(reg_p2(CtNamed("FrozenArray", reg_p1(reg_any())), CtInt), reg_any(), None), true, true, true),
+  ("FrozenArray::length", CtFn(reg_p1(CtNamed("FrozenArray", reg_p1(reg_any()))), CtInt, None), true, true, true),
+  ("FrozenArray::to_array", CtFn(reg_p1(CtNamed("FrozenArray", reg_p1(reg_any()))), CtArray(reg_any()), None), true, true, true),
+  ("Array::slice", CtFn(reg_p3(CtArray(reg_any()), CtInt, CtInt), CtArray(reg_any()), None), true, true, true),
+  ("Array::concat", CtFn(reg_p2(CtArray(reg_any()), CtArray(reg_any())), CtArray(reg_any()), None), true, true, true),
   ("Bytes::new", CtFn(reg_p0(), CtBytes, None), true, true, true),
   ("Bytes::from_array", CtFn(reg_p1(CtArray(CtInt)), CtBytes, None), true, true, true),
   ("Bytes::to_array", CtFn(reg_p1(CtBytes), CtArray(CtInt), None), true, true, true),
@@ -319,10 +347,10 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("Bytes::append", CtFn(reg_p2(CtBytes, CtBytes), CtUnit, None), true, true, true),
   ("Bytes::concat", CtFn(reg_p2(CtBytes, CtBytes), CtBytes, None), true, true, true),
   ("Bytes::slice", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtBytes, None), true, true, true),
-  ("__to_string", CtFn(reg_p1(CtUnknown), CtString, None), true, true, true),
-  ("vibe_rc_drop", CtFn(reg_p1(CtUnknown), CtUnit, None), true, false, false),
+  ("__to_string", CtFn(reg_p1(reg_any()), CtString, None), true, true, true),
+  ("vibe_rc_drop", CtFn(reg_p1(reg_any()), CtUnit, None), true, false, false),
   ("vibe_rc_alloc", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
-  ("vibe_rc_dup", CtFn(reg_p1(CtUnknown), CtUnit, None), true, false, false),
+  ("vibe_rc_dup", CtFn(reg_p1(reg_any()), CtUnit, None), true, false, false),
   ("vibe_heap_grow_check", CtFn(reg_p0(), CtUnit, None), true, false, false),
   ("not", CtFn(reg_p1(CtBool), CtBool, None), false, true, true),
   ("Bytes::blit", CtFn(reg_p4(CtBytes, CtBytes, CtInt, CtInt), CtUnit, None), false, true, true),
@@ -333,12 +361,12 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("Char::to_int", CtFn(reg_p1(CtChar), CtInt, None), false, true, true),
   ("Char::from_int", CtFn(reg_p1(CtInt), CtChar, None), false, true, true),
   ("Int::to_float", CtFn(reg_p1(CtInt), CtDouble, None), false, true, true),
-  ("FixedArray::make", CtFn(reg_p2(CtInt, CtUnknown), CtArray(CtUnknown), None), false, true, true),
-  ("FixedArray::length", CtFn(reg_p1(CtArray(CtUnknown)), CtInt, None), false, true, true),
-  ("FixedArray::get", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnknown, None), false, true, true),
-  ("FixedArray::set", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtUnknown), CtUnit, None), false, true, true),
-  ("FixedArray::unsafe_set", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtUnknown), CtUnit, None), false, true, true),
-  ("FixedArray::blit", CtFn(reg_p5(CtArray(CtUnknown), CtInt, CtArray(CtUnknown), CtInt, CtInt), CtUnit, None), false, true, true),
+  ("FixedArray::make", CtFn(reg_p2(CtInt, reg_any()), CtArray(reg_any()), None), false, true, true),
+  ("FixedArray::length", CtFn(reg_p1(CtArray(reg_any())), CtInt, None), false, true, true),
+  ("FixedArray::get", CtFn(reg_p2(CtArray(reg_any()), CtInt), reg_any(), None), false, true, true),
+  ("FixedArray::set", CtFn(reg_p3(CtArray(reg_any()), CtInt, reg_any()), CtUnit, None), false, true, true),
+  ("FixedArray::unsafe_set", CtFn(reg_p3(CtArray(reg_any()), CtInt, reg_any()), CtUnit, None), false, true, true),
+  ("FixedArray::blit", CtFn(reg_p5(CtArray(reg_any()), CtInt, CtArray(reg_any()), CtInt, CtInt), CtUnit, None), false, true, true),
   // #835: Int64Array rides on the same linear-memory Array representation
   // as FixedArray (Array[Int] already stores the full 62-bit tagged Int
   // per cell, no i32-cell truncation in these backends — unlike the
@@ -350,28 +378,28 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("Int64Array::length", CtFn(reg_p1(CtArray(CtInt)), CtInt, None), false, true, true),
   ("Int64Array::get", CtFn(reg_p2(CtArray(CtInt), CtInt), CtInt, None), false, true, true),
   ("Int64Array::set", CtFn(reg_p3(CtArray(CtInt), CtInt, CtInt), CtUnit, None), false, true, true),
-  ("StringBuilder::new", CtFn(reg_p0(), CtUnknown, None), false, true, true),
-  ("StringBuilder::push", CtFn(reg_p2(CtUnknown, CtString), CtUnit, None), false, true, true),
-  ("StringBuilder::freeze", CtFn(reg_p1(CtUnknown), CtString, None), false, true, true),
-  ("Map::get", CtFn(reg_p2(CtUnknown, CtString), CtUnknown, None), false, true, true),
-  ("Map::keys", CtFn(reg_p1(CtUnknown), CtArray(CtString), None), false, true, true),
-  ("MapBuilder::new", CtFn(reg_p0(), CtUnknown, None), false, true, true),
-  ("MapBuilder::set", CtFn(reg_p3(CtUnknown, CtString, CtUnknown), CtUnit, None), false, true, true),
-  ("MapBuilder::freeze", CtFn(reg_p1(CtUnknown), CtUnknown, None), false, true, true),
+  ("StringBuilder::new", CtFn(reg_p0(), reg_opaque("StringBuilder"), None), false, true, true),
+  ("StringBuilder::push", CtFn(reg_p2(reg_opaque("StringBuilder"), CtString), CtUnit, None), false, true, true),
+  ("StringBuilder::freeze", CtFn(reg_p1(reg_opaque("StringBuilder")), CtString, None), false, true, true),
+  ("Map::get", CtFn(reg_p2(reg_opaque("Map"), CtString), reg_any(), None), false, true, true),
+  ("Map::keys", CtFn(reg_p1(reg_opaque("Map")), CtArray(CtString), None), false, true, true),
+  ("MapBuilder::new", CtFn(reg_p0(), reg_opaque("MapBuilder"), None), false, true, true),
+  ("MapBuilder::set", CtFn(reg_p3(reg_opaque("MapBuilder"), CtString, reg_any()), CtUnit, None), false, true, true),
+  ("MapBuilder::freeze", CtFn(reg_p1(reg_opaque("MapBuilder")), reg_opaque("Map"), None), false, true, true),
   // #1310: has_key/get read the builder without freezing (O(n) scan over
   // the same handle-indirect storage MapBuilder::set already walks -- see
   // its search loop in expr/compile_call.vibe / gc/backend_call.vibe).
   // `get` returns Option[V] (built via a synthesized Some/None `ce` call,
   // same technique as int_parse_expr / Array::find), not the "0 on miss"
   // raw-value convention Map::get uses.
-  ("MapBuilder::has_key", CtFn(reg_p2(CtUnknown, CtString), CtBool, None), false, true, true),
-  ("MapBuilder::get", CtFn(reg_p2(CtUnknown, CtString), CtOption(CtUnknown), None), false, true, true),
+  ("MapBuilder::has_key", CtFn(reg_p2(reg_opaque("MapBuilder"), CtString), CtBool, None), false, true, true),
+  ("MapBuilder::get", CtFn(reg_p2(reg_opaque("MapBuilder"), CtString), CtOption(reg_any()), None), false, true, true),
   ("assert", CtFn(reg_p1(CtBool), CtUnit, None), false, true, true),
   ("assert_true", CtFn(reg_p1(CtBool), CtUnit, None), false, true, true),
-  ("assert_eq", CtFn(reg_p2(CtUnknown, CtUnknown), CtUnit, None), false, true, true),
+  ("assert_eq", CtFn(reg_p2(reg_any(), reg_any()), CtUnit, None), false, true, true),
   ("println", CtFn(reg_p1(CtString), CtUnit, None), false, true, true),
   ("print", CtFn(reg_p1(CtString), CtUnit, None), false, true, true),
-  ("map_has", CtFn(reg_p2(CtUnknown, CtString), CtBool, None), false, true, true)
+  ("map_has", CtFn(reg_p2(reg_opaque("Map"), CtString), CtBool, None), false, true, true)
 ]
 
 export fn builtin_registry_typed() -> Array[(String, Type, Bool, Bool, Bool)] {

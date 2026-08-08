@@ -152,6 +152,73 @@ fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
   }
 }
 
+/// #1514 C (repair 08): the evidence-passing hard error carries the culprit
+/// call as `(here: the call to 'X') ... [@off=N:M]`, where N:M index the text
+/// of whichever MODULE the handle lives in. This lane resolves markers against
+/// the ENTRY file's text, which is only correct when the culprit is in the
+/// entry file itself. Verify the span actually spells `X` in `source` before
+/// letting locate_type_error resolve it; on mismatch (a dep-module offset)
+/// strip the marker so the message degrades to unlocated instead of naming a
+/// plausible-but-wrong entry-file line (worse than no position, per #1445).
+/// Messages without the culprit clause pass through untouched.
+/// Parse a run of ASCII digits as a non-negative Int, or -1 when `s` is empty
+/// or contains any non-digit (local copy of typecheck_fs's parse_offset_digits,
+/// which is module-private there).
+fn parse_marker_digits(s: String) -> Int {
+  let n = String::length(s)
+  let mut i = 0
+  let mut acc = 0
+  let mut ok = n > 0
+  while i < n && ok {
+    let c = String::char_code_at(s, i)
+    if c >= 48 && c <= 57 {
+      acc = acc * 10 + (c - 48)
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  if ok {
+    acc
+  } else {
+    -1
+  }
+}
+
+export fn verify_culprit_off_marker(source: String, msg: String) -> String {
+  let clause = " (here: the call to '"
+  let ci = String::index_of(msg, clause)
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if ci < 0 || mi < 0 {
+    msg
+  } else {
+    let name_start = ci + String::length(clause)
+    let name_rel = String::index_of(String::substring(msg, name_start, String::length(msg)), "')")
+    let inner_start = mi + String::length(marker)
+    let close_rel = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+    if name_rel < 0 || close_rel < 0 {
+      msg
+    } else {
+      let culprit = String::substring(msg, name_start, name_start + name_rel)
+      let inner = String::substring(msg, inner_start, inner_start + close_rel)
+      let colon = String::index_of(inner, ":")
+      let span_ok = if colon < 0 {
+        false
+      } else {
+        let n = parse_marker_digits(String::substring(inner, 0, colon))
+        let m = parse_marker_digits(String::substring(inner, colon + 1, String::length(inner)))
+        n >= 0 && m > n && m <= String::length(source) && String::substring(source, n, m) == culprit
+      }
+      if span_ok {
+        msg
+      } else {
+        String::concat(String::substring(msg, 0, mi), String::substring(msg, inner_start + close_rel + 1, String::length(msg)))
+      }
+    }
+  }
+}
+
 export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with Exception + Fs {
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(input_path)
   let main_stmts = array_empty()
@@ -220,7 +287,10 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
       None => ()
     }
   } with Exception {
-    Throw(msg) => throw(locate_type_error(entry_source, msg))
+    // #1514: verify_culprit_off_marker first — the evidence-passing culprit
+    // marker may index a DEP module's text; only a span that provably spells
+    // the culprit in the entry file is allowed to resolve against it.
+    Throw(msg) => throw(locate_type_error(entry_source, verify_culprit_off_marker(entry_source, msg)))
   }
   0
 }
