@@ -1449,15 +1449,44 @@ let main = () -> Int { c }         // ok
 
 ```vibe skip
 // doctest-skip: every NG line here is a form the parser rejects on purpose
-test "name" { .. }        // ok  — 名前は文字列リテラル必須
-test name { .. }          // NG: expected test name string
-test "n" with Fs { .. }   // NG: expected { but got with — effect row は書けない
+test "name" { .. }             // ok  — 名前は文字列リテラル必須
+test name { .. }               // NG: expected test name string
+test "n" with { Fs } { .. }    // NG: braced row は #1429 で削除 — `with Fs` と書く
 ```
 
-row を書けない帰結として、**`Http` / `Socket` / `Llm` を実際に呼ぶ test / bench
-は書けない** (#1508)。これらは test/bench の ambient row に入っておらず、足す
-手段が無い。`handle { .. } with Http { _ => () }` は通るが、それは effect を
-**放電**する — 実際の呼び出しをハンドラで置換するので mock にしかならない。
+**名前付き `test` / `bench` は名前の後に effect row を書ける** (#1508)。宣言した
+row は ambient row (`{ Fs, Env, Stdin, Stdout, Stderr, Console, Process,
+Profiler, Error, Exception }`) を**置換ではなく拡張**する — `with Http` を
+書いても `assert` に必要な `Exception` などの既定は残る。無名 `test { .. }` /
+`bench { .. }` には row を書けない (row を対応付ける名前が無い)。
+
+```vibe
+// row は effect 名でも operation 粒度でも書ける
+test "declared row widens the ambient one" with Exception {
+  assert_eq(1 + 1, 2)
+}
+
+bench "http_get" with Http {
+  let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
+  let _ = Http::response_body(h)
+  Http::close(h)
+}
+
+test "op-granular row" with Http::request + Http::close {
+  let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
+  Http::close(h)
+  assert(true)
+}
+```
+
+これで **`Http` を実際に呼ぶ test / bench が書ける** — network は ambient row に
+入っておらず明示宣言が必須、という設計はそのまま。クライアント系 builtin
+(`Http::request` / `response_status` / `response_header` / `response_body` /
+`close`) は bare file の直接綴りでも host import に落ちる (#1508 第2障壁の解消。
+実行例: `bench/http_bench.vibe`、要 `python3 tests/http_echo_server.py 18281`)。
+server 系 (`Http::listen` / `accept` / `respond`) は今も handler が必要。
+`handle { .. } with Http { _ => () }` で row を放電する古い回避策は、実 HTTP の
+test/bench にはもう不要。
 
 ### 引数
 

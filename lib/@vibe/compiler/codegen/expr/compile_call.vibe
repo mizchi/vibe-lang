@@ -1140,9 +1140,36 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
   }
 }
 
+fn http_client_surface_to_raw(name: String) -> String {
+  match name {
+    "Http::request" => "vibe_http_request_raw",
+    "Http::response_status" => "vibe_http_response_status_raw",
+    "Http::response_header" => "vibe_http_response_header_raw",
+    "Http::response_body" => "vibe_http_response_body_raw",
+    "Http::close" => "vibe_http_close_raw",
+    _ => ""
+  }
+}
+
 fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) {
-    let fname0 = canonical_builtin_name(get_eident_name(callee))
+    let fname00 = canonical_builtin_name(get_eident_name(callee))
+    // #1508 second barrier: the five CLIENT-side `Http::*` builtins are
+    // checker-legal as direct spellings (checker/builtins_net.vibe), but only
+    // the raw dunder names lib/@vibe/http calls internally (#794) had codegen
+    // wiring -- a bare file calling `Http::request(..)` died here with
+    // "reached code generation unresolved". Lower the direct spellings onto
+    // the very same host imports. Guarded on the name not resolving to
+    // anything real: a unit bundling lib/@vibe/http binds these names to its
+    // value aliases (`export let Http::request = request`, #795), and a bound
+    // name must keep winning. Server-side ops (listen/accept/respond/...)
+    // stay perform-based and are NOT aliased.
+    let http_raw = http_client_surface_to_raw(fname00)
+    let fname0 = if String::length(http_raw) > 0 && func_table_index_of(ctx.func_table, fname00) < 0 && !array_contains_str(local_names, fname00) {
+      http_raw
+    } else {
+      fname00
+    }
     // Stream[T] (docs/spec/wasi-p3-async.md §2.4) is backed by the eager Array
     // machinery on the linear backend: map/fold reuse the existing inline
     // Array::map / Array::fold lowering verbatim (same arg order, same value

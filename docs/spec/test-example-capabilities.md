@@ -1,7 +1,19 @@
 # Test / Example capability と executable documentation 設計
 
-**Status:** Proposal  
-**Related:** #819 (merged doctest compile)
+**Status:** Proposal — 一部実装済み (#1508)  
+**Related:** #819 (merged doctest compile), #1508 (test/bench effect row)
+
+> **実装状況 (2026-08, #1508):** `test "name" with <row> { .. }` /
+> `bench "name" with <row> { .. }` は**実装済み**。ただし実装された意味論は
+> この文書の「明示時は row を完全に明示し `Exception` 必須」ではなく、
+> **宣言 row が ambient row (標準 effect policy の default 10 effect) を
+> 拡張する** — `with Http` が `Exception` や Stdout/Fs 系を黙って落とすと、
+> row を足すすべての test が既定値を全部書き直す羽目になるため
+> (決定の経緯は #1508 と 80f3088 のコミットメッセージ)。本文書の
+> 「省略時 `{ Exception }`」「明示時 `Exception` 必須」「`with ()` はエラー」は
+> **未実装の将来案**のまま。`example` / `for Symbol` / `DevEnv` bundle も未実装。
+> 無名 `test { .. }` / `bench { .. }` に row は書けない (row を対応付ける
+> 名前が無い)。
 
 ## 目的
 
@@ -23,7 +35,7 @@ capability を宣言可能にする。Markdown fence の任意スクリプトを
 ## 構文
 
 ```vibe skip
-// doctest-skip: design sketch: the syntax below is not implemented -- `test ".." with <row>` is rejected today
+// doctest-skip: design sketch: `test ".." with <row>` is implemented (#1508, widening semantics) but `example .. for Symbol` is not
 test "test name" {
   // body
 }
@@ -57,7 +69,7 @@ capability を宣言しなければならない。
 エラーとする。
 
 ```vibe skip
-// doctest-skip: design sketch: the syntax below is not implemented -- `test ".." with <row>` is rejected today
+// doctest-skip: design sketch: the strict explicit-row rules here (Exception mandatory, `with ()` rejected) are NOT implemented -- today a declared row widens the ambient default (#1508)
 // OK
 test "pure" with Exception { assert_eq(1, 1) }
 
@@ -83,7 +95,7 @@ capability である。
 下げるため、`DevEnv` を定義済み development capability bundle とする。
 
 ```vibe skip
-// doctest-skip: design sketch: the syntax below is not implemented -- `test ".." with <row>` is rejected today
+// doctest-skip: design sketch: the `DevEnv` bundle is not implemented (`test ".." with <row>` itself is, #1508)
 test "local integration" with Exception + DevEnv {
   // development fixture を使う
 }
