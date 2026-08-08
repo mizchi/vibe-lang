@@ -525,6 +525,69 @@ trace ffa885f7...  (5 spans)
 最内で `sed`/`awk`/`printf` を呼ぶ形)。ここは vibe を一切書かずに
 速くできる可能性が高い。
 
+### 5.9 もう1段刻んだら「bash が遅い」は完全に間違いだった
+
+§5.8 で 48.5秒を「本当に bash」と切り分けたが、その中に span を6つ置いたら
+**自前の bash はほぼ残らなかった**。
+
+```
+trace 2ccd115c...  (11 spans)
+     wall       self  name
+ 112912.0     989.1  selfhost build
+  68675.0    1099.2    prepare flat source
+   3848.2    3848.2      adapter bundle (pass 1)
+  29401.9   29401.9      exact adapter merged source
+    611.2     611.2      adapter module source
+  23375.1   23375.1      validate module source (seed compile)
+   3994.3    3994.3      adapter bundle (pass 2)
+     23.4      23.4      runtime entry bundle
+   6321.8    6321.8      compiler sources bundle
+  21725.8   21725.8    stage0(seed) -> stage1
+  21522.1   21522.1    stage1 -> stage2
+```
+
+`prepare flat source` の self は **48.5秒 → 1.1秒**。最大は
+`build_exact_adapter_merged_source` の **29.4秒 = ビルド全体の26%** で、
+中身は:
+
+1. `bootstrap_merge_flatten_tool` — **merge-flatten 専用のコンパイラ wasm を
+   ビルドする** (= もう1回のコンパイル)
+2. その wasm を `--invoke cli_main` で走らせて flat merged source を作る
+
+つまり**これも bash ではなくコンパイラ実行**である。
+
+### 結論: ビルドは「3回のコンパイル」ではない
+
+`generations.sh` のログは stage hop を3つ (`--stage3` なら4つ) しか出さないが、
+実際に走っているコンパイラ実行はもっと多い:
+
+| | 秒 | ログに出るか |
+|---|---|---|
+| merge-flatten tool のビルド + 実行 | 29.4 | **出ない** |
+| validate module source (seed compile) | 23.4 | **出ない** |
+| stage0 → stage1 | 21.7 | 出る |
+| stage1 → stage2 | 21.5 | 出る |
+| compiler sources bundle | 6.3 | 出ない |
+| adapter bundle ×2 | 7.8 | 出ない |
+| generate_bundle.sh 自身の bash | **1.1** | — |
+
+**ログに出る2回のコンパイル (43秒) より、出ないコンパイラ実行 (53秒) の方が
+長い。** ビルド時間を縮める話は「codegen を速くする」でも
+「bash を速くする」でもなく、**「同じソースを何回コンパイルしているかを
+減らす」**だった。
+
+`adapter bundle` が pass 1 / pass 2 で2回走っている (3.8 + 4.0 = 7.8秒) のも
+ここで初めて見えた。
+
+### 自分の主張を2回訂正したことについて
+
+- 版1: 「77秒の bash」→ 1/3 は隠れたコンパイルだった (§5.8)
+- 版2: 「48.5秒の bash」→ **その 29.4秒もコンパイルだった** (本節)
+
+段0 の span は「どこ」を返し、「なに」は返さない。2回とも、私は次の span を
+置く前に「なに」を断定した。**span を置くコストは1回あたり数行で、
+ビルド1回分の時間しかかからない。**推測する前に置いた方が速い。
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |
