@@ -629,6 +629,36 @@ trace 2ccd115c...  (11 spans)
 > ところを触るので、fingerprint gate も stub 化も、着手するなら
 > `pkf run full-gate` と fixpoint を毎回通しながら進める必要がある。
 
+### 5.11 (1) を実装した — 28秒、出力はバイト一致
+
+`bootstrap_merge_flatten_tool` に fingerprint gate を入れた。値は
+**`ensure_generated.sh --print-fingerprint` を再利用**する — その fingerprint は
+seed wasm・manifest・manifest が名指す全ソース・`generate_bundle.sh`・
+自分自身をカバーしており、**この tool の入力集合とちょうど同じ**である。
+2つ目のハッシュを書き起こさないのは、将来どちらかに入力が足された時に
+もう片方が黙って取りこぼすのを防ぐため。1.3秒。
+
+| span | cold | warm | 差 |
+|---|---|---|---|
+| `exact adapter merged source` | 32,474 ms | **4,289 ms** | **-28.2s** |
+| `prepare flat source` | 71,790 ms | 42,140 ms | -29.7s |
+
+検証:
+
+- **fixpoint OK** (`stage2 == stage3`)
+- **cold ビルドと warm ビルドの stage2 がバイト一致** — キャッシュした tool が
+  作り直した tool と同じ出力を出すことの直接の確認。これが一致しない限り
+  この最適化は成立しない
+- `pkf run test` 通過
+
+安全側の設計:
+
+- stamp は wasm が**実際に落ちた後**にだけ書く。失敗したビルドが
+  「無い / 半端な tool」を fresh と印付けない
+- fingerprint が読めなかった (空) ら**素通しで再ビルド**する。
+  キャッシュは最適化であって、stale な tool を使う理由になってはならない
+- 冒頭で `rm -f "$stamp"` — wasm を消して stamp を残す窓を作らない
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |

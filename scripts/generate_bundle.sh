@@ -897,9 +897,34 @@ write_runtime_entry_bundle() {
 # (merge_sources.vibe / import_alias_rewrite.vibe) would not take effect until
 # the next seed bump -- silently, since the output would still be valid. Paying
 # two extra seed passes keeps "edit the merge, regenerate, see it" true.
+# Rebuilding this tool costs three compiler invocations (~29s, 26% of the whole
+# build -- docs/tracing-design.md §5.9/§5.10) and it is a pure function of the
+# seed wasm plus the compiler sources. Both are already hashed by
+# ensure_generated.sh's fingerprint, which covers the seed, the manifest, every
+# manifest-named source, generate_bundle.sh and itself -- exactly this tool's
+# input set. Reusing that value rather than rolling a second hash keeps the two
+# from drifting apart: if a future input is added to one, the other cannot
+# silently miss it.
+#
+# The stamp is written only after the wasm actually lands, so a failed build
+# does not mark a missing or half-written tool as fresh. An unreadable
+# fingerprint (empty $want) falls through to the rebuild -- the cache is an
+# optimisation and must never be the reason a build uses a stale tool.
+merge_flatten_tool_fingerprint() {
+  bash "$PROJECT_ROOT/scripts/ensure_generated.sh" --print-fingerprint 2>/dev/null || true
+}
+
 bootstrap_merge_flatten_tool() {
   local flatten_wasm="$1"
   local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  local stamp="$flatten_wasm.fingerprint"
+  local want
+  want="$(merge_flatten_tool_fingerprint)"
+  if [ -n "$want" ] && [ -s "$flatten_wasm" ] && [ -f "$stamp" ] \
+    && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]; then
+    return 0
+  fi
+  rm -f "$stamp"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
   local seed_merged seed_modsrc
@@ -933,6 +958,9 @@ bootstrap_merge_flatten_tool() {
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
     "$seed_modsrc" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
   rm -f "$seed_merged" "$seed_merged.diag" "$seed_modsrc" "$seed_modsrc.diag"
+  if [ -s "$flatten_wasm" ] && [ -n "$want" ]; then
+    printf '%s\n' "$want" > "$stamp"
+  fi
 }
 
 build_exact_adapter_merged_source() {
