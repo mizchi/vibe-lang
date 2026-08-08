@@ -21,11 +21,15 @@
 #     After any prior compile of the same tree the type-env / dep-list TSVs
 #     hit, so the typecheck phase mostly deserializes cached envs
 #     (<2 GiB peak per #1553).
-#   --cold: first deletes _build/vibe_selfhost_type_env_v3_*.tsv and
-#     _build/vibe_selfhost_dep_list_*.tsv, so every module's type env is
-#     re-inferred AND re-serialized (the ~2.6 GiB peak of #1553). The cold
-#     run rebuilds those caches — expect it to take minutes and to leave the
-#     caches warm again afterwards.
+#   --cold: first deletes the type-env / dep-list TSVs
+#     (vibe_selfhost_type_env_v3_*.tsv + vibe_selfhost_dep_list_*.tsv), so
+#     every module's type env is re-inferred AND re-serialized (the ~2.6 GiB
+#     peak of #1553). The cold run rebuilds those caches — expect it to take
+#     minutes and to leave the caches warm again afterwards. The TSVs live
+#     under _build/ by default, but VIBE_BUILD_CACHE_DIR rebases them
+#     (cache_underlying.vibe rebase_cache_path: `_build/vibe_` ->
+#     `$VIBE_BUILD_CACHE_DIR/vibe_`), so the deletion follows the same rule —
+#     otherwise a warm run would be mislabeled cold.
 #
 # BASE COMPILER
 #   Must be built from the CURRENT tree (it has to contain the #1553 marks).
@@ -75,10 +79,17 @@ fi
 if [ "$MODE" = "cold" ]; then
   # Cold = the type-env cache TSVs from #1553 are gone; everything else
   # (artifact caches etc.) is left alone so the run still measures the
-  # compile itself, not unrelated cache rebuilds.
-  echo "[fs-heap] cold: deleting _build/vibe_selfhost_type_env_v3_*.tsv + _build/vibe_selfhost_dep_list_*.tsv" >&2
-  rm -f "$PROJECT_ROOT"/_build/vibe_selfhost_type_env_v3_*.tsv \
-    "$PROJECT_ROOT"/_build/vibe_selfhost_dep_list_*.tsv
+  # compile itself, not unrelated cache rebuilds. VIBE_BUILD_CACHE_DIR
+  # rebases the persistent caches (`_build/vibe_` -> `$override/vibe_`,
+  # cache_underlying.vibe), so mirror that rule or the "cold" run would
+  # silently read the surviving warm caches from the override root.
+  CACHE_PREFIX="$PROJECT_ROOT/_build/vibe_"
+  if [ -n "${VIBE_BUILD_CACHE_DIR:-}" ]; then
+    CACHE_PREFIX="${VIBE_BUILD_CACHE_DIR%/}/vibe_"
+  fi
+  echo "[fs-heap] cold: deleting ${CACHE_PREFIX}selfhost_type_env_v3_*.tsv + ${CACHE_PREFIX}selfhost_dep_list_*.tsv" >&2
+  rm -f "${CACHE_PREFIX}"selfhost_type_env_v3_*.tsv \
+    "${CACHE_PREFIX}"selfhost_dep_list_*.tsv
 fi
 
 ENTRY_REL="lib/@vibe/cli/main.vibex"
@@ -88,7 +99,10 @@ LOG="$OUT_DIR/run_${MODE}.log"
 echo "[fs-heap] mode=$MODE base=$BASE_COMPILER entry=$ENTRY_REL" >&2
 start_s=$(date +%s)
 set +e
-VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_PROFILE_MEMORY_MARKS=1 \
+# VIBE_RC=1 is forced: the heap-marked lane only exists on the RC path
+# (cli_adapter.vibe dispatch), so an ambient VIBE_RC=0/shadow would silently
+# measure the wrong pipeline while write_output still emits one mark.
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_RC=1 VIBE_PROFILE_MEMORY_MARKS=1 \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" \
   --invoke cli_main \
   "$BASE_COMPILER" \
@@ -123,10 +137,20 @@ awk -v mode="$MODE" -v wall="$((end_s - start_s))" '
     prev = heap
     if (heap > peak) { peak = heap; peak_pages = pages }
     seen = 1
+    if (name == "codegen_rc") { seen_rc_lane = 1 }
   }
   END {
     if (!seen) {
       print "[fs-heap] ERROR: no named [profile-memory] marks in the log -- is the base compiler built from a tree that contains the #1553 marks?" > "/dev/stderr"
+      exit 1
+    }
+    # write_output is emitted unconditionally under the marks env, so a run
+    # that dodged the RC lane still produces one named mark; the per-phase
+    # marks live only in compile_file_fs_mode_rc_heap_marked. Require its
+    # codegen_rc mark so a wrong-lane run fails instead of reporting a
+    # plausible one-phase profile.
+    if (!seen_rc_lane) {
+      print "[fs-heap] ERROR: no codegen_rc mark -- the compile did not take the heap-marked RC lane (compile_file_fs_mode_rc_heap_marked)" > "/dev/stderr"
       exit 1
     }
     # wasm32 linear memory cap: 65536 pages = 4 GiB.
