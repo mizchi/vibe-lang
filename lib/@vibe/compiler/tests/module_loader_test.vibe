@@ -151,3 +151,18 @@ test "collect_merged_stmts rewrites `as` aliases to the original name (#1584)" {
   assert(String::contains(text, "env_probe"))
   assert(!String::contains(text, "ep("))
 }
+
+test "collect_merged_stmts: a top-level def shadows a same-named import alias (#1584)" {
+  // `fn shade` is declared in the importing file itself; references to
+  // `shade` anywhere in that file must keep resolving to the local def,
+  // not get rewritten to the aliased import's original name.
+  let dep_src = "export fn tint(x: Int) -> Int {\n  x + 1\n}\n"
+  let main_src = "import ./dep.vibe { tint as shade }\n\nfn shade() -> Int {\n  5\n}\n\nexport let picked = shade()\n"
+  let merged = collect_merged_stmts([
+    ("dep.vibe", dep_src),
+    ("main.vibe", main_src)
+  ])
+  let text = print_program(merged)
+  assert(String::contains(text, "shade()"))
+  assert(!String::contains(text, "tint()"))
+}
