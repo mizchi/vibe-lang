@@ -83,7 +83,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
-  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env
+  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env, verify_culprit_off_marker
 }
 
 import @vibe/lsp {
@@ -332,12 +332,35 @@ fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: Strin
   }
 }
 
+/// Remove a ` [@off=...]` side-channel marker WITHOUT resolving it. The marker
+/// is internal transport for a source offset (#1514); a lane that does not know
+/// which source text the offset indexes (the FS-compile lane compiles MERGED
+/// module text) must degrade to the unlocated message -- never print the raw
+/// marker (#1445's leaked `[@off=135]` is the failure mode this guards against).
+fn strip_off_marker(msg: String) -> String {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(msg, inner_start, String::length(msg))
+    let rel = String::index_of(rest, "]")
+    if rel < 0 {
+      String::substring(msg, 0, mi)
+    } else {
+      String::concat(String::substring(msg, 0, mi), String::substring(msg, inner_start + rel + 1, String::length(msg)))
+    }
+  }
+}
+
 /// On a parse/type/codegen error the checker throws a formatted diagnostic
 /// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
 /// the `vibe` launcher can print a real message instead of an opaque wasm trap.
 /// Returns a non-zero exit code. (#594 usability / docs/release-roadmap.md.)
+/// Always strips an unresolved ` [@off=...]` marker -- see strip_off_marker.
 fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
-  Fs::write_file(String::concat(output_path, ".diag"), msg)
+  Fs::write_file(String::concat(output_path, ".diag"), strip_off_marker(msg))
   1
 }
 
@@ -360,6 +383,30 @@ fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
 fn emit_compile_diag_located(output_path: String, msg: String, source: String) -> Int with Fs {
   if String::contains(msg, " [@off=") {
     emit_compile_diag(output_path, locate_type_error(source, msg))
+  } else {
+    emit_compile_diag(output_path, msg)
+  }
+}
+
+/// #1514 (repair 08): the FS-compile lane's located variant. This lane
+/// compiles MERGED module text, so a marker's offsets index whichever module
+/// the diagnostic came from -- resolving blindly against the entry file could
+/// name a plausible-but-wrong line (#1445's leaked-marker lesson, one step
+/// worse). Only the evidence-passing culprit marker is resolvable here,
+/// because it carries its own proof: the message names the culprit callee and
+/// the span, so `verify_culprit_off_marker` can check the entry text actually
+/// spells that callee at that span before locate_type_error renders it. Any
+/// other (or failed-verify) marker degrades to the stripped, unlocated
+/// message via emit_compile_diag.
+fn emit_compile_diag_fs_located(output_path: String, msg: String, input_path: String) -> Int with Fs + Exception {
+  if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
+    let entry_source = Fs::read_file(input_path)
+    let verified = verify_culprit_off_marker(entry_source, msg)
+    if String::contains(verified, " [@off=") {
+      emit_compile_diag(output_path, locate_type_error(entry_source, verified))
+    } else {
+      emit_compile_diag(output_path, verified)
+    }
   } else {
     emit_compile_diag(output_path, msg)
   }
@@ -1023,7 +1070,12 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       }
       0
     } with Exception {
-      Throw(msg) => emit_compile_diag(output_path, msg)
+      // #1514: the evidence-passing culprit marker's offsets index whichever
+      // MODULE the offending handle lives in; resolve against the entry file
+      // only when the span provably spells the culprit there (see
+      // emit_compile_diag_fs_located). Everything else degrades to the
+      // stripped, unlocated message as before.
+      Throw(msg) => emit_compile_diag_fs_located(output_path, msg, input_path)
     }
   }
   // #594 `vibe normalize`: canonicalize a source file (module flatten + DCE +
