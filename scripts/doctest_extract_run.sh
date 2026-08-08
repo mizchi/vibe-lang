@@ -174,6 +174,7 @@ worklist="$workdir/worklist"
 results_dir="$workdir/results"
 mkdir -p "$results_dir"
 seq_no=0
+doc_no=0
 
 for md in "$@"; do
   if [ ! -f "$md" ]; then
@@ -185,7 +186,20 @@ for md in "$@"; do
   # carry the file in their name instead, so the tree stays greppable per file.
   trace_begin "extract $md"
   md_tok="$TRACE_TOKEN"
-  base="$(basename "$md" .md | tr -c 'A-Za-z0-9_' '_')"
+  # The document INDEX leads the prefix, so two inputs can never share
+  # extraction paths. Basenames are not unique enough twice over: `a/x.md` and
+  # `b/x.md` collide outright, and the `tr -c` normalization collapses
+  # `foo-bar.md` and `foo.bar.md` onto the same `foo_bar_`.
+  #
+  # This became silent-wrong when extraction moved ahead of compilation. Serial,
+  # a collision still compiled both documents -- each was extracted and
+  # compiled before the next overwrote it. Now every document is extracted
+  # first, so the later one clobbers the earlier one's block files while the
+  # earlier one's work-list entries still point at those paths: the earlier
+  # document's examples get REPORTED against the later document's code, and a
+  # doc block that cannot compile comes out PASS. Reproduced before this fix.
+  doc_no=$((doc_no + 1))
+  base="$(printf 'd%03d_%s' "$doc_no" "$(basename "$md" .md | tr -c 'A-Za-z0-9_' '_')")"
 
   # --- extract ```vibe blocks -> $workdir/${base}_bNN_LLLL.vibe + manifest ---
   manifest="$workdir/${base}.manifest"
