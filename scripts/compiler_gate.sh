@@ -9859,4 +9859,32 @@ echo "[compiler-gate] 96/96 host-side tracing spans nest, propagate and record f
 bash scripts/test_trace_spans.sh
 echo "[compiler-gate] tracing spans ok"
 
+echo "[compiler-gate] 97/97 desugar-emitted builtins resolve in BOTH compile lanes (#1590)"
+# The three builtins desugar_trait_dict synthesizes -- str_lex_diff for String
+# `<`, __generic_rel_diff / __generic_add for an erased type parameter -- were
+# checker_visible=false, which is fine only while the checker runs BEFORE
+# desugar. It does not in the lane that omits VIBE_FS_COMPILE=1 (the one
+# generate_bundle.sh's bootstrap_merge_flatten_tool pass 3 uses), so each one
+# died there with `unknown name: <builtin>` while compiling fine with
+# VIBE_FS_COMPILE=1. Compiling every shape in the NON-FS lane specifically:
+# the FS lane never had the bug and would pass either way.
+dvdir="_build/_gate_desugar_builtins"
+rm -rf "$dvdir"; mkdir -p "$dvdir"
+printf 'export fn lt(a: String, b: String) -> Bool { a < b }\nexport fn main() -> Int { if lt("a","b") { 0 } else { 1 } }\n' > "$dvdir/str_lex_diff.vibe"
+printf 'fn g[T](a: T, b: T) -> Bool { a < b }\nexport fn main() -> Int { if g(1,2) { 0 } else { 1 } }\n' > "$dvdir/generic_rel_diff.vibe"
+printf 'fn ga[T](a: T, b: T) -> T { a + b }\nexport fn main() -> Int { ga(1,2) }\n' > "$dvdir/generic_add.vibe"
+for dvsrc in "$dvdir"/*.vibe; do
+  dvname="$(basename "$dvsrc" .vibe)"
+  VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dvsrc" "$dvdir/$dvname.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$dvdir/$dvname.wasm" ]; then
+    echo "[compiler-gate] FAIL: $dvname did not compile in the non-FS lane (#1590)" >&2
+    cat "$dvdir/$dvname.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+rm -rf "$dvdir"
+echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
+
 echo "[compiler-gate] ok"

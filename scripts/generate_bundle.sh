@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
+. "$PROJECT_ROOT/scripts/trace_lib.sh"
 COMPILER_DIR="${VIBE_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
 MANIFEST="${VIBE_SOURCE_MANIFEST:-$COMPILER_DIR/compiler_sources_manifest.tsv}"
 OUT="${VIBE_BUNDLE_OUT:-$COMPILER_DIR/compiler_sources_bundle.vibe}"
@@ -896,9 +897,34 @@ write_runtime_entry_bundle() {
 # (merge_sources.vibe / import_alias_rewrite.vibe) would not take effect until
 # the next seed bump -- silently, since the output would still be valid. Paying
 # two extra seed passes keeps "edit the merge, regenerate, see it" true.
+# Rebuilding this tool costs three compiler invocations (~29s, 26% of the whole
+# build -- docs/tracing-design.md §5.9/§5.10) and it is a pure function of the
+# seed wasm plus the compiler sources. Both are already hashed by
+# ensure_generated.sh's fingerprint, which covers the seed, the manifest, every
+# manifest-named source, generate_bundle.sh and itself -- exactly this tool's
+# input set. Reusing that value rather than rolling a second hash keeps the two
+# from drifting apart: if a future input is added to one, the other cannot
+# silently miss it.
+#
+# The stamp is written only after the wasm actually lands, so a failed build
+# does not mark a missing or half-written tool as fresh. An unreadable
+# fingerprint (empty $want) falls through to the rebuild -- the cache is an
+# optimisation and must never be the reason a build uses a stale tool.
+merge_flatten_tool_fingerprint() {
+  bash "$PROJECT_ROOT/scripts/ensure_generated.sh" --print-fingerprint 2>/dev/null || true
+}
+
 bootstrap_merge_flatten_tool() {
   local flatten_wasm="$1"
   local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  local stamp="$flatten_wasm.fingerprint"
+  local want
+  want="$(merge_flatten_tool_fingerprint)"
+  if [ -n "$want" ] && [ -s "$flatten_wasm" ] && [ -f "$stamp" ] \
+    && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]; then
+    return 0
+  fi
+  rm -f "$stamp"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
   local seed_merged seed_modsrc
@@ -932,6 +958,9 @@ bootstrap_merge_flatten_tool() {
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
     "$seed_modsrc" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
   rm -f "$seed_merged" "$seed_merged.diag" "$seed_modsrc" "$seed_modsrc.diag"
+  if [ -s "$flatten_wasm" ] && [ -n "$want" ]; then
+    printf '%s\n' "$want" > "$stamp"
+  fi
 }
 
 build_exact_adapter_merged_source() {
@@ -1009,6 +1038,12 @@ validate_module_source_compiles() {
   rm -f "$check_wasm"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local ok=0
+  # This is a FULL seed compile of the candidate module source -- structurally
+  # the same work as a stage hop, not bundle bookkeeping. It gets its own span
+  # because "prepare flat source is 77s" (docs/tracing-design.md §5.8) reads as
+  # a slow shell script until you see how much of it is this.
+  trace_begin "validate module source (seed compile)"
+  local vtok="$TRACE_TOKEN"
   if (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
     VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
@@ -1018,6 +1053,7 @@ validate_module_source_compiles() {
       ok=1
     fi
   fi
+  trace_end "$vtok" "$(( ok == 1 ? 0 : 1 ))"
   if [ "$ok" != "1" ]; then
     echo "generate_bundle: candidate module source failed to compile (#979 sticky-failure guard) -- leaving any existing $ADAPTER_MODULE_SOURCE_OUT untouched" >&2
     cat "$check_wasm.diag" >&2 2>/dev/null || true
@@ -1028,9 +1064,18 @@ validate_module_source_compiles() {
   [ "$ok" = "1" ]
 }
 
+# Inner spans for the 48.5s of bash docs/tracing-design.md §5.8 isolated.
+# Coarse units first: the point is to find WHICH of these five does the work
+# before reading any of their loops.
+trace_begin "adapter bundle (pass 1)"; _t="$TRACE_TOKEN"
 write_adapter_bundle "" ""
+trace_end "$_t" 0
+trace_begin "exact adapter merged source"; _t="$TRACE_TOKEN"
 ADAPTER_MERGED_SOURCE_FILE="$(build_exact_adapter_merged_source)"
+trace_end "$_t" 0
+trace_begin "adapter module source"; _t="$TRACE_TOKEN"
 ADAPTER_MODULE_SOURCE_FILE="$(build_adapter_module_source "$ADAPTER_MERGED_SOURCE_FILE")"
+trace_end "$_t" 0
 if [ -n "$ADAPTER_MODULE_SOURCE_OUT" ]; then
   if ! validate_module_source_compiles "$ADAPTER_MODULE_SOURCE_FILE"; then
     exit 1
@@ -1040,9 +1085,14 @@ if [ -n "$ADAPTER_MODULE_SOURCE_OUT" ]; then
   cp "$ADAPTER_MODULE_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_OUT_TMP"
   mv "$ADAPTER_MODULE_SOURCE_OUT_TMP" "$ADAPTER_MODULE_SOURCE_OUT"
 fi
+trace_begin "adapter bundle (pass 2)"; _t="$TRACE_TOKEN"
 write_adapter_bundle "$ADAPTER_MERGED_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_FILE"
+trace_end "$_t" 0
+trace_begin "runtime entry bundle"; _t="$TRACE_TOKEN"
 write_runtime_entry_bundle
+trace_end "$_t" 0
 
+trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
 {
   echo "// AUTO-GENERATED by scripts/generate_bundle.sh"
   echo "// Do not edit manually. Regenerate with: bash scripts/generate_bundle.sh"
@@ -1205,6 +1255,7 @@ sys.stdout.write('\"' + content + '\"')
   echo "  groups"
   echo "}"
 } > "$OUT"
+trace_end "$BUNDLE_TOK" 0
 
 echo "Generated $OUT ($(wc -l < "$OUT") lines, $(wc -c < "$OUT" | tr -d ' ') bytes)"
 echo "Generated $OUT_ADAPTER ($(wc -l < "$OUT_ADAPTER") lines, $(wc -c < "$OUT_ADAPTER" | tr -d ' ') bytes)"

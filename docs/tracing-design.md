@@ -455,6 +455,210 @@ slowest 12 by self time:
 > 「self = どの子 span も走っていなかった時間」であって、
 > 「親自身の CPU 時間」ではない。
 
+### 5.8 未帰属だった時間の正体 — span を1つ足しただけで出た
+
+§5.6 と §5.7 が同じ「どのフェーズにも属さない半分」を指していたので、
+`generations.sh` の bundle 生成呼び出しに span を1つ足した。
+
+```
+trace 7c36551f...  (4 spans)
+     wall       self  name
+ 125120.0    1738.7  selfhost build
+  76976.0   76976.0    prepare flat source
+  22825.9   22825.9    stage0(seed) -> stage1
+  23579.4   23579.4    stage1 -> stage2
+```
+
+**`prepare flat source` が 77.0秒 = ビルドの 62%。** そして root の未帰属
+self 時間が **94.5秒 → 1.7秒**に落ちた。span 1つが、未説明だった時間の
+ほぼ全部を回収している。
+
+正体は `scripts/generate_bundle.sh` (1,211行の bash) だった。
+
+**ただし「77秒の bash」は誤りで、span をもう1段刻んで訂正した。**
+その中の `validate_module_source_compiles` は、生成した flat module source を
+**seed で丸ごとコンパイルし直している** (`--invoke cli_main $seed_wasm
+$candidate ...`) — bundle の帳簿仕事ではなく、ステージ hop と同じ実体の
+コンパイルである。span を足すと:
+
+```
+trace ffa885f7...  (5 spans)
+     wall       self  name
+ 115348.1    1144.8  selfhost build
+  69674.4   48497.6    prepare flat source
+  21176.8   21176.8      validate module source (seed compile)
+  21890.1   21890.1    stage0(seed) -> stage1
+  22638.8   22638.8    stage1 -> stage2
+```
+
+**このビルドはコンパイルを3回ではなく4回している** (`--stage3` なら5回)。
+`validate module source` の 21.2秒は stage hop (21.9s / 22.6s) とほぼ同じで、
+これは当然で、同じ規模の入力を同じ seed でコンパイルしているからである。
+`generations.sh` のログにはこの4回目が現れない。
+
+内訳の確定:
+
+| | |
+|---|---|
+| bundle 組み立て (本当に bash) | **48.5秒** |
+| 隠れた4回目のコンパイル | **21.2秒** |
+| stage0→stage1 | 21.9秒 |
+| stage1→stage2 | 22.6秒 |
+
+**48.5秒の bash は、依然として単一項目としてビルド最大**である
+(どの1回のコンパイルよりも長い)。一方 21.2秒の方は bash の問題ではなく
+「同じものを4回コンパイルしている」という構造の問題で、対処法が違う
+(#979 の sticky-failure guard として意図的に入っているので、消すかどうかは
+その趣旨との兼ね合いになる)。
+
+> **これは自分の主張の訂正でもある。** 1つ前の版でここに「77秒の bash」と
+> 書いた。span を1段深く刻んだら 1/3 が別物だった。段0 が返してくれるのは
+> 「どこが遅いか」であって「なぜ遅いか」ではない — 後者は次の span を
+> 置いて初めて出る。
+
+> この結果自体が段0 の投資回収の証拠になっている。§5.6 の時点では
+> 「48% がどこかにある」としか言えず、その先は勘だった。span を1つ、
+> 当たりを付けた場所に置いたら 1回の実行で確定した。
+
+次に見るべきは残る 48.5秒の中で、`generate_bundle.sh` の bash ループが
+何回サブプロセスを起こしているかである (`while IFS=$'\t' read` が3箇所、
+最内で `sed`/`awk`/`printf` を呼ぶ形)。ここは vibe を一切書かずに
+速くできる可能性が高い。
+
+### 5.9 もう1段刻んだら「bash が遅い」は完全に間違いだった
+
+§5.8 で 48.5秒を「本当に bash」と切り分けたが、その中に span を6つ置いたら
+**自前の bash はほぼ残らなかった**。
+
+```
+trace 2ccd115c...  (11 spans)
+     wall       self  name
+ 112912.0     989.1  selfhost build
+  68675.0    1099.2    prepare flat source
+   3848.2    3848.2      adapter bundle (pass 1)
+  29401.9   29401.9      exact adapter merged source
+    611.2     611.2      adapter module source
+  23375.1   23375.1      validate module source (seed compile)
+   3994.3    3994.3      adapter bundle (pass 2)
+     23.4      23.4      runtime entry bundle
+   6321.8    6321.8      compiler sources bundle
+  21725.8   21725.8    stage0(seed) -> stage1
+  21522.1   21522.1    stage1 -> stage2
+```
+
+`prepare flat source` の self は **48.5秒 → 1.1秒**。最大は
+`build_exact_adapter_merged_source` の **29.4秒 = ビルド全体の26%** で、
+中身は:
+
+1. `bootstrap_merge_flatten_tool` — **merge-flatten 専用のコンパイラ wasm を
+   ビルドする** (= もう1回のコンパイル)
+2. その wasm を `--invoke cli_main` で走らせて flat merged source を作る
+
+つまり**これも bash ではなくコンパイラ実行**である。
+
+### 結論: ビルドは「3回のコンパイル」ではない
+
+`generations.sh` のログは stage hop を3つ (`--stage3` なら4つ) しか出さないが、
+実際に走っているコンパイラ実行はもっと多い:
+
+| | 秒 | ログに出るか |
+|---|---|---|
+| merge-flatten tool のビルド + 実行 | 29.4 | **出ない** |
+| validate module source (seed compile) | 23.4 | **出ない** |
+| stage0 → stage1 | 21.7 | 出る |
+| stage1 → stage2 | 21.5 | 出る |
+| compiler sources bundle | 6.3 | 出ない |
+| adapter bundle ×2 | 7.8 | 出ない |
+| generate_bundle.sh 自身の bash | **1.1** | — |
+
+**ログに出る2回のコンパイル (43秒) より、出ないコンパイラ実行 (53秒) の方が
+長い。** ビルド時間を縮める話は「codegen を速くする」でも
+「bash を速くする」でもなく、**「同じソースを何回コンパイルしているかを
+減らす」**だった。
+
+`adapter bundle` が pass 1 / pass 2 で2回走っている (3.8 + 4.0 = 7.8秒) のも
+ここで初めて見えた。
+
+### 自分の主張を2回訂正したことについて
+
+- 版1: 「77秒の bash」→ 1/3 は隠れたコンパイルだった (§5.8)
+- 版2: 「48.5秒の bash」→ **その 29.4秒もコンパイルだった** (本節)
+
+段0 の span は「どこ」を返し、「なに」は返さない。2回とも、私は次の span を
+置く前に「なに」を断定した。**span を置くコストは1回あたり数行で、
+ビルド1回分の時間しかかからない。**推測する前に置いた方が速い。
+
+### 5.10 §5.9 の上位2件を読んだ — どちらも重複、判断は不要
+
+**(1) merge-flatten tool は毎回ゼロから作り直している (29.4秒)**
+
+`build_exact_adapter_merged_source` は `bootstrap_merge_flatten_tool` を
+**無条件で**呼ぶ。その中身は3パス:
+
+| pass | 内容 |
+|---|---|
+| 1 | seed が live tree を flatten → `seed_merged` (コンパイラ実行) |
+| 2 | `emit-module-source` で DCE → `seed_modsrc` (host vibe コマンド) |
+| 3 | seed が `seed_modsrc` をコンパイル → `flatten_wasm` (コンパイラ実行) |
+
+そのうえで本体が `flatten_wasm` を `cli_adapter.vibe` に対して走らせる。
+**merged source 1本を得るのにコンパイラを4回叩いている。**
+
+そして pass 3 の冒頭は `rm -f "$flatten_wasm"` である。成果物は
+`_build/merge_flatten_compiler.wasm` に残るのに、**鮮度チェックが無く
+毎回消して作り直す**。この tool は (seed wasm, compiler sources) の
+純粋な関数で、どちらもハッシュできる — `scripts/ensure_generated.sh` が
+生成物5点に対して既にやっているのと同じ形の fingerprint gate が入る。
+
+**(2) adapter bundle を2回書いている (3.8 + 4.0 = 7.8秒)**
+
+`write_adapter_bundle "" ""` を空引数で1回、あとで実引数でもう1回。
+どちらも同じ `$OUT_ADAPTER` に書くので、**1回目の内容は捨てられる**。
+
+1回目が要るのは chicken-and-egg のためと読める — `build_exact_adapter_merged_source`
+が `cli_adapter.vibe` を flatten するとき、`cli_adapter_bundle.vibe` が
+存在して import 解決できる必要がある。つまり**1回目は「在ること」だけが
+要件で、中身は要らない**。フル bundle (bash の `echo` の山) を書く必要はなく、
+最小の妥当な stub で足りるはずである。
+
+両方とも「同じものを2回作っている」だけで、**安全側の重複を外す判断
+(§5.9 の3件目、#979 の guard) とは性質が違う**。合計 ~37秒、ビルドの
+約1/3。
+
+> 本節は診断であって修正ではない。どちらも bootstrap の最も壊れやすい
+> ところを触るので、fingerprint gate も stub 化も、着手するなら
+> `pkf run full-gate` と fixpoint を毎回通しながら進める必要がある。
+
+### 5.11 (1) を実装した — 28秒、出力はバイト一致
+
+`bootstrap_merge_flatten_tool` に fingerprint gate を入れた。値は
+**`ensure_generated.sh --print-fingerprint` を再利用**する — その fingerprint は
+seed wasm・manifest・manifest が名指す全ソース・`generate_bundle.sh`・
+自分自身をカバーしており、**この tool の入力集合とちょうど同じ**である。
+2つ目のハッシュを書き起こさないのは、将来どちらかに入力が足された時に
+もう片方が黙って取りこぼすのを防ぐため。1.3秒。
+
+| span | cold | warm | 差 |
+|---|---|---|---|
+| `exact adapter merged source` | 32,474 ms | **4,289 ms** | **-28.2s** |
+| `prepare flat source` | 71,790 ms | 42,140 ms | -29.7s |
+
+検証:
+
+- **fixpoint OK** (`stage2 == stage3`)
+- **cold ビルドと warm ビルドの stage2 がバイト一致** — キャッシュした tool が
+  作り直した tool と同じ出力を出すことの直接の確認。これが一致しない限り
+  この最適化は成立しない
+- `pkf run test` 通過
+
+安全側の設計:
+
+- stamp は wasm が**実際に落ちた後**にだけ書く。失敗したビルドが
+  「無い / 半端な tool」を fresh と印付けない
+- fingerprint が読めなかった (空) ら**素通しで再ビルド**する。
+  キャッシュは最適化であって、stale な tool を使う理由になってはならない
+- 冒頭で `rm -f "$stamp"` — wasm を消して stamp を残す窓を作らない
+
 ## 6. 実装順
 
 | 段 | 内容 | コンパイラ変更 |
