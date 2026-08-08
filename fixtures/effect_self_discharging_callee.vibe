@@ -1,0 +1,51 @@
+import ../lib/@vibe/core {
+  inspect
+}
+
+// #1595: a function that discharges its own effect but ALSO declares that
+// effect in its row (`selfd` -- the row is required so callers can name it,
+// and the checker separately requires a `handle ... with Effect`'s
+// enclosing declared row to authorize the whole effect name) must not sink
+// evidence-passing migration for the whole program when it is CALLED from
+// another row-carrying function. Two halves, both required:
+//   1. `selfd` is dropped from the effect's `needing` set
+//      (edp_drop_self_discharging_needing -- it provides the dict, never
+//      needs one), and
+//   2. calls TO `selfd` are inert (edp_append_self_discharging_row_fns) --
+//      without this the drop was self-defeating: removing `selfd` from
+//      `needing` removed the very membership that made `main`'s call to it
+//      safe in edp_has_unsafe_construct, so `main` went ineligible and the
+//      whole effect's migration failed hard.
+// The handler arm must stay perform-free for half 2 (an arm that
+// re-performs the effect escapes `selfd` -- see
+// fixtures/err_effect_self_discharge_arm_reperform.vibe for the rejection).
+effect Ask {
+  Get -> Int
+}
+
+fn read_one() -> Int with Ask::Get {
+  perform Ask::Get
+}
+
+fn selfd() -> Int with Ask + Ask::Get {
+  handle {
+    read_one()
+  } with Ask {
+    Get => resume(42)
+  }
+}
+
+fn main() -> Int with Ask + Ask::Get {
+  selfd()
+}
+
+test "calling a self-discharging fn from a row-carrying caller compiles and runs" {
+  // The wrapping handle discharges `main`'s declared row for the test
+  // block (a test's own row cannot authorize Ask); `selfd`'s inner handler
+  // must win, so resume(0) is deliberately NOT the expected value.
+  handle {
+    inspect(main(), "42")
+  } with Ask {
+    Get => resume(0)
+  }
+}

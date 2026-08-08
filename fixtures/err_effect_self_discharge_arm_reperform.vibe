@@ -1,0 +1,35 @@
+// #1595/#1591: the narrow boundary of self-discharging call-inertness. A
+// fn whose whole body is a bare same-effect handle is dropped from
+// `needing` (edp_drop_self_discharging_needing), but a handler ARM that
+// re-performs the effect escapes the fn (arms run outside their own
+// handle's coverage), so such a fn must NOT be call-inert
+// (edp_fn_is_self_discharging_inert rejects it) -- treating the call as
+// safe would migrate the outer handle while the arm's perform stays
+// invisible to it (silent-wrong, P0). The program is rejected, and the
+// diagnostic names the callee and the arm re-perform instead of reciting
+// the allowed-forms enumeration this program already satisfies (#1591:
+// the body really does only "call a named top-level `fn`").
+// needle: "hides a perform from it"
+effect Ask {
+  Get -> Int
+}
+
+fn read_one() -> Int with Ask::Get {
+  perform Ask::Get
+}
+
+fn selfd() -> Int with Ask + Ask::Get {
+  handle {
+    read_one()
+  } with Ask {
+    Get => resume(perform Ask::Get + 1)
+  }
+}
+
+fn main() -> Int with Ask + Ask::Get {
+  handle {
+    selfd()
+  } with Ask {
+    Get => resume(105)
+  }
+}
