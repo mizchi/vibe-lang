@@ -1620,7 +1620,11 @@ function writeTextFileEnsuringDir(filePath, content) {
 
 let profileMemoryMarkIndex = 0;
 
-function emitProfileMemoryMark() {
+// `label` (optional) is a phase name the guest attached to the mark (#1553);
+// when present the line ends with ` name=<label>` so per-phase heap numbers
+// can be grepped out of a compile's stderr. Unnamed marks (Profiler::now_us,
+// plain VIBE_PROFILE_MEMORY_MARK env reads) keep the exact pre-#1553 format.
+function emitProfileMemoryMark(label) {
   if (process.env.VIBE_PROFILE_MEMORY_MARKS !== "1" || !instanceRefGlobal) {
     return;
   }
@@ -1640,15 +1644,23 @@ function emitProfileMemoryMark() {
   const memoryPages = memoryBytes / 65536;
   const hostAllocPtr = hostAllocPtrGlobal === null ? 0 : hostAllocPtrGlobal;
   const rss = process.memoryUsage().rss;
+  const nameSuffix = label ? ` name=${label}` : "";
   console.error(
-    `[profile-memory] mark=${profileMemoryMarkIndex} pages=${memoryPages} bytes=${memoryBytes} heap_ptr=${heapPtr ?? "missing"} host_alloc_ptr=${hostAllocPtr} rss=${rss}`,
+    `[profile-memory] mark=${profileMemoryMarkIndex} pages=${memoryPages} bytes=${memoryBytes} heap_ptr=${heapPtr ?? "missing"} host_alloc_ptr=${hostAllocPtr} rss=${rss}${nameSuffix}`,
   );
   profileMemoryMarkIndex += 1;
 }
 
+const NAMED_MEMORY_MARK_ENV_PREFIX = "VIBE_PROFILE_MEMORY_MARK:";
+
 function maybeEmitEnvMemoryMark(name) {
   if (name === "VIBE_PROFILE_MEMORY_MARK") {
     emitProfileMemoryMark();
+  } else if (name.startsWith(NAMED_MEMORY_MARK_ENV_PREFIX)) {
+    // #1553: named mark. The guest spells a phase name into the env-get key
+    // (`Env::get("VIBE_PROFILE_MEMORY_MARK:<phase>")`); the env var itself is
+    // never set, so the guest observes "" and the read is a pure signal.
+    emitProfileMemoryMark(name.slice(NAMED_MEMORY_MARK_ENV_PREFIX.length));
   }
 }
 

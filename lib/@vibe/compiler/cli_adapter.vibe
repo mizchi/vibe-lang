@@ -60,6 +60,7 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_cached_artifact_input_trace,
   compile_file_fs_mode_coverage,
   compile_file_fs_mode_rc,
+  compile_file_fs_mode_rc_heap_marked,
   compile_file_fs_mode_rc_shadow,
   compile_file_fs_mode_testmeta,
   compile_file_fs_mode_trace,
@@ -1001,7 +1002,14 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       } else if Env::get("VIBE_RC") != "0" {
         // ADR-0055 #493 cutover DEFAULT: RC reclaims memory each iteration; the
         // legacy bump path leaks until exit. Opt back into bump with VIBE_RC=0.
-        (compile_file_fs_mode_rc(input_path, entry_name), "")
+        // #1553: under VIBE_PROFILE_MEMORY_MARKS=1 take the heap-marked twin
+        // (same pipeline, named memory mark per phase); production runs keep
+        // the exact unmarked lane.
+        if mark_memory {
+          (compile_file_fs_mode_rc_heap_marked(input_path, entry_name), "")
+        } else {
+          (compile_file_fs_mode_rc(input_path, entry_name), "")
+        }
       } else {
         // Legacy bump path (VIBE_RC=0). #634 (ADR-0026): only when `vibe test`
         // requests the pure-test cache verdict (VIBE_TESTMETA_OUT set) do we

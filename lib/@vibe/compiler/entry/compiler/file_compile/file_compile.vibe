@@ -521,6 +521,48 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   compile_wasi_module_rc(merged_stmts, entry_name)
 }
 
+/// #1553: emit a named heap mark for the FS-compile memory measurement. The
+/// node runner intercepts `Env::get` of "VIBE_PROFILE_MEMORY_MARK:<phase>"
+/// (scripts/wasm_vibe_host_runner.js maybeEmitEnvMemoryMark) and prints one
+/// `[profile-memory] ... name=<phase>` line with the current bump-heap
+/// pointer / linear-memory pages — but only under VIBE_PROFILE_MEMORY_MARKS=1;
+/// otherwise the env read returns "" and nothing is printed. The env var
+/// spelled here is never set, so the read is a pure observation signal.
+fn fs_heap_mark(phase: String) -> Unit with Env {
+  let _ = Env::get(String::concat("VIBE_PROFILE_MEMORY_MARK:", phase))
+  ()
+}
+
+/// #1553 heap-measurement variant of compile_file_fs_mode_rc: byte-identical
+/// pipeline with a named memory mark at each phase boundary. Selected by the
+/// CLI adapter ONLY under VIBE_PROFILE_MEMORY_MARKS=1 (the production lanes
+/// stay Env-free per the #634 layering note; this observation-only lane
+/// carries Env solely to reach the runner's mark hook). Phase names:
+///   start           — before any work (baseline heap)
+///   collect_sources — after collect_source_groups_fs (FS reads + module
+///                     header parsing + import-graph resolution)
+///   typecheck       — after db_typecheck_fs (type env build, persistent
+///                     type-env/dep-list TSV cache read/write)
+///   parse_merge     — after build_grouped_merged_stmts (parse all sources,
+///                     export-rename plan, alias rewriting, whole-program merge)
+///   codegen_rc      — after compile_wasi_module_rc (effect lowering /
+///                     evidence-passing migration, perceus RC insertion,
+///                     wasm emit) — this is also the run's heap peak, since
+///                     the bump allocator never frees.
+export fn compile_file_fs_mode_rc_heap_marked(entry_path: String, entry_name: String) -> Bytes with Exception + Fs + Env {
+  fs_heap_mark("start")
+  let source_groups = collect_source_groups_fs(entry_path)
+  fs_heap_mark("collect_sources")
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  fs_heap_mark("typecheck")
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  fs_heap_mark("parse_merge")
+  let bytes = compile_wasi_module_rc(merged_stmts, entry_name)
+  fs_heap_mark("codegen_rc")
+  bytes
+}
+
 /// #715/#768 debug variant (VIBE_RC=shadow): same load/merge as
 /// compile_file_fs_mode_rc but with shadow-liveness double-free traps, so an
 /// import-resolving test build's "moving target" free-list corruption becomes a
