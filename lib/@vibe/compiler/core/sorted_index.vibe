@@ -17,9 +17,35 @@ import @vibe/core {
 // duplicate keys (results are byte-identical to the linear scan they
 // replace).
 
-/// Lexicographic (char-code) string less-than. Written char-by-char instead
-/// of `a < b` because the String `<` desugar (str_lex_diff, #746) is newer
-/// than the pinned seed compiler -- this file must stay seed-compilable.
+/// Lexicographic (char-code) string less-than. Written char-by-char instead of
+/// `a < b`, which costs one out-of-line `__rt_str_char_code_at` call PER BYTE
+/// on one of the compiler's hottest comparisons.
+///
+/// The reason is NOT the one this comment used to give ("the String `<`
+/// desugar, str_lex_diff #746, is newer than the pinned seed"). That is stale:
+/// the seed bump to console-exception-rowvar-2026-08-06 moved the seed past
+/// #746, and the committed seed compiles and correctly runs `a < b` on String
+/// today. Replacing this body with `a < b` was measured to be CORRECT --
+/// 81 pairs in the doubly-indirected call shape sort_perm_by_names actually
+/// uses, 0 disagreements with this loop, on both the seed and stage2.
+///
+/// It still cannot land, for a different reason: the bundle build round-trips
+/// the compiler's own sources through MERGED SOURCE TEXT.
+/// bootstrap_merge_flatten_tool pass 1 runs the seed with
+/// VIBE_EMIT_MERGED_SOURCE=1 and pass 3 re-compiles the text it emitted, but
+/// the emitted text is POST-DESUGAR: `a < b` on String has already become a
+/// call to `str_lex_diff`, which is a codegen builtin and not a source-level
+/// name. Pass 3 then dies with `unknown name: str_lex_diff`. So compiler
+/// sources may not use String `<` at all until that emitter round-trips --
+/// it currently prints a name it cannot read back.
+///
+/// If that is fixed, this body becomes `a < b` and the loop goes away. Two
+/// things to keep when it does. Keep it a FUNCTION with `String` parameters:
+/// inlining it as `Array::get(xs, i) < Array::get(xs, j)` is #1184, where `<`
+/// on two Array::get results degrades to a LENGTH-FIRST comparison (`"b" <
+/// "ab"` comes out true) and would silently reorder the sort. #1184 is marked
+/// closed but its own repro still prints the wrong answer on today's stage2;
+/// only adding a `: String` annotation rescues it.
 export fn str_lt(a: String, b: String) -> Bool {
   let la = String::length(a)
   let lb = String::length(b)
