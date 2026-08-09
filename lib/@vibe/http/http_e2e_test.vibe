@@ -1,16 +1,8 @@
-//# Imports
-
-import ./http.vibe {
-  close, request, response_body, response_status
-}
-
 //# Functions
 
-// Real-network e2e against the runner's `vibe.http_*` host imports. As in
-// lib/@vibe/fs/fs_test.vibe, the `handle ... with Http { ... }` blocks only
-// discharge the Http row for the checker — the client ops compile to direct
-// host-import calls (#794), so the arm is never invoked and the requests hit
-// the real test server.
+// Real-network e2e against the runner's `vibe.http_*` host imports. Use the
+// public client spellings directly: #1508 must lower these unbound names (not
+// just @vibe/http's internal raw helpers) to the client host imports.
 //
 // The echo-server port is overridable via VIBE_HTTP_ECHO_PORT (#934: a fixed
 // port collides when concurrent worktree batteries each start their own
@@ -25,64 +17,25 @@ fn base_from(port: String) -> String {
   String::concat("http://127.0.0.1:", p)
 }
 
-fn do_get(base: String) -> Bool with Http {
-  let h = request("GET", String::concat(base, "/hello"), "", "")
-  let ok = response_status(h) == 200 && response_body(h) == "hello"
-  close(h)
-  ok
-}
-
-fn do_post_echo(base: String) -> Bool with Http {
-  let h = request("POST", String::concat(base, "/echo"), "", "ping from vibe")
-  let ok = response_status(h) == 200 && response_body(h) == "ping from vibe"
-  close(h)
-  ok
-}
-
-fn do_404(base: String) -> Bool with Http {
-  let h = request("GET", String::concat(base, "/nonexistent"), "", "")
-  let ok = response_status(h) == 404
-  close(h)
-  ok
-}
-
-//# Misc
-
-/// The `handle ... with Http { ... }` blocks below ALSO pin ADR-0076 追記34
-/// V2's vacuous-handle elimination for checker-BUILTIN effect labels
-/// (#1119 Codex review, P2): `Http` has no `effect Http {..}` declaration,
-/// so the evidence migration has no operation list to build a dict from and
-/// cannot migrate these sites -- but nothing in the program performs Http
-/// either (the client ops are direct host calls), so the arms are provably
-/// dead and the whole handle is erased in codegen. Candidate collection
-/// reads handler sites, not just declared effects, precisely so this shape
-/// keeps compiling.
-test "http GET request" {
+test "http GET request" with Http::request + Http::response_status + Http::response_body + Http::close {
   let base = base_from(Env::get("VIBE_HTTP_ECHO_PORT"))
-  let ok = handle {
-    do_get(base)
-  } with Http {
-    Listen(_p) => resume(0)
-  }
-  assert(ok)
+  let h = Http::request("GET", String::concat(base, "/hello"), "", "")
+  assert(Http::response_status(h) == 200)
+  assert(Http::response_body(h) == "hello")
+  Http::close(h)
 }
 
-test "http POST echo" {
+test "http POST echo" with Http::request + Http::response_status + Http::response_body + Http::close {
   let base = base_from(Env::get("VIBE_HTTP_ECHO_PORT"))
-  let ok = handle {
-    do_post_echo(base)
-  } with Http {
-    Listen(_p) => resume(0)
-  }
-  assert(ok)
+  let h = Http::request("POST", String::concat(base, "/echo"), "", "ping from vibe")
+  assert(Http::response_status(h) == 200)
+  assert(Http::response_body(h) == "ping from vibe")
+  Http::close(h)
 }
 
-test "http 404 response" {
+test "http 404 response" with Http::request + Http::response_status + Http::close {
   let base = base_from(Env::get("VIBE_HTTP_ECHO_PORT"))
-  let ok = handle {
-    do_404(base)
-  } with Http {
-    Listen(_p) => resume(0)
-  }
-  assert(ok)
+  let h = Http::request("GET", String::concat(base, "/nonexistent"), "", "")
+  assert(Http::response_status(h) == 404)
+  Http::close(h)
 }
