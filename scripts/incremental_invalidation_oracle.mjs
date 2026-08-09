@@ -702,14 +702,14 @@ function run(stage2) {
     if (implementationOwnersChanged(implBoundEq, implBoundShow).join(",") !== "library") fail("impl generic bound edit did not change token-stream implementation identity");
     if (interfaceOwnersChanged(implBoundEq, implBoundShow).length !== 0) fail("impl-bound edit changed the exported interface identity even though impls have no export surface bit");
     if (checkedEnvOwnersChanged(implBoundEq, implBoundShow).length !== 0) fail("impl-bound edit changed the value-only checked environment identity");
-    if (persistentTypeEnvTransportOwnersChanged(implBoundEq, implBoundShow).join(",") !== "library") {
-      fail("impl-bound edit did not change the complete persistent TypeEnv transport identity")
+    if (persistentTypeEnvTransportOwnersChanged(implBoundEq, implBoundShow).length !== 0) {
+      fail("unselected Eq impl-bound edit changed the selected persistent TypeEnv transport identity")
     }
     writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Identity { identity[U: Eq](U) -> U }\nimpl [T: Show] Eq for Array[T]\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const implTargetArray = check("impl_target_array");
     if (interfaceOwnersChanged(implBoundShow, implTargetArray).length !== 0) fail("impl-target edit changed the exported interface identity even though impls have no export surface bit");
-    if (persistentTypeEnvTransportOwnersChanged(implBoundShow, implTargetArray).join(",") !== "library") {
-      fail("impl-target edit did not change the complete persistent TypeEnv transport identity")
+    if (persistentTypeEnvTransportOwnersChanged(implBoundShow, implTargetArray).length !== 0) {
+      fail("unselected Eq impl-target edit changed the selected persistent TypeEnv transport identity")
     }
 
     writeFileSync(join(project, "app.vibe"), "import ./base.vibe { base_value }\nimport ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\nbase_value(0) }\n");

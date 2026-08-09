@@ -100,8 +100,8 @@ function supertraitDependencyEdit(project) {
 }
 
 function traitDependencyEdit(project) {
-  // The app does not import the trait name. This independently proves that
-  // hidden method and concrete-impl changes invalidate the v3 transport key.
+  // The app imports neither this private trait nor a value bounded by it, so
+  // selected trait authority must not leak this method/impl edit into v3.
   writeFileSync(join(project, "helper.vibe"), "trait Base\ntrait OtherBase\ntrait Hidden: Base { changed(Self) -> Int }\nimpl Base for Int\nimpl OtherBase for Int\nimpl Hidden for String\nexport fn value() -> Int { 1 }\n");
 }
 
@@ -623,7 +623,7 @@ function run(stage2) {
     expectCounts("trait module private body reuse", traitPrivate.telemetry, 1, 1);
     supertraitDependencyEdit(traitProject);
     const supertraitFallback = check(stage2, traitProject, traitCache, true, "supertrait-dependency-fallback");
-    expectCounts("supertrait-only dependency change fallback", supertraitFallback.telemetry, 2, 0);
+    expectCounts("unselected supertrait dependency change reuses consumer", supertraitFallback.telemetry, 1, 1);
 
     const traitChangeProject = join(work, "trait-change-project");
     const traitChangeCache = join(work, "trait-change-cache");
@@ -631,7 +631,7 @@ function run(stage2) {
     check(stage2, traitChangeProject, traitChangeCache, true, "trait-change-cold");
     traitDependencyEdit(traitChangeProject);
     const traitFallback = check(stage2, traitChangeProject, traitChangeCache, true, "trait-dependency-fallback");
-    expectCounts("trait method/impl dependency change fallback", traitFallback.telemetry, 2, 0);
+    expectCounts("unselected trait method/impl dependency change reuses consumer", traitFallback.telemetry, 1, 1);
 
     const chainProject = join(work, "chain-project");
     const chainCache = join(work, "chain-cache");
