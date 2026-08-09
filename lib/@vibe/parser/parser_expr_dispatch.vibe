@@ -584,79 +584,54 @@ fn fold_block_steps(steps: Array[BlockStep]) -> Expr {
   result
 }
 
-/// #1283: does EVERY exit of this expression leave the enclosing function via
-/// `return`? This is what makes a `guard`'s binding safe to publish to the
-/// rest of the block: the else arm never falls through to the continuation, so
-/// there is no path on which the name would be unbound.
+/// #1283: does EVERY exit of this expression leave the enclosing function?
+/// This is what makes a `guard`'s binding safe to publish to the rest of the
+/// block: the else arm never falls through to the continuation, so there is no
+/// path on which the name would be unbound.
 ///
 /// The property is syntactic, and it has to be decided HERE rather than in the
 /// checker, because `guard` desugars to `match` in this file — by the time the
 /// checker sees the tree, nothing distinguishes a guard's else arm from an
-/// ordinary match arm that happens to return.
+/// ordinary match arm that happens to exit.
 ///
-/// Deliberately NOT counted as divergence, per the #1283 decision:
-///   - `throw` — ADR-0073 does pin Exception::Throw as checked and non-resumable,
-///     but the decision defers an explicit abortive-effect judgement in the
-///     checker to separate work, and guessing here would bake in a rule the
-///     effect system has not agreed to yet.
-///   - a general `perform` — resumptive, so the handler CAN resume back into
-///     the continuation, which is exactly the case the binding must not see.
-///   - `break` / `continue` — they escape the enclosing LOOP, not the
-///     function. Sound in principle, out of scope for the first version.
-fn expr_always_returns(e: Expr) -> Bool {
+/// `return` and the direct `perform Exception::Throw(payload)` AST shape both
+/// exit. `throw(payload)` is already desugared to that exact shape, and the
+/// legacy `Error::Throw` operation spelling remains compatible. Do not widen
+/// this to arbitrary `perform`: ordinary operations are resumptive. A handled
+/// throw is likewise not direct — its EHandle wrapper can produce a value and
+/// continue. `break` and `continue` escape a loop rather than this function.
+fn expr_always_exits_guard(e: Expr) -> Bool {
   match e {
     EReturn(_) => true,
-    ESeq(_, b) => expr_always_returns(b),
-    ELet(_, _, b, _) => expr_always_returns(b),
-    ELetMut(_, _, b, _) => expr_always_returns(b),
-    ELetRec(_, _, b) => expr_always_returns(b),
-    EAssign(_, _, c) => expr_always_returns(c),
-    EAssignOp(_, _, _, c) => expr_always_returns(c),
-    // An `if` with no `else` parses with EUnit in the else slot, which is not
-    // a return — so a one-armed `if` correctly fails the check.
-    EIf(_, t, f) => expr_always_returns(t) && expr_always_returns(f),
+    ECall(EIdent("perform", _), args, _) => if Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        ECall(EIdent(op_name, _), op_args, _) =>
+        (op_name == "Exception::Throw" || op_name == "Error::Throw") && Array::length(op_args) == 1,
+        _ => false
+      }
+    } else {
+      false
+    },
+    ESeq(_, b) => expr_always_exits_guard(b),
+    ELet(_, _, b, _) => expr_always_exits_guard(b),
+    ELetMut(_, _, b, _) => expr_always_exits_guard(b),
+    ELetRec(_, _, b) => expr_always_exits_guard(b),
+    EAssign(_, _, c) => expr_always_exits_guard(c),
+    EAssignOp(_, _, _, c) => expr_always_exits_guard(c),
+    // An `if` with no `else` parses with EUnit in the else slot, which does
+    // not exit — so a one-armed `if` correctly fails the check.
+    EIf(_, t, f) => expr_always_exits_guard(t) && expr_always_exits_guard(f),
     EMatch(_, arms) => {
       let mut all = Array::length(arms) > 0
       let mut i = 0
       while i < Array::length(arms) {
         let (_, body) = Array::get(arms, i)
-        if !expr_always_returns(body) {
+        if !expr_always_exits_guard(body) {
           all = false
         }
         i = i + 1
       }
       all
-    },
-    _ => false
-  }
-}
-
-/// #1283: does the tail of this block reach a `perform` (which `throw`
-/// desugars to)? Only used to pick a more specific rejection message — a
-/// `guard .. else { throw(..) }` is the mistake most likely to be made first,
-/// since the let-else this replaces did accept it.
-fn expr_tail_performs(e: Expr) -> Bool {
-  match e {
-    ECall(callee, _, _) => match callee {
-      EIdent(n, _) => n == "perform",
-      _ => false
-    },
-    ESeq(_, b) => expr_tail_performs(b),
-    ELet(_, _, b, _) => expr_tail_performs(b),
-    ELetMut(_, _, b, _) => expr_tail_performs(b),
-    ELetRec(_, _, b) => expr_tail_performs(b),
-    EIf(_, t, f) => expr_tail_performs(t) || expr_tail_performs(f),
-    EMatch(_, arms) => {
-      let mut any = false
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (_, body) = Array::get(arms, i)
-        if expr_tail_performs(body) {
-          any = true
-        }
-        i = i + 1
-      }
-      any
     },
     _ => false
   }
@@ -690,12 +665,10 @@ fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
   }
   let br = expect_tk(tokens, else_pos, "{")
   let (alt, end) = parse_recur(tokens, br, 20)
-  if expr_always_returns(alt) {
+  if expr_always_exits_guard(alt) {
     (pat, scrut, alt, end)
-  } else if expr_tail_performs(alt) {
-    throw("guard: the `else` block must leave the enclosing function on every path, and `return` is the only form accepted for now. `throw` is not accepted yet: ADR-0073 pins Exception::Throw as checked and non-resumable, but #1283 defers the checker's explicit abortive-effect judgement to separate work, so treating it as divergence here would commit the effect system to a rule it has not agreed to. Write `else { return <value> }`, or use `if <scrutinee> is <pattern> { .. } else { .. }` when the fallback produces a value. (#1283)")
   } else {
-    throw("guard: the `else` block must leave the enclosing function on every path with `return` -- that is exactly what makes the bound name safe to use in the rest of the block. Write `else { return <value> }`, or use `if <scrutinee> is <pattern> { .. } else { .. }` when the fallback produces a value instead of exiting. (#1283)")
+    throw("guard: the `else` block must leave the enclosing function on every path with `return` or a direct `throw(...)` -- that is exactly what makes the bound name safe to use in the rest of the block. Other `perform` operations and handled throws can return to the continuation. Use `if <scrutinee> is <pattern> { .. } else { .. }` when the fallback produces a value instead of exiting. (#1283)")
   }
 }
 
