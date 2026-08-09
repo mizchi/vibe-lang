@@ -23,8 +23,9 @@ out="$5"
 sleep_pid=""
 trap '[ -z "$sleep_pid" ] || kill "$sleep_pid" 2>/dev/null || true; [ -z "$sleep_pid" ] || wait "$sleep_pid" 2>/dev/null || true; printf "terminated\\n" >> "$FAKE_RUN_LOG"; exit 143' TERM
 printf 'runner_pid=%s\n' "$$" >> "$FAKE_RUN_LOG"
-printf 'marks=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta=%s testmeta=%s rc_heap_start=%s wasm_names=%s ingestion_stamp=%s import_abi=%s coverage=%s\n' \
+printf 'marks=%s rc=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta=%s testmeta=%s rc_heap_start=%s wasm_names=%s ingestion_stamp=%s import_abi=%s coverage=%s\n' \
   "${VIBE_PROFILE_MEMORY_MARKS:-unset}" \
+  "${VIBE_RC:-unset}" \
   "${VIBE_BUILD_CACHE_DIR:-unset}" \
   "${VIBE_WASM_PRE_GROW_PAGES:-unset}" \
   "${VIBE_WASM_HOST_ALLOC_MODE:-unset}" \
@@ -46,7 +47,11 @@ fi
 printf '\0asm\1\0\0\0' > "$out"
 if [ "${VIBE_PROFILE_MEMORY_MARKS:-}" = "1" ]; then
   pages="${FAKE_PAGES:-100}"
-  for name in start source_groups prepared_db merged_stmts codegen_rc write_output fs_compile_complete; do
+  codegen_boundary=codegen_rc
+  if [ "${VIBE_RC:-}" = "0" ]; then
+    codegen_boundary=codegen_bump
+  fi
+  for name in start source_groups prepared_db merged_stmts "$codegen_boundary" write_output fs_compile_complete; do
     if [ "${FAKE_MISSING_BOUNDARY:-}" = "$name" ]; then
       continue
     fi
@@ -74,10 +79,21 @@ VIBE_RC_HEAP_START=123456 \
 VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP=1 \
   bash "$SCRIPT" --cold --base "$BASE" --verify-parity > "$TMP_DIR/ok.stdout"
 
-grep -q '^\[fs-heap\] parity=ok mode=cold$' "$TMP_DIR/ok.stdout"
-grep -q '^\[fs-heap\] mode=cold boundary=fs_compile_complete ' "$TMP_DIR/ok.stdout"
-grep -Eq "^marks=1 cache=$TMP_DIR/out/run\.[^/]*/cache_marked pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
-grep -Eq "^marks=0 cache=$TMP_DIR/out/run\.[^/]*/cache_unmarked pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -q '^\[fs-heap\] parity=ok mode=cold backend=rc$' "$TMP_DIR/ok.stdout"
+grep -q '^\[fs-heap\] mode=cold backend=rc boundary=fs_compile_complete ' "$TMP_DIR/ok.stdout"
+grep -Eq "^marks=1 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_marked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -Eq "^marks=0 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_unmarked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
+
+# The marked bump twin must pin VIBE_RC=0, require its distinct codegen mark,
+# and compare only against the independently cold unmarked bump lane.
+FAKE_RUN_LOG="$RUN_LOG" \
+VIBE_FS_HEAP_RUNNER="$RUNNER" \
+VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/bump" \
+  bash "$SCRIPT" --cold --backend bump --base "$BASE" --verify-parity > "$TMP_DIR/bump.stdout"
+grep -q '^\[fs-heap\] parity=ok mode=cold backend=bump$' "$TMP_DIR/bump.stdout"
+grep -q '^\[fs-heap\] mode=cold backend=bump boundary=codegen_bump ' "$TMP_DIR/bump.stdout"
+grep -Eq "^marks=1 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_marked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -Eq "^marks=0 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_unmarked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
 if grep -q 'ambient-cache-must-not-be-used' "$RUN_LOG"; then
   echo "measure_fs_heap test: ambient cache leaked into measurement" >&2
   exit 1

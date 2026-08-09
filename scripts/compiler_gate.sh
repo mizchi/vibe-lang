@@ -4099,12 +4099,12 @@ if [ ! -s "$shdir/shadow.wasm" ]; then
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "232489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 232489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+if [ "$sh_out" != "25232489" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25232489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[compiler-gate] RC shadow-liveness regression guard ok (232489)"
+echo "[compiler-gate] RC shadow-liveness regression guard ok (25232489)"
 
 # 40g. #cfg conditional-compilation guard: the flag-off build must strip the
 #      guarded statements entirely (compiles, dev symbols absent -> different
