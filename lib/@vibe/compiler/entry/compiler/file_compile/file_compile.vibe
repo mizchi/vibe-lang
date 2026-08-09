@@ -564,6 +564,25 @@ export fn compile_file_fs_mode_rc_heap_marked(entry_path: String, entry_name: St
   bytes
 }
 
+/// #1553 observation-only bump counterpart of
+/// compile_file_fs_mode_rc_heap_marked. It deliberately mirrors the ordinary
+/// compile_file_fs_mode "no-dce" path, including its call boundaries, but is
+/// only selected when VIBE_RC=0 and VIBE_PROFILE_MEMORY_MARKS=1. Production
+/// bump compiles remain Env-free and continue to use compile_file_fs_mode.
+export fn compile_file_fs_mode_bump_heap_marked(entry_path: String, entry_name: String) -> Bytes with Exception + Fs + Env {
+  fs_heap_mark("start")
+  let source_groups = collect_source_groups_fs(entry_path)
+  fs_heap_mark("source_groups")
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  fs_heap_mark("prepared_db")
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  fs_heap_mark("merged_stmts")
+  let bytes = compile_wasi_module(merged_stmts, entry_name)
+  fs_heap_mark("codegen_bump")
+  bytes
+}
+
 /// #715/#768 debug variant (VIBE_RC=shadow): same load/merge as
 /// compile_file_fs_mode_rc but with shadow-liveness double-free traps, so an
 /// import-resolving test build's "moving target" free-list corruption becomes a

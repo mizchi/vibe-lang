@@ -1592,16 +1592,12 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, scrut)
       }
-      let snap = copy_ints(ctx.remaining)
-      // #705: track the MIN remaining over all arms (see EIf). An arm that
-      // consumes an outer binding (e.g. a param re-stored into a ctor) leaves it
-      // at a lower remaining; leaving the LAST arm's (higher) value made the
-      // scope-end drop double-free that binding on the arm that consumed it.
-      let minrem = copy_ints(snap)
-      let mut a = 0
-      while a < Array::length(arms) {
-        let arm = Array::get(arms, a)
-        restore_prefix(ctx.remaining, snap)
+      // A single arm has no alternative control-flow state to merge. Count and
+      // emit it directly so the overwhelmingly common lowered residual match
+      // avoids the branch snapshot arrays. Empty and multi-arm matches retain
+      // the general path below.
+      if Array::length(arms) == 1 {
+        let arm = Array::get(arms, 0)
         let pnames: Array[String] = [
         ]
         pat_names(arm.0, pnames)
@@ -1622,19 +1618,52 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
           pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
           j = j + 1
         }
-        let mut mi = 0
-        while mi < Array::length(snap) {
-          if Array::get(ctx.remaining, mi) < Array::get(minrem, mi) {
-            Array::set(minrem, mi, Array::get(ctx.remaining, mi))
-          } else {
-            ()
+        0
+      } else {
+        let snap = copy_ints(ctx.remaining)
+        // #705: track the MIN remaining over all arms (see EIf). An arm that
+        // consumes an outer binding (e.g. a param re-stored into a ctor) leaves it
+        // at a lower remaining; leaving the LAST arm's (higher) value made the
+        // scope-end drop double-free that binding on the arm that consumed it.
+        let minrem = copy_ints(snap)
+        let mut a = 0
+        while a < Array::length(arms) {
+          let arm = Array::get(arms, a)
+          restore_prefix(ctx.remaining, snap)
+          let pnames: Array[String] = [
+          ]
+          pat_names(arm.0, pnames)
+          let mut s = scope
+          let pids: Array[Int] = [
+          ]
+          let mut k = 0
+          while k < Array::length(pnames) {
+            let nm = Array::get(pnames, k)
+            let pid = pe_declare(ctx, nm)
+            s = Map::set(s, nm, pid)
+            Array::push(pids, pid)
+            k = k + 1
           }
-          mi = mi + 1
+          pc_emit(ctx, s, arm.1)
+          let mut j = 0
+          while j < Array::length(pids) {
+            pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+            j = j + 1
+          }
+          let mut mi = 0
+          while mi < Array::length(snap) {
+            if Array::get(ctx.remaining, mi) < Array::get(minrem, mi) {
+              Array::set(minrem, mi, Array::get(ctx.remaining, mi))
+            } else {
+              ()
+            }
+            mi = mi + 1
+          }
+          a = a + 1
         }
-        a = a + 1
+        restore_prefix(ctx.remaining, minrem)
+        0
       }
-      restore_prefix(ctx.remaining, minrem)
-      0
     },
     EHandle(hbody, arms) => {
       let snap = copy_ints(ctx.remaining)
@@ -1879,15 +1908,11 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         EIdent(sx, _) => pc_count_borrow(ctx, scope, sx),
         _ => pc_count(ctx, scope, scrut)
       }
-      let snap_u = copy_ints(ctx.uses)
-      let snap_b = copy_ints(ctx.borrows)
-      let max_u = zeros(Array::length(snap_u))
-      let max_b = zeros(Array::length(snap_b))
-      let mut a = 0
-      while a < Array::length(arms) {
-        let arm = Array::get(arms, a)
-        restore_prefix(ctx.uses, snap_u)
-        restore_prefix(ctx.borrows, snap_b)
+      // A single arm has no alternative counts to merge. Avoid the four
+      // branch snapshot arrays while preserving the general empty/multi-arm
+      // merge path below.
+      if Array::length(arms) == 1 {
+        let arm = Array::get(arms, 0)
         let pnames: Array[String] = [
         ]
         pat_names(arm.0, pnames)
@@ -1900,29 +1925,53 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
           k = k + 1
         }
         pc_count(ctx, s, arm.1)
-        let mut id = 0
-        while id < Array::length(snap_u) {
-          let du = Array::get(ctx.uses, id) - Array::get(snap_u, id)
-          if du > Array::get(max_u, id) {
-            Array::set(max_u, id, du)
+        0
+      } else {
+        let snap_u = copy_ints(ctx.uses)
+        let snap_b = copy_ints(ctx.borrows)
+        let max_u = zeros(Array::length(snap_u))
+        let max_b = zeros(Array::length(snap_b))
+        let mut a = 0
+        while a < Array::length(arms) {
+          let arm = Array::get(arms, a)
+          restore_prefix(ctx.uses, snap_u)
+          restore_prefix(ctx.borrows, snap_b)
+          let pnames: Array[String] = [
+          ]
+          pat_names(arm.0, pnames)
+          let mut s = scope
+          let mut k = 0
+          while k < Array::length(pnames) {
+            let nm = Array::get(pnames, k)
+            let pid = pc_declare(ctx, nm, false)
+            s = Map::set(s, nm, pid)
+            k = k + 1
           }
-          let db = Array::get(ctx.borrows, id) - Array::get(snap_b, id)
-          if db > Array::get(max_b, id) {
-            Array::set(max_b, id, db)
+          pc_count(ctx, s, arm.1)
+          let mut id = 0
+          while id < Array::length(snap_u) {
+            let du = Array::get(ctx.uses, id) - Array::get(snap_u, id)
+            if du > Array::get(max_u, id) {
+              Array::set(max_u, id, du)
+            }
+            let db = Array::get(ctx.borrows, id) - Array::get(snap_b, id)
+            if db > Array::get(max_b, id) {
+              Array::set(max_b, id, db)
+            }
+            id = id + 1
           }
-          id = id + 1
+          a = a + 1
         }
-        a = a + 1
+        restore_prefix(ctx.uses, snap_u)
+        restore_prefix(ctx.borrows, snap_b)
+        let mut id2 = 0
+        while id2 < Array::length(snap_u) {
+          Array::set(ctx.uses, id2, Array::get(snap_u, id2) + Array::get(max_u, id2))
+          Array::set(ctx.borrows, id2, Array::get(snap_b, id2) + Array::get(max_b, id2))
+          id2 = id2 + 1
+        }
+        0
       }
-      restore_prefix(ctx.uses, snap_u)
-      restore_prefix(ctx.borrows, snap_b)
-      let mut id2 = 0
-      while id2 < Array::length(snap_u) {
-        Array::set(ctx.uses, id2, Array::get(snap_u, id2) + Array::get(max_u, id2))
-        Array::set(ctx.borrows, id2, Array::get(snap_b, id2) + Array::get(max_b, id2))
-        id2 = id2 + 1
-      }
-      0
     },
     EHandle(hbody, arms) => {
       let snap_u = copy_ints(ctx.uses)

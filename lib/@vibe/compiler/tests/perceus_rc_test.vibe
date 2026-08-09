@@ -250,6 +250,88 @@ test "perceus: match arm pattern binding is dropped" {
   assert(count_drops(plan, "p") == 1)
 }
 
+/// #1553: the single-arm path skips branch snapshots but must retain the same
+/// pattern scope-end drop as the general EMatch path.
+test "perceus: single-arm match pattern binding is dropped" {
+  // match s { Some(p) => p.0 }
+  let arm: (Pat, Expr) = (PCtor("Some", [
+    PBind("p")
+  ]), EDot(EIdent("p", -1), "0", -1, -1))
+  let m = EMatch(EIdent("s", -1), [
+    arm
+  ])
+  let plan = build_perceus_plan(m)
+  assert(count_drops(plan, "p") == 1)
+}
+
+/// #1553: a one-arm body can consume an outer heap binding. Unlike a branch
+/// merge, the sole path transfers that binding's original reference, so its
+/// enclosing scope must not emit a second drop.
+test "perceus: single-arm match consumes outer heap binding" {
+  // let t = (1, 2); match 0 { _ => t }
+  let m = EMatch(EInt(0), [
+    (PWild, EIdent("t", -1))
+  ])
+  let body = ELet("t", ETuple([
+    EInt(1),
+    EInt(2)
+  ]), m, -1)
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "t") == 0)
+  assert(count_dups(plan, "t") == 0)
+}
+
+/// #1553: borrowing an outer heap binding before an owning tuple slot retains
+/// the original for the scope, so the slot takes one dup and that original is
+/// released exactly once at scope end.
+test "perceus: single-arm match borrows then owns outer heap binding" {
+  // let t = (1, 2); match 0 { _ => (t.0, t) }
+  let m = EMatch(EInt(0), [
+    (PWild, ETuple([
+      EDot(EIdent("t", -1), "0", -1, -1),
+      EIdent("t", -1)
+    ]))
+  ])
+  let body = ELet("t", ETuple([
+    EInt(1),
+    EInt(2)
+  ]), m, -1)
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "t") == 1)
+  assert(count_dups(plan, "t") == 1)
+}
+
+/// #1553: nested one-arm matches each create and close their own pattern
+/// scopes while preserving the borrowed outer payload binding.
+test "perceus: nested single-arm matches preserve pattern drops" {
+  // match s { p => match p { q => q.0 } }
+  let inner = EMatch(EIdent("p", -1), [
+    (PBind("q"), EDot(EIdent("q", -1), "0", -1, -1))
+  ])
+  let outer = EMatch(EIdent("s", -1), [
+    (PBind("p"), inner)
+  ])
+  let plan = build_perceus_plan(outer)
+  assert(count_drops(plan, "p") == 1)
+  assert(count_drops(plan, "q") == 1)
+}
+
+/// #1553: zero-arm matches stay on the general path. Their scrutinee remains a
+/// borrow, so an enclosing heap binding retains its ordinary scope-end drop.
+test "perceus: zero-arm match preserves outer heap drop" {
+  // let t = (1, 2); match t { }
+  let empty_arms: Array[(Pat, Expr)] = [
+  ]
+  let m = EMatch(EIdent("t", -1), empty_arms)
+  let body = ELet("t", ETuple([
+    EInt(1),
+    EInt(2)
+  ]), m, -1)
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "t") == 1)
+  assert(count_dups(plan, "t") == 0)
+}
+
 /// A heap binding consumed only as a match scrutinee is borrowed (matching reads
 /// the tag/fields but frees nothing), so it keeps its owned reference and is
 /// dropped once at its scope end — this is what reclaims an enum/record/tuple

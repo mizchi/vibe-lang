@@ -67,11 +67,43 @@ if s2 != s3:
 print(f"[compiler-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
+stage2_wasm="${latest_gen}stage2.wasm"
+# #1553: a real compiled-CLI smoke. The protocol test above validates the
+# measurement wrapper with a fake runner; this proves the freshly self-hosted
+# CLI actually selects both marked helpers and emits their required codegen
+# boundaries without changing the normal production lane.
+echo "[compiler-gate] 3a/3 FS heap mark lane smoke"
+heapmarkdir="_build/_gate_fs_heap_marks"
+rm -rf "$heapmarkdir"; mkdir -p "$heapmarkdir"
+printf 'export let _start: () -> Int = () -> { 42 }\n' > "$heapmarkdir/input.vibe"
+for heap_backend in rc bump; do
+  heap_rc=1
+  heap_boundary=codegen_rc
+  if [ "$heap_backend" = bump ]; then
+    heap_rc=0
+    heap_boundary=codegen_bump
+  fi
+  heap_log="$heapmarkdir/$heap_backend.log"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    VIBE_RC="$heap_rc" VIBE_PROFILE_MEMORY_MARKS=1 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$heapmarkdir/input.vibe" "$heapmarkdir/$heap_backend.wasm" _start \
+    >/dev/null 2>"$heap_log"
+  if [ ! -s "$heapmarkdir/$heap_backend.wasm" ] \
+    || ! grep -q "name=start" "$heap_log" \
+    || ! grep -q "name=$heap_boundary" "$heap_log"; then
+    echo "[compiler-gate] FAIL: compiled CLI did not emit selected $heap_backend heap marks" >&2
+    cat "$heap_log" >&2 || true
+    exit 1
+  fi
+done
+rm -rf "$heapmarkdir"
+echo "[compiler-gate] FS heap mark lanes ok (rc + bump)"
+
 # 3a. Bounded artifact-input identity observation: use this just-built stage2
 # against an isolated cache. The trace wrapper is VIBE_RC=0-only and verifies a
 # cold miss/warm hit, dependency invalidation, and stale-sidecar fail-closed
 # behavior without changing any production cache key or format.
-stage2_wasm="${latest_gen}stage2.wasm"
 echo "[compiler-gate] 3a/3 artifact-input trace oracle"
 VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 
@@ -4099,12 +4131,12 @@ if [ ! -s "$shdir/shadow.wasm" ]; then
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "232489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 232489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+if [ "$sh_out" != "25232489" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25232489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[compiler-gate] RC shadow-liveness regression guard ok (232489)"
+echo "[compiler-gate] RC shadow-liveness regression guard ok (25232489)"
 
 # 40g. #cfg conditional-compilation guard: the flag-off build must strip the
 #      guarded statements entirely (compiles, dev symbols absent -> different
