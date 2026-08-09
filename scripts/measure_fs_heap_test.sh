@@ -20,6 +20,9 @@ cat > "$RUNNER" <<'EOF'
 set -euo pipefail
 [ "$1" = "--invoke" ] && [ "$2" = "cli_main" ] || exit 2
 out="$5"
+sleep_pid=""
+trap '[ -z "$sleep_pid" ] || kill "$sleep_pid" 2>/dev/null || true; [ -z "$sleep_pid" ] || wait "$sleep_pid" 2>/dev/null || true; printf "terminated\\n" >> "$FAKE_RUN_LOG"; exit 143' TERM
+printf 'runner_pid=%s\n' "$$" >> "$FAKE_RUN_LOG"
 printf 'marks=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta=%s testmeta=%s rc_heap_start=%s wasm_names=%s ingestion_stamp=%s import_abi=%s coverage=%s\n' \
   "${VIBE_PROFILE_MEMORY_MARKS:-unset}" \
   "${VIBE_BUILD_CACHE_DIR:-unset}" \
@@ -34,8 +37,6 @@ printf 'marks=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta
   "${VIBE_IMPORT_ABI:-unset}" \
   "${VIBE_COVERAGE:-unset}" >> "$FAKE_RUN_LOG"
 mkdir -p "$(dirname "$out")"
-sleep_pid=""
-trap '[ -z "$sleep_pid" ] || kill "$sleep_pid" 2>/dev/null || true; [ -z "$sleep_pid" ] || wait "$sleep_pid" 2>/dev/null || true; printf "terminated\\n" >> "$FAKE_RUN_LOG"; exit 143' TERM
 if [ "${FAKE_SLEEP:-0}" != 0 ]; then
   sleep "$FAKE_SLEEP" &
   sleep_pid=$!
@@ -156,7 +157,11 @@ if [ "$status" -ne 143 ]; then
   echo "measure_fs_heap test: TERM exit was $status, expected 143" >&2
   exit 1
 fi
-grep -q '^terminated$' "$RUN_LOG"
+runner_pid="$(sed -n 's/^runner_pid=//p' "$RUN_LOG" | tail -1)"
+if [ -z "$runner_pid" ] || kill -0 "$runner_pid" 2>/dev/null; then
+  echo "measure_fs_heap test: interrupted runner is still alive" >&2
+  exit 1
+fi
 if find "$TMP_DIR/signal" -mindepth 1 -maxdepth 1 -type d -name 'run.*' | grep -q .; then
   echo "measure_fs_heap test: interrupted run directory was not cleaned" >&2
   exit 1
