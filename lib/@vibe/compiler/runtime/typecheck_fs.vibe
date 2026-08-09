@@ -27,12 +27,14 @@ import @vibe/compiler/core {
   dir_of_path,
   env_bind,
   env_flat_bindings,
+  env_lookup,
   env_lookup_flat,
   normalize_path,
   resolution_env_seed,
   resolve_import_path,
   resolve_import_path_candidates,
-  str_lt
+  str_lt,
+  trait_defined
 }
 
 // #946(4): inline-wasm codegen validation (lane/align/etc. errors) runs as
@@ -149,14 +151,14 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
 /// coincidence) but "unknown name: Json::string" for the other 8 of the
 /// 11 documented accessors. The bundle-merge lane resolves these by name
 /// against the merged unit and never had the gap; only this FS lane did.
-fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, Type)], enum_name: String) -> TypeEnv {
+fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)]) -> TypeEnv {
   let qual_prefix = String::concat(enum_name, "::")
   let mut out = acc
   let mut i = 0
   while i < Array::length(dep_bindings) {
     let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
     if candidate_name != enum_name && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, enum_name) || String::starts_with(candidate_name, qual_prefix)) {
-      out = env_bind(out, candidate_name, candidate_ty)
+      out = env_bind(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings))
     }
     i = i + 1
   }
@@ -192,6 +194,350 @@ fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, T
 /// therefore reported here, with the same message as a name that never
 /// existed: from the importer's side those are the same fact, "the
 /// dependency does not export this name".
+
+//# Trait-aware dependency projection (#1549)
+
+/// Trait declaration/implementation authority is not part of
+/// `env_flat_bindings`, so importing a bounded value used to drop the exact
+/// declarations needed to check that value at its consumer. This projection is
+/// intentionally limited to TypeEnv's trait nodes: typedef and effect
+/// declarations have different transport contracts.
+fn trait_projection_mapping(mappings: Array[(String, String)], canonical: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(mappings) && found == None {
+    let (source_name, local_name) = Array::get(mappings, i)
+    if source_name == canonical {
+      found = Some(local_name)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn trait_projection_local_owner(mappings: Array[(String, String)], local_name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(mappings) && found == None {
+    let (source_name, candidate_local) = Array::get(mappings, i)
+    if candidate_local == local_name {
+      found = Some(source_name)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn trait_projection_add_mapping(mappings: Array[(String, String)], canonical: String, local_name: String) -> Unit {
+  if trait_projection_mapping(mappings, canonical) == None {
+    Array::push(mappings, (canonical, local_name))
+  } else {
+    ()
+  }
+}
+
+fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
+  match env {
+    EnvEmpty => array_empty(),
+    EnvBind(_, _, rest) => trait_projection_supers(rest, name),
+    EnvTraitDef(candidate, supers, _, _, rest, _, _) => if candidate == name {
+      supers
+    } else {
+      trait_projection_supers(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => trait_projection_supers(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_projection_supers(rest, name),
+    EnvFlat(_) => array_empty(),
+    EnvCached(_, _, rest) => trait_projection_supers(rest, name)
+  }
+}
+
+fn trait_projection_collect_type_bounds(ty: Type, mappings: Array[(String, String)], dep_env: TypeEnv) -> Unit {
+  match ty {
+    CtForAll(_, bounds, body) => {
+      let mut i = 0
+      while i < Array::length(bounds) {
+        let (_, labels) = Array::get(bounds, i)
+        let mut j = 0
+        while j < Array::length(labels) {
+          let label = Array::get(labels, j)
+          if trait_defined(dep_env, label) {
+            trait_projection_add_mapping(mappings, label, label)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        i = i + 1
+      }
+      trait_projection_collect_type_bounds(body, mappings, dep_env)
+    },
+    CtFn(args, ret, _) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        trait_projection_collect_type_bounds(Array::get(args, i), mappings, dep_env)
+        i = i + 1
+      }
+      trait_projection_collect_type_bounds(ret, mappings, dep_env)
+    },
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        trait_projection_collect_type_bounds(Array::get(items, i), mappings, dep_env)
+        i = i + 1
+      }
+    },
+    CtArray(item) => trait_projection_collect_type_bounds(item, mappings, dep_env),
+    CtOption(item) => trait_projection_collect_type_bounds(item, mappings, dep_env),
+    CtNamed(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        trait_projection_collect_type_bounds(Array::get(args, i), mappings, dep_env)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Rewrite every reachable Type that crosses the selected import boundary.
+/// In particular, a value's `CtForAll` labels must agree with the local alias
+/// of the projected trait authority; keeping the dependency spelling makes an
+/// otherwise valid alias fail closed as an unknown trait at use sites.
+fn trait_projection_map_type_bounds(ty: Type, mappings: Array[(String, String)]) -> Type {
+  match ty {
+    CtForAll(vars, bounds, body) => CtForAll(vars, trait_projection_map_bound_rows(bounds, mappings), trait_projection_map_type_bounds(body, mappings)),
+    CtFn(args, ret, effects) => {
+      let mapped_args = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(mapped_args, trait_projection_map_type_bounds(Array::get(args, i), mappings))
+        i = i + 1
+      }
+      CtFn(mapped_args, trait_projection_map_type_bounds(ret, mappings), effects)
+    },
+    CtTuple(items) => {
+      let mapped_items = array_empty()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(mapped_items, trait_projection_map_type_bounds(Array::get(items, i), mappings))
+        i = i + 1
+      }
+      CtTuple(mapped_items)
+    },
+    CtArray(item) => CtArray(trait_projection_map_type_bounds(item, mappings)),
+    CtOption(item) => CtOption(trait_projection_map_type_bounds(item, mappings)),
+    CtNamed(name, args) => {
+      let mapped_args = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(mapped_args, trait_projection_map_type_bounds(Array::get(args, i), mappings))
+        i = i + 1
+      }
+      CtNamed(name, mapped_args)
+    },
+    _ => ty
+  }
+}
+
+/// Explicit trait selections win regardless of their position among selected
+/// values. A second pass then imports only traits required by selected value
+/// schemes. Conflicting aliases fail closed instead of making import order an
+/// unobservable authority choice.
+fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(String, Type)], names: Array[(String, Option[String])], unresolved: Array[String]) -> Array[(String, String)] {
+  let mappings = array_empty()
+  let mut i = 0
+  // Pass one: reserve explicit trait aliases before inspecting value bounds.
+  while i < Array::length(names) {
+    let (name, alias) = Array::get(names, i)
+    if trait_defined(dep_env, name) {
+      let local_name = match alias {
+        Some(value) => value,
+        None => name
+      }
+      match (trait_projection_mapping(mappings, name), trait_projection_local_owner(mappings, local_name)) {
+        (Some(existing), _) => if existing != local_name {
+          Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import '", name), "': aliases '"), String::concat(existing, String::concat("' and '", String::concat(local_name, "'")))))
+        } else {
+          ()
+        },
+        (None, Some(owner)) => if owner != name {
+          Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import alias '", local_name), "': used for '"), String::concat(owner, String::concat("' and '", String::concat(name, "'")))))
+        } else {
+          trait_projection_add_mapping(mappings, name, local_name)
+        },
+        (None, None) => trait_projection_add_mapping(mappings, name, local_name)
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Pass two: values import only the trait labels their reachable Type schemes
+  // require. Explicit aliases above therefore always retain their spelling.
+  i = 0
+  while i < Array::length(names) {
+    let (name, _) = Array::get(names, i)
+    if !trait_defined(dep_env, name) {
+      match env_lookup_flat(dep_bindings, name) {
+        Some(ty) => trait_projection_collect_type_bounds(ty, mappings, dep_env),
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Selected traits bring their supertrait closure. Unselected supers retain
+  // their canonical source spelling because they have no explicit local alias.
+  let mut cursor = 0
+  while cursor < Array::length(mappings) {
+    let (canonical, _) = Array::get(mappings, cursor)
+    let supers = trait_projection_supers(dep_env, canonical)
+    let mut j = 0
+    while j < Array::length(supers) {
+      let super_name = Array::get(supers, j)
+      if trait_defined(dep_env, super_name) {
+        trait_projection_add_mapping(mappings, super_name, super_name)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    cursor = cursor + 1
+  }
+  mappings
+}
+
+fn trait_projection_map_bound_rows(bounds: Array[(Int, Array[String])], mappings: Array[(String, String)]) -> Array[(Int, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(bounds) {
+    let (param, labels) = Array::get(bounds, i)
+    let mapped_labels = array_empty()
+    let mut j = 0
+    while j < Array::length(labels) {
+      let label = Array::get(labels, j)
+      Array::push(mapped_labels, match trait_projection_mapping(mappings, label) {
+        Some(mapped) => mapped,
+        None => label
+      })
+      j = j + 1
+    }
+    Array::push(out, (param, mapped_labels))
+    i = i + 1
+  }
+  out
+}
+
+fn trait_projection_map_method_gens(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], mappings: Array[(String, String)]) -> Array[(String, Array[String], Array[(String, Array[String])])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(method_gens) {
+    let (name, params, bounds) = Array::get(method_gens, i)
+    Array::push(out, (name, params, trait_projection_map_method_bound_rows(bounds, mappings)))
+    i = i + 1
+  }
+  out
+}
+
+fn trait_projection_map_method_bound_rows(bounds: Array[(String, Array[String])], mappings: Array[(String, String)]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(bounds) {
+    let (param, labels) = Array::get(bounds, i)
+    let mapped_labels = array_empty()
+    let mut j = 0
+    while j < Array::length(labels) {
+      let label = Array::get(labels, j)
+      Array::push(mapped_labels, match trait_projection_mapping(mappings, label) {
+        Some(mapped) => mapped,
+        None => label
+      })
+      j = j + 1
+    }
+    Array::push(out, (param, mapped_labels))
+    i = i + 1
+  }
+  out
+}
+
+fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, String)], tail: TypeEnv) -> TypeEnv {
+  // Preserve every generic implementation in source order. Its parameters and
+  // bounds are semantic payload, so deduplicating by erased target spelling
+  // could silently change obligation satisfaction.
+  let retained = array_empty()
+  let seen_defs = array_empty()
+  let mut cur = dep_env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
+        match trait_projection_mapping(mappings, name) {
+          Some(local_name) => if !contains_str(seen_defs, local_name) {
+            let local_supers = array_empty()
+            let mut j = 0
+            while j < Array::length(supers) {
+              let super_name = Array::get(supers, j)
+              Array::push(local_supers, match trait_projection_mapping(mappings, super_name) {
+                Some(mapped) => mapped,
+                None => super_name
+              })
+              j = j + 1
+            }
+            Array::push(retained, EnvTraitDef(local_name, local_supers, is_auto, methods, EnvEmpty, params, trait_projection_map_method_gens(method_gens, mappings)))
+            Array::push(seen_defs, local_name)
+          } else {
+            ()
+          },
+          None => ()
+        }
+        cur = rest
+      },
+      EnvTraitImpl(name, target, rest) => {
+        match trait_projection_mapping(mappings, name) {
+          Some(local_name) => Array::push(retained, EnvTraitImpl(local_name, trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
+          None => ()
+        }
+        cur = rest
+      },
+      EnvTraitImplGen(name, params, bounds, target, rest) => {
+        match trait_projection_mapping(mappings, name) {
+          Some(local_name) => Array::push(retained, EnvTraitImplGen(local_name, params, trait_projection_map_method_bound_rows(bounds, mappings), trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
+          None => ()
+        }
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  let mut out = tail
+  let mut i = Array::length(retained) - 1
+  while i >= 0 {
+    out = match Array::get(retained, i) {
+      EnvTraitDef(name, supers, is_auto, methods, _, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, out, params, method_gens),
+      EnvTraitImpl(name, target, _) => EnvTraitImpl(name, target, out),
+      EnvTraitImplGen(name, params, bounds, target, _) => EnvTraitImplGen(name, params, bounds, target, out),
+      _ => out
+    }
+    i = i - 1
+  }
+  out
+}
+
 fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
@@ -199,6 +545,9 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     None => EnvEmpty
   }
   let dep_bindings = env_flat_bindings(dep_env)
+  // Explicit trait aliases must be known before values are bound: a selected
+  // value can mention the trait before its `trait X as Local` row appears.
+  let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, unresolved)
   // Whether the dependency was CHECKED, not whether it happens to bind any
   // values. A module that exports only types or only traits is checked and
   // cached, and its flat value environment is legitimately empty -- deriving
@@ -220,7 +569,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         None => name
       }
       let ty = match env_lookup_flat(dep_bindings, name) {
-        Some(t) => t,
+        Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
         None => {
           if dep_known && !starts_with_upper(name) {
             Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
@@ -232,9 +581,9 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       }
       let with_name = env_bind(nacc, bound_name, ty)
       let with_companions = match ty {
-        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_bindings, enum_name),
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_bindings, enum_name, trait_mappings),
         _ => if starts_with_upper(name) {
-          bind_enum_constructor_companions(with_name, dep_bindings, name)
+          bind_enum_constructor_companions(with_name, dep_bindings, name, trait_mappings)
         } else {
           with_name
         }
@@ -242,7 +591,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       bind_names(j + 1, with_companions)
     }
   }
-  bind_names(0, acc)
+  bind_names(0, prepend_dependency_trait_nodes(dep_env, trait_mappings, acc))
 }
 
 fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {
@@ -1097,6 +1446,83 @@ fn interface_public_value_names(stmts: Array[Stmt]) -> Array[String] {
   interface_sorted_unique(names)
 }
 
+/// Trait and impl authority is published only for explicitly exported traits,
+/// plus traits required by exported value schemes and their supertrait closure.
+/// This mirrors selected import projection without widening the interface to
+/// typedef or effect transport.
+fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Array[String] {
+  let mappings = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(true, name, _, _, _, _) => trait_projection_add_mapping(mappings, name, name),
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let name = Array::get(items, j)
+          if trait_defined(checked_env, name) {
+            trait_projection_add_mapping(mappings, name, name)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SReExport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (source_name, alias) = Array::get(items, j)
+          let local_name = match alias {
+            Some(value) => value,
+            None => source_name
+          }
+          if trait_defined(checked_env, local_name) {
+            trait_projection_add_mapping(mappings, local_name, local_name)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let values = interface_public_value_names(stmts)
+  i = 0
+  while i < Array::length(values) {
+    match env_lookup(checked_env, Array::get(values, i)) {
+      Some(ty) => trait_projection_collect_type_bounds(ty, mappings, checked_env),
+      None => ()
+    }
+    i = i + 1
+  }
+  let mut cursor = 0
+  while cursor < Array::length(mappings) {
+    let (name, _) = Array::get(mappings, cursor)
+    let supers = trait_projection_supers(checked_env, name)
+    let mut j = 0
+    while j < Array::length(supers) {
+      let super_name = Array::get(supers, j)
+      if trait_defined(checked_env, super_name) {
+        trait_projection_add_mapping(mappings, super_name, super_name)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    cursor = cursor + 1
+  }
+  let names = array_empty()
+  i = 0
+  while i < Array::length(mappings) {
+    let (name, _) = Array::get(mappings, i)
+    Array::push(names, name)
+    i = i + 1
+  }
+  interface_sorted_unique(names)
+}
+
 /// #1533: the environment a module PUBLISHES to its importers is its export
 /// surface, not its full checked environment. The checked environment binds
 /// every top-level `let`/`fn` -- and, via the import env at its base, every
@@ -1116,31 +1542,50 @@ fn interface_public_value_names(stmts: Array[Stmt]) -> Array[String] {
 /// of #1521 stays open rather than risk rejecting valid code, and the
 /// companion-binding scan over dep_bindings keeps working unchanged.
 ///
-/// Trait nodes ride through untouched; EnvCached wrappers are rebuilt from
-/// the restricted chain (their arrays are acceleration state, same rule as
-/// the serializer's). Persistent-cache staleness is not a concern: the cache
-/// version tag folds in codegen_fingerprint(), so envs published before this
-/// restriction live under different keys.
-fn restrict_env_to_export_surface(surface: Array[String], env: TypeEnv) -> TypeEnv {
+/// Trait definitions and implementations are published only for the selected
+/// trait surface. EnvCached wrappers are rebuilt from the restricted chain
+/// (their arrays are acceleration state, same rule as the serializer's).
+fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], env: TypeEnv) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, ty, rest) => {
-      let restricted = restrict_env_to_export_surface(surface, rest)
-      if starts_with_upper(name) || bsearch_leftmost(surface, name) >= 0 {
+      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, rest)
+      if starts_with_upper(name) || bsearch_leftmost(value_surface, name) >= 0 {
         EnvBind(name, ty, restricted)
       } else {
         restricted
       }
     },
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, restrict_env_to_export_surface(surface, rest), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, restrict_env_to_export_surface(surface, rest)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, restrict_env_to_export_surface(surface, rest)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
+      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, rest)
+      if bsearch_leftmost(trait_surface, name) >= 0 {
+        EnvTraitDef(name, supers, is_auto, methods, restricted, params, method_gens)
+      } else {
+        restricted
+      }
+    },
+    EnvTraitImpl(name, target, rest) => {
+      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, rest)
+      if bsearch_leftmost(trait_surface, name) >= 0 {
+        EnvTraitImpl(name, target, restricted)
+      } else {
+        restricted
+      }
+    },
+    EnvTraitImplGen(name, params, bounds, target, rest) => {
+      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, rest)
+      if bsearch_leftmost(trait_surface, name) >= 0 {
+        EnvTraitImplGen(name, params, bounds, target, restricted)
+      } else {
+        restricted
+      }
+    },
     EnvFlat(bindings) => {
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(bindings) {
         let (name, ty) = Array::get(bindings, i)
-        if starts_with_upper(name) || bsearch_leftmost(surface, name) >= 0 {
+        if starts_with_upper(name) || bsearch_leftmost(value_surface, name) >= 0 {
           Array::push(kept, (name, ty))
         } else {
           ()
@@ -1158,7 +1603,7 @@ fn restrict_env_to_export_surface(surface: Array[String], env: TypeEnv) -> TypeE
     // module lane resolves an import over a same-named local (the merge
     // lane shadows correctly), while an `as` alias broke the
     // collect_merged_stmts lane instead. Both are their own bugs.
-    EnvCached(_, _, rest) => restrict_env_to_export_surface(surface, rest)
+    EnvCached(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, rest)
   }
 }
 
@@ -2260,7 +2705,9 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
       // consumer of `Checked`'s env (env cache, persistent store, worker
       // transport, TDRE4, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
-      let checked_env = restrict_env_to_export_surface(interface_public_value_names(stmts), full_checked_env)
+      let value_surface = interface_public_value_names(stmts)
+      let trait_surface = interface_public_trait_names(stmts, full_checked_env)
+      let checked_env = restrict_env_to_export_surface(value_surface, trait_surface, full_checked_env)
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {
