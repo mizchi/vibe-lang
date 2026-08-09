@@ -2270,42 +2270,10 @@ fn item_key_text(item: Array[LTok]) -> String {
   key
 }
 
-/// Work around #1184 (String `<`/`>` degrade to a length-based comparison,
-/// not lexicographic, once an operand originates from Array::get): a
-/// char-by-char comparator confirmed correct against that issue's repro.
-/// Plain `<` is fine everywhere else in this file (only ever used on fresh
-/// literals/interpolated text); this is the one place that needs to compare
-/// two Array::get-sourced values.
+/// Typed helper for Array::get-sourced values. Keeping the operands behind
+/// String parameters preserves the #1184 relational-lowering boundary.
 fn str_lt(a: String, b: String) -> Bool {
-  let la = String::length(a)
-  let lb = String::length(b)
-  let n = if la < lb {
-    la
-  } else {
-    lb
-  }
-  let mut i = 0
-  let mut result = -1
-  while result < 0 && i < n {
-    let ca = String::char_code_at(a, i)
-    let cb = String::char_code_at(b, i)
-    if ca < cb {
-      result = 1
-    }
-    else if ca > cb {
-      result = 2
-    }
-    else {
-      i = i + 1
-    }
-  }
-  if result == 1 {
-    true
-  } else if result == 2 {
-    false
-  } else {
-    la < lb
-  }
+  a < b
 }
 
 /// Stable in-place insertion sort (import lists are small; O(n^2) is fine).
@@ -2826,9 +2794,8 @@ fn vp_header_end(src: String) -> Int {
   }
 }
 
-/// Sorts the parallel (name, version) deps arrays by package name. Uses
-/// str_lt, not `<`: plain String `<` is length-first, which would order
-/// `@a/zzz` before `@a/bbbb` (see str_lt's own note).
+/// Sorts the parallel (name, version) deps arrays by package name. Uses the
+/// typed str_lt helper because the operands originate from Array::get (#1184).
 fn vp_sort_deps(names: Array[String], vers: Array[String]) -> Unit {
   let n = Array::length(names)
   let mut i = 1
