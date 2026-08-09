@@ -4,27 +4,12 @@ import @vibe/compiler/core {
   Type
 }
 
-import @vibe/core {
-  array_empty
-}
-
 //# Functions
 
-fn system_no_params() -> Array[Type] {
-  array_empty()
-}
-
-/// NOTE: these use `if name == ...` chains, NOT `match name { "lit" => }`.
-/// String-literal patterns in `match` do not match at runtime in the compiled
-/// output (codegen gap), so the original `match`-based lookups silently
-/// returned None for every entry — that is why Stdin/Stdout/Env/sh builtins (and
-/// thus io.vibe/markdown/rlm) failed to resolve. `==` comparison works.
+/// Fallback-only process and path helpers. Checker-visible capability builtins
+/// (sh, Stdin, Stdout, Env, Profiler, sleep) live in the registry (#1593).
 fn lookup_io_a(name: String) -> Option[Type] {
-  if name == "sh" {
-    Some(CtFn([
-      CtString
-    ], CtString, Some("Process")))
-  } else if name == "sh_lines" {
+  if name == "sh_lines" {
     Some(CtFn([
       CtString
     ], CtArray(CtString), Some("Process")))
@@ -33,11 +18,6 @@ fn lookup_io_a(name: String) -> Option[Type] {
       CtString
     ], CtUnknown, None))
   } else if name == "Path::ref" {
-    // #762: a trusted path LITERAL reference. Resolved to an absolute path
-    // against the process CWD by the `resolve_path` host import (compile_call
-    // lowering), but typed PURE — a `Path::ref` in source is a static reference,
-    // so from_literal need not carry `Env`. Path::resolve is the effect-tracked
-    // dynamic counterpart (same host op, `with Env`).
     Some(CtFn([
       CtString
     ], CtString, None))
@@ -53,64 +33,6 @@ fn lookup_io_a(name: String) -> Option[Type] {
     Some(CtFn([
       CtString
     ], CtString, None))
-  } else if name == "Stdin::read_char" {
-    Some(CtFn(system_no_params(), CtInt, Some("Stdin")))
-  } else if name == "Stdin::read_stream" {
-    Some(CtFn([
-      CtInt
-    ], CtString, Some("Stdin")))
-  } else {
-    None
-  }
-}
-
-fn lookup_io_b(name: String) -> Option[Type] {
-  if name == "Stdout::write_char" {
-    Some(CtFn([
-      CtInt
-    ], CtUnit, Some("Stdout")))
-  } else if name == "Stdout::write_stream" {
-    Some(CtFn([
-      CtString
-    ], CtUnit, Some("Stdout")))
-  } else if name == "Env::get" {
-    Some(CtFn([
-      CtString
-    ], CtString, Some("Env")))
-  } else if name == "Env::args_len" {
-    Some(CtFn(system_no_params(), CtInt, Some("Env")))
-  } else if name == "Env::args_get" {
-    Some(CtFn([
-      CtInt
-    ], CtString, Some("Env")))
-  } else if name == "Profiler::now_us" {
-    Some(CtFn(system_no_params(), CtInt, Some("Profiler")))
-  } else if name == "sleep" {
-    Some(CtFn([
-      CtInt
-    ], CtUnit, Some("Async")))
-  } else if name == "sleep_blocking" {
-    // #1227: the same host suspend as `sleep`, but WITHOUT the nominal
-    // `Async` row, for callers that must block while holding a row-free
-    // signature: @vibex/concurrent's pump settling sleep debts, and the
-    // ADR-0089 D1 entry-boundary handler doing the same for sequential
-    // code (linked_compile.vibe lc_inject_async_sleep_boundary).
-    //
-    // ADR-0089 D1 (#1218) update to the original #1227 rationale: `sleep`
-    // itself is no longer an opaque nominal-row call in programs that can
-    // handle it -- linked_compile retargets it to a synthesized
-    // `perform Async::Suspend(-ms)` whenever the entry row carries Async
-    // or a `handle ... with Async` exists, and the checker lets such a
-    // handle discharge the row. This builtin remains the row-free BLOCKING
-    // primitive those synthesized/settling sites bottom out in.
-    //
-    // Still NOT a general-purpose blocking sleep: it is only sound where
-    // the caller knows nothing else is runnable (the pump settles only
-    // when every task owes time; the entry boundary runs only when nothing
-    // is parked). `sleep` remains the right spelling everywhere else.
-    Some(CtFn([
-      CtInt
-    ], CtUnit, None))
   } else if name == "Path::resolve" {
     Some(CtFn([
       CtString
@@ -120,9 +42,8 @@ fn lookup_io_b(name: String) -> Option[Type] {
   }
 }
 
-/// Lines / Llm / Rlm builtins (host: src/checker builtin_declared_names +
-/// core_io / json_and_fallback handlers). Added to match host behavior.
-fn lookup_io_c(name: String) -> Option[Type] {
+/// Lines / Llm / Rlm remain fallback-only checker declarations.
+fn lookup_io_b(name: String) -> Option[Type] {
   if name == "Lines::parse" {
     Some(CtFn([
       CtString
@@ -153,9 +74,6 @@ fn lookup_io_c(name: String) -> Option[Type] {
 export fn lookup_io(name: String) -> Option[Type] {
   match lookup_io_a(name) {
     Some(t) => Some(t),
-    None => match lookup_io_b(name) {
-      Some(t) => Some(t),
-      None => lookup_io_c(name)
-    }
+    None => lookup_io_b(name)
   }
 }
