@@ -1,0 +1,41 @@
+// #1536 (a) v4: a suspending if expression in SEQUENCE HEAD position is
+// distributed over its continuation. `once` proves the condition evaluates
+// once; the branch-local `outer` must not capture the tail's outer binding.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let visits = [
+  0
+]
+
+fn once() -> Bool {
+  Array::set(visits, 0, Array::get(visits, 0) + 1)
+  Array::get(visits, 0) == 1
+}
+
+let _start = () -> Int {
+  handle {
+    let outer = 100
+    let mut got = 0
+    if once() {
+      let outer = perform Ask::Get(3)
+      got = outer
+    } else {
+      let outer = perform Ask::Get(99)
+      got = outer
+    }
+    got * 10000 + Array::get(visits, 0) * 1000 + outer
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+_start()
+
+__DATA__
+{
+  "last": "41100"
+}

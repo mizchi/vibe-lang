@@ -6747,6 +6747,15 @@ scps_run_expect "effect_seq_head_block_suspend.vibe" "1105" "seqheadshadow"
 # probe bumps past any occurrence in the floated continuation or the
 # tail. Control-measured: with the probe disabled this prints 1015.
 scps_run_expect "effect_seq_head_reserved_name_collision.vibe" "3011" "seqheadfresh"
+# #1536 (a) v4: suspendable if/match heads distribute the original sequence
+# tail into each selected branch. The runtime pins one evaluation of the
+# condition/scrutinee and capture-safe branch/pattern bindings.
+scps_run_expect "effect_seq_head_if_suspend.vibe" "41100" "seqheadif"
+scps_run_expect "effect_seq_head_match_suspend.vibe" "3200" "seqheadmatch"
+# This continuation distribution deliberately starts AFTER selection; a
+# suspendable if condition or match scrutinee remains an ineligible head.
+scps_check_reject "err_effect_seq_head_if_condition_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadifcond"
+scps_check_reject "err_effect_seq_head_match_scrutinee_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadmatchscrut"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"

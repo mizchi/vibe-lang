@@ -2801,6 +2801,24 @@ rename を外すと捕獲で黙って誤る、その P0 側を pin)、
 実験では 1015 に化ける)。実害側は
 `async_iter_test.vibe` の suspend-class handle 内 terminals テスト。
 
+### 追記43 (2026-08-10): sequence HEAD の EIf / EMatch へ継続を分配する (#1536 (a) v4)
+
+`scps_split_tail` は sequence HEAD が suspending `EIf` なら
+`EIf(c, ESeq(t, b), ESeq(el, b))` へ、suspending `EMatch` なら各 arm body に
+`ESeq(body, b)` を置く形へ分配する。condition / scrutinee は transform の外に
+残るので一回だけ評価され、選ばれなかった branch / arm の tail は実行されない。
+
+match の pattern binder は tail の元の外側参照を捕獲し得るため、arm ごとに
+`__scps_match<site>_<arm>_<name>` を基底とする fresh name へ alpha-rename してから
+分配する。freshness は pattern・arm body・shared tail の全出現を probe する。
+`effect_seq_head_if_suspend.vibe` (want 41100) は condition 一回評価と branch-local
+shadow を、`effect_seq_head_match_suspend.vibe` (want 3200) は scrutinee 一回評価と
+pattern capture を pin する。suspend が condition / scrutinee 自身にある形は選択前の
+継続を要するためこの slice の範囲外で、negative fixture で拒否を固定する。
+
+**残る不適格**: EForIn(array)/ELoop HEAD、代入 RHS 直書きの perform、row 変数
+callee、literal param flow。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
