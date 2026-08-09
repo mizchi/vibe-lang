@@ -17,66 +17,12 @@ import @vibe/core {
 // duplicate keys (results are byte-identical to the linear scan they
 // replace).
 
-/// Lexicographic (char-code) string less-than. Written char-by-char instead of
-/// `a < b`, which costs one out-of-line `__rt_str_char_code_at` call PER BYTE
-/// on one of the compiler's hottest comparisons.
-///
-/// The reason is NOT the one this comment used to give ("the String `<`
-/// desugar, str_lex_diff #746, is newer than the pinned seed"). That is stale:
-/// the seed bump to console-exception-rowvar-2026-08-06 moved the seed past
-/// #746, and the committed seed compiles and correctly runs `a < b` on String
-/// today. Replacing this body with `a < b` was measured to be CORRECT --
-/// 81 pairs in the doubly-indirected call shape sort_perm_by_names actually
-/// uses, 0 disagreements with this loop, on both the seed and stage2.
-///
-/// What blocks it is #1590, and only until the next bootstrap bump. `a < b` on
-/// String desugars to `str_lex_diff(a, b) < 0`, and that builtin was
-/// checker_visible=false in builtin_registry.vibe -- correct only while the
-/// checker runs BEFORE desugar, which it does not in the lane that omits
-/// VIBE_FS_COMPILE=1. bootstrap_merge_flatten_tool pass 3 is exactly that
-/// lane, so the bundle build died with `unknown name: str_lex_diff`. The
-/// registry row is now checker_visible=true and a stage2 built from this tree
-/// compiles the merged module source fine -- but pass 3 runs the PINNED SEED,
-/// which predates the fix and still fails.
-///
-/// (An earlier revision of this comment blamed the merged-source emitter for
-/// printing post-desugar text it could not read back. That was wrong: the
-/// emitted text preserves `(a < b)` verbatim. The failure was always in
-/// compiling it, never in producing it.)
-///
-/// So: after the next seed bump, this body becomes `a < b` and the loop goes
-/// away. Two things to keep when it does. Keep it a FUNCTION with `String`
-/// parameters:
-/// inlining it as `Array::get(xs, i) < Array::get(xs, j)` is #1184, where `<`
-/// on two Array::get results degrades to a LENGTH-FIRST comparison (`"b" <
-/// "ab"` comes out true) and would silently reorder the sort. #1184 is marked
-/// closed but its own repro still prints the wrong answer on today's stage2;
-/// only adding a `: String` annotation rescues it.
+/// Lexicographic String less-than. Keep this typed helper boundary instead of
+/// inlining `Array::get(xs, i) < Array::get(xs, j)`: #1184 showed that an
+/// untyped aggregate-origin operand can miss String relational lowering and
+/// silently use the wrong representation order.
 export fn str_lt(a: String, b: String) -> Bool {
-  let la = String::length(a)
-  let lb = String::length(b)
-  let lim = if la < lb {
-    la
-  } else {
-    lb
-  }
-  let mut i = 0
-  let mut res = la < lb
-  let mut done = false
-  while i < lim && !done {
-    let ca = String::char_code_at(a, i)
-    let cb = String::char_code_at(b, i)
-    if ca < cb {
-      res = true
-      done = true
-    } else if ca > cb {
-      res = false
-      done = true
-    } else {
-      i = i + 1
-    }
-  }
-  res
+  a < b
 }
 
 /// Stable bottom-up merge sort. Returns the permutation `perm` such that
