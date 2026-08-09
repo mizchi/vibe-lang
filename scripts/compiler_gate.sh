@@ -67,11 +67,43 @@ if s2 != s3:
 print(f"[compiler-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
+stage2_wasm="${latest_gen}stage2.wasm"
+# #1553: a real compiled-CLI smoke. The protocol test above validates the
+# measurement wrapper with a fake runner; this proves the freshly self-hosted
+# CLI actually selects both marked helpers and emits their required codegen
+# boundaries without changing the normal production lane.
+echo "[compiler-gate] 3a/3 FS heap mark lane smoke"
+heapmarkdir="_build/_gate_fs_heap_marks"
+rm -rf "$heapmarkdir"; mkdir -p "$heapmarkdir"
+printf 'export let _start: () -> Int = () -> { 42 }\n' > "$heapmarkdir/input.vibe"
+for heap_backend in rc bump; do
+  heap_rc=1
+  heap_boundary=codegen_rc
+  if [ "$heap_backend" = bump ]; then
+    heap_rc=0
+    heap_boundary=codegen_bump
+  fi
+  heap_log="$heapmarkdir/$heap_backend.log"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    VIBE_RC="$heap_rc" VIBE_PROFILE_MEMORY_MARKS=1 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$heapmarkdir/input.vibe" "$heapmarkdir/$heap_backend.wasm" _start \
+    >/dev/null 2>"$heap_log"
+  if [ ! -s "$heapmarkdir/$heap_backend.wasm" ] \
+    || ! grep -q "name=start" "$heap_log" \
+    || ! grep -q "name=$heap_boundary" "$heap_log"; then
+    echo "[compiler-gate] FAIL: compiled CLI did not emit selected $heap_backend heap marks" >&2
+    cat "$heap_log" >&2 || true
+    exit 1
+  fi
+done
+rm -rf "$heapmarkdir"
+echo "[compiler-gate] FS heap mark lanes ok (rc + bump)"
+
 # 3a. Bounded artifact-input identity observation: use this just-built stage2
 # against an isolated cache. The trace wrapper is VIBE_RC=0-only and verifies a
 # cold miss/warm hit, dependency invalidation, and stale-sidecar fail-closed
 # behavior without changing any production cache key or format.
-stage2_wasm="${latest_gen}stage2.wasm"
 echo "[compiler-gate] 3a/3 artifact-input trace oracle"
 VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 

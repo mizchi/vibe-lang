@@ -33,15 +33,23 @@
 #   bash scripts/measure_fs_heap.sh --cold [--backend rc|bump] [--base stage2.wasm] [--gate]
 #   bash scripts/measure_fs_heap.sh --warm [--backend rc|bump] [--base stage2.wasm]
 #   bash scripts/measure_fs_heap.sh --cold --backend rc --verify-parity --base stage2.wasm
+#   bash scripts/measure_fs_heap.sh --cold --compare --base stage2.wasm
 #
 # --backend selects the marked RC (default) or bump codegen twin. --verify-parity
 # performs a second, independently cold unmarked compile in that same lane and
 # fails unless its wasm bytes exactly match the marked compile. It is also
 # opt-in because it doubles the already-expensive full-CLI work.
 #
+# A normal invocation measures exactly one lane and is explicitly unpaired: its
+# output MUST NOT be used as an RC-vs-bump comparison. --compare runs both lanes
+# against one caller-supplied --base, records base and compiler-input hashes, and
+# fails if either changes while the pair is collected. It never implicitly builds
+# a base compiler, so the pair has a stable shared compiler identity.
+#
 # Output is stdout-only and grep-able:
-#   [fs-heap] mode=cold backend=rc boundary=... heap_mib=... pages=... mem_mib=... rss_mib=...
-#   [fs-heap] mode=cold backend=rc peak_heap_mib=... peak_pages=... headroom_mib=... wall_s=...
+#   [fs-heap] comparison=unpaired mode=cold backend=rc boundary=... heap_mib=... pages=... mem_mib=... rss_mib=...
+#   [fs-heap] comparison=unpaired mode=cold backend=rc peak_heap_mib=... peak_pages=... headroom_mib=... wall_s=...
+#   [fs-heap] comparison=attested mode=cold backends=rc,bump base_sha256=... input_sha256=...
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -50,7 +58,10 @@ cd "$PROJECT_ROOT"
 
 MODE=warm
 BACKEND=rc
+BACKEND_EXPLICIT=0
 BASE_COMPILER="${VIBE_MEASURE_BASE_COMPILER:-}"
+BASE_EXPLICIT=0
+COMPARE=0
 VERIFY_PARITY=0
 GATE=0
 MAX_PAGES="${VIBE_FS_HEAP_MAX_PAGES:-}"
@@ -84,7 +95,7 @@ unset VIBE_WASM_PRE_GROW_PAGES VIBE_WASM_HOST_ALLOC_MODE \
   VIBE_FORCE_RUN_INIT
 
 usage() {
-  sed -n '1,45p' "$0" >&2
+  sed -n '1,52p' "$0" >&2
 }
 
 cleanup() {
@@ -122,10 +133,11 @@ while [ $# -gt 0 ]; do
     --warm) MODE=warm; shift ;;
     --backend)
       [ $# -ge 2 ] || { echo "measure_fs_heap: --backend requires rc or bump" >&2; exit 2; }
-      BACKEND="$2"; shift 2 ;;
+      BACKEND="$2"; BACKEND_EXPLICIT=1; shift 2 ;;
     --base)
       [ $# -ge 2 ] || { echo "measure_fs_heap: --base requires a wasm path" >&2; exit 2; }
-      BASE_COMPILER="$2"; shift 2 ;;
+      BASE_COMPILER="$2"; BASE_EXPLICIT=1; shift 2 ;;
+    --compare) COMPARE=1; shift ;;
     --gate) GATE=1; shift ;;
     --verify-parity) VERIFY_PARITY=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -140,6 +152,71 @@ case "$BACKEND" in
     exit 2
     ;;
 esac
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
+# The full CLI entry is influenced by the checked-in compiler and CLI sources,
+# not only main.vibex. Hash the source set before and after a paired collection
+# so its attestation remains truthful if another writer touches the tree.
+compiler_input_hash() {
+  (
+    cd "$PROJECT_ROOT"
+    find lib/@vibe lib/@vibex -type f \
+      \( -name '*.vibe' -o -name '*.vibex' -o -name '*.vpkg' \) -print0 \
+      | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' path; do
+          sha256_file "$path"
+        done
+  ) | sha256_stream
+}
+
+if [ "$COMPARE" = 1 ]; then
+  if [ "$BACKEND_EXPLICIT" = 1 ]; then
+    echo "measure_fs_heap: --compare selects both backends; do not pass --backend" >&2
+    exit 2
+  fi
+  if [ "$BASE_EXPLICIT" != 1 ]; then
+    echo "measure_fs_heap: --compare requires one explicit shared --base; separate runs are unpaired and must not be compared" >&2
+    exit 2
+  fi
+  if [ ! -s "$BASE_COMPILER" ]; then
+    echo "measure_fs_heap: base compiler not found: $BASE_COMPILER" >&2
+    exit 1
+  fi
+  base_hash_before="$(sha256_file "$BASE_COMPILER")"
+  input_hash_before="$(compiler_input_hash)"
+  pair_args=("--$MODE" --base "$BASE_COMPILER")
+  if [ "$GATE" = 1 ]; then pair_args+=(--gate); fi
+  if [ "$VERIFY_PARITY" = 1 ]; then pair_args+=(--verify-parity); fi
+  "$0" "${pair_args[@]}" --backend rc
+  "$0" "${pair_args[@]}" --backend bump
+  base_hash_after="$(sha256_file "$BASE_COMPILER")"
+  input_hash_after="$(compiler_input_hash)"
+  if [ "$base_hash_before" != "$base_hash_after" ]; then
+    echo "measure_fs_heap: comparison invalid: shared --base changed during collection" >&2
+    exit 1
+  fi
+  if [ "$input_hash_before" != "$input_hash_after" ]; then
+    echo "measure_fs_heap: comparison invalid: compiler input changed during collection" >&2
+    exit 1
+  fi
+  echo "[fs-heap] comparison=attested mode=$MODE backends=rc,bump base_sha256=$base_hash_before input_sha256=$input_hash_before"
+  exit 0
+fi
 
 if [ "$GATE" = 1 ] && [ -z "$MAX_PAGES" ]; then
   MAX_PAGES=57344
@@ -210,7 +287,7 @@ if [ "$BACKEND" = bump ]; then
   RC_VALUE=0
 fi
 
-echo "[fs-heap] mode=$MODE backend=$BACKEND base=$BASE_COMPILER entry=$ENTRY_REL run_dir=$RUN_DIR" >&2
+echo "[fs-heap] comparison=unpaired mode=$MODE backend=$BACKEND base=$BASE_COMPILER entry=$ENTRY_REL run_dir=$RUN_DIR" >&2
 
 run_compile() {
   local marks="$1"
@@ -318,7 +395,7 @@ awk -v mode="$MODE" -v backend="$BACKEND" -v codegen_boundary="$CODEGEN_BOUNDARY
       error("duplicate boundary mark: " name)
       next
     }
-    printf "[fs-heap] mode=%s backend=%s boundary=%s heap_mib=%.1f delta_mib=%.1f pages=%d mem_mib=%.1f rss_mib=%.1f\n", \
+    printf "[fs-heap] comparison=unpaired mode=%s backend=%s boundary=%s heap_mib=%.1f delta_mib=%.1f pages=%d mem_mib=%.1f rss_mib=%.1f\n", \
       mode, backend, name, heap / 1048576, (heap - prev_heap) / 1048576, pages, bytes / 1048576, rss / 1048576
     prev_heap = heap
     if (heap + 0 > peak_heap) { peak_heap = heap + 0 }
@@ -337,7 +414,7 @@ awk -v mode="$MODE" -v backend="$BACKEND" -v codegen_boundary="$CODEGEN_BOUNDARY
     }
     if (peak_pages == "") error("no valid named [profile-memory] marks in runner stderr")
     if (!failed) {
-      printf "[fs-heap] mode=%s backend=%s peak_heap_mib=%.1f peak_pages=%d headroom_mib=%.1f wall_s=%d\n", \
+      printf "[fs-heap] comparison=unpaired mode=%s backend=%s peak_heap_mib=%.1f peak_pages=%d headroom_mib=%.1f wall_s=%d\n", \
         mode, backend, peak_heap / 1048576, peak_pages, (65536 - peak_pages) * 64 / 1024, wall
       if (max_pages != "" && peak_pages > max_pages) {
         error("GATE FAIL: peak_pages " peak_pages " > limit " max_pages " (3.5 GiB default is 57344 pages)")
@@ -368,7 +445,7 @@ if [ "$VERIFY_PARITY" = 1 ]; then
     echo "measure_fs_heap: parity failure: marked and unmarked full-CLI wasm differ" >&2
     exit 1
   fi
-  echo "[fs-heap] parity=ok mode=$MODE backend=$BACKEND"
+  echo "[fs-heap] comparison=unpaired parity=ok mode=$MODE backend=$BACKEND"
 fi
 
 # Publish a warm cache only after every requested check passed. The run cache

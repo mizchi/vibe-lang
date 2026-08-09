@@ -79,8 +79,8 @@ VIBE_RC_HEAP_START=123456 \
 VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP=1 \
   bash "$SCRIPT" --cold --base "$BASE" --verify-parity > "$TMP_DIR/ok.stdout"
 
-grep -q '^\[fs-heap\] parity=ok mode=cold backend=rc$' "$TMP_DIR/ok.stdout"
-grep -q '^\[fs-heap\] mode=cold backend=rc boundary=fs_compile_complete ' "$TMP_DIR/ok.stdout"
+grep -q '^\[fs-heap\] comparison=unpaired parity=ok mode=cold backend=rc$' "$TMP_DIR/ok.stdout"
+grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=rc boundary=fs_compile_complete ' "$TMP_DIR/ok.stdout"
 grep -Eq "^marks=1 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_marked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
 grep -Eq "^marks=0 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_unmarked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
 
@@ -90,8 +90,8 @@ FAKE_RUN_LOG="$RUN_LOG" \
 VIBE_FS_HEAP_RUNNER="$RUNNER" \
 VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/bump" \
   bash "$SCRIPT" --cold --backend bump --base "$BASE" --verify-parity > "$TMP_DIR/bump.stdout"
-grep -q '^\[fs-heap\] parity=ok mode=cold backend=bump$' "$TMP_DIR/bump.stdout"
-grep -q '^\[fs-heap\] mode=cold backend=bump boundary=codegen_bump ' "$TMP_DIR/bump.stdout"
+grep -q '^\[fs-heap\] comparison=unpaired parity=ok mode=cold backend=bump$' "$TMP_DIR/bump.stdout"
+grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=bump boundary=codegen_bump ' "$TMP_DIR/bump.stdout"
 grep -Eq "^marks=1 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_marked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
 grep -Eq "^marks=0 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_unmarked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
 if grep -q 'ambient-cache-must-not-be-used' "$RUN_LOG"; then
@@ -102,6 +102,44 @@ if find "$TMP_DIR/out" -mindepth 1 -maxdepth 1 -type d -name 'run.*' | grep -q .
   echo "measure_fs_heap test: successful run directory was not cleaned" >&2
   exit 1
 fi
+
+# Separate lane runs remain deliberately unpaired even when a base happens to
+# be supplied. RC-vs-bump attribution must use --compare with one explicit
+# shared base; an environment default is intentionally insufficient.
+set +e
+FAKE_RUN_LOG="$RUN_LOG" \
+VIBE_MEASURE_BASE_COMPILER="$BASE" \
+VIBE_FS_HEAP_RUNNER="$RUNNER" \
+VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/compare-no-base" \
+  bash "$SCRIPT" --cold --compare > "$TMP_DIR/compare-no-base.stdout" 2> "$TMP_DIR/compare-no-base.stderr"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "measure_fs_heap test: --compare accepted an implicit base" >&2
+  exit 1
+fi
+grep -q -- '--compare requires one explicit shared --base' "$TMP_DIR/compare-no-base.stderr"
+
+FAKE_RUN_LOG="$RUN_LOG" \
+VIBE_FS_HEAP_RUNNER="$RUNNER" \
+VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/compare" \
+  bash "$SCRIPT" --cold --compare --base "$BASE" > "$TMP_DIR/compare.stdout"
+grep -Eq '^\[fs-heap\] comparison=attested mode=cold backends=rc,bump base_sha256=[0-9a-f]{64} input_sha256=[0-9a-f]{64}$' "$TMP_DIR/compare.stdout"
+grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=rc boundary=codegen_rc ' "$TMP_DIR/compare.stdout"
+grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=bump boundary=codegen_bump ' "$TMP_DIR/compare.stdout"
+
+set +e
+FAKE_RUN_LOG="$RUN_LOG" \
+VIBE_FS_HEAP_RUNNER="$RUNNER" \
+VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/compare-backend" \
+  bash "$SCRIPT" --cold --compare --backend rc --base "$BASE" > "$TMP_DIR/compare-backend.stdout" 2> "$TMP_DIR/compare-backend.stderr"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "measure_fs_heap test: --compare accepted a single backend" >&2
+  exit 1
+fi
+grep -q -- '--compare selects both backends' "$TMP_DIR/compare-backend.stderr"
 
 # The default --gate limit is 57344 pages (3.5 GiB), and exceeding it must
 # fail rather than report a plausible measurement.
