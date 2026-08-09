@@ -9402,6 +9402,46 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
             (bok, ESeq(a, bexpr))
           },
+          // #1536 (a) v3, let-floating: a suspending let-chain compound in
+          // SEQUENCE HEAD position (what an async-iterator `for` in statement
+          // position desugars to -- `ELet(__iter_src, ..)` terminating in the
+          // loop, with the rest of the body as the seq tail) is rebalanced
+          // onto the continuation spine this split already handles:
+          //   ESeq(ELet(x, v, k), b)  ==>  ELet(nx, v, ESeq(k[x:=nx], b))
+          // Widening the binder's scope over `b` is only sound if `b` cannot
+          // capture it, so the binder is ALWAYS alpha-renamed to a
+          // site-suffixed fresh spelling first (shadow-aware, assignment
+          // targets included -- scps_rename_ident): any `x` free in `b`
+          // refers to an OUTER binding and must keep doing so. Two floated
+          // binders collide in `nx` only if they share the original name, and
+          // then surface block scoping already guarantees the inner one
+          // shadows every use the rename could reach. Non-suspending heads
+          // keep the ordinary statement path below (same reasoning as the
+          // `while` arm above: no gratuitous restructuring).
+          ELet(x, v, k, off) => if scps_contains_susp(a, sctx) {
+            let nx = String::concat(String::concat(scps_local("__scps_seq", site), "_"), x)
+            scps_split_tail(ELet(nx, v, ESeq(scps_rename_ident(k, x, nx), b), off), sctx, ctx, st)
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
+          ELetMut(x, v, k, off) => if scps_contains_susp(a, sctx) {
+            let nx = String::concat(String::concat(scps_local("__scps_seq", site), "_"), x)
+            scps_split_tail(ELetMut(nx, v, ESeq(scps_rename_ident(k, x, nx), b), off), sctx, ctx, st)
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
+          // Reassociate a suspending nested sequence head so its own head
+          // surfaces for the arms above: ESeq(ESeq(a1, a2), b) ==>
+          // ESeq(a1, ESeq(a2, b)). Strictly decreases head size, so the
+          // rewrite loop terminates.
+          ESeq(a1, a2) => if scps_contains_susp(a, sctx) {
+            scps_split_tail(ESeq(a1, ESeq(a2, b)), sctx, ctx, st)
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
           _ => {
             let ap = scps_as_target_perform(a, ops)
             let an = scps_as_needing_call(a, sctx)

@@ -1043,7 +1043,11 @@ let r = handle {
 
 制約 (linear backend のみ): resume を値参照する handle の body では、
 対象 effect の perform (と、row にその effect を持つ関数の呼び出し) は
-let/seq/tail/分岐 tail に直接現れる必要がある。**concrete な row に
+let/seq/tail/分岐 tail に直接現れる必要がある。**let 連鎖 (brace block
+文や文位置の async-iterator `for` の脱糖出力) が文の途中 (sequence HEAD)
+に立つ形は、split が継続 spine へ float して受理する** (#1536 (a) v3,
+ADR-0076 追記42 — `async_iter_collect` / `_fold` / `_count` が suspend
+body から呼べるのはこれ)。**concrete な row に
 対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
 再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
 向けに無変更)。それ以外に呼べるのは perform / pure builtin / ctor /

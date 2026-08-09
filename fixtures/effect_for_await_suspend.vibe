@@ -1,0 +1,61 @@
+// #1536 (a) v3, let-floating: an async-iterator `for` in STATEMENT position
+// desugars (build_await_iter_for) to a self-contained let-chain terminating
+// in the eligible while spine -- but the chain lands in SEQUENCE HEAD
+// position (`ESeq(<for machine>, rest)`), which the suspend split used to
+// reject wholesale ("sequence HEAD carrying a perform"). scps_split_tail now
+// floats the chain onto the continuation spine it already handles
+// (`ESeq(ELet(x, v, k), b)` => `ELet(nx, v, ESeq(k[x:=nx], b))`, binder
+// alpha-renamed so `b`'s own references can never be captured), so the
+// desugared `for` splits exactly like the hand-written while+let-mut spine.
+// Two sequential loops on purpose: both desugar to the same `__iter_*`
+// spellings, so this also pins that repeated floats of the same original
+// name stay independent.
+trait AIter[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+struct Countdown {
+  n: Int
+}
+
+impl AIter for Countdown {
+  next(self) -> Future[Option[(Int, Countdown)]] {
+    Future::ready(if self.n > 0 {
+      Some((self.n, Countdown::{
+        n: self.n - 1
+      }))
+    } else {
+      None
+    })
+  }
+}
+
+fn total() -> Int with Async {
+  let mut acc = 0
+  for x in Countdown::{
+    n: 4
+  } {
+    acc = acc + x
+  }
+  for y in Countdown::{
+    n: 4
+  } {
+    acc = acc + y
+  }
+  acc
+}
+
+let _start = () -> Int {
+  handle {
+    total()
+  } with Async {
+    Suspend(t) => {
+      let k = resume
+      k(t)
+    }
+  }
+}
+_start()
+
+__DATA__
+{"last":"20"}

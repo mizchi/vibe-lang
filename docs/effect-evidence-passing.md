@@ -2755,6 +2755,44 @@ fixtures: `effect_stream_next_suspend_retarget.vibe` (want 42; `Some(41)` と
 argument の一回評価を pin)、`effect_stream_next_retarget_hygiene.vibe`
 (`__sn_next` collision、shadowed `Future::ready`、empty layout を pin)。
 
+### 追記42 (2026-08-09): sequence HEAD の let 連鎖を継続 spine へ float する (#1536 (a) v3)
+
+「sequence の HEAD が perform を内側に抱えた複合式」は追記27 以来の不適格形
+だったが、**async-iterator `for` の脱糖出力 (`build_await_iter_for`) が
+構造的に必ずこの形になる** — `for` は自己完結の
+`ELet(__iter_src, .., ELetMut(.., ELetMut(.., EWhile)))` 1 式に落ち、文位置の
+`for` ではそれが `ESeq(<for 機械>, rest)` の HEAD に置かれる。手書きの
+while+let-mut spine (適格) と脱糖出力の差はこの木の左右バランスだけで、
+`async_iter_collect` / `_fold` / `_count` (と suspend body 内のあらゆる非末尾
+`for`、brace block 文) が実質これだけで塞がっていた (#1536 の残りの名指し被害)。
+
+`scps_split_tail` の ESeq arm に let-floating を足した:
+
+- `ESeq(ELet(x, v, k), b)` → `ELet(nx, v, ESeq(k[x:=nx], b))`
+  (ELetMut も同形、`ESeq(ESeq(a1, a2), b)` は右結合へ再結合)。
+  float 後は既存の ELet/ELetMut/while arm がそのまま split する。
+- **binder は無条件に site-suffix の fresh 名 `__scps_seq<site>_<x>` へ
+  α-rename する** (`scps_rename_ident`、shadow-aware で代入先も追う)。
+  scope を `b` の上へ広げるので、`b` 内の自由な `x` (外側 binding への参照)
+  を捕獲しないことが正しさの条件 — rename で構造的に排除する。同名 float の
+  `nx` 衝突は「内側 literal binder が外側を shadow する」surface scoping が
+  そのまま成り立つので無害。
+- 判定と変換が同じ関数なので、`vibe check` の #1574 ミラー
+  (`effect_lowering_prelude` 経由) と codegen は自動で lockstep。
+- suspend しない HEAD は従来どおり素通し (while arm と同じ理由 — 不要な
+  再構成をしない)。
+
+**残る不適格 (このスライスの範囲外)**: EIf/EMatch/EForIn(array)/ELoop が
+suspend を抱えて HEAD に立つ形、代入 RHS 直書きの perform
+(`acc = perform ..` — cellify 後に call-arg 位置へ落ちる)、row 変数 callee、
+literal param。
+
+fixtures: `effect_for_await_suspend.vibe` (want 20; 逐次 2 loop で同名
+`__iter_*` の反復 float を pin)、`effect_seq_head_block_suspend.vibe`
+(want 1105; inner binder が outer 名を shadow し tail が outer を参照する形 —
+rename を外すと捕獲で黙って誤る、その P0 側を pin)。実害側は
+`async_iter_test.vibe` の suspend-class handle 内 terminals テスト。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

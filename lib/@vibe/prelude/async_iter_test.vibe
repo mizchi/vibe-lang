@@ -201,3 +201,45 @@ test "async_iter: lazy combinators chain into an async terminal" {
   })
   assert(total == 36)
 }
+
+test "async_iter: terminals run inside a suspend-class handle body (#1536)" {
+  // The `for`-driven terminals (collect / fold / count) desugar to a
+  // let-chain-in-sequence-head shape; the suspend split's let-floating
+  // (ADR-0076 追記42) is what makes them eligible here. find is the
+  // hand-written while spine, pinned alongside as the baseline.
+  let out = handle {
+    let folded = async_iter_fold(async_iter_arr([
+      1,
+      2,
+      3
+    ]), 0, (acc: Int, x: Int) -> Int {
+      acc + x
+    })
+    let collected = async_iter_collect(async_iter_arr([
+      10,
+      20
+    ]))
+    let counted = async_iter_count(async_iter_arr([
+      7,
+      7,
+      7
+    ]))
+    let found_opt = async_iter_find(async_iter_arr([
+      4,
+      5
+    ]), (x: Int) -> Bool {
+      x % 5 == 0
+    })
+    let found = match found_opt {
+      Some(v) => v,
+      None => 0 - 1
+    }
+    folded + Array::length(collected) + counted + found
+  } with Async {
+    Suspend(t) => {
+      let k = resume
+      k(t)
+    }
+  }
+  assert_eq(out, 16)
+}
