@@ -23,6 +23,7 @@ out="$5"
 sleep_pid=""
 trap '[ -z "$sleep_pid" ] || kill "$sleep_pid" 2>/dev/null || true; [ -z "$sleep_pid" ] || wait "$sleep_pid" 2>/dev/null || true; printf "terminated\\n" >> "$FAKE_RUN_LOG"; exit 143' TERM
 printf 'runner_pid=%s\n' "$$" >> "$FAKE_RUN_LOG"
+printf 'base=%s\n' "$3" >> "$FAKE_RUN_LOG"
 printf 'marks=%s rc=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta=%s testmeta=%s rc_heap_start=%s wasm_names=%s ingestion_stamp=%s import_abi=%s coverage=%s\n' \
   "${VIBE_PROFILE_MEMORY_MARKS:-unset}" \
   "${VIBE_RC:-unset}" \
@@ -127,6 +128,14 @@ VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/compare" \
 grep -Eq '^\[fs-heap\] comparison=attested mode=cold backends=rc,bump base_sha256=[0-9a-f]{64} input_sha256=[0-9a-f]{64}$' "$TMP_DIR/compare.stdout"
 grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=rc boundary=codegen_rc ' "$TMP_DIR/compare.stdout"
 grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=bump boundary=codegen_bump ' "$TMP_DIR/compare.stdout"
+compare_base_paths="$(grep '^base=' "$RUN_LOG" | tail -n 2 | cut -d= -f2-)"
+[ "$(printf '%s\n' "$compare_base_paths" | sort -u | wc -l | tr -d ' ')" = 1 ]
+compare_base_path="$(printf '%s\n' "$compare_base_paths" | head -n 1)"
+[ "$compare_base_path" != "$BASE" ]
+case "$compare_base_path" in
+  */vibe_fs_heap_pair.*/base.wasm) ;;
+  *) echo "measure_fs_heap test: compare did not use one private base snapshot" >&2; exit 1 ;;
+esac
 
 set +e
 FAKE_RUN_LOG="$RUN_LOG" \

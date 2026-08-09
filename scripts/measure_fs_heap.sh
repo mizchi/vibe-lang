@@ -69,6 +69,7 @@ OUT_DIR="${VIBE_FS_HEAP_OUT_DIR:-$PROJECT_ROOT/_build/measure_fs_heap}"
 RUNNER="${VIBE_FS_HEAP_RUNNER:-$SCRIPT_DIR/run_wasm_vibe_host_runner.sh}"
 KEEP_RUN_DIR="${VIBE_FS_HEAP_KEEP_RUN_DIR:-0}"
 RUN_DIR=""
+PAIR_DIR=""
 WARM_NEXT=""
 LOCK_DIR=""
 LOCK_HELD=0
@@ -108,6 +109,9 @@ cleanup() {
   fi
   if [ -n "$RUN_DIR" ] && [ "$KEEP_RUN_DIR" != 1 ]; then
     rm -rf "$RUN_DIR"
+  fi
+  if [ -n "$PAIR_DIR" ]; then
+    rm -rf "$PAIR_DIR"
   fi
   exit "$status"
 }
@@ -197,24 +201,29 @@ if [ "$COMPARE" = 1 ]; then
     echo "measure_fs_heap: base compiler not found: $BASE_COMPILER" >&2
     exit 1
   fi
-  base_hash_before="$(sha256_file "$BASE_COMPILER")"
+  # Prepare deterministic ignored inputs before attesting the source snapshot.
+  # Child lanes repeat this as a no-op freshness check.
+  bash "$SCRIPT_DIR/ensure_generated.sh" >&2
   input_hash_before="$(compiler_input_hash)"
-  pair_args=("--$MODE" --base "$BASE_COMPILER")
+
+  # Both lanes consume one private snapshot, not the caller's mutable pathname.
+  # This prevents a concurrent replace/restore race from mixing base compilers
+  # while still producing matching before/after hashes.
+  PAIR_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vibe_fs_heap_pair.XXXXXX")"
+  cp "$BASE_COMPILER" "$PAIR_DIR/base.wasm"
+  chmod 0444 "$PAIR_DIR/base.wasm"
+  base_hash="$(sha256_file "$PAIR_DIR/base.wasm")"
+  pair_args=("--$MODE" --base "$PAIR_DIR/base.wasm")
   if [ "$GATE" = 1 ]; then pair_args+=(--gate); fi
   if [ "$VERIFY_PARITY" = 1 ]; then pair_args+=(--verify-parity); fi
   "$0" "${pair_args[@]}" --backend rc
   "$0" "${pair_args[@]}" --backend bump
-  base_hash_after="$(sha256_file "$BASE_COMPILER")"
   input_hash_after="$(compiler_input_hash)"
-  if [ "$base_hash_before" != "$base_hash_after" ]; then
-    echo "measure_fs_heap: comparison invalid: shared --base changed during collection" >&2
-    exit 1
-  fi
   if [ "$input_hash_before" != "$input_hash_after" ]; then
     echo "measure_fs_heap: comparison invalid: compiler input changed during collection" >&2
     exit 1
   fi
-  echo "[fs-heap] comparison=attested mode=$MODE backends=rc,bump base_sha256=$base_hash_before input_sha256=$input_hash_before"
+  echo "[fs-heap] comparison=attested mode=$MODE backends=rc,bump base_sha256=$base_hash input_sha256=$input_hash_before"
   exit 0
 fi
 
