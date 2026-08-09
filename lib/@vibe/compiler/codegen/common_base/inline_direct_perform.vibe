@@ -9402,6 +9402,46 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
             (bok, ESeq(a, bexpr))
           },
+          // #1536 (a) v3, let-floating: a suspending let-chain compound in
+          // SEQUENCE HEAD position (what an async-iterator `for` in statement
+          // position desugars to -- `ELet(__iter_src, ..)` terminating in the
+          // loop, with the rest of the body as the seq tail) is rebalanced
+          // onto the continuation spine this split already handles:
+          //   ESeq(ELet(x, v, k), b)  ==>  ELet(nx, v, ESeq(k[x:=nx], b))
+          // Widening the binder's scope over `b` is only sound if `b` cannot
+          // capture it, so the binder is ALWAYS alpha-renamed to a
+          // site-suffixed fresh spelling first (shadow-aware, assignment
+          // targets included -- scps_rename_ident): any `x` free in `b`
+          // refers to an OUTER binding and must keep doing so. Two floated
+          // binders collide in `nx` only if they share the original name, and
+          // then surface block scoping already guarantees the inner one
+          // shadows every use the rename could reach. Non-suspending heads
+          // keep the ordinary statement path below (same reasoning as the
+          // `while` arm above: no gratuitous restructuring).
+          ELet(x, v, k, off) => if scps_contains_susp(a, sctx) {
+            let nx = scps_seq_float_fresh(x, k, b, site)
+            scps_split_tail(ELet(nx, v, ESeq(scps_rename_ident(k, x, nx), b), off), sctx, ctx, st)
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
+          ELetMut(x, v, k, off) => if scps_contains_susp(a, sctx) {
+            let nx = scps_seq_float_fresh(x, k, b, site)
+            scps_split_tail(ELetMut(nx, v, ESeq(scps_rename_ident(k, x, nx), b), off), sctx, ctx, st)
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
+          // Reassociate a suspending nested sequence head so its own head
+          // surfaces for the arms above: ESeq(ESeq(a1, a2), b) ==>
+          // ESeq(a1, ESeq(a2, b)). Strictly decreases head size, so the
+          // rewrite loop terminates.
+          ESeq(a1, a2) => if scps_contains_susp(a, sctx) {
+            scps_split_tail(ESeq(a1, ESeq(a2, b)), sctx, ctx, st)
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
           _ => {
             let ap = scps_as_target_perform(a, ops)
             let an = scps_as_needing_call(a, sctx)
@@ -10309,6 +10349,126 @@ fn scps_binds_name_arms(arms: Array[(Pat, Expr)], x: String) -> Bool {
     i = i + 1
   }
   hit
+}
+
+/// True if `x` occurs ANYWHERE in `e` as an identifier reference or an
+/// assignment target (scope-blind on purpose: this feeds the seq-float's
+/// freshness probe, where any occurrence at all -- bound or free -- means
+/// the candidate spelling is not safe to mint). Binder occurrences are
+/// scps_binds_name's job; scps_mentions_name below ORs the two.
+fn scps_refs_name(e: Expr, x: String) -> Bool {
+  match e {
+    EIdent(nm, _) => nm == x,
+    EAssign(nm, v, b) => nm == x || scps_refs_name(v, x) || scps_refs_name(b, x),
+    EAssignOp(_, nm, v, b) => nm == x || scps_refs_name(v, x) || scps_refs_name(b, x),
+    ELet(_, v, b, _) => scps_refs_name(v, x) || scps_refs_name(b, x),
+    ELetMut(_, v, b, _) => scps_refs_name(v, x) || scps_refs_name(b, x),
+    ELetRec(_, v, b) => scps_refs_name(v, x) || scps_refs_name(b, x),
+    EFn(_, _, _, _, _, b) => scps_refs_name(b, x),
+    EForIn(_, _, it, b) => scps_refs_name(it, x) || scps_refs_name(b, x),
+    ELoop(pairs, b) => {
+      let mut hit = scps_refs_name(b, x)
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, i)
+        if scps_refs_name(v, x) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EMatch(s, arms) => scps_refs_name(s, x) || scps_refs_name_arms(arms, x),
+    EHandle(b, arms) => scps_refs_name(b, x) || scps_refs_name_arms(arms, x),
+    ESeq(a, b) => scps_refs_name(a, x) || scps_refs_name(b, x),
+    EIf(c, t, el) => scps_refs_name(c, x) || scps_refs_name(t, x) || scps_refs_name(el, x),
+    ECall(callee, args, _) => scps_refs_name(callee, x) || scps_refs_name_exprs(args, x),
+    EBinOp(_, l, r) => scps_refs_name(l, x) || scps_refs_name(r, x),
+    EUnaryOp(_, a) => scps_refs_name(a, x),
+    EReturn(a) => scps_refs_name(a, x),
+    EDot(o, _, _, _) => scps_refs_name(o, x),
+    ELabeledArg(_, _, v) => scps_refs_name(v, x),
+    EBreak(opt) => match opt {
+      Some(a) => scps_refs_name(a, x),
+      None => false
+    },
+    EContinue(args) => scps_refs_name_exprs(args, x),
+    ETuple(items) => scps_refs_name_exprs(items, x),
+    EArray(items) => scps_refs_name_exprs(items, x),
+    ERecord(_, fields, _) => scps_refs_name_pairs(fields, x),
+    EMap(fields) => scps_refs_name_pairs(fields, x),
+    ESpread(a) => scps_refs_name(a, x),
+    _ => false
+  }
+}
+
+fn scps_refs_name_exprs(es: Array[Expr], x: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if scps_refs_name(Array::get(es, i), x) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_refs_name_pairs(pairs: Array[(String, Expr)], x: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if scps_refs_name(v, x) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_refs_name_arms(arms: Array[(Pat, Expr)], x: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if scps_refs_name(ex, x) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_mentions_name(e: Expr, x: String) -> Bool {
+  scps_binds_name(e, x) || scps_refs_name(e, x)
+}
+
+/// Mint the seq-float's alpha-renaming target: `__scps_seq<site>_<x>`,
+/// bumped with a numeric suffix until the spelling occurs NOWHERE in the
+/// floated continuation `k` or the sequence tail `b` (Codex P1 on #1607:
+/// nothing stops a user binding or referencing the generated spelling
+/// literally, and a collision either captures the tail's outer reference
+/// or lets an inner binder capture the renamed occurrences -- both
+/// silent-wrong). The probe is scope-blind (any occurrence disqualifies),
+/// so the minted name is fresh for both roles by construction.
+fn scps_seq_float_fresh(x: String, k: Expr, b: Expr, site: Int) -> String {
+  let base = String::concat(String::concat(scps_local("__scps_seq", site), "_"), x)
+  let mut nx = base
+  let mut i = 0
+  while scps_mentions_name(k, nx) || scps_mentions_name(b, nx) {
+    i = i + 1
+    nx = String::concat(String::concat(base, "_"), Int::to_string(i))
+  }
+  nx
 }
 
 /// True if `e` could reach a suspend of the effect under proof: ANY

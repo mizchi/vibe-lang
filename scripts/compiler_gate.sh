@@ -6701,6 +6701,20 @@ scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
 # `__sn_next` must not capture the retarget and shadowed Future::ready must
 # not change empty-stream layout (None fallback = 7).
 scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygiene"
+# #1536 (a) v3 (let-floating): an async-iterator `for` in statement position
+# desugars to a let-chain in SEQUENCE HEAD position; scps_split_tail floats
+# it onto the continuation spine. Two sequential loops pin repeated floats
+# of the same __iter_* spellings.
+scps_run_expect "effect_for_await_suspend.vibe" "20" "forawaitsusp"
+# Shadow pin for the float's alpha-rename: an inner block binder shadows an
+# outer name the sequence TAIL references -- capture would print 8/wrong,
+# not 1105. Covers both the handle-body spine and a needing fn's clone.
+scps_run_expect "effect_seq_head_block_suspend.vibe" "1105" "seqheadshadow"
+# Codex P1 on #1607: user code literally spelling the generated
+# `__scps_seq<site>_<x>` target must not be captured -- the freshness
+# probe bumps past any occurrence in the floated continuation or the
+# tail. Control-measured: with the probe disabled this prints 1015.
+scps_run_expect "effect_seq_head_reserved_name_collision.vibe" "3011" "seqheadfresh"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"

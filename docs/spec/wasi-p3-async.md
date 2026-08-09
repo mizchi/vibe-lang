@@ -165,11 +165,14 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
 
 - **適格**: let / seq / tail / branch-tail の spine、`while` + `let mut`
   (#1230 で widening 済み。`let mut x = v` → 1 要素セル、`while` → `let rec`
-  ローカル closure への末尾再帰)、**row-free closure パラメータの呼び出しの
-  うち、全 by-name call site の実引数が suspend-inert と証明できるもの**
-  (#1536 (a)。下記)
-- **不適格**: ループ内 `break`/`continue`/`return`、`for`/`loop` 形、
-  sequence の HEAD が perform を内側に抱えた複合式、実引数証明が成立しない
+  ローカル closure への末尾再帰)、**sequence HEAD に立つ let 連鎖複合式**
+  (brace block 文・文位置の async-iterator `for` の脱糖出力 — #1536 (a) v3
+  の let-floating が継続 spine へ再バランスする、ADR-0076 追記42)、
+  **row-free closure パラメータの呼び出しのうち、全 by-name call site の
+  実引数が suspend-inert と証明できるもの** (#1536 (a)。下記)
+- **不適格**: ループ内 `break`/`continue`/`return`、配列 `for` / `loop` 形、
+  sequence HEAD に立つ perform 抱えの `if`/`match` 複合式、代入 RHS 直書きの
+  perform (`acc = perform ..`)、実引数証明が成立しない
   closure パラメータの呼び出し、row 変数 callee (`with e`)
 
 closure param を**無条件に**許すのは不健全 — closure literal 内の `perform`
@@ -185,8 +188,9 @@ row が空 ⇒ perform しない」が成り立たない。#1536 (a) の受理�
 渡せば slot 全体が taint し、従来どおり `cannot see through` で拒否される
 (fixtures/err_effect_closure_param_taint.vibe)。これで `async_iter_find` /
 `_any` / `_all` は suspend body から呼べる。`await(Stream::next(s))` は
-別問題 (builtin `Stream::next` が top-level fn ではなく needing 集合に
-乗らない) で、まだ書けない。
+synthetic retarget (#1536 (a) v2, ADR-0076 追記41) で書けるようになり、
+`for` 駆動の terminal (`async_iter_collect` / `_fold` / `_count`) は
+let-floating (#1536 (a) v3, 追記42) で書けるようになった。
 
 ### 2.3 同期 effect との関係
 
@@ -1627,7 +1631,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 
 | 項目 | 内容 | 依存 |
 |---|---|---|
-| **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow と eager `await(Stream::next(s))` retarget は済み (§2.2 末尾) | — (ADR-0076 本体) |
+| **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
 | **`ByteStream` の p3 接続** (#1539) | `lib/@vibe/console/byte_stream.vibe` の Stdin closure 版を `stream.read` へ。ADR-0089 は「pull closure の host shim を差し替えるだけ」と設計済み | — |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
