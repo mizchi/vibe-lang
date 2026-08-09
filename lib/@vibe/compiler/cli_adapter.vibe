@@ -84,7 +84,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
-  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env, verify_culprit_off_marker_for_file
+  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env, verify_culprit_off_marker_fs_fail_closed
 }
 
 import @vibe/lsp {
@@ -389,26 +389,15 @@ fn emit_compile_diag_located(output_path: String, msg: String, source: String) -
   }
 }
 
-/// #1514 (repair 08): the FS-compile lane's located variant. This lane
-/// compiles MERGED module text, so a marker's offsets index whichever module
-/// the diagnostic came from -- resolving blindly against the entry file could
-/// name a plausible-but-wrong line (#1445's leaked-marker lesson, one step
-/// worse). Only the evidence-passing culprit marker is resolvable here,
-/// because the message names the culprit callee and span. #1596 requires the
-/// entry to be the UNIQUE matching reachable source; a dependency with the
-/// same culprit at the same offset makes the basis ambiguous and therefore
-/// degrades to an unlocated message via emit_compile_diag.
-fn emit_compile_diag_fs_located(output_path: String, msg: String, input_path: String) -> Int with Fs + Exception {
-  if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-    let (entry_source, verified) = verify_culprit_off_marker_for_file(input_path, msg)
-    if String::contains(verified, " [@off=") {
-      emit_compile_diag(output_path, locate_type_error(entry_source, verified))
-    } else {
-      emit_compile_diag(output_path, verified)
-    }
-  } else {
-    emit_compile_diag(output_path, msg)
-  }
+/// #1596: FS/build compile helpers own their grouped-source snapshot internally
+/// and currently expose only Bytes/Throw, not that snapshot. Rereading after a
+/// failure cannot prove marker ownership under concurrent edits. Fail closed in
+/// this lane until the compile API transports source identity: preserve the
+/// actionable culprit name and strip the unresolved marker, never invent an
+/// entry-file location. `vibe check` retains locations because it passes one
+/// exact grouped-source snapshot through checking and verification.
+fn emit_compile_diag_fs_located(output_path: String, msg: String, _input_path: String) -> Int with Fs {
+  emit_compile_diag(output_path, verify_culprit_off_marker_fs_fail_closed(msg))
 }
 
 /// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
