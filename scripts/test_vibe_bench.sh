@@ -111,17 +111,24 @@ mlines="$(printf '%s\n' "$multi_out" | grep -cE '^vibe::bench ' || true)"
 # 6. #1508: direct client `Http::*` calls in bench blocks use the compiled
 # host-import path. The local echo server gives this an actual request/response
 # round trip rather than merely proving that the source type-checks.
-http_echo_port="${VIBE_HTTP_ECHO_PORT:-$((18280 + $(printf '%s' "$ROOT_DIR" | cksum | cut -d' ' -f1) % 1000))}"
-export VIBE_HTTP_ECHO_PORT="$http_echo_port"
-python3 "$ROOT_DIR/tests/http_echo_server.py" "$http_echo_port" >/dev/null 2>&1 &
+requested_http_echo_port="${VIBE_HTTP_ECHO_PORT:-0}"
+http_echo_log="$WORK/http_echo.log"
+python3 "$ROOT_DIR/tests/http_echo_server.py" "$requested_http_echo_port" >"$http_echo_log" 2>&1 &
 HTTP_ECHO_PID=$!
-for _ in $(seq 1 20); do
-  kill -0 "$HTTP_ECHO_PID" 2>/dev/null || break
+http_echo_port=""
+for _ in $(seq 1 50); do
+  if ! kill -0 "$HTTP_ECHO_PID" 2>/dev/null; then
+    break
+  fi
+  http_echo_port="$(sed -n 's/^HTTP echo server listening on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$http_echo_log" | head -1)"
+  [ -n "$http_echo_port" ] && break
   sleep 0.1
 done
-if ! kill -0 "$HTTP_ECHO_PID" 2>/dev/null; then
-  bad "HTTP echo server failed to start on 127.0.0.1:$http_echo_port"
+if [ -z "$http_echo_port" ] || ! kill -0 "$HTTP_ECHO_PID" 2>/dev/null; then
+  bad "HTTP echo server failed to start (requested port $requested_http_echo_port)"
+  cat "$http_echo_log" >&2 || true
 else
+  export VIBE_HTTP_ECHO_PORT="$http_echo_port"
   http_out="$("$VIBE" bench "$ROOT_DIR/bench/http_bench.vibe" --iters 5 --warmup 1 2>&1)"
   for label in http_get_hello http_post_echo_small http_post_echo_1kb http_get_headers; do
     printf '%s\n' "$http_out" | grep -qE "vibe::bench label=http_bench\\.vibe::$label iters=5 " \

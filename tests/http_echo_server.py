@@ -69,7 +69,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 18280
     server = HTTPServer(("127.0.0.1", port), Handler)
-    print(f"HTTP echo server listening on 127.0.0.1:{port}", flush=True)
+    actual_port = server.server_address[1]
+    print(f"HTTP echo server listening on 127.0.0.1:{actual_port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

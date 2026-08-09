@@ -29,18 +29,25 @@ bash scripts/install.sh --cli-wasm "$cli" >/dev/null
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "bench-http: launcher not installed" >&2; exit 1; }
 
-PORT="${VIBE_HTTP_ECHO_PORT:-$((18280 + $(printf '%s' "$ROOT_DIR" | cksum | cut -d' ' -f1) % 1000))}"
-export VIBE_HTTP_ECHO_PORT="$PORT"
-python3 tests/http_echo_server.py "$PORT" >/dev/null 2>&1 &
+REQUESTED_PORT="${VIBE_HTTP_ECHO_PORT:-0}"
+SERVER_LOG="$WORK/http_echo.log"
+python3 tests/http_echo_server.py "$REQUESTED_PORT" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-for _ in $(seq 1 20); do
-  kill -0 "$SERVER_PID" 2>/dev/null || break
+PORT=""
+for _ in $(seq 1 50); do
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    break
+  fi
+  PORT="$(sed -n 's/^HTTP echo server listening on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$SERVER_LOG" | head -1)"
+  [ -n "$PORT" ] && break
   sleep 0.1
 done
-if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-  echo "bench-http: echo server failed to start on 127.0.0.1:$PORT" >&2
+if [ -z "$PORT" ] || ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "bench-http: echo server failed to start (requested port $REQUESTED_PORT)" >&2
+  cat "$SERVER_LOG" >&2 || true
   exit 1
 fi
+export VIBE_HTTP_ECHO_PORT="$PORT"
 
 ITERS="${VIBE_BENCH_HTTP_N:-50}"
 WARMUP="${VIBE_BENCH_HTTP_WARMUP:-5}"
