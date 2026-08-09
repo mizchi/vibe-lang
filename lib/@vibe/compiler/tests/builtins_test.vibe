@@ -5,7 +5,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Type, builtin_registry_typed, type_to_string
+  Type, builtin_registry_typed
 }
 
 //# Misc
@@ -646,36 +646,21 @@ test "lookup_builtin println" {
   }
 }
 
-/// #1520: 85 of the 154 registry rows are ALSO declared in a per-lane
-/// `lookup_*` table. `lookup_builtin` consults the registry first, so those
-/// lane entries are shadowed -- nothing reads them, and nothing noticed when
-/// one drifted. That is the state `eq` was in: both sides claimed
-/// `(Int, Int) -> Bool` for the structural-equality builtin, and the untruth
-/// only surfaced when #1519 made the checker read the registry's parameter
-/// types and `eq(Color::Red, c)` started being rejected.
-///
-/// This locks the two declarations together. A row that resolves in BOTH
-/// places must render identically; fix the drift (or drop the shadowed lane
-/// entry) rather than relaxing this test. It does not require every registry
-/// row to have a lane twin -- only that the ones that do, agree.
-test "registry rows agree with their shadowed lane declarations" {
+/// #1593: checker-visible registry rows are the single source of truth.
+/// `lookup_builtin` consults the registry first, so carrying the same name in
+/// this fallback chain would be a shadowed declaration that no production
+/// lookup can reach. Fallback-only builtins remain valid; registry-backed ones
+/// must never be reintroduced here.
+test "checker-visible registry builtins are absent from fallback declarations" {
   let rows = builtin_registry_typed()
   let mut i = 0
-  let mut checked = 0
   while i < Array::length(rows) {
-    let (name, ty, _, _, visible) = Array::get(rows, i)
+    let (name, _, _, _, visible) = Array::get(rows, i)
     if visible {
       match lookup_builtin_fallback(name) {
-        Some(lane_ty) => {
-          let reg_s = type_to_string(ty)
-          let lane_s = type_to_string(lane_ty)
-          if reg_s == lane_s {
-            ()
-          } else {
-            println("registry/lane disagree for \{name}: registry \{reg_s} vs lane \{lane_s}")
-          }
-          assert(reg_s == lane_s)
-          checked = checked + 1
+        Some(_) => {
+          println("checker-visible registry builtin is duplicated in fallback declarations: \{name}")
+          assert(false)
         },
         None => ()
       }
@@ -684,7 +669,4 @@ test "registry rows agree with their shadowed lane declarations" {
     }
     i = i + 1
   }
-  // Guard against the test silently becoming vacuous (a refactor that makes
-  // the fallback chain unreachable would otherwise leave it green).
-  assert(checked > 50)
 }

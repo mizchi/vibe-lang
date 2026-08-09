@@ -6,8 +6,8 @@
 // an else arm that fell through would reach them unbound.
 //
 // This file covers the ACCEPTED forms. The rejected ones (a non-diverging
-// else, an else that only `throw`s, a missing `is`/`else`, and the retired
-// `let PAT = v else { .. }` spelling) are pinned in
+// else, an arbitrary `perform`, a handled `throw`, a missing `is`/`else`, and
+// the retired `let PAT = v else { .. }` spelling) are pinned in
 // lib/@vibe/compiler/tests/parser_test.vibe, where the error text can be
 // asserted — a fixture can only witness what compiles.
 //
@@ -16,6 +16,14 @@
 let unwrap_or_return: (Option[Int]) -> Int = (opt) -> {
   guard opt is Some(v) else {
     return -1
+  }
+  v + 100
+}
+
+// A direct Exception::Throw is also abortive, so it may be a guard else arm.
+let unwrap_or_throw: (Option[Int]) -> Int with Exception = (opt) -> {
+  guard opt is Some(v) else {
+    throw("none")
   }
   v + 100
 }
@@ -66,6 +74,21 @@ test "guard binds on Some and falls through to the rest of the block" {
 
 test "guard takes the else arm on None" {
   assert_eq(unwrap_or_return(None), -1)
+}
+
+test "guard else may directly throw" {
+  let some = handle {
+    unwrap_or_throw(Some(5))
+  } with Exception {
+    Throw(_) => -1
+  }
+  let none = handle {
+    unwrap_or_throw(None)
+  } with Exception {
+    Throw(_) => -1
+  }
+  assert_eq(some, 105)
+  assert_eq(none, -1)
 }
 
 test "guard with a nested tuple pattern" {

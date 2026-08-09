@@ -504,11 +504,12 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
 
 > **guard semantics (#1283):** `guard e is PAT else { alt }` desugars to
 > `match e { PAT => <rest-of-block>, _ => alt }` — the else arm IS the
-> continuation's fallthrough, which is why it must diverge. `return` is the
-> only accepted divergence form for now; `throw` is deliberately not accepted
-> yet (ADR-0073 pins `Exception::Throw` as non-resumable, but the checker's
-> explicit abortive-effect judgement is deferred). For a fall-through *value*
-> fallback, use `if e is PAT { .. } else { .. }` or an explicit `match`.
+> continuation's fallthrough, which is why it must diverge. `return` and a
+> direct `throw(...)` (equivalently `perform Exception::Throw(...)`) are
+> accepted divergence forms. Other `perform` operations may resume, and a
+> handled `throw` may produce the handler's value, so neither counts as
+> divergence here. For a fall-through *value* fallback, use `if e is PAT { .. }
+> else { .. }` or an explicit `match`.
 >
 > This replaced the `let PAT = e else { .. }` spelling (#760(1)), which is now
 > a named parse error. The two are not interchangeable: let-else's else block

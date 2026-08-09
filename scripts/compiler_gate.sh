@@ -36,6 +36,12 @@ echo "[compiler-gate] 1-2/3 generated compiler artifacts"
 # Warm (fingerprint unchanged since the last run) this is ~1s.
 bash scripts/ensure_generated.sh
 
+# #1553: exercise the measurement protocol with a fake runner. This validates
+# isolation and fail-closed parsing without running the costly real full-CLI
+# memory measurement, which remains opt-in via `pkf run measure-fs-heap`.
+echo "[compiler-gate] 2a/3 FS heap measurement protocol"
+bash scripts/measure_fs_heap_test.sh
+
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
 # ensure_generated just wrote the flat module source from the current tree, so
 # feed it to the selfbuild directly rather than paying a second generation.
@@ -6687,6 +6693,14 @@ scps_check_reject() {
 # literal taints the slot and the rejection stays.
 scps_run_expect "effect_closure_param_inert.vibe" "5" "inertparam"
 scps_run_expect "effect_closure_param_inert_transitive.vibe" "5" "inertdeleg"
+# #1536 (a), eager Stream slice: Stream::next must retarget before suspend
+# CPS evaluates a resume-value Async handler. The fixture also pins its
+# Array-backed ready Future[Option[T]] result and one evaluation (Some(41)+1).
+scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
+# Fresh synthetic target and direct [ready, payload] cell: a user
+# `__sn_next` must not capture the retarget and shadowed Future::ready must
+# not change empty-stream layout (None fallback = 7).
+scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygiene"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"

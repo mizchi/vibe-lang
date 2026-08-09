@@ -17,7 +17,15 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
-  check_file_fs_mode, compile_file_fs_mode, compile_file_fs_mode_cached, compile_file_fs_mode_cached_profiled, compile_file_fs_mode_profiled
+  check_file_fs_mode_from_source_groups,
+  compile_file_fs_mode,
+  compile_file_fs_mode_cached,
+  compile_file_fs_mode_cached_profiled,
+  compile_file_fs_mode_profiled
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
 }
 
 // #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
@@ -162,10 +170,11 @@ fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
 /// locate_type_error resolve it; on mismatch (a dep-module offset) strip the
 /// marker so the message degrades to unlocated instead of naming a
 /// plausible-but-wrong entry-file line (worse than no position, per #1445).
-/// Messages without the culprit clause pass through untouched. Residual
-/// (Codex review, PR #1594): a dep offset whose entry-text span coincidentally
-/// spells the same whole identifier still passes — closing that needs the
-/// marker to carry source identity, tracked as a follow-up issue.
+/// Messages without the culprit clause pass through untouched. This is the
+/// single-source primitive; linked lanes must use
+/// verify_culprit_off_marker_snapshot below, which additionally rejects an
+/// entry match when any dependency in the same consumed snapshot matches the
+/// same culprit and span (#1596).
 /// Parse a run of ASCII digits as a non-negative Int, or -1 when `s` is empty
 /// or contains any non-digit (local copy of typecheck_fs's parse_offset_digits,
 /// which is module-private there).
@@ -239,6 +248,65 @@ export fn verify_culprit_off_marker(source: String, msg: String) -> String {
   }
 }
 
+/// FS/build compilation does not yet return the grouped-source snapshot that
+/// produced a Throw. Without same-snapshot ownership evidence, keep the culprit
+/// name but strip its unproven transport offset (#1596).
+export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
+  if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
+    verify_culprit_off_marker("", msg)
+  } else {
+    msg
+  }
+}
+
+/// Verify a culprit marker against the exact grouped-source snapshot consumed
+/// by the failing check. The entry must occur exactly once in that snapshot and
+/// be the unique reachable source spelling the named whole identifier at the
+/// marker span. Missing/duplicate entry identity or a dependency collision is
+/// fail-closed: keep the culprit name, but strip the transport marker (#1596).
+export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: Array[(String, Array[(String, String)])], msg: String) -> (String, String) {
+  let mut entry_source = ""
+  let dep_sources: Array[String] = array_empty()
+  let mut entry_count = 0
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      if path == input_path {
+        entry_source = source
+        entry_count = entry_count + 1
+      } else {
+        Array::push(dep_sources, source)
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  if entry_count != 1 {
+    (entry_source, verify_culprit_off_marker("", msg))
+  } else {
+    let entry_verified = verify_culprit_off_marker(entry_source, msg)
+    if !String::contains(entry_verified, " [@off=") {
+      (entry_source, entry_verified)
+    } else {
+      let mut i = 0
+      let mut ambiguous = false
+      while i < Array::length(dep_sources) && !ambiguous {
+        let dep_verified = verify_culprit_off_marker(Array::get(dep_sources, i), msg)
+        ambiguous = String::contains(dep_verified, " [@off=")
+        i = i + 1
+      }
+      if ambiguous {
+        (entry_source, verify_culprit_off_marker("", msg))
+      } else {
+        (entry_source, entry_verified)
+      }
+    }
+  }
+}
+
 export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with Exception + Fs {
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(input_path)
   let main_stmts = array_empty()
@@ -274,6 +342,10 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
   } else {
     ()
   }
+  // Capture one grouped-source snapshot and pass that exact value through the
+  // failing check and culprit ownership proof. Recollecting after Throw would
+  // reintroduce #1596's concurrent-edit TOCTOU.
+  let source_groups = collect_source_groups_fs(input_path)
   // #946 P1 (Codex, PR #1006): the type-check itself must go through
   // check_file_fs_mode (the fs-mode source-group + db_typecheck_fs pipeline
   // compile_file_fs_mode already relies on for a real compile), NOT
@@ -289,7 +361,7 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
   // the merged stmts check_inline_wasm_fns scans (inline-wasm fns can live in
   // an imported file too) — that scan is independent of type information.
   handle {
-    let _ = check_file_fs_mode(input_path)
+    let _ = check_file_fs_mode_from_source_groups(input_path, source_groups)
     let (resolved_type_stmts, _linked_imports, _linked_dep_specs) = collect_linked_dep_inputs_for_stmts(input_path, entry_stmts)
     let stmts = array_empty()
     append_stmt_array(stmts, resolved_type_stmts)
@@ -307,10 +379,17 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
       None => ()
     }
   } with Exception {
-    // #1514: verify_culprit_off_marker first — the evidence-passing culprit
-    // marker may index a DEP module's text; only a span that provably spells
-    // the culprit in the entry file is allowed to resolve against it.
-    Throw(msg) => throw(locate_type_error(entry_source, verify_culprit_off_marker(entry_source, msg)))
+    // #1596: locate only when entry is the unique reachable source matching
+    // the culprit/span. A dependency collision keeps the culprit name but
+    // drops the potentially false entry location.
+    Throw(msg) => {
+      if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
+        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
+        throw(locate_type_error(snapshot_entry_source, verified))
+      } else {
+        throw(locate_type_error(entry_source, msg))
+      }
+    }
   }
   0
 }

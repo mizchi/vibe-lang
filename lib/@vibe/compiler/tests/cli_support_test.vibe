@@ -1,7 +1,11 @@
 //# Imports
 
 import ../cli_support.vibe {
-  compile_release_file_mode, check_linked_file, verify_culprit_off_marker
+  compile_release_file_mode, check_linked_file, verify_culprit_off_marker, verify_culprit_off_marker_fs_fail_closed, verify_culprit_off_marker_snapshot
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
 }
 
 import @vibe/core {
@@ -29,6 +33,13 @@ fn assert_wasm_magic(bytes: Bytes) -> Unit {
 }
 
 //# Misc
+
+test "FS/build culprit marker is fail-closed without its compile snapshot (#1596)" {
+  let msg = "cannot lower (here: the call to 'bump') [@off=112:116]"
+  let verified = verify_culprit_off_marker_fs_fail_closed(msg)
+  assert(String::contains(verified, "here: the call to 'bump'"))
+  assert(!String::contains(verified, "[@off="))
+}
 
 test "cli support dispatches mvp through pruned compile path" {
   let main_path = "/tmp/vibe_cli_support_mode_main.vibe"
@@ -186,6 +197,71 @@ test "check_linked_file: dep-module culprit degrades to unlocated, no marker lea
     Throw(m) => m
   }
   assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(!String::contains(msg, "[@off="))
+}
+
+/// #1596: the harder basis collision. The dependency's culprit `bump` starts
+/// at byte 112, and the entry deliberately spells a different whole `bump` at
+/// that exact span. Entry-only spelling verification would falsely report the
+/// entry line; the reachable-source proof must retain the culprit name but
+/// suppress the ambiguous location.
+test "check_linked_file: identical dep and entry culprit spans degrade to unlocated (#1596)" {
+  let base_dir = "/tmp/vibe_cli_support_check_edp_same_span"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
+  let msg = handle {
+    let _ = check_linked_file(main_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(!String::contains(msg, "line "))
+  assert(!String::contains(msg, "[@off="))
+}
+
+/// The source proof must use the snapshot consumed by the check, not reread a
+/// dependency after Throw. Rewriting the dependency after collection cannot
+/// erase its collision from the proof (#1596 TOCTOU regression).
+test "culprit snapshot proof is stable across post-collection source changes (#1596)" {
+  let base_dir = "/tmp/vibe_cli_support_snapshot_stable"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
+  let source_groups = collect_source_groups_fs(main_path)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn run() -> Int { 0 }\n"))
+  let msg = "cannot lower (here: the call to 'bump') [@off=112:116]"
+  let (_, verified) = verify_culprit_off_marker_snapshot(main_path, source_groups, msg)
+  assert(!String::contains(verified, "[@off="))
+  let fresh_groups = collect_source_groups_fs(main_path)
+  let (_, fresh_verified) = verify_culprit_off_marker_snapshot(main_path, fresh_groups, msg)
+  assert(String::contains(fresh_verified, "[@off=112:116]"))
+}
+
+/// A transitive dependency collision is part of the same grouped snapshot and
+/// must suppress the plausible entry location too.
+test "check_linked_file: transitive dep and entry culprit spans degrade to unlocated (#1596)" {
+  let base_dir = "/tmp/vibe_cli_support_check_edp_transitive"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let mid_path = String::concat(base_dir, "/mid.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(mid_path, string_to_bytes("import ./dep.vibe { run }\nexport fn relay() -> Int { run() }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./mid.vibe { relay }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { relay() }\n"))
+  let msg = handle {
+    let _ = check_linked_file(main_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(!String::contains(msg, "line "))
   assert(!String::contains(msg, "[@off="))
 }
 

@@ -84,7 +84,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
-  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env, verify_culprit_off_marker
+  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env, verify_culprit_off_marker_fs_fail_closed
 }
 
 import @vibe/lsp {
@@ -389,28 +389,15 @@ fn emit_compile_diag_located(output_path: String, msg: String, source: String) -
   }
 }
 
-/// #1514 (repair 08): the FS-compile lane's located variant. This lane
-/// compiles MERGED module text, so a marker's offsets index whichever module
-/// the diagnostic came from -- resolving blindly against the entry file could
-/// name a plausible-but-wrong line (#1445's leaked-marker lesson, one step
-/// worse). Only the evidence-passing culprit marker is resolvable here,
-/// because it carries its own proof: the message names the culprit callee and
-/// the span, so `verify_culprit_off_marker` can check the entry text actually
-/// spells that callee at that span before locate_type_error renders it. Any
-/// other (or failed-verify) marker degrades to the stripped, unlocated
-/// message via emit_compile_diag.
-fn emit_compile_diag_fs_located(output_path: String, msg: String, input_path: String) -> Int with Fs + Exception {
-  if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-    let entry_source = Fs::read_file(input_path)
-    let verified = verify_culprit_off_marker(entry_source, msg)
-    if String::contains(verified, " [@off=") {
-      emit_compile_diag(output_path, locate_type_error(entry_source, verified))
-    } else {
-      emit_compile_diag(output_path, verified)
-    }
-  } else {
-    emit_compile_diag(output_path, msg)
-  }
+/// #1596: FS/build compile helpers own their grouped-source snapshot internally
+/// and currently expose only Bytes/Throw, not that snapshot. Rereading after a
+/// failure cannot prove marker ownership under concurrent edits. Fail closed in
+/// this lane until the compile API transports source identity: preserve the
+/// actionable culprit name and strip the unresolved marker, never invent an
+/// entry-file location. `vibe check` retains locations because it passes one
+/// exact grouped-source snapshot through checking and verification.
+fn emit_compile_diag_fs_located(output_path: String, msg: String, _input_path: String) -> Int with Fs {
+  emit_compile_diag(output_path, verify_culprit_off_marker_fs_fail_closed(msg))
 }
 
 /// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
@@ -1038,10 +1025,9 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         strip_executable_wasm_env(bytes, entry_name)
       }
       Fs::write_bytes(output_path, out_bytes)
-      // #1553: final named heap mark for the FS-compile measurement — captures
-      // the strip_executable_wasm_env + output-write tail, so the reported
-      // peak is not under-read when stripping allocates past the codegen_rc
-      // mark. No-op (empty env read) unless VIBE_PROFILE_MEMORY_MARKS=1.
+      // #1553: this observes the executable-strip + primary-output boundary.
+      // It is intentionally not called "final": optional sidecars below are
+      // still observable work and fs_compile_complete marks their completion.
       if mark_memory {
         let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:write_output")
         ()
@@ -1083,6 +1069,15 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // sidecar is deliberately the final publication operation.
       if artifact_input_trace_out != "" {
         Fs::write_file(artifact_input_trace_out, artifact_input_trace)
+      } else {
+        ()
+      }
+      // Successful FS compilation is now complete, including optional
+      // sidecar publication. This is a coarse completion boundary only; it
+      // deliberately does not infer a normalize or link sub-phase.
+      if mark_memory {
+        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:fs_compile_complete")
+        ()
       } else {
         ()
       }

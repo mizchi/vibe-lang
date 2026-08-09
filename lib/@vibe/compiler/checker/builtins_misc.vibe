@@ -20,13 +20,6 @@ fn misc_one_param(a: Type) -> Array[Type] {
   arr
 }
 
-fn lookup_not(name: String) -> Option[Type] {
-  if name == "not" {
-    Some(CtFn(misc_one_param(CtBool), CtBool, None))
-  }
-  else None
-}
-
 fn lookup_neg(name: String) -> Option[Type] {
   if name == "__neg" {
     Some(CtFn(misc_one_param(CtUnknown), CtUnknown, None))
@@ -39,23 +32,6 @@ fn misc_two_params(a: Type, b: Type) -> Array[Type] {
   Array::push(arr, a)
   Array::push(arr, b)
   arr
-}
-
-/// #1520: this is a SHADOWED declaration -- `eq` has a checker-visible registry
-/// row, and `lookup_builtin` consults the registry before this chain, so nothing
-/// reads it. It said `(Int, Int) -> Bool` while `eq` is the structural-equality
-/// builtin and is applied to enums / structs / strings; the registry carried the
-/// same untruth until #1519 made the checker read parameter types and
-/// `eq(Color::Red, c)` started being rejected. Kept in sync (rather than
-/// deleted) because 85 of the 154 registry rows are shadowed like this and
-/// deleting one of them would be an arbitrary partial cleanup -- the
-/// "registry and lane tables agree" test in tests/builtins_test.vibe is what
-/// makes the whole set self-checking.
-fn lookup_eq(name: String) -> Option[Type] {
-  if name == "eq" {
-    Some(CtFn(misc_two_params(CtUnknown, CtUnknown), CtBool, None))
-  }
-  else None
 }
 
 fn lookup_arithmetic_helper(name: String) -> Option[Type] {
@@ -99,13 +75,6 @@ fn lookup_index(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_print(name: String) -> Option[Type] {
-  if name == "print" {
-    Some(CtFn(misc_one_param(CtString), CtUnit, None))
-  }
-  else None
-}
-
 fn lookup_throw(name: String) -> Option[Type] {
   if name == "throw" {
     // #786: `throw` accepts any value, not just String — a `suberror` value
@@ -133,36 +102,6 @@ fn misc_three_params(a: Type, b: Type, c: Type) -> Array[Type] {
 fn lookup_slice(name: String) -> Option[Type] {
   if name == "__slice" {
     Some(CtFn(misc_three_params(CtUnknown, CtInt, CtInt), CtUnknown, None))
-  }
-  else None
-}
-
-fn lookup_assert(name: String) -> Option[Type] {
-  if name == "assert" {
-    Some(CtFn(misc_one_param(CtBool), CtUnit, None))
-  }
-  else if name == "assert_true" {
-    Some(CtFn(misc_one_param(CtBool), CtUnit, None))
-  }
-  else if name == "assert_eq" {
-    Some(CtFn([
-      CtUnknown,
-      CtUnknown
-    ], CtUnit, None))
-  }
-  else None
-}
-
-fn lookup_println(name: String) -> Option[Type] {
-  if name == "println" {
-    Some(CtFn(misc_one_param(CtString), CtUnit, None))
-  }
-  else None
-}
-
-fn lookup_to_string(name: String) -> Option[Type] {
-  if name == "__to_string" {
-    Some(CtFn(misc_one_param(CtUnknown), CtString, None))
   }
   else None
 }
@@ -220,56 +159,24 @@ fn lookup_iter_intrinsic(name: String) -> Option[Type] {
   }
 }
 
-fn lookup_char_to_int(name: String) -> Option[Type] {
-  if name == "Char::to_int" {
-    Some(CtFn(misc_one_param(CtChar), CtInt, None))
-  }
-  else None
-}
-
 fn lookup_misc_group_a(name: String) -> Option[Type] {
   match lookup_arithmetic_helper(name) {
     Some(t) => Some(t),
-    None => match lookup_eq(name) {
+    None => match lookup_neg(name) {
       Some(t) => Some(t),
-      None => match lookup_not(name) {
+      None => match lookup_exn_kind(name) {
         Some(t) => Some(t),
-        None => match lookup_neg(name) {
+        None => match lookup_len(name) {
           Some(t) => Some(t),
-          None => match lookup_to_string(name) {
-            Some(t) => Some(t),
-            None => match lookup_exn_kind(name) {
-              Some(t) => Some(t),
-              None => match lookup_len(name) {
-                Some(t) => Some(t),
-                None => lookup_index(name)
-              }
-            }
-          }
+          None => lookup_index(name)
         }
       }
     }
   }
 }
 
-fn lookup_misc_group_b(name: String) -> Option[Type] {
-  match lookup_slice(name) {
-    Some(t) => Some(t),
-    None => match lookup_print(name) {
-      Some(t) => Some(t),
-      None => match lookup_println(name) {
-        Some(t) => Some(t),
-        None => lookup_assert(name)
-      }
-    }
-  }
-}
-
 fn lookup_misc_group_e(name: String) -> Option[Type] {
-  if name == "String::join" {
-    // (Array[String], String) -> String  (host builtin)
-    Some(CtFn(misc_two_params(CtArray(CtString), CtString), CtString, None))
-  } else if name == "__rec_field" {
+  if name == "__rec_field" {
     // record-pattern desugar: __rec_field(record, index) -> field value.
     // Lenient (field type unknown); only needs to resolve, not constrain.
     Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
@@ -281,28 +188,17 @@ fn lookup_misc_group_e(name: String) -> Option[Type] {
   }
 }
 
-fn lookup_char_from_int(name: String) -> Option[Type] {
-  if name == "Char::from_int" {
-    Some(CtFn(misc_one_param(CtInt), CtChar, None))
-  }
-  else None
-}
-
 fn lookup_double_to_int(name: String) -> Option[Type] {
-  // `Float` is `CtDouble` under the hood (see core/types.vibe) — codegen
-  // already treats "Double::to_int" / "Float::to_int" as the same case, so
-  // accept both spellings here too.
-  if name == "Double::to_int" || name == "Float::to_int" {
+  // `Double::to_int` is registry-backed; its `Float` alias remains a
+  // fallback-only spelling with the same representation.
+  if name == "Float::to_int" {
     Some(CtFn(misc_one_param(CtDouble), CtInt, None))
   }
   else None
 }
 
 fn lookup_int_to_double(name: String) -> Option[Type] {
-  if name == "Int::to_double" || name == "Int::to_float" {
-    Some(CtFn(misc_one_param(CtInt), CtDouble, None))
-  }
-  else if name == "Int::to_string" {
+  if name == "Int::to_string" {
     // Documented in the cheatsheet's conversion set but never wired up —
     // codegen lowers it to the `__to_string` integer path (#740 fallout:
     // ripple_test rotted against it).
@@ -331,30 +227,12 @@ fn lookup_misc_group_c(name: String) -> Option[Type] {
   }
 }
 
-fn lookup_double_from_i64_bits(name: String) -> Option[Type] {
-  if name == "Double::from_i64_bits" {
-    Some(CtFn(misc_one_param(CtInt), CtDouble, None))
-  }
-  else None
-}
-
 fn lookup_misc_group_d(name: String) -> Option[Type] {
-  match lookup_double_from_i64_bits(name) {
-    Some(t) => Some(t),
-    None => match lookup_char_to_int(name) {
-      Some(t) => Some(t),
-      None => match lookup_char_from_int(name) {
-        Some(t) => Some(t),
-        None => lookup_some(name)
-      }
-    }
-  }
+  lookup_some(name)
 }
 
-/// Double::to_string / Float::to_string: codegen already lowers these through
-/// `double_to_string_expr` (the same formatter string interpolation of a
-/// float uses via `__to_string`) — only the checker-side registration was
-/// missing.
+/// Double::to_string / Float::to_string are fallback-only aliases; codegen
+/// lowers both through `double_to_string_expr`.
 fn lookup_double_to_string(name: String) -> Option[Type] {
   if name == "Double::to_string" || name == "Float::to_string" {
     Some(CtFn(misc_one_param(CtDouble), CtString, None))
@@ -412,7 +290,7 @@ fn lookup_misc_group_f(name: String) -> Option[Type] {
 export fn lookup_misc(name: String) -> Option[Type] {
   match lookup_misc_group_a(name) {
     Some(t) => Some(t),
-    None => match lookup_misc_group_b(name) {
+    None => match lookup_slice(name) {
       Some(t) => Some(t),
       None => match lookup_misc_group_c(name) {
         Some(t) => Some(t),

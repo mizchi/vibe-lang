@@ -468,8 +468,7 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
 /// fs-mode source-group + db_typecheck_fs pipeline instead -- the same one
 /// compile_file_fs_mode already relies on for a real compile's (working)
 /// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
-export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
-  let source_groups = collect_source_groups_fs(entry_path)
+export fn check_file_fs_mode_from_source_groups(entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Exception + Fs {
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   // #1536(c) / #1511(b): after the typecheck passes, run the ADR-0076
   // effect-lowering eligibility passes (suspend CPS split + evidence-passing
@@ -490,6 +489,11 @@ export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
     ()
   }
   0
+}
+
+export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  check_file_fs_mode_from_source_groups(entry_path, source_groups)
 }
 
 export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {
@@ -534,30 +538,27 @@ fn fs_heap_mark(phase: String) -> Unit with Env {
 }
 
 /// #1553 heap-measurement variant of compile_file_fs_mode_rc: byte-identical
-/// pipeline with a named memory mark at each phase boundary. Selected by the
-/// CLI adapter ONLY under VIBE_PROFILE_MEMORY_MARKS=1 (the production lanes
-/// stay Env-free per the #634 layering note; this observation-only lane
-/// carries Env solely to reach the runner's mark hook). Phase names:
-///   start           — before any work (baseline heap)
-///   collect_sources — after collect_source_groups_fs (FS reads + module
-///                     header parsing + import-graph resolution)
-///   typecheck       — after db_typecheck_fs (type env build, persistent
-///                     type-env/dep-list TSV cache read/write)
-///   parse_merge     — after build_grouped_merged_stmts (parse all sources,
-///                     export-rename plan, alias rewriting, whole-program merge)
-///   codegen_rc      — after compile_wasi_module_rc (effect lowering /
-///                     evidence-passing migration, perceus RC insertion,
-///                     wasm emit) — this is also the run's heap peak, since
-///                     the bump allocator never frees.
+/// pipeline with a named memory mark at each observable call boundary. Selected
+/// by the CLI adapter ONLY under VIBE_PROFILE_MEMORY_MARKS=1 (the production
+/// lanes stay Env-free per the #634 layering note; this observation-only lane
+/// carries Env solely to reach the runner's mark hook). The labels name the
+/// completed call, not an inferred compiler phase:
+///   start         — before this FS compile helper does work
+///   source_groups — after collect_source_groups_fs
+///   prepared_db   — after prepare_file_fs_from_source_groups_persistent_cached
+///   merged_stmts  — after build_grouped_merged_stmts
+///   codegen_rc    — after compile_wasi_module_rc
+/// In particular these marks do not attribute unobservable normalize or link
+/// phases. heap_ptr is a bump-heap high-water; it is monotonic for this run.
 export fn compile_file_fs_mode_rc_heap_marked(entry_path: String, entry_name: String) -> Bytes with Exception + Fs + Env {
   fs_heap_mark("start")
   let source_groups = collect_source_groups_fs(entry_path)
-  fs_heap_mark("collect_sources")
+  fs_heap_mark("source_groups")
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  fs_heap_mark("typecheck")
+  fs_heap_mark("prepared_db")
   let merged_stmts = build_grouped_merged_stmts(source_groups)
-  fs_heap_mark("parse_merge")
+  fs_heap_mark("merged_stmts")
   let bytes = compile_wasi_module_rc(merged_stmts, entry_name)
   fs_heap_mark("codegen_rc")
   bytes

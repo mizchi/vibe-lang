@@ -638,20 +638,48 @@ test "#1283: a guard else that does not diverge is rejected" {
   assert(String::contains(half_branch, "#1283"))
 }
 
-test "#1283: a guard else that only throws gets its own message" {
-  // `throw` is NOT accepted as divergence yet -- the #1283 decision defers the
-  // checker's explicit abortive-effect judgement -- but it is the mistake most
-  // likely to be made first, since let-else did accept it. So it must not fall
-  // into the generic message.
-  let thrown = handle {
+test "#1446: a guard else accepts direct canonical and compatible exception throws" {
+  let direct_throw = handle {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int with Exception = (o) -> { guard o is Some(v) else { throw(\"none\") }\n  v }\nf(Some(1))"))
     "ok"
   } with Exception {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(String::starts_with(thrown, "ERROR: "))
-  assert(String::contains(thrown, "#1283"))
-  assert(String::contains(thrown, "ADR-0073"))
+  assert(direct_throw == "ok")
+  let canonical_perform = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int with Exception = (o) -> { guard o is Some(v) else { perform Exception::Throw(\"none\") }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Exception {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(canonical_perform == "ok")
+  // `Error::Throw` remains a compatible operation spelling (#1461).
+  let compatible_perform = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int with Exception = (o) -> { guard o is Some(v) else { perform Error::Throw(\"none\") }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Exception {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(compatible_perform == "ok")
+}
+
+test "#1446: a guard else rejects arbitrary performs and handled throws" {
+  let arbitrary_perform = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { perform Log::Emit(\"none\") }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Exception {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(arbitrary_perform, "ERROR: "))
+  assert(String::contains(arbitrary_perform, "Other `perform` operations"))
+  let handled_throw = handle {
+    let _ = parse_program(lex("let f: (Option[Int]) -> Int with Exception = (o) -> { guard o is Some(v) else { handle { throw(\"none\") } with Exception { Throw(_) => 0 } }\n  v }\nf(Some(1))"))
+    "ok"
+  } with Exception {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(handled_throw, "ERROR: "))
+  assert(String::contains(handled_throw, "handled throws"))
 }
 
 test "#1283: guard requires both `is` and `else`" {

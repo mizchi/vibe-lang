@@ -19,7 +19,15 @@ cli="$(bash scripts/build_cli_wasm.sh)"
 [ -s "$cli" ] || { echo "FAIL: no CLI wasm built" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+HTTP_ECHO_PID=""
+cleanup() {
+  if [ -n "$HTTP_ECHO_PID" ] && kill -0 "$HTTP_ECHO_PID" 2>/dev/null; then
+    kill "$HTTP_ECHO_PID" 2>/dev/null || true
+    wait "$HTTP_ECHO_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
@@ -99,6 +107,38 @@ printf '%s\n' "$multi_out" | grep -qE "vibe::bench label=multi_bench\.vibe::heav
 mlines="$(printf '%s\n' "$multi_out" | grep -cE '^vibe::bench ' || true)"
 [ "${mlines:-0}" -eq 2 ] && ok "per-block: exactly 2 machine-readable rows for 2 blocks" \
   || bad "per-block: expected 2 vibe::bench rows, got $mlines (out: $multi_out)"
+
+# 6. #1508: direct client `Http::*` calls in bench blocks use the compiled
+# host-import path. The local echo server gives this an actual request/response
+# round trip rather than merely proving that the source type-checks.
+requested_http_echo_port="${VIBE_HTTP_ECHO_PORT:-0}"
+http_echo_log="$WORK/http_echo.log"
+python3 "$ROOT_DIR/tests/http_echo_server.py" "$requested_http_echo_port" >"$http_echo_log" 2>&1 &
+HTTP_ECHO_PID=$!
+http_echo_port=""
+for _ in $(seq 1 50); do
+  if ! kill -0 "$HTTP_ECHO_PID" 2>/dev/null; then
+    break
+  fi
+  http_echo_port="$(sed -n 's/^HTTP echo server listening on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$http_echo_log" | head -1)"
+  [ -n "$http_echo_port" ] && break
+  sleep 0.1
+done
+if [ -z "$http_echo_port" ] || ! kill -0 "$HTTP_ECHO_PID" 2>/dev/null; then
+  bad "HTTP echo server failed to start (requested port $requested_http_echo_port)"
+  cat "$http_echo_log" >&2 || true
+else
+  export VIBE_HTTP_ECHO_PORT="$http_echo_port"
+  http_out="$("$VIBE" bench "$ROOT_DIR/bench/http_bench.vibe" --iters 5 --warmup 1 2>&1)"
+  for label in http_get_hello http_post_echo_small http_post_echo_1kb http_get_headers; do
+    printf '%s\n' "$http_out" | grep -qE "vibe::bench label=http_bench\\.vibe::$label iters=5 " \
+      && ok "HTTP bench: $label completed through local echo server" \
+      || bad "HTTP bench: missing $label result (got: $http_out)"
+  done
+  hlines="$(printf '%s\n' "$http_out" | grep -cE '^vibe::bench ' || true)"
+  [ "${hlines:-0}" -eq 4 ] && ok "HTTP bench: exactly 4 client benchmark rows" \
+    || bad "HTTP bench: expected 4 vibe::bench rows, got $hlines (out: $http_out)"
+fi
 
 echo "[test_vibe_bench] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

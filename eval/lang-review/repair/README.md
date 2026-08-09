@@ -291,15 +291,19 @@ r6 が直接比較できなくなる。
   marker を剥がして位置なしに降りる — もっともらしく間違った行を指すのは
   位置なしより悪い (#1445 の教訓)
 - **FS-compile レーン** (`vibe build/run/test`, この repair ハーネス):
-  `emit_compile_diag_fs_located` (cli_adapter.vibe) が同じ検証付きで解決
+  compile API が診断を生成した source snapshot を返さないため、offset の所有元を
+  証明できない。`emit_compile_diag_fs_located` は犯人名を残して marker を剥がし、
+  **位置なしへ fail closed** する (#1596)。snapshot を輸送できるようになるまで、
+  entry の現在内容を読み直して位置を推測してはならない
 - **single-source レーン** (self-build 用): desugar 後の AST で offset が
   失われるため名指しのみ・位置なし (marker は `emit_compile_diag` が常に
   剥がすので生の `[@off=` は漏れない)
 
 | # | 位置 (before → after) | 名指し | L | C | 計 |
 |---|---|---|---|---|---|
-| 08 | なし → **`line 9:20-24`** (犯人の `bump` 呼び出しそのもの) | **`(here: the call to 'bump')`** | 0 → **1** | 1 → **2** | 2 → **4** |
+| 08 | `vibe check` は snapshot 証明付きで犯人位置、FS repair lane は安全のため位置なし (#1596) | **`(here: the call to 'bump')`** | **0** | 1 → **2** | 2 → **3** |
 
-mean = 40/10 = 4.0 → **repair_convergence = 5.0**。コーパス10ケースの減点は
-これで無くなった。以降スコアを動かすには新しい種別の発見が必要 (上の
-「追加候補」節の運用に従う)。
+mean = 39/10 = 3.9 → **repair_convergence = 4.9**。FS compile API が consumed
+source snapshot を診断側へ輸送できるまでは、誤った位置を出すより L=0 を選ぶ。
+残る減点はケース08の位置情報1点。以降スコアを動かす場合も、上の
+「追加候補」節の運用に従う。

@@ -1126,20 +1126,18 @@ fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
   }
 }
 
-/// ADR-0089 Decision 3 (#1218): rewrite calls to a host-stream SURFACE name
-/// into calls to the injected fn that implements it (the stream sibling of
-/// lc_rename_sleep_calls, same shadow discipline: `active` goes false under
-/// any binder that shadows the name). The fresh name sidesteps the
-/// nominal-row double-classification hazard documented on
-/// lc_rename_sleep_calls. Only the program-wide form exists -- the stream
-/// machinery is entry-row-keyed, so the boundary is always installed when
-/// this walk runs.
+/// Rewrite calls to a surface builtin into calls to its injected fn (the
+/// stream sibling of lc_rename_sleep_calls, same shadow discipline: `active`
+/// goes false under any binder that shadows the source name). The fresh name
+/// sidesteps the nominal-row double-classification hazard documented on
+/// lc_rename_sleep_calls.
 ///
-/// Parameterized over (surface, injected) so the two retargets share one
-/// TOTAL walk: `host_stream_next` -> `__hs_next` (the read, which performs)
-/// and `host_stream_close` -> `__hs_close` (the drop, which does not). A
-/// second copy of a 150-line total walk is exactly the kind of thing that
-/// drifts and silently stops covering a container.
+/// Parameterized over (surface, injected) so the host read
+/// `host_stream_next` -> `__hs_next`, host close
+/// `host_stream_close` -> `__hs_close`, and eager builtin
+/// `Stream::next` -> `__sn_next` share one TOTAL walk. A second copy of a
+/// 150-line total walk is exactly the kind of thing that drifts and silently
+/// stops covering a container.
 fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) -> Expr {
   match e {
     ECall(callee, args, off) => {
@@ -1287,6 +1285,14 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
 
 fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
   lc_rename_hs_call(e, active, "host_stream_next", "__hs_next")
+}
+
+/// #1536 (a), eager Stream slice: the Array-backed `Stream::next` builtin
+/// lowers too late in compile_call for suspend CPS to classify it. Retarget
+/// it to the synthetic row-free top-level fn before that pass, just as the
+/// host-stream read surface retargets to `__hs_next`.
+fn lc_rename_stream_next_calls(e: Expr, active: Bool, target: String) -> Expr {
+  lc_rename_hs_call(e, active, "Stream::next", target)
 }
 
 /// ADR-0089 Decision 3 follow-up (#1218): the CLOSE retarget, run as its own
@@ -2059,6 +2065,278 @@ fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
     i = i + 1
   }
   hit
+}
+
+/// #1536 (a), eager Stream slice: the same program-level key as the host
+/// boundary machinery, but for `Stream::next`'s row-free synthetic retarget.
+/// The rewrite itself is shadow-aware; this key may only over-inject an unused
+/// private fn when a shadowed spelling appears.
+fn lc_stmts_call_stream_next(stmts: Array[Stmt]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let se = match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => lc_expr_calls_name(v, "Stream::next"),
+      SLetMut(_, _, v) => lc_expr_calls_name(v, "Stream::next"),
+      SExpr(v) => lc_expr_calls_name(v, "Stream::next"),
+      STest(_, v) => lc_expr_calls_name(v, "Stream::next"),
+      SBench(_, v) => lc_expr_calls_name(v, "Stream::next"),
+      _ => false
+    }
+    if se {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// True when `target` appears as a binder or identifier reference. The
+/// retarget's synthetic target must avoid both: a duplicate top-level binding
+/// changes an existing definition, while a nested binding captures the newly
+/// rewritten call. This deliberately walks every expression shape, rather
+/// than treating the `__sn_next` spelling as a private namespace.
+fn lc_pat_mentions_name(p: Pat, target: String) -> Bool {
+  match p {
+    PBind(n) => n == target,
+    PCtor(_, ps) => lc_pats_bind_name(ps, target),
+    PTuple(ps) => lc_pats_bind_name(ps, target),
+    POr(a, b) => lc_pat_mentions_name(a, target) || lc_pat_mentions_name(b, target),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut hit = false
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if lc_pat_mentions_name(fp, target) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn lc_expr_mentions_name(e: Expr, target: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == target,
+    EFn(_, _, params, _, _, b) => {
+      let mut hit = lc_expr_mentions_name(b, target)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == target {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ELet(n, v, b, _) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    ELetMut(n, v, b, _) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    ELetRec(n, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    ESeq(a, b) => lc_expr_mentions_name(a, target) || lc_expr_mentions_name(b, target),
+    EIf(c, t, el) => lc_expr_mentions_name(c, target) || lc_expr_mentions_name(t, target) || lc_expr_mentions_name(el, target),
+    EMatch(s, arms) => lc_expr_mentions_name(s, target) || lc_arms_mention_name(arms, target),
+    EHandle(b, arms) => lc_expr_mentions_name(b, target) || lc_arms_mention_name(arms, target),
+    EWhile(c, b) => lc_expr_mentions_name(c, target) || lc_expr_mentions_name(b, target),
+    EForIn(n, ix, it, b) => n == target || lc_option_name_equals(ix, target) || lc_expr_mentions_name(it, target) || lc_expr_mentions_name(b, target),
+    ELoop(pairs, b) => lc_pairs_mention_name(pairs, target) || lc_expr_mentions_name(b, target),
+    EAssign(n, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    EAssignOp(_, n, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    EReturn(a) => lc_expr_mentions_name(a, target),
+    EDot(o, _, _, _) => lc_expr_mentions_name(o, target),
+    ECall(callee, args, _) => lc_expr_mentions_name(callee, target) || lc_exprs_mention_name(args, target),
+    EBinOp(_, l, r) => lc_expr_mentions_name(l, target) || lc_expr_mentions_name(r, target),
+    EUnaryOp(_, a) => lc_expr_mentions_name(a, target),
+    ELabeledArg(_, _, v) => lc_expr_mentions_name(v, target),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_mentions_name(a, target),
+      None => false
+    },
+    EContinue(args) => lc_exprs_mention_name(args, target),
+    ETuple(items) => lc_exprs_mention_name(items, target),
+    EArray(items) => lc_exprs_mention_name(items, target),
+    ERecord(_, fields, _) => lc_fields_mention_name(fields, target),
+    EMap(fields) => lc_fields_mention_name(fields, target),
+    ESpread(a) => lc_expr_mentions_name(a, target),
+    _ => false
+  }
+}
+
+fn lc_exprs_mention_name(es: Array[Expr], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if lc_expr_mentions_name(Array::get(es, i), target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_arms_mention_name(arms: Array[(Pat, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (p, b) = Array::get(arms, i)
+    if lc_pat_mentions_name(p, target) || lc_expr_mentions_name(b, target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_pairs_mention_name(pairs: Array[(String, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(pairs) {
+    let (n, v) = Array::get(pairs, i)
+    if n == target || lc_expr_mentions_name(v, target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_fields_mention_name(fields: Array[(String, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if lc_expr_mentions_name(v, target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_option_name_equals(opt: Option[String], target: String) -> Bool {
+  match opt {
+    Some(n) => n == target,
+    None => false
+  }
+}
+
+fn lc_stmts_mention_name(stmts: Array[Stmt], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(stmts) {
+    let mentioned = match Array::get(stmts, i) {
+      SLet(_, _, n, _, e) => n == target || lc_expr_mentions_name(e, target),
+      SLetMut(n, _, e) => n == target || lc_expr_mentions_name(e, target),
+      SExpr(e) => lc_expr_mentions_name(e, target),
+      STest(_, e) => lc_expr_mentions_name(e, target),
+      SBench(_, e) => lc_expr_mentions_name(e, target),
+      _ => false
+    }
+    if mentioned {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_fresh_stream_next_target(stmts: Array[Stmt]) -> String {
+  let mut suffix = 0
+  let mut target = ""
+  while target == "" {
+    let candidate = if suffix == 0 {
+      "__sn_next"
+    } else {
+      String::concat("__sn_next_", __to_string(suffix))
+    }
+    if lc_stmts_mention_name(stmts, candidate) {
+      suffix = suffix + 1
+    } else {
+      target = candidate
+    }
+  }
+  target
+}
+
+/// #1536 (a), eager Stream slice: make `Stream::next` visible as a concrete
+/// row-free top-level call before suspend CPS evaluates eligibility. The
+/// target is fresh against every user binding and reference, so rewriting
+/// cannot capture a local `__sn_next*` binding. Its ready Future cell is
+/// constructed directly: `Future::ready` is user-shadowable and therefore
+/// cannot be used inside a synthetic body.
+fn lc_inject_stream_next_retarget(stmts: Array[Stmt]) -> Unit {
+  // compile_call prefers a real top-level binding over builtin lowering. A
+  // user-defined nominal `Stream` therefore owns its generated
+  // `Stream::next` method; retargeting that spelling would silently replace
+  // the user's iterator semantics with the eager Array-backed builtin.
+  if !lc_stmts_call_stream_next(stmts) || lc_program_defines_top_level(stmts, "Stream::next") {
+    ()
+  } else {
+    let target = lc_fresh_stream_next_target(stmts)
+    let sn_s = EIdent("__sn_s", -1)
+    let sn_option = EIf(ECall(EIdent("lt", -1), [
+      EInt(0),
+      ECall(EIdent("Array::length", -1), [
+        sn_s
+      ], -1)
+    ], -1), ECall(EIdent("Some", -1), [
+      ECall(EIdent("Array::get", -1), [
+        sn_s,
+        EInt(0)
+      ], -1)
+    ], -1), ECall(EIdent("None", -1), array_empty(), -1))
+    let sn_body = EArray([
+      EInt(0),
+      sn_option
+    ])
+    let sn_params: Array[(String, Option[TypeExpr])] = [
+      ("__sn_s", None)
+    ]
+    Array::push(stmts, SLet(false, false, target, None, EFn(lc_fresh_string_array(), array_empty(), sn_params, None, None, sn_body)))
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(ex, isrec, nm, ty, expr) => if nm == target {
+          ()
+        } else {
+          Array::set(stmts, i, SLet(ex, isrec, nm, ty, lc_rename_stream_next_calls(expr, true, target)))
+        },
+        SLetMut(nm, ty, expr) => {
+          Array::set(stmts, i, SLetMut(nm, ty, lc_rename_stream_next_calls(expr, true, target)))
+        },
+        SExpr(expr) => {
+          Array::set(stmts, i, SExpr(lc_rename_stream_next_calls(expr, true, target)))
+        },
+        STest(nm, expr) => {
+          Array::set(stmts, i, STest(nm, lc_rename_stream_next_calls(expr, true, target)))
+        },
+        SBench(nm, expr) => {
+          Array::set(stmts, i, SBench(nm, lc_rename_stream_next_calls(expr, true, target)))
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
 }
 
 /// ADR-0089 (#1218, resolve -> direct wake): can this program call the
@@ -2942,6 +3220,12 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     if async_sleep_boundary_err != "" {
       Array::push(errs, async_sleep_boundary_err)
     } else {
+      // #1536 (a), eager Stream slice: compile_call lowers `Stream::next`
+      // directly, which is after suspend_cps_pass and leaves it opaque to the
+      // pass. Give it a shadow-aware synthetic top-level spelling first; its
+      // row-free body exactly preserves the one-evaluation ready
+      // Future[Option[T]] lowering. This must stay before suspend CPS.
+      lc_inject_stream_next_retarget(stmts)
       // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
       // reachable-only-via-tail-resumptive-handler-arms directly into their
       // handler arm body (single-shot fast path). Conservative: bails out

@@ -2733,6 +2733,28 @@ fixtures: `effect_closure_param_inert.vibe` (want 5)、
 → 拒否維持)。これで `async_iter_find` / `_any` / `_all` が suspend body から
 呼べる。
 
+### 追記41 (2026-08-09): eager `Stream::next` の synthetic retarget (#1536 (a) v2)
+
+`Stream::next` は eager Array-backed builtin で、従来は `compile_call` が
+`Future::ready(Some(s[0]) | None)` へ直接 lower していた。その時点は
+`suspend_cps_pass` より後なので、resume を値参照する `handle ... with Async`
+の body では opaque builtin call と判定され、`await(Stream::next(s))` が拒否
+されていた。
+
+`linked_compile` は suspend CPS の直前に、shadow-aware な total walk で
+`Stream::next` を user bindings/references と衝突しない fresh private top-level
+fn へ retarget する。synthetic fn は `Future::ready`（user が shadow 可能）を
+呼ばず、既存 lowering と同じ ready-cell `[0, if 0 < Array::length(s) {
+Some(Array::get(s, 0)) } else { None }]` を直接構築する。通常の call argument
+evaluation により `s` は一度だけ評価される。concrete row-free top-level call になったので
+CPS eligibility は see through できる。これは eager `Stream::next` だけの
+retarget であり、`host_stream_next`、row-variable callee、literal-param flow は
+この slice の範囲外のまま。
+
+fixtures: `effect_stream_next_suspend_retarget.vibe` (want 42; `Some(41)` と
+argument の一回評価を pin)、`effect_stream_next_retarget_hygiene.vibe`
+(`__sn_next` collision、shadowed `Future::ready`、empty layout を pin)。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
