@@ -1627,7 +1627,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 
 | 項目 | 内容 | 依存 |
 |---|---|---|
-| **suspend lowering の適格性** (#1536) | closure パラメータ callee (`pred(v)`) が `scps_calls_ok` を通らない。`await(Stream::next(s))` が書けない直接の原因 (§2.2 末尾) | — (ADR-0076 本体) |
+| **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow と eager `await(Stream::next(s))` retarget は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
 | **`ByteStream` の p3 接続** (#1539) | `lib/@vibe/console/byte_stream.vibe` の Stdin closure 版を `stream.read` へ。ADR-0089 は「pull closure の host shim を差し替えるだけ」と設計済み | — |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |

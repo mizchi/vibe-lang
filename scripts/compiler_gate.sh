@@ -6687,6 +6687,10 @@ scps_check_reject() {
 # literal taints the slot and the rejection stays.
 scps_run_expect "effect_closure_param_inert.vibe" "5" "inertparam"
 scps_run_expect "effect_closure_param_inert_transitive.vibe" "5" "inertdeleg"
+# #1536 (a), eager Stream slice: Stream::next must retarget before suspend
+# CPS evaluates a resume-value Async handler. The fixture also pins its
+# Array-backed ready Future[Option[T]] result and one evaluation (Some(41)+1).
+scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"
