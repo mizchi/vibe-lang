@@ -39,6 +39,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./typecheck_fs.vibe {
+  build_trait_aware_import_env,
   ensure_fingerprint_fs_impl,
   load_persistent_dep_list,
   load_persistent_leaf_fingerprint,
@@ -298,121 +299,17 @@ fn lookup_env_cache(cache: Array[(String, TypeEnv)], path: String) -> Option[Typ
   go(0)
 }
 
-fn resolve_cached_import_path(base_dir: String, raw_path: String, cache: Array[(String, TypeEnv)]) -> String {
-  let candidates = resolve_import_path_candidates(base_dir, raw_path)
-  let mut selected = ""
-  let mut i = 0
-  while i < Array::length(candidates) && selected == "" {
-    let candidate = Array::get(candidates, i)
-    match lookup_env_cache(cache, candidate) {
-      Some(_) => {
-        selected = candidate
-      },
-      None => ()
-    }
-    i = i + 1
-  }
-  if selected == "" {
-    resolve_import_path(base_dir, raw_path)
-  } else {
-    selected
-  }
-}
-
 export fn db_check_env(db: TypeDb, path: String) -> Option[TypeEnv] {
   match unwrap_db(db) {
     TypeDbState(_, cache, _, _, _, _, _, _, _, _) => lookup_env_cache(cache, path)
   }
 }
 
-fn starts_with_upper(name: String) -> Bool {
-  if String::length(name) == 0 {
-    false
-  } else {
-    let c = String::char_code_at(name, 0)
-    c >= 65 && c <= 90
-  }
-}
-
-fn type_returns_name(ty: Type, type_name: String) -> Bool {
-  match ty {
-    CtEnum(name) => name == type_name,
-    CtNamed(name, _) => name == type_name,
-    CtFn(_, ret, _) => type_returns_name(ret, type_name),
-    CtForAll(_, _, body) => type_returns_name(body, type_name),
-    _ => false
-  }
-}
-
-fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, Type)], enum_name: String) -> TypeEnv {
-  let mut out = acc
-  let mut i = 0
-  while i < Array::length(dep_bindings) {
-    let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
-    if candidate_name != enum_name && starts_with_upper(candidate_name) && type_returns_name(candidate_ty, enum_name) {
-      out = env_bind(out, candidate_name, candidate_ty)
-    }
-    i = i + 1
-  }
-  out
-}
-
-fn bind_import_names_from_cache(acc: TypeEnv, resolved: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)]) -> TypeEnv {
-  let dep_env = match lookup_env_cache(cache, resolved) {
-    Some(e) => e,
-    None => EnvEmpty
-  }
-  let dep_bindings = env_flat_bindings(dep_env)
-  let nlen = Array::length(names)
-  let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
-    if j >= nlen {
-      nacc
-    } else {
-      let (name, alias) = Array::get(names, j)
-      let bound_name = match alias {
-        Some(a) => a,
-        None => name
-      }
-      let ty = match env_lookup_flat(dep_bindings, name) {
-        Some(t) => t,
-        None => CtUnknown
-      }
-      let with_name = env_bind(nacc, bound_name, ty)
-      let with_companions = match ty {
-        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_bindings, enum_name),
-        _ => if starts_with_upper(name) {
-          bind_enum_constructor_companions(with_name, dep_bindings, name)
-        } else {
-          with_name
-        }
-      }
-      bind_names(j + 1, with_companions)
-    }
-  }
-  bind_names(0, acc)
-}
-
-fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {
-  let len = Array::length(stmts)
-  let rec go: (Int, TypeEnv) -> TypeEnv = (i, acc) -> {
-    if i >= len {
-      acc
-    } else {
-      let next = match Array::get(stmts, i) {
-        SImport(raw_path, names) => {
-          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache(acc, resolved, names, cache)
-        },
-        SReExport(raw_path, names) => {
-          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache(acc, resolved, names, cache)
-        },
-        _ => acc
-      }
-      go(i + 1, next)
-    }
-  }
-  go(0, EnvEmpty)
+/// The in-memory TypeDb accepts caller-provided modules. Delegate its import
+/// assembly to the trait-aware FS implementation rather than silently dropping
+/// trait declarations and impls from those module environments.
+fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
+  build_trait_aware_import_env(stmts, base_dir, cache)
 }
 
 fn upsert_env_cache(cache: Array[(String, TypeEnv)], path: String, env: TypeEnv) -> Array[(String, TypeEnv)] {

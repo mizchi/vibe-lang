@@ -238,6 +238,60 @@ fn trait_projection_add_mapping(mappings: Array[(String, String)], canonical: St
   }
 }
 
+/// A local trait spelling owns exactly one dependency-qualified authority.
+/// Keep these claims across every import in a module: otherwise two unrelated
+/// traits imported as the same local name would leave one definition and the
+/// other's impls/methods in the TypeEnv, depending on import order.
+fn trait_projection_claim_local(claims: Array[(String, String)], canonical: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(claims) && found == None {
+    let (candidate_canonical, local_name) = Array::get(claims, i)
+    if candidate_canonical == canonical {
+      found = Some(local_name)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn trait_projection_claim_owner(claims: Array[(String, String)], local_name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(claims) && found == None {
+    let (canonical, candidate_local) = Array::get(claims, i)
+    if candidate_local == local_name {
+      found = Some(canonical)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn trait_projection_claim_mappings(claims: Array[(String, String)], resolved: String, mappings: Array[(String, String)], unresolved: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(mappings) {
+    let (source_name, local_name) = Array::get(mappings, i)
+    let canonical = String::concat(String::concat(resolved, "::"), source_name)
+    match (trait_projection_claim_local(claims, canonical), trait_projection_claim_owner(claims, local_name)) {
+      (Some(existing), _) => if existing != local_name {
+        Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import '", canonical), "': aliases '"), String::concat(existing, String::concat("' and '", String::concat(local_name, "'")))))
+      } else {
+        ()
+      },
+      (None, Some(owner)) => if owner != canonical {
+        Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import alias '", local_name), "': used for '"), String::concat(owner, String::concat("' and '", String::concat(canonical, "'")))))
+      } else {
+        Array::push(claims, (canonical, local_name))
+      },
+      (None, None) => Array::push(claims, (canonical, local_name))
+    }
+    i = i + 1
+  }
+}
+
 fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
   match env {
     EnvEmpty => array_empty(),
@@ -251,6 +305,39 @@ fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
     EnvTraitImplGen(_, _, _, _, rest) => trait_projection_supers(rest, name),
     EnvFlat(_) => array_empty(),
     EnvCached(_, _, rest) => trait_projection_supers(rest, name)
+  }
+}
+
+fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: String, mappings: Array[(String, String)]) -> Unit {
+  match dep_env {
+    EnvEmpty => (),
+    EnvBind(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
+    EnvTraitDef(_, _, _, _, rest, _, _) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
+    EnvTraitImpl(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
+    EnvTraitImplGen(candidate, _, bounds, _, rest) => {
+      if candidate == trait_name {
+        let mut i = 0
+        while i < Array::length(bounds) {
+          let (_, labels) = Array::get(bounds, i)
+          let mut j = 0
+          while j < Array::length(labels) {
+            let label = Array::get(labels, j)
+            if trait_defined(dep_env, label) {
+              trait_projection_add_mapping(mappings, label, label)
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+          i = i + 1
+        }
+      } else {
+        ()
+      }
+      trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings)
+    },
+    EnvFlat(_) => (),
+    EnvCached(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings)
   }
 }
 
@@ -396,6 +483,7 @@ fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(S
   while cursor < Array::length(mappings) {
     let (canonical, _) = Array::get(mappings, cursor)
     let supers = trait_projection_supers(dep_env, canonical)
+    trait_projection_collect_generic_impl_bounds(dep_env, canonical, mappings)
     let mut j = 0
     while j < Array::length(supers) {
       let super_name = Array::get(supers, j)
@@ -538,7 +626,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
   out
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -548,6 +636,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
   let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, unresolved)
+  trait_projection_claim_mappings(trait_claims, resolved, trait_mappings, unresolved)
   // Whether the dependency was CHECKED, not whether it happens to bind any
   // values. A module that exports only types or only traits is checked and
   // cached, and its flat value environment is legitimately empty -- deriving
@@ -594,14 +683,28 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   bind_names(0, prepend_dependency_trait_nodes(dep_env, trait_mappings, acc))
 }
 
-fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {
-  build_import_env_collecting(stmts, base_dir, cache, array_empty())
+/// Shared by the filesystem and in-memory TypeDb lanes. The latter accepts
+/// caller-provided source modules, so it must not fall back to value-only
+/// imports once global trait-bound enforcement is enabled.
+export fn build_trait_aware_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
+  let unresolved = array_empty()
+  let env = build_import_env_collecting(stmts, base_dir, cache, unresolved)
+  if Array::length(unresolved) == 0 {
+    env
+  } else {
+    throw(Array::get(unresolved, 0))
+  }
+}
+
+fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
+  build_trait_aware_import_env(stmts, base_dir, cache)
 }
 
 /// `build_import_env`, additionally collecting the imported names the
 /// dependency does not export (#1521 -- see
 /// `bind_import_names_from_cache_collecting`).
 fn build_import_env_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
+  let trait_claims = array_empty()
   let len = Array::length(stmts)
   let rec go: (Int, TypeEnv) -> TypeEnv = (i, acc) -> {
     if i >= len {
@@ -610,11 +713,11 @@ fn build_import_env_collecting(stmts: Array[Stmt], base_dir: String, cache: Arra
       let next = match Array::get(stmts, i) {
         SImport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved)
+          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved)
+          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims)
         },
         _ => acc
       }
@@ -1501,6 +1604,7 @@ fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arr
   while cursor < Array::length(mappings) {
     let (name, _) = Array::get(mappings, cursor)
     let supers = trait_projection_supers(checked_env, name)
+    trait_projection_collect_generic_impl_bounds(checked_env, name, mappings)
     let mut j = 0
     while j < Array::length(supers) {
       let super_name = Array::get(supers, j)

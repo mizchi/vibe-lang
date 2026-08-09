@@ -365,6 +365,56 @@ test "db_typecheck_fs: missing imported trait impl fails cold and with a warm de
   assert(String::contains(warm_error, "no impl `Required` for `Int`"))
 }
 
+test "db_typecheck_fs: different dependency traits cannot share a local alias" {
+  let first_path = "/tmp/vibe_compiler_trait_authority_collision_first.vibe"
+  let second_path = "/tmp/vibe_compiler_trait_authority_collision_second.vibe"
+  let main_path = "/tmp/vibe_compiler_trait_authority_collision_main.vibe"
+  let first_src = "export trait First { tag(Self) -> Int }\nimpl First for Int { tag(self) -> Int { 1 } }"
+  let second_src = "export trait Second { tag(Self) -> Int }\nimpl Second for String { tag(self) -> Int { 2 } }"
+  let main_src = "import ./vibe_compiler_trait_authority_collision_first.vibe { trait First as Local }\nimport ./vibe_compiler_trait_authority_collision_second.vibe { trait Second as Local }"
+  Fs::write_bytes(first_path, string_to_bytes(first_src))
+  Fs::write_bytes(second_path, string_to_bytes(second_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let first_fp = build_test_fingerprint(first_src, array_empty())
+  let second_fp = build_test_fingerprint(second_src, array_empty())
+  let main_fp = build_test_fingerprint(main_src, [
+    (first_path, first_fp),
+    (second_path, second_fp)
+  ])
+  remove_typecheck_fs_cache(first_path, first_src, first_fp)
+  remove_typecheck_fs_cache(second_path, second_src, second_fp)
+  remove_typecheck_fs_cache(main_path, main_src, main_fp)
+  let error = handle {
+    let db = db_set_source(db_set_source(db_set_source(db_new(), first_path, first_src), second_path, second_src), main_path, main_src)
+    let _ = db_typecheck_fs(db, main_path)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(error, "ambiguous trait import alias 'Local'"))
+}
+
+test "db_typecheck_fs: selected generic impl bounds retain authority cold and warm" {
+  let dep_path = "/tmp/vibe_compiler_trait_authority_generic_dep.vibe"
+  let main_path = "/tmp/vibe_compiler_trait_authority_generic_main.vibe"
+  let dep_src = "export trait Marker { mark(Self) -> Int }\ntrait Other\nimpl Other for Int\nimpl [T: Other] Marker for Array[T] { mark(self) -> Int { Array::length(self) } }\nexport fn accept[T: Marker](x: T) -> Int { let _ = x; 1 }"
+  let main_src = "import ./vibe_compiler_trait_authority_generic_dep.vibe { trait Marker, accept }\nexport let result = accept([1])"
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  let main_fp = build_test_fingerprint(main_src, [
+    (dep_path, dep_fp)
+  ])
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(main_path, main_src, main_fp)
+  let cold = db_typecheck_fs(db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src), main_path)
+  assert(db_check_env(cold, main_path) != None)
+  // Force import assembly while preserving the dependency's persistent env.
+  remove_typecheck_fs_cache(main_path, main_src, main_fp)
+  let warm = db_typecheck_fs(db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src), main_path)
+  assert(db_check_env(warm, main_path) != None)
+}
+
 test "db_typecheck_fs: selected trait alias publishes only its projected authority" {
   let dep_path = "/tmp/vibe_compiler_trait_authority_selected_dep.vibe"
   let main_path = "/tmp/vibe_compiler_trait_authority_selected_main.vibe"
