@@ -84,7 +84,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
-  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env, verify_culprit_off_marker
+  check_deprecated_warnings, check_linked_file, strip_executable_wasm_env, verify_culprit_off_marker_for_file
 }
 
 import @vibe/lsp {
@@ -394,15 +394,13 @@ fn emit_compile_diag_located(output_path: String, msg: String, source: String) -
 /// the diagnostic came from -- resolving blindly against the entry file could
 /// name a plausible-but-wrong line (#1445's leaked-marker lesson, one step
 /// worse). Only the evidence-passing culprit marker is resolvable here,
-/// because it carries its own proof: the message names the culprit callee and
-/// the span, so `verify_culprit_off_marker` can check the entry text actually
-/// spells that callee at that span before locate_type_error renders it. Any
-/// other (or failed-verify) marker degrades to the stripped, unlocated
-/// message via emit_compile_diag.
+/// because the message names the culprit callee and span. #1596 requires the
+/// entry to be the UNIQUE matching reachable source; a dependency with the
+/// same culprit at the same offset makes the basis ambiguous and therefore
+/// degrades to an unlocated message via emit_compile_diag.
 fn emit_compile_diag_fs_located(output_path: String, msg: String, input_path: String) -> Int with Fs + Exception {
   if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-    let entry_source = Fs::read_file(input_path)
-    let verified = verify_culprit_off_marker(entry_source, msg)
+    let (entry_source, verified) = verify_culprit_off_marker_for_file(input_path, msg)
     if String::contains(verified, " [@off=") {
       emit_compile_diag(output_path, locate_type_error(entry_source, verified))
     } else {

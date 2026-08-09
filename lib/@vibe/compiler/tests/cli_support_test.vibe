@@ -189,6 +189,29 @@ test "check_linked_file: dep-module culprit degrades to unlocated, no marker lea
   assert(!String::contains(msg, "[@off="))
 }
 
+/// #1596: the harder basis collision. The dependency's culprit `bump` starts
+/// at byte 112, and the entry deliberately spells a different whole `bump` at
+/// that exact span. Entry-only spelling verification would falsely report the
+/// entry line; the reachable-source proof must retain the culprit name but
+/// suppress the ambiguous location.
+test "check_linked_file: identical dep and entry culprit spans degrade to unlocated (#1596)" {
+  let base_dir = "/tmp/vibe_cli_support_check_edp_same_span"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
+  let msg = handle {
+    let _ = check_linked_file(main_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "here: the call to 'bump'"))
+  assert(!String::contains(msg, "line "))
+  assert(!String::contains(msg, "[@off="))
+}
+
 /// Codex review on PR #1594: the spelling check must match a WHOLE
 /// identifier. A dep-module offset landing where the entry text spells the
 /// culprit as a prefix of a longer name (`run` inside `run_all`) is a basis

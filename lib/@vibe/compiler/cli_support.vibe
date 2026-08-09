@@ -20,6 +20,10 @@ import @vibe/compiler/entry/compiler/file_compile {
   check_file_fs_mode, compile_file_fs_mode, compile_file_fs_mode_cached, compile_file_fs_mode_cached_profiled, compile_file_fs_mode_profiled
 }
 
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
 // #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
 // these used to be three separate leaf imports (linked_artifacts.vibe,
 // preprocess_interp.vibe, linked_library.vibe), now merged into one. A
@@ -162,10 +166,11 @@ fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
 /// locate_type_error resolve it; on mismatch (a dep-module offset) strip the
 /// marker so the message degrades to unlocated instead of naming a
 /// plausible-but-wrong entry-file line (worse than no position, per #1445).
-/// Messages without the culprit clause pass through untouched. Residual
-/// (Codex review, PR #1594): a dep offset whose entry-text span coincidentally
-/// spells the same whole identifier still passes — closing that needs the
-/// marker to carry source identity, tracked as a follow-up issue.
+/// Messages without the culprit clause pass through untouched. This is the
+/// single-source primitive; linked lanes must use
+/// verify_culprit_off_marker_for_file below, which additionally rejects an
+/// entry match when any reachable dependency has the same culprit at the same
+/// span (#1596).
 /// Parse a run of ASCII digits as a non-negative Int, or -1 when `s` is empty
 /// or contains any non-digit (local copy of typecheck_fs's parse_offset_digits,
 /// which is module-private there).
@@ -239,6 +244,63 @@ export fn verify_culprit_off_marker(source: String, msg: String) -> String {
   }
 }
 
+/// Keep a culprit offset only when the entry is the unique reachable source
+/// that spells the named whole identifier at that span. A dependency match
+/// makes the source basis ambiguous, so strip the transport marker while
+/// preserving the actionable culprit name (#1596, #1445).
+fn verify_culprit_off_marker_sources(entry_source: String, dep_sources: Array[String], msg: String) -> String {
+  let entry_verified = verify_culprit_off_marker(entry_source, msg)
+  if !String::contains(entry_verified, " [@off=") {
+    entry_verified
+  } else {
+    let mut i = 0
+    let mut ambiguous = false
+    while i < Array::length(dep_sources) && !ambiguous {
+      let dep_verified = verify_culprit_off_marker(Array::get(dep_sources, i), msg)
+      ambiguous = String::contains(dep_verified, " [@off=")
+      i = i + 1
+    }
+    if ambiguous {
+      // The marker was already proven syntactically valid against entry_source;
+      // an empty source therefore strips exactly that marker.
+      verify_culprit_off_marker("", msg)
+    } else {
+      entry_verified
+    }
+  }
+}
+
+/// Resolve the source set through the same loader used by FS check/build. This
+/// runs only while rendering a failed diagnostic; it reuses import resolution
+/// rather than maintaining a second dependency walker. If source collection
+/// itself fails, degrade conservatively to an unlocated culprit diagnostic.
+export fn verify_culprit_off_marker_for_file(input_path: String, msg: String) -> (String, String) with Exception + Fs {
+  let entry_source = Fs::read_file(input_path)
+  let verified = handle {
+    let groups = collect_source_groups_fs(input_path)
+    let dep_sources: Array[String] = array_empty()
+    let mut gi = 0
+    while gi < Array::length(groups) {
+      let (_, sources) = Array::get(groups, gi)
+      let mut si = 0
+      while si < Array::length(sources) {
+        let (path, source) = Array::get(sources, si)
+        if path != input_path {
+          Array::push(dep_sources, source)
+        } else {
+          ()
+        }
+        si = si + 1
+      }
+      gi = gi + 1
+    }
+    verify_culprit_off_marker_sources(entry_source, dep_sources, msg)
+  } with Exception {
+    Throw(_) => verify_culprit_off_marker("", msg)
+  }
+  (entry_source, verified)
+}
+
 export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with Exception + Fs {
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(input_path)
   let main_stmts = array_empty()
@@ -307,10 +369,13 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
       None => ()
     }
   } with Exception {
-    // #1514: verify_culprit_off_marker first — the evidence-passing culprit
-    // marker may index a DEP module's text; only a span that provably spells
-    // the culprit in the entry file is allowed to resolve against it.
-    Throw(msg) => throw(locate_type_error(entry_source, verify_culprit_off_marker(entry_source, msg)))
+    // #1596: locate only when entry is the unique reachable source matching
+    // the culprit/span. A dependency collision keeps the culprit name but
+    // drops the potentially false entry location.
+    Throw(msg) => {
+      let (_, verified) = verify_culprit_off_marker_for_file(input_path, msg)
+      throw(locate_type_error(entry_source, verified))
+    }
   }
   0
 }
