@@ -89,6 +89,30 @@ pkf run release-gates   # = scripts/compiler_gate.sh
 pkf run generation-gate
 ```
 
+## Cold FS Compile Memory Observation (#1553)
+
+The full CLI's FS compile can approach wasm32 linear-memory limits only on a
+cold persistent-cache run. Measure it separately from the normal operation
+loop; it uses an isolated cache and prints deterministic guest `pages` and
+`heap_ptr` values (RSS is diagnostic only):
+
+```bash
+pkf run measure-fs-heap -- --cold --base path/to/stage2.wasm
+# Optional 3.5 GiB (= 57344 wasm pages) failure threshold:
+pkf run measure-fs-heap -- --cold --gate --base path/to/stage2.wasm
+# Optional byte parity check, at the cost of a second cold compile:
+pkf run measure-fs-heap -- --cold --verify-parity --base path/to/stage2.wasm
+```
+
+This is deliberately opt-in rather than an always-on CI lane: a cold
+whole-CLI measurement is materially more expensive than the existing
+single-input `selfcompile-kpi` gate. Promote it only after recording repeated
+cold-run duration/resource data and a reviewed threshold rationale. At that
+point, add the `--cold --gate` invocation to the existing `compiler-gate` CI
+job using that job's already-built stage2 artifact; do not add a second stage
+build solely for this measurement. The mark labels are observable call
+boundaries, not claims about separately unobservable normalize or link phases.
+
 ## Stop Criteria
 
 次のどれかが起きたら、compiler の運用は一時停止して原因を切り分ける。

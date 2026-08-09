@@ -1038,10 +1038,9 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         strip_executable_wasm_env(bytes, entry_name)
       }
       Fs::write_bytes(output_path, out_bytes)
-      // #1553: final named heap mark for the FS-compile measurement — captures
-      // the strip_executable_wasm_env + output-write tail, so the reported
-      // peak is not under-read when stripping allocates past the codegen_rc
-      // mark. No-op (empty env read) unless VIBE_PROFILE_MEMORY_MARKS=1.
+      // #1553: this observes the executable-strip + primary-output boundary.
+      // It is intentionally not called "final": optional sidecars below are
+      // still observable work and fs_compile_complete marks their completion.
       if mark_memory {
         let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:write_output")
         ()
@@ -1083,6 +1082,15 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // sidecar is deliberately the final publication operation.
       if artifact_input_trace_out != "" {
         Fs::write_file(artifact_input_trace_out, artifact_input_trace)
+      } else {
+        ()
+      }
+      // Successful FS compilation is now complete, including optional
+      // sidecar publication. This is a coarse completion boundary only; it
+      // deliberately does not infer a normalize or link sub-phase.
+      if mark_memory {
+        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:fs_compile_complete")
+        ()
       } else {
         ()
       }
