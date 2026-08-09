@@ -1,0 +1,43 @@
+// #1536 (a) v4: a suspending match expression in SEQUENCE HEAD position is
+// distributed over its continuation. The pattern binds `outer`, while the
+// sequence tail refers to the outer `outer`; alpha-renaming the pattern is
+// required to prevent that tail reference from being captured. `next_key`
+// also proves the scrutinee is evaluated once.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let visits = [
+  0
+]
+let calls = [
+  0
+]
+
+fn next_key() -> Option[Int] {
+  Array::set(visits, 0, Array::get(visits, 0) + 1)
+  Some(1)
+}
+
+let _start = () -> Int {
+  handle {
+    let outer = 100
+    match next_key() {
+      Some(outer) => perform Ask::Get(outer + 2),
+      _ => perform Ask::Get(99)
+    }
+    Array::get(calls, 0) * 1000 + Array::get(visits, 0) * 100 + outer
+  } with Ask {
+    Get(n) => {
+      Array::set(calls, 0, n)
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+_start()
+
+__DATA__
+{
+  "last": "3200"
+}

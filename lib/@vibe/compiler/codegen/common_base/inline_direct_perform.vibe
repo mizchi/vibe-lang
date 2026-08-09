@@ -9432,6 +9432,35 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
             (bok, ESeq(a, bexpr))
           },
+          // #1536 (a) v4: distribute the sequence continuation through a
+          // suspending conditional. The condition remains outside the
+          // branches, so it is evaluated exactly once before exactly one
+          // branch and its continuation. Branch-local lets remain lexical
+          // to their branch because `b` is an ESeq sibling, not their body.
+          EIf(c, t, el) => if scps_contains_susp(a, sctx) {
+            if scps_contains_susp(c, sctx) {
+              (false, e)
+            } else {
+              scps_split_tail(EIf(c, ESeq(t, b), ESeq(el, b)), sctx, ctx, st)
+            }
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
+          // #1536 (a) v4: likewise distribute through match after first
+          // alpha-renaming every pattern binder. The tail was outside the
+          // match originally; without the rename, a pattern binding could
+          // capture an outer reference in the duplicated tail.
+          EMatch(s, arms) => if scps_contains_susp(a, sctx) {
+            if scps_contains_susp(s, sctx) {
+              (false, e)
+            } else {
+              scps_split_tail(EMatch(s, scps_seq_float_match_arms(arms, b, site)), sctx, ctx, st)
+            }
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
           // Reassociate a suspending nested sequence head so its own head
           // surfaces for the arms above: ESeq(ESeq(a1, a2), b) ==>
           // ESeq(a1, ESeq(a2, b)). Strictly decreases head size, so the
@@ -10469,6 +10498,96 @@ fn scps_seq_float_fresh(x: String, k: Expr, b: Expr, site: Int) -> String {
     nx = String::concat(String::concat(base, "_"), Int::to_string(i))
   }
   nx
+}
+
+/// Append the original sequence tail to every match arm without letting a
+/// pattern binder capture a name in that tail. Each arm gets fresh binders
+/// and a correspondingly alpha-renamed body before `b` is placed under the
+/// arm scope. The scrutinee remains outside this helper and is evaluated once.
+fn scps_seq_float_match_arms(arms: Array[(Pat, Expr)], b: Expr, site: Int) -> Array[(Pat, Expr)] {
+  let out = scps_empty_arms()
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, body) = Array::get(arms, i)
+    let names = array_empty()
+    scps_pat_collect_binds(p, names)
+    let mut p2 = p
+    let mut body2 = body
+    let mut ni = 0
+    while ni < Array::length(names) {
+      let nm = Array::get(names, ni)
+      let mut seen = false
+      let mut prev = 0
+      while prev < ni {
+        if Array::get(names, prev) == nm {
+          seen = true
+        } else {
+          ()
+        }
+        prev = prev + 1
+      }
+      if seen {
+        ()
+      } else {
+        let nx = scps_seq_float_match_fresh(nm, p2, body2, b, site, i)
+        p2 = scps_rename_pat_ident(p2, nm, nx)
+        body2 = scps_rename_ident(body2, nm, nx)
+      }
+      ni = ni + 1
+    }
+    Array::push(out, (p2, ESeq(body2, b)))
+    i = i + 1
+  }
+  out
+}
+
+/// Fresh name for one distributed match arm. Besides the arm body and shared
+/// tail, probe the pattern itself: a target already bound by a sibling field
+/// or an or-pattern would change its binding relation.
+fn scps_seq_float_match_fresh(x: String, p: Pat, body: Expr, b: Expr, site: Int, arm: Int) -> String {
+  let arm_base = String::concat(String::concat(scps_local("__scps_match", site), "_"), Int::to_string(arm))
+  let base = String::concat(String::concat(arm_base, "_"), x)
+  let mut nx = base
+  let mut i = 0
+  while scps_pat_binds_name(p, nx) || scps_mentions_name(body, nx) || scps_mentions_name(b, nx) {
+    i = i + 1
+    nx = String::concat(String::concat(base, "_"), Int::to_string(i))
+  }
+  nx
+}
+
+fn scps_rename_pat_ident(p: Pat, x: String, nx: String) -> Pat {
+  match p {
+    PBind(nm) => if nm == x {
+      PBind(nx)
+    } else {
+      p
+    },
+    PCtor(nm, ps) => PCtor(nm, scps_rename_pat_idents(ps, x, nx)),
+    PTuple(ps) => PTuple(scps_rename_pat_idents(ps, x, nx)),
+    POr(a, b) => POr(scps_rename_pat_ident(a, x, nx), scps_rename_pat_ident(b, x, nx)),
+    PStruct(nm, fields) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fp) = Array::get(fields, i)
+        Array::push(out, (fname, scps_rename_pat_ident(fp, x, nx)))
+        i = i + 1
+      }
+      PStruct(nm, out)
+    },
+    _ => p
+  }
+}
+
+fn scps_rename_pat_idents(ps: Array[Pat], x: String, nx: String) -> Array[Pat] {
+  let out = scps_empty_pats()
+  let mut i = 0
+  while i < Array::length(ps) {
+    Array::push(out, scps_rename_pat_ident(Array::get(ps, i), x, nx))
+    i = i + 1
+  }
+  out
 }
 
 /// True if `e` could reach a suspend of the effect under proof: ANY
