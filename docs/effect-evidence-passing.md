@@ -2771,12 +2771,17 @@ while+let-mut spine (適格) と脱糖出力の差はこの木の左右バラン
 - `ESeq(ELet(x, v, k), b)` → `ELet(nx, v, ESeq(k[x:=nx], b))`
   (ELetMut も同形、`ESeq(ESeq(a1, a2), b)` は右結合へ再結合)。
   float 後は既存の ELet/ELetMut/while arm がそのまま split する。
-- **binder は無条件に site-suffix の fresh 名 `__scps_seq<site>_<x>` へ
-  α-rename する** (`scps_rename_ident`、shadow-aware で代入先も追う)。
-  scope を `b` の上へ広げるので、`b` 内の自由な `x` (外側 binding への参照)
-  を捕獲しないことが正しさの条件 — rename で構造的に排除する。同名 float の
-  `nx` 衝突は「内側 literal binder が外側を shadow する」surface scoping が
-  そのまま成り立つので無害。
+- **binder は無条件に fresh 名へ α-rename する** (`scps_rename_ident`、
+  shadow-aware で代入先も追う)。scope を `b` の上へ広げるので、`b` 内の
+  自由な `x` (外側 binding への参照) を捕獲しないことが正しさの条件 —
+  rename で構造的に排除する。fresh 名は `__scps_seq<site>_<x>` を基底に、
+  **その綴りが `k`・`b` のどこにも出現しなくなるまで数値 suffix を bump
+  して mint する** (`scps_seq_float_fresh` — Codex P1 on #1607: user code が
+  生成綴りを文字どおり書いていると、tail の外側参照の捕獲か、`k` 内の同綴り
+  binder による rename 済み出現の捕獲が起き、どちらも黙って誤る。probe は
+  scope-blind な出現検査 `scps_mentions_name` = binder + 参照 + 代入先)。
+  同名 float どうしの `nx` 衝突は「内側 literal binder が外側を shadow する」
+  surface scoping がそのまま成り立つので無害。
 - 判定と変換が同じ関数なので、`vibe check` の #1574 ミラー
   (`effect_lowering_prelude` 経由) と codegen は自動で lockstep。
 - suspend しない HEAD は従来どおり素通し (while arm と同じ理由 — 不要な
@@ -2790,7 +2795,10 @@ literal param。
 fixtures: `effect_for_await_suspend.vibe` (want 20; 逐次 2 loop で同名
 `__iter_*` の反復 float を pin)、`effect_seq_head_block_suspend.vibe`
 (want 1105; inner binder が outer 名を shadow し tail が outer を参照する形 —
-rename を外すと捕獲で黙って誤る、その P0 側を pin)。実害側は
+rename を外すと捕獲で黙って誤る、その P0 側を pin)、
+`effect_seq_head_reserved_name_collision.vibe` (want 3011; user code が
+生成綴り `__scps_seq0_x` を文字どおり束縛/参照する形 — probe を外した対照
+実験では 1015 に化ける)。実害側は
 `async_iter_test.vibe` の suspend-class handle 内 terminals テスト。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

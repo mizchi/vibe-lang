@@ -6710,6 +6710,11 @@ scps_run_expect "effect_for_await_suspend.vibe" "20" "forawaitsusp"
 # outer name the sequence TAIL references -- capture would print 8/wrong,
 # not 1105. Covers both the handle-body spine and a needing fn's clone.
 scps_run_expect "effect_seq_head_block_suspend.vibe" "1105" "seqheadshadow"
+# Codex P1 on #1607: user code literally spelling the generated
+# `__scps_seq<site>_<x>` target must not be captured -- the freshness
+# probe bumps past any occurrence in the floated continuation or the
+# tail. Control-measured: with the probe disabled this prints 1015.
+scps_run_expect "effect_seq_head_reserved_name_collision.vibe" "3011" "seqheadfresh"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"
