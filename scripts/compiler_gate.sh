@@ -36,6 +36,12 @@ echo "[compiler-gate] 1-2/3 generated compiler artifacts"
 # Warm (fingerprint unchanged since the last run) this is ~1s.
 bash scripts/ensure_generated.sh
 
+# #1553: exercise the measurement protocol with a fake runner. This validates
+# isolation and fail-closed parsing without running the costly real full-CLI
+# memory measurement, which remains opt-in via `pkf run measure-fs-heap`.
+echo "[compiler-gate] 2a/3 FS heap measurement protocol"
+bash scripts/measure_fs_heap_test.sh
+
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
 # ensure_generated just wrote the flat module source from the current tree, so
 # feed it to the selfbuild directly rather than paying a second generation.

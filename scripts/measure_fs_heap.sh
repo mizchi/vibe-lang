@@ -14,21 +14,20 @@
 #   write_output, fs_compile_complete.
 # They do not claim separately unobservable normalize or link work.
 #
-# COLD CACHE CONTRACT
-#   --cold uses a newly-created VIBE_BUILD_CACHE_DIR below the measurement
-#   output directory. It never reads an ambient VIBE_BUILD_CACHE_DIR or the
-#   repository's shared _build/vibe_* cache. That makes a cold result suitable
-#   for comparing commits. --warm uses a separate, persistent cache under the
-#   same output directory; first use is necessarily cold.
+# ISOLATION CONTRACT
+#   Each invocation creates a unique run directory below VIBE_FS_HEAP_OUT_DIR
+#   for its cache, output wasm, and runner logs. It deletes that directory on
+#   exit unless VIBE_FS_HEAP_KEEP_RUN_DIR=1. --cold always starts with an empty
+#   cache. --warm snapshots its persistent warm cache into the unique run
+#   directory, then atomically refreshes the snapshot after a successful run.
+#   Warm runs take an exclusive cache lock; VIBE_FS_HEAP_LOCK_DIR optionally
+#   requests the same exclusion for cold runs.
 #
 # GATE
 #   --gate (or VIBE_FS_HEAP_MAX_PAGES) fails when the peak guest pages exceed
 #   the configured limit. --gate's default is 57344 pages = 3.5 GiB. This is
 #   intentionally opt-in: a cold full-CLI compile is too costly to add to an
-#   always-on CI lane without recorded timing/cost data. Promotion procedure:
-#   record repeated cold runs and their cost, commit a baseline/rationale, then
-#   add `pkf run measure-fs-heap -- --cold --gate --base <stage2.wasm>` to the
-#   existing compiler-gate job, reusing its freshly-built stage2 artifact.
+#   always-on CI lane without recorded timing/cost data.
 #
 # USAGE
 #   bash scripts/measure_fs_heap.sh --cold [--base stage2.wasm] [--gate]
@@ -55,10 +54,49 @@ GATE=0
 MAX_PAGES="${VIBE_FS_HEAP_MAX_PAGES:-}"
 OUT_DIR="${VIBE_FS_HEAP_OUT_DIR:-$PROJECT_ROOT/_build/measure_fs_heap}"
 RUNNER="${VIBE_FS_HEAP_RUNNER:-$SCRIPT_DIR/run_wasm_vibe_host_runner.sh}"
+KEEP_RUN_DIR="${VIBE_FS_HEAP_KEEP_RUN_DIR:-0}"
+RUN_DIR=""
+WARM_NEXT=""
+LOCK_DIR=""
+LOCK_HELD=0
+
+# Also sanitize the artifact-preparation step below: it executes the same host
+# runner and must not inherit controls that would perturb a later measurement.
+unset VIBE_WASM_PRE_GROW_PAGES VIBE_WASM_HOST_ALLOC_MODE \
+  VIBE_WASM_HOST_ARENA_GUARD_BYTES VIBE_WASM_MEMORY_STATS \
+  VIBE_WASM_NAMES VIBE_WASM_KEEP_EXPORTS VIBE_ENTRY_TESTMETA_OUT \
+  VIBE_TESTMETA_OUT VIBE_PROFILE_MEMORY_MARK VIBE_ARTIFACT_INPUT_TRACE_OUT \
+  VIBE_ARTIFACT_INPUT_TRACE_NONCE VIBE_INGESTION_TELEMETRY_OUT \
+  VIBE_INGESTION_TELEMETRY_NONCE VIBE_INCREMENTAL_TELEMETRY_OUT \
+  VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE \
+  VIBE_DIAGNOSTICS_ALL VIBE_SCHEDULER_TRACE VIBE_DEP_ORDER_SEED \
+  VIBE_RC_HEAP_START VIBE_RC_FL_WINDOW VIBE_RC_POISON_MASK VIBE_CFG \
+  VIBE_BACKEND VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE VIBE_CHECK_ONLY VIBE_LSP \
+  VIBE_HASH VIBE_HASH_WRITE VIBE_MISSING_VPKG_SCAN VIBE_DEPS_MISSING_SCAN \
+  VIBE_FILL_PINS VIBE_PUBLISH_CHECK VIBE_MODULE_JOB_DIR VIBE_PUBLISH_ENV_CACHE \
+  VIBE_LIST_DEPS VIBE_MODULE_PLAN VIBE_RC VIBE_COVERAGE VIBE_DEBUG \
+  VIBE_DEBUG_BREAK VIBE_IMPORT_ABI VIBE_BUILD_CACHE_DIR VIBE_NODE_WASM_FLAGS \
+  VIBE_PROFILE_MEMORY_MARKS VIBE_PREOPEN_DIR VIBE_INPUT VIBE_OUTPUT VIBE_ENTRY \
+  VIBE_FORCE_RUN_INIT
 
 usage() {
-  sed -n '1,48p' "$0" >&2
+  sed -n '1,45p' "$0" >&2
 }
+
+cleanup() {
+  local status=$?
+  if [ -n "$WARM_NEXT" ]; then
+    rm -rf "$WARM_NEXT"
+  fi
+  if [ "$LOCK_HELD" = 1 ]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+  if [ -n "$RUN_DIR" ] && [ "$KEEP_RUN_DIR" != 1 ]; then
+    rm -rf "$RUN_DIR"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -91,6 +129,21 @@ if [ ! -x "$RUNNER" ]; then
 fi
 
 mkdir -p "$OUT_DIR"
+# Warm snapshot updates share state; cold runs are independent unless an
+# operator explicitly requests a host-resource lock.
+if [ "$MODE" = warm ]; then
+  LOCK_DIR="${VIBE_FS_HEAP_LOCK_DIR:-$OUT_DIR/.warm-cache.lock}"
+elif [ -n "${VIBE_FS_HEAP_LOCK_DIR:-}" ]; then
+  LOCK_DIR="$VIBE_FS_HEAP_LOCK_DIR"
+fi
+if [ -n "$LOCK_DIR" ]; then
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "measure_fs_heap: another measurement holds lock: $LOCK_DIR" >&2
+    exit 1
+  fi
+  LOCK_HELD=1
+fi
+RUN_DIR="$(mktemp -d "$OUT_DIR/run.XXXXXX")"
 
 # The full CLI import graph references the ignored, deterministically generated
 # compiler bundles. A direct opt-in measurement must prepare them too; otherwise
@@ -99,7 +152,7 @@ mkdir -p "$OUT_DIR"
 bash "$SCRIPT_DIR/ensure_generated.sh" >&2
 
 if [ -z "$BASE_COMPILER" ]; then
-  BASE_COMPILER="$OUT_DIR/base_compiler.wasm"
+  BASE_COMPILER="$RUN_DIR/base_compiler.wasm"
   echo "[fs-heap] building base compiler from current tree -> $BASE_COMPILER" >&2
   bash "$SCRIPT_DIR/build_cli_wasm.sh" "$BASE_COMPILER" >&2
 fi
@@ -114,28 +167,67 @@ if [ ! -f "$ENTRY_REL" ]; then
   exit 1
 fi
 
-# Do not trust an ambient cache override: the cache paths are the experimental
-# control, so the script owns them. Cold removes the complete cache root;
-# warm preserves only its own prior measurements.
-MARKED_CACHE="$OUT_DIR/cache_${MODE}_marked"
-if [ "$MODE" = cold ]; then
-  rm -rf "$MARKED_CACHE"
+MARKED_CACHE="$RUN_DIR/cache_marked"
+if [ "$MODE" = warm ] && [ -d "$OUT_DIR/warm-cache" ]; then
+  cp -a "$OUT_DIR/warm-cache/." "$MARKED_CACHE"
+else
+  mkdir -p "$MARKED_CACHE"
 fi
-mkdir -p "$MARKED_CACHE"
-MARKED_OUT="$OUT_DIR/cli_core_${MODE}_marked.wasm"
-MARKED_LOG="$OUT_DIR/run_${MODE}_marked.log"
-rm -f "$MARKED_OUT" "$MARKED_OUT.diag" "$MARKED_LOG"
+MARKED_OUT="$RUN_DIR/cli_core_marked.wasm"
+MARKED_LOG="$RUN_DIR/marked.log"
 
-echo "[fs-heap] mode=$MODE base=$BASE_COMPILER entry=$ENTRY_REL cache=$MARKED_CACHE" >&2
+echo "[fs-heap] mode=$MODE base=$BASE_COMPILER entry=$ENTRY_REL run_dir=$RUN_DIR" >&2
 
 run_compile() {
   local marks="$1"
   local cache_dir="$2"
   local output="$3"
   local log="$4"
-  # Pin the normal RC FS lane; an ambient coverage/debug selector would choose
-  # a different compiler entry and fail the required-boundary check.
-  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_RC=1 \
+  # Pin one FS RC lane. env -u prevents host-runner allocation controls,
+  # alternate compiler modes, sidecars, and observability from contaminating
+  # the measured heap/pages or silently selecting a different compile path.
+  env \
+    -u VIBE_WASM_PRE_GROW_PAGES \
+    -u VIBE_WASM_HOST_ALLOC_MODE \
+    -u VIBE_WASM_HOST_ARENA_GUARD_BYTES \
+    -u VIBE_WASM_MEMORY_STATS \
+    -u VIBE_WASM_NAMES \
+    -u VIBE_WASM_KEEP_EXPORTS \
+    -u VIBE_ENTRY_TESTMETA_OUT \
+    -u VIBE_TESTMETA_OUT \
+    -u VIBE_PROFILE_MEMORY_MARK \
+    -u VIBE_ARTIFACT_INPUT_TRACE_OUT \
+    -u VIBE_ARTIFACT_INPUT_TRACE_NONCE \
+    -u VIBE_INGESTION_TELEMETRY_OUT \
+    -u VIBE_INGESTION_TELEMETRY_NONCE \
+    -u VIBE_INCREMENTAL_TELEMETRY_OUT \
+    -u VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT \
+    -u VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE \
+    -u VIBE_DIAGNOSTICS_ALL \
+    -u VIBE_SCHEDULER_TRACE \
+    -u VIBE_DEP_ORDER_SEED \
+    -u VIBE_RC_HEAP_START \
+    -u VIBE_RC_FL_WINDOW \
+    -u VIBE_RC_POISON_MASK \
+    -u VIBE_CFG \
+    -u VIBE_BACKEND \
+    -u VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE \
+    -u VIBE_CHECK_ONLY \
+    -u VIBE_LSP \
+    -u VIBE_HASH \
+    -u VIBE_HASH_WRITE \
+    -u VIBE_MISSING_VPKG_SCAN \
+    -u VIBE_DEPS_MISSING_SCAN \
+    -u VIBE_FILL_PINS \
+    -u VIBE_PUBLISH_CHECK \
+    -u VIBE_MODULE_JOB_DIR \
+    -u VIBE_PUBLISH_ENV_CACHE \
+    -u VIBE_LIST_DEPS \
+    -u VIBE_MODULE_PLAN \
+    -u VIBE_EMIT_MERGED_SOURCE \
+    -u VIBE_EMIT_MODULE_SOURCE \
+    VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+    VIBE_FS_COMPILE=1 VIBE_RC=1 VIBE_CHECK_ERROR_ROW=1 \
     VIBE_COVERAGE=0 VIBE_DEBUG_BREAK=0 VIBE_DEBUG=0 \
     VIBE_BUILD_CACHE_DIR="$cache_dir" VIBE_PROFILE_MEMORY_MARKS="$marks" \
     bash "$RUNNER" --invoke cli_main "$BASE_COMPILER" "$ENTRY_REL" "$output" main \
@@ -218,12 +310,10 @@ awk -v mode="$MODE" -v wall="$((end_s - start_s))" -v max_pages="$MAX_PAGES" '
 ' "$MARKED_LOG"
 
 if [ "$VERIFY_PARITY" = 1 ]; then
-  UNMARKED_CACHE="$OUT_DIR/cache_${MODE}_unmarked"
-  UNMARKED_OUT="$OUT_DIR/cli_core_${MODE}_unmarked.wasm"
-  UNMARKED_LOG="$OUT_DIR/run_${MODE}_unmarked.log"
-  rm -rf "$UNMARKED_CACHE"
+  UNMARKED_CACHE="$RUN_DIR/cache_unmarked"
+  UNMARKED_OUT="$RUN_DIR/cli_core_unmarked.wasm"
+  UNMARKED_LOG="$RUN_DIR/unmarked.log"
   mkdir -p "$UNMARKED_CACHE"
-  rm -f "$UNMARKED_OUT" "$UNMARKED_OUT.diag" "$UNMARKED_LOG"
   set +e
   run_compile 0 "$UNMARKED_CACHE" "$UNMARKED_OUT" "$UNMARKED_LOG"
   status=$?
@@ -237,5 +327,20 @@ if [ "$VERIFY_PARITY" = 1 ]; then
     echo "measure_fs_heap: parity failure: marked and unmarked full-CLI wasm differ" >&2
     exit 1
   fi
-  echo "[fs-heap] parity=ok mode=$MODE marked=$MARKED_OUT unmarked=$UNMARKED_OUT"
+  echo "[fs-heap] parity=ok mode=$MODE"
+fi
+
+# Publish a warm cache only after every requested check passed. The run cache
+# itself is always unique; this snapshot is the sole shared warm state and is
+# covered by the warm-run lock above.
+if [ "$MODE" = warm ]; then
+  WARM_NEXT="$(mktemp -d "$OUT_DIR/.warm-cache.next.XXXXXX")"
+  cp -a "$MARKED_CACHE/." "$WARM_NEXT"
+  rm -rf "$OUT_DIR/warm-cache"
+  mv "$WARM_NEXT" "$OUT_DIR/warm-cache"
+  WARM_NEXT=""
+fi
+
+if [ "$KEEP_RUN_DIR" = 1 ]; then
+  echo "[fs-heap] run_dir=$RUN_DIR" >&2
 fi

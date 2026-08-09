@@ -93,8 +93,13 @@ pkf run generation-gate
 
 The full CLI's FS compile can approach wasm32 linear-memory limits only on a
 cold persistent-cache run. Measure it separately from the normal operation
-loop; it uses an isolated cache and prints deterministic guest `pages` and
-`heap_ptr` values (RSS is diagnostic only):
+loop; each invocation uses a unique temporary run directory for its compiler
+cache, output, and logs, and prints deterministic guest `pages` and `heap_ptr`
+values (RSS is diagnostic only). `--warm` snapshots its persistent cache into
+that isolated run directory and serializes snapshot updates with a lock. Set
+`VIBE_FS_HEAP_KEEP_RUN_DIR=1` to retain a run's diagnostics; cold runs can
+optionally use `VIBE_FS_HEAP_LOCK_DIR=/path/to/lock` for host-resource
+exclusion:
 
 ```bash
 pkf run measure-fs-heap -- --cold --base path/to/stage2.wasm
@@ -104,14 +109,17 @@ pkf run measure-fs-heap -- --cold --gate --base path/to/stage2.wasm
 pkf run measure-fs-heap -- --cold --verify-parity --base path/to/stage2.wasm
 ```
 
-This is deliberately opt-in rather than an always-on CI lane: a cold
-whole-CLI measurement is materially more expensive than the existing
-single-input `selfcompile-kpi` gate. Promote it only after recording repeated
-cold-run duration/resource data and a reviewed threshold rationale. At that
-point, add the `--cold --gate` invocation to the existing `compiler-gate` CI
+The real measurement is deliberately opt-in rather than an always-on CI lane:
+a cold whole-CLI run is materially more expensive than the existing
+single-input `selfcompile-kpi` gate. The normal `compiler-gate` does run the
+cheap fake-runner protocol self-test, which verifies environment sanitization,
+per-run cache isolation, cleanup, locking, and fail-closed parsing without
+performing a full-CLI compile. Promote the real `--cold --gate` invocation only
+after recording repeated cold-run duration/resource data and a reviewed
+threshold rationale. At that point, add it to the existing `compiler-gate` CI
 job using that job's already-built stage2 artifact; do not add a second stage
 build solely for this measurement. The mark labels are observable call
-boundaries, not claims about separately unobservable normalize or link phases.
+boundaries, not claims about separately unobservable normalize or link work.
 
 ## Stop Criteria
 

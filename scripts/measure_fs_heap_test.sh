@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Protocol test for measure_fs_heap.sh. This uses a fake runner so it checks
-# cache isolation, fail-closed mark parsing, optional parity, and the page
-# threshold without running the expensive real full-CLI compile.
+# env/cache isolation, unique run directories and cleanup, fail-closed mark
+# parsing, optional parity/locking, and the page threshold without running the
+# expensive real full-CLI compile.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,14 +13,25 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 BASE="$TMP_DIR/base.wasm"
 printf '\0asm\1\0\0\0' > "$BASE"
 RUNNER="$TMP_DIR/fake_runner.sh"
-CACHE_LOG="$TMP_DIR/cache.log"
+RUN_LOG="$TMP_DIR/run.log"
 
 cat > "$RUNNER" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [ "$1" = "--invoke" ] && [ "$2" = "cli_main" ] || exit 2
 out="$5"
-printf '%s\t%s\n' "${VIBE_PROFILE_MEMORY_MARKS:-unset}" "$VIBE_BUILD_CACHE_DIR" >> "$FAKE_CACHE_LOG"
+printf 'marks=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta=%s testmeta=%s rc_heap_start=%s wasm_names=%s import_abi=%s coverage=%s\n' \
+  "${VIBE_PROFILE_MEMORY_MARKS:-unset}" \
+  "${VIBE_BUILD_CACHE_DIR:-unset}" \
+  "${VIBE_WASM_PRE_GROW_PAGES:-unset}" \
+  "${VIBE_WASM_HOST_ALLOC_MODE:-unset}" \
+  "${VIBE_WASM_HOST_ARENA_GUARD_BYTES:-unset}" \
+  "${VIBE_ENTRY_TESTMETA_OUT:-unset}" \
+  "${VIBE_TESTMETA_OUT:-unset}" \
+  "${VIBE_RC_HEAP_START:-unset}" \
+  "${VIBE_WASM_NAMES:-unset}" \
+  "${VIBE_IMPORT_ABI:-unset}" \
+  "${VIBE_COVERAGE:-unset}" >> "$FAKE_RUN_LOG"
 mkdir -p "$(dirname "$out")"
 printf '\0asm\1\0\0\0' > "$out"
 if [ "${VIBE_PROFILE_MEMORY_MARKS:-}" = "1" ]; then
@@ -35,27 +47,39 @@ fi
 EOF
 chmod +x "$RUNNER"
 
-# An ambient cache override must not leak into cold measurements. The fake
-# marked/unmarked outputs are identical, so --verify-parity must pass.
-FAKE_CACHE_LOG="$CACHE_LOG" \
+# Ambient runner/compiler controls must not change the lane or its measured
+# guest pages. The marked/unmarked outputs are identical, so parity must pass.
+FAKE_RUN_LOG="$RUN_LOG" \
 VIBE_FS_HEAP_RUNNER="$RUNNER" \
 VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/out" \
 VIBE_BUILD_CACHE_DIR="$TMP_DIR/ambient-cache-must-not-be-used" \
+VIBE_WASM_PRE_GROW_PAGES=999 \
+VIBE_WASM_HOST_ALLOC_MODE=arena \
+VIBE_WASM_HOST_ARENA_GUARD_BYTES=123 \
+VIBE_WASM_MEMORY_STATS=1 \
+VIBE_WASM_NAMES=1 \
+VIBE_ENTRY_TESTMETA_OUT="$TMP_DIR/ambient-entry-meta" \
+VIBE_TESTMETA_OUT="$TMP_DIR/ambient-test-meta" \
+VIBE_RC_HEAP_START=123456 \
   bash "$SCRIPT" --cold --base "$BASE" --verify-parity > "$TMP_DIR/ok.stdout"
 
-grep -q '^\[fs-heap\] parity=ok mode=cold ' "$TMP_DIR/ok.stdout"
+grep -q '^\[fs-heap\] parity=ok mode=cold$' "$TMP_DIR/ok.stdout"
 grep -q '^\[fs-heap\] mode=cold boundary=fs_compile_complete ' "$TMP_DIR/ok.stdout"
-grep -q "^1[[:space:]]$TMP_DIR/out/cache_cold_marked$" "$CACHE_LOG"
-grep -q "^0[[:space:]]$TMP_DIR/out/cache_cold_unmarked$" "$CACHE_LOG"
-if grep -q 'ambient-cache-must-not-be-used' "$CACHE_LOG"; then
+grep -Eq "^marks=1 cache=$TMP_DIR/out/run\.[^/]*/cache_marked pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -Eq "^marks=0 cache=$TMP_DIR/out/run\.[^/]*/cache_unmarked pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset import_abi=raw coverage=0$" "$RUN_LOG"
+if grep -q 'ambient-cache-must-not-be-used' "$RUN_LOG"; then
   echo "measure_fs_heap test: ambient cache leaked into measurement" >&2
+  exit 1
+fi
+if find "$TMP_DIR/out" -mindepth 1 -maxdepth 1 -type d -name 'run.*' | grep -q .; then
+  echo "measure_fs_heap test: successful run directory was not cleaned" >&2
   exit 1
 fi
 
 # The default --gate limit is 57344 pages (3.5 GiB), and exceeding it must
 # fail rather than report a plausible measurement.
 set +e
-FAKE_CACHE_LOG="$CACHE_LOG" \
+FAKE_RUN_LOG="$RUN_LOG" \
 FAKE_PAGES=57345 \
 VIBE_FS_HEAP_RUNNER="$RUNNER" \
 VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/gate" \
@@ -71,7 +95,7 @@ grep -q 'GATE FAIL: peak_pages 57345 > limit 57344' "$TMP_DIR/gate.stderr"
 # A successful runner exit without every documented mark is an invalid sample,
 # not a partial measurement that can look healthy.
 set +e
-FAKE_CACHE_LOG="$CACHE_LOG" \
+FAKE_RUN_LOG="$RUN_LOG" \
 FAKE_MISSING_BOUNDARY=fs_compile_complete \
 VIBE_FS_HEAP_RUNNER="$RUNNER" \
 VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/missing" \
@@ -83,5 +107,22 @@ if [ "$status" -eq 0 ]; then
   exit 1
 fi
 grep -q 'missing required boundary mark: fs_compile_complete' "$TMP_DIR/missing.stderr"
+
+# Warm runs serialize only the persistent warm-cache snapshot. A pre-held lock
+# must fail rather than let two runs race that snapshot.
+mkdir -p "$TMP_DIR/warm/.warm-cache.lock"
+set +e
+FAKE_RUN_LOG="$RUN_LOG" \
+VIBE_FS_HEAP_RUNNER="$RUNNER" \
+VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/warm" \
+  bash "$SCRIPT" --warm --base "$BASE" > "$TMP_DIR/lock.stdout" 2> "$TMP_DIR/lock.stderr"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "measure_fs_heap test: expected pre-held warm lock to fail" >&2
+  exit 1
+fi
+grep -q 'another measurement holds lock:' "$TMP_DIR/lock.stderr"
+rmdir "$TMP_DIR/warm/.warm-cache.lock"
 
 echo "measure_fs_heap self-test: ok"
