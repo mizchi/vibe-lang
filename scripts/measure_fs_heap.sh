@@ -59,6 +59,7 @@ RUN_DIR=""
 WARM_NEXT=""
 LOCK_DIR=""
 LOCK_HELD=0
+ACTIVE_PID=""
 
 # Also sanitize the artifact-preparation step below: it executes the same host
 # runner and must not inherit controls that would perturb a later measurement.
@@ -69,6 +70,7 @@ unset VIBE_WASM_PRE_GROW_PAGES VIBE_WASM_HOST_ALLOC_MODE \
   VIBE_ARTIFACT_INPUT_TRACE_NONCE VIBE_INGESTION_TELEMETRY_OUT \
   VIBE_INGESTION_TELEMETRY_NONCE VIBE_INCREMENTAL_TELEMETRY_OUT \
   VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE \
+  VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP \
   VIBE_DIAGNOSTICS_ALL VIBE_SCHEDULER_TRACE VIBE_DEP_ORDER_SEED \
   VIBE_RC_HEAP_START VIBE_RC_FL_WINDOW VIBE_RC_POISON_MASK VIBE_CFG \
   VIBE_BACKEND VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE VIBE_CHECK_ONLY VIBE_LSP \
@@ -96,7 +98,21 @@ cleanup() {
   fi
   exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+
+on_signal() {
+  local status="$1"
+  trap - HUP INT TERM
+  if [ -n "$ACTIVE_PID" ]; then
+    kill "$ACTIVE_PID" 2>/dev/null || true
+    wait "$ACTIVE_PID" 2>/dev/null || true
+    ACTIVE_PID=""
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -186,7 +202,7 @@ run_compile() {
   # Pin one FS RC lane. env -u prevents host-runner allocation controls,
   # alternate compiler modes, sidecars, and observability from contaminating
   # the measured heap/pages or silently selecting a different compile path.
-  env \
+  exec env \
     -u VIBE_WASM_PRE_GROW_PAGES \
     -u VIBE_WASM_HOST_ALLOC_MODE \
     -u VIBE_WASM_HOST_ARENA_GUARD_BYTES \
@@ -203,6 +219,7 @@ run_compile() {
     -u VIBE_INCREMENTAL_TELEMETRY_OUT \
     -u VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT \
     -u VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE \
+    -u VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP \
     -u VIBE_DIAGNOSTICS_ALL \
     -u VIBE_SCHEDULER_TRACE \
     -u VIBE_DEP_ORDER_SEED \
@@ -236,8 +253,11 @@ run_compile() {
 
 start_s=$(date +%s)
 set +e
-run_compile 1 "$MARKED_CACHE" "$MARKED_OUT" "$MARKED_LOG"
+run_compile 1 "$MARKED_CACHE" "$MARKED_OUT" "$MARKED_LOG" &
+ACTIVE_PID=$!
+wait "$ACTIVE_PID"
 status=$?
+ACTIVE_PID=""
 set -e
 end_s=$(date +%s)
 if [ "$status" -ne 0 ]; then
@@ -315,8 +335,11 @@ if [ "$VERIFY_PARITY" = 1 ]; then
   UNMARKED_LOG="$RUN_DIR/unmarked.log"
   mkdir -p "$UNMARKED_CACHE"
   set +e
-  run_compile 0 "$UNMARKED_CACHE" "$UNMARKED_OUT" "$UNMARKED_LOG"
+  run_compile 0 "$UNMARKED_CACHE" "$UNMARKED_OUT" "$UNMARKED_LOG" &
+  ACTIVE_PID=$!
+  wait "$ACTIVE_PID"
   status=$?
+  ACTIVE_PID=""
   set -e
   if [ "$status" -ne 0 ] || [ ! -s "$UNMARKED_OUT" ]; then
     echo "measure_fs_heap: unmarked parity compile failed (exit $status)" >&2
