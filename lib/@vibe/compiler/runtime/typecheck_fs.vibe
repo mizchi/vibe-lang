@@ -242,11 +242,11 @@ fn trait_projection_add_mapping(mappings: Array[(String, String)], canonical: St
 /// Keep these claims across every import in a module: otherwise two unrelated
 /// traits imported as the same local name would leave one definition and the
 /// other's impls/methods in the TypeEnv, depending on import order.
-fn trait_projection_claim_local(claims: Array[(String, String)], canonical: String) -> Option[String] {
+fn trait_projection_claim_local(claims: Array[(String, String, Bool)], canonical: String) -> Option[String] {
   let mut i = 0
   let mut found = None
   while i < Array::length(claims) && found == None {
-    let (candidate_canonical, local_name) = Array::get(claims, i)
+    let (candidate_canonical, local_name, _) = Array::get(claims, i)
     if candidate_canonical == canonical {
       found = Some(local_name)
     } else {
@@ -256,13 +256,13 @@ fn trait_projection_claim_local(claims: Array[(String, String)], canonical: Stri
   found
 }
 
-fn trait_projection_claim_owner(claims: Array[(String, String)], local_name: String) -> Option[String] {
+fn trait_projection_claim_owner(claims: Array[(String, String, Bool)], local_name: String) -> Option[(String, Bool)] {
   let mut i = 0
   let mut found = None
   while i < Array::length(claims) && found == None {
-    let (canonical, candidate_local) = Array::get(claims, i)
+    let (canonical, candidate_local, explicit_alias) = Array::get(claims, i)
     if candidate_local == local_name {
-      found = Some(canonical)
+      found = Some((canonical, explicit_alias))
     } else {
       i = i + 1
     }
@@ -270,23 +270,28 @@ fn trait_projection_claim_owner(claims: Array[(String, String)], local_name: Str
   found
 }
 
-fn trait_projection_claim_mappings(claims: Array[(String, String)], resolved: String, mappings: Array[(String, String)], unresolved: Array[String]) -> Unit {
+fn trait_projection_claim_mappings(claims: Array[(String, String, Bool)], resolved: String, mappings: Array[(String, String)], unresolved: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(mappings) {
     let (source_name, local_name) = Array::get(mappings, i)
     let canonical = String::concat(String::concat(resolved, "::"), source_name)
+    let explicit_alias = source_name != local_name
     match (trait_projection_claim_local(claims, canonical), trait_projection_claim_owner(claims, local_name)) {
       (Some(existing), _) => if existing != local_name {
         Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import '", canonical), "': aliases '"), String::concat(existing, String::concat("' and '", String::concat(local_name, "'")))))
       } else {
         ()
       },
-      (None, Some(owner)) => if owner != canonical {
+      (None, Some((owner, owner_explicit))) => if owner != canonical && (owner_explicit || explicit_alias) {
+        // Same-spelled, unaliased traits retain the language's historical
+        // name-based identity across re-export modules. An explicit alias is
+        // different: merging two canonical names through it would silently
+        // mix their impl and method authority.
         Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import alias '", local_name), "': used for '"), String::concat(owner, String::concat("' and '", String::concat(canonical, "'")))))
       } else {
-        Array::push(claims, (canonical, local_name))
+        Array::push(claims, (canonical, local_name, explicit_alias))
       },
-      (None, None) => Array::push(claims, (canonical, local_name))
+      (None, None) => Array::push(claims, (canonical, local_name, explicit_alias))
     }
     i = i + 1
   }
@@ -626,7 +631,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
   out
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String)]) -> TypeEnv {
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
