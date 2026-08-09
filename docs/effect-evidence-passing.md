@@ -2742,16 +2742,18 @@ fixtures: `effect_closure_param_inert.vibe` (want 5)、
 されていた。
 
 `linked_compile` は suspend CPS の直前に、shadow-aware な total walk で
-`Stream::next` を private top-level `__sn_next` へ retarget する。synthetic fn
-の body は既存 lowering と同じ `Future::ready(if 0 < Array::length(s) {
-Some(Array::get(s, 0)) } else { None })` で、通常の call argument evaluation
-により `s` は一度だけ評価される。concrete row-free top-level call になったので
+`Stream::next` を user bindings/references と衝突しない fresh private top-level
+fn へ retarget する。synthetic fn は `Future::ready`（user が shadow 可能）を
+呼ばず、既存 lowering と同じ ready-cell `[0, if 0 < Array::length(s) {
+Some(Array::get(s, 0)) } else { None }]` を直接構築する。通常の call argument
+evaluation により `s` は一度だけ評価される。concrete row-free top-level call になったので
 CPS eligibility は see through できる。これは eager `Stream::next` だけの
 retarget であり、`host_stream_next`、row-variable callee、literal-param flow は
 この slice の範囲外のまま。
 
-fixture: `effect_stream_next_suspend_retarget.vibe` (want 42; `Some(41)` と
-argument の一回評価を同時に pin)。
+fixtures: `effect_stream_next_suspend_retarget.vibe` (want 42; `Some(41)` と
+argument の一回評価を pin)、`effect_stream_next_retarget_hygiene.vibe`
+(`__sn_next` collision、shadowed `Future::ready`、empty layout を pin)。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

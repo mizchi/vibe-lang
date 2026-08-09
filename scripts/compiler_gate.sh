@@ -6691,6 +6691,10 @@ scps_run_expect "effect_closure_param_inert_transitive.vibe" "5" "inertdeleg"
 # CPS evaluates a resume-value Async handler. The fixture also pins its
 # Array-backed ready Future[Option[T]] result and one evaluation (Some(41)+1).
 scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
+# Fresh synthetic target and direct [ready, payload] cell: a user
+# `__sn_next` must not capture the retarget and shadowed Future::ready must
+# not change empty-stream layout (None fallback = 7).
+scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygiene"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"
