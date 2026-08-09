@@ -34,10 +34,13 @@ printf 'marks=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta
   "${VIBE_IMPORT_ABI:-unset}" \
   "${VIBE_COVERAGE:-unset}" >> "$FAKE_RUN_LOG"
 mkdir -p "$(dirname "$out")"
-trap 'printf "terminated\\n" >> "$FAKE_RUN_LOG"; exit 143' TERM
+sleep_pid=""
+trap '[ -z "$sleep_pid" ] || kill "$sleep_pid" 2>/dev/null || true; [ -z "$sleep_pid" ] || wait "$sleep_pid" 2>/dev/null || true; printf "terminated\\n" >> "$FAKE_RUN_LOG"; exit 143' TERM
 if [ "${FAKE_SLEEP:-0}" != 0 ]; then
   sleep "$FAKE_SLEEP" &
-  wait $!
+  sleep_pid=$!
+  wait "$sleep_pid"
+  sleep_pid=""
 fi
 printf '\0asm\1\0\0\0' > "$out"
 if [ "${VIBE_PROFILE_MEMORY_MARKS:-}" = "1" ]; then
