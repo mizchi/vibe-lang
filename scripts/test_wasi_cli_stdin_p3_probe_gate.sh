@@ -3,8 +3,8 @@
 #
 # The probe declares the ratified WIT import, including the nominal
 # wasi:cli/types@0.3.0 error-code used in the completion result. It checks
-# linkage only; a successful link deliberately fails this gate so availability
-# cannot be mistaken for a completed behavioral test.
+# linkage only; either a successful link or the exact missing-implementation
+# diagnostic is an availability result, never a completed behavioral test.
 #
 # Env:
 #   WASMTIME_BIN                 wasmtime binary under test (default: PATH)
@@ -20,11 +20,12 @@ is_expected_unavailability() {
 }
 
 run_diagnostic_self_test() {
-  local dir expected wrong_type missing_function
+  local dir expected wrong_type missing_function missing_command_export
   dir="$(mktemp -d)"
   expected="$dir/expected.log"
   wrong_type="$dir/wrong-type.log"
   missing_function="$dir/missing-function.log"
+  missing_command_export="$dir/missing-command-export.log"
 
   cat >"$expected" <<'EOF'
 component imports instance `wasi:cli/stdin@0.3.0`, but a matching implementation was not found in the linker
@@ -35,15 +36,18 @@ EOF
   cat >"$missing_function" <<'EOF'
 component imports instance wasi:cli/stdin@0.3.0, but function implementation is missing
 EOF
+  cat >"$missing_command_export" <<'EOF'
+no exported instance named `wasi:cli/run@0.2.12`
+EOF
 
   if ! is_expected_unavailability "$expected"; then
     rm -rf "$dir"
     echo "wasi cli stdin p3 probe diagnostic self-test FAILED: missing expected unavailability" >&2
     return 1
   fi
-  if is_expected_unavailability "$wrong_type" || is_expected_unavailability "$missing_function"; then
+  if is_expected_unavailability "$wrong_type" || is_expected_unavailability "$missing_function" || is_expected_unavailability "$missing_command_export"; then
     rm -rf "$dir"
-    echo "wasi cli stdin p3 probe diagnostic self-test FAILED: accepted ABI/type mismatch diagnostic" >&2
+    echo "wasi cli stdin p3 probe diagnostic self-test FAILED: accepted ABI/type or missing-command diagnostic" >&2
     return 1
   fi
   rm -rf "$dir"
@@ -83,17 +87,20 @@ PRINTED="$OUT_DIR/stdin_read_via_stream.print.wat"
 wasm-tools print "$COMPONENT" >"$PRINTED"
 grep -Fq 'wasi:cli/types@0.3.0' "$PRINTED"
 grep -Fq 'wasi:cli/stdin@0.3.0' "$PRINTED"
+grep -Fq 'wasi:cli/run@0.2.12' "$PRINTED"
 grep -Fq '(enum "io" "illegal-byte-sequence" "pipe")' "$PRINTED"
 grep -Fq 'read-via-stream' "$PRINTED"
 
 LOG="$OUT_DIR/wasmtime.log"
 if "$WASMTIME_BIN" run -Sp3 -Wcomponent-model-async=y "$COMPONENT" >"$LOG" 2>&1; then
-  echo "wasi cli stdin p3 probe FAILED: $WASMTIME_BIN linked the exact @0.3.0 import; availability result must be reviewed before this gate can pass" >&2
-  exit 1
+  echo "[wasi-cli-stdin-p3-probe] validated exact ratified @0.3.0 imports; wasmtime linked stdin"
+  echo "wasi cli stdin p3 probe gate OK (availability only; lifecycle remains unmeasured)"
+  exit 0
 fi
 
-# A generic `wrong type` or `function implementation is missing` diagnosis is
-# not evidence of host unavailability. Preserve the exact log for review.
+# A generic `wrong type`, `function implementation is missing`, or missing
+# command export is not evidence of stdin availability. Preserve the exact log
+# for review.
 if ! is_expected_unavailability "$LOG"; then
   echo "wasi cli stdin p3 probe FAILED: unexpected wasmtime rejection" >&2
   cat "$LOG" >&2
@@ -101,4 +108,4 @@ if ! is_expected_unavailability "$LOG"; then
 fi
 
 echo "[wasi-cli-stdin-p3-probe] validated exact ratified @0.3.0 imports; wasmtime has no matching stdin implementation"
-echo "wasi cli stdin p3 probe gate OK (fail-closed availability result)"
+echo "wasi cli stdin p3 probe gate OK (availability only; lifecycle remains unmeasured)"

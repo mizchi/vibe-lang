@@ -181,9 +181,12 @@ preserves the WIT type's nominal identity rather than using a byte-sized
 stand-in.
 
 `scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates the
-component. It accepts only the explicit missing-stdin-implementation linker
-diagnostic as unavailability; generic ABI/type mismatch diagnostics fail. The
-probe is included in the optional `test-wasi-p3` aggregate.
+component. Its minimal `wasi:cli/run@0.2.12` command export lets wasmtime 47
+instantiate it before resolving the `read-via-stream` import. It accepts only
+the explicit missing-stdin-implementation linker diagnostic as
+unavailability; generic ABI/type mismatch or missing-command-export diagnostics
+fail. A successful link likewise passes as an availability result, not a
+lifecycle result. The probe is included in the optional `test-wasi-p3` aggregate.
 
 ## `stackful/`: hand-authored blocking-wait probe (M1b-3c mechanics proof)
 

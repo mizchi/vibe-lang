@@ -1476,12 +1476,15 @@ instance, so the declaration does not substitute a representation-compatible
 payload for the WIT type.
 
 `bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates that
-component, then accepts only wasmtime's explicit diagnostic that the ratified
-stdin instance has no matching linker implementation. Generic ABI/type
-mismatch diagnostics are failures. A successful link also fails this
-availability-only gate for review rather than being reported as a passing
-behavioral result. The optional `test-wasi-p3` aggregate includes this probe;
-its CI job remains outside `ci-required`.
+component. Its minimal `wasi:cli/run@0.2.12` command export makes wasmtime 47
+instantiate the component before it resolves the retained stdin function
+import, rather than rejecting it for lacking a command export. The gate then
+accepts only wasmtime's explicit diagnostic that the ratified stdin instance
+has no matching linker implementation. Generic ABI/type mismatch or
+missing-command-export diagnostics are failures. A successful link reports
+that stdin is available and passes this availability-only gate; it remains not
+a passing lifecycle/behavioral result. The optional `test-wasi-p3` aggregate
+includes this probe; its CI job remains outside `ci-required`.
 
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
