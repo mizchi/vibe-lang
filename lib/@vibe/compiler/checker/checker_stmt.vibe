@@ -474,6 +474,31 @@ fn es_qualified_collision(ed_names: Array[String], ed_ops_list: Array[Array[Stri
 /// Shared by check_stmts' own pre-pass (order-independent cycle/collision
 /// checking) and collect_async_effect_errors' row-expansion pass below (step
 /// 3) so both walks agree on exactly the same tables.
+fn es_append_imported_tables(defs: Array[TypeDef], es_names: Array[String], es_members_list: Array[Array[String]], ed_names: Array[String], ed_ops_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDEffect(name, ops, _) => {
+        let op_names = array_empty()
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (op, _, _) = Array::get(ops, oi)
+          Array::push(op_names, op)
+          oi = oi + 1
+        }
+        Array::push(ed_names, name)
+        Array::push(ed_ops_list, op_names)
+      },
+      TDEffectSet(name, members) => {
+        Array::push(es_names, name)
+        Array::push(es_members_list, members)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array[Array[String]], Array[String], Array[Array[String]]) {
   let es_names = array_empty()
   let es_members_list = array_empty()
@@ -482,7 +507,7 @@ fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array
   let mut i = from_idx
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SEffectSet(_, esname, esmembers) => {
+      SEffectSet(exported, esname, esmembers) => {
         Array::push(es_names, esname)
         Array::push(es_members_list, esmembers)
       },
@@ -748,8 +773,9 @@ fn es_expand_stmts_effect_rows(stmts: Array[Stmt], es_names: Array[String], es_m
 /// The retained CheckedProgram statements deliberately remain the original
 /// post-desugar source representation, while all checking passes see this
 /// identical expanded copy on both ordinary and imported-environment paths.
-fn es_expand_top_level_effectset_rows(stmts: Array[Stmt]) -> Array[Stmt] {
-  let (top_es_names, top_es_members_list, _, _) = es_collect_tables(stmts, 0)
+fn es_expand_top_level_effectset_rows(stmts: Array[Stmt], initial_env: TypeEnv) -> Array[Stmt] {
+  let (top_es_names, top_es_members_list, top_ed_names, top_ed_ops) = es_collect_tables(stmts, 0)
+  es_append_imported_tables(env_type_defs(initial_env), top_es_names, top_es_members_list, top_ed_names, top_ed_ops)
   es_expand_stmts_effect_rows(stmts, top_es_names, top_es_members_list)
 }
 
@@ -991,6 +1017,8 @@ fn local_type_def_names(stmts: Array[Stmt]) -> Array[String] {
       SEnum(_, name, _, _, _) => Array::push(names, name),
       SStruct(_, name, _, _, _, _) => Array::push(names, name),
       STypeAlias(_, name, _, _) => Array::push(names, name),
+      SEffectDef(_, name, _, _) => Array::push(names, name),
+      SEffectSet(_, name, _) => Array::push(names, name),
       _ => ()
     }
     i = i + 1
@@ -1025,7 +1053,8 @@ fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array
       TDEnum(n, _, _) => n,
       TDStruct(n, _, _, _) => n,
       TDAlias(n, _, _) => n,
-      TDEffect(n, _, _) => n
+      TDEffect(n, _, _) => n,
+      TDEffectSet(n, _) => n
     }
     // First declaration wins, matching find_typedef and the import cache's
     // first-match rule. A projected interface never contains effects here.
@@ -1068,7 +1097,11 @@ fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array
           Array::push(defs, TDAlias(alias_name, params, target))
           Array::push(type_def_binders, array_empty())
         },
-        TDEffect(_, _, _) => ()
+        TDEffect(effect_name, ops, params) => {
+          Array::push(defs, TDEffect(effect_name, ops, params))
+          Array::push(type_def_binders, array_empty())
+        },
+        TDEffectSet(_, _) => ()
       }
     }
     i = i + 1
@@ -1255,6 +1288,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   // (step 3's row-expansion pass) via es_collect_tables so both walks stay
   // in sync from one implementation.
   let (es_names, es_members_list, ed_names, ed_ops_list) = es_collect_tables(stmts, idx)
+  es_append_imported_tables(defs, es_names, es_members_list, ed_names, ed_ops_list)
   // ADR-0075 Phase 2 (#1343): resource identity rules need the WHOLE list
   // (duplicate detection), so they run here rather than in the SResource arm
   // below -- which is why that arm has nothing left to do.
@@ -1531,7 +1565,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         capture_statement_root_type(capture, statement_path, "SLetPat", vt)
         (new_env, ns, nc)
       },
-      SEnum(_, name, params, variants, enum_derives) => {
+      SEnum(exported, name, params, variants, enum_derives) => {
         validate_derives(enum_derives, errors)
         duplicate_ctor_errors("enum", name, variants, errors)
         let param_len = Array::length(params)
@@ -1675,7 +1709,13 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         (EnvTypeDefs([
           TDEnum(name, params, published_variants)
-        ], env_default), s, c + param_len)
+        ], if exported {
+          [
+            name
+          ]
+        } else {
+          array_empty()
+        }, env_default), s, c + param_len)
       },
       SSuberror(_, name, variants) => {
         // #786: a `suberror Name(payload...)` declaration is structurally a
@@ -1732,7 +1772,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         ], CtBool, None))
         (env_eq, s, c)
       },
-      SStruct(_, name, field_defs, derives, mut_fields, tparams) => {
+      SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
         let resolved_fields = array_empty()
         let mut fi = 0
@@ -1809,9 +1849,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         (EnvTypeDefs([
           TDStruct(name, resolved_fields, mut_fields, tparams)
-        ], bind_fn_return(env5, name, CtStruct(name))), s, c)
+        ], if exported {
+          [
+            name
+          ]
+        } else {
+          array_empty()
+        }, bind_fn_return(env5, name, CtStruct(name))), s, c)
       },
-      STypeAlias(_, name, params, te) => {
+      STypeAlias(exported, name, params, te) => {
         // #1512: `params` shadow `defs` -- see resolve_type_expr_shadowed.
         let t = resolve_type_expr_shadowed(te, defs, params)
         // Record the alias (with its formal params) so an applied use
@@ -1820,7 +1866,13 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         Array::push(type_def_binders, array_empty())
         (EnvTypeDefs([
           TDAlias(name, params, t)
-        ], env_bind(env, name, t)), s, c)
+        ], if exported {
+          [
+            name
+          ]
+        } else {
+          array_empty()
+        }, env_bind(env, name, t)), s, c)
       },
       SExternLet(name, te) => {
         let t = resolve_type_expr(te, defs)
@@ -1907,7 +1959,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         (new_env, s, c)
       },
-      SEffectDef(_, ename, eparams, ops) => {
+      SEffectDef(exported, ename, eparams, ops) => {
         // #813: register the effect's operation signatures (resolved to
         // checker Types) so perform arguments, handler arm names/arity/
         // payload binds, and resume values can be validated. #1340
@@ -1934,9 +1986,17 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         Array::push(defs, TDEffect(ename, resolved_ops, eparams))
         Array::push(type_def_binders, array_empty())
-        (env, s, c)
+        (EnvTypeDefs([
+          TDEffect(ename, resolved_ops, eparams)
+        ], if exported {
+          [
+            ename
+          ]
+        } else {
+          array_empty()
+        }, env), s, c)
       },
-      SEffectSet(_, esname, _) => {
+      SEffectSet(exported, esname, esmembers) => {
         // ADR-0071 (#755): the ADR's Decision section calls out two specific
         // invalid-definition cases by name -- a cycle through member
         // references, and a qualified name colliding with an operation of
@@ -1963,7 +2023,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             None => ()
           }
         }
-        (env, s, c)
+        (EnvTypeDefs([
+          TDEffectSet(esname, esmembers)
+        ], if exported {
+          [
+            esname
+          ]
+        } else {
+          array_empty()
+        }, env), s, c)
       },
       _ => (env, s, c)
     }
@@ -2224,7 +2292,8 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: 
       // instead of requiring callers to re-declare it verbatim. Pure AST
       // rewrite local to this file (see es_expand_stmts_effect_rows);
       // check_perform_effects_stmts_env itself is untouched.
-      let (perform_es_names, perform_es_members_list, _, _) = es_collect_tables(stmts, 0)
+      let (perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops) = es_collect_tables(stmts, 0)
+      es_append_imported_tables(env_type_defs(env), perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops)
       let expanded_stmts = es_expand_stmts_effect_rows(stmts, perform_es_names, perform_es_members_list)
       let perform_errs = check_perform_effects_stmts_env(expanded_stmts, env)
       let mut j = 0
@@ -2783,7 +2852,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // effectset actually covers it. A non-mutating copy (stmts itself, and
   // whatever the caller does with it after check_program returns, are
   // unaffected) is enough: codegen never reads the row's text content.
-  let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
+  let expanded_stmts = es_expand_top_level_effectset_rows(stmts, EnvEmpty)
   let statement_parent_path = match capture {
     Some(_) => Some(array_empty()),
     None => match role_lane_capture {
@@ -3079,7 +3148,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       check_labeled_arg_names_stmts(stmts, frozen_errors, false)
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,
       // but match the ordinary path by checking and validating an expanded copy.
-      let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
+      let expanded_stmts = es_expand_top_level_effectset_rows(stmts, initial_env)
       let statement_parent_path = match capture {
         Some(_) => Some(array_empty()),
         None => match role_lane_capture {

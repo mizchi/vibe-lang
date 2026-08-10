@@ -278,8 +278,8 @@ function stableCachePath(cache, version, prefix, seed, suffix) {
   return join(cache, `vibe_${prefix}_${token}${suffix}`);
 }
 
-function typeEnvPath(stage2, cache, target, major = "v17") {
-  return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v3", target, ".tsv");
+function typeEnvPath(stage2, cache, target, major = "v18") {
+  return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v5", target, ".tsv");
 }
 
 // Derive the exact referenced TypeEnv filename from the target conservative

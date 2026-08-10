@@ -30,9 +30,13 @@ import @vibe/compiler/core {
   env_flat_bindings,
   env_lookup,
   env_lookup_flat,
+  env_selectable_type_defs,
   env_type_defs,
+  has_standard_effect_policy,
+  lookup_registry_builtin,
   normalize_path,
   resolution_env_seed,
+  resolve_builtin,
   resolve_import_path,
   resolve_import_path_candidates,
   str_lt,
@@ -160,6 +164,34 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
 
 /// Constructors and generated `Type::member` values are value bindings, but
 /// their authority is the selected public typedef rather than capitalization.
+/// Ambient declarations are a fixed language/runtime set, never a naming
+/// convention. They retain explicit package re-exports such as Option/Fs
+/// without reopening the retired uppercase fallback for user declarations.
+fn is_ambient_import_authority(name: String) -> Bool {
+  let qualifier_at = String::index_of(name, "::")
+  let qualifier = if qualifier_at > 0 {
+    String::substring(name, 0, qualifier_at)
+  } else {
+    ""
+  }
+  if name == "Option" || name == "Random" || qualifier == "Option" || qualifier == "Random" {
+    true
+  } else match resolve_builtin(qualifier) {
+    // A member of a fixed builtin type namespace (e.g. String::unicode_length)
+    // is ambient; an arbitrary uppercase qualifier is still rejected.
+    Some(_) => true,
+    None => match resolve_builtin(name) {
+      Some(_) => true,
+      None => if has_standard_effect_policy(name) {
+        true
+      } else match lookup_registry_builtin(name) {
+        Some(_) => true,
+        None => false
+      }
+    }
+  }
+}
+
 fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String]) -> Bool {
   let mut i = 0
   let mut selected = false
@@ -342,7 +374,7 @@ fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
     },
     EnvTraitImpl(_, _, rest) => trait_projection_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_projection_supers(rest, name),
-    EnvTypeDefs(_, rest) => trait_projection_supers(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_projection_supers(rest, name),
     EnvFlat(_) => array_empty(),
     EnvCached(_, _, rest) => trait_projection_supers(rest, name)
   }
@@ -376,7 +408,7 @@ fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: St
       }
       trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings)
     },
-    EnvTypeDefs(_, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
+    EnvTypeDefs(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
     EnvFlat(_) => (),
     EnvCached(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings)
   }
@@ -598,7 +630,8 @@ fn typedef_projection_name(def: TypeDef) -> String {
     TDEnum(name, _, _) => name,
     TDStruct(name, _, _, _) => name,
     TDAlias(name, _, _) => name,
-    TDEffect(name, _, _) => name
+    TDEffect(name, _, _) => name,
+    TDEffectSet(name, _) => name
   }
 }
 
@@ -690,7 +723,26 @@ fn typedef_projection_add_named(name: String, dep_defs: Array[TypeDef], selected
             }
           },
           TDAlias(_, _, target) => typedef_projection_add_type_refs(target, dep_defs, selected),
-          TDEffect(_, _, _) => ()
+          TDEffect(_, ops, _) => {
+            let mut oi = 0
+            while oi < Array::length(ops) {
+              let (_, params, ret) = Array::get(ops, oi)
+              let mut pi = 0
+              while pi < Array::length(params) {
+                typedef_projection_add_type_refs(Array::get(params, pi), dep_defs, selected)
+                pi = pi + 1
+              }
+              typedef_projection_add_type_refs(ret, dep_defs, selected)
+              oi = oi + 1
+            }
+          },
+          TDEffectSet(_, members) => {
+            let mut mi = 0
+            while mi < Array::length(members) {
+              typedef_projection_add_named(Array::get(members, mi), dep_defs, selected)
+              mi = mi + 1
+            }
+          }
         }
       },
       None => ()
@@ -700,12 +752,17 @@ fn typedef_projection_add_named(name: String, dep_defs: Array[TypeDef], selected
 
 fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[(String, Option[String])]) -> Array[TypeDef] {
   let dep_defs = env_type_defs(dep_env)
+  let selectable = env_selectable_type_defs(dep_env)
   let selected = array_empty()
   let mut i = 0
   while i < Array::length(names) {
     let (name, alias) = Array::get(names, i)
     let before = Array::length(selected)
-    typedef_projection_add_named(name, dep_defs, selected)
+    if contains_str(selectable, name) {
+      typedef_projection_add_named(name, dep_defs, selected)
+    } else {
+      ()
+    }
     if Array::length(selected) > before {
       match alias {
         Some(local_name) => if local_name != name && !typedef_projection_contains(selected, local_name) {
@@ -718,9 +775,8 @@ fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[(String, Option[
               CtNamed(param, array_empty())
             })),
             TDAlias(_, params, target) => TDAlias(local_name, params, target),
-            // Effects have no declaration transport; this branch is
-            // unreachable for a selected import and must not fabricate one.
-            TDEffect(_, _, _) => TDAlias(local_name, array_empty(), CtUnknown)
+            TDEffect(_, ops, params) => TDEffect(local_name, ops, params),
+            TDEffectSet(_, members) => TDEffectSet(local_name, members)
           }
           Array::push(selected, alias_def)
         } else {
@@ -741,7 +797,24 @@ fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[(String, Option[S
   if Array::length(defs) == 0 {
     tail
   } else {
-    EnvTypeDefs(defs, tail)
+    // Only the explicitly requested names are selectable; recursive closure
+    // entries merely make their signatures intelligible to this checker.
+    let selectable = array_empty()
+    let published = env_selectable_type_defs(dep_env)
+    let mut i = 0
+    while i < Array::length(names) {
+      let (source, alias) = Array::get(names, i)
+      if contains_str(published, source) {
+        Array::push(selectable, match alias {
+          Some(local) => local,
+          None => source
+        })
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    EnvTypeDefs(defs, selectable, tail)
   }
 }
 
@@ -797,7 +870,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
         }
         cur = rest
       },
-      EnvTypeDefs(_, rest) => {
+      EnvTypeDefs(_, _, rest) => {
         cur = rest
       },
       EnvFlat(_) => {
@@ -830,6 +903,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   }
   let dep_bindings = env_flat_bindings(dep_env)
   let dep_type_defs = env_type_defs(dep_env)
+  let dep_selectable_type_defs = env_selectable_type_defs(dep_env)
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
   let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, unresolved)
@@ -857,12 +931,10 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let ty = match env_lookup_flat(dep_bindings, name) {
         Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
         None => {
-          // Declaration authority now travels explicitly in EnvTypeDefs, so
-          // uppercase is no longer evidence that an import is valid. This
-          // also rejects selected effects/effectsets until their own authority
-          // transport exists, instead of allowing a missing uppercase import
-          // to become CtUnknown and fail later in codegen.
-          if dep_known && !typedef_projection_contains(dep_type_defs, name) && !trait_defined(dep_env, name) {
+          // Declaration authority travels explicitly in EnvTypeDefs, so
+          // uppercase is never evidence that an import is valid. Effects and
+          // effectsets use the same selected declaration channel.
+          if dep_known && !contains_str(dep_selectable_type_defs, name) && !trait_defined(dep_env, name) && !is_ambient_import_authority(name) {
             Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
           } else {
             ()
@@ -1837,6 +1909,8 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
       SEnum(true, name, _, _, _) => Array::push(names, name),
       SStruct(true, name, _, _, _, _) => Array::push(names, name),
       STypeAlias(true, name, _, _) => Array::push(names, name),
+      SEffectDef(true, name, _, _) => Array::push(names, name),
+      SEffectSet(true, name, _) => Array::push(names, name),
       SExport(items) => {
         let mut j = 0
         while j < Array::length(items) {
@@ -1860,17 +1934,23 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
     i = i + 1
   }
   let defs = env_type_defs(checked_env)
-  let selected = array_empty()
+  let out = array_empty()
   let mut ni = 0
   while ni < Array::length(names) {
-    typedef_projection_add_named(Array::get(names, ni), defs, selected)
+    let name = Array::get(names, ni)
+    // Publish only the name the module selected. Its declaration closure is
+    // retained separately by restrict_env_to_export_surface so a private
+    // field/signature type remains interpretable without becoming selectable.
+    if typedef_projection_contains(defs, name) {
+      Array::push(out, name)
+    } else if is_ambient_import_authority(name) {
+      // Ambient declarations have no user TypeDef to carry, but an explicit
+      // package export remains a valid authority grant.
+      Array::push(out, name)
+    } else {
+      ()
+    }
     ni = ni + 1
-  }
-  let out = array_empty()
-  let mut si = 0
-  while si < Array::length(selected) {
-    Array::push(out, typedef_projection_name(Array::get(selected, si)))
-    si = si + 1
   }
   interface_sorted_unique(out)
 }
@@ -1927,23 +2007,34 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
         restricted
       }
     },
-    EnvTypeDefs(defs, rest) => {
+    EnvTypeDefs(defs, _, rest) => {
       let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(defs) {
         let def = Array::get(defs, i)
         if bsearch_leftmost(type_surface, typedef_projection_name(def)) >= 0 {
-          Array::push(kept, def)
+          let closure = array_empty()
+          typedef_projection_add_named(typedef_projection_name(def), defs, closure)
+          let mut ci = 0
+          while ci < Array::length(closure) {
+            let closure_def = Array::get(closure, ci)
+            if !typedef_projection_contains(kept, typedef_projection_name(closure_def)) {
+              Array::push(kept, closure_def)
+            } else {
+              ()
+            }
+            ci = ci + 1
+          }
         } else {
           ()
         }
         i = i + 1
       }
-      if Array::length(kept) == 0 {
+      if Array::length(kept) == 0 && Array::length(type_surface) == 0 {
         restricted
       } else {
-        EnvTypeDefs(kept, restricted)
+        EnvTypeDefs(kept, type_surface, restricted)
       }
     },
     EnvFlat(bindings) => {
@@ -2388,7 +2479,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete persistent TypeEnv transport observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(persistent_type_env_transport_fingerprint))
-    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v4 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
+    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v5 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1

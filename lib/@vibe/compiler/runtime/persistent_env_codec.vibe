@@ -532,10 +532,25 @@ fn serialize_type_def(def: TypeDef) -> String {
     },
     TDStruct(name, fields, mut_fields, params) => String::concat("S", String::concat(serialize_segment(name), String::concat(serialize_bindings(fields), String::concat(serialize_string_array(mut_fields), serialize_string_array(params))))),
     TDAlias(name, params, target) => String::concat("A", String::concat(serialize_segment(name), String::concat(serialize_string_array(params), serialize_type(target)))),
-    // Effects deliberately have no declaration transport in this slice.
-    // The decoder rejects this tag, so a future accidental insertion cannot
-    // turn an undeclared effect into the old permissive fallback.
-    TDEffect(_, _, _) => "!"
+    TDEffect(name, ops, params) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "K")
+      StringBuilder::push(out, serialize_segment(name))
+      StringBuilder::push(out, serialize_string_array(params))
+      StringBuilder::push(out, __to_string(Array::length(ops)))
+      StringBuilder::push(out, "[")
+      let mut i = 0
+      while i < Array::length(ops) {
+        let (op, args, ret) = Array::get(ops, i)
+        StringBuilder::push(out, serialize_segment(op))
+        StringBuilder::push(out, serialize_type_array(args))
+        StringBuilder::push(out, serialize_type(ret))
+        i = i + 1
+      }
+      StringBuilder::push(out, "]")
+      StringBuilder::freeze(out)
+    },
+    TDEffectSet(name, members) => String::concat("Z", String::concat(serialize_segment(name), serialize_string_array(members)))
   }
 }
 
@@ -576,6 +591,32 @@ fn parse_type_def(text: String, pos: Int) -> (TypeDef, Int) with Exception {
         let (params, after_params) = parse_string_array(text, after_name)
         let (target, next) = parse_cached_type(text, after_params)
         (TDAlias(name, params, target), next)
+      },
+      'K' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        let (params, after_params) = parse_string_array(text, after_name)
+        let (count, start) = parse_count_header(text, after_params, '[')
+        let ops = array_empty()
+        let mut i = 0
+        let mut cursor = start
+        while i < count {
+          let (op, after_op) = parse_segment(text, cursor)
+          let (args, after_args) = parse_type_array(text, after_op)
+          let (ret, next) = parse_cached_type(text, after_args)
+          Array::push(ops, (op, args, ret))
+          cursor = next
+          i = i + 1
+        }
+        if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+          throw("invalid persistent effect definition")
+        } else {
+          (TDEffect(name, ops, params), cursor + 1)
+        }
+      },
+      'Z' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        let (members, next) = parse_string_array(text, after_name)
+        (TDEffectSet(name, members), next)
       },
       _ => throw("invalid persistent type definition tag")
     }
@@ -689,9 +730,10 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
       StringBuilder::push(buf, serialize_type(target))
       serialize_type_env_into(buf, rest)
     },
-    EnvTypeDefs(defs, rest) => {
+    EnvTypeDefs(defs, selectable, rest) => {
       StringBuilder::push(buf, "P")
       StringBuilder::push(buf, serialize_type_defs(defs))
+      StringBuilder::push(buf, serialize_string_array(selectable))
       serialize_type_env_into(buf, rest)
     },
     EnvFlat(bindings) => {
@@ -770,8 +812,9 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
       },
       'P' => {
         let (defs, after_defs) = parse_type_defs(text, pos + 1)
-        let (rest, next) = parse_persistent_type_env_payload(text, after_defs)
-        (EnvTypeDefs(defs, rest), next)
+        let (selectable, after_selectable) = parse_string_array(text, after_defs)
+        let (rest, next) = parse_persistent_type_env_payload(text, after_selectable)
+        (EnvTypeDefs(defs, selectable, rest), next)
       },
       'L' => {
         let (bindings, next) = parse_bindings(text, pos + 1)
@@ -858,23 +901,23 @@ export fn load_persistent_dep_list(path: String, source: String) -> Option[Array
   }
 }
 
-/// Strict v4 module-interface wire format. It preserves the full persistent
-/// chain plus enum/struct/alias declaration authority. Older bare TypeEnv-v3
-/// bytes are rejected rather than being misread as an interface with no defs.
+/// Strict v5 module-interface wire format. It preserves declaration closure
+/// plus the distinct selected declaration surface. Older bytes are rejected
+/// rather than being misread as authority.
 export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Exception {
   let normalized = normalize_persistent_cache_text(text)
-  let header = "version\t4\nenv\t"
+  let header = "version\t5\nenv\t"
   let header_len = String::length(header)
   if String::length(normalized) < header_len || normalized[0: header_len] != header {
     None
   } else {
     let (payload, after_payload) = parse_segment(normalized, header_len)
     if after_payload + 1 != String::length(normalized) || String::char_code_at(normalized, after_payload) != '\n' {
-      throw("invalid persistent type env v4 envelope")
+      throw("invalid persistent type env v5 envelope")
     } else {
       let (env, end) = parse_persistent_type_env_payload(payload, 0)
       if end != String::length(payload) {
-        throw("invalid persistent type env v4 payload")
+        throw("invalid persistent type env v5 payload")
       } else {
         Some(env)
       }
@@ -899,7 +942,7 @@ export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with 
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
-  String::concat("version\t4\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
+  String::concat("version\t5\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
 }
 
 export fn load_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with Exception + Fs {

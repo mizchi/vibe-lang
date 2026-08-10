@@ -51,7 +51,10 @@ export enum TypeDef {
   // effects register too — a type param resolves to a rigid `CtNamed(param,
   // [])` inside the op signatures, and use sites instantiate it per
   // perform/handle via subst_type_params + fresh inference vars.
-  TDEffect(String, Array[(String, Array[Type], Type)], Array[String])
+  TDEffect(String, Array[(String, Array[Type], Type)], Array[String]);
+  // Effectsets are declaration authority too: a selected import must carry
+  // its exact member closure, rather than re-inferring permission from case.
+  TDEffectSet(String, Array[String])
 }
 
 export enum TypeEnv {
@@ -65,7 +68,11 @@ export enum TypeEnv {
   EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv);
   // Published typedef authority. Unlike the retired enum value carrier this
   // keeps enums, structs, and aliases in one lossless declaration channel.
-  EnvTypeDefs(Array[TypeDef], TypeEnv);
+  // `defs` is the declaration closure required to interpret exported
+  // signatures; `selectable` is the public declaration surface. Keeping them
+  // separate prevents a private dependency of an exported signature from
+  // becoming importable by name.
+  EnvTypeDefs(Array[TypeDef], Array[String], TypeEnv);
   EnvFlat(Array[(String, Type)]);
   // Sorted names/types pair (see core/sorted_index.vibe), instead of a
   // Map[String, Type]: this compiler's `Map` is a flat assoc list, so
@@ -132,10 +139,52 @@ export fn env_type_defs(env: TypeEnv) -> Array[TypeDef] {
       EnvTraitImplGen(_, _, _, _, rest) => {
         cur = rest
       },
-      EnvTypeDefs(defs, rest) => {
+      EnvTypeDefs(defs, _, rest) => {
         let mut i = 0
         while i < Array::length(defs) {
           Array::push(out, Array::get(defs, i))
+          i = i + 1
+        }
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  out
+}
+
+/// Names explicitly published for selected import. The declaration closure
+/// itself can include private names needed only to interpret a public type.
+export fn env_selectable_type_defs(env: TypeEnv) -> Array[String] {
+  let out = array_empty()
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, selectable, rest) => {
+        let mut i = 0
+        while i < Array::length(selectable) {
+          Array::push(out, Array::get(selectable, i))
           i = i + 1
         }
         cur = rest
@@ -182,7 +231,7 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvTraitImplGen(_, _, _, _, rest) => {
           cur = rest
         },
-        EnvTypeDefs(_, rest) => {
+        EnvTypeDefs(_, _, rest) => {
           cur = rest
         },
         EnvFlat(bindings) => {
@@ -284,7 +333,7 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
       EnvTraitImplGen(_, _, _, _, rest) => {
         cur = rest
       },
-      EnvTypeDefs(_, rest) => {
+      EnvTypeDefs(_, _, rest) => {
         cur = rest
       },
       EnvFlat(bindings) => {
@@ -398,7 +447,8 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
         TDEnum(n, _, _) => n,
         TDStruct(n, _, _, _) => n,
         TDAlias(n, _, _) => n,
-        TDEffect(n, _, _) => n
+        TDEffect(n, _, _) => n,
+        TDEffectSet(n, _) => n
       }
       if dname == name {
         result = Some(d)
@@ -456,7 +506,7 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name),
-    EnvTypeDefs(_, rest) => trait_supers(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_supers(rest, name),
     EnvFlat(_) => empty,
     EnvCached(_, _, rest) => trait_supers(rest, name)
   }
@@ -527,7 +577,7 @@ export fn trait_method_sig_binders(env: TypeEnv, trait_name: String, method_name
     } else trait_method_sig_binders(rest, trait_name, method_name),
     EnvTraitImpl(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
-    EnvTypeDefs(_, rest) => trait_method_sig_binders(rest, trait_name, method_name),
+    EnvTypeDefs(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvFlat(_) => None,
     EnvCached(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name)
   }
@@ -574,7 +624,7 @@ fn type_name_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: String)
       } else type_name_iterator_impl_scan(rest, full, type_name)
     },
     EnvTraitImplGen(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
-    EnvTypeDefs(_, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTypeDefs(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name)
   }
@@ -639,7 +689,7 @@ fn type_name_async_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: S
         true
       } else type_name_async_iterator_impl_scan(rest, full, type_name)
     },
-    EnvTypeDefs(_, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
+    EnvTypeDefs(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name)
   }
@@ -929,7 +979,7 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name),
-    EnvTypeDefs(_, rest) => trait_defined(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_defined(rest, name),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => trait_defined(rest, name)
   }
@@ -1431,7 +1481,7 @@ export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
           EnvTraitImplGen(_, _, _, _, rest) => {
             cur = rest
           },
-          EnvTypeDefs(_, rest) => {
+          EnvTypeDefs(_, _, rest) => {
             cur = rest
           },
           EnvFlat(bindings) => {
@@ -2167,7 +2217,7 @@ export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) 
       else impls_overlap_for(rest, trait_name, new_target)
     } else impls_overlap_for(rest, trait_name, new_target),
     EnvTraitImplGen(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target),
-    EnvTypeDefs(_, rest) => impls_overlap_for(rest, trait_name, new_target),
+    EnvTypeDefs(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => impls_overlap_for(rest, trait_name, new_target)
   }
@@ -2232,7 +2282,7 @@ fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, reso
       else type_implements_check_env(rest, full, trait_name, resolved)
     } else type_implements_check_env(rest, full, trait_name, resolved),
     EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, full, trait_name, resolved),
-    EnvTypeDefs(_, rest) => type_implements_check_env(rest, full, trait_name, resolved),
+    EnvTypeDefs(_, _, rest) => type_implements_check_env(rest, full, trait_name, resolved),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => type_implements_check_env(rest, full, trait_name, resolved)
   }
@@ -2262,7 +2312,7 @@ export fn trait_impl_declared_for_ctor(e: TypeEnv, trait_name: String, resolved:
       } else {
         trait_impl_declared_for_ctor(rest, trait_name, resolved)
       },
-      EnvTypeDefs(_, rest) => trait_impl_declared_for_ctor(rest, trait_name, resolved),
+      EnvTypeDefs(_, _, rest) => trait_impl_declared_for_ctor(rest, trait_name, resolved),
       EnvFlat(_) => false,
       EnvCached(_, _, rest) => trait_impl_declared_for_ctor(rest, trait_name, resolved)
     }
@@ -2358,7 +2408,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
         type_implements_check_super(rest, full_env, s, trait_name, resolved)
       }
     },
-    EnvTypeDefs(_, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvTypeDefs(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved)
   }
@@ -2396,7 +2446,7 @@ fn trait_is_method_bearing(env: TypeEnv, trait_name: String) -> Bool {
     } else trait_is_method_bearing(rest, trait_name),
     EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_is_method_bearing(rest, trait_name),
-    EnvTypeDefs(_, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvTypeDefs(_, _, rest) => trait_is_method_bearing(rest, trait_name),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => trait_is_method_bearing(rest, trait_name)
   }
@@ -2445,7 +2495,7 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
         true
       } else generic_impl_satisfies(rest, full, s, trait_name, resolved)
     },
-    EnvTypeDefs(_, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
+    EnvTypeDefs(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved)
   }

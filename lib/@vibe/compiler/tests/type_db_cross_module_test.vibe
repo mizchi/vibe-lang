@@ -81,7 +81,7 @@ fn retained_trait_node_tags(env: TypeEnv) -> String {
     EnvTraitDef(name, _, _, _, rest, _, _) => String::concat(String::concat("def:", name), String::concat(";", retained_trait_node_tags(rest))),
     EnvTraitImpl(name, _, rest) => String::concat(String::concat("impl:", name), String::concat(";", retained_trait_node_tags(rest))),
     EnvTraitImplGen(name, _, _, _, rest) => String::concat(String::concat("gen:", name), String::concat(";", retained_trait_node_tags(rest))),
-    EnvTypeDefs(_, rest) => retained_trait_node_tags(rest),
+    EnvTypeDefs(_, _, rest) => retained_trait_node_tags(rest),
     EnvFlat(_) => "",
     EnvCached(_, _, rest) => retained_trait_node_tags(rest)
   }
@@ -107,6 +107,16 @@ fn typecheck_fs_pair_error(dep_path: String, dep_src: String, main_path: String,
   handle {
     let db = db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src)
     let _ = db_typecheck_fs(db, main_path)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+fn typecheck_db_pair_error(dep_src: String, main_src: String) -> String with Exception {
+  handle {
+    let db = db_set_source(db_set_source(db_new(), "mem/dep.vibe", dep_src), "mem/main.vibe", main_src)
+    let _ = db_typecheck(db, "mem/main.vibe")
     ""
   } with Exception {
     Throw(msg) => msg
@@ -828,14 +838,36 @@ test "db_typecheck_fs: a local typedef shadows imported declaration authority" {
   assert(err == "")
 }
 
-test "db_typecheck_fs: selected effects and effectsets reject until authority transport exists" {
-  let effect_err = typedef_surface_pair_error("/tmp/vibe_selected_effect_rejected", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Audit }\nexport let value = 1\n")
-  assert(String::contains(effect_err, "imported name 'Audit' is not exported by"))
-  let set_err = typedef_surface_pair_error("/tmp/vibe_selected_effectset_rejected", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport let value = 1\n")
-  assert(String::contains(set_err, "imported name 'Audits' is not exported by"))
+test "db_typecheck_fs: selected effects and effectsets retain operation authority" {
+  let effect_err = typedef_surface_pair_error("/tmp/vibe_selected_effect_authority", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Audit }\nexport fn write() -> Unit with Audit { perform Audit::Emit(\"x\") }\n")
+  assert(effect_err == "")
+  // Selecting a public effectset transports its private member as closure for
+  // the row and operation signature, without making that member selectable.
+  let set_err = typedef_surface_pair_error("/tmp/vibe_selected_effectset_authority", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
+  assert(set_err == "")
 }
 
-test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v4" {
+test "db_typecheck: effect and effectset authority match the fs lane" {
+  let public_err = typecheck_db_pair_error("export effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
+  assert(public_err == "")
+  let private_err = typecheck_db_pair_error("effect Secret { Emit(String) -> Unit }\n", "import ./dep.vibe { Secret }\nexport let value = 1\n")
+  assert(String::contains(private_err, "imported name 'Secret' is not exported by"))
+}
+
+test "db_typecheck_fs: private unknown effects and effectsets are not selectable" {
+  let private_effect = typedef_surface_pair_error("/tmp/vibe_private_effect_authority", "effect Secret { Emit(String) -> Unit }\n", "import ./dep.vibe { Secret }\nexport let value = 1\n")
+  assert(String::contains(private_effect, "imported name 'Secret' is not exported by"))
+  let private_set = typedef_surface_pair_error("/tmp/vibe_private_effectset_authority", "effect Audit { Emit(String) -> Unit }\neffectset Secrets = { Audit }\n", "import ./dep.vibe { Secrets }\nexport let value = 1\n")
+  assert(String::contains(private_set, "imported name 'Secrets' is not exported by"))
+  // Audit crosses this boundary only as the public Audits closure; it cannot
+  // be selected directly by a downstream package.
+  let closure_member = typedef_surface_pair_error("/tmp/vibe_private_effect_closure_authority", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audit }\nexport let value = 1\n")
+  assert(String::contains(closure_member, "imported name 'Audit' is not exported by"))
+  let unknown = typedef_surface_pair_error("/tmp/vibe_unknown_effect_authority", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Missing }\nexport let value = 1\n")
+  assert(String::contains(unknown, "imported name 'Missing' is not exported by"))
+}
+
+test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v5" {
   let dir = "/tmp/vibe_v4_cache_cold_recheck"
   let path = String::concat(dir, "/main.vibe")
   let source = "export let value = 1\n"
@@ -848,9 +880,9 @@ test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck 
   let leaf_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
   Fs::write_file(env_path, "version\t3\nenv\t1:0\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t4\nenv\t"))
-  Fs::write_file(env_path, "version\t4\nenv\t1:Z\n")
+  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
+  Fs::write_file(env_path, "version\t5\nenv\t1:Z\n")
   Fs::write_file(leaf_path, "version\t1\nnot-a-fingerprint\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t4\nenv\t"))
+  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
 }
