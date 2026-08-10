@@ -1604,10 +1604,11 @@ Load-bearing invariants for stages 1--3:
 
 This is only the successful-close lifecycle slice. **Read-error injection is
 unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
-measurement). The forced completion-tag expected-trap scenario is a control of
-the cleanup/fail-closed branch, not a measurement of a provider-generated
-error, and this work makes no runtime, console, or public compiler-routing
-change.
+measurement). The forced completion-tag, wrong-byte, and extra-byte
+expected-trap scenarios are controls of cleanup/fail-closed branches, not
+measurements of provider-generated errors. Each byte-mismatch control settles
+and drops both owned ends through the shared close path before trapping. This
+work makes no runtime, console, or public compiler-routing change.
 
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 

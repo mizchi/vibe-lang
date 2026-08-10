@@ -3011,9 +3011,9 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
     127
   ])
   bytebuf_push_section(out, 1, tc)
-  // Canonical imports 0..8, four scenario task-return imports 9..12, memory.
+  // Canonical imports 0..8, six scenario task-return imports 9..14, memory.
   let ic = bytebuf_new()
-  bytebuf_push_vec_header(ic, 14)
+  bytebuf_push_vec_header(ic, 16)
   let import_modules = [
     "$root",
     "$root",
@@ -3024,6 +3024,8 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
     "$root",
     "$root",
     "$root",
+    "[export]$root",
+    "[export]$root",
     "[export]$root",
     "[export]$root",
     "[export]$root",
@@ -3042,7 +3044,9 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
     "[task-return]drain",
     "[task-return]early-close",
     "[task-return]forced-completion-tag-control",
-    "[task-return]foreign-provider-control"
+    "[task-return]foreign-provider-control",
+    "[task-return]wrong-byte-cleanup-control",
+    "[task-return]extra-byte-cleanup-control"
   ]
   let import_types = [
     0,
@@ -3057,10 +3061,12 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
     0,
     0,
     0,
+    0,
+    0,
     0
   ]
   let mut ii = 0
-  while ii < 13 {
+  while ii < 15 {
     emit_name(ic, Array::get(import_modules, ii))
     emit_name(ic, Array::get(import_names, ii))
     bytebuf_push(ic, 0)
@@ -3073,7 +3079,7 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   bytebuf_push(ic, 0)
   leb128_encode_u32(ic, 1)
   bytebuf_push_section(out, 2, ic)
-  // locals 13..18 are decode/acquire/fail/settle/read/close; 19..22 scenarios.
+  // locals 15..20 are decode/acquire/fail/settle/read/close; 21..26 scenarios.
   emit_function_section(out, [
     5,
     3,
@@ -3081,6 +3087,8 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
     7,
     5,
     5,
+    6,
+    6,
     6,
     6,
     6,
@@ -3096,10 +3104,10 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
     "drain",
     "early-close",
     "forced-completion-tag-control",
-    "foreign-provider-control"
+    "foreign-provider-control",
+    "wrong-byte-cleanup-control",
+    "extra-byte-cleanup-control"
   ], [
-    13,
-    14,
     15,
     16,
     17,
@@ -3107,10 +3115,14 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
     19,
     20,
     21,
-    22
+    22,
+    23,
+    24,
+    25,
+    26
   ])
   let code_sec = bytebuf_new()
-  leb128_encode_u32(code_sec, 10)
+  leb128_encode_u32(code_sec, 12)
   // decode(id) -> record address. Prefix, capacity, record tag and published
   // phase are checked before a caller can reach any canonical operation.
   let decode = bytebuf_new()
@@ -3379,7 +3391,7 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   leb128_encode_u32(read, 5)
   bytebuf_push(read, 127)
   emit_local_get(read, 0)
-  emit_call(read, 13)
+  emit_call(read, 15)
   emit_local_set(read, 1)
   emit_local_get(read, 1)
   emit_i32_load(read, 2, 0)
@@ -3435,7 +3447,7 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   emit_i32_ne(read)
   emit_if_void(read)
   emit_local_get(read, 1)
-  emit_call(read, 15)
+  emit_call(read, 17)
   emit_end(read)
   emit_local_get(read, 1)
   emit_i32_load(read, 2, 44)
@@ -3458,13 +3470,13 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   emit_if_void(read)
   emit_local_get(read, 1)
   emit_i32_const(read, 0)
-  emit_call(read, 16)
+  emit_call(read, 18)
   emit_local_set(read, 5)
   emit_i32_const(read, -1)
   emit_return(read)
   emit_end(read)
   emit_local_get(read, 1)
-  emit_call(read, 15)
+  emit_call(read, 17)
   bytebuf_push(read, 0)
   emit_end(read)
   leb128_encode_u32(code_sec, Bytes::length(read))
@@ -3476,7 +3488,7 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   leb128_encode_u32(close, 2)
   bytebuf_push(close, 127)
   emit_local_get(close, 0)
-  emit_call(close, 13)
+  emit_call(close, 15)
   emit_local_set(close, 1)
   emit_local_get(close, 1)
   emit_i32_load(close, 2, 0)
@@ -3496,18 +3508,20 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   emit_end(close)
   emit_local_get(close, 1)
   emit_i32_const(close, 0)
-  emit_call(close, 16)
+  emit_call(close, 18)
   emit_local_set(close, 2)
   emit_i32_const(close, 0)
   bytebuf_push(close, 11)
   leb128_encode_u32(code_sec, Bytes::length(close))
   bytebuf_push_buf(code_sec, close)
   // drain scenario: exact bytes, shared EOF settlement, repeated EOF/close.
+  // Every scenario diagnostic after acquisition closes through the shared
+  // lifecycle-complete path before trapping.
   let drain = bytebuf_new()
   leb128_encode_u32(drain, 1)
   leb128_encode_u32(drain, 2)
   bytebuf_push(drain, 127)
-  emit_call(drain, 14)
+  emit_call(drain, 16)
   emit_local_set(drain, 0)
   let expected_bytes = [
     10,
@@ -3517,33 +3531,42 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   let mut di = 0
   while di < 3 {
     emit_local_get(drain, 0)
-    emit_call(drain, 17)
+    emit_call(drain, 19)
     emit_i32_const(drain, Array::get(expected_bytes, di))
     emit_i32_ne(drain)
     emit_if_void(drain)
+    emit_local_get(drain, 0)
+    emit_call(drain, 20)
+    emit_local_set(drain, 1)
     bytebuf_push(drain, 0)
     emit_end(drain)
     di = di + 1
   }
   emit_local_get(drain, 0)
-  emit_call(drain, 17)
+  emit_call(drain, 19)
   emit_i32_const(drain, -1)
   emit_i32_ne(drain)
   emit_if_void(drain)
+  emit_local_get(drain, 0)
+  emit_call(drain, 20)
+  emit_local_set(drain, 1)
   bytebuf_push(drain, 0)
   emit_end(drain)
   emit_local_get(drain, 0)
-  emit_call(drain, 17)
+  emit_call(drain, 19)
   emit_i32_const(drain, -1)
   emit_i32_ne(drain)
   emit_if_void(drain)
+  emit_local_get(drain, 0)
+  emit_call(drain, 20)
+  emit_local_set(drain, 1)
   bytebuf_push(drain, 0)
   emit_end(drain)
   emit_local_get(drain, 0)
-  emit_call(drain, 18)
+  emit_call(drain, 20)
   emit_local_set(drain, 1)
   emit_local_get(drain, 0)
-  emit_call(drain, 18)
+  emit_call(drain, 20)
   emit_local_set(drain, 1)
   emit_i32_const(drain, 42)
   emit_call(drain, 9)
@@ -3554,19 +3577,22 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   leb128_encode_u32(early, 1)
   leb128_encode_u32(early, 2)
   bytebuf_push(early, 127)
-  emit_call(early, 14)
+  emit_call(early, 16)
   emit_local_set(early, 0)
   emit_local_get(early, 0)
-  emit_call(early, 18)
+  emit_call(early, 20)
   emit_local_set(early, 1)
   emit_local_get(early, 0)
-  emit_call(early, 18)
+  emit_call(early, 20)
   emit_local_set(early, 1)
   emit_local_get(early, 0)
-  emit_call(early, 17)
+  emit_call(early, 19)
   emit_i32_const(early, -1)
   emit_i32_ne(early)
   emit_if_void(early)
+  emit_local_get(early, 0)
+  emit_call(early, 20)
+  emit_local_set(early, 1)
   bytebuf_push(early, 0)
   emit_end(early)
   emit_i32_const(early, 43)
@@ -3580,14 +3606,14 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   leb128_encode_u32(forced, 1)
   leb128_encode_u32(forced, 2)
   bytebuf_push(forced, 127)
-  emit_call(forced, 14)
+  emit_call(forced, 16)
   emit_local_set(forced, 0)
   emit_local_get(forced, 0)
-  emit_call(forced, 13)
+  emit_call(forced, 15)
   emit_local_set(forced, 1)
   emit_local_get(forced, 1)
   emit_i32_const(forced, 1)
-  emit_call(forced, 16)
+  emit_call(forced, 18)
   emit_local_set(forced, 0)
   bytebuf_push(forced, 0)
   emit_end(forced)
@@ -3599,12 +3625,76 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   leb128_encode_u32(foreign, 1)
   bytebuf_push(foreign, 127)
   emit_i32_const(foreign, 1409286145)
-  emit_call(foreign, 17)
+  emit_call(foreign, 19)
   emit_local_set(foreign, 0)
   bytebuf_push(foreign, 0)
   emit_end(foreign)
   leb128_encode_u32(code_sec, Bytes::length(foreign))
   bytebuf_push_buf(code_sec, foreign)
+  // Expected-trap controls for the scenario checks that motivated #1539's
+  // cleanup review. They perturb guest expectations only; neither control is
+  // a measurement of provider byte errors. Both close while OPEN, settling
+  // and dropping the stream/future exactly once, before unreachable.
+  let wrong_byte = bytebuf_new()
+  leb128_encode_u32(wrong_byte, 1)
+  leb128_encode_u32(wrong_byte, 2)
+  bytebuf_push(wrong_byte, 127)
+  emit_call(wrong_byte, 16)
+  emit_local_set(wrong_byte, 0)
+  emit_local_get(wrong_byte, 0)
+  emit_call(wrong_byte, 19)
+  emit_i32_const(wrong_byte, 11)
+  emit_i32_ne(wrong_byte)
+  emit_if_void(wrong_byte)
+  emit_local_get(wrong_byte, 0)
+  emit_call(wrong_byte, 20)
+  emit_local_set(wrong_byte, 1)
+  bytebuf_push(wrong_byte, 0)
+  emit_end(wrong_byte)
+  emit_i32_const(wrong_byte, 0)
+  emit_call(wrong_byte, 13)
+  bytebuf_push(wrong_byte, 11)
+  leb128_encode_u32(code_sec, Bytes::length(wrong_byte))
+  bytebuf_push_buf(code_sec, wrong_byte)
+  let extra_byte = bytebuf_new()
+  leb128_encode_u32(extra_byte, 1)
+  leb128_encode_u32(extra_byte, 2)
+  bytebuf_push(extra_byte, 127)
+  emit_call(extra_byte, 16)
+  emit_local_set(extra_byte, 0)
+  let extra_expected_bytes = [
+    10,
+    15
+  ]
+  let mut ei = 0
+  while ei < 2 {
+    emit_local_get(extra_byte, 0)
+    emit_call(extra_byte, 19)
+    emit_i32_const(extra_byte, Array::get(extra_expected_bytes, ei))
+    emit_i32_ne(extra_byte)
+    emit_if_void(extra_byte)
+    emit_local_get(extra_byte, 0)
+    emit_call(extra_byte, 20)
+    emit_local_set(extra_byte, 1)
+    bytebuf_push(extra_byte, 0)
+    emit_end(extra_byte)
+    ei = ei + 1
+  }
+  emit_local_get(extra_byte, 0)
+  emit_call(extra_byte, 19)
+  emit_i32_const(extra_byte, -1)
+  emit_i32_ne(extra_byte)
+  emit_if_void(extra_byte)
+  emit_local_get(extra_byte, 0)
+  emit_call(extra_byte, 20)
+  emit_local_set(extra_byte, 1)
+  bytebuf_push(extra_byte, 0)
+  emit_end(extra_byte)
+  emit_i32_const(extra_byte, 0)
+  emit_call(extra_byte, 14)
+  bytebuf_push(extra_byte, 11)
+  leb128_encode_u32(code_sec, Bytes::length(extra_byte))
+  bytebuf_push_buf(code_sec, extra_byte)
   bytebuf_push_section(out, 10, code_sec)
   bytebuf_to_bytes(out)
 }
@@ -3647,6 +3737,8 @@ export fn comp_emit_component_wasm_stdin_provider_shadow() -> Bytes {
   emit_canon_task_return(buf, comp_valtype_u32)
   emit_canon_task_return(buf, comp_valtype_u32)
   emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf, comp_valtype_u32)
   let root_inst = 1
   emit_core_instance_from_exports(buf, 1, [
     9
@@ -3673,17 +3765,21 @@ export fn comp_emit_component_wasm_stdin_provider_shadow() -> Bytes {
   ])
   let export_root_inst = 2
   emit_core_instance_from_exports(buf, 1, [
-    4
+    6
   ], [
     "[task-return]drain",
     "[task-return]early-close",
     "[task-return]forced-completion-tag-control",
-    "[task-return]foreign-provider-control"
+    "[task-return]foreign-provider-control",
+    "[task-return]wrong-byte-cleanup-control",
+    "[task-return]extra-byte-cleanup-control"
   ], [
     9,
     10,
     11,
-    12
+    12,
+    13,
+    14
   ])
   emit_core_instance_from_exports_sorted(buf, [
     "memory"
@@ -3709,22 +3805,28 @@ export fn comp_emit_component_wasm_stdin_provider_shadow() -> Bytes {
     "drain",
     "early-close",
     "forced-completion-tag-control",
-    "foreign-provider-control"
+    "foreign-provider-control",
+    "wrong-byte-cleanup-control",
+    "extra-byte-cleanup-control"
   ], [
+    core_sort_func,
+    core_sort_func,
     core_sort_func,
     core_sort_func,
     core_sort_func,
     core_sort_func
   ])
   let mut lift_i = 0
-  while lift_i < 4 {
-    emit_canon_lift_async_section(buf, 13 + lift_i, async_type_idx)
+  while lift_i < 6 {
+    emit_canon_lift_async_section(buf, 15 + lift_i, async_type_idx)
     lift_i = lift_i + 1
   }
   emit_comp_export_section(buf, "drain", 1)
   emit_comp_export_section(buf, "early-close", 2)
   emit_comp_export_section(buf, "forced-completion-tag-control", 3)
   emit_comp_export_section(buf, "foreign-provider-control", 4)
+  emit_comp_export_section(buf, "wrong-byte-cleanup-control", 5)
+  emit_comp_export_section(buf, "extra-byte-cleanup-control", 6)
   bytebuf_to_bytes(buf)
 }
 

@@ -3,15 +3,17 @@
 # Structural checks always cover the exact nominal import prefix, synchronous
 # memory-bearing read-via-stream lower, private adapter/scenario surface, and
 # component WIT. Wasmtime 47.0.2 additionally runs drain/early-close and the
-# two expected-trap controls when its ratified stdin provider is available.
-# The forced completion tag is a control of cleanup/fail-closed code, not a
-# measurement of a provider-generated completion error.
+# expected-trap controls when its ratified stdin provider is available. The
+# forced completion tag and byte-mismatch controls exercise cleanup/fail-closed
+# code; they do not measure provider-generated errors.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
-OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/wasi_cli_stdin_provider_shadow}"
+# Keep this fixed because the generated Vibe harness writes the same path.
+# There is intentionally no OUT_DIR override with a divergent guest target.
+OUT_DIR="$PROJECT_ROOT/_build/bench/wasi_cli_stdin_provider_shadow"
 mkdir -p "$OUT_DIR"
 
 require_or_skip_runtime() {
@@ -32,7 +34,13 @@ command -v wasm-tools >/dev/null 2>&1 || {
 
 COMPILER="${VIBE_STDIN_PROVIDER_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
+  shopt -s nullglob
+  for candidate in "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm; do
+    if [ -z "$COMPILER" ] || [ "$candidate" -nt "$COMPILER" ]; then
+      COMPILER="$candidate"
+    fi
+  done
+  shopt -u nullglob
   [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
 fi
 HARNESS="$OUT_DIR/dump.vibex"
@@ -76,6 +84,10 @@ grep -Fq 'stdin-provider-shadow-acquire' "$PRINTED"
 grep -Fq 'stdin-provider-shadow-settle' "$PRINTED"
 grep -Fq 'forced-completion-tag-control' "$PRINTED"
 grep -Fq 'foreign-provider-control' "$PRINTED"
+grep -Fq 'wrong-byte-cleanup-control' "$PRINTED"
+grep -Fq 'extra-byte-cleanup-control' "$PRINTED"
+# The dollar sign is part of the literal canonical import name.
+# shellcheck disable=SC2016
 if grep -Fq 'host_stream_get$stdin' "$PRINTED" || grep -Fq 'host_stream_close' "$PRINTED"; then
   echo "wasi cli stdin provider shadow FAILED: generic HostStream machinery leaked into shadow" >&2
   exit 1
@@ -83,6 +95,25 @@ fi
 # Both BLOCKED branches encode join(handle,set), wait, join(handle,0), set.drop.
 [ "$(grep -c 'call 6' "$PRINTED")" -ge 4 ]
 [ "$(grep -c 'call 8' "$PRINTED")" -eq 2 ]
+# Scenario mismatch traps must be immediately preceded by close(id) and its
+# result local.set. These fixed indices are part of this byte-level shadow gate.
+check_cleanup_before_traps() {
+  local func_idx="$1" expected_traps="$2"
+  local body="$OUT_DIR/func-$func_idx.wat"
+  sed -n "/    (func (;$func_idx;) (type 6)/,/^    )/p" "$PRINTED" >"$body"
+  awk -v expected="$expected_traps" '
+    /^        call 20$/ { close_line = NR }
+    /^        unreachable$/ {
+      traps += 1
+      if (close_line != NR - 2) bad = 1
+    }
+    END { exit !(traps == expected && bad != 1) }
+  ' "$body"
+}
+check_cleanup_before_traps 21 5 # drain wrong-byte + extra-byte diagnostics
+check_cleanup_before_traps 22 1 # post-close scenario diagnostic
+check_cleanup_before_traps 25 1 # wrong-byte cleanup control
+check_cleanup_before_traps 26 3 # extra-byte cleanup control and prefix guards
 echo "[wasi-cli-stdin-provider-shadow] generated component validate/WIT/prefix/structure OK"
 
 WASMTIME_BIN="${WASMTIME_BIN:-$(command -v wasmtime || true)}"
@@ -132,5 +163,7 @@ run_success drain 42
 run_success early-close 43
 run_trap forced-completion-tag-control
 run_trap foreign-provider-control
+run_trap wrong-byte-cleanup-control
+run_trap extra-byte-cleanup-control
 
 echo "wasi cli stdin provider shadow component gate OK (wasmtime 47.0.2)"
