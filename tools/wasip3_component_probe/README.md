@@ -173,22 +173,17 @@ does this at compile time): `wit-bindgen rust wit/ --async all --out-dir src_gen
 
 ## `stdin_read_via_stream/`: ratified stdin ABI availability check (#1539)
 
-`stdin_read_via_stream/component.wat` is the smallest hand-authored component
-that declares the **ratified** `wasi:cli/stdin@0.3.0` import name plus the
-returned `stream<u8>`/completion-future shape. WIT specifies
-`read-via-stream` as `tuple<stream<u8>, future<result<_, error-code>>>`; the
-probe uses a one-byte error payload because current wasm-tools rejects the
-nominal enum in a hand-authored imported instance. It intentionally has no
-read loop. Linking that exact import name is the prerequisite to measuring the loop's normal EOF,
-early readable-end drop, and completion-future lifecycle; an RC interface is
-not evidence for the ratified ABI.
+`stdin_read_via_stream/component.wat` declares the ratified
+`wasi:cli/stdin@0.3.0` import and `read-via-stream` result type
+`tuple<stream<u8>, future<result<_, error-code>>>`. Its `error-code` is
+imported from `wasi:cli/types@0.3.0` and aliased into the stdin instance, which
+preserves the WIT type's nominal identity rather than using a byte-sized
+stand-in.
 
-`scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates the probe,
-then records the expected fail-closed result while the selected wasmtime cannot
-link `@0.3.0`. If a host starts linking it, the gate fails rather than claiming
-success: it must first be extended with executable normal-EOF and early-drop
-runs. See `docs/spec/wasi-p3-async.md` §3.18.2 for the measured availability
-constraint and the production blocker.
+`scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates the
+component. It accepts only the explicit missing-stdin-implementation linker
+diagnostic as unavailability; generic ABI/type mismatch diagnostics fail. The
+probe is included in the optional `test-wasi-p3` aggregate.
 
 ## `stackful/`: hand-authored blocking-wait probe (M1b-3c mechanics proof)
 

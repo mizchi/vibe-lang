@@ -1,16 +1,59 @@
 #!/usr/bin/env bash
 # #1539: fail-closed availability check for wasi:cli/stdin@0.3.0.
 #
-# The probe deliberately declares the ratified WIT import, including the
-# returned readable stream and completion future. It has no guest lifecycle
-# body: a successful link is the prerequisite for measuring normal EOF, early
-# readable-end drop, and completion-result errors. Do not substitute the
-# older RC interface; an RC observation is not evidence for @0.3.0.
+# The probe declares the ratified WIT import, including the nominal
+# wasi:cli/types@0.3.0 error-code used in the completion result. It checks
+# linkage only; a successful link deliberately fails this gate so availability
+# cannot be mistaken for a completed behavioral test.
 #
 # Env:
 #   WASMTIME_BIN                 wasmtime binary under test (default: PATH)
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1 missing tools = FAIL instead of skip
 set -euo pipefail
+
+is_expected_unavailability() {
+  local log="$1"
+  # Do not accept a generic type error: it could describe an ABI defect in the
+  # probe itself. The selected host must specifically say that the ratified
+  # stdin instance has no linker implementation.
+  grep -Eq 'component imports instance .wasi:cli/stdin@0\.3\.0., but a matching implementation was not found in (the )?linker' "$log"
+}
+
+run_diagnostic_self_test() {
+  local dir expected wrong_type missing_function
+  dir="$(mktemp -d)"
+  expected="$dir/expected.log"
+  wrong_type="$dir/wrong-type.log"
+  missing_function="$dir/missing-function.log"
+
+  cat >"$expected" <<'EOF'
+component imports instance `wasi:cli/stdin@0.3.0`, but a matching implementation was not found in the linker
+EOF
+  cat >"$wrong_type" <<'EOF'
+component imports instance wasi:cli/stdin@0.3.0, but instance export read-via-stream has the wrong type
+EOF
+  cat >"$missing_function" <<'EOF'
+component imports instance wasi:cli/stdin@0.3.0, but function implementation is missing
+EOF
+
+  if ! is_expected_unavailability "$expected"; then
+    rm -rf "$dir"
+    echo "wasi cli stdin p3 probe diagnostic self-test FAILED: missing expected unavailability" >&2
+    return 1
+  fi
+  if is_expected_unavailability "$wrong_type" || is_expected_unavailability "$missing_function"; then
+    rm -rf "$dir"
+    echo "wasi cli stdin p3 probe diagnostic self-test FAILED: accepted ABI/type mismatch diagnostic" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+  echo "wasi cli stdin p3 probe diagnostic self-test OK"
+}
+
+if [ "${1:-}" = "--self-test-diagnostics" ]; then
+  run_diagnostic_self_test
+  exit 0
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -38,27 +81,24 @@ wasm-tools parse "$WAT" -o "$COMPONENT"
 wasm-tools validate --features all "$COMPONENT"
 PRINTED="$OUT_DIR/stdin_read_via_stream.print.wat"
 wasm-tools print "$COMPONENT" >"$PRINTED"
+grep -Fq 'wasi:cli/types@0.3.0' "$PRINTED"
 grep -Fq 'wasi:cli/stdin@0.3.0' "$PRINTED"
+grep -Fq '(enum "io" "illegal-byte-sequence" "pipe")' "$PRINTED"
 grep -Fq 'read-via-stream' "$PRINTED"
 
-# There is intentionally no success case yet. A host that links this import
-# means the ABI availability blocker has moved: this gate must then grow the
-# two lifecycle runs instead of silently claiming they passed.
 LOG="$OUT_DIR/wasmtime.log"
 if "$WASMTIME_BIN" run -Sp3 -Wcomponent-model-async=y "$COMPONENT" >"$LOG" 2>&1; then
-  echo "wasi cli stdin p3 probe FAILED: $WASMTIME_BIN linked @0.3.0; add normal-EOF and early-drop lifecycle measurements before accepting it" >&2
+  echo "wasi cli stdin p3 probe FAILED: $WASMTIME_BIN linked the exact @0.3.0 import; availability result must be reviewed before this gate can pass" >&2
   exit 1
 fi
 
-# Wasmtime releases/tool builds can reject the unavailable interface during
-# parsing or linker construction. Either is an availability failure, not a
-# lifecycle result. Preserve the exact log for review.
-if ! grep -Eq 'instance not valid to be used as import|matching implementation was not found|function implementation is missing|wrong type' "$LOG"; then
+# A generic `wrong type` or `function implementation is missing` diagnosis is
+# not evidence of host unavailability. Preserve the exact log for review.
+if ! is_expected_unavailability "$LOG"; then
   echo "wasi cli stdin p3 probe FAILED: unexpected wasmtime rejection" >&2
   cat "$LOG" >&2
   exit 1
 fi
 
-echo "[wasi-cli-stdin-p3-probe] validated ratified @0.3.0 import; wasmtime could not link it"
-echo "[wasi-cli-stdin-p3-probe] lifecycle unmeasured: normal EOF, early readable-end drop, and completion errors remain blocked"
+echo "[wasi-cli-stdin-p3-probe] validated exact ratified @0.3.0 imports; wasmtime has no matching stdin implementation"
 echo "wasi cli stdin p3 probe gate OK (fail-closed availability result)"

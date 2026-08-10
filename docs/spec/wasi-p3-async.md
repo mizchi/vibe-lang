@@ -1466,45 +1466,22 @@ gate lane = `test_named_hoststreams_component_gate.sh` の close lane
 かつ drain-only component に close import が無いこと + closing component に
 guest import と adapter export が両方あることを .wat で確認）。
 
-### 3.18.2 #1539 — `wasi:cli/stdin@0.3.0` の ABI/lifecycle 前提（availability のみ実測）
+### 3.18.2 #1539 — `wasi:cli/stdin@0.3.0` ABI availability probe
 
-#1539 の production stdin 接続は、`read-via-stream` が返す **readable
-`stream<u8>` と completion `future<result<_, error-code>>` の両方**を正しく
-所有・終了処理できることが前提である。ここでは lifecycle を推測で埋めないため、
-まず ratified import 名と returned stream/future shape を手書き component
-probe (`tools/wasip3_component_probe/stdin_read_via_stream/component.wat`) に固定した。
-WIT の署名は `wasi:cli/stdin@0.3.0` の
-`read-via-stream: func() -> tuple<stream<u8>, future<result<_, error-code>>>`
-である（`error-code` は nominal enum: `io` / `illegal-byte-sequence` / `pipe`）。
-現行 `wasm-tools 1.245.1` は hand-authored imported-instance type 内の nominal
-error enum を reject するため、probe は validate 可能な one-byte error payload
-で **availability だけ**を検査する。full nominal result compatibility も未測定で
-あり、production ABI として扱わない。
+`tools/wasip3_component_probe/stdin_read_via_stream/component.wat` declares
+`wasi:cli/stdin@0.3.0` and its `read-via-stream` result type:
+`tuple<stream<u8>, future<result<_, error-code>>>`. The component imports
+`wasi:cli/types@0.3.0` and aliases its nominal `error-code` into the stdin
+instance, so the declaration does not substitute a representation-compatible
+payload for the WIT type.
 
-**測定結果（2026-08-10, この tree の pinned wasmtime source + local CLI）**:
-
-- pinned `deps/wasmtime` は 45.0.0 (`377cd917a`) で、vendored p3 WIT は
-  `wasi:cli@0.3.0-rc-2026-03-15` だけを定義している。ratified `@0.3.0` ではない。
-- local `wasmtime 42.0.1` にこの ratified-import component を
-  `run -Sp3 -Wcomponent-model-async=y` で渡すと、stdin instance を link できず
-  nonzero で終了した（`matching implementation was not found` / missing function
-  implementation）。`wasm-tools 1.245.1` の parse と `validate --features all` は
-  通るので、これは component text の不正ではなく実行 host availability の失敗である。
-
-従って **normal EOF、readable end の早期 drop、completion future を await/drop
-すべき時点、host 読み取り失敗時の `error-code` はいずれも未測定**である。特に
-completion future を「EOF で自動的に成功」「drop してよい」とは扱わない。host
-failure も再現していないため、error-code mapping や recovery は実装しない。
-
-`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` はこの availability 結果を
-reproduce する。将来の host が `@0.3.0` を link した時点で gate は意図的に失敗し、
-normal-EOF と early-readable-drop の executable lifecycle lanes（completion result
-を明示的に await する lane を含む）を追加するまで green にしない。
-
-**#1539 constraint**: compiler / Console / runtime の stdin API を p3 stream に
-接続してはならない。再開条件は、ratified `wasi:cli/stdin@0.3.0` を実際に link
-できる wasmtime host と、上の二 lifecycle lane の実測である。RC ABI や
-`host_stream_named` の `body` probe を代用してこの条件を満たしたとは扱わない。
+`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates that
+component, then accepts only wasmtime's explicit diagnostic that the ratified
+stdin instance has no matching linker implementation. Generic ABI/type
+mismatch diagnostics are failures. A successful link also fails this
+availability-only gate for review rather than being reported as a passing
+behavioral result. The optional `test-wasi-p3` aggregate includes this probe;
+its CI job remains outside `ci-required`.
 
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
