@@ -244,17 +244,9 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
 /// the env but whose variant list only reaches this module through
 /// `enum_def_env_name`.
 ///
-/// A PARAMETERIZED enum is built from the `Enum::__variants__` carrier rather
-/// than from the `TDEnum`, because the `TDEnum`'s payloads carry the declaring
-/// compilation's `CtVar` ids and the `CtForAll` binders that quantify them live
-/// in `type_def_binders`, which this function cannot reach and which does not
-/// cross a module boundary anyway. The carrier stores the NAME-parameterized
-/// payloads, so the scheme can be rebuilt here from binder ids of our own:
-/// `c` is the caller's next-fresh counter, and the caller instantiates the
-/// result immediately, which renames every binder again (`instantiate` steps
-/// its own counter past any binder id it sees, so ids minted here cannot be
-/// captured). Falling back to `env_lookup(env, member)` when the carrier is
-/// missing keeps the pre-#1455 behaviour for anything this cannot reconstruct.
+/// A PARAMETERIZED enum validates ownership through `TDEnum` and then uses
+/// the imported bare constructor's checked `CtForAll` scheme. The historical
+/// `Enum::__variants__` carrier is deliberately not an authority source.
 fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef], c: Int) -> Option[Type] {
   let idx = String::index_of(name, "::")
   if idx < 0 {
@@ -285,7 +277,10 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
               Some(CtFn(payloads, CtEnum(ename), None))
             }
           } else {
-            resolve_qualified_parameterized_ctor(ename, params, member, env, c)
+            // The imported bare constructor is the checked `CtForAll` scheme.
+            // `Enum::__variants__` is legacy data only and is never consulted
+            // for authority, so a corrupt carrier cannot override EnvTypeDefs.
+            env_lookup(env, member)
           }
         } else {
           None
@@ -296,9 +291,8 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
   }
 }
 
-/// The parameterized half of `resolve_qualified_ctor_ident`: rebuild
-/// `Enum::Variant`'s `CtForAll` scheme from the carrier's name-parameterized
-/// payloads, binding the enum's formals to fresh ids starting at `c`.
+/// Legacy carrier decoder path retained for compatibility with its isolated
+/// codec tests. No checker/import path calls it; EnvTypeDefs is authoritative.
 fn resolve_qualified_parameterized_ctor(ename: String, params: Array[String], member: String, env: TypeEnv, c: Int) -> Option[Type] {
   match env_lookup(env, enum_def_env_name(ename)) {
     Some(carrier) => match decode_enum_def(carrier) {
