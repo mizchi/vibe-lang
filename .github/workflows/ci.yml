@@ -571,6 +571,36 @@ jobs:
           echo "$PWD/p3-tools" >> "$GITHUB_PATH"
       - name: Add wasm32 target for the http adapter
         run: rustup target add wasm32-unknown-unknown
+      # Phase C compiles a harness that IMPORTS `@vibe/compiler/...`, unlike
+      # phases A/B which only drive the compiler as a black box over plain
+      # .vibe inputs. That package's closure includes the five generated
+      # artifacts (gitignored build outputs), so without these steps the
+      # harness compile fails on `lib/@vibe/compiler/cache/index.vpkg:
+      # contract violation: contract declaration 'codegen_fingerprint' has no
+      # implementation`. ensure_generated.sh needs the seed, hence both.
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Generated compiler artifacts (fingerprint)
+        id: p3genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.p3genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
       - name: Download stage2 artifact
         uses: actions/download-artifact@v4
         with:
@@ -582,6 +612,10 @@ jobs:
           VIBE_P3_GATE_PHASES: "async,http,stdin"
           VIBE_ASYNC_GATE_COMPILER: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
           VIBE_SERVE_CLI_WASM: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
+          # This job builds nothing: it has no generations tree and no seed
+          # (it never runs ensure_seed.sh), so phase C's shadow-component gate
+          # has to be pointed at the downloaded stage2 like the other two.
+          VIBE_STDIN_PROVIDER_GATE_COMPILER: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
         run: bash scripts/test_wasi_p3_guarantee_gate.sh
 
   # Aggregate required check (branch protection requires "ci-required").

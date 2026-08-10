@@ -9238,10 +9238,219 @@ fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   }
 }
 
-///|
-/// In-place labeled-argument reordering over a whole program. Rebuilds only the
-/// top-level statements that actually contain a labeled argument (see
-/// expr_has_labeled_arg).
+/// Read-only scan for one of three questions, in ONE explicit-variant walk:
+///   mode 0 -- does this contain a two-argument `inspect(..)` call?
+///   mode 1 -- does this BIND the name `inspect` (a let / for / fn parameter)?
+///   mode 2 -- does this mention `name` at all, as a reference or a binder?
+///
+/// The variants are enumerated by hand rather than recursed through
+/// `expr_children`, and that is the whole point: `expr_children` ALLOCATES a
+/// fresh array per node, so using it for a "read-only" pre-check cost more
+/// allocation than the rebuild the pre-check exists to avoid. Measured on the
+/// perf gate's deterministic axis: the expr_children version put
+/// `selfcompile heap_ptr_bytes` +2.61% over main; this one is allocation-free.
+///
+/// Enumerated (no `_ =>` catch-all for the recursive shapes) so a new `Expr`
+/// variant is a compile error here instead of a silently unscanned subtree.
+fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
+  let here = if mode == 0 {
+    match expr {
+      ECall(callee, args, _) => match callee {
+        EIdent(n, _) => n == "inspect" && Array::length(args) == 2,
+        _ => false
+      },
+      _ => false
+    }
+  } else if mode == 1 {
+    match expr {
+      ELet(n, _, _, _) => n == "inspect",
+      ELetRec(n, _, _) => n == "inspect",
+      ELetMut(n, _, _, _) => n == "inspect",
+      EForIn(v, _, _, _) => v == "inspect",
+      EFn(_, _, params, _, _, _) => dinsp_params_bind(params, "inspect"),
+      EMatch(_, arms) => dinsp_arms_bind(arms, "inspect"),
+      EHandle(_, arms) => dinsp_arms_bind(arms, "inspect"),
+      _ => false
+    }
+  } else {
+    match expr {
+      EIdent(n, _) => n == name,
+      ELet(n, _, _, _) => n == name,
+      ELetRec(n, _, _) => n == name,
+      ELetMut(n, _, _, _) => n == name,
+      EAssign(n, _, _) => n == name,
+      EAssignOp(_, n, _, _) => n == name,
+      EForIn(v, _, _, _) => v == name,
+      EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),
+      EMatch(_, arms) => dinsp_arms_bind(arms, name),
+      EHandle(_, arms) => dinsp_arms_bind(arms, name),
+      _ => false
+    }
+  }
+  if here {
+    true
+  } else {
+    match expr {
+      EInt(_) => false,
+      EFloat(_) => false,
+      EString(_) => false,
+      EBool(_) => false,
+      EUnit => false,
+      EIdent(_, _) => false,
+      EStringInterp(_) => false,
+      ETuple(items) => dinsp_scan_list(items, mode, name),
+      EArray(items) => dinsp_scan_list(items, mode, name),
+      ERecord(_, fields, _) => dinsp_scan_fields(fields, mode, name),
+      EMap(fields) => dinsp_scan_fields(fields, mode, name),
+      EIf(c, t, f) => dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name),
+      ELet(_, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      ELetRec(_, v, b) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      ELetMut(_, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      EAssign(_, v, b) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      EAssignOp(_, _, v, b) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      ESeq(a, b) => dinsp_scan(a, mode, name) || dinsp_scan(b, mode, name),
+      EMatch(sc, arms) => dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name),
+      EHandle(sc, arms) => dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name),
+      EWhile(c, b) => dinsp_scan(c, mode, name) || dinsp_scan(b, mode, name),
+      ELoop(params, b) => dinsp_scan_fields(params, mode, name) || dinsp_scan(b, mode, name),
+      EForIn(_, _, it, b) => dinsp_scan(it, mode, name) || dinsp_scan(b, mode, name),
+      ECall(callee, args, _) => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name),
+      EBinOp(_, l, r) => dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name),
+      EUnaryOp(_, v) => dinsp_scan(v, mode, name),
+      EFn(_, _, _, _, _, body) => dinsp_scan(body, mode, name),
+      EDot(inner, _, _, _) => dinsp_scan(inner, mode, name),
+      ELabeledArg(_, _, v) => dinsp_scan(v, mode, name),
+      EReturn(v) => dinsp_scan(v, mode, name),
+      EBreak(opt) => match opt {
+        Some(v) => dinsp_scan(v, mode, name),
+        None => false
+      },
+      EContinue(args) => dinsp_scan_list(args, mode, name),
+      ESpread(v) => dinsp_scan(v, mode, name)
+    }
+  }
+}
+
+fn dinsp_scan_list(items: Array[Expr], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    found = dinsp_scan(Array::get(items, i), mode, name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_scan_fields(fields: Array[(String, Expr)], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    found = dinsp_scan(v, mode, name)
+    i = i + 1
+  }
+  found
+}
+
+/// A binder named `name` in PATTERN position -- `let (inspect, x) = ..`, a
+/// match/handle arm's `Some(inspect)`, a struct-pattern field bound to it.
+///
+/// Codex review on #1622 (P1): without this the shadow guard only saw binders
+/// spelled in expression position, so a `inspect` introduced by destructuring
+/// left `dinsp_binds_inspect` false and the rewrite went ahead and replaced the
+/// user's own call with snapshot-assertion behaviour -- silently, since the
+/// program still compiled.
+fn dinsp_pat_binds(pat: Pat, name: String) -> Bool {
+  match pat {
+    PWild => false,
+    PBind(n) => n == name,
+    PInt(_) => false,
+    PFloat(_) => false,
+    PString(_) => false,
+    PBool(_) => false,
+    PCtor(_, args) => dinsp_pat_list_binds(args, name),
+    PTuple(items) => dinsp_pat_list_binds(items, name),
+    POr(a, b) => dinsp_pat_binds(a, name) || dinsp_pat_binds(b, name),
+    PStruct(_, fields) => dinsp_pat_fields_bind(fields, name)
+  }
+}
+
+fn dinsp_pat_list_binds(pats: Array[Pat], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(pats) {
+    found = dinsp_pat_binds(Array::get(pats, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_pat_fields_bind(fields: Array[(String, Pat)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, p) = Array::get(fields, i)
+    found = dinsp_pat_binds(p, name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_arms_bind(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    found = dinsp_pat_binds(p, name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_scan_arms(arms: Array[(Pat, Expr)], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (_, v) = Array::get(arms, i)
+    found = dinsp_scan(v, mode, name)
+    i = i + 1
+  }
+  found
+}
+
+/// Every name `expr` MENTIONS -- as a reference or as a binder. Used to mint
+/// temporaries that cannot capture anything in the expressions being moved.
+/// Over-approximates (a shadowed inner binder counts too), which only ever
+/// costs a suffix.
+fn dinsp_mentions(expr: Expr, name: String) -> Bool {
+  dinsp_scan(expr, 2, name)
+}
+
+fn dinsp_params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    found = pn == name
+    i = i + 1
+  }
+  found
+}
+
+/// `base`, or `base` with the smallest numeric suffix that neither argument
+/// mentions. Bounded by an occurrence check rather than a global counter so the
+/// expansion stays a pure function of its inputs (two identical `inspect` calls
+/// lower identically, which keeps the pass idempotent).
+fn dinsp_fresh_name(base: String, value: Expr, content: Expr) -> String {
+  let mut candidate = base
+  let mut n = 0
+  while dinsp_mentions(value, candidate) || dinsp_mentions(content, candidate) {
+    n = n + 1
+    candidate = String::concat(base, String::concat("_", __to_string(n)))
+  }
+  candidate
+}
+
 /// #1571: the desugared form of `inspect(value, content)`.
 ///
 /// WHY A BUILTIN AT ALL. `inspect` was deliberately a plain library function in
@@ -9270,9 +9479,16 @@ fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
 /// Both arguments are let-bound because each is referenced more than once.
 /// Re-evaluating them would make `inspect(next(), ..)` consume two values and
 /// report a different one than it compared.
+///
+/// The temporaries are minted FRESH against both arguments (dinsp_fresh_name).
+/// A fixed name captures: with `let __vibe_inspect_actual = "wrong"`,
+/// `inspect(1, __vibe_inspect_actual)` would move that reference under the new
+/// binding and compare the stringified value against ITSELF -- a failing
+/// assertion that silently passes, which is the worst way this could break
+/// (Codex review on #1621).
 fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
-  let actual_name = "__vibe_inspect_actual"
-  let expected_name = "__vibe_inspect_expected"
+  let actual_name = dinsp_fresh_name("__vibe_inspect_actual", value, content)
+  let expected_name = dinsp_fresh_name("__vibe_inspect_expected", value, content)
   let actual = EIdent(actual_name, 0 - 1)
   let expected = EIdent(expected_name, 0 - 1)
   // Nested String::concat rather than one variadic call: `concat` is binary.
@@ -9303,11 +9519,11 @@ fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
 
 /// Rewrite every two-argument `inspect(value, content)` call to its expansion.
 ///
-/// A LOCAL definition wins: the guard is on the callee spelling only, so a file
-/// that declares or imports its own `inspect` still gets rewritten -- which is
-/// why the expansion must stay behaviourally identical to `@vibe/core`'s
-/// library `inspect` (assert.vibe), the one every existing importer was
-/// compiled against until now.
+/// Only reached when the file binds NOTHING named `inspect` (see
+/// desugar_inspect_calls). A file that declares, imports or takes a parameter
+/// named `inspect` keeps calling that one, exactly as it did before this pass
+/// existed -- rewriting there would silently swap a user function's body for
+/// snapshot-assertion behaviour (Codex review on #1621).
 fn dinsp_expr(expr: Expr) -> Expr {
   match expr {
     ECall(callee, args, off) => {
@@ -9414,17 +9630,135 @@ fn dinsp_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
   }
 }
 
-/// In-place, like the other desugars in this file: `check_program` hands the
-/// SAME array to the checker and then on to codegen, so a fresh array would be
-/// dropped on the floor.
-export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
-  let mut i = 0
-  while i < Array::length(stmts) {
-    Array::set(stmts, i, dinsp_stmt(Array::get(stmts, i)))
-    i = i + 1
+/// True when `expr` contains a two-argument `inspect(..)` call anywhere.
+///
+/// This is a READ-ONLY walk, and the reason it exists is measured, not
+/// speculative: `dinsp_children` rebuilds every node it visits, so running the
+/// rewrite unconditionally allocated a fresh copy of the whole AST for every
+/// file -- +1.34% on `selfcompile heap_ptr_bytes`, which the perf gate reports
+/// in its deterministic section where "any drift is real". Almost no file
+/// calls `inspect`, and no file in the compiler's own source does, so checking
+/// first and rebuilding only what needs it makes the pass free for them.
+/// `rewrite_alias_expr_ix` (core/import_alias_rewrite.vibe) carries the same
+/// guard for the same reason.
+fn dinsp_uses(expr: Expr) -> Bool {
+  dinsp_scan(expr, 0, "")
+}
+
+fn dinsp_stmt_uses(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, body) => dinsp_uses(body),
+    SLetMut(_, _, body) => dinsp_uses(body),
+    SLetPat(_, body) => dinsp_uses(body),
+    STest(_, body) => dinsp_uses(body),
+    SBench(_, body) => dinsp_uses(body),
+    SExample(_, body) => dinsp_uses(body),
+    SExpr(body) => dinsp_uses(body),
+    SFnDecl(_, _, body, _, _) => dinsp_uses(body),
+    SModule(_, _, body) => dinsp_stmts_use(body),
+    _ => false
   }
 }
 
+fn dinsp_stmts_use(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(stmts) {
+    found = dinsp_stmt_uses(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+/// True when the file binds the name `inspect` anywhere -- an import (under
+/// either spelling), a declaration, or any local binder or parameter.
+///
+/// The whole rewrite stands down for such a file. `inspect` is meant to be
+/// reachable when nothing DEFINES it; where something does, that definition is
+/// what the program meant, and quietly replacing a user function's body with
+/// snapshot-assertion behaviour would be a silent change of meaning. This is
+/// deliberately whole-file rather than scope-accurate: it is the conservative
+/// direction (it can only decline to rewrite), and a file that binds `inspect`
+/// at all is rare enough not to be worth a scope tracker that could get the
+/// direction wrong.
+///
+/// It also puts `@vibe/core`'s library `inspect` and its importers back on
+/// their original path -- assert.vibe binds the name, so its body is live
+/// again, and `import @vibe/core { inspect }` still calls it.
+fn dinsp_binds_inspect(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(stmts) {
+    found = dinsp_stmt_binds(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_import_binds(items: Array[(String, Option[String])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    let (original, alias) = Array::get(items, i)
+    found = match alias {
+      Some(a) => a == "inspect",
+      None => original == "inspect"
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_stmt_binds(stmt: Stmt) -> Bool {
+  match stmt {
+    SImport(_, items) => dinsp_import_binds(items),
+    SReExport(_, items) => dinsp_import_binds(items),
+    SLet(_, _, name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
+    SLetMut(name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
+    SLetPat(pat, body) => dinsp_pat_binds(pat, "inspect") || dinsp_mentions_binder(body),
+    SFnDecl(_, name, body, _, _) => name == "inspect" || dinsp_mentions_binder(body),
+    STest(_, body) => dinsp_mentions_binder(body),
+    SBench(_, body) => dinsp_mentions_binder(body),
+    SExample(_, body) => dinsp_mentions_binder(body),
+    SExpr(body) => dinsp_mentions_binder(body),
+    SModule(_, _, body) => dinsp_binds_inspect(body),
+    _ => false
+  }
+}
+
+/// A binder named `inspect` INSIDE an expression (a `let`, a lambda parameter,
+/// a `for` variable, or a match/handle arm's pattern). A bare reference does
+/// not count -- that is the call this pass exists to rewrite.
+fn dinsp_mentions_binder(expr: Expr) -> Bool {
+  dinsp_scan(expr, 1, "")
+}
+
+/// In-place, like the other desugars in this file: `check_program` hands the
+/// SAME array to the checker and then on to codegen, so a fresh array would be
+/// dropped on the floor.
+///
+/// Only statements that actually contain an `inspect(..)` call are rebuilt --
+/// see dinsp_uses for why that guard is load-bearing rather than cosmetic.
+export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
+  if dinsp_binds_inspect(stmts) {
+    ()
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      let stmt = Array::get(stmts, i)
+      if dinsp_stmt_uses(stmt) {
+        Array::set(stmts, i, dinsp_stmt(stmt))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+/// In-place labeled-argument reordering over a whole program. Rebuilds only the
+/// top-level statements that actually contain a labeled argument (see
+/// expr_has_labeled_arg).
 export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   let tbl = collect_fn_param_labels(stmts)
   // #1500: optional-parameter call sites are rewritten by the same walk (see
