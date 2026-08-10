@@ -157,7 +157,10 @@ CI shard では:
 に一本化していく**方針で、新しいテストはこれで書く。
 
 - **`inspect(...)`** — 本命。期待値がソースの中にあり、`vibe test --update`
-  で更新できる (`lib/@vibe/compiler/inspect_update.vibe`)
+  で更新できる (`lib/@vibe/compiler/inspect_update.vibe`)。**import 不要**
+  (#1571): `desugar_inspect_calls` が checker の前に `__to_string` /
+  `println` / `assert_true` へ展開するので、import 解決の無い単一ファイル
+  レーンで compile される fixture からも呼べる
 - **`__DATA__`** — fixture 末尾の `{"last": "..."}`。723 fixture 中 544 が使用。
   vibe の構文ではないので、fixture を単体で `vibe test` に食わせられず、
   `compiler_gate.sh` は**81 箇所で `sed '/^__DATA__$/,$d'` して剥がしている**
