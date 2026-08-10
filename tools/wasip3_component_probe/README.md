@@ -182,11 +182,12 @@ stand-in.
 
 `scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates the
 component. Its minimal `wasi:cli/run@0.2.12` command export lets wasmtime 47
-instantiate it before resolving the `read-via-stream` import. It accepts only
-the explicit missing-stdin-implementation linker diagnostic as
-unavailability; generic ABI/type mismatch or missing-command-export diagnostics
-fail. A successful link likewise passes as an availability result, not a
-lifecycle result. The probe is included in the optional `test-wasi-p3` aggregate.
+instantiate it before resolving the `read-via-stream` import. Generic ABI/type
+mismatch or missing-command-export diagnostics fail. An explicit
+missing-stdin-implementation diagnostic skips the local default lane and fails
+required mode; only a successful link passes required mode. Link success is an
+availability result, not a lifecycle result. The probe is included in the
+optional `test-wasi-p3` aggregate.
 
 ## `stackful/`: hand-authored blocking-wait probe (M1b-3c mechanics proof)
 

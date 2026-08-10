@@ -3,8 +3,9 @@
 #
 # The probe declares the ratified WIT import, including the nominal
 # wasi:cli/types@0.3.0 error-code used in the completion result. It checks
-# linkage only; either a successful link or the exact missing-implementation
-# diagnostic is an availability result, never a completed behavioral test.
+# linkage only. A successful link passes; the exact missing-implementation
+# diagnostic skips locally and fails in required mode. Neither is a completed
+# behavioral test.
 #
 # Env:
 #   WASMTIME_BIN                 wasmtime binary under test (default: PATH)
@@ -108,4 +109,4 @@ if ! is_expected_unavailability "$LOG"; then
 fi
 
 echo "[wasi-cli-stdin-p3-probe] validated exact ratified @0.3.0 imports; wasmtime has no matching stdin implementation"
-echo "wasi cli stdin p3 probe gate OK (availability only; lifecycle remains unmeasured)"
+require_or_skip "wasmtime has no matching wasi:cli/stdin@0.3.0 implementation"
