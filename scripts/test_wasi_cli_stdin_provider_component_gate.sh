@@ -41,7 +41,22 @@ if [ -z "$COMPILER" ]; then
     fi
   done
   shopt -u nullglob
+  # The CI job that runs this gate (wasi-p3-gate) builds nothing itself: it
+  # downloads compiler-gate's stage2 into _build/ci-artifacts/ and never runs
+  # ensure_seed.sh, so it has NEITHER a generations tree nor a seed. Without
+  # this candidate the search fell through to the seed path, and a path that
+  # does not exist reached the runner as an argument -- surfacing as an ENOENT
+  # stack trace plus a spurious `usage:` line (the runner prints usage for any
+  # pre-instantiation failure), which reads as a broken invocation rather than
+  # a missing compiler.
+  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/_build/ci-artifacts/stage2.wasm"
   [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+fi
+if [ ! -f "$COMPILER" ]; then
+  echo "wasi cli stdin provider shadow FAILED: no compiler to generate the shadow component with." >&2
+  echo "  looked for: _build/selfhost/generations/*/stage2.wasm, _build/ci-artifacts/stage2.wasm, bootstrap/seed/compiler.wasm" >&2
+  echo "  set VIBE_STDIN_PROVIDER_GATE_COMPILER=<stage2.wasm> to point at one." >&2
+  exit 1
 fi
 HARNESS="$OUT_DIR/dump.vibex"
 HARNESS_WASM="$OUT_DIR/dump.wasm"
@@ -58,9 +73,25 @@ fn main() -> Unit with Exception + Fs {
 }
 EOF
 rm -f "$HARNESS_WASM" "$HARNESS_WASM.diag" "$COMPONENT"
-VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+# The CLI writes compile diagnostics to a `<output>.diag` SIDECAR, not to
+# stdout/stderr (#1567), so a failed compile here exits non-zero having printed
+# nothing at all -- under `set -e` that surfaced as a bare
+# "Process completed with exit code 1" with no cause anywhere in the CI log.
+# Echo the sidecar before giving up.
+if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
-  "$COMPILER" "$HARNESS" "$HARNESS_WASM" main >/dev/null
+  "$COMPILER" "$HARNESS" "$HARNESS_WASM" main >/dev/null; then
+  echo "wasi cli stdin provider shadow FAILED: could not compile the generator harness with $COMPILER" >&2
+  if [ -s "$HARNESS_WASM.diag" ]; then
+    # The sidecar has no trailing newline, so give it one rather than letting
+    # it run into whatever the log prints next.
+    cat "$HARNESS_WASM.diag" >&2
+    echo >&2
+  else
+    echo "  (no .diag sidecar was written)" >&2
+  fi
+  exit 1
+fi
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke main "$HARNESS_WASM" >/dev/null
 
