@@ -41,7 +41,22 @@ if [ -z "$COMPILER" ]; then
     fi
   done
   shopt -u nullglob
+  # The CI job that runs this gate (wasi-p3-gate) builds nothing itself: it
+  # downloads compiler-gate's stage2 into _build/ci-artifacts/ and never runs
+  # ensure_seed.sh, so it has NEITHER a generations tree nor a seed. Without
+  # this candidate the search fell through to the seed path, and a path that
+  # does not exist reached the runner as an argument -- surfacing as an ENOENT
+  # stack trace plus a spurious `usage:` line (the runner prints usage for any
+  # pre-instantiation failure), which reads as a broken invocation rather than
+  # a missing compiler.
+  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/_build/ci-artifacts/stage2.wasm"
   [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+fi
+if [ ! -f "$COMPILER" ]; then
+  echo "wasi cli stdin provider shadow FAILED: no compiler to generate the shadow component with." >&2
+  echo "  looked for: _build/selfhost/generations/*/stage2.wasm, _build/ci-artifacts/stage2.wasm, bootstrap/seed/compiler.wasm" >&2
+  echo "  set VIBE_STDIN_PROVIDER_GATE_COMPILER=<stage2.wasm> to point at one." >&2
+  exit 1
 fi
 HARNESS="$OUT_DIR/dump.vibex"
 HARNESS_WASM="$OUT_DIR/dump.wasm"
