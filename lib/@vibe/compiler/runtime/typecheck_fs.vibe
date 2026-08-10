@@ -81,6 +81,22 @@ fn empty_dep_fps() -> Array[(String, String)] {
   array_empty()
 }
 
+/// Every acceptance of a persistent fingerprint must first decode its v4
+/// interface. Old/corrupt bytes are ordinary cold-cache misses.
+fn valid_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Exception + Fs {
+  load_persistent_type_env(fingerprint)
+}
+
+fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with Exception + Fs {
+  match load_persistent_leaf_fingerprint(path, source) {
+    Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
+      Some(_) => Some(fingerprint),
+      None => None
+    },
+    None => None
+  }
+}
+
 fn lookup_env_cache(cache: Array[(String, TypeEnv)], path: String) -> Option[TypeEnv] {
   let len = Array::length(cache)
   let mut i = 0
@@ -140,6 +156,22 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
     CtForAll(_, _, body) => type_returns_name(body, type_name),
     _ => false
   }
+}
+
+/// Constructors and generated `Type::member` values are value bindings, but
+/// their authority is the selected public typedef rather than capitalization.
+fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String]) -> Bool {
+  let mut i = 0
+  let mut selected = false
+  while i < Array::length(type_surface) && !selected {
+    let type_name = Array::get(type_surface, i)
+    if name == type_name || String::starts_with(name, String::concat(type_name, "::")) || type_returns_name(ty, type_name) {
+      selected = true
+    } else {
+      i = i + 1
+    }
+  }
+  selected
 }
 
 /// Companions bound alongside an imported type `T`: (a) constructors and
@@ -679,9 +711,15 @@ fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[(String, Option[
         Some(local_name) => if local_name != name && !typedef_projection_contains(selected, local_name) {
           let source = Array::get(selected, before)
           let alias_def = match source {
-            TDEnum(_, _, _) => TDAlias(local_name, array_empty(), CtEnum(name)),
-            TDStruct(_, _, _, _) => TDAlias(local_name, array_empty(), CtStruct(name)),
-            TDAlias(_, _, target) => TDAlias(local_name, array_empty(), target),
+            TDEnum(_, params, _) => TDAlias(local_name, params, CtNamed(name, for param in params {
+              CtNamed(param, array_empty())
+            })),
+            TDStruct(_, _, _, params) => TDAlias(local_name, params, CtNamed(name, for param in params {
+              CtNamed(param, array_empty())
+            })),
+            TDAlias(_, params, target) => TDAlias(local_name, params, target),
+            // Effects have no declaration transport; this branch is
+            // unreachable for a selected import and must not fabricate one.
             TDEffect(_, _, _) => TDAlias(local_name, array_empty(), CtUnknown)
           }
           Array::push(selected, alias_def)
@@ -791,6 +829,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     None => EnvEmpty
   }
   let dep_bindings = env_flat_bindings(dep_env)
+  let dep_type_defs = env_type_defs(dep_env)
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
   let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, unresolved)
@@ -818,7 +857,12 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let ty = match env_lookup_flat(dep_bindings, name) {
         Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
         None => {
-          if dep_known && !starts_with_upper(name) {
+          // Declaration authority now travels explicitly in EnvTypeDefs, so
+          // uppercase is no longer evidence that an import is valid. This
+          // also rejects selected effects/effectsets until their own authority
+          // transport exists, instead of allowing a missing uppercase import
+          // to become CtUnknown and fail later in codegen.
+          if dep_known && !typedef_projection_contains(dep_type_defs, name) && !trait_defined(dep_env, name) {
             Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
           } else {
             ()
@@ -1198,9 +1242,9 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = [
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// TDRE4 aliases only an exact v3 decoded TypeEnv when every direct dependency
+// TDRE4 aliases only an exact v4 decoded TypeEnv when every direct dependency
 // transport environment is unchanged. It is not a CheckedProgram or typed-IR
-// transport; v3 retains the TypeEnv trait/impl chain only. The empty cell is
+// transport; v4 retains the TypeEnv declaration, trait, and impl chain. The empty cell is
 // conservative for direct FS consumers. The CLI check-only lane explicitly
 // enables production reuse after validating its per-invocation policy; build,
 // codegen, and other FS consumers remain off pending compact publication.
@@ -1841,14 +1885,9 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// makes the existing membership check in
 /// bind_import_names_from_cache_collecting the export test itself.
 ///
-/// Only lowercase-initial bindings are dropped, and `surface` is
-/// interface_public_value_names -- exported `let`/`fn`, `export { .. }`
-/// lists, and re-export aliases -- which is exactly the set of importable
-/// lowercase names. Uppercase bindings (enum constructors, `T::` companions,
-/// qualified impl methods) are kept wholesale: the value environment cannot
-/// distinguish an unexported `Foo` from a struct-only `Foo`, so their half
-/// of #1521 stays open rather than risk rejecting valid code, and the
-/// companion-binding scan over dep_bindings keeps working unchanged.
+/// Value bindings are retained only when they are explicitly exported.
+/// Type/constructor authority travels separately through `EnvTypeDefs`; an
+/// uppercase spelling is never authority to import a private declaration.
 ///
 /// Trait definitions and implementations are published only for the selected
 /// trait surface. EnvCached wrappers are rebuilt from the restricted chain
@@ -1858,7 +1897,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     EnvEmpty => EnvEmpty,
     EnvBind(name, ty, rest) => {
       let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
-      if starts_with_upper(name) || bsearch_leftmost(value_surface, name) >= 0 {
+      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, ty, type_surface) {
         EnvBind(name, ty, restricted)
       } else {
         restricted
@@ -1912,7 +1951,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       let mut i = 0
       while i < Array::length(bindings) {
         let (name, ty) = Array::get(bindings, i)
-        if starts_with_upper(name) || bsearch_leftmost(value_surface, name) >= 0 {
+        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, ty, type_surface) {
           Array::push(kept, (name, ty))
         } else {
           ()
@@ -2230,7 +2269,7 @@ fn incremental_checked_env_identity(env: TypeEnv) -> String with Exception {
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
-/// A trace-only observation of the complete persistent TypeEnv v3 transport.
+/// A trace-only observation of the complete persistent TypeEnv v4 transport.
 /// The canonical cache-text bytes are the sole input. This is not a
 /// CheckedProgram, typed IR, exported interface, cache key, or reuse decision.
 fn incremental_persistent_type_env_transport_identity(env: TypeEnv) -> String {
@@ -2284,7 +2323,7 @@ fn incremental_trace_json_string(text: String) -> String {
 /// provisional canonical token-stream identity, not normalized typed IR.
 /// `checked_env_fingerprint` is a complete value-environment observation.
 /// `persistent_type_env_transport_fingerprint` observes only the complete
-/// persistent TypeEnv v3 transport, not a CheckedProgram, typed IR, exported
+/// persistent TypeEnv v4 transport, not a CheckedProgram, typed IR, exported
 /// interface, cache key, or reuse decision. `decision` records what this current TypeDb
 /// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
@@ -2349,7 +2388,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete persistent TypeEnv transport observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(persistent_type_env_transport_fingerprint))
-    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v3 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
+    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v4 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1
@@ -2476,10 +2515,10 @@ let parse_memo_paths: Array[String] = [
   text
 }
 
-// TDRE4 is deliberately independent from the TypeEnv v3 envelope and from
+// TDRE4 is deliberately independent from the TypeEnv v4 envelope and from
 // every production artifact/cache identity. Both v4 envelopes use strict
 // decimal length-delimited fields and bind the logical checker input, target
-// conservative fingerprint, and exact canonical TypeEnv-v3 transport text.
+// conservative fingerprint, and exact canonical TypeEnv-v4 transport text.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
 let typing_dependency_env_reuse_alias_v4_tag = "TDRE4A"
@@ -2570,7 +2609,7 @@ fn typing_dependency_transport_input_key(path: String, source: String, dep_envs:
 }
 
 /// Decode untrusted target bytes strictly and require the decoder's canonical
-/// v3 re-encoding to equal both the raw file and the binding's exact text.
+/// v4 re-encoding to equal both the raw file and the binding's exact text.
 /// parse_persistent_type_env accepts normalized line endings for ordinary cache
 /// compatibility; this additional equality makes the experimental lane strict.
 fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[TypeEnv] with Fs {
@@ -2624,7 +2663,7 @@ fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool
   }
 }
 
-/// Eligibility is transitively witnessed by successful canonical TypeEnv-v3
+/// Eligibility is transitively witnessed by successful canonical TypeEnv-v4
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
@@ -2988,7 +3027,7 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
   // The final strings are trace-only interface, checked-value-env, and
-  // complete persistent TypeEnv v3 transport identities. They are computed
+  // complete persistent TypeEnv v4 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
   // inputs, and are empty unless the invalidation trace is enabled.
   Checked(String, String, TypeEnv, String, String, String);
@@ -3316,7 +3355,17 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exc
   while i < len {
     let (fingerprint, env_file) = Array::get(rows, i)
     let env_text = Fs::read_file(job_dir_path(dir, env_file))
-    Fs::write_file(persistent_type_env_cache_path(fingerprint), env_text)
+    match parse_persistent_type_env(env_text) {
+      Some(env) => {
+        let canonical = persistent_type_env_cache_text(env)
+        if env_text == canonical {
+          Fs::write_file(persistent_type_env_cache_path(fingerprint), env_text)
+        } else {
+          throw(String::concat("publish manifest has non-canonical v4 environment: ", env_file))
+        }
+      },
+      None => throw(String::concat("publish manifest has unreadable v4 environment: ", env_file))
+    }
     i = i + 1
   }
 }
@@ -3329,58 +3378,58 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exc
 /// cross-check) that identical fingerprint itself, the same way a worker
 /// would -- one canonical computation, not a value trusted from the caller.
 fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
-  if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
-    if incremental_interface_trace_enabled() {
-      match load_persistent_type_env(fingerprint) {
-        Some(cached_env) => incremental_trace_observe_checked_env(path, source, cached_env),
-        None => throw(String::concat("incremental trace observation: unreadable reused environment for ", path))
+  match valid_persistent_type_env(fingerprint) {
+    Some(cached_env) => {
+      if incremental_interface_trace_enabled() {
+        incremental_trace_observe_checked_env(path, source, cached_env)
+      } else {
+        ()
       }
-    } else {
-      ()
-    }
-    let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
-    (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
-  } else {
-    // Keep the accumulated cache as coordinator state, but expose exactly the
-    // resolved dependency sequence to the checker and TDRE4. Construct this
-    // once: lookup, check, and publication must describe the same value.
-    let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
-    let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
-    let reused_env = if experimental_typing_dependency_env_reuse_enabled() {
-      if typing_dependency_env_reuse_is_eligible(dep_fps) {
-        let input_key = typing_dependency_transport_input_key(path, source, projected_dep_envs)
-        match load_typing_dependency_env_reuse_target(input_key) {
-          Some((target_fingerprint, target_text, target_env)) => Some((input_key, target_fingerprint, target_text, target_env)),
-          None => None
+      let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+      (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
+    },
+    None => {
+      // Keep the accumulated cache as coordinator state, but expose exactly the
+      // resolved dependency sequence to the checker and TDRE4. Construct this
+      // once: lookup, check, and publication must describe the same value.
+      let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
+      let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
+      let reused_env = if experimental_typing_dependency_env_reuse_enabled() {
+        if typing_dependency_env_reuse_is_eligible(dep_fps) {
+          let input_key = typing_dependency_transport_input_key(path, source, projected_dep_envs)
+          match load_typing_dependency_env_reuse_target(input_key) {
+            Some((target_fingerprint, target_text, target_env)) => Some((input_key, target_fingerprint, target_text, target_env)),
+            None => None
+          }
+        } else {
+          None
         }
       } else {
         None
       }
-    } else {
-      None
-    }
-    match reused_env {
-      Some((input_key, _target_fingerprint, target_text, target_env)) => {
-        // Preserve the ordinary conservative fingerprint path for every later
-        // consumer. Commit this target first, then its exact bound witness, and
-        // only then the alias, so torn publication always fails closed.
-        Fs::write_file(persistent_type_env_cache_path(fingerprint), target_text)
-        publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
-        write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
-        let next_env_cache = upsert_env_cache(coordinated_env_cache, path, target_env)
-        let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
-        (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
-      },
-      None => {
-        let job = ModuleJob::{
-          path: path,
-          source: source,
-          deps: deps,
-          dep_fps: dep_fps,
-          dep_envs: projected_dep_envs
+      match reused_env {
+        Some((input_key, _target_fingerprint, target_text, target_env)) => {
+          // Preserve the ordinary conservative fingerprint path for every later
+          // consumer. Commit this target first, then its exact bound witness, and
+          // only then the alias, so torn publication always fails closed.
+          Fs::write_file(persistent_type_env_cache_path(fingerprint), target_text)
+          publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
+          write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
+          let next_env_cache = upsert_env_cache(coordinated_env_cache, path, target_env)
+          let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+          (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
+        },
+        None => {
+          let job = ModuleJob::{
+            path: path,
+            source: source,
+            deps: deps,
+            dep_fps: dep_fps,
+            dep_envs: projected_dep_envs
+          }
+          let outcome = check_module(job)
+          commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome)
         }
-        let outcome = check_module(job)
-        commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome)
       }
     }
   }
@@ -3475,7 +3524,10 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
       Some(source) => {
         let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
           match ripple_get_fingerprint(rdb, path) {
-            Some(_) => true,
+            Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
+              Some(_) => true,
+              None => false
+            },
             None => false
           }
         } else {
@@ -3484,7 +3536,7 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
         if reusable {
           ()
         } else {
-          match load_persistent_leaf_fingerprint(path, source) {
+          match valid_persistent_leaf_fingerprint(path, source) {
             Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
             None => {
               // Codex review P2: resolving a module's imports PARSES it, so a
@@ -3566,18 +3618,22 @@ fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Opt
 /// The leaf-fingerprint arm: a module whose persistent leaf cache is valid is
 /// recorded with no deps at all and needs no checking.
 fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
-  if incremental_interface_trace_enabled() {
-    match load_persistent_type_env(leaf_fingerprint) {
-      Some(cached_env) => incremental_trace_observe_checked_env(path, source, cached_env),
-      None => throw(String::concat("incremental trace observation: unreadable reused leaf environment for ", path))
-    }
-  } else {
-    ()
+  // The plan read this cache earlier, but recheck at the accepting edge: a
+  // stale/malformed leaf pointer must cold-check rather than become authority.
+  match valid_persistent_type_env(leaf_fingerprint) {
+    Some(cached_env) => {
+      if incremental_interface_trace_enabled() {
+        incremental_trace_observe_checked_env(path, source, cached_env)
+      } else {
+        ()
+      }
+      write_persistent_dep_list_if_missing(path, source, empty_stack())
+      let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
+      let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
+      (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
+    },
+    None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(source, empty_dep_fps()))
   }
-  write_persistent_dep_list_if_missing(path, source, empty_stack())
-  let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
-  let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
-  (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
 }
 /// One module's step, once its dependency list is known and every dependency
 /// already has a fingerprint. Folds the dependency fingerprints in
@@ -3603,7 +3659,10 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
   match ripple_get_fingerprint(rdb, path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {
-      (fingerprint, rdb, env_cache, dep_source_cache, parse_count)
+      match valid_persistent_type_env(fingerprint) {
+        Some(_) => (fingerprint, rdb, env_cache, dep_source_cache, parse_count),
+        None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
+      }
     } else {
       finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
     },
@@ -3636,7 +3695,13 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
     None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
     Some(source) => {
       let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
-        ripple_get_fingerprint(rdb, path)
+        match ripple_get_fingerprint(rdb, path) {
+          Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
+            Some(_) => Some(fingerprint),
+            None => None
+          },
+          None => None
+        }
       } else {
         None
       }

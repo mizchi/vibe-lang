@@ -983,8 +983,40 @@ fn collect_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[(String, String)]
 /// the old `Enum::__variants__` value carrier is intentionally not consulted.
 /// Generic enum payloads are name-parameterized on the wire and rebound to
 /// this check's fresh ids here, exactly once.
-fn seed_imported_type_defs(initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int) {
+fn local_type_def_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, name, _, _, _) => Array::push(names, name),
+      SStruct(_, name, _, _, _, _) => Array::push(names, name),
+      STypeAlias(_, name, _, _) => Array::push(names, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+fn string_array_contains(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == wanted {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int) {
   let imported = env_type_defs(initial_env)
+  // `find_typedef` is first-match-wins. Local declarations are checked after
+  // this seed, so omit same-named imported authority up front; otherwise an
+  // imported typedef would permanently win over the lexical local declaration.
+  let local_names = local_type_def_names(stmts)
   let mut next_c = 0
   let mut i = 0
   while i < Array::length(imported) {
@@ -999,7 +1031,9 @@ fn seed_imported_type_defs(initial_env: TypeEnv, defs: Array[TypeDef], type_def_
     // first-match rule. A projected interface never contains effects here.
     match find_typedef(defs, name) {
       Some(_) => (),
-      None => match def {
+      None => if string_array_contains(local_names, name) {
+        ()
+      } else match def {
         TDEnum(enum_name, params, variants) => {
           let ids = array_empty()
           let vars = array_empty()
@@ -3032,7 +3066,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // `seed_next_c` is the first type-variable id seeding did NOT consume;
       // checking has to start there or a parameterized imported enum's formals
       // would be handed out a second time.
-      let (local_defs_start, seed_next_c) = seed_imported_type_defs(initial_env, empty_defs, type_def_binders)
+      let (local_defs_start, seed_next_c) = seed_imported_type_defs(stmts, initial_env, empty_defs, type_def_binders)
       let cached_env = env_cache(initial_env)
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env

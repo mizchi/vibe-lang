@@ -870,11 +870,11 @@ export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Except
   } else {
     let (payload, after_payload) = parse_segment(normalized, header_len)
     if after_payload + 1 != String::length(normalized) || String::char_code_at(normalized, after_payload) != '\n' {
-      throw("invalid persistent type env v3 envelope")
+      throw("invalid persistent type env v4 envelope")
     } else {
       let (env, end) = parse_persistent_type_env_payload(payload, 0)
       if end != String::length(payload) {
-        throw("invalid persistent type env v3 payload")
+        throw("invalid persistent type env v4 payload")
       } else {
         Some(env)
       }
@@ -882,12 +882,19 @@ export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Except
   }
 }
 
+/// Filesystem cache bytes are untrusted. A malformed or old envelope is a
+/// cache miss, never an exception that can turn a cold check into a failure or
+/// a partially decoded interface into authority.
 export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Exception + Fs {
   let path = persistent_type_env_cache_path(fingerprint)
   if !(Fs::exists(path)) {
     None
   } else {
-    parse_persistent_type_env(Fs::read_file(path))
+    handle {
+      parse_persistent_type_env(Fs::read_file(path))
+    } with Exception {
+      Throw(_) => None
+    }
   }
 }
 

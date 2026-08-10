@@ -178,7 +178,7 @@ test "db_typecheck_fs: re-exported enum type imports constructors" {
   let main_path = "/tmp/vibe_compiler_reexport_enum_ctor_fs_main.vibe"
   let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
   let index_src = "export ./vibe_compiler_reexport_enum_ctor_fs_ast.vibe { TypeExpr }"
-  let main_src = "import ./vibe_compiler_reexport_enum_ctor_fs_index.vibe { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  let main_src = "import ./vibe_compiler_reexport_enum_ctor_fs_index.vibe { TypeExpr }\nexport { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
   Fs::write_bytes(ast_path, string_to_bytes(ast_src))
   Fs::write_bytes(index_path, string_to_bytes(index_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
@@ -213,7 +213,7 @@ test "db_typecheck_fs: extensionless directory re-export imports enum constructo
   let main_path = String::concat(base_dir, "/main.vibe")
   let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
   let index_src = "export ./ast.vibe { TypeExpr }"
-  let main_src = "import ./core { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  let main_src = "import ./core { TypeExpr }\nexport { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
   Fs::mkdir_p(core_dir)
   Fs::write_bytes(ast_path, string_to_bytes(ast_src))
   Fs::write_bytes(index_path, string_to_bytes(index_src))
@@ -660,6 +660,23 @@ fn export_surface_error(paths: Array[String], entry: String) -> String with Fs {
   }
 }
 
+fn typedef_surface_pair_error(dir: String, dep_src: String, main_src: String) -> String with Fs {
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (dep_path, dep_fp)
+  ]))
+  export_surface_error([
+    dep_path,
+    main_path
+  ], main_path)
+}
+
 test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)" {
   let dir = "/tmp/vibe_compiler_export_surface_private"
   let dep_path = String::concat(dir, "/dep.vibe")
@@ -785,4 +802,55 @@ test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 c
     main_path
   ], main_path)
   assert(err == "")
+}
+
+test "db_typecheck_fs: private struct enum and alias declarations are not importable" {
+  let struct_err = typedef_surface_pair_error("/tmp/vibe_private_struct_authority", "struct Secret { value: Int }\n", "import ./dep.vibe { Secret }\nexport let value = Secret(1)\n")
+  assert(String::contains(struct_err, "imported name 'Secret' is not exported by"))
+  let enum_err = typedef_surface_pair_error("/tmp/vibe_private_enum_authority", "enum Secret { Hidden(Int) }\n", "import ./dep.vibe { Secret }\nexport let value = Hidden(1)\n")
+  assert(String::contains(enum_err, "imported name 'Secret' is not exported by"))
+  let alias_err = typedef_surface_pair_error("/tmp/vibe_private_alias_authority", "type Secret = Int\n", "import ./dep.vibe { Secret }\nexport let value: Secret = 1\n")
+  assert(String::contains(alias_err, "imported name 'Secret' is not exported by"))
+}
+
+test "db_typecheck_fs: public struct enum and alias declarations remain importable" {
+  let err = typedef_surface_pair_error("/tmp/vibe_public_typedef_authority", "export struct PublicStruct { value: Int }\nexport enum PublicEnum { PublicCase(Int) }\nexport type PublicAlias = Int\n", "import ./dep.vibe { PublicStruct, PublicEnum, PublicAlias }\nexport let s = PublicStruct(1)\nexport let e = PublicCase(1)\nexport let a: PublicAlias = 1\n")
+  assert(err == "")
+}
+
+test "db_typecheck_fs: imported generic alias enum and struct aliases retain formals" {
+  let err = typedef_surface_pair_error("/tmp/vibe_generic_typedef_alias_authority", "export type Wrap[T] = Array[T]\nexport enum Choice[T] { Pick(T) }\nexport struct Box[T] { value: T }\n", "import ./dep.vibe { Wrap as LocalWrap, Choice as LocalChoice, Box as LocalBox }\nexport let xs: LocalWrap[Int] = [1]\nexport let picked: LocalChoice[Int] = Pick(1)\nexport fn unbox(value: LocalBox[String]) -> String { value.value }\n")
+  assert(err == "")
+}
+
+test "db_typecheck_fs: a local typedef shadows imported declaration authority" {
+  let err = typedef_surface_pair_error("/tmp/vibe_local_typedef_shadow", "export type Label = Int\n", "import ./dep.vibe { Label }\ntype Label = String\nexport fn use_label(value: Label) -> String { value }\n")
+  assert(err == "")
+}
+
+test "db_typecheck_fs: selected effects and effectsets reject until authority transport exists" {
+  let effect_err = typedef_surface_pair_error("/tmp/vibe_selected_effect_rejected", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Audit }\nexport let value = 1\n")
+  assert(String::contains(effect_err, "imported name 'Audit' is not exported by"))
+  let set_err = typedef_surface_pair_error("/tmp/vibe_selected_effectset_rejected", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport let value = 1\n")
+  assert(String::contains(set_err, "imported name 'Audits' is not exported by"))
+}
+
+test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v4" {
+  let dir = "/tmp/vibe_v4_cache_cold_recheck"
+  let path = String::concat(dir, "/main.vibe")
+  let source = "export let value = 1\n"
+  let fingerprint = build_test_fingerprint(source, array_empty())
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_typecheck_fs_cache(path, source, fingerprint)
+  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  let env_path = persistent_type_env_cache_path(fingerprint)
+  let leaf_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
+  Fs::write_file(env_path, "version\t3\nenv\t1:0\n")
+  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  assert(String::starts_with(Fs::read_file(env_path), "version\t4\nenv\t"))
+  Fs::write_file(env_path, "version\t4\nenv\t1:Z\n")
+  Fs::write_file(leaf_path, "version\t1\nnot-a-fingerprint\n")
+  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  assert(String::starts_with(Fs::read_file(env_path), "version\t4\nenv\t"))
 }

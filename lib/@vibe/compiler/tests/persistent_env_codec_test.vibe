@@ -269,6 +269,41 @@ test "persistent module interface v4 round-trips enum struct and alias authority
   }
 }
 
+test "legacy enum carrier bytes cannot alter v4 typedef authority" {
+  let declared = TDEnum("Choice", [
+  ], [
+    ("Pick", [
+      CtInt
+    ])
+  ])
+  // This was the retired `Choice::__variants__` value carrier. It is valid
+  // TypeEnv data but EnvTypeDefs must remain the only declaration authority.
+  let env = EnvTypeDefs([
+    declared
+  ], EnvBind("Choice::__variants__", CtNamed("__variants__", [
+    CtNamed("Corrupt", [
+      CtString
+    ])
+  ]), EnvEmpty))
+  match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+    Some(decoded) => {
+      let defs = env_type_defs(decoded)
+      assert(Array::length(defs) == 1)
+      match Array::get(defs, 0) {
+        TDEnum(name, params, variants) => {
+          assert(name == "Choice")
+          assert(Array::length(params) == 0)
+          let (variant, fields) = Array::get(variants, 0)
+          assert(variant == "Pick")
+          assert(Array::get(fields, 0) == CtInt)
+        },
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
 test "persistent module interface v4 rebuilds untrusted cached lookup indexes" {
   let corrupt = EnvCached([
     "shadow",
