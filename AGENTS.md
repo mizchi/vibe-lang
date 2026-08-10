@@ -257,6 +257,19 @@ vibe diagnostics file.vibe
 # = codegen が wasm local ではなく heap ref cell に落とすもの (#1262)。
 # 空出力 = ファイル中の `let mut` は全部ただの local
 vibe escapes file.vibe
+
+# AST パターン検索 (#1572)。上の4つが「位置 → 意味」なのに対しこれは逆向きの
+# 「構造 → 位置」。メタ変数は `$(name:kind)` (kind: exp/id/const/arg/args/pat/type)。
+# 出力は 1件1行 `path:line:col: <マッチ本文>` + tab 区切りの `$var=<capture>`。
+# 空出力 = マッチなし (--json では `[]`)
+vibe grep --pattern 'Iterator::map($(a:args))' lib
+# **文法だけで止まらない**のが moongrep / ast-grep との差: filter は checker の
+# 答え (推論型・effect row・解決済み名・型エラー) で書く。これらを付けると
+# `vibe check` と同じ import 解決レーンに乗る (typed tier)
+vibe grep --pattern 'f($(x:exp))' --where '$x : Array[_]' lib
+vibe grep --pattern '$(f:id)($(a:args))' --where '$f = Iterator::map' lib
+vibe grep --pattern '$(f:id)($(a:args))' --where-row '$f with Async' lib
+vibe grep --pattern 'f($(x:exp))' --only-ill-typed lib
 ```
 
 > **`vibe diagnostics` は import を解決しない。** `import ./dep.vibe { Hue as T }`

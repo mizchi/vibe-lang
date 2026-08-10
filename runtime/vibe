@@ -51,6 +51,16 @@
 #                                         a heap ref cell instead of a wasm local
 #                                         (NAME START END per line; empty = none)
 #   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
+#   vibe grep --pattern '<pat>' [paths]   AST pattern search (#1572). Metavars
+#                                         are `$(name:kind)`, kind = exp / id /
+#                                         const / arg / args / pat / type.
+#                                         Type-aware filters (these resolve
+#                                         imports like `vibe check` does):
+#                                           --where '$x : Array[Int]'  inferred type
+#                                           --where '$f = Iterator::map' resolved name
+#                                           --where-row '$f with Async'  effect row
+#                                           --only-ill-typed / --only-well-typed
+#                                         --json for machine-readable output
 #   vibe normalize [--check|--stdout] <file.vibe>
 #                                         canonicalize a source file in place
 #                                         (--check: exit 1 if not normalized;
@@ -1142,6 +1152,82 @@ case "$cmd" in
     # A clean file yields empty output; this subcommand always exits 0 (a report,
     # not a failure), so the LSP can treat empty as "no diagnostics".
     if [ -s "$out" ]; then cat "$out"; fi
+    ;;
+  grep)
+    # vibe grep [flags] --pattern '<pattern>' [paths...]        (#1572)
+    #
+    # Structural AST search. Unlike moongrep / ast-grep, the filters run on the
+    # CHECKER's answers, not on the grammar alone:
+    #   --where '$x : Array[Int]'    the capture's INFERRED type (`_` wildcard)
+    #   --where '$f = Iterator::map' the capture's RESOLVED name (sees through
+    #                                `import { Iterator as It }`)
+    #   --where-row '$f with Async' / '$f without Async'
+    #                                the capture's effect ROW
+    #   --only-ill-typed / --only-well-typed
+    #                                keep matches in declarations that do (not)
+    #                                type-check
+    # Any of those switches the sweep into the typed tier, which resolves
+    # imports through the same walk `vibe check` uses -- `vibe diagnostics`'s
+    # import-blind false positives are not reproduced here.
+    #
+    # Output is one match per line, `path:line:col: <matched text>` followed by
+    # tab-separated `$var=<capture>`; `--json` emits the same matches as a JSON
+    # array (each capture carrying its inferred type when the typed tier ran).
+    # Empty output = no match. A report, not a failure: only a bad pattern or a
+    # bad filter is an error.
+    g_pattern=""; g_json=0; g_only=""; g_where=""; g_where_row=""
+    g_paths=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --pattern) [ "$#" -ge 2 ] || die "vibe grep: --pattern needs an argument"; g_pattern="$2"; shift 2 ;;
+        --pattern=*) g_pattern="${1#--pattern=}"; shift ;;
+        --json|--output-json) g_json=1; shift ;;
+        --where) [ "$#" -ge 2 ] || die "vibe grep: --where needs an argument"; g_where="$g_where$2"$'\n'; shift 2 ;;
+        --where=*) g_where="$g_where${1#--where=}"$'\n'; shift ;;
+        --where-row) [ "$#" -ge 2 ] || die "vibe grep: --where-row needs an argument"; g_where_row="$g_where_row$2"$'\n'; shift 2 ;;
+        --where-row=*) g_where_row="$g_where_row${1#--where-row=}"$'\n'; shift ;;
+        --only-ill-typed) g_only="ill"; shift ;;
+        --only-well-typed) g_only="well"; shift ;;
+        --) shift; while [ "$#" -gt 0 ]; do g_paths+=("$1"); shift; done ;;
+        -*) die "vibe grep: unknown flag: $1" ;;
+        *) g_paths+=("$1"); shift ;;
+      esac
+    done
+    [ -n "$g_pattern" ] || die "usage: vibe grep --pattern '<pattern>' [--where '\$x : T'] [--where-row '\$f with E'] [--only-ill-typed|--only-well-typed] [--json] [paths...]"
+    # No path means "here", the same default `grep -r` and `rg` use.
+    [ "${#g_paths[@]}" -gt 0 ] || g_paths=(".")
+    # Each root produces its own JSON array, so several roots could not be one
+    # document. Reject that instead of emitting text no JSON parser accepts.
+    if [ "$g_json" = "1" ] && [ "${#g_paths[@]}" -gt 1 ]; then
+      die "vibe grep --json: one path at a time (JSON output is a single array)"
+    fi
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-grep-XXXXXX)"
+    trap 'rm -f "$out" "$out.diag"' EXIT
+    for g_path in "${g_paths[@]}"; do
+      [ -e "$g_path" ] || die "not found: $g_path"
+      # Clear inherited adapter-mode envs so a leaked selector can't divert this
+      # into compiling and emitting wasm bytes as "matches".
+      env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+          -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_COVERAGE -u VIBE_DEBUG \
+          -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+        VIBE_GREP=1 \
+        VIBE_GREP_PATTERN="$g_pattern" \
+        VIBE_GREP_WHERE="$g_where" \
+        VIBE_GREP_WHERE_ROW="$g_where_row" \
+        VIBE_GREP_ONLY="$g_only" \
+        VIBE_GREP_JSON="$g_json" \
+        VIBE_IMPORT_ABI=raw \
+        "$RUNNER" "$cli" "$g_path" "$out" >/dev/null 2>&1 || true
+      # A bad pattern is the caller's mistake, not a partial result: stop
+      # instead of sweeping the remaining roots with the same broken pattern.
+      if [ -s "$out.diag" ]; then
+        echo "error: $(cat "$out.diag")" >&2
+        die "grep failed"
+      fi
+      if [ -s "$out" ]; then cat "$out"; fi
+      : >"$out"
+    done
     ;;
   normalize)
     # vibe normalize [--check|--stdout] <file.vibe>  (#882)
