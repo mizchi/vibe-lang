@@ -22,6 +22,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_async_trampolined_p1,
   comp_emit_component_wasm_future_value,
   comp_emit_component_wasm_host_future_value,
+  comp_emit_component_wasm_stdin_provider_shadow,
   comp_emit_component_wasm_stream_value,
   comp_emit_component_wasm_string_handler,
   comp_emit_component_wasm_string_handler_stubbed,
@@ -1435,6 +1436,29 @@ fn build_main_i64_core_hoststream_named(with_future: Bool) -> Bytes {
     body
   ])
   bytebuf_to_bytes(out)
+}
+
+// #1539 is intentionally a separate, production-unused component: exact
+// stdin imports plus an opaque provider-table adapter and private scenarios.
+test "component stdin provider shadow: distinct lifecycle adapter remains unrouted (#1539)" {
+  let comp = comp_emit_component_wasm_stdin_provider_shadow()
+  assert(component_bytes_contains(comp, "wasi:cli/types@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "wasi:cli/stdin@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "read-via-stream") == 1)
+  assert(component_bytes_contains(comp, "stdin-provider-shadow-acquire") == 1)
+  assert(component_bytes_contains(comp, "stdin-provider-shadow-read") == 1)
+  assert(component_bytes_contains(comp, "stdin-provider-shadow-settle") == 1)
+  assert(component_bytes_contains(comp, "drain") == 1)
+  assert(component_bytes_contains(comp, "early-close") == 1)
+  assert(component_bytes_contains(comp, "forced-completion-tag-control") == 1)
+  assert(component_bytes_contains(comp, "foreign-provider-control") == 1)
+  assert(component_bytes_contains(comp, "wrong-byte-cleanup-control") == 1)
+  assert(component_bytes_contains(comp, "extra-byte-cleanup-control") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][stream-read-0]read-via-stream") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-1]read-via-stream") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  assert(component_bytes_contains(comp, "host_stream_get$stdin") == 0)
+  assert(component_bytes_contains(comp, "host_stream_close") == 0)
 }
 
 // ADR-0089 Decision 3 (#1218): a named host STREAM composes into a
