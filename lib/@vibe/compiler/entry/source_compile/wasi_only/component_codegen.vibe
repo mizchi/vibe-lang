@@ -2876,11 +2876,10 @@ fn emit_comp_wasi_cli_stdin_instance_type_for_test(buf: Bytes) -> Unit {
 }
 
 /// Exact, fixed-prefix ratified wasi:cli stdin import surface for #1539.
-/// The root indexes below are load-bearing for this 208-byte test fixture;
-/// this is not a general instance-import builder and has no production caller.
-fn comp_emit_wasi_cli_stdin_import_surface_for_test() -> Bytes {
-  let buf = bytebuf_new()
-  emit_component_header(buf)
+/// The root indexes below are load-bearing: the golden fixture and the shadow
+/// provider component both call this emitter, so the nominal error-code alias
+/// cannot drift between the proof fixture and the production-unused adapter.
+fn emit_comp_wasi_cli_stdin_import_prefix(buf: Bytes) -> Unit {
   // root type 0, then imported component instance 0
   emit_comp_wasi_cli_types_instance_type_for_test(buf)
   emit_comp_instance_import_section(buf, "wasi:cli/types@0.3.0", 0)
@@ -2891,6 +2890,943 @@ fn comp_emit_wasi_cli_stdin_import_surface_for_test() -> Bytes {
   emit_comp_instance_import_section(buf, "wasi:cli/stdin@0.3.0", 2)
   // root component function 0
   emit_comp_instance_export_alias_section(buf, 1, "read-via-stream", comp_extern_func)
+}
+
+fn comp_emit_wasi_cli_stdin_import_surface_for_test() -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_comp_wasi_cli_stdin_import_prefix(buf)
+  bytebuf_to_bytes(buf)
+}
+
+/// Synchronous canon lower with an explicit memory option. Unlike async lower,
+/// read-via-stream returns its `(stream, future)` tuple indirectly but does not
+/// itself suspend. Encoding: lower, reserved, function, one option, memory.
+fn emit_canon_lower_memory_section(buf: Bytes, comp_func_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, comp_func_idx)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+fn emit_comp_result_error_type_section(buf: Bytes, error_type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 106)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, error_type_idx)
+  emit_raw_content(buf, content)
+}
+
+fn comp_stdin_provider_phase_open() -> Int {
+  1
+}
+
+fn comp_stdin_provider_phase_reading() -> Int {
+  2
+}
+
+fn comp_stdin_provider_phase_settling() -> Int {
+  3
+}
+
+fn comp_stdin_provider_phase_settled_ok() -> Int {
+  4
+}
+
+fn comp_stdin_provider_phase_settled_failed() -> Int {
+  5
+}
+
+fn comp_stdin_provider_tag() -> Int {
+  1398031433
+}
+
+fn comp_stdin_provider_id_prefix() -> Int {
+  1392508928
+}
+
+fn comp_stdin_provider_slot_base() -> Int {
+  64
+}
+
+fn comp_stdin_provider_slot_capacity() -> Int {
+  16
+}
+
+/// #1539 shadow-only provider adapter. Canonical stream/future handles never
+/// escape: monotonically allocated opaque IDs address 64-byte records which
+/// own both ends and all landing/wait scratch. The component exports only
+/// private lifecycle scenarios; linked_compile and public HostStream routing
+/// deliberately do not reference this module.
+fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // 0 (i32)->(); 1 (i32,i32,i32)->i32; 2 (i32,i32)->i32;
+  // 3 ()->i32; 4 (i32,i32)->(); 5 (i32)->i32; 6 ()->();
+  // 7 (i32,i32)->i32.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 8)
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, [
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, array_empty(), array_empty())
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, tc)
+  // Canonical imports 0..8, six scenario task-return imports 9..14, memory.
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 16)
+  let import_modules = [
+    "$root",
+    "$root",
+    "$root",
+    "$root",
+    "$root",
+    "$root",
+    "$root",
+    "$root",
+    "$root",
+    "[export]$root",
+    "[export]$root",
+    "[export]$root",
+    "[export]$root",
+    "[export]$root",
+    "[export]$root"
+  ]
+  let import_names = [
+    "read-via-stream",
+    "[async-lower][stream-read-0]read-via-stream",
+    "[stream-drop-readable-0]read-via-stream",
+    "[async-lower][future-read-1]read-via-stream",
+    "[future-drop-readable-1]read-via-stream",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]",
+    "[task-return]drain",
+    "[task-return]early-close",
+    "[task-return]forced-completion-tag-control",
+    "[task-return]foreign-provider-control",
+    "[task-return]wrong-byte-cleanup-control",
+    "[task-return]extra-byte-cleanup-control"
+  ]
+  let import_types = [
+    0,
+    1,
+    0,
+    2,
+    0,
+    3,
+    4,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ]
+  let mut ii = 0
+  while ii < 15 {
+    emit_name(ic, Array::get(import_modules, ii))
+    emit_name(ic, Array::get(import_names, ii))
+    bytebuf_push(ic, 0)
+    leb128_encode_u32(ic, Array::get(import_types, ii))
+    ii = ii + 1
+  }
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  // locals 15..20 are decode/acquire/fail/settle/read/close; 21..26 scenarios.
+  emit_function_section(out, [
+    5,
+    3,
+    0,
+    7,
+    5,
+    5,
+    6,
+    6,
+    6,
+    6,
+    6,
+    6
+  ])
+  emit_export_section_multi(out, [
+    "stdin-provider-shadow-decode",
+    "stdin-provider-shadow-acquire",
+    "stdin-provider-shadow-fail-cleanup",
+    "stdin-provider-shadow-settle",
+    "stdin-provider-shadow-read",
+    "stdin-provider-shadow-close",
+    "drain",
+    "early-close",
+    "forced-completion-tag-control",
+    "foreign-provider-control",
+    "wrong-byte-cleanup-control",
+    "extra-byte-cleanup-control"
+  ], [
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26
+  ])
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 12)
+  // decode(id) -> record address. Prefix, capacity, record tag and published
+  // phase are checked before a caller can reach any canonical operation.
+  let decode = bytebuf_new()
+  leb128_encode_u32(decode, 1)
+  leb128_encode_u32(decode, 2)
+  bytebuf_push(decode, 127)
+  emit_local_get(decode, 0)
+  emit_i32_const(decode, -16777216)
+  emit_i32_and(decode)
+  emit_i32_const(decode, comp_stdin_provider_id_prefix())
+  emit_i32_ne(decode)
+  emit_if_void(decode)
+  bytebuf_push(decode, 0)
+  emit_end(decode)
+  emit_local_get(decode, 0)
+  emit_i32_const(decode, 16777215)
+  emit_i32_and(decode)
+  emit_local_set(decode, 1)
+  emit_local_get(decode, 1)
+  emit_i32_eqz(decode)
+  emit_if_void(decode)
+  bytebuf_push(decode, 0)
+  emit_end(decode)
+  emit_local_get(decode, 1)
+  emit_i32_const(decode, comp_stdin_provider_slot_capacity())
+  emit_i32_gt_u(decode)
+  emit_if_void(decode)
+  bytebuf_push(decode, 0)
+  emit_end(decode)
+  emit_local_get(decode, 1)
+  emit_i32_const(decode, 1)
+  emit_i32_sub(decode)
+  emit_i32_const(decode, 6)
+  emit_i32_shl(decode)
+  emit_i32_const(decode, comp_stdin_provider_slot_base())
+  emit_i32_add(decode)
+  emit_local_set(decode, 2)
+  emit_local_get(decode, 2)
+  emit_i32_load(decode, 2, 4)
+  emit_i32_const(decode, comp_stdin_provider_tag())
+  emit_i32_ne(decode)
+  emit_if_void(decode)
+  bytebuf_push(decode, 0)
+  emit_end(decode)
+  emit_local_get(decode, 2)
+  emit_i32_load(decode, 2, 0)
+  emit_i32_eqz(decode)
+  emit_if_void(decode)
+  bytebuf_push(decode, 0)
+  emit_end(decode)
+  emit_local_get(decode, 2)
+  bytebuf_push(decode, 11)
+  leb128_encode_u32(code_sec, Bytes::length(decode))
+  bytebuf_push_buf(code_sec, decode)
+  // acquire() -> opaque provider id. Capacity is checked before authority is
+  // exercised. The synchronous lower lands the two handles directly in the
+  // record; ownership/tag are initialized before OPEN is published last.
+  let acquire = bytebuf_new()
+  leb128_encode_u32(acquire, 1)
+  leb128_encode_u32(acquire, 2)
+  bytebuf_push(acquire, 127)
+  emit_i32_const(acquire, 0)
+  emit_i32_load(acquire, 2, 0)
+  emit_local_set(acquire, 0)
+  emit_local_get(acquire, 0)
+  emit_i32_const(acquire, comp_stdin_provider_slot_capacity() - 1)
+  emit_i32_gt_u(acquire)
+  emit_if_void(acquire)
+  bytebuf_push(acquire, 0)
+  emit_end(acquire)
+  emit_local_get(acquire, 0)
+  emit_i32_const(acquire, 6)
+  emit_i32_shl(acquire)
+  emit_i32_const(acquire, comp_stdin_provider_slot_base())
+  emit_i32_add(acquire)
+  emit_local_set(acquire, 1)
+  emit_local_get(acquire, 1)
+  emit_i32_const(acquire, 8)
+  emit_i32_add(acquire)
+  emit_call(acquire, 0)
+  emit_local_get(acquire, 1)
+  emit_i32_const(acquire, 3)
+  emit_i32_store(acquire, 2, 16)
+  emit_local_get(acquire, 1)
+  emit_i32_const(acquire, comp_stdin_provider_tag())
+  emit_i32_store(acquire, 2, 4)
+  emit_local_get(acquire, 1)
+  emit_i32_const(acquire, comp_stdin_provider_phase_open())
+  emit_i32_store(acquire, 2, 0)
+  emit_i32_const(acquire, 0)
+  emit_local_get(acquire, 0)
+  emit_i32_const(acquire, 1)
+  emit_i32_add(acquire)
+  emit_i32_store(acquire, 2, 0)
+  emit_i32_const(acquire, comp_stdin_provider_id_prefix())
+  emit_local_get(acquire, 0)
+  emit_i32_add(acquire)
+  emit_i32_const(acquire, 1)
+  emit_i32_add(acquire)
+  bytebuf_push(acquire, 11)
+  leb128_encode_u32(code_sec, Bytes::length(acquire))
+  bytebuf_push_buf(code_sec, acquire)
+  // fail_cleanup(addr): release each still-owned canonical end once, mark the
+  // tombstone FAILED, then trap. No waitable set is live at its call sites.
+  let fail = bytebuf_new()
+  leb128_encode_u32(fail, 0)
+  emit_local_get(fail, 0)
+  emit_i32_load(fail, 2, 16)
+  emit_i32_const(fail, 1)
+  emit_i32_and(fail)
+  emit_if_void(fail)
+  emit_local_get(fail, 0)
+  emit_i32_load(fail, 2, 8)
+  emit_call(fail, 2)
+  emit_local_get(fail, 0)
+  emit_local_get(fail, 0)
+  emit_i32_load(fail, 2, 16)
+  emit_i32_const(fail, -2)
+  emit_i32_and(fail)
+  emit_i32_store(fail, 2, 16)
+  emit_end(fail)
+  emit_local_get(fail, 0)
+  emit_i32_load(fail, 2, 16)
+  emit_i32_const(fail, 2)
+  emit_i32_and(fail)
+  emit_if_void(fail)
+  emit_local_get(fail, 0)
+  emit_i32_load(fail, 2, 12)
+  emit_call(fail, 4)
+  emit_local_get(fail, 0)
+  emit_local_get(fail, 0)
+  emit_i32_load(fail, 2, 16)
+  emit_i32_const(fail, -3)
+  emit_i32_and(fail)
+  emit_i32_store(fail, 2, 16)
+  emit_end(fail)
+  emit_local_get(fail, 0)
+  emit_i32_const(fail, comp_stdin_provider_phase_settled_failed())
+  emit_i32_store(fail, 2, 0)
+  bytebuf_push(fail, 0)
+  emit_end(fail)
+  leb128_encode_u32(code_sec, Bytes::length(fail))
+  bytebuf_push_buf(code_sec, fail)
+  // settle(addr, force_tag) -> 0. This single path is used by EOF and close.
+  // Every BLOCKED future read is new/join/wait/unjoin/drop. Validation is
+  // delayed until after future.drop-readable and ownership-bit clearing.
+  let settle = bytebuf_new()
+  leb128_encode_u32(settle, 1)
+  leb128_encode_u32(settle, 4)
+  bytebuf_push(settle, 127)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, comp_stdin_provider_phase_settling())
+  emit_i32_store(settle, 2, 0)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 16)
+  emit_i32_const(settle, 1)
+  emit_i32_and(settle)
+  emit_if_void(settle)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 8)
+  emit_call(settle, 2)
+  emit_local_get(settle, 0)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 16)
+  emit_i32_const(settle, -2)
+  emit_i32_and(settle)
+  emit_i32_store(settle, 2, 16)
+  emit_end(settle)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 16)
+  emit_i32_const(settle, 2)
+  emit_i32_and(settle)
+  emit_i32_eqz(settle)
+  emit_if_void(settle)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, comp_stdin_provider_phase_settled_failed())
+  emit_i32_store(settle, 2, 0)
+  bytebuf_push(settle, 0)
+  emit_end(settle)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 12)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, 32)
+  emit_i32_add(settle)
+  emit_call(settle, 3)
+  emit_local_set(settle, 2)
+  emit_local_get(settle, 2)
+  emit_i32_const(settle, -1)
+  emit_i32_eq(settle)
+  emit_if_void(settle)
+  emit_call(settle, 5)
+  emit_local_set(settle, 3)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 12)
+  emit_local_get(settle, 3)
+  emit_call(settle, 6)
+  emit_local_get(settle, 3)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, 40)
+  emit_i32_add(settle)
+  emit_call(settle, 7)
+  emit_local_set(settle, 4)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 12)
+  emit_i32_const(settle, 0)
+  emit_call(settle, 6)
+  emit_local_get(settle, 3)
+  emit_call(settle, 8)
+  emit_local_get(settle, 4)
+  emit_i32_const(settle, 4)
+  emit_i32_ne(settle)
+  emit_if_void(settle)
+  emit_i32_const(settle, 1)
+  emit_local_set(settle, 5)
+  emit_end(settle)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 44)
+  emit_local_set(settle, 2)
+  emit_end(settle)
+  // Negative control only: perturb the already-read discriminant. This is
+  // not evidence that a provider emitted an error.
+  emit_local_get(settle, 1)
+  emit_if_void(settle)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, 1)
+  emit_i32_store(settle, 2, 32)
+  emit_end(settle)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 12)
+  emit_call(settle, 4)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, 0)
+  emit_i32_store(settle, 2, 16)
+  emit_local_get(settle, 2)
+  emit_i32_const(settle, 0)
+  emit_i32_ne(settle)
+  emit_if_void(settle)
+  emit_i32_const(settle, 1)
+  emit_local_set(settle, 5)
+  emit_end(settle)
+  emit_local_get(settle, 0)
+  emit_i32_load(settle, 2, 32)
+  emit_if_void(settle)
+  emit_i32_const(settle, 1)
+  emit_local_set(settle, 5)
+  emit_end(settle)
+  emit_local_get(settle, 5)
+  emit_if_void(settle)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, comp_stdin_provider_phase_settled_failed())
+  emit_i32_store(settle, 2, 0)
+  bytebuf_push(settle, 0)
+  emit_end(settle)
+  emit_local_get(settle, 0)
+  emit_i32_const(settle, comp_stdin_provider_phase_settled_ok())
+  emit_i32_store(settle, 2, 0)
+  emit_i32_const(settle, 0)
+  bytebuf_push(settle, 11)
+  leb128_encode_u32(code_sec, Bytes::length(settle))
+  bytebuf_push_buf(code_sec, settle)
+  // read(id) -> byte or -1. Only OPEN reaches stream.read. READING is
+  // published before the call, so same-slot in-flight re-entry fails in
+  // decode/phase checks without a second canonical operation.
+  let read = bytebuf_new()
+  leb128_encode_u32(read, 1)
+  leb128_encode_u32(read, 5)
+  bytebuf_push(read, 127)
+  emit_local_get(read, 0)
+  emit_call(read, 15)
+  emit_local_set(read, 1)
+  emit_local_get(read, 1)
+  emit_i32_load(read, 2, 0)
+  emit_local_set(read, 2)
+  emit_local_get(read, 2)
+  emit_i32_const(read, comp_stdin_provider_phase_settled_ok())
+  emit_i32_eq(read)
+  emit_if_void(read)
+  emit_i32_const(read, -1)
+  emit_return(read)
+  emit_end(read)
+  emit_local_get(read, 2)
+  emit_i32_const(read, comp_stdin_provider_phase_open())
+  emit_i32_ne(read)
+  emit_if_void(read)
+  bytebuf_push(read, 0)
+  emit_end(read)
+  emit_local_get(read, 1)
+  emit_i32_const(read, comp_stdin_provider_phase_reading())
+  emit_i32_store(read, 2, 0)
+  emit_local_get(read, 1)
+  emit_i32_load(read, 2, 8)
+  emit_local_get(read, 1)
+  emit_i32_const(read, 24)
+  emit_i32_add(read)
+  emit_i32_const(read, 1)
+  emit_call(read, 1)
+  emit_local_set(read, 2)
+  emit_local_get(read, 2)
+  emit_i32_const(read, -1)
+  emit_i32_eq(read)
+  emit_if_void(read)
+  emit_call(read, 5)
+  emit_local_set(read, 3)
+  emit_local_get(read, 1)
+  emit_i32_load(read, 2, 8)
+  emit_local_get(read, 3)
+  emit_call(read, 6)
+  emit_local_get(read, 3)
+  emit_local_get(read, 1)
+  emit_i32_const(read, 40)
+  emit_i32_add(read)
+  emit_call(read, 7)
+  emit_local_set(read, 4)
+  emit_local_get(read, 1)
+  emit_i32_load(read, 2, 8)
+  emit_i32_const(read, 0)
+  emit_call(read, 6)
+  emit_local_get(read, 3)
+  emit_call(read, 8)
+  emit_local_get(read, 4)
+  emit_i32_const(read, 2)
+  emit_i32_ne(read)
+  emit_if_void(read)
+  emit_local_get(read, 1)
+  emit_call(read, 17)
+  emit_end(read)
+  emit_local_get(read, 1)
+  emit_i32_load(read, 2, 44)
+  emit_local_set(read, 2)
+  emit_end(read)
+  emit_local_get(read, 2)
+  emit_i32_const(read, 16)
+  emit_i32_eq(read)
+  emit_if_void(read)
+  emit_local_get(read, 1)
+  emit_i32_const(read, comp_stdin_provider_phase_open())
+  emit_i32_store(read, 2, 0)
+  emit_local_get(read, 1)
+  emit_i32_load8_u(read, 0, 24)
+  emit_return(read)
+  emit_end(read)
+  emit_local_get(read, 2)
+  emit_i32_const(read, 1)
+  emit_i32_eq(read)
+  emit_if_void(read)
+  emit_local_get(read, 1)
+  emit_i32_const(read, 0)
+  emit_call(read, 18)
+  emit_local_set(read, 5)
+  emit_i32_const(read, -1)
+  emit_return(read)
+  emit_end(read)
+  emit_local_get(read, 1)
+  emit_call(read, 17)
+  bytebuf_push(read, 0)
+  emit_end(read)
+  leb128_encode_u32(code_sec, Bytes::length(read))
+  bytebuf_push_buf(code_sec, read)
+  // close(id): successful settlement is idempotent; every other non-OPEN
+  // phase traps before calling the shared settlement path.
+  let close = bytebuf_new()
+  leb128_encode_u32(close, 1)
+  leb128_encode_u32(close, 2)
+  bytebuf_push(close, 127)
+  emit_local_get(close, 0)
+  emit_call(close, 15)
+  emit_local_set(close, 1)
+  emit_local_get(close, 1)
+  emit_i32_load(close, 2, 0)
+  emit_local_set(close, 2)
+  emit_local_get(close, 2)
+  emit_i32_const(close, comp_stdin_provider_phase_settled_ok())
+  emit_i32_eq(close)
+  emit_if_void(close)
+  emit_i32_const(close, 0)
+  emit_return(close)
+  emit_end(close)
+  emit_local_get(close, 2)
+  emit_i32_const(close, comp_stdin_provider_phase_open())
+  emit_i32_ne(close)
+  emit_if_void(close)
+  bytebuf_push(close, 0)
+  emit_end(close)
+  emit_local_get(close, 1)
+  emit_i32_const(close, 0)
+  emit_call(close, 18)
+  emit_local_set(close, 2)
+  emit_i32_const(close, 0)
+  bytebuf_push(close, 11)
+  leb128_encode_u32(code_sec, Bytes::length(close))
+  bytebuf_push_buf(code_sec, close)
+  // drain scenario: exact bytes, shared EOF settlement, repeated EOF/close.
+  // Every scenario diagnostic after acquisition closes through the shared
+  // lifecycle-complete path before trapping.
+  let drain = bytebuf_new()
+  leb128_encode_u32(drain, 1)
+  leb128_encode_u32(drain, 2)
+  bytebuf_push(drain, 127)
+  emit_call(drain, 16)
+  emit_local_set(drain, 0)
+  let expected_bytes = [
+    10,
+    15,
+    17
+  ]
+  let mut di = 0
+  while di < 3 {
+    emit_local_get(drain, 0)
+    emit_call(drain, 19)
+    emit_i32_const(drain, Array::get(expected_bytes, di))
+    emit_i32_ne(drain)
+    emit_if_void(drain)
+    emit_local_get(drain, 0)
+    emit_call(drain, 20)
+    emit_local_set(drain, 1)
+    bytebuf_push(drain, 0)
+    emit_end(drain)
+    di = di + 1
+  }
+  emit_local_get(drain, 0)
+  emit_call(drain, 19)
+  emit_i32_const(drain, -1)
+  emit_i32_ne(drain)
+  emit_if_void(drain)
+  emit_local_get(drain, 0)
+  emit_call(drain, 20)
+  emit_local_set(drain, 1)
+  bytebuf_push(drain, 0)
+  emit_end(drain)
+  emit_local_get(drain, 0)
+  emit_call(drain, 19)
+  emit_i32_const(drain, -1)
+  emit_i32_ne(drain)
+  emit_if_void(drain)
+  emit_local_get(drain, 0)
+  emit_call(drain, 20)
+  emit_local_set(drain, 1)
+  bytebuf_push(drain, 0)
+  emit_end(drain)
+  emit_local_get(drain, 0)
+  emit_call(drain, 20)
+  emit_local_set(drain, 1)
+  emit_local_get(drain, 0)
+  emit_call(drain, 20)
+  emit_local_set(drain, 1)
+  emit_i32_const(drain, 42)
+  emit_call(drain, 9)
+  bytebuf_push(drain, 11)
+  leb128_encode_u32(code_sec, Bytes::length(drain))
+  bytebuf_push_buf(code_sec, drain)
+  let early = bytebuf_new()
+  leb128_encode_u32(early, 1)
+  leb128_encode_u32(early, 2)
+  bytebuf_push(early, 127)
+  emit_call(early, 16)
+  emit_local_set(early, 0)
+  emit_local_get(early, 0)
+  emit_call(early, 20)
+  emit_local_set(early, 1)
+  emit_local_get(early, 0)
+  emit_call(early, 20)
+  emit_local_set(early, 1)
+  emit_local_get(early, 0)
+  emit_call(early, 19)
+  emit_i32_const(early, -1)
+  emit_i32_ne(early)
+  emit_if_void(early)
+  emit_local_get(early, 0)
+  emit_call(early, 20)
+  emit_local_set(early, 1)
+  bytebuf_push(early, 0)
+  emit_end(early)
+  emit_i32_const(early, 43)
+  emit_call(early, 10)
+  bytebuf_push(early, 11)
+  leb128_encode_u32(code_sec, Bytes::length(early))
+  bytebuf_push_buf(code_sec, early)
+  // Expected trap after common cleanup; deliberately not a provider-error
+  // measurement (force_tag only changes the already-landed result tag).
+  let forced = bytebuf_new()
+  leb128_encode_u32(forced, 1)
+  leb128_encode_u32(forced, 2)
+  bytebuf_push(forced, 127)
+  emit_call(forced, 16)
+  emit_local_set(forced, 0)
+  emit_local_get(forced, 0)
+  emit_call(forced, 15)
+  emit_local_set(forced, 1)
+  emit_local_get(forced, 1)
+  emit_i32_const(forced, 1)
+  emit_call(forced, 18)
+  emit_local_set(forced, 0)
+  bytebuf_push(forced, 0)
+  emit_end(forced)
+  leb128_encode_u32(code_sec, Bytes::length(forced))
+  bytebuf_push_buf(code_sec, forced)
+  // Foreign discriminator must trap in decode before any canonical call.
+  let foreign = bytebuf_new()
+  leb128_encode_u32(foreign, 1)
+  leb128_encode_u32(foreign, 1)
+  bytebuf_push(foreign, 127)
+  emit_i32_const(foreign, 1409286145)
+  emit_call(foreign, 19)
+  emit_local_set(foreign, 0)
+  bytebuf_push(foreign, 0)
+  emit_end(foreign)
+  leb128_encode_u32(code_sec, Bytes::length(foreign))
+  bytebuf_push_buf(code_sec, foreign)
+  // Expected-trap controls for the scenario checks that motivated #1539's
+  // cleanup review. They perturb guest expectations only; neither control is
+  // a measurement of provider byte errors. Both close while OPEN, settling
+  // and dropping the stream/future exactly once, before unreachable.
+  let wrong_byte = bytebuf_new()
+  leb128_encode_u32(wrong_byte, 1)
+  leb128_encode_u32(wrong_byte, 2)
+  bytebuf_push(wrong_byte, 127)
+  emit_call(wrong_byte, 16)
+  emit_local_set(wrong_byte, 0)
+  emit_local_get(wrong_byte, 0)
+  emit_call(wrong_byte, 19)
+  emit_i32_const(wrong_byte, 11)
+  emit_i32_ne(wrong_byte)
+  emit_if_void(wrong_byte)
+  emit_local_get(wrong_byte, 0)
+  emit_call(wrong_byte, 20)
+  emit_local_set(wrong_byte, 1)
+  bytebuf_push(wrong_byte, 0)
+  emit_end(wrong_byte)
+  emit_i32_const(wrong_byte, 0)
+  emit_call(wrong_byte, 13)
+  bytebuf_push(wrong_byte, 11)
+  leb128_encode_u32(code_sec, Bytes::length(wrong_byte))
+  bytebuf_push_buf(code_sec, wrong_byte)
+  let extra_byte = bytebuf_new()
+  leb128_encode_u32(extra_byte, 1)
+  leb128_encode_u32(extra_byte, 2)
+  bytebuf_push(extra_byte, 127)
+  emit_call(extra_byte, 16)
+  emit_local_set(extra_byte, 0)
+  let extra_expected_bytes = [
+    10,
+    15
+  ]
+  let mut ei = 0
+  while ei < 2 {
+    emit_local_get(extra_byte, 0)
+    emit_call(extra_byte, 19)
+    emit_i32_const(extra_byte, Array::get(extra_expected_bytes, ei))
+    emit_i32_ne(extra_byte)
+    emit_if_void(extra_byte)
+    emit_local_get(extra_byte, 0)
+    emit_call(extra_byte, 20)
+    emit_local_set(extra_byte, 1)
+    bytebuf_push(extra_byte, 0)
+    emit_end(extra_byte)
+    ei = ei + 1
+  }
+  emit_local_get(extra_byte, 0)
+  emit_call(extra_byte, 19)
+  emit_i32_const(extra_byte, -1)
+  emit_i32_ne(extra_byte)
+  emit_if_void(extra_byte)
+  emit_local_get(extra_byte, 0)
+  emit_call(extra_byte, 20)
+  emit_local_set(extra_byte, 1)
+  bytebuf_push(extra_byte, 0)
+  emit_end(extra_byte)
+  emit_i32_const(extra_byte, 0)
+  emit_call(extra_byte, 14)
+  bytebuf_push(extra_byte, 11)
+  leb128_encode_u32(code_sec, Bytes::length(extra_byte))
+  bytebuf_push_buf(code_sec, extra_byte)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+/// Emit the production-unused #1539 shadow component. Its first 208 bytes are
+/// exactly comp_emit_wasi_cli_stdin_import_surface_for_test(). Scenario exports
+/// are private gates, not a Stdin effect or HostStream API.
+export fn comp_emit_component_wasm_stdin_provider_shadow() -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_comp_wasi_cli_stdin_import_prefix(buf)
+  emit_core_module_section(buf, comp_generate_stdin_provider_adapter_core_module())
+  emit_core_module_section(buf, comp_generate_memhost_module())
+  let memhost_inst = 0
+  emit_core_instance_instantiate_section(buf, 1, array_empty())
+  let mem_alias_idx = 0
+  emit_alias_section(buf, memhost_inst, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  // Root types 3..5 mirror the nested stdin result's stream and nominal
+  // completion future. Function 0 is the imported read-via-stream alias.
+  let stream_type_idx = 3
+  let completion_result_type_idx = 4
+  let completion_future_type_idx = 5
+  emit_comp_stream_type_section(buf, comp_valtype_u8)
+  emit_comp_result_error_type_section(buf, 1)
+  emit_comp_future_type_section(buf, completion_result_type_idx)
+  emit_canon_lower_memory_section(buf, 0, mem_alias_idx)
+  emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
+  emit_canon_stream_drop_readable(buf, stream_type_idx)
+  emit_canon_future_read(buf, completion_future_type_idx, mem_alias_idx)
+  emit_canon_future_drop_readable(buf, completion_future_type_idx)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_drop(buf)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  let root_inst = 1
+  emit_core_instance_from_exports(buf, 1, [
+    9
+  ], [
+    "read-via-stream",
+    "[async-lower][stream-read-0]read-via-stream",
+    "[stream-drop-readable-0]read-via-stream",
+    "[async-lower][future-read-1]read-via-stream",
+    "[future-drop-readable-1]read-via-stream",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ])
+  let export_root_inst = 2
+  emit_core_instance_from_exports(buf, 1, [
+    6
+  ], [
+    "[task-return]drain",
+    "[task-return]early-close",
+    "[task-return]forced-completion-tag-control",
+    "[task-return]foreign-provider-control",
+    "[task-return]wrong-byte-cleanup-control",
+    "[task-return]extra-byte-cleanup-control"
+  ], [
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    mem_alias_idx
+  ])
+  let env_inst = 3
+  let guest_inst = 4
+  emit_core_instance_instantiate_args(buf, 0, [
+    "$root",
+    "[export]$root",
+    "env"
+  ], [
+    root_inst,
+    export_root_inst,
+    env_inst
+  ])
+  let async_type_idx = 6
+  emit_comp_async_functype_section(buf, comp_valtype_u32)
+  emit_alias_section(buf, guest_inst, [
+    "drain",
+    "early-close",
+    "forced-completion-tag-control",
+    "foreign-provider-control",
+    "wrong-byte-cleanup-control",
+    "extra-byte-cleanup-control"
+  ], [
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func
+  ])
+  let mut lift_i = 0
+  while lift_i < 6 {
+    emit_canon_lift_async_section(buf, 15 + lift_i, async_type_idx)
+    lift_i = lift_i + 1
+  }
+  emit_comp_export_section(buf, "drain", 1)
+  emit_comp_export_section(buf, "early-close", 2)
+  emit_comp_export_section(buf, "forced-completion-tag-control", 3)
+  emit_comp_export_section(buf, "foreign-provider-control", 4)
+  emit_comp_export_section(buf, "wrong-byte-cleanup-control", 5)
+  emit_comp_export_section(buf, "extra-byte-cleanup-control", 6)
   bytebuf_to_bytes(buf)
 }
 
