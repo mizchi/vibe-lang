@@ -1466,25 +1466,36 @@ gate lane = `test_named_hoststreams_component_gate.sh` の close lane
 かつ drain-only component に close import が無いこと + closing component に
 guest import と adapter export が両方あることを .wat で確認）。
 
-### 3.18.2 #1539 — `wasi:cli/stdin@0.3.0` ABI availability probe
+### 3.18.2 #1539 — `wasi:cli/stdin@0.3.0` success lifecycle measurement
 
-`tools/wasip3_component_probe/stdin_read_via_stream/component.wat` declares
-`wasi:cli/stdin@0.3.0` and its `read-via-stream` result type:
-`tuple<stream<u8>, future<result<_, error-code>>>`. The component imports
-`wasi:cli/types@0.3.0` and aliases its nominal `error-code` into the stdin
-instance, so the declaration does not substitute a representation-compatible
-payload for the WIT type.
+`tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the
+ratified `wasi:cli/stdin@0.3.0` result type
+`tuple<stream<u8>, future<result<_, error-code>>>`, including the nominal
+`wasi:cli/types@0.3.0/error-code` alias. It also retains the preview-2
+`wasi:cli/run@0.2.12` command export. Thus an error result cannot be silently
+accepted as a representation-compatible non-nominal value.
 
-`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates that
-component. Its minimal `wasi:cli/run@0.2.12` command export makes wasmtime 47
-instantiate the component before it resolves the retained stdin function
-import, rather than rejecting it for lacking a command export. Generic ABI/type
-mismatch or missing-command-export diagnostics are failures. Wasmtime's
-explicit missing-stdin-implementation diagnostic skips the local default lane
-but fails required mode; only a successful link passes the required
-availability gate. Link success remains not a passing lifecycle/behavioral
-result. The optional `test-wasi-p3` aggregate includes this probe; its CI job
+**Measured on pinned wasmtime 47.0.2:** with binary stdin `10,15,17`, `drain`
+performs canonical async `stream.read` calls for each byte, observes the
+separate zero-item EOF status, drops the readable stream, and awaits canonical
+`future.read` completion success; it returns `42`. `drop` obtains the same
+pair, drops its readable stream immediately, awaits completion success, and
+returns `43`. BLOCKED stream/future reads use `waitable-set.new`,
+`waitable.join`, and `waitable-set.wait`; the end is unjoined before its set is
+dropped. Other statuses, events, byte values, EOF forms, and result tags are
+diagnostic return paths, not success.
+
+`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses, validates, and
+prints the component, generates that deterministic binary input, and executes
+both async-lifted lanes. Required mode requires exactly wasmtime 47.0.2;
+missing tools, an unpinned provider, and ABI/type/link/command-export failures
+fail closed. The default local mode skips unavailable tools or an unpinned
+provider. The optional `test-wasi-p3` aggregate includes this probe; its CI job
 remains outside `ci-required`.
+
+This is only the successful-close lifecycle slice. **Read-error injection is
+unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
+measurement), and this work makes no compiler or console change.
 
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
