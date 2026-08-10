@@ -162,12 +162,11 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
   }
 }
 
-/// Constructors and generated `Type::member` values are value bindings, but
-/// their authority is the selected public typedef rather than capitalization.
-/// Ambient declarations are a fixed language/runtime set, never a naming
-/// convention. They retain explicit package re-exports such as Option/Fs
-/// without reopening the retired uppercase fallback for user declarations.
-fn is_ambient_import_authority(name: String) -> Bool {
+/// A builtin declaration becomes import authority only when the dependency
+/// explicitly publishes it. This predicate is deliberately used solely while
+/// constructing that published surface; import validation below never falls
+/// back to builtin, registry, or effect-name recognition.
+fn is_explicit_builtin_declaration(name: String) -> Bool {
   let qualifier_at = String::index_of(name, "::")
   let qualifier = if qualifier_at > 0 {
     String::substring(name, 0, qualifier_at)
@@ -177,8 +176,6 @@ fn is_ambient_import_authority(name: String) -> Bool {
   if name == "Option" || name == "Random" || qualifier == "Option" || qualifier == "Random" {
     true
   } else match resolve_builtin(qualifier) {
-    // A member of a fixed builtin type namespace (e.g. String::unicode_length)
-    // is ambient; an arbitrary uppercase qualifier is still rejected.
     Some(_) => true,
     None => match resolve_builtin(name) {
       Some(_) => true,
@@ -934,7 +931,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
           // Declaration authority travels explicitly in EnvTypeDefs, so
           // uppercase is never evidence that an import is valid. Effects and
           // effectsets use the same selected declaration channel.
-          if dep_known && !contains_str(dep_selectable_type_defs, name) && !trait_defined(dep_env, name) && !is_ambient_import_authority(name) {
+          if dep_known && !contains_str(dep_selectable_type_defs, name) && !trait_defined(dep_env, name) {
             Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
           } else {
             ()
@@ -1941,11 +1938,10 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
     // Publish only the name the module selected. Its declaration closure is
     // retained separately by restrict_env_to_export_surface so a private
     // field/signature type remains interpretable without becoming selectable.
-    if typedef_projection_contains(defs, name) {
-      Array::push(out, name)
-    } else if is_ambient_import_authority(name) {
-      // Ambient declarations have no user TypeDef to carry, but an explicit
-      // package export remains a valid authority grant.
+    if typedef_projection_contains(defs, name) || is_explicit_builtin_declaration(name) {
+      // Builtin/registry declarations have no user TypeDef payload, but an
+      // explicit export gives them the same selected-surface authority as a
+      // contract declaration. They are never accepted merely by import name.
       Array::push(out, name)
     } else {
       ()
@@ -2062,6 +2058,45 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     // collect_merged_stmts lane instead. Both are their own bugs.
     EnvCached(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
   }
+}
+
+/// Builtin values are resolved outside a module's ordinary TypeEnv, so an
+/// explicit export of one needs a marker binding in the published environment.
+/// The marker never grants unexported builtin authority: its source is the
+/// already-filtered explicit value surface.
+fn prepend_explicit_builtin_value_markers(value_surface: Array[String], env: TypeEnv) -> TypeEnv {
+  let mut out = env
+  let mut i = 0
+  while i < Array::length(value_surface) {
+    let name = Array::get(value_surface, i)
+    if is_explicit_builtin_declaration(name) && env_lookup(env, name) == None {
+      out = EnvBind(name, CtUnknown, out)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Build the single published environment shared by the filesystem and
+/// in-memory TypeDb lanes. Only declarations named by this module's explicit
+/// export surface leave the check; imported authority stays local unless the
+/// module re-exports it.
+export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv {
+  let value_surface = interface_public_value_names(stmts)
+  let trait_surface = interface_public_trait_names(stmts, full_checked_env)
+  let type_surface = interface_public_type_names(stmts, full_checked_env)
+  let published = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, full_checked_env)
+  // Builtin declarations have no TypeDef node to survive the restriction.
+  // Their explicit selected surface still needs a transport node, otherwise
+  // the importer cannot distinguish this export from an empty dependency.
+  let with_builtin_types = if Array::length(type_surface) > 0 && Array::length(env_type_defs(published)) == 0 {
+    EnvTypeDefs(array_empty(), type_surface, published)
+  } else {
+    published
+  }
+  prepend_explicit_builtin_value_markers(value_surface, with_builtin_types)
 }
 
 fn interface_decl_line(prefix: String, name: String, body: String) -> String {
@@ -3162,10 +3197,7 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
       // consumer of `Checked`'s env (env cache, persistent store, worker
       // transport, TDRE4, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
-      let value_surface = interface_public_value_names(stmts)
-      let trait_surface = interface_public_trait_names(stmts, full_checked_env)
-      let type_surface = interface_public_type_names(stmts, full_checked_env)
-      let checked_env = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, full_checked_env)
+      let checked_env = checked_module_public_env(stmts, full_checked_env)
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {
