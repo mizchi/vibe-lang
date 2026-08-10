@@ -9238,38 +9238,133 @@ fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   }
 }
 
-///|
-/// In-place labeled-argument reordering over a whole program. Rebuilds only the
-/// top-level statements that actually contain a labeled argument (see
-/// expr_has_labeled_arg).
+/// Read-only scan for one of three questions, in ONE explicit-variant walk:
+///   mode 0 -- does this contain a two-argument `inspect(..)` call?
+///   mode 1 -- does this BIND the name `inspect` (a let / for / fn parameter)?
+///   mode 2 -- does this mention `name` at all, as a reference or a binder?
+///
+/// The variants are enumerated by hand rather than recursed through
+/// `expr_children`, and that is the whole point: `expr_children` ALLOCATES a
+/// fresh array per node, so using it for a "read-only" pre-check cost more
+/// allocation than the rebuild the pre-check exists to avoid. Measured on the
+/// perf gate's deterministic axis: the expr_children version put
+/// `selfcompile heap_ptr_bytes` +2.61% over main; this one is allocation-free.
+///
+/// Enumerated (no `_ =>` catch-all for the recursive shapes) so a new `Expr`
+/// variant is a compile error here instead of a silently unscanned subtree.
+fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
+  let here = if mode == 0 {
+    match expr {
+      ECall(callee, args, _) => match callee {
+        EIdent(n, _) => n == "inspect" && Array::length(args) == 2,
+        _ => false
+      },
+      _ => false
+    }
+  } else if mode == 1 {
+    match expr {
+      ELet(n, _, _, _) => n == "inspect",
+      ELetRec(n, _, _) => n == "inspect",
+      ELetMut(n, _, _, _) => n == "inspect",
+      EForIn(v, _, _, _) => v == "inspect",
+      EFn(_, _, params, _, _, _) => dinsp_params_bind(params, "inspect"),
+      _ => false
+    }
+  } else {
+    match expr {
+      EIdent(n, _) => n == name,
+      ELet(n, _, _, _) => n == name,
+      ELetRec(n, _, _) => n == name,
+      ELetMut(n, _, _, _) => n == name,
+      EAssign(n, _, _) => n == name,
+      EAssignOp(_, n, _, _) => n == name,
+      EForIn(v, _, _, _) => v == name,
+      EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),
+      _ => false
+    }
+  }
+  if here {
+    true
+  } else {
+    match expr {
+      EInt(_) => false,
+      EFloat(_) => false,
+      EString(_) => false,
+      EBool(_) => false,
+      EUnit => false,
+      EIdent(_, _) => false,
+      EStringInterp(_) => false,
+      ETuple(items) => dinsp_scan_list(items, mode, name),
+      EArray(items) => dinsp_scan_list(items, mode, name),
+      ERecord(_, fields, _) => dinsp_scan_fields(fields, mode, name),
+      EMap(fields) => dinsp_scan_fields(fields, mode, name),
+      EIf(c, t, f) => dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name),
+      ELet(_, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      ELetRec(_, v, b) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      ELetMut(_, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      EAssign(_, v, b) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      EAssignOp(_, _, v, b) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
+      ESeq(a, b) => dinsp_scan(a, mode, name) || dinsp_scan(b, mode, name),
+      EMatch(sc, arms) => dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name),
+      EHandle(sc, arms) => dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name),
+      EWhile(c, b) => dinsp_scan(c, mode, name) || dinsp_scan(b, mode, name),
+      ELoop(params, b) => dinsp_scan_fields(params, mode, name) || dinsp_scan(b, mode, name),
+      EForIn(_, _, it, b) => dinsp_scan(it, mode, name) || dinsp_scan(b, mode, name),
+      ECall(callee, args, _) => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name),
+      EBinOp(_, l, r) => dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name),
+      EUnaryOp(_, v) => dinsp_scan(v, mode, name),
+      EFn(_, _, _, _, _, body) => dinsp_scan(body, mode, name),
+      EDot(inner, _, _, _) => dinsp_scan(inner, mode, name),
+      ELabeledArg(_, _, v) => dinsp_scan(v, mode, name),
+      EReturn(v) => dinsp_scan(v, mode, name),
+      EBreak(opt) => match opt {
+        Some(v) => dinsp_scan(v, mode, name),
+        None => false
+      },
+      EContinue(args) => dinsp_scan_list(args, mode, name),
+      ESpread(v) => dinsp_scan(v, mode, name)
+    }
+  }
+}
+
+fn dinsp_scan_list(items: Array[Expr], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    found = dinsp_scan(Array::get(items, i), mode, name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_scan_fields(fields: Array[(String, Expr)], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    found = dinsp_scan(v, mode, name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_scan_arms(arms: Array[(Pat, Expr)], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (_, v) = Array::get(arms, i)
+    found = dinsp_scan(v, mode, name)
+    i = i + 1
+  }
+  found
+}
+
 /// Every name `expr` MENTIONS -- as a reference or as a binder. Used to mint
 /// temporaries that cannot capture anything in the expressions being moved.
 /// Over-approximates (a shadowed inner binder counts too), which only ever
 /// costs a suffix.
 fn dinsp_mentions(expr: Expr, name: String) -> Bool {
-  let here = match expr {
-    EIdent(n, _) => n == name,
-    ELet(n, _, _, _) => n == name,
-    ELetRec(n, _, _) => n == name,
-    ELetMut(n, _, _, _) => n == name,
-    EAssign(n, _, _) => n == name,
-    EAssignOp(_, n, _, _) => n == name,
-    EForIn(v, _, _, _) => v == name,
-    EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),
-    _ => false
-  }
-  if here {
-    true
-  } else {
-    let kids = expr_children(expr)
-    let mut i = 0
-    let mut found = false
-    while !found && i < Array::length(kids) {
-      found = dinsp_mentions(Array::get(kids, i), name)
-      i = i + 1
-    }
-    found
-  }
+  dinsp_scan(expr, 2, name)
 }
 
 fn dinsp_params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
@@ -9488,25 +9583,7 @@ fn dinsp_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
 /// `rewrite_alias_expr_ix` (core/import_alias_rewrite.vibe) carries the same
 /// guard for the same reason.
 fn dinsp_uses(expr: Expr) -> Bool {
-  let hit = match expr {
-    ECall(callee, args, _) => match callee {
-      EIdent(name, _) => name == "inspect" && Array::length(args) == 2,
-      _ => false
-    },
-    _ => false
-  }
-  if hit {
-    true
-  } else {
-    let kids = expr_children(expr)
-    let mut i = 0
-    let mut found = false
-    while !found && i < Array::length(kids) {
-      found = dinsp_uses(Array::get(kids, i))
-      i = i + 1
-    }
-    found
-  }
+  dinsp_scan(expr, 0, "")
 }
 
 fn dinsp_stmt_uses(stmt: Stmt) -> Bool {
@@ -9594,26 +9671,7 @@ fn dinsp_stmt_binds(stmt: Stmt) -> Bool {
 /// a `for` variable). A bare reference does not count -- that is the call this
 /// pass exists to rewrite.
 fn dinsp_mentions_binder(expr: Expr) -> Bool {
-  let here = match expr {
-    ELet(n, _, _, _) => n == "inspect",
-    ELetRec(n, _, _) => n == "inspect",
-    ELetMut(n, _, _, _) => n == "inspect",
-    EForIn(v, _, _, _) => v == "inspect",
-    EFn(_, _, params, _, _, _) => dinsp_params_bind(params, "inspect"),
-    _ => false
-  }
-  if here {
-    true
-  } else {
-    let kids = expr_children(expr)
-    let mut i = 0
-    let mut found = false
-    while !found && i < Array::length(kids) {
-      found = dinsp_mentions_binder(Array::get(kids, i))
-      i = i + 1
-    }
-    found
-  }
+  dinsp_scan(expr, 1, "")
 }
 
 /// In-place, like the other desugars in this file: `check_program` hands the
@@ -9639,6 +9697,9 @@ export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
   }
 }
 
+/// In-place labeled-argument reordering over a whole program. Rebuilds only the
+/// top-level statements that actually contain a labeled argument (see
+/// expr_has_labeled_arg).
 export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   let tbl = collect_fn_param_labels(stmts)
   // #1500: optional-parameter call sites are rewritten by the same walk (see
