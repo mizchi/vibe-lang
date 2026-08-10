@@ -3902,63 +3902,81 @@ fn comp_generate_stdin_provider_synthetic_core(mode: Int) -> Bytes {
   leb128_encode_u32(body, 1)
   leb128_encode_u32(body, 1)
   bytebuf_push(body, 126)
-  emit_call(body, 1)
-  emit_local_set(body, 1)
-  let expected = if mode == 0 {
-    [
-      20,
-      30,
-      34,
-      -2,
+  if mode < 2 {
+    emit_call(body, 1)
+    emit_local_set(body, 1)
+    let expected = if mode == 0 {
+      [
+        20,
+        30,
+        34,
+        -2,
+        -2
+      ]
+    } else {
+      [
+        20
+      ]
+    }
+    let mut ei = 0
+    while ei < Array::length(expected) {
+      emit_local_get(body, 1)
+      emit_call(body, 2)
+      emit_i64_const(body, Array::get(expected, ei))
+      bytebuf_push(body, 82)
+      // i64.ne
+      emit_if_void(body)
+      bytebuf_push(body, 0)
+      emit_end(body)
+      ei = ei + 1
+    }
+    emit_local_get(body, 1)
+    emit_call(body, 3)
+    emit_i64_const(body, 0)
+    bytebuf_push(body, 82)
+    emit_if_void(body)
+    bytebuf_push(body, 0)
+    emit_end(body)
+    emit_local_get(body, 1)
+    emit_call(body, 3)
+    emit_i64_const(body, 0)
+    bytebuf_push(body, 82)
+    emit_if_void(body)
+    bytebuf_push(body, 0)
+    emit_end(body)
+    if mode != 0 {
+      emit_local_get(body, 1)
+      emit_call(body, 2)
+      emit_i64_const(body, -2)
+      bytebuf_push(body, 82)
+      emit_if_void(body)
+      bytebuf_push(body, 0)
+      emit_end(body)
+    } else {
+      ()
+    }
+    emit_i64_const(body, if mode == 0 {
+      42
+    } else {
+      43
+    })
+  } else {
+    // Expected-trap controls call read directly with malformed tagged wires:
+    // odd, positive above u32, and signed high-bit respectively. The bridge
+    // decode must reject each before calling the lifecycle shadow.
+    emit_i64_const(body, if mode == 2 {
+      1
+    } else if mode == 3 {
+      4294967296
+    } else {
       -2
-    ]
-  } else {
-    [
-      20
-    ]
-  }
-  let mut ei = 0
-  while ei < Array::length(expected) {
-    emit_local_get(body, 1)
+    })
     emit_call(body, 2)
-    emit_i64_const(body, Array::get(expected, ei))
-    bytebuf_push(body, 82)
-    // i64.ne
-    emit_if_void(body)
+    bytebuf_push(body, 26)
+    // If validation accidentally returns, keep the control fail-closed.
     bytebuf_push(body, 0)
-    emit_end(body)
-    ei = ei + 1
+    emit_i64_const(body, 0)
   }
-  emit_local_get(body, 1)
-  emit_call(body, 3)
-  emit_i64_const(body, 0)
-  bytebuf_push(body, 82)
-  emit_if_void(body)
-  bytebuf_push(body, 0)
-  emit_end(body)
-  emit_local_get(body, 1)
-  emit_call(body, 3)
-  emit_i64_const(body, 0)
-  bytebuf_push(body, 82)
-  emit_if_void(body)
-  bytebuf_push(body, 0)
-  emit_end(body)
-  if mode != 0 {
-    emit_local_get(body, 1)
-    emit_call(body, 2)
-    emit_i64_const(body, -2)
-    bytebuf_push(body, 82)
-    emit_if_void(body)
-    bytebuf_push(body, 0)
-    emit_end(body)
-  } else {
-    ()
-  }
-  emit_i64_const(body, if mode == 0 {
-    42
-  } else {
-    43
-  })
   bytebuf_push(body, 11)
   // Write this body's section directly because it has an explicit local.
   let code = bytebuf_new()
@@ -5608,7 +5626,8 @@ export fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, e
   bytebuf_to_bytes(buf)
 }
 
-/// Internal runtime-gate fixture: 0=drain (42), 1=early close (43).
+/// Internal runtime-gate fixture: 0=drain (42), 1=early close (43), and
+/// 2/3/4=odd/out-of-u32/high-bit malformed tagged-wire trap controls.
 export fn comp_emit_component_wasm_async_stdin_provider_fixture(mode: Int) -> Bytes with Exception {
   comp_emit_component_wasm_async_stdin_provider(comp_generate_stdin_provider_synthetic_core(mode), "run")
 }
