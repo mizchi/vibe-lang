@@ -1522,7 +1522,7 @@ does **not** by itself complete the stdin lifecycle: the completion future must
 still be read, its result checked, and then released. This corrects the stale
 short-hand that described stream drop alone as a completed stdin close.
 
-#### Provider-aware contract (implemented only as a production-unused shadow)
+#### Provider-aware contract (shadow lifecycle + checker-hidden core route)
 
 The #1539 prerequisite is a distinct, opaque provider-aware handle whose
 adapter state retains both owned ends from `read-via-stream`:
@@ -1558,13 +1558,30 @@ future or silently report a failed lifecycle as a successful close.
 
 #### Staged prerequisite and invariants
 
-Stages 1--3 are implemented only by the production-unused shadow emitter
+Stages 1--3 were first implemented by the production-unused shadow emitter
 `comp_emit_component_wasm_stdin_provider_shadow` and its private component
-scenarios. It is intentionally not routed by `linked_compile`, checker,
-runtime, console, `stdin_stream`, generic HostStream, or any public API.
-Stage 4 therefore remains undecided. The shadow is structural/runtime gate
-evidence for the internal prerequisite, not a claim that Vibe programs can
-consume stdin through it:
+scenarios. #1539 now also has a bounded **core-only** route: `linked_compile`
+reserves checker-invisible raw rows for exact core imports
+`vibe.stdin_provider_acquire () -> i64`, `stdin_provider_read (i64) -> i64`,
+and `stdin_provider_close (i64) -> i64`; the stdin-first wrapper sniffs parsed
+module/name pairs and the dedicated arbitrary-core composer validates exact
+signatures before composing the nominal stdin/types imports.
+
+The guest receives only a tagged-i64 bridge instance. The bridge rejects odd
+or high-bit-aliased wire IDs before i32 narrowing, and only then calls the
+proven opaque lifecycle functions. The full shadow instance, scenario exports,
+canonical stream handle, and completion-future handle never cross into the
+compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
+bytes or tagged `-1` after settlement and close returns tagged zero.
+
+This does **not** make the route source-reachable: all three registry rows have
+`checker_visible=false`, there is no AST lowering that injects them, and no
+`Stdin`/`ByteStream` API was added. This is deliberate authority preservation,
+not missing plumbing. `stdin_stream`, generic HostStream, and named
+future/stream behavior remain unchanged. A core that mixes the provider imports
+with named future/stream imports is explicitly rejected in this bounded slice.
+Stage 4 (public authority/type/error and effect-level Suspend-token lowering)
+therefore remains undecided:
 
 
 1. **ABI boundary:** introduce a provider-specific lowering/adapter route for
@@ -1602,13 +1619,19 @@ Load-bearing invariants for stages 1--3:
   transition, never EOF or successful close. Public propagation remains
   intentionally undecided and fail-closed.
 
+The synthetic compiled-shaped drain and early-close cores are composed and
+validated by `test_wasi_cli_stdin_provider_guest_component_gate.sh`; they check
+bytes 10/15/17, EOF/repeated reads, early settlement, and repeated close on the
+pinned Wasmtime 47.0.2 lane. The original shadow gate and exact 208-byte nominal
+prefix remain separately preserved.
+
 This is only the successful-close lifecycle slice. **Read-error injection is
 unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
 measurement). The forced completion-tag, wrong-byte, and extra-byte
 expected-trap scenarios are controls of cleanup/fail-closed branches, not
 measurements of provider-generated errors. Each byte-mismatch control settles
 and drops both owned ends through the shared close path before trapping. This
-work makes no runtime, console, or public compiler-routing change.
+work makes no runtime, console, or checker-visible/source API change.
 
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
@@ -1782,7 +1805,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **stdin provider / `ByteStream` の p3 接続** (#1539) | **shadow 前提のみ実装**: production-unused emitter が ratified `read-via-stream` の stream + completion future を opaque provider handle に保持し、EOF/early close を Async settlement する (§3.18.3)。public routing と既存 `stdin_stream(chunk_size)` は未変更 | generated shadow + merged stdin lifecycle probe/gate (§3.18.3); generic `[3, handle]` `HostStream` は使えない |
+| **stdin provider / `ByteStream` の p3 接続** (#1539) | **checker-hidden core route まで実装**: shadow lifecycle に加え、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff を実装。raw rows は checker-invisible で public/source lowering は未決定、既存 `stdin_stream(chunk_size)` は未変更 (§3.18.3) | generated shadow + compiled-shaped drain/early-close gate; generic `[3, handle]` `HostStream` は使わず、named future/stream との mix は明示拒否 |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |
