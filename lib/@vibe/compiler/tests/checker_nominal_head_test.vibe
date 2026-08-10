@@ -50,6 +50,23 @@ test "1001: #981 same-name generic mismatch keeps being rejected (no regression)
   assert(check_source_err("struct Box[T] { v: T }\nfn get_int(b: Box[Int]) -> Int { b.v + 1 }\nfn main() -> Int {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  get_int(b)\n}"))
 }
 
+// #1538: `HostStream` is a component handle cell, not the eager array that
+// backs legacy `Stream[T]`. The boundary must fail before an eager consumer
+// can read the cell as bytes. This deliberately uses a user-defined consumer
+// too, so every `Stream[T]` parameter is protected rather than only a list of
+// current Stream builtins.
+test "1538: HostStream is rejected by a legacy Stream consumer" {
+  assert(check_source_err("fn consume(s: Stream[Int]) -> Int { 0 }\nfn main() -> Int { consume(host_stream_named(\"body\")) }"))
+}
+
+test "1538: an eager Stream still reaches its legacy consumer" {
+  assert(check_source_ok("fn consume(s: Stream[Int]) -> Int { 0 }\nfn main() -> Int { consume(Stream::once(42)) }"))
+}
+
+test "1538: HostStream retains its direct read lane" {
+  assert(check_source_ok("fn read(s: HostStream) -> Int with Async { host_stream_next(s) }\nfn main() -> Int with Async { read(host_stream_named(\"body\")) }"))
+}
+
 test "1001: genuinely generic parameter stays tolerated (no over-rejection)" {
   assert(check_source_ok("struct Box[T] { v: T }\nfn second[T](b: Box[T], d: Int) -> Int { d }\nfn main() -> Int {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  second(b, 42)\n}"))
 }

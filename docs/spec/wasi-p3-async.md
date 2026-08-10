@@ -1403,13 +1403,18 @@ identifier と直接の `host_stream_named(..)` 呼び出しにしか効かず�
 `infer_arg_type_name` を通すため）。回帰ロックは gate の projected `for`
 lane（bytes を読むこと + `{ Async }` 無しの row が reject されること）。
 
-**残る限界**: `HostStream` は **routing key であって barrier ではない**。
-実測: `s: HostStream` を `take_int(s)` に渡しても型エラーにならない
-（projection 特有ではなく素の local でも同様 — `CtNamed` の head は引数位置で
-許容される、`nominal_head_conflict` の concreteness gate）。したがって
-「eager 用 combinator を host stream に適用すると型エラー」という当初の主張は
-**誤り**で、引数位置の nominal 検査を強くするのは `HostStream` に限らない
-横断的な別作業。
+**#1538 の boundary slice（done）**: `HostStream` は routing key であると同時に、
+**legacy `Stream[T]` consumer への入力では barrier** である。checker は
+`HostStream` を期待する `Stream[T]` に渡すと型エラーにするので、
+`Stream::map` / `Stream::fold` / `Stream::to_string` と、同じ型を受け取る
+ユーザー定義関数は state-3 cell を eager array として読めない。この判定は
+この二つの compiler-owned nominal name にだけ閉じており、`CtNamed` 全体の
+concreteness や通常の user-defined/generic nominal assignability は広げない。
+
+任意の非 `Stream[T]` parameter（例えば `take_int(s)`）に `HostStream` を渡す
+ことまでを拒否する一般 nominal barrier ではない。その横断的な型検査強化は
+別作業のままにする。この狭い fail-closed boundary が、#1539 で Stdin の
+legacy eager ByteStream path を p3 stream reader へ接続する前提になる。
 
 **残り**: 一般 `Stream::next`（`Future[Option[T]]`）を host read へ落とす件は
 まだ。実測では `await(Stream::next(s))` は ADR-0076 の evidence-passing
@@ -1633,7 +1638,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **`ByteStream` の p3 接続** (#1539) | `lib/@vibe/console/byte_stream.vibe` の Stdin closure 版を `stream.read` へ。ADR-0089 は「pull closure の host shim を差し替えるだけ」と設計済み | — |
+| **`ByteStream` の p3 接続** (#1539) | `lib/@vibe/console/byte_stream.vibe` の Stdin closure 版を `stream.read` へ。ADR-0089 は「pull closure の host shim を差し替えるだけ」と設計済み | #1538 boundary slice: `HostStream` → legacy `Stream[T]` fail-closed boundary |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |
