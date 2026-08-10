@@ -171,23 +171,37 @@ wasm-tools print guest/target/wasm32-unknown-unknown/release/probe_guest.wasm \
 To regenerate `wit/` bindings by hand (not required to build, `wit_bindgen::generate!`
 does this at compile time): `wit-bindgen rust wit/ --async all --out-dir src_gen`.
 
-## `stdin_read_via_stream/`: ratified stdin ABI availability check (#1539)
+## `stdin_read_via_stream/`: ratified stdin lifecycle measurement (#1539)
 
 `stdin_read_via_stream/component.wat` declares the ratified
-`wasi:cli/stdin@0.3.0` import and `read-via-stream` result type
+`wasi:cli/stdin@0.3.0` `read-via-stream` result
 `tuple<stream<u8>, future<result<_, error-code>>>`. Its `error-code` is
-imported from `wasi:cli/types@0.3.0` and aliased into the stdin instance, which
-preserves the WIT type's nominal identity rather than using a byte-sized
-stand-in.
+imported from `wasi:cli/types@0.3.0` and aliased into the stdin instance, so
+completion errors retain their nominal identity rather than using a
+representation-compatible stand-in. The preview-2 `wasi:cli/run@0.2.12`
+command export remains present for command instantiation.
 
-`scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates the
-component. Its minimal `wasi:cli/run@0.2.12` command export lets wasmtime 47
-instantiate it before resolving the `read-via-stream` import. Generic ABI/type
-mismatch or missing-command-export diagnostics fail. An explicit
-missing-stdin-implementation diagnostic skips the local default lane and fails
-required mode; only a successful link passes required mode. Link success is an
-availability result, not a lifecycle result. The probe is included in the
-optional `test-wasi-p3` aggregate.
+Measured on **wasmtime 47.0.2**: the `drain` async-lifted lane reads the exact
+binary input bytes `10,15,17`, observes the separate zero-item EOF status, then
+reads the completion future as success and returns `42`. The `drop` lane drops
+the readable stream immediately, reads that completion future as success, and
+returns `43`. Stream and future reads use canonical async `stream.read` /
+`future.read`; BLOCKED is awaited with `waitable-set.new`, `waitable.join`, and
+`waitable-set.wait`, with joined ends removed before the set is dropped.
+Unexpected status, event, byte, EOF, or result variants return diagnostic
+values instead of being accepted.
+
+`scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses, validates, and prints
+the component, creates the deterministic binary input, and executes both
+lanes. Required mode accepts only wasmtime 47.0.2; missing tools, a different
+provider version, failed linkage, and generic ABI/type or command-export
+failures are strict failures (the default local mode reports unavailable tools
+or an unpinned provider as a skip). The probe remains in the optional
+`test-wasi-p3` aggregate.
+
+Read-error injection is deliberately **unmeasured**: these success-only lanes
+do not claim behavior for `io`, `illegal-byte-sequence`, or `pipe`. This probe
+changes no compiler or console implementation.
 
 ## `stackful/`: hand-authored blocking-wait probe (M1b-3c mechanics proof)
 

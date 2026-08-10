@@ -2,15 +2,15 @@
 # WASI p3 guarantee gate (#821): assert that vibe-built artifacts run on
 # wasmtime's WASI p3 surface, on a SPECIFIC wasmtime binary, with missing
 # tooling treated as failure. This is the CI entry point; it composes the two
-# existing verticals, the optional stdin availability probe, and a WIT
+# existing verticals, the optional stdin success-lifecycle probe, and a WIT
 # version-pin assert:
 #
 #   phase A  async component vertical (test_async_component_gate.sh)
 #            .vibe async entry -> component-model async component -> 42
 #   phase B  wasi:http p3 world (test_wasi_http_p3_full_gate.sh)
 #            componentize -> wac plug -> wasmtime serve -> curl 200/401
-#   phase C  wasi:cli/stdin availability (test_wasi_cli_stdin_p3_probe_gate.sh)
-#            exact ratified import; explicit missing implementation is expected
+#   phase C  wasi:cli/stdin lifecycle (test_wasi_cli_stdin_p3_probe_gate.sh)
+#            exact ratified import; drain-to-EOF and early-drop completion
 #   phase D  WIT pin: the composed serve component's world must reference the
 #            pinned wasi:http version, so adapter/vendored-WIT/runtime drift
 #            fails loudly instead of as a mysterious resolution error.
@@ -72,7 +72,7 @@ case ",$PHASES," in *",http,"*)
   ;;
 esac
 case ",$PHASES," in *",stdin,"*)
-  echo "[p3-guarantee] phase C: wasi:cli/stdin availability"
+  echo "[p3-guarantee] phase C: wasi:cli/stdin lifecycle"
   bash "$SCRIPT_DIR/test_wasi_cli_stdin_p3_probe_gate.sh"
   ;;
 esac
