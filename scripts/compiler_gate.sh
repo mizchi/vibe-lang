@@ -4250,18 +4250,23 @@ echo "[compiler-gate] wasm-gc backend evidence-dict user-defined effect support 
 echo "[compiler-gate] 40h3/40 wasm-gc backend: dead needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
 gcdeaddir="_build/_gate_gc_dead_needing"
 rm -rf "$gcdeaddir"; mkdir -p "$gcdeaddir"
-sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_wrapper.vibe > "$gcdeaddir/src.vibe"
+# #1571: the fixture is an inspect() test-block suite now, compiled AS-IS --
+# no `__DATA__` tail to `sed` off, no temp copy, and the expected 105 is in
+# the fixture instead of in this comparison. It still goes through the
+# SINGLE-FILE lane (no VIBE_FS_COMPILE), which is the property this site
+# exists to hold: `inspect` is import-free precisely so migrating a fixture
+# does not force one.
 VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$gcdeaddir/src.vibe" "$gcdeaddir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_local_closure_by_value_wrapper.vibe "$gcdeaddir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$gcdeaddir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe did not compile under VIBE_BACKEND=gc" >&2
   cat "$gcdeaddir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-gcdead_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdeaddir/out.wasm" 2>&1 | tail -1)"
-if [ "$gcdead_out" != "105" ]; then
-  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe under gc got '$gcdead_out' (want 105) -- dead-needing-function filtering regressed" >&2
+if ! gcdead_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcdeaddir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe under gc failed its inspect (want 105) -- dead-needing-function filtering regressed" >&2
+  echo "$gcdead_out" >&2
   exit 1
 fi
 rm -rf "$gcdeaddir"
@@ -5364,18 +5369,19 @@ echo "[compiler-gate] local effectful closure capture conversion ok (#1069)"
 echo "[compiler-gate] 40ai/40 capturing effectful closure passed by value through a trivial wrapper (#1070 narrow slice)"
 lcbvwdir="_build/_gate_local_closure_by_value_wrapper"
 rm -rf "$lcbvwdir"; mkdir -p "$lcbvwdir"
-sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_wrapper.vibe > "$lcbvwdir/src.vibe"
+# #1571: inspect() test block in the fixture, compiled as-is (see the gc site
+# for this same fixture above).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$lcbvwdir/src.vibe" "$lcbvwdir/out.wasm" main >/dev/null 2>&1
+  fixtures/effect_local_closure_by_value_wrapper.vibe "$lcbvwdir/out.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$lcbvwdir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe did not compile" >&2
   cat "$lcbvwdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-lcbvw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcbvwdir/out.wasm" 2>&1 | tail -1)"
-if [ "$lcbvw_out" != "105" ]; then
-  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe got '$lcbvw_out' (want 105) -- #1070's trivial-wrapper inlining regressed" >&2
+if ! lcbvw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$lcbvwdir/out.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe failed its inspect (want 105) -- #1070's trivial-wrapper inlining regressed" >&2
+  echo "$lcbvw_out" >&2
   exit 1
 fi
 rm -rf "$lcbvwdir"
