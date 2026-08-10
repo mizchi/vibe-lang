@@ -10026,4 +10026,87 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
+echo "[compiler-gate] 98/98 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+# grep_test.vibe covers the pattern language and the filters through
+# grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
+# filesystem tier: sweeping a directory, and resolving a capture's type through
+# the same FS import walk `vibe check` uses. That resolution is the whole point
+# of the feature and it is the part that silently degrades -- seeding the module
+# sources wrong makes every import type as `CtUnknown`, at which point the
+# filters keep answering, just wrongly.
+gvdir="_build/_gate_vibe_grep"
+rm -rf "$gvdir"; mkdir -p "$gvdir"
+cat > "$gvdir/dep.vibe" <<'VEOF'
+export fn helper(v: Int) -> Int {
+  v + 1
+}
+VEOF
+cat > "$gvdir/main.vibe" <<'VEOF'
+import ./dep.vibe {
+  helper as h
+}
+
+fn readit(p: String) -> String with Fs {
+  Fs::read_file(p)
+}
+
+fn plain(p: String) -> String {
+  p
+}
+
+fn run(q: String) -> String with Fs {
+  let a = readit(q)
+  let b = h(1)
+  String::concat(plain(a), __to_string(b))
+}
+VEOF
+gv_run() {
+  # $1 = output basename, $2.. = extra env assignments (name=value)
+  local gv_out="$gvdir/$1"; shift
+  rm -f "$gv_out" "$gv_out.diag"
+  env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_GREP=1 "$@" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$gvdir" "$gv_out" >/dev/null 2>&1 || true
+}
+# Parse-only tier: every call in the directory, whatever its arity.
+gv_run all.txt VIBE_GREP_PATTERN='$(f:id)($(a:args))'
+for gv_want in 'readit(q)' 'h(1)' 'plain(a)' 'Fs::read_file(p)'; do
+  if ! grep -qF "$gv_want" "$gvdir/all.txt"; then
+    echo "[compiler-gate] FAIL: vibe grep did not find $gv_want" >&2
+    cat "$gvdir/all.txt" "$gvdir/all.txt.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+if ! grep -q '^.*main\.vibe:[0-9][0-9]*:[0-9][0-9]*: ' "$gvdir/all.txt"; then
+  echo "[compiler-gate] FAIL: vibe grep output is not path:line:col-prefixed" >&2
+  cat "$gvdir/all.txt" >&2
+  exit 1
+fi
+# Typed tier: the effect row of the CALLEE, which only exists if the import
+# walk actually resolved the module graph.
+gv_run row.txt VIBE_GREP_PATTERN='$(f:id)($(a:args))' VIBE_GREP_WHERE_ROW='$f with Fs'
+if ! grep -qF 'readit(q)' "$gvdir/row.txt" || grep -qF 'plain(a)' "$gvdir/row.txt"; then
+  echo "[compiler-gate] FAIL: --where-row '\$f with Fs' kept the wrong sites" >&2
+  cat "$gvdir/row.txt" "$gvdir/row.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# Resolved-name filter: `h` is an ALIAS for dep.vibe's `helper`, so a text grep
+# for `helper(` finds nothing here and this must still find it.
+gv_run alias.txt VIBE_GREP_PATTERN='$(f:id)($(a:args))' VIBE_GREP_WHERE='$f = helper'
+if ! grep -qF 'h(1)' "$gvdir/alias.txt"; then
+  echo "[compiler-gate] FAIL: --where '\$f = helper' did not resolve the import alias" >&2
+  cat "$gvdir/alias.txt" "$gvdir/alias.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# A bad pattern is an ERROR on the .diag sidecar, never a plausible-but-wrong
+# match list on output_path (the VIBE_SYMBOLS convention).
+gv_run bad.txt VIBE_GREP_PATTERN='f($(x:expr))'
+if [ -s "$gvdir/bad.txt" ] || ! grep -q 'unknown metavariable kind' "$gvdir/bad.txt.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a bad grep pattern did not land on the .diag sidecar" >&2
+  cat "$gvdir/bad.txt" "$gvdir/bad.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$gvdir"
+echo "[compiler-gate] vibe grep typed filters ok"
+
 echo "[compiler-gate] ok"
