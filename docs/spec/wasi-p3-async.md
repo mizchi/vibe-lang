@@ -1469,7 +1469,7 @@ gate lane = `test_named_hoststreams_component_gate.sh` の close lane
 かつ drain-only component に close import が無いこと + closing component に
 guest import と adapter export が両方あることを .wat で確認）。
 
-### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and provider prerequisite (design only)
+### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
 
 `tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the
 ratified `wasi:cli/stdin@0.3.0` result type
@@ -1489,8 +1489,9 @@ dropped. Other statuses, events, byte values, EOF forms, and result tags are
 diagnostic return paths, not success.
 
 `bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` is the merged executable
-probe/gate for this measurement; phase C of
-`scripts/test_wasi_p3_guarantee_gate.sh` (`pkf run test-wasi-p3`) invokes it.
+probe/gate for this measurement. The generated shadow is validated by
+`bash scripts/test_wasi_cli_stdin_provider_component_gate.sh`; phase C of
+`scripts/test_wasi_p3_guarantee_gate.sh` (`pkf run test-wasi-p3`) invokes both.
 It parses, validates, and prints the component, generates deterministic binary
 input, and executes both async-lifted lanes. Required mode requires exactly
 wasmtime 47.0.2; missing tools, an unpinned provider, and
@@ -1521,7 +1522,7 @@ does **not** by itself complete the stdin lifecycle: the completion future must
 still be read, its result checked, and then released. This corrects the stale
 short-hand that described stream drop alone as a completed stdin close.
 
-#### Required provider-aware contract (not implemented)
+#### Provider-aware contract (implemented only as a production-unused shadow)
 
 The #1539 prerequisite is a distinct, opaque provider-aware handle whose
 adapter state retains both owned ends from `read-via-stream`:
@@ -1557,8 +1558,14 @@ future or silently report a failed lifecycle as a successful close.
 
 #### Staged prerequisite and invariants
 
-No compiler, runtime, or console change is claimed by this section. An
-implementation may start only after these stages are satisfied:
+Stages 1--3 are implemented only by the production-unused shadow emitter
+`comp_emit_component_wasm_stdin_provider_shadow` and its private component
+scenarios. It is intentionally not routed by `linked_compile`, checker,
+runtime, console, `stdin_stream`, generic HostStream, or any public API.
+Stage 4 therefore remains undecided. The shadow is structural/runtime gate
+evidence for the internal prerequisite, not a claim that Vibe programs can
+consume stdin through it:
+
 
 1. **ABI boundary:** introduce a provider-specific lowering/adapter route for
    synchronous `read-via-stream` acquisition. Keep it distinct from
@@ -1597,7 +1604,10 @@ Load-bearing invariants for stages 1--3:
 
 This is only the successful-close lifecycle slice. **Read-error injection is
 unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
-measurement), and this work makes no compiler or console change.
+measurement). The forced completion-tag expected-trap scenario is a control of
+the cleanup/fail-closed branch, not a measurement of a provider-generated
+error, and this work makes no runtime, console, or public compiler-routing
+change.
 
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
@@ -1771,7 +1781,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **stdin provider / `ByteStream` の p3 接続** (#1539) | **未実装の前提契約**: ratified `read-via-stream` の stream + completion future を opaque provider handle に保持し、EOF/early close を Async settlement する (§3.18.3)。既存 `stdin_stream(chunk_size)` は変更しない | merged stdin lifecycle probe/gate (§3.18.3); generic `[3, handle]` `HostStream` は使えない |
+| **stdin provider / `ByteStream` の p3 接続** (#1539) | **shadow 前提のみ実装**: production-unused emitter が ratified `read-via-stream` の stream + completion future を opaque provider handle に保持し、EOF/early close を Async settlement する (§3.18.3)。public routing と既存 `stdin_stream(chunk_size)` は未変更 | generated shadow + merged stdin lifecycle probe/gate (§3.18.3); generic `[3, handle]` `HostStream` は使えない |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |
