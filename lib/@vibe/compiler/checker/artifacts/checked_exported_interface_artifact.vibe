@@ -1,0 +1,776 @@
+//# Shadow-only checked exported-interface artifact (#1548)
+//
+// This is a deliberately isolated observation boundary. It derives a canonical
+// description from a successful production `CheckedProgram` without reparsing
+// source. It is not an import contract, cache key, reuse input, interface-v2,
+// TypeEnv transport, artifact-input trace, or planner decision.
+//
+// The retained program has no lexical TypeEnv for nested modules. Extraction
+// therefore fails closed for exported nested values rather than inventing a
+// type or omitting that declaration. Nested exported type/trait/effect shapes
+// and reexports remain representable from retained statements.
+
+import @vibe/cache {
+  compact_string_fingerprint
+}
+
+import @vibe/compiler/checker {
+  CheckedProgram, canonical_checked_occurrence_type_fields
+}
+
+import @vibe/compiler/core {
+  Stmt, TypeExpr, env_lookup, str_lt
+}
+
+import @vibe/core {
+  array_empty
+}
+
+/// Opaque, shadow-only canonical exported-interface payload. Construction is
+/// fail-closed and is intentionally unavailable to cache/reuse production APIs.
+export struct CheckedExportedInterfaceArtifact {
+  entries: Array[String]
+}
+
+fn interface_piece(text: String) -> String {
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
+}
+
+fn interface_node(tag: String, fields: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "E")
+  StringBuilder::push(out, interface_piece(tag))
+  StringBuilder::push(out, __to_string(Array::length(fields)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(fields) {
+    StringBuilder::push(out, interface_piece(Array::get(fields, i)))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn interface_strings(items: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, __to_string(Array::length(items)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(items) {
+    StringBuilder::push(out, interface_piece(Array::get(items, i)))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn interface_type_expr(ty: TypeExpr) -> String {
+  match ty {
+    TyName(name) => interface_node("name", [
+      name
+    ]),
+    TyApp(name, args) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(encoded, interface_type_expr(Array::get(args, i)))
+        i = i + 1
+      }
+      interface_node("app", [
+        name,
+        interface_strings(encoded)
+      ])
+    },
+    TyFn(params, ret, effect) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(encoded, interface_type_expr(Array::get(params, i)))
+        i = i + 1
+      }
+      let effect_text = match effect {
+        Some(value) => interface_node("some", [
+          value
+        ]),
+        None => interface_node("none", array_empty())
+      }
+      interface_node("fn", [
+        interface_strings(encoded),
+        interface_type_expr(ret),
+        effect_text
+      ])
+    },
+    TyTuple(items) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(encoded, interface_type_expr(Array::get(items, i)))
+        i = i + 1
+      }
+      interface_node("tuple", [
+        interface_strings(encoded)
+      ])
+    },
+    TyUnit => interface_node("unit", array_empty())
+  }
+}
+
+fn interface_type_exprs(items: Array[TypeExpr]) -> String {
+  let encoded = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    Array::push(encoded, interface_type_expr(Array::get(items, i)))
+    i = i + 1
+  }
+  interface_strings(encoded)
+}
+
+fn interface_variant_rows(rows: Array[(String, Array[TypeExpr])]) -> String {
+  let encoded = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, args) = Array::get(rows, i)
+    Array::push(encoded, interface_node("variant", [
+      name,
+      interface_type_exprs(args)
+    ]))
+    i = i + 1
+  }
+  interface_strings(encoded)
+}
+
+fn interface_struct_fields(rows: Array[(String, TypeExpr)]) -> String {
+  let encoded = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, ty) = Array::get(rows, i)
+    Array::push(encoded, interface_node("field", [
+      name,
+      interface_type_expr(ty)
+    ]))
+    i = i + 1
+  }
+  interface_strings(encoded)
+}
+
+fn interface_methods(rows: Array[(String, Array[TypeExpr], TypeExpr)]) -> String {
+  let encoded = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, params, ret) = Array::get(rows, i)
+    Array::push(encoded, interface_node("method", [
+      name,
+      interface_type_exprs(params),
+      interface_type_expr(ret)
+    ]))
+    i = i + 1
+  }
+  interface_strings(encoded)
+}
+
+fn interface_method_gens(rows: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
+  let encoded = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, params, bounds) = Array::get(rows, i)
+    let encoded_bounds = array_empty()
+    let mut j = 0
+    while j < Array::length(bounds) {
+      let (param, labels) = Array::get(bounds, j)
+      Array::push(encoded_bounds, interface_node("bound", [
+        param,
+        interface_strings(labels)
+      ]))
+      j = j + 1
+    }
+    Array::push(encoded, interface_node("method-gens", [
+      name,
+      interface_strings(params),
+      interface_strings(encoded_bounds)
+    ]))
+    i = i + 1
+  }
+  interface_strings(encoded)
+}
+
+fn interface_effect_ops(rows: Array[(String, Array[TypeExpr], TypeExpr)]) -> String {
+  let encoded = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, params, ret) = Array::get(rows, i)
+    Array::push(encoded, interface_node("operation", [
+      name,
+      interface_type_exprs(params),
+      interface_type_expr(ret)
+    ]))
+    i = i + 1
+  }
+  interface_strings(encoded)
+}
+
+fn interface_reexport_items(rows: Array[(String, Option[String])]) -> String {
+  let encoded = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, alias) = Array::get(rows, i)
+    let alias_text = match alias {
+      Some(value) => interface_node("some", [
+        value
+      ]),
+      None => interface_node("none", array_empty())
+    }
+    Array::push(encoded, interface_node("item", [
+      name,
+      alias_text
+    ]))
+    i = i + 1
+  }
+  interface_strings(encoded)
+}
+
+fn interface_path(path: Array[String]) -> String {
+  interface_strings(path)
+}
+
+fn interface_export_list(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(names, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+fn interface_has_name(names: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == wanted {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn interface_declares_name(stmts: Array[Stmt], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(name, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SEnum(_, name, _, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SSuberror(_, name, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SStruct(_, name, _, _, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      STypeAlias(_, name, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      STrait(_, name, _, _, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SExternLet(name, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SModule(_, name, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SFnDecl(_, name, _, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SEffectDef(_, name, _, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      SEffectSet(_, name, _) => if name == wanted {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn interface_requested_names_are_known(stmts: Array[Stmt], names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(names) && valid {
+    if interface_declares_name(stmts, Array::get(names, i)) {
+      i = i + 1
+    } else {
+      valid = false
+    }
+  }
+  valid
+}
+
+fn interface_value_entry(checked: CheckedProgram, path: Array[String], name: String) -> Option[String] {
+  // The production checker intentionally discards nested module environments.
+  // Never substitute an annotation or source recheck for the missing result.
+  if Array::length(path) != 0 {
+    None
+  } else {
+    match env_lookup(checked.final_env, name) {
+      Some(ty) => {
+        let canonical = canonical_checked_occurrence_type_fields([
+          ty
+        ], checked.final_subst)
+        Some(interface_node("value", [
+          interface_path(path),
+          name,
+          Array::get(canonical, 0)
+        ]))
+      },
+      None => None
+    }
+  }
+}
+
+fn interface_collect(stmts: Array[Stmt], path: Array[String], checked: CheckedProgram, entries: Array[String]) -> Bool {
+  let selected = interface_export_list(stmts)
+  if !interface_requested_names_are_known(stmts, selected) {
+    false
+  } else {
+    let mut i = 0
+    let mut valid = true
+    while i < Array::length(stmts) && valid {
+      match Array::get(stmts, i) {
+        SLet(exported, _, name, _, _) => if exported || interface_has_name(selected, name) {
+          match interface_value_entry(checked, path, name) {
+            Some(entry) => Array::push(entries, entry),
+            None => {
+              valid = false
+            }
+          }
+        } else {
+          ()
+        },
+        SLetMut(name, _, _) => if interface_has_name(selected, name) {
+          match interface_value_entry(checked, path, name) {
+            Some(entry) => Array::push(entries, entry),
+            None => {
+              valid = false
+            }
+          }
+        } else {
+          ()
+        },
+        SExternLet(name, _) => if interface_has_name(selected, name) {
+          match interface_value_entry(checked, path, name) {
+            Some(entry) => Array::push(entries, entry),
+            None => {
+              valid = false
+            }
+          }
+        } else {
+          ()
+        },
+        SFnDecl(exported, name, _, _, _) => if exported || interface_has_name(selected, name) {
+          match interface_value_entry(checked, path, name) {
+            Some(entry) => Array::push(entries, entry),
+            None => {
+              valid = false
+            }
+          }
+        } else {
+          ()
+        },
+        SEnum(exported, name, params, variants, derives) => if exported || interface_has_name(selected, name) {
+          Array::push(entries, interface_node("enum", [
+            interface_path(path),
+            name,
+            interface_strings(params),
+            interface_variant_rows(variants),
+            interface_strings(derives)
+          ]))
+        } else {
+          ()
+        },
+        SSuberror(exported, name, variants) => if exported || interface_has_name(selected, name) {
+          Array::push(entries, interface_node("suberror", [
+            interface_path(path),
+            name,
+            interface_variant_rows(variants)
+          ]))
+        } else {
+          ()
+        },
+        SStruct(exported, name, fields, derives, mut_fields, params) => if exported || interface_has_name(selected, name) {
+          Array::push(entries, interface_node("struct", [
+            interface_path(path),
+            name,
+            interface_struct_fields(fields),
+            interface_strings(derives),
+            interface_strings(mut_fields),
+            interface_strings(params)
+          ]))
+        } else {
+          ()
+        },
+        STypeAlias(exported, name, params, target) => if exported || interface_has_name(selected, name) {
+          Array::push(entries, interface_node("alias", [
+            interface_path(path),
+            name,
+            interface_strings(params),
+            interface_type_expr(target)
+          ]))
+        } else {
+          ()
+        },
+        STrait(exported, name, supers, methods, method_gens, params) => if exported || interface_has_name(selected, name) {
+          Array::push(entries, interface_node("trait", [
+            interface_path(path),
+            name,
+            interface_strings(supers),
+            interface_methods(methods),
+            interface_method_gens(method_gens),
+            interface_strings(params)
+          ]))
+        } else {
+          ()
+        },
+        SEffectDef(exported, name, params, ops) => if exported || interface_has_name(selected, name) {
+          Array::push(entries, interface_node("effect", [
+            interface_path(path),
+            name,
+            interface_strings(params),
+            interface_effect_ops(ops)
+          ]))
+        } else {
+          ()
+        },
+        SEffectSet(exported, name, members) => if exported || interface_has_name(selected, name) {
+          Array::push(entries, interface_node("effectset", [
+            interface_path(path),
+            name,
+            interface_strings(members)
+          ]))
+        } else {
+          ()
+        },
+        SReExport(raw_path, items) => Array::push(entries, interface_node("reexport", [
+          interface_path(path),
+          raw_path,
+          interface_reexport_items(items)
+        ])),
+        SModule(exported, name, body) => if exported || interface_has_name(selected, name) {
+          Array::push(path, name)
+          valid = interface_collect(body, path, checked, entries)
+          Array::truncate(path, Array::length(path) - 1)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    valid
+  }
+}
+
+fn interface_sorted(entries: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(entries) {
+    let entry = Array::get(entries, i)
+    let mut at = Array::length(out)
+    let mut j = 0
+    while j < Array::length(out) && at == Array::length(out) {
+      if str_lt(entry, Array::get(out, j)) {
+        at = j
+      } else {
+        j = j + 1
+      }
+    }
+    Array::push(out, entry)
+    let mut k = Array::length(out) - 1
+    while k > at {
+      Array::set(out, k, Array::get(out, k - 1))
+      k = k - 1
+    }
+    Array::set(out, at, entry)
+    i = i + 1
+  }
+  out
+}
+
+fn interface_is_sorted(entries: Array[String]) -> Bool {
+  let mut i = 1
+  let mut valid = true
+  while i < Array::length(entries) && valid {
+    if str_lt(Array::get(entries, i), Array::get(entries, i - 1)) {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+/// Derive a complete exported interface from one successful production result.
+/// Unknown `export { name }` targets and unavailable nested value types return
+/// None; the artifact never silently drops an exported declaration.
+export fn checked_exported_interface_artifact_from_checked_program(checked: CheckedProgram) -> Option[CheckedExportedInterfaceArtifact] {
+  let entries = array_empty()
+  if interface_collect(checked.checked_stmts, array_empty(), checked, entries) {
+    Some(CheckedExportedInterfaceArtifact::{
+      entries: interface_sorted(entries)
+    })
+  } else {
+    None
+  }
+}
+
+fn interface_push_piece(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+/// Strict versioned, length-delimited v1 transport for the opaque shadow
+/// artifact. It is intentionally not a persistent cache or interface-v2 codec.
+export fn encode_checked_exported_interface_artifact_v1(artifact: CheckedExportedInterfaceArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-exported-interface-artifact:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(artifact.entries)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(artifact.entries) {
+    interface_push_piece(out, Array::get(artifact.entries, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn interface_decimal(text: String, start: Int, end: Int, bound: Int) -> Option[Int] {
+  if start >= end || bound < 0 {
+    None
+  } else {
+    let mut i = start
+    let mut value = 0
+    let mut valid = true
+    if end - start > 1 && String::char_code_at(text, start) == 48 {
+      valid = false
+    } else {
+      ()
+    }
+    while i < end && valid {
+      let digit = String::char_code_at(text, i) - 48
+      if digit < 0 || digit > 9 || value > (bound - digit) / 10 {
+        valid = false
+      } else {
+        value = value * 10 + digit
+        i = i + 1
+      }
+    }
+    if valid {
+      Some(value)
+    } else {
+      None
+    }
+  }
+}
+
+fn interface_piece_parse(text: String, pos: Int) -> Option[(String, Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 58 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match interface_decimal(text, pos, at, n - at - 1) {
+      Some(size) => {
+        let start = at + 1
+        let end = start + size
+        if end < start || end > n {
+          None
+        } else {
+          Some((text[start: end], end))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn interface_entry_tag_arity(tag: String) -> Int {
+  if tag == "value" || tag == "effectset" || tag == "reexport" || tag == "suberror" {
+    3
+  } else if tag == "alias" || tag == "effect" {
+    4
+  } else if tag == "enum" {
+    5
+  } else if tag == "struct" || tag == "trait" {
+    6
+  } else {
+    -1
+  }
+}
+
+/// Validate the outer declaration node as well as its length envelope. Nested
+/// fields intentionally remain opaque canonical fragments: decoding bytes
+/// cannot attest their checker provenance or re-run type checking.
+fn interface_entry_valid(text: String) -> Bool {
+  let n = String::length(text)
+  if n == 0 || String::char_code_at(text, 0) != 69 {
+    false
+  } else {
+    match interface_piece_parse(text, 1) {
+      Some((tag, after_tag)) => {
+        let mut at = after_tag
+        while at < n && String::char_code_at(text, at) != 91 {
+          at = at + 1
+        }
+        if at == after_tag || at >= n {
+          false
+        } else {
+          match interface_decimal(text, after_tag, at, n - at - 1) {
+            Some(count) => if count != interface_entry_tag_arity(tag) {
+              false
+            } else {
+              let mut cursor = at + 1
+              let mut i = 0
+              let mut valid = true
+              while i < count && valid {
+                match interface_piece_parse(text, cursor) {
+                  Some((_, next)) => {
+                    cursor = next
+                  },
+                  None => {
+                    valid = false
+                  }
+                }
+                i = i + 1
+              }
+              valid && cursor + 1 == n && cursor < n && String::char_code_at(text, cursor) == 93
+            },
+            None => false
+          }
+        }
+      },
+      None => false
+    }
+  }
+}
+
+/// Decode only canonical v1 envelopes: malformed lengths, alternate versions,
+/// unsorted entry order, trailing bytes, and noncanonical decimal spellings
+/// are rejected. Decoded bytes still attest no checker invocation.
+export fn decode_checked_exported_interface_artifact_v1(text: String) -> Option[CheckedExportedInterfaceArtifact] {
+  let prefix = "vibe-checked-exported-interface-artifact:v1\n"
+  let n = String::length(text)
+  if String::length(text) < String::length(prefix) || text[0: String::length(prefix)] != prefix {
+    None
+  } else {
+    let mut at = String::length(prefix)
+    while at < n && String::char_code_at(text, at) != 91 {
+      at = at + 1
+    }
+    if at == String::length(prefix) || at >= n {
+      None
+    } else {
+      match interface_decimal(text, String::length(prefix), at, n - at - 1) {
+        Some(count) => {
+          let entries = array_empty()
+          let mut cursor = at + 1
+          let mut i = 0
+          let mut valid = true
+          while i < count && valid {
+            match interface_piece_parse(text, cursor) {
+              Some((entry, next)) => {
+                Array::push(entries, entry)
+                cursor = next
+              },
+              None => {
+                valid = false
+              }
+            }
+            i = i + 1
+          }
+          let mut entries_valid = true
+          let mut entry_i = 0
+          while entry_i < Array::length(entries) && entries_valid {
+            if interface_entry_valid(Array::get(entries, entry_i)) {
+              entry_i = entry_i + 1
+            } else {
+              entries_valid = false
+            }
+          }
+          if !valid || cursor >= n || String::char_code_at(text, cursor) != 93 || cursor + 1 != n || !interface_is_sorted(entries) || !entries_valid {
+            None
+          } else {
+            let artifact = CheckedExportedInterfaceArtifact::{
+              entries: entries
+            }
+            if encode_checked_exported_interface_artifact_v1(artifact) == text {
+              Some(artifact)
+            } else {
+              None
+            }
+          }
+        },
+        None => None
+      }
+    }
+  }
+}
+
+/// Canonical payload text for snapshots only. This has no cache/reuse meaning.
+export fn canonical_checked_exported_interface_artifact_snapshot(artifact: CheckedExportedInterfaceArtifact) -> String {
+  encode_checked_exported_interface_artifact_v1(artifact)
+}
+
+/// Stable compact fingerprint of the versioned opaque payload. It is a
+/// shadow-only comparison token and is deliberately not wired into any cache,
+/// production reuse, interface-v2, TypeEnv-v3, trace, or planner path.
+export fn checked_exported_interface_artifact_fingerprint_v1(artifact: CheckedExportedInterfaceArtifact) -> String {
+  compact_string_fingerprint(encode_checked_exported_interface_artifact_v1(artifact))
+}

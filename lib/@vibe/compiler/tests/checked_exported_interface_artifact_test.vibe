@@ -1,0 +1,363 @@
+//# #1548 shadow-only checked exported-interface artifact tests.
+
+import @vibe/compiler/checker {
+  check_program_result
+}
+
+import @vibe/compiler/checker/artifacts {
+  canonical_checked_exported_interface_artifact_snapshot,
+  checked_exported_interface_artifact_fingerprint_v1,
+  checked_exported_interface_artifact_from_checked_program,
+  decode_checked_exported_interface_artifact_v1,
+  encode_checked_exported_interface_artifact_v1
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+fn artifact_text(stmts: Array[Stmt]) -> String with Exception {
+  match checked_exported_interface_artifact_from_checked_program(check_program_result(stmts)) {
+    Some(artifact) => encode_checked_exported_interface_artifact_v1(artifact),
+    None => "<none>"
+  }
+}
+
+fn artifact_fingerprint(stmts: Array[Stmt]) -> String with Exception {
+  match checked_exported_interface_artifact_from_checked_program(check_program_result(stmts)) {
+    Some(artifact) => checked_exported_interface_artifact_fingerprint_v1(artifact),
+    None => "<none>"
+  }
+}
+
+test "checked exported-interface artifact round-trips its complete public surface" {
+  let checked = check_program_result([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", [
+      "T"
+    ], [
+      ("One", [
+        TyName("T")
+      ])
+    ], [
+      "Eq"
+    ]),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], [
+      "Eq"
+    ], [
+      "value"
+    ], [
+      "T"
+    ]),
+    STypeAlias(true, "Name", [
+      "T"
+    ], TyApp("Array", [
+      TyName("T")
+    ])),
+    STrait(true, "Show", [
+      "Eq"
+    ], [
+      ("show", [
+        TyName("Self")
+      ], TyName("String"))
+    ], [
+      ("show", [
+        "X"
+      ], [
+        ("X", [
+          "Eq"
+        ])
+      ])
+    ], [
+      "Self"
+    ]),
+    SEffectDef(true, "Ask", [
+      "T"
+    ], [
+      ("Get", [
+        TyName("T")
+      ], TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", Some("renamed"))
+    ])
+  ])
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(artifact) => {
+      let text = encode_checked_exported_interface_artifact_v1(artifact)
+      match decode_checked_exported_interface_artifact_v1(text) {
+        Some(decoded) => {
+          assert(encode_checked_exported_interface_artifact_v1(decoded) == text)
+          assert(canonical_checked_exported_interface_artifact_snapshot(decoded) == text)
+        },
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "checked exported-interface artifact observes every public declaration category" {
+  let base = artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ])
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EString("one")),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ]))
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("Two", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ]))
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("String"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ]))
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("String")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ]))
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("Int"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ]))
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Put", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ]))
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Other"
+    ]),
+    SReExport("./dep.vibe", [
+      ("remote", None)
+    ])
+  ]))
+  assert(base != artifact_fingerprint([
+    SLet(true, false, "value", None, EInt(1)),
+    SEnum(true, "Choice", array_empty(), [
+      ("One", array_empty())
+    ], array_empty()),
+    SStruct(true, "Box", [
+      ("value", TyName("Int"))
+    ], array_empty(), array_empty(), array_empty()),
+    STypeAlias(true, "Name", array_empty(), TyName("Int")),
+    STrait(true, "Show", array_empty(), [
+      ("show", array_empty(), TyName("String"))
+    ], array_empty(), array_empty()),
+    SEffectDef(true, "Ask", array_empty(), [
+      ("Get", array_empty(), TyName("String"))
+    ]),
+    SEffectSet(true, "Reads", [
+      "Ask::Get"
+    ]),
+    SReExport("./other.vibe", [
+      ("remote", None)
+    ])
+  ]))
+}
+
+test "checked exported-interface artifact ignores private bodies and comments" {
+  let first = artifact_text(parse_program(lex("let hidden = 1\nexport let api = 2\n// private comment\n")))
+  let second = artifact_text(parse_program(lex("let hidden = 3 + 4\n// changed private comment\nexport let api = 2\n")))
+  assert(first == second)
+}
+
+test "checked exported-interface artifact fails closed for unknown exports and nested public values" {
+  let unknown = check_program_result([
+    SLet(false, false, "private", None, EInt(1)),
+    SExport([
+      "missing"
+    ])
+  ])
+  match checked_exported_interface_artifact_from_checked_program(unknown) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  let nested = check_program_result([
+    SModule(true, "Public", [
+      SLet(true, false, "value", None, EInt(1))
+    ])
+  ])
+  match checked_exported_interface_artifact_from_checked_program(nested) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "checked exported-interface artifact rejects malformed and noncanonical envelopes" {
+  match decode_checked_exported_interface_artifact_v1("vibe-checked-exported-interface-artifact:v2\n0[]") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_exported_interface_artifact_v1("vibe-checked-exported-interface-artifact:v1\n00[]") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_exported_interface_artifact_v1("vibe-checked-exported-interface-artifact:v1\n0[]trailing") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_checked_exported_interface_artifact_v1("vibe-checked-exported-interface-artifact:v1\n1[5:noise]") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
