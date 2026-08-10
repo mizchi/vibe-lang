@@ -142,8 +142,17 @@ they get the same desugaring. Measured on the current parser:
 - `xs |> map(f)` and `map(xs, f)` are the same AST and match each other;
 - `xs.map(f)` keeps its `EDot` callee and matches only the method spelling.
 
-Unifying those call forms is the **resolved-name filter**'s job (below), not
-structural matching's.
+Structural matching keeps the method form separate on purpose. The
+resolved-name filter below closes the **alias** half of that gap (`It::map` and
+`Iterator::map` are one query), but it does **not** yet relate `xs.map(f)` to
+`Iterator::map`: a method callee is an `EDot`, and the checker's member
+resolution is not exposed as a name anywhere this can read. A sweep that must
+cover both spellings needs two queries today:
+
+```bash
+vibe grep --pattern 'Iterator::map($(a:args))'   lib
+vibe grep --pattern '$(r:exp).map($(a:args))'    lib
+```
 
 **Limitation (v1):** declaration-shaped patterns (`fn …`, top-level `let … =
 …`, `enum …`) are rejected with a message saying so, rather than silently
@@ -191,9 +200,12 @@ Where a capture's type comes from, and what that costs:
   AST, so a bare literal capture (`$(k:const)` bound to `1`) has nothing to
   look its type up *by*. Dropped, not guessed.
 - When the import graph itself fails to check, the file has **no** type table:
-  every `--where` drops, and every match counts as ill-typed. "We could not
-  resolve this" must not read as "it is not an `Array[Int]`", and a program
-  that does not compile must not answer `--only-well-typed`.
+  every `--where` drops — **including `=`** — and every match counts as
+  ill-typed. "We could not resolve this" must not read as "it is not an
+  `Array[Int]`", a program that does not compile must not answer
+  `--only-well-typed`, and a name filter must not silently fall back to the
+  syntactic alias table and call an unvalidated import *resolved*. Pure syntax
+  is what the parse-only tier is for.
 - `--only-ill-typed` is per *declaration*: the checker reports one type error
   per file, and a match counts as ill-typed when it sits in the same top-level
   declaration as that error. An error with no position covers the whole file.
@@ -227,8 +239,11 @@ trailing punctuation and literals are not counted. Use `text`, not `[start,
 end)`, when you need to know what the match was.
 
 A file that does not parse is skipped, not fatal: a repo sweep must not stop at
-the first work-in-progress file. `_build`, `node_modules`, `dist`, `target` and
-dot-directories are never descended into.
+the first work-in-progress file. Recursion skips `_build`, `node_modules`,
+`dist`, `target`, dot-directories, and `deps` (where `vibe fetch` vendors
+packages — and, since relative imports nest, each vendored package's own
+`deps` below that). Naming one of those directly still searches it:
+`vibe grep --pattern '…' deps` asks for exactly that.
 
 ---
 

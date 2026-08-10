@@ -1373,8 +1373,11 @@ export fn grep_typed_context(source: String, typed_source: String, import_env: T
     // The ingested source is SHORTER than the file, so it is not the file plus
     // a prefix and no single delta relates their offsets. Refusing to type is
     // the honest answer: typing anyway would attribute types and errors to the
-    // wrong positions.
-    grep_untyped_context()
+    // wrong positions. It has to be the ERROR context rather than the untyped
+    // one -- an untyped context reads as "this file is clean", which would let
+    // `--only-well-typed` and the resolved-name filter answer from a typing
+    // that never happened.
+    grep_typed_context_error(source, "grep: refusing to type this file -- its ingested source is not the file plus a prefix")
   } else {
     let lo = grep_empty_ints()
     let hi = grep_empty_ints()
@@ -1403,7 +1406,7 @@ export fn grep_typed_context(source: String, typed_source: String, import_env: T
         Throw(msg) => grep_shift(grep_empty_typed(aliases, lo, hi, msg, grep_marker_offset(msg)), delta)
       }
     } with Exception {
-      Throw(_) => grep_untyped_context()
+      Throw(msg) => grep_typed_context_error(source, msg)
     }
   }
 }
@@ -1453,6 +1456,21 @@ fn grep_trim(s: String) -> String {
   String::trim(s)
 }
 
+/// One split filter clause, rejecting an empty operand.
+///
+/// `--where '$x :'` and `--where '$f ='` otherwise pass the up-front
+/// validation and only misbehave later: the `=` form compares against the
+/// empty name (never true), and the `:` form only fails once some file
+/// actually matches -- so a sweep with no structural hits returns the empty
+/// output that means "no match" and the typo is never reported.
+fn grep_operand(what: String, var: String, op: String, rhs: String) -> (String, String, String) with Exception {
+  if String::length(rhs) == 0 {
+    throw(String::concat(what, String::concat(": nothing after `", String::concat(op, String::concat("` in `$", String::concat(var, "`"))))))
+  } else {
+    (var, op, rhs)
+  }
+}
+
 /// Split `$name <op> <rest>` into its three parts. The accepted operators are
 /// `:` (inferred type), `=` (resolved name) and the `with` / `without` row
 /// keywords; the first one that appears wins.
@@ -1475,14 +1493,19 @@ fn grep_split_filter(item: String, what: String) -> (String, String, String) wit
       if rlen == 0 {
         throw(String::concat(what, ": nothing to compare against"))
       } else if String::char_code_at(rest, 0) == ':' {
-        (var, ":", grep_trim(String::substring(rest, 1, rlen)))
+        grep_operand(what, var, ":", grep_trim(String::substring(rest, 1, rlen)))
       } else if String::char_code_at(rest, 0) == '=' {
-        (var, "=", grep_trim(String::substring(rest, 1, rlen)))
+        grep_operand(what, var, "=", grep_trim(String::substring(rest, 1, rlen)))
       } else if String::starts_with(rest, "without ") {
-        (var, "without", grep_trim(String::substring(rest, 8, rlen)))
+        grep_operand(what, var, "without", grep_trim(String::substring(rest, 8, rlen)))
       } else if String::starts_with(rest, "with ") {
-        (var, "with", grep_trim(String::substring(rest, 5, rlen)))
-      } else {
+        grep_operand(what, var, "with", grep_trim(String::substring(rest, 5, rlen)))
+      } else if rest == "without" {
+        // The row keywords are the only operators spelled as a word, so a bare
+        // one has already been trimmed of the space that would identify it.
+        // Reach grep_operand anyway, for the precise "nothing after" message.
+        grep_operand(what, var, "without", "")
+      } else if rest == "with" { grep_operand(what, var, "with", "") } else {
         throw(String::concat(what, String::concat(": expected `:` (type), `=` (resolved name), `with` or `without` (effect row) after `$", String::concat(var, "`"))))
       }
     }
@@ -1850,7 +1873,15 @@ fn grep_filter_keeps(ctx: GrepTyped, hit: GrepHit, clause: String, what: String)
   match grep_find_capture(hit, var) {
     None => throw(String::concat(what, String::concat(": the pattern never captures `$", String::concat(var, "`")))),
     Some((text, off, is_callee)) => if op == "=" {
-      grep_resolve_name(ctx, text) == rhs
+      // The alias table is syntactic and survives a failed typing, so this
+      // branch could answer TRUE for `$f = helper` on a file whose import of
+      // `helper` the checker never validated (missing module, or a name the
+      // dependency does not export -- #1533). Every other filter already drops
+      // there; this one claimed to have RESOLVED a name it only spelled out.
+      // A resolved-name filter that degrades to syntax when the graph is
+      // broken is exactly the silently-wrong answer the typed tier exists to
+      // avoid, so it drops too. Pure syntax is what the parse-only tier is for.
+      ctx.type_error == "" && grep_resolve_name(ctx, text) == rhs
     } else if op == ":" {
       let expected = resolve_type_expr(parse_type(lex(rhs), 0).0, ctx.defs)
       match grep_capture_type(ctx, text, off, is_callee) {

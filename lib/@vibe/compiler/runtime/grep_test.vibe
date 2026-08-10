@@ -56,9 +56,13 @@ fn scan_err(source: String, pattern: String, wheres: Array[String]) -> String {
 /// The same scan the FS tier performs when the import graph fails to check:
 /// matching still runs, but the typed context carries the failure.
 fn grep_error_scan(source: String, pattern: String, only: String) -> String with Exception {
+  grep_error_scan_where(source, pattern, no_strings(), only)
+}
+
+fn grep_error_scan_where(source: String, pattern: String, wheres: Array[String], only: String) -> String with Exception {
   let hits = grep_file_hits("a.vibe", source, grep_compile_pattern(pattern))
   let out = grep_empty_strings()
-  grep_emit_hits(source, hits, grep_typed_context_error(source, "dep.vibe: line 1:1: boom"), true, no_strings(), no_strings(), only, false, out)
+  grep_emit_hits(source, hits, grep_typed_context_error(source, "dep.vibe: line 1:1: boom"), true, wheres, no_strings(), only, false, out)
   grep_join_lines(out, false)
 }
 
@@ -200,6 +204,23 @@ test "grep: a file whose typing failed outright is never reported well-typed" {
   // source offset, so there is nothing to look the type up BY -- the filter
   // drops it instead of guessing. Same boundary the docs state.
   inspect(scan_where(src, "f($(x:const))", "$x : Int"), "")
+}
+
+test "grep --where `=`: a failed typing drops the match instead of answering from the alias table" {
+  // The alias table is SYNTACTIC and survives a failed typing, so `$f = helper`
+  // could otherwise report a name as RESOLVED that the checker never validated
+  // -- a missing module, or a name the dependency does not export (#1533).
+  let src = "import ./dep.vibe {\n  helper as h\n}\nlet a = h(1)\n"
+  inspect(scan_where(src, "$(f:id)($(_:exp))", "$f = helper"), "a.vibe:4:9: h(1)\t$f=h\n")
+  inspect(grep_error_scan_where(src, "$(f:id)($(_:exp))", one_string("$f = helper"), ""), "")
+}
+
+test "grep: a filter with nothing after its operator is an error" {
+  // Otherwise `--where '$x :'` only misbehaves on a file that happens to match,
+  // so a sweep with no hits returns the empty output that means "no match".
+  inspect(scan_err("let a = f(1)\n", "f($(x:exp))", one_string("$x :")), "--where: nothing after `:` in `$x`")
+  inspect(scan_err("let a = f(1)\n", "f($(x:exp))", one_string("$x =")), "--where: nothing after `=` in `$x`")
+  inspect(scan_err("let a = f(1)\n", "f($(x:exp))", one_string("$x with ")), "--where: nothing after `with` in `$x`")
 }
 
 test "grep: a malformed pattern says what to write instead of matching nothing" {
