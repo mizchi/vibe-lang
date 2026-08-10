@@ -712,6 +712,26 @@ fn is_stream_named_type(t: Type) -> Bool {
   }
 }
 
+/// #1538: `HostStream` is a state-3 cell, while legacy `Stream[T]` is an eager
+/// array. `CtNamed` normally remains permissive because a bare name can be an
+/// unresolved generic parameter, but these two compiler-owned names have
+/// incompatible representations. Reject only this boundary; do not widen
+/// nominal concreteness or change ordinary user-defined/generic `CtNamed`
+/// assignability.
+fn host_stream_to_legacy_stream_conflict(expected: Type, actual: Type) -> Bool {
+  match expected {
+    CtNamed(expected_name, _) => if expected_name == "Stream" {
+      match actual {
+        CtNamed(actual_name, _) => actual_name == "HostStream",
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 /// True when every declared field type of a struct is ground (the struct is not
 /// generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
 fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
@@ -974,9 +994,12 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       // head was never reported at all. Check that ahead of the existing
       // gates; internally gated on `type_fully_concrete` so a still-rigid
       // type parameter never triggers it.
-      let nominal_conflict = nominal_head_conflict(subst_apply(s, expected), subst_apply(s, actual))
-      if nominal_conflict {
-        Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
+      let expected_zonked = subst_apply(s, expected)
+      let actual_zonked = subst_apply(s, actual)
+      let host_stream_conflict = host_stream_to_legacy_stream_conflict(expected_zonked, actual_zonked)
+      let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
+      if host_stream_conflict || nominal_conflict {
+        Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
         s
       } else if structural {
         // #939: the structural retry tolerated EVERY effect-only difference,
