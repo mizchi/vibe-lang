@@ -9,7 +9,7 @@
 // prefix validation path without changing normal compiler semantics.
 
 import assert from "node:assert/strict";
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -56,6 +56,24 @@ function mutateSameSizeInPlace(path, needleText, replacementText) {
   const after = readFileSync(path);
   assert.equal(after.length, before.length, "adversarial mutation must preserve file size");
   assert.notDeepEqual(after, before, "adversarial mutation must change file content");
+  return { before, after };
+}
+
+function replaceSameSize(path, needleText, replacementText, mtimeSeconds) {
+  const needle = Buffer.from(needleText, "utf8");
+  const replacement = Buffer.from(replacementText, "utf8");
+  assert.equal(replacement.length, needle.length, "replacement mutation must preserve byte size");
+  const before = readFileSync(path);
+  const offset = before.indexOf(needle);
+  assert.ok(offset >= 0, `replacement mutation marker not found: ${needleText}`);
+  assert.equal(before.indexOf(needle, offset + 1), -1, `replacement mutation marker must be unique: ${needleText}`);
+  const after = Buffer.concat([before.subarray(0, offset), replacement, before.subarray(offset + needle.length)]);
+  const replacementPath = `${path}.replacement`;
+  writeFileSync(replacementPath, after);
+  utimesSync(replacementPath, mtimeSeconds, mtimeSeconds);
+  renameSync(replacementPath, path);
+  assert.equal(after.length, before.length, "replacement mutation must preserve file size");
+  assert.deepEqual(readFileSync(path), after, "replacement mutation must replace file contents");
   return { before, after };
 }
 
@@ -235,6 +253,49 @@ function main() {
     }
     assert.notDeepEqual(adversarialMutation.after, adversarialMutation.before, "same-token adversary changed source bytes");
 
+    // Replacing a source with equal-sized changed bytes must not reuse the
+    // stamp. The controlled mtime rules out timestamp granularity while the
+    // replacement inode deterministically changes the trusted stat token.
+    const replacementBeforeTokenInputs = statTokenInputs(contract);
+    const replacementMutation = replaceSameSize(contract, "// api ", "// API ", controlledMtimeSeconds);
+    const replacementAfterTokenInputs = statTokenInputs(contract);
+    assert.notDeepEqual(replacementMutation.after, replacementMutation.before, "replacement source must change bytes");
+    assert.equal(replacementMutation.after.length, replacementMutation.before.length, "replacement source must keep size");
+    assert.ok(!sameStatTokenInputs(replacementBeforeTokenInputs, replacementAfterTokenInputs), "replacement source must change the trusted stat token");
+    const replacedSameSize = check("replaced-same-size", { stampEnabled: true, cacheDir: gateOnCache });
+    assert.ok(replacedSameSize.telemetry.stamp_misses > 0, "same-size replacement must miss the stamp");
+    assert.ok(replacedSameSize.telemetry.source_read_calls > 0 && replacedSameSize.telemetry.hash_calls > 0, "same-size replacement must re-read and hash source");
+    assert.deepEqual(replacedSameSize.outputBytes, malformed.outputBytes, "same-size replacement output bytes");
+    compareSuccessfulIncrementalInvalidationTraces(malformed.trace, replacedSameSize.trace);
+
+    // A deleted source must fail before a stamp can stand in for it. The
+    // requested successful-only sidecar begins stale to verify failure clears
+    // it instead of reporting an earlier successful observation.
+    const deletedSourceBytes = readFileSync(input);
+    rmSync(input);
+    assert.ok(!existsSync(input), "deleted-source fixture must be absent");
+    const deletedOutput = join(work, "deleted-source.out");
+    const deletedTelemetry = join(work, "deleted-source.ingestion.json");
+    writeFileSync(deletedTelemetry, "stale ingestion observation");
+    const deletedSource = spawnSync(runner, ["--invoke", "cli_main", stage2, input, deletedOutput, ""], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        VIBE_PREOPEN_DIR: root,
+        VIBE_CHECK_ONLY: "1",
+        VIBE_BUILD_CACHE_DIR: gateOnCache,
+        VIBE_INGESTION_TELEMETRY_OUT: deletedTelemetry,
+        VIBE_INGESTION_TELEMETRY_NONCE: "ingestion-stamp-deleted-source",
+        VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "1",
+      },
+    });
+    assert.notEqual(deletedSource.status, 0, "deleted source must not be satisfied by a stamp");
+    assert.ok(!existsSync(deletedOutput), "deleted source must not produce a successful check output");
+    assert.ok(!existsSync(deletedTelemetry), "deleted source must remove stale telemetry");
+    writeFileSync(input, deletedSourceBytes);
+    utimesSync(input, controlledMtimeSeconds, controlledMtimeSeconds);
+
     // A content token change is also a miss even if the source edit is non-semantic.
     writeFileSync(contract, `${readFileSync(contract, "utf8")}\n// token-change oracle\n`);
     const tokenChanged = check("token-changed", { stampEnabled: true, cacheDir: gateOnCache });
@@ -248,6 +309,8 @@ function main() {
       metadata_changed: metadataChanged.telemetry,
       malformed: malformed.telemetry,
       same_token_content_changed: sameTokenAdversary,
+      replaced_same_size: replacedSameSize.telemetry,
+      deleted_source: { rejected: true },
       token_changed: tokenChanged.telemetry,
     }));
   } finally {
