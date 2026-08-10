@@ -2771,6 +2771,129 @@ fn emit_comp_import_section_typed(buf: Bytes, import_name: String, functype_idx:
   emit_raw_content(buf, content)
 }
 
+/// A single component-instance import. This is deliberately separate from
+/// emit_comp_import_section_typed: an instance descriptor uses sort 0x05,
+/// not the component-function sort.
+fn emit_comp_instance_import_section(buf: Bytes, import_name: String, instance_type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_import)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 0)
+  emit_name(content, import_name)
+  bytebuf_push(content, 5)
+  leb128_encode_u32(content, instance_type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// Alias one export from a component instance. Component instance-export
+/// aliases use alias target 0x00; emit_alias_section instead emits core
+/// instance aliases and must not be used for this encoding.
+fn emit_comp_instance_export_alias_section(buf: Bytes, instance_idx: Int, export_name: String, sort: Int) -> Unit {
+  bytebuf_push(buf, section_alias)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, sort)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, instance_idx)
+  emit_name(content, export_name)
+  emit_raw_content(buf, content)
+}
+
+/// Fixed wasi:cli/types@0.3.0 instance type for the #1539 encoder fixture.
+fn emit_comp_wasi_cli_types_instance_type_for_test(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  leb128_encode_u32(content, 2)
+  // type error-code = enum { io, illegal-byte-sequence, pipe }
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 109)
+  leb128_encode_u32(content, 3)
+  emit_name(content, "io")
+  emit_name(content, "illegal-byte-sequence")
+  emit_name(content, "pipe")
+  // export type error-code = type 0
+  bytebuf_push(content, 4)
+  bytebuf_push(content, 0)
+  emit_name(content, "error-code")
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 0)
+  emit_raw_content(buf, content)
+}
+
+/// Fixed wasi:cli/stdin@0.3.0 instance type for the #1539 encoder fixture.
+/// Its first declaration aliases outer type 1, preserving the nominal identity
+/// of wasi:cli/types/error-code instead of defining a lookalike local enum.
+fn emit_comp_wasi_cli_stdin_instance_type_for_test(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  leb128_encode_u32(content, 7)
+  // alias outer 1 1: type 1 (the root error-code alias)
+  bytebuf_push(content, 2)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 2)
+  leb128_encode_u32(content, 1)
+  leb128_encode_u32(content, 1)
+  // stream<u8>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 102)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 125)
+  // result<_, error-code>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 106)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 0)
+  // future<result<_, error-code>>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 2)
+  // tuple<stream<u8>, future<result<_, error-code>>>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 111)
+  leb128_encode_u32(content, 2)
+  leb128_encode_u32(content, 1)
+  leb128_encode_u32(content, 3)
+  // synchronous func() -> tuple<...>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 64)
+  leb128_encode_u32(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 4)
+  // export read-via-stream = func type 5
+  bytebuf_push(content, 4)
+  bytebuf_push(content, 0)
+  emit_name(content, "read-via-stream")
+  bytebuf_push(content, comp_extern_func)
+  leb128_encode_u32(content, 5)
+  emit_raw_content(buf, content)
+}
+
+/// Exact, fixed-prefix ratified wasi:cli stdin import surface for #1539.
+/// The root indexes below are load-bearing for this 208-byte test fixture;
+/// this is not a general instance-import builder and has no production caller.
+fn comp_emit_wasi_cli_stdin_import_surface_for_test() -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  // root type 0, then imported component instance 0
+  emit_comp_wasi_cli_types_instance_type_for_test(buf)
+  emit_comp_instance_import_section(buf, "wasi:cli/types@0.3.0", 0)
+  // root type 1 aliases the imported nominal error-code
+  emit_comp_instance_export_alias_section(buf, 0, "error-code", 3)
+  // root type 2, then imported component instance 1
+  emit_comp_wasi_cli_stdin_instance_type_for_test(buf)
+  emit_comp_instance_import_section(buf, "wasi:cli/stdin@0.3.0", 2)
+  // root component function 0
+  emit_comp_instance_export_alias_section(buf, 1, "read-via-stream", comp_extern_func)
+  bytebuf_to_bytes(buf)
+}
+
 /// ADR-0089 Decision 2 / step 4 (#1218): guest core module for the
 /// HOST-SUPPLIED future<u32> value -- a byte-level port of
 /// tools/wasip3_component_probe/host_future_value/component.wat's $guest.
@@ -5822,4 +5945,12 @@ export fn comp_emit_component_wasm_string_handler_vfs(core_wasm: Bytes, target_f
   emit_raw_content(buf, lift_content)
   emit_comp_export_section(buf, export_name, 4)
   bytebuf_to_bytes(buf)
+}
+
+//# Misc
+
+// Same-package sibling-test visibility only. Keep this private fn absent from
+// index.vpkg so it cannot become part of the package contract.
+export {
+  comp_emit_wasi_cli_stdin_import_surface_for_test
 }
