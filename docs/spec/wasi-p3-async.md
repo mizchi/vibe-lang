@@ -1413,8 +1413,11 @@ concreteness や通常の user-defined/generic nominal assignability は広げ�
 
 任意の非 `Stream[T]` parameter（例えば `take_int(s)`）に `HostStream` を渡す
 ことまでを拒否する一般 nominal barrier ではない。その横断的な型検査強化は
-別作業のままにする。この狭い fail-closed boundary が、#1539 で Stdin の
-legacy eager ByteStream path を p3 stream reader へ接続する前提になる。
+別作業のままにする。この狭い fail-closed boundary は generic `HostStream` と
+legacy eager `Stream[T]` の誤交差を防ぐ一般安全策であり、#1539 の provider
+lifecycle を実装した証拠ではない。#1539 の既存 `stdin_stream` は
+`Stdin` authority を持つ `Option[String]` pull closure で、§3.18.3 の ratified
+stdin route は別の provider-aware lifecycle を必要とする。
 
 **残り**: 一般 `Stream::next`（`Future[Option[T]]`）を host read へ落とす件は
 まだ。実測では `await(Stream::next(s))` は ADR-0076 の evidence-passing
@@ -1609,7 +1612,7 @@ StreamProducer）を相手に実測されている。production の相手 —
 | | serve 経路 | host-stream 経路 |
 |---|---|---|
 | emitter | `comp_emit_component_wasm_string_handler`（`VIBE_SERVE_COMPONENT=1`） | `comp_emit_component_wasm_async_hostfuture` |
-| guest surface | `handler(method, url, headers, body: String) -> String` | `host_stream_named(name) -> Stream[Int]` |
+| guest surface | `handler(method, url, headers, body: String) -> String` | `host_stream_named(name) -> HostStream` |
 | body の扱い | full adapter が **materialize** する（`Request::consume_body` + `StreamReader::collect` → String） | 生の `stream<u8>` を per-name component import として受ける |
 | compose | `wac plug`（adapter component + guest） | 自前の core module 合成（adapter core module を同梱） |
 
