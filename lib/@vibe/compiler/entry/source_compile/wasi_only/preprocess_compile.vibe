@@ -26,7 +26,9 @@ import @vibe/compiler/core {
 import ./component_codegen.vibe {
   comp_core_imports_host_future,
   comp_core_imports_host_stream,
+  comp_core_imports_stdin_provider,
   comp_emit_component_wasm_async_hostfuture,
+  comp_emit_component_wasm_async_stdin_provider,
   comp_emit_component_wasm_async_trampolined_p1
 }
 
@@ -88,7 +90,12 @@ fn entry_declares_async_int(stmts: Array[Stmt], entry_name: String) -> Bool {
 /// the self-contained trampolined-p1 shape byte-identically.
 fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exception {
   if wrap_async {
-    if comp_core_imports_host_future(bytes) || comp_core_imports_host_stream(bytes) {
+    // #1539: provider routing is first because its nominal stdin lifecycle
+    // cannot be satisfied by (or safely mixed into) generic named streams.
+    // The dedicated composer validates signatures and rejects mixing.
+    if comp_core_imports_stdin_provider(bytes) {
+      comp_emit_component_wasm_async_stdin_provider(bytes, "run")
+    } else if comp_core_imports_host_future(bytes) || comp_core_imports_host_stream(bytes) {
       // ADR-0089 Decision 3 (#1218): host STREAMS
       // (`vibe.host_stream_get$<name>`) key the same composition -- the
       // composer emits per-name `stream<u8>` component imports alongside

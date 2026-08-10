@@ -3699,6 +3699,276 @@ fn comp_generate_stdin_provider_adapter_core_module() -> Bytes {
   bytebuf_to_bytes(out)
 }
 
+/// #1539 tagged-i64 bridge over the proven shadow lifecycle. The guest sees
+/// only these three exports; canonical stream/future handles and the shadow's
+/// scenario exports remain confined to private component instances.
+fn comp_generate_stdin_provider_tagged_bridge_core_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // 0 ()->i32; 1 (i32)->i32; 2 ()->i64; 3 (i64)->i64;
+  // 4 (i64)->i32 (validated decode helper).
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 5)
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 3)
+  let shadow_names = [
+    "stdin-provider-shadow-acquire",
+    "stdin-provider-shadow-read",
+    "stdin-provider-shadow-close"
+  ]
+  let shadow_types = [
+    0,
+    1,
+    1
+  ]
+  let mut ii = 0
+  while ii < 3 {
+    emit_name(ic, "shadow")
+    emit_name(ic, Array::get(shadow_names, ii))
+    bytebuf_push(ic, 0)
+    leb128_encode_u32(ic, Array::get(shadow_types, ii))
+    ii = ii + 1
+  }
+  bytebuf_push_section(out, 2, ic)
+  // imports 0..2; locals 3=decode, 4=acquire, 5=read, 6=close.
+  emit_function_section(out, [
+    4,
+    2,
+    3,
+    3
+  ])
+  emit_export_section_multi(out, [
+    "stdin_provider_acquire",
+    "stdin_provider_read",
+    "stdin_provider_close"
+  ], [
+    4,
+    5,
+    6
+  ])
+  let code = bytebuf_new()
+  leb128_encode_u32(code, 4)
+  // decode(wire): tagged integers are even. Reject every value above the
+  // largest non-negative i32 wire value before i32.wrap_i64, so malformed
+  // high bits cannot alias a valid provider ID during narrowing.
+  let decode = bytebuf_new()
+  leb128_encode_u32(decode, 0)
+  emit_local_get(decode, 0)
+  emit_i64_const(decode, 1)
+  bytebuf_push(decode, 131)
+  // i64.and
+  bytebuf_push(decode, 80)
+  // i64.eqz
+  emit_i32_eqz(decode)
+  emit_if_void(decode)
+  bytebuf_push(decode, 0)
+  emit_end(decode)
+  emit_local_get(decode, 0)
+  emit_i64_const(decode, 4294967294)
+  bytebuf_push(decode, 86)
+  // i64.gt_u
+  emit_if_void(decode)
+  bytebuf_push(decode, 0)
+  emit_end(decode)
+  emit_local_get(decode, 0)
+  emit_i64_const(decode, 1)
+  emit_i64_shr_s(decode)
+  emit_i32_wrap_i64(decode)
+  bytebuf_push(decode, 11)
+  leb128_encode_u32(code, Bytes::length(decode))
+  bytebuf_push_buf(code, decode)
+  let acquire = bytebuf_new()
+  leb128_encode_u32(acquire, 0)
+  emit_call(acquire, 0)
+  bytebuf_push(acquire, 173)
+  // i64.extend_i32_u
+  emit_i64_const(acquire, 1)
+  emit_i64_shl(acquire)
+  bytebuf_push(acquire, 11)
+  leb128_encode_u32(code, Bytes::length(acquire))
+  bytebuf_push_buf(code, acquire)
+  let read = bytebuf_new()
+  leb128_encode_u32(read, 0)
+  emit_local_get(read, 0)
+  emit_call(read, 3)
+  emit_call(read, 1)
+  bytebuf_push(read, 172)
+  // i64.extend_i32_s (preserves EOF = -1)
+  emit_i64_const(read, 1)
+  emit_i64_shl(read)
+  bytebuf_push(read, 11)
+  leb128_encode_u32(code, Bytes::length(read))
+  bytebuf_push_buf(code, read)
+  let close = bytebuf_new()
+  leb128_encode_u32(close, 0)
+  emit_local_get(close, 0)
+  emit_call(close, 3)
+  emit_call(close, 2)
+  bytebuf_push(close, 26)
+  // drop shadow's i32 zero
+  emit_i64_const(close, 0)
+  bytebuf_push(close, 11)
+  leb128_encode_u32(code, Bytes::length(close))
+  bytebuf_push_buf(code, close)
+  bytebuf_push_section(out, 10, code)
+  bytebuf_to_bytes(out)
+}
+
+/// A compiled-shaped synthetic guest for the runtime gate. It imports the
+/// exact private provider ABI plus the ordinary preview1 fd_write preamble and
+/// exports `run : (i64) -> i64`. Mode 0 drains 10/15/17 through EOF; mode 1
+/// consumes one byte then closes early. Every observed value is checked in
+/// core wasm before returning 42/43.
+fn comp_generate_stdin_provider_synthetic_core(mode: Int) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 4)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 4)
+  emit_name(ic, "wasi_snapshot_preview1")
+  emit_name(ic, "fd_write")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  let provider_names = [
+    "stdin_provider_acquire",
+    "stdin_provider_read",
+    "stdin_provider_close"
+  ]
+  let provider_types = [
+    1,
+    2,
+    2
+  ]
+  let mut ii = 0
+  while ii < 3 {
+    emit_name(ic, "vibe")
+    emit_name(ic, Array::get(provider_names, ii))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, Array::get(provider_types, ii))
+    ii = ii + 1
+  }
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    3
+  ])
+  emit_export_section(out, "run", 4)
+  let body = bytebuf_new()
+  // one i64 local for the opaque tagged provider ID
+  leb128_encode_u32(body, 1)
+  leb128_encode_u32(body, 1)
+  bytebuf_push(body, 126)
+  emit_call(body, 1)
+  emit_local_set(body, 1)
+  let expected = if mode == 0 {
+    [
+      20,
+      30,
+      34,
+      -2,
+      -2
+    ]
+  } else {
+    [
+      20
+    ]
+  }
+  let mut ei = 0
+  while ei < Array::length(expected) {
+    emit_local_get(body, 1)
+    emit_call(body, 2)
+    emit_i64_const(body, Array::get(expected, ei))
+    bytebuf_push(body, 82)
+    // i64.ne
+    emit_if_void(body)
+    bytebuf_push(body, 0)
+    emit_end(body)
+    ei = ei + 1
+  }
+  emit_local_get(body, 1)
+  emit_call(body, 3)
+  emit_i64_const(body, 0)
+  bytebuf_push(body, 82)
+  emit_if_void(body)
+  bytebuf_push(body, 0)
+  emit_end(body)
+  emit_local_get(body, 1)
+  emit_call(body, 3)
+  emit_i64_const(body, 0)
+  bytebuf_push(body, 82)
+  emit_if_void(body)
+  bytebuf_push(body, 0)
+  emit_end(body)
+  if mode != 0 {
+    emit_local_get(body, 1)
+    emit_call(body, 2)
+    emit_i64_const(body, -2)
+    bytebuf_push(body, 82)
+    emit_if_void(body)
+    bytebuf_push(body, 0)
+    emit_end(body)
+  } else {
+    ()
+  }
+  emit_i64_const(body, if mode == 0 {
+    42
+  } else {
+    43
+  })
+  bytebuf_push(body, 11)
+  // Write this body's section directly because it has an explicit local.
+  let code = bytebuf_new()
+  leb128_encode_u32(code, 1)
+  leb128_encode_u32(code, Bytes::length(body))
+  bytebuf_push_buf(code, body)
+  bytebuf_push_section(out, 10, code)
+  bytebuf_to_bytes(out)
+}
+
 /// Emit the production-unused #1539 shadow component. Its first 208 bytes are
 /// exactly comp_emit_wasi_cli_stdin_import_surface_for_test(). Scenario exports
 /// are private gates, not a Stdin effect or HostStream API.
@@ -5047,6 +5317,300 @@ fn comp_generate_async_trampoline_hostfuture() -> Bytes {
     body
   ])
   bytebuf_to_bytes(out)
+}
+
+fn comp_core_sig_is_p0_i64(sig: Array[Int]) -> Bool {
+  Array::length(sig) == 3 && Array::get(sig, 0) == 0 && Array::get(sig, 1) == 1 && Array::get(sig, 2) == 126
+}
+
+fn comp_core_sig_is_p1_i64_i64(sig: Array[Int]) -> Bool {
+  Array::length(sig) == 4 && Array::get(sig, 0) == 1 && Array::get(sig, 1) == 126 && Array::get(sig, 2) == 1 && Array::get(sig, 3) == 126
+}
+
+fn comp_core_sig_is_fd_write(sig: Array[Int]) -> Bool {
+  Array::length(sig) == 7 && Array::get(sig, 0) == 4 && Array::get(sig, 1) == 127 && Array::get(sig, 2) == 127 && Array::get(sig, 3) == 127 && Array::get(sig, 4) == 127 && Array::get(sig, 5) == 1 && Array::get(sig, 6) == 127
+}
+
+fn comp_is_stdin_provider_import_name(name: String) -> Bool {
+  name == "stdin_provider_acquire" || name == "stdin_provider_read" || name == "stdin_provider_close"
+}
+
+/// #1539 exact parsed-import routing key. A malformed exact provider import
+/// still returns true so the stdin composer, rather than an unrelated wrapper,
+/// produces the actionable signature diagnostic.
+export fn comp_core_imports_stdin_provider(core_wasm: Bytes) -> Bool {
+  let modules = array_empty()
+  let names = array_empty()
+  let indices = new_int_array()
+  let sigs = array_empty()
+  let count = parse_core_imports(core_wasm, modules, names, indices, sigs)
+  let mut found = false
+  let mut i = 0
+  while i < count {
+    if Array::get(modules, i) == "vibe" && comp_is_stdin_provider_import_name(Array::get(names, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1539 bounded arbitrary-core composer. The nominal stdin instance and
+/// canonical handles terminate at the shadow lifecycle instance; a distinct
+/// tagged-i64 bridge is the only `vibe` instance passed to the compiled guest.
+export fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, export_name: String) -> Bytes with Exception {
+  let export_names = array_empty()
+  let export_func_indices = new_int_array()
+  let export_sigs = array_empty()
+  let _ = parse_core_exports(main_core_wasm, export_names, export_func_indices, export_sigs)
+  let mut run_ok = false
+  let mut ei = 0
+  while ei < Array::length(export_names) {
+    if Array::get(export_names, ei) == "run" {
+      let sig = Array::get(export_sigs, ei)
+      run_ok = Array::length(sig) == 4 && Array::get(sig, 0) == 1 && Array::get(sig, 1) == 126 && Array::get(sig, 2) == 1 && Array::get(sig, 3) == 126
+    } else {
+      ()
+    }
+    ei = ei + 1
+  }
+  if !run_ok {
+    throw("component(async-stdin-provider): core module must export 'run : (i64) -> i64' (compile with entry name \"run\")")
+  } else {
+    ()
+  }
+  let modules = array_empty()
+  let names = array_empty()
+  let indices = new_int_array()
+  let sigs = array_empty()
+  let count = parse_core_imports(main_core_wasm, modules, names, indices, sigs)
+  // Diagnose the bounded-slice composition conflict before the allowlist walk:
+  // linked_compile emits the shared stream/future operations before some
+  // per-name getters, so waiting for declaration order could produce a generic
+  // unsupported-import error instead of the required explicit rejection.
+  if comp_core_imports_host_future(main_core_wasm) || comp_core_imports_host_stream(main_core_wasm) {
+    throw("component(async-stdin-provider): mixing stdin-provider imports with named host future/stream imports is not supported in this bounded route")
+  } else {
+    ()
+  }
+  let mut acquire_count = 0
+  let mut read_count = 0
+  let mut close_count = 0
+  let mut i = 0
+  while i < count {
+    let module_name = Array::get(modules, i)
+    let name = Array::get(names, i)
+    let type_idx = Array::get(indices, i)
+    if type_idx < 0 || type_idx >= Array::length(sigs) {
+      throw("component(async-stdin-provider): import '\{module_name}.\{name}' has an invalid core type index")
+    } else {
+      ()
+    }
+    let sig = Array::get(sigs, type_idx)
+    if module_name == "wasi_snapshot_preview1" && name == "fd_write" {
+      if !comp_core_sig_is_fd_write(sig) {
+        throw("component(async-stdin-provider): wasi_snapshot_preview1.fd_write must have signature (i32, i32, i32, i32) -> i32")
+      } else {
+        ()
+      }
+    } else if module_name == "vibe" && name == "stdin_provider_acquire" {
+      acquire_count = acquire_count + 1
+      if !comp_core_sig_is_p0_i64(sig) {
+        throw("component(async-stdin-provider): vibe.stdin_provider_acquire must have signature () -> i64")
+      } else {
+        ()
+      }
+    } else if module_name == "vibe" && name == "stdin_provider_read" {
+      read_count = read_count + 1
+      if !comp_core_sig_is_p1_i64_i64(sig) {
+        throw("component(async-stdin-provider): vibe.stdin_provider_read must have signature (i64) -> i64")
+      } else {
+        ()
+      }
+    } else if module_name == "vibe" && name == "stdin_provider_close" {
+      close_count = close_count + 1
+      if !comp_core_sig_is_p1_i64_i64(sig) {
+        throw("component(async-stdin-provider): vibe.stdin_provider_close must have signature (i64) -> i64")
+      } else {
+        ()
+      }
+    } else {
+      throw("component(async-stdin-provider): core module uses host import '\{module_name}.\{name}' (only fd_write and the three exact vibe.stdin_provider_* imports are satisfiable)")
+    }
+    i = i + 1
+  }
+  if acquire_count > 1 || read_count > 1 || close_count > 1 {
+    throw("component(async-stdin-provider): duplicate stdin-provider core import")
+  } else if acquire_count == 0 {
+    throw("component(async-stdin-provider): stdin_provider_read/close requires exactly one stdin_provider_acquire import")
+  } else if read_count + close_count == 0 {
+    throw("component(async-stdin-provider): stdin_provider_acquire requires at least one consuming read or close import")
+  } else {
+    ()
+  }
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  // Keep #1620/#1623's exact 208-byte nominal prefix first.
+  emit_comp_wasi_cli_stdin_import_prefix(buf)
+  // modules: 0 main, 1 lifecycle shadow, 2 tagged bridge, 3 trampoline,
+  // 4 fd_write stub, 5 memhost.
+  emit_core_module_section(buf, main_core_wasm)
+  emit_core_module_section(buf, comp_generate_stdin_provider_adapter_core_module())
+  emit_core_module_section(buf, comp_generate_stdin_provider_tagged_bridge_core_module())
+  emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
+  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  emit_core_module_section(buf, comp_generate_memhost_module())
+  let memhost_inst = 0
+  emit_core_instance_instantiate_section(buf, 5, array_empty())
+  let mem_alias_idx = 0
+  emit_alias_section(buf, memhost_inst, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  let stream_type_idx = 3
+  let completion_result_type_idx = 4
+  let completion_future_type_idx = 5
+  emit_comp_stream_type_section(buf, comp_valtype_u8)
+  emit_comp_result_error_type_section(buf, 1)
+  emit_comp_future_type_section(buf, completion_result_type_idx)
+  emit_canon_lower_memory_section(buf, 0, mem_alias_idx)
+  emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
+  emit_canon_stream_drop_readable(buf, stream_type_idx)
+  emit_canon_future_read(buf, completion_future_type_idx, mem_alias_idx)
+  emit_canon_future_drop_readable(buf, completion_future_type_idx)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_drop(buf)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  let root_inst = 1
+  emit_core_instance_from_exports(buf, 1, [
+    9
+  ], [
+    "read-via-stream",
+    "[async-lower][stream-read-0]read-via-stream",
+    "[stream-drop-readable-0]read-via-stream",
+    "[async-lower][future-read-1]read-via-stream",
+    "[future-drop-readable-1]read-via-stream",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ])
+  // The scenario imports exist only because the proven lifecycle module is
+  // reused byte-for-byte. They all bind the same unreachable-from-production
+  // task-return function and are never passed to the main guest.
+  let export_root_inst = 2
+  emit_core_instance_from_exports(buf, 1, [
+    6
+  ], [
+    "[task-return]drain",
+    "[task-return]early-close",
+    "[task-return]forced-completion-tag-control",
+    "[task-return]foreign-provider-control",
+    "[task-return]wrong-byte-cleanup-control",
+    "[task-return]extra-byte-cleanup-control"
+  ], [
+    9,
+    9,
+    9,
+    9,
+    9,
+    9
+  ])
+  let env_inst = 3
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    mem_alias_idx
+  ])
+  let shadow_inst = 4
+  emit_core_instance_instantiate_args(buf, 1, [
+    "$root",
+    "[export]$root",
+    "env"
+  ], [
+    root_inst,
+    export_root_inst,
+    env_inst
+  ])
+  let bridge_inst = 5
+  emit_core_instance_instantiate_args(buf, 2, [
+    "shadow"
+  ], [
+    shadow_inst
+  ])
+  let stub_inst = 6
+  emit_core_instance_instantiate_section(buf, 4, array_empty())
+  let main_inst = 7
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], [
+    stub_inst,
+    bridge_inst
+  ])
+  let main_run_func_idx = 10
+  emit_alias_section(buf, main_inst, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  let main_arg_inst = 8
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "run"
+  ], [
+    main_run_func_idx
+  ])
+  let cm_arg_inst = 9
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "task-return"
+  ], [
+    9
+  ])
+  let tramp_inst = 10
+  emit_core_instance_instantiate_args(buf, 3, [
+    "main",
+    "cm"
+  ], [
+    main_arg_inst,
+    cm_arg_inst
+  ])
+  let async_type_idx = 6
+  emit_comp_async_functype_section(buf, comp_valtype_u32)
+  let tramp_run_func_idx = 11
+  emit_alias_section(buf, tramp_inst, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, tramp_run_func_idx, async_type_idx)
+  emit_comp_export_section(buf, export_name, 1)
+  bytebuf_to_bytes(buf)
+}
+
+/// Internal runtime-gate fixture: 0=drain (42), 1=early close (43).
+export fn comp_emit_component_wasm_async_stdin_provider_fixture(mode: Int) -> Bytes with Exception {
+  comp_emit_component_wasm_async_stdin_provider(comp_generate_stdin_provider_synthetic_core(mode), "run")
 }
 
 /// ADR-0089 step 4 (#1218): wrap a REAL compiled core module -- one whose

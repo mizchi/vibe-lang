@@ -3896,6 +3896,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // module bytes are unchanged -- the injected `__hs_close` is the only
   // caller, and it only exists when the source called `host_stream_close`.
   let need_host_stream_close_builtin = Map::has_key(used_builtin_names, "vibe_hs_close_raw")
+  // #1539 core-only stdin provider route. The registry names are checker-
+  // invisible and therefore only compiler-injected/raw AST can request these
+  // imports. Keep each half independently gated so unused registry rows do not
+  // widen a component's authority.
+  let need_stdin_provider_acquire_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_acquire_raw")
+  let need_stdin_provider_read_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_read_raw")
+  let need_stdin_provider_close_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_close_raw")
   // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
   // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
   // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
@@ -4156,6 +4163,29 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     -1
   }
   let hs_close_import_idx = if need_host_stream_close_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #1539: exact private provider imports follow the generic host-stream
+  // pair. This is a separate lifecycle/authority band, not HostStream.
+  let stdin_provider_acquire_import_idx = if need_stdin_provider_acquire_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdin_provider_read_import_idx = if need_stdin_provider_read_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdin_provider_close_import_idx = if need_stdin_provider_close_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -4664,6 +4694,23 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     fs_read_file_stub_idx
   }
+  // #1539 private stdin-provider call targets. Their shapes match the
+  // existing never-called ()->i64 and (i64)->i64 fallbacks.
+  let stdin_provider_acquire_idx = if stdin_provider_acquire_import_idx >= 0 {
+    stdin_provider_acquire_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stdin_provider_read_idx = if stdin_provider_read_import_idx >= 0 {
+    stdin_provider_read_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let stdin_provider_close_idx = if stdin_provider_close_import_idx >= 0 {
+    stdin_provider_close_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   // sh / sh_lines call targets: the import when reserved, else the fs_read_file
   // stub (a `(i64)->i64` never-called placeholder) — the real call site only
   // exists when the import is reserved (i.e. when the program uses sh/sh_lines).
@@ -4982,6 +5029,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         // ADR-0089 Decision 3 follow-up: shared drop half of the named host
         // streams (`host_stream_close` -> injected `__hs_close`).
         "vibe_hs_close_raw" => hs_close_idx,
+        // #1539 checker-hidden core-only stdin provider bridge.
+        "vibe_stdin_provider_acquire_raw" => stdin_provider_acquire_idx,
+        "vibe_stdin_provider_read_raw" => stdin_provider_read_idx,
+        "vibe_stdin_provider_close_raw" => stdin_provider_close_idx,
         "simd_skip_ws" => simd_skip_ws_idx,
         "simd_scan_alnum" => simd_scan_alnum_idx,
         "simd_scan_alnum_str" => simd_scan_alnum_str_idx,
@@ -6906,6 +6957,32 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if hs_close_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "host_stream_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #1539: the dedicated stdin provider route uses exact names and tagged
+  // i64s. It is intentionally separate from generic HostStream imports.
+  if stdin_provider_acquire_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_provider_acquire")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  if stdin_provider_read_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_provider_read")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if stdin_provider_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_provider_close")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   } else {
