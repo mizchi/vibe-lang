@@ -73,9 +73,25 @@ fn main() -> Unit with Exception + Fs {
 }
 EOF
 rm -f "$HARNESS_WASM" "$HARNESS_WASM.diag" "$COMPONENT"
-VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+# The CLI writes compile diagnostics to a `<output>.diag` SIDECAR, not to
+# stdout/stderr (#1567), so a failed compile here exits non-zero having printed
+# nothing at all -- under `set -e` that surfaced as a bare
+# "Process completed with exit code 1" with no cause anywhere in the CI log.
+# Echo the sidecar before giving up.
+if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
-  "$COMPILER" "$HARNESS" "$HARNESS_WASM" main >/dev/null
+  "$COMPILER" "$HARNESS" "$HARNESS_WASM" main >/dev/null; then
+  echo "wasi cli stdin provider shadow FAILED: could not compile the generator harness with $COMPILER" >&2
+  if [ -s "$HARNESS_WASM.diag" ]; then
+    # The sidecar has no trailing newline, so give it one rather than letting
+    # it run into whatever the log prints next.
+    cat "$HARNESS_WASM.diag" >&2
+    echo >&2
+  else
+    echo "  (no .diag sidecar was written)" >&2
+  fi
+  exit 1
+fi
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke main "$HARNESS_WASM" >/dev/null
 
