@@ -171,6 +171,24 @@ wasm-tools print guest/target/wasm32-unknown-unknown/release/probe_guest.wasm \
 To regenerate `wit/` bindings by hand (not required to build, `wit_bindgen::generate!`
 does this at compile time): `wit-bindgen rust wit/ --async all --out-dir src_gen`.
 
+## `stdin_read_via_stream/`: ratified stdin ABI availability check (#1539)
+
+`stdin_read_via_stream/component.wat` declares the ratified
+`wasi:cli/stdin@0.3.0` import and `read-via-stream` result type
+`tuple<stream<u8>, future<result<_, error-code>>>`. Its `error-code` is
+imported from `wasi:cli/types@0.3.0` and aliased into the stdin instance, which
+preserves the WIT type's nominal identity rather than using a byte-sized
+stand-in.
+
+`scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates the
+component. Its minimal `wasi:cli/run@0.2.12` command export lets wasmtime 47
+instantiate it before resolving the `read-via-stream` import. Generic ABI/type
+mismatch or missing-command-export diagnostics fail. An explicit
+missing-stdin-implementation diagnostic skips the local default lane and fails
+required mode; only a successful link passes required mode. Link success is an
+availability result, not a lifecycle result. The probe is included in the
+optional `test-wasi-p3` aggregate.
+
 ## `stackful/`: hand-authored blocking-wait probe (M1b-3c mechanics proof)
 
 `stackful/component.wat` is a **fully hand-written** Component Model binary

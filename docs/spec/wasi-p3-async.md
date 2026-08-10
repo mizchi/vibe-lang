@@ -1466,6 +1466,26 @@ gate lane = `test_named_hoststreams_component_gate.sh` の close lane
 かつ drain-only component に close import が無いこと + closing component に
 guest import と adapter export が両方あることを .wat で確認）。
 
+### 3.18.2 #1539 — `wasi:cli/stdin@0.3.0` ABI availability probe
+
+`tools/wasip3_component_probe/stdin_read_via_stream/component.wat` declares
+`wasi:cli/stdin@0.3.0` and its `read-via-stream` result type:
+`tuple<stream<u8>, future<result<_, error-code>>>`. The component imports
+`wasi:cli/types@0.3.0` and aliases its nominal `error-code` into the stdin
+instance, so the declaration does not substitute a representation-compatible
+payload for the WIT type.
+
+`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` parses and validates that
+component. Its minimal `wasi:cli/run@0.2.12` command export makes wasmtime 47
+instantiate the component before it resolves the retained stdin function
+import, rather than rejecting it for lacking a command export. Generic ABI/type
+mismatch or missing-command-export diagnostics are failures. Wasmtime's
+explicit missing-stdin-implementation diagnostic skips the local default lane
+but fails required mode; only a successful link passes the required
+availability gate. Link success remains not a passing lifecycle/behavioral
+result. The optional `test-wasi-p3` aggregate includes this probe; its CI job
+remains outside `ci-required`.
+
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
 §3.18 + §3.18.1 の host stream は **viberun の test provider**

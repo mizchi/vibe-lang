@@ -2,13 +2,16 @@
 # WASI p3 guarantee gate (#821): assert that vibe-built artifacts run on
 # wasmtime's WASI p3 surface, on a SPECIFIC wasmtime binary, with missing
 # tooling treated as failure. This is the CI entry point; it composes the two
-# existing verticals plus a WIT version-pin assert:
+# existing verticals, the optional stdin availability probe, and a WIT
+# version-pin assert:
 #
 #   phase A  async component vertical (test_async_component_gate.sh)
 #            .vibe async entry -> component-model async component -> 42
 #   phase B  wasi:http p3 world (test_wasi_http_p3_full_gate.sh)
 #            componentize -> wac plug -> wasmtime serve -> curl 200/401
-#   phase C  WIT pin: the composed serve component's world must reference the
+#   phase C  wasi:cli/stdin availability (test_wasi_cli_stdin_p3_probe_gate.sh)
+#            exact ratified import; explicit missing implementation is expected
+#   phase D  WIT pin: the composed serve component's world must reference the
 #            pinned wasi:http version, so adapter/vendored-WIT/runtime drift
 #            fails loudly instead of as a mysterious resolution error.
 #
@@ -23,7 +26,7 @@
 #                                pin 0.3.0, wasmtime 46 cutover, #821 — was
 #                                the RC pin 0.3.0-rc-2026-03-15 on wasmtime 45)
 #   VIBE_P3_GATE_PHASES          comma list of phases to run (default
-#                                "async,http"). Both phases pass on wasmtime
+#                                "async,http,stdin"). The async/http phases pass on wasmtime
 #                                46.0.1 as of the ratified-WIT cutover (#821):
 #                                the vendored WIT was refreshed to
 #                                wasi:http@0.3.0 (matching what 46 serves),
@@ -52,7 +55,7 @@ if [ -z "${WASMTIME_BIN:-}" ] || ! "$WASMTIME_BIN" --version >/dev/null 2>&1; th
   echo "[p3-guarantee] SKIP: wasmtime not available"
   exit 0
 fi
-PHASES="${VIBE_P3_GATE_PHASES:-async,http}"
+PHASES="${VIBE_P3_GATE_PHASES:-async,http,stdin}"
 echo "[p3-guarantee] wasmtime under test: $("$WASMTIME_BIN" --version) ($WASMTIME_BIN)"
 echo "[p3-guarantee] required-tools mode: $REQUIRE / phases: $PHASES / wit pin: wasi:http@$WIT_PIN"
 
@@ -68,13 +71,18 @@ case ",$PHASES," in *",http,"*)
   bash "$SCRIPT_DIR/test_wasi_http_p3_full_gate.sh"
   ;;
 esac
+case ",$PHASES," in *",stdin,"*)
+  echo "[p3-guarantee] phase C: wasi:cli/stdin availability"
+  bash "$SCRIPT_DIR/test_wasi_cli_stdin_p3_probe_gate.sh"
+  ;;
+esac
 
 if [ "$run_http" != "1" ]; then
   echo "[p3-guarantee] PASS (phases: $PHASES) on $("$WASMTIME_BIN" --version)"
   exit 0
 fi
 
-echo "[p3-guarantee] phase C: WIT version pin"
+echo "[p3-guarantee] phase D: WIT version pin"
 COMPOSED="$PROJECT_ROOT/_build/bench/wasi_http_p3_full/handler.serve.wasm"
 if command -v wasm-tools >/dev/null 2>&1 && [ -s "$COMPOSED" ]; then
   if ! wasm-tools component wit "$COMPOSED" | grep -q "wasi:http/handler@$WIT_PIN"; then
