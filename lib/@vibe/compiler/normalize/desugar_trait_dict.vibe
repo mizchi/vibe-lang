@@ -9268,6 +9268,8 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       ELetMut(n, _, _, _) => n == "inspect",
       EForIn(v, _, _, _) => v == "inspect",
       EFn(_, _, params, _, _, _) => dinsp_params_bind(params, "inspect"),
+      EMatch(_, arms) => dinsp_arms_bind(arms, "inspect"),
+      EHandle(_, arms) => dinsp_arms_bind(arms, "inspect"),
       _ => false
     }
   } else {
@@ -9280,6 +9282,8 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EAssignOp(_, n, _, _) => n == name,
       EForIn(v, _, _, _) => v == name,
       EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),
+      EMatch(_, arms) => dinsp_arms_bind(arms, name),
+      EHandle(_, arms) => dinsp_arms_bind(arms, name),
       _ => false
     }
   }
@@ -9343,6 +9347,61 @@ fn dinsp_scan_fields(fields: Array[(String, Expr)], mode: Int, name: String) -> 
   while !found && i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
     found = dinsp_scan(v, mode, name)
+    i = i + 1
+  }
+  found
+}
+
+/// A binder named `name` in PATTERN position -- `let (inspect, x) = ..`, a
+/// match/handle arm's `Some(inspect)`, a struct-pattern field bound to it.
+///
+/// Codex review on #1622 (P1): without this the shadow guard only saw binders
+/// spelled in expression position, so a `inspect` introduced by destructuring
+/// left `dinsp_binds_inspect` false and the rewrite went ahead and replaced the
+/// user's own call with snapshot-assertion behaviour -- silently, since the
+/// program still compiled.
+fn dinsp_pat_binds(pat: Pat, name: String) -> Bool {
+  match pat {
+    PWild => false,
+    PBind(n) => n == name,
+    PInt(_) => false,
+    PFloat(_) => false,
+    PString(_) => false,
+    PBool(_) => false,
+    PCtor(_, args) => dinsp_pat_list_binds(args, name),
+    PTuple(items) => dinsp_pat_list_binds(items, name),
+    POr(a, b) => dinsp_pat_binds(a, name) || dinsp_pat_binds(b, name),
+    PStruct(_, fields) => dinsp_pat_fields_bind(fields, name)
+  }
+}
+
+fn dinsp_pat_list_binds(pats: Array[Pat], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(pats) {
+    found = dinsp_pat_binds(Array::get(pats, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_pat_fields_bind(fields: Array[(String, Pat)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, p) = Array::get(fields, i)
+    found = dinsp_pat_binds(p, name)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_arms_bind(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    found = dinsp_pat_binds(p, name)
     i = i + 1
   }
   found
@@ -9656,7 +9715,7 @@ fn dinsp_stmt_binds(stmt: Stmt) -> Bool {
     SReExport(_, items) => dinsp_import_binds(items),
     SLet(_, _, name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
     SLetMut(name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
-    SLetPat(_, body) => dinsp_mentions_binder(body),
+    SLetPat(pat, body) => dinsp_pat_binds(pat, "inspect") || dinsp_mentions_binder(body),
     SFnDecl(_, name, body, _, _) => name == "inspect" || dinsp_mentions_binder(body),
     STest(_, body) => dinsp_mentions_binder(body),
     SBench(_, body) => dinsp_mentions_binder(body),
@@ -9668,8 +9727,8 @@ fn dinsp_stmt_binds(stmt: Stmt) -> Bool {
 }
 
 /// A binder named `inspect` INSIDE an expression (a `let`, a lambda parameter,
-/// a `for` variable). A bare reference does not count -- that is the call this
-/// pass exists to rewrite.
+/// a `for` variable, or a match/handle arm's pattern). A bare reference does
+/// not count -- that is the call this pass exists to rewrite.
 fn dinsp_mentions_binder(expr: Expr) -> Bool {
   dinsp_scan(expr, 1, "")
 }

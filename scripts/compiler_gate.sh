@@ -10214,7 +10214,7 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
-echo "[compiler-gate] 98/98 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+echo "[compiler-gate] 98/99 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through
@@ -10296,5 +10296,105 @@ if [ -s "$gvdir/bad.txt" ] || ! grep -q 'unknown metavariable kind' "$gvdir/bad.
 fi
 rm -rf "$gvdir"
 echo "[compiler-gate] vibe grep typed filters ok"
+
+# 99. #1571: `inspect` is a REWRITE, not a function, so the two ways it can be
+#     wrong are both silent -- it can capture a name the user already bound, and
+#     it can hijack a call the user meant for their own `inspect`. Both were
+#     found by review rather than by a gate (the second twice: expression
+#     binders in #1622, PATTERN binders after that), which is what this step is
+#     for. Each case below fails DIFFERENTLY if the guard regresses.
+echo "[compiler-gate] 99/99 the inspect rewrite neither captures nor hijacks (#1571)"
+inspdir="_build/_gate_inspect_guard"
+rm -rf "$inspdir"; mkdir -p "$inspdir"
+
+# (a) Hygiene: the temporaries the expansion introduces must not capture a name
+# the arguments already reference. With a fixed temp name this compared the
+# literal against ITSELF and passed; the assertion has to see "wrong".
+cat > "$inspdir/hygiene.vibe" <<'INSPH'
+fn main() -> Int {
+  let __vibe_inspect_actual = "wrong"
+  inspect(1, __vibe_inspect_actual)
+  0
+}
+INSPH
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$inspdir/hygiene.vibe" "$inspdir/hygiene.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$inspdir/hygiene.wasm" ]; then
+  echo "[compiler-gate] FAIL: the inspect hygiene sample did not compile" >&2
+  cat "$inspdir/hygiene.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if insp_hyg="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/hygiene.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: inspect(1, __vibe_inspect_actual) PASSED -- the expansion's temporary captured the argument, so it compared a value against itself (#1571 hygiene)" >&2
+  echo "$insp_hyg" >&2
+  exit 1
+fi
+
+# (b) Shadow, expression binder: a user function named `inspect` must keep its
+# own body. 2 + 5 = 7; the rewrite would return Unit and not type.
+cat > "$inspdir/shadow_fn.vibe" <<'INSPF'
+fn inspect(v: Int, c: String) -> Int {
+  v + 5
+}
+
+fn main() -> Int {
+  inspect(2, "ignored")
+}
+INSPF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$inspdir/shadow_fn.vibe" "$inspdir/shadow_fn.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$inspdir/shadow_fn.wasm" ]; then
+  echo "[compiler-gate] FAIL: a user-declared \`inspect\` did not compile -- the rewrite hijacked the call (#1571 shadow)" >&2
+  cat "$inspdir/shadow_fn.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+insp_fn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/shadow_fn.wasm" 2>/dev/null | tail -1)"
+if [ "$insp_fn_out" != "7" ]; then
+  echo "[compiler-gate] FAIL: a user-declared \`inspect\` got '$insp_fn_out' (want 7) -- its body did not run (#1571 shadow)" >&2
+  exit 1
+fi
+
+# (c) Shadow, PATTERN binder (Codex review on #1622): the same hijack via a
+# match arm, which the expression-only guard could not see. The side effect is
+# the observable: the rewrite runs a snapshot assertion instead and traps.
+cat > "$inspdir/shadow_pat.vibe" <<'INSPP'
+enum Box {
+  B((Int, String) -> Unit)
+}
+
+fn shout(v: Int, c: String) -> Unit {
+  println(c)
+}
+
+fn main() -> Int {
+  match B(shout) {
+    B(inspect) => {
+      inspect(1, "SIDE EFFECT RAN")
+      7
+    }
+  }
+}
+INSPP
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$inspdir/shadow_pat.vibe" "$inspdir/shadow_pat.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$inspdir/shadow_pat.wasm" ]; then
+  echo "[compiler-gate] FAIL: a pattern-bound \`inspect\` did not compile (#1571 shadow, pattern binders)" >&2
+  cat "$inspdir/shadow_pat.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+insp_pat_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/shadow_pat.wasm" 2>&1)"
+case "$insp_pat_out" in
+  *"SIDE EFFECT RAN"*) ;;
+  *)
+    echo "[compiler-gate] FAIL: a match-arm-bound \`inspect\` was rewritten -- the user's function never ran (#1571 shadow; see dinsp_pat_binds in normalize/desugar_trait_dict.vibe)" >&2
+    echo "$insp_pat_out" >&2
+    exit 1
+    ;;
+esac
+rm -rf "$inspdir"
+echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
 
 echo "[compiler-gate] ok"
