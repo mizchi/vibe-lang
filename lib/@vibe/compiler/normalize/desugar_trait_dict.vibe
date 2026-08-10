@@ -9242,6 +9242,189 @@ fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
 /// In-place labeled-argument reordering over a whole program. Rebuilds only the
 /// top-level statements that actually contain a labeled argument (see
 /// expr_has_labeled_arg).
+/// #1571: the desugared form of `inspect(value, content)`.
+///
+/// WHY A BUILTIN AT ALL. `inspect` was deliberately a plain library function in
+/// `@vibe/core` -- it needs no codegen support, only `__to_string` + `println`
+/// + `assert_true`, so adding it there cost nothing (see assert.vibe's header).
+/// #1571 changed the constraint: migrating the `__DATA__` fixtures to inline
+/// snapshots means `inspect` must be callable from a fixture compiled in the
+/// SINGLE-FILE lane, which resolves no imports at all, so a library function
+/// cannot be reached from one. Registering it alongside `assert` /
+/// `assert_true` / `assert_eq` -- import-free for exactly this reason -- is
+/// what unblocks the rest of that migration.
+///
+/// WHY A REWRITE AND NOT A CODEGEN LOWERING. The first cut lowered `inspect` at
+/// the callsite in both backends, the way `assert_eq` is lowered. That builds
+/// an invalid module: everything a call needs is decided by passes that run
+/// BEFORE codegen and walk the AST, so an expression conjured during emission
+/// is invisible to them. Measured, in order: the message literals were absent
+/// from the string table (`string not in table: inspect mismatch:`), and once
+/// those were seeded by hand, the synthesized `println` still had no gated-in
+/// `Stdout::write_stream` import and produced `expected 1 elements on the stack
+/// for fallthru, found 3`. Expanding here instead -- before checking, before
+/// every scan -- means each of those passes sees ordinary calls and needs no
+/// knowledge of `inspect` at all. It also gives both backends the same
+/// expansion by construction rather than by two lowerings agreeing.
+///
+/// Both arguments are let-bound because each is referenced more than once.
+/// Re-evaluating them would make `inspect(next(), ..)` consume two values and
+/// report a different one than it compared.
+fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
+  let actual_name = "__vibe_inspect_actual"
+  let expected_name = "__vibe_inspect_expected"
+  let actual = EIdent(actual_name, 0 - 1)
+  let expected = EIdent(expected_name, 0 - 1)
+  // Nested String::concat rather than one variadic call: `concat` is binary.
+  let tail = ECall(EIdent("String::concat", 0 - 1), [
+    EString("\n  expected: "),
+    expected
+  ], 0 - 1)
+  let body_msg = ECall(EIdent("String::concat", 0 - 1), [
+    actual,
+    tail
+  ], 0 - 1)
+  let msg = ECall(EIdent("String::concat", 0 - 1), [
+    EString("inspect mismatch:\n  actual:   "),
+    body_msg
+  ], 0 - 1)
+  // The message must print BEFORE the trap: `vibe test --update` reads exactly
+  // this "actual/expected" text off stdout to rewrite the stale literal.
+  let on_mismatch = ESeq(ECall(EIdent("println", 0 - 1), [
+    msg
+  ], 0 - 1), ECall(EIdent("assert_true", 0 - 1), [
+    EBool(false)
+  ], 0 - 1))
+  let check = EIf(EBinOp("==", actual, expected), EUnit, on_mismatch)
+  ELet(actual_name, ECall(EIdent("__to_string", 0 - 1), [
+    value
+  ], 0 - 1), ELet(expected_name, content, check, 0 - 1), 0 - 1)
+}
+
+/// Rewrite every two-argument `inspect(value, content)` call to its expansion.
+///
+/// A LOCAL definition wins: the guard is on the callee spelling only, so a file
+/// that declares or imports its own `inspect` still gets rewritten -- which is
+/// why the expansion must stay behaviourally identical to `@vibe/core`'s
+/// library `inspect` (assert.vibe), the one every existing importer was
+/// compiled against until now.
+fn dinsp_expr(expr: Expr) -> Expr {
+  match expr {
+    ECall(callee, args, off) => {
+      let rewritten = for a in args {
+        dinsp_expr(a)
+      }
+      match callee {
+        EIdent(name, _) => if name == "inspect" && Array::length(rewritten) == 2 {
+          inspect_lowering_expr(Array::get(rewritten, 0), Array::get(rewritten, 1))
+        } else {
+          ECall(dinsp_expr(callee), rewritten, off)
+        },
+        _ => ECall(dinsp_expr(callee), rewritten, off)
+      }
+    },
+    _ => dinsp_children(expr)
+  }
+}
+
+fn dinsp_exprs(items: Array[Expr]) -> Array[Expr] {
+  for item in items {
+    dinsp_expr(item)
+  }
+}
+
+fn dinsp_fields(fields: Array[(String, Expr)]) -> Array[(String, Expr)] {
+  for f in fields {
+    (f.0, dinsp_expr(f.1))
+  }
+}
+
+fn dinsp_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for arm in arms {
+    (arm.0, dinsp_expr(arm.1))
+  }
+}
+
+fn dinsp_opt(opt: Option[Expr]) -> Option[Expr] {
+  match opt {
+    Some(v) => Some(dinsp_expr(v)),
+    None => None
+  }
+}
+
+/// Structural recursion for every non-ECall node. Enumerated rather than
+/// `_ => expr` so a new `Expr` variant is a compile error here instead of a
+/// silently un-rewritten subtree.
+fn dinsp_children(expr: Expr) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_, _) => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(dinsp_exprs(items)),
+    EArray(items) => EArray(dinsp_exprs(items)),
+    ERecord(n, fields, tys) => ERecord(n, dinsp_fields(fields), tys),
+    EMap(fields) => EMap(dinsp_fields(fields)),
+    EIf(c, t, f) => EIf(dinsp_expr(c), dinsp_expr(t), dinsp_expr(f)),
+    ELet(n, v, b, off) => ELet(n, dinsp_expr(v), dinsp_expr(b), off),
+    ELetRec(n, v, b) => ELetRec(n, dinsp_expr(v), dinsp_expr(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, dinsp_expr(v), dinsp_expr(b), off),
+    EAssign(n, v, b) => EAssign(n, dinsp_expr(v), dinsp_expr(b)),
+    EAssignOp(op, n, v, b) => EAssignOp(op, n, dinsp_expr(v), dinsp_expr(b)),
+    ESeq(a, b) => ESeq(dinsp_expr(a), dinsp_expr(b)),
+    EMatch(s, arms) => EMatch(dinsp_expr(s), dinsp_arms(arms)),
+    EHandle(s, arms) => EHandle(dinsp_expr(s), dinsp_arms(arms)),
+    EWhile(c, b) => EWhile(dinsp_expr(c), dinsp_expr(b)),
+    ELoop(params, b) => ELoop(dinsp_fields(params), dinsp_expr(b)),
+    EForIn(v, k, it, b) => EForIn(v, k, dinsp_expr(it), dinsp_expr(b)),
+    ECall(callee, args, off) => ECall(dinsp_expr(callee), dinsp_exprs(args), off),
+    EBinOp(op, l, r) => EBinOp(op, dinsp_expr(l), dinsp_expr(r)),
+    EUnaryOp(op, v) => EUnaryOp(op, dinsp_expr(v)),
+    EFn(g, bs, ps, ret, row, body) => EFn(g, bs, ps, ret, row, dinsp_expr(body)),
+    EDot(inner, f, off, foff) => EDot(dinsp_expr(inner), f, off, foff),
+    ELabeledArg(l, sfx, v) => ELabeledArg(l, sfx, dinsp_expr(v)),
+    EReturn(v) => EReturn(dinsp_expr(v)),
+    EBreak(opt) => EBreak(dinsp_opt(opt)),
+    EContinue(args) => EContinue(dinsp_exprs(args)),
+    ESpread(v) => ESpread(dinsp_expr(v))
+  }
+}
+
+fn dinsp_stmt(stmt: Stmt) -> Stmt {
+  match stmt {
+    SLet(e, r, n, t, body) => SLet(e, r, n, t, dinsp_expr(body)),
+    SLetMut(n, t, body) => SLetMut(n, t, dinsp_expr(body)),
+    SLetPat(p, body) => SLetPat(p, dinsp_expr(body)),
+    STest(n, body) => STest(n, dinsp_expr(body)),
+    SBench(n, body) => SBench(n, dinsp_expr(body)),
+    SExample(n, body) => SExample(n, dinsp_expr(body)),
+    SExpr(body) => SExpr(dinsp_expr(body)),
+    SFnDecl(e, n, body, req, ens) => SFnDecl(e, n, dinsp_expr(body), req, ens),
+    SModule(e, n, body) => SModule(e, n, dinsp_stmts_copy(body)),
+    _ => stmt
+  }
+}
+
+fn dinsp_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
+  for s in stmts {
+    dinsp_stmt(s)
+  }
+}
+
+/// In-place, like the other desugars in this file: `check_program` hands the
+/// SAME array to the checker and then on to codegen, so a fresh array would be
+/// dropped on the floor.
+export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, dinsp_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+}
+
 export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   let tbl = collect_fn_param_labels(stmts)
   // #1500: optional-parameter call sites are rewritten by the same walk (see

@@ -28,7 +28,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/normalize {
-  lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings
+  desugar_inspect_calls, lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings
 }
 
 import @vibe/compiler/perceus {
@@ -3174,6 +3174,14 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
   if za_msg != "" {
     Array::push(errs, za_msg)
   } else {
+    // #1571: expand `inspect(value, content)` into its
+    // `__to_string`/`println`/`assert_true` form. The checker runs this too
+    // (checker_stmt.vibe), but on the statement array IT was handed --
+    // parse_program_with_path hands out a fresh array per caller, so the
+    // merged program codegen compiles has never seen that pass. Idempotent
+    // (nothing named `inspect` survives it), same as desugar_labeled_args's
+    // check-then-codegen double run.
+    desugar_inspect_calls(stmts)
     // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
     // convergence point — runs here on the fully merged program before generic
     // type params are stripped (just below). No-op unless a method-bearing trait
