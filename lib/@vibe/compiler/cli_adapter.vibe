@@ -23,6 +23,7 @@ import @vibe/compiler/runtime {
   collect_all_diagnostics,
   doc_at_source,
   escape_spans,
+  grep_scan_fs,
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
   locate_type_error,
@@ -242,6 +243,28 @@ fn parse_int_or(s: String, default: Int) -> Int {
       default
     }
   }
+}
+
+/// Split a newline-separated env var into its non-empty lines. `vibe grep`
+/// passes repeatable `--where` / `--where-row` clauses this way: a clause can
+/// contain spaces, commas and `:` (they are type syntax), so newline is the
+/// only separator that never needs quoting.
+fn adapter_split_nonempty_lines(text: String) -> Array[String] {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let parts = String::split(text, "\n")
+  let mut i = 0
+  while i < Array::length(parts) {
+    let part = String::trim(Array::get(parts, i))
+    if String::length(part) > 0 {
+      Array::push(out, part)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn adapter_string_to_bytes(s: String) -> Bytes {
@@ -1199,6 +1222,22 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       let src = Fs::read_file(input_path)
       let esc = escape_spans(src)
       Fs::write_bytes(output_path, adapter_string_to_bytes(join_escape_spans(esc)))
+      0
+    } with Exception {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  }
+  // `vibe grep` (#1572): AST pattern search. `input_path` is the root to sweep
+  // (a file or a directory); the pattern and the filters arrive as env vars so
+  // this keeps the same (input, output) interface every other query mode uses.
+  // A report, not a failure: no match is empty output (`[]` in JSON), and only
+  // a bad PATTERN or filter is an error -- routed to the `.diag` sidecar, the
+  // same convention VIBE_SYMBOLS uses, so `output_path` never carries a
+  // plausible-but-wrong result list.
+  if Env::get("VIBE_GREP") == "1" {
+    return handle {
+      let text = grep_scan_fs(input_path, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1")
+      Fs::write_bytes(output_path, adapter_string_to_bytes(text))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)

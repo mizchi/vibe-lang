@@ -1,0 +1,221 @@
+//# Imports
+
+// #1572 `vibe grep`: structural AST search plus the type-aware filters.
+// Every case here drives grep_scan_source (the no-Fs seam) so the whole
+// pattern language, the capture wire format and the typed filters are
+// covered without touching the filesystem.
+
+import ./grep.vibe {
+  grep_compile_pattern, grep_emit_hits, grep_empty_strings, grep_file_hits, grep_join_lines, grep_scan_source, grep_typed_context_error
+}
+
+import @vibe/core {
+  array_empty, inspect
+}
+
+//# Functions
+
+fn no_strings() -> Array[String] {
+  array_empty()
+}
+
+fn one_string(a: String) -> Array[String] {
+  let out = no_strings()
+  Array::push(out, a)
+  out
+}
+
+fn scan(source: String, pattern: String) -> String with Exception {
+  grep_scan_source("a.vibe", source, pattern, no_strings(), no_strings(), "", false)
+}
+
+fn scan_where(source: String, pattern: String, where_clause: String) -> String with Exception {
+  grep_scan_source("a.vibe", source, pattern, one_string(where_clause), no_strings(), "", false)
+}
+
+fn scan_row(source: String, pattern: String, row_clause: String) -> String with Exception {
+  grep_scan_source("a.vibe", source, pattern, no_strings(), one_string(row_clause), "", false)
+}
+
+fn scan_only(source: String, pattern: String, only: String) -> String with Exception {
+  grep_scan_source("a.vibe", source, pattern, no_strings(), no_strings(), only, false)
+}
+
+/// The error message a bad pattern / bad filter produces, or "" when the scan
+/// unexpectedly succeeded. The whole point of these cases is that the message
+/// tells the caller what to type instead.
+fn scan_err(source: String, pattern: String, wheres: Array[String]) -> String {
+  handle {
+    let _ = grep_scan_source("a.vibe", source, pattern, wheres, no_strings(), "", false)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+/// The same scan the FS tier performs when the import graph fails to check:
+/// matching still runs, but the typed context carries the failure.
+fn grep_error_scan(source: String, pattern: String, only: String) -> String with Exception {
+  let hits = grep_file_hits("a.vibe", source, grep_compile_pattern(pattern))
+  let out = grep_empty_strings()
+  grep_emit_hits(source, hits, grep_typed_context_error(source, "dep.vibe: line 1:1: boom"), true, no_strings(), no_strings(), only, false, out)
+  grep_join_lines(out, false)
+}
+
+fn count_lines(text: String) -> Int {
+  let len = String::length(text)
+  let mut i = 0
+  let mut n = 0
+  while i < len {
+    if String::char_code_at(text, i) == 10 {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+//# Tests
+
+test "grep: a literal pattern matches only the identical call" {
+  let src = "let a = f(1)\nlet b = f(2)\nlet c = g(1)\n"
+  inspect(scan(src, "f(1)"), "a.vibe:1:9: f(1)\n")
+}
+
+test "grep: an `exp` metavariable matches any argument and captures it" {
+  let src = "let a = f(1)\nlet b = f(g(2))\n"
+  inspect(scan(src, "f($(x:exp))"), "a.vibe:1:9: f(1)\t$x=1\na.vibe:2:9: f(g(2))\t$x=g(2)\n")
+}
+
+test "grep: `args` matches any arity, including zero" {
+  let src = "let a = f()\nlet b = f(1)\nlet c = f(1, 2, 3)\n"
+  inspect(scan(src, "f($(a:args))"), "a.vibe:1:9: f()\t$a=\na.vibe:2:9: f(1)\t$a=1\na.vibe:3:9: f(1, 2, 3)\t$a=1, 2, 3\n")
+}
+
+test "grep: `args` in the middle keeps the fixed head and tail positions" {
+  let src = "let a = f(1, 9)\nlet b = f(1, 5, 6, 9)\nlet c = f(2, 9)\n"
+  inspect(scan(src, "f(1, $(mid:args), 9)"), "a.vibe:1:9: f(1, 9)\t$mid=\na.vibe:2:9: f(1, 5, 6, 9)\t$mid=5, 6\n")
+}
+
+test "grep: `id` only takes identifiers, `const` only literals" {
+  let src = "let a = f(1)\nlet b = f(x)\n"
+  inspect(scan(src, "f($(n:id))"), "a.vibe:2:9: f(x)\t$n=x\n")
+  inspect(scan(src, "f($(k:const))"), "a.vibe:1:9: f(1)\t$k=1\n")
+}
+
+test "grep: a repeated metavariable must agree, `_` never has to" {
+  let src = "let a = f(x, x)\nlet b = f(x, y)\n"
+  inspect(scan(src, "f($(v:exp), $(v:exp))"), "a.vibe:1:9: f(x, x)\t$v=x\n")
+  inspect(count_lines(scan(src, "f($(_:exp), $(_:exp))")), "2")
+}
+
+test "grep: matching is formatting-insensitive (AST, not text)" {
+  let spread = "let a = f(\n  1,\n  2\n)\n"
+  inspect(scan(spread, "f(1, 2)"), "a.vibe:1:9: f(1, 2)\n")
+}
+
+test "grep: match arms with a `pat` metavariable" {
+  let src = "let a = match v { Some(k) => k, None => 0 }\n"
+  inspect(scan(src, "match $(s:exp) { Some($(p:pat)) => $(b:exp), None => 0 }"), "a.vibe:1:15: match v { Some(k) => k, None => 0 }\t$s=v\t$p=k\t$b=k\n")
+}
+
+test "grep: a `type` metavariable matches a lambda's annotation" {
+  let src = "let a = (x: Int) -> Int { x }\n"
+  inspect(scan(src, "(x: $(t:type)) -> Int { x }"), "a.vibe:1:27: (x: Int) -> Int { x }\t$t=Int\n")
+}
+
+test "grep: a method call keeps its shape; the pipe form parses to a plain call" {
+  let src = "let a = xs.map(f)\nlet b = xs |> map(f)\nlet c = map(xs, f)\n"
+  inspect(scan(src, "$(r:exp).map($(f:exp))"), "a.vibe:1:9: xs.map(f)\t$r=xs\t$f=f\n")
+  inspect(scan(src, "map($(a:args))"), "a.vibe:2:9: map(xs, f)\t$a=xs, f\na.vibe:3:9: map(xs, f)\t$a=xs, f\n")
+}
+
+test "grep: nested matches are reported as the separate sites they are" {
+  let src = "let a = f(f(1))\n"
+  inspect(scan(src, "f($(x:exp))"), "a.vibe:1:9: f(f(1))\t$x=f(1)\na.vibe:1:11: f(1)\t$x=1\n")
+}
+
+test "grep: JSON output carries offsets and per-capture spans" {
+  let src = "let a = f(1)\n"
+  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":-1}}}\n]\n")
+}
+
+test "grep: no match is empty output, in both text and JSON form" {
+  let src = "let a = f(1)\n"
+  inspect(scan(src, "zzz(1)"), "")
+  inspect(grep_scan_source("a.vibe", src, "zzz(1)", no_strings(), no_strings(), "", true), "[]\n")
+}
+
+test "grep --where: filter a capture by its inferred type" {
+  let src = "let f = (v: Int) -> Int { v }\nlet g = (v: String) -> String { v }\nlet n = 1\nlet s = \"x\"\nlet a = f(n)\nlet b = g(s)\n"
+  inspect(scan_where(src, "$(c:id)($(x:exp))", "$x : Int"), "a.vibe:5:9: f(n)\t$c=f\t$x=n\n")
+  inspect(scan_where(src, "$(c:id)($(x:exp))", "$x : String"), "a.vibe:6:9: g(s)\t$c=g\t$x=s\n")
+}
+
+test "grep --where: `_` is a wildcard inside the requested type" {
+  let src = "let f = (v: Array[Int]) -> Int { 0 }\nlet xs = [\n  1\n]\nlet a = f(xs)\n"
+  inspect(scan_where(src, "f($(x:exp))", "$x : Array[_]"), "a.vibe:5:9: f(xs)\t$x=xs\n")
+  inspect(scan_where(src, "f($(x:exp))", "$x : Array[String]"), "")
+}
+
+test "grep --where: `=` compares the RESOLVED name, seeing through an alias" {
+  let src = "import ./dep.vibe {\n  helper as h\n}\nlet other = (v: Int) -> Int { v }\nlet a = h(1)\nlet b = other(1)\n"
+  inspect(scan_where(src, "$(f:id)($(_:exp))", "$f = helper"), "a.vibe:5:9: h(1)\t$f=h\n")
+  inspect(scan_where(src, "$(f:id)($(_:exp))", "$f = h"), "")
+}
+
+test "grep: `exp` declines a labeled argument, `arg` takes one" {
+  let src = "let f = (a: Int, b: Int) -> Int { a + b }\nlet x = f(1, b=2)\n"
+  inspect(scan(src, "f(1, $(v:exp))"), "")
+  inspect(scan(src, "f(1, $(v:arg))"), "a.vibe:2:9: f(1, b=2)\t$v=b=2\n")
+}
+
+test "grep --where-row: keep or drop by what a callee's effect row carries" {
+  let src = "let readit = (p: String) -> String with Fs {\n  Fs::read_file(p)\n}\nlet plain = (p: String) -> String {\n  p\n}\nlet run = (q: String) -> String with Fs {\n  let a = readit(q)\n  plain(a)\n}\n"
+  // A capability builtin carries the row too, so it is a genuine hit here.
+  inspect(scan_row(src, "$(f:id)($(x:id))", "$f with Fs"), "a.vibe:2:3: Fs::read_file(p)\t$f=Fs::read_file\t$x=p\na.vibe:8:11: readit(q)\t$f=readit\t$x=q\n")
+  inspect(scan_row(src, "$(f:id)($(x:id))", "$f without Fs"), "a.vibe:9:3: plain(a)\t$f=plain\t$x=a\n")
+}
+
+test "grep --only-well-typed / --only-ill-typed split a file by its type error" {
+  let good = "let f = (x: Int) -> Int { x }\nlet a = f(1)\n"
+  inspect(scan_only(good, "f($(x:exp))", "well"), "a.vibe:2:9: f(1)\t$x=1\n")
+  inspect(scan_only(good, "f($(x:exp))", "ill"), "")
+  let bad = "let f = (x: Int) -> Int { x }\nlet a = f(\"s\")\n"
+  inspect(scan_only(bad, "f($(x:exp))", "ill"), "a.vibe:2:9: f(\"s\")\t$x=\"s\"\n")
+  inspect(scan_only(bad, "f($(x:exp))", "well"), "")
+}
+
+test "grep: a file whose typing failed outright is never reported well-typed" {
+  // The FS tier lands here whenever the import graph itself fails to check
+  // (grep_fs.vibe). An empty context would call the file clean; this one must
+  // not, and its `--where` filters must drop rather than guess.
+  let src = "let f = (x: Int) -> Int { x }\nlet a = f(1)\n"
+  inspect(grep_scan_source("a.vibe", src, "f($(x:exp))", no_strings(), no_strings(), "well", false), "a.vibe:2:9: f(1)\t$x=1\n")
+  inspect(grep_error_scan(src, "f($(x:exp))", "well"), "")
+  inspect(grep_error_scan(src, "f($(x:exp))", "ill"), "a.vibe:2:9: f(1)\t$x=1\n")
+  // A capture with no identifier-shaped token (a bare literal) carries no
+  // source offset, so there is nothing to look the type up BY -- the filter
+  // drops it instead of guessing. Same boundary the docs state.
+  inspect(scan_where(src, "f($(x:const))", "$x : Int"), "")
+}
+
+test "grep: a malformed pattern says what to write instead of matching nothing" {
+  inspect(scan_err("let a = 1\n", "f($x)", no_strings()), "grep pattern: `$` must start a metavariable `$(name:kind)`")
+  inspect(scan_err("let a = 1\n", "f($(x))", no_strings()), "grep pattern: expected `$(name:kind)`, e.g. `$(x:exp)`")
+  inspect(scan_err("let a = 1\n", "f($(x:exp", no_strings()), "grep pattern: unterminated metavariable — expected `)` after `$(name:kind)`")
+  inspect(scan_err("let a = 1\n", "f($(x:exp)", no_strings()), "grep pattern: expected ) but got eof at #3")
+  inspect(scan_err("let a = 1\n", "f($(x:expr))", no_strings()), "grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type")
+  inspect(scan_err("let a = 1\n", "f($(a:args), $(b:args))", no_strings()), "grep pattern: at most one `args` metavariable per argument list")
+  inspect(scan_err("let a = 1\n", "let x = 1", no_strings()), "grep pattern: must be a single EXPRESSION — declaration patterns (`fn`, top-level `let`, `enum`, ...) are not supported yet; use `vibe symbols` for declarations")
+}
+
+test "grep --where: a clause naming an uncaptured metavariable is an error" {
+  inspect(scan_err("let a = f(1)\n", "f($(x:exp))", one_string("$y : Int")), "--where: the pattern never captures `$y`")
+  // ...even when nothing in the searched source matches the pattern at all.
+  // Reporting this only on a matching file would let a typo'd clause come back
+  // as the empty output that means "clean".
+  inspect(scan_err("let a = 1\n", "f($(x:exp))", one_string("$y : Int")), "--where: the pattern never captures `$y`")
+}

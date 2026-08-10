@@ -1,0 +1,2085 @@
+//# Imports
+
+// `vibe grep` (#1572) — AST pattern search with TYPE-aware filters.
+//
+// The other editor query primitives (`vibe symbols` / `type-at` / `binding-at`
+// / `escapes`) all answer "position -> meaning". This one runs the other way:
+// "structure -> positions". moongrep / ast-grep stop at the grammar (their
+// guards can only regex an identifier capture); the filters here run on the
+// CHECKER's answers instead — a capture's inferred type, a capture's effect
+// row, the name a capture resolves to after import aliases, and whether the
+// declaration around the match type-checks at all.
+//
+// PATTERN LANGUAGE
+//   `$(name:kind)` is a metavariable, kind one of:
+//     exp    any single expression
+//     id     an identifier only (also matches a FIELD / binder / constructor /
+//            type NAME where one is grammatical) — captures the name text
+//     const  a literal only (Int / Double / String / Bool / unit)
+//     arg    one argument position (like `exp`, but also matches a LABELED
+//            argument `name=expr`, which `exp` does not)
+//     args   ZERO OR MORE consecutive argument positions (the variadic form;
+//            at most one per argument list)
+//     pat    any single pattern (match-arm / destructuring position)
+//     type   any single type expression
+//   `$(_:kind)` is anonymous: it never has to agree with another occurrence.
+//   Any other name must match the SAME text everywhere it appears.
+//
+//   `args` is an addition to the six kinds #1572 lists. Without it a pattern
+//   can only match a fixed arity, so `Iterator::map($(a:args))` — "every call
+//   to this, whatever it is passed" — would not be expressible at all, which
+//   is the single most common thing a migration sweep needs.
+//
+// HOW A PATTERN IS PARSED (design point 1 in #1572)
+//   `$(` is not lexable today, so the spelling cannot collide with real
+//   source. Each metavariable is rewritten to a reserved identifier
+//   (`__vgm_<kind>__<name>`) and the result goes through the ORDINARY parser
+//   — this is AST matching, never a text regex, and formatting differences
+//   (newlines, indentation, comments) cannot affect it.
+//
+//   Both sides go through the SAME parser, so both sides get the same
+//   desugaring. Measured on the current parser: `xs |> f(y)` and `f(xs, y)`
+//   both parse to `f(xs, y)` and therefore match each other, while `x.f(y)`
+//   stays an `EDot` callee and matches only the method spelling. That is the
+//   honest description of today's behaviour — #1572's design point 1 wants
+//   surface fidelity for structure and leaves call-form unification to the
+//   resolved-name filter, and the pipe case is the one place the parser
+//   already decided otherwise.
+//
+// LIMITATION (v1): a pattern must be a single EXPRESSION. Declaration-shaped
+// patterns (`fn ...`, `let ... = ...` at statement level, `enum ...`) are
+// rejected with an actionable message rather than silently matching nothing.
+//
+// All strings are built with String::concat only (never `+`, never "\{x}"
+// interpolation): both mis-codegen to NUL here. Ints stringify via
+// __to_string.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, Subst, Type, TypeDef, TypeEnv, TypeExpr, collect_import_aliases, env_lookup, expr_children, subst_apply, type_to_string
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/checker {
+  check_program_with_env_result, lookup_builtin, resolve_type_expr
+}
+
+import @vibe/compiler/syntax {
+  lex,
+  lex_with_offsets,
+  offset_to_line_col,
+  parse_program,
+  parse_program_located,
+  parse_program_spans,
+  parse_type,
+  print_expr,
+  print_pat,
+  print_type_expr
+}
+
+//# Types
+
+/// One structural match. `offset`/`end_offset` are char offsets; `end_offset`
+/// is a LOWER BOUND on the true extent (see grep_expr_span: only identifier-
+/// shaped tokens carry offsets in this AST, so trailing punctuation and
+/// literals are not counted). `text` is the printer's canonical rendering of
+/// the matched node and is the exact, complete description of what matched.
+export struct GrepHit {
+  path: String;
+  offset: Int;
+  end_offset: Int;
+  text: String;
+  captures: Array[(String, String, Int, Bool)]
+}
+
+/// A compiled pattern: the parsed template plus the metavariable names it
+/// declares, in source order (so `--where` can reject a name the pattern
+/// never captures instead of silently filtering nothing out).
+export struct GrepPattern {
+  template: Expr;
+  vars: Array[String]
+}
+
+/// Everything the typed filters need about ONE file. `type_error` is "" when
+/// the file checks cleanly; otherwise it is the checker's raw message, and
+/// `type_error_offset` is the source offset its own ` [@off=N]` marker points
+/// at (-1 when it carries none). Reading the marker directly is both simpler
+/// and more precise than re-parsing a rendered `line L:C:` prefix back into an
+/// offset.
+export struct GrepTyped {
+  tytab: Array[(Int, Type)];
+  /// Added to a hit's offset before it is looked up in `tytab` / compared
+  /// with `stmt_lo`/`stmt_hi`. Matching runs on the file as written (so
+  /// `line:col` names a real position in it), while typing runs on the
+  /// INGESTED source the loader hands the checker, which may carry a prepended
+  /// directory-shared import. That prefix is the whole difference, so one
+  /// delta translates between the two.
+  offset_delta: Int;
+  env: TypeEnv;
+  subst: Subst;
+  defs: Array[TypeDef];
+  aliases: Array[(String, String)];
+  type_error: String;
+  type_error_offset: Int;
+  stmt_lo: Array[Int];
+  stmt_hi: Array[Int]
+}
+
+//# Functions
+
+export fn grep_empty_hits() -> Array[GrepHit] {
+  array_empty()
+}
+
+fn grep_empty_binds() -> Array[(String, String, Int, Bool)] {
+  array_empty()
+}
+
+fn grep_empty_ints() -> Array[Int] {
+  array_empty()
+}
+
+export fn grep_empty_strings() -> Array[String] {
+  array_empty()
+}
+
+fn grep_empty_tytab() -> Array[(Int, Type)] {
+  array_empty()
+}
+
+fn grep_empty_defs() -> Array[TypeDef] {
+  array_empty()
+}
+
+fn grep_empty_pairs() -> Array[(String, String)] {
+  array_empty()
+}
+
+/// True for the characters a metavariable NAME and a metavariable KIND may
+/// use. Deliberately narrow: everything else in `$(...)` is a spelling
+/// mistake we want to report, not guess at.
+fn grep_is_meta_char(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn grep_is_ident_char(c: Int) -> Bool {
+  grep_is_meta_char(c)
+}
+
+/// The reserved identifier a metavariable becomes. `kind` never contains `_`,
+/// so the `__` after it is an unambiguous separator no matter what the user
+/// named the variable.
+fn grep_mangle(kind: String, name: String) -> String {
+  String::concat("__vgm_", String::concat(kind, String::concat("__", name)))
+}
+
+fn grep_kind_is_known(kind: String) -> Bool {
+  kind == "exp" || kind == "id" || kind == "const" || kind == "arg" || kind == "args" || kind == "pat" || kind == "type"
+}
+
+/// Decode a reserved identifier back to `(kind, name)`, or `("", "")` when the
+/// identifier is an ordinary one. Kinds contain no `_`, so the separator is
+/// the first `__` at or after the prefix.
+fn grep_meta_of(ident: String) -> (String, String) {
+  if !String::starts_with(ident, "__vgm_") {
+    ("", "")
+  } else {
+    let len = String::length(ident)
+    let mut i = 6
+    let mut sep = -1
+    while sep < 0 && i + 1 < len {
+      if String::char_code_at(ident, i) == '_' && String::char_code_at(ident, i + 1) == '_' {
+        sep = i
+      } else {
+        i = i + 1
+      }
+    }
+    if sep < 0 {
+      ("", "")
+    } else {
+      let kind = String::substring(ident, 6, sep)
+      let name = String::substring(ident, sep + 2, len)
+      if grep_kind_is_known(kind) {
+        (kind, name)
+      } else {
+        ("", "")
+      }
+    }
+  }
+}
+
+/// Rewrite every `$(name:kind)` in `pattern` to its reserved identifier, and
+/// collect the declared variable names in source order.
+///
+/// String literals are skipped verbatim so a pattern can look for a literal
+/// that happens to contain `$(`. A `$` that does not begin a well-formed
+/// metavariable is an ERROR, not a literal `$`: `$` is not lexable in vibe
+/// source, so leaving it in place could only ever produce a confusing lexer
+/// message pointing at the rewritten text rather than at what was typed.
+fn grep_expand_metavars(pattern: String, vars: Array[String]) -> String with Exception {
+  let len = String::length(pattern)
+  let mut out = ""
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(pattern, i)
+    if c == '"' {
+      // Copy the whole string literal, honouring backslash escapes.
+      let start = i
+      let mut j = i + 1
+      let mut closed = false
+      while !closed && j < len {
+        let d = String::char_code_at(pattern, j)
+        if d == 92 {
+          j = j + 2
+        } else if d == '"' {
+          closed = true
+          j = j + 1
+        } else {
+          j = j + 1
+        }
+      }
+      out = String::concat(out, String::substring(pattern, start, j))
+      i = j
+    } else if c == '$' {
+      if i + 1 >= len || String::char_code_at(pattern, i + 1) != '(' {
+        throw("grep pattern: `$` must start a metavariable `$(name:kind)`")
+      } else {
+        let mut j = i + 2
+        while j < len && grep_is_meta_char(String::char_code_at(pattern, j)) {
+          j = j + 1
+        }
+        let name = String::substring(pattern, i + 2, j)
+        if String::length(name) == 0 || j >= len || String::char_code_at(pattern, j) != ':' {
+          throw("grep pattern: expected `$(name:kind)`, e.g. `$(x:exp)`")
+        } else {
+          let kstart = j + 1
+          let mut k = kstart
+          while k < len && grep_is_meta_char(String::char_code_at(pattern, k)) {
+            k = k + 1
+          }
+          let kind = String::substring(pattern, kstart, k)
+          if k >= len || String::char_code_at(pattern, k) != ')' {
+            throw("grep pattern: unterminated metavariable — expected `)` after `$(name:kind)`")
+          } else if !grep_kind_is_known(kind) {
+            throw(String::concat("grep pattern: unknown metavariable kind `", String::concat(kind, "` — use one of exp, id, const, arg, args, pat, type")))
+          } else {
+            out = String::concat(out, grep_mangle(kind, name))
+            if name != "_" {
+              Array::push(vars, name)
+            } else {
+              ()
+            }
+            i = k + 1
+          }
+        }
+      }
+    } else {
+      out = String::concat(out, String::substring(pattern, i, i + 1))
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// Reject a pattern with two variadic holes in one list BEFORE any file is
+/// searched. Resolving `f($(a:args), $(b:args))` would need a rule for where
+/// to split that nobody wrote down, and diagnosing it only when a call happens
+/// to be encountered would make the error depend on which files were scanned.
+fn grep_validate_holes(e: Expr) -> Unit with Exception {
+  match e {
+    ECall(_, args, _) => grep_check_holes(args),
+    ETuple(items) => grep_check_holes(items),
+    EArray(items) => grep_check_holes(items),
+    EContinue(args) => grep_check_holes(args),
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut i = 0
+  while i < Array::length(kids) {
+    grep_validate_holes(Array::get(kids, i))
+    i = i + 1
+  }
+}
+
+fn grep_check_holes(items: Array[Expr]) -> Unit with Exception {
+  if grep_args_hole(items) == -2 {
+    throw("grep pattern: at most one `args` metavariable per argument list")
+  } else {
+    ()
+  }
+}
+
+/// Parse a pattern into its template expression. A pattern that parses to
+/// anything other than exactly one expression statement is rejected here with
+/// the shape it actually produced, rather than being matched against nothing.
+export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
+  let vars = grep_empty_strings()
+  let expanded = grep_expand_metavars(pattern, vars)
+  // Prefix a lex/parse failure so the reader can tell "your PATTERN does not
+  // parse" from "the file being searched does not parse" -- the two arrive on
+  // the same channel and are otherwise indistinguishable.
+  let stmts = handle {
+    parse_program(lex(expanded))
+  } with Exception {
+    Throw(msg) => throw(String::concat("grep pattern: ", msg))
+  }
+  if Array::length(stmts) == 0 {
+    throw("grep pattern: empty pattern")
+  } else if Array::length(stmts) > 1 {
+    throw("grep pattern: expected ONE expression; got several statements")
+  } else {
+    match Array::get(stmts, 0) {
+      SExpr(e) => {
+        grep_validate_holes(e)
+        GrepPattern::{
+          template: e, vars: vars
+        }
+      },
+      _ => throw("grep pattern: must be a single EXPRESSION — declaration patterns (`fn`, top-level `let`, `enum`, ...) are not supported yet; use `vibe symbols` for declarations")
+    }
+  }
+}
+
+//# Functions — span recovery
+
+/// Accumulate `[min located offset, max located end)` for `e` into `acc`
+/// (a two-cell box). Only identifier-shaped tokens carry offsets in this AST,
+/// so the result is exact at the start and a LOWER BOUND at the end.
+fn grep_note_span(acc: Array[Int], off: Int, len: Int) -> Unit {
+  if off < 0 {
+    ()
+  } else {
+    if Array::get(acc, 0) < 0 || off < Array::get(acc, 0) {
+      Array::set(acc, 0, off)
+    } else {
+      ()
+    }
+    if off + len > Array::get(acc, 1) {
+      Array::set(acc, 1, off + len)
+    } else {
+      ()
+    }
+  }
+}
+
+fn grep_span_exprs(items: Array[Expr], acc: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    grep_span_expr(Array::get(items, i), acc)
+    i = i + 1
+  }
+}
+
+fn grep_span_fields(fields: Array[(String, Expr)], acc: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    grep_span_expr(v, acc)
+    i = i + 1
+  }
+}
+
+fn grep_span_arms(arms: Array[(Pat, Expr)], acc: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, v) = Array::get(arms, i)
+    grep_span_expr(v, acc)
+    i = i + 1
+  }
+}
+
+fn grep_span_expr(e: Expr, acc: Array[Int]) -> Unit {
+  match e {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EUnit => (),
+    EStringInterp(_) => (),
+    EIdent(name, off) => grep_note_span(acc, off, String::length(name)),
+    ETuple(items) => grep_span_exprs(items, acc),
+    EArray(items) => grep_span_exprs(items, acc),
+    ERecord(_, fields, _) => grep_span_fields(fields, acc),
+    EMap(fields) => grep_span_fields(fields, acc),
+    EIf(c, t, f) => {
+      grep_span_expr(c, acc)
+      grep_span_expr(t, acc)
+      grep_span_expr(f, acc)
+    },
+    ELet(name, v, b, off) => {
+      grep_note_span(acc, off, String::length(name))
+      grep_span_expr(v, acc)
+      grep_span_expr(b, acc)
+    },
+    ELetRec(_, v, b) => {
+      grep_span_expr(v, acc)
+      grep_span_expr(b, acc)
+    },
+    ELetMut(name, v, b, off) => {
+      grep_note_span(acc, off, String::length(name))
+      grep_span_expr(v, acc)
+      grep_span_expr(b, acc)
+    },
+    EAssign(_, v, b) => {
+      grep_span_expr(v, acc)
+      grep_span_expr(b, acc)
+    },
+    EAssignOp(_, _, v, b) => {
+      grep_span_expr(v, acc)
+      grep_span_expr(b, acc)
+    },
+    ESeq(a, b) => {
+      grep_span_expr(a, acc)
+      grep_span_expr(b, acc)
+    },
+    EMatch(s, arms) => {
+      grep_span_expr(s, acc)
+      grep_span_arms(arms, acc)
+    },
+    EHandle(s, arms) => {
+      grep_span_expr(s, acc)
+      grep_span_arms(arms, acc)
+    },
+    EWhile(c, b) => {
+      grep_span_expr(c, acc)
+      grep_span_expr(b, acc)
+    },
+    ELoop(params, b) => {
+      grep_span_fields(params, acc)
+      grep_span_expr(b, acc)
+    },
+    EForIn(_, _, it, b) => {
+      grep_span_expr(it, acc)
+      grep_span_expr(b, acc)
+    },
+    ECall(callee, args, off) => {
+      grep_note_span(acc, off, 0)
+      grep_span_expr(callee, acc)
+      grep_span_exprs(args, acc)
+    },
+    EBinOp(_, l, r) => {
+      grep_span_expr(l, acc)
+      grep_span_expr(r, acc)
+    },
+    EUnaryOp(_, v) => grep_span_expr(v, acc),
+    EFn(_, _, _, _, _, body) => grep_span_expr(body, acc),
+    EDot(inner, field, off, field_off) => {
+      grep_note_span(acc, off, 0)
+      grep_note_span(acc, field_off, String::length(field))
+      grep_span_expr(inner, acc)
+    },
+    ELabeledArg(_, _, v) => grep_span_expr(v, acc),
+    EReturn(v) => grep_span_expr(v, acc),
+    EBreak(opt) => match opt {
+      Some(v) => grep_span_expr(v, acc),
+      None => ()
+    },
+    EContinue(args) => grep_span_exprs(args, acc),
+    ESpread(v) => grep_span_expr(v, acc)
+  }
+}
+
+/// `(start, end)` for `e`, both -1 when nothing inside it carries an offset
+/// (a fully synthetic subtree — string interpolation parts, desugared sugar).
+fn grep_expr_span(e: Expr) -> (Int, Int) {
+  let acc = grep_empty_ints()
+  Array::push(acc, -1)
+  Array::push(acc, -1)
+  grep_span_expr(e, acc)
+  (Array::get(acc, 0), Array::get(acc, 1))
+}
+
+//# Functions — matching
+
+/// Record `name := (text, offset)`. An anonymous `_` capture is never
+/// recorded and never has to agree. A repeated name must describe the same
+/// text as its first occurrence.
+fn grep_bind(binds: Array[(String, String, Int, Bool)], name: String, text: String, off: Int, is_callee: Bool) -> Bool {
+  if name == "_" {
+    true
+  } else {
+    let mut i = 0
+    let mut seen = false
+    let mut ok = true
+    while i < Array::length(binds) && !seen {
+      let (n, t, _, _) = Array::get(binds, i)
+      if n == name {
+        seen = true
+        ok = t == text
+      } else {
+        i = i + 1
+      }
+    }
+    if seen {
+      ok
+    } else {
+      Array::push(binds, (name, text, off, is_callee))
+      true
+    }
+  }
+}
+
+/// True when a literal-only (`const`) metavariable may take `e`.
+fn grep_is_const_expr(e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    _ => false
+  }
+}
+
+/// Bind one expression-position metavariable, or fail because its kind does
+/// not admit `t`.
+fn grep_meta_match_expr(kind: String, name: String, t: Expr, binds: Array[(String, String, Int, Bool)], is_callee: Bool) -> Bool {
+  let admits = if kind == "exp" {
+    // A labeled argument is an argument, not an expression: `arg` is the kind
+    // that takes one. Accepting it here too would make the two kinds exact
+    // synonyms.
+    match t {
+      ELabeledArg(_, _, _) => false,
+      _ => true
+    }
+  } else if kind == "arg" {
+    true
+  } else if kind == "const" {
+    grep_is_const_expr(t)
+  } else if kind == "id" {
+    match t {
+      EIdent(_, _) => true,
+      _ => false
+    }
+  } else {
+    // `args` only means anything inside an argument list (handled by
+    // grep_match_exprs); `pat` / `type` are not expression kinds.
+    false
+  }
+  if !admits {
+    false
+  } else {
+    let (off, _) = grep_expr_span(t)
+    let text = match t {
+      EIdent(n, _) => n,
+      _ => print_expr(t)
+    }
+    grep_bind(binds, name, text, off, is_callee)
+  }
+}
+
+/// Match a NAME slot (a field name, a binder, a constructor, a type name) that
+/// the AST stores as a bare String. Only the `id` kind is meaningful there.
+fn grep_match_name(pname: String, tname: String, binds: Array[(String, String, Int, Bool)]) -> Bool {
+  let (kind, var) = grep_meta_of(pname)
+  if kind == "" {
+    pname == tname
+  } else if kind == "id" {
+    grep_bind(binds, var, tname, -1, false)
+  } else {
+    false
+  }
+}
+
+/// The index of the single `args` metavariable in a pattern argument list, or
+/// -1. A second one is rejected by the caller: two variadic holes in one list
+/// have no unambiguous split, and silently picking one would make the result
+/// depend on an unwritten rule.
+fn grep_args_hole(ps: Array[Expr]) -> Int {
+  let mut i = 0
+  let mut found = -1
+  let mut extra = false
+  while i < Array::length(ps) {
+    match Array::get(ps, i) {
+      EIdent(pn, _) => {
+        let (kind, _) = grep_meta_of(pn)
+        if kind == "args" {
+          if found >= 0 {
+            extra = true
+          } else {
+            found = i
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if extra {
+    -2
+  } else {
+    found
+  }
+}
+
+/// Render a run of captured arguments the way the source spells an argument
+/// list, so an `args` capture reads back as something you could paste.
+fn grep_join_args(ts: Array[Expr], lo: Int, hi: Int) -> String {
+  let mut out = ""
+  let mut i = lo
+  while i < hi {
+    let piece = print_expr(Array::get(ts, i))
+    out = if i == lo {
+      piece
+    } else {
+      String::concat(out, String::concat(", ", piece))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Match two expression lists. With no `args` hole this is positional; with
+/// one, the elements before it match from the front, the elements after it
+/// match from the back, and the hole takes everything left over.
+fn grep_match_exprs(ps: Array[Expr], ts: Array[Expr], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  let hole = grep_args_hole(ps)
+  if hole == -2 {
+    throw("grep pattern: at most one `args` metavariable per argument list")
+  } else if hole < 0 {
+    if Array::length(ps) != Array::length(ts) {
+      false
+    } else {
+      let mut i = 0
+      let mut ok = true
+      while ok && i < Array::length(ps) {
+        ok = grep_match_expr(Array::get(ps, i), Array::get(ts, i), binds)
+        i = i + 1
+      }
+      ok
+    }
+  } else {
+    let after = Array::length(ps) - hole - 1
+    if Array::length(ts) < hole + after {
+      false
+    } else {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < hole {
+        ok = grep_match_expr(Array::get(ps, i), Array::get(ts, i), binds)
+        i = i + 1
+      }
+      let tail_lo = Array::length(ts) - after
+      let mut j = 0
+      while ok && j < after {
+        ok = grep_match_expr(Array::get(ps, hole + 1 + j), Array::get(ts, tail_lo + j), binds)
+        j = j + 1
+      }
+      if !ok {
+        false
+      } else {
+        match Array::get(ps, hole) {
+          EIdent(pn, _) => {
+            let (_, var) = grep_meta_of(pn)
+            let off = if hole < tail_lo {
+              let (o, _) = grep_expr_span(Array::get(ts, hole))
+              o
+            } else {
+              -1
+            }
+            grep_bind(binds, var, grep_join_args(ts, hole, tail_lo), off, false)
+          },
+          _ => false
+        }
+      }
+    }
+  }
+}
+
+fn grep_match_fields(ps: Array[(String, Expr)], ts: Array[(String, Expr)], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  if Array::length(ps) != Array::length(ts) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(ps) {
+      let (pn, pv) = Array::get(ps, i)
+      let (tn, tv) = Array::get(ts, i)
+      ok = grep_match_name(pn, tn, binds) && grep_match_expr(pv, tv, binds)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn grep_match_arms(ps: Array[(Pat, Expr)], ts: Array[(Pat, Expr)], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  if Array::length(ps) != Array::length(ts) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(ps) {
+      let (pp, pe) = Array::get(ps, i)
+      let (tp, te) = Array::get(ts, i)
+      ok = grep_match_pat(pp, tp, binds) && grep_match_expr(pe, te, binds)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn grep_match_pats(ps: Array[Pat], ts: Array[Pat], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  if Array::length(ps) != Array::length(ts) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(ps) {
+      ok = grep_match_pat(Array::get(ps, i), Array::get(ts, i), binds)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn grep_match_pat_fields(ps: Array[(String, Pat)], ts: Array[(String, Pat)], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  if Array::length(ps) != Array::length(ts) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(ps) {
+      let (pn, pv) = Array::get(ps, i)
+      let (tn, tv) = Array::get(ts, i)
+      ok = grep_match_name(pn, tn, binds) && grep_match_pat(pv, tv, binds)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn grep_match_pat(p: Pat, t: Pat, binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  match p {
+    PBind(pn) => {
+      let (kind, var) = grep_meta_of(pn)
+      if kind == "pat" {
+        grep_bind(binds, var, print_pat(t), -1, false)
+      } else if kind == "id" {
+        match t {
+          PBind(tn) => grep_bind(binds, var, tn, -1, false),
+          _ => false
+        }
+      } else if kind != "" {
+        false
+      } else {
+        match t {
+          PBind(tn) => tn == pn,
+          _ => false
+        }
+      }
+    },
+    PWild => match t {
+      PWild => true,
+      _ => false
+    },
+    PInt(pv) => match t {
+      PInt(tv) => pv == tv,
+      _ => false
+    },
+    PFloat(pv) => match t {
+      PFloat(tv) => pv == tv,
+      _ => false
+    },
+    PString(pv) => match t {
+      PString(tv) => pv == tv,
+      _ => false
+    },
+    PBool(pv) => match t {
+      PBool(tv) => pv == tv,
+      _ => false
+    },
+    PCtor(pn, pargs) => match t {
+      PCtor(tn, targs) => grep_match_name(pn, tn, binds) && grep_match_pats(pargs, targs, binds),
+      _ => false
+    },
+    PTuple(pitems) => match t {
+      PTuple(titems) => grep_match_pats(pitems, titems, binds),
+      _ => false
+    },
+    POr(pa, pb) => match t {
+      POr(ta, tb) => grep_match_pat(pa, ta, binds) && grep_match_pat(pb, tb, binds),
+      _ => false
+    },
+    PStruct(pn, pfields) => match t {
+      PStruct(tn, tfields) => grep_match_name(pn, tn, binds) && grep_match_pat_fields(pfields, tfields, binds),
+      _ => false
+    }
+  }
+}
+
+fn grep_match_types(ps: Array[TypeExpr], ts: Array[TypeExpr], binds: Array[(String, String, Int, Bool)]) -> Bool {
+  if Array::length(ps) != Array::length(ts) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(ps) {
+      ok = grep_match_type(Array::get(ps, i), Array::get(ts, i), binds)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn grep_match_type(p: TypeExpr, t: TypeExpr, binds: Array[(String, String, Int, Bool)]) -> Bool {
+  match p {
+    TyName(pn) => {
+      let (kind, var) = grep_meta_of(pn)
+      if kind == "type" {
+        grep_bind(binds, var, print_type_expr(t), -1, false)
+      } else if kind == "id" {
+        match t {
+          TyName(tn) => grep_bind(binds, var, tn, -1, false),
+          _ => false
+        }
+      } else if kind != "" {
+        false
+      } else {
+        match t {
+          TyName(tn) => tn == pn,
+          _ => false
+        }
+      }
+    },
+    TyApp(pn, pargs) => match t {
+      TyApp(tn, targs) => grep_match_name(pn, tn, binds) && grep_match_types(pargs, targs, binds),
+      _ => false
+    },
+    TyFn(pparams, pret, prow) => match t {
+      TyFn(tparams, tret, trow) => grep_match_types(pparams, tparams, binds) && grep_match_type(pret, tret, binds) && grep_match_opt_row(prow, trow),
+      _ => false
+    },
+    TyTuple(pitems) => match t {
+      TyTuple(titems) => grep_match_types(pitems, titems, binds),
+      _ => false
+    },
+    TyUnit => match t {
+      TyUnit => true,
+      _ => false
+    }
+  }
+}
+
+fn grep_match_opt_row(p: Option[String], t: Option[String]) -> Bool {
+  match p {
+    None => match t {
+      None => true,
+      _ => false
+    },
+    Some(pr) => match t {
+      Some(tr) => pr == tr,
+      None => false
+    }
+  }
+}
+
+fn grep_match_opt_type(p: Option[TypeExpr], t: Option[TypeExpr], binds: Array[(String, String, Int, Bool)]) -> Bool {
+  match p {
+    None => match t {
+      None => true,
+      _ => false
+    },
+    Some(pt) => match t {
+      Some(tt) => grep_match_type(pt, tt, binds),
+      None => false
+    }
+  }
+}
+
+fn grep_match_opt_name(p: Option[String], t: Option[String], binds: Array[(String, String, Int, Bool)]) -> Bool {
+  match p {
+    None => match t {
+      None => true,
+      _ => false
+    },
+    Some(pn) => match t {
+      Some(tn) => grep_match_name(pn, tn, binds),
+      None => false
+    }
+  }
+}
+
+fn grep_match_opt_expr(p: Option[Expr], t: Option[Expr], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  match p {
+    None => match t {
+      None => true,
+      _ => false
+    },
+    Some(pe) => match t {
+      Some(te) => grep_match_expr(pe, te, binds),
+      None => false
+    }
+  }
+}
+
+fn grep_match_strings(ps: Array[String], ts: Array[String]) -> Bool {
+  if Array::length(ps) != Array::length(ts) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(ps) {
+      ok = Array::get(ps, i) == Array::get(ts, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn grep_match_params(ps: Array[(String, Option[TypeExpr])], ts: Array[(String, Option[TypeExpr])], binds: Array[(String, String, Int, Bool)]) -> Bool {
+  if Array::length(ps) != Array::length(ts) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(ps) {
+      let (pn, pt) = Array::get(ps, i)
+      let (tn, tt) = Array::get(ts, i)
+      ok = grep_match_name(pn, tn, binds) && grep_match_opt_type(pt, tt, binds)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn grep_match_loop_params(ps: Array[(String, Expr)], ts: Array[(String, Expr)], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  grep_match_fields(ps, ts, binds)
+}
+
+/// Match the CALLEE slot of a call. Identical to grep_match_expr except that a
+/// metavariable bound here is flagged as a callee — the checker records a
+/// call's RESULT type at the callee's own offset, so a callee capture's type
+/// has to come from the environment instead of from the offset table
+/// (grep_capture_type).
+fn grep_match_callee(p: Expr, t: Expr, binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  match p {
+    EIdent(pn, _) => {
+      let (kind, var) = grep_meta_of(pn)
+      if kind != "" {
+        grep_meta_match_expr(kind, var, t, binds, true)
+      } else {
+        match t {
+          EIdent(tn, _) => tn == pn,
+          _ => false
+        }
+      }
+    },
+    _ => grep_match_expr(p, t, binds)
+  }
+}
+
+/// Structural match of one pattern node against one target node. Every offset
+/// slot is ignored: the pattern text and the file text never share positions.
+fn grep_match_expr(p: Expr, t: Expr, binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
+  match p {
+    EIdent(pn, _) => {
+      let (kind, var) = grep_meta_of(pn)
+      if kind != "" {
+        grep_meta_match_expr(kind, var, t, binds, false)
+      } else {
+        match t {
+          EIdent(tn, _) => tn == pn,
+          _ => false
+        }
+      }
+    },
+    EInt(pv) => match t {
+      EInt(tv) => pv == tv,
+      _ => false
+    },
+    EFloat(pv) => match t {
+      EFloat(tv) => pv == tv,
+      _ => false
+    },
+    EString(pv) => match t {
+      EString(tv) => pv == tv,
+      _ => false
+    },
+    EBool(pv) => match t {
+      EBool(tv) => pv == tv,
+      _ => false
+    },
+    EUnit => match t {
+      EUnit => true,
+      _ => false
+    },
+    EStringInterp(pparts) => match t {
+      EStringInterp(tparts) => grep_match_strings(pparts, tparts),
+      _ => false
+    },
+    ETuple(pitems) => match t {
+      ETuple(titems) => grep_match_exprs(pitems, titems, binds),
+      _ => false
+    },
+    EArray(pitems) => match t {
+      EArray(titems) => grep_match_exprs(pitems, titems, binds),
+      _ => false
+    },
+    ERecord(pn, pfields, ptys) => match t {
+      ERecord(tn, tfields, ttys) => grep_match_name(pn, tn, binds) && grep_match_types(ptys, ttys, binds) && grep_match_fields(pfields, tfields, binds),
+      _ => false
+    },
+    EMap(pfields) => match t {
+      EMap(tfields) => grep_match_fields(pfields, tfields, binds),
+      _ => false
+    },
+    EIf(pc, pt, pf) => match t {
+      EIf(tc, tt, tf) => grep_match_expr(pc, tc, binds) && grep_match_expr(pt, tt, binds) && grep_match_expr(pf, tf, binds),
+      _ => false
+    },
+    ELet(pn, pv, pb, _) => match t {
+      ELet(tn, tv, tb, _) => grep_match_name(pn, tn, binds) && grep_match_expr(pv, tv, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    ELetRec(pn, pv, pb) => match t {
+      ELetRec(tn, tv, tb) => grep_match_name(pn, tn, binds) && grep_match_expr(pv, tv, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    ELetMut(pn, pv, pb, _) => match t {
+      ELetMut(tn, tv, tb, _) => grep_match_name(pn, tn, binds) && grep_match_expr(pv, tv, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    EAssign(pn, pv, pb) => match t {
+      EAssign(tn, tv, tb) => grep_match_name(pn, tn, binds) && grep_match_expr(pv, tv, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    EAssignOp(pop, pn, pv, pb) => match t {
+      EAssignOp(top, tn, tv, tb) => pop == top && grep_match_name(pn, tn, binds) && grep_match_expr(pv, tv, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    ESeq(pa, pb) => match t {
+      ESeq(ta, tb) => grep_match_expr(pa, ta, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    EMatch(ps, parms) => match t {
+      EMatch(ts, tarms) => grep_match_expr(ps, ts, binds) && grep_match_arms(parms, tarms, binds),
+      _ => false
+    },
+    EHandle(ps, parms) => match t {
+      EHandle(ts, tarms) => grep_match_expr(ps, ts, binds) && grep_match_arms(parms, tarms, binds),
+      _ => false
+    },
+    EWhile(pc, pb) => match t {
+      EWhile(tc, tb) => grep_match_expr(pc, tc, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    ELoop(pparams, pb) => match t {
+      ELoop(tparams, tb) => grep_match_loop_params(pparams, tparams, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    EForIn(pv, pk, pit, pb) => match t {
+      EForIn(tv, tk, tit, tb) => grep_match_name(pv, tv, binds) && grep_match_opt_name(pk, tk, binds) && grep_match_expr(pit, tit, binds) && grep_match_expr(pb, tb, binds),
+      _ => false
+    },
+    ECall(pcallee, pargs, _) => match t {
+      ECall(tcallee, targs, _) => grep_match_callee(pcallee, tcallee, binds) && grep_match_exprs(pargs, targs, binds),
+      _ => false
+    },
+    EBinOp(pop, pl, pr) => match t {
+      EBinOp(top, tl, tr) => pop == top && grep_match_expr(pl, tl, binds) && grep_match_expr(pr, tr, binds),
+      _ => false
+    },
+    EUnaryOp(pop, pv) => match t {
+      EUnaryOp(top, tv) => pop == top && grep_match_expr(pv, tv, binds),
+      _ => false
+    },
+    EFn(pgens, pbounds, pparams, pret, prow, pbody) => match t {
+      EFn(tgens, tbounds, tparams, tret, trow, tbody) => grep_match_strings(pgens, tgens) && Array::length(pbounds) == Array::length(tbounds) && grep_match_params(pparams, tparams, binds) && grep_match_opt_type(pret, tret, binds) && grep_match_opt_row(prow, trow) && grep_match_expr(pbody, tbody, binds),
+      _ => false
+    },
+    EDot(pinner, pfield, _, _) => match t {
+      EDot(tinner, tfield, _, _) => grep_match_name(pfield, tfield, binds) && grep_match_expr(pinner, tinner, binds),
+      _ => false
+    },
+    ELabeledArg(plabel, psuffix, pv) => match t {
+      ELabeledArg(tlabel, tsuffix, tv) => grep_match_name(plabel, tlabel, binds) && psuffix == tsuffix && grep_match_expr(pv, tv, binds),
+      _ => false
+    },
+    EReturn(pv) => match t {
+      EReturn(tv) => grep_match_expr(pv, tv, binds),
+      _ => false
+    },
+    EBreak(pv) => match t {
+      EBreak(tv) => grep_match_opt_expr(pv, tv, binds),
+      _ => false
+    },
+    EContinue(pargs) => match t {
+      EContinue(targs) => grep_match_exprs(pargs, targs, binds),
+      _ => false
+    },
+    ESpread(pv) => match t {
+      ESpread(tv) => grep_match_expr(pv, tv, binds),
+      _ => false
+    }
+  }
+}
+
+//# Functions — walking a target file
+
+/// `text` for a hit, flattened to one line: the output contract is one match
+/// per line, and a lambda body can print across several.
+fn grep_flatten(text: String) -> String {
+  let len = String::length(text)
+  let mut out = ""
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(text, i)
+    out = if c == 10 || c == 13 || c == 9 {
+      String::concat(out, " ")
+    } else {
+      String::concat(out, String::substring(text, i, i + 1))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn grep_try_match(pat: GrepPattern, node: Expr, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  let binds = grep_empty_binds()
+  if grep_match_expr(pat.template, node, binds) {
+    let (lo, hi) = grep_expr_span(node)
+    Array::push(out, GrepHit::{
+      path: path,
+      offset: lo,
+      end_offset: hi,
+      text: grep_flatten(print_expr(node)),
+      captures: binds
+    })
+  } else {
+    ()
+  }
+}
+
+fn grep_walk_exprs(items: Array[Expr], pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(items) {
+    grep_walk_expr(Array::get(items, i), pat, path, out)
+    i = i + 1
+  }
+}
+
+fn grep_walk_fields(fields: Array[(String, Expr)], pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    grep_walk_expr(v, pat, path, out)
+    i = i + 1
+  }
+}
+
+fn grep_walk_arms(arms: Array[(Pat, Expr)], pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, v) = Array::get(arms, i)
+    grep_walk_expr(v, pat, path, out)
+    i = i + 1
+  }
+}
+
+/// Visit every expression node, trying the pattern at each. Outer nodes are
+/// tried BEFORE their children, so results come out in source-structure order
+/// and a pattern that matches an outer node also reports the nested matches it
+/// contains (they are genuinely separate sites).
+fn grep_walk_expr(e: Expr, pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  grep_try_match(pat, e, path, out)
+  match e {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EUnit => (),
+    EStringInterp(_) => (),
+    EIdent(_, _) => (),
+    ETuple(items) => grep_walk_exprs(items, pat, path, out),
+    EArray(items) => grep_walk_exprs(items, pat, path, out),
+    ERecord(_, fields, _) => grep_walk_fields(fields, pat, path, out),
+    EMap(fields) => grep_walk_fields(fields, pat, path, out),
+    EIf(c, t, f) => {
+      grep_walk_expr(c, pat, path, out)
+      grep_walk_expr(t, pat, path, out)
+      grep_walk_expr(f, pat, path, out)
+    },
+    ELet(_, v, b, _) => {
+      grep_walk_expr(v, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    ELetRec(_, v, b) => {
+      grep_walk_expr(v, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    ELetMut(_, v, b, _) => {
+      grep_walk_expr(v, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    EAssign(_, v, b) => {
+      grep_walk_expr(v, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    EAssignOp(_, _, v, b) => {
+      grep_walk_expr(v, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    ESeq(a, b) => {
+      grep_walk_expr(a, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    EMatch(s, arms) => {
+      grep_walk_expr(s, pat, path, out)
+      grep_walk_arms(arms, pat, path, out)
+    },
+    EHandle(s, arms) => {
+      grep_walk_expr(s, pat, path, out)
+      grep_walk_arms(arms, pat, path, out)
+    },
+    EWhile(c, b) => {
+      grep_walk_expr(c, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    ELoop(params, b) => {
+      grep_walk_fields(params, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    EForIn(_, _, it, b) => {
+      grep_walk_expr(it, pat, path, out)
+      grep_walk_expr(b, pat, path, out)
+    },
+    ECall(callee, args, _) => {
+      grep_walk_expr(callee, pat, path, out)
+      grep_walk_exprs(args, pat, path, out)
+    },
+    EBinOp(_, l, r) => {
+      grep_walk_expr(l, pat, path, out)
+      grep_walk_expr(r, pat, path, out)
+    },
+    EUnaryOp(_, v) => grep_walk_expr(v, pat, path, out),
+    EFn(_, _, _, _, _, body) => grep_walk_expr(body, pat, path, out),
+    EDot(inner, _, _, _) => grep_walk_expr(inner, pat, path, out),
+    ELabeledArg(_, _, v) => grep_walk_expr(v, pat, path, out),
+    EReturn(v) => grep_walk_expr(v, pat, path, out),
+    EBreak(opt) => match opt {
+      Some(v) => grep_walk_expr(v, pat, path, out),
+      None => ()
+    },
+    EContinue(args) => grep_walk_exprs(args, pat, path, out),
+    ESpread(v) => grep_walk_expr(v, pat, path, out)
+  }
+}
+
+fn grep_walk_stmts(stmts: Array[Stmt], pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => grep_walk_expr(body, pat, path, out),
+      SLetMut(_, _, body) => grep_walk_expr(body, pat, path, out),
+      SLetPat(_, body) => grep_walk_expr(body, pat, path, out),
+      STest(_, body) => grep_walk_expr(body, pat, path, out),
+      SBench(_, body) => grep_walk_expr(body, pat, path, out),
+      SExample(_, body) => grep_walk_expr(body, pat, path, out),
+      SExpr(body) => grep_walk_expr(body, pat, path, out),
+      SFnDecl(_, _, body, _, _) => grep_walk_expr(body, pat, path, out),
+      SModule(_, _, body) => grep_walk_stmts(body, pat, path, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+//# Functions — typed context
+
+fn grep_empty_typed(aliases: Array[(String, String)], stmt_lo: Array[Int], stmt_hi: Array[Int], type_error: String, type_error_offset: Int) -> GrepTyped {
+  GrepTyped::{
+    tytab: grep_empty_tytab(),
+    offset_delta: 0,
+    env: EnvEmpty,
+    subst: SubstEmpty,
+    defs: grep_empty_defs(),
+    aliases: aliases,
+    type_error: type_error,
+    type_error_offset: type_error_offset,
+    stmt_lo: stmt_lo,
+    stmt_hi: stmt_hi
+  }
+}
+
+/// The context to use when no typed filter was requested: nothing in it is
+/// ever read, and building it costs no type-check.
+export fn grep_untyped_context() -> GrepTyped {
+  grep_empty_typed(grep_empty_pairs(), grep_empty_ints(), grep_empty_ints(), "", -1)
+}
+
+/// The source offset a checker diagnostic points at, taken from its own
+/// ` [@off=N]` / ` [@off=N:M]` evidence marker. -1 when the message carries
+/// none (an unlocated diagnostic), which the `--only-ill-typed` filter treats
+/// as covering the whole file.
+fn grep_marker_offset(msg: String) -> Int {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    -1
+  } else {
+    let len = String::length(msg)
+    let mut i = mi + String::length(marker)
+    let mut n = 0
+    let mut digits = 0
+    while i < len && String::char_code_at(msg, i) >= '0' && String::char_code_at(msg, i) <= '9' {
+      n = n * 10 + (String::char_code_at(msg, i) - '0')
+      digits = digits + 1
+      i = i + 1
+    }
+    if digits == 0 {
+      -1
+    } else {
+      n
+    }
+  }
+}
+
+/// Top-level statement spans, used to decide WHICH matches an `--only-ill-typed`
+/// file's single type error covers. A file whose spans cannot be recovered
+/// simply gets empty arrays: the filter then treats the whole file as covered,
+/// which over-reports rather than silently dropping sites.
+fn grep_stmt_spans(source: String, lo: Array[Int], hi: Array[Int]) -> Unit {
+  handle {
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let (_, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    let mut i = 0
+    while i < Array::length(span_start) {
+      Array::push(lo, Array::get(span_start, i))
+      Array::push(hi, if i < Array::length(span_end) {
+        Array::get(span_end, i)
+      } else {
+        String::length(source)
+      })
+      i = i + 1
+    }
+  } with Exception {
+    Throw(_) => ()
+  }
+}
+
+/// Type one file with `import_env` already resolved, and package everything
+/// the filters read. A type error is NOT propagated: it becomes `type_error`,
+/// which is exactly what `--only-ill-typed` is asking about. A file that does
+/// not even parse yields the empty context (its structural matches, if any,
+/// came from a parse this one just failed to repeat, so there is nothing to
+/// type).
+export fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv) -> GrepTyped {
+  let delta = String::length(typed_source) - String::length(source)
+  if delta < 0 {
+    // The ingested source is SHORTER than the file, so it is not the file plus
+    // a prefix and no single delta relates their offsets. Refusing to type is
+    // the honest answer: typing anyway would attribute types and errors to the
+    // wrong positions.
+    grep_untyped_context()
+  } else {
+    let lo = grep_empty_ints()
+    let hi = grep_empty_ints()
+    grep_stmt_spans(typed_source, lo, hi)
+    handle {
+      // A fresh parse on purpose: check_program mutates the statement array it
+      // is handed, so it must never share one with the matcher's own walk.
+      let (tokens, starts, _) = lex_with_offsets(typed_source)
+      let stmts = parse_program_located(tokens, starts, typed_source)
+      let aliases = collect_import_aliases(stmts)
+      handle {
+        let checked = check_program_with_env_result(stmts, import_env)
+        GrepTyped::{
+          tytab: checked.typed_occurrences,
+          offset_delta: delta,
+          env: checked.final_env,
+          subst: checked.final_subst,
+          defs: checked.type_defs,
+          aliases: aliases,
+          type_error: "",
+          type_error_offset: -1,
+          stmt_lo: lo,
+          stmt_hi: hi
+        }
+      } with Exception {
+        Throw(msg) => grep_shift(grep_empty_typed(aliases, lo, hi, msg, grep_marker_offset(msg)), delta)
+      }
+    } with Exception {
+      Throw(_) => grep_untyped_context()
+    }
+  }
+}
+
+/// The context for a file whose TYPING could not be performed at all -- the
+/// import graph itself failed to check, so no type table exists.
+///
+/// `type_error` is set, which is the whole point: the alternative (an empty
+/// context) reports the file as clean, so `--only-well-typed` would hand back
+/// sites from a program that does not compile. Every `--where` filter drops
+/// its matches here, because "we do not know this capture's type" must not
+/// read as "it is not an Array[Int]".
+///
+/// The error may belong to a DEPENDENCY rather than to this file. Covering the
+/// whole file over-reports for `--only-ill-typed`, which is the safe direction
+/// for a "show me the broken sites" filter.
+export fn grep_typed_context_error(source: String, message: String) -> GrepTyped {
+  let lo = grep_empty_ints()
+  let hi = grep_empty_ints()
+  grep_stmt_spans(source, lo, hi)
+  let aliases = handle {
+    collect_import_aliases(parse_program(lex(source)))
+  } with Exception {
+    Throw(_) => grep_empty_pairs()
+  }
+  grep_empty_typed(aliases, lo, hi, message, grep_marker_offset(message))
+}
+
+fn grep_shift(ctx: GrepTyped, delta: Int) -> GrepTyped {
+  GrepTyped::{
+    tytab: ctx.tytab,
+    offset_delta: delta,
+    env: ctx.env,
+    subst: ctx.subst,
+    defs: ctx.defs,
+    aliases: ctx.aliases,
+    type_error: ctx.type_error,
+    type_error_offset: ctx.type_error_offset,
+    stmt_lo: ctx.stmt_lo,
+    stmt_hi: ctx.stmt_hi
+  }
+}
+
+//# Functions — filters
+
+fn grep_trim(s: String) -> String {
+  String::trim(s)
+}
+
+/// Split `$name <op> <rest>` into its three parts. The accepted operators are
+/// `:` (inferred type), `=` (resolved name) and the `with` / `without` row
+/// keywords; the first one that appears wins.
+fn grep_split_filter(item: String, what: String) -> (String, String, String) with Exception {
+  let text = grep_trim(item)
+  let len = String::length(text)
+  if len == 0 || String::char_code_at(text, 0) != '$' {
+    throw(String::concat(what, ": must start with a captured metavariable, e.g. `$x : Array[Int]`"))
+  } else {
+    let mut i = 1
+    while i < len && grep_is_ident_char(String::char_code_at(text, i)) {
+      i = i + 1
+    }
+    let var = String::substring(text, 1, i)
+    if String::length(var) == 0 {
+      throw(String::concat(what, ": expected a metavariable name after `$`"))
+    } else {
+      let rest = grep_trim(String::substring(text, i, len))
+      let rlen = String::length(rest)
+      if rlen == 0 {
+        throw(String::concat(what, ": nothing to compare against"))
+      } else if String::char_code_at(rest, 0) == ':' {
+        (var, ":", grep_trim(String::substring(rest, 1, rlen)))
+      } else if String::char_code_at(rest, 0) == '=' {
+        (var, "=", grep_trim(String::substring(rest, 1, rlen)))
+      } else if String::starts_with(rest, "without ") {
+        (var, "without", grep_trim(String::substring(rest, 8, rlen)))
+      } else if String::starts_with(rest, "with ") {
+        (var, "with", grep_trim(String::substring(rest, 5, rlen)))
+      } else {
+        throw(String::concat(what, String::concat(": expected `:` (type), `=` (resolved name), `with` or `without` (effect row) after `$", String::concat(var, "`"))))
+      }
+    }
+  }
+}
+
+fn grep_pattern_declares(pat: GrepPattern, var: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(pat.vars) {
+    if Array::get(pat.vars, i) == var {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn grep_check_clauses(pat: GrepPattern, clauses: Array[String], what: String) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(clauses) {
+    let (var, _, _) = grep_split_filter(Array::get(clauses, i), what)
+    if !grep_pattern_declares(pat, var) {
+      throw(String::concat(what, String::concat(": the pattern never captures `$", String::concat(var, "`"))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// Reject a filter clause naming a metavariable the pattern never declares,
+/// BEFORE any file is read.
+///
+/// Checking this per hit instead would only report it on a file that already
+/// matched: a typo'd `--where '$fn = ...'` against a pattern that binds `$f`
+/// would sweep the whole repo, drop everything, and come back with the empty
+/// output that means "clean" -- the exact "quietly matches nothing" failure a
+/// filter must never have.
+export fn grep_check_filters(pat: GrepPattern, wheres: Array[String], where_rows: Array[String]) -> Unit with Exception {
+  grep_check_clauses(pat, wheres, "--where")
+  grep_check_clauses(pat, where_rows, "--where-row")
+}
+
+fn grep_find_capture(hit: GrepHit, var: String) -> Option[(String, Int, Bool)] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(hit.captures) && found == None {
+    let (n, t, o, callee) = Array::get(hit.captures, i)
+    if n == var {
+      found = Some((t, o, callee))
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The type the checker recorded at `off`. `prefer_first` picks the earliest
+/// role recorded there: a call records its RESULT at the callee's own offset,
+/// so an identifier that is also an argument has its own type first and the
+/// enclosing call's result last. The table carries no role tag, so first/last
+/// is the whole vocabulary available.
+fn grep_type_at_offset(ctx: GrepTyped, raw_off: Int, prefer_first: Bool) -> Option[Type] {
+  if raw_off < 0 {
+    None
+  } else {
+    let off = raw_off + ctx.offset_delta
+    let mut i = 0
+    let mut found = None
+    while i < Array::length(ctx.tytab) {
+      let (toff, ty) = Array::get(ctx.tytab, i)
+      if toff == off {
+        if prefer_first {
+          if found == None {
+            found = Some(ty)
+          } else {
+            ()
+          }
+        } else {
+          found = Some(ty)
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    match found {
+      Some(ty) => Some(subst_apply(ctx.subst, ty)),
+      None => None
+    }
+  }
+}
+
+/// The type of one capture.
+///
+/// A CALLEE never consults the offset table: the checker resolves a named
+/// callee without going through the identifier arm, so the only thing recorded
+/// at that offset is the call's RESULT — reporting that as the function's type
+/// would be a confidently wrong answer, which is the failure mode this
+/// codebase ranks worst. Callees resolve through the final environment
+/// instead, after import-alias resolution, which is also what makes
+/// `--where-row '$f with Fs'` mean the callee's effect row.
+///
+/// LIMITATION: a callee that is a local or a parameter is not in the final
+/// environment, so it has no type here (the filter drops it rather than
+/// guessing). Same boundary `vibe type-at` documents.
+fn grep_capture_type(ctx: GrepTyped, text: String, off: Int, is_callee: Bool) -> Option[Type] {
+  grep_known(grep_capture_type_raw(ctx, text, off, is_callee))
+}
+
+/// `CtUnknown` is the checker's "I could not resolve this" placeholder, not a
+/// type. Answering a filter from it would report `--where-row '$f without
+/// Async'` as TRUE for a name whose row is simply unknown -- a confident wrong
+/// answer, the failure mode this codebase ranks above crashing. Drop it, so an
+/// unresolvable capture matches neither `with` nor `without`.
+fn grep_known(ty: Option[Type]) -> Option[Type] {
+  match ty {
+    Some(CtUnknown) => None,
+    _ => ty
+  }
+}
+
+fn grep_capture_type_raw(ctx: GrepTyped, text: String, off: Int, is_callee: Bool) -> Option[Type] {
+  if is_callee {
+    // As WRITTEN first: an importing module's environment is keyed by the
+    // name in this file, so `import ./dep.vibe { helper as h }` binds `h`, not
+    // `helper`. The alias-resolved spelling is the fallback, for the whole-
+    // program-merged shape where the original name is what survives.
+    match env_lookup(ctx.env, text) {
+      Some(t) => Some(t),
+      None => {
+        let resolved = grep_resolve_name(ctx, text)
+        match env_lookup(ctx.env, resolved) {
+          Some(t) => Some(t),
+          // Capability builtins (`Fs::read_file`, `Env::get`, ...) are never
+          // in a module environment, and they are exactly what an effect-row
+          // filter is usually hunting for.
+          None => match lookup_builtin(text) {
+            Some(t) => Some(t),
+            None => lookup_builtin(resolved)
+          }
+        }
+      }
+    }
+  } else {
+    grep_type_at_offset(ctx, off, grep_capture_is_ident(text))
+  }
+}
+
+/// True when the capture text names an identifier (so the IDENTIFIER role is
+/// the one wanted at its offset).
+fn grep_capture_is_ident(text: String) -> Bool {
+  let len = String::length(text)
+  if len == 0 {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < len {
+      let c = String::char_code_at(text, i)
+      ok = grep_is_ident_char(c) || c == ':'
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// Structural type comparison with `_` as a wildcard on the EXPECTED side.
+/// This is the "unify" of #1572 scope 2 restricted to what a CLI flag can
+/// honestly express: an inference variable in the actual type matches only a
+/// wildcard, because claiming `?t3` equals `Int` would be exactly the silent
+/// wrong answer the triage policy ranks worst.
+fn grep_type_matches(expected: Type, actual: Type) -> Bool {
+  match expected {
+    CtNamed(name, args) => if name == "_" && Array::length(args) == 0 {
+      true
+    } else {
+      match actual {
+        CtNamed(aname, aargs) => name == aname && grep_type_list_matches(args, aargs),
+        CtEnum(aname) => name == aname && Array::length(args) == 0,
+        CtStruct(aname) => name == aname && Array::length(args) == 0,
+        _ => false
+      }
+    },
+    CtInt => match actual {
+      CtInt => true,
+      _ => false
+    },
+    CtDouble => match actual {
+      CtDouble => true,
+      _ => false
+    },
+    CtBool => match actual {
+      CtBool => true,
+      _ => false
+    },
+    CtString => match actual {
+      CtString => true,
+      _ => false
+    },
+    CtChar => match actual {
+      CtChar => true,
+      _ => false
+    },
+    CtUnit => match actual {
+      CtUnit => true,
+      _ => false
+    },
+    CtBytes => match actual {
+      CtBytes => true,
+      _ => false
+    },
+    CtArray(e) => match actual {
+      CtArray(a) => grep_type_matches(e, a),
+      _ => false
+    },
+    CtOption(e) => match actual {
+      CtOption(a) => grep_type_matches(e, a),
+      _ => false
+    },
+    CtTuple(es) => match actual {
+      CtTuple(as_) => grep_type_list_matches(es, as_),
+      _ => false
+    },
+    CtFn(eps, er, erow) => match actual {
+      CtFn(aps, ar, arow) => grep_type_list_matches(eps, aps) && grep_type_matches(er, ar) && grep_row_equiv(erow, arow),
+      _ => false
+    },
+    CtEnum(name) => match actual {
+      CtEnum(aname) => name == aname,
+      CtNamed(aname, aargs) => name == aname && Array::length(aargs) == 0,
+      _ => false
+    },
+    CtStruct(name) => match actual {
+      CtStruct(aname) => name == aname,
+      CtNamed(aname, aargs) => name == aname && Array::length(aargs) == 0,
+      _ => false
+    },
+    CtVar(_) => false,
+    CtForAll(_, _, body) => grep_type_matches(body, actual),
+    CtUnknown => false
+  }
+}
+
+fn grep_type_list_matches(es: Array[Type], as_: Array[Type]) -> Bool {
+  if Array::length(es) != Array::length(as_) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < Array::length(es) {
+      ok = grep_type_matches(Array::get(es, i), Array::get(as_, i))
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// An unwritten row on the expected side means "don't care"; a written one
+/// must name the same effects.
+fn grep_row_equiv(expected: Option[String], actual: Option[String]) -> Bool {
+  match expected {
+    None => true,
+    Some(er) => match actual {
+      Some(ar) => er == ar,
+      None => false
+    }
+  }
+}
+
+/// Split an effect row string (`"Async + Exception"`) into its items.
+fn grep_row_items(row: String) -> Array[String] {
+  let parts = String::split(row, "+")
+  let out = grep_empty_strings()
+  let mut i = 0
+  while i < Array::length(parts) {
+    let item = grep_trim(Array::get(parts, i))
+    if String::length(item) > 0 {
+      Array::push(out, item)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// True when `row` mentions `want`. An `Effect::op` request matches only that
+/// exact operation item; a bare effect NAME matches both the whole effect and
+/// any of its operations, so `with Fs` finds `Fs::read_file` too.
+fn grep_row_has(row: Option[String], want: String) -> Bool {
+  match row {
+    None => false,
+    Some(text) => {
+      let items = grep_row_items(text)
+      let prefix = String::concat(want, "::")
+      let mut i = 0
+      let mut hit = false
+      while !hit && i < Array::length(items) {
+        let item = Array::get(items, i)
+        hit = item == want || (String::index_of(want, "::") < 0 && String::starts_with(item, prefix))
+        i = i + 1
+      }
+      hit
+    }
+  }
+}
+
+fn grep_row_of(ty: Type) -> Option[String] {
+  match ty {
+    CtFn(_, _, row) => row,
+    CtForAll(_, _, body) => grep_row_of(body),
+    _ => None
+  }
+}
+
+/// Resolve a captured name through this file's import aliases, so `--where
+/// '$f = Iterator::map'` finds the site even when the file wrote
+/// `import ... { Iterator as It }` and called `It::map`.
+fn grep_resolve_name(ctx: GrepTyped, name: String) -> String {
+  let mut i = 0
+  let mut out = name
+  let mut done = false
+  while !done && i < Array::length(ctx.aliases) {
+    let (alias, original) = Array::get(ctx.aliases, i)
+    if alias == name {
+      out = original
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  if done {
+    out
+  } else {
+    let qi = String::index_of(name, "::")
+    if qi < 0 {
+      name
+    } else {
+      let head = String::substring(name, 0, qi)
+      let mut j = 0
+      let mut resolved = name
+      while j < Array::length(ctx.aliases) {
+        let (alias, original) = Array::get(ctx.aliases, j)
+        if alias == head {
+          resolved = String::concat(original, String::substring(name, qi, String::length(name)))
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      resolved
+    }
+  }
+}
+
+/// Apply one `--where` / `--where-row` clause to one hit. A clause naming a
+/// metavariable the pattern never captured is an ERROR, not a silent
+/// no-match: a filter that quietly matches nothing is indistinguishable from
+/// a clean result.
+fn grep_filter_keeps(ctx: GrepTyped, hit: GrepHit, clause: String, what: String) -> Bool with Exception {
+  let (var, op, rhs) = grep_split_filter(clause, what)
+  match grep_find_capture(hit, var) {
+    None => throw(String::concat(what, String::concat(": the pattern never captures `$", String::concat(var, "`")))),
+    Some((text, off, is_callee)) => if op == "=" {
+      grep_resolve_name(ctx, text) == rhs
+    } else if op == ":" {
+      let expected = resolve_type_expr(parse_type(lex(rhs), 0).0, ctx.defs)
+      match grep_capture_type(ctx, text, off, is_callee) {
+        None => false,
+        Some(actual) => grep_type_matches(expected, actual)
+      }
+    } else {
+      match grep_capture_type(ctx, text, off, is_callee) {
+        None => false,
+        Some(actual) => {
+          let has = grep_row_has(grep_row_of(actual), rhs)
+          if op == "with" { has } else {
+            !has
+          }
+        }
+      }
+    }
+  }
+}
+
+/// True when the file's type error lands in the same top-level declaration as
+/// `hit`. An unlocated error (or unknown statement spans) covers the whole
+/// file: over-reporting is the safe direction for a "show me the broken
+/// sites" filter.
+fn grep_hit_is_ill_typed(ctx: GrepTyped, hit: GrepHit) -> Bool {
+  if ctx.type_error == "" {
+    false
+  } else {
+    let err_off = ctx.type_error_offset
+    if err_off < 0 || Array::length(ctx.stmt_lo) == 0 || hit.offset < 0 {
+      true
+    } else {
+      let hit_off = hit.offset + ctx.offset_delta
+      let mut i = 0
+      let mut covered = false
+      while !covered && i < Array::length(ctx.stmt_lo) {
+        let lo = Array::get(ctx.stmt_lo, i)
+        let hi = Array::get(ctx.stmt_hi, i)
+        if lo <= err_off && err_off < hi {
+          covered = lo <= hit_off && hit_off < hi
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      covered
+    }
+  }
+}
+
+//# Functions — rendering
+
+fn grep_json_escape(s: String) -> String {
+  let len = String::length(s)
+  let mut out = ""
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    let piece = if c == '"' {
+      "\\\""
+    } else if c == 92 {
+      "\\\\"
+    } else if c == 10 {
+      "\\n"
+    } else if c == 13 {
+      "\\r"
+    } else if c == 9 {
+      "\\t"
+    } else if c < 32 {
+      // Control characters have no short escape here; drop them rather than
+      // emit a byte a JSON parser would reject.
+      ""
+    } else {
+      String::substring(s, i, i + 1)
+    }
+    out = String::concat(out, piece)
+    i = i + 1
+  }
+  out
+}
+
+fn grep_int(n: Int) -> String {
+  __to_string(n)
+}
+
+/// `path:line:col: <matched text>` followed by tab-separated `$var=<text>`
+/// captures — one match per line, fixed field order, greppable.
+fn grep_render_line(hit: GrepHit, line: Int, col: Int) -> String {
+  let head = String::concat(hit.path, String::concat(":", String::concat(grep_int(line), String::concat(":", String::concat(grep_int(col), String::concat(": ", hit.text))))))
+  let mut out = head
+  let mut i = 0
+  while i < Array::length(hit.captures) {
+    let (n, t, _, _) = Array::get(hit.captures, i)
+    out = String::concat(out, String::concat("\t$", String::concat(n, String::concat("=", grep_flatten(t)))))
+    i = i + 1
+  }
+  out
+}
+
+fn grep_render_json(ctx: GrepTyped, typed: Bool, hit: GrepHit, line: Int, col: Int) -> String {
+  let head = String::concat("{\"path\":\"", String::concat(grep_json_escape(hit.path), String::concat("\",\"line\":", String::concat(grep_int(line), String::concat(",\"col\":", String::concat(grep_int(col), String::concat(",\"start\":", String::concat(grep_int(hit.offset), String::concat(",\"end\":", String::concat(grep_int(hit.end_offset), String::concat(",\"text\":\"", String::concat(grep_json_escape(hit.text), "\",\"captures\":{"))))))))))))
+  let mut body = ""
+  let mut i = 0
+  while i < Array::length(hit.captures) {
+    let (n, t, o, is_callee) = Array::get(hit.captures, i)
+    let ty = if typed {
+      match grep_capture_type(ctx, t, o, is_callee) {
+        Some(actual) => String::concat(",\"type\":\"", String::concat(grep_json_escape(type_to_string(actual)), "\"")),
+        None => ""
+      }
+    } else {
+      ""
+    }
+    let entry = String::concat("\"", String::concat(grep_json_escape(n), String::concat("\":{\"text\":\"", String::concat(grep_json_escape(t), String::concat("\",\"start\":", String::concat(grep_int(o), String::concat(ty, "}")))))))
+    body = if i == 0 {
+      entry
+    } else {
+      String::concat(body, String::concat(",", entry))
+    }
+    i = i + 1
+  }
+  String::concat(head, String::concat(body, "}}"))
+}
+
+//# Functions — per-file driver
+
+export fn grep_file_hits(path: String, source: String, pat: GrepPattern) -> Array[GrepHit] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let out = grep_empty_hits()
+  grep_walk_stmts(stmts, pat, path, out)
+  out
+}
+
+export fn grep_needs_typing(wheres: Array[String], where_rows: Array[String], only: String) -> Bool {
+  Array::length(wheres) > 0 || Array::length(where_rows) > 0 || only != ""
+}
+
+/// Filter `hits` and append their rendered form to `out`.
+export fn grep_emit_hits(source: String, hits: Array[GrepHit], ctx: GrepTyped, typed: Bool, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, out: Array[String]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(hits) {
+    let hit = Array::get(hits, i)
+    let mut keep = true
+    let mut w = 0
+    while keep && w < Array::length(wheres) {
+      keep = grep_filter_keeps(ctx, hit, Array::get(wheres, w), "--where")
+      w = w + 1
+    }
+    let mut r = 0
+    while keep && r < Array::length(where_rows) {
+      keep = grep_filter_keeps(ctx, hit, Array::get(where_rows, r), "--where-row")
+      r = r + 1
+    }
+    if keep && only != "" {
+      let ill = grep_hit_is_ill_typed(ctx, hit)
+      keep = if only == "ill" {
+        ill
+      } else if only == "well" {
+        !ill
+      } else {
+        throw(String::concat("grep: unknown --only mode `", String::concat(only, "` — expected `ill` or `well`")))
+      }
+    } else {
+      ()
+    }
+    if keep {
+      let (line, col) = if hit.offset >= 0 {
+        offset_to_line_col(source, hit.offset)
+      } else {
+        (0, 0)
+      }
+      Array::push(out, if json {
+        grep_render_json(ctx, typed, hit, line, col)
+      } else {
+        grep_render_line(hit, line, col)
+      })
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+//# Functions — entry points
+
+export fn grep_join_lines(lines: Array[String], json: Bool) -> String {
+  if json {
+    let mut body = ""
+    let mut i = 0
+    while i < Array::length(lines) {
+      body = if i == 0 {
+        String::concat("\n  ", Array::get(lines, i))
+      } else {
+        String::concat(body, String::concat(",\n  ", Array::get(lines, i)))
+      }
+      i = i + 1
+    }
+    if Array::length(lines) == 0 {
+      "[]\n"
+    } else {
+      String::concat("[", String::concat(body, "\n]\n"))
+    }
+  } else {
+    let mut out = ""
+    let mut i = 0
+    while i < Array::length(lines) {
+      out = String::concat(out, String::concat(Array::get(lines, i), "\n"))
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// Single-source entry: parse-only matching plus the typed filters resolved
+/// against THIS FILE ALONE (no import resolution). This is the seam the unit
+/// tests drive; `vibe grep` itself always uses grep_scan_fs, which resolves
+/// imports the way `vibe check` does.
+export fn grep_scan_source(path: String, source: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception {
+  let pat = grep_compile_pattern(pattern)
+  grep_check_filters(pat, wheres, where_rows)
+  let hits = grep_file_hits(path, source, pat)
+  let out = grep_empty_strings()
+  let typed = grep_needs_typing(wheres, where_rows, only)
+  let ctx = if typed && Array::length(hits) > 0 {
+    grep_typed_context(source, source, EnvEmpty)
+  } else {
+    grep_untyped_context()
+  }
+  grep_emit_hits(source, hits, ctx, typed, wheres, where_rows, only, json, out)
+  grep_join_lines(out, json)
+}

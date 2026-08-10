@@ -1,0 +1,244 @@
+//# Imports
+
+// `vibe grep`'s filesystem tier (#1572 scope 3). Kept apart from grep.vibe on
+// purpose: this file imports typecheck_fs.vibe, whose `ModuleJob` is declared
+// in the package CONTRACT rather than in the file itself, so anything that
+// reaches typecheck_fs.vibe can only be compiled with index.vpkg in scope.
+// grep.vibe stays free of that dependency, which is what lets grep_test.vibe
+// drive the whole pattern language and every typed filter as plain sibling
+// leaf imports.
+//
+// The two tiers #1572 specifies:
+//   * no typed filter  -> parse only, no import resolution, one pass per file;
+//   * any typed filter -> the file is typed through the SAME FS import walk
+//     `vibe check` uses, so this cannot reproduce the `vibe diagnostics`
+//     import-blind false positives the issue calls out.
+
+import @vibe/compiler/core {
+  TypeEnv
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
+import @vibe/graph {
+  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
+}
+
+import ./grep.vibe {
+  GrepTyped,
+  grep_check_filters,
+  grep_compile_pattern,
+  grep_emit_hits,
+  grep_empty_hits,
+  grep_empty_strings,
+  grep_file_hits,
+  grep_join_lines,
+  grep_needs_typing,
+  grep_typed_context,
+  grep_typed_context_error,
+  grep_untyped_context
+}
+
+import ./persistent_env_codec.vibe {
+  load_persistent_type_env
+}
+
+import ./typecheck_fs.vibe {
+  ensure_fingerprint_fs_impl, projected_import_env_for_test
+}
+
+//# Functions
+
+fn grep_fs_empty_env_cache() -> Array[(String, TypeEnv)] {
+  array_empty()
+}
+
+fn grep_fs_empty_pairs() -> Array[(String, String)] {
+  array_empty()
+}
+
+fn grep_fs_is_source_name(name: String) -> Bool {
+  String::ends_with(name, ".vibe") || String::ends_with(name, ".vibex")
+}
+
+/// Directories a repo sweep must never descend into: build output and vendored
+/// trees are not the user's source, and walking them dominates the runtime.
+fn grep_fs_skip_dir(name: String) -> Bool {
+  String::starts_with(name, ".") || name == "_build" || name == "node_modules" || name == "dist" || name == "target"
+}
+
+fn grep_fs_join(dir: String, name: String) -> String {
+  if String::ends_with(dir, "/") {
+    String::concat(dir, name)
+  } else {
+    String::concat(dir, String::concat("/", name))
+  }
+}
+
+/// Collect the `.vibe` / `.vibex` files under `root`, in directory order. An
+/// explicitly named file is taken whatever its extension: the caller asked for
+/// that file by name.
+fn grep_fs_collect_files(root: String, out: Array[String]) -> Unit with Fs {
+  if Fs::is_dir(root) {
+    let names = Fs::readdir(root)
+    let mut i = 0
+    while i < Array::length(names) {
+      let name = Array::get(names, i)
+      let child = grep_fs_join(root, name)
+      if Fs::is_dir(child) {
+        if !grep_fs_skip_dir(name) {
+          grep_fs_collect_files(child, out)
+        } else {
+          ()
+        }
+      } else if grep_fs_is_source_name(name) {
+        Array::push(out, child)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else if Fs::is_file(root) {
+    Array::push(out, root)
+  } else {
+    ()
+  }
+}
+
+/// The typed context for `path`, resolved the way `vibe check` resolves it.
+///
+/// `vibe check`'s pipeline is: collect every reachable module's INGESTED source
+/// (collect_source_groups_fs), seed them all into the ripple db, then walk.
+/// The seeding is load-bearing -- the walk short-circuits on any module whose
+/// source it cannot find, so skipping it makes every import resolve to
+/// `CtUnknown` and quietly turns every typed filter into a coin flip.
+///
+/// `projected_import_env_for_test` is the exported name for the exact
+/// dependency projection production uses for `ModuleJob.dep_envs`
+/// (typecheck_fs.vibe) -- test-only in NAME, not in behaviour.
+///
+/// Degrades to single-file typing when the graph cannot be resolved at all, so
+/// one broken dependency costs precision on that file instead of killing the
+/// sweep. On a file with imports that fallback reports imported names as
+/// unknown, which makes `--only-ill-typed` over-report rather than miss sites.
+fn grep_fs_typed_context(path: String, raw_source: String) -> GrepTyped with Fs {
+  handle {
+    let groups = collect_source_groups_fs(path)
+    let mut rdb = ripple_new()
+    let mut entry_source = raw_source
+    let mut gi = 0
+    while gi < Array::length(groups) {
+      let (_, sources) = Array::get(groups, gi)
+      let mut si = 0
+      while si < Array::length(sources) {
+        let (p, text) = Array::get(sources, si)
+        rdb = ripple_set_source(rdb, p, text)
+        if p == path {
+          entry_source = text
+        } else {
+          ()
+        }
+        si = si + 1
+      }
+      gi = gi + 1
+    }
+    let (_, walked, env_cache, _, _) = ensure_fingerprint_fs_impl(rdb, grep_fs_empty_env_cache(), grep_fs_empty_pairs(), 0, path)
+    let deps = match ripple_get_deps(walked, path) {
+      Some(d) => d,
+      None => grep_empty_strings()
+    }
+    let import_env = projected_import_env_for_test(entry_source, path, deps, grep_fs_fill_dep_envs(walked, env_cache, deps))
+    grep_typed_context(raw_source, entry_source, import_env)
+  } with Exception {
+    // The graph did not check. That is a real answer, not a reason to fall
+    // back to single-file typing: doing so would type-check this file against
+    // an empty environment, find nothing wrong with it, and report every match
+    // in a program that does not compile as `--only-well-typed`.
+    Throw(msg) => grep_typed_context_error(raw_source, msg)
+  }
+}
+
+fn grep_fs_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(cache) {
+    let (p, _) = Array::get(cache, i)
+    if p == path {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Fill in the dependency environments the walk did NOT return in-memory.
+///
+/// `ensure_fingerprint_fs_impl` only adds a module to its env cache when it
+/// actually re-checks it; a module whose persistent environment was already on
+/// disk is recorded in the ripple db and skipped. That is the normal (warm)
+/// case, so without this step a repeat run resolves imports against an empty
+/// cache -- `projected_import_env_for_test` then throws and every imported name
+/// types as `CtUnknown`. Reading each missing dependency back from the same
+/// persistent store the walk published to is what makes the typed tier behave
+/// the same warm as cold.
+fn grep_fs_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], deps: Array[String]) -> Array[(String, TypeEnv)] with Exception + Fs {
+  let mut i = 0
+  while i < Array::length(deps) {
+    let dep = Array::get(deps, i)
+    if !grep_fs_cache_has(env_cache, dep) {
+      match ripple_get_fingerprint(rdb, dep) {
+        Some(fingerprint) => match load_persistent_type_env(fingerprint) {
+          Some(dep_env) => Array::push(env_cache, (dep, dep_env)),
+          None => ()
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  env_cache
+}
+
+/// `vibe grep <root>` proper. Typing runs only for files that already have a
+/// structural match: typing a file the pattern never hits would be pure cost.
+export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception + Fs {
+  let pat = grep_compile_pattern(pattern)
+  grep_check_filters(pat, wheres, where_rows)
+  let files = grep_empty_strings()
+  grep_fs_collect_files(root, files)
+  let typed = grep_needs_typing(wheres, where_rows, only)
+  let out = grep_empty_strings()
+  let mut i = 0
+  while i < Array::length(files) {
+    let path = Array::get(files, i)
+    let source = Fs::read_file(path)
+    // A file that does not parse is not a match and not a failure: a repo
+    // sweep must not stop at the first work-in-progress file.
+    let hits = handle {
+      grep_file_hits(path, source, pat)
+    } with Exception {
+      Throw(_) => grep_empty_hits()
+    }
+    if Array::length(hits) > 0 {
+      let ctx = if typed {
+        grep_fs_typed_context(path, source)
+      } else {
+        grep_untyped_context()
+      }
+      grep_emit_hits(source, hits, ctx, typed, wheres, where_rows, only, json, out)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  grep_join_lines(out, json)
+}

@@ -154,6 +154,43 @@ fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with Exception
 // codegen's own `is_mut_captured_in`, so the answer IS the lowering decision.
 fn escape_spans(source: String) -> Array[(String, Int, Int)] with Exception
 
+// --- grep.vibe (#1572): `vibe grep` — AST pattern search whose filters run on
+// the CHECKER's answers (a capture's inferred type / effect row / resolved
+// name, and whether the declaration around the match type-checks), not on the
+// grammar alone the way moongrep and ast-grep do.
+//
+// The three types are `opaque` for the same reason graph's `RippleDb` and this
+// package's own `ModuleOutcome` are: the only thing outside grep.vibe that
+// ever holds one is grep_fs.vibe, and it exclusively passes them back in.
+// Everything below except `grep_scan_fs` exists to serve that one caller plus
+// grep_test.vibe -- grep.vibe deliberately does not import typecheck_fs.vibe
+// (whose `ModuleJob` is declared here rather than in the file, so any file
+// reaching it needs this contract in scope), which is what keeps the whole
+// pattern language testable through plain sibling leaf imports.
+opaque type GrepHit
+opaque type GrepPattern
+opaque type GrepTyped
+
+fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception
+fn grep_check_filters(pat: GrepPattern, wheres: Array[String], where_rows: Array[String]) -> Unit with Exception
+fn grep_file_hits(path: String, source: String, pat: GrepPattern) -> Array[GrepHit] with Exception
+fn grep_empty_hits() -> Array[GrepHit]
+fn grep_empty_strings() -> Array[String]
+fn grep_needs_typing(wheres: Array[String], where_rows: Array[String], only: String) -> Bool
+fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv) -> GrepTyped
+fn grep_untyped_context() -> GrepTyped
+fn grep_typed_context_error(source: String, message: String) -> GrepTyped
+fn grep_emit_hits(source: String, hits: Array[GrepHit], ctx: GrepTyped, typed: Bool, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, out: Array[String]) -> Unit with Exception
+fn grep_join_lines(lines: Array[String], json: Bool) -> String
+// Single-source seam: typed filters resolved against THIS FILE ALONE. Only
+// grep_test.vibe uses it; `vibe grep` always goes through grep_scan_fs.
+fn grep_scan_source(path: String, source: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception
+
+// --- grep_fs.vibe (#1572 scope 3): the filesystem tier. Typing runs only for
+// files that already have a structural match, through the same FS import walk
+// `vibe check` uses.
+fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception + Fs
+
 // --- deprecated_scan.vibe (#1262 / ADR-0101): uses, in entry_source, of
 // names whose declarations carry a `#deprecated` marker (in the entry itself
 // or any dep source). Token-level; one formatted `warning:` line per use.

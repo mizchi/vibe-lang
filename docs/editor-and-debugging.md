@@ -6,6 +6,7 @@ interactive debugger, both driven by the same `vibe` launcher you installed
 
 - [Language Server (`vibe lsp`)](#language-server-vibe-lsp)
 - [Editor query primitives](#editor-query-primitives)
+- [Structural search (`vibe grep`)](#structural-search-vibe-grep)
 - [Interactive debugging (`vibe run --break` / `--trace`)](#interactive-debugging)
 - [VS Code integration (DAP)](#vs-code-integration)
 - [Keeping the compiler up to date (`vibe self update`)](#keeping-the-compiler-up-to-date)
@@ -97,6 +98,137 @@ vibe diagnostics --json <file.vibe>       # same diagnostics as a JSON array of 
   span in the diagnostic itself — the checker only tracks function names and
   effect rows today, not per-declaration source spans, so `data` doesn't
   pretend otherwise.
+
+---
+
+## Structural search (`vibe grep`)
+
+Every primitive above answers **"position → meaning"**. `vibe grep` runs the
+other way — **"structure → positions"** — and its filters run on the checker's
+answers, not on the grammar alone the way [moongrep](https://github.com/moonbit-community/moongrep)
+and ast-grep do (their guards can only regex an identifier capture). #1572.
+
+```bash
+vibe grep --pattern 'match $(v:exp) { Some($(x:pat)) => $(b:exp), None => $(n:exp) }' lib
+vibe grep --pattern 'Iterator::map($(a:args))' --json lib
+```
+
+### Pattern language
+
+A pattern is a single **expression**, written in ordinary vibe syntax, with
+`$(name:kind)` metavariables:
+
+| kind | matches | capture text |
+| --- | --- | --- |
+| `exp` | any single expression | the printed expression |
+| `id` | an identifier only — also a field / binder / constructor / type NAME where one is grammatical | the name |
+| `const` | a literal only (Int / Double / String / Bool / unit) | the literal |
+| `arg` | one argument position (like `exp`, but also matches a labeled argument `l=e`) | the printed argument |
+| `args` | **zero or more** consecutive argument positions; at most one per list | the arguments, comma-joined |
+| `pat` | any single pattern (match arm / destructuring) | the printed pattern |
+| `type` | any single type expression | the printed type |
+
+`$(_:kind)` is anonymous and never has to agree with another occurrence; any
+other name must match the **same text** everywhere it appears in the pattern.
+
+`args` is an addition to the six kinds #1572 lists. Without it a pattern could
+only ever match one fixed arity, so "every call to this, whatever it is passed"
+— the thing a migration sweep actually needs — would not be expressible.
+
+Matching is on the **AST**, so newlines, indentation and comments cannot affect
+it. Both the pattern and the file go through the *same* parser, which means
+they get the same desugaring. Measured on the current parser:
+
+- `xs |> map(f)` and `map(xs, f)` are the same AST and match each other;
+- `xs.map(f)` keeps its `EDot` callee and matches only the method spelling.
+
+Unifying those call forms is the **resolved-name filter**'s job (below), not
+structural matching's.
+
+**Limitation (v1):** declaration-shaped patterns (`fn …`, top-level `let … =
+…`, `enum …`) are rejected with a message saying so, rather than silently
+matching nothing. Use `vibe symbols` for declarations.
+
+### Type-aware filters
+
+Passing any of these switches the sweep into the **typed tier**, which resolves
+imports through the same walk `vibe check` uses — the `vibe diagnostics`
+import-blind false positives described above are deliberately *not* reproduced
+here. Only files that already have a structural match are typed.
+
+```bash
+# the capture's INFERRED type (`_` is a wildcard inside the type)
+vibe grep --pattern 'f($(x:exp))' --where '$x : Array[_]' lib
+
+# the capture's RESOLVED name — sees through `import ./m.vibe { Iterator as It }`,
+# so `It::map(...)` and `Iterator::map(...)` are one query
+vibe grep --pattern '$(f:id)($(a:args))' --where '$f = Iterator::map' lib
+
+# the capture's effect ROW (a bare effect name also matches its operations)
+vibe grep --pattern '$(f:id)($(a:args))' --where-row '$f with Async' lib
+vibe grep --pattern '$(f:id)($(a:args))' --where-row '$f without Fs' lib
+
+# matches inside declarations that do (or do not) type-check
+vibe grep --pattern 'f($(x:exp))' --only-ill-typed lib
+vibe grep --pattern 'f($(x:exp))' --only-well-typed lib
+```
+
+`--where` and `--where-row` are repeatable and AND together.
+
+Where a capture's type comes from, and what that costs:
+
+- A capture in **callee** position resolves through the final type
+  environment (plus the builtin table, so `Fs::read_file` carries its row).
+  The checker records a call's *result* at the callee's own offset, so
+  reading the offset table there would confidently report the wrong type.
+- Every other capture resolves through the per-offset type table — the same
+  one `vibe type-at` uses.
+- **A callee that is a local or a parameter has no type here** (it is not in
+  the final environment): the filter drops the match rather than guessing.
+  Same boundary `vibe type-at` documents for locals.
+- **A capture containing no identifier-shaped token has no type here either.**
+  Only identifiers, call callees and field names carry source offsets in this
+  AST, so a bare literal capture (`$(k:const)` bound to `1`) has nothing to
+  look its type up *by*. Dropped, not guessed.
+- When the import graph itself fails to check, the file has **no** type table:
+  every `--where` drops, and every match counts as ill-typed. "We could not
+  resolve this" must not read as "it is not an `Array[Int]`", and a program
+  that does not compile must not answer `--only-well-typed`.
+- `--only-ill-typed` is per *declaration*: the checker reports one type error
+  per file, and a match counts as ill-typed when it sits in the same top-level
+  declaration as that error. An error with no position covers the whole file.
+- `CtUnknown` is treated as *no answer*, not as a type. An unresolvable name
+  therefore matches neither `--where-row '$f with E'` nor `'$f without E'`.
+
+### Output
+
+One match per line, fixed field order, greppable — `path:line:col: <matched
+text>` then tab-separated `$var=<capture>`:
+
+```
+lib/@vibe/x/y.vibe:41:11: readit(q)	$f=readit	$x=q
+```
+
+`--json` emits the same matches as a JSON array; each match carries `start` /
+`end` char offsets and per-capture `{text, start}`, plus `type` when the typed
+tier ran. Empty output (`[]` in JSON) means no match, and `vibe grep` exits 0 —
+it is a *report*. Only a bad pattern or a bad filter is an error, and those say
+what to write instead:
+
+```
+$ vibe grep --pattern 'f($(x:expr))' lib
+error: grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type
+```
+
+`text` is the **printer's canonical rendering** of the matched node and is the
+exact, complete description of what matched. `end` is a *lower bound* on the
+source extent: only identifier-shaped tokens carry offsets in this AST, so
+trailing punctuation and literals are not counted. Use `text`, not `[start,
+end)`, when you need to know what the match was.
+
+A file that does not parse is skipped, not fatal: a repo sweep must not stop at
+the first work-in-progress file. `_build`, `node_modules`, `dist`, `target` and
+dot-directories are never descended into.
 
 ---
 
