@@ -17,6 +17,10 @@ import @vibe/compiler/runtime {
   projected_import_env_for_test, set_collect_module_diagnostics, set_dep_order_seed
 }
 
+import @vibe/compiler/loader {
+  ingest_source_text_fs
+}
+
 import @vibe/compiler/cache {
   compact_string_fingerprint,
   persistent_dep_list_cache_path,
@@ -81,6 +85,7 @@ fn retained_trait_node_tags(env: TypeEnv) -> String {
     EnvTraitDef(name, _, _, _, rest, _, _) => String::concat(String::concat("def:", name), String::concat(";", retained_trait_node_tags(rest))),
     EnvTraitImpl(name, _, rest) => String::concat(String::concat("impl:", name), String::concat(";", retained_trait_node_tags(rest))),
     EnvTraitImplGen(name, _, _, _, rest) => String::concat(String::concat("gen:", name), String::concat(";", retained_trait_node_tags(rest))),
+    EnvTypeDefs(_, _, rest) => retained_trait_node_tags(rest),
     EnvFlat(_) => "",
     EnvCached(_, _, rest) => retained_trait_node_tags(rest)
   }
@@ -112,11 +117,21 @@ fn typecheck_fs_pair_error(dep_path: String, dep_src: String, main_path: String,
   }
 }
 
+fn typecheck_db_pair_error(dep_src: String, main_src: String) -> String with Exception {
+  handle {
+    let db = db_set_source(db_set_source(db_new(), "mem/dep.vibe", dep_src), "mem/main.vibe", main_src)
+    let _ = db_typecheck(db, "mem/main.vibe")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
 //# Misc
 
 test "cross-module type propagation" {
   let db0 = db_new()
-  let db1 = db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nlet x = y"), "b.vibe", "export let y = 42")
+  let db1 = db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nexport let x = y"), "b.vibe", "export let y = 42")
   let db2 = db_typecheck(db1, "a.vibe")
   let b_y_is_int = match db_check_env(db2, "b.vibe") {
     Some(e) => match env_lookup(e, "y") {
@@ -126,14 +141,14 @@ test "cross-module type propagation" {
     None => false
   }
   assert(b_y_is_int)
-  let a_y_is_int = match db_check_env(db2, "a.vibe") {
+  let a_y_is_published = match db_check_env(db2, "a.vibe") {
     Some(e) => match env_lookup(e, "y") {
-      Some(CtInt) => true,
-      _ => false
+      Some(_) => true,
+      None => false
     },
     None => false
   }
-  assert(a_y_is_int)
+  assert(!a_y_is_published)
   let a_x_is_int = match db_check_env(db2, "a.vibe") {
     Some(e) => match env_lookup(e, "x") {
       Some(CtInt) => true,
@@ -148,7 +163,7 @@ test "cross-module re-export propagates enum constructors" {
   let db0 = db_new()
   let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
   let index_src = "export ./ast.vibe { TypeExpr }"
-  let main_src = "import ./index.vibe { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  let main_src = "import ./index.vibe { TypeExpr }\nexport let ann: TypeExpr = TyTuple([TyName(\"Int\")])"
   let db1 = db_set_source(db_set_source(db_set_source(db0, "main.vibe", main_src), "index.vibe", index_src), "ast.vibe", ast_src)
   let db2 = db_typecheck(db1, "main.vibe")
   let has_ann = match db_check_env(db2, "main.vibe") {
@@ -168,7 +183,7 @@ test "cross-module re-export propagates enum constructors" {
     },
     None => false
   }
-  assert(has_ctor)
+  assert(!has_ctor)
 }
 
 test "db_typecheck_fs: re-exported enum type imports constructors" {
@@ -177,7 +192,7 @@ test "db_typecheck_fs: re-exported enum type imports constructors" {
   let main_path = "/tmp/vibe_compiler_reexport_enum_ctor_fs_main.vibe"
   let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
   let index_src = "export ./vibe_compiler_reexport_enum_ctor_fs_ast.vibe { TypeExpr }"
-  let main_src = "import ./vibe_compiler_reexport_enum_ctor_fs_index.vibe { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  let main_src = "import ./vibe_compiler_reexport_enum_ctor_fs_index.vibe { TypeExpr }\nexport { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
   Fs::write_bytes(ast_path, string_to_bytes(ast_src))
   Fs::write_bytes(index_path, string_to_bytes(index_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
@@ -212,7 +227,7 @@ test "db_typecheck_fs: extensionless directory re-export imports enum constructo
   let main_path = String::concat(base_dir, "/main.vibe")
   let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
   let index_src = "export ./ast.vibe { TypeExpr }"
-  let main_src = "import ./core { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  let main_src = "import ./core { TypeExpr }\nexport { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
   Fs::mkdir_p(core_dir)
   Fs::write_bytes(ast_path, string_to_bytes(ast_src))
   Fs::write_bytes(index_path, string_to_bytes(index_src))
@@ -659,6 +674,23 @@ fn export_surface_error(paths: Array[String], entry: String) -> String with Fs {
   }
 }
 
+fn typedef_surface_pair_error(dir: String, dep_src: String, main_src: String) -> String with Fs {
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (dep_path, dep_fp)
+  ]))
+  export_surface_error([
+    dep_path,
+    main_path
+  ], main_path)
+}
+
 test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)" {
   let dir = "/tmp/vibe_compiler_export_surface_private"
   let dep_path = String::concat(dir, "/dep.vibe")
@@ -783,5 +815,145 @@ test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 c
     mid_path,
     main_path
   ], main_path)
+  assert(err == "")
+}
+
+test "db_typecheck_fs: private struct enum and alias declarations are not importable" {
+  let struct_err = typedef_surface_pair_error("/tmp/vibe_private_struct_authority", "struct Secret { value: Int }\n", "import ./dep.vibe { Secret }\nexport let value = Secret(1)\n")
+  assert(String::contains(struct_err, "imported name 'Secret' is not exported by"))
+  let enum_err = typedef_surface_pair_error("/tmp/vibe_private_enum_authority", "enum Secret { Hidden(Int) }\n", "import ./dep.vibe { Secret }\nexport let value = Hidden(1)\n")
+  assert(String::contains(enum_err, "imported name 'Secret' is not exported by"))
+  let alias_err = typedef_surface_pair_error("/tmp/vibe_private_alias_authority", "type Secret = Int\n", "import ./dep.vibe { Secret }\nexport let value: Secret = 1\n")
+  assert(String::contains(alias_err, "imported name 'Secret' is not exported by"))
+}
+
+test "db_typecheck_fs: public struct enum and alias declarations remain importable" {
+  let err = typedef_surface_pair_error("/tmp/vibe_public_typedef_authority", "export struct PublicStruct { value: Int }\nexport enum PublicEnum { PublicCase(Int) }\nexport type PublicAlias = Int\n", "import ./dep.vibe { PublicStruct, PublicEnum, PublicAlias }\nexport let s = PublicStruct(1)\nexport let e = PublicCase(1)\nexport let a: PublicAlias = 1\n")
+  assert(err == "")
+}
+
+test "db_typecheck_fs: imported generic alias enum and struct aliases retain formals" {
+  let err = typedef_surface_pair_error("/tmp/vibe_generic_typedef_alias_authority", "export type Wrap[T] = Array[T]\nexport enum Choice[T] { Pick(T) }\nexport struct Box[T] { value: T }\n", "import ./dep.vibe { Wrap as LocalWrap, Choice as LocalChoice, Box as LocalBox }\nexport let xs: LocalWrap[Int] = [1]\nexport let picked: LocalChoice[Int] = Pick(1)\nexport fn unbox(value: LocalBox[String]) -> String { value.value }\n")
+  assert(err == "")
+}
+
+test "db_typecheck_fs: a local typedef shadows imported declaration authority" {
+  let err = typedef_surface_pair_error("/tmp/vibe_local_typedef_shadow", "export type Label = Int\n", "import ./dep.vibe { Label }\ntype Label = String\nexport fn use_label(value: Label) -> String { value }\n")
+  assert(err == "")
+}
+
+test "db_typecheck_fs: selected effects and effectsets retain operation authority" {
+  let effect_err = typedef_surface_pair_error("/tmp/vibe_selected_effect_authority", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Audit }\nexport fn write() -> Unit with Audit { perform Audit::Emit(\"x\") }\n")
+  assert(effect_err == "")
+  // Selecting a public effectset transports its private member as closure for
+  // the row and operation signature, without making that member selectable.
+  let set_err = typedef_surface_pair_error("/tmp/vibe_selected_effectset_authority", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
+  assert(set_err == "")
+}
+
+test "db_typecheck: effect and effectset authority match the fs lane" {
+  let public_err = typecheck_db_pair_error("export effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
+  assert(public_err == "")
+  let private_err = typecheck_db_pair_error("effect Secret { Emit(String) -> Unit }\n", "import ./dep.vibe { Secret }\nexport let value = 1\n")
+  assert(String::contains(private_err, "imported name 'Secret' is not exported by"))
+}
+
+test "db_typecheck_fs: private unknown effects and effectsets are not selectable" {
+  let private_effect = typedef_surface_pair_error("/tmp/vibe_private_effect_authority", "effect Secret { Emit(String) -> Unit }\n", "import ./dep.vibe { Secret }\nexport let value = 1\n")
+  assert(String::contains(private_effect, "imported name 'Secret' is not exported by"))
+  let private_set = typedef_surface_pair_error("/tmp/vibe_private_effectset_authority", "effect Audit { Emit(String) -> Unit }\neffectset Secrets = { Audit }\n", "import ./dep.vibe { Secrets }\nexport let value = 1\n")
+  assert(String::contains(private_set, "imported name 'Secrets' is not exported by"))
+  // Audit crosses this boundary only as the public Audits closure; it cannot
+  // be selected directly by a downstream package.
+  let closure_member = typedef_surface_pair_error("/tmp/vibe_private_effect_closure_authority", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audit }\nexport let value = 1\n")
+  assert(String::contains(closure_member, "imported name 'Audit' is not exported by"))
+  let unknown = typedef_surface_pair_error("/tmp/vibe_unknown_effect_authority", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Missing }\nexport let value = 1\n")
+  assert(String::contains(unknown, "imported name 'Missing' is not exported by"))
+}
+
+test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v5" {
+  let dir = "/tmp/vibe_v4_cache_cold_recheck"
+  let path = String::concat(dir, "/main.vibe")
+  let source = "export let value = 1\n"
+  let fingerprint = build_test_fingerprint(source, array_empty())
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_typecheck_fs_cache(path, source, fingerprint)
+  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  let env_path = persistent_type_env_cache_path(fingerprint)
+  let leaf_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
+  Fs::write_file(env_path, "version\t3\nenv\t1:0\n")
+  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
+  Fs::write_file(env_path, "version\t5\nenv\t1:Z\n")
+  Fs::write_file(leaf_path, "version\t1\nnot-a-fingerprint\n")
+  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
+}
+
+test "db_typecheck: an imported effect does not leak through a non-re-exporting module (#1549)" {
+  let err = handle {
+    let db0 = db_new()
+    let db1 = db_set_source(db_set_source(db_set_source(db0, "mem/a.vibe", "export effect Audit { Emit(String) -> Unit }\n"), "mem/b.vibe", "import ./a.vibe { Audit }\nexport let marker = 1\n"), "mem/c.vibe", "import ./b.vibe { Audit }\nexport let marker = 1\n")
+    let _ = db_typecheck(db1, "mem/c.vibe")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(err, "imported name 'Audit' is not exported by"))
+  assert(String::contains(err, "./b.vibe"))
+}
+
+test "db_typecheck: an explicit effect re-export remains importable (#1549)" {
+  let err = handle {
+    let db0 = db_new()
+    let db1 = db_set_source(db_set_source(db_set_source(db0, "mem/a.vibe", "export effect Audit { Emit(String) -> Unit }\n"), "mem/b.vibe", "export ./a.vibe { Audit }\n"), "mem/c.vibe", "import ./b.vibe { Audit }\nexport fn write() -> Unit with Audit { perform Audit::Emit(\"ok\") }\n")
+    let _ = db_typecheck(db1, "mem/c.vibe")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(err == "")
+}
+
+test "db_typecheck: empty local dependencies cannot grant ambient authority (#1549)" {
+  let db0 = db_new()
+  let random_err = handle {
+    let db1 = db_set_source(db_set_source(db0, "mem/empty.vibe", "export let marker = 1\n"), "mem/main.vibe", "import ./empty.vibe { Random, Fs }\nexport let marker = 1\n")
+    let _ = db_typecheck(db1, "mem/main.vibe")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  let fs_err = handle {
+    let db1 = db_set_source(db_set_source(db_new(), "mem/empty.vibe", "export let marker = 1\n"), "mem/main.vibe", "import ./empty.vibe { Fs }\nexport let marker = 1\n")
+    let _ = db_typecheck(db1, "mem/main.vibe")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(random_err, "imported name 'Random' is not exported by"))
+  assert(String::contains(fs_err, "imported name 'Fs' is not exported by"))
+}
+
+test "db_typecheck_fs: @vibe/fs contract explicitly grants Fs authority (#1549)" {
+  let path = "lib/@vibe/compiler/tests/type_db_package_fs_authority.vibe"
+  let source = "import @vibe/fs { Fs }\nexport fn write(path: String) -> Unit with Fs { perform Fs::WriteFile(path, \"ok\") }\n"
+  let contract_path = "lib/@vibe/fs/index.vpkg"
+  let contract_source = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+  let fs_path = "lib/@vibe/fs/fs.vibe"
+  let effect_path = "lib/@vibe/fs/fs_effect.vibe"
+  let aliases_path = "lib/@vibe/fs/fs_aliases.vibe"
+  let db0 = db_set_source(db_new(), contract_path, contract_source)
+  let db1 = db_set_source(db0, fs_path, ingest_source_text_fs(fs_path, Fs::read_file(fs_path)))
+  let db2 = db_set_source(db1, effect_path, ingest_source_text_fs(effect_path, Fs::read_file(effect_path)))
+  let db3 = db_set_source(db2, aliases_path, ingest_source_text_fs(aliases_path, Fs::read_file(aliases_path)))
+  let err = handle {
+    let db = db_set_source(db3, path, source)
+    let _ = db_typecheck_fs(db, path)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
   assert(err == "")
 }

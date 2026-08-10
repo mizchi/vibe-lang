@@ -9860,13 +9860,9 @@ export let _start = () -> Int {
   }
 }
 '
-# 7. The DELIBERATE gap, pinned so a later change to it is a visible decision
-#    rather than a surprise: an uppercase name is not reported. A struct or a
-#    type alias is not a value binding at all (it lives in `defs`, which the
-#    dependency-environment cache does not carry), so "absent" cannot be told
-#    apart from "not exported" for uppercase names. Closing this needs the
-#    dependency's type definitions, not a tweak here.
-ui_case bogus_uppercase_not_reported ok 'import ./dep.vibe { Hue, NoSuchType }
+# 7. Declaration authority now travels with the dependency environment, so an
+#    unknown uppercase selection is rejected by the same import-surface check.
+ui_case bogus_uppercase_not_reported err 'import ./dep.vibe { Hue, NoSuchType }
 
 export let _start = () -> Int { 1 }
 '

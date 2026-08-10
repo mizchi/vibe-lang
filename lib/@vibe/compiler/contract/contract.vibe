@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, Stmt, TypeExpr, lookup_registry_builtin, resolve_builtin
 }
 
 import @vibe/compiler/syntax {
@@ -565,7 +565,12 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     // domain-local helpers) are legal and never violations by themselves —
     // only when NO def satisfies the decl do the candidates drive the
     // error message (best mismatch first, then export status).
-    let mut satisfied = false
+    // Compiler-provided values may be explicitly exposed by a contract even
+    // though no sibling implementation file owns their bodies.
+    let mut satisfied = match lookup_registry_builtin(dname) {
+      Some(_) => true,
+      None => dname == "Int::to_string"
+    }
     let mut seen_any = false
     let mut best_msg = ""
     let mut fi = 0
@@ -631,7 +636,17 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     // #847: same trust-at-face-value treatment as the fn-decl loop above —
     // a re-exported name has no arity to compare, so it satisfies an opaque
     // type declaration without an arity check (there is nothing to check).
-    let mut ofound = array_contains_string(reexported, oname)
+    // Compiler-provided types likewise have no implementation sibling. The
+    // contract declaration itself is the explicit package authority.
+    let builtin_arity = if oname == "Option" {
+      1
+    } else {
+      0
+    }
+    let mut ofound = array_contains_string(reexported, oname) || (match resolve_builtin(oname) {
+      Some(_) => builtin_arity == oarity,
+      None => oname == "Option" && oarity == 1
+    })
     let mut ti = 0
     while ti < Array::length(type_defs) {
       let (tname, texported, tarity) = Array::get(type_defs, ti)
@@ -864,6 +879,45 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
     tdi = tdi + 1
   }
   let allocated = array_empty()
+  // Contract-declared compiler builtins have no implementation sibling. Keep
+  // their authority explicit in the generated plain-vibe facade.
+  let builtin_exports = array_empty()
+  let mut boi = 0
+  while boi < Array::length(opaque_names) {
+    let (oname, oarity) = Array::get(opaque_names, boi)
+    let expected_arity = if oname == "Option" {
+      1
+    } else {
+      0
+    }
+    let is_builtin_type = match resolve_builtin(oname) {
+      Some(_) => expected_arity == oarity,
+      None => oname == "Option" && oarity == 1
+    }
+    if is_builtin_type {
+      Array::push(builtin_exports, oname)
+      Array::push(allocated, "type \{oname}")
+    } else ()
+    boi = boi + 1
+  }
+  let mut bdi = 0
+  while bdi < Array::length(decls) {
+    let (dname, _) = Array::get(decls, bdi)
+    match lookup_registry_builtin(dname) {
+      Some(_) => {
+        Array::push(builtin_exports, dname)
+        Array::push(allocated, dname)
+      },
+      None => if dname == "Int::to_string" {
+        Array::push(builtin_exports, dname)
+        Array::push(allocated, dname)
+      } else ()
+    }
+    bdi = bdi + 1
+  }
+  if Array::length(builtin_exports) > 0 {
+    Array::push(lines, "export { \{String::join(builtin_exports, ", ")} }")
+  } else ()
   let mut ui = 0
   while ui < Array::length(impl_units) {
     let (raw, unit_stmts) = Array::get(impl_units, ui)

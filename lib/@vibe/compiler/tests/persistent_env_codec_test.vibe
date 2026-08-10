@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Type, TypeEnv, TypeExpr, env_lookup, trait_method_sig, trait_supers, types_equal
+  Type, TypeDef, TypeEnv, TypeExpr, env_lookup, env_selectable_type_defs, env_type_defs, trait_method_sig, trait_supers, types_equal
 }
 
 import @vibe/compiler/runtime {
@@ -110,6 +110,7 @@ fn retained_trait_header_params(env: TypeEnv, name: String) -> Array[String] {
     },
     EnvTraitImpl(_, _, rest) => retained_trait_header_params(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => retained_trait_header_params(rest, name),
+    EnvTypeDefs(_, _, rest) => retained_trait_header_params(rest, name),
     EnvFlat(_) => [
     ],
     EnvCached(_, _, rest) => retained_trait_header_params(rest, name)
@@ -127,6 +128,7 @@ fn retained_trait_method_gens(env: TypeEnv, name: String) -> Array[(String, Arra
     },
     EnvTraitImpl(_, _, rest) => retained_trait_method_gens(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => retained_trait_method_gens(rest, name),
+    EnvTypeDefs(_, _, rest) => retained_trait_method_gens(rest, name),
     EnvFlat(_) => array_empty(),
     EnvCached(_, _, rest) => retained_trait_method_gens(rest, name)
   }
@@ -144,6 +146,7 @@ fn retained_generic_impl_bounds(env: TypeEnv, name: String) -> Array[(String, Ar
     } else {
       retained_generic_impl_bounds(rest, name)
     },
+    EnvTypeDefs(_, _, rest) => retained_generic_impl_bounds(rest, name),
     EnvFlat(_) => [
     ],
     EnvCached(_, _, rest) => retained_generic_impl_bounds(rest, name)
@@ -163,12 +166,12 @@ fn malformed_rejected(text: String) -> Bool {
 
 //# Tests
 
-test "persistent TypeEnv v3 round-trips every variant and trait payload" {
+test "persistent module interface v5 round-trips every variant and trait payload" {
   let env = codec_fixture()
   let encoded = persistent_type_env_cache_text(env)
-  assert(String::starts_with(encoded, "version\t3\nenv\t"))
+  assert(String::starts_with(encoded, "version\t5\nenv\t"))
   // TDRE4 hardening binds this exact canonical text externally; it does not
-  // change or wrap the production TypeEnv-v3 transport envelope itself.
+  // change or wrap the production TypeEnv-v4 transport envelope itself.
   assert(String::index_of(encoded, "TDRE4") < 0)
   match parse_persistent_type_env(encoded) {
     Some(decoded) => {
@@ -221,7 +224,127 @@ test "persistent TypeEnv v3 round-trips every variant and trait payload" {
   }
 }
 
-test "persistent TypeEnv v3 rebuilds untrusted cached lookup indexes" {
+test "persistent module interface v5 round-trips enum struct and alias authority" {
+  let defs = [
+    TDEnum("Choice", [
+      "T"
+    ], [
+      ("Pick", [
+        CtNamed("T", [
+        ])
+      ])
+    ]),
+    TDStruct("Box", [
+      ("value", CtNamed("T", [
+      ]))
+    ], [
+    ], [
+      "T"
+    ]),
+    TDAlias("ChoiceBox", [
+    ], CtStruct("Box"))
+  ]
+  let env = EnvTypeDefs(defs, [
+    "Choice",
+    "Box",
+    "ChoiceBox"
+  ], EnvBind("Choice", CtEnum("Choice"), EnvEmpty))
+  match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+    Some(decoded) => {
+      let decoded_defs = env_type_defs(decoded)
+      assert(Array::length(decoded_defs) == 3)
+      match (Array::get(decoded_defs, 0), Array::get(decoded_defs, 1), Array::get(decoded_defs, 2)) {
+        (TDEnum(name, params, variants), TDStruct(struct_name, fields, _, struct_params), TDAlias(alias, _, CtStruct(target))) => {
+          assert(name == "Choice")
+          assert(Array::get(params, 0) == "T")
+          let (variant, payload) = Array::get(variants, 0)
+          assert(variant == "Pick")
+          assert(Array::length(payload) == 1)
+          assert(struct_name == "Box")
+          assert(Array::get(struct_params, 0) == "T")
+          assert(Array::get(fields, 0).0 == "value")
+          assert(alias == "ChoiceBox")
+          assert(target == "Box")
+        },
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "persistent module interface v5 round-trips effect and effectset authority" {
+  let env = EnvTypeDefs([
+    TDEffect("Audit", [
+      ("Emit", [
+        CtString
+      ], CtUnit)
+    ], [
+    ]),
+    TDEffectSet("Audits", [
+      "Audit"
+    ])
+  ], [
+    "Audits"
+  ], EnvEmpty)
+  match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+    Some(decoded) => {
+      let defs = env_type_defs(decoded)
+      assert(Array::length(defs) == 2)
+      assert(Array::length(env_selectable_type_defs(decoded)) == 1)
+      assert(Array::get(env_selectable_type_defs(decoded), 0) == "Audits")
+      match (Array::get(defs, 0), Array::get(defs, 1)) {
+        (TDEffect(effect_name, ops, _), TDEffectSet(set_name, members)) => {
+          assert(effect_name == "Audit")
+          assert(Array::get(ops, 0).0 == "Emit")
+          assert(set_name == "Audits")
+          assert(Array::get(members, 0) == "Audit")
+        },
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "legacy enum carrier bytes cannot alter v5 typedef authority" {
+  let declared = TDEnum("Choice", [
+  ], [
+    ("Pick", [
+      CtInt
+    ])
+  ])
+  // This was the retired `Choice::__variants__` value carrier. It is valid
+  // TypeEnv data but EnvTypeDefs must remain the only declaration authority.
+  let env = EnvTypeDefs([
+    declared
+  ], [
+    "Choice"
+  ], EnvBind("Choice::__variants__", CtNamed("__variants__", [
+    CtNamed("Corrupt", [
+      CtString
+    ])
+  ]), EnvEmpty))
+  match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+    Some(decoded) => {
+      let defs = env_type_defs(decoded)
+      assert(Array::length(defs) == 1)
+      match Array::get(defs, 0) {
+        TDEnum(name, params, variants) => {
+          assert(name == "Choice")
+          assert(Array::length(params) == 0)
+          let (variant, fields) = Array::get(variants, 0)
+          assert(variant == "Pick")
+          assert(Array::get(fields, 0) == CtInt)
+        },
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "persistent module interface v5 rebuilds untrusted cached lookup indexes" {
   let corrupt = EnvCached([
     "shadow",
     "shadow",
@@ -253,12 +376,15 @@ test "persistent TypeEnv v3 rebuilds untrusted cached lookup indexes" {
   }
 }
 
-test "persistent TypeEnv v3 rejects old, truncated, and malformed envelopes" {
+test "persistent module interface v5 rejects old, truncated, and malformed envelopes" {
   assert(malformed_rejected("version\t1\nbind\tvalue\tI\n"))
   assert(malformed_rejected("version\t2\nenv\t1:0\n"))
-  assert(malformed_rejected("version\t3\nenv\t"))
-  assert(malformed_rejected("version\t3\nenv\t1:Z\n"))
-  assert(malformed_rejected("version\t3\nenv\t2:00\n"))
-  assert(malformed_rejected("version\t3\nenv\t4:B0:0\n"))
-  assert(malformed_rejected("version\t3\nenv\t1:0\ntrailing"))
+  // Bare v3 was a value/trait-only TypeEnv, never an empty declaration interface.
+  assert(malformed_rejected("version\t3\nenv\t1:0\n"))
+  assert(malformed_rejected("version\t4\nenv\t1:0\n"))
+  assert(malformed_rejected("version\t5\nenv\t"))
+  assert(malformed_rejected("version\t5\nenv\t1:Z\n"))
+  assert(malformed_rejected("version\t5\nenv\t2:00\n"))
+  assert(malformed_rejected("version\t5\nenv\t4:B0:0\n"))
+  assert(malformed_rejected("version\t5\nenv\t1:0\ntrailing"))
 }

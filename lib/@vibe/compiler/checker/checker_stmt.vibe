@@ -31,6 +31,7 @@ import @vibe/compiler/core {
   env_cache,
   env_flat_bindings,
   env_lookup_flat,
+  env_type_defs,
   find_enum_typedef,
   find_typedef,
   generalize,
@@ -52,10 +53,6 @@ import ./checker.vibe {
   check_assignable,
   check_expr,
   check_expr_capture,
-  decode_enum_def,
-  encode_enum_def,
-  enum_def_env_name,
-  enum_def_env_target,
   fn_return_env_name,
   is_array_builder_ty,
   is_region_tagged_ty,
@@ -477,6 +474,31 @@ fn es_qualified_collision(ed_names: Array[String], ed_ops_list: Array[Array[Stri
 /// Shared by check_stmts' own pre-pass (order-independent cycle/collision
 /// checking) and collect_async_effect_errors' row-expansion pass below (step
 /// 3) so both walks agree on exactly the same tables.
+fn es_append_imported_tables(defs: Array[TypeDef], es_names: Array[String], es_members_list: Array[Array[String]], ed_names: Array[String], ed_ops_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDEffect(name, ops, _) => {
+        let op_names = array_empty()
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (op, _, _) = Array::get(ops, oi)
+          Array::push(op_names, op)
+          oi = oi + 1
+        }
+        Array::push(ed_names, name)
+        Array::push(ed_ops_list, op_names)
+      },
+      TDEffectSet(name, members) => {
+        Array::push(es_names, name)
+        Array::push(es_members_list, members)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array[Array[String]], Array[String], Array[Array[String]]) {
   let es_names = array_empty()
   let es_members_list = array_empty()
@@ -485,7 +507,7 @@ fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array
   let mut i = from_idx
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SEffectSet(_, esname, esmembers) => {
+      SEffectSet(exported, esname, esmembers) => {
         Array::push(es_names, esname)
         Array::push(es_members_list, esmembers)
       },
@@ -751,8 +773,9 @@ fn es_expand_stmts_effect_rows(stmts: Array[Stmt], es_names: Array[String], es_m
 /// The retained CheckedProgram statements deliberately remain the original
 /// post-desugar source representation, while all checking passes see this
 /// identical expanded copy on both ordinary and imported-environment paths.
-fn es_expand_top_level_effectset_rows(stmts: Array[Stmt]) -> Array[Stmt] {
-  let (top_es_names, top_es_members_list, _, _) = es_collect_tables(stmts, 0)
+fn es_expand_top_level_effectset_rows(stmts: Array[Stmt], initial_env: TypeEnv) -> Array[Stmt] {
+  let (top_es_names, top_es_members_list, top_ed_names, top_ed_ops) = es_collect_tables(stmts, 0)
+  es_append_imported_tables(env_type_defs(initial_env), top_es_names, top_es_members_list, top_ed_names, top_ed_ops)
   es_expand_stmts_effect_rows(stmts, top_es_names, top_es_members_list)
 }
 
@@ -981,183 +1004,109 @@ fn collect_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[(String, String)]
   out
 }
 
-/// #1455: rebuild a `TDEnum` in this module's `defs` for every enum an
-/// imported module published under `enum_def_env_name`. Returns the index at
-/// which this module's OWN declarations start (which #1078's collision check
-/// needs -- see `find_other_enum_declaring_variant`) paired with the next free
-/// type-variable id.
-///
-/// The second half of that pair is what makes PARAMETERIZED imported enums
-/// work. The carrier stores name-parameterized payloads (`CtNamed("T", [])`),
-/// so seeding has to bind each formal to a `CtVar` of THIS compilation's
-/// counter before the payloads mean anything -- and those ids must not be
-/// handed out again, so checking has to resume from the counter seeding left
-/// off at rather than from zero.
-///
-/// Seeding happens once, before checking, rather than at each `SImport`, so an
-/// imported enum is visible from the first statement on, exactly like the
-/// constructor bindings it belongs to. A consequence is that
-/// `import ./m { E as F }` registers the enum under `E`: the alias is only
-/// known to `bind_stmt_imports`, and the dependency's constructors already
-/// arrive under their original names, so following them keeps the two
-/// consistent. Renaming the type is left out of this slice.
-///
-/// A candidate is DROPPED when any of its variant names is already declared
-/// locally, or by another candidate. Both `find_ctor_in_defs` and
-/// `find_typedef` are first-match-wins over one flat `defs`, so registering
-/// two enums that share a constructor name would silently decide which one a
-/// bare `Mk(..)` pattern means -- the exact hazard #1078 rejects WITHIN a
-/// unit. Across a module boundary the shadowing is legitimate (the local
-/// binding wins, and that code compiles today), so the conservative move is
-/// to leave the ambiguous enum unregistered and keep today's behaviour for
-/// it rather than to guess or to reject. This also keeps the invariant #1078
-/// relies on -- no two enums in `defs` share a variant name -- true of the
-/// seeded entries too.
-fn seed_imported_enum_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int) {
-  let claimed_variants = array_empty()
-  let local_names = local_enum_names(stmts, claimed_variants)
-  let bindings = env_flat_bindings(initial_env)
-  // Pass 1: the candidates, deduped by enum name. `env_flat_bindings` lists
-  // the most recent binding first, so the first carrier seen for a name is
-  // the one whose constructors the env actually resolves to.
-  let cand_names = array_empty()
-  let cand_params = array_empty()
-  let cand_variants = array_empty()
-  let mut i = 0
-  while i < Array::length(bindings) {
-    let (bname, bty) = Array::get(bindings, i)
-    match enum_def_env_target(bname) {
-      Some(ename) => if es_string_array_contains(local_names, ename) || es_string_array_contains(cand_names, ename) {
-        ()
-      } else {
-        match decode_enum_def(bty) {
-          Some((params, variants)) => {
-            Array::push(cand_names, ename)
-            Array::push(cand_params, params)
-            Array::push(cand_variants, variants)
-          },
-          None => ()
-        }
-      },
-      None => ()
-    }
-    i = i + 1
-  }
-  // Pass 2: a variant name claimed more than once disqualifies every
-  // candidate that claims it, so the outcome does not depend on which
-  // candidate happened to be seen first.
-  let contested = array_empty()
-  let mut ci = 0
-  while ci < Array::length(cand_names) {
-    let variants = Array::get(cand_variants, ci)
-    let mut vi = 0
-    while vi < Array::length(variants) {
-      let (vname, _) = Array::get(variants, vi)
-      if es_string_array_contains(claimed_variants, vname) {
-        Array::push(contested, vname)
-      } else {
-        Array::push(claimed_variants, vname)
-      }
-      vi = vi + 1
-    }
-    ci = ci + 1
-  }
-  let mut next_c = 0
-  let mut ri = 0
-  while ri < Array::length(cand_names) {
-    let ename = Array::get(cand_names, ri)
-    let params = Array::get(cand_params, ri)
-    let variants = Array::get(cand_variants, ri)
-    let mut ok = true
-    let mut vi2 = 0
-    while vi2 < Array::length(variants) {
-      let (vname, _) = Array::get(variants, vi2)
-      if es_string_array_contains(contested, vname) {
-        ok = false
-      } else {
-        ()
-      }
-      vi2 = vi2 + 1
-    }
-    if ok {
-      // Bind the formals to ids of this compilation's counter, then push the
-      // SAME shape a local `SEnum` would have: `CtVar`-substituted payloads in
-      // the `TDEnum`, the ids that quantify them in `type_def_binders`.
-      let param_var_ids = array_empty()
-      let param_var_types = array_empty()
-      let mut pi = 0
-      while pi < Array::length(params) {
-        Array::push(param_var_ids, next_c + pi)
-        Array::push(param_var_types, CtVar(next_c + pi))
-        pi = pi + 1
-      }
-      next_c = next_c + Array::length(params)
-      let resolved_variants = array_empty()
-      let mut si = 0
-      while si < Array::length(variants) {
-        let (vname, vtypes) = Array::get(variants, si)
-        let resolved_vtypes = for vt in vtypes {
-          subst_type_params(vt, params, param_var_types)
-        }
-        Array::push(resolved_variants, (vname, resolved_vtypes))
-        si = si + 1
-      }
-      Array::push(defs, TDEnum(ename, params, resolved_variants))
-      Array::push(type_def_binders, param_var_ids)
-    } else {
-      ()
-    }
-    ri = ri + 1
-  }
-  seed_import_alias_defs(stmts, defs, type_def_binders)
-  (Array::length(defs), next_c)
-}
-
-/// #1502: `import ./m { E as F }` registers `F` as a `TDAlias` of `E`, so the
-/// constructor qualifier can be spelled with the name this module actually
-/// bound (`F::Mk`). Before this the alias was known only to
-/// `bind_stmt_imports`, and `F::Mk` failed with `unknown name` while the
-/// unaliased `E::Mk` worked -- a surprise, since `F` is usable everywhere else
-/// (type annotations, and the bare constructors, which arrive under their
-/// ORIGINAL names and so need no renaming).
-///
-/// Runs after the enum seeding above so `orig` is resolvable whether it is a
-/// local enum or one that seeding just introduced. Registration is skipped
-/// when `alias` already names a type -- a genuine conflict belongs to whatever
-/// declared that name, not to this convenience.
-///
-/// `type_def_binders` is index-aligned with `defs`, so each alias pushes an
-/// empty binder row -- exactly what the `STypeAlias` arm does for a written
-/// `type` alias. Omitting it would misalign every typedef registered after
-/// this point.
-fn seed_import_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> Unit {
+/// Seed imported declaration authority before checking. The published
+/// `EnvTypeDefs` chain is the sole source for enum, struct, and alias defs;
+/// the old `Enum::__variants__` value carrier is intentionally not consulted.
+/// Generic enum payloads are name-parameterized on the wire and rebound to
+/// this check's fresh ids here, exactly once.
+fn local_type_def_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(_, items) => {
-        let mut j = 0
-        while j < Array::length(items) {
-          let (orig, alias_opt) = Array::get(items, j)
-          match alias_opt {
-            Some(alias) => match find_enum_typedef(defs, orig) {
-              Some(_) => match find_typedef(defs, alias) {
-                Some(_) => (),
-                None => {
-                  Array::push(defs, TDAlias(alias, array_empty(), CtEnum(orig)))
-                  Array::push(type_def_binders, array_empty())
-                }
-              },
-              None => ()
-            },
-            None => ()
-          }
-          j = j + 1
-        }
-      },
+      SEnum(_, name, _, _, _) => Array::push(names, name),
+      SStruct(_, name, _, _, _, _) => Array::push(names, name),
+      STypeAlias(_, name, _, _) => Array::push(names, name),
+      SEffectDef(_, name, _, _) => Array::push(names, name),
+      SEffectSet(_, name, _) => Array::push(names, name),
       _ => ()
     }
     i = i + 1
   }
+  names
+}
+
+fn string_array_contains(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == wanted {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int) {
+  let imported = env_type_defs(initial_env)
+  // `find_typedef` is first-match-wins. Local declarations are checked after
+  // this seed, so omit same-named imported authority up front; otherwise an
+  // imported typedef would permanently win over the lexical local declaration.
+  let local_names = local_type_def_names(stmts)
+  let mut next_c = 0
+  let mut i = 0
+  while i < Array::length(imported) {
+    let def = Array::get(imported, i)
+    let name = match def {
+      TDEnum(n, _, _) => n,
+      TDStruct(n, _, _, _) => n,
+      TDAlias(n, _, _) => n,
+      TDEffect(n, _, _) => n,
+      TDEffectSet(n, _) => n
+    }
+    // First declaration wins, matching find_typedef and the import cache's
+    // first-match rule. A projected interface never contains effects here.
+    match find_typedef(defs, name) {
+      Some(_) => (),
+      None => if string_array_contains(local_names, name) {
+        ()
+      } else match def {
+        TDEnum(enum_name, params, variants) => {
+          let ids = array_empty()
+          let vars = array_empty()
+          let mut pi = 0
+          while pi < Array::length(params) {
+            Array::push(ids, next_c + pi)
+            Array::push(vars, CtVar(next_c + pi))
+            pi = pi + 1
+          }
+          next_c = next_c + Array::length(params)
+          let rebound = array_empty()
+          let mut vi = 0
+          while vi < Array::length(variants) {
+            let (variant, fields) = Array::get(variants, vi)
+            let rebound_fields = array_empty()
+            let mut fi = 0
+            while fi < Array::length(fields) {
+              Array::push(rebound_fields, subst_type_params(Array::get(fields, fi), params, vars))
+              fi = fi + 1
+            }
+            Array::push(rebound, (variant, rebound_fields))
+            vi = vi + 1
+          }
+          Array::push(defs, TDEnum(enum_name, params, rebound))
+          Array::push(type_def_binders, ids)
+        },
+        TDStruct(struct_name, fields, mut_fields, params) => {
+          Array::push(defs, TDStruct(struct_name, fields, mut_fields, params))
+          Array::push(type_def_binders, array_empty())
+        },
+        TDAlias(alias_name, params, target) => {
+          Array::push(defs, TDAlias(alias_name, params, target))
+          Array::push(type_def_binders, array_empty())
+        },
+        TDEffect(effect_name, ops, params) => {
+          Array::push(defs, TDEffect(effect_name, ops, params))
+          Array::push(type_def_binders, array_empty())
+        },
+        TDEffectSet(_, _) => ()
+      }
+    }
+    i = i + 1
+  }
+  (Array::length(defs), next_c)
 }
 
 /// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
@@ -1339,6 +1288,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   // (step 3's row-expansion pass) via es_collect_tables so both walks stay
   // in sync from one implementation.
   let (es_names, es_members_list, ed_names, ed_ops_list) = es_collect_tables(stmts, idx)
+  es_append_imported_tables(defs, es_names, es_members_list, ed_names, ed_ops_list)
   // ADR-0075 Phase 2 (#1343): resource identity rules need the WHOLE list
   // (duplicate detection), so they run here rather than in the SResource arm
   // below -- which is why that arm has nothing left to do.
@@ -1615,7 +1565,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         capture_statement_root_type(capture, statement_path, "SLetPat", vt)
         (new_env, ns, nc)
       },
-      SEnum(_, name, params, variants, enum_derives) => {
+      SEnum(exported, name, params, variants, enum_derives) => {
         validate_derives(enum_derives, errors)
         duplicate_ctor_errors("enum", name, variants, errors)
         let param_len = Array::length(params)
@@ -1635,14 +1585,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         let ctor_bounds = array_empty()
         let resolved_variants = array_empty()
-        // #1455: the same variant list twice. `resolved_variants` binds the
-        // formals to THIS compilation's `CtVar` ids and is what the `TDEnum`
-        // stores; `exported_variants` keeps them as `CtNamed(paramName, [])`
-        // and is what rides the `Enum::__variants__` carrier, because an id
-        // means nothing without the binder list that quantifies it and that
-        // list does not cross a module boundary. For a monomorphic enum the
-        // two are the same value (the substitution has nothing to do).
-        let exported_variants = array_empty()
+        // The local TDEnum uses this check's ids; published authority retains
+        // the name-parameterized shape and rebinds it at each importer.
+        let published_variants = array_empty()
         let mut vi = 0
         while vi < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, vi)
@@ -1658,7 +1603,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             ti = ti + 1
           }
           Array::push(resolved_variants, (vname, resolved_vtypes))
-          Array::push(exported_variants, (vname, named_vtypes))
+          Array::push(published_variants, (vname, named_vtypes))
           vi = vi + 1
         }
         Array::push(defs, TDEnum(name, params, resolved_variants))
@@ -1716,12 +1661,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           }
           ci2 = ci2 + 1
         }
-        // #1455: publish this enum's variant list so a module that imports it
-        // can rebuild the TDEnum (see `enum_def_env_name`). Parameterized enums
-        // ride the same carrier now that it stores the name-parameterized
-        // payloads plus the formals; the importer re-substitutes ids of its own
-        // (`seed_imported_enum_defs`).
-        env1 = env_bind(env1, enum_def_env_name(name), encode_enum_def(params, exported_variants))
         // #672: pre-bind the generated structural `E::equals` (every enum gets
         // one) so `==` dispatch call sites resolve at check time.
         let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
@@ -1768,7 +1707,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           env_hash
         }
-        (env_default, s, c + param_len)
+        (EnvTypeDefs([
+          TDEnum(name, params, published_variants)
+        ], if exported {
+          [
+            name
+          ]
+        } else {
+          array_empty()
+        }, env_default), s, c + param_len)
       },
       SSuberror(_, name, variants) => {
         // #786: a `suberror Name(payload...)` declaration is structurally a
@@ -1825,7 +1772,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         ], CtBool, None))
         (env_eq, s, c)
       },
-      SStruct(_, name, field_defs, derives, mut_fields, tparams) => {
+      SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
         let resolved_fields = array_empty()
         let mut fi = 0
@@ -1900,16 +1847,32 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           env_hash
         }
-        (bind_fn_return(env5, name, CtStruct(name)), s, c)
+        (EnvTypeDefs([
+          TDStruct(name, resolved_fields, mut_fields, tparams)
+        ], if exported {
+          [
+            name
+          ]
+        } else {
+          array_empty()
+        }, bind_fn_return(env5, name, CtStruct(name))), s, c)
       },
-      STypeAlias(_, name, params, te) => {
+      STypeAlias(exported, name, params, te) => {
         // #1512: `params` shadow `defs` -- see resolve_type_expr_shadowed.
         let t = resolve_type_expr_shadowed(te, defs, params)
         // Record the alias (with its formal params) so an applied use
         // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
         Array::push(defs, TDAlias(name, params, t))
         Array::push(type_def_binders, array_empty())
-        (env_bind(env, name, t), s, c)
+        (EnvTypeDefs([
+          TDAlias(name, params, t)
+        ], if exported {
+          [
+            name
+          ]
+        } else {
+          array_empty()
+        }, env_bind(env, name, t)), s, c)
       },
       SExternLet(name, te) => {
         let t = resolve_type_expr(te, defs)
@@ -1996,7 +1959,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         (new_env, s, c)
       },
-      SEffectDef(_, ename, eparams, ops) => {
+      SEffectDef(exported, ename, eparams, ops) => {
         // #813: register the effect's operation signatures (resolved to
         // checker Types) so perform arguments, handler arm names/arity/
         // payload binds, and resume values can be validated. #1340
@@ -2023,9 +1986,17 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         Array::push(defs, TDEffect(ename, resolved_ops, eparams))
         Array::push(type_def_binders, array_empty())
-        (env, s, c)
+        (EnvTypeDefs([
+          TDEffect(ename, resolved_ops, eparams)
+        ], if exported {
+          [
+            ename
+          ]
+        } else {
+          array_empty()
+        }, env), s, c)
       },
-      SEffectSet(_, esname, _) => {
+      SEffectSet(exported, esname, esmembers) => {
         // ADR-0071 (#755): the ADR's Decision section calls out two specific
         // invalid-definition cases by name -- a cycle through member
         // references, and a qualified name colliding with an operation of
@@ -2052,7 +2023,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             None => ()
           }
         }
-        (env, s, c)
+        (EnvTypeDefs([
+          TDEffectSet(esname, esmembers)
+        ], if exported {
+          [
+            esname
+          ]
+        } else {
+          array_empty()
+        }, env), s, c)
       },
       _ => (env, s, c)
     }
@@ -2313,7 +2292,8 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: 
       // instead of requiring callers to re-declare it verbatim. Pure AST
       // rewrite local to this file (see es_expand_stmts_effect_rows);
       // check_perform_effects_stmts_env itself is untouched.
-      let (perform_es_names, perform_es_members_list, _, _) = es_collect_tables(stmts, 0)
+      let (perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops) = es_collect_tables(stmts, 0)
+      es_append_imported_tables(env_type_defs(env), perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops)
       let expanded_stmts = es_expand_stmts_effect_rows(stmts, perform_es_names, perform_es_members_list)
       let perform_errs = check_perform_effects_stmts_env(expanded_stmts, env)
       let mut j = 0
@@ -2872,7 +2852,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // effectset actually covers it. A non-mutating copy (stmts itself, and
   // whatever the caller does with it after check_program returns, are
   // unaffected) is enough: codegen never reads the row's text content.
-  let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
+  let expanded_stmts = es_expand_top_level_effectset_rows(stmts, EnvEmpty)
   let statement_parent_path = match capture {
     Some(_) => Some(array_empty()),
     None => match role_lane_capture {
@@ -3155,7 +3135,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // `seed_next_c` is the first type-variable id seeding did NOT consume;
       // checking has to start there or a parameterized imported enum's formals
       // would be handed out a second time.
-      let (local_defs_start, seed_next_c) = seed_imported_enum_defs(stmts, initial_env, empty_defs, type_def_binders)
+      let (local_defs_start, seed_next_c) = seed_imported_type_defs(stmts, initial_env, empty_defs, type_def_binders)
       let cached_env = env_cache(initial_env)
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env
@@ -3168,7 +3148,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       check_labeled_arg_names_stmts(stmts, frozen_errors, false)
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,
       // but match the ordinary path by checking and validating an expanded copy.
-      let expanded_stmts = es_expand_top_level_effectset_rows(stmts)
+      let expanded_stmts = es_expand_top_level_effectset_rows(stmts, initial_env)
       let statement_parent_path = match capture {
         Some(_) => Some(array_empty()),
         None => match role_lane_capture {
