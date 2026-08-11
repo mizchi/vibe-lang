@@ -936,7 +936,22 @@ case "$cmd" in
         rm -f "$out" "$out.diag"
       else
         if [ -s "$out.diag" ]; then
-          echo "error: $(cat "$out.diag")" >&2
+          # #1567: the sidecar can now hold SEVERAL diagnostics, one per line
+          # (check_linked_file reports every top-level parse error the
+          # recovering parser collected, not just the first). Prefix each line
+          # so a multi-error report stays one-diagnostic-per-line and grep-able
+          # instead of collapsing into a single smeared `error:` line.
+          #
+          # #1625 review (Codex P2): a single diagnostic can still span several
+          # LINES -- checker_effects.vibe appends a `hint: ...` continuation to
+          # an effect row mismatch. Prefixing that too would make one diagnostic
+          # count as two, which is precisely the grep-ability the prefix exists
+          # to provide. Only diagnostic STARTS get `error: `; a continuation is
+          # indented under the diagnostic it belongs to, so `grep -c '^error: '`
+          # is an exact diagnostic count. `hint: ` is the only continuation the
+          # compiler emits today; leading whitespace is accepted too so a future
+          # indented continuation does not silently become a phantom error.
+          awk '/^(hint: |[[:space:]])/ { print "  " $0; next } { print "error: " $0 }' "$out.diag" >&2
         fi
         rm -f "$out" "$out.diag"
         die "check failed: $src"

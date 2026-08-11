@@ -99,6 +99,24 @@ else
   echo "info: compiler did not emit a structured diagnostic (seed build); skipping message assertion"
 fi
 
+# #1567 slice 1 + its review (Codex P2): `vibe check` prefixes each sidecar line
+# with `error: ` so a multi-error report stays one-diagnostic-per-line and
+# grep-able. A single diagnostic can still span several LINES, though --
+# checker_effects.vibe appends a `hint: ...` continuation to an effect row
+# mismatch -- so prefixing every line would report ONE diagnostic as TWO. This
+# pins the distinction: exactly one `error: ` line, with the hint present and
+# indented under it rather than counted as its own error.
+printf 'fn leaky() -> String {\n  Env::get("HOME")\n}\n\nfn main {\n  let _ = leaky()\n  ()\n}\n' > "$proj/hint.vibe"
+hint_diag="$("$VIBE" check "$proj/hint.vibe" 2>&1 || true)"
+if echo "$hint_diag" | grep -q "effect row mismatch"; then
+  check "vibe check counts a hint as part of its diagnostic" \
+    "1" "$(echo "$hint_diag" | grep -c '^error: ')"
+  check "vibe check still shows the hint" \
+    "yes" "$(echo "$hint_diag" | grep -q 'hint: ' && echo yes || echo no)"
+else
+  echo "info: compiler did not emit the effect row mismatch hint (seed build); skipping continuation-line assertion"
+fi
+
 # test: passing file exits 0, failing file exits non-zero, aggregate fails
 "$VIBE" test "$proj/pass_test.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe test pass exit" "0" "$rc"
