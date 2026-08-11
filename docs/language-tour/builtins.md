@@ -151,7 +151,7 @@ reserved and is not part of the current surface syntax.
 | `Stdin::read_via_stream` | `() -> StdinStream` | `{Stdin}` | Acquire an opaque p3 stdin provider stream |
 | `StdinStream::next` | `(StdinStream) -> Int` | `{Async}` | Read one byte, or `-1` after settled EOF |
 | `StdinStream::close` | `(StdinStream) -> Unit` | `{Async}` | Settle an early close (idempotent after success) |
-| `StdinStream::chunks` | `(StdinStream, Int) -> (() -> Option[String] with Async)` | `-` (pull: `{Async}`) | Pure factory for exact-size binary chunks; caller retains and closes the stream on early stop |
+| `StdinStream::read_chunk` | `(StdinStream, Int) -> Option[String]` | `{Async}` | Read one exact-size binary chunk (except the final short chunk); caller closes after early stop or non-positive size |
 
 ## JSON
 

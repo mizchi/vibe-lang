@@ -24,7 +24,7 @@ grep -Fq 'type StdinStream' lib/@vibe/console/index.vpkg
 grep -Fq 'fn Stdin::read_via_stream() -> StdinStream with Stdin' lib/@vibe/console/index.vpkg
 grep -Fq 'fn StdinStream::next(stream: StdinStream) -> Int with Async' lib/@vibe/console/index.vpkg
 grep -Fq 'fn StdinStream::close(stream: StdinStream) -> Unit with Async' lib/@vibe/console/index.vpkg
-grep -Fq 'fn StdinStream::chunks(stream: StdinStream, chunk_size: Int) -> (() -> Option[String] with Async)' lib/@vibe/console/index.vpkg
+grep -Fq 'fn StdinStream::read_chunk(stream: StdinStream, chunk_size: Int) -> Option[String] with Async' lib/@vibe/console/index.vpkg
 if grep -Fq 'vibe_stdin_provider_' lib/@vibe/console/index.vpkg; then
   echo "stdin provider source gate FAILED: raw names leaked into console contract" >&2
   exit 1
@@ -92,36 +92,50 @@ fn run() -> Int with Stdin + Async {
   if first == 10 { 46 } else { 0 }
 }
 EOF
-cat >"$OUT/chunks-direct.vibe" <<'EOF'
+cat >"$OUT/chunk-loop.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
   let mut index = 0
   let mut ok = true
-  for chunk in StdinStream::chunks(stream, 4) {
-    if index == 0 {
-      ok = ok && String::length(chunk) == 4 && String::char_code_at(chunk, 0) == 0 && String::char_code_at(chunk, 1) == 128 && String::char_code_at(chunk, 2) == 255 && String::char_code_at(chunk, 3) == 65
-    } else if index == 1 {
-      ok = ok && String::length(chunk) == 1 && String::char_code_at(chunk, 0) == 66
-    } else {
-      ok = false
+  let mut done = false
+  while done == false {
+    match StdinStream::read_chunk(stream, 4) {
+      Some(chunk) => {
+        if index == 0 {
+          ok = ok && String::length(chunk) == 4 && String::char_code_at(chunk, 0) == 0 && String::char_code_at(chunk, 1) == 128 && String::char_code_at(chunk, 2) == 255 && String::char_code_at(chunk, 3) == 65
+        } else if index == 1 {
+          ok = ok && String::length(chunk) == 1 && String::char_code_at(chunk, 0) == 66
+        } else {
+          ok = false
+        }
+        index = index + 1
+      },
+      None => { done = true }
     }
-    index = index + 1
   }
-  if ok && index == 2 { 50 } else { 0 }
+  let post_eof = StdinStream::read_chunk(stream, 4)
+  StdinStream::close(stream)
+  StdinStream::close(stream)
+  match post_eof {
+    None => match StdinStream::read_chunk(stream, 4) {
+      None => if ok && index == 2 { 50 } else { 0 },
+      Some(_) => 0
+    },
+    Some(_) => 0
+  }
 }
 EOF
-cat >"$OUT/chunks-one-alias.vibe" <<'EOF'
+cat >"$OUT/chunk-one-alias.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let factory = StdinStream::chunks
-  let pull = factory(stream, 1)
-  let a = pull()
-  let b = pull()
-  let c = pull()
-  let d = pull()
-  let e = pull()
-  let eof1 = pull()
-  let eof2 = pull()
+  let read_chunk = StdinStream::read_chunk
+  let a = read_chunk(stream, 1)
+  let b = read_chunk(stream, 1)
+  let c = read_chunk(stream, 1)
+  let d = read_chunk(stream, 1)
+  let e = read_chunk(stream, 1)
+  let eof1 = read_chunk(stream, 1)
+  let eof2 = read_chunk(stream, 1)
   match a {
     Some(sa) => match b {
       Some(sb) => match c {
@@ -146,47 +160,44 @@ fn run() -> Int with Stdin + Async {
   }
 }
 EOF
-cat >"$OUT/chunks-zero.vibe" <<'EOF'
+cat >"$OUT/chunk-zero.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let pull = StdinStream::chunks(stream, 0)
-  match pull() {
+  match StdinStream::read_chunk(stream, 0) {
     Some(_) => 0,
-    None => match pull() {
+    None => match StdinStream::read_chunk(stream, 0) {
       Some(_) => 0,
       None => {
         let first = StdinStream::next(stream)
         StdinStream::close(stream)
         StdinStream::close(stream)
-        match pull() { None => if first == 0 { 52 } else { 0 }, Some(_) => 0 }
+        match StdinStream::read_chunk(stream, 0) { None => if first == 0 { 52 } else { 0 }, Some(_) => 0 }
       }
     }
   }
 }
 EOF
-cat >"$OUT/chunks-negative.vibe" <<'EOF'
+cat >"$OUT/chunk-negative.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let pull = StdinStream::chunks(stream, -7)
-  match pull() {
+  match StdinStream::read_chunk(stream, -7) {
     Some(_) => 0,
     None => {
       let first = StdinStream::next(stream)
       StdinStream::close(stream)
-      match pull() { None => if first == 0 { 53 } else { 0 }, Some(_) => 0 }
+      match StdinStream::read_chunk(stream, -7) { None => if first == 0 { 53 } else { 0 }, Some(_) => 0 }
     }
   }
 }
 EOF
-cat >"$OUT/chunks-early-close.vibe" <<'EOF'
+cat >"$OUT/chunk-early-close.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let pull = StdinStream::chunks(stream, 4)
-  let first = pull()
+  let first = StdinStream::read_chunk(stream, 4)
   StdinStream::close(stream)
   StdinStream::close(stream)
   match first {
-    Some(chunk) => match pull() {
+    Some(chunk) => match StdinStream::read_chunk(stream, 4) {
       None => if String::length(chunk) == 4 && String::char_code_at(chunk, 0) == 0 && String::char_code_at(chunk, 3) == 65 { 54 } else { 0 },
       Some(_) => 0
     },
@@ -230,15 +241,15 @@ compile_component early-alias
 compile_component second
 compile_component multiple-active
 compile_component import-alias 0 1 1
-compile_component chunks-direct
-compile_component chunks-one-alias
-compile_component chunks-zero
-compile_component chunks-negative
-compile_component chunks-early-close
+compile_component chunk-loop
+compile_component chunk-one-alias
+compile_component chunk-zero
+compile_component chunk-negative
+compile_component chunk-early-close
 cp "$OUT/drain.vibe" "$OUT/drain-rc.vibe"
 compile_component drain-rc 1
-cp "$OUT/chunks-direct.vibe" "$OUT/chunks-direct-rc.vibe"
-compile_component chunks-direct-rc 1
+cp "$OUT/chunk-loop.vibe" "$OUT/chunk-loop-rc.vibe"
+compile_component chunk-loop-rc 1
 
 WIT="$OUT/drain.wit"
 WAT="$OUT/drain.wat"
@@ -250,8 +261,8 @@ grep -Fq 'read-via-stream: func() -> tuple<stream<u8>, future<result<_, error-co
 grep -Fq 'stdin_provider_acquire' "$WAT"
 grep -Fq 'stdin_provider_read' "$WAT"
 grep -Fq 'stdin_provider_close' "$WAT"
-wasm-tools print "$OUT/chunks-direct.component.wasm" >"$OUT/chunks-direct.wat"
-if grep -Fq 'host_stream_get$stdin' "$WAT" "$OUT/chunks-direct.wat" || grep -Fq 'host_stream_read' "$WAT" "$OUT/chunks-direct.wat" || grep -Fq 'host_stream_close' "$WAT" "$OUT/chunks-direct.wat"; then
+wasm-tools print "$OUT/chunk-loop.component.wasm" >"$OUT/chunk-loop.wat"
+if grep -Fq 'host_stream_get$stdin' "$WAT" "$OUT/chunk-loop.wat" || grep -Fq 'host_stream_read' "$WAT" "$OUT/chunk-loop.wat" || grep -Fq 'host_stream_close' "$WAT" "$OUT/chunk-loop.wat"; then
   echo "stdin provider source gate FAILED: generic HostStream route leaked" >&2
   exit 1
 fi
@@ -282,6 +293,31 @@ cat >"$OUT/next-effect.vibe" <<'EOF'
 fn run() -> Int with Stdin { let s = Stdin::read_via_stream(); StdinStream::next(s) }
 EOF
 actionable_fail next-effect run 'effectful call outside effectful context: StdinStream::next'
+cat >"$OUT/read-chunk-effect-direct.vibe" <<'EOF'
+fn pure_read_chunk(stream: StdinStream) -> Option[String] {
+  StdinStream::read_chunk(stream, 4)
+}
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let _ = pure_read_chunk(stream)
+  StdinStream::close(stream)
+  0
+}
+EOF
+actionable_fail read-chunk-effect-direct run 'effectful call outside effectful context: StdinStream::read_chunk'
+cat >"$OUT/read-chunk-effect-alias.vibe" <<'EOF'
+fn pure_read_chunk(stream: StdinStream) -> Option[String] {
+  let read_chunk = StdinStream::read_chunk
+  read_chunk(stream, 4)
+}
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let _ = pure_read_chunk(stream)
+  StdinStream::close(stream)
+  0
+}
+EOF
+actionable_fail read-chunk-effect-alias run 'effectful call outside effectful context'
 cat >"$OUT/nominal.vibe" <<'EOF'
 fn run() -> Int with Async { StdinStream::next(1) }
 EOF
@@ -301,16 +337,16 @@ cat >"$OUT/mixed.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = host_stream_named("body"); StdinStream::close(s); 0 }
 EOF
 actionable_fail mixed run 'mixing stdin-provider imports with named host future/stream imports is not supported'
-cat >"$OUT/chunks-mixed.vibe" <<'EOF'
-fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = host_stream_named("body"); let _ = StdinStream::chunks(s, 4); StdinStream::close(s); 0 }
+cat >"$OUT/chunk-mixed.vibe" <<'EOF'
+fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = host_stream_named("body"); let _ = StdinStream::read_chunk(s, 4); StdinStream::close(s); 0 }
 EOF
-actionable_fail chunks-mixed run 'effect Async has closure values whose row carries it'
+actionable_fail chunk-mixed run 'mixing stdin-provider imports with named host future/stream imports is not supported'
 cat >"$OUT/noncomponent.vibe" <<'EOF'
-fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let pull = StdinStream::chunks(s, 4); let _ = pull(); StdinStream::close(s); 0 }
+fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); StdinStream::close(s); 0 }
 EOF
 actionable_fail noncomponent main 'requires an Async component entry named run'
 cat >"$OUT/gc.vibe" <<'EOF'
-fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let pull = StdinStream::chunks(s, 4); let _ = pull(); 0 }
+fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); 0 }
 EOF
 actionable_fail gc main 'StdinStream is unsupported on gc backend' gc
 cat >"$OUT/coverage.vibe" <<'EOF'
@@ -405,10 +441,10 @@ run_lane second 44
 run_lane multiple-active 45
 run_lane import-alias 46
 run_lane drain-rc 42
-run_lane chunks-direct 50 "$CHUNK_INPUT"
-run_lane chunks-one-alias 51 "$CHUNK_INPUT"
-run_lane chunks-zero 52 "$CHUNK_INPUT"
-run_lane chunks-negative 53 "$CHUNK_INPUT"
-run_lane chunks-early-close 54 "$CHUNK_INPUT"
-run_lane chunks-direct-rc 50 "$CHUNK_INPUT"
+run_lane chunk-loop 50 "$CHUNK_INPUT"
+run_lane chunk-one-alias 51 "$CHUNK_INPUT"
+run_lane chunk-zero 52 "$CHUNK_INPUT"
+run_lane chunk-negative 53 "$CHUNK_INPUT"
+run_lane chunk-early-close 54 "$CHUNK_INPUT"
+run_lane chunk-loop-rc 50 "$CHUNK_INPUT"
 echo "wasi cli stdin provider source component gate OK (wasmtime 47.0.2)"

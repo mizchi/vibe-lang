@@ -44,10 +44,10 @@ gc_cs = callsite_names(GC_CALLSITE)
 gc_text = open(GC_CALLSITE).read()
 gc_throw_only_expected = {
     "Stdin::read_via_stream", "StdinStream::next", "StdinStream::close",
-    "StdinStream::chunks"
+    "StdinStream::read_chunk"
 }
 throw_only_match = re.search(
-    r'if\s+((?:fname == "(?:Stdin::read_via_stream|StdinStream::next|StdinStream::close|StdinStream::chunks)"(?:\s*\|\|\s*)?)+)\s*\{\s*throw\("StdinStream is unsupported on gc backend;',
+    r'if\s+((?:fname == "(?:Stdin::read_via_stream|StdinStream::next|StdinStream::close|StdinStream::read_chunk)"(?:\s*\|\|\s*)?)+)\s*\{\s*throw\("StdinStream is unsupported on gc backend;',
     gc_text)
 throw_only_found = (set(re.findall(r'fname == "([^"]+)"', throw_only_match.group(1)))
                     if throw_only_match else set())
@@ -75,13 +75,13 @@ if len(rows) < 90:
 reg_lin = {n for n, l, g, v in rows if l == "true"}
 reg_gc = {n for n, l, g, v in rows if g == "true"}
 # Compiler-owned wrappers can implement a checker-visible builtin without a
-# func-table row. Keep this exception exact and mutation-checked: chunks must
-# still be retargeted to its injected linear/RC source factory.
-wrapper_only_expected = {"StdinStream::chunks"}
+# func-table row. Keep this exception exact and mutation-checked: read_chunk
+# must still be retargeted to its injected linear/RC implementation.
+wrapper_only_expected = {"StdinStream::read_chunk"}
 linked_text = open(LINKED).read()
 wrapper_only_found = {
     n for n in wrapper_only_expected
-    if f'"{n}"' in linked_text and "__stdin_provider_chunks_surface" in linked_text
+    if f'"{n}"' in linked_text and "__stdin_provider_read_chunk_surface" in linked_text
 }
 if wrapper_only_found != wrapper_only_expected:
     print("[builtin-parity] FAIL: compiler-owned StdinStream wrapper shape "

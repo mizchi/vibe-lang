@@ -406,7 +406,15 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
       Some(h) => Some(h),
       None => match env_lookup(env, n) {
         Some(t) => afe_type_head_name(t),
-        None => None
+        None => if n == "StdinStream::read_chunk" {
+          // #1539: targeted provenance for the compiler-owned direct adapter.
+          // This deliberately does not infer generic closure effect evidence
+          // (#1536); it only keeps a bare local alias use-gated like the
+          // public builtin it names.
+          Some("#stdin_read_chunk_async_primitive")
+        } else {
+          None
+        }
       }
     },
     // `Counter::{ .. }` -- the struct literal names its own type.
@@ -470,6 +478,15 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
   match expr {
     ECall(EIdent(name, _), _, _) => if !in_async && is_async_primitive(name, env) {
       Array::push(errors, EEEffectfulCallOutsideEffect(name))
+    } else if !in_async {
+      match afe_lookup_local(locals, name) {
+        Some(target) => if target == "#stdin_read_chunk_async_primitive" {
+          Array::push(errors, EEEffectfulCallOutsideEffect("StdinStream::read_chunk"))
+        } else {
+          ()
+        },
+        None => ()
+      }
     } else {
       ()
     },
