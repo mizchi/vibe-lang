@@ -868,12 +868,37 @@ export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
   found
 }
 
+fn is_stdin_provider_import_value(name: String) -> Bool {
+  name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
+}
+
+/// Preserve an imported provider value alias as a canonical value-position
+/// marker after the import itself is dropped. The shared pre-codegen provider
+/// validator then rejects the marker just like `let n = StdinStream::next`.
+/// Type aliases such as `StdinStream as S` deliberately add no marker: their
+/// qualified call heads are canonicalized by rewrite_alias_qualified_head.
+fn append_stdin_provider_import_alias_markers(merged: Array[Stmt], items: Array[(String, Option[String])]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let (original, alias_opt) = Array::get(items, i)
+    match alias_opt {
+      Some(_) => if is_stdin_provider_import_value(original) {
+        Array::push(merged, SExpr(EIdent(original, -1)))
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
 export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, _) => (),
+      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, stmt)
@@ -890,7 +915,7 @@ export fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, _) => (),
+      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       SModule(_, _, _) => Array::push(merged, rewrite_alias_stmt_ix(stmt, am)),
@@ -2216,7 +2241,7 @@ export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Ar
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, _) => (),
+      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       SModule(_, _, _) => Array::push(merged, rewrite_alias_stmt_ix(stmt, am)),

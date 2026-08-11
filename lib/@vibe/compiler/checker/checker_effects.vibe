@@ -66,6 +66,9 @@ export enum EffectError {
   // tier in eval/lang-review/repair (05).
   EEEffectRowMismatch(String, String, String, String, Int);
   EEAssignImmutable(String);
+  // #1539: provider-owned stdin lifecycle operations cannot be transported as
+  // values until generic higher-order effect flow is sound (#1536).
+  EEStdinProviderValueReference(String);
   // #1347: a `handle ... with E` whose arms are provably dead because the
   // body cannot reach a perform of E and only invokes an opaque value —
   // the handler-switch footgun. Field: the effect name.
@@ -147,6 +150,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
       }
     },
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)")),
+    EEStdinProviderValueReference(name) => String::concat("stdin provider operations are direct-call-only; wrap `", String::concat(name, "` in an explicitly effectful function")),
     EEHandleNeverFires(eff) => {
       let tail = String::concat(eff, "::..` and calls an opaque function value. A continuation captured by another handler carries THAT handler with it, so wrapping its invocation in a new `handle` does not switch handlers (non-scoped resumption is unsupported -- ADR-0089 Part A, #1347). Drive the continuation without the wrapping handle, or handle the effect where it is performed")
       String::concat("handle of effect '", String::concat(eff, String::concat("' can never fire: this body reaches no `perform ", tail)))
@@ -174,20 +178,105 @@ fn effect_opt_is_async(eff: Option[String]) -> Bool {
   effect_row_has_label(effect_row_parse(eff), "Async")
 }
 
+fn is_stdin_provider_surface(name: String) -> Bool {
+  name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
+}
+
+/// #1539: the four public provider operations are syntactic direct-call
+/// primitives, not first-class function values. A direct `ECall` skips its
+/// exact builtin callee but still checks every argument; every other expression
+/// position is traversed structurally. This rejects aliases, chains,
+/// conditionals, returned/container values, and unknown HOF transport without
+/// attempting the generic effect-flow propagation deliberately deferred by
+/// #1536. An explicitly effectful user wrapper remains an ordinary function.
+fn check_stdin_provider_direct_calls_expr(expr: Expr) -> Array[EffectError] {
+  let errors = array_empty()
+  match expr {
+    ECall(EIdent(name, _), args, _) => {
+      if is_stdin_provider_surface(name) {
+        let mut ai = 0
+        while ai < Array::length(args) {
+          append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(args, ai)))
+          ai = ai + 1
+        }
+      } else {
+        let children = expr_children(expr)
+        let mut i = 0
+        while i < Array::length(children) {
+          append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(children, i)))
+          i = i + 1
+        }
+      }
+    },
+    EIdent(name, _) => if is_stdin_provider_surface(name) {
+      Array::push(errors, EEStdinProviderValueReference(name))
+    } else {
+      ()
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(children, i)))
+        i = i + 1
+      }
+    }
+  }
+  errors
+}
+
+fn check_stdin_provider_direct_calls_stmt(stmt: Stmt) -> Array[EffectError] {
+  match stmt {
+    SLet(_, _, _, _, body) => check_stdin_provider_direct_calls_expr(body),
+    SLetMut(_, _, body) => check_stdin_provider_direct_calls_expr(body),
+    STest(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SBench(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SExample(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SExpr(body) => check_stdin_provider_direct_calls_expr(body),
+    SLetPat(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SModule(_, _, inner) => check_stdin_provider_direct_calls_stmts(inner),
+    _ => array_empty()
+  }
+}
+
+export fn check_stdin_provider_direct_calls_stmts(stmts: Array[Stmt]) -> Array[EffectError] {
+  let errors = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    append_eff_errs(errors, check_stdin_provider_direct_calls_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+  errors
+}
+
 /// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
 /// A name bound in `env` (a user/prelude function) is intentionally NOT treated
-/// as a primitive even if its type is `with Async`.
+/// as a primitive even if its type is `with Async`, except the four exact
+/// compiler-owned stdin provider names imported from their public contract.
 fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
-  match env_lookup(env, name) {
-    Some(_) => false,
-    None => {
-      let normalized = canonical_builtin_name(name)
-      match lookup_builtin(normalized) {
-        Some(ty) => match ty {
-          CtFn(_, _, eff) => effect_opt_is_async(eff),
-          _ => false
-        },
-        None => false
+  if is_stdin_provider_surface(name) {
+    // Imported package contracts bind these exact public names in env, but
+    // they remain compiler-owned primitives after canonical import rewriting.
+    // Do not let that binding suppress their Async authority requirement.
+    match lookup_builtin(canonical_builtin_name(name)) {
+      Some(ty) => match ty {
+        CtFn(_, _, eff) => effect_opt_is_async(eff),
+        _ => false
+      },
+      None => false
+    }
+  } else {
+    match env_lookup(env, name) {
+      Some(_) => false,
+      None => {
+        let normalized = canonical_builtin_name(name)
+        match lookup_builtin(normalized) {
+          Some(ty) => match ty {
+            CtFn(_, _, eff) => effect_opt_is_async(eff),
+            _ => false
+          },
+          None => false
+        }
       }
     }
   }
@@ -569,11 +658,13 @@ export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectErro
 }
 
 export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+  // Enforce direct-call-only before ordinary Async row checks. These errors are
+  // checker diagnostics, so no artifact reaches codegen for an opaque flow.
+  let errors = check_stdin_provider_direct_calls_stmts(stmts)
   // #1341: rebuild the struct field-type table for THIS program before the
   // walk, so a stale one from a previous module can never classify a
   // same-named field here.
   afe_set_field_types(stmts)
-  let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     append_eff_errs(errors, check_async_effects_stmt(Array::get(stmts, i), env))

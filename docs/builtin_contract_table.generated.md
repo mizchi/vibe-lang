@@ -42,6 +42,10 @@ Legend:
 | `MapBuilder::set` | `(MapBuilder[K, V], K, V) -> Unit` | `-` | yes | yes |
 | `Stdin::read_char` | `() -> Int` | `{Stdin}` | yes | yes |
 | `Stdin::read_stream` | `(Int) -> String` | `{Stdin}` | yes | yes |
+| `Stdin::read_via_stream` | `() -> StdinStream` | `{Stdin}` | component linear/RC only | component linear/RC only |
+| `StdinStream::next` | `(StdinStream) -> Int` | `{Async}` | component linear/RC only | component linear/RC only |
+| `StdinStream::close` | `(StdinStream) -> Unit` | `{Async}` | component linear/RC only | component linear/RC only |
+| `StdinStream::read_chunk` | `(StdinStream, Int) -> Option[String]` | `{Async}` | component linear/RC only | component linear/RC only |
 | `Stdout::write_char` | `(Int) -> Unit` | `{Stdout}` | yes | yes |
 | `Stdout::write_stream` | `(String) -> Unit` | `{Stdout}` | yes | yes |
 | `String::char_code_at` | `(String, Int) -> Int` | `-` | yes | yes |

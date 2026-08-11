@@ -1540,10 +1540,17 @@ The compiler now exposes this contract through one unforgeable nominal scalar:
 Stdin::read_via_stream() -> StdinStream with Stdin
 StdinStream::next(StdinStream) -> Int with Async
 StdinStream::close(StdinStream) -> Unit with Async
+StdinStream::read_chunk(StdinStream, Int) -> Option[String] with Async
 ```
 
 `StdinStream` is neither `Int`, generic `HostStream`, nor `Stream[T]`; source
-cannot construct it and it is not `Send`. Its observable authority and effect
+cannot construct it and it is not `Send`. The four public provider builtins are
+**direct-call-only**: any value-position reference (local/top-level alias,
+chain, compound/container/field, returned value, or unknown HOF transport) is a
+checker error. A user-defined wrapper with an explicit `Stdin` or `Async` row is
+an ordinary function and may be passed as a value under the existing effect
+rules. This deliberately does not add the generic higher-order effect-flow
+propagation deferred by #1536. Their observable authority and effect
 requirements are fixed as follows:
 
 - Acquisition is synchronous but requires `Stdin` authority. It calls
@@ -1558,6 +1565,17 @@ requirements are fixed as follows:
 - A completion `error-code` is fail-closed. There is no approved public
   `Stdin`/`Exception`/`Result` mapping yet; an adapter must not turn it into
   EOF, success, a generic integer, or a legacy `Option` value.
+- `read_chunk(stream, n)` is a direct compiler-owned, use-gated operation with
+  `Async`. For positive `n`, it reads one provider byte at a time and returns
+  exactly `n` bytes except for the final short chunk. Bytes are validated as
+  `0..255` and appended through one-byte `String::from_char_code`, without
+  UTF-8 expansion. It does not promise to preserve internal provider read
+  boundaries. EOF settles before `None`; subsequent calls return `None`. An
+  exact multiple needs one extra call to observe EOF. For `n <= 0`, it returns
+  `None` without reading or settling, so the caller must close the stream.
+  Early stopping likewise requires explicit, idempotent `close`. A pull
+  closure/direct-`for` adapter remains blocked on transitive higher-order
+  effect evidence (#1536) and is not part of this surface.
 
 The existing `host_stream_close(HostStream) -> Unit` is deliberately
 synchronous and only drops its one generic stream handle (§3.18.1). It cannot
@@ -1583,11 +1601,11 @@ canonical stream handle, and completion-future handle never cross into the
 compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
 bytes or tagged `-1` after settlement and close returns tagged zero.
 
-The three raw registry rows remain `checker_visible=false`; three public rows
-lower atomically through compiler-owned wrapper functions to those same exact
-imports. The wrappers are required for first-class references/aliases because
-raw imports do not accept the hidden closure-environment argument. Source emits
-only the exact `vibe.stdin_provider_*` core imports and the nominal
+The three raw registry rows remain `checker_visible=false`. Exact direct calls
+lower through compiler-owned ABI wrappers to those imports; the `read_chunk`
+wrapper additionally implements repeated hidden raw reads. Public operation
+values never reach codegen because the checker rejects them. Source
+emits only the exact `vibe.stdin_provider_*` core imports and the nominal
 `wasi:cli/types@0.3.0` + `wasi:cli/stdin@0.3.0` component imports.
 
 `stdin_stream`, generic HostStream, and named future/stream behavior remain
@@ -1807,7 +1825,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff を実装。既存 `stdin_stream(chunk_size)` は未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active gate; generic `[3, handle]` `HostStream` は使わず、named future/stream との mix は明示拒否 |
+| **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route + additive compiler-owned direct chunk operation まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff、`StdinStream::read_chunk` を実装。pull-closure/direct-`for` adapter は transitive HOF effect evidence (#1536) 待ち。既存 `stdin_stream(chunk_size)` は standalone-capable のまま未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` manual while-loop chunks (linear/RC, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import は不使用 |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |

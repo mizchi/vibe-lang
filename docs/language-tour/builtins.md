@@ -151,6 +151,12 @@ reserved and is not part of the current surface syntax.
 | `Stdin::read_via_stream` | `() -> StdinStream` | `{Stdin}` | Acquire an opaque p3 stdin provider stream |
 | `StdinStream::next` | `(StdinStream) -> Int` | `{Async}` | Read one byte, or `-1` after settled EOF |
 | `StdinStream::close` | `(StdinStream) -> Unit` | `{Async}` | Settle an early close (idempotent after success) |
+| `StdinStream::read_chunk` | `(StdinStream, Int) -> Option[String]` | `{Async}` | Read one exact-size binary chunk (except the final short chunk); caller closes after early stop or non-positive size |
+
+These four stdin-provider builtins are direct-call-only. To pass an operation as
+a value, define a wrapper whose `with` row explicitly declares `Stdin` or
+`Async`; aliases and other value-position references to the builtins are
+rejected by the checker.
 
 ## JSON
 
