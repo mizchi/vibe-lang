@@ -489,75 +489,140 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
   }
 }
 
-/// Conservative escape gate for the first user-visible native GC value. The
-/// reference stays in one typed local and may only be the receiver of direct
-/// Array::length/get/set calls; all control forms that can capture, return, or
-/// ambiguously bind it are rejected until typed-reference handling grows.
-fn gc_native_array_body_is_safe(expr: Expr, name: String) -> Bool {
+fn gc_direct_abi_expr_index(ctx: CompileCtxGc, name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(ctx.gc_direct_abi_names) {
+    if found < 0 && Array::get(ctx.gc_direct_abi_names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Conservative escape gate for native locals, extended in #1541 to admit a
+/// reference in a proven direct-call parameter position and in the tail of a
+/// proven reference-result body. `allow_tail` is reset for ordinary children,
+/// so aggregates, indirect calls, captures, and joins remain impossible.
+fn gc_native_array_body_is_safe_tail(expr: Expr, name: String, allow_tail: Bool, ctx: CompileCtxGc) -> Bool {
   match expr {
-    EIdent(n, _) => n != name,
+    EIdent(n, _) => n != name || allow_tail,
     ECall(EIdent(fname, _), args, _) => {
-      let expected = if fname == "Array::length" {
-        1
-      } else if fname == "Array::get" {
-        2
-      } else if fname == "Array::set" {
-        3
-      } else {
-        -1
-      }
-      if expected > 0 && Array::length(args) == expected {
-        match Array::get(args, 0) {
-          EIdent(n, _) => if n == name {
-            let mut i = 1
-            let mut ok = true
-            while i < Array::length(args) {
-              if !gc_native_array_body_is_safe(Array::get(args, i), name) {
-                ok = false
-              }
-              i = i + 1
+      let direct_idx = gc_direct_abi_expr_index(ctx, fname)
+      if direct_idx >= 0 {
+        let refs = Array::get(ctx.gc_direct_abi_param_refs, direct_idx)
+        let mut i = 0
+        let mut ok = Array::length(refs) == Array::length(args)
+        while i < Array::length(args) {
+          let is_target = match Array::get(args, i) {
+            EIdent(n, _) => n == name,
+            _ => false
+          }
+          if is_target {
+            if !Array::get(refs, i) {
+              ok = false
+            } else {
+              ()
             }
-            ok
+          } else if !gc_native_array_body_is_safe_tail(Array::get(args, i), name, false, ctx) {
+            ok = false
           } else {
-            gc_native_array_children_are_safe(expr, name)
-          },
-          _ => gc_native_array_children_are_safe(expr, name)
+            ()
+          }
+          i = i + 1
         }
+        ok
       } else {
-        gc_native_array_children_are_safe(expr, name)
+        let expected = if fname == "Array::length" {
+          1
+        } else if fname == "Array::get" {
+          2
+        } else if fname == "Array::set" {
+          3
+        } else {
+          -1
+        }
+        if expected > 0 && Array::length(args) == expected {
+          match Array::get(args, 0) {
+            EIdent(n, _) => if n == name {
+              let mut i = 1
+              let mut ok = true
+              while i < Array::length(args) {
+                if !gc_native_array_body_is_safe_tail(Array::get(args, i), name, false, ctx) {
+                  ok = false
+                }
+                i = i + 1
+              }
+              ok
+            } else {
+              gc_native_array_children_are_safe(expr, name, ctx)
+            },
+            _ => gc_native_array_children_are_safe(expr, name, ctx)
+          }
+        } else {
+          gc_native_array_children_are_safe(expr, name, ctx)
+        }
       }
     },
-    // Same-name nesting makes the simple syntactic ownership proof ambiguous.
-    ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
-    ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
-    ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
-    EAssign(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
-    EAssignOp(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
+    // A plain alias remains in the same typed reference lane. Its own uses
+    // are checked when that ELet is compiled and logged as a typed local.
+    ELet(alias, EIdent(source, _), body, _) => if alias != name && source == name {
+      // Check both spellings: the original binding remains in scope after a
+      // plain alias and must not be smuggled into an unsupported i64 use.
+      gc_native_array_body_is_safe_tail(body, alias, allow_tail, ctx) && gc_native_array_body_is_safe_tail(body, name, allow_tail, ctx)
+    } else {
+      alias != name && gc_native_array_children_are_safe(expr, name, ctx)
+    },
+    ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
+    ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
+    ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
+    EAssign(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
+    EAssignOp(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
     EFn(_, _, _, _, _, _) => false,
     EMatch(_, _) => false,
     EHandle(_, _) => false,
     EForIn(_, _, _, _) => false,
     ELoop(_, _) => false,
-    // A scalar result may be returned; returning the reference itself is
-    // still rejected by the recursive EIdent check.
-    EReturn(_) => gc_native_array_children_are_safe(expr, name),
+    EReturn(value) => gc_native_array_body_is_safe_tail(value, name, allow_tail, ctx),
     EBreak(_) => false,
     EContinue(_) => false,
-    _ => gc_native_array_children_are_safe(expr, name)
+    _ => gc_native_array_children_are_safe(expr, name, ctx)
   }
 }
 
-fn gc_native_array_children_are_safe(expr: Expr, name: String) -> Bool {
+fn gc_native_array_children_are_safe(expr: Expr, name: String, ctx: CompileCtxGc) -> Bool {
   let children = expr_children(expr)
   let mut i = 0
   let mut ok = true
   while i < Array::length(children) {
-    if !gc_native_array_body_is_safe(Array::get(children, i), name) {
+    if !gc_native_array_body_is_safe_tail(Array::get(children, i), name, false, ctx) {
       ok = false
     }
     i = i + 1
   }
   ok
+}
+
+fn gc_direct_abi_result_is_native(expr: Expr, ctx: CompileCtxGc) -> Bool {
+  match expr {
+    ECall(EIdent(name, _), _, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ctx.gc_direct_abi_names) {
+        if Array::get(ctx.gc_direct_abi_names, i) == name && Array::get(ctx.gc_direct_abi_return_refs, i) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
 }
 
 /// i64 fallback for an ELet after its name has already been pushed into
@@ -986,9 +1051,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let local_idx = next_local
       Array::push(local_names, name)
       match value {
-        EArray(native_elems) => if ctx.gc_native_array_frame_ok && ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe(body, name) {
+        EArray(native_elems) => if ctx.gc_native_array_frame_ok && ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
           // This local is a `(ref null $native_i64_array)`, never an i64.
-          // Only the direct native Array call paths below may read it.
           Array::push(ctx.gc_native_array_locals, local_idx)
           Array::push(ctx.gc_native_array_local_types, local_idx)
           emit_i32_const(buf, Array::length(native_elems))
@@ -1003,6 +1067,27 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             emit_array_set(buf, ctx.gc_native_array_type_idx)
             ni = ni + 1
           }
+          ce(buf, body, local_names, native_nl, ld)
+        } else {
+          gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+        },
+        EIdent(source, _) => {
+          let source_slot = find_local_slot(local_names, source)
+          if source_slot >= 0 && array_contains_int(ctx.gc_native_array_locals, source_slot) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
+            Array::push(ctx.gc_native_array_locals, local_idx)
+            Array::push(ctx.gc_native_array_local_types, local_idx)
+            emit_local_get(buf, source_slot)
+            emit_local_set(buf, local_idx)
+            ce(buf, body, local_names, next_local + 1, ld)
+          } else {
+            gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+          }
+        },
+        ECall(_, _, _) => if gc_direct_abi_result_is_native(value, ctx) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
+          Array::push(ctx.gc_native_array_locals, local_idx)
+          Array::push(ctx.gc_native_array_local_types, local_idx)
+          let native_nl = ce(buf, value, local_names, next_local + 1, ld)
+          emit_local_set(buf, local_idx)
           ce(buf, body, local_names, native_nl, ld)
         } else {
           gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
