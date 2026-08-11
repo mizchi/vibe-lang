@@ -66,6 +66,9 @@ export enum EffectError {
   // tier in eval/lang-review/repair (05).
   EEEffectRowMismatch(String, String, String, String, Int);
   EEAssignImmutable(String);
+  // #1539: provider-owned stdin lifecycle operations cannot be transported as
+  // values until generic higher-order effect flow is sound (#1536).
+  EEStdinProviderValueReference(String);
   // #1347: a `handle ... with E` whose arms are provably dead because the
   // body cannot reach a perform of E and only invokes an opaque value —
   // the handler-switch footgun. Field: the effect name.
@@ -147,6 +150,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
       }
     },
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)")),
+    EEStdinProviderValueReference(name) => String::concat("stdin provider operations are direct-call-only; wrap `", String::concat(name, "` in an explicitly effectful function")),
     EEHandleNeverFires(eff) => {
       let tail = String::concat(eff, "::..` and calls an opaque function value. A continuation captured by another handler carries THAT handler with it, so wrapping its invocation in a new `handle` does not switch handlers (non-scoped resumption is unsupported -- ADR-0089 Part A, #1347). Drive the continuation without the wrapping handle, or handle the effect where it is performed")
       String::concat("handle of effect '", String::concat(eff, String::concat("' can never fire: this body reaches no `perform ", tail)))
@@ -174,75 +178,85 @@ fn effect_opt_is_async(eff: Option[String]) -> Bool {
   effect_row_has_label(effect_row_parse(eff), "Async")
 }
 
-// #1539 follow-up: preserve provider identity only across an exact top-level
-// `let alias = Provider::builtin`. This is deliberately not a generic closure
-// effect inference rule (#1536): alias chains, locals, and compound/escaping
-// values remain opaque. The same evidence feeds the Async and ordinary-row
-// passes so all four provider surfaces agree.
-let provider_alias_names_cell: Array[String] = array_empty()
-let provider_alias_targets_cell: Array[String] = array_empty()
+fn is_stdin_provider_surface(name: String) -> Bool {
+  name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
+}
 
-fn stdin_provider_surface_effect(name: String) -> Option[String] {
-  if name == "Stdin::read_via_stream" {
-    Some("Stdin")
-  } else if name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk" {
-    Some("Async")
-  } else {
-    None
+/// #1539: the four public provider operations are syntactic direct-call
+/// primitives, not first-class function values. A direct `ECall` skips its
+/// exact builtin callee but still checks every argument; every other expression
+/// position is traversed structurally. This rejects aliases, chains,
+/// conditionals, returned/container values, and unknown HOF transport without
+/// attempting the generic effect-flow propagation deliberately deferred by
+/// #1536. An explicitly effectful user wrapper remains an ordinary function.
+fn check_stdin_provider_direct_calls_expr(expr: Expr) -> Array[EffectError] {
+  let errors = array_empty()
+  match expr {
+    ECall(EIdent(name, _), args, _) => {
+      if is_stdin_provider_surface(name) {
+        let mut ai = 0
+        while ai < Array::length(args) {
+          append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(args, ai)))
+          ai = ai + 1
+        }
+      } else {
+        let children = expr_children(expr)
+        let mut i = 0
+        while i < Array::length(children) {
+          append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(children, i)))
+          i = i + 1
+        }
+      }
+    },
+    EIdent(name, _) => if is_stdin_provider_surface(name) {
+      Array::push(errors, EEStdinProviderValueReference(name))
+    } else {
+      ()
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(children, i)))
+        i = i + 1
+      }
+    }
+  }
+  errors
+}
+
+fn check_stdin_provider_direct_calls_stmt(stmt: Stmt) -> Array[EffectError] {
+  match stmt {
+    SLet(_, _, _, _, body) => check_stdin_provider_direct_calls_expr(body),
+    SLetMut(_, _, body) => check_stdin_provider_direct_calls_expr(body),
+    STest(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SBench(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SExample(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SExpr(body) => check_stdin_provider_direct_calls_expr(body),
+    SLetPat(_, body) => check_stdin_provider_direct_calls_expr(body),
+    SModule(_, _, inner) => check_stdin_provider_direct_calls_stmts(inner),
+    _ => array_empty()
   }
 }
 
-fn set_provider_top_level_aliases(stmts: Array[Stmt]) -> Unit {
-  Array::truncate(provider_alias_names_cell, 0)
-  Array::truncate(provider_alias_targets_cell, 0)
+export fn check_stdin_provider_direct_calls_stmts(stmts: Array[Stmt]) -> Array[EffectError] {
+  let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, alias, _, EIdent(target, _)) => match stdin_provider_surface_effect(target) {
-        Some(_) => {
-          Array::push(provider_alias_names_cell, alias)
-          Array::push(provider_alias_targets_cell, target)
-        },
-        None => ()
-      },
-      _ => ()
-    }
+    append_eff_errs(errors, check_stdin_provider_direct_calls_stmt(Array::get(stmts, i)))
     i = i + 1
   }
-}
-
-fn provider_top_level_alias_target(name: String) -> Option[String] {
-  let mut i = 0
-  let mut out = None
-  while i < Array::length(provider_alias_names_cell) {
-    if Array::get(provider_alias_names_cell, i) == name {
-      out = Some(Array::get(provider_alias_targets_cell, i))
-      i = Array::length(provider_alias_names_cell)
-    } else {
-      i = i + 1
-    }
-  }
-  out
+  errors
 }
 
 /// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
 /// A name bound in `env` (a user/prelude function) is intentionally NOT treated
 /// as a primitive even if its type is `with Async`.
 fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
-  let resolved = match provider_top_level_alias_target(name) {
-    Some(target) => target,
-    None => name
-  }
   match env_lookup(env, name) {
-    Some(_) => match provider_top_level_alias_target(name) {
-      Some(target) => match stdin_provider_surface_effect(target) {
-        Some(eff) => eff == "Async",
-        None => false
-      },
-      None => false
-    },
+    Some(_) => false,
     None => {
-      let normalized = canonical_builtin_name(resolved)
+      let normalized = canonical_builtin_name(name)
       match lookup_builtin(normalized) {
         Some(ty) => match ty {
           CtFn(_, _, eff) => effect_opt_is_async(eff),
@@ -467,15 +481,7 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
       Some(h) => Some(h),
       None => match env_lookup(env, n) {
         Some(t) => afe_type_head_name(t),
-        None => if n == "StdinStream::read_chunk" {
-          // #1539: targeted provenance for the compiler-owned direct adapter.
-          // This deliberately does not infer generic closure effect evidence
-          // (#1536); it only keeps a bare local alias use-gated like the
-          // public builtin it names.
-          Some("#stdin_read_chunk_async_primitive")
-        } else {
-          None
-        }
+        None => None
       }
     },
     // `Counter::{ .. }` -- the struct literal names its own type.
@@ -538,20 +544,7 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
   // structural children, then delegate their enumeration to expr_children.
   match expr {
     ECall(EIdent(name, _), _, _) => if !in_async && is_async_primitive(name, env) {
-      let provider_name = match provider_top_level_alias_target(name) {
-        Some(target) => target,
-        None => name
-      }
-      Array::push(errors, EEEffectfulCallOutsideEffect(provider_name))
-    } else if !in_async {
-      match afe_lookup_local(locals, name) {
-        Some(target) => if target == "#stdin_read_chunk_async_primitive" {
-          Array::push(errors, EEEffectfulCallOutsideEffect("StdinStream::read_chunk"))
-        } else {
-          ()
-        },
-        None => ()
-      }
+      Array::push(errors, EEEffectfulCallOutsideEffect(name))
     } else {
       ()
     },
@@ -651,12 +644,13 @@ export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectErro
 }
 
 export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
-  set_provider_top_level_aliases(stmts)
+  // Enforce direct-call-only before ordinary Async row checks. These errors are
+  // checker diagnostics, so no artifact reaches codegen for an opaque flow.
+  let errors = check_stdin_provider_direct_calls_stmts(stmts)
   // #1341: rebuild the struct field-type table for THIS program before the
   // walk, so a stale one from a previous module can never classify a
   // same-named field here.
   afe_set_field_types(stmts)
-  let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     append_eff_errs(errors, check_async_effects_stmt(Array::get(stmts, i), env))
@@ -1197,10 +1191,6 @@ fn builtin_call_op_label(name: String, eff: String) -> String {
 /// discipline) and `Async` (composition-allowed; handled by the async pass) are
 /// deliberately excluded from this slice.
 fn builtin_call_effect(name: String) -> Option[String] {
-  let resolved = match provider_top_level_alias_target(name) {
-    Some(target) => target,
-    None => name
-  }
   // `sh`/`sh_lines` and the checker_visible `vibe_*_raw` dunder builtins
   // (Codex review, PR #909) are the only UNQUALIFIED effectful builtins:
   // they lower to real `vibe.*` host imports that execute shell commands or
@@ -1211,15 +1201,15 @@ fn builtin_call_effect(name: String) -> Option[String] {
   // callable from source); vibe_sh_lines_raw is checker_visible=false (only
   // synthesized internally, never typed by user source) so it needs no
   // entry. Checked before the `::` fast path below.
-  if resolved == "sh" || resolved == "sh_lines"
-  || resolved == "vibe_sh_capture_raw"
-  || resolved == "vibe_sh_capture_exit_code_raw"
-  || resolved == "vibe_sh_capture_stdout_raw"
-  || resolved == "vibe_sh_capture_stderr_raw"
-  || resolved == "vibe_sh_capture_close_raw"
-  || resolved == "vibe_process_exit_raw" {
+  if name == "sh" || name == "sh_lines"
+  || name == "vibe_sh_capture_raw"
+  || name == "vibe_sh_capture_exit_code_raw"
+  || name == "vibe_sh_capture_stdout_raw"
+  || name == "vibe_sh_capture_stderr_raw"
+  || name == "vibe_sh_capture_close_raw"
+  || name == "vibe_process_exit_raw" {
     Some("Process")
-  } else if String::index_of(resolved, "::") < 0 {
+  } else if String::index_of(name, "::") < 0 {
     // Fast path: every OTHER effectful builtin in this slice is a QUALIFIED name
     // (`Fs::read_file`, `Env::args_len`, `Stdin::...`, `Stdout::...`, ...), so a
     // callee with no `::` can never be one. Skipping `lookup_builtin` for the
@@ -1227,7 +1217,7 @@ fn builtin_call_effect(name: String) -> Option[String] {
     // over the whole compiler source within the seed's heap during self-build.
     None
   } else {
-    let normalized = canonical_builtin_name(resolved)
+    let normalized = canonical_builtin_name(name)
     match lookup_builtin(normalized) {
       Some(ty) => match ty {
         // Standard entry/runtime execution handles `Error`/`Exception[K]`
@@ -2735,7 +2725,6 @@ export fn check_perform_effects_stmts(stmts: Array[Stmt]) -> Array[EffectError] 
 }
 
 export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
-  set_provider_top_level_aliases(stmts)
   // Build the call-graph effect map (parallel arrays) from every top-level
   // binding's declared row — locals first, then the env's (imported)
   // bindings (#812) — then run the per-stmt check WITH transitive

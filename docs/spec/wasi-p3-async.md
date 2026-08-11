@@ -1544,7 +1544,13 @@ StdinStream::read_chunk(StdinStream, Int) -> Option[String] with Async
 ```
 
 `StdinStream` is neither `Int`, generic `HostStream`, nor `Stream[T]`; source
-cannot construct it and it is not `Send`. Its observable authority and effect
+cannot construct it and it is not `Send`. The four public provider builtins are
+**direct-call-only**: any value-position reference (local/top-level alias,
+chain, compound/container/field, returned value, or unknown HOF transport) is a
+checker error. A user-defined wrapper with an explicit `Stdin` or `Async` row is
+an ordinary function and may be passed as a value under the existing effect
+rules. This deliberately does not add the generic higher-order effect-flow
+propagation deferred by #1536. Their observable authority and effect
 requirements are fixed as follows:
 
 - Acquisition is synchronous but requires `Stdin` authority. It calls
@@ -1595,11 +1601,11 @@ canonical stream handle, and completion-future handle never cross into the
 compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
 bytes or tagged `-1` after settlement and close returns tagged zero.
 
-The three raw registry rows remain `checker_visible=false`; the four public
-operations (acquire, next, close, and read_chunk) lower atomically through
-compiler-owned wrapper functions to those same exact imports. The wrappers are required for first-class references/aliases because
-raw imports do not accept the hidden closure-environment argument. Source emits
-only the exact `vibe.stdin_provider_*` core imports and the nominal
+The three raw registry rows remain `checker_visible=false`. Exact direct calls
+lower through compiler-owned ABI wrappers to those imports; the `read_chunk`
+wrapper additionally implements repeated hidden raw reads. Public operation
+values never reach codegen because the checker rejects them. Source
+emits only the exact `vibe.stdin_provider_*` core imports and the nominal
 `wasi:cli/types@0.3.0` + `wasi:cli/stdin@0.3.0` component imports.
 
 `stdin_stream`, generic HostStream, and named future/stream behavior remain

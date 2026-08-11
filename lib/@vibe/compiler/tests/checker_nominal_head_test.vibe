@@ -96,6 +96,21 @@ test "1539: acquisition and operations carry only their exact authority" {
   assert(check_source_ok("fn consume(s: StdinStream) -> Unit with Async { StdinStream::close(s) }\nfn run() -> Int with Stdin + Async { consume(Stdin::read_via_stream()); 0 }"))
 }
 
+test "1539: stdin provider builtins are direct-call-only" {
+  assert(check_source_err("let acquire = Stdin::read_via_stream\nfn run() -> Int { 0 }"))
+  assert(check_source_err("fn run() -> Int { let next = StdinStream::next; 0 }"))
+  assert(check_source_err("fn run() -> Int { let close = StdinStream::close; 0 }"))
+  assert(check_source_err("fn run() -> Int { let read = StdinStream::read_chunk; 0 }"))
+  assert(check_source_err("fn run() -> Int { let op = if true { StdinStream::next } else { StdinStream::next }; 0 }"))
+  assert(check_source_err("fn leak() -> (StdinStream) -> Int with Async { StdinStream::next }\nfn run() -> Int { 0 }"))
+  assert(check_source_err("struct Holder { op: (StdinStream) -> Int with Async }\nfn run() -> Int { let _ = Holder::{ op: StdinStream::next }; 0 }"))
+  assert(check_source_err("fn carry(op: (StdinStream) -> Int with Async) -> Int { 0 }\nfn run() -> Int { carry(StdinStream::next) }"))
+}
+
+test "1539: explicit effectful wrappers remain first-class" {
+  assert(check_source_ok("fn acquire() -> StdinStream with Stdin { Stdin::read_via_stream() }\nfn next(s: StdinStream) -> Int with Async { StdinStream::next(s) }\nfn close(s: StdinStream) -> Unit with Async { StdinStream::close(s) }\nfn read(s: StdinStream, n: Int) -> Option[String] with Async { StdinStream::read_chunk(s, n) }\nfn run() -> Int with Stdin + Async { let a = acquire; let b = next; let c = close; let d = read; let s = a(); let _ = b(s); let _ = d(s, 1); c(s); 0 }"))
+}
+
 test "1001: genuinely generic parameter stays tolerated (no over-rejection)" {
   assert(check_source_ok("struct Box[T] { v: T }\nfn second[T](b: Box[T], d: Int) -> Int { d }\nfn main() -> Int {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  second(b, 42)\n}"))
 }

@@ -778,7 +778,11 @@ StdinStream::read_chunk(StdinStream, Int) -> Option[String] with Async
 `next` yields `0..255`, then `-1` after successful EOF settlement. `close`
 settles an early stop; repeated close and reads after successful settlement are
 idempotent. `StdinStream` is opaque, non-`Send`, and unrelated to `HostStream`
-or eager `Stream[T]`. `read_chunk(stream, n)` directly returns exactly `n`
+or eager `Stream[T]`. All four provider operations are direct-call-only:
+referencing one as a value (including through an alias, container, return value,
+or unknown higher-order call) is rejected. Wrap a direct call in a user function
+whose row explicitly declares `Stdin` or `Async` when transport is needed.
+`read_chunk(stream, n)` directly returns exactly `n`
 bytes per `Some` except for the final short chunk; it does not preserve provider
 read boundaries and preserves arbitrary bytes. EOF settles the provider, after
 which calls return `None`. For `n <= 0`, it returns `None` without reading or

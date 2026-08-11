@@ -153,6 +153,11 @@ reserved and is not part of the current surface syntax.
 | `StdinStream::close` | `(StdinStream) -> Unit` | `{Async}` | Settle an early close (idempotent after success) |
 | `StdinStream::read_chunk` | `(StdinStream, Int) -> Option[String]` | `{Async}` | Read one exact-size binary chunk (except the final short chunk); caller closes after early stop or non-positive size |
 
+These four stdin-provider builtins are direct-call-only. To pass an operation as
+a value, define a wrapper whose `with` row explicitly declares `Stdin` or
+`Async`; aliases and other value-position references to the builtins are
+rejected by the checker.
+
 ## JSON
 
 | Function | Signature | Description |

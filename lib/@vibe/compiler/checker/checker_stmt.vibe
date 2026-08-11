@@ -9,7 +9,11 @@ import @vibe/core {
 }
 
 import ./checker_effects.vibe {
-  check_async_effects_stmts, check_mutability_stmts, check_perform_effects_stmts_env, effect_error_to_string
+  check_async_effects_stmts,
+  check_mutability_stmts,
+  check_perform_effects_stmts_env,
+  check_stdin_provider_direct_calls_stmts,
+  effect_error_to_string
 }
 
 import ./checker_pattern.vibe {
@@ -2265,6 +2269,18 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   }
 }
 
+/// Reject stdin provider operation values before inference can replace the
+/// actionable safety diagnostic with a secondary type mismatch. This syntactic
+/// gate intentionally precedes artifact production and generic effect flow.
+fn collect_stdin_provider_direct_call_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let direct_errors = check_stdin_provider_direct_calls_stmts(stmts)
+  let mut i = 0
+  while i < Array::length(direct_errors) {
+    Array::push(errors, effect_error_to_string(Array::get(direct_errors, i)))
+    i = i + 1
+  }
+}
+
 /// Append `Async`-escape diagnostics (an async primitive used outside an
 /// `{Async}` context) to the type-error list, but only when type checking is
 /// otherwise clean so we surface the real error first.
@@ -2812,6 +2828,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   desugar_railway_binds(stmts)
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
+  collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
   // #1455 step 3: the `Enum::Variant` pattern qualifiers the parser folded into
   // a trailing `SQualifiedPatternRefs` marker (see attach_qualified_pattern_refs).
   // Collected up front; validating them needs the enum table, which only exists
@@ -3125,6 +3142,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       desugar_railway_binds(stmts)
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)
+      collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
       // #1455 step 3: see check_program.
       let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
       // #1001: mixed argument-mode validation before desugar (see check_program).

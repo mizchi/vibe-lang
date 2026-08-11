@@ -758,11 +758,12 @@ fn lc_row_has_error(eff: Option[String]) -> Bool {
   lc_row_has_label(eff, "Exception")
 }
 
-/// #1539: public provider functions are first-class values, while their exact
-/// raw imports do not accept the hidden closure-environment argument. Retarget
-/// every public reference (not only direct calls) to ordinary compiler-owned
-/// wrapper functions, then let the existing closure machinery handle aliases.
-/// Wrapper bodies alone spell the checker-hidden raw names.
+/// #1539: direct provider calls are retargeted to compiler-owned wrapper
+/// functions because the raw imports do not accept the closure-environment ABI
+/// used by ordinary functions. The checker rejects every value-position public
+/// reference before codegen, so this is strictly direct-call lowering and does
+/// not provide first-class alias transport. Wrapper bodies alone spell the
+/// checker-hidden raw names.
 fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
   let public_names = [
     "Stdin::read_via_stream",
@@ -3312,16 +3313,7 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // EFn def so calls do not route through the 0-param thunk registration
     // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
     rewrite_top_level_fn_alias_refs(stmts)
-    let injected_stdin_wrappers = lc_inject_stdin_surface_wrappers(stmts)
-    // Provider references are retargeted to wrapper names by the injection
-    // above. Run the exact-alias rewrite again only when that happened, so a
-    // top-level `let read = StdinStream::read_chunk` resolves to the wrapper
-    // EFn instead of the alias's zero-parameter thunk (invalid wasm).
-    if injected_stdin_wrappers {
-      rewrite_top_level_fn_alias_refs(stmts)
-    } else {
-      ()
-    }
+    let _ = lc_inject_stdin_surface_wrappers(stmts)
     // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
     // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
     lc_extract_inline_wasm(stmts, iw_names, iw_wats)
@@ -5161,8 +5153,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         // ADR-0089 Decision 3 follow-up: shared drop half of the named host
         // streams (`host_stream_close` -> injected `__hs_close`).
         "vibe_hs_close_raw" => hs_close_idx,
-        // #1539 public and checker-hidden spellings share the same exact raw
-        // component-private targets, including first-class function aliases.
+        // #1539 direct public spellings and checker-hidden compiler wrappers
+        // share the same exact component-private targets.
         "vibe_stdin_provider_acquire_raw" => stdin_provider_acquire_idx,
         "vibe_stdin_provider_read_raw" => stdin_provider_read_idx,
         "vibe_stdin_provider_close_raw" => stdin_provider_close_idx,

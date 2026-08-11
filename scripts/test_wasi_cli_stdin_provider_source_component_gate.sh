@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # #1539: compile the public StdinStream API from real source, validate its exact
-# component boundary, and run lifecycle/alias/reacquisition scenarios on the
+# component boundary, and run lifecycle/wrapper/reacquisition scenarios on the
 # pinned Wasmtime 47 lane.
 set -euo pipefail
 
@@ -43,11 +43,12 @@ fn run() -> Int with Stdin + Async {
   if a == 10 && b == 15 && c == 17 && eof1 == -1 && eof2 == -1 { 42 } else { 0 }
 }
 EOF
-cat >"$OUT/early-alias.vibe" <<'EOF'
+cat >"$OUT/early-wrapper.vibe" <<'EOF'
+fn acquire() -> StdinStream with Stdin { Stdin::read_via_stream() }
+fn next(stream: StdinStream) -> Int with Async { StdinStream::next(stream) }
+fn close(stream: StdinStream) -> Unit with Async { StdinStream::close(stream) }
+
 fn run() -> Int with Stdin + Async {
-  let acquire = Stdin::read_via_stream
-  let next = StdinStream::next
-  let close = StdinStream::close
   let stream = acquire()
   let alias = stream
   let a = next(alias)
@@ -56,17 +57,21 @@ fn run() -> Int with Stdin + Async {
   if a == 10 && next(alias) == -1 { 43 } else { 0 }
 }
 EOF
-cat >"$OUT/top-level-aliases.vibe" <<'EOF'
-let acquire_alias = Stdin::read_via_stream
-let next_alias = StdinStream::next
-let close_alias = StdinStream::close
-let read_chunk_alias = StdinStream::read_chunk
+cat >"$OUT/top-level-wrappers.vibe" <<'EOF'
+fn acquire_wrapper() -> StdinStream with Stdin { Stdin::read_via_stream() }
+fn next_wrapper(stream: StdinStream) -> Int with Async { StdinStream::next(stream) }
+fn close_wrapper(stream: StdinStream) -> Unit with Async { StdinStream::close(stream) }
+fn read_chunk_wrapper(stream: StdinStream, size: Int) -> Option[String] with Async { StdinStream::read_chunk(stream, size) }
 
 fn use_provider() -> Int with Stdin + Async {
-  let stream = acquire_alias()
-  let first = next_alias(stream)
-  let chunk = read_chunk_alias(stream, 2)
-  close_alias(stream)
+  let acquire = acquire_wrapper
+  let next = next_wrapper
+  let close = close_wrapper
+  let read_chunk = read_chunk_wrapper
+  let stream = acquire()
+  let first = next(stream)
+  let chunk = read_chunk(stream, 2)
+  close(stream)
   match chunk { Some(s) => if first == 10 && String::length(s) == 2 { 55 } else { 0 }, None => 0 }
 }
 fn run() -> Int with Stdin + Async { use_provider() }
@@ -140,10 +145,11 @@ fn run() -> Int with Stdin + Async {
   }
 }
 EOF
-cat >"$OUT/chunk-one-alias.vibe" <<'EOF'
+cat >"$OUT/chunk-one-wrapper.vibe" <<'EOF'
+fn read_chunk(stream: StdinStream, size: Int) -> Option[String] with Async { StdinStream::read_chunk(stream, size) }
+
 fn run() -> Int with Stdin + Async {
   let stream = Stdin::read_via_stream()
-  let read_chunk = StdinStream::read_chunk
   let a = read_chunk(stream, 1)
   let b = read_chunk(stream, 1)
   let c = read_chunk(stream, 1)
@@ -252,13 +258,13 @@ compile_component() {
   wasm-tools validate --features all "$OUT/$name.component.wasm"
 }
 compile_component drain
-compile_component early-alias
-compile_component top-level-aliases
+compile_component early-wrapper
+compile_component top-level-wrappers
 compile_component second
 compile_component multiple-active
 compile_component import-alias 0 1 1
 compile_component chunk-loop
-compile_component chunk-one-alias
+compile_component chunk-one-wrapper
 compile_component chunk-zero
 compile_component chunk-negative
 compile_component chunk-early-close
@@ -333,13 +339,12 @@ fn run() -> Int with Stdin + Async {
   0
 }
 EOF
-actionable_fail read-chunk-effect-alias run 'effectful call outside effectful context'
-cat >"$OUT/top-acquire-effect-alias.vibe" <<'EOF'
+actionable_fail read-chunk-effect-alias run 'stdin provider operations are direct-call-only; wrap `StdinStream::read_chunk` in an explicitly effectful function'
+cat >"$OUT/top-acquire-value.vibe" <<'EOF'
 let acquire_alias = Stdin::read_via_stream
-fn pure_acquire() -> StdinStream { acquire_alias() }
-fn run() -> Int with Stdin + Async { let s = pure_acquire(); StdinStream::close(s); 0 }
+fn run() -> Int { 0 }
 EOF
-actionable_fail top-acquire-effect-alias run 'missing { Stdin }'
+actionable_fail top-acquire-value run 'stdin provider operations are direct-call-only; wrap `Stdin::read_via_stream` in an explicitly effectful function'
 for surface in next close read_chunk; do
   case "$surface" in
     next) call='next_alias(stream)'; ret='Int' ;;
@@ -351,7 +356,62 @@ let ${surface}_alias = StdinStream::$surface
 fn pure_alias(stream: StdinStream) -> $ret { $call }
 fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = pure_alias(s); StdinStream::close(s); 0 }
 EOF
-  actionable_fail "top-$surface-effect-alias" run 'effectful call outside effectful context:'
+  actionable_fail "top-$surface-effect-alias" run "stdin provider operations are direct-call-only; wrap \`StdinStream::$surface\` in an explicitly effectful function"
+done
+
+# Every opaque transport shape reviewed for the safety blocker must fail in the
+# checker with the same actionable direct-call-only diagnostic, before artifact
+# creation. The first forbidden provider reference is intentionally identical
+# across these fixtures so the assertion also pins deterministic reporting.
+cat >"$OUT/value-alias-chain.vibe" <<'EOF'
+fn run() -> Int {
+  let first = StdinStream::next
+  let second = first
+  let _ = second
+  0
+}
+EOF
+cat >"$OUT/value-conditional.vibe" <<'EOF'
+fn run() -> Int {
+  let _ = if true { StdinStream::next } else { StdinStream::next }
+  0
+}
+EOF
+cat >"$OUT/value-compound.vibe" <<'EOF'
+fn run() -> Int {
+  let _ = (StdinStream::next, StdinStream::close)
+  0
+}
+EOF
+cat >"$OUT/value-return.vibe" <<'EOF'
+fn leak() -> (StdinStream) -> Int with Async { StdinStream::next }
+fn run() -> Int { 0 }
+EOF
+cat >"$OUT/value-struct-field.vibe" <<'EOF'
+struct Holder { op: (StdinStream) -> Int with Async }
+fn run() -> Int {
+  let _ = Holder::{ op: StdinStream::next }
+  0
+}
+EOF
+cat >"$OUT/value-array-field.vibe" <<'EOF'
+fn run() -> Int {
+  let _ = [StdinStream::next]
+  0
+}
+EOF
+cat >"$OUT/value-map-field.vibe" <<'EOF'
+fn run() -> Int {
+  let _ = Map::from_pairs([("next", StdinStream::next)])
+  0
+}
+EOF
+cat >"$OUT/value-unknown-hof.vibe" <<'EOF'
+fn transport(op: (StdinStream) -> Int with Async) -> Int { 0 }
+fn run() -> Int { transport(StdinStream::next) }
+EOF
+for opaque in alias-chain conditional compound return struct-field array-field map-field unknown-hof; do
+  actionable_fail "value-$opaque" run 'stdin provider operations are direct-call-only; wrap `StdinStream::next` in an explicitly effectful function'
 done
 cat >"$OUT/nominal.vibe" <<'EOF'
 fn run() -> Int with Async { StdinStream::next(1) }
@@ -471,14 +531,14 @@ run_lane() {
   echo "[stdin-provider-source] $name: $actual"
 }
 run_lane drain 42
-run_lane early-alias 43
-run_lane top-level-aliases 55
+run_lane early-wrapper 43
+run_lane top-level-wrappers 55
 run_lane second 44
 run_lane multiple-active 45
 run_lane import-alias 46
 run_lane drain-rc 42
 run_lane chunk-loop 50 "$CHUNK_INPUT"
-run_lane chunk-one-alias 51 "$CHUNK_INPUT"
+run_lane chunk-one-wrapper 51 "$CHUNK_INPUT"
 run_lane chunk-zero 52 "$CHUNK_INPUT"
 run_lane chunk-negative 53 "$CHUNK_INPUT"
 run_lane chunk-early-close 54 "$CHUNK_INPUT"
