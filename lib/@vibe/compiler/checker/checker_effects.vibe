@@ -251,18 +251,32 @@ export fn check_stdin_provider_direct_calls_stmts(stmts: Array[Stmt]) -> Array[E
 
 /// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
 /// A name bound in `env` (a user/prelude function) is intentionally NOT treated
-/// as a primitive even if its type is `with Async`.
+/// as a primitive even if its type is `with Async`, except the four exact
+/// compiler-owned stdin provider names imported from their public contract.
 fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
-  match env_lookup(env, name) {
-    Some(_) => false,
-    None => {
-      let normalized = canonical_builtin_name(name)
-      match lookup_builtin(normalized) {
-        Some(ty) => match ty {
-          CtFn(_, _, eff) => effect_opt_is_async(eff),
-          _ => false
-        },
-        None => false
+  if is_stdin_provider_surface(name) {
+    // Imported package contracts bind these exact public names in env, but
+    // they remain compiler-owned primitives after canonical import rewriting.
+    // Do not let that binding suppress their Async authority requirement.
+    match lookup_builtin(canonical_builtin_name(name)) {
+      Some(ty) => match ty {
+        CtFn(_, _, eff) => effect_opt_is_async(eff),
+        _ => false
+      },
+      None => false
+    }
+  } else {
+    match env_lookup(env, name) {
+      Some(_) => false,
+      None => {
+        let normalized = canonical_builtin_name(name)
+        match lookup_builtin(normalized) {
+          Some(ty) => match ty {
+            CtFn(_, _, eff) => effect_opt_is_async(eff),
+            _ => false
+          },
+          None => false
+        }
       }
     }
   }

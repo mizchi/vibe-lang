@@ -102,8 +102,8 @@ cat >"$OUT/import-alias.vibe" <<'EOF'
 import @vibe/console { StdinStream as S }
 
 fn acquire() -> StdinStream with Stdin { Stdin::read_via_stream() }
-fn next_alias(stream: S) -> Int with Async { StdinStream::next(stream) }
-fn close_alias(stream: S) -> Unit with Async { StdinStream::close(stream) }
+fn next_alias(stream: S) -> Int with Async { S::next(stream) }
+fn close_alias(stream: S) -> Unit with Async { S::close(stream) }
 
 fn run() -> Int with Stdin + Async {
   let stream = acquire()
@@ -238,6 +238,10 @@ deps = {}
 generated_hash =
 
 type StdinStream
+fn Stdin::read_via_stream() -> StdinStream with Stdin
+fn StdinStream::next(stream: StdinStream) -> Int with Async
+fn StdinStream::close(stream: StdinStream) -> Unit with Async
+fn StdinStream::read_chunk(stream: StdinStream, chunk_size: Int) -> Option[String] with Async
 EOF
 
 compile_component() {
@@ -302,6 +306,14 @@ actionable_fail() {
     exit 1
   fi
   grep -Fq "$expected" "$OUT/$name.wasm.diag" || { echo "stdin provider source gate FAILED: $name diagnostic" >&2; cat "$OUT/$name.wasm.diag" >&2 || true; exit 1; }
+}
+provider_alias_fail() {
+  local name="$1" expected="$2"
+  actionable_fail "$name" run "$expected" linear 1
+  if grep -Fq 'stdin_provider_' "$OUT/$name.wasm.diag"; then
+    echo "stdin provider source gate FAILED: $name exposed the raw provider ABI" >&2
+    exit 1
+  fi
 }
 cat >"$OUT/raw.vibe" <<'EOF'
 fn run() -> Int with Async { vibe_stdin_provider_acquire_raw() }
@@ -413,6 +425,73 @@ EOF
 for opaque in alias-chain conditional compound return struct-field array-field map-field unknown-hof; do
   actionable_fail "value-$opaque" run 'stdin provider operations are direct-call-only; wrap `StdinStream::next` in an explicitly effectful function'
 done
+
+# FS/package merge canonicalizes imported value aliases and qualified type
+# heads before the shared compile-boundary validation. Value imports remain
+# forbidden even when called directly through their local alias; a type alias
+# used as the head of S::next above remains a valid direct call with Async.
+cat >"$OUT/fs-type-alias-effect.vibe" <<'EOF'
+import @vibe/console { StdinStream as S }
+fn run() -> Int with Stdin {
+  let stream = Stdin::read_via_stream()
+  S::next(stream)
+}
+EOF
+actionable_fail fs-type-alias-effect run 'effectful call outside effectful context: StdinStream::next' linear 1
+cat >"$OUT/fs-next-value-alias.vibe" <<'EOF'
+import @vibe/console { StdinStream::next as n }
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  n(stream)
+}
+EOF
+cat >"$OUT/fs-acquire-value-alias.vibe" <<'EOF'
+import @vibe/console { Stdin::read_via_stream as acquire }
+fn run() -> Int with Stdin + Async {
+  let stream = acquire()
+  StdinStream::close(stream)
+  0
+}
+EOF
+cat >"$OUT/fs-close-value-alias.vibe" <<'EOF'
+import @vibe/console { StdinStream::close as close }
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  close(stream)
+  0
+}
+EOF
+cat >"$OUT/fs-read-chunk-value-alias.vibe" <<'EOF'
+import @vibe/console { StdinStream::read_chunk as read_chunk }
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let _ = read_chunk(stream, 4)
+  StdinStream::close(stream)
+  0
+}
+EOF
+cat >"$OUT/fs-value-alias-chain.vibe" <<'EOF'
+import @vibe/console { StdinStream::next as n }
+fn run() -> Int {
+  let second = n
+  let _ = second
+  0
+}
+EOF
+cat >"$OUT/fs-value-alias-container.vibe" <<'EOF'
+import @vibe/console { StdinStream::next as n }
+fn run() -> Int {
+  let _ = [n]
+  0
+}
+EOF
+provider_alias_fail fs-next-value-alias 'stdin provider operations are direct-call-only; wrap `StdinStream::next` in an explicitly effectful function'
+provider_alias_fail fs-acquire-value-alias 'stdin provider operations are direct-call-only; wrap `Stdin::read_via_stream` in an explicitly effectful function'
+provider_alias_fail fs-close-value-alias 'stdin provider operations are direct-call-only; wrap `StdinStream::close` in an explicitly effectful function'
+provider_alias_fail fs-read-chunk-value-alias 'stdin provider operations are direct-call-only; wrap `StdinStream::read_chunk` in an explicitly effectful function'
+provider_alias_fail fs-value-alias-chain 'stdin provider operations are direct-call-only; wrap `StdinStream::next` in an explicitly effectful function'
+provider_alias_fail fs-value-alias-container 'stdin provider operations are direct-call-only; wrap `StdinStream::next` in an explicitly effectful function'
+
 cat >"$OUT/nominal.vibe" <<'EOF'
 fn run() -> Int with Async { StdinStream::next(1) }
 EOF

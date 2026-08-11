@@ -42,6 +42,7 @@ import @vibe/compiler/core {
   is_singleton_resource_kind,
   predeclared_resources,
   resolve_builtin,
+  rewrite_import_alias_stmt,
   sort_perm_by_names,
   subst_apply,
   trait_defined,
@@ -2269,6 +2270,49 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   }
 }
 
+/// Canonicalize only the imported `StdinStream as S` type head before the
+/// ordinary checker runs. This makes `S::next(..)` the same exact direct-call
+/// AST as `StdinStream::next(..)`, so existing Async authority checks apply;
+/// value imports remain distinct and are rejected at the merged compile
+/// boundary rather than becoming first-class provider operations.
+fn canonicalize_stdin_provider_type_import_heads(stmts: Array[Stmt]) -> Unit {
+  let aliases: Array[(String, String)] = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (original, alias_opt) = Array::get(items, j)
+          match alias_opt {
+            Some(alias) => if original == "StdinStream" {
+              Array::push(aliases, (alias, original))
+            } else {
+              ()
+            },
+            None => ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(aliases) > 0 {
+    let mut k = 0
+    while k < Array::length(stmts) {
+      match Array::get(stmts, k) {
+        SImport(_, _) => (),
+        _ => Array::set(stmts, k, rewrite_import_alias_stmt(Array::get(stmts, k), aliases))
+      }
+      k = k + 1
+    }
+  } else {
+    ()
+  }
+}
+
 /// Reject stdin provider operation values before inference can replace the
 /// actionable safety diagnostic with a secondary type mismatch. This syntactic
 /// gate intentionally precedes artifact production and generic effect flow.
@@ -2828,6 +2872,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   desugar_railway_binds(stmts)
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
+  canonicalize_stdin_provider_type_import_heads(stmts)
   collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
   // #1455 step 3: the `Enum::Variant` pattern qualifiers the parser folded into
   // a trailing `SQualifiedPatternRefs` marker (see attach_qualified_pattern_refs).
@@ -3142,6 +3187,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       desugar_railway_binds(stmts)
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)
+      canonicalize_stdin_provider_type_import_heads(stmts)
       collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
       // #1455 step 3: see check_program.
       let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)

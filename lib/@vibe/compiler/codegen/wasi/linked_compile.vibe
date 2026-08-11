@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
   exception_effect_labels_equal,
+  expr_children,
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
@@ -758,12 +759,84 @@ fn lc_row_has_error(eff: Option[String]) -> Bool {
   lc_row_has_label(eff, "Exception")
 }
 
+fn lc_is_stdin_provider_surface(name: String) -> Bool {
+  name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
+}
+
+fn lc_stdin_provider_value_error(name: String) -> String {
+  String::concat("stdin provider operations are direct-call-only; wrap `", String::concat(name, "` in an explicitly effectful function"))
+}
+
+/// Canonical post-merge validation for #1539. Import value aliases and
+/// qualified type heads have already been rewritten to their exact public
+/// provider names by the merge boundary. Each such name is legal only as the
+/// immediate EIdent callee of a direct ECall; arguments are still traversed.
+/// Returning the first source-order error keeps every compile lane on the same
+/// actionable diagnostic without rerunning type/effect checking.
+fn lc_validate_stdin_provider_expr(expr: Expr) -> String {
+  match expr {
+    ECall(EIdent(name, _), args, _) => if lc_is_stdin_provider_surface(name) {
+      let mut i = 0
+      let mut err = ""
+      while i < Array::length(args) && err == "" {
+        err = lc_validate_stdin_provider_expr(Array::get(args, i))
+        i = i + 1
+      }
+      err
+    } else {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut err = ""
+      while i < Array::length(children) && err == "" {
+        err = lc_validate_stdin_provider_expr(Array::get(children, i))
+        i = i + 1
+      }
+      err
+    },
+    EIdent(name, _) => if lc_is_stdin_provider_surface(name) {
+      lc_stdin_provider_value_error(name)
+    } else {
+      ""
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut err = ""
+      while i < Array::length(children) && err == "" {
+        err = lc_validate_stdin_provider_expr(Array::get(children, i))
+        i = i + 1
+      }
+      err
+    }
+  }
+}
+
+fn lc_validate_stdin_provider_stmts(stmts: Array[Stmt]) -> String {
+  let mut i = 0
+  let mut err = ""
+  while i < Array::length(stmts) && err == "" {
+    err = match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => lc_validate_stdin_provider_expr(body),
+      SLetMut(_, _, body) => lc_validate_stdin_provider_expr(body),
+      STest(_, body) => lc_validate_stdin_provider_expr(body),
+      SBench(_, body) => lc_validate_stdin_provider_expr(body),
+      SExample(_, body) => lc_validate_stdin_provider_expr(body),
+      SExpr(body) => lc_validate_stdin_provider_expr(body),
+      SLetPat(_, body) => lc_validate_stdin_provider_expr(body),
+      SModule(_, _, inner) => lc_validate_stdin_provider_stmts(inner),
+      _ => ""
+    }
+    i = i + 1
+  }
+  err
+}
+
 /// #1539: direct provider calls are retargeted to compiler-owned wrapper
 /// functions because the raw imports do not accept the closure-environment ABI
-/// used by ordinary functions. The checker rejects every value-position public
-/// reference before codegen, so this is strictly direct-call lowering and does
-/// not provide first-class alias transport. Wrapper bodies alone spell the
-/// checker-hidden raw names.
+/// used by ordinary functions. The canonical compile-boundary validator above
+/// has rejected every value-position public reference, so this is strictly
+/// direct-call lowering and does not provide first-class alias transport.
+/// Wrapper bodies alone spell the checker-hidden raw names.
 fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
   let public_names = [
     "Stdin::read_via_stream",
@@ -3309,11 +3382,25 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // keep the boxed form, and the rewrite is semantics-preserving so the
     // cross-lane differential gates still agree.
     unbox_tuple_loop_params(stmts)
+    // The fully merged AST now carries canonical import value names and
+    // qualified type heads. Validate provider direct-call-only syntax here,
+    // before top-level alias retargeting could erase a value position and before
+    // wrapper injection can introduce any raw provider ABI.
+    let provider_value_err = lc_validate_stdin_provider_stmts(stmts)
+    if provider_value_err != "" {
+      Array::push(errs, provider_value_err)
+    } else {
+      ()
+    }
     // Top-level `let f = g` function aliases: retarget references to the final
     // EFn def so calls do not route through the 0-param thunk registration
     // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
-    rewrite_top_level_fn_alias_refs(stmts)
-    let _ = lc_inject_stdin_surface_wrappers(stmts)
+    if Array::length(errs) == 0 {
+      rewrite_top_level_fn_alias_refs(stmts)
+      let _ = lc_inject_stdin_surface_wrappers(stmts)
+    } else {
+      ()
+    }
     // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
     // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
     lc_extract_inline_wasm(stmts, iw_names, iw_wats)
