@@ -1590,7 +1590,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         EString(s) => s,
         _ => throw("host_stream_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
       }
-      if !cc_is_valid_host_future_name(hs_name) {
+      if hs_name == "stdin" {
+        throw("host_stream_named(\"stdin\") is reserved; use Stdin::read_via_stream()")
+      } else if !cc_is_valid_host_future_name(hs_name) {
         throw("host_stream_named: invalid import name '\{hs_name}' -- must be lower kebab-case ([a-z][a-z0-9-]*), the component-model label shape")
       } else {
         ()
@@ -4660,6 +4662,18 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_end(buf)
       emit_local_get(buf, res_l)
       nl2
+    }
+    else if !ctx.enable_rc && fname == "vibe_stdin_provider_read_raw" {
+      // #1539: the component-private provider ABI is tagged-i64 even on the
+      // default linear lane (the opaque provider ID itself stays tagged and
+      // is passed through unchanged). Decode its byte/EOF result for ordinary
+      // source Int semantics. RC already uses tagged Ints and needs no shim.
+      let (read_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_call(buf, read_idx)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      nl
     }
     else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char") {
       // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values

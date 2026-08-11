@@ -77,6 +77,10 @@ fn reg_opaque(kind: String) -> Type {
   CtUnknown
 }
 
+fn reg_stdin_stream() -> Type {
+  CtStruct("#vibe_stdin_stream")
+}
+
 fn reg_p0() -> Array[Type] {
   array_empty()
 }
@@ -268,14 +272,18 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   // codegen-internal shape as the read half (injected `__hs_close` only),
   // and NOT async: dropping a readable end never blocks.
   ("vibe_hs_close_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
-  // #1539 core-only stdin provider route. These names are deliberately
-  // checker-invisible: they are reserved for compiler-generated/raw core
-  // calls and must not become a source-level authority surface. The component
-  // adapter owns the nominal stream plus completion future behind an opaque
-  // provider ID; it never exposes either canonical handle as HostStream.
+  // #1539 checker-hidden stdin provider core route. The component adapter
+  // owns the canonical stream plus completion future behind an opaque ID.
   ("vibe_stdin_provider_acquire_raw", CtFn(reg_p0(), CtInt, None), true, false, false),
   ("vibe_stdin_provider_read_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
   ("vibe_stdin_provider_close_raw", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
+  // Public source surface over that exact route. The unspellable CtStruct
+  // identity prevents Int/HostStream/user types from forging a handle; the
+  // runtime value remains one tagged scalar provider ID. Acquisition owns
+  // only Stdin authority; operations that may settle carry only Async.
+  ("Stdin::read_via_stream", CtFn(reg_p0(), reg_stdin_stream(), Some("Stdin")), true, false, true),
+  ("StdinStream::next", CtFn(reg_p1(reg_stdin_stream()), CtInt, Some("Async")), true, false, true),
+  ("StdinStream::close", CtFn(reg_p1(reg_stdin_stream()), CtUnit, Some("Async")), true, false, true),
   ("Stdin::read_char", CtFn(reg_p0(), CtInt, Some("Stdin")), true, false, true),
   ("simd_skip_ws", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtInt, None), true, true, true),
   ("simd_scan_alnum", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtInt, None), true, true, true),
@@ -417,7 +425,10 @@ export fn builtin_registry_typed() -> Array[(String, Type, Bool, Bool, Bool)] {
 /// Derived 5-tuple view for the two codegen lanes -- SAME shape as the B-0/B-1
 /// table so wasi/linked_compile.vibe and gc/backend_body.vibe are unchanged:
 /// param_count = the type's parameter count, returns = 0 iff the return type
-/// is CtUnit.
+/// is CtUnit. #1539's StdinStream::close is the one ABI exception: its hidden
+/// raw core route returns tagged zero, which is exactly Unit's value, so it
+/// stays value-returning to preserve the same target for direct calls and
+/// first-class function aliases.
 export fn builtin_registry() -> Array[(String, Int, Int, Bool, Bool)] {
   let rows = builtin_registry_typed()
   let out = array_empty()
@@ -427,7 +438,11 @@ export fn builtin_registry() -> Array[(String, Int, Int, Bool, Bool)] {
     let (pc, ret) = match ty {
       CtFn(params, ret_ty, _) => {
         let r = match ret_ty {
-          CtUnit => 0,
+          CtUnit => if name == "StdinStream::close" {
+            1
+          } else {
+            0
+          },
           _ => 1
         }
         (Array::length(params), r)

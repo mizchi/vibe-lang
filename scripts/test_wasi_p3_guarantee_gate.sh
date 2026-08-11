@@ -77,6 +77,7 @@ case ",$PHASES," in *",stdin,"*)
   echo "[p3-guarantee] phase C: wasi:cli/stdin lifecycle"
   bash "$SCRIPT_DIR/test_wasi_cli_stdin_provider_component_gate.sh"
   bash "$SCRIPT_DIR/test_wasi_cli_stdin_provider_guest_component_gate.sh"
+  bash "$SCRIPT_DIR/test_wasi_cli_stdin_provider_source_component_gate.sh"
   bash "$SCRIPT_DIR/test_wasi_cli_stdin_p3_probe_gate.sh"
   ;;
 esac
