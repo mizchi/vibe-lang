@@ -18,7 +18,7 @@
 #
 #   scripts/coverage_drivers.sh
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SEED="${VIBE_COV_SEED:-bootstrap/seed/compiler.wasm}"
 OUTDIR="_build/coverage/selfhost-corpus"
 ACC="$OUTDIR/acc.json"
@@ -31,7 +31,41 @@ RUNNER="scripts/run_wasm_vibe_host_runner.sh"
 # with EVERY driver silently skipped. Keep in sync with coverage_corpus.sh.
 export VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --experimental-wasm-inlining --stack-size=131072}"
 MERGED="_build/coverage/merged_nodce.vibe"
-WORK="_build/coverage/drivers"; mkdir -p "$WORK"
+WORK="_build/coverage/drivers"
+
+# Split out one attempt so the deterministic-vs-transient retry contract has a
+# focused shell test without invoking the full coverage corpus.
+coverage_driver_compile_once() { # dir entry
+  local driver_dir="$1" entry="$2"
+  VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
+    bash "$RUNNER" --invoke cli_main "$SEED" "$driver_dir/src.vibe" "$driver_dir/m.wasm" "$entry" >"$driver_dir/compile.log" 2>&1
+}
+
+COVERAGE_DRIVER_COMPILE_ATTEMPTS=0
+coverage_driver_compile_with_retries() { # dir entry
+  local driver_dir="$1" entry="$2" attempt
+  COVERAGE_DRIVER_COMPILE_ATTEMPTS=0
+  for attempt in 1 2 3 4 5 6; do
+    COVERAGE_DRIVER_COMPILE_ATTEMPTS="$attempt"
+    rm -f "$driver_dir/m.wasm" "$driver_dir/m.wasm.diag"
+    coverage_driver_compile_once "$driver_dir" "$entry" || true
+    [ -s "$driver_dir/m.wasm" ] && return 0
+    # A compiler diagnostic is deterministic. Only host/OOM failures without a
+    # diagnostic are eligible for another attempt.
+    [ -s "$driver_dir/m.wasm.diag" ] && return 2
+  done
+  return 1
+}
+
+if [ "${VIBE_COVERAGE_DRIVERS_LIB_ONLY:-0}" = "1" ]; then
+  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+  fi
+  exit 0
+fi
+
+cd "$ROOT" || exit 1
+mkdir -p "$WORK"
 [ -s "$ACC" ] || { echo "drivers: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
 
 # 1. Regenerate the no-DCE merged source: every manifest file, imports stripped,
@@ -125,18 +159,16 @@ run_driver() { # entry driver_file label
   local entry="$1" file="$2" label="$3"
   local d="$WORK/$label"; rm -rf "$d"; mkdir -p "$d"
   cat "$MERGED" "$file" > "$d/src.vibe"
-  local ok=0 t
-  for t in 1 2 3 4 5 6; do
-    rm -f "$d/m.wasm"
-    VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
-      bash "$RUNNER" --invoke cli_main "$SEED" "$d/src.vibe" "$d/m.wasm" "$entry" >"$d/compile.log" 2>&1 || true
-    [ -s "$d/m.wasm" ] && { ok=1; break; }
-  done
-  if [ "$ok" != 1 ]; then
-    # "compile failed after retries" on its own cost a manual re-run to learn
-    # anything. The compiler already wrote the reason to the `.diag` sidecar --
-    # surface it, so the message names what to fix.
-    echo "[$label] compile failed after retries" >&2
+  local compile_status=0
+  coverage_driver_compile_with_retries "$d" "$entry" || compile_status=$?
+  if [ "$compile_status" != 0 ]; then
+    # Surface deterministic diagnostics immediately; only diagnostic-free host
+    # failures consume the six-attempt retry budget.
+    if [ "$compile_status" = 2 ]; then
+      echo "[$label] deterministic compile failure (not retried)" >&2
+    else
+      echo "[$label] compile failed after $COVERAGE_DRIVER_COMPILE_ATTEMPTS transient attempts" >&2
+    fi
     # awk, not sed: the compiler writes the sidecar WITHOUT a trailing newline,
     # and sed passes that through -- so the reason ran straight into the next
     # driver's line (`unknown name: db_new[round] compile failed ...`). awk's
