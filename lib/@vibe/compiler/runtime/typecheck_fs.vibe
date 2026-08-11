@@ -3312,9 +3312,10 @@ export fn checked_module_typing_artifact_observation(outcome: ModuleOutcome) -> 
   }
 }
 
-/// Pure module check. No Fs: the dependency environments it needs are
-/// already values inside the job.
-export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
+/// Pure module check implementation. Artifact observation is explicitly opt-in:
+/// the production incremental path must not allocate canonical shadow bytes for
+/// every checked module when no observer consumes them.
+fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOutcome with Exception {
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
@@ -3370,7 +3371,11 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
       } else {
         ""
       }
-      let module_typing_artifact = checked_module_typing_artifact_bytes(checked_program, job)
+      let module_typing_artifact = if observe_typing_artifact {
+        checked_module_typing_artifact_bytes(checked_program, job)
+      } else {
+        None
+      }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with Exception {
       Throw(msg) => Diagnosed(job.path, [
@@ -3379,6 +3384,19 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
     }
   }
 }
+
+/// Production module check. No Fs: dependency environments are already values
+/// inside the job. Shadow artifact observation stays disabled by default.
+export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
+  check_module_impl(job, false)
+}
+
+/// Opt-in trusted #1550 observation producer. This runs the same complete module
+/// checker and retains canonical bytes only in its opaque successful outcome.
+export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> ModuleOutcome with Exception {
+  check_module_impl(job, true)
+}
+
 /// Coordinator-owned commit. Every filesystem and accumulator write for a
 /// module happens here and nowhere else.
 fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
