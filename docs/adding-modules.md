@@ -50,7 +50,12 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
    で無条件に全部拾って battery を回す — allowlist ファイルは無い(#1231
    で撤廃)ので、追加の登録手順は不要。generic harness で回せない特殊な
    ファイル(gate 専用の `__DATA__` フィクスチャ、gc-only fixture 等)だけ
-   `scripts/unit_test_runner.sh` の `EXCLUDE_PATTERNS` に理由付きで載せる
+   `scripts/unit_test_runner.sh` の `EXCLUDE_PATTERNS` に理由付きで載せる。
+   **`fixtures/` に `test` ブロック付きのファイルを置くときは `*_test.vibe`
+   で命名すること** — この命名が discover() に載る唯一の条件で、外れると
+   どの lane も回さない。それを黙って通さないよう
+   `scripts/check_fixture_execution.sh` が gate 冒頭で検査する
+   ([docs/operation-gate.md](operation-gate.md) の「Fixture は列挙しない」)
 4. **compiler から消費する場合のみ**: `lib/@vibe/compiler/compiler_sources_manifest.tsv`
    に `vibe_core` group で `../../../lib/@vibe/<pkg>/...` の行を足す。bundle
    への inline / codegen fingerprint への波及は generate_bundle.sh

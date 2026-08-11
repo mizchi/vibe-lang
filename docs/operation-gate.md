@@ -89,6 +89,45 @@ pkf run release-gates   # = scripts/compiler_gate.sh
 pkf run generation-gate
 ```
 
+### Fixture は列挙しない — glob で拾う (#1587)
+
+テストブロックを持つ fixture の実行は**手書きの列挙で管理しない**。
+`compiler_gate.sh` にはかつて同じループの写しが 3 箇所あり、それぞれが
+`for fx in \` + バックスラッシュ継続のリストを持っていた。この形は 2 つの
+壊れ方をする。
+
+1. fixture を足す PR が**必ずリスト末尾の同じ行を取り合う**
+2. fixture をコミットして gate への追記を忘れると、**どこでも実行されない
+   まま「カバレッジがあるように見える」** ——「黙って誤る」の隣接系
+
+今は `run_test_block_fixtures <label> <glob>` に一本化してあり、呼び出し側は
+必ず glob を渡す (`fixtures/derive_*_test.vibe` など)。規約に乗った fixture は
+置いた瞬間から走る。glob が 1 件も match しなければ gate は落ちる (無言で
+0 件を回すのが最悪なので)。
+
+3 つ目の状態 —— どの lane にも拾われない fixture —— は
+`scripts/check_fixture_execution.sh` が塞ぐ。`fixtures/**/*.vibe` のうち
+`test` ブロックを持つものは、次のいずれかでなければならない:
+
+- `scripts/unit_test_runner.sh --list` に載る (= `*_test.vibe` 命名規約。
+  **これが最も安い**)
+- `fixtures/typecheck/expected.tsv` に verdict 行がある (この lane は行ごとに
+  期待判定を持つので glob では代替できない。代わりに**網羅性**を検査する)
+- `scripts/` / `lib/` / `examples/` / `.github/` のどこかが名前で参照している
+  (= 個別の期待値を持つ bespoke check)
+- `scripts/fixture_execution_exceptions.txt` に**理由付きで**載っている
+
+どれでもなければ gate が落ち、直し方 4 択を出す。純 shell で ~2s なので
+`compiler_gate.sh` の**先頭**、selfbuild の前で走る。単独では
+`pkf run check-fixture-execution`。
+
+> この検査を入れた時点で 10 件が「どの lane にも拾われない」状態だった
+> (#641 Phase 1 の受け入れ fixture 1 件と、`fixtures/runtime/` の struct
+> fixture 9 件)。後者は `__DATA__` マーカーの**後ろ**に test ブロックが
+> 置かれていて、ソースとしてすら成立していなかった
+> (`line 13:1: top-level expressions are not allowed`)。いずれも
+> `*_test.vibe` へ改名して unit lane に載せてある。
+
 ## Cold FS Compile Memory Observation (#1553)
 
 The full CLI's FS compile can approach wasm32 linear-memory limits only on a
