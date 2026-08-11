@@ -21,6 +21,14 @@ FLAT_ABS="$ROOT_DIR/lib/@vibe/compiler/_cli_adapter_module_source.vibe"
 OUT_DIR="${VIBE_COV_DIR:-$ROOT_DIR/_build/coverage/selfhost-corpus}"
 COMPILER_COV="$OUT_DIR/compiler_cov.wasm"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
+# Instrumenting the ~5MB flat compiler source recurses deep enough to exhaust
+# node's DEFAULT stack, and the host reports that as
+# `[vibe] stack overflow: expression too deeply nested` -- which reads like the
+# SOURCE is at fault rather than the runner. Every other lane that feeds the
+# same flat source through node already raises this (generate_bundle.sh,
+# generations.sh); this one did not, so `[corpus] building instrumented
+# compiler ...` was the last line it ever printed. Same 131072 they use.
+export VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --experimental-wasm-inlining --stack-size=131072}"
 ACC="$OUT_DIR/acc.json"
 RUN_JSON="$OUT_DIR/run.json"
 FAILS="$OUT_DIR/fails.txt"
