@@ -1,0 +1,486 @@
+//# #1550 bounded shadow-only checked module typing artifact tests.
+
+import @vibe/compiler/checker {
+  CheckedProgram, check_program_result
+}
+
+import @vibe/compiler/checker/artifacts {
+  canonical_checked_module_typing_artifact_snapshot,
+  checked_exported_interface_artifact_fingerprint_v1,
+  checked_exported_interface_artifact_from_checked_program,
+  checked_module_typing_artifact_fingerprint_v1,
+  decode_checked_module_typing_artifact_v1,
+  encode_checked_exported_interface_artifact_v1,
+  encode_checked_module_typing_artifact_v1,
+  shadow_unattested_checked_module_typing_artifact_from_checked_program
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+fn mt_piece(text: String) -> String {
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
+}
+
+fn mt_dependencies(rows: Array[(String, String)]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, __to_string(Array::length(rows)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (locator, fingerprint) = Array::get(rows, i)
+    StringBuilder::push(out, mt_piece(locator))
+    StringBuilder::push(out, mt_piece(fingerprint))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn mt_closure(rows: Array[(String, String, String)]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, __to_string(Array::length(rows)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (locator, kind, identity) = Array::get(rows, i)
+    StringBuilder::push(out, mt_piece(locator))
+    StringBuilder::push(out, mt_piece(kind))
+    StringBuilder::push(out, mt_piece(identity))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn mt_outer(fields: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-module-typing-artifact:v1\n")
+  StringBuilder::push(out, __to_string(Array::length(fields)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(fields) {
+    StringBuilder::push(out, mt_piece(Array::get(fields, i)))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn mt_valid_fields(nested: String) -> Array[String] {
+  [
+    "singleton_semantic_module",
+    "owner",
+    "1",
+    "owner",
+    "provisional_token_stream_v1",
+    "1:2:3",
+    mt_dependencies([
+      ("dep", "1:2:3"),
+      ("dep", "1:2:3")
+    ]),
+    mt_closure([
+      ("owner", "provisional_token_stream_v1", "1:2:3")
+    ]),
+    nested,
+    "typing_errors_only:path,start,end,code,message",
+    "vibe-checked-module-typing-artifact:caller-attested-empty-typing-errors:v1",
+    "ineligible:lossless_checked_body_unavailable_v1"
+  ]
+}
+
+fn mt_nested_interface(stmts: Array[Stmt]) -> String with Exception {
+  let checked = check_program_result(stmts)
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(artifact) => encode_checked_exported_interface_artifact_v1(artifact),
+    None => "<none>"
+  }
+}
+
+fn mt_build_text(stmts: Array[Stmt], owner: String, kind: String, identity: String, dependencies: Array[(String, String)], closure: Array[(String, String, String)]) -> Option[String] with Exception {
+  let checked = check_program_result(stmts)
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked, owner, kind, identity, dependencies, closure, interface) {
+      Some(artifact) => Some(encode_checked_module_typing_artifact_v1(artifact)),
+      None => None
+    },
+    None => None
+  }
+}
+
+fn mt_assert_decode_none(text: String) -> Unit {
+  match decode_checked_module_typing_artifact_v1(text) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+fn mt_set(fields: Array[String], at: Int, value: String) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(fields) {
+    if i == at {
+      Array::push(out, value)
+    } else {
+      Array::push(out, Array::get(fields, i))
+    }
+    i = i + 1
+  }
+  out
+}
+
+test "checked module typing artifact round-trips caller-supplied singleton metadata" {
+  let stmts = [
+    SLet(true, false, "api", Some(TyName("Int")), EInt(1))
+  ]
+  let checked = check_program_result(stmts)
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked, "pkg::owner", "provisional_token_stream_v1", "1:2:3", [
+      ("pkg::dep", checked_exported_interface_artifact_fingerprint_v1(interface))
+    ], [
+      ("pkg::owner", "provisional_token_stream_v1", "1:2:3")
+    ], interface) {
+      Some(artifact) => {
+        let text = encode_checked_module_typing_artifact_v1(artifact)
+        match decode_checked_module_typing_artifact_v1(text) {
+          Some(decoded) => {
+            assert(encode_checked_module_typing_artifact_v1(decoded) == text)
+            assert(canonical_checked_module_typing_artifact_snapshot(decoded) == text)
+            assert(checked_module_typing_artifact_fingerprint_v1(decoded) == checked_module_typing_artifact_fingerprint_v1(artifact))
+            assert(String::contains(text, "singleton_semantic_module"))
+            assert(String::contains(text, "typing_errors_only:path,start,end,code,message"))
+            assert(String::contains(text, "caller-attested-empty-typing-errors:v1"))
+            assert(String::contains(text, "ineligible:lossless_checked_body_unavailable_v1"))
+            assert(!String::contains(text, "TypeEnv"))
+            assert(!String::contains(text, "typed_ir"))
+            assert(!String::contains(text, "source_text"))
+            assert(!String::contains(text, "CST"))
+            assert(!String::contains(text, "span"))
+            assert(!String::contains(text, "mtime"))
+            assert(!String::contains(text, "stat_token"))
+            assert(!String::contains(text, "cache_fingerprint"))
+          },
+          None => assert(false)
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "manually constructed CheckedProgram can produce an unattested shadow artifact" {
+  let checked = check_program_result([
+    SLet(true, false, "api", Some(TyName("Int")), EInt(1))
+  ])
+  let manual = CheckedProgram::{
+    checked_stmts: [
+      SLet(true, false, "api", Some(TyName("Int")), EString("not checked against copied type state"))
+    ],
+    final_env: checked.final_env,
+    type_defs: checked.type_defs,
+    final_subst: checked.final_subst,
+    typed_occurrences: checked.typed_occurrences
+  }
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(manual, "owner", "validated_metadata_v1", "1:2:3", array_empty(), [
+      ("owner", "validated_metadata_v1", "1:2:3")
+    ], interface) {
+      Some(artifact) => assert(String::length(encode_checked_module_typing_artifact_v1(artifact)) > 0),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "unattested shadow builder requires matching #1548 bytes and propagates missing provenance" {
+  let first = check_program_result([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  let second = check_program_result([
+    SLet(true, false, "api", None, EString("different"))
+  ])
+  match checked_exported_interface_artifact_from_checked_program(second) {
+    Some(wrong_interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(first, "owner", "validated_metadata_v1", "1:2:3", array_empty(), [
+      ("owner", "validated_metadata_v1", "1:2:3")
+    ], wrong_interface) {
+      Some(_) => assert(false),
+      None => assert(true)
+    },
+    None => assert(false)
+  }
+  let nested = check_program_result([
+    SModule(true, "Public", [
+      SLet(true, false, "value", None, EInt(1))
+    ])
+  ])
+  match checked_exported_interface_artifact_from_checked_program(nested) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "own identity and recorded implementation closure change aggregate identity" {
+  let stmts = [
+    SLet(true, false, "api", None, EInt(1))
+  ]
+  let deps = [
+    ("dep", "1:2:3")
+  ]
+  let first = mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:3", deps, [
+    ("owner", "validated_metadata_v1", "1:2:3")
+  ])
+  let second = mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:4", deps, [
+    ("owner", "validated_metadata_v1", "1:2:4")
+  ])
+  let closure_changed = mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:3", deps, [
+    ("dep", "validated_metadata_v1", "1:2:5"),
+    ("owner", "validated_metadata_v1", "1:2:3")
+  ])
+  match (first, second, closure_changed) {
+    (Some(a), Some(b), Some(c)) => {
+      assert(a != b)
+      assert(a != c)
+      assert(String::contains(a, mt_piece(mt_dependencies(deps))))
+      assert(String::contains(c, mt_piece(mt_dependencies(deps))))
+    },
+    _ => assert(false)
+  }
+}
+
+test "dependency typing assumptions preserve order and duplicate occurrences" {
+  let deps = [
+    ("z", "1:2:3"),
+    ("aa", "4:5:6"),
+    ("z", "1:2:3")
+  ]
+  match mt_build_text([
+    SLet(true, false, "api", None, EInt(1))
+  ], "owner", "validated_metadata_v1", "1:2:3", deps, [
+    ("owner", "validated_metadata_v1", "1:2:3")
+  ]) {
+    Some(text) => {
+      assert(String::contains(text, mt_piece(mt_dependencies(deps))))
+      match decode_checked_module_typing_artifact_v1(text) {
+        Some(decoded) => assert(encode_checked_module_typing_artifact_v1(decoded) == text),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "unattested shadow builder snapshots caller-owned row arrays" {
+  let checked = check_program_result([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  let dependencies = [
+    ("dep", "1:2:3")
+  ]
+  let closure = [
+    ("owner", "validated_metadata_v1", "1:2:3")
+  ]
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked, "owner", "validated_metadata_v1", "1:2:3", dependencies, closure, interface) {
+      Some(artifact) => {
+        let before = encode_checked_module_typing_artifact_v1(artifact)
+        Array::set(dependencies, 0, ("mutated", "9:9:9"))
+        Array::set(closure, 0, ("mutated", "validated_metadata_v1", "mutated"))
+        assert(encode_checked_module_typing_artifact_v1(artifact) == before)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "recorded implementation closure sorts lexically and rejects duplicate or inconsistent owners" {
+  let stmts = [
+    SLet(true, false, "api", None, EInt(1))
+  ]
+  let lexical = [
+    ("aa", "validated_metadata_v1", "1:2:4"),
+    ("b", "validated_metadata_v1", "1:2:3")
+  ]
+  match mt_build_text(stmts, "b", "validated_metadata_v1", "1:2:3", array_empty(), [
+    ("b", "validated_metadata_v1", "1:2:3"),
+    ("aa", "validated_metadata_v1", "1:2:4")
+  ]) {
+    Some(text) => assert(String::contains(text, mt_piece(mt_closure(lexical)))),
+    None => assert(false)
+  }
+  match mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:3", array_empty(), [
+    ("owner", "validated_metadata_v1", "1:2:3"),
+    ("owner", "validated_metadata_v1", "1:2:3")
+  ]) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:3", array_empty(), [
+    ("other", "validated_metadata_v1", "1:2:3")
+  ]) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:3", array_empty(), [
+    ("owner", "validated_metadata_v1", "1:2:4")
+  ]) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "unattested shadow builder rejects invalid tags locators and compact fingerprints" {
+  let stmts = [
+    SLet(true, false, "api", None, EInt(1))
+  ]
+  match mt_build_text(stmts, "owner", "typed_ir", "1:2:3", array_empty(), [
+    ("owner", "typed_ir", "1:2:3")
+  ]) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match mt_build_text(stmts, "owner\nother", "validated_metadata_v1", "1:2:3", array_empty(), [
+    ("owner\nother", "validated_metadata_v1", "1:2:3")
+  ]) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:3", [
+    ("dep", "01:2:3")
+  ], [
+    ("owner", "validated_metadata_v1", "1:2:3")
+  ]) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "compact fingerprints enforce positive count and exact hash maxima for own dependency and closure identities" {
+  let nested = mt_nested_interface([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  let maximum = "1:2147483646:2147483628"
+  let first_maximum_plus_one = "1:2147483647:2147483628"
+  let second_maximum_plus_one = "1:2147483646:2147483629"
+  let fields = mt_set(mt_valid_fields(nested), 5, maximum)
+  let valid = mt_set(mt_set(fields, 6, mt_dependencies([
+    ("dep", maximum)
+  ])), 7, mt_closure([
+    ("dep", "validated_metadata_v1", maximum),
+    ("owner", "provisional_token_stream_v1", maximum)
+  ]))
+  match decode_checked_module_typing_artifact_v1(mt_outer(valid)) {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+  mt_assert_decode_none(mt_outer(mt_set(mt_set(valid, 5, first_maximum_plus_one), 7, mt_closure([
+    ("dep", "validated_metadata_v1", maximum),
+    ("owner", "provisional_token_stream_v1", first_maximum_plus_one)
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(mt_set(valid, 5, second_maximum_plus_one), 7, mt_closure([
+    ("dep", "validated_metadata_v1", maximum),
+    ("owner", "provisional_token_stream_v1", second_maximum_plus_one)
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(valid, 6, mt_dependencies([
+    ("dep", first_maximum_plus_one)
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(valid, 6, mt_dependencies([
+    ("dep", second_maximum_plus_one)
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(valid, 7, mt_closure([
+    ("dep", "validated_metadata_v1", first_maximum_plus_one),
+    ("owner", "provisional_token_stream_v1", maximum)
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(valid, 7, mt_closure([
+    ("dep", "validated_metadata_v1", second_maximum_plus_one),
+    ("owner", "provisional_token_stream_v1", maximum)
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(mt_set(valid, 5, "0:17:29"), 7, mt_closure([
+    ("dep", "validated_metadata_v1", maximum),
+    ("owner", "provisional_token_stream_v1", "0:17:29")
+  ]))))
+}
+
+test "strict decoder rejects wrong version decimals hostile counts truncation and trailing bytes" {
+  let nested = mt_nested_interface([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  let canonical = mt_outer(mt_valid_fields(nested))
+  match decode_checked_module_typing_artifact_v1(canonical) {
+    Some(decoded) => assert(encode_checked_module_typing_artifact_v1(decoded) == canonical),
+    None => assert(false)
+  }
+  let header = "vibe-checked-module-typing-artifact:v1\n"
+  let suffix = canonical[String::length(header): String::length(canonical)]
+  mt_assert_decode_none(String::concat("vibe-checked-module-typing-artifact:v2\n", suffix))
+  mt_assert_decode_none(String::concat(String::concat(header, "012"), canonical[String::length(header) + 2: String::length(canonical)]))
+  mt_assert_decode_none("vibe-checked-module-typing-artifact:v1\n12[999999999999999999999999999:")
+  mt_assert_decode_none(canonical[0: String::length(canonical) - 1])
+  mt_assert_decode_none(String::concat(canonical, "trailing"))
+}
+
+test "strict decoder rejects noncanonical structure nested interface and closure order" {
+  let nested = mt_nested_interface([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  let fields = mt_valid_fields(nested)
+  mt_assert_decode_none(mt_outer(mt_set(fields, 0, "multi_member_scc")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 2, "2")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 3, "other")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 4, "typed_ir")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 6, "02[]")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 6, "999999999999999999999999[")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 7, mt_closure([
+    ("owner", "provisional_token_stream_v1", "1:2:3"),
+    ("aa", "validated_metadata_v1", "1:2:4")
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 7, mt_closure([
+    ("owner", "provisional_token_stream_v1", "1:2:3"),
+    ("owner", "provisional_token_stream_v1", "1:2:3")
+  ]))))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 8, "vibe-checked-exported-interface-artifact:v1\n0[]trailing")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 8, "vibe-checked-exported-interface-artifact:v2\n0[]")))
+}
+
+test "strict decoder accepts only caller-attested empty typing errors and fixed body ineligibility" {
+  let nested = mt_nested_interface([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  let fields = mt_valid_fields(nested)
+  mt_assert_decode_none(mt_outer(mt_set(fields, 9, "message,path")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 10, "non-empty:error")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 11, "TypeEnv-v5:target")))
+  mt_assert_decode_none(mt_outer(mt_set(fields, 11, "typed_ir:fragment")))
+}
+
+test "wrapper around genuine checker failure returns no module artifact bytes" {
+  let produced = handle {
+    let stmts = parse_program(lex("export let bad: Int = \"not an int\"\n"))
+    match mt_build_text(stmts, "owner", "validated_metadata_v1", "1:2:3", array_empty(), [
+      ("owner", "validated_metadata_v1", "1:2:3")
+    ]) {
+      Some(bytes) => Some(bytes),
+      None => None
+    }
+  } with Exception {
+    Throw(_) => None
+  }
+  match produced {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}

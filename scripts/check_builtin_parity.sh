@@ -28,6 +28,7 @@ import re, sys
 LIN_CALLSITE = "lib/@vibe/compiler/codegen/expr/compile_call.vibe"
 GC_CALLSITE = "lib/@vibe/compiler/codegen/gc/backend_call.vibe"
 REGISTRY = "lib/@vibe/compiler/core/builtin_registry.vibe"
+LINKED = "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 CLASSIFICATION = "scripts/builtin_parity_classification.tsv"
 
 def callsite_names(path):
@@ -42,10 +43,11 @@ gc_cs = callsite_names(GC_CALLSITE)
 # fail instead of silently counting (or excluding) the wrong names.
 gc_text = open(GC_CALLSITE).read()
 gc_throw_only_expected = {
-    "Stdin::read_via_stream", "StdinStream::next", "StdinStream::close"
+    "Stdin::read_via_stream", "StdinStream::next", "StdinStream::close",
+    "StdinStream::read_chunk"
 }
 throw_only_match = re.search(
-    r'if\s+((?:fname == "(?:Stdin::read_via_stream|StdinStream::next|StdinStream::close)"(?:\s*\|\|\s*)?)+)\s*\{\s*throw\("StdinStream is unsupported on gc backend;',
+    r'if\s+((?:fname == "(?:Stdin::read_via_stream|StdinStream::next|StdinStream::close|StdinStream::read_chunk)"(?:\s*\|\|\s*)?)+)\s*\{\s*throw\("StdinStream is unsupported on gc backend;',
     gc_text)
 throw_only_found = (set(re.findall(r'fname == "([^"]+)"', throw_only_match.group(1)))
                     if throw_only_match else set())
@@ -72,13 +74,27 @@ if len(rows) < 90:
     sys.exit(1)
 reg_lin = {n for n, l, g, v in rows if l == "true"}
 reg_gc = {n for n, l, g, v in rows if g == "true"}
-neither = sorted(n for n, l, g, v in rows if l == "false" and g == "false")
+# Compiler-owned wrappers can implement a checker-visible builtin without a
+# func-table row. Keep this exception exact and mutation-checked: read_chunk
+# must still be retargeted to its injected linear/RC implementation.
+wrapper_only_expected = {"StdinStream::read_chunk"}
+linked_text = open(LINKED).read()
+wrapper_only_found = {
+    n for n in wrapper_only_expected
+    if f'"{n}"' in linked_text and "__stdin_provider_read_chunk_surface" in linked_text
+}
+if wrapper_only_found != wrapper_only_expected:
+    print("[builtin-parity] FAIL: compiler-owned StdinStream wrapper shape "
+          f"changed (found {sorted(wrapper_only_found)})", file=sys.stderr)
+    sys.exit(1)
+neither = sorted(n for n, l, g, v in rows
+                 if l == "false" and g == "false" and n not in wrapper_only_expected)
 if neither:
     print(f"[builtin-parity] FAIL: registry rows claiming NEITHER lane "
           f"(dead rows?): {', '.join(neither)}", file=sys.stderr)
     sys.exit(1)
 
-served_lin = lin_cs | reg_lin
+served_lin = lin_cs | reg_lin | wrapper_only_expected
 served_gc = gc_cs | reg_gc
 actual = ({(n, "linear-only") for n in served_lin - served_gc}
           | {(n, "gc-only") for n in served_gc - served_lin})
