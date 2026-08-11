@@ -1079,9 +1079,23 @@ case "$cmd" in
       fi
     else
       out="$(mktemp -t vibe-check-XXXXXX.wasm)"
-      trap 'rm -f "$out"' EXIT
+      cerr="$(mktemp -t vibe-check-err-XXXXXX)"
+      trap 'rm -f "$out" "$cerr"' EXIT
       # A successful compile implies a clean parse + typecheck; surface failures.
-      if ! compile_to "$src" "$out" main; then
+      #
+      # compile_to reports to STDERR -- correct for the shared BUILD path, where
+      # the wasm is the output and the diagnostic is the aside. This lane inverts
+      # that: the report IS the output, and #1567 puts it on stdout. Without the
+      # capture below, `vibe check` against a compiler old enough to take this
+      # branch would exit 1 with empty stdout, which a stdout-only consumer reads
+      # as "failed, no reason given" -- worse than the contract it replaced.
+      # compile_to already prefixes its line `error: `, so re-emit it verbatim
+      # rather than through emit_check_diagnostics (which would double-prefix).
+      if compile_to "$src" "$out" main 2>"$cerr"; then
+        rm -f "$out" "$cerr"
+      else
+        [ -s "$cerr" ] && cat "$cerr"
+        rm -f "$out" "$cerr"
         exit 1
       fi
     fi
