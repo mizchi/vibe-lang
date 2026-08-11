@@ -1,10 +1,13 @@
 //# Bounded shadow-only checked module typing artifact (#1550)
 //
-// This v1 aggregate is built only from an already successful `CheckedProgram`
-// and its matching checked exported-interface artifact. It is observation-only:
-// no cache, reuse, planner, trace, CLI, filesystem, or module-worker path reads
-// or publishes it. Current producers describe exactly one semantic module, and
-// therefore one singleton SCC.
+// IMPORTANT: `CheckedProgram` is transparent in this slice. Callers can manually
+// construct one and obtain this artifact, so neither the schema nor the
+// `shadow_unattested` builder proves checker success, cryptographically or
+// through the type system. Only a future trusted producer invoked after
+// `check_program_result` succeeds may publish these bytes; this slice adds no
+// producer or publisher. It is observation-only: no cache, reuse, planner,
+// trace, CLI, filesystem, or module-worker path reads or publishes it. Values
+// describe exactly one semantic module and therefore one singleton SCC.
 //
 // Dependency interface assumptions are ordered typing inputs. They deliberately
 // preserve repeated import occurrences. The separately recorded implementation
@@ -13,9 +16,11 @@
 // referenced. Neither dimension is a substitute for the other.
 //
 // The implementation identity is explicitly tagged provisional token-stream or
-// validated metadata. It is never called typed IR. Structured non-empty typing
-// diagnostics and lossless checked bodies are unavailable in v1 and fail closed
-// through fixed closed markers in the codec.
+// validated metadata. It is never called typed IR. Canonical empty diagnostics
+// mean only that the caller attests the successful typing-error set is empty;
+// they are not evidence that checking ran.
+// Structured non-empty typing diagnostics and lossless checked bodies are
+// unavailable in v1 and fail closed through fixed closed markers in the codec.
 
 import @vibe/cache {
   compact_string_fingerprint
@@ -40,9 +45,9 @@ import ./checked_exported_interface_artifact.vibe {
   encode_checked_exported_interface_artifact_v1
 }
 
-/// Opaque aggregate for shadow comparison only. Decoding canonical bytes does
-/// not attest that a checker ran; only the successful-result builder consumes
-/// `CheckedProgram` authority.
+/// Aggregate for shadow comparison only. It is opaque at the package boundary,
+/// but the input `CheckedProgram` remains transparent and manually constructible.
+/// Neither building nor decoding attests that a checker ran.
 export struct CheckedModuleTypingArtifact {
   module_locator: String;
   implementation_kind: String;
@@ -61,7 +66,7 @@ fn module_diagnostic_scope_order() -> String {
 }
 
 fn module_empty_diagnostic_identity() -> String {
-  "vibe-checked-module-typing-artifact:empty-typing-errors:v1"
+  "vibe-checked-module-typing-artifact:caller-attested-empty-typing-errors:v1"
 }
 
 fn module_checked_body_marker() -> String {
@@ -130,12 +135,16 @@ fn module_compact_fingerprint_valid(text: String) -> Bool {
     false
   } else {
     match module_decimal(text, 0, first, 2305843009213693951) {
-      Some(_) => match module_decimal(text, first + 1, second, 2147483647) {
-        Some(_) => match module_decimal(text, second + 1, n, 2147483647) {
-          Some(_) => true,
+      Some(count) => if count <= 0 {
+        false
+      } else {
+        match module_decimal(text, first + 1, second, 2147483646) {
+          Some(_) => match module_decimal(text, second + 1, n, 2147483628) {
+            Some(_) => true,
+            None => false
+          },
           None => false
-        },
-        None => false
+        }
       },
       None => false
     }
@@ -180,7 +189,7 @@ fn module_closure_sorted(rows: Array[(String, String, String)]) -> Array[(String
 }
 
 fn module_inputs_valid(module_locator: String, implementation_kind: String, implementation_identity: String, dependencies: Array[(String, String)], closure: Array[(String, String, String)]) -> Bool {
-  if !module_metadata_text_valid(module_locator) || !module_implementation_kind_valid(implementation_kind) || !module_metadata_text_valid(implementation_identity) {
+  if !module_metadata_text_valid(module_locator) || !module_implementation_kind_valid(implementation_kind) || !module_compact_fingerprint_valid(implementation_identity) {
     false
   } else {
     let mut valid = true
@@ -197,7 +206,7 @@ fn module_inputs_valid(module_locator: String, implementation_kind: String, impl
     i = 0
     while i < Array::length(closure) && valid {
       let (locator, kind, identity) = Array::get(closure, i)
-      if !module_metadata_text_valid(locator) || !module_implementation_kind_valid(kind) || !module_metadata_text_valid(identity) {
+      if !module_metadata_text_valid(locator) || !module_implementation_kind_valid(kind) || !module_compact_fingerprint_valid(identity) {
         valid = false
       } else {
         if locator == module_locator {
@@ -226,11 +235,13 @@ fn module_inputs_valid(module_locator: String, implementation_kind: String, impl
   }
 }
 
-/// Build only when successful checker authority and the caller-provided #1548
-/// artifact agree byte-for-byte. Missing nested export provenance, malformed
-/// metadata, duplicate closure locators, or a missing/mismatched owner returns
-/// None; callers therefore have no artifact bytes to publish.
-export fn checked_module_typing_artifact_from_checked_program(checked: CheckedProgram, module_locator: String, implementation_kind: String, implementation_identity: String, dependency_interface_assumptions: Array[(String, String)], recorded_implementation_closure: Array[(String, String, String)], exported_interface: CheckedExportedInterfaceArtifact) -> Option[CheckedModuleTypingArtifact] {
+/// Unattested shadow builder. It checks metadata shape and byte agreement with
+/// the caller-provided #1548 artifact, but `CheckedProgram` is transparent: a
+/// manually constructed value can pass these checks. This function provides no
+/// checker-success authority and publishes nothing. Missing nested export data,
+/// malformed metadata, duplicate closure locators, or a missing/mismatched owner
+/// returns None.
+export fn shadow_unattested_checked_module_typing_artifact_from_checked_program(checked: CheckedProgram, module_locator: String, implementation_kind: String, implementation_identity: String, dependency_interface_assumptions: Array[(String, String)], recorded_implementation_closure: Array[(String, String, String)], exported_interface: CheckedExportedInterfaceArtifact) -> Option[CheckedModuleTypingArtifact] {
   if !module_inputs_valid(module_locator, implementation_kind, implementation_identity, dependency_interface_assumptions, recorded_implementation_closure) {
     None
   } else {

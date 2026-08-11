@@ -73,11 +73,14 @@ is an ADR-sized decision, not a slice-sized one.
 ### Shadow-only checked module typing aggregate v1 (#1550)
 
 `CheckedModuleTypingArtifact` v1 is a bounded checker/artifacts experiment, not a
-production incremental-build input. Its builder requires an already successful
-`CheckedProgram` and a byte-matching `CheckedExportedInterfaceArtifact` v1; it
-returns no artifact when the exported-interface extraction is incomplete. The
-codec embeds those exact canonical interface bytes and validates them by strict
-decode/re-encode.
+production incremental-build input. `CheckedProgram` remains transparent and
+manually constructible in this slice. Consequently neither the schema nor the
+`shadow_unattested_checked_module_typing_artifact_from_checked_program` builder
+cryptographically or type-system-proves that checking succeeded. The builder
+checks only metadata shape and byte agreement with a supplied
+`CheckedExportedInterfaceArtifact` v1; manually constructed matching inputs can
+produce an artifact. The codec embeds those exact canonical interface bytes and
+validates them by strict decode/re-encode.
 
 The v1 commit unit is exactly one semantic module and therefore one singleton
 SCC. Multi-member declaration SCC production requires a later producer and
@@ -91,10 +94,13 @@ conflated.
 
 Own and closure implementation identities use a closed tag:
 `provisional_token_stream_v1` or `validated_metadata_v1`. The former is explicit
-conservative syntax identity, not normalized typed IR. Diagnostics encode only
-the canonical empty successful typing-error identity with the fixed ordering and
-scope `path,start,end,code,message`; non-empty structured diagnostics, warnings,
-and CLI/LSP diagnostic completeness are ineligible. Checked body state is only
+conservative syntax identity, not normalized typed IR. All implementation and
+dependency identities use the exact positive-length compact fingerprint shape;
+the two hash components are bounded by 2147483646 and 2147483628 respectively.
+Canonical empty diagnostics mean only a caller-attested successful typing-error
+set with the fixed ordering and scope `path,start,end,code,message`; they are not
+proof that checking ran. Non-empty structured diagnostics, warnings, and CLI/LSP
+diagnostic completeness are ineligible. Checked body state is only
 `ineligible:lossless_checked_body_unavailable_v1`—there is no TypeEnv target or
 fabricated typed-IR/body reference.
 
@@ -102,9 +108,10 @@ The aggregate and its complete-encoding fingerprint are shadow comparison data
 only. They are not wired to filesystem/module workers, TypeDb, `ModuleJob` or
 `ModuleOutcome`, the current TypeEnv v5 transport and persistent cache namespace
 v18, TDRE4, interface-v2, artifact-input traces, planner decisions, reuse, the
-CLI, or a persistent cache namespace. Decoded values attest canonical bytes, not
-a checker invocation. Reused modules cannot produce v1 without retained
-successful-check authority.
+CLI, or a persistent cache namespace. Decoded values establish canonical bytes,
+not a checker invocation. This slice has no producer or publisher. Only a future
+trusted producer invoked after `check_program_result` succeeds may publish the
+artifact; making that boundary trustworthy is explicitly future work.
 
 ## User-visible KPI contract
 
