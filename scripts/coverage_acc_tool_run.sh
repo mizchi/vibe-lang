@@ -31,9 +31,26 @@ if [ $# -lt 2 ]; then
   exit 2
 fi
 
-compiler="${VIBE_COVERAGE_ACC_TOOL_COMPILER:-bootstrap/seed/compiler.wasm}"
+# The tool is ordinary vibe source in this checkout, so it must be built by a
+# compiler that understands THIS checkout's contracts -- not by the pinned seed.
+# The seed is the previous bootstrap tag; once `lib/@vibe/prelude/index.vpkg`
+# moved past it, a seed build died with
+#
+#   lib/@vibe/prelude/index.vpkg: contract violation: contract declaration
+#   'String::join' has no implementation; ... opaque type 'Int' has no
+#   implementation; ...
+#
+# which reads like a broken prelude but is really "the builder is too old".
+# Prefer a checkout-matched compiler and keep the seed only as a last resort,
+# the same precedence `runtime/vibe`'s pick_cli uses.
+compiler="${VIBE_COVERAGE_ACC_TOOL_COMPILER:-}"
+if [ -z "$compiler" ]; then
+  for cand in dist/cli/vibe-cli.wasm $(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null) bootstrap/seed/compiler.wasm; do
+    [ -s "$cand" ] && { compiler="$cand"; break; }
+  done
+fi
 if [ ! -s "$compiler" ]; then
-  echo "coverage_acc_tool_run.sh: compiler wasm not found: $compiler" >&2
+  echo "coverage_acc_tool_run.sh: compiler wasm not found: ${compiler:-<none>}" >&2
   exit 2
 fi
 

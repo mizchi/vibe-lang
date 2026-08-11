@@ -23,6 +23,13 @@ SEED="${VIBE_COV_SEED:-bootstrap/seed/compiler.wasm}"
 OUTDIR="_build/coverage/selfhost-corpus"
 ACC="$OUTDIR/acc.json"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"
+# Same node-stack requirement as coverage_corpus.sh: every driver compiles the
+# ~5MB merged source (plus the driver) under coverage instrumentation, which
+# recurses past node's default stack. Without this the host overflow surfaces as
+# `expression too deeply nested`, run_driver counts it as a compile failure, and
+# -- because that path used to `return 0` -- the whole suite reported success
+# with EVERY driver silently skipped. Keep in sync with coverage_corpus.sh.
+export VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --experimental-wasm-inlining --stack-size=131072}"
 MERGED="_build/coverage/merged_nodce.vibe"
 WORK="_build/coverage/drivers"; mkdir -p "$WORK"
 [ -s "$ACC" ] || { echo "drivers: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
@@ -105,6 +112,15 @@ PY
 # Run one driver: append <driver>.vibe to the merged source, compile under
 # coverage with the driver entry, run, union into acc.json. Retries: the 36k-line
 # source occasionally OOMs the seed under instrumentation.
+# A driver that cannot compile, or that dumps no coverage, means its branches
+# were NOT measured. Both used to be a note on stderr and `return 0`, so the
+# suite finished green and printed its usual summary line -- indistinguishable
+# from a run where everything worked. That is how the whole suite came to be
+# 0-for-34 without anyone noticing (#1631): the numbers just stopped improving.
+# Count them and fail the suite at the end (after running every driver, so one
+# breakage does not hide the rest).
+DRIVER_FAILS=0
+
 run_driver() { # entry driver_file label
   local entry="$1" file="$2" label="$3"
   local d="$WORK/$label"; rm -rf "$d"; mkdir -p "$d"
@@ -113,10 +129,26 @@ run_driver() { # entry driver_file label
   for t in 1 2 3 4 5 6; do
     rm -f "$d/m.wasm"
     VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
-      bash "$RUNNER" --invoke cli_main "$SEED" "$d/src.vibe" "$d/m.wasm" "$entry" >/dev/null 2>&1 || true
+      bash "$RUNNER" --invoke cli_main "$SEED" "$d/src.vibe" "$d/m.wasm" "$entry" >"$d/compile.log" 2>&1 || true
     [ -s "$d/m.wasm" ] && { ok=1; break; }
   done
-  [ "$ok" = 1 ] || { echo "[$label] compile failed after retries" >&2; return 0; }
+  if [ "$ok" != 1 ]; then
+    # "compile failed after retries" on its own cost a manual re-run to learn
+    # anything. The compiler already wrote the reason to the `.diag` sidecar --
+    # surface it, so the message names what to fix.
+    echo "[$label] compile failed after retries" >&2
+    # awk, not sed: the compiler writes the sidecar WITHOUT a trailing newline,
+    # and sed passes that through -- so the reason ran straight into the next
+    # driver's line (`unknown name: db_new[round] compile failed ...`). awk's
+    # `print` always terminates the line it emits.
+    if [ -s "$d/m.wasm.diag" ]; then
+      awk '{ print "               " $0 }' "$d/m.wasm.diag" >&2
+    elif [ -s "$d/compile.log" ]; then
+      tail -3 "$d/compile.log" | awk '{ print "               " $0 }' >&2
+    fi
+    DRIVER_FAILS=$((DRIVER_FAILS + 1))
+    return 0
+  fi
   VIBE_COV_OUT="$d/cov.json" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT" \
     bash "$RUNNER" "$d/m.wasm" >/dev/null 2>&1 || true
   if [ -s "$d/cov.json" ]; then
@@ -126,6 +158,7 @@ run_driver() { # entry driver_file label
     echo "[$label] $base -> $now/$tot ($pct%) (+$((now-base)))"
   else
     echo "[$label] no coverage dumped" >&2
+    DRIVER_FAILS=$((DRIVER_FAILS + 1))
   fi
 }
 
@@ -187,3 +220,12 @@ read -r now tot < <(bash scripts/coverage_acc_tool_run.sh stat "$ACC")
 scaled=$(( (now * 10000 + tot / 2) / tot ))
 pct="$((scaled / 100)).$(printf '%02d' $((scaled % 100)))"
 echo "[drivers] corpus branches: $base -> $now/$tot ($pct%)  (+$((now-base)))" >&2
+
+# Without this the line above is the whole story, and `+0` reads as "the
+# drivers added nothing new" rather than "no driver ran". Never report a
+# coverage number as if it came from a complete run when it did not.
+if [ "$DRIVER_FAILS" -gt 0 ]; then
+  echo "[drivers] FAIL: $DRIVER_FAILS driver(s) did not contribute coverage (see the per-driver reasons above)" >&2
+  echo "[drivers] the branch numbers above are therefore INCOMPLETE" >&2
+  exit 1
+fi
