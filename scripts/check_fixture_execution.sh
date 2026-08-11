@@ -108,9 +108,20 @@ while IFS= read -r f; do
       ;;
   esac
 
-  # --exclude: this script must not be able to account for a fixture by
-  # mentioning it (see the header note).
+  # --exclude: neither this script nor the exceptions manifest may account for
+  # a fixture by merely mentioning it.
+  #
+  # This script, because the header note names the shapes it was built for and
+  # a filename written there would cover that fixture forever.
+  #
+  # The manifest, because its entries are prose plus a path: comment out or
+  # delete an entry and the basename survives in the reason text above it, so
+  # a withdrawn exception would silently become a "bespoke reference" and the
+  # fixture would go on being executed by nothing -- the exact state this
+  # check exists to make impossible. An exception must count through the
+  # explicit lookup below or not at all.
   if grep -rqF --exclude="$(basename "${BASH_SOURCE[0]}")" \
+      --exclude="$(basename "$EXCEPTIONS_FILE")" \
       -- "$(basename "$f")" scripts lib examples .github 2>/dev/null; then
     [ "$mode" = "list" ] && printf '%s\tbespoke-reference\n' "$f"
     accounted=$((accounted + 1)); continue
