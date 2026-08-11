@@ -91,7 +91,7 @@ pkf run test              # operation gate (commit 前の主チェック)
 pkf run test-local        # affected tests only (fast inner loop)
 pkf run full-gate         # complete operation gate
 pkf run run -- args       # run main with args
-# 単一ファイルの型検査 / 診断: vibe diagnostics <file.vibe>
+# 型検査 / 診断: vibe check <file.vibe> (空出力 = clean、診断ありは exit 1)
 # selfhost の CST-token formatter (lib/@vibe/compiler/fmt/format.vibe,
 # scripts/vibe_fmt.sh, #854/#1138) は実装済みで `bash scripts/vibe_fmt.sh
 # [--check|--stdout] <file.vibe>` で直接使える。`pkf run fmt`
@@ -212,7 +212,7 @@ CI shard では:
 
 ### 方針: CLI を LLM 向けの IDE 相当クエリ面として育てる
 
-`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe check` (`--single-file` 込み) / `vibe symbols` / `vibe type-at` /
 `vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
 得るのと同じ意味解析を **CLI から直接**取り出すためのもの。**想定する第一の
 読み手は人間ではなく LLM** で、次を満たすことを目標にする:
@@ -233,11 +233,16 @@ CI shard では:
 作業するときのコストとして毎回効いてくる。
 
 現に効いている既知の穴 (どれもこの方針違反として扱う):
-`vibe check` と `vibe diagnostics` が同じ質問に別の答え方をすること
-(**#1567** — 統合提案。import 解決の有無・clean の表現・exit code・
-出力先が全部食い違い、どちらを使うかを呼び出し側が覚えている)、
-型エラーに `line:col` が付かないこと (同 #1567)、
+型エラーに `line:col` が付かないこと (**#1567** の残り)、
+`vibe check --json` が `--single-file` でしか使えないこと (同 #1567 —
+import 解決レーンは診断を文字列で投げるので range が無い)、
 `vibe symbols` が doc comment を返さないこと (Coding Convention 節)。
+
+> **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
+> `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・
+> clean の表現・exit code・出力先が全部食い違っていた)。今は**動詞は
+> `vibe check` 一つ**で、違いは `--single-file` フラグだけ。`vibe diagnostics`
+> は deprecated (既存エディタ向けに挙動を凍結したまま残置)。
 
 ### Editor query primitives — Semantic Code Navigation
 
@@ -251,10 +256,15 @@ vibe type-at file.vibe <line> <col>
 # カーソル位置の binding の全出現箇所 (START END char offset / 行)。rename/refs の基盤
 vibe binding-at file.vibe <line> <col>
 
-# 全 diagnostics (parse error 全件 + 型エラー)。空出力 = clean
-# ただし単一ファイル解析で import を辿らない → import のあるファイルでは
-# 「未定義」の誤検知を出す。import があるなら `vibe check` で判定すること
-vibe diagnostics file.vibe
+# 全 diagnostics (parse error 全件 + 型エラー)。**空出力 = clean、診断ありは
+# exit 1**、行は stdout に 1件1行。import は FS から解決するので、これ単体で
+# 「このファイルはコンパイルが通るか」に答えられる
+vibe check file.vibe
+
+# 同じ質問をバッファ単位で (import を辿らない)。未保存バッファを見る
+# エディタ用。`--json` は LSP Diagnostic 配列 (このモードのみ)
+vibe check --single-file file.vibe
+vibe check --single-file --json file.vibe
 
 # closure に捕獲されて escape する `let mut` (NAME START END / 行)。
 # = codegen が wasm local ではなく heap ref cell に落とすもの (#1262)。
@@ -275,16 +285,17 @@ vibe grep --pattern '$(f:id)($(a:args))' --where-row '$f with Async' lib
 vibe grep --pattern 'f($(x:exp))' --only-ill-typed lib
 ```
 
-> **`vibe diagnostics` は import を解決しない。** `import ./dep.vibe { Hue as T }`
-> のあるファイルは、正しくても `unknown name: T::Crimson` を返す。空出力が意味
-> するのは「**単体ファイルとして** clean」であって「コンパイルが通る」ではない。
-> **import があるファイルの可否は `vibe check`** で見る (diagnostics はエディタの
-> バッファ単位フィードバック用で、そこでは正しい道具)。逆向き — export されて
-> いない名前の import — は `vibe check` が検査時に報告する (#1521/#1533。
-> 依存が publish する環境は export surface に制限されるので、private も
-> 単なる import 素通しも「is not exported by」になる)。`vibe diagnostics` は
-> 単一ファイル解析なのでこちらは今も見えない。大文字名 (struct / type alias)
-> だけは値環境が判定できず、未検出のまま (#1521 の残り半分)。
+> **`--single-file` は import を解決しない** — これは欠陥ではなく、そのモードの
+> 定義。`import ./dep.vibe { Hue as T }` のあるファイルは、正しくても
+> `unknown name: T::Crimson` を返す。空出力が意味するのは「**単体ファイルとして**
+> clean」であって「コンパイルが通る」ではない。**可否を知りたいならフラグ無しの
+> `vibe check`** を使う (`--single-file` は未保存バッファを見るエディタ用で、
+> そこでは正しい道具)。逆向き — export されていない名前の import — は
+> フラグ無しの `vibe check` が検査時に報告する (#1521/#1533。依存が publish する
+> 環境は export surface に制限されるので、private も単なる import 素通しも
+> 「is not exported by」になる)。`--single-file` は単一ファイル解析なので
+> こちらは見えない。大文字名 (struct / type alias) だけは値環境が判定できず、
+> 未検出のまま (#1521 の残り半分)。
 
 ### `vibe lsp` - Language Server
 
@@ -328,9 +339,10 @@ completion / signature help を提供する。詳細は
 - `pkf run test` — operation gate (`scripts/compiler_gate.sh`)。commit 前の主チェック。
 - `pkf run release-check` — full gate (fmt + info + check + test + operation gates)。
 - `pkf run test-local` — 変更影響範囲のテストのみ (fast inner loop、flaker 経由)。
-- 単一ファイルの型検査 / 診断は `vibe diagnostics <file.vibe>`（空出力 = clean）。
-  **import を辿らないので、import のあるファイルは `vibe check <file.vibe>` で
-  判定すること** — diagnostics は import 由来の名前を「未定義」と誤検知する。
+- 型検査 / 診断は `vibe check <file.vibe>`（空出力 = clean、診断ありは stdout に
+  1件1行 + exit 1）。import は FS から解決するので、これ単体で可否を判定できる。
+  **未保存バッファ相当の単一ファイル解析が要るときだけ `--single-file`** を足す
+  — そのモードは import を辿らないので、import 由来の名前を「未定義」と報告する。
 - selfhost の CST-token formatter は実装済み (`lib/@vibe/compiler/fmt/format.vibe`,
   #854/#1138) — `bash scripts/vibe_fmt.sh [--check|--stdout] <file>` で
   直接使える。`pkf run fmt` (`scripts/vibe_fmt_apply.sh`) は `lib/**/*.vibe`

@@ -48,8 +48,9 @@ directly (useful for scripting or wiring a different editor):
 vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1-based (line,col)
 vibe binding-at <file.vibe> <line> <col>  # source spans (START END char offsets) of every occurrence of that binding
 vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END per line)
-vibe diagnostics <file.vibe>              # all diagnostics, one per line; empty output = clean
-vibe diagnostics --json <file.vibe>       # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
+vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
+vibe check --single-file <file.vibe>      # same, analysing the buffer ALONE (no FS import resolution)
+vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
 ```
 
 - `type-at` powers hover. Empty output means there is no env-visible
@@ -64,22 +65,35 @@ vibe diagnostics --json <file.vibe>       # same diagnostics as a JSON array of 
   parsed AST (not a line regex) it handles multi-line declarations and
   module-nested symbols and never reports a name that only appears in a string
   or comment.
-- **`diagnostics` analyzes ONE file and does not follow its imports**, so on a
+- **`--single-file` analyzes ONE file and does not follow its imports**, so on a
   file with imports it reports names it cannot see as undefined. A file that is
-  perfectly valid under `vibe check` can come back with `unknown name: T::Crimson`
-  here, purely because `import ./dep.vibe { Hue as T }` was never resolved.
-  Empty output therefore means "clean *as a standalone file*", not "compiles".
-  **To judge a file that imports anything, use `vibe check`** (`vibe diagnostics`
-  stays the right tool for the editor's per-buffer feedback, which is what it
-  exists for). The converse gap — a name imported from a module that does not
-  export it — is missed by BOTH and only surfaces at codegen (#1521).
-- `diagnostics` always exits 0 (it is a *report*, not a pass/fail), so a clean
-  file simply yields no output (plain mode) or `[]` (`--json` mode).
-  `--json` reuses the same `[@off=N]`-derived offsets `vibe lsp`'s
-  `publishDiagnostics` uses, wrapped as `{range, severity, source, message}`
-  objects — no separate structured-diagnostic format to keep in sync.
-- Once a file type-checks and codegen-validates cleanly, `diagnostics` also
-  runs two soft, warning-only passes (#1129) that never affect the exit
+  perfectly valid under a plain `vibe check` can come back with
+  `unknown name: T::Crimson` in this mode, purely because
+  `import ./dep.vibe { Hue as T }` was never resolved. Empty output therefore
+  means "clean *as a standalone file*", not "compiles". **To judge a file that
+  imports anything, drop the flag** — buffer scope exists for the editor's
+  per-buffer feedback, where the unsaved text is the thing being asked about.
+  The converse gap — a name imported from a module that does not export it — is
+  missed by the single-file mode and only surfaces at codegen (#1521); a plain
+  `vibe check` reports it (#1521/#1533).
+- Both modes share one contract (#1567): diagnostics on **stdout**, one per
+  line, `error: ` marking each diagnostic start (continuations like `hint: `
+  are indented under it, so `grep -c '^error: '` is an exact count); **clean =
+  empty output + exit 0**; anything reported = **exit 1**.
+- `--json` is available in `--single-file` mode, where the compiler's own
+  structured emitter produces real ranges: it reuses the same `[@off=N]`-derived
+  offsets `vibe lsp`'s `publishDiagnostics` uses, wrapped as
+  `{range, severity, source, message}` objects — no separate
+  structured-diagnostic format to keep in sync. A clean file yields `[]` and
+  exit 0. Without `--single-file` the launcher refuses `--json` rather than
+  inventing ranges: the import-resolving lane reports diagnostics as message
+  text with no per-diagnostic span attached (#1567).
+- `vibe diagnostics` is the **deprecated** spelling of `vibe check
+  --single-file`. It is kept behaviourally frozen (raw lines with no `error: `
+  prefix, always exit 0) for editors already wired to it — see
+  [spec/1.0-freeze.md](spec/1.0-freeze.md).
+- Once a file type-checks and codegen-validates cleanly, the single-file mode
+  also runs two soft, warning-only passes (#1129) that never affect the exit
   code or fail a compile: **unused imports** (a named `import ./f.vibe { a }`
   item, or an `import @pkg @alias` alias, never referenced in the file —
   a whole-program-merge-only alias may still legitimately trip this, since
@@ -161,7 +175,7 @@ matching nothing. Use `vibe symbols` for declarations.
 ### Type-aware filters
 
 Passing any of these switches the sweep into the **typed tier**, which resolves
-imports through the same walk `vibe check` uses — the `vibe diagnostics`
+imports through the same walk a plain `vibe check` uses — the `--single-file`
 import-blind false positives described above are deliberately *not* reproduced
 here. Only files that already have a structural match are typed.
 

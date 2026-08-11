@@ -10417,7 +10417,10 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$chkdir/multi.vibe" "$chkdir/diag.out" main >/dev/null 2>&1 || true
 # check reports through the .diag sidecar, diagnostics through the output file.
-# That difference is the REST of #1567; this step only pins the counts.
+# That is a COMPILER-side transport difference; the launcher normalizes both to
+# stdout (#1567 slice 2, pinned in scripts/test_vibe_cli_install.sh, which is
+# the layer that owns the user-facing contract). This step stays at the
+# compiler layer and only pins the counts.
 chk_n="$(grep -c '^line ' "$chkdir/check.out.diag" 2>/dev/null || true)"
 diag_n="$(grep -c '^line ' "$chkdir/diag.out" 2>/dev/null || true)"
 [ -n "$chk_n" ] || chk_n=0
