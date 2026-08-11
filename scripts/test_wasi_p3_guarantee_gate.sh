@@ -10,8 +10,9 @@
 #   phase B  wasi:http p3 world (test_wasi_http_p3_full_gate.sh)
 #            componentize -> wac plug -> wasmtime serve -> curl 200/401
 #   phase C  wasi:cli/stdin lifecycle
-#            generated shadow adapter + hand-WAT provider measurement; exact
-#            ratified import, drain-to-EOF, and early-drop completion
+#            generated shadow adapter + checker-hidden arbitrary-core route +
+#            hand-WAT provider measurement; exact ratified import,
+#            drain-to-EOF, and early-drop completion
 #   phase D  WIT pin: the composed serve component's world must reference the
 #            pinned wasi:http version, so adapter/vendored-WIT/runtime drift
 #            fails loudly instead of as a mysterious resolution error.
@@ -75,6 +76,7 @@ esac
 case ",$PHASES," in *",stdin,"*)
   echo "[p3-guarantee] phase C: wasi:cli/stdin lifecycle"
   bash "$SCRIPT_DIR/test_wasi_cli_stdin_provider_component_gate.sh"
+  bash "$SCRIPT_DIR/test_wasi_cli_stdin_provider_guest_component_gate.sh"
   bash "$SCRIPT_DIR/test_wasi_cli_stdin_p3_probe_gate.sh"
   ;;
 esac

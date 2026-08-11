@@ -13,11 +13,14 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_core_host_stream_names,
   comp_core_imports_host_future,
   comp_core_imports_host_stream,
+  comp_core_imports_stdin_provider,
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
   comp_emit_component_wasm_async_concurrent_awaits,
   comp_emit_component_wasm_async_hostfuture,
   comp_emit_component_wasm_async_spawned_future,
+  comp_emit_component_wasm_async_stdin_provider,
+  comp_emit_component_wasm_async_stdin_provider_fixture,
   comp_emit_component_wasm_async_trampolined,
   comp_emit_component_wasm_async_trampolined_p1,
   comp_emit_component_wasm_future_value,
@@ -1369,6 +1372,124 @@ test "component async hostfuture: the anonymous host future is a one-name list (
   assert(Array::length(comp_core_host_future_names(build_main_i64_core_p1())) == 0)
 }
 
+fn build_main_i64_core_stdin_provider(module_name: String, include_acquire: Bool, duplicate_acquire: Bool, malformed_acquire: Bool, include_read: Bool, include_close: Bool, include_named_stream: Bool) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // 0 fd_write; 1 ()->i64; 2 (i64)->i64; 3 (i64)->i64 malformed
+  // acquire; 4 (i64)->i64 run.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 5)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let import_count = 1 + if include_acquire {
+    1
+  } else {
+    0
+  } + if duplicate_acquire {
+    1
+  } else {
+    0
+  } + if include_read {
+    1
+  } else {
+    0
+  } + if include_close {
+    1
+  } else {
+    0
+  } + if include_named_stream {
+    1
+  } else {
+    0
+  }
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, import_count)
+  emit_name(ic, "wasi_snapshot_preview1")
+  emit_name(ic, "fd_write")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  if include_acquire {
+    emit_name(ic, module_name)
+    emit_name(ic, "stdin_provider_acquire")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, if malformed_acquire {
+      3
+    } else {
+      1
+    })
+  } else {
+    ()
+  }
+  if duplicate_acquire {
+    emit_name(ic, module_name)
+    emit_name(ic, "stdin_provider_acquire")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+  } else {
+    ()
+  }
+  if include_read {
+    emit_name(ic, module_name)
+    emit_name(ic, "stdin_provider_read")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
+  if include_close {
+    emit_name(ic, module_name)
+    emit_name(ic, "stdin_provider_close")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
+  if include_named_stream {
+    emit_name(ic, "vibe")
+    emit_name(ic, "host_stream_get$body")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+  } else {
+    ()
+  }
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    4
+  ])
+  emit_export_section(out, "run", import_count)
+  let body = bytebuf_new()
+  emit_i64_const(body, 42)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
 fn build_main_i64_core_hoststream_named(with_future: Bool) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
@@ -1459,6 +1580,79 @@ test "component stdin provider shadow: distinct lifecycle adapter remains unrout
   assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
   assert(component_bytes_contains(comp, "host_stream_get$stdin") == 0)
   assert(component_bytes_contains(comp, "host_stream_close") == 0)
+}
+
+// #1539 bounded production route: parsed exact imports key the nominal stdin
+// composer, while the main guest receives only the tagged bridge instance.
+test "component stdin provider: exact core imports compose through tagged bridge (#1539)" {
+  let core = build_main_i64_core_stdin_provider("vibe", true, false, false, true, true, false)
+  assert(comp_core_imports_stdin_provider(core))
+  let comp = comp_emit_component_wasm_async_stdin_provider(core, "run")
+  assert(component_bytes_contains(comp, "wasi:cli/types@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "wasi:cli/stdin@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "stdin_provider_acquire") == 1)
+  assert(component_bytes_contains(comp, "stdin_provider_read") == 1)
+  assert(component_bytes_contains(comp, "stdin_provider_close") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][stream-read-0]read-via-stream") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-1]read-via-stream") == 1)
+  assert(component_bytes_contains(comp, "host_stream_get$stdin") == 0)
+  assert(component_bytes_contains(comp, "host_stream_read") == 0)
+  assert(component_bytes_contains(comp, "host_stream_close") == 0)
+  let drain = comp_emit_component_wasm_async_stdin_provider_fixture(0)
+  let early = comp_emit_component_wasm_async_stdin_provider_fixture(1)
+  assert(Bytes::length(drain) > 208)
+  assert(Bytes::length(early) > 208)
+  assert(Bytes::length(drain) != Bytes::length(early))
+}
+
+fn stdin_provider_compose_rejection(core: Bytes) -> String {
+  handle {
+    let _ = comp_emit_component_wasm_async_stdin_provider(core, "run")
+    ""
+  } with Exception {
+    Throw(message) => message
+  }
+}
+
+fn stdin_provider_compose_rejected(core: Bytes) -> Bool {
+  stdin_provider_compose_rejection(core) != ""
+}
+
+test "component stdin provider: malformed signature is rejected (#1539)" {
+  let core = build_main_i64_core_stdin_provider("vibe", true, false, true, true, false, false)
+  assert(comp_core_imports_stdin_provider(core))
+  assert(stdin_provider_compose_rejected(core))
+}
+
+test "component stdin provider: wrong module is rejected (#1539)" {
+  let core = build_main_i64_core_stdin_provider("wrong", true, false, false, true, false, false)
+  assert(comp_core_imports_stdin_provider(core) == false)
+  assert(stdin_provider_compose_rejected(core))
+}
+
+test "component stdin provider: read without acquire is rejected (#1539)" {
+  let core = build_main_i64_core_stdin_provider("vibe", false, false, false, true, false, false)
+  assert(comp_core_imports_stdin_provider(core))
+  assert(stdin_provider_compose_rejected(core))
+}
+
+test "component stdin provider: duplicate provider import is rejected (#1539)" {
+  let core = build_main_i64_core_stdin_provider("vibe", true, true, false, true, false, false)
+  assert(comp_core_imports_stdin_provider(core))
+  assert(stdin_provider_compose_rejection(core) == "component(async-stdin-provider): duplicate stdin-provider core import")
+}
+
+test "component stdin provider: acquire without consumer is rejected (#1539)" {
+  let core = build_main_i64_core_stdin_provider("vibe", true, false, false, false, false, false)
+  assert(comp_core_imports_stdin_provider(core))
+  assert(stdin_provider_compose_rejection(core) == "component(async-stdin-provider): stdin_provider_acquire requires at least one consuming read or close import")
+}
+
+test "component stdin provider: named stream mixing is rejected (#1539)" {
+  let core = build_main_i64_core_stdin_provider("vibe", true, false, false, true, true, true)
+  assert(comp_core_imports_stdin_provider(core))
+  assert(comp_core_imports_host_stream(core))
+  assert(stdin_provider_compose_rejected(core))
 }
 
 // ADR-0089 Decision 3 (#1218): a named host STREAM composes into a
