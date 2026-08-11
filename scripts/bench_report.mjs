@@ -38,6 +38,8 @@ const fmt = (n) => n == null ? "–" : n.toLocaleString("en-US");
 // change misread as host-speed drift and divided out of every advisory
 // delta (found in review, #1209) — so all three hashes must be present
 // and equal on both snapshots before normalizing.
+const RUNNER_FACTOR_MIN = 0.85;
+const RUNNER_FACTOR_MAX = 1.18;
 let runnerFactor = null;
 let calibNote = "no calibration data (older baseline snapshot, or runner/seed unavailable) — deltas below are raw, uncorrected for runner speed";
 {
@@ -51,8 +53,14 @@ let calibNote = "no calibration data (older baseline snapshot, or runner/seed un
     } else if (mismatched.length) {
       calibNote = `calibration inputs changed between baseline and current (${mismatched.join(", ")}) — not comparable (bootstrap bump, or a change to runtime/viberun or the calibration bench), deltas below are raw`;
     } else if (b.ns_p50 > 0) {
-      runnerFactor = c.ns_p50 / b.ns_p50;
-      calibNote = `runner factor ${runnerFactor.toFixed(3)}× (${c.label || "calibration"}: current ${fmt(c.ns_p50)}ns vs baseline ${fmt(b.ns_p50)}ns p50) — advisory deltas below are normalized to correct for it`;
+      const candidateFactor = c.ns_p50 / b.ns_p50;
+      const reading = `${c.label || "calibration"}: current ${fmt(c.ns_p50)}ns vs baseline ${fmt(b.ns_p50)}ns p50`;
+      if (candidateFactor >= RUNNER_FACTOR_MIN && candidateFactor <= RUNNER_FACTOR_MAX) {
+        runnerFactor = candidateFactor;
+        calibNote = `runner factor ${runnerFactor.toFixed(3)}× (${reading}) — advisory deltas below are normalized to correct for it`;
+      } else {
+        calibNote = `runner mismatch: calibration factor ${String(candidateFactor)}× is outside the plausible ${RUNNER_FACTOR_MIN.toFixed(2)}–${RUNNER_FACTOR_MAX.toFixed(2)}× range (${reading}) — advisory deltas below are raw`;
+      }
     }
   }
 }

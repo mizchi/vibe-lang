@@ -244,6 +244,13 @@ flatten を最終出力に使わないのは、それが一世代古く、`merge
 ない) から。この切り替え時に、seed だけから作った5成果物が従来の commit 済み
 コピーと **byte-identical** であることを確認している。
 
+`coverage_drivers.sh` の #1633 exact-path exposure も同じ世代境界を守る。
+新しい内部 mode は current source から作る `compiler_cov.wasm` が実行し、driver
+entry から DCE した通常の vibe source を出力する。固定 seed が担当するのはその
+出力の coverage compile だけであり、新しい mode を seed 自身が理解する必要は
+ない。このため syntax 追加も seed bump も伴わず、通常の
+`VIBE_EMIT_MERGED_SOURCE` 出力も変更しない。
+
 ### なぜ tracking をやめたか
 
 - compiler source に触る PR が2本あれば**必ず**5ファイル全部で衝突し、

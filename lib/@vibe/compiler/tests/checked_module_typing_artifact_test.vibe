@@ -19,6 +19,10 @@ import @vibe/compiler/core {
   Expr, Stmt, TypeExpr
 }
 
+import @vibe/compiler/runtime {
+  ModuleJob, check_module, check_module_with_typing_artifact_observation, checked_module_typing_artifact_observation
+}
+
 import @vibe/compiler/syntax {
   lex
 }
@@ -125,6 +129,16 @@ fn mt_assert_decode_none(text: String) -> Unit {
   match decode_checked_module_typing_artifact_v1(text) {
     Some(_) => assert(false),
     None => assert(true)
+  }
+}
+
+fn mt_module_job(path: String, source: String) -> ModuleJob {
+  ModuleJob::{
+    path: path,
+    source: source,
+    deps: array_empty(),
+    dep_fps: array_empty(),
+    dep_envs: array_empty()
   }
 }
 
@@ -483,4 +497,42 @@ test "wrapper around genuine checker failure returns no module artifact bytes" {
     Some(_) => assert(false),
     None => assert(true)
   }
+}
+
+test "production module check leaves shadow observation disabled" {
+  let outcome = check_module(mt_module_job("default.vibe", "export let api: Int = 1\n"))
+  assert(checked_module_typing_artifact_observation(outcome) == None)
+}
+
+test "opaque successful ModuleOutcome carries one canonical in-memory artifact" {
+  let outcome = check_module_with_typing_artifact_observation(mt_module_job("owner.vibe", "export let api: Int = 1\n"))
+  match checked_module_typing_artifact_observation(outcome) {
+    Some(bytes) => match decode_checked_module_typing_artifact_v1(bytes) {
+      Some(artifact) => {
+        assert(encode_checked_module_typing_artifact_v1(artifact) == bytes)
+        assert(String::contains(bytes, "owner.vibe"))
+        assert(String::contains(bytes, "provisional_token_stream_v1"))
+        assert(String::contains(bytes, "ineligible:lossless_checked_body_unavailable_v1"))
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "opaque ModuleOutcome publishes nothing for ordinary type or effect failures" {
+  let type_failure = check_module_with_typing_artifact_observation(mt_module_job("type_bad.vibe", "export let bad: Int = \"not an int\"\n"))
+  assert(checked_module_typing_artifact_observation(type_failure) == None)
+  let effect_failure = check_module_with_typing_artifact_observation(mt_module_job("effect_bad.vibe", "effect Logger { Log(String) -> Unit }\nexport fn bad() -> Int {\n  perform Logger::Log(\"hi\")\n  1\n}\n"))
+  assert(checked_module_typing_artifact_observation(effect_failure) == None)
+}
+
+test "later diagnosed outcome cannot reuse a stale successful observation" {
+  let successful = check_module_with_typing_artifact_observation(mt_module_job("same.vibe", "export let api: Int = 1\n"))
+  match checked_module_typing_artifact_observation(successful) {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+  let diagnosed = check_module_with_typing_artifact_observation(mt_module_job("same.vibe", "export let api: Int = \"stale\"\n"))
+  assert(checked_module_typing_artifact_observation(diagnosed) == None)
 }

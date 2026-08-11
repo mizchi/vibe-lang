@@ -206,6 +206,18 @@ in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入�
 
 #### 80% 達成（no-DCE merged source + direct-call drivers）
 
+> **#1633 migration status:** the historical raw concatenation described below
+> is being retired one driver at a time. `cov_units.vibe` now uses compiler-owned
+> exact-path value exposure: its imports name one `.vibe` file in the collected
+> compiler closure, the production export/private namespacing plan determines
+> the final target name, and the existing shadow-aware import rewriter updates
+> driver references before entry-based DCE. Missing, duplicate, out-of-closure,
+> type/constructor, mutable-global, extern, method, and collision requests fail
+> with a diagnostic. The internal mode (`VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1` +
+> `VIBE_COVERAGE_DRIVER_PATH`) is invoked only by `coverage_drivers.sh`; it does
+> not widen normal import visibility or change `VIBE_EMIT_MERGED_SOURCE` output.
+> The other drivers retain the legacy base until their own reviewed slices.
+
 **分岐 5711/6694 (85.32%)**・関数 1037/1176 (88.18%) に到達（85% = 5690 に対し +21 のマージン、下限ガード 80% に対し +355）。
 74% で頭打ちだった主因（コンパイラ自身の unit test 120/148 が builtins⇄checker
 の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
