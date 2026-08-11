@@ -108,6 +108,38 @@ fn entry_declares_async_int(stmts: Array[Stmt], entry_name: String) -> Bool {
 /// host-future composition (adapter-provided imports + `get-future`
 /// component import + u32 lift, driven by viberun); everything else keeps
 /// the self-contained trampolined-p1 shape byte-identically.
+fn stdin_provider_component_only_diagnostic(mode: String) -> String {
+  String::concat("StdinStream is component-only; ", String::concat(mode, " cannot emit its component-private stdin provider imports. Use an Async component entry named run without this instrumentation mode"))
+}
+
+/// Reject an exact compiled-core stdin-provider import before a caller can
+/// publish that core as a standalone artifact. The import detector parses the
+/// core import section; it does not guess from source names, so shadowed/user
+/// identifiers cannot trigger this boundary.
+export fn reject_stdin_provider_core(bytes: Bytes, mode: String) -> Bytes with Exception {
+  if comp_core_imports_stdin_provider(bytes) {
+    throw(stdin_provider_component_only_diagnostic(mode))
+  } else {
+    bytes
+  }
+}
+
+/// Route an arbitrary compiled core through the production stdin-provider
+/// composer when (and only when) its parsed imports contain the exact private
+/// provider ABI. Used by the import-resolving CLI lane, whose frontend cannot
+/// use compile_source_wasi_only's source-local async wrapper decision.
+export fn maybe_wrap_stdin_provider_core(bytes: Bytes, entry_name: String) -> Bytes with Exception {
+  if comp_core_imports_stdin_provider(bytes) {
+    if entry_name == "run" {
+      comp_emit_component_wasm_async_stdin_provider(bytes, "run")
+    } else {
+      throw("StdinStream is component-only and requires an Async component entry named run")
+    }
+  } else {
+    bytes
+  }
+}
+
 fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exception {
   if wrap_async {
     // #1539: provider routing is first because its nominal stdin lifecycle
@@ -150,7 +182,10 @@ export fn compile_source_wasi_only_coverage(source: String, entry_name: String) 
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
   strip_generic_type_params(stmts)
-  compile_wasi_module_coverage_impl(stmts, entry_name)
+  // Coverage consumers require a standalone instrumented core. StdinStream's
+  // raw provider ABI is satisfiable only inside the dedicated component, so
+  // parse the emitted core imports and fail before returning any artifact.
+  reject_stdin_provider_core(compile_wasi_module_coverage_impl(stmts, entry_name), "VIBE_COVERAGE=1")
 }
 
 /// ADR-0055 #493 cutover: same pipeline on the Perceus RC codegen path. Lets the

@@ -575,6 +575,20 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
   }
 }
 
+fn rewrite_alias_type_opt(ty: Option[TypeExpr], am: AliasIdx) -> Option[TypeExpr] {
+  match ty {
+    Some(inner) => Some(rewrite_alias_type_expr(inner, am)),
+    None => None
+  }
+}
+
+fn rewrite_alias_param_types(params: Array[(String, Option[TypeExpr])], am: AliasIdx) -> Array[(String, Option[TypeExpr])] {
+  for param in params {
+    let (name, ty) = param
+    (name, rewrite_alias_type_opt(ty, am))
+  }
+}
+
 fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   // Perf: with no aliases the rewrite is the identity, but the match below
   // still rebuilt EVERY node of the tree. Alias maps only shrink on the way
@@ -651,7 +665,14 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       }, off),
       EBinOp(op, left, right) => EBinOp(op, rewrite_alias_expr_ix(left, am), rewrite_alias_expr_ix(right, am)),
       EUnaryOp(op, value) => EUnaryOp(op, rewrite_alias_expr_ix(value, am)),
-      EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, params, ret_ty, effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params))),
+      EFn(type_params, bounds, params, ret_ty, effect, body) => {
+        // Type formals shadow imported TYPE aliases, independently of value
+        // parameters shadowing imported VALUE aliases. Preserve both
+        // namespaces while canonicalizing imported contract aliases in fn
+        // parameter and return annotations (#1539 StdinStream as S).
+        let type_am = aliasidx_without_names(am, type_params)
+        EFn(type_params, bounds, rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params)))
+      },
       // #897: `mod.x` written against a qualified-import namespace (`import
       // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see
       // qualify_import_items in lib/@vibe/parser/parser.vibe. A real
@@ -767,8 +788,8 @@ export fn rewrite_import_alias_stmt(stmt: Stmt, aliases: Array[(String, String)]
 
 fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
   match stmt {
-    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, ty, rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
-    SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_alias_type_opt(ty, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
+    SLetMut(name, ty, body) => SLetMut(name, rewrite_alias_type_opt(ty, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
     STest(name, body) => STest(name, rewrite_alias_expr_ix(body, am)),
     SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, am)),
     SExpr(body) => SExpr(rewrite_alias_expr_ix(body, am)),

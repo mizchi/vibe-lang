@@ -35,6 +35,26 @@ def callsite_names(path):
 
 lin_cs = callsite_names(LIN_CALLSITE)
 gc_cs = callsite_names(GC_CALLSITE)
+
+# A loud rejection is not an implementation. Keep this subtraction narrow and
+# mutation-checked: these public rows deliberately appear in one GC condition
+# whose body only throws the component-only diagnostic. If that shape moves,
+# fail instead of silently counting (or excluding) the wrong names.
+gc_text = open(GC_CALLSITE).read()
+gc_throw_only_expected = {
+    "Stdin::read_via_stream", "StdinStream::next", "StdinStream::close"
+}
+throw_only_match = re.search(
+    r'if\s+((?:fname == "(?:Stdin::read_via_stream|StdinStream::next|StdinStream::close)"(?:\s*\|\|\s*)?)+)\s*\{\s*throw\("StdinStream is unsupported on gc backend;',
+    gc_text)
+throw_only_found = (set(re.findall(r'fname == "([^"]+)"', throw_only_match.group(1)))
+                    if throw_only_match else set())
+if throw_only_found != gc_throw_only_expected:
+    print("[builtin-parity] FAIL: GC StdinStream rejection shape changed; "
+          "update the throw-only extraction without counting rejection as "
+          f"implementation (found {sorted(throw_only_found)})", file=sys.stderr)
+    sys.exit(1)
+gc_cs -= throw_only_found
 if not lin_cs or not gc_cs:
     print(f"[builtin-parity] FAIL: extracted no dispatch arms "
           f"(linear {len(lin_cs)}, gc {len(gc_cs)}) -- did the dispatch "
