@@ -101,6 +101,25 @@ expect_contains "bare-fn dot call reports no-method (#953)" 'no method `total` o
 expect_matches "bare-fn dot call no-method located with exact range (#953)" "line 10:5-10:" \
   'enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(t)\n  }\n}\nexport let main = () -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n'
 
+# #1567: the type errors that used to arrive with NO location at all. Each
+# passed a hardcoded -1 where the offending expression was in scope; the anchor
+# is now threaded through. Assert the exact line:col, not just "some location" —
+# an anchor on the wrong sub-expression still produces a plausible number.
+expect_contains "implicit tail return locates on the returned expr" "line 3:3:" \
+  'export let mk = () -> String { "s" }\nexport fn f() -> Int {\n  mk()\n}\n'
+expect_contains "explicit return locates on the returned expr" "line 3:10:" \
+  'export let mk = () -> String { "s" }\nexport fn f() -> Int {\n  return mk()\n}\n'
+# A body that opens with a statement parses as ELet(_, val, REST, _), not ESeq,
+# so a tail walk that only knows ESeq drops back to no location here.
+expect_contains "tail return past a let statement still locates on the tail" "line 5:3:" \
+  'export let setup = () -> Int { 1 }\nexport let mk = () -> String { "s" }\nexport fn f() -> Int {\n  let _ = setup()\n  mk()\n}\n'
+# `let x: T = v` desugars to a synthetic call whose own offset is -1; the anchor
+# has to come from the bound VALUE.
+expect_contains "annotated local let locates on the bound value" "line 3:16:" \
+  'export let mk = () -> String { "s" }\nexport fn main() -> Int {\n  let x: Int = mk()\n  0\n}\n'
+expect_contains "binop mismatch locates on an operand" "line 3:3:" \
+  'export let s = "str"\nexport fn main() -> Int {\n  s & 1\n}\n'
+
 # the internal [@off=N] offset marker must never leak into user-facing output.
 expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
   local desc="$1" needle="$2"; shift 2
@@ -119,6 +138,14 @@ expect_missing "no [@off= marker leak (unknown name)" "[@off=" \
   'export let a = 1\nexport let main = () -> Int { zzz }\n'
 expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
   'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
+
+# #1567, the flip side of the located type errors above — stated so it reads as
+# a decision rather than an accident: an expression built only from LITERALS has
+# no offset to anchor on (EInt/EFloat/EString/EBool have no offset slot in
+# lib/@vibe/ast/index.vpkg), so it stays unlocated rather than borrowing a
+# nearby node's position and confidently pointing at the wrong thing.
+expect_missing "literal-only mismatch does not invent a location" "line " \
+  'export fn main() -> Int {\n  1 + "s"\n}\n'
 
 # #1567: EXACTLY ONE location per diagnostic, and it must be the crime scene.
 #
