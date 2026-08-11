@@ -163,11 +163,17 @@ the baseline's to get a `runnerFactor`, and divides every advisory
 that's uniformly N% slower today no longer shows up as an N% regression on
 every single benchmark. Deterministic metrics (heap, sizes, bytes/op) are
 never normalized; they don't depend on runner speed to begin with.
-Normalization is skipped, falling back to raw deltas with a note in the
-report, when either snapshot lacks calibration data (e.g. an older
-snapshot predating this feature) or `seed_sha256` differs between them (a
-bootstrap bump landed between the two commits, making the calibration
-readings themselves not comparable).
+
+A single calibration series is not trusted outside the inclusive
+**0.85–1.18×** plausibility range. Such a reading is reported as a `runner
+mismatch`, and advisory rows show raw deltas rather than normalized warning
+conclusions. This is deliberately fail-open: an uncorrected noisy reading is
+more honest than dividing every row by an implausible factor. Normalization is
+also skipped, falling back to raw deltas with a note in the report, when either
+snapshot lacks calibration data (e.g. an older snapshot predating this
+feature) or any recorded calibration input hash differs between them (for
+example, a bootstrap bump landed between the two commits, making the readings
+not comparable).
 
 To track a new micro bench, add its file to `tracked_benches.txt` (keep the
 whole list fast — it runs on every PR). To track a new size sample, drop a
