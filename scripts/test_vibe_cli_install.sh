@@ -99,6 +99,88 @@ else
   echo "info: compiler did not emit a structured diagnostic (seed build); skipping message assertion"
 fi
 
+# #1567 slice 1 + its review (Codex P2): `vibe check` prefixes each sidecar line
+# with `error: ` so a multi-error report stays one-diagnostic-per-line and
+# grep-able. A single diagnostic can still span several LINES, though --
+# checker_effects.vibe appends a `hint: ...` continuation to an effect row
+# mismatch -- so prefixing every line would report ONE diagnostic as TWO. This
+# pins the distinction: exactly one `error: ` line, with the hint present and
+# indented under it rather than counted as its own error.
+printf 'fn leaky() -> String {\n  Env::get("HOME")\n}\n\nfn main {\n  let _ = leaky()\n  ()\n}\n' > "$proj/hint.vibe"
+hint_diag="$("$VIBE" check "$proj/hint.vibe" 2>&1 || true)"
+if echo "$hint_diag" | grep -q "effect row mismatch"; then
+  check "vibe check counts a hint as part of its diagnostic" \
+    "1" "$(echo "$hint_diag" | grep -c '^error: ')"
+  check "vibe check still shows the hint" \
+    "yes" "$(echo "$hint_diag" | grep -q 'hint: ' && echo yes || echo no)"
+else
+  echo "info: compiler did not emit the effect row mismatch hint (seed build); skipping continuation-line assertion"
+fi
+
+# #1567 slice 2: the `vibe check` REPORTING CONTRACT, pinned as a whole. The
+# point of the unification is that a caller can judge a file without knowing
+# which lane answered, so all three properties have to hold together:
+#   diagnostics on STDOUT (not stderr) / clean = EMPTY output / exit 1 when
+#   anything is reported.
+# Splitting stdout from stderr here is deliberate -- the old contract printed
+# diagnostics to stderr and `ok: <file>` to stdout, so a test that merges the
+# two (`2>&1`) cannot tell the two contracts apart.
+chk_stdout="$("$VIBE" check "$proj/bad.vibex" 2>/dev/null || true)"
+check "vibe check writes diagnostics to stdout" \
+  "yes" "$(echo "$chk_stdout" | grep -q '^error: ' && echo yes || echo no)"
+clean_stdout="$("$VIBE" check "$proj/app.vibex" 2>/dev/null || true)"
+check "vibe check is silent on a clean file" "" "$clean_stdout"
+
+# `--single-file` is what makes the second verb (`vibe diagnostics`)
+# unnecessary, so pin the thing that actually distinguishes the two modes:
+# app.vibex imports lib.vibe, so it is CLEAN with FS import resolution and
+# reports an unknown name WITHOUT it. Same file, same verb, one flag.
+sf_out="$("$VIBE" check --single-file "$proj/app.vibex" 2>/dev/null || true)"
+"$VIBE" check --single-file "$proj/app.vibex" >/dev/null 2>&1 && rc=0 || rc=$?
+if echo "$sf_out" | grep -q 'unknown name'; then
+  check "vibe check --single-file does not resolve imports" "1" "$rc"
+  check "vibe check (no flag) does resolve them" "" "$clean_stdout"
+else
+  echo "info: compiler did not report an unresolved import in single-file mode (seed build); skipping --single-file assertion"
+fi
+sf_clean="$("$VIBE" check --single-file "$proj/lib.vibe" 2>/dev/null || true)"
+check "vibe check --single-file is silent on a clean file" "" "$sf_clean"
+
+# The #1129 soft passes (unused import / unbound non-Unit return) are WARNINGS:
+# advisory, documented as never affecting the exit code. They come back in the
+# same report as the errors, so the two modes have to agree on splitting them
+# out -- otherwise `--single-file` calls a file broken that the import-resolving
+# lane calls clean, which is the very disagreement #1567 removes.
+printf 'import ./lib.vibe { add }\n\nexport let main = () -> Int { 42 }\n' > "$proj/warnonly.vibe"
+warn_stdout="$("$VIBE" check --single-file "$proj/warnonly.vibe" 2>/dev/null || true)"
+warn_stderr="$("$VIBE" check --single-file "$proj/warnonly.vibe" 2>&1 >/dev/null || true)"
+"$VIBE" check --single-file "$proj/warnonly.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+if echo "$warn_stderr" | grep -q 'warning: '; then
+  check "vibe check --single-file exits 0 on warnings alone" "0" "$rc"
+  check "vibe check --single-file keeps warnings off stdout" "" "$warn_stdout"
+  check "vibe check --single-file never labels a warning an error" \
+    "0" "$(echo "$warn_stdout" | grep -c '^error: ')"
+  "$VIBE" check "$proj/warnonly.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe check (import lane) agrees the same file is clean" "0" "$rc"
+  "$VIBE" check --single-file --json "$proj/warnonly.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe check --json exits 0 on warnings alone" "0" "$rc"
+else
+  echo "info: compiler did not emit an unused-import warning (seed build); skipping warning-split assertion"
+fi
+
+# --json rides the compiler's own structured emitter, so it is only available
+# in single-file mode; without the flag the launcher must say so instead of
+# emitting something JSON-shaped but rangeless.
+json_out="$("$VIBE" check --single-file --json "$proj/bad.vibex" 2>/dev/null || true)"
+check "vibe check --single-file --json emits a JSON array" \
+  "yes" "$(echo "$json_out" | grep -q '^\[{' && echo yes || echo no)"
+json_clean="$("$VIBE" check --single-file --json "$proj/lib.vibe" 2>/dev/null || true)"
+check "vibe check --json emits [] for a clean file" "[]" "$json_clean"
+"$VIBE" check --single-file --json "$proj/lib.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe check --json exits 0 for a clean file" "0" "$rc"
+"$VIBE" check --json "$proj/lib.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe check --json without --single-file is refused" "1" "$rc"
+
 # test: passing file exits 0, failing file exits non-zero, aggregate fails
 "$VIBE" test "$proj/pass_test.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe test pass exit" "0" "$rc"

@@ -209,13 +209,15 @@ else
   printf '%s\n' "$out_deep" >&2
   fail=$((fail + 1))
 fi
-deep_check_err="$WORK/deepexpr_check.stderr"
-"$VIBE" check "$deepexpr" >/dev/null 2>"$deep_check_err" && rc_deep_check=0 || rc_deep_check=$?
-if [ "$rc_deep_check" -ne 0 ] && grep -qi 'too deeply nested' "$deep_check_err" 2>/dev/null; then
-  echo "ok: vibe check on the same file also reports the crash, not just 'check failed'"; pass=$((pass + 1))
+# #1567 slice 2: `vibe check` reports on STDOUT (stderr is for warnings and
+# launcher-level failures), so read the crash report from there.
+deep_check_out="$WORK/deepexpr_check.stdout"
+"$VIBE" check "$deepexpr" >"$deep_check_out" 2>/dev/null && rc_deep_check=0 || rc_deep_check=$?
+if [ "$rc_deep_check" -ne 0 ] && grep -qi 'too deeply nested' "$deep_check_out" 2>/dev/null; then
+  echo "ok: vibe check on the same file also reports the crash, not just failing"; pass=$((pass + 1))
 else
-  echo "FAIL: expected 'vibe check' to fail with a 'too deeply nested' message (rc=$rc_deep_check):" >&2
-  cat "$deep_check_err" >&2 2>/dev/null
+  echo "FAIL: expected 'vibe check' to fail with a 'too deeply nested' message on stdout (rc=$rc_deep_check):" >&2
+  cat "$deep_check_out" >&2 2>/dev/null
   fail=$((fail + 1))
 fi
 

@@ -28,7 +28,7 @@ vibe build --release app.vibe  # standalone .wasm
 
 ### CLI は IDE 相当のクエリ面 (方針)
 
-`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
+`vibe check` (`--single-file` 込み) / `vibe symbols` / `vibe type-at` /
 `vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
 得るのと同じ意味解析を **CLI から直接**取り出すためのもの。想定する第一の
 読み手は**人間ではなく LLM** なので、行指向 (1件1行) で grep でき、空出力が
@@ -1394,7 +1394,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 ただし **`vibe check` は #1511(b)/#1536(c) 以降、型検査の後に codegen と同じ
 効き方の適格性判定 (ADR-0076 の effect-lowering prelude) を走らせる**ため、
 `vibe check` / `vibe build` / `vibe test` / doctest のどれでも同じエラーが出る
-(`vibe diagnostics` は単一ファイル解析なので対象外):
+(`vibe check --single-file` は単一ファイル解析なので対象外):
 
 ```
 line 5:12-16: handle of effect 'Ask' cannot be compiled here. Every perform

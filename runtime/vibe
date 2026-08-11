@@ -41,7 +41,14 @@
 #                                         docs/compiler-parallelism.md)
 #   vibe serve   <handler.vibe> [--port N] compile + compose with the wasi-http
 #                                         P3 adapter + `wasmtime serve` (#537)
-#   vibe check   <file.vibe>              parse + typecheck (no output kept)
+#   vibe check [--single-file] [--json] <file.vibe>
+#                                         parse + typecheck. Diagnostics go to
+#                                         stdout, one per line; clean = EMPTY
+#                                         output + exit 0, anything reported =
+#                                         exit 1. Imports are resolved from the
+#                                         FS unless --single-file (buffer scope,
+#                                         what an editor with unsaved text
+#                                         needs). --json needs --single-file.
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
 #   vibe doc-at  <file.vibe> <line> <col> print the `///` doc comment at a position (#854)
 #   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
@@ -50,7 +57,10 @@
 #                                         captures -- the ones codegen boxes into
 #                                         a heap ref cell instead of a wasm local
 #                                         (NAME START END per line; empty = none)
-#   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
+#   vibe diagnostics <file.vibe>          DEPRECATED (#1567): use
+#                                         `vibe check --single-file`. Kept
+#                                         unchanged (raw lines, always exit 0)
+#                                         for the editors already on it.
 #   vibe grep --pattern '<pat>' [paths]   AST pattern search (#1572). Metavars
 #                                         are `$(name:kind)`, kind = exp / id /
 #                                         const / arg / args / pat / type.
@@ -329,6 +339,59 @@ compile_to() {
   fi
   rm -f "$out.diag" "$rerr"
   return 1
+}
+
+# #1567: print a diagnostics report, one diagnostic per line, on STDOUT.
+#
+# Both `vibe check` modes funnel through here so the two answer the same
+# question in the same shape -- which is the whole point of the unification:
+# a caller must not have to know which lane produced the report to read it.
+#
+# `error: ` marks a diagnostic START. A single diagnostic can span several
+# LINES (checker_effects.vibe appends a `hint: ...` continuation to an effect
+# row mismatch), so continuations are indented UNDER the diagnostic they belong
+# to rather than prefixed -- otherwise one diagnostic would count as two and
+# `grep -c '^error: '` would stop being an exact diagnostic count (#1625 review,
+# Codex P2). `hint: ` is the only continuation the compiler emits today;
+# leading whitespace is accepted too so a future indented continuation does not
+# silently become a phantom error.
+#
+# awk's `print` always terminates the last line, which also repairs a report
+# whose final line has no trailing newline (the compiler writes the sidecar
+# without one) -- otherwise it ran into whatever the shell printed next.
+emit_check_diagnostics() { # <report-file>
+  awk '/^(hint: |[[:space:]])/ { print "  " $0; next } { print "error: " $0 }' "$1"
+}
+
+# The single-file lane's report can also contain the #1129 soft passes' output
+# (unused imports / unbound non-Unit returns). Those are WARNINGS: advisory,
+# and explicitly documented as never affecting the exit code. They arrive in
+# the same report as the errors, so they have to be split back out here --
+# otherwise `--single-file` would label a warning `error: ` and exit 1 on a
+# file the import-resolving lane calls clean, which is the exact two-lanes-
+# disagree defect #1567 exists to remove.
+#
+# A warning is either bare (`warning: ...`, how the import lane spells it) or
+# located (`line N:C: warning: ...` / `line N:C-N:C: warning: ...`, how the
+# single-file lane spells it). Anchoring on both spellings keeps a message that
+# merely CONTAINS the word from being misclassified. Continuation lines inherit
+# the classification of the diagnostic they hang off.
+#
+# Two passes rather than one awk writing to /dev/stderr: this launcher ships to
+# macOS as well, and not every awk there treats /dev/stderr as a writable file.
+check_warning_re='^(line [0-9]+:[0-9]+(-[0-9]+:[0-9]+)?: )?warning: '
+emit_check_report() { # <report-file> -> exit 1 if it holds at least one ERROR
+  awk -v wre="$check_warning_re" '
+    $0 ~ wre                     { w = 1; print; next }
+    /^(hint: |[[:space:]])/      { if (w) print; next }
+                                 { w = 0 }
+  ' "$1" >&2
+  awk -v wre="$check_warning_re" '
+    $0 ~ wre                     { w = 1; next }
+    /^(hint: |[[:space:]])/      { if (w) next; print "  " $0; next }
+                                 { w = 0; err = 1; print "error: " $0 }
+    END                          { exit(err ? 1 : 0) }
+  ' "$1"
 }
 
 # #906 Phase 2 (real-build wiring): best-effort pre-warm of the persistent
@@ -877,19 +940,91 @@ case "$cmd" in
       rm -f "$dout" "$dout.diag"
       exit "$rc"
     fi
-    src=""; jobs=1
+    src=""; jobs=1; chk_single=0; chk_json=0
+    chk_usage="usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>"
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --jobs) [ "$#" -ge 2 ] || die "--jobs requires a value"; jobs="$2"; shift 2 ;;
-        *) [ -z "$src" ] || die "usage: vibe check [--jobs N] <file.vibe>"; src="$1"; shift ;;
+        --single-file) chk_single=1; shift ;;
+        --json) chk_json=1; shift ;;
+        *) [ -z "$src" ] || die "$chk_usage"; src="$1"; shift ;;
       esac
     done
-    [ -n "$src" ] || die "usage: vibe check [--jobs N] <file.vibe>"
+    [ -n "$src" ] || die "$chk_usage"
     case "$jobs" in
       ''|*[!0-9]*) die "--jobs must be a positive integer, got: $jobs" ;;
     esac
     [ "$jobs" -ge 1 ] || die "--jobs must be a positive integer, got: $jobs"
     [ -f "$src" ] || die "not found: $src"
+    # #1567 slice 2: `--single-file` analyses the buffer ALONE (no FS import
+    # resolution) -- the one thing `vibe diagnostics` could do that `check`
+    # could not, and the reason an editor needs it: an LSP sees unsaved text,
+    # so the imports of the on-disk file are not the imports of the buffer.
+    # Making it a FLAG rather than a second verb is what removes "which verb
+    # answers this?" from the caller: `vibe check` is the only verb, and the
+    # answer to "does this file compile?" no longer depends on knowing whether
+    # the file happens to have imports.
+    #
+    # Everything else about the contract is shared with the import-resolving
+    # mode below: diagnostics on stdout one per line, clean = empty output,
+    # exit 1 when there is anything to report. `--jobs` does not apply here --
+    # it pre-warms the import walk, and there is no import walk in this mode.
+    if [ "$chk_single" = "1" ]; then
+      cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+      out="$(mktemp -t vibe-check-sf-XXXXXX)"
+      trap 'rm -f "$out" "$out.diag"' EXIT
+      env -u VIBE_FS_COMPILE -u VIBE_CHECK_ONLY -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+          -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_SYMBOLS -u VIBE_NORMALIZE \
+          -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+        VIBE_DIAGNOSTICS=1 \
+        VIBE_DIAGNOSTICS_JSON="$([ "$chk_json" = "1" ] && echo 1 || echo "")" \
+        VIBE_IMPORT_ABI=raw \
+        "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+      # #946(4): a host-level crash (native stack overflow on a pathologically
+      # deep expression) writes the sidecar instead of `$out`. Reported as a
+      # diagnostic, never as clean -- the same rule the diagnostics verb uses.
+      if [ -s "$out.diag" ]; then
+        if [ "$chk_json" = "1" ]; then
+          diag_msg="$(sed 's/\\/\\\\/g; s/"/\\"/g' "$out.diag" | tr '\n' ' ')"
+          printf '[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"severity":1,"source":"vibe","message":"%s"}]\n' "$diag_msg"
+        else
+          emit_check_diagnostics "$out.diag"
+        fi
+        rm -f "$out" "$out.diag"
+        exit 1
+      fi
+      if [ -s "$out" ]; then
+        if [ "$chk_json" = "1" ]; then
+          cat "$out"; [ -n "$(tail -c 1 "$out")" ] && echo
+          # `severity` is the JSON spelling of the same error/warning split
+          # emit_check_report does in text mode: 1 = Error, 2 = Warning. A
+          # report of nothing but warnings is clean, exactly as it is there
+          # (and `[]`, a clean file, has no severity at all).
+          chk_rc=0
+          grep -q '"severity":1' "$out" && chk_rc=1
+          rm -f "$out" "$out.diag"
+          exit "$chk_rc"
+        fi
+        chk_rc=0
+        emit_check_report "$out" || chk_rc=1
+        rm -f "$out" "$out.diag"
+        exit "$chk_rc"
+      fi
+      # Clean. Text mode says so with empty output; JSON mode must still be
+      # parseable JSON, so it gets the empty array.
+      [ "$chk_json" = "1" ] && echo "[]"
+      rm -f "$out" "$out.diag"
+      exit 0
+    fi
+    if [ "$chk_json" = "1" ]; then
+      # The import-resolving lane reports diagnostics as message TEXT (the
+      # checker throws a string that check_linked_file joins), with no
+      # per-diagnostic range attached -- so there is nothing to build an LSP
+      # Diagnostic's `range` out of without re-parsing the message in the
+      # launcher and guessing. `--single-file` goes through the compiler's own
+      # structured emitter (lsp_diagnostics_json_string) and has real ranges.
+      die "check --json needs --single-file today: the import-resolving lane has no per-diagnostic ranges to emit (#1567)"
+    fi
     # #906 Phase 2 (real-check wiring): same best-effort pre-warm `build`
     # already gets (maybe_warm_frontend_cache above) -- `check` walks the
     # exact same import graph via the exact same persistent type-env cache,
@@ -930,25 +1065,38 @@ case "$cmd" in
       if [ -s "$out" ]; then
         # #deprecated marker warnings (#1262 / ADR-0101): the adapter writes
         # `warning:` lines before the final `ok`. Non-fatal — surface on
-        # stderr, keep exit 0.
+        # stderr, keep exit 0 AND keep stdout empty, so "clean" stays
+        # detectable as empty stdout even for a file that warns.
         grep '^warning: ' "$out" >&2 || true
-        echo "ok: $src"
         rm -f "$out" "$out.diag"
       else
-        if [ -s "$out.diag" ]; then
-          echo "error: $(cat "$out.diag")" >&2
-        fi
+        # #1567: the sidecar can hold SEVERAL diagnostics, one per line
+        # (check_linked_file reports every top-level parse error the recovering
+        # parser collected, not just the first).
+        [ -s "$out.diag" ] && emit_check_diagnostics "$out.diag"
         rm -f "$out" "$out.diag"
-        die "check failed: $src"
+        exit 1
       fi
     else
       out="$(mktemp -t vibe-check-XXXXXX.wasm)"
-      trap 'rm -f "$out"' EXIT
+      cerr="$(mktemp -t vibe-check-err-XXXXXX)"
+      trap 'rm -f "$out" "$cerr"' EXIT
       # A successful compile implies a clean parse + typecheck; surface failures.
-      if compile_to "$src" "$out" main; then
-        echo "ok: $src"
+      #
+      # compile_to reports to STDERR -- correct for the shared BUILD path, where
+      # the wasm is the output and the diagnostic is the aside. This lane inverts
+      # that: the report IS the output, and #1567 puts it on stdout. Without the
+      # capture below, `vibe check` against a compiler old enough to take this
+      # branch would exit 1 with empty stdout, which a stdout-only consumer reads
+      # as "failed, no reason given" -- worse than the contract it replaced.
+      # compile_to already prefixes its line `error: `, so re-emit it verbatim
+      # rather than through emit_check_diagnostics (which would double-prefix).
+      if compile_to "$src" "$out" main 2>"$cerr"; then
+        rm -f "$out" "$cerr"
       else
-        die "check failed: $src"
+        [ -s "$cerr" ] && cat "$cerr"
+        rm -f "$out" "$cerr"
+        exit 1
       fi
     fi
     ;;
@@ -1093,6 +1241,19 @@ case "$cmd" in
     ;;
   diagnostics)
     # vibe diagnostics [--json] <file.vibe>
+    #
+    # DEPRECATED (#1567 slice 2): `vibe check --single-file [--json]` is the
+    # supported spelling. This verb existed only because `check` could not do
+    # buffer-scope analysis; now that it can, having two verbs answer "does
+    # this file compile?" is the defect, not a feature.
+    #
+    # Deliberately NOT rewritten as an alias: this one is frozen for 1.0
+    # (docs/spec/1.0-freeze.md -- raw diagnostic lines, always exit 0), and
+    # editors are on it today. `check --single-file` carries the unified
+    # contract instead (`error: `-prefixed lines, exit 1 when non-clean), so
+    # aliasing would silently change the exit code under existing callers.
+    # Both run the same compiler lane, so they never disagree on WHAT is wrong.
+    #
     # Print ALL diagnostics, one per line: every top-level syntax error (the
     # recovering parser resynchronizes past each failed statement) or, when the
     # file parses clean, the single located type error. Empty output = clean.

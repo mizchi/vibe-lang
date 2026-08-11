@@ -34,7 +34,7 @@ vibe bench file.vibe         # bench {} ブロックを計測 (ns/op, ops/sec)
 # エディタ級のクエリ (LSP と同じ AST 解析)
 vibe symbols file.vibe               # 宣言アウトライン
 vibe type-at file.vibe <line> <col>  # カーソル位置の型
-vibe diagnostics file.vibe           # 全診断
+vibe check file.vibe                 # 全診断 (空出力 = clean)
 vibe lsp                             # LSP サーバ (stdio)
 
 # パッケージの内容 hash (require pin に使う)

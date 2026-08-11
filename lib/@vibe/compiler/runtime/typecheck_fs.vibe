@@ -3009,11 +3009,94 @@ fn locate_unused_import_msg(source: String, msg: String) -> String {
     }
   }
 }
+/// Does `msg` already carry a `line N:C` location?
+///
+/// Two shapes reach the final locate pass already located:
+///   `line 3:3-4: <msg>`                 -- located, not yet path-prefixed
+///   `/path/to/mod.vibe: line 3:3-4: ..` -- located AND path-prefixed by the
+///                                          per-module pass (see the
+///                                          `job.path + ": "` concat below)
+///
+/// The second shape used to slip past the guard, which only tested for the
+/// location at index 0. A path-prefixed message then went through the
+/// first-occurrence heuristic AGAIN -- against the ENTRY module's source, which
+/// is not necessarily the source the error came from -- and got a SECOND,
+/// earlier location glued to its front:
+///
+///   error: line 1:12: /tmp/x.vibe: line 3:3-4: function arity mismatch for g
+///          ^^^^^^^^^ g's DECLARATION      ^^^^^^^^ the actual call site
+///
+/// Both locations are real positions of `g`, so nothing looks malformed; the
+/// first one is simply the wrong one, and it is the one a reader (or an LSP
+/// parsing `^line N:C`) takes. Reporting a confident wrong location is worse
+/// than reporting none, so recognize the path-prefixed shape too.
+///
+/// Recognized by SHAPE, at any position: `line <digits>:<digits>` sitting
+/// either at the start of the message or right after a `: ` delimiter. An
+/// earlier revision anchored on the FIRST `: ` on the theory that a path cannot
+/// contain one -- but `: ` is legal in a POSIX path (`/tmp/foo: bar/x.vibe`),
+/// and there the anchor lands inside the path, the guard returns false, and the
+/// heuristic prepends its wrong location again: the exact bug this is here to
+/// stop (#1628 review, Codex P2). Scanning every candidate makes the answer
+/// depend on the message's shape rather than on assumptions about path
+/// contents.
+///
+/// Erring toward "already located" is the safe direction. A false positive
+/// costs a location the heuristic might have guessed; a false negative
+/// reinstates a CONFIDENTLY WRONG one. Missing information beats misinformation
+/// (docs/issue-triage.md ranks silent-wrong above every other failure).
+fn diag_already_located(msg: String) -> Bool {
+  let lead = "line "
+  let lead_len = String::length(lead)
+  let total = String::length(msg)
+  let mut cursor = 0
+  let mut found = false
+  while !found && cursor < total {
+    let rel = String::index_of(String::substring(msg, cursor, total), lead)
+    if rel < 0 {
+      cursor = total
+    } else {
+      let at = cursor + rel
+      // Delimited: message start, or the `: ` a path prefix ends with. Without
+      // this, prose containing the word "line " would match on shape alone.
+      let delimited = if at == 0 {
+        true
+      } else {
+        at >= 2 && String::char_code_at(msg, at - 2) == ':' && String::char_code_at(msg, at - 1) == ' '
+      }
+      if delimited && location_shape_at(msg, at + lead_len) {
+        found = true
+      } else {
+        cursor = at + lead_len
+      }
+    }
+  }
+  found
+}
+
+/// Does `msg` read as `<digits>:<digits>` starting at `start`? The `line `
+/// keyword alone is too weak a signal (it occurs in ordinary prose); the
+/// digit-colon-digit shape after it is what makes a location a location.
+fn location_shape_at(msg: String, start: Int) -> Bool {
+  let total = String::length(msg)
+  let mut i = start
+  while i < total && parse_offset_digits(msg, i, i + 1) >= 0 {
+    i = i + 1
+  }
+  if i == start || i >= total {
+    false
+  } else if String::char_code_at(msg, i) != ':' {
+    false
+  } else {
+    i + 1 < total && parse_offset_digits(msg, i + 1, i + 2) >= 0
+  }
+}
+
 /// First-occurrence heuristic locator (the original behavior). Kept separate so
 /// the offset-marker path can fall through to it on the marker-stripped message.
 fn locate_type_error_heuristic(source: String, msg: String) -> String {
   // Already located (e.g. a parse error that bubbled here)? leave it.
-  if String::index_of(msg, "line ") == 0 {
+  if diag_already_located(msg) {
     msg
   } else {
     let with_name = locate_by_marker(source, msg, "unknown name: ")

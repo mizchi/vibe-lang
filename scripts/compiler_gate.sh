@@ -10214,7 +10214,7 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
-echo "[compiler-gate] 98/99 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+echo "[compiler-gate] 98/100 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through
@@ -10303,7 +10303,7 @@ echo "[compiler-gate] vibe grep typed filters ok"
 #     found by review rather than by a gate (the second twice: expression
 #     binders in #1622, PATTERN binders after that), which is what this step is
 #     for. Each case below fails DIFFERENTLY if the guard regresses.
-echo "[compiler-gate] 99/99 the inspect rewrite neither captures nor hijacks (#1571)"
+echo "[compiler-gate] 99/100 the inspect rewrite neither captures nor hijacks (#1571)"
 inspdir="_build/_gate_inspect_guard"
 rm -rf "$inspdir"; mkdir -p "$inspdir"
 
@@ -10396,5 +10396,68 @@ case "$insp_pat_out" in
 esac
 rm -rf "$inspdir"
 echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
+
+# 100. #1567 slice 1: `vibe check` and `vibe diagnostics` must agree on the
+#      COUNT of top-level parse errors, not just on their wording. The
+#      recovering parser has already collected every one by the time
+#      check_linked_file looks, so reporting `parse_diags[0]` and dropping the
+#      rest made `check` a strictly worse answer to the same question -- three
+#      broken statements cost three edit-and-rerun cycles. This pins the two
+#      surfaces together so they cannot drift apart again.
+echo "[compiler-gate] 100/100 check and diagnostics report the SAME parse errors (#1567)"
+chkdir="_build/_gate_check_diag_parity"
+rm -rf "$chkdir"; mkdir -p "$chkdir"
+# Three top-level statements, two independently broken, one good between them.
+# The good statement in the middle is what forces real resynchronization.
+printf 'export let a = = 1\nexport let ok = 1\nexport let b = = 2\n' > "$chkdir/multi.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$chkdir/multi.vibe" "$chkdir/check.out" main >/dev/null 2>&1 || true
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$chkdir/multi.vibe" "$chkdir/diag.out" main >/dev/null 2>&1 || true
+# check reports through the .diag sidecar, diagnostics through the output file.
+# That is a COMPILER-side transport difference; the launcher normalizes both to
+# stdout (#1567 slice 2, pinned in scripts/test_vibe_cli_install.sh, which is
+# the layer that owns the user-facing contract). This step stays at the
+# compiler layer and only pins the counts.
+chk_n="$(grep -c '^line ' "$chkdir/check.out.diag" 2>/dev/null || true)"
+diag_n="$(grep -c '^line ' "$chkdir/diag.out" 2>/dev/null || true)"
+[ -n "$chk_n" ] || chk_n=0
+[ -n "$diag_n" ] || diag_n=0
+if [ "$chk_n" != "2" ]; then
+  echo "[compiler-gate] FAIL: vibe check reported $chk_n parse errors, want 2 -- check_linked_file is dropping diagnostics the recovering parser already collected (#1567)" >&2
+  cat "$chkdir/check.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if [ "$diag_n" != "2" ]; then
+  echo "[compiler-gate] FAIL: vibe diagnostics reported $diag_n parse errors, want 2 (#1567)" >&2
+  cat "$chkdir/diag.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+# Same errors, not merely the same count: both must name line 1 and line 3.
+for want in 'line 1:' 'line 3:'; do
+  if ! grep -qF "$want" "$chkdir/check.out.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe check's report is missing '$want' (#1567)" >&2
+    cat "$chkdir/check.out.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! grep -qF "$want" "$chkdir/diag.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe diagnostics' report is missing '$want' (#1567)" >&2
+    cat "$chkdir/diag.out" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# A clean file must stay clean on both, with check still exiting 0.
+printf 'export let a = 1\n' > "$chkdir/clean.vibe"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$chkdir/clean.vibe" "$chkdir/clean.out" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: vibe check rejected a clean file (#1567)" >&2
+  cat "$chkdir/clean.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$chkdir"
+echo "[compiler-gate] check/diagnostics parse-error parity ok (#1567)"
 
 echo "[compiler-gate] ok"
