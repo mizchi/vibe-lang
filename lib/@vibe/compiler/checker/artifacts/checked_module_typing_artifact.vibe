@@ -1,0 +1,520 @@
+//# Bounded shadow-only checked module typing artifact (#1550)
+//
+// This v1 aggregate is built only from an already successful `CheckedProgram`
+// and its matching checked exported-interface artifact. It is observation-only:
+// no cache, reuse, planner, trace, CLI, filesystem, or module-worker path reads
+// or publishes it. Current producers describe exactly one semantic module, and
+// therefore one singleton SCC.
+//
+// Dependency interface assumptions are ordered typing inputs. They deliberately
+// preserve repeated import occurrences. The separately recorded implementation
+// closure is canonical freshness metadata only; v1 records no dependency
+// implementation unless the caller says its implementation was embedded or
+// referenced. Neither dimension is a substitute for the other.
+//
+// The implementation identity is explicitly tagged provisional token-stream or
+// validated metadata. It is never called typed IR. Structured non-empty typing
+// diagnostics and lossless checked bodies are unavailable in v1 and fail closed
+// through fixed closed markers in the codec.
+
+import @vibe/cache {
+  compact_string_fingerprint
+}
+
+import @vibe/compiler/checker {
+  CheckedProgram
+}
+
+import @vibe/compiler/core {
+  str_lt
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checked_exported_interface_artifact.vibe {
+  CheckedExportedInterfaceArtifact,
+  checked_exported_interface_artifact_from_checked_program,
+  decode_checked_exported_interface_artifact_v1,
+  encode_checked_exported_interface_artifact_v1
+}
+
+/// Opaque aggregate for shadow comparison only. Decoding canonical bytes does
+/// not attest that a checker ran; only the successful-result builder consumes
+/// `CheckedProgram` authority.
+export struct CheckedModuleTypingArtifact {
+  module_locator: String;
+  implementation_kind: String;
+  implementation_identity: String;
+  dependency_interface_assumptions: Array[(String, String)];
+  recorded_implementation_closure: Array[(String, String, String)];
+  exported_interface_bytes: String
+}
+
+fn module_unit_kind() -> String {
+  "singleton_semantic_module"
+}
+
+fn module_diagnostic_scope_order() -> String {
+  "typing_errors_only:path,start,end,code,message"
+}
+
+fn module_empty_diagnostic_identity() -> String {
+  "vibe-checked-module-typing-artifact:empty-typing-errors:v1"
+}
+
+fn module_checked_body_marker() -> String {
+  "ineligible:lossless_checked_body_unavailable_v1"
+}
+
+fn module_implementation_kind_valid(kind: String) -> Bool {
+  kind == "provisional_token_stream_v1" || kind == "validated_metadata_v1"
+}
+
+fn module_metadata_text_valid(text: String) -> Bool {
+  let n = String::length(text)
+  let mut i = 0
+  let mut valid = n > 0
+  while i < n && valid {
+    let c = String::char_code_at(text, i)
+    if c < 32 || c == 127 {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+fn module_decimal(text: String, start: Int, end: Int, bound: Int) -> Option[Int] {
+  if start >= end || bound < 0 {
+    None
+  } else {
+    let mut i = start
+    let mut value = 0
+    let mut valid = true
+    if end - start > 1 && String::char_code_at(text, start) == 48 {
+      valid = false
+    } else {
+      ()
+    }
+    while i < end && valid {
+      let digit = String::char_code_at(text, i) - 48
+      if digit < 0 || digit > 9 || value > (bound - digit) / 10 {
+        valid = false
+      } else {
+        value = value * 10 + digit
+        i = i + 1
+      }
+    }
+    if valid {
+      Some(value)
+    } else {
+      None
+    }
+  }
+}
+
+fn module_compact_fingerprint_valid(text: String) -> Bool {
+  let n = String::length(text)
+  let mut first = 0
+  while first < n && String::char_code_at(text, first) != 58 {
+    first = first + 1
+  }
+  let mut second = first + 1
+  while second < n && String::char_code_at(text, second) != 58 {
+    second = second + 1
+  }
+  if first == 0 || first >= n || second == first + 1 || second >= n || second + 1 >= n {
+    false
+  } else {
+    match module_decimal(text, 0, first, 2305843009213693951) {
+      Some(_) => match module_decimal(text, first + 1, second, 2147483647) {
+        Some(_) => match module_decimal(text, second + 1, n, 2147483647) {
+          Some(_) => true,
+          None => false
+        },
+        None => false
+      },
+      None => false
+    }
+  }
+}
+
+fn module_dependencies_copy(rows: Array[(String, String)]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    Array::push(out, Array::get(rows, i))
+    i = i + 1
+  }
+  out
+}
+
+fn module_closure_sorted(rows: Array[(String, String, String)]) -> Array[(String, String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let row = Array::get(rows, i)
+    let mut at = Array::length(out)
+    let mut j = 0
+    while j < Array::length(out) && at == Array::length(out) {
+      let (other_locator, _, _) = Array::get(out, j)
+      if str_lt(row.0, other_locator) {
+        at = j
+      } else {
+        j = j + 1
+      }
+    }
+    Array::push(out, row)
+    let mut k = Array::length(out) - 1
+    while k > at {
+      Array::set(out, k, Array::get(out, k - 1))
+      k = k - 1
+    }
+    Array::set(out, at, row)
+    i = i + 1
+  }
+  out
+}
+
+fn module_inputs_valid(module_locator: String, implementation_kind: String, implementation_identity: String, dependencies: Array[(String, String)], closure: Array[(String, String, String)]) -> Bool {
+  if !module_metadata_text_valid(module_locator) || !module_implementation_kind_valid(implementation_kind) || !module_metadata_text_valid(implementation_identity) {
+    false
+  } else {
+    let mut valid = true
+    let mut i = 0
+    while i < Array::length(dependencies) && valid {
+      let (locator, fingerprint) = Array::get(dependencies, i)
+      if !module_metadata_text_valid(locator) || !module_compact_fingerprint_valid(fingerprint) {
+        valid = false
+      } else {
+        i = i + 1
+      }
+    }
+    let mut owner_count = 0
+    i = 0
+    while i < Array::length(closure) && valid {
+      let (locator, kind, identity) = Array::get(closure, i)
+      if !module_metadata_text_valid(locator) || !module_implementation_kind_valid(kind) || !module_metadata_text_valid(identity) {
+        valid = false
+      } else {
+        if locator == module_locator {
+          owner_count = owner_count + 1
+          if kind != implementation_kind || identity != implementation_identity {
+            valid = false
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        let mut j = 0
+        while j < i && valid {
+          let (previous, _, _) = Array::get(closure, j)
+          if previous == locator {
+            valid = false
+          } else {
+            j = j + 1
+          }
+        }
+        i = i + 1
+      }
+    }
+    valid && owner_count == 1
+  }
+}
+
+/// Build only when successful checker authority and the caller-provided #1548
+/// artifact agree byte-for-byte. Missing nested export provenance, malformed
+/// metadata, duplicate closure locators, or a missing/mismatched owner returns
+/// None; callers therefore have no artifact bytes to publish.
+export fn checked_module_typing_artifact_from_checked_program(checked: CheckedProgram, module_locator: String, implementation_kind: String, implementation_identity: String, dependency_interface_assumptions: Array[(String, String)], recorded_implementation_closure: Array[(String, String, String)], exported_interface: CheckedExportedInterfaceArtifact) -> Option[CheckedModuleTypingArtifact] {
+  if !module_inputs_valid(module_locator, implementation_kind, implementation_identity, dependency_interface_assumptions, recorded_implementation_closure) {
+    None
+  } else {
+    match checked_exported_interface_artifact_from_checked_program(checked) {
+      Some(derived_interface) => {
+        let derived_bytes = encode_checked_exported_interface_artifact_v1(derived_interface)
+        let supplied_bytes = encode_checked_exported_interface_artifact_v1(exported_interface)
+        if derived_bytes != supplied_bytes {
+          None
+        } else {
+          Some(CheckedModuleTypingArtifact::{
+            module_locator: module_locator,
+            implementation_kind: implementation_kind,
+            implementation_identity: implementation_identity,
+            dependency_interface_assumptions: module_dependencies_copy(dependency_interface_assumptions),
+            recorded_implementation_closure: module_closure_sorted(recorded_implementation_closure),
+            exported_interface_bytes: supplied_bytes
+          })
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn module_push_piece(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+fn module_encode_dependencies(rows: Array[(String, String)]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, __to_string(Array::length(rows)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (locator, fingerprint) = Array::get(rows, i)
+    module_push_piece(out, locator)
+    module_push_piece(out, fingerprint)
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn module_encode_closure(rows: Array[(String, String, String)]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, __to_string(Array::length(rows)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (locator, kind, identity) = Array::get(rows, i)
+    module_push_piece(out, locator)
+    module_push_piece(out, kind)
+    module_push_piece(out, identity)
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+/// Strict, versioned and length-delimited shadow transport. Its fingerprint is
+/// a comparison token only, never a production lookup key.
+export fn encode_checked_module_typing_artifact_v1(artifact: CheckedModuleTypingArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-module-typing-artifact:v1\n12[")
+  module_push_piece(out, module_unit_kind())
+  module_push_piece(out, artifact.module_locator)
+  module_push_piece(out, "1")
+  module_push_piece(out, artifact.module_locator)
+  module_push_piece(out, artifact.implementation_kind)
+  module_push_piece(out, artifact.implementation_identity)
+  module_push_piece(out, module_encode_dependencies(artifact.dependency_interface_assumptions))
+  module_push_piece(out, module_encode_closure(artifact.recorded_implementation_closure))
+  module_push_piece(out, artifact.exported_interface_bytes)
+  module_push_piece(out, module_diagnostic_scope_order())
+  module_push_piece(out, module_empty_diagnostic_identity())
+  module_push_piece(out, module_checked_body_marker())
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+fn module_piece_parse(text: String, pos: Int) -> Option[(String, Int)] {
+  let n = String::length(text)
+  let mut at = pos
+  while at < n && String::char_code_at(text, at) != 58 {
+    at = at + 1
+  }
+  if at == pos || at >= n {
+    None
+  } else {
+    match module_decimal(text, pos, at, n - at - 1) {
+      Some(size) => {
+        let start = at + 1
+        let end = start + size
+        if end < start || end > n {
+          None
+        } else {
+          Some((text[start: end], end))
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn module_decode_dependencies(text: String) -> Option[Array[(String, String)]] {
+  let n = String::length(text)
+  let mut open_at = 0
+  while open_at < n && String::char_code_at(text, open_at) != 91 {
+    open_at = open_at + 1
+  }
+  if open_at == 0 || open_at >= n {
+    None
+  } else {
+    match module_decimal(text, 0, open_at, n - open_at - 1) {
+      Some(count) => {
+        let rows = array_empty()
+        let mut cursor = open_at + 1
+        let mut i = 0
+        let mut valid = true
+        while i < count && valid {
+          match module_piece_parse(text, cursor) {
+            Some((locator, after_locator)) => match module_piece_parse(text, after_locator) {
+              Some((fingerprint, next)) => {
+                Array::push(rows, (locator, fingerprint))
+                cursor = next
+              },
+              None => {
+                valid = false
+              }
+            },
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        if valid && cursor < n && String::char_code_at(text, cursor) == 93 && cursor + 1 == n && module_encode_dependencies(rows) == text {
+          Some(rows)
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn module_decode_closure(text: String) -> Option[Array[(String, String, String)]] {
+  let n = String::length(text)
+  let mut open_at = 0
+  while open_at < n && String::char_code_at(text, open_at) != 91 {
+    open_at = open_at + 1
+  }
+  if open_at == 0 || open_at >= n {
+    None
+  } else {
+    match module_decimal(text, 0, open_at, n - open_at - 1) {
+      Some(count) => {
+        let rows = array_empty()
+        let mut cursor = open_at + 1
+        let mut i = 0
+        let mut valid = true
+        while i < count && valid {
+          match module_piece_parse(text, cursor) {
+            Some((locator, after_locator)) => match module_piece_parse(text, after_locator) {
+              Some((kind, after_kind)) => match module_piece_parse(text, after_kind) {
+                Some((identity, next)) => {
+                  Array::push(rows, (locator, kind, identity))
+                  cursor = next
+                },
+                None => {
+                  valid = false
+                }
+              },
+              None => {
+                valid = false
+              }
+            },
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        if valid && cursor < n && String::char_code_at(text, cursor) == 93 && cursor + 1 == n && module_encode_closure(rows) == text {
+          Some(rows)
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn module_closure_is_canonical(rows: Array[(String, String, String)]) -> Bool {
+  let mut i = 1
+  let mut valid = true
+  while i < Array::length(rows) && valid {
+    let (previous, _, _) = Array::get(rows, i - 1)
+    let (current, _, _) = Array::get(rows, i)
+    if previous == current || str_lt(current, previous) {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+/// Decode only exact canonical v1 bytes. Alternate tags, malformed/noncanonical
+/// lengths or counts, hostile truncation, trailing bytes, noncanonical closure
+/// order, duplicate locators, malformed nested #1548 bytes, non-empty diagnostic
+/// states, and any checked-body substitute are rejected.
+export fn decode_checked_module_typing_artifact_v1(text: String) -> Option[CheckedModuleTypingArtifact] {
+  let prefix = "vibe-checked-module-typing-artifact:v1\n12["
+  let n = String::length(text)
+  if n <= String::length(prefix) || text[0: String::length(prefix)] != prefix {
+    None
+  } else {
+    let fields = array_empty()
+    let mut cursor = String::length(prefix)
+    let mut i = 0
+    let mut valid = true
+    while i < 12 && valid {
+      match module_piece_parse(text, cursor) {
+        Some((field, next)) => {
+          Array::push(fields, field)
+          cursor = next
+        },
+        None => {
+          valid = false
+        }
+      }
+      i = i + 1
+    }
+    if !valid || cursor >= n || String::char_code_at(text, cursor) != 93 || cursor + 1 != n {
+      None
+    } else if Array::get(fields, 0) != module_unit_kind() || Array::get(fields, 2) != "1" || Array::get(fields, 3) != Array::get(fields, 1) || Array::get(fields, 9) != module_diagnostic_scope_order() || Array::get(fields, 10) != module_empty_diagnostic_identity() || Array::get(fields, 11) != module_checked_body_marker() {
+      None
+    } else {
+      match module_decode_dependencies(Array::get(fields, 6)) {
+        Some(dependencies) => match module_decode_closure(Array::get(fields, 7)) {
+          Some(closure) => match decode_checked_exported_interface_artifact_v1(Array::get(fields, 8)) {
+            Some(exported_interface) => {
+              let nested_bytes = encode_checked_exported_interface_artifact_v1(exported_interface)
+              if nested_bytes != Array::get(fields, 8) || !module_closure_is_canonical(closure) || !module_inputs_valid(Array::get(fields, 1), Array::get(fields, 4), Array::get(fields, 5), dependencies, closure) {
+                None
+              } else {
+                let artifact = CheckedModuleTypingArtifact::{
+                  module_locator: Array::get(fields, 1),
+                  implementation_kind: Array::get(fields, 4),
+                  implementation_identity: Array::get(fields, 5),
+                  dependency_interface_assumptions: dependencies,
+                  recorded_implementation_closure: closure,
+                  exported_interface_bytes: nested_bytes
+                }
+                if encode_checked_module_typing_artifact_v1(artifact) == text {
+                  Some(artifact)
+                } else {
+                  None
+                }
+              }
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    }
+  }
+}
+
+/// Canonical complete aggregate bytes for snapshots only.
+export fn canonical_checked_module_typing_artifact_snapshot(artifact: CheckedModuleTypingArtifact) -> String {
+  encode_checked_module_typing_artifact_v1(artifact)
+}
+
+/// Compact shadow-comparison identity of the complete versioned encoding. It is
+/// deliberately disconnected from persistent cache lookup and reuse.
+export fn checked_module_typing_artifact_fingerprint_v1(artifact: CheckedModuleTypingArtifact) -> String {
+  compact_string_fingerprint(encode_checked_module_typing_artifact_v1(artifact))
+}
