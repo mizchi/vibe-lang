@@ -15,7 +15,19 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program, check_program_type_table, check_program_with_env, detect_unbound_nonunit_returns, detect_unused_imports
+  CheckedProgram,
+  check_program,
+  check_program_result,
+  check_program_type_table,
+  check_program_with_env_result,
+  detect_unbound_nonunit_returns,
+  detect_unused_imports
+}
+
+import @vibe/compiler/checker/artifacts {
+  checked_exported_interface_artifact_from_checked_program,
+  encode_checked_module_typing_artifact_v1,
+  shadow_unattested_checked_module_typing_artifact_from_checked_program
 }
 
 import @vibe/compiler/core {
@@ -3254,10 +3266,52 @@ export enum ModuleOutcome {
   // The final strings are trace-only interface, checked-value-env, and
   // complete persistent TypeEnv v4 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
-  // inputs, and are empty unless the invalidation trace is enabled.
-  Checked(String, String, TypeEnv, String, String, String);
+  // inputs, and are empty unless the invalidation trace is enabled. The final
+  // optional string is a canonical in-memory-only #1550 module artifact
+  // observation. ModuleOutcome is opaque at the package boundary, so only this
+  // real checker-success path can authorize a present observation.
+  Checked(String, String, TypeEnv, String, String, String, Option[String]);
   Diagnosed(String, Array[String])
 }
+
+fn checked_module_dependency_interface_assumptions(dep_envs: Array[(String, TypeEnv)]) -> Array[(String, String)] with Exception {
+  let assumptions = array_empty()
+  let mut i = 0
+  while i < Array::length(dep_envs) {
+    let (path, env) = Array::get(dep_envs, i)
+    // check_module receives dependency environments only after they have been
+    // restricted to their published export surfaces. Preserve their actual
+    // import order and fingerprint exactly that checker-visible interface.
+    Array::push(assumptions, (path, incremental_persistent_type_env_transport_identity(env)))
+    i = i + 1
+  }
+  assumptions
+}
+
+fn checked_module_typing_artifact_bytes(checked: CheckedProgram, job: ModuleJob) -> Option[String] with Exception {
+  let implementation_identity = incremental_implementation_identity(job.source)
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked, job.path, "provisional_token_stream_v1", implementation_identity, checked_module_dependency_interface_assumptions(job.dep_envs), [
+      (job.path, "provisional_token_stream_v1", implementation_identity)
+    ], exported_interface) {
+      Some(artifact) => Some(encode_checked_module_typing_artifact_v1(artifact)),
+      None => None
+    },
+    None => None
+  }
+}
+
+/// Observe only canonical bytes retained by an opaque successful ModuleOutcome.
+/// Diagnosed outcomes have no observation, and callers cannot construct either
+/// variant through the runtime package contract. The bytes are not persisted or
+/// consulted by planning, cache lookup, TypeEnv assembly, or reuse.
+export fn checked_module_typing_artifact_observation(outcome: ModuleOutcome) -> Option[String] {
+  match outcome {
+    Checked(_, _, _, _, _, _, observation) => observation,
+    Diagnosed(_, _) => None
+  }
+}
+
 /// Pure module check. No Fs: the dependency environments it needs are
 /// already values inside the job.
 export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
@@ -3287,10 +3341,14 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
     })
   } else {
     handle {
-      let full_checked_env = match import_env {
-        EnvEmpty => check_program(stmts),
-        _ => check_program_with_env(stmts, import_env)
+      // Retain the opaque-producing checker result from this exact production
+      // invocation. No caller-supplied CheckedProgram or diagnostic assertion
+      // participates in the #1550 observation.
+      let checked_program = match import_env {
+        EnvEmpty => check_program_result(stmts),
+        _ => check_program_with_env_result(stmts, import_env)
       }
+      let full_checked_env = checked_program.final_env
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
       // consumer of `Checked`'s env (env cache, persistent store, worker
@@ -3312,7 +3370,8 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
       } else {
         ""
       }
-      Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity)
+      let module_typing_artifact = checked_module_typing_artifact_bytes(checked_program, job)
+      Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with Exception {
       Throw(msg) => Diagnosed(job.path, [
         String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
@@ -3333,7 +3392,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     } else {
       throw(String::concat(job.path, ": type error"))
     },
-    Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity) => {
+    Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, _) => {
       // Serialize the TypeEnv once. Production-default TDRE4 publication binds
       // the exact same text as the conservative target; serializing it a second
       // time materially inflates fresh selfcompile heap without adding evidence.
@@ -3517,7 +3576,7 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   // so a worker killed mid-write leaves an obviously unfinished job dir
   // rather than a plausible-looking wrong answer.
   match outcome {
-    Checked(_, fingerprint, env, _, _, _) => {
+    Checked(_, fingerprint, env, _, _, _, _) => {
       Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
       // The module's own identity, as check_module computed it -- an
       // OUTPUT of this job, needed by the coordinator to build the NEXT
