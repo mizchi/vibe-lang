@@ -8,6 +8,14 @@ import @vibe/compiler/core {
   Type, builtin_registry_typed, type_to_string
 }
 
+import @vibe/compiler/codegen {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
 //# Misc
 
 test "lookup_builtin normalizes a legacy alias before registry lookup" {
@@ -40,16 +48,35 @@ test "#1539 stdin provider raw names remain checker-invisible" {
   }
 }
 
+test "#1539 bodyless chunks builtin is positively classified as a direct pull source" {
+  let stmts = parse_program(lex("fn run() -> Int with Stdin + Async { let stream = Stdin::read_via_stream(); let mut total = 0; for chunk in StdinStream::chunks(stream, 4) { total = total + String::length(chunk) }; total }"))
+  desugar_trait_dicts(stmts)
+  let printed = print_program(stmts)
+  assert(String::contains(printed, "__pull_next"))
+  assert(!String::contains(printed, "for chunk in StdinStream::chunks"))
+}
+
 test "#1539 public StdinStream surface is visible with exact effects" {
   let expected = [
     "() -> StdinStream with Stdin",
     "(StdinStream) -> Int with Async",
-    "(StdinStream) -> () with Async"
+    "(StdinStream) -> () with Async",
+    "(StdinStream, Int) -> () -> Option[String] with Async"
   ]
   let names = [
     "Stdin::read_via_stream",
     "StdinStream::next",
-    "StdinStream::close"
+    "StdinStream::close",
+    "StdinStream::chunks"
+  ]
+  // chunks is served by the compiler-owned injected factory rather than a
+  // low-level func-table row; the other three map directly to provider ABI
+  // indices after public references have been retargeted.
+  let expected_linear_table = [
+    true,
+    true,
+    true,
+    false
   ]
   let rows = builtin_registry_typed()
   let mut ni = 0
@@ -59,7 +86,7 @@ test "#1539 public StdinStream surface is visible with exact effects" {
     while ri < Array::length(rows) {
       let (name, ty, linear, gc, visible) = Array::get(rows, ri)
       if name == Array::get(names, ni) {
-        assert(linear)
+        assert(linear == Array::get(expected_linear_table, ni))
         assert(!gc)
         assert(visible)
         assert(type_to_string(ty) == Array::get(expected, ni))

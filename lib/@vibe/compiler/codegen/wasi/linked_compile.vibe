@@ -767,20 +767,23 @@ fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
   let public_names = [
     "Stdin::read_via_stream",
     "StdinStream::next",
-    "StdinStream::close"
+    "StdinStream::close",
+    "StdinStream::chunks"
   ]
   let raw_names = [
     "__stdin_provider_acquire_surface",
     "__stdin_provider_next_surface",
-    "__stdin_provider_close_surface"
+    "__stdin_provider_close_surface",
+    "__stdin_provider_chunks_surface"
   ]
   let aliases: Array[(String, String)] = [
     (Array::get(public_names, 0), Array::get(raw_names, 0)),
     (Array::get(public_names, 1), Array::get(raw_names, 1)),
-    (Array::get(public_names, 2), Array::get(raw_names, 2))
+    (Array::get(public_names, 2), Array::get(raw_names, 2)),
+    (Array::get(public_names, 3), Array::get(raw_names, 3))
   ]
   let mentions = collect_used_builtin_names(stmts, lc_fresh_string_array())
-  let needed = Map::has_key(mentions, Array::get(public_names, 0)) || Map::has_key(mentions, Array::get(public_names, 1)) || Map::has_key(mentions, Array::get(public_names, 2))
+  let needed = Map::has_key(mentions, Array::get(public_names, 0)) || Map::has_key(mentions, Array::get(public_names, 1)) || Map::has_key(mentions, Array::get(public_names, 2)) || Map::has_key(mentions, Array::get(public_names, 3))
   if needed {
     let mut i = 0
     while i < Array::length(stmts) {
@@ -802,6 +805,10 @@ fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
     let close_param: Array[(String, Option[TypeExpr])] = [
       ("__stdin_stream", Some(TyName("StdinStream")))
     ]
+    let chunks_params: Array[(String, Option[TypeExpr])] = [
+      ("__stdin_stream", Some(TyName("StdinStream"))),
+      ("__stdin_chunk_size", Some(TyName("Int")))
+    ]
     let acquire_body = ECall(EIdent("vibe_stdin_provider_acquire_raw", -1), lc_fresh_expr_array(), -1)
     let next_body = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
       EIdent("__stdin_stream", -1)
@@ -809,9 +816,42 @@ fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
     let close_body = ESeq(ECall(EIdent("vibe_stdin_provider_close_raw", -1), [
       EIdent("__stdin_stream", -1)
     ], -1), EUnit)
+    // One-byte String::from_char_code construction preserves every u8 value,
+    // including NUL and bytes that are not valid standalone UTF-8. The raw
+    // route is validated before conversion so an ABI violation traps instead
+    // of being silently truncated by store8.
+    let chunk_read = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
+      EIdent("__stdin_stream", -1)
+    ], -1)
+    let chunk_byte_valid = EBinOp("&&", EBinOp("<=", EInt(0), EIdent("__stdin_chunk_byte", -1)), EBinOp("<=", EIdent("__stdin_chunk_byte", -1), EInt(255)))
+    let chunk_push = ESeq(ECall(EIdent("StringBuilder::push", -1), [
+      EIdent("__stdin_chunk_builder", -1),
+      ECall(EIdent("String::from_char_code", -1), [
+        EIdent("__stdin_chunk_byte", -1)
+      ], -1)
+    ], -1), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1)), EUnit))
+    let chunk_accept = EIf(chunk_byte_valid, chunk_push, ECall(EIdent("assert_true", -1), [
+      EBool(false)
+    ], -1))
+    let chunk_step = ELet("__stdin_chunk_byte", chunk_read, EIf(EBinOp("==", EIdent("__stdin_chunk_byte", -1), EInt(0 - 1)), EAssign("__stdin_chunk_eof", EBool(true), EUnit), chunk_accept), -1)
+    let chunk_loop_cond = EBinOp("&&", EBinOp("<", EIdent("__stdin_chunk_len", -1), EIdent("__stdin_chunk_size", -1)), EBinOp("==", EIdent("__stdin_chunk_eof", -1), EBool(false)))
+    let chunk_result = EIf(EBinOp("==", EIdent("__stdin_chunk_len", -1), EInt(0)), ECall(EIdent("None", -1), array_empty(), -1), ECall(EIdent("Some", -1), [
+      ECall(EIdent("StringBuilder::freeze", -1), [
+        EIdent("__stdin_chunk_builder", -1)
+      ], -1)
+    ], -1))
+    let positive_pull = ELet("__stdin_chunk_builder", ECall(EIdent("StringBuilder::new", -1), array_empty(), -1), ELetMut("__stdin_chunk_len", EInt(0), ELetMut("__stdin_chunk_eof", EBool(false), ESeq(EWhile(chunk_loop_cond, chunk_step), chunk_result), -1), -1), -1)
+    let pull_body = EIf(EBinOp("<=", EIdent("__stdin_chunk_size", -1), EInt(0)), ECall(EIdent("None", -1), array_empty(), -1), positive_pull)
+    let chunks_body = EFn(lc_fresh_string_array(), array_empty(), no_params, Some(TyApp("Option", [
+      TyName("String")
+    ])), Some("Async"), pull_body)
+    let chunks_ret = TyFn(array_empty(), TyApp("Option", [
+      TyName("String")
+    ]), Some("Async"))
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 0), None, EFn(lc_fresh_string_array(), array_empty(), no_params, Some(TyName("StdinStream")), None, acquire_body)))
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 1), None, EFn(lc_fresh_string_array(), array_empty(), next_param, Some(TyName("Int")), None, next_body)))
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 2), None, EFn(lc_fresh_string_array(), array_empty(), close_param, Some(TyName("Unit")), None, close_body)))
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 3), None, EFn(lc_fresh_string_array(), array_empty(), chunks_params, Some(chunks_ret), None, chunks_body)))
   } else {
     ()
   }

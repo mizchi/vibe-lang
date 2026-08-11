@@ -772,15 +772,23 @@ entry/runtime policy; WIT mapping and handler behavior are unchanged.
 Stdin::read_via_stream() -> StdinStream with Stdin
 StdinStream::next(StdinStream) -> Int with Async
 StdinStream::close(StdinStream) -> Unit with Async
+StdinStream::chunks(StdinStream, Int) -> (() -> Option[String] with Async)
 ```
 
 `next` yields `0..255`, then `-1` after successful EOF settlement. `close`
 settles an early stop; repeated close and reads after successful settlement are
 idempotent. `StdinStream` is opaque, non-`Send`, and unrelated to `HostStream`
-or eager `Stream[T]`. Keep aliases within one task and explicitly drain or
-close every acquisition. This surface is component-only (linear/RC); GC,
-standalone core, `host_stream_named("stdin")`, and mixed named-provider
-composition are rejected. Legacy `stdin_stream(chunk_size)` is unchanged.
+or eager `Stream[T]`. `chunks(stream, n)` is a pure factory whose captured
+pull closure returns exactly `n` bytes per `Some` except for the final short
+chunk; it does not preserve provider read boundaries. It preserves arbitrary
+bytes. EOF settles the provider, after which pulls return `None`. For `n <= 0`,
+pulls return `None` without reading or settling. Keep the original `stream`
+handle, explicitly drain to EOF or call `close` after stopping early, and note
+that exact multiples need one extra pull to settle EOF. This surface is
+component-only (linear/RC); GC, standalone core,
+`host_stream_named("stdin")`, and mixed named-provider composition are
+rejected. Legacy `stdin_stream(chunk_size)` is standalone-capable and
+unchanged.
 
 **Naming.** Effect names are CamelCase. A standard provider builtin is a plain
 `Effect::snake_case` function call; a declared operation is CamelCase and is

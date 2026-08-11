@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children, is_exception_throw_operation, sort_perm_by_names, str_lt
+  Expr, Pat, Stmt, Type, TypeExpr, expr_children, is_exception_throw_operation, lookup_registry_builtin, sort_perm_by_names, str_lt
 }
 
 import @vibe/core {
@@ -2792,6 +2792,27 @@ fn fn_return_is_fn_type(fn_returns: Array[(String, String)], fname: String) -> B
   }
 }
 
+/// A bodyless registry builtin has no SLet entry for collect_fn_returns to
+/// inspect. Admit it as a pull factory only when its checker type positively
+/// returns CtFn. A source definition with the same name wins: if that
+/// definition has a non-function/unknown return, fail closed instead of
+/// consulting the shadowed builtin. This is classification only; it does not
+/// manufacture or relax Async effect evidence (#1536).
+fn known_fn_returns_pull_closure(fn_returns: Array[(String, String)], fname: String) -> Bool {
+  if fn_exists(fn_returns, fname) {
+    fn_return_is_fn_type(fn_returns, fname)
+  } else match lookup_registry_builtin(fname) {
+    Some(ty) => match ty {
+      CtFn(_, ret, _) => match ret {
+        CtFn(_, _, _) => true,
+        _ => false
+      },
+      _ => false
+    },
+    None => false
+  }
+}
+
 /// Desugar `for x in it { body }` over a struct iterator type `C` into a loop
 /// driven by the functional `C::next(self) -> Option[(T, Self)]`:
 ///
@@ -2978,7 +2999,7 @@ fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) ->
   match inner {
     EFn(_, _, _, _, _, _) => true,
     ECall(callee, _, _) => match callee {
-      EIdent(fname, _) => fn_return_is_fn_type(fn_returns, fname),
+      EIdent(fname, _) => known_fn_returns_pull_closure(fn_returns, fname),
       _ => false
     },
     _ => false

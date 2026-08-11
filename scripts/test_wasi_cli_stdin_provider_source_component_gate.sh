@@ -24,6 +24,7 @@ grep -Fq 'type StdinStream' lib/@vibe/console/index.vpkg
 grep -Fq 'fn Stdin::read_via_stream() -> StdinStream with Stdin' lib/@vibe/console/index.vpkg
 grep -Fq 'fn StdinStream::next(stream: StdinStream) -> Int with Async' lib/@vibe/console/index.vpkg
 grep -Fq 'fn StdinStream::close(stream: StdinStream) -> Unit with Async' lib/@vibe/console/index.vpkg
+grep -Fq 'fn StdinStream::chunks(stream: StdinStream, chunk_size: Int) -> (() -> Option[String] with Async)' lib/@vibe/console/index.vpkg
 if grep -Fq 'vibe_stdin_provider_' lib/@vibe/console/index.vpkg; then
   echo "stdin provider source gate FAILED: raw names leaked into console contract" >&2
   exit 1
@@ -91,6 +92,108 @@ fn run() -> Int with Stdin + Async {
   if first == 10 { 46 } else { 0 }
 }
 EOF
+cat >"$OUT/chunks-direct.vibe" <<'EOF'
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let mut index = 0
+  let mut ok = true
+  for chunk in StdinStream::chunks(stream, 4) {
+    if index == 0 {
+      ok = ok && String::length(chunk) == 4 && String::char_code_at(chunk, 0) == 0 && String::char_code_at(chunk, 1) == 128 && String::char_code_at(chunk, 2) == 255 && String::char_code_at(chunk, 3) == 65
+    } else if index == 1 {
+      ok = ok && String::length(chunk) == 1 && String::char_code_at(chunk, 0) == 66
+    } else {
+      ok = false
+    }
+    index = index + 1
+  }
+  if ok && index == 2 { 50 } else { 0 }
+}
+EOF
+cat >"$OUT/chunks-one-alias.vibe" <<'EOF'
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let factory = StdinStream::chunks
+  let pull = factory(stream, 1)
+  let a = pull()
+  let b = pull()
+  let c = pull()
+  let d = pull()
+  let e = pull()
+  let eof1 = pull()
+  let eof2 = pull()
+  match a {
+    Some(sa) => match b {
+      Some(sb) => match c {
+        Some(sc) => match d {
+          Some(sd) => match e {
+            Some(se) => match eof1 {
+              None => match eof2 {
+                None => if String::length(sa) == 1 && String::char_code_at(sa, 0) == 0 && String::char_code_at(sb, 0) == 128 && String::char_code_at(sc, 0) == 255 && String::char_code_at(sd, 0) == 65 && String::char_code_at(se, 0) == 66 { 51 } else { 0 },
+                Some(_) => 0
+              },
+              Some(_) => 0
+            },
+            None => 0
+          },
+          None => 0
+        },
+        None => 0
+      },
+      None => 0
+    },
+    None => 0
+  }
+}
+EOF
+cat >"$OUT/chunks-zero.vibe" <<'EOF'
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let pull = StdinStream::chunks(stream, 0)
+  match pull() {
+    Some(_) => 0,
+    None => match pull() {
+      Some(_) => 0,
+      None => {
+        let first = StdinStream::next(stream)
+        StdinStream::close(stream)
+        StdinStream::close(stream)
+        match pull() { None => if first == 0 { 52 } else { 0 }, Some(_) => 0 }
+      }
+    }
+  }
+}
+EOF
+cat >"$OUT/chunks-negative.vibe" <<'EOF'
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let pull = StdinStream::chunks(stream, -7)
+  match pull() {
+    Some(_) => 0,
+    None => {
+      let first = StdinStream::next(stream)
+      StdinStream::close(stream)
+      match pull() { None => if first == 0 { 53 } else { 0 }, Some(_) => 0 }
+    }
+  }
+}
+EOF
+cat >"$OUT/chunks-early-close.vibe" <<'EOF'
+fn run() -> Int with Stdin + Async {
+  let stream = Stdin::read_via_stream()
+  let pull = StdinStream::chunks(stream, 4)
+  let first = pull()
+  StdinStream::close(stream)
+  StdinStream::close(stream)
+  match first {
+    Some(chunk) => match pull() {
+      None => if String::length(chunk) == 4 && String::char_code_at(chunk, 0) == 0 && String::char_code_at(chunk, 3) == 65 { 54 } else { 0 },
+      Some(_) => 0
+    },
+    None => 0
+  }
+}
+EOF
 # Isolated minimal contract fixture: preserve the exact public package spelling
 # while avoiding unrelated @vibe/console implementation imports in this
 # component-composer test. The type is still compiler-owned (no source body).
@@ -127,8 +230,15 @@ compile_component early-alias
 compile_component second
 compile_component multiple-active
 compile_component import-alias 0 1 1
+compile_component chunks-direct
+compile_component chunks-one-alias
+compile_component chunks-zero
+compile_component chunks-negative
+compile_component chunks-early-close
 cp "$OUT/drain.vibe" "$OUT/drain-rc.vibe"
 compile_component drain-rc 1
+cp "$OUT/chunks-direct.vibe" "$OUT/chunks-direct-rc.vibe"
+compile_component chunks-direct-rc 1
 
 WIT="$OUT/drain.wit"
 WAT="$OUT/drain.wat"
@@ -140,7 +250,8 @@ grep -Fq 'read-via-stream: func() -> tuple<stream<u8>, future<result<_, error-co
 grep -Fq 'stdin_provider_acquire' "$WAT"
 grep -Fq 'stdin_provider_read' "$WAT"
 grep -Fq 'stdin_provider_close' "$WAT"
-if grep -Fq 'host_stream_get$stdin' "$WAT" || grep -Fq 'host_stream_read' "$WAT" || grep -Fq 'host_stream_close' "$WAT"; then
+wasm-tools print "$OUT/chunks-direct.component.wasm" >"$OUT/chunks-direct.wat"
+if grep -Fq 'host_stream_get$stdin' "$WAT" "$OUT/chunks-direct.wat" || grep -Fq 'host_stream_read' "$WAT" "$OUT/chunks-direct.wat" || grep -Fq 'host_stream_close' "$WAT" "$OUT/chunks-direct.wat"; then
   echo "stdin provider source gate FAILED: generic HostStream route leaked" >&2
   exit 1
 fi
@@ -190,12 +301,16 @@ cat >"$OUT/mixed.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = host_stream_named("body"); StdinStream::close(s); 0 }
 EOF
 actionable_fail mixed run 'mixing stdin-provider imports with named host future/stream imports is not supported'
+cat >"$OUT/chunks-mixed.vibe" <<'EOF'
+fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = host_stream_named("body"); let _ = StdinStream::chunks(s, 4); StdinStream::close(s); 0 }
+EOF
+actionable_fail chunks-mixed run 'effect Async has closure values whose row carries it'
 cat >"$OUT/noncomponent.vibe" <<'EOF'
-fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); StdinStream::close(s); 0 }
+fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let pull = StdinStream::chunks(s, 4); let _ = pull(); StdinStream::close(s); 0 }
 EOF
 actionable_fail noncomponent main 'requires an Async component entry named run'
 cat >"$OUT/gc.vibe" <<'EOF'
-fn main() -> Int with Stdin { let _ = Stdin::read_via_stream(); 0 }
+fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let pull = StdinStream::chunks(s, 4); let _ = pull(); 0 }
 EOF
 actionable_fail gc main 'StdinStream is unsupported on gc backend' gc
 cat >"$OUT/coverage.vibe" <<'EOF'
@@ -238,6 +353,29 @@ if grep -Fq 'stdin_provider_' "$OUT/import-alias-coverage.wasm.diag" "$OUT/impor
   exit 1
 fi
 
+# The additive compiler-owned adapter must not poison the unchanged source
+# implementation of legacy stdin_stream or make its standalone core acquire
+# the component-private provider ABI.
+cat >"$OUT/legacy-standalone.vibe" <<'EOF'
+import @vibe/console { stdin_stream }
+fn main() -> Int with Stdin {
+  let pull = stdin_stream(2)
+  match pull() { Some(chunk) => String::length(chunk), None => 0 }
+}
+EOF
+rm -f "$OUT/legacy-standalone.wasm" "$OUT/legacy-standalone.wasm.diag"
+VIBE_FS_COMPILE=1 VIBE_LIB="$ROOT/lib" VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" "$OUT/legacy-standalone.vibe" "$OUT/legacy-standalone.wasm" main >/dev/null
+[ -s "$OUT/legacy-standalone.wasm" ] || { cat "$OUT/legacy-standalone.wasm.diag" >&2 || true; exit 1; }
+[ "$(od -A n -t x1 -N 8 "$OUT/legacy-standalone.wasm" | awk '{print $5}')" = "01" ]
+wasm-tools validate --features all "$OUT/legacy-standalone.wasm"
+wasm-tools print "$OUT/legacy-standalone.wasm" >"$OUT/legacy-standalone.wat"
+if grep -Fq 'stdin_provider_' "$OUT/legacy-standalone.wat"; then
+  echo "stdin provider source gate FAILED: legacy stdin_stream gained provider imports" >&2
+  exit 1
+fi
+
 echo "[stdin-provider-source] source compile/structure/negative gates OK"
 WT="${WASMTIME_BIN:-$(command -v wasmtime || true)}"
 VERSION="$([ -n "$WT" ] && "$WT" --version 2>/dev/null || true)"
@@ -249,13 +387,15 @@ if [[ "$VERSION" != "wasmtime 47.0.2"* ]]; then
   echo "[stdin-provider-source] runtime SKIP: requires wasmtime 47.0.2, got ${VERSION:-unavailable}"
   exit 0
 fi
-INPUT="$OUT/input.bin"
-printf '\012\017\021' >"$INPUT"
+LEGACY_INPUT="$OUT/legacy-input.bin"
+CHUNK_INPUT="$OUT/chunk-input.bin"
+printf '\012\017\021' >"$LEGACY_INPUT"
+printf '\000\200\377AB' >"$CHUNK_INPUT"
 FLAGS=(-Sp3 -W component-model-async=y -W component-model-async-stackful=y -W component-model-more-async-builtins=y)
 run_lane() {
-  local name="$1" expected="$2"
+  local name="$1" expected="$2" input="${3:-$LEGACY_INPUT}"
   local actual
-  actual="$(timeout 60 "$WT" run "${FLAGS[@]}" --invoke 'run()' "$OUT/$name.component.wasm" <"$INPUT")"
+  actual="$(timeout 60 "$WT" run "${FLAGS[@]}" --invoke 'run()' "$OUT/$name.component.wasm" <"$input")"
   [ "$actual" = "$expected" ] || { echo "stdin provider source gate FAILED: $name expected $expected, got $actual" >&2; exit 1; }
   echo "[stdin-provider-source] $name: $actual"
 }
@@ -265,4 +405,10 @@ run_lane second 44
 run_lane multiple-active 45
 run_lane import-alias 46
 run_lane drain-rc 42
+run_lane chunks-direct 50 "$CHUNK_INPUT"
+run_lane chunks-one-alias 51 "$CHUNK_INPUT"
+run_lane chunks-zero 52 "$CHUNK_INPUT"
+run_lane chunks-negative 53 "$CHUNK_INPUT"
+run_lane chunks-early-close 54 "$CHUNK_INPUT"
+run_lane chunks-direct-rc 50 "$CHUNK_INPUT"
 echo "wasi cli stdin provider source component gate OK (wasmtime 47.0.2)"

@@ -1540,6 +1540,7 @@ The compiler now exposes this contract through one unforgeable nominal scalar:
 Stdin::read_via_stream() -> StdinStream with Stdin
 StdinStream::next(StdinStream) -> Int with Async
 StdinStream::close(StdinStream) -> Unit with Async
+StdinStream::chunks(StdinStream, Int) -> (() -> Option[String] with Async)
 ```
 
 `StdinStream` is neither `Int`, generic `HostStream`, nor `Stream[T]`; source
@@ -1558,6 +1559,17 @@ requirements are fixed as follows:
 - A completion `error-code` is fail-closed. There is no approved public
   `Stdin`/`Exception`/`Result` mapping yet; an adapter must not turn it into
   EOF, success, a generic integer, or a legacy `Option` value.
+- `chunks(stream, n)` is a compiler-owned, use-gated adapter. Its pure factory
+  retains `stream` and `n` in a pull closure; each pull carries `Async`. For
+  positive `n`, it reads one provider byte at a time and returns exactly `n`
+  bytes except for the final short chunk. Bytes are validated as `0..255` and
+  appended through one-byte `String::from_char_code`, without UTF-8 expansion.
+  It does not promise to preserve internal provider read boundaries. EOF
+  settles before `None`; subsequent pulls return `None`. An exact multiple
+  needs one extra pull to observe EOF. For `n <= 0`, pulls return `None` without
+  reading or settling, so the caller must close the retained stream. Early
+  stopping likewise requires explicit, idempotent `close`; closure drop is not
+  a finalizer.
 
 The existing `host_stream_close(HostStream) -> Unit` is deliberately
 synchronous and only drops its one generic stream handle (§3.18.1). It cannot
@@ -1583,9 +1595,9 @@ canonical stream handle, and completion-future handle never cross into the
 compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
 bytes or tagged `-1` after settlement and close returns tagged zero.
 
-The three raw registry rows remain `checker_visible=false`; three public rows
-lower atomically through compiler-owned wrapper functions to those same exact
-imports. The wrappers are required for first-class references/aliases because
+The three raw registry rows remain `checker_visible=false`; the four public
+operations (acquire, next, close, and chunks) lower atomically through
+compiler-owned wrapper functions to those same exact imports. The wrappers are required for first-class references/aliases because
 raw imports do not accept the hidden closure-environment argument. Source emits
 only the exact `vibe.stdin_provider_*` core imports and the nominal
 `wasi:cli/types@0.3.0` + `wasi:cli/stdin@0.3.0` component imports.
@@ -1807,7 +1819,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff を実装。既存 `stdin_stream(chunk_size)` は未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active gate; generic `[3, handle]` `HostStream` は使わず、named future/stream との mix は明示拒否 |
+| **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route + additive compiler-owned chunk adapter まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff、`StdinStream::chunks` を実装。既存 `stdin_stream(chunk_size)` は standalone-capable のまま未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` chunks (linear/RC capture, direct `for`, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import は不使用 |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |
