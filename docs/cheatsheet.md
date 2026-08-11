@@ -766,6 +766,22 @@ The ordered default and cache-safe owners preserve their existing output.
 Checker row filtering and WIT import filtering use only the predicate-based
 entry/runtime policy; WIT mapping and handler behavior are unchanged.
 
+### Atomic stdin provider stream (#1539)
+
+```text
+Stdin::read_via_stream() -> StdinStream with Stdin
+StdinStream::next(StdinStream) -> Int with Async
+StdinStream::close(StdinStream) -> Unit with Async
+```
+
+`next` yields `0..255`, then `-1` after successful EOF settlement. `close`
+settles an early stop; repeated close and reads after successful settlement are
+idempotent. `StdinStream` is opaque, non-`Send`, and unrelated to `HostStream`
+or eager `Stream[T]`. Keep aliases within one task and explicitly drain or
+close every acquisition. This surface is component-only (linear/RC); GC,
+standalone core, `host_stream_named("stdin")`, and mixed named-provider
+composition are rejected. Legacy `stdin_stream(chunk_size)` is unchanged.
+
 **Naming.** Effect names are CamelCase. A standard provider builtin is a plain
 `Effect::snake_case` function call; a declared operation is CamelCase and is
 emitted with `perform`:

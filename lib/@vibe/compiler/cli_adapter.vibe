@@ -9,7 +9,9 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   compile_source_wasi_only_coverage,
   compile_source_wasi_only_rc,
   compile_source_wasi_only_rc_shadow,
-  merged_program_source_fs
+  maybe_wrap_stdin_provider_core,
+  merged_program_source_fs,
+  reject_stdin_provider_core
 }
 
 import @vibe/compiler/entry/source_compile/gc_only {
@@ -1048,10 +1050,23 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // both, so they stay untouched; so do `__no_entry__` test/bench builds
       // (gated inside strip_executable_wasm_env).
       let fs_instrumented = Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_DEBUG_BREAK") == "1" || Env::get("VIBE_DEBUG") == "1" || Env::get("VIBE_RC") == "shadow"
-      let out_bytes = if fs_instrumented {
+      let core_bytes = if fs_instrumented {
         bytes
       } else {
         strip_executable_wasm_env(bytes, entry_name)
+      }
+      // #1539: file-mode compilation bypasses the source preprocess wrapper.
+      // Never publish its component-private provider ABI as a standalone core:
+      // instrumentation lanes fail before the write, while the ordinary lane
+      // safely composes the exact parsed imports after executable stripping.
+      let out_bytes = if fs_instrumented {
+        reject_stdin_provider_core(core_bytes, if Env::get("VIBE_COVERAGE") == "1" {
+          "VIBE_COVERAGE=1"
+        } else {
+          "this instrumentation mode"
+        })
+      } else {
+        maybe_wrap_stdin_provider_core(core_bytes, entry_name)
       }
       Fs::write_bytes(output_path, out_bytes)
       // #1553: this observes the executable-strip + primary-output boundary.

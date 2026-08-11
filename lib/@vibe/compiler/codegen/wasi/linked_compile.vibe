@@ -18,6 +18,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
+  rewrite_import_alias_expr,
   rewrite_top_level_fn_alias_refs,
   sorted_names_of,
   verify_lane_builtins
@@ -755,6 +756,83 @@ fn lc_row_has_label(eff: Option[String], label: String) -> Bool {
 /// spelled `Error` matches this just as it did before the flip.
 fn lc_row_has_error(eff: Option[String]) -> Bool {
   lc_row_has_label(eff, "Exception")
+}
+
+/// #1539: public provider functions are first-class values, while their exact
+/// raw imports do not accept the hidden closure-environment argument. Retarget
+/// every public reference (not only direct calls) to ordinary compiler-owned
+/// wrapper functions, then let the existing closure machinery handle aliases.
+/// Wrapper bodies alone spell the checker-hidden raw names.
+fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
+  let public_names = [
+    "Stdin::read_via_stream",
+    "StdinStream::next",
+    "StdinStream::close"
+  ]
+  let raw_names = [
+    "__stdin_provider_acquire_surface",
+    "__stdin_provider_next_surface",
+    "__stdin_provider_close_surface"
+  ]
+  let aliases: Array[(String, String)] = [
+    (Array::get(public_names, 0), Array::get(raw_names, 0)),
+    (Array::get(public_names, 1), Array::get(raw_names, 1)),
+    (Array::get(public_names, 2), Array::get(raw_names, 2))
+  ]
+  let mentions = collect_used_builtin_names(stmts, lc_fresh_string_array())
+  let needed = Map::has_key(mentions, Array::get(public_names, 0)) || Map::has_key(mentions, Array::get(public_names, 1)) || Map::has_key(mentions, Array::get(public_names, 2))
+  if needed {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(ex, is_rec, name, ty, body) => Array::set(stmts, i, SLet(ex, is_rec, name, ty, rewrite_import_alias_expr(body, aliases))),
+        SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, rewrite_import_alias_expr(body, aliases))),
+        STest(name, body) => Array::set(stmts, i, STest(name, rewrite_import_alias_expr(body, aliases))),
+        SBench(name, body) => Array::set(stmts, i, SBench(name, rewrite_import_alias_expr(body, aliases))),
+        SExpr(body) => Array::set(stmts, i, SExpr(rewrite_import_alias_expr(body, aliases))),
+        SLetPat(pat, body) => Array::set(stmts, i, SLetPat(pat, rewrite_import_alias_expr(body, aliases))),
+        _ => ()
+      }
+      i = i + 1
+    }
+    let no_params: Array[(String, Option[TypeExpr])] = array_empty()
+    let next_param: Array[(String, Option[TypeExpr])] = [
+      ("__stdin_stream", Some(TyName("StdinStream")))
+    ]
+    let close_param: Array[(String, Option[TypeExpr])] = [
+      ("__stdin_stream", Some(TyName("StdinStream")))
+    ]
+    let acquire_body = ECall(EIdent("vibe_stdin_provider_acquire_raw", -1), lc_fresh_expr_array(), -1)
+    let next_body = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
+      EIdent("__stdin_stream", -1)
+    ], -1)
+    let close_body = ESeq(ECall(EIdent("vibe_stdin_provider_close_raw", -1), [
+      EIdent("__stdin_stream", -1)
+    ], -1), EUnit)
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 0), None, EFn(lc_fresh_string_array(), array_empty(), no_params, Some(TyName("StdinStream")), None, acquire_body)))
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 1), None, EFn(lc_fresh_string_array(), array_empty(), next_param, Some(TyName("Int")), None, next_body)))
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 2), None, EFn(lc_fresh_string_array(), array_empty(), close_param, Some(TyName("Unit")), None, close_body)))
+  } else {
+    ()
+  }
+  needed
+}
+
+fn lc_entry_declares_async(stmts: Array[Stmt], entry_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, eff, _)) => if name == entry_name && lc_row_has_label(eff, "Async") {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// #944 (ADR-0073 stage C): the runtime outermost Error handler. When the
@@ -3197,6 +3275,7 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // EFn def so calls do not route through the 0-param thunk registration
     // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
     rewrite_top_level_fn_alias_refs(stmts)
+    let _ = lc_inject_stdin_surface_wrappers(stmts)
     // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
     // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
     lc_extract_inline_wasm(stmts, iw_names, iw_wats)
@@ -3816,6 +3895,15 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
   // ident inside.
   let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
+  let uses_stdin_provider_surface = lc_program_defines_top_level(stmts, "__stdin_provider_acquire_surface")
+  // #1539: these imports are component-internal, not a standalone core ABI.
+  // compile_source_wasi_only wraps only `run : () -> Int with Async`; reject
+  // every other entry explicitly rather than emitting an unsatisfied core.
+  if uses_stdin_provider_surface && (entry_name != "run" || !lc_entry_declares_async(stmts, entry_name)) {
+    throw("Stdin::read_via_stream requires an Async component entry named run; standalone core/library and non-Async entries cannot provide the stdin lifecycle")
+  } else {
+    ()
+  }
   let need_env_get_builtin = Map::has_key(used_builtin_names, "Env::get")
   let need_env_args_len_builtin = Map::has_key(used_builtin_names, "Env::args_len")
   let need_env_args_get_builtin = Map::has_key(used_builtin_names, "Env::args_get")
@@ -3896,13 +3984,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // module bytes are unchanged -- the injected `__hs_close` is the only
   // caller, and it only exists when the source called `host_stream_close`.
   let need_host_stream_close_builtin = Map::has_key(used_builtin_names, "vibe_hs_close_raw")
-  // #1539 core-only stdin provider route. The registry names are checker-
-  // invisible and therefore only compiler-injected/raw AST can request these
-  // imports. Keep each half independently gated so unused registry rows do not
-  // widen a component's authority.
-  let need_stdin_provider_acquire_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_acquire_raw")
-  let need_stdin_provider_read_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_read_raw")
-  let need_stdin_provider_close_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_close_raw")
+  // #1539 public names and checker-hidden raw names share the exact three
+  // component-private import targets. Gate each half independently.
+  let need_stdin_provider_acquire_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_acquire_raw") || Map::has_key(used_builtin_names, "Stdin::read_via_stream")
+  let need_stdin_provider_read_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_read_raw") || Map::has_key(used_builtin_names, "StdinStream::next")
+  let need_stdin_provider_close_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_close_raw") || Map::has_key(used_builtin_names, "StdinStream::close")
   // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
   // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
   // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
@@ -5029,10 +5115,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         // ADR-0089 Decision 3 follow-up: shared drop half of the named host
         // streams (`host_stream_close` -> injected `__hs_close`).
         "vibe_hs_close_raw" => hs_close_idx,
-        // #1539 checker-hidden core-only stdin provider bridge.
+        // #1539 public and checker-hidden spellings share the same exact raw
+        // component-private targets, including first-class function aliases.
         "vibe_stdin_provider_acquire_raw" => stdin_provider_acquire_idx,
         "vibe_stdin_provider_read_raw" => stdin_provider_read_idx,
         "vibe_stdin_provider_close_raw" => stdin_provider_close_idx,
+        "Stdin::read_via_stream" => stdin_provider_acquire_idx,
+        "StdinStream::next" => stdin_provider_read_idx,
+        "StdinStream::close" => stdin_provider_close_idx,
         "simd_skip_ws" => simd_skip_ws_idx,
         "simd_scan_alnum" => simd_scan_alnum_idx,
         "simd_scan_alnum_str" => simd_scan_alnum_str_idx,

@@ -148,6 +148,9 @@ reserved and is not part of the current surface syntax.
 | `Stdout::write_char` | `(Int) -> Unit` | `{Stdout}` | Write char to stdout |
 | `Stdin::read_stream` | `(Int) -> String` | `{Stdin}` | Read from stdin |
 | `Stdin::read_char` | `() -> Int` | `{Stdin}` | Read char from stdin |
+| `Stdin::read_via_stream` | `() -> StdinStream` | `{Stdin}` | Acquire an opaque p3 stdin provider stream |
+| `StdinStream::next` | `(StdinStream) -> Int` | `{Async}` | Read one byte, or `-1` after settled EOF |
+| `StdinStream::close` | `(StdinStream) -> Unit` | `{Async}` | Settle an early close (idempotent after success) |
 
 ## JSON
 

@@ -67,6 +67,35 @@ test "1538: HostStream retains its direct read lane" {
   assert(check_source_ok("fn read(s: HostStream) -> Int with Async { host_stream_next(s) }\nfn main() -> Int with Async { read(host_stream_named(\"body\")) }"))
 }
 
+test "1539: exact StdinStream token is accepted" {
+  assert(check_source_ok("fn use(s: StdinStream) -> Int with Async { StdinStream::next(s) }\nfn run() -> Int with Stdin + Async { use(Stdin::read_via_stream()) }"))
+}
+
+test "1539: StdinStream cannot cross Int, HostStream, Stream, or user-struct boundaries" {
+  assert(check_source_err("fn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(1) }"))
+  assert(check_source_err("fn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(host_stream_named(\"body\")) }"))
+  assert(check_source_err("fn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(Stream::once(1)) }"))
+  assert(check_source_err("struct Fake { value: Int }\nfn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(Fake::{ value: 1 }) }"))
+  assert(check_source_err("fn use(i: Int) -> Int { i }\nfn run() -> Int with Stdin { use(Stdin::read_via_stream()) }"))
+  assert(check_source_err("fn use(s: HostStream) -> Int { 0 }\nfn run() -> Int with Stdin { use(Stdin::read_via_stream()) }"))
+}
+
+test "1539: a source struct named StdinStream cannot forge the token" {
+  assert(check_source_err("struct StdinStream { value: Int }\nfn run() -> Int with Async { let s = StdinStream::{ value: 1 }; StdinStream::next(s) }"))
+}
+
+test "1539: StdinStream does not satisfy Send" {
+  assert(check_source_err("fn require_send[T: Send](x: T) -> Int { 0 }\nfn run() -> Int with Stdin { require_send(Stdin::read_via_stream()) }"))
+}
+
+test "1539: acquisition and operations carry only their exact authority" {
+  assert(check_source_err("fn run() -> Int { let s = Stdin::read_via_stream(); 0 }"))
+  assert(check_source_ok("fn run() -> Int with Stdin { let s = Stdin::read_via_stream(); 0 }"))
+  assert(check_source_err("fn run() -> Int with Stdin { let s = Stdin::read_via_stream(); StdinStream::next(s) }"))
+  assert(check_source_ok("fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); StdinStream::next(s) }"))
+  assert(check_source_ok("fn consume(s: StdinStream) -> Unit with Async { StdinStream::close(s) }\nfn run() -> Int with Stdin + Async { consume(Stdin::read_via_stream()); 0 }"))
+}
+
 test "1001: genuinely generic parameter stays tolerated (no over-rejection)" {
   assert(check_source_ok("struct Box[T] { v: T }\nfn second[T](b: Box[T], d: Int) -> Int { d }\nfn main() -> Int {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  second(b, 42)\n}"))
 }

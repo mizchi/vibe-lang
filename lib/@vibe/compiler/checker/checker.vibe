@@ -732,6 +732,79 @@ fn host_stream_to_legacy_stream_conflict(expected: Type, actual: Type) -> Bool {
   }
 }
 
+fn is_stdin_stream_internal(t: Type) -> Bool {
+  match t {
+    CtStruct(n) => n == "#vibe_stdin_stream",
+    _ => false
+  }
+}
+
+/// #1539: the opaque stdin provider token is compiler-owned. Unlike ordinary
+/// nullary CtNamed values, no unresolved/generic tolerance may let a different
+/// concrete representation cross this boundary. Recurse through matching
+/// containers/function signatures so aliases cannot launder the token either.
+fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
+  let e_token = is_stdin_stream_internal(expected)
+  let a_token = is_stdin_stream_internal(actual)
+  if e_token || a_token {
+    e_token != a_token
+  } else {
+    match expected {
+      CtArray(e) => match actual {
+        CtArray(a) => stdin_stream_nominal_conflict(e, a),
+        _ => false
+      },
+      CtOption(e) => match actual {
+        CtOption(a) => stdin_stream_nominal_conflict(e, a),
+        _ => false
+      },
+      CtNamed(_, es) => match actual {
+        CtNamed(_, actuals) => if Array::length(es) == Array::length(actuals) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(es) && !conflict {
+            conflict = stdin_stream_nominal_conflict(Array::get(es, i), Array::get(actuals, i))
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtTuple(es) => match actual {
+        CtTuple(actuals) => if Array::length(es) == Array::length(actuals) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(es) && !conflict {
+            conflict = stdin_stream_nominal_conflict(Array::get(es, i), Array::get(actuals, i))
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtFn(eps, er, _) => match actual {
+        CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
+          let mut i = 0
+          let mut conflict = stdin_stream_nominal_conflict(er, ar)
+          while i < Array::length(eps) && !conflict {
+            conflict = stdin_stream_nominal_conflict(Array::get(eps, i), Array::get(aps, i))
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
 /// True when every declared field type of a struct is ground (the struct is not
 /// generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
 fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
@@ -997,8 +1070,9 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       let expected_zonked = subst_apply(s, expected)
       let actual_zonked = subst_apply(s, actual)
       let host_stream_conflict = host_stream_to_legacy_stream_conflict(expected_zonked, actual_zonked)
+      let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
       let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
-      if host_stream_conflict || nominal_conflict {
+      if host_stream_conflict || stdin_stream_conflict || nominal_conflict {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
         s
       } else if structural {
@@ -1068,7 +1142,12 @@ fn nominal_name_of(t: Type) -> Option[String] {
     CtOption(_) => Some("Option"),
     CtEnum(n) => Some(n),
     CtStruct(n) => Some(n),
-    CtNamed(n, _) => if type_fully_concrete(t) {
+    CtNamed(n, _) => if n == "HostStream" {
+      // Compiler-owned and always concrete despite the nullary CtNamed shape.
+      // This makes HostStream conflict with #1539's internal StdinStream
+      // identity instead of passing through the generic-name tolerance.
+      Some(n)
+    } else if type_fully_concrete(t) {
       Some(n)
     } else {
       None

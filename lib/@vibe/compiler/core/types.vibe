@@ -1033,7 +1033,14 @@ export fn type_to_string(ty: Type) -> String {
     CtArray(elem) => String::concat("Array[", String::concat(type_to_string(elem), "]")),
     CtOption(elem) => String::concat("Option[", String::concat(type_to_string(elem), "]")),
     CtEnum(name) => name,
-    CtStruct(name) => name,
+    // #1539: the checker identity is deliberately unspellable so source
+    // structs/types cannot forge a provider token. Diagnostics expose only
+    // the public nominal spelling.
+    CtStruct(name) => if name == "#vibe_stdin_stream" {
+      "StdinStream"
+    } else {
+      name
+    },
     CtNamed(name, args) => if Array::length(args) == 0 {
       name
     } else {
@@ -1139,6 +1146,12 @@ export fn resolve_builtin(name: String) -> Option[Type] {
   }
   else if name == "Bytes" {
     Some(CtBytes)
+  }
+  else if name == "StdinStream" {
+    // #1539: compiler-owned opaque scalar token. CtStruct with an unspellable
+    // identity is concrete (unlike a nullary CtNamed) while remaining
+    // impossible for source declarations or literals to manufacture.
+    Some(CtStruct("#vibe_stdin_stream"))
   }
   else if name == "V128" {
     // #536: first-class WebAssembly 128-bit SIMD type. Represented structurally
