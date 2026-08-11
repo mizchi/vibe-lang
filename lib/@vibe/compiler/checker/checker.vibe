@@ -456,6 +456,28 @@ fn railway_expr_off(e: Expr) -> Int {
   }
 }
 
+/// Source anchor for a function BODY's implicit return -- the value the return
+/// type is checked against. `railway_expr_off` walks into an `ESeq`'s FIRST
+/// arm, which is the right anchor for a desugar operand but the wrong one here:
+/// in `{ setup(); compute() }` the return value is `compute()`, so a diagnostic
+/// anchored on `setup()` would point at a line that is not the problem. Descend
+/// to the tail first, then reuse the ordinary walk.
+///
+/// A statement body is not only `ESeq`: `let`/`let mut` parse as an `ELet`
+/// whose THIRD field is the rest of the block, so `{ let _ = setup(); mk() }`
+/// is `ELet(_, setup(), mk(), _)` and stopping at `ESeq` alone would miss the
+/// tail entirely (and, via railway_expr_off's ELet-less fallback, report no
+/// location at all).
+fn tail_expr_off(e: Expr) -> Int {
+  match e {
+    ESeq(_, rest) => tail_expr_off(rest),
+    ELet(_, _, rest, _) => tail_expr_off(rest),
+    ELetRec(_, _, rest) => tail_expr_off(rest),
+    ELetMut(_, _, rest, _) => tail_expr_off(rest),
+    _ => railway_expr_off(e)
+  }
+}
+
 fn type_is_ground(t: Type) -> Bool {
   match t {
     CtNamed(_, _) => false,
@@ -2604,12 +2626,27 @@ fn rigid_trait_bound_binop(env: TypeEnv, left_ty: Type, right_ty: Type, trait_na
   }
 }
 
-fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: Subst, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst) {
+/// `type mismatch in '<op>': <tail>`, carrying the operand anchor as the
+/// strippable `[@off=N]` marker. Every binop mismatch in `infer_binop_type`
+/// goes through here so none of them can silently go back to being unlocated:
+/// the offset is a parameter of the message, not an afterthought at one site.
+/// String::concat only (`+`/interpolation mis-codegen to NUL here).
+fn binop_mismatch_msg(op: String, tail: String, off: Int) -> String {
+  String::concat(String::concat("type mismatch in '", String::concat(op, tail)), off_marker(off))
+}
+
+/// `off` is the source anchor of the offending operator expression (the left
+/// operand's offset, falling back to the right's) -- see the EBinOp arm. -1
+/// when neither operand carries one, which is what a literal-only expression
+/// like `1 + "s"` gives: EInt/EString/EBool/EFloat have no offset slot in the
+/// AST (lib/@vibe/ast/index.vpkg), so there is nothing to point at. off_marker
+/// emits nothing for -1, leaving those messages exactly as they were.
+fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: Subst, errors: Array[String], tytab: Array[(Int, Type)], off: Int) -> (Type, Subst) {
   if is_logic_binop(op) {
     match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
       Some(s1) => (CtBool, s1),
       None => {
-        Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Bool")))
+        Array::push(errors, binop_mismatch_msg(op, "': operands must be Bool", off))
         (CtUnknown, s)
       }
     }
@@ -2636,7 +2673,7 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
         if eq_has_named {
           (CtBool, s)
         } else {
-          Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must have same type")))
+          Array::push(errors, binop_mismatch_msg(op, "': operands must have same type", off))
           (CtUnknown, s)
         }
       }
@@ -2652,7 +2689,7 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
           None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
             Some((_, s1)) => (CtBool, s1),
             None => {
-              Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
+              Array::push(errors, binop_mismatch_msg(op, "': operands must be Int or Double", off))
               (CtUnknown, s)
             }
           }
@@ -2672,7 +2709,7 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
             None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
               Some((resolved, s1)) => (resolved, s1),
               None => {
-                Array::push(errors, "type mismatch in '+': operands must be Int, Double, or String")
+                Array::push(errors, binop_mismatch_msg("+", "': operands must be Int, Double, or String", off))
                 (CtUnknown, s)
               }
             }
@@ -2698,7 +2735,7 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
         None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
           Some((resolved, s1)) => (resolved, s1),
           None => {
-            Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
+            Array::push(errors, binop_mismatch_msg(op, "': operands must be Int or Double", off))
             (CtUnknown, s)
           }
         }
@@ -2709,7 +2746,7 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
     match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
       Some(s1) => (CtInt, s1),
       None => {
-        Array::push(errors, "type mismatch in '%': operands must be Int")
+        Array::push(errors, binop_mismatch_msg("%", "': operands must be Int", off))
         (CtUnknown, s)
       }
     }
@@ -2718,13 +2755,13 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
     match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
       Some(s1) => (CtInt, s1),
       None => {
-        Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int")))
+        Array::push(errors, binop_mismatch_msg(op, "': operands must be Int", off))
         (CtUnknown, s)
       }
     }
   }
   else {
-    Array::push(errors, String::concat("unknown operator: ", op))
+    Array::push(errors, String::concat(String::concat("unknown operator: ", op), off_marker(off)))
     (CtUnknown, s)
   }
 }
@@ -5666,7 +5703,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // `CtNamed` check itself (its tolerate branch calls
             // `detect_narrowed_generic_mismatch`), so the explicit second
             // call this site used to make would double-report — dropped.
-            let ns2 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", call_off)
+            // This ECall is SYNTHETIC (ascribe_wrap builds it), so `call_off`
+            // is -1 and the diagnostic came out unlocated. The bound value is
+            // the sole argument and does have a real position -- anchor there,
+            // which is also where the annotation-vs-value conflict is fixed.
+            let asc_off = if call_off >= 0 {
+              call_off
+            } else {
+              railway_expr_off(Array::get(args, 0))
+            }
+            let ns2 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", asc_off)
             let bound_ty = preserve_generic_instantiation(resolved, subst_apply(ns2, actual))
             (tab_call_ty(tytab, call_off, bound_ty, capture, lane), ns2, nc0)
           },
@@ -5771,7 +5817,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EBinOp(op, left, right) => {
       let (left_ty, s1, c1) = check_expr_capture(left, env, defs, s, c, errors, tytab, capture, lane)
       let (right_ty, s2, c2) = check_expr_capture(right, env, defs, s1, c1, errors, tytab, capture, lane)
-      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors, tytab)
+      // EBinOp carries no offset of its own, so anchor the diagnostic on an
+      // operand: the left one reads as the start of the offending expression,
+      // and the right is the fallback for `1 + x` (a literal left operand has
+      // no offset to give).
+      let bin_left_off = railway_expr_off(left)
+      let bin_off = if bin_left_off >= 0 {
+        bin_left_off
+      } else {
+        railway_expr_off(right)
+      }
+      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors, tytab, bin_off)
       (subst_apply(s3, result_ty), s3, c2)
     },
     EUnaryOp(op, operand) => {
@@ -6743,7 +6799,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // pure->effectful direction and still reports the UNSOUND one (an
           // effectful value flowing into a pure-typed slot) via
           // effect_row_dropped, so this loosens nothing that was load-bearing.
-          let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", 0 - 1)
+          // Anchor on the body's TAIL expression -- the value actually being
+          // returned. -1 (unlocated, as before) when the tail is a literal:
+          // EInt/EString/EBool/EFloat carry no offset in the AST.
+          let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
           (subst_apply(ns, resolved_ret), ns)
         },
         None => (subst_apply(s2, bt), s2)
@@ -7036,7 +7095,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         Some(rt) => {
           let rte = subst_apply(s1, rt)
           let ate = subst_apply(s1, et)
-          let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", 0 - 1)
+          // Explicit `return e`: anchor on `e` itself, so this spelling locates
+          // the same way the implicit tail-expression return does above.
+          let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", railway_expr_off(e))
           ()
         },
         None => ()
