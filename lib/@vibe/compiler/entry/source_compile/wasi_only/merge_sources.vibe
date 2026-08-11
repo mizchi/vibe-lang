@@ -193,25 +193,26 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
   }
 }
 
-fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visited: Array[Array[String]]) -> Unit with Exception + Fs {
-  let file_paths = array_empty()
-  let file_stmts = array_empty()
-  collect_parsed_sources_recursive(entry_path, file_paths, file_stmts, visited)
+fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], plan: ExportRenamePlan) -> Array[Stmt] {
+  let export_renamed = if path == entry_path {
+    stmts
+  } else {
+    apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+  }
+  if path == entry_path {
+    export_renamed
+  } else {
+    namespace_private_value_stmts(path, export_renamed)
+  }
+}
+
+fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Exception + Fs {
   let plan = build_export_rename_plan(file_paths, file_stmts, entry_path)
   let mut fi = 0
   while fi < Array::length(file_paths) {
     let path = Array::get(file_paths, fi)
     let stmts = Array::get(file_stmts, fi)
-    let export_renamed = if path == entry_path {
-      stmts
-    } else {
-      apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
-    }
-    let namespaced_stmts = if path == entry_path {
-      export_renamed
-    } else {
-      namespace_private_value_stmts(path, export_renamed)
-    }
+    let namespaced_stmts = transformed_file_stmts(entry_path, path, stmts, plan)
     if stmts_have_import_deep(stmts) {
       let import_renames = collect_import_value_renames(plan, path, stmts)
       let skipped_locals = collect_import_alias_collision_locals(stmts)
@@ -222,6 +223,328 @@ fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visit
     }
     fi = fi + 1
   }
+  plan
+}
+
+fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visited: Array[Array[String]]) -> Unit with Exception + Fs {
+  let file_paths = array_empty()
+  let file_stmts = array_empty()
+  collect_parsed_sources_recursive(entry_path, file_paths, file_stmts, visited)
+  let _ = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged)
+  ()
+}
+
+fn coverage_driver_import_error(driver_path: String, raw_path: String, name: String, reason: String) -> Unit with Exception {
+  throw(String::concat("coverage driver ", String::concat(driver_path, String::concat(" import ", String::concat(raw_path, String::concat(" { ", String::concat(name, String::concat(" } rejected: ", reason))))))))
+}
+
+fn closure_path_index_for_coverage_import(file_paths: Array[String], driver_path: String, raw_path: String, name: String) -> Int with Exception + Fs {
+  if !String::ends_with(raw_path, ".vibe") {
+    coverage_driver_import_error(driver_path, raw_path, name, "use one exact .vibe file path; package/directory imports are unsupported")
+    0 - 1
+  } else {
+    let candidates = resolve_import_path_candidates(dir_of_path(driver_path), raw_path)
+    let mut chosen = 0 - 1
+    let mut matches = 0
+    let mut exists_outside = false
+    let mut ci = 0
+    while ci < Array::length(candidates) {
+      let candidate = Array::get(candidates, ci)
+      let mut fi = 0
+      while fi < Array::length(file_paths) {
+        if Array::get(file_paths, fi) == candidate {
+          chosen = fi
+          matches = matches + 1
+        } else {
+          ()
+        }
+        fi = fi + 1
+      }
+      if Fs::exists(candidate) && matches == 0 {
+        exists_outside = true
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    if matches == 1 {
+      chosen
+    } else if matches > 1 {
+      coverage_driver_import_error(driver_path, raw_path, name, "path resolves more than once inside the compiler closure")
+      0 - 1
+    } else if exists_outside {
+      coverage_driver_import_error(driver_path, raw_path, name, "target exists but is outside the collected compiler closure")
+      0 - 1
+    } else {
+      coverage_driver_import_error(driver_path, raw_path, name, "target file is missing from the collected compiler closure")
+      0 - 1
+    }
+  }
+}
+
+fn stmt_declares_named_ctor(stmt: Stmt, name: String) -> Bool {
+  match stmt {
+    SEnum(_, _, _, ctors, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ctors) && !found {
+        let (ctor_name, _) = Array::get(ctors, i)
+        if ctor_name == name {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    SSuberror(_, _, ctors) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ctors) && !found {
+        let (ctor_name, _) = Array::get(ctors, i)
+        if ctor_name == name {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn coverage_target_unsupported_kind(stmt: Stmt, name: String) -> String {
+  match stmt {
+    SLetMut(stmt_name, _, _) => if stmt_name == name {
+      "mutable global"
+    } else {
+      ""
+    },
+    SExternLet(stmt_name, _) => if stmt_name == name {
+      "extern value"
+    } else {
+      ""
+    },
+    SEnum(_, stmt_name, _, _, _) => if stmt_name == name {
+      "type"
+    } else if stmt_declares_named_ctor(stmt, name) {
+      "constructor"
+    } else {
+      ""
+    },
+    SSuberror(_, stmt_name, _) => if stmt_name == name {
+      "type"
+    } else if stmt_declares_named_ctor(stmt, name) {
+      "constructor"
+    } else {
+      ""
+    },
+    SStruct(_, stmt_name, _, _, _, _) => if stmt_name == name {
+      "type"
+    } else {
+      ""
+    },
+    STypeAlias(_, stmt_name, _, _) => if stmt_name == name {
+      "type"
+    } else {
+      ""
+    },
+    STrait(_, stmt_name, _, _, _, _) => if stmt_name == name {
+      "trait"
+    } else {
+      ""
+    },
+    SModule(_, stmt_name, _) => if stmt_name == name {
+      "module"
+    } else {
+      ""
+    },
+    SEffectDef(_, stmt_name, _, ops) => if stmt_name == name {
+      "effect"
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ops) && !found {
+        let (op_name, _, _) = Array::get(ops, i)
+        if op_name == name {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      if found {
+        "effect operation"
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+fn merged_value_name_count(stmts: Array[Stmt], name: String) -> Int {
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, stmt_name, _, _) => if stmt_name == name {
+        count = count + 1
+      } else {
+        ()
+      },
+      SLetMut(stmt_name, _, _) => if stmt_name == name {
+        count = count + 1
+      } else {
+        ()
+      },
+      SExternLet(stmt_name, _) => if stmt_name == name {
+        count = count + 1
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn resolve_coverage_value_target(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, merged: Array[Stmt], driver_path: String, raw_path: String, original: String) -> String with Exception + Fs {
+  if String::contains(original, "::") {
+    coverage_driver_import_error(driver_path, raw_path, original, "method and qualified targets are unsupported")
+    ""
+  } else {
+    let path_index = closure_path_index_for_coverage_import(file_paths, driver_path, raw_path, original)
+    let target_path = Array::get(file_paths, path_index)
+    let original_stmts = Array::get(file_stmts, path_index)
+    let transformed_stmts = transformed_file_stmts(entry_path, target_path, original_stmts, plan)
+    let mut matches = 0
+    let mut final_name = ""
+    let mut unsupported = ""
+    let mut i = 0
+    while i < Array::length(original_stmts) {
+      let stmt = Array::get(original_stmts, i)
+      match stmt {
+        SLet(_, _, stmt_name, _, _) => if stmt_name == original {
+          matches = matches + 1
+          match Array::get(transformed_stmts, i) {
+            SLet(_, _, transformed_name, _, _) => {
+              final_name = transformed_name
+            },
+            _ => coverage_driver_import_error(driver_path, raw_path, original, "production merge changed the target into a non-value declaration")
+          }
+        } else {
+          ()
+        },
+        _ => {
+          let kind = coverage_target_unsupported_kind(stmt, original)
+          if kind != "" {
+            unsupported = kind
+          } else {
+            ()
+          }
+        }
+      }
+      i = i + 1
+    }
+    if unsupported != "" {
+      coverage_driver_import_error(driver_path, raw_path, original, String::concat("unsupported ", unsupported))
+      ""
+    } else if matches == 0 {
+      coverage_driver_import_error(driver_path, raw_path, original, "no top-level immutable value with that exact name exists in the target file")
+      ""
+    } else if matches > 1 {
+      coverage_driver_import_error(driver_path, raw_path, original, "duplicate top-level value declarations in the target file")
+      ""
+    } else if merged_value_name_count(merged, final_name) != 1 {
+      coverage_driver_import_error(driver_path, raw_path, original, "the production transformed name is not unique in the merged compiler")
+      ""
+    } else {
+      final_name
+    }
+  }
+}
+
+fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_stmts: Array[Stmt], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, merged: Array[Stmt]) -> Unit with Exception + Fs {
+  let renames = array_empty()
+  let imported_locals = array_empty()
+  let imported_finals = array_empty()
+  let mut i = 0
+  while i < Array::length(driver_stmts) {
+    match Array::get(driver_stmts, i) {
+      SImport(raw_path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (original, alias_opt) = Array::get(items, j)
+          let local = match alias_opt {
+            Some(alias) => alias,
+            None => original
+          }
+          if string_array_contains_local(imported_locals, local) {
+            coverage_driver_import_error(driver_path, raw_path, original, String::concat("local import name collides with another request: ", local))
+          } else {
+            let final_name = resolve_coverage_value_target(entry_path, file_paths, file_stmts, plan, merged, driver_path, raw_path, original)
+            if string_array_contains_local(imported_finals, final_name) {
+              coverage_driver_import_error(driver_path, raw_path, original, "multiple requests resolve to the same transformed compiler value")
+            } else {
+              Array::push(imported_locals, local)
+              Array::push(imported_finals, final_name)
+              Array::push(renames, (local, final_name))
+            }
+          }
+          j = j + 1
+        }
+      },
+      SReExport(raw_path, _) => coverage_driver_import_error(driver_path, raw_path, "*", "re-export requests are unsupported"),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let driver_values = array_empty()
+  let mut di = 0
+  while di < Array::length(driver_stmts) {
+    let stmt = Array::get(driver_stmts, di)
+    let driver_name = match stmt {
+      SLet(_, _, name, _, _) => name,
+      SLetMut(name, _, _) => name,
+      SExternLet(name, _) => name,
+      _ => ""
+    }
+    if driver_name != "" {
+      if string_array_contains_local(driver_values, driver_name) {
+        coverage_driver_import_error(driver_path, driver_path, driver_name, "duplicate top-level value in the driver")
+      } else if string_array_contains_local(imported_locals, driver_name) {
+        coverage_driver_import_error(driver_path, driver_path, driver_name, "driver top-level value collides with an imported local name")
+      } else if merged_value_name_count(merged, driver_name) > 0 {
+        coverage_driver_import_error(driver_path, driver_path, driver_name, "driver top-level value collides with the merged compiler")
+      } else {
+        Array::push(driver_values, driver_name)
+      }
+    } else {
+      ()
+    }
+    di = di + 1
+  }
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged, driver_stmts, array_empty(), renames)
+}
+
+/// #1633: merge the compiler entry with one coverage driver whose imports name
+/// exact source files in that compiler closure. Import items may expose only
+/// top-level immutable values. Their references are rewritten to the exact
+/// names produced by the ordinary export/private namespacing pipeline; no
+/// guessed mangling or visibility broadening is involved.
+export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String) -> String with Exception + Fs {
+  let file_paths = array_empty()
+  let file_stmts = array_empty()
+  let visited = path_set_new()
+  collect_parsed_sources_recursive(entry_path, file_paths, file_stmts, visited)
+  let merged = empty_stmt_array()
+  let plan = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged)
+  let driver_source = ingest_source_text_fs(driver_path, Fs::read_file(driver_path))
+  let driver_stmts = parse_program(lex(driver_source))
+  append_coverage_driver_stmts(entry_path, driver_path, driver_stmts, file_paths, file_stmts, plan, merged)
+  print_program(merged)
 }
 
 /// #726: the merged whole program AS SOURCE TEXT. Resolves imports from the

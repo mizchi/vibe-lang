@@ -34,20 +34,17 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   exit 1
 }
 
-# Churn, the if branch, the match branch, and (since #1332) the nested lambda
-# body and a lambda created inside a module initializer each have one eligible
-# literal -- five in total. Alias/push/return, an array a DEEPER lambda
-# captures, and an array bound directly in an initializer's own `_start` frame
-# still use the linear fallback. This guards typed-ref/i64 sibling-control-flow
-# regressions, the lambda/capture boundary, and the frame-vs-module halves of
-# the eligibility split, all at Wasm emission.
+# Churn, the if branch, the match branch, the #1332 nested-lambda sites, and
+# the #1541 plain local alias each have one eligible literal -- six in total.
+# Push/return (this mixed fixture disables the direct ABI island), a deeper
+# lambda capture, and an initializer-frame binding retain the linear fallback.
 python3 - "$OUT" <<'PY'
 import sys
 wasm = open(sys.argv[1], "rb").read()
 count = wasm.count(b"\xfb\x07\x0c")
-if count != 5:
+if count != 6:
     raise SystemExit(
-        "[gc-heap-accounting] FAIL: expected five eligible native "
+        "[gc-heap-accounting] FAIL: expected six eligible native "
         f"array.new_default type 12 instructions, found {count}"
     )
 PY
@@ -56,6 +53,58 @@ PY
 # records DO describe typed native-array locals, so this is the check that the
 # lambda code section declares (ref null $array) for exactly those slots.
 wasm-tools validate --features all "$OUT" >/dev/null
+
+# #1541 direct-call ABI pair. The positive fixture has one native literal that
+# crosses a typed Array[Int] parameter/result/alias chain. The fallback fixture
+# contains the same candidate signature plus a generic crossing; its complete
+# component must retain the tagged-i64 ABI, so no native literal is emitted.
+DIRECT_OUT="$WORK/direct_array_abi.wasm"
+DIRECT_OUT_REL="${DIRECT_OUT#"$ROOT_DIR"/}"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  fixtures/gc_direct_array_abi_test.vibe "$DIRECT_OUT_REL" __no_entry__ >/dev/null
+wasm-tools validate --features all "$DIRECT_OUT" >/dev/null
+"$RUNNER" "$DIRECT_OUT" >/dev/null
+
+compile_direct_abi_fallback() {
+  local fixture="$1"
+  local output="$2"
+  local output_rel="${output#"$ROOT_DIR"/}"
+  VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+    "$fixture" "$output_rel" __no_entry__ >/dev/null
+  wasm-tools validate --features all "$output" >/dev/null
+  "$RUNNER" "$output" >/dev/null
+}
+
+FALLBACK_OUT="$WORK/direct_array_abi_fallback.wasm"
+SHADOW_FALLBACK_OUT="$WORK/direct_array_abi_shadow_fallback.wasm"
+EXPORT_FALLBACK_OUT="$WORK/direct_array_abi_export_fallback.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_abi_fallback_test.vibe "$FALLBACK_OUT"
+compile_direct_abi_fallback fixtures/gc_direct_array_abi_shadow_fallback_test.vibe "$SHADOW_FALLBACK_OUT"
+compile_direct_abi_fallback fixtures/gc_direct_array_abi_export_fallback_test.vibe "$EXPORT_FALLBACK_OUT"
+
+python3 - "$DIRECT_OUT" "$FALLBACK_OUT" "$SHADOW_FALLBACK_OUT" "$EXPORT_FALLBACK_OUT" <<'PY'
+import sys
+positive = open(sys.argv[1], "rb").read().count(b"\xfb\x07\x0c")
+fallbacks = {
+    "generic": open(sys.argv[2], "rb").read().count(b"\xfb\x07\x0c"),
+    "spelling shadow": open(sys.argv[3], "rb").read().count(b"\xfb\x07\x0c"),
+    "export": open(sys.argv[4], "rb").read().count(b"\xfb\x07\x0c"),
+}
+if positive != 1:
+    raise SystemExit(
+        "[gc-heap-accounting] FAIL: expected one #1541 direct-ABI native "
+        f"literal, found {positive}"
+    )
+for label, count in fallbacks.items():
+    if count != 0:
+        raise SystemExit(
+            f"[gc-heap-accounting] FAIL: {label} boundary mixed a typed "
+            f"reference into the fallback component ({count} native literals)"
+        )
+PY
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2
@@ -95,11 +144,9 @@ case "$ALLOCATED" in
     ;;
 esac
 
-# The fixture's 8192 churn literals are native GC arrays. The current fixture
-# also deliberately executes several linear fallback examples (alias, push,
-# return, a module-level initializer, and since #1332 an array a DEEPER lambda
-# captures), so its observed fixed baseline is 396 B -- it has moved 228 -> 304
-# -> 380 -> 396 as those fallback cases were added.
+# The fixture's 8192 churn literals are native GC arrays. It also deliberately
+# executes several linear fallback examples (push, return, a module-level
+# initializer, and a deeper-lambda capture). The alias is native since #1541.
 # Do not assert that exact value: startup/layout and fallback
 # fixture changes may move it. The old linear churn lowering was hundreds of
 # KiB, therefore this bounded allowance remains the regression property.

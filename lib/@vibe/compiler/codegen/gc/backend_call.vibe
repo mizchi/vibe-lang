@@ -70,6 +70,7 @@ import @vibe/compiler/codegen/common_extractors {
 import @vibe/compiler/codegen/wasm_emit {
   emit_array_get,
   emit_array_len,
+  emit_array_new_default,
   emit_array_set,
   emit_block_i64,
   emit_block_void,
@@ -287,24 +288,118 @@ fn gc_native_array_receiver_slot(args: Array[Expr], local_names: Array[String], 
   }
 }
 
+fn gc_direct_abi_call_index(ctx: CompileCtxGc, name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(ctx.gc_direct_abi_names) {
+    if found < 0 && Array::get(ctx.gc_direct_abi_names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn gc_expr_is_native_array_ref(expr: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match expr {
+    EIdent(name, _) => {
+      let slot = find_local_slot(local_names, name)
+      slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot)
+    },
+    EArray(_) => true,
+    ECall(EIdent(name, _), _, _) => {
+      let idx = gc_direct_abi_call_index(ctx, name)
+      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
+    },
+    _ => false
+  }
+}
+
+/// Emit one value already proven to inhabit the direct reference lane.
+/// Unsupported shapes are an internal proof failure and abort compilation;
+/// they are never reinterpreted as i64.
+fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  match expr {
+    EIdent(name, _) => {
+      let slot = find_local_slot(local_names, name)
+      if slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot) {
+        emit_local_get(buf, slot)
+        next_local
+      } else {
+        throw("gc direct ABI proof mismatch: expected native array local")
+      }
+    },
+    EArray(elems) => {
+      let slot = next_local
+      Array::push(local_names, "__gc_direct_array_arg")
+      Array::push(ctx.gc_native_array_locals, slot)
+      Array::push(ctx.gc_native_array_local_types, slot)
+      emit_i32_const(buf, Array::length(elems))
+      emit_array_new_default(buf, ctx.gc_native_array_type_idx)
+      emit_local_set(buf, slot)
+      let mut nl = next_local + 1
+      let mut i = 0
+      while i < Array::length(elems) {
+        emit_local_get(buf, slot)
+        emit_i32_const(buf, i)
+        nl = ce(buf, Array::get(elems, i), local_names, nl, ld)
+        emit_array_set(buf, ctx.gc_native_array_type_idx)
+        i = i + 1
+      }
+      emit_local_get(buf, slot)
+      nl
+    },
+    ECall(callee, args, _) => match callee {
+      EIdent(name, _) => {
+        let idx = gc_direct_abi_call_index(ctx, name)
+        if idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx) {
+          compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce)
+        } else {
+          throw("gc direct ABI proof mismatch: call does not return a native array")
+        }
+      },
+      _ => throw("gc direct ABI proof mismatch: indirect native array call")
+    },
+    _ => throw("gc direct ABI proof mismatch: unsupported native array expression")
+  }
+}
+
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   match callee {
     EIdent(fname, _) => {
       let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
-      if native_slot >= 0 && fname == "Array::length" && Array::length(args) == 1 {
-        emit_local_get(buf, native_slot)
+      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx))
+      if native_receiver && fname == "Array::length" && Array::length(args) == 1 {
+        let nl = if native_slot >= 0 {
+          emit_local_get(buf, native_slot)
+          next_local
+        } else {
+          gc_compile_native_array_ref(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+        }
         emit_array_len(buf)
         emit_i64_extend_i32_u(buf)
-        return next_local
-      } else if native_slot >= 0 && fname == "Array::get" && Array::length(args) == 2 {
-        emit_local_get(buf, native_slot)
-        let nl = ce(buf, Array::get(args, 1), local_names, next_local, ld)
+        return nl
+      } else if native_receiver && fname == "Array::get" && Array::length(args) == 2 {
+        let nl0 = if native_slot >= 0 {
+          emit_local_get(buf, native_slot)
+          next_local
+        } else {
+          gc_compile_native_array_ref(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+        }
+        let nl = ce(buf, Array::get(args, 1), local_names, nl0, ld)
         emit_i32_wrap_i64(buf)
         emit_array_get(buf, ctx.gc_native_array_type_idx)
         return nl
-      } else if native_slot >= 0 && fname == "Array::set" && Array::length(args) == 3 {
-        emit_local_get(buf, native_slot)
-        let nl1 = ce(buf, Array::get(args, 1), local_names, next_local, ld)
+      } else if native_receiver && fname == "Array::set" && Array::length(args) == 3 {
+        let nl0 = if native_slot >= 0 {
+          emit_local_get(buf, native_slot)
+          next_local
+        } else {
+          gc_compile_native_array_ref(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+        }
+        let nl1 = ce(buf, Array::get(args, 1), local_names, nl0, ld)
         emit_i32_wrap_i64(buf)
         let nl2 = ce(buf, Array::get(args, 2), local_names, nl1, ld)
         emit_array_set(buf, ctx.gc_native_array_type_idx)
@@ -1897,10 +1992,15 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         if fn_idx_in_list >= 0 {
           let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
           let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
+          let direct_idx = gc_direct_abi_call_index(ctx, fname)
           let mut nl = next_local
           let mut ci = 0
           while ci < Array::length(args) {
-            nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
+            if direct_idx >= 0 && Array::get(Array::get(ctx.gc_direct_abi_param_refs, direct_idx), ci) {
+              nl = gc_compile_native_array_ref(buf, Array::get(args, ci), local_names, nl, ctx, ld, ce)
+            } else {
+              nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
+            }
             ci = ci + 1
           }
           if ctx.func_offset > 0 {

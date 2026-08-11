@@ -9,6 +9,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   compile_source_wasi_only_coverage,
   compile_source_wasi_only_rc,
   compile_source_wasi_only_rc_shadow,
+  coverage_driver_program_source_fs,
   maybe_wrap_stdin_provider_core,
   merged_program_source_fs,
   reject_stdin_provider_core
@@ -1289,6 +1290,41 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // Adding this adapter -> merge_sources import edge is safe now that the
   // committed bundle is itself merge-built (zero duplicate defs, no
   // first-match roulette to reshuffle).
+  // #1633 internal coverage-driver exposure. This is deliberately a separate
+  // mode from VIBE_EMIT_MERGED_SOURCE: ordinary flatten output remains byte-
+  // for-byte governed by merged_program_source_fs, while this mode appends one
+  // driver after resolving its exact-file value imports through the same
+  // production rename plan. It is not surfaced as an end-user CLI command.
+  if Env::get("VIBE_EMIT_COVERAGE_DRIVER_SOURCE") == "1" {
+    return handle {
+      if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
+        throw("VIBE_EMIT_COVERAGE_DRIVER_SOURCE cannot be combined with VIBE_EMIT_MERGED_SOURCE")
+      } else {
+        ()
+      }
+      let driver_path = own_host_string(Env::get("VIBE_COVERAGE_DRIVER_PATH"))
+      if driver_path == "" {
+        throw("VIBE_EMIT_COVERAGE_DRIVER_SOURCE requires VIBE_COVERAGE_DRIVER_PATH")
+      } else {
+        ()
+      }
+      if entry_name == "" {
+        throw("VIBE_EMIT_COVERAGE_DRIVER_SOURCE requires the driver entry name")
+      } else {
+        ()
+      }
+      let merged_src = coverage_driver_program_source_fs(input_path, driver_path)
+      // Prune before the pinned seed type-checks the result. The full no-DCE
+      // compiler contains intentionally dormant generic scaffolding that is
+      // not a valid standalone program; the driver and every exact target it
+      // reaches remain in the emitted ordinary source.
+      let driver_src = build_module_source_from_source(merged_src, entry_name)
+      Fs::write_file(output_path, driver_src)
+      0
+    } with Exception {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  }
   if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
     return handle {
       let merged_src = merged_program_source_fs(input_path)
