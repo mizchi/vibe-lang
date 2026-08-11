@@ -1522,7 +1522,7 @@ does **not** by itself complete the stdin lifecycle: the completion future must
 still be read, its result checked, and then released. This corrects the stale
 short-hand that described stream drop alone as a completed stdin close.
 
-#### Provider-aware contract (shadow lifecycle + checker-hidden core route)
+#### Provider-aware contract (shadow lifecycle + atomic public source route)
 
 The #1539 prerequisite is a distinct, opaque provider-aware handle whose
 adapter state retains both owned ends from `read-via-stream`:
@@ -1534,8 +1534,17 @@ read opaque handle -> byte | EOF                  with Async
 close opaque handle -> lifecycle-complete result  with Async
 ```
 
-This is an internal/lowering contract, not a proposed public Vibe API. Its
-observable authority and effect requirements are fixed as follows:
+The compiler now exposes this contract through one unforgeable nominal scalar:
+
+```text
+Stdin::read_via_stream() -> StdinStream with Stdin
+StdinStream::next(StdinStream) -> Int with Async
+StdinStream::close(StdinStream) -> Unit with Async
+```
+
+`StdinStream` is neither `Int`, generic `HostStream`, nor `Stream[T]`; source
+cannot construct it and it is not `Send`. Its observable authority and effect
+requirements are fixed as follows:
 
 - Acquisition is synchronous but requires `Stdin` authority. It calls
   `read-via-stream` once and transfers ownership of **both** returned readable
@@ -1574,41 +1583,32 @@ canonical stream handle, and completion-future handle never cross into the
 compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
 bytes or tagged `-1` after settlement and close returns tagged zero.
 
-This does **not** make the route source-reachable: all three registry rows have
-`checker_visible=false`, there is no AST lowering that injects them, and no
-`Stdin`/`ByteStream` API was added. This is deliberate authority preservation,
-not missing plumbing. `stdin_stream`, generic HostStream, and named
-future/stream behavior remain unchanged. A core that mixes the provider imports
-with named future/stream imports is explicitly rejected in this bounded slice.
-Stage 4 (public authority/type/error and effect-level Suspend-token lowering)
-therefore remains undecided:
+The three raw registry rows remain `checker_visible=false`; three public rows
+lower atomically through compiler-owned wrapper functions to those same exact
+imports. The wrappers are required for first-class references/aliases because
+raw imports do not accept the hidden closure-environment argument. Source emits
+only the exact `vibe.stdin_provider_*` core imports and the nominal
+`wasi:cli/types@0.3.0` + `wasi:cli/stdin@0.3.0` component imports.
 
+`stdin_stream`, generic HostStream, and named future/stream behavior remain
+unchanged. `host_stream_named("stdin")` is reserved and rejected. A source core
+that mixes stdin-provider imports with named future/stream imports is explicitly
+rejected in this bounded slice. GC and standalone/non-Async-entry compilation
+are also rejected explicitly; linear and RC component lanes are supported.
 
-1. **ABI boundary:** introduce a provider-specific lowering/adapter route for
-   synchronous `read-via-stream` acquisition. Keep it distinct from
-   `host_stream_named`; retain both readable handles behind an opaque handle.
-2. **Read path:** implement the provider handle's Async read with the canonical
-   stream wait protocol. A BLOCKED read joins its stream end to a waitable set,
-   waits for the expected event, unjoins that end, and drops the set exactly
-   once before retrying/decoding the status.
-3. **Settlement path:** implement one shared Async settlement transition used
-   by both EOF and early close. It drops the stream end if still owned, waits
-   for the completion future when blocked, unjoins before dropping every
-   waitable set, accepts only completion success, then drops the future end.
-4. **Surface migration:** only after the above is proven, decide how the
-   provider path feeds a Vibe consumer. The existing
-   `stdin_stream(chunk_size) -> (() -> Option[String] with Stdin)` remains
-   unchanged in this prerequisite; it continues to use its legacy synchronous
-   `read_n` closure and is not evidence that the provider contract exists.
-5. **Regression gate:** extend implementation validation with the merged
-   executable probe/gate above for both drain-to-EOF and early-drop success,
-   plus explicit lifecycle-error coverage before any public error mapping is
-   proposed.
+The provider permits multiple active acquisitions. Adapter IDs allocate
+monotonically from 16 slots and are never recycled: capacity overflow traps
+before another canonical acquisition, while concurrent/reentrant use of the
+same open slot traps on its non-open phase. Successful EOF/close remains
+idempotent through aliases. Wasmtime 47 source gates measure drain, early close,
+function aliases, a sequential second acquisition, and two simultaneously open
+acquisitions.
 
 Load-bearing invariants for stages 1--3:
 
-- Exactly one acquisition owns exactly one stream end and one completion-future
-  end; neither end may escape as a generic `[3, handle]` HostStream.
+- Each successful acquisition owns exactly one stream end and one
+  completion-future end; up to 16 acquisitions may coexist, and neither end may
+  escape as a generic `[3, handle]` HostStream.
 - EOF and early close converge on one settlement state machine. Once settlement
   begins, subsequent reads/closes are idempotent at the opaque-handle boundary
   and cannot issue a second drop, read, join, or unjoin.
@@ -1630,8 +1630,10 @@ unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
 measurement). The forced completion-tag, wrong-byte, and extra-byte
 expected-trap scenarios are controls of cleanup/fail-closed branches, not
 measurements of provider-generated errors. Each byte-mismatch control settles
-and drops both owned ends through the shared close path before trapping. This
-work makes no runtime, console, or checker-visible/source API change.
+and drops both owned ends through the shared close path before trapping. Those
+shadow-scenario controls introduced no API by themselves; the production
+checker-visible `StdinStream` source/console API is the surface documented in
+§3.18.3 above.
 
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
@@ -1805,7 +1807,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **stdin provider / `ByteStream` の p3 接続** (#1539) | **checker-hidden core route まで実装**: shadow lifecycle に加え、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff を実装。raw rows は checker-invisible で public/source lowering は未決定、既存 `stdin_stream(chunk_size)` は未変更 (§3.18.3) | generated shadow + compiled-shaped drain/early-close gate; generic `[3, handle]` `HostStream` は使わず、named future/stream との mix は明示拒否 |
+| **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff を実装。既存 `stdin_stream(chunk_size)` は未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active gate; generic `[3, handle]` `HostStream` は使わず、named future/stream との mix は明示拒否 |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |
