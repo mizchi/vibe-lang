@@ -616,29 +616,42 @@ function runCheck(uri) {
   let diagnostics = [];
   try {
     fs.writeFileSync(tmp, doc.text, "utf8");
-    // `vibe diagnostics` runs the recovering parser and reports EVERY located
-    // syntax error (one per line), or the single located type error on a clean
-    // parse; empty = clean. Be robust: key off STDOUT (a clean file may exit
-    // non-zero) and accept ONLY well-formed located lines ("line N:M: <msg>"),
-    // so a stray/garbled line can never become a spurious diagnostic, and never
-    // fabricate one on a tooling hiccup (which would pollute every document).
-    const dres = spawnSync(VIBE_BIN, ["diagnostics", tmp], { encoding: "utf8" });
-    const located = (dres.stdout || "")
+    // `vibe check --single-file` (#1567) runs the recovering parser over the
+    // BUFFER ALONE and reports EVERY located syntax error (one per line), or
+    // the single located type error on a clean parse; empty = clean. Buffer
+    // scope is what an editor needs: the text here is unsaved, so the on-disk
+    // file's imports are not this buffer's imports. (This used to spell it
+    // `vibe diagnostics`, deprecated in favour of the flag -- same compiler
+    // lane, so the reports are identical apart from the `error: ` prefix.)
+    //
+    // Be robust: key off the OUTPUT (a clean file may exit non-zero) and accept
+    // ONLY well-formed located lines ("line N:M: <msg>"), so a stray/garbled
+    // line can never become a spurious diagnostic, and never fabricate one on
+    // a tooling hiccup (which would pollute every document).
+    //
+    // Errors land on stdout and the #1129 soft-pass warnings on stderr (they
+    // are advisory and must not decide the exit code), so read BOTH -- an
+    // editor wants to see an unused import, it just must not be told the file
+    // is broken. Severity comes from the `warning: ` marker in the message
+    // itself rather than from which stream carried it, so a future routing
+    // change cannot silently turn warnings into errors in the editor.
+    const dres = spawnSync(VIBE_BIN, ["check", "--single-file", tmp], { encoding: "utf8" });
+    const located = `${dres.stdout || ""}\n${dres.stderr || ""}`
       .split(/\r?\n/)
-      .map((l) => l.replace(/\s+$/, ""))
+      .map((l) => l.replace(/\s+$/, "").replace(/^error:\s+/, ""))
       .filter((l) => /^\s*line\s+\d+:\d+:/.test(l));
     if (located.length) {
       diagnostics = located.map((message) => ({
         range: locate(doc.text, message),
-        severity: 1, // Error
+        severity: /^\s*line\s+\d+:\d+(-\d+:\d+)?:\s*warning:/.test(message) ? 2 : 1,
         source: "vibe",
         message: message.trim(),
       }));
     } else {
-      // No located diagnostics: either the file is clean OR `vibe diagnostics`
-      // could not produce them in this environment. Confirm with `vibe check`
-      // (the always-available compile path) — a real error surfaces a single
-      // located diagnostic; a clean file yields none.
+      // No located diagnostics: either the file is clean OR the single-file
+      // pass could not produce them in this environment. Confirm with a plain
+      // `vibe check` (the always-available compile path) — a real error
+      // surfaces a single located diagnostic; a clean file yields none.
       const res = spawnSync(VIBE_BIN, ["check", tmp], { encoding: "utf8" });
       const out = `${res.stdout || ""}\n${res.stderr || ""}`;
       if ((res.status && res.status !== 0) || /\berror:/.test(out)) {

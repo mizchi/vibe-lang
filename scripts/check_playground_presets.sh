@@ -64,15 +64,15 @@ count=0
 while IFS=$'\t' read -r path pid; do
   [ -n "$path" ] || continue
   count=$((count + 1))
-  out="$("$VIBE" check "$path" 2>&1)" || true
-  case "$out" in
-    ok:*) ;;
-    *)
-      fail=$((fail + 1))
-      echo "[playground-presets] FAIL: preset '$pid' ($SRC)" >&2
-      printf '%s\n' "$out" | head -3 | sed 's/^/                      /' >&2
-      ;;
-  esac
+  # #1567 slice 2: judge by EXIT STATUS, not by matching an `ok:` line. A clean
+  # check is now silent (empty output + exit 0), so pattern-matching the output
+  # would report every clean preset as broken -- with an empty reason, since
+  # there is no diagnostic to print.
+  if out="$("$VIBE" check "$path" 2>&1)"; then :; else
+    fail=$((fail + 1))
+    echo "[playground-presets] FAIL: preset '$pid' ($SRC)" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/                      /' >&2
+  fi
 done < "$MANIFEST"
 
 if [ "$fail" -gt 0 ]; then

@@ -72,11 +72,10 @@ known_hit=0
 
 for f in examples/*.vibe; do
   checked=$((checked + 1))
-  out="$("$VIBE" check "$f" 2>&1)" || true
-  case "$out" in
-    ok:*) ok=1 ;;
-    *)    ok=0 ;;
-  esac
+  # #1567 slice 2: judge by EXIT STATUS, not by matching an `ok:` line. A clean
+  # check is now silent (empty output + exit 0), so pattern-matching the output
+  # would report every clean example as a failure.
+  if out="$("$VIBE" check "$f" 2>&1)"; then ok=1; else ok=0; fi
   if [ "$ok" -eq 1 ]; then
     if is_known "$f"; then
       fixed_known+=("$f")
