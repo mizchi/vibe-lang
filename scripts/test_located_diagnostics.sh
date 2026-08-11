@@ -120,6 +120,35 @@ expect_missing "no [@off= marker leak (unknown name)" "[@off=" \
 expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
   'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
+# #1567: EXACTLY ONE location per diagnostic, and it must be the crime scene.
+#
+# A per-module error is rendered `<path>: line N:C: <msg>` and then handed to a
+# second, entry-level locate pass. That pass only recognized a message as
+# already-located when the location sat at index 0, so the path-prefixed shape
+# fell through to the first-occurrence heuristic and got a SECOND location
+# glued to its front -- the first textual occurrence of the symbol, i.e. its
+# DECLARATION, not the call that is actually wrong:
+#
+#   error: line 1:12: /tmp/x.vibe: line 3:3-4: function arity mismatch for g
+#
+# Both numbers are real positions of `g`, so nothing looks broken; the leading
+# one is just wrong, and it is the one a reader or an `^line N:C`-parsing LSP
+# takes. Pin the count (one `line N:C:`) and the value (line 3, the call).
+locdup="$WORK/dup.vibe"
+printf 'export let g = (a: Int, b: Int) -> Int { a + b }\nexport fn main() -> Int {\n  g(1)\n}\n' > "$locdup"
+dup_out="$("$VIBE" check "$locdup" 2>&1 || true)"
+dup_n="$(printf '%s' "$dup_out" | grep -oE 'line [0-9]+:[0-9]+' | wc -l | tr -d ' ')"
+if [ "$dup_n" = "1" ]; then
+  echo "ok: same-file arity mismatch carries exactly one location"; pass=$((pass + 1))
+else
+  echo "FAIL: expected 1 location, got $dup_n (in: $dup_out)" >&2; fail=$((fail + 1))
+fi
+if printf '%s' "$dup_out" | grep -qE 'line 3:3'; then
+  echo "ok: the location is the call site, not the declaration"; pass=$((pass + 1))
+else
+  echo "FAIL: expected the call site (line 3:3) in: $dup_out" >&2; fail=$((fail + 1))
+fi
+
 # a good program -> check passes (no error)
 printf 'export let main = () -> Int { 40 + 2 }\n' > "$WORK/ok.vibe"
 if "$VIBE" check "$WORK/ok.vibe" >/dev/null 2>&1; then

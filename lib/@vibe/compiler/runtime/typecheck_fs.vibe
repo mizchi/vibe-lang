@@ -3009,11 +3009,56 @@ fn locate_unused_import_msg(source: String, msg: String) -> String {
     }
   }
 }
+/// Does `msg` already carry a `line N:C` location?
+///
+/// Two shapes reach the final locate pass already located:
+///   `line 3:3-4: <msg>`                 -- located, not yet path-prefixed
+///   `/path/to/mod.vibe: line 3:3-4: ..` -- located AND path-prefixed by the
+///                                          per-module pass (see the
+///                                          `job.path + ": "` concat below)
+///
+/// The second shape used to slip past the guard, which only tested for the
+/// location at index 0. A path-prefixed message then went through the
+/// first-occurrence heuristic AGAIN -- against the ENTRY module's source, which
+/// is not necessarily the source the error came from -- and got a SECOND,
+/// earlier location glued to its front:
+///
+///   error: line 1:12: /tmp/x.vibe: line 3:3-4: function arity mismatch for g
+///          ^^^^^^^^^ g's DECLARATION      ^^^^^^^^ the actual call site
+///
+/// Both locations are real positions of `g`, so nothing looks malformed; the
+/// first one is simply the wrong one, and it is the one a reader (or an LSP
+/// parsing `^line N:C`) takes. Reporting a confident wrong location is worse
+/// than reporting none, so recognize the path-prefixed shape too.
+///
+/// Anchored on the FIRST `: ` in the message: the prefix is a file path, which
+/// does not contain `: `, so a `: line N` occurring later (inside the message
+/// prose) cannot be mistaken for the location prefix.
+fn diag_already_located(msg: String) -> Bool {
+  let lead = "line "
+  if String::index_of(msg, lead) == 0 {
+    parse_offset_digits(msg, String::length(lead), String::length(lead) + 1) >= 0
+  } else {
+    let sep = String::index_of(msg, ": ")
+    if sep < 0 {
+      false
+    } else {
+      let after = sep + 2
+      let rest = String::substring(msg, after, String::length(msg))
+      if String::index_of(rest, lead) == 0 {
+        parse_offset_digits(rest, String::length(lead), String::length(lead) + 1) >= 0
+      } else {
+        false
+      }
+    }
+  }
+}
+
 /// First-occurrence heuristic locator (the original behavior). Kept separate so
 /// the offset-marker path can fall through to it on the marker-stripped message.
 fn locate_type_error_heuristic(source: String, msg: String) -> String {
   // Already located (e.g. a parse error that bubbled here)? leave it.
-  if String::index_of(msg, "line ") == 0 {
+  if diag_already_located(msg) {
     msg
   } else {
     let with_name = locate_by_marker(source, msg, "unknown name: ")
