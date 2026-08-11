@@ -22,6 +22,11 @@ bash scripts/check_builtin_parity.sh
 # Static check, so it runs here with the other pre-build checks.
 bash scripts/check_inline_builtin_capture.sh
 
+# #1587: a fixture with `test` blocks that no lane runs is coverage that does
+# not exist. Pure shell + grep (~2s), so it runs before the multi-minute
+# selfbuild rather than after it.
+bash scripts/check_fixture_execution.sh
+
 # Capability-only gate for the future TDRE5 immutable cache publisher. The
 # builtin remains unused by compiler source until the bootstrap seed is bumped.
 node scripts/test_immutable_publish_plumbing.js
@@ -1551,39 +1556,62 @@ fi
 rm -rf "$drvdir"
 echo "[compiler-gate] derive(Ord/Show) structural-generation regression ok"
 
-# 15b. extended derive(...) regression (#638): enum `derive(Ord/Show)`, struct +
-#      enum `derive(Default)`, and `derive(Hash)` (Map-key usability). Each real
-#      fixture is a `test "..."`-block suite; compile it through the fresh stage2
-#      and run `_start` — every `assert` traps on failure, so a clean run == all
-#      blocks passed. Covers multiple-derive (`derive(Eq, Ord, Show, Hash)`) too.
-echo "[compiler-gate] 15b/15 extended derive (enum Ord/Show, Default, Hash)"
-for fx in \
-  fixtures/derive_ord_show_test.vibe \
-  fixtures/derive_enum_ord_show_test.vibe \
-  fixtures/derive_default_test.vibe \
-  fixtures/derive_hash_test.vibe \
-  fixtures/eq_array_option_fields.vibe \
-  fixtures/bool_interp_test.vibe \
-  fixtures/shadow_scope_test.vibe; do
-  fxout="_build/_gate_derive_ext_$(basename "${fx%.vibe}").wasm"
-  rm -f "$fxout" "$fxout.diag"
-  # ADR-0069: these are test-block suites with no `_start` of their own — the
-  # test-runner `_start` synthesis needs the explicit `__no_entry__` sentinel
-  # now (an unknown entry name is a compile error).
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
-  if [ ! -s "$fxout" ]; then
-    echo "[compiler-gate] FAIL: $fx did not compile" >&2
-    cat "$fxout.diag" 2>/dev/null >&2; exit 1
-  fi
-  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-      --invoke _start "$fxout" >/dev/null 2>&1; then
-    echo "[compiler-gate] FAIL: $fx has a failing test (assert trapped)" >&2
-    exit 1
-  fi
-  rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
-done
+# Runs each given fixture as a test-block suite through the fresh stage2:
+# compile with the `__no_entry__` sentinel (ADR-0069 — these files have no
+# `_start` of their own, and the test-runner `_start` synthesis needs the
+# explicit sentinel now that an unknown entry name is a compile error), then
+# run `_start`. Every `assert` traps on failure, so a clean run == all blocks
+# in the file passed.
+#
+# #1587: callers pass a GLOB, never a hand-written list. Three sections below
+# used to carry byte-identical copies of this loop over enumerations that every
+# fixture-adding PR appended to — so queued PRs collided on the same line, and
+# a fixture committed without the gate edit was silently never executed. With a
+# glob, a fixture that matches the convention runs the moment it lands, and
+# scripts/check_fixture_execution.sh fails the gate if some test-block fixture
+# is picked up by no lane at all.
+run_test_block_fixtures() {
+  local label="$1"; shift
+  local fx fxout
+  [ "$#" -gt 0 ] || { echo "[compiler-gate] FAIL: $label matched no fixtures" >&2; exit 1; }
+  for fx in "$@"; do
+    # An unmatched glob comes through literally (nullglob is off); catch that
+    # here rather than reporting it as a compile failure of a missing file.
+    [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
+    fxout="_build/_gate_tbf_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile ($label)" >&2
+      cat "$fxout.diag" 2>/dev/null >&2; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test (assert trapped) ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+  done
+}
+
+# 15b. extended derive(...) regression (#638 / #694): enum `derive(Ord/Show)`,
+#      struct + enum `derive(Default)`, `derive(Eq)`, and `derive(Hash)`
+#      including transparent Map keys — `map_key_to_string = [K: Hash](key) ->
+#      K::hash_key(key)` threads the witness dict (#684) through the `[K: Hash]`
+#      `get_by`/`has_by`/`get_or_by` chain, with a nested-aggregate key proving
+#      Layer-2 recursion. Covers multiple-derive (`derive(Eq, Ord, Show, Hash)`).
+#
+#      The set is `fixtures/derive_*_test.vibe`, not a list: a new derive
+#      fixture that follows the convention is covered without touching this
+#      file. (Three fixtures unrelated to derive — eq_array_option_fields,
+#      bool_interp_test, shadow_scope_test — used to ride along here because
+#      this list was the nearest place to append; they are `*_test.vibe` under
+#      fixtures/, so scripts/unit_test_runner.sh runs them through this exact
+#      same harness and nothing is lost by dropping them from the gate copy.)
+echo "[compiler-gate] 15b/15 extended derive (enum Ord/Show, Default, Eq, Hash + Map keys)"
+run_test_block_fixtures "extended derive" fixtures/derive_*_test.vibe
 # Unknown-derive negative check: `derive(Foo)` for an unknown trait must error
 # (`unknown trait: Foo`, no wasm emitted), keeping genuinely-unknown derive names
 # rejected while Eq/Ord/Show/Hash/Default are accepted.
@@ -1601,7 +1629,7 @@ if [ -s "$undir/u.wasm" ]; then
   exit 1
 fi
 rm -rf "$undir"
-echo "[compiler-gate] extended derive (enum Ord/Show, Default, Hash) ok"
+echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map keys) ok"
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
@@ -1612,25 +1640,7 @@ echo "[compiler-gate] extended derive (enum Ord/Show, Default, Hash) ok"
 #      early-return-None, Result `?` early-return-Err, and the mixed-type type
 #      error (a negative file that must NOT compile).
 echo "[compiler-gate] 15c/15 railway let*/? Option generalization (#635)"
-for fx in \
-  fixtures/try_let_star_option_test.vibe \
-  fixtures/try_question_option_test.vibe; do
-  fxout="_build/_gate_railway_$(basename "${fx%.vibe}").wasm"
-  rm -f "$fxout" "$fxout.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
-  if [ ! -s "$fxout" ]; then
-    echo "[compiler-gate] FAIL: $fx did not compile" >&2
-    cat "$fxout.diag" 2>/dev/null >&2; exit 1
-  fi
-  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-      --invoke _start "$fxout" >/dev/null 2>&1; then
-    echo "[compiler-gate] FAIL: $fx has a failing test (assert trapped)" >&2
-    exit 1
-  fi
-  rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
-done
+run_test_block_fixtures "railway let*/?" fixtures/try_*_option_test.vibe
 # Mixed Result/Option in one `let*` chain must be a type error (NO implicit
 # conversion): a block returns one type, so a `Result` rest under an `Option`
 # `let*` (or vice-versa) fails the checker. The file must NOT compile.
@@ -1660,33 +1670,10 @@ fi
 rm -rf "$mixdir"
 echo "[compiler-gate] railway let*/? Option generalization ok"
 
-# 15d. derive(Hash) transparent Map keys (#694): a `derive(Hash)` struct is
-#      usable as a Map key through the method-bearing `Hash::hash_key` —
-#      `map_key_to_string = [K: Hash](key) -> K::hash_key(key)` threads the
-#      witness dict (#684) through the `[K: Hash]` `get_by`/`has_by`/`get_or_by`
-#      generic->generic chain, and the derived structural `T::hash_key` (a
-#      recursive `to_string`) is the key. INCLUDES a key with a nested aggregate
-#      field (nested struct + Option + Array) to prove Layer-2 recursion. The
-#      fixture is a `test "..."`-block suite; compile via the fresh stage2 and run
-#      `_start` (a failing `assert` traps, so a clean run == all blocks passed).
-echo "[compiler-gate] 15d/15 derive(Hash) transparent Map keys (#694)"
-hkfx="fixtures/derive_hash_map_key_test.vibe"
-hkout="_build/_gate_derive_hash_map_key.wasm"
-rm -f "$hkout" "$hkout.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$hkfx" "$hkout" __no_entry__ >/dev/null 2>&1
-if [ ! -s "$hkout" ]; then
-  echo "[compiler-gate] FAIL: $hkfx did not compile" >&2
-  cat "$hkout.diag" 2>/dev/null >&2; exit 1
-fi
-if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-    --invoke _start "$hkout" >/dev/null 2>&1; then
-  echo "[compiler-gate] FAIL: $hkfx has a failing test (assert trapped) -> #694 regressed" >&2
-  exit 1
-fi
-rm -f "$hkout" "$hkout.diag" "$hkout.funcmap"
-echo "[compiler-gate] derive(Hash) transparent Map keys ok"
+# 15d was a third byte-identical copy of the test-block-suite loop, for the
+# single fixture `fixtures/derive_hash_map_key_test.vibe` (#694). That name
+# matches 15b's `fixtures/derive_*_test.vibe` glob, so it runs there now and
+# the standalone copy is gone (#1587); 15b's comment carries the #694 rationale.
 
 # 16. trait type parameters / Iterator regression (#636): a method-bearing trait
 #     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be

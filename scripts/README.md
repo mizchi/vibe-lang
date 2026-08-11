@@ -90,6 +90,12 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   was paid down in the 2026-07-28 bulk reformat). `vibe_fmt_apply.sh` (`pkf
   run fmt`) is the write-mode counterpart that applies the formatter across
   the tree; this script only lints.
+- `check_fixture_execution.sh` (+ `fixture_execution_exceptions.txt`) — every
+  `fixtures/**/*.vibe` carrying `test` blocks must be run by some lane (the
+  `unit_test_runner.sh` glob, a `fixtures/typecheck/expected.tsv` verdict row,
+  or a gate that names it) or be listed with a reason. Kills the state where a
+  fixture looks like coverage and is executed by nothing (#1587). Pure shell,
+  ~2s, runs at the top of `compiler_gate.sh` before the selfbuild.
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`
