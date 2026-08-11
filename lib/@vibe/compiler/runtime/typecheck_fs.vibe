@@ -3031,26 +3031,64 @@ fn locate_unused_import_msg(source: String, msg: String) -> String {
 /// parsing `^line N:C`) takes. Reporting a confident wrong location is worse
 /// than reporting none, so recognize the path-prefixed shape too.
 ///
-/// Anchored on the FIRST `: ` in the message: the prefix is a file path, which
-/// does not contain `: `, so a `: line N` occurring later (inside the message
-/// prose) cannot be mistaken for the location prefix.
+/// Recognized by SHAPE, at any position: `line <digits>:<digits>` sitting
+/// either at the start of the message or right after a `: ` delimiter. An
+/// earlier revision anchored on the FIRST `: ` on the theory that a path cannot
+/// contain one -- but `: ` is legal in a POSIX path (`/tmp/foo: bar/x.vibe`),
+/// and there the anchor lands inside the path, the guard returns false, and the
+/// heuristic prepends its wrong location again: the exact bug this is here to
+/// stop (#1628 review, Codex P2). Scanning every candidate makes the answer
+/// depend on the message's shape rather than on assumptions about path
+/// contents.
+///
+/// Erring toward "already located" is the safe direction. A false positive
+/// costs a location the heuristic might have guessed; a false negative
+/// reinstates a CONFIDENTLY WRONG one. Missing information beats misinformation
+/// (docs/issue-triage.md ranks silent-wrong above every other failure).
 fn diag_already_located(msg: String) -> Bool {
   let lead = "line "
-  if String::index_of(msg, lead) == 0 {
-    parse_offset_digits(msg, String::length(lead), String::length(lead) + 1) >= 0
-  } else {
-    let sep = String::index_of(msg, ": ")
-    if sep < 0 {
-      false
+  let lead_len = String::length(lead)
+  let total = String::length(msg)
+  let mut cursor = 0
+  let mut found = false
+  while !found && cursor < total {
+    let rel = String::index_of(String::substring(msg, cursor, total), lead)
+    if rel < 0 {
+      cursor = total
     } else {
-      let after = sep + 2
-      let rest = String::substring(msg, after, String::length(msg))
-      if String::index_of(rest, lead) == 0 {
-        parse_offset_digits(rest, String::length(lead), String::length(lead) + 1) >= 0
+      let at = cursor + rel
+      // Delimited: message start, or the `: ` a path prefix ends with. Without
+      // this, prose containing the word "line " would match on shape alone.
+      let delimited = if at == 0 {
+        true
       } else {
-        false
+        at >= 2 && String::char_code_at(msg, at - 2) == ':' && String::char_code_at(msg, at - 1) == ' '
+      }
+      if delimited && location_shape_at(msg, at + lead_len) {
+        found = true
+      } else {
+        cursor = at + lead_len
       }
     }
+  }
+  found
+}
+
+/// Does `msg` read as `<digits>:<digits>` starting at `start`? The `line `
+/// keyword alone is too weak a signal (it occurs in ordinary prose); the
+/// digit-colon-digit shape after it is what makes a location a location.
+fn location_shape_at(msg: String, start: Int) -> Bool {
+  let total = String::length(msg)
+  let mut i = start
+  while i < total && parse_offset_digits(msg, i, i + 1) >= 0 {
+    i = i + 1
+  }
+  if i == start || i >= total {
+    false
+  } else if String::char_code_at(msg, i) != ':' {
+    false
+  } else {
+    i + 1 < total && parse_offset_digits(msg, i + 1, i + 2) >= 0
   }
 }
 

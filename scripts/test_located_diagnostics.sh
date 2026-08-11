@@ -149,6 +149,20 @@ else
   echo "FAIL: expected the call site (line 3:3) in: $dup_out" >&2; fail=$((fail + 1))
 fi
 
+# ...and the guard must not depend on what the PATH contains. `: ` is legal in a
+# POSIX path, so a guard anchored on the first `: ` in the message lands inside
+# the path and falls back to the buggy behaviour (#1628 review, Codex P2).
+locdir="$WORK/foo: bar"
+mkdir -p "$locdir"
+printf 'export let g = (a: Int, b: Int) -> Int { a + b }\nexport fn main() -> Int {\n  g(1)\n}\n' > "$locdir/dup.vibe"
+sep_out="$("$VIBE" check "$locdir/dup.vibe" 2>&1 || true)"
+sep_n="$(printf '%s' "$sep_out" | grep -oE 'line [0-9]+:[0-9]+' | wc -l | tr -d ' ')"
+if [ "$sep_n" = "1" ]; then
+  echo "ok: a path containing ': ' still yields exactly one location"; pass=$((pass + 1))
+else
+  echo "FAIL: expected 1 location for a ': '-containing path, got $sep_n (in: $sep_out)" >&2; fail=$((fail + 1))
+fi
+
 # a good program -> check passes (no error)
 printf 'export let main = () -> Int { 40 + 2 }\n' > "$WORK/ok.vibe"
 if "$VIBE" check "$WORK/ok.vibe" >/dev/null 2>&1; then
