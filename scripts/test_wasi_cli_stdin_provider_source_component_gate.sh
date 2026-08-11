@@ -56,6 +56,21 @@ fn run() -> Int with Stdin + Async {
   if a == 10 && next(alias) == -1 { 43 } else { 0 }
 }
 EOF
+cat >"$OUT/top-level-aliases.vibe" <<'EOF'
+let acquire_alias = Stdin::read_via_stream
+let next_alias = StdinStream::next
+let close_alias = StdinStream::close
+let read_chunk_alias = StdinStream::read_chunk
+
+fn use_provider() -> Int with Stdin + Async {
+  let stream = acquire_alias()
+  let first = next_alias(stream)
+  let chunk = read_chunk_alias(stream, 2)
+  close_alias(stream)
+  match chunk { Some(s) => if first == 10 && String::length(s) == 2 { 55 } else { 0 }, None => 0 }
+}
+fn run() -> Int with Stdin + Async { use_provider() }
+EOF
 cat >"$OUT/second.vibe" <<'EOF'
 fn run() -> Int with Stdin + Async {
   let first = Stdin::read_via_stream()
@@ -238,6 +253,7 @@ compile_component() {
 }
 compile_component drain
 compile_component early-alias
+compile_component top-level-aliases
 compile_component second
 compile_component multiple-active
 compile_component import-alias 0 1 1
@@ -318,6 +334,25 @@ fn run() -> Int with Stdin + Async {
 }
 EOF
 actionable_fail read-chunk-effect-alias run 'effectful call outside effectful context'
+cat >"$OUT/top-acquire-effect-alias.vibe" <<'EOF'
+let acquire_alias = Stdin::read_via_stream
+fn pure_acquire() -> StdinStream { acquire_alias() }
+fn run() -> Int with Stdin + Async { let s = pure_acquire(); StdinStream::close(s); 0 }
+EOF
+actionable_fail top-acquire-effect-alias run 'missing { Stdin }'
+for surface in next close read_chunk; do
+  case "$surface" in
+    next) call='next_alias(stream)'; ret='Int' ;;
+    close) call='close_alias(stream)'; ret='Unit' ;;
+    read_chunk) call='read_chunk_alias(stream, 4)'; ret='Option[String]' ;;
+  esac
+  cat >"$OUT/top-$surface-effect-alias.vibe" <<EOF
+let ${surface}_alias = StdinStream::$surface
+fn pure_alias(stream: StdinStream) -> $ret { $call }
+fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = pure_alias(s); StdinStream::close(s); 0 }
+EOF
+  actionable_fail "top-$surface-effect-alias" run 'effectful call outside effectful context:'
+done
 cat >"$OUT/nominal.vibe" <<'EOF'
 fn run() -> Int with Async { StdinStream::next(1) }
 EOF
@@ -437,6 +472,7 @@ run_lane() {
 }
 run_lane drain 42
 run_lane early-alias 43
+run_lane top-level-aliases 55
 run_lane second 44
 run_lane multiple-active 45
 run_lane import-alias 46

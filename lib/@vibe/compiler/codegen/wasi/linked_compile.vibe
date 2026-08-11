@@ -3312,7 +3312,16 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // EFn def so calls do not route through the 0-param thunk registration
     // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
     rewrite_top_level_fn_alias_refs(stmts)
-    let _ = lc_inject_stdin_surface_wrappers(stmts)
+    let injected_stdin_wrappers = lc_inject_stdin_surface_wrappers(stmts)
+    // Provider references are retargeted to wrapper names by the injection
+    // above. Run the exact-alias rewrite again only when that happened, so a
+    // top-level `let read = StdinStream::read_chunk` resolves to the wrapper
+    // EFn instead of the alias's zero-parameter thunk (invalid wasm).
+    if injected_stdin_wrappers {
+      rewrite_top_level_fn_alias_refs(stmts)
+    } else {
+      ()
+    }
     // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
     // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
     lc_extract_inline_wasm(stmts, iw_names, iw_wats)
