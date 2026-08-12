@@ -30,9 +30,14 @@ if [ $# -lt 2 ]; then
   exit 2
 fi
 
-compiler="${VIBE_COVERAGE_LOCAL_MERGE_COMPILER:-bootstrap/seed/compiler.wasm}"
+# This tool imports the checkout-local prelude/json surface, so compile it with
+# the current instrumented compiler produced by coverage_corpus.sh. The pinned
+# seed may compile emitted ordinary merged source, but can be older than this
+# checkout's package contracts.
+compiler="${VIBE_COVERAGE_LOCAL_MERGE_COMPILER:-_build/coverage/selfhost-corpus/compiler_cov.wasm}"
 if [ ! -s "$compiler" ]; then
-  echo "coverage_local_merge_run.sh: compiler wasm not found: $compiler" >&2
+  echo "coverage_local_merge_run.sh: current compiler wasm not found: $compiler" >&2
+  echo "coverage_local_merge_run.sh: run scripts/coverage_corpus.sh first" >&2
   exit 2
 fi
 
@@ -41,7 +46,7 @@ workdir="${VIBE_COVERAGE_LOCAL_MERGE_WORKDIR:-_build/coverage_local_merge_tool}"
 mkdir -p "$workdir"
 tool="$workdir/coverage_local_merge.wasm"
 
-if [ ! -s "$tool" ] || [ "$src" -nt "$tool" ]; then
+if [ ! -s "$tool" ] || [ "$src" -nt "$tool" ] || [ "$compiler" -nt "$tool" ]; then
   rm -f "$tool.diag" "$tool.funcmap"
   build_status=0
   env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \

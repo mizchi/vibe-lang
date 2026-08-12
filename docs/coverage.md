@@ -303,6 +303,23 @@ scripts/coverage_multimodule.sh
 scripts/coverage_features.sh
 ```
 
+`coverage_corpus.sh` は実行前に生成 compiler source と必須入力の存在・鮮度を
+検証するだけで、自動再生成はしない。不足・stale の場合は
+`bash scripts/ensure_generated.sh` を実行するよう診断する。repository 内の
+host path を Python `relpath` + containment check で作るため、GNU
+`realpath --relative-to` を持たない BSD/macOS でも同じ入力を使う。driver の
+checkout-local merge tool は corpus が生成した現在の `compiler_cov.wasm` で
+compile する（committed seed は compiler が emit した通常の merged source を
+compile する役割だけ）。merge は command status と `base now total` schema を
+検査し、`total > 0`、分母不変、hit 非減少、書込み後 stat 一致を満たさなければ
+coverage run 全体を失敗させる。
+
+#1633 の production exact-path exposure へ移行済みなのは現在 `cov_units.vibe`
+だけ。登録済み active driver の残り **38 本**は legacy raw base のままで、個別に
+exact-path import を宣言して移行する必要がある。`cov_driver.vibe` は現在の
+`coverage_drivers.sh` に登録されない historical monolith なので、移行対象へ戻すか
+退役するかを別途決める。ここで件数へ含めたり暗黙に実行済みとは扱わない。
+
 #### 構造的に到達不能な残差（~19 dark）
 
 80% 到達後も残るのは大半が構造的:

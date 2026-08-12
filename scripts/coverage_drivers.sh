@@ -61,24 +61,22 @@ coverage_driver_compile_with_retries() { # dir entry
   return 1
 }
 
-if [ "${VIBE_COVERAGE_DRIVERS_LIB_ONLY:-0}" = "1" ]; then
-  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
-    return 0
-  fi
-  exit 0
-fi
-
 cd "$ROOT" || exit 1
-mkdir -p "$WORK"
-[ -s "$ACC" ] || { echo "drivers: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
-[ -s "$COMPILER_COV" ] || { echo "drivers: run coverage_corpus.sh first (no current compiler_cov.wasm)" >&2; exit 1; }
+COVERAGE_DRIVERS_SOURCED=0
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  COVERAGE_DRIVERS_SOURCED=1
+else
+  [ -s "$ACC" ] || { echo "drivers: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
+  [ -s "$COMPILER_COV" ] || { echo "drivers: run coverage_corpus.sh first (no current compiler_cov.wasm)" >&2; exit 1; }
+  mkdir -p "$WORK"
+fi
 
 # 1. Regenerate the legacy no-DCE source only for drivers not yet migrated to
 #    exact-path exposure. #1633's first slice migrates `units`; the remaining
 #    drivers deliberately stay on their existing path until separate reviewed
 #    slices move them. A units-only smoke therefore never constructs or trusts
 #    the old raw concatenation.
-if [ -z "$DRIVER_FILTER" ] || [ "$DRIVER_FILTER" != "units" ]; then
+if [ "$COVERAGE_DRIVERS_SOURCED" = "0" ] && { [ -z "$DRIVER_FILTER" ] || [ "$DRIVER_FILTER" != "units" ]; }; then
   echo "[drivers] regenerating legacy no-DCE source ..." >&2
   python3 - "lib/@vibe/compiler" "lib/@vibe/compiler/compiler_sources_manifest.tsv" "cli_adapter.vibe" "$MERGED" <<'PY'
 import os, re, sys
@@ -152,6 +150,44 @@ fi
 # acc.json -- scripts/coverage_local_merge.vibex's `merge` subcommand (native
 # vibe port; see that file's header comment for the algorithm).
 
+coverage_driver_stat() { # acc_path
+  local stat_out hit total extra
+  stat_out="$(bash scripts/coverage_acc_tool_run.sh stat "$1")" || return 1
+  # Command substitution strips trailing newlines, so require exactly one
+  # non-empty record and reject embedded/trailing records fail-closed.
+  [[ "$stat_out" != *$'\n'* ]] || return 1
+  read -r hit total extra <<<"$stat_out"
+  [ -z "${extra:-}" ] || return 1
+  [[ "$hit" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] || return 1
+  [ "$total" -gt 0 ] || return 1
+  [ "$hit" -le "$total" ] || return 1
+  printf '%s %s\n' "$hit" "$total"
+}
+
+coverage_driver_merge_checked() { # acc_path run_path
+  local acc="$1" run="$2" before_stat before_hit before_total merge_out base now total extra after_stat after_hit after_total
+  before_stat="$(coverage_driver_stat "$acc")" || return 1
+  read -r before_hit before_total <<<"$before_stat"
+  merge_out="$(VIBE_COVERAGE_LOCAL_MERGE_COMPILER="$COMPILER_COV" \
+    bash scripts/coverage_local_merge_run.sh merge "$acc" "$run")" || return 1
+  [[ "$merge_out" != *$'\n'* ]] || return 1
+  read -r base now total extra <<<"$merge_out"
+  [ -z "${extra:-}" ] || return 1
+  [[ "$base" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] || return 1
+  [ "$base" -eq "$before_hit" ] || return 1
+  [ "$total" -eq "$before_total" ] || return 1
+  [ "$total" -gt 0 ] || return 1
+  [ "$now" -ge "$base" ] && [ "$now" -le "$total" ] || return 1
+  after_stat="$(coverage_driver_stat "$acc")" || return 1
+  read -r after_hit after_total <<<"$after_stat"
+  [ "$after_hit" -eq "$now" ] && [ "$after_total" -eq "$total" ] || return 1
+  printf '%s %s %s\n' "$base" "$now" "$total"
+}
+
+if [ "$COVERAGE_DRIVERS_SOURCED" = "1" ]; then
+  return 0
+fi
+
 # Run one driver: append <driver>.vibe to the merged source, compile under
 # coverage with the driver entry, run, union into acc.json. Retries: the 36k-line
 # source occasionally OOMs the seed under instrumentation.
@@ -221,10 +257,16 @@ run_driver() { # entry driver_file label
   VIBE_COV_OUT="$d/cov.json" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT" \
     bash "$RUNNER" "$d/m.wasm" >/dev/null 2>&1 || true
   if [ -s "$d/cov.json" ]; then
-    read -r base now tot < <(bash scripts/coverage_local_merge_run.sh merge "$ACC" "$d/cov.json")
-    scaled=$(( (now * 10000 + tot / 2) / tot ))
-    pct="$((scaled / 100)).$(printf '%02d' $((scaled % 100)))"
-    echo "[$label] $base -> $now/$tot ($pct%) (+$((now-base)))"
+    local merge_stat
+    if merge_stat="$(coverage_driver_merge_checked "$ACC" "$d/cov.json")"; then
+      read -r base now tot <<<"$merge_stat"
+      scaled=$(( (now * 10000 + tot / 2) / tot ))
+      pct="$((scaled / 100)).$(printf '%02d' $((scaled % 100)))"
+      echo "[$label] $base -> $now/$tot ($pct%) (+$((now-base)))"
+    else
+      echo "[$label] local coverage merge failed validation" >&2
+      DRIVER_FAILS=$((DRIVER_FAILS + 1))
+    fi
   else
     echo "[$label] no coverage dumped" >&2
     DRIVER_FAILS=$((DRIVER_FAILS + 1))
@@ -243,7 +285,11 @@ mkdir -p _build/covfs2
 printf 'export let m: () -> Int = () -> { 7 }\n' > _build/covfs2/main.vibe
 printf '# group\tpath\ngrp\tmain.vibe\n' > _build/covfs2/compiler_sources_manifest.tsv
 
-base=$(bash scripts/coverage_acc_tool_run.sh stat "$ACC" | cut -d' ' -f1)
+initial_stat="$(coverage_driver_stat "$ACC")" || {
+  echo "drivers: invalid or empty acc.json statistics" >&2
+  exit 1
+}
+read -r base _ <<<"$initial_stat"
 run_driver cov_async_main      scripts/coverage/cov_async.vibe      async       # inlined async/stream builtins
 run_driver cov_builtins_main   scripts/coverage/cov_builtins.vibe   builtins    # Array/String/Map/Bytes builtins
 run_driver cov_lookup_main     scripts/coverage/cov_lookup.vibe     lookup      # builtin name->Type dispatch chains
@@ -285,7 +331,11 @@ run_driver cov_namespace3_main scripts/coverage/cov_namespace3.vibe namespace3  
 run_driver cov_round_main      scripts/coverage/cov_round.vibe      round       # parse_enum_stmt/parse_export_name forms + print_stmt SImpl/SModule/SReExport/SEffectDef variants + has_non_pipe_infix_top ranges
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
-read -r now tot < <(bash scripts/coverage_acc_tool_run.sh stat "$ACC")
+final_stat="$(coverage_driver_stat "$ACC")" || {
+  echo "[drivers] FAIL: invalid final accumulator statistics" >&2
+  exit 1
+}
+read -r now tot <<<"$final_stat"
 scaled=$(( (now * 10000 + tot / 2) / tot ))
 pct="$((scaled / 100)).$(printf '%02d' $((scaled % 100)))"
 echo "[drivers] corpus branches: $base -> $now/$tot ($pct%)  (+$((now-base)))" >&2
