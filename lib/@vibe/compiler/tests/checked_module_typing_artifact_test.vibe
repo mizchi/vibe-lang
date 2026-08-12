@@ -9,6 +9,7 @@ import @vibe/compiler/checker/artifacts {
   checked_exported_interface_artifact_fingerprint_v1,
   checked_exported_interface_artifact_from_checked_program,
   checked_module_typing_artifact_fingerprint_v1,
+  checked_module_typing_artifact_v2_matches_exact_inputs,
   decode_checked_module_typing_artifact_v1,
   decode_checked_module_typing_artifact_v2,
   encode_checked_exported_interface_artifact_v1,
@@ -28,7 +29,10 @@ import @vibe/compiler/runtime {
   check_module_with_typing_artifact_observation,
   checked_module_typing_artifact_construction_attempt_count,
   checked_module_typing_artifact_observation,
-  reset_checked_module_typing_artifact_construction_attempt_count
+  checked_module_typing_artifact_observation_is_fresh_for_job,
+  checked_module_typing_artifact_validation_attempt_count,
+  reset_checked_module_typing_artifact_construction_attempt_count,
+  reset_checked_module_typing_artifact_validation_attempt_count
 }
 
 import @vibe/compiler/syntax {
@@ -527,11 +531,13 @@ test "wrapper around genuine checker failure returns no module artifact bytes" {
   }
 }
 
-test "production module check leaves shadow observation disabled and makes zero construction attempts" {
+test "production module check leaves shadow observation disabled and makes zero construction and validation attempts" {
   reset_checked_module_typing_artifact_construction_attempt_count()
+  reset_checked_module_typing_artifact_validation_attempt_count()
   let outcome = check_module(mt_module_job("default.vibe", "export let api: Int = 1\n"))
   assert(checked_module_typing_artifact_observation(outcome) == None)
   assert(checked_module_typing_artifact_construction_attempt_count() == 0)
+  assert(checked_module_typing_artifact_validation_attempt_count() == 0)
 }
 
 test "opaque successful ModuleOutcome carries one canonical v2 artifact after one construction attempt" {
@@ -606,6 +612,77 @@ test "v1 canonical bytes remain unchanged after v2 introduction" {
       assert(bytes == expected)
       match decode_checked_module_typing_artifact_v1(bytes) {
         Some(decoded) => assert(encode_checked_module_typing_artifact_v1(decoded) == bytes),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "opt-in freshness validator accepts only current exact singleton inputs" {
+  reset_checked_module_typing_artifact_validation_attempt_count()
+  let source = "export let api: Int = 1\n"
+  let job = mt_module_job("fresh.vibe", source)
+  let outcome = check_module_with_typing_artifact_observation(job)
+  assert(checked_module_typing_artifact_observation_is_fresh_for_job(job, outcome))
+  assert(checked_module_typing_artifact_validation_attempt_count() == 1)
+  // Exact source identity rejects trivia-only changes even when provisional
+  // token identity remains intentionally unchanged.
+  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("fresh.vibe", "// changed trivia\nexport let api: Int = 1\n"), outcome))
+  // Parser-visible edits, owner changes, v1/malformed bytes, and absent
+  // observations fail closed.
+  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("fresh.vibe", "export let api: Int = 2\n"), outcome))
+  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("other.vibe", source), outcome))
+  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(job, check_module(job)))
+  let diagnosed = check_module_with_typing_artifact_observation(mt_module_job("bad.vibe", "export let bad: Int = \"no\"\n"))
+  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("bad.vibe", "export let bad: Int = \"no\"\n"), diagnosed))
+}
+
+test "strict v2 exact-input matcher rejects stale closure dependencies and non-v2 bytes" {
+  inspect(checked_module_typing_artifact_v2_matches_exact_inputs("malformed", "owner", "1:2:3", "1:2:5", array_empty()), "false")
+  let checked = check_program_result([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(interface) => {
+      let source_identity = "1:2:3"
+      let implementation_identity = "1:2:5"
+      match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, "owner", source_identity, source_identity, implementation_identity, implementation_identity, [
+        ("dep-a", "1:2:7"),
+        ("dep-b", "1:2:8")
+      ], [
+        ("owner", "provisional_token_stream_v1", implementation_identity)
+      ], interface) {
+        Some(artifact) => {
+          let bytes = encode_checked_module_typing_artifact_v2(artifact)
+          inspect(checked_module_typing_artifact_v2_matches_exact_inputs(bytes, "owner", source_identity, implementation_identity, [
+            ("dep-a", "1:2:7"),
+            ("dep-b", "1:2:8")
+          ]), "true")
+          inspect(checked_module_typing_artifact_v2_matches_exact_inputs(bytes, "owner", source_identity, implementation_identity, [
+            ("dep-b", "1:2:8"),
+            ("dep-a", "1:2:7")
+          ]), "false")
+          inspect(checked_module_typing_artifact_v2_matches_exact_inputs(String::concat(bytes, "trailing"), "owner", source_identity, implementation_identity, [
+            ("dep-a", "1:2:7"),
+            ("dep-b", "1:2:8")
+          ]), "false")
+        },
+        None => assert(false)
+      }
+      match mt_build_text([
+        SLet(true, false, "api", None, EInt(1))
+      ], "owner", "provisional_token_stream_v1", implementation_identity, array_empty(), [
+        ("owner", "provisional_token_stream_v1", implementation_identity)
+      ]) {
+        Some(v1) => assert(!checked_module_typing_artifact_v2_matches_exact_inputs(v1, "owner", source_identity, implementation_identity, array_empty())),
+        None => assert(false)
+      }
+      match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, "owner", source_identity, source_identity, implementation_identity, implementation_identity, array_empty(), [
+        ("extra", "validated_metadata_v1", "1:2:9"),
+        ("owner", "provisional_token_stream_v1", implementation_identity)
+      ], interface) {
+        Some(artifact) => assert(!checked_module_typing_artifact_v2_matches_exact_inputs(encode_checked_module_typing_artifact_v2(artifact), "owner", source_identity, implementation_identity, array_empty())),
         None => assert(false)
       }
     },

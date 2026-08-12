@@ -6855,6 +6855,10 @@ scps_run_expect "effect_tail_selection_input_suspend.vibe" "3311" "tailselectinp
 # #1536 direct plain-assignment RHS: name the resumed value on the CPS spine,
 # then assign and continue once. Compound RHS and EAssignOp remain fail-closed.
 scps_run_expect "effect_assignment_rhs_suspend.vibe" "41112" "assignrhs"
+# #1536 direct while condition: resume into the existing recursive loop
+# closure once per condition check. Compound conditions remain fail-closed.
+scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
+scps_check_reject "err_effect_while_condition_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "whilecondcompound"
 scps_check_reject "err_effect_assignment_rhs_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "assignrhscompound"
 scps_check_reject "err_effect_assignment_op_rhs_suspend.vibe" "let/seq/tail/branch-tail spine" "assignoprhs"
 scps_check_reject "err_effect_seq_head_if_condition_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadifcompound"

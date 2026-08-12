@@ -36,6 +36,14 @@ if grep -q 'merged_nodce' scripts/coverage_drivers.sh; then
   echo "coverage_drivers_test: legacy merged_nodce base reintroduced" >&2
   exit 1
 fi
+if grep -Eq 'VIBE_COV_FLAT|cat .*FLAT' scripts/coverage_driver.sh scripts/coverage_unittests.sh; then
+  echo "coverage_drivers_test: legacy raw flat concatenation remains" >&2
+  exit 1
+fi
+grep -q 'VIBE_COV_DRIVER_FILTER=driver' scripts/coverage_driver.sh || {
+  echo "coverage_drivers_test: singular compatibility wrapper does not select driver" >&2
+  exit 1
+}
 
 # A sidecar diagnostic is deterministic: one attempt and a nonzero status.
 deterministic_attempts=0

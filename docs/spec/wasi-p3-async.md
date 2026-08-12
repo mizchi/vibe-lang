@@ -173,9 +173,10 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   `match` scrutinee が direct target perform・concrete needing call・CPS-local call
   そのものの形 (fresh let へ一回評価してから selection、ADR-0076 追記44)、
   **継続 spine 上の通常代入 (`=`) の RHS が同じ direct 形そのもの** (fresh let
-  へ一回評価してから一回だけ代入、追記45)
+  へ一回評価してから一回だけ代入、追記45)、**`while` condition が同じ direct
+  形そのもの** (再帰 loop closure 内で check ごとに一回評価、追記46)
 - **不適格**: ループ内 `break`/`continue`/`return`、配列 `for` / `loop` 形、
-  selection input / 代入 RHS が suspend を内包する複合式、compound assignment
+  selection input / 代入 RHS / while condition が suspend を内包する複合式、compound assignment
   (`+=` 等)、実引数証明が成立しない
   closure パラメータの呼び出し、row 変数 callee (`with e`)
 

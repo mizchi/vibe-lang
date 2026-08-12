@@ -657,6 +657,45 @@ export fn decode_checked_module_typing_artifact_v2(text: String) -> Option[Check
   }
 }
 
+fn module_dependencies_equal(left: Array[(String, String)], right: Array[(String, String)]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut equal = true
+    while i < Array::length(left) && equal {
+      let (left_locator, left_identity) = Array::get(left, i)
+      let (right_locator, right_identity) = Array::get(right, i)
+      if left_locator != right_locator || left_identity != right_identity {
+        equal = false
+      } else {
+        i = i + 1
+      }
+    }
+    equal
+  }
+}
+
+/// Strictly match canonical v2 bytes against one current singleton-module
+/// input. This is freshness observation only: it returns no artifact or type
+/// environment and cannot authorize persistence or reuse. The caller supplies
+/// identities derived from its already-ingested source. Additional closure
+/// rows fail closed because this bounded consumer has no authority to validate
+/// dependency implementation inputs.
+export fn checked_module_typing_artifact_v2_matches_exact_inputs(text: String, module_locator: String, source_identity: String, implementation_identity: String, dependency_interface_assumptions: Array[(String, String)]) -> Bool {
+  match decode_checked_module_typing_artifact_v2(text) {
+    Some(artifact) => if artifact.module_locator != module_locator || artifact.source_identity_kind != module_source_identity_kind_v2() || artifact.source_identity != source_identity || artifact.implementation_kind != "provisional_token_stream_v1" || artifact.implementation_identity != implementation_identity || !module_dependencies_equal(artifact.dependency_interface_assumptions, dependency_interface_assumptions) {
+      false
+    } else if Array::length(artifact.recorded_implementation_closure) != 1 {
+      false
+    } else {
+      let (owner_locator, owner_kind, owner_identity) = Array::get(artifact.recorded_implementation_closure, 0)
+      owner_locator == module_locator && owner_kind == "provisional_token_stream_v1" && owner_identity == implementation_identity
+    },
+    None => false
+  }
+}
+
 /// Canonical complete aggregate bytes for snapshots only.
 export fn canonical_checked_module_typing_artifact_snapshot(artifact: CheckedModuleTypingArtifact) -> String {
   encode_checked_module_typing_artifact_v1(artifact)

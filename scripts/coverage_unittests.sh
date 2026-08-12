@@ -1,50 +1,76 @@
 #!/usr/bin/env bash
-# Run the compiler's own *_test.vibe unit tests against the cycle-free FLAT module
-# source (bypassing the cyclic-import blocker). For each test file: strip imports
-# from the relevant *_support.vibe helpers (their deps are top-level in the flat
-# source), append the test bodies + assert helpers, compile+run under coverage,
-# and union into the corpus acc.json. Test files using cli_main-unreachable
-# (DCE'd) functions fail to compile and are skipped.
-set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
-SEED="bootstrap/seed/compiler.wasm"
-# FLAT defaults to the committed DCE'd flat source; override with VIBE_COV_FLAT
-# (e.g. the no-DCE merged source) to unblock test files that reference
-# cli_main-unreachable (DCE'd) functions. Merge still counts only branches in
-# corpus-present functions, so a richer base only adds executed bits, never
-# inflates the denominator.
-FLAT="${VIBE_COV_FLAT:-lib/@vibe/compiler/_cli_adapter_module_source.vibe}"
+# Execute the compiler root unit tests through compiler-owned exact-path
+# exposure (#1633). The extraction tool removes package/type imports; this
+# wrapper restores exact-file imports for every compiler immutable value used
+# by each generated driver. No flat compiler text is concatenated.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+SEED="${VIBE_COV_SEED:-bootstrap/seed/compiler.wasm}"
+OUTDIR="${VIBE_COV_DIR:-_build/coverage/selfhost-corpus}"
+ACC="$OUTDIR/acc.json"
+COMPILER_COV="$OUTDIR/compiler_cov.wasm"
+COMPILER_ENTRY="lib/@vibe/compiler/cli_adapter.vibe"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"
-ACC="_build/coverage/selfhost-corpus/acc.json"
-OUT="_build/coverage/selfhost-ut"; rm -rf "$OUT"; mkdir -p "$OUT"
+OUT="_build/coverage/selfhost-ut"
+export VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --experimental-wasm-inlining --stack-size=131072}"
 
-ok=0; fail=0; : > "$OUT/runs.txt"
-DRIVER="$OUT/ut_driver.vibe"
+[ -s "$ACC" ] || { echo "ut: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
+[ -s "$COMPILER_COV" ] || { echo "ut: run coverage_corpus.sh first (no current compiler_cov.wasm)" >&2; exit 1; }
+rm -rf "$OUT"; mkdir -p "$OUT"
+VIBE_COVERAGE_DRIVERS_LIB_ONLY=1 source scripts/coverage_drivers.sh
+
+exact_imports() { # test basename
+  case "$1" in
+    cfv_test.vibe)
+      printf 'import ../../../../lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe { collect_free_vars }\n'
+      printf 'let array_empty: [T]() -> Array[T] = () -> { Array::slice([], 0, 0) }\n'
+      ;;
+    cfv_encl_test.vibe)
+      printf 'import ../../../../lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe { collect_free_vars_indexed_self }\n'
+      ;;
+    pctor_test.vibe|pctor2_test.vibe)
+      printf 'import ../../../../lib/@vibe/compiler/codegen/codegen.vibe { compile_wasi_module }\n'
+      printf 'import ../../../../lib/@vibe/parser/lexer.vibe { lex }\n'
+      printf 'import ../../../../lib/@vibe/parser/parser.vibe { parse_program }\n'
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+ok=0
 for f in lib/@vibe/compiler/*_test.vibe; do
   base="$(basename "$f")"
-  SUPPORTS="$(grep -oE "\./[a-z_]+_support\.vibe" "$f" 2>/dev/null | sed "s|\./||" | sort -u | paste -sd, -)"
-  bash scripts/coverage_unittests_run.sh "$SUPPORTS" "$base" "$DRIVER" >/dev/null 2>&1 || { fail=$((fail+1)); continue; }
-  grep -q "cov_ut_1:" "$DRIVER" 2>/dev/null || { continue; }  # no tests
-  cat "$FLAT" "$DRIVER" > "$OUT/src.vibe"
-  built=0
-  for t in 1 2 3; do
-    rm -f "$OUT/ut.wasm"
-    VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw bash "$RUNNER" --invoke cli_main "$SEED" "$OUT/src.vibe" "$OUT/ut.wasm" cov_driver_main >/dev/null 2>&1
-    [ -s "$OUT/ut.wasm" ] && { built=1; break; }
-  done
-  if [ "$built" = 1 ]; then
-    cov="$OUT/${base%.vibe}.json"
-    VIBE_COV_OUT="$cov" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT" bash "$RUNNER" "$OUT/ut.wasm" >/dev/null 2>&1
-    [ -s "$cov" ] && { echo "$cov" >> "$OUT/runs.txt"; ok=$((ok+1)); } || fail=$((fail+1))
-  else
-    fail=$((fail+1))
+  d="$OUT/${base%.vibe}"; mkdir -p "$d"
+  generated="$d/generated.vibe"
+  bash scripts/coverage_unittests_run.sh "" "$base" "$generated" >"$d/generate.log" 2>&1 || {
+    echo "[ut:$base] driver generation failed" >&2; cat "$d/generate.log" >&2; exit 1
+  }
+  grep -q 'cov_ut_1:' "$generated" || { echo "[ut:$base] generated no tests" >&2; exit 1; }
+  { exact_imports "$base"; cat "$generated"; } > "$d/driver.vibe"
+  if [ "$base" = pctor_test.vibe ]; then
+    # The extracted test performs the same Fs write as its source declaration;
+    # the historical extractor retains Exception but cannot infer capability rows.
+    sed -e 's/) -> Int with Exception =/) -> Int with Exception + Fs::write_bytes =/' -e 's/let cov_driver_main: () -> Int =/let cov_driver_main: () -> Int with Fs::write_bytes =/' "$d/driver.vibe" > "$d/driver.tmp"
+    mv "$d/driver.tmp" "$d/driver.vibe"
   fi
+  rm -f "$d/src.vibe" "$d/src.vibe.diag"
+  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 VIBE_COVERAGE_DRIVER_PATH="$d/driver.vibe" \
+    VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
+    bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
+    "$COMPILER_ENTRY" "$d/src.vibe" cov_driver_main >"$d/expose.log" 2>&1 || true
+  [ -s "$d/src.vibe" ] || { echo "[ut:$base] exact-path exposure failed" >&2; cat "$d/src.vibe.diag" 2>/dev/null >&2 || tail -3 "$d/expose.log" >&2; exit 1; }
+  compile_status=0
+  coverage_driver_compile_with_retries "$d" cov_driver_main || compile_status=$?
+  [ "$compile_status" = 0 ] || { echo "[ut:$base] compile failed (status $compile_status)" >&2; cat "$d/m.wasm.diag" 2>/dev/null >&2 || tail -3 "$d/compile.log" >&2; exit 1; }
+  cov="$d/cov.json"
+  VIBE_COV_OUT="$cov" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT" bash "$RUNNER" --invoke _start "$d/m.wasm" >"$d/run.log" 2>&1 || {
+    echo "[ut:$base] execution failed" >&2; tail -5 "$d/run.log" >&2; exit 1
+  }
+  [ -s "$cov" ] || { echo "[ut:$base] run produced no raw coverage" >&2; exit 1; }
+  merge_stat="$(coverage_driver_merge_checked "$ACC" "$cov")" || { echo "[ut:$base] checked coverage merge failed" >&2; exit 1; }
+  echo "[ut:$base] $merge_stat"
+  ok=$((ok + 1))
 done
-echo "[ut] $ok test files ran, $fail skipped (DCE'd fns / no tests)" >&2
-# (fn_name, local_branch_index) union of every run in runs.txt into acc.json
-# -- scripts/coverage_local_merge.vibex's `merge-list` subcommand (native
-# vibe port; see that file's header comment for the algorithm).
-read -r base now tot < <(bash scripts/coverage_local_merge_run.sh merge-list "$ACC" "$OUT/runs.txt")
-scaled=$(( (now * 10000 + tot / 2) / tot ))
-pct="$((scaled / 100)).$(printf '%02d' $((scaled % 100)))"
-echo "[ut] unit-test merge: $base -> $now/$tot ($pct%) (+$((now-base)))"
+[ "$ok" -gt 0 ] || { echo "ut: no root test driver ran" >&2; exit 1; }
+echo "[ut] $ok exact-path test files ran and merged" >&2
