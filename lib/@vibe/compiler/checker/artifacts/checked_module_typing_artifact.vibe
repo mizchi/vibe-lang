@@ -54,6 +54,8 @@ import ./checked_exported_interface_artifact.vibe {
 /// Neither building nor decoding attests that a checker ran.
 export struct CheckedModuleTypingArtifact {
   module_locator: String;
+  source_identity_kind: String;
+  source_identity: String;
   implementation_kind: String;
   implementation_identity: String;
   dependency_interface_assumptions: Array[(String, String)];
@@ -75,6 +77,10 @@ fn module_empty_diagnostic_identity() -> String {
 
 fn module_checked_body_marker() -> String {
   "ineligible:lossless_checked_body_unavailable_v1"
+}
+
+fn module_source_identity_kind_v2() -> String {
+  "compact_string_fingerprint(ingested_source)"
 }
 
 fn module_implementation_kind_valid(kind: String) -> Bool {
@@ -258,8 +264,47 @@ export fn shadow_unattested_checked_module_typing_artifact_from_checked_program(
         } else {
           Some(CheckedModuleTypingArtifact::{
             module_locator: module_locator,
+            source_identity_kind: "",
+            source_identity: "",
             implementation_kind: implementation_kind,
             implementation_identity: implementation_identity,
+            dependency_interface_assumptions: module_dependencies_copy(dependency_interface_assumptions),
+            recorded_implementation_closure: module_closure_sorted(recorded_implementation_closure),
+            exported_interface_bytes: supplied_bytes
+          })
+        }
+      },
+      None => None
+    }
+  }
+}
+
+/// Unattested v2 builder. `observed_*` arguments represent identities derived
+/// by the caller from one already-ingested source value; `recorded_*` are the
+/// claims to freeze. Equality is required before any artifact is constructed.
+/// This remains shadow-only because all arguments and CheckedProgram are
+/// caller-constructible. The opaque runtime producer supplies both observed
+/// identities from the same ModuleJob.source after successful checking.
+export fn shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked: CheckedProgram, module_locator: String, observed_source_identity: String, recorded_source_identity: String, observed_implementation_identity: String, recorded_implementation_identity: String, dependency_interface_assumptions: Array[(String, String)], recorded_implementation_closure: Array[(String, String, String)], exported_interface: CheckedExportedInterfaceArtifact) -> Option[CheckedModuleTypingArtifact] {
+  let implementation_kind = "provisional_token_stream_v1"
+  if observed_source_identity != recorded_source_identity || observed_implementation_identity != recorded_implementation_identity || !module_compact_fingerprint_valid(recorded_source_identity) {
+    None
+  } else if !module_inputs_valid(module_locator, implementation_kind, recorded_implementation_identity, dependency_interface_assumptions, recorded_implementation_closure) {
+    None
+  } else {
+    match checked_exported_interface_artifact_from_checked_program(checked) {
+      Some(derived_interface) => {
+        let derived_bytes = encode_checked_exported_interface_artifact_v1(derived_interface)
+        let supplied_bytes = encode_checked_exported_interface_artifact_v1(exported_interface)
+        if derived_bytes != supplied_bytes {
+          None
+        } else {
+          Some(CheckedModuleTypingArtifact::{
+            module_locator: module_locator,
+            source_identity_kind: module_source_identity_kind_v2(),
+            source_identity: recorded_source_identity,
+            implementation_kind: implementation_kind,
+            implementation_identity: recorded_implementation_identity,
             dependency_interface_assumptions: module_dependencies_copy(dependency_interface_assumptions),
             recorded_implementation_closure: module_closure_sorted(recorded_implementation_closure),
             exported_interface_bytes: supplied_bytes
@@ -317,6 +362,29 @@ export fn encode_checked_module_typing_artifact_v1(artifact: CheckedModuleTyping
   module_push_piece(out, artifact.module_locator)
   module_push_piece(out, "1")
   module_push_piece(out, artifact.module_locator)
+  module_push_piece(out, artifact.implementation_kind)
+  module_push_piece(out, artifact.implementation_identity)
+  module_push_piece(out, module_encode_dependencies(artifact.dependency_interface_assumptions))
+  module_push_piece(out, module_encode_closure(artifact.recorded_implementation_closure))
+  module_push_piece(out, artifact.exported_interface_bytes)
+  module_push_piece(out, module_diagnostic_scope_order())
+  module_push_piece(out, module_empty_diagnostic_identity())
+  module_push_piece(out, module_checked_body_marker())
+  StringBuilder::push(out, "]")
+  StringBuilder::freeze(out)
+}
+
+/// Strict v2 transport. It adds exact ingested-source identity alongside the
+/// provisional parser-visible token-stream identity; v1 bytes are unchanged.
+export fn encode_checked_module_typing_artifact_v2(artifact: CheckedModuleTypingArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-module-typing-artifact:v2\n14[")
+  module_push_piece(out, module_unit_kind())
+  module_push_piece(out, artifact.module_locator)
+  module_push_piece(out, "1")
+  module_push_piece(out, artifact.module_locator)
+  module_push_piece(out, artifact.source_identity_kind)
+  module_push_piece(out, artifact.source_identity)
   module_push_piece(out, artifact.implementation_kind)
   module_push_piece(out, artifact.implementation_identity)
   module_push_piece(out, module_encode_dependencies(artifact.dependency_interface_assumptions))
@@ -500,6 +568,8 @@ export fn decode_checked_module_typing_artifact_v1(text: String) -> Option[Check
               } else {
                 let artifact = CheckedModuleTypingArtifact::{
                   module_locator: Array::get(fields, 1),
+                  source_identity_kind: "",
+                  source_identity: "",
                   implementation_kind: Array::get(fields, 4),
                   implementation_identity: Array::get(fields, 5),
                   dependency_interface_assumptions: dependencies,
@@ -507,6 +577,70 @@ export fn decode_checked_module_typing_artifact_v1(text: String) -> Option[Check
                   exported_interface_bytes: nested_bytes
                 }
                 if encode_checked_module_typing_artifact_v1(artifact) == text {
+                  Some(artifact)
+                } else {
+                  None
+                }
+              }
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    }
+  }
+}
+
+/// Decode exact canonical v2 bytes. Source and implementation identities are
+/// independently tagged and the closure owner must agree with implementation.
+export fn decode_checked_module_typing_artifact_v2(text: String) -> Option[CheckedModuleTypingArtifact] {
+  let prefix = "vibe-checked-module-typing-artifact:v2\n14["
+  let n = String::length(text)
+  if n <= String::length(prefix) || text[0: String::length(prefix)] != prefix {
+    None
+  } else {
+    let fields = array_empty()
+    let mut cursor = String::length(prefix)
+    let mut i = 0
+    let mut valid = true
+    while i < 14 && valid {
+      match module_piece_parse(text, cursor) {
+        Some((field, next)) => {
+          Array::push(fields, field)
+          cursor = next
+        },
+        None => {
+          valid = false
+        }
+      }
+      i = i + 1
+    }
+    if !valid || cursor >= n || String::char_code_at(text, cursor) != 93 || cursor + 1 != n {
+      None
+    } else if Array::get(fields, 0) != module_unit_kind() || Array::get(fields, 2) != "1" || Array::get(fields, 3) != Array::get(fields, 1) || Array::get(fields, 4) != module_source_identity_kind_v2() || !module_compact_fingerprint_valid(Array::get(fields, 5)) || Array::get(fields, 11) != module_diagnostic_scope_order() || Array::get(fields, 12) != module_empty_diagnostic_identity() || Array::get(fields, 13) != module_checked_body_marker() {
+      None
+    } else {
+      match module_decode_dependencies(Array::get(fields, 8)) {
+        Some(dependencies) => match module_decode_closure(Array::get(fields, 9)) {
+          Some(closure) => match decode_checked_exported_interface_artifact_v1(Array::get(fields, 10)) {
+            Some(exported_interface) => {
+              let nested_bytes = encode_checked_exported_interface_artifact_v1(exported_interface)
+              if nested_bytes != Array::get(fields, 10) || !module_closure_is_canonical(closure) || !module_inputs_valid(Array::get(fields, 1), Array::get(fields, 6), Array::get(fields, 7), dependencies, closure) {
+                None
+              } else {
+                let artifact = CheckedModuleTypingArtifact::{
+                  module_locator: Array::get(fields, 1),
+                  source_identity_kind: Array::get(fields, 4),
+                  source_identity: Array::get(fields, 5),
+                  implementation_kind: Array::get(fields, 6),
+                  implementation_identity: Array::get(fields, 7),
+                  dependency_interface_assumptions: dependencies,
+                  recorded_implementation_closure: closure,
+                  exported_interface_bytes: nested_bytes
+                }
+                if encode_checked_module_typing_artifact_v2(artifact) == text {
                   Some(artifact)
                 } else {
                   None
@@ -532,4 +666,8 @@ export fn canonical_checked_module_typing_artifact_snapshot(artifact: CheckedMod
 /// deliberately disconnected from persistent cache lookup and reuse.
 export fn checked_module_typing_artifact_fingerprint_v1(artifact: CheckedModuleTypingArtifact) -> String {
   compact_string_fingerprint(encode_checked_module_typing_artifact_v1(artifact))
+}
+
+export fn checked_module_typing_artifact_fingerprint_v2(artifact: CheckedModuleTypingArtifact) -> String {
+  compact_string_fingerprint(encode_checked_module_typing_artifact_v2(artifact))
 }

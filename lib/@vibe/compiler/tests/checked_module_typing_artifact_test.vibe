@@ -10,9 +10,12 @@ import @vibe/compiler/checker/artifacts {
   checked_exported_interface_artifact_from_checked_program,
   checked_module_typing_artifact_fingerprint_v1,
   decode_checked_module_typing_artifact_v1,
+  decode_checked_module_typing_artifact_v2,
   encode_checked_exported_interface_artifact_v1,
   encode_checked_module_typing_artifact_v1,
-  shadow_unattested_checked_module_typing_artifact_from_checked_program
+  encode_checked_module_typing_artifact_v2,
+  shadow_unattested_checked_module_typing_artifact_from_checked_program,
+  shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
 }
 
 import @vibe/compiler/core {
@@ -20,7 +23,12 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/runtime {
-  ModuleJob, check_module, check_module_with_typing_artifact_observation, checked_module_typing_artifact_observation
+  ModuleJob,
+  check_module,
+  check_module_with_typing_artifact_observation,
+  checked_module_typing_artifact_construction_attempt_count,
+  checked_module_typing_artifact_observation,
+  reset_checked_module_typing_artifact_construction_attempt_count
 }
 
 import @vibe/compiler/syntax {
@@ -99,6 +107,26 @@ fn mt_valid_fields(nested: String) -> Array[String] {
     mt_closure([
       ("owner", "provisional_token_stream_v1", "1:2:3")
     ]),
+    nested,
+    "typing_errors_only:path,start,end,code,message",
+    "vibe-checked-module-typing-artifact:caller-attested-empty-typing-errors:v1",
+    "ineligible:lossless_checked_body_unavailable_v1"
+  ]
+}
+
+// Pre-v2 canonical fixture for the exact owner/identity/empty-dependency input
+// used by the compatibility regression. This deliberately spells every field
+// instead of sharing mt_valid_fields or the production encoder.
+fn mt_v1_empty_dependencies_fields(nested: String) -> Array[String] {
+  [
+    "singleton_semantic_module",
+    "owner",
+    "1",
+    "owner",
+    "provisional_token_stream_v1",
+    "1:2:3",
+    "0[]",
+    "1[5:owner27:provisional_token_stream_v15:1:2:3]",
     nested,
     "typing_errors_only:path,start,end,code,message",
     "vibe-checked-module-typing-artifact:caller-attested-empty-typing-errors:v1",
@@ -499,18 +527,23 @@ test "wrapper around genuine checker failure returns no module artifact bytes" {
   }
 }
 
-test "production module check leaves shadow observation disabled" {
+test "production module check leaves shadow observation disabled and makes zero construction attempts" {
+  reset_checked_module_typing_artifact_construction_attempt_count()
   let outcome = check_module(mt_module_job("default.vibe", "export let api: Int = 1\n"))
   assert(checked_module_typing_artifact_observation(outcome) == None)
+  assert(checked_module_typing_artifact_construction_attempt_count() == 0)
 }
 
-test "opaque successful ModuleOutcome carries one canonical in-memory artifact" {
+test "opaque successful ModuleOutcome carries one canonical v2 artifact after one construction attempt" {
+  reset_checked_module_typing_artifact_construction_attempt_count()
   let outcome = check_module_with_typing_artifact_observation(mt_module_job("owner.vibe", "export let api: Int = 1\n"))
+  assert(checked_module_typing_artifact_construction_attempt_count() == 1)
   match checked_module_typing_artifact_observation(outcome) {
-    Some(bytes) => match decode_checked_module_typing_artifact_v1(bytes) {
+    Some(bytes) => match decode_checked_module_typing_artifact_v2(bytes) {
       Some(artifact) => {
-        assert(encode_checked_module_typing_artifact_v1(artifact) == bytes)
+        assert(encode_checked_module_typing_artifact_v2(artifact) == bytes)
         assert(String::contains(bytes, "owner.vibe"))
+        assert(String::contains(bytes, "compact_string_fingerprint(ingested_source)"))
         assert(String::contains(bytes, "provisional_token_stream_v1"))
         assert(String::contains(bytes, "ineligible:lossless_checked_body_unavailable_v1"))
       },
@@ -520,11 +553,64 @@ test "opaque successful ModuleOutcome carries one canonical in-memory artifact" 
   }
 }
 
-test "opaque ModuleOutcome publishes nothing for ordinary type or effect failures" {
+test "opaque ModuleOutcome publishes nothing and constructs nothing for ordinary type or effect failures" {
+  reset_checked_module_typing_artifact_construction_attempt_count()
   let type_failure = check_module_with_typing_artifact_observation(mt_module_job("type_bad.vibe", "export let bad: Int = \"not an int\"\n"))
   assert(checked_module_typing_artifact_observation(type_failure) == None)
+  assert(checked_module_typing_artifact_construction_attempt_count() == 0)
   let effect_failure = check_module_with_typing_artifact_observation(mt_module_job("effect_bad.vibe", "effect Logger { Log(String) -> Unit }\nexport fn bad() -> Int {\n  perform Logger::Log(\"hi\")\n  1\n}\n"))
   assert(checked_module_typing_artifact_observation(effect_failure) == None)
+  assert(checked_module_typing_artifact_construction_attempt_count() == 0)
+}
+
+test "v2 unattested builder rejects mismatched source implementation and owner closure claims" {
+  let checked = check_program_result([
+    SLet(true, false, "api", None, EInt(1))
+  ])
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(interface) => {
+      match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, "owner", "1:2:3", "1:2:4", "1:2:5", "1:2:5", array_empty(), [
+        ("owner", "provisional_token_stream_v1", "1:2:5")
+      ], interface) {
+        Some(_) => assert(false),
+        None => assert(true)
+      }
+      match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, "owner", "1:2:3", "1:2:3", "1:2:5", "1:2:6", array_empty(), [
+        ("owner", "provisional_token_stream_v1", "1:2:6")
+      ], interface) {
+        Some(_) => assert(false),
+        None => assert(true)
+      }
+      match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, "owner", "1:2:3", "1:2:3", "1:2:5", "1:2:5", array_empty(), [
+        ("owner", "provisional_token_stream_v1", "1:2:6")
+      ], interface) {
+        Some(_) => assert(false),
+        None => assert(true)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "v1 canonical bytes remain unchanged after v2 introduction" {
+  let stmts = [
+    SLet(true, false, "api", None, EInt(1))
+  ]
+  // mt_outer is a test-owned length-delimited writer; neither it nor the
+  // explicit field fixture calls the production v1 encoder under test.
+  let expected = mt_outer(mt_v1_empty_dependencies_fields(mt_nested_interface(stmts)))
+  match mt_build_text(stmts, "owner", "provisional_token_stream_v1", "1:2:3", array_empty(), [
+    ("owner", "provisional_token_stream_v1", "1:2:3")
+  ]) {
+    Some(bytes) => {
+      assert(bytes == expected)
+      match decode_checked_module_typing_artifact_v1(bytes) {
+        Some(decoded) => assert(encode_checked_module_typing_artifact_v1(decoded) == bytes),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
 }
 
 test "later diagnosed outcome cannot reuse a stale successful observation" {

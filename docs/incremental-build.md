@@ -70,9 +70,9 @@ is an ADR-sized decision, not a slice-sized one.
 - Do not paper over missing provenance in a full trait observation by reparsing
   and reprinting source.
 
-### Shadow-only checked module typing aggregate v1 (#1550)
+### Shadow-only checked module typing aggregate v1/v2 (#1550)
 
-`CheckedModuleTypingArtifact` v1 is a bounded checker/artifacts experiment, not a
+`CheckedModuleTypingArtifact` remains a bounded checker/artifacts experiment, not a
 production incremental-build input. `CheckedProgram` remains transparent and
 manually constructible in this slice. Consequently neither the schema nor the
 `shadow_unattested_checked_module_typing_artifact_from_checked_program` builder
@@ -104,14 +104,22 @@ diagnostic completeness are ineligible. Checked body state is only
 `ineligible:lossless_checked_body_unavailable_v1`—there is no TypeEnv target or
 fabricated typed-IR/body reference.
 
+V2 preserves the complete v1 encoding unchanged and adds two separately tagged
+identities derived from the same already-ingested `ModuleJob.source`: exact
+`compact_string_fingerprint(ingested_source)` and the provisional parser-visible
+`provisional_token_stream_v1`. The v2 unattested builder requires observed and
+recorded claims to agree and still validates the implementation-closure owner.
+The opaque opt-in runtime producer derives both values only after successful
+checking. Ordinary `check_module` makes no artifact construction attempt;
+diagnosed opt-in checks also make none; successful opt-in checks make exactly
+one. This counter is test observation, not production telemetry.
+
 The aggregate and its complete-encoding fingerprint are shadow comparison data
-only. They are not wired to filesystem/module workers, TypeDb, `ModuleJob` or
-`ModuleOutcome`, the current TypeEnv v5 transport and persistent cache namespace
-v18, TDRE4, interface-v2, artifact-input traces, planner decisions, reuse, the
-CLI, or a persistent cache namespace. Decoded values establish canonical bytes,
-not a checker invocation. This slice has no producer or publisher. Only a future
-trusted producer invoked after `check_program_result` succeeds may publish the
-artifact; making that boundary trustworthy is explicitly future work.
+only. They are not wired to TypeDb, the TypeEnv v5 transport and persistent cache
+namespace v18, TDRE4, interface-v2, artifact-input traces, planner decisions,
+reuse, CLI, or a persistent cache namespace. Decoded values establish canonical
+bytes, not a checker invocation. Runtime retains v2 bytes only in an opaque,
+in-memory successful `ModuleOutcome`; it does not publish or persist them.
 
 ## User-visible KPI contract
 
