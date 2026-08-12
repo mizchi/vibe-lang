@@ -9295,8 +9295,8 @@ fn scps_need_clone(eff: String, fname: String, st: (Array[Int], Array[String], A
 // let/seq/tail/branch-tail spine. A direct recognized suspension may also
 // occupy an if condition, match scrutinee, or plain-assignment RHS: it is
 // first named by a fresh ELet, then the existing spine machinery resumes into
-// selection/assignment. Compound inputs, compound assignment, and every other
-// nested suspension still fail closed.
+// selection/assignment or a while condition. Compound inputs, compound
+// assignment, and every other nested suspension still fail closed.
 
 fn scps_direct_spine_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
   let (_, ops, _, _, _) = sctx
@@ -10022,7 +10022,7 @@ fn scps_seq_append(e: Expr, k: Expr) -> Expr {
 fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, s_ops, s_needing, s_site, s_cps) = sctx
   let orig = ESeq(EWhile(c, body), rest)
-  if scps_contains_susp(c, sctx) || scps_has_loop_ctl(body) {
+  if scps_has_loop_ctl(body) {
     (false, orig)
   } else {
     let lp = scps_local("__scps_lp", scps_next_site(st))
@@ -10030,13 +10030,31 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
     Array::push(ext, lp)
     let sctx2 = (eff, s_ops, s_needing, s_site, ext)
     let step = scps_seq_append(body, ECall(EIdent(lp, -1), array_empty_expr(), -1))
-    let (iok, ibody) = scps_split_tail(step, sctx2, ctx, st)
-    let (rok, rbody) = scps_split_tail(rest, sctx2, ctx, st)
-    if iok && rok {
-      let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, EIf(c, ibody, rbody))
-      (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1)))
-    } else {
+    if scps_direct_spine_input(c, sctx) {
+      // #1536 (a) v7: evaluate one directly recognized suspending condition
+      // once per loop check, then resume into the existing recursive loop
+      // selection. Probe the whole loop + continuation so the fresh binder
+      // cannot capture a user spelling in the condition, body, or rest.
+      let cx = scps_seq_float_fresh("while", orig, EUnit, s_site)
+      let loop_body = ELet(cx, c, EIf(EIdent(cx, -1), step, rest), -1)
+      let (lok, lowered) = scps_split_tail(loop_body, sctx2, ctx, st)
+      if lok {
+        let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, lowered)
+        (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1)))
+      } else {
+        (false, orig)
+      }
+    } else if scps_contains_susp(c, sctx) {
       (false, orig)
+    } else {
+      let (iok, ibody) = scps_split_tail(step, sctx2, ctx, st)
+      let (rok, rbody) = scps_split_tail(rest, sctx2, ctx, st)
+      if iok && rok {
+        let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, EIf(c, ibody, rbody))
+        (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1)))
+      } else {
+        (false, orig)
+      }
     }
   }
 }

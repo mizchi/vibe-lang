@@ -2838,8 +2838,18 @@ scope-blind probe して fresh binder を作り、`let fresh = rhs; x = fresh; r
 continuation は各一回だけ実行する。compound RHS と `+=` 等の EAssignOp は引き続き
 fail-closed であり、この追記は loop / nested handle / row-variable callee を広げない。
 
-**残る不適格**: EForIn(array)/ELoop HEAD、compound assignment RHS、compound
-selection input、row 変数 callee、literal param flow。
+### 追記46 (2026-08-12): direct while condition を再帰 loop spine に名前付けする (#1536 (a) v7)
+
+`while condition { body }` の condition が追記44と同じ direct recognized suspension
+そのものなら、既存の `let rec lp = () -> ...` loop closure の内側で fresh binder に
+一回だけ束縛し、resumed Bool を `if` で選択する。したがって operation は各 condition
+check ごとに一回、body は true ごとに一回、loop 後の continuation は最初の false
+後に一回だけ実行される。fresh probe は condition/body/continuation 全体を見る。
+compound condition、loop control、for-in/loop、nested-argument suspension は引き続き
+fail-closed。
+
+**残る不適格**: EForIn(array)/ELoop HEAD、compound while/selection input、compound
+assignment RHS、loop control、row 変数 callee、literal param flow。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
