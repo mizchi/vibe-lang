@@ -7,6 +7,7 @@ cd "$ROOT"
 SEED="${VIBE_COV_SEED:-bootstrap/seed/compiler.wasm}"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"
 FLAT="lib/@vibe/compiler/_cli_adapter_module_source.vibe"
+COMPILER_ENTRY="lib/@vibe/compiler/cli_adapter.vibe"
 TMP="_build/coverage-driver-exposure-test"
 TOOL="$TMP/compiler_cov.wasm"
 export VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --experimental-wasm-inlining --stack-size=131072}"
@@ -46,14 +47,14 @@ import ./dep.vibe { hidden as selected_hidden }
 export fn driver_main() -> Int { selected_hidden(41) }
 VEOF
 
-emit_driver() { # driver output entry
-  local driver="$1" output="$2" entry="$3"
+emit_driver() { # driver output entry [compiler-entry]
+  local driver="$1" output="$2" entry="$3" compiler_entry="${4:-$TMP/root.vibe}"
   rm -f "$output" "$output.diag"
   VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 \
     VIBE_COVERAGE_DRIVER_PATH="$driver" \
     VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$TOOL" \
-    "$TMP/root.vibe" "$output" "$entry" >/dev/null 2>&1 || true
+    "$compiler_entry" "$output" "$entry" >/dev/null 2>&1 || true
 }
 
 # Positive: a private exact-file value imported under an alias is rewritten by
@@ -69,6 +70,54 @@ VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
   "$TMP/positive.out.vibe" "$TMP/positive.wasm" driver_main >/dev/null
 positive_out="$(VIBE_PREOPEN_DIR="$ROOT" bash "$RUNNER" --invoke driver_main "$TMP/positive.wasm" 2>&1 | tail -1)"
 [ "$positive_out" = "42" ] || { echo "coverage-driver-exposure: positive run got '$positive_out', want 42" >&2; exit 1; }
+
+# Repository migration: cov_traitenv imports its private target from the exact
+# compiler file under an alias. Exercise the real emit/compile/run path so the
+# routing test below cannot pass on text alone.
+emit_driver "scripts/coverage/cov_traitenv.vibe" "$TMP/traitenv.out.vibe" cov_traitenv_main "$COMPILER_ENTRY"
+[ -s "$TMP/traitenv.out.vibe" ] || { cat "$TMP/traitenv.out.vibe.diag" >&2; exit 1; }
+if grep -q 'cov_type_implements_check_super' "$TMP/traitenv.out.vibe"; then
+  echo "coverage-driver-exposure: cov_traitenv alias survived instead of being rewritten" >&2
+  exit 1
+fi
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$RUNNER" --invoke cli_main "$SEED" \
+  "$TMP/traitenv.out.vibe" "$TMP/traitenv.wasm" cov_traitenv_main >/dev/null
+traitenv_out="$(VIBE_COV_OUT="$TMP/traitenv.cov.json" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT" bash "$RUNNER" --invoke cov_traitenv_main "$TMP/traitenv.wasm" 2>&1 | tail -1)"
+[ "$traitenv_out" = "1" ] || { echo "coverage-driver-exposure: cov_traitenv run got '$traitenv_out', want 1" >&2; exit 1; }
+[ -s "$TMP/traitenv.cov.json" ] || { echo "coverage-driver-exposure: cov_traitenv dumped no raw coverage" >&2; exit 1; }
+
+# Feed that exact real raw dump through the production checked merge helper.
+# Starting from an identical accumulator makes the expected union precise: the
+# denominator stays stable and the hit count is non-decreasing (equal here).
+python3 - "$TMP/traitenv.cov.json" "$TMP/traitenv.acc.json" <<'PY'
+import json, sys
+run = json.load(open(sys.argv[1]))
+raw = run["raw"]
+json.dump({
+    "fn_names": raw["fn_names"],
+    "br_owners": raw["branch_owners"],
+    "br": raw["branch_bitmap"],
+}, open(sys.argv[2], "w"))
+PY
+VIBE_COVERAGE_DRIVERS_LIB_ONLY=1 source scripts/coverage_drivers.sh
+COMPILER_COV="$TOOL"
+export VIBE_COVERAGE_ACC_TOOL_COMPILER="$TOOL"
+traitenv_merge="$(coverage_driver_merge_checked "$TMP/traitenv.acc.json" "$TMP/traitenv.cov.json")" || {
+  echo "coverage-driver-exposure: cov_traitenv raw coverage failed checked merge" >&2
+  exit 1
+}
+read -r traitenv_base traitenv_now traitenv_total <<<"$traitenv_merge"
+[ "$traitenv_total" -gt 0 ] && [ "$traitenv_now" -ge "$traitenv_base" ] || {
+  echo "coverage-driver-exposure: invalid cov_traitenv merge '$traitenv_merge'" >&2
+  exit 1
+}
+traitenv_after="$(coverage_driver_stat "$TMP/traitenv.acc.json")"
+read -r traitenv_after_hit traitenv_after_total <<<"$traitenv_after"
+[ "$traitenv_after_hit" -eq "$traitenv_now" ] && [ "$traitenv_after_total" -eq "$traitenv_total" ] || {
+  echo "coverage-driver-exposure: cov_traitenv denominator/hits changed after checked merge" >&2
+  exit 1
+}
 
 # Ordinary merged-source mode remains separate and never appends the driver.
 rm -f "$TMP/ordinary.vibe" "$TMP/ordinary.vibe.diag"

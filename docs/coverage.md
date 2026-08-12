@@ -207,8 +207,9 @@ in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入�
 #### 80% 達成（no-DCE merged source + direct-call drivers）
 
 > **#1633 migration status:** the historical raw concatenation described below
-> is being retired one driver at a time. `cov_units.vibe` now uses compiler-owned
-> exact-path value exposure: its imports name one `.vibe` file in the collected
+> is being retired one driver at a time. `cov_units.vibe` and
+> `cov_traitenv.vibe` now use compiler-owned exact-path value exposure: their
+> imports name one `.vibe` file in the collected
 > compiler closure, the production export/private namespacing plan determines
 > the final target name, and the existing shadow-aware import rewriter updates
 > driver references before entry-based DCE. Missing, duplicate, out-of-closure,
@@ -315,7 +316,8 @@ compile する役割だけ）。merge は command status と `base now total` sc
 coverage run 全体を失敗させる。
 
 #1633 の production exact-path exposure へ移行済みなのは現在 `cov_units.vibe`
-だけ。登録済み active driver の残り **38 本**は legacy raw base のままで、個別に
+と `cov_traitenv.vibe`。登録済み active driver の残り **37 本**は legacy raw base
+のままで、個別に
 exact-path import を宣言して移行する必要がある。`cov_driver.vibe` は現在の
 `coverage_drivers.sh` に登録されない historical monolith なので、移行対象へ戻すか
 退役するかを別途決める。ここで件数へ含めたり暗黙に実行済みとは扱わない。
