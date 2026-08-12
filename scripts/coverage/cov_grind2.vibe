@@ -1,39 +1,78 @@
+import ../../lib/@vibe/parser/parser_expr.vibe {
+  parse_impl
+}
+
+import ../../lib/@vibe/parser/lexer.vibe {
+  lex_with_offsets
+}
+
+import ../../lib/@vibe/compiler/core/import_alias_rewrite.vibe {
+  namespace_private_value_stmts
+}
+
+import ../../lib/@vibe/parser/parser_expr_core.vibe {
+  parse_call_arg
+}
+
+import ../../lib/@vibe/parser/parser_expr_primary.vibe {
+  parse_generic_fn_primary,
+  parse_perform_primary
+}
 
 // #cov grind2 driver: namespace_private_value_stmts over a body exercising the
 // Stmt kinds its first driver missed — STest / SBench / SLetPat / SExpr /
 // SExternLet — each referencing the private enum/struct (so the ctor/type rewrite
 // walks their bodies). Plus parser primaries parse_perform_primary /
 // parse_generic_fn_primary / parse_call_arg via the parse_impl callback.
-let pe_a: () -> Expr = () -> { ECall(EIdent("A"), Array::slice([EInt(1)], 0, 1)) }
+let pe_a: () -> Expr = () -> { ECall(EIdent("A", 0), Array::slice([EInt(1)], 0, 1), 0) }
 
 let gr2_ns: () -> Int = () -> {
   let body = Array::slice([SExpr(EUnit)], 0, 0)
   let no = Array::slice([TyName("Int")], 0, 0)
   let ii = Array::slice([TyName("Int")], 0, 1)
-  Array::push(body, SEnum(false, "PE", Array::slice([""], 0, 0), Array::slice([("A", ii), ("N", no)], 0, 2)))
-  Array::push(body, SStruct(false, "PS", Array::slice([("f", TyName("Int"))], 0, 1)))
+  Array::push(body, SEnum(false, "PE", Array::slice([""], 0, 0), Array::slice([("A", ii), ("N", no)], 0, 2), Array::slice([""], 0, 0)))
+  Array::push(body, SStruct(false, "PS", Array::slice([("f", TyName("Int"))], 0, 1), Array::slice([""], 0, 0), Array::slice([""], 0, 0), Array::slice([""], 0, 0)))
   // refs to the private ctor/type across many Stmt kinds:
   Array::push(body, SExpr(pe_a()))
-  let arms = Array::slice([(PCtor("A", Array::slice([PBind("x")], 0, 1)), EIdent("x"))], 0, 1)
+  let arms = Array::slice([(PCtor("A", Array::slice([PBind("x")], 0, 1)), EIdent("x", 0))], 0, 1)
   Array::push(arms, (PCtor("N", Array::slice([PWild], 0, 0)), EInt(0)))
   Array::push(body, STest("t", EMatch(pe_a(), arms)))
   Array::push(body, SBench("b", pe_a()))
   Array::push(body, SLetPat(PCtor("A", Array::slice([PBind("y")], 0, 1)), pe_a()))
-  Array::push(body, SLetMut("mv", Some(TyName("PS")), ERecord(Array::slice([("f", EInt(2))], 0, 1))))
+  Array::push(body, SLetMut("mv", Some(TyName("PS")), ERecord("", Array::slice([("f", EInt(2))], 0, 1), Array::slice([TyName("Int")], 0, 0))))
   Array::push(body, SExternLet("ext", TyName("PS")))
   Array::push(body, SLet(true, false, "use_it", Some(TyName("PE")), pe_a()))
   Array::push(body, SExport(Array::slice(["use_it"], 0, 1)))
   Array::length(namespace_private_value_stmts("M", body)) + Array::length(namespace_private_value_stmts("X", namespace_private_value_stmts("M", body)))
 }
+// These primaries take the token START offsets (#1567 located diagnostics) and a
+// `parse_recur` callback shaped (tokens, pos, mode); parse_impl closes over the
+// offsets, exactly as parser_expr.vibe's own recur does.
+let gr2_prim: (Int, String) -> Int = (which, s) -> {
+  handle {
+    let (t, st, _) = lex_with_offsets(s)
+    let rec recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception = (tt, p, m) -> {
+      parse_impl(tt, st, p, m)
+    }
+    let r = if which == 0 {
+      parse_perform_primary(t, st, 1, recur)
+    } else if which == 1 {
+      parse_generic_fn_primary(t, st, 1, recur)
+    } else {
+      parse_call_arg(t, st, 0, recur)
+    }
+    match r.0 { _ => 1 }
+  } with Exception { Throw(_) => 0 }
+}
 let gr2_perform: () -> Int = () -> {
   let mut acc = 0
-  acc = acc + (handle { let r = parse_perform_primary(lex("perform St::get()"), 1, parse_impl); match r.0 { _ => 1 } } with Exception { Throw(_) => 0 })
-  acc = acc + (handle { let r = parse_perform_primary(lex("perform Eff::put(1, 2)"), 1, parse_impl); match r.0 { _ => 1 } } with Exception { Throw(_) => 0 })
-  acc = acc + (handle { let r = parse_generic_fn_primary(lex("fn[a, b](x: a, y: b) -> a { x }"), 1, parse_impl); match r.0 { _ => 1 } } with Exception { Throw(_) => 0 })
-  acc = acc + (handle { let r = parse_generic_fn_primary(lex("fn[a](x: a) -> a { x }"), 1, parse_impl); match r.0 { _ => 1 } } with Exception { Throw(_) => 0 })
-  acc = acc + (handle { let r = parse_call_arg(lex("lbl: 5"), 0, parse_impl); match r.0 { _ => 1 } } with Exception { Throw(_) => 0 })
-  acc = acc + (handle { let r = parse_call_arg(lex("...rest"), 0, parse_impl); match r.0 { _ => 1 } } with Exception { Throw(_) => 0 })
-  acc = acc + (handle { let r = parse_call_arg(lex("plain"), 0, parse_impl); match r.0 { _ => 1 } } with Exception { Throw(_) => 0 })
+  acc = acc + gr2_prim(0, "perform St::get()")
+  acc = acc + gr2_prim(0, "perform Eff::put(1, 2)")
+  acc = acc + gr2_prim(1, "fn[a, b](x: a, y: b) -> a { x }")
+  acc = acc + gr2_prim(1, "fn[a](x: a) -> a { x }")
+  acc = acc + gr2_prim(2, "lbl: 5")
+  acc = acc + gr2_prim(2, "...rest")
+  acc = acc + gr2_prim(2, "plain")
   acc
 }
 

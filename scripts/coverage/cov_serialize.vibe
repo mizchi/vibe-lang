@@ -1,8 +1,25 @@
+import ../../lib/@vibe/compiler/core/import_alias_rewrite.vibe {
+  collect_private_type_renames
+}
+
+import ../../lib/@vibe/compiler/loader/manifest_sources.vibe {
+  ensure_grouped_source_bucket_seeded
+}
+
+import ../../lib/@vibe/compiler/loader/loader.vibe {
+  push_grouped_source
+}
+
+import ../../lib/@vibe/compiler/runtime/persistent_env_codec.vibe {
+  parse_cached_type,
+  serialize_type
+}
+
 
 // #cov serialize driver: serialize_type (Type -> cache string) and parse_cached_type
 // (cache string -> Type) are an inverse pair; round-tripping every Type variant
 // covers both walkers' arms at once. Plus the grouped-source accumulators
-// (push_grouped_source / ensure_grouped_source_bucket: new-bucket vs existing) and
+// (push_grouped_source / ensure_grouped_source_bucket_seeded: new vs existing) and
 // collect_private_type_renames over a private-decl Stmt body.
 let s_rt: (Type) -> Int = (ty) -> {
   let enc = serialize_type(ty)
@@ -38,14 +55,16 @@ export let cov_serialize_main: () -> Int = () -> {
   push_grouped_source(groups, "g1", "b.vibe", "src_b")    // existing bucket
   push_grouped_source(groups, "g2", "c.vibe", "src_c")    // new bucket
   acc = acc + Array::length(groups)
-  let bucket = ensure_grouped_source_bucket(groups, "g1")  // existing
+  // ensure_grouped_source_bucket is now the *_seeded form: it takes the path and
+  // source to seed a freshly created bucket with.
+  let bucket = ensure_grouped_source_bucket_seeded(groups, "g1", "d.vibe", "src_d")  // existing
   acc = acc + Array::length(bucket)
-  let bucket2 = ensure_grouped_source_bucket(groups, "g3") // new
+  let bucket2 = ensure_grouped_source_bucket_seeded(groups, "g3", "e.vibe", "src_e") // new
   acc = acc + Array::length(bucket2)
   // collect_private_type_renames over a body with private + exported type decls
   let body = Array::slice([SExpr(EUnit)], 0, 0)
-  Array::push(body, SStruct(false, "Priv", Array::slice([("f", TyName("Int"))], 0, 1)))
-  Array::push(body, SEnum(true, "Pub", Array::slice([""], 0, 0), Array::slice([("A", Array::slice([CtInt], 0, 0))], 0, 1)))
+  Array::push(body, SStruct(false, "Priv", Array::slice([("f", TyName("Int"))], 0, 1), Array::slice([""], 0, 0), Array::slice([""], 0, 0), Array::slice([""], 0, 0)))
+  Array::push(body, SEnum(true, "Pub", Array::slice([""], 0, 0), Array::slice([("A", Array::slice([TyName("Int")], 0, 0))], 0, 1), Array::slice([""], 0, 0)))
   Array::push(body, STypeAlias(false, "PrivAlias", Array::slice([""], 0, 0), TyName("Int")))
   acc = acc + Array::length(collect_private_type_renames("M", body, Array::slice(["Pub"], 0, 1), Array::slice([""], 0, 0)))
   acc

@@ -1,3 +1,19 @@
+import ../../lib/@vibe/compiler/perceus/perceus.vibe {
+  expr_projects_or_matches
+}
+
+import ../../lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe {
+  is_mut_captured_in
+}
+
+import ../../lib/@vibe/compiler/core/import_alias_rewrite.vibe {
+  pat_binds_name,
+  rewrite_import_alias_expr
+}
+
+import ../../lib/@vibe/parser/parser_expr_core.vibe {
+  wrap_placeholder_arg
+}
 
 // #cov expr-walk driver: is_mut_captured_in / rewrite_import_alias_expr /
 // wrap_placeholder_arg are unique recursive Expr walkers whose per-variant arms
@@ -19,8 +35,8 @@ export let cov_exprwalk_main: () -> Int = () -> {
   let mut acc = 0
   let al = Array::slice([("x", "y")], 0, 1)        // alias map [("x","y")]
   let noexpr = Array::slice([EUnit], 0, 0)          // empty Array[Expr]
-  let xid = EIdent("x")
-  let ph = EIdent("_")
+  let xid = EIdent("x", 0)
+  let ph = EIdent("_", 0)
   let es = Array::slice([xid], 0, 0)                 // empty Array[Expr]
   Array::push(es, xid)
   // one Expr per branched variant (leaves + every recursive shape)
@@ -34,22 +50,22 @@ export let cov_exprwalk_main: () -> Int = () -> {
   Array::push(progs, ph)
   Array::push(progs, ETuple(es))
   Array::push(progs, EArray(es))
-  Array::push(progs, ERecord(Array::slice([("f", xid)], 0, 1)))
+  Array::push(progs, ERecord("", Array::slice([("f", xid)], 0, 1), Array::slice([TyName("Int")], 0, 0)))
   Array::push(progs, EMap(Array::slice([("k", xid)], 0, 1)))
   Array::push(progs, EIf(xid, EInt(1), EInt(2)))
-  Array::push(progs, ELet("a", xid, EIdent("a")))
-  Array::push(progs, ELetRec("a", xid, EIdent("a")))
-  Array::push(progs, ELetMut("a", xid, EAssign("a", EInt(1), EUnit)))
+  Array::push(progs, ELet("a", xid, EIdent("a", 0), 0))
+  Array::push(progs, ELetRec("a", xid, EIdent("a", 0)))
+  Array::push(progs, ELetMut("a", xid, EAssign("a", EInt(1), EUnit), 0))
   Array::push(progs, EAssign("x", EInt(1), EUnit))
   Array::push(progs, EAssignOp("+", "x", EInt(1), EUnit))
   Array::push(progs, ESeq(xid, EUnit))
   Array::push(progs, EWhile(xid, EUnit))
   Array::push(progs, EForIn("i", None, xid, EUnit))
-  Array::push(progs, ECall(EIdent("f"), Array::slice([xid, ph], 0, 2)))
+  Array::push(progs, ECall(EIdent("f", 0), Array::slice([xid, ph], 0, 2), 0))
   Array::push(progs, EBinOp("+", xid, ph))
   Array::push(progs, EBinOp("+", EInt(1), EInt(2)))
   Array::push(progs, EUnaryOp("-", xid))
-  Array::push(progs, EDot(ph, "field"))
+  Array::push(progs, EDot(ph, "field", 0, 0))
   Array::push(progs, EReturn(xid))
   Array::push(progs, EBreak(Some(xid)))
   Array::push(progs, EBreak(None))
@@ -61,11 +77,11 @@ export let cov_exprwalk_main: () -> Int = () -> {
   Array::push(progs, EBinOp("+", EInt(1), xid))          // x in rhs only
   Array::push(progs, EIf(EInt(0), EInt(1), xid))         // x in else only
   Array::push(progs, EIf(EInt(0), xid, EInt(1)))         // x in then only
-  Array::push(progs, ECall(EIdent("f"), Array::slice([EInt(1), xid], 0, 2)))  // x in later arg
-  Array::push(progs, ECall(xid, noexpr))                 // x in callee
-  Array::push(progs, ELet("x", EInt(1), EIdent("x")))    // shadowing: n == name
-  Array::push(progs, ELetRec("x", EInt(1), EIdent("x"))) // shadowing
-  Array::push(progs, ELetMut("x", EInt(1), EIdent("x"))) // shadowing
+  Array::push(progs, ECall(EIdent("f", 0), Array::slice([EInt(1), xid], 0, 2), 0))  // x in later arg
+  Array::push(progs, ECall(xid, noexpr, 0))                 // x in callee
+  Array::push(progs, ELet("x", EInt(1), EIdent("x", 0), 0))    // shadowing: n == name
+  Array::push(progs, ELetRec("x", EInt(1), EIdent("x", 0))) // shadowing
+  Array::push(progs, ELetMut("x", EInt(1), EIdent("x", 0), 0)) // shadowing
   Array::push(progs, EForIn("i", None, EInt(0), xid))    // x in body only
   Array::push(progs, EWhile(EInt(0), xid))               // x in body only
   Array::push(progs, ESeq(EInt(0), xid))                 // x in second only
@@ -76,11 +92,11 @@ export let cov_exprwalk_main: () -> Int = () -> {
   // expr_projects_or_matches: EIdent / EDot / EMatch / EHandle (+ default)
   let arms = Array::slice([(PWild, EUnit)], 0, 1)         // one arm [(PWild, EUnit)]
   let pexprs = Array::slice([EUnit], 0, 0)
-  Array::push(pexprs, EIdent("x"))
-  Array::push(pexprs, EIdent("z"))
-  Array::push(pexprs, EDot(EIdent("x"), "f"))
-  Array::push(pexprs, EMatch(EIdent("x"), arms))
-  Array::push(pexprs, EHandle(EIdent("x"), arms))
+  Array::push(pexprs, EIdent("x", 0))
+  Array::push(pexprs, EIdent("z", 0))
+  Array::push(pexprs, EDot(EIdent("x", 0), "f", 0, 0))
+  Array::push(pexprs, EMatch(EIdent("x", 0), arms))
+  Array::push(pexprs, EHandle(EIdent("x", 0), arms))
   Array::push(pexprs, EInt(1))
   let mut j = 0
   while j < Array::length(pexprs) { acc = acc + cov_ew_proj(Array::get(pexprs, j)); j = j + 1 }
