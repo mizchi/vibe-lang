@@ -66,6 +66,17 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
 wasm-tools validate --features all "$DIRECT_OUT" >/dev/null
 "$RUNNER" "$DIRECT_OUT" >/dev/null
 
+# #1541 Phase B characterization: one private concrete Array[Int] literal
+# crosses exactly one immutable local alias. Mutating through that alias and
+# reading through the original proves that lowering preserves object identity.
+ALIAS_OUT="$WORK/direct_array_alias_identity.wasm"
+ALIAS_OUT_REL="${ALIAS_OUT#"$ROOT_DIR"/}"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  fixtures/gc_direct_array_alias_identity_test.vibe "$ALIAS_OUT_REL" __no_entry__ >/dev/null
+wasm-tools validate --features all "$ALIAS_OUT" >/dev/null
+"$RUNNER" "$ALIAS_OUT" >/dev/null
+
 compile_direct_abi_fallback() {
   local fixture="$1"
   local output="$2"
@@ -84,27 +95,35 @@ compile_direct_abi_fallback fixtures/gc_direct_array_abi_fallback_test.vibe "$FA
 compile_direct_abi_fallback fixtures/gc_direct_array_abi_shadow_fallback_test.vibe "$SHADOW_FALLBACK_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_abi_export_fallback_test.vibe "$EXPORT_FALLBACK_OUT"
 
-python3 - "$DIRECT_OUT" "$FALLBACK_OUT" "$SHADOW_FALLBACK_OUT" "$EXPORT_FALLBACK_OUT" <<'PY'
-import sys
-positive = open(sys.argv[1], "rb").read().count(b"\xfb\x07\x0c")
-fallbacks = {
-    "generic": open(sys.argv[2], "rb").read().count(b"\xfb\x07\x0c"),
-    "spelling shadow": open(sys.argv[3], "rb").read().count(b"\xfb\x07\x0c"),
-    "export": open(sys.argv[4], "rb").read().count(b"\xfb\x07\x0c"),
+# Count decoded instructions rather than byte patterns: raw scanning can match
+# non-code sections and also couples this gate to an incidental numeric type
+# index. `wasm-tools print` parses the module and renders instructions with the
+# actual type reference, which we deliberately ignore here.
+count_native_array_allocs() {
+  local wasm="$1"
+  wasm-tools print "$wasm" | awk '$1 == "array.new_default" { count += 1 } END { print count + 0 }'
 }
-if positive != 1:
-    raise SystemExit(
-        "[gc-heap-accounting] FAIL: expected one #1541 direct-ABI native "
-        f"literal, found {positive}"
-    )
-for label, count in fallbacks.items():
-    if count != 0:
-        raise SystemExit(
-            f"[gc-heap-accounting] FAIL: {label} boundary mixed a typed "
-            f"reference into the fallback component ({count} native literals)"
-        )
-PY
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI and fail-closed component fallbacks"
+
+positive="$(count_native_array_allocs "$DIRECT_OUT")"
+alias="$(count_native_array_allocs "$ALIAS_OUT")"
+declare -a fallback_labels=("generic" "spelling shadow" "export")
+declare -a fallback_outputs=("$FALLBACK_OUT" "$SHADOW_FALLBACK_OUT" "$EXPORT_FALLBACK_OUT")
+if [ "$positive" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one #1541 direct-ABI native literal, found $positive" >&2
+  exit 1
+fi
+if [ "$alias" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one #1541 local-alias native literal, found $alias" >&2
+  exit 1
+fi
+for i in "${!fallback_outputs[@]}"; do
+  count="$(count_native_array_allocs "${fallback_outputs[$i]}")"
+  if [ "$count" -ne 0 ]; then
+    echo "[gc-heap-accounting] FAIL: ${fallback_labels[$i]} boundary mixed a typed reference into the fallback component ($count native literals)" >&2
+    exit 1
+  fi
+done
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, local alias identity, and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2
