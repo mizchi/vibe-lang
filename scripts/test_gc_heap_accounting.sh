@@ -95,13 +95,115 @@ compile_direct_abi_fallback fixtures/gc_direct_array_abi_fallback_test.vibe "$FA
 compile_direct_abi_fallback fixtures/gc_direct_array_abi_shadow_fallback_test.vibe "$SHADOW_FALLBACK_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_abi_export_fallback_test.vibe "$EXPORT_FALLBACK_OUT"
 
+# #1541 isolated direct-argument characterization. The native fixture crosses
+# exactly one private concrete Array[Int] parameter boundary; the generic pair
+# must retain the component-wide tagged-i64 fallback.
+ARGUMENT_OUT="$WORK/direct_array_argument_identity.wasm"
+ARGUMENT_FALLBACK_OUT="$WORK/direct_array_argument_fallback.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_argument_identity_test.vibe "$ARGUMENT_OUT"
+compile_direct_abi_fallback fixtures/gc_direct_array_argument_fallback_test.vibe "$ARGUMENT_FALLBACK_OUT"
+
 # Count decoded instructions rather than byte patterns: raw scanning can match
 # non-code sections and also couples this gate to an incidental numeric type
 # index. `wasm-tools print` parses the module and renders instructions with the
 # actual type reference, which we deliberately ignore here.
-count_native_array_allocs() {
+count_decoded_instruction() {
   local wasm="$1"
-  wasm-tools print "$wasm" | awk '$1 == "array.new_default" { count += 1 } END { print count + 0 }'
+  local instruction="$2"
+  wasm-tools print "$wasm" | awk -v instruction="$instruction" '$1 == instruction { count += 1 } END { print count + 0 }'
+}
+
+count_native_array_allocs() {
+  count_decoded_instruction "$1" "array.new_default"
+}
+
+assert_direct_argument_structure() {
+  local wasm="$1"
+  local printed="$WORK/$(basename "$wasm").wat"
+  wasm-tools print "$wasm" > "$printed"
+
+  # The only native allocation is the caller literal. Its two initializer
+  # writes plus the callee mutation are the complete decoded array.set set.
+  local allocs sets indirect_calls
+  allocs="$(awk '$1 == "array.new_default" { count += 1 } END { print count + 0 }' "$printed")"
+  sets="$(awk '$1 == "array.set" { count += 1 } END { print count + 0 }' "$printed")"
+  indirect_calls="$(awk '$1 == "call_indirect" { count += 1 } END { print count + 0 }' "$printed")"
+  [ "$allocs" -eq 1 ] || {
+    echo "[gc-heap-accounting] FAIL: expected one direct-argument native literal, found $allocs" >&2
+    exit 1
+  }
+  [ "$sets" -eq 3 ] || {
+    echo "[gc-heap-accounting] FAIL: expected two literal initializers plus one callee array.set, found $sets" >&2
+    exit 1
+  }
+  [ "$indirect_calls" -eq 0 ] || {
+    echo "[gc-heap-accounting] FAIL: direct-argument fixture emitted $indirect_calls call_indirect instructions" >&2
+    exit 1
+  }
+
+  # Tie a decoded direct call to the function that both has the native-array
+  # parameter type and performs the callee mutation. Discover all indices from
+  # wasm-tools output; numeric type/function indices are deliberately not
+  # fixed because they are an encoding detail.
+  python3 - "$printed" <<'PY'
+import re
+import sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+typed_types = set()
+for line in lines:
+    match = re.match(
+        r"^  \(type \(;(\d+);\) \(func \(param \(ref null [^)]+\) i64\) \(result i64\)\)\)$",
+        line,
+    )
+    if match:
+        typed_types.add(match.group(1))
+if not typed_types:
+    raise SystemExit(
+        "[gc-heap-accounting] FAIL: missing typed array-ref direct-argument signature"
+    )
+
+functions = []
+current = None
+for line in lines:
+    declaration = re.match(r"^  \(func \(;(\d+);\) \(type (\d+)\)", line)
+    if declaration:
+        if current is not None:
+            functions.append(current)
+        current = {
+            "index": declaration.group(1),
+            "type": declaration.group(2),
+            "lines": [],
+        }
+    elif current is not None:
+        current["lines"].append(line)
+if current is not None:
+    functions.append(current)
+
+# The characterized callee is identified structurally: typed native-array
+# parameter plus the decoded array.set mutation in its body.
+typed_mutators = {
+    function["index"]
+    for function in functions
+    if function["type"] in typed_types
+    and any(re.match(r"^\s+array\.set\b", line) for line in function["lines"])
+}
+if not typed_mutators:
+    raise SystemExit(
+        "[gc-heap-accounting] FAIL: no typed array-ref callee performs array.set"
+    )
+
+direct_targets = {
+    match.group(1)
+    for line in lines
+    if (match := re.match(r"^\s+call (\d+)\s*$", line))
+}
+called_mutators = typed_mutators & direct_targets
+if not called_mutators:
+    raise SystemExit(
+        "[gc-heap-accounting] FAIL: typed array-ref mutator has no decoded direct call"
+    )
+PY
 }
 
 positive="$(count_native_array_allocs "$DIRECT_OUT")"
@@ -123,7 +225,29 @@ for i in "${!fallback_outputs[@]}"; do
     exit 1
   fi
 done
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, local alias identity, and fail-closed component fallbacks"
+assert_direct_argument_structure "$ARGUMENT_OUT"
+argument_fallback="$(count_native_array_allocs "$ARGUMENT_FALLBACK_OUT")"
+if [ "$argument_fallback" -ne 0 ]; then
+  echo "[gc-heap-accounting] FAIL: generic argument boundary emitted $argument_fallback native literals" >&2
+  exit 1
+fi
+ARGUMENT_REPORT="$(VIBE_MEM=1 "$RUNNER" "$ARGUMENT_OUT" 2>&1 >/dev/null)" || {
+  printf '%s\n' "$ARGUMENT_REPORT" >&2
+  echo "[gc-heap-accounting] FAIL: direct-argument fixture trapped under heap accounting" >&2
+  exit 1
+}
+ARGUMENT_ALLOCATED="$(printf '%s\n' "$ARGUMENT_REPORT" | sed -n 's/.*allocated=\([0-9][0-9]*\).*/\1/p' | head -1)"
+case "$ARGUMENT_ALLOCATED" in
+  ''|*[!0-9]*)
+    echo "[gc-heap-accounting] FAIL: missing direct-argument numeric vibe::mem allocated field" >&2
+    exit 1
+    ;;
+esac
+if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
+  echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
+  exit 1
+fi
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2
