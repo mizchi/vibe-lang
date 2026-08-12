@@ -8,7 +8,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Source the driver helpers without requiring a real corpus.
-VIBE_COVERAGE_DRIVERS_LIB_ONLY=1 source scripts/coverage_drivers.sh
+source scripts/coverage_drivers.sh
 COMPILER_COV="$TMP/compiler_cov.wasm"
 printf wasm > "$COMPILER_COV"
 
@@ -63,23 +63,21 @@ FAKE_BEFORE_STAT='3 10' FAKE_AFTER_STAT='4 10' FAKE_STAT_STATUS=7 expect_reject 
 unset FAKE_MERGE_STATUS FAKE_MERGE_OUTPUT FAKE_BEFORE_STAT FAKE_AFTER_STAT FAKE_STAT_STATUS
 
 # Source corpus freshness helpers without running the corpus.
-VIBE_COVERAGE_CORPUS_LIB_ONLY=1 source scripts/coverage_corpus.sh
-REAL_FIND="$(command -v find)"
-REAL_SORT="$(command -v sort)"
-FLAT_ABS="$TMP/flat.vibe"
-printf flat >"$FLAT_ABS"
+source scripts/coverage_corpus.sh
+TEST_FLAT="$TMP/flat.vibe"
+printf flat >"$TEST_FLAT"
 mkdir -p "$TMP/fresh/bin"
 for required in bootstrap/seed/compiler.wasm lib/@vibe/compiler/compiler_sources_manifest.tsv scripts/generate_bundle.sh scripts/ensure_generated.sh; do
   mkdir -p "$TMP/fresh/$(dirname "$required")"
   printf x >"$TMP/fresh/$required"
 done
 mkdir -p "$TMP/fresh/lib/@vibe" "$TMP/fresh/lib/@vibex"
-touch "$FLAT_ABS"
+touch "$TEST_FLAT"
 (
   cd "$TMP/fresh"
-  coverage_require_fresh_flat
+  coverage_require_fresh_flat "$TEST_FLAT"
   rm bootstrap/seed/compiler.wasm
-  if coverage_require_fresh_flat >/dev/null 2>&1; then
+  if coverage_require_fresh_flat "$TEST_FLAT" >/dev/null 2>&1; then
     echo 'coverage_pipeline_contract_test: missing required input was accepted' >&2
     exit 1
   fi
@@ -90,11 +88,30 @@ printf '%s\n' 'lib/@vibe/plausible.vibe'
 exit 9
 SH
   chmod +x bin/find
-  if PATH="$PWD/bin:$PATH" coverage_require_fresh_flat >/dev/null 2>&1; then
+  if PATH="$PWD/bin:$PATH" coverage_require_fresh_flat "$TEST_FLAT" >/dev/null 2>&1; then
     echo 'coverage_pipeline_contract_test: failing find producer was accepted' >&2
     exit 1
   fi
 )
+
+# Library-only environment variables must not bypass direct production entry.
+# Missing prerequisites make both direct invocations fail before doing work.
+if VIBE_COVERAGE_CORPUS_LIB_ONLY=1 VIBE_COV_SEED="$TMP/missing-seed.wasm" \
+    bash scripts/coverage_corpus.sh >/dev/null 2>&1; then
+  echo 'coverage_pipeline_contract_test: corpus direct invocation bypassed prerequisites' >&2
+  exit 1
+fi
+rm -rf "$TMP/direct-drivers"
+if VIBE_COVERAGE_DRIVERS_LIB_ONLY=1 \
+    VIBE_COV_DIR="$TMP/direct-drivers" \
+    bash scripts/coverage_drivers.sh >/dev/null 2>&1; then
+  echo 'coverage_pipeline_contract_test: drivers direct invocation bypassed prerequisites' >&2
+  exit 1
+fi
+[ ! -e "$TMP/direct-drivers" ] || {
+  echo 'coverage_pipeline_contract_test: drivers modified output before prerequisite checks' >&2
+  exit 1
+}
 
 # The local tool defaults to the current corpus compiler, not the pinned seed,
 # and includes compiler freshness in its cache invalidation condition.
@@ -107,7 +124,7 @@ grep -Fq '[ "$compiler" -nt "$tool" ]' scripts/coverage_local_merge_run.sh
 ! grep -Fq 'realpath --relative-to' scripts/coverage_corpus.sh
 ! grep -Eq '^[[:space:]]*bash scripts/ensure_generated[.]sh' scripts/coverage_corpus.sh
 grep -Fq 'coverage_require_fresh_flat' scripts/coverage_corpus.sh
-grep -Fq 'if [ "$input" -nt "$FLAT_ABS" ]' scripts/coverage_corpus.sh
+grep -Fq 'if [ "$input" -nt "$flat_abs" ]' scripts/coverage_corpus.sh
 grep -Fq 'os.path.commonpath' scripts/coverage_corpus.sh
 grep -Fq 'export VIBE_COVERAGE_ACC_TOOL_COMPILER="$COMPILER_COV"' scripts/coverage_corpus.sh
 

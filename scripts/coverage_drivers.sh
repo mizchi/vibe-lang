@@ -62,15 +62,21 @@ coverage_driver_compile_with_retries() { # dir entry
 }
 
 cd "$ROOT" || exit 1
-mkdir -p "$WORK"
+COVERAGE_DRIVERS_SOURCED=0
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  COVERAGE_DRIVERS_SOURCED=1
+else
+  [ -s "$ACC" ] || { echo "drivers: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
+  [ -s "$COMPILER_COV" ] || { echo "drivers: run coverage_corpus.sh first (no current compiler_cov.wasm)" >&2; exit 1; }
+  mkdir -p "$WORK"
+fi
 
 # 1. Regenerate the legacy no-DCE source only for drivers not yet migrated to
 #    exact-path exposure. #1633's first slice migrates `units`; the remaining
 #    drivers deliberately stay on their existing path until separate reviewed
 #    slices move them. A units-only smoke therefore never constructs or trusts
 #    the old raw concatenation.
-# Library-only mode skips all setup but still loads the helper contracts below.
-if [ "${VIBE_COVERAGE_DRIVERS_LIB_ONLY:-0}" != "1" ] && { [ -z "$DRIVER_FILTER" ] || [ "$DRIVER_FILTER" != "units" ]; }; then
+if [ "$COVERAGE_DRIVERS_SOURCED" = "0" ] && { [ -z "$DRIVER_FILTER" ] || [ "$DRIVER_FILTER" != "units" ]; }; then
   echo "[drivers] regenerating legacy no-DCE source ..." >&2
   python3 - "lib/@vibe/compiler" "lib/@vibe/compiler/compiler_sources_manifest.tsv" "cli_adapter.vibe" "$MERGED" <<'PY'
 import os, re, sys
@@ -178,15 +184,9 @@ coverage_driver_merge_checked() { # acc_path run_path
   printf '%s %s %s\n' "$base" "$now" "$total"
 }
 
-if [ "${VIBE_COVERAGE_DRIVERS_LIB_ONLY:-0}" = "1" ]; then
-  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
-    return 0
-  fi
-  exit 0
+if [ "$COVERAGE_DRIVERS_SOURCED" = "1" ]; then
+  return 0
 fi
-
-[ -s "$ACC" ] || { echo "drivers: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
-[ -s "$COMPILER_COV" ] || { echo "drivers: run coverage_corpus.sh first (no current compiler_cov.wasm)" >&2; exit 1; }
 
 # Run one driver: append <driver>.vibe to the merged source, compile under
 # coverage with the driver entry, run, union into acc.json. Retries: the 36k-line

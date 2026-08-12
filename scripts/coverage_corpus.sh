@@ -17,7 +17,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SEED="${VIBE_COV_SEED:-$ROOT_DIR/bootstrap/seed/compiler.wasm}"
-FLAT_ABS="${VIBE_COV_FLAT_ABS:-$ROOT_DIR/lib/@vibe/compiler/_cli_adapter_module_source.vibe}"
+FLAT_ABS="$ROOT_DIR/lib/@vibe/compiler/_cli_adapter_module_source.vibe"
 OUT_DIR="${VIBE_COV_DIR:-$ROOT_DIR/_build/coverage/selfhost-corpus}"
 COMPILER_COV="$OUT_DIR/compiler_cov.wasm"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
@@ -39,6 +39,7 @@ MAX="${VIBE_COV_MAX:-100000}"
 # synchronously materialize the discovered source list, then compare mtimes.
 # Any missing/stale input or producer failure is actionable and fail-closed.
 coverage_require_fresh_flat() {
+  local flat_abs="${1:-$FLAT_ABS}"
   local input list_file sorted_file
   local required=(
     bootstrap/seed/compiler.wasm
@@ -46,7 +47,7 @@ coverage_require_fresh_flat() {
     scripts/generate_bundle.sh
     scripts/ensure_generated.sh
   )
-  [ -s "$FLAT_ABS" ] || {
+  [ -s "$flat_abs" ] || {
     echo "corpus: generated flat compiler source missing; run: bash scripts/ensure_generated.sh" >&2
     return 1
   }
@@ -82,7 +83,7 @@ coverage_require_fresh_flat() {
       rm -f "$sorted_file"
       return 1
     }
-    if [ "$input" -nt "$FLAT_ABS" ]; then
+    if [ "$input" -nt "$flat_abs" ]; then
       echo "corpus: generated flat compiler source is stale after $input; run: bash scripts/ensure_generated.sh" >&2
       rm -f "$sorted_file"
       return 1
@@ -108,11 +109,8 @@ print(os.path.relpath(path, root))
 PY
 }
 
-if [ "${VIBE_COVERAGE_CORPUS_LIB_ONLY:-0}" = "1" ]; then
-  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
-    return 0
-  fi
-  exit 0
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
 fi
 
 [ -s "$SEED" ] || { echo "corpus: seed not found" >&2; exit 1; }
