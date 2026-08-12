@@ -169,9 +169,11 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   (brace block 文・文位置の async-iterator `for` の脱糖出力 — #1536 (a) v3
   の let-floating が継続 spine へ再バランスする、ADR-0076 追記42)、
   **row-free closure パラメータの呼び出しのうち、全 by-name call site の
-  実引数が suspend-inert と証明できるもの** (#1536 (a)。下記)
+  実引数が suspend-inert と証明できるもの** (#1536 (a)。下記)、`if` condition /
+  `match` scrutinee が direct target perform・concrete needing call・CPS-local call
+  そのものの形 (fresh let へ一回評価してから selection、ADR-0076 追記44)
 - **不適格**: ループ内 `break`/`continue`/`return`、配列 `for` / `loop` 形、
-  sequence HEAD に立つ perform 抱えの `if`/`match` 複合式、代入 RHS 直書きの
+  selection input が suspend を内包する複合式、代入 RHS 直書きの
   perform (`acc = perform ..`)、実引数証明が成立しない
   closure パラメータの呼び出し、row 変数 callee (`with e`)
 
@@ -1823,7 +1825,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 
 | 項目 | 内容 | 依存 |
 |---|---|---|
-| **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
+| **suspend lowering の適格性** (#1536) | row-variable callee と residual literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal)、direct if-condition/match-scrutinee は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
 | **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route + additive compiler-owned direct chunk operation まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff、`StdinStream::read_chunk` を実装。pull-closure/direct-`for` adapter は transitive HOF effect evidence (#1536) 待ち。既存 `stdin_stream(chunk_size)` は standalone-capable のまま未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` manual while-loop chunks (linear/RC, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import は不使用 |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |

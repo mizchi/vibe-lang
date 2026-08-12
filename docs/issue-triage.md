@@ -66,7 +66,7 @@ Phase A が実バグと同じ棚に並んでしまう。
 
 | # | blocker | 内容 |
 |---|---|---|
-| #1536 | ✔ | suspend CPS split の see-through。row-free closure param flow 証明と eager `Stream::next` retarget は済み。残り = row-variable callee / literal-param flow |
+| #1536 | ✔ | suspend CPS split の see-through。row-free closure param flow、eager `Stream::next` retarget、direct if-condition/match-scrutinee は済み。残り = row-variable callee / residual literal-param flow / compound selection input |
 | #1511 | | `handle` の適格性制約が型検査を通り抜ける。(c) エラー文は済み、(b) は #1536 のスライスと同一機構 |
 | #1520 | | builtin レジストリの検証。提案 1 は済み、残り = 85 件の二重宣言の一括整理 + 提案 3 の正例コーパス |
 | #1508 | | `Http` を実行する test / bench。row 構文は済み、残り = test/bench 経路での `Http::*` lowering |

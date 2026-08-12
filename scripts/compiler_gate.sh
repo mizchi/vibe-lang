@@ -6846,10 +6846,14 @@ scps_run_expect "effect_seq_head_reserved_name_collision.vibe" "3011" "seqheadfr
 # condition/scrutinee and capture-safe branch/pattern bindings.
 scps_run_expect "effect_seq_head_if_suspend.vibe" "41100" "seqheadif"
 scps_run_expect "effect_seq_head_match_suspend.vibe" "3200" "seqheadmatch"
-# This continuation distribution deliberately starts AFTER selection; a
-# suspendable if condition or match scrutinee remains an ineligible head.
-scps_check_reject "err_effect_seq_head_if_condition_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadifcond"
-scps_check_reject "err_effect_seq_head_match_scrutinee_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadmatchscrut"
+# #1536 direct selection input: a recognized direct perform is first named on
+# the CPS spine, evaluates once, then selects a branch/arm whose continuation
+# runs once. Compound inputs remain fail-closed.
+scps_run_expect "effect_seq_head_if_condition_suspend.vibe" "3210" "seqheadifcond"
+scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadmatchscrut"
+scps_run_expect "effect_tail_selection_input_suspend.vibe" "3311" "tailselectinput"
+scps_check_reject "err_effect_seq_head_if_condition_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadifcompound"
+scps_check_reject "err_effect_seq_head_match_compound_scrutinee_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadmatchcompound"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"

@@ -9292,8 +9292,22 @@ fn scps_need_clone(eff: String, fname: String, st: (Array[Int], Array[String], A
 // lowered (a handle body or a clone body); the result is an expression
 // producing a __ScpsStep_E value. Suspendables (direct performs of E,
 // calls to needing functions) are only recognized on the
-// let/seq/tail/branch-tail spine -- anything else containing one fails
-// the split (returned Bool = false).
+// let/seq/tail/branch-tail spine. A direct recognized suspension may also
+// occupy an if condition or match scrutinee: it is first named by a fresh
+// ELet, then the existing spine machinery resumes into selection. Compound
+// selection inputs and every other nested suspension still fail closed.
+
+fn scps_direct_selection_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
+  let (_, ops, _, _, _) = sctx
+  scps_as_target_perform(e, ops) >= 0 || scps_as_needing_call(e, sctx) != "" || scps_as_cps_local_call(e, sctx) != ""
+}
+
+fn scps_selection_fresh(e: Expr, site: Int) -> String {
+  // Reuse the scope-blind collision probe used by sequence-head floating.
+  // Passing the whole selection expression ensures the generated binder is
+  // absent from both the input and every continuation branch/arm.
+  scps_seq_float_fresh("select", e, EUnit, site)
+}
 
 fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, ops, _, site, cps_locals) = sctx
@@ -9452,7 +9466,10 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           // branch and its continuation. Branch-local lets remain lexical
           // to their branch because `b` is an ESeq sibling, not their body.
           EIf(c, t, el) => if scps_contains_susp(a, sctx) {
-            if scps_contains_susp(c, sctx) {
+            if scps_direct_selection_input(c, sctx) {
+              let sx = scps_selection_fresh(e, site)
+              scps_split_tail(ELet(sx, c, EIf(EIdent(sx, -1), ESeq(t, b), ESeq(el, b)), -1), sctx, ctx, st)
+            } else if scps_contains_susp(c, sctx) {
               (false, e)
             } else {
               scps_split_tail(EIf(c, ESeq(t, b), ESeq(el, b)), sctx, ctx, st)
@@ -9466,7 +9483,10 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           // match originally; without the rename, a pattern binding could
           // capture an outer reference in the duplicated tail.
           EMatch(s, arms) => if scps_contains_susp(a, sctx) {
-            if scps_contains_susp(s, sctx) {
+            if scps_direct_selection_input(s, sctx) {
+              let sx = scps_selection_fresh(e, site)
+              scps_split_tail(ELet(sx, s, EMatch(EIdent(sx, -1), scps_seq_float_match_arms(arms, b, site)), -1), sctx, ctx, st)
+            } else if scps_contains_susp(s, sctx) {
               (false, e)
             } else {
               scps_split_tail(EMatch(s, scps_seq_float_match_arms(arms, b, site)), sctx, ctx, st)
@@ -9529,7 +9549,10 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             }
           }
         },
-        EIf(c, t, el) => if scps_contains_susp(c, sctx) {
+        EIf(c, t, el) => if scps_direct_selection_input(c, sctx) {
+          let sx = scps_selection_fresh(e, site)
+          scps_split_tail(ELet(sx, c, EIf(EIdent(sx, -1), t, el), -1), sctx, ctx, st)
+        } else if scps_contains_susp(c, sctx) {
           (false, e)
         } else {
           let (tok, te) = scps_split_tail(t, sctx, ctx, st)
@@ -9540,7 +9563,10 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             (false, e)
           }
         },
-        EMatch(s, arms) => if scps_contains_susp(s, sctx) {
+        EMatch(s, arms) => if scps_direct_selection_input(s, sctx) {
+          let sx = scps_selection_fresh(e, site)
+          scps_split_tail(ELet(sx, s, EMatch(EIdent(sx, -1), arms), -1), sctx, ctx, st)
+        } else if scps_contains_susp(s, sctx) {
           (false, e)
         } else {
           let out = scps_empty_arms()
