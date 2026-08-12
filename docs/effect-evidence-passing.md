@@ -2813,10 +2813,23 @@ match の pattern binder は tail の元の外側参照を捕獲し得るため�
 分配する。freshness は pattern・arm body・shared tail の全出現を probe する。
 `effect_seq_head_if_suspend.vibe` (want 41100) は condition 一回評価と branch-local
 shadow を、`effect_seq_head_match_suspend.vibe` (want 3200) は scrutinee 一回評価と
-pattern capture を pin する。suspend が condition / scrutinee 自身にある形は選択前の
-継続を要するためこの slice の範囲外で、negative fixture で拒否を固定する。
+pattern capture を pin する。
 
-**残る不適格**: EForIn(array)/ELoop HEAD、代入 RHS 直書きの perform、row 変数
+### 追記44 (2026-08-12): direct selection input を継続 spine に名前付けする (#1536 (a) v5)
+
+`if` condition / `match` scrutinee が **direct target perform、concrete needing call、
+または既に step-typed な CPS-local call そのもの**なら、scope-blind collision probe で
+fresh な binder を作り `ELet(tmp, input, EIf/EMatch(tmp, ...))` へ正規化する。これで
+入力は一回だけ評価され、既存の let/bubble spine が selection 後の branch/arm と tail
+を処理する。tail-position と sequence-HEAD の両方で同じ変換を使う。
+
+`perform Op() > 0` や `Some(perform Op())` のように suspend を内包する compound input
+は direct shape ではなく、評価順序の一般 CPS 化を暗黙に始めないため拒否を維持する。
+positive fixtures は if/match の一回評価・tail 一回実行・名前/pattern capture 回避を、
+negative fixtures は compound input の fail-closed 診断を固定する。
+
+**残る不適格**: EForIn(array)/ELoop HEAD、代入 RHS 直書きの perform、compound
+selection input、row 変数
 callee、literal param flow。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

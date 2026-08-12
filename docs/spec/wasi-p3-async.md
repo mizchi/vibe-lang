@@ -169,9 +169,11 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   (brace block 文・文位置の async-iterator `for` の脱糖出力 — #1536 (a) v3
   の let-floating が継続 spine へ再バランスする、ADR-0076 追記42)、
   **row-free closure パラメータの呼び出しのうち、全 by-name call site の
-  実引数が suspend-inert と証明できるもの** (#1536 (a)。下記)
+  実引数が suspend-inert と証明できるもの** (#1536 (a)。下記)、`if` condition /
+  `match` scrutinee が direct target perform・concrete needing call・CPS-local call
+  そのものの形 (fresh let へ一回評価してから selection、ADR-0076 追記44)
 - **不適格**: ループ内 `break`/`continue`/`return`、配列 `for` / `loop` 形、
-  sequence HEAD に立つ perform 抱えの `if`/`match` 複合式、代入 RHS 直書きの
+  selection input が suspend を内包する複合式、代入 RHS 直書きの
   perform (`acc = perform ..`)、実引数証明が成立しない
   closure パラメータの呼び出し、row 変数 callee (`with e`)
 
@@ -208,7 +210,7 @@ ADR-0089 Decision 3) への一本化だが、**今日の実装には 3 つの表
 | 型 | 実行時表現 | 用途 | 位置づけ |
 |---|---|---|---|
 | `Stream[T]` | `Array[T]` (eager) | `empty`/`once`/`map`/`filter`/`fold`/`next`、`String::to_bytes`/`Stream::to_string` | **legacy**。ADR-0089 D3 で退役予定 |
-| `HostStream` | 2 語セル `[3, handle]` | `host_stream_named`/`host_stream_next`/`host_stream_close` | **generic named-host-stream 専用**の p3 境界実体。stream の readable handle 1本しか保持できず、completion future を伴う provider の所有/lifecycle は表せない (§3.18.3) |
+| `HostStream` | 2 語セル `[3, handle]` | `host_stream_named`/`host_stream_next`/`host_stream_close` | p3 境界の実体 |
 | AsyncIter | trait (`lib/@vibe/prelude/async_iter.vibe`) | `for x in it` の pull protocol | 目標形、host stream とは未接続 |
 
 `host_stream_named` の戻り型が `Stream[Int]` **ではない**のは #1341 の実測に
@@ -1263,14 +1265,14 @@ let run: () -> Int with Async = () -> {
 lowering は §3.16 の named host futures と同型で、park が「future 1本ごと」
 から「read 1回ごと」に変わる:
 
-1. **surface**: `host_stream_named: (String) -> HostStream`（pure。名前は
+1. **surface**: `host_stream_named: (String) -> Stream[Int]`（pure。名前は
    §3.16 と同じ string-literal + component-label 検証）と
-   `host_stream_next: (HostStream) -> Int with Async`（次の byte 0-255、writer
-   が居なくなったら -1。以後の read は cell 側で latch されて -1 のまま）。
-   §3.17 の予告した `ByteStream::next` ではなく `host_stream_next` の綴りに
-   したのは、eager な `Stream[Int]`（`String::to_bytes` 等）と表現が異なる
-   ため — AsyncIter への統一は Decision 4 の boundary 規則と合わせて別
-   スライス。
+   `host_stream_next: (Stream[Int]) -> Int with Async`（次の byte
+   0-255、writer が居なくなったら -1。以後の read は cell 側で latch されて
+   -1 のまま）。§3.17 の予告した `ByteStream::next` ではなく
+   `host_stream_next` の綴りにしたのは、eager な `Stream[Int]`
+   （`String::to_bytes` 等）と表現が異なるため — AsyncIter への統一は
+   Decision 4 の boundary 規則と合わせて別スライス。
 2. **cell**: `[state 3, handle]`（state 3 = host stream。future cell の
    0/1/2 と不交なので取り違えは構造的に起きない）。生成は
    `vibe_hs_get_raw$<name>` → core import `vibe.host_stream_get$<name>`。
@@ -1403,21 +1405,13 @@ identifier と直接の `host_stream_named(..)` 呼び出しにしか効かず�
 `infer_arg_type_name` を通すため）。回帰ロックは gate の projected `for`
 lane（bytes を読むこと + `{ Async }` 無しの row が reject されること）。
 
-**#1538 の boundary slice（done）**: `HostStream` は routing key であると同時に、
-**legacy `Stream[T]` consumer への入力では barrier** である。checker は
-`HostStream` を期待する `Stream[T]` に渡すと型エラーにするので、
-`Stream::map` / `Stream::fold` / `Stream::to_string` と、同じ型を受け取る
-ユーザー定義関数は state-3 cell を eager array として読めない。この判定は
-この二つの compiler-owned nominal name にだけ閉じており、`CtNamed` 全体の
-concreteness や通常の user-defined/generic nominal assignability は広げない。
-
-任意の非 `Stream[T]` parameter（例えば `take_int(s)`）に `HostStream` を渡す
-ことまでを拒否する一般 nominal barrier ではない。その横断的な型検査強化は
-別作業のままにする。この狭い fail-closed boundary は generic `HostStream` と
-legacy eager `Stream[T]` の誤交差を防ぐ一般安全策であり、#1539 の provider
-lifecycle を実装した証拠ではない。#1539 の既存 `stdin_stream` は
-`Stdin` authority を持つ `Option[String]` pull closure で、§3.18.3 の ratified
-stdin route は別の provider-aware lifecycle を必要とする。
+**残る限界**: `HostStream` は **routing key であって barrier ではない**。
+実測: `s: HostStream` を `take_int(s)` に渡しても型エラーにならない
+（projection 特有ではなく素の local でも同様 — `CtNamed` の head は引数位置で
+許容される、`nominal_head_conflict` の concreteness gate）。したがって
+「eager 用 combinator を host stream に適用すると型エラー」という当初の主張は
+**誤り**で、引数位置の nominal 検査を強くするのは `HostStream` に限らない
+横断的な別作業。
 
 **残り**: 一般 `Stream::next`（`Future[Option[T]]`）を host read へ落とす件は
 まだ。実測では `await(Stream::next(s))` は ADR-0076 の evidence-passing
@@ -1432,7 +1426,7 @@ readable end を解放する surface が無い）を埋めたスライス。read
 到達したときだけ drop するので、それ以前に読むのをやめた handle は component
 instance の寿命まで残っていた。
 
-surface は `host_stream_close: (HostStream) -> Unit`。**`Async` は付かない** —
+surface は `host_stream_close: (Stream[Int]) -> Unit`。**`Async` は付かない** —
 `stream.drop-readable` は block しない canon call なので park も予約帯も
 boundary settle arm も要らず、注入 fn `__hs_close` が adapter を直接呼ぶ。
 
@@ -1469,190 +1463,6 @@ gate lane = `test_named_hoststreams_component_gate.sh` の close lane
 かつ drain-only component に close import が無いこと + closing component に
 guest import と adapter export が両方あることを .wat で確認）。
 
-### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
-
-`tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the
-ratified `wasi:cli/stdin@0.3.0` result type
-`tuple<stream<u8>, future<result<_, error-code>>>`, including the nominal
-`wasi:cli/types@0.3.0/error-code` alias. It also retains the preview-2
-`wasi:cli/run@0.2.12` command export. Thus an error result cannot be silently
-accepted as a representation-compatible non-nominal value.
-
-**Measured on pinned wasmtime 47.0.2:** with binary stdin `10,15,17`, `drain`
-performs canonical async `stream.read` calls for each byte, observes the
-separate zero-item EOF status, drops the readable stream, and awaits canonical
-`future.read` completion success; it returns `42`. `drop` obtains the same
-pair, drops its readable stream immediately, awaits completion success, and
-returns `43`. BLOCKED stream/future reads use `waitable-set.new`,
-`waitable.join`, and `waitable-set.wait`; the end is unjoined before its set is
-dropped. Other statuses, events, byte values, EOF forms, and result tags are
-diagnostic return paths, not success.
-
-`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` is the merged executable
-probe/gate for this measurement. The generated shadow is validated by
-`bash scripts/test_wasi_cli_stdin_provider_component_gate.sh`; phase C of
-`scripts/test_wasi_p3_guarantee_gate.sh` (`pkf run test-wasi-p3`) invokes both.
-It parses, validates, and prints the component, generates deterministic binary
-input, and executes both async-lifted lanes. Required mode requires exactly
-wasmtime 47.0.2; missing tools, an unpinned provider, and
-ABI/type/link/command-export failures fail closed. The default local mode skips
-unavailable tools or an unpinned provider. The aggregate remains outside
-`ci-required`.
-
-#### Why the current `HostStream` ABI cannot represent stdin
-
-The current generic `HostStream` cell is exactly `[3, handle]`: one readable
-`stream<u8>` handle identified by a named host-stream getter. It has no slot
-for another owned resource, no provider identity, and its
-`host_stream_named("name")` import is modeled as a getter for that one stream.
-It is therefore correct for the generic named-host-stream contract in §3.18,
-but it is not a lossless carrier for stdin.
-
-`wasi:cli/stdin@0.3.0::read-via-stream` is instead a **synchronous
-acquisition** which returns **two separately owned readable handles** in one
-result: the readable byte stream and the readable completion future. The latter
-settles the stdin lifecycle after the stream is drained or dropped. Replacing
-that call with `host_stream_named("stdin")` would discard the completion handle
-at acquisition, make its ownership unrepresentable, and make lifecycle failure
-invisible. It must not be treated as an alias or special name of the generic
-HostStream ABI.
-
-In particular, `stream.drop-readable` releases only the stream resource. It
-does **not** by itself complete the stdin lifecycle: the completion future must
-still be read, its result checked, and then released. This corrects the stale
-short-hand that described stream drop alone as a completed stdin close.
-
-#### Provider-aware contract (shadow lifecycle + atomic public source route)
-
-The #1539 prerequisite is a distinct, opaque provider-aware handle whose
-adapter state retains both owned ends from `read-via-stream`:
-
-```text
-acquire stdin provider (sync, Stdin authority)
-  -> opaque stdin-provider handle { readable-stream, completion-future, state }
-read opaque handle -> byte | EOF                  with Async
-close opaque handle -> lifecycle-complete result  with Async
-```
-
-The compiler now exposes this contract through one unforgeable nominal scalar:
-
-```text
-Stdin::read_via_stream() -> StdinStream with Stdin
-StdinStream::next(StdinStream) -> Int with Async
-StdinStream::close(StdinStream) -> Unit with Async
-StdinStream::read_chunk(StdinStream, Int) -> Option[String] with Async
-```
-
-`StdinStream` is neither `Int`, generic `HostStream`, nor `Stream[T]`; source
-cannot construct it and it is not `Send`. The four public provider builtins are
-**direct-call-only**: any value-position reference (local/top-level alias,
-chain, compound/container/field, returned value, or unknown HOF transport) is a
-checker error. A user-defined wrapper with an explicit `Stdin` or `Async` row is
-an ordinary function and may be passed as a value under the existing effect
-rules. This deliberately does not add the generic higher-order effect-flow
-propagation deferred by #1536. Their observable authority and effect
-requirements are fixed as follows:
-
-- Acquisition is synchronous but requires `Stdin` authority. It calls
-  `read-via-stream` once and transfers ownership of **both** returned readable
-  handles into the opaque provider state.
-- Reads require `Async` because canonical `stream.read` may block. They retain
-  the existing byte/EOF behavior only after the provider adapter has performed
-  the required read/wait/unjoin work.
-- EOF and early close both require `Async`: each must release the stream end,
-  await the completion future, validate success, and release the future end.
-  Therefore lifecycle-complete close cannot be a synchronous operation.
-- A completion `error-code` is fail-closed. There is no approved public
-  `Stdin`/`Exception`/`Result` mapping yet; an adapter must not turn it into
-  EOF, success, a generic integer, or a legacy `Option` value.
-- `read_chunk(stream, n)` is a direct compiler-owned, use-gated operation with
-  `Async`. For positive `n`, it reads one provider byte at a time and returns
-  exactly `n` bytes except for the final short chunk. Bytes are validated as
-  `0..255` and appended through one-byte `String::from_char_code`, without
-  UTF-8 expansion. It does not promise to preserve internal provider read
-  boundaries. EOF settles before `None`; subsequent calls return `None`. An
-  exact multiple needs one extra call to observe EOF. For `n <= 0`, it returns
-  `None` without reading or settling, so the caller must close the stream.
-  Early stopping likewise requires explicit, idempotent `close`. A pull
-  closure/direct-`for` adapter remains blocked on transitive higher-order
-  effect evidence (#1536) and is not part of this surface.
-
-The existing `host_stream_close(HostStream) -> Unit` is deliberately
-synchronous and only drops its one generic stream handle (§3.18.1). It cannot
-wait for or validate a missing completion future, so it **cannot safely
-implement** provider stdin close. Reusing it would either leak/unjoin the
-future or silently report a failed lifecycle as a successful close.
-
-#### Staged prerequisite and invariants
-
-Stages 1--3 were first implemented by the production-unused shadow emitter
-`comp_emit_component_wasm_stdin_provider_shadow` and its private component
-scenarios. #1539 now also has a bounded **core-only** route: `linked_compile`
-reserves checker-invisible raw rows for exact core imports
-`vibe.stdin_provider_acquire () -> i64`, `stdin_provider_read (i64) -> i64`,
-and `stdin_provider_close (i64) -> i64`; the stdin-first wrapper sniffs parsed
-module/name pairs and the dedicated arbitrary-core composer validates exact
-signatures before composing the nominal stdin/types imports.
-
-The guest receives only a tagged-i64 bridge instance. The bridge rejects odd
-or high-bit-aliased wire IDs before i32 narrowing, and only then calls the
-proven opaque lifecycle functions. The full shadow instance, scenario exports,
-canonical stream handle, and completion-future handle never cross into the
-compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
-bytes or tagged `-1` after settlement and close returns tagged zero.
-
-The three raw registry rows remain `checker_visible=false`. Exact direct calls
-lower through compiler-owned ABI wrappers to those imports; the `read_chunk`
-wrapper additionally implements repeated hidden raw reads. Public operation
-values never reach codegen because the checker rejects them. Source
-emits only the exact `vibe.stdin_provider_*` core imports and the nominal
-`wasi:cli/types@0.3.0` + `wasi:cli/stdin@0.3.0` component imports.
-
-`stdin_stream`, generic HostStream, and named future/stream behavior remain
-unchanged. `host_stream_named("stdin")` is reserved and rejected. A source core
-that mixes stdin-provider imports with named future/stream imports is explicitly
-rejected in this bounded slice. GC and standalone/non-Async-entry compilation
-are also rejected explicitly; linear and RC component lanes are supported.
-
-The provider permits multiple active acquisitions. Adapter IDs allocate
-monotonically from 16 slots and are never recycled: capacity overflow traps
-before another canonical acquisition, while concurrent/reentrant use of the
-same open slot traps on its non-open phase. Successful EOF/close remains
-idempotent through aliases. Wasmtime 47 source gates measure drain, early close,
-function aliases, a sequential second acquisition, and two simultaneously open
-acquisitions.
-
-Load-bearing invariants for stages 1--3:
-
-- Each successful acquisition owns exactly one stream end and one
-  completion-future end; up to 16 acquisitions may coexist, and neither end may
-  escape as a generic `[3, handle]` HostStream.
-- EOF and early close converge on one settlement state machine. Once settlement
-  begins, subsequent reads/closes are idempotent at the opaque-handle boundary
-  and cannot issue a second drop, read, join, or unjoin.
-- Every successful join has exactly one unjoin before its waitable set is
-  dropped. Each stream/future readable end is dropped exactly once, including
-  all diagnostic/failure exits.
-- A completion error, unexpected status, or unexpected event is a failing
-  transition, never EOF or successful close. Public propagation remains
-  intentionally undecided and fail-closed.
-
-The synthetic compiled-shaped drain and early-close cores are composed and
-validated by `test_wasi_cli_stdin_provider_guest_component_gate.sh`; they check
-bytes 10/15/17, EOF/repeated reads, early settlement, and repeated close on the
-pinned Wasmtime 47.0.2 lane. The original shadow gate and exact 208-byte nominal
-prefix remain separately preserved.
-
-This is only the successful-close lifecycle slice. **Read-error injection is
-unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
-measurement). The forced completion-tag, wrong-byte, and extra-byte
-expected-trap scenarios are controls of cleanup/fail-closed branches, not
-measurements of provider-generated errors. Each byte-mismatch control settles
-and drops both owned ends through the shared close path before trapping. Those
-shadow-scenario controls introduced no API by themselves; the production
-checker-visible `StdinStream` source/console API is the surface documented in
-§3.18.3 above.
-
 ### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
 
 §3.18 + §3.18.1 の host stream は **viberun の test provider**
@@ -1666,7 +1476,7 @@ StreamProducer）を相手に実測されている。production の相手 —
 | | serve 経路 | host-stream 経路 |
 |---|---|---|
 | emitter | `comp_emit_component_wasm_string_handler`（`VIBE_SERVE_COMPONENT=1`） | `comp_emit_component_wasm_async_hostfuture` |
-| guest surface | `handler(method, url, headers, body: String) -> String` | `host_stream_named(name) -> HostStream` |
+| guest surface | `handler(method, url, headers, body: String) -> String` | `host_stream_named(name) -> Stream[Int]` |
 | body の扱い | full adapter が **materialize** する（`Request::consume_body` + `StreamReader::collect` → String） | 生の `stream<u8>` を per-name component import として受ける |
 | compose | `wac plug`（adapter component + guest） | 自前の core module 合成（adapter core module を同梱） |
 
@@ -1823,9 +1633,9 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 
 | 項目 | 内容 | 依存 |
 |---|---|---|
-| **suspend lowering の適格性** (#1536) | row-variable callee と literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal) は済み (§2.2 末尾) | — (ADR-0076 本体) |
+| **suspend lowering の適格性** (#1536) | row-variable callee と residual literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal)、direct if-condition/match-scrutinee は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route + additive compiler-owned direct chunk operation まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff、`StdinStream::read_chunk` を実装。pull-closure/direct-`for` adapter は transitive HOF effect evidence (#1536) 待ち。既存 `stdin_stream(chunk_size)` は standalone-capable のまま未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` manual while-loop chunks (linear/RC, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import は不使用 |
+| **`ByteStream` の p3 接続** (#1539) | `lib/@vibe/console/byte_stream.vibe` の Stdin closure 版を `stream.read` へ。ADR-0089 は「pull closure の host shim を差し替えるだけ」と設計済み | — |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |

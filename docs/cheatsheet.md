@@ -28,7 +28,7 @@ vibe build --release app.vibe  # standalone .wasm
 
 ### CLI は IDE 相当のクエリ面 (方針)
 
-`vibe check` (`--single-file` 込み) / `vibe symbols` / `vibe type-at` /
+`vibe check` / `vibe diagnostics` / `vibe symbols` / `vibe type-at` /
 `vibe binding-at` / `vibe escapes` / `vibe bench` は、エディタが LSP 越しに
 得るのと同じ意味解析を **CLI から直接**取り出すためのもの。想定する第一の
 読み手は**人間ではなく LLM** なので、行指向 (1件1行) で grep でき、空出力が
@@ -766,34 +766,6 @@ The ordered default and cache-safe owners preserve their existing output.
 Checker row filtering and WIT import filtering use only the predicate-based
 entry/runtime policy; WIT mapping and handler behavior are unchanged.
 
-### Atomic stdin provider stream (#1539)
-
-```text
-Stdin::read_via_stream() -> StdinStream with Stdin
-StdinStream::next(StdinStream) -> Int with Async
-StdinStream::close(StdinStream) -> Unit with Async
-StdinStream::read_chunk(StdinStream, Int) -> Option[String] with Async
-```
-
-`next` yields `0..255`, then `-1` after successful EOF settlement. `close`
-settles an early stop; repeated close and reads after successful settlement are
-idempotent. `StdinStream` is opaque, non-`Send`, and unrelated to `HostStream`
-or eager `Stream[T]`. All four provider operations are direct-call-only:
-referencing one as a value (including through an alias, container, return value,
-or unknown higher-order call) is rejected. Wrap a direct call in a user function
-whose row explicitly declares `Stdin` or `Async` when transport is needed.
-`read_chunk(stream, n)` directly returns exactly `n`
-bytes per `Some` except for the final short chunk; it does not preserve provider
-read boundaries and preserves arbitrary bytes. EOF settles the provider, after
-which calls return `None`. For `n <= 0`, it returns `None` without reading or
-settling, so the caller must close the stream. An exact multiple needs one extra
-call to settle EOF. The pull-closure/`for` adapter remains blocked on transitive
-higher-order effect evidence (#1536); do not treat `read_chunk` as directly
-iterable. This surface is component-only (linear/RC); GC, standalone core,
-`host_stream_named("stdin")`, and mixed named-provider composition are
-rejected. Legacy `stdin_stream(chunk_size)` is standalone-capable and
-unchanged.
-
 **Naming.** Effect names are CamelCase. A standard provider builtin is a plain
 `Effect::snake_case` function call; a declared operation is CamelCase and is
 emitted with `perform`:
@@ -1075,7 +1047,11 @@ let/seq/tail/分岐 tail に直接現れる必要がある。**let 連鎖 (brace
 文や文位置の async-iterator `for` の脱糖出力) が文の途中 (sequence HEAD)
 に立つ形は、split が継続 spine へ float して受理する** (#1536 (a) v3,
 ADR-0076 追記42 — `async_iter_collect` / `_fold` / `_count` が suspend
-body から呼べるのはこれ)。**concrete な row に
+body から呼べるのはこれ)。**`if` condition / `match` scrutinee が direct
+perform・concrete needing call・CPS-local call そのものなら、fresh let へ
+一回評価してから selection する形も可** (追記44)。`perform Op() > 0` や
+`Some(perform Op())` のような compound selection input は reject のまま。
+**concrete な row に
 対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
 再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
 向けに無変更)。それ以外に呼べるのは perform / pure builtin / ctor /
@@ -1394,7 +1370,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 ただし **`vibe check` は #1511(b)/#1536(c) 以降、型検査の後に codegen と同じ
 効き方の適格性判定 (ADR-0076 の effect-lowering prelude) を走らせる**ため、
 `vibe check` / `vibe build` / `vibe test` / doctest のどれでも同じエラーが出る
-(`vibe check --single-file` は単一ファイル解析なので対象外):
+(`vibe diagnostics` は単一ファイル解析なので対象外):
 
 ```
 line 5:12-16: handle of effect 'Ask' cannot be compiled here. Every perform
