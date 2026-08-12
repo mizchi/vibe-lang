@@ -26,8 +26,8 @@ import @vibe/compiler/checker {
 
 import @vibe/compiler/checker/artifacts {
   checked_exported_interface_artifact_from_checked_program,
-  encode_checked_module_typing_artifact_v1,
-  shadow_unattested_checked_module_typing_artifact_from_checked_program
+  encode_checked_module_typing_artifact_v2,
+  shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
 }
 
 import @vibe/compiler/core {
@@ -3288,13 +3288,31 @@ fn checked_module_dependency_interface_assumptions(dep_envs: Array[(String, Type
   assumptions
 }
 
+let checked_module_typing_artifact_construction_attempts: Array[Int] = [
+  0
+]
+
+/// Test-observation counter. It measures entry into artifact construction, not
+/// checker execution: ordinary and diagnosed paths remain zero.
+export fn checked_module_typing_artifact_construction_attempt_count() -> Int {
+  Array::get(checked_module_typing_artifact_construction_attempts, 0)
+}
+
+export fn reset_checked_module_typing_artifact_construction_attempt_count() -> Unit {
+  Array::set(checked_module_typing_artifact_construction_attempts, 0, 0)
+}
+
 fn checked_module_typing_artifact_bytes(checked: CheckedProgram, job: ModuleJob) -> Option[String] with Exception {
+  Array::set(checked_module_typing_artifact_construction_attempts, 0, Array::get(checked_module_typing_artifact_construction_attempts, 0) + 1)
+  // Both identities are derived here from the exact same already-ingested
+  // ModuleJob.source; there is no filesystem reread or caller identity input.
+  let source_identity = compact_string_fingerprint(job.source)
   let implementation_identity = incremental_implementation_identity(job.source)
   match checked_exported_interface_artifact_from_checked_program(checked) {
-    Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_from_checked_program(checked, job.path, "provisional_token_stream_v1", implementation_identity, checked_module_dependency_interface_assumptions(job.dep_envs), [
+    Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, job.path, source_identity, source_identity, implementation_identity, implementation_identity, checked_module_dependency_interface_assumptions(job.dep_envs), [
       (job.path, "provisional_token_stream_v1", implementation_identity)
     ], exported_interface) {
-      Some(artifact) => Some(encode_checked_module_typing_artifact_v1(artifact)),
+      Some(artifact) => Some(encode_checked_module_typing_artifact_v2(artifact)),
       None => None
     },
     None => None
