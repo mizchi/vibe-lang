@@ -1077,8 +1077,10 @@ let/seq/tail/分岐 tail に直接現れる必要がある。**let 連鎖 (brace
 ADR-0076 追記42 — `async_iter_collect` / `_fold` / `_count` が suspend
 body から呼べるのはこれ)。**`if` condition / `match` scrutinee が direct
 perform・concrete needing call・CPS-local call そのものなら、fresh let へ
-一回評価してから selection する形も可** (追記44)。`perform Op() > 0` や
-`Some(perform Op())` のような compound selection input は reject のまま。
+一回評価してから selection する形も可** (追記44)。同じ direct 形そのものは
+**継続 spine 上の通常代入 (`x = perform Op()`) の RHS** でも fresh let を介して
+一回だけ代入できる (追記45)。`perform Op() + 1` のような compound RHS、`+=`
+等の compound assignment、compound selection input は reject のまま。
 **concrete な row に
 対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
 再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
