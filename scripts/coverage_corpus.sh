@@ -17,7 +17,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SEED="${VIBE_COV_SEED:-$ROOT_DIR/bootstrap/seed/compiler.wasm}"
-FLAT_ABS="$ROOT_DIR/lib/@vibe/compiler/_cli_adapter_module_source.vibe"
+FLAT_ABS="${VIBE_COV_FLAT_ABS:-$ROOT_DIR/lib/@vibe/compiler/_cli_adapter_module_source.vibe}"
 OUT_DIR="${VIBE_COV_DIR:-$ROOT_DIR/_build/coverage/selfhost-corpus}"
 COMPILER_COV="$OUT_DIR/compiler_cov.wasm"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
@@ -34,15 +34,100 @@ RUN_JSON="$OUT_DIR/run.json"
 FAILS="$OUT_DIR/fails.txt"
 MAX="${VIBE_COV_MAX:-100000}"
 
+# The flat adapter is generated from compiler sources. Keep this corpus entry
+# validation-only and portable on stock BSD/macOS: require every fixed input,
+# synchronously materialize the discovered source list, then compare mtimes.
+# Any missing/stale input or producer failure is actionable and fail-closed.
+coverage_require_fresh_flat() {
+  local input list_file sorted_file
+  local required=(
+    bootstrap/seed/compiler.wasm
+    lib/@vibe/compiler/compiler_sources_manifest.tsv
+    scripts/generate_bundle.sh
+    scripts/ensure_generated.sh
+  )
+  [ -s "$FLAT_ABS" ] || {
+    echo "corpus: generated flat compiler source missing; run: bash scripts/ensure_generated.sh" >&2
+    return 1
+  }
+  for input in "${required[@]}"; do
+    [ -s "$input" ] || {
+      echo "corpus: required freshness input missing or empty: $input; run: bash scripts/ensure_generated.sh" >&2
+      return 1
+    }
+  done
+  list_file="$(mktemp "${TMPDIR:-/tmp}/vibe-cov-inputs.XXXXXX")" || return 1
+  sorted_file="$list_file.sorted"
+  if ! find lib/@vibe lib/@vibex -type f \
+      \( -name '*.vibe' -o -name '*.vpkg' \) \
+      ! -path '*/tests/*' ! -name '*_test.vibe' ! -name '*_bench.vibe' \
+      ! -name 'compiler_sources_bundle.vibe' \
+      ! -name 'cli_adapter_bundle.vibe' \
+      ! -name 'selfbuild_runtime_entry_bundle.vibe' \
+      ! -name '_cli_adapter_module_source.vibe' \
+      ! -name 'codegen_fingerprint.vibe' >"$list_file"; then
+    echo "corpus: failed to enumerate freshness inputs; run: bash scripts/ensure_generated.sh" >&2
+    rm -f "$list_file" "$sorted_file"
+    return 1
+  fi
+  if ! { printf '%s\n' "${required[@]}"; cat "$list_file"; } | LC_ALL=C sort >"$sorted_file"; then
+    echo "corpus: failed to sort freshness inputs; run: bash scripts/ensure_generated.sh" >&2
+    rm -f "$list_file" "$sorted_file"
+    return 1
+  fi
+  rm -f "$list_file"
+  while IFS= read -r input; do
+    [ -s "$input" ] || {
+      echo "corpus: required freshness input missing or empty: $input; run: bash scripts/ensure_generated.sh" >&2
+      rm -f "$sorted_file"
+      return 1
+    }
+    if [ "$input" -nt "$FLAT_ABS" ]; then
+      echo "corpus: generated flat compiler source is stale after $input; run: bash scripts/ensure_generated.sh" >&2
+      rm -f "$sorted_file"
+      return 1
+    fi
+  done <"$sorted_file"
+  rm -f "$sorted_file"
+}
+
+# BSD/macOS realpath has no GNU --relative-to. Python's relpath is portable and
+# the containment check keeps every wasm-host path inside the preopened root.
+rel() {
+  python3 - "$ROOT_DIR" "$1" <<'PY'
+import os, sys
+root = os.path.realpath(sys.argv[1])
+path = os.path.realpath(sys.argv[2])
+try:
+    inside = os.path.commonpath([root, path]) == root
+except ValueError:
+    inside = False
+if not inside:
+    raise SystemExit(f"corpus: path escapes repository root: {sys.argv[2]}")
+print(os.path.relpath(path, root))
+PY
+}
+
+if [ "${VIBE_COVERAGE_CORPUS_LIB_ONLY:-0}" = "1" ]; then
+  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+  fi
+  exit 0
+fi
+
 [ -s "$SEED" ] || { echo "corpus: seed not found" >&2; exit 1; }
+coverage_require_fresh_flat
 rm -rf "$OUT_DIR"; mkdir -p "$OUT_DIR"; : > "$FAILS"
-rel() { realpath --relative-to="$ROOT_DIR" "$1"; }
 FLAT="$(rel "$FLAT_ABS")"
 
 echo "[corpus] building instrumented compiler ..." >&2
 VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$SEED" "$FLAT" "$(rel "$COMPILER_COV")" cli_main
 [ -s "$COMPILER_COV" ] || { echo "corpus: instrumented compiler not produced" >&2; exit 1; }
+# Checkout-local coverage helper sources follow current package contracts. Use
+# the just-built current compiler rather than allowing their wrappers to fall
+# back to the potentially older committed seed.
+export VIBE_COVERAGE_ACC_TOOL_COMPILER="$COMPILER_COV"
 
 # accumulate one workload run (env... -- runner args); merge via
 # scripts/coverage_acc_tool.vibex (OR RUN_JSON's raw bitmap into ACC,
