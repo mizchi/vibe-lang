@@ -30,7 +30,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SEED="${VIBE_COV_SEED:-bootstrap/seed/compiler.wasm}"
-OUTDIR="_build/coverage/selfhost-corpus"
+OUTDIR="${VIBE_COV_DIR:-_build/coverage/selfhost-corpus}"
 ACC="$OUTDIR/acc.json"
 COMPILER_COV="$OUTDIR/compiler_cov.wasm"
 COMPILER_ENTRY="lib/@vibe/compiler/cli_adapter.vibe"
@@ -262,6 +262,7 @@ run_driver cov_margin_main     scripts/coverage/cov_margin.vibe     margin      
 run_driver cov_parser5_main    scripts/coverage/cov_parser5.vibe    parser5     # parse_type_impl modes x type forms + parse_pattern/parse_export_stmt/parse_one_param internals
 run_driver cov_namespace3_main scripts/coverage/cov_namespace3.vibe namespace3  # namespace_private_value_stmts SModule/SImpl/SEffectDef/SReExport/SAliasDecl arms
 run_driver cov_round_main      scripts/coverage/cov_round.vibe      round       # parse_enum_stmt/parse_export_name forms + print_stmt SImpl/SModule/SReExport/SEffectDef variants + has_non_pipe_infix_top ranges
+run_driver cov_driver_main     scripts/coverage/cov_driver.vibe     driver      # historical deep checker driver, retained through exact-path exposure
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 final_stat="$(coverage_driver_stat "$ACC")" || {

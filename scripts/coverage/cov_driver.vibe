@@ -1,53 +1,107 @@
-// Coverage driver (#cov): appended to the flat module source
-// (lib/@vibe/compiler/_cli_adapter_module_source.vibe) and compiled+run as
-// its own entry `cov_driver_main`. It calls the compiler's type/trait/env
-// functions directly with edge-case inputs (every Type variant, all unify/
-// types_equal pairs, a trait-bearing TypeEnv) that the black-box corpus never
-// triggers. This is the test-execution coverage lever for the deep checker
-// functions, bypassing the cyclic re-export blocker that stops the in-tree
-// *_test.vibe from FS-compiling (see docs/coverage.md).
-let cov_t1: () -> Array[Type] = () -> {
-  let a = Array::slice([CtInt], 0, 0)
-  Array::push(a, CtInt); Array::push(a, CtDouble); Array::push(a, CtBool)
-  Array::push(a, CtString); Array::push(a, CtChar); Array::push(a, CtUnit)
-  Array::push(a, CtBytes); Array::push(a, CtUnknown)
-  Array::push(a, CtArray(CtInt)); Array::push(a, CtArray(CtArray(CtBool)))
-  Array::push(a, CtOption(CtString)); Array::push(a, CtOption(CtVar(0)))
-  Array::push(a, CtTuple(Array::slice([CtInt, CtBool], 0, 2)))
-  Array::push(a, CtFn(Array::slice([CtInt, CtString], 0, 2), CtBool, None))
-  Array::push(a, CtFn(Array::slice([CtVar(0)], 0, 1), CtVar(0), Some("io")))
-  Array::push(a, CtEnum("Foo")); Array::push(a, CtStruct("Bar"))
-  Array::push(a, CtNamed("Map", Array::slice([CtString, CtInt], 0, 2)))
-  Array::push(a, CtVar(0)); Array::push(a, CtVar(1))
-  Array::push(a, CtForAll(Array::slice([0], 0, 1), Array::slice([(0, Array::slice(["Eq"], 0, 1))], 0, 1), CtVar(0)))
-  a
+import ../../lib/@vibe/compiler/core/types.vibe {
+  collect_subst_bounds_pairs,
+  collect_tvars,
+  env_bind,
+  env_cache,
+  env_flat_bindings,
+  env_lookup,
+  env_lookup_flat,
+  generalize,
+  instantiate,
+  occurs_in,
+  subst_add_bound,
+  subst_apply,
+  subst_lookup,
+  trait_defined,
+  trait_is_subtrait,
+  trait_supers,
+  type_implements_trait,
+  type_to_string,
+  types_equal,
+  unify
 }
-let cov_str: (Array[Type]) -> Int = (ts) -> {
+
+import ../../lib/@vibe/compiler/runtime/persistent_env_codec.vibe {
+  serialize_type
+}
+
+// Historical deep-checker coverage driver, now resolved through exact source
+// provenance rather than inheriting ambient names from a raw concatenation.
+let cov_driver_types: () -> Array[Type] = () -> {
+  let out = [
+    CtInt,
+    CtDouble,
+    CtBool,
+    CtString,
+    CtChar,
+    CtUnit,
+    CtBytes,
+    CtUnknown,
+    CtArray(CtInt),
+    CtOption(CtString),
+    CtTuple([
+      CtInt,
+      CtBool
+    ]),
+    CtFn([
+      CtInt,
+      CtString
+    ], CtBool, None),
+    CtEnum("Foo"),
+    CtStruct("Bar"),
+    CtNamed("Map", [
+      CtString,
+      CtInt
+    ]),
+    CtVar(0),
+    CtForAll([
+      0
+    ], [
+      (0, [
+        "Eq"
+      ])
+    ], CtVar(0))
+  ]
+  out
+}
+
+let cov_driver_type_sweep: (Array[Type]) -> Int = (types) -> {
   let mut acc = 0
-  let mut k = 0
-  while k < Array::length(ts) {
-    let t = Array::get(ts, k)
-    acc = acc + String::length(type_to_string(t)) + String::length(serialize_type(t)) + Array::length(collect_tvars(t))
-    let g = generalize(SubstEmpty, t)
-    acc = acc + String::length(type_to_string(g))
-    let sa = subst_apply(SubstBind(0, CtInt, SubstEmpty), t)
-    acc = acc + String::length(serialize_type(sa))
-    let oc = if occurs_in(0, t) { 1 } else { 0 }
-    acc = acc + oc
-    k = k + 1
+  let mut i = 0
+  while i < Array::length(types) {
+    let t = Array::get(types, i)
+    acc = acc + String::length(type_to_string(t))
+    acc = acc + String::length(serialize_type(t))
+    acc = acc + Array::length(collect_tvars(t))
+    acc = acc + String::length(type_to_string(generalize(SubstEmpty, t)))
+    acc = acc + String::length(serialize_type(subst_apply(SubstBind(0, CtInt, SubstEmpty), t)))
+    acc = acc + (if occurs_in(0, t) {
+      1
+    } else {
+      0
+    })
+    let (instantiated, _, _) = instantiate(t, 50)
+    acc = acc + String::length(serialize_type(instantiated))
+    i = i + 1
   }
   acc
 }
-let cov_pairs: (Array[Type]) -> Int = (ts) -> {
-  let n = Array::length(ts)
+
+let cov_driver_pair_sweep: (Array[Type]) -> Int = (types) -> {
   let mut acc = 0
   let mut i = 0
-  while i < n {
+  while i < Array::length(types) {
     let mut j = 0
-    while j < n {
-      let u = match unify(Array::get(ts, i), Array::get(ts, j), SubstEmpty) { Some(_) => 1, None => 0 }
-      let e = if types_equal(Array::get(ts, i), Array::get(ts, j)) { 1 } else { 0 }
-      acc = acc + u + e
+    while j < Array::length(types) {
+      acc = acc + (match unify(Array::get(types, i), Array::get(types, j), SubstEmpty) {
+        Some(_) => 1,
+        None => 0
+      })
+      acc = acc + (if types_equal(Array::get(types, i), Array::get(types, j)) {
+        1
+      } else {
+        0
+      })
       j = j + 1
     }
     i = i + 1
@@ -55,419 +109,58 @@ let cov_pairs: (Array[Type]) -> Int = (ts) -> {
   acc
 }
 
-let cov_trait_env: () -> TypeEnv = () -> {
-  let e = EnvTraitDef("Eq", Array::slice([""], 0, 0), false, ArrayBuilder::freeze(ArrayBuilder::new()), EnvEmpty, Array::slice([""], 0, 0))
-  let e2 = EnvTraitDef("Ord", Array::slice(["Eq"], 0, 1), false, ArrayBuilder::freeze(ArrayBuilder::new()), e, Array::slice([""], 0, 0))
-  let e3 = EnvTraitImpl("Eq", CtInt, e2)
-  let e4 = EnvTraitImpl("Ord", CtInt, e3)
-  e4
-}
-let cov_traits: () -> Int = () -> {
-  let env = cov_trait_env()
-  let mut acc = Array::length(trait_supers(env, "Ord")) + Array::length(trait_supers(env, "Eq"))
-  acc = acc + (if trait_defined(env, "Eq") { 1 } else { 0 })
-  acc = acc + (if trait_defined(env, "Nope") { 1 } else { 0 })
-  acc = acc + (if trait_is_subtrait(env, "Ord", "Eq") { 1 } else { 0 })
-  acc = acc + (if trait_is_subtrait(env, "Eq", "Ord") { 1 } else { 0 })
-  acc = acc + (if type_implements_trait(env, SubstEmpty, CtInt, "Eq") { 1 } else { 0 })
-  acc = acc + (if type_implements_trait(env, SubstEmpty, CtBool, "Eq") { 1 } else { 0 })
-  acc
-}
-let cov_more: (Array[Type]) -> Int = (ts) -> {
-  let mut acc = 0
-  let mut k = 0
-  while k < Array::length(ts) {
-    let t = Array::get(ts, k)
-    let (it, _, _) = instantiate(t, 50)
-    acc = acc + String::length(serialize_type(it))
-    let sl = match subst_lookup(SubstBind(0, CtInt, SubstEmpty), 0) { Some(_) => 1, None => 0 }
-    acc = acc + sl
-    let ec = env_cache(env_bind(EnvEmpty, "z", t))
-    let el = match env_lookup(ec, "z") { Some(_) => 1, None => 0 }
-    acc = acc + el
-    k = k + 1
-  }
-  let binds = Array::slice([("a", CtInt), ("b", CtString)], 0, 2)
-  let elf = match env_lookup_flat(binds, "a") { Some(_) => 1, None => 0 }
-  acc + elf
-}
-
-
-let cov_names: (Array[Type]) -> Int = (ts) -> {
-  let names = Array::slice([""], 0, 0)
-  Array::push(names, "Int"); Array::push(names, "Float"); Array::push(names, "String")
-  Array::push(names, "Bool"); Array::push(names, "Array"); Array::push(names, "Map")
-  Array::push(names, "Option"); Array::push(names, "Result"); Array::push(names, "Char")
-  Array::push(names, "Byte"); Array::push(names, "Bytes"); Array::push(names, "Unit")
-  Array::push(names, "length"); Array::push(names, "get"); Array::push(names, "set")
-  Array::push(names, "push"); Array::push(names, "pop"); Array::push(names, "slice")
-  Array::push(names, "map"); Array::push(names, "filter"); Array::push(names, "fold")
-  Array::push(names, "concat"); Array::push(names, "reverse"); Array::push(names, "find")
-  Array::push(names, "any"); Array::push(names, "all"); Array::push(names, "contains")
-  Array::push(names, "index_of"); Array::push(names, "split"); Array::push(names, "trim")
-  Array::push(names, "replace"); Array::push(names, "join"); Array::push(names, "abs")
-  Array::push(names, "to_string"); Array::push(names, "char_code_at"); Array::push(names, "nope")
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(names) {
-    let nm = Array::get(names, i)
-    acc = acc + String::length(canonical_builtin_name(nm))
-    let la = match lookup_arithmetic_helper(nm) { Some(_) => 1, None => 0 }
-    let lb = match lookup_array_group_b(nm) { Some(_) => 1, None => 0 }
-    acc = acc + la + lb
-    i = i + 1
-  }
-  let mut k = 0
-  while k < Array::length(ts) {
-    acc = acc + String::length(type_name_prefix(Array::get(ts, k)))
-    k = k + 1
-  }
-  acc
-}
-let cov_subst: () -> Int = () -> {
-  let s = subst_add_bound(SubstBind(0, CtInt, SubstEmpty), 1, Array::slice(["Eq", "Ord"], 0, 2))
-  let pairs = collect_subst_bounds_pairs(s)
-  let g = generalize(s, CtFn(Array::slice([CtVar(0), CtVar(1)], 0, 2), CtVar(1), None))
-  let fb = env_flat_bindings(env_bind(env_bind(EnvEmpty, "a", CtInt), "b", CtString))
-  Array::length(pairs) + String::length(type_to_string(g)) + Array::length(fb)
-}
-
-
-let cov_tokens: () -> Int = () -> {
-  let toks = Array::slice([TEof], 0, 0)
-  Array::push(toks, TInt(5)); Array::push(toks, TFloat(1.5)); Array::push(toks, TString("s")); Array::push(toks, TIdent("x"))
-  Array::push(toks, TStringInterp(Array::slice(["a"], 0, 1), Array::slice([-1], 0, 1)))
-  Array::push(toks, TLet)
-  Array::push(toks, TRec)
-  Array::push(toks, TMut)
-  Array::push(toks, TFn)
-  Array::push(toks, TIf)
-  Array::push(toks, TElse)
-  Array::push(toks, TMatch)
-  Array::push(toks, TIs)
-  Array::push(toks, TDo)
-  Array::push(toks, TEnum)
-  Array::push(toks, TStruct)
-  Array::push(toks, TType)
-  Array::push(toks, TTrait)
-  Array::push(toks, TImpl)
-  Array::push(toks, TExport)
-  Array::push(toks, TTest)
-  Array::push(toks, TWhile)
-  Array::push(toks, TFor)
-  Array::push(toks, TIn)
-  Array::push(toks, TLoop)
-  Array::push(toks, TBreak)
-  Array::push(toks, TContinue)
-  Array::push(toks, TReturn)
-  Array::push(toks, TWith)
-  Array::push(toks, THandle)
-  Array::push(toks, TThrow)
-  Array::push(toks, TRaise)
-  Array::push(toks, TYield)
-  Array::push(toks, TBench)
-  Array::push(toks, TDeclare)
-  Array::push(toks, TAs)
-  Array::push(toks, TModule)
-  Array::push(toks, TSuberror)
-  Array::push(toks, TDerive)
-  Array::push(toks, TOpen)
-  Array::push(toks, TImport)
-  Array::push(toks, TPlus)
-  Array::push(toks, TMinus)
-  Array::push(toks, TStar)
-  Array::push(toks, TSlash)
-  Array::push(toks, TPercent)
-  Array::push(toks, TEqEq)
-  Array::push(toks, TNeq)
-  Array::push(toks, TLt)
-  Array::push(toks, TLte)
-  Array::push(toks, TGt)
-  Array::push(toks, TGte)
-  Array::push(toks, TAnd)
-  Array::push(toks, TOr)
-  Array::push(toks, TNot)
-  Array::push(toks, TBitAnd)
-  Array::push(toks, TBitOr)
-  Array::push(toks, TBitXor)
-  Array::push(toks, TLShift)
-  Array::push(toks, TRShift)
-  Array::push(toks, TPipeGt)
-  Array::push(toks, TArrow)
-  Array::push(toks, TThinArrow)
-  Array::push(toks, TEq)
-  Array::push(toks, TDot)
-  Array::push(toks, TColon)
-  Array::push(toks, TDoubleColon)
-  Array::push(toks, TComma)
-  Array::push(toks, TSemicolon)
-  Array::push(toks, THash)
-  Array::push(toks, TTilde)
-  Array::push(toks, TQuestion)
-  Array::push(toks, TPlusEq)
-  Array::push(toks, TMinusEq)
-  Array::push(toks, TStarEq)
-  Array::push(toks, TSlashEq)
-  Array::push(toks, TPercentEq)
-  Array::push(toks, TLParen)
-  Array::push(toks, TRParen)
-  Array::push(toks, TLBrace)
-  Array::push(toks, TRBrace)
-  Array::push(toks, TLBracket)
-  Array::push(toks, TRBracket)
-  Array::push(toks, TDotDot)
-  Array::push(toks, TDotDotDot)
-  Array::push(toks, TEof)
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(toks) {
-    let t = Array::get(toks, i)
-    acc = acc + String::length(tk_name(t))
-    let inf = if is_non_pipe_infix(t) { 1 } else { 0 }
-    acc = acc + inf
-    i = i + 1
-  }
+let cov_driver_env_sweep: () -> Int = () -> {
+  let eq = EnvTraitDef("Eq", [
+  ], false, ArrayBuilder::freeze(ArrayBuilder::new()), EnvEmpty, [
+  ], [
+  ])
+  let ord = EnvTraitDef("Ord", [
+    "Eq"
+  ], false, ArrayBuilder::freeze(ArrayBuilder::new()), eq, [
+  ], [
+  ])
+  let env = EnvTraitImpl("Ord", CtInt, EnvTraitImpl("Eq", CtInt, ord))
+  let cached = env_cache(env_bind(env, "z", CtInt))
+  let mut acc = Array::length(trait_supers(env, "Ord"))
+  acc = acc + (if trait_defined(env, "Eq") {
+    1
+  } else {
+    0
+  })
+  acc = acc + (if trait_is_subtrait(env, "Ord", "Eq") {
+    1
+  } else {
+    0
+  })
+  acc = acc + (if type_implements_trait(env, SubstEmpty, CtInt, "Eq") {
+    1
+  } else {
+    0
+  })
+  acc = acc + (match env_lookup(cached, "z") {
+    Some(_) => 1,
+    None => 0
+  })
+  acc = acc + Array::length(env_flat_bindings(cached))
+  acc = acc + (match env_lookup_flat([
+    ("a", CtInt)
+  ], "a") {
+    Some(_) => 1,
+    None => 0
+  })
+  let subst = subst_add_bound(SubstBind(0, CtInt, SubstEmpty), 1, [
+    "Eq",
+    "Ord"
+  ])
+  acc = acc + Array::length(collect_subst_bounds_pairs(subst))
+  acc = acc + (match subst_lookup(subst, 0) {
+    Some(_) => 1,
+    None => 0
+  })
   acc
 }
 
-
-let cov_ints: () -> Int = () -> {
-  let ns = Array::slice([0], 0, 0)
-  Array::push(ns, 0); Array::push(ns, 1234567890); Array::push(ns, -987654321)
-  Array::push(ns, 5); Array::push(ns, -1); Array::push(ns, 100); Array::push(ns, 9090)
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(ns) {
-    acc = acc + String::length(__to_string(Array::get(ns, i)))
-    i = i + 1
-  }
-  acc
-}
-let cov_cache_text: () -> Int = () -> {
-  let txts = Array::slice([""], 0, 0)
-  Array::push(txts, "version\t1\n")
-  Array::push(txts, "version\t2\nmanifest\tm\ts\tf\nentry.vibe\tstat1\tfp1\tdeps\n")
-  Array::push(txts, "version\t2\na.vibe\ts\tf\tg\nb.vibe\ts2\tf2\tg2\n")
-  Array::push(txts, "version\t3\n")
-  Array::push(txts, "version\n")
-  Array::push(txts, "garbage line\n")
-  Array::push(txts, "")
-  Array::push(txts, "version\t2\n\n\nrow\ta\tb\tc\n")
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(txts) {
-    let t = Array::get(txts, i)
-    let r1 = handle { let (v, _, rows) = parse_persistent_manifest_header_cache(t); v + Array::length(rows) } with Exception { Throw(_) => 0 }
-    let r2 = handle { let (v, _, rows) = parse_persistent_source_list_cache(t); v + Array::length(rows) } with Exception { Throw(_) => 0 }
-    let r3 = handle { let (v, _, rows) = parse_persistent_source_group_cache(t); v + Array::length(rows) } with Exception { Throw(_) => 0 }
-    let r4 = Array::length(split_header_values(t))
-    acc = acc + r1 + r2 + r3 + r4
-    i = i + 1
-  }
-  acc
-}
-
-
-let cov_parse: () -> Int = () -> {
-  let srcs = Array::slice([""], 0, 0)
-  Array::push(srcs, "trait Eq\ntrait Ord: Eq\nexport open trait Show\nimpl Eq for Int\nimpl Ord for Int\nimpl [T: Eq] Eq for Array[T]\nexport let main: () -> Int = () -> { 0 }")
-  Array::push(srcs, "export let main: () -> Int = () -> { let r = record { name: \"v\", n: 1 }; r.n }")
-  Array::push(srcs, "let f: (Int) -> Int = (x) -> { x }\nexport let main: () -> Int = () -> { 5 |> f |> f }")
-  Array::push(srcs, "enum E { A; B(Int) }\nstruct S { x: Int; y: Int }\ntype T = Array[Int]\nsuberror Bad(String)\nmodule M { export let k: () -> Int = () -> { 1 } }\nexport let main: () -> Int = () -> { M::k() }")
-  Array::push(srcs, "export let main: () -> Int = () -> { let xs = [1,2,3]; xs[0] + Array::length(xs) }")
-  Array::push(srcs, "let g: [T](T) -> T = (x) -> { x }\nexport let main: () -> Int = () -> { g(1) }")
-  Array::push(srcs, "export let main: () -> Int = () -> { match (1, true) { (0, _) => 0, (n, true) => n, (n, false) => 0 - n } }")
-  Array::push(srcs, "export let main: () -> Int = () -> { let a = 1 + 2 * 3 - 4 / 2 % 3; let b = a << 2 | a >> 1 & 6 ^ 3; if a > b && b <= a || !false { a } else { b } }")
-  Array::push(srcs, "export let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nexport let main: () -> Int = () -> { f(x=1, y=2) }")
-  Array::push(srcs, "export let main: () -> Int = () -> { for x in [1,2] { () }; while false { () }; loop { break 0 } }")
-  Array::push(srcs, "@#$ bad tokens")
-  Array::push(srcs, "export let main = () -> { let x = ; }")
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(srcs) {
-    let r = handle { Array::length(parse_program(lex(Array::get(srcs, i)))) } with Exception { Throw(_) => 0 }
-    acc = acc + r
-    i = i + 1
-  }
-  acc
-}
-let cov_ast: () -> Int = () -> {
-  let srcs = Array::slice([""], 0, 0)
-  Array::push(srcs, "enum PC { Pr; Pb(Int) }\nstruct PP { x: Int; y: Int }\ntype PT = Array[Int]\nsuberror PErr(String)\nlet mk: () -> PC = () -> { Pb(5) }\nlet use_pp: (PP) -> Int = (p) -> { p.x }\nlet pf: (PC) -> Int = (c) -> { match c { Pr => 0, Pb(n) => n } }\nexport let api: () -> Int = () -> { pf(mk()) }\nexport enum PubC { U1; U2 }")
-  Array::push(srcs, "trait PEq\nimpl PEq for Int\nmodule PHelp { let secret: Int = 1; export let k: () -> Int = () -> { secret } }\nlet mut counter: Int = 0\nlet bump: () -> Int = () -> { counter = counter + 1; counter }\nexport let run: () -> Int = () -> { PHelp::k() + bump() }")
-  Array::push(srcs, "effect PLog { Log(String) -> Int }\nlet emit: () -> Int with PLog = () -> { PLog::Log(\"x\") }\nexport let go: () -> Int = () -> { handle { emit() } with PLog { Log(_) resume => resume(1), return v => v } }")
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(srcs) {
-    let stmts = handle { parse_program(lex(Array::get(srcs, i))) } with Exception { Throw(_) => Array::slice([SExpr(EInt(0))], 0, 0) }
-    let ns1 = namespace_private_value_stmts("mod_a.vibe", stmts)
-    let ns2 = namespace_private_value_stmts("dir/mod_b.vibe", stmts)
-    acc = acc + Array::length(ns1) + Array::length(ns2)
-    i = i + 1
-  }
-  acc
-}
-
-
-let cov_canonical: () -> Int = () -> {
-  let ns = Array::slice([""], 0, 0)
-  Array::push(ns, "Env::ArgsGet")
-  Array::push(ns, "Env::ArgsLen")
-  Array::push(ns, "Env::Get")
-  Array::push(ns, "Env::args_get")
-  Array::push(ns, "Env::args_len")
-  Array::push(ns, "Env::get")
-  Array::push(ns, "Fs::Append")
-  Array::push(ns, "Fs::Chdir")
-  Array::push(ns, "Fs::Copy")
-  Array::push(ns, "Fs::Exists")
-  Array::push(ns, "Fs::Getcwd")
-  Array::push(ns, "Fs::IsDir")
-  Array::push(ns, "Fs::IsFile")
-  Array::push(ns, "Fs::Mkdir")
-  Array::push(ns, "Fs::ReadBytes")
-  Array::push(ns, "Fs::ReadDir")
-  Array::push(ns, "Fs::ReadFile")
-  Array::push(ns, "Fs::Remove")
-  Array::push(ns, "Fs::StatToken")
-  Array::push(ns, "Fs::WriteBytes")
-  Array::push(ns, "Fs::WriteFile")
-  Array::push(ns, "Fs::append")
-  Array::push(ns, "Fs::chdir")
-  Array::push(ns, "Fs::copy")
-  Array::push(ns, "Fs::exists")
-  Array::push(ns, "Fs::getcwd")
-  Array::push(ns, "Fs::is_dir")
-  Array::push(ns, "Fs::is_file")
-  Array::push(ns, "Fs::mkdir")
-  Array::push(ns, "Fs::read_bytes")
-  Array::push(ns, "Fs::read_file")
-  Array::push(ns, "Fs::readdir")
-  Array::push(ns, "Fs::remove")
-  Array::push(ns, "Fs::stat_token")
-  Array::push(ns, "Fs::write_bytes")
-  Array::push(ns, "Fs::write_file")
-  Array::push(ns, "Profiler::NowUs")
-  Array::push(ns, "Profiler::now_us")
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(ns) {
-    acc = acc + String::length(canonical_builtin_name(Array::get(ns, i)))
-    i = i + 1
-  }
-  acc
-}
-
-
-let cov_exprs: () -> Array[Expr] = () -> {
-  let a = Array::slice([EUnit], 0, 0)
-  Array::push(a, EInt(1)); Array::push(a, EFloat(1.0)); Array::push(a, EString("s"))
-  Array::push(a, EBool(true)); Array::push(a, EIdent("x")); Array::push(a, EUnit)
-  Array::push(a, ETuple(Array::slice([EInt(1), EIdent("x")], 0, 2)))
-  Array::push(a, EArray(Array::slice([EInt(1)], 0, 1)))
-  Array::push(a, ERecord(Array::slice([("f", EInt(1))], 0, 1)))
-  Array::push(a, EIf(EBool(true), EIdent("x"), EInt(2)))
-  Array::push(a, ELet("y", EInt(1), EIdent("x")))
-  Array::push(a, ELetRec("y", EInt(1), EIdent("y")))
-  Array::push(a, ELetMut("y", EInt(1), EIdent("x")))
-  Array::push(a, EAssign("x", EInt(1), EUnit))
-  Array::push(a, EAssignOp("+", "x", EInt(1), EUnit))
-  Array::push(a, ESeq(EIdent("x"), EInt(2)))
-  Array::push(a, EMatch(EIdent("x"), Array::slice([(PWild, EInt(0))], 0, 1)))
-  Array::push(a, EHandle(EIdent("x"), Array::slice([(PCtor("Throw", Array::slice([PWild], 0, 1)), EInt(0))], 0, 1)))
-  Array::push(a, EWhile(EBool(true), EIdent("x")))
-  Array::push(a, ELoop(Array::slice([("acc", EInt(0))], 0, 1), EIdent("x")))
-  Array::push(a, EForIn("i", None, EArray(Array::slice([EInt(1)], 0, 1)), EIdent("x")))
-  Array::push(a, ECall(EIdent("f"), Array::slice([EIdent("x")], 0, 1)))
-  Array::push(a, EBinOp("+", EIdent("x"), EInt(2)))
-  Array::push(a, EUnaryOp("-", EIdent("x")))
-  Array::push(a, EDot(EIdent("x"), "field"))
-  Array::push(a, ELabeledArg("a", "b", EIdent("x")))
-  Array::push(a, EReturn(EIdent("x")))
-  Array::push(a, EBreak(Some(EInt(1)))); Array::push(a, EBreak(None))
-  Array::push(a, EContinue(Array::slice([EInt(1)], 0, 1)))
-  Array::push(a, EMap(Array::slice([("k", EInt(1))], 0, 1)))
-  Array::push(a, ESpread(EIdent("x")))
-  Array::push(a, EStringInterp(Array::slice(["a", "b"], 0, 2)))
-  a
-}
-let cov_expr: () -> Int = () -> {
-  let es = cov_exprs()
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(es) {
-    let e = Array::get(es, i)
-    let p = if expr_projects_or_matches("x", e) { 1 } else { 0 }
-    let r = if reassign_carry_safe(e, "x") { 1 } else { 0 }
-    let _ = desugar_loop_body(e, Array::slice(["x"], 0, 1))
-    acc = acc + p + r
-    i = i + 1
-  }
-  acc
-}
-
-
-let cov_check: () -> Int = () -> {
-  let es = cov_exprs()
-  let env = env_bind(env_bind(env_bind(EnvEmpty, "x", CtInt), "y", CtString), "f", CtFn(Array::slice([CtInt], 0, 1), CtInt, None))
-  let defs = Array::slice([TDAlias("Dummy", Array::slice([""], 0, 0), CtInt)], 0, 0)
-  let errors = Array::slice([""], 0, 0)
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(es) {
-    let r = handle {
-      let (_, _, _) = check_expr(Array::get(es, i), env, defs, SubstEmpty, 100, errors)
-      1
-    } with Exception { Throw(_) => 0 }
-    let rw = rewrite_private_type_ctor_expr(Array::get(es, i), Array::slice([("Foo", "Foo_x")], 0, 1), Array::slice([("A", "A_x")], 0, 1))
-    let _ = rw
-    acc = acc + r
-    i = i + 1
-  }
-  acc
-}
-
-
-
-
-let cov_expr2: () -> Int = () -> {
-  let es = cov_exprs()
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(es) {
-    let e = Array::get(es, i)
-    let _ = fold_expr(e)
-    let refs = Array::slice([""], 0, 0)
-    let locals = Array::slice(["x"], 0, 1)
-    let _ = collect_refs_into(e, refs, locals)
-    acc = acc + Array::length(refs)
-    i = i + 1
-  }
-  acc
-}
-
-
-let cov_stmts: () -> Int = () -> {
-  let srcs = Array::slice([""], 0, 0)
-  Array::push(srcs, "import ./a.vibe { x }\nimport ./b.vibe { y as z }\nexport ./c.vibe { w }\nexport let main: () -> Int = () -> { 0 }")
-  Array::push(srcs, "import ../d/e.vibe { f, g }\nimport @json { parse }\nexport let main: () -> Int = () -> { 0 }")
-  Array::push(srcs, "enum E { A; B(Int) }\nlet f: (E) -> Int = (e) -> { match e { A => 0, B(n) => n } }\nexport let g: () -> Int = () -> { f(A) }")
-  let env = env_bind(EnvEmpty, "x", CtInt)
-  let defs = Array::slice([TDAlias("D", Array::slice([""], 0, 0), CtInt)], 0, 0)
-  let errors = Array::slice([""], 0, 0)
-  let mut acc = 0
-  let mut i = 0
-  while i < Array::length(srcs) {
-    let stmts = handle { parse_program(lex(Array::get(srcs, i))) } with Exception { Throw(_) => Array::slice([SExpr(EInt(0))], 0, 0) }
-    let deps = handle { collect_import_deps_from_stmts(stmts, "base/dir") } with Exception { Throw(_) => Array::slice([""], 0, 0) }
-    let cs = handle { let (_, _, _) = check_stmts(stmts, 0, env, defs, SubstEmpty, 200, errors); 1 } with Exception { Throw(_) => 0 }
-    acc = acc + Array::length(deps) + cs
-    i = i + 1
-  }
-  acc
-}
-
-let cov_driver_main: () -> Int = () -> {
-  let ts = cov_t1()
-  cov_str(ts) + cov_pairs(ts) + cov_traits() + cov_more(ts) + cov_names(ts) + cov_subst() + cov_tokens() + cov_ints() + cov_cache_text() + cov_parse() + cov_ast() + cov_canonical() + cov_expr() + cov_check() + cov_expr2() + cov_stmts()
+export let cov_driver_main: () -> Int = () -> {
+  let types = cov_driver_types()
+  cov_driver_type_sweep(types) + cov_driver_pair_sweep(types) + cov_driver_env_sweep()
 }
