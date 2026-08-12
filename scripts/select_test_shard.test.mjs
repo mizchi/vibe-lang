@@ -14,7 +14,7 @@ import {
 test("normalizeRepoPath converts absolute paths to repo-relative slash paths", () => {
   const root = path.join(os.tmpdir(), "repo");
   assert.equal(
-    normalizeRepoPath(path.join(root, "vibe", "compiler", "a_test.vibe"), root),
+    normalizeRepoPath(path.join(root, "lib", "@vibe", "compiler", "a_test.vibe"), root),
     "lib/@vibe/compiler/a_test.vibe",
   );
 });
