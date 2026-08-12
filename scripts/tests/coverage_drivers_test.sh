@@ -30,6 +30,48 @@ while read -r entry file label; do
   }
 done <<< "$driver_rows"
 
+# The one way a driver can still bind a compiler value WITHOUT asking for it:
+# the production merge leaves the ENTRY file's own top-level names unrenamed
+# (`transformed_file_stmts` returns the entry's statements as-is), so a bare
+# call in a driver silently resolves to cli_adapter.vibe's copy. That is how
+# `parse_int_or` -- which also exists, differently, in coverage_suite_lib.vibe
+# -- was measured without anyone naming it. Every such reference must be an
+# explicit import, so the driver says which copy it measures.
+python3 - "$driver_rows" <<'PY' || exit 1
+import re, sys
+
+entry_path = "lib/@vibe/compiler/cli_adapter.vibe"
+entry_names = set()
+for line in open(entry_path, encoding="utf-8"):
+    m = re.match(r'(?:export\s+)?(?:fn|let\s+rec|let\s+mut|let)\s+([A-Za-z_][A-Za-z0-9_]*)', line)
+    if m:
+        entry_names.add(m.group(1))
+
+bad = []
+for row in sys.argv[1].splitlines():
+    if not row.strip():
+        continue
+    _entry, path, label = row.split()
+    src = open(path, encoding="utf-8").read()
+    imported = set()
+    for m in re.finditer(r'^import [^\{]*\{([^\}]*)\}', src, re.M):
+        for item in m.group(1).split(","):
+            parts = item.split()
+            if parts:
+                imported.add(parts[0])
+                if len(parts) == 3:
+                    imported.add(parts[2])
+    body = re.sub(r'^import [^\{]*\{[^\}]*\}', '', src, flags=re.M)
+    body = re.sub(r'//[^\n]*', '', body)
+    local = set(re.findall(r'\b(?:let|fn)\s+(?:rec\s+|mut\s+)?([A-Za-z_][A-Za-z0-9_]*)', body))
+    for name in sorted(set(re.findall(r'(?<![:.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(', body))):
+        if name in entry_names and name not in imported and name not in local:
+            bad.append(f"{label} ({path}): bare `{name}` binds to {entry_path}'s copy; import it explicitly")
+for line in bad:
+    print("coverage_drivers_test: " + line, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+
 # The raw-concatenation lane and its truncated walk are gone; nothing may bring
 # a `merged_nodce` base back without also revisiting this test.
 if grep -q 'merged_nodce' scripts/coverage_drivers.sh; then
