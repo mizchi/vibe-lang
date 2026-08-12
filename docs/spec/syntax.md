@@ -108,8 +108,14 @@ Rules:
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
   `Float`.
 - Strings support escapes and interpolation with `\{Expr}`. The former
-  `\(Expr)` spelling was removed in 0.3.0 and is now a lex error.
-- `Char` is represented as an integer character code.
+  `\(Expr)` spelling was removed in 0.3.0 and is now a lex error. A `String`
+  is a byte string: `String::length`, indexes, slices, and iteration use byte
+  counts/offsets, and iteration yields byte-valued `Int`s. Use
+  `String::byte_at` and `String::from_byte` for single-byte operations;
+  Unicode code-point or grapheme semantics are not implied.
+- `Char` is a transparent `Int` alias used as a readability hint. A character
+  literal such as `'A'` is numeric literal syntax (the byte value `65`), not a
+  distinct Unicode-scalar type; `Char` and `Int` unify without conversion.
 
 ## Program Structure
 
