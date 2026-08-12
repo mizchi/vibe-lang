@@ -206,31 +206,41 @@ in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入�
 
 #### 80% 達成（no-DCE merged source + direct-call drivers）
 
-> **#1633 migration status:** the historical raw concatenation described below
-> is being retired one driver at a time. `cov_units.vibe` and
-> `cov_traitenv.vibe` now use compiler-owned exact-path value exposure: their
-> imports name one `.vibe` file in the collected
-> compiler closure, the production export/private namespacing plan determines
-> the final target name, and the existing shadow-aware import rewriter updates
-> driver references before entry-based DCE. Missing, duplicate, out-of-closure,
-> type/constructor, mutable-global, extern, method, and collision requests fail
-> with a diagnostic. The internal mode (`VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1` +
-> `VIBE_COVERAGE_DRIVER_PATH`) is invoked only by `coverage_drivers.sh`; it does
-> not widen normal import visibility or change `VIBE_EMIT_MERGED_SOURCE` output.
-> The other drivers retain the legacy base until their own reviewed slices.
+> **#1633 migration status: done for `coverage_drivers.sh`.** The historical raw
+> concatenation described below has been deleted; all 39 registered drivers use
+> compiler-owned exact-path value exposure. Their imports name one `.vibe` file
+> in the collected compiler closure, the production export/private namespacing
+> plan determines the final target name, and the existing shadow-aware import
+> rewriter updates driver references before entry-based DCE. Missing, duplicate,
+> out-of-closure, type/constructor, mutable-global, extern, method, and collision
+> requests fail with a diagnostic. The internal mode
+> (`VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1` + `VIBE_COVERAGE_DRIVER_PATH`) is invoked
+> only by `coverage_drivers.sh`; it does not widen normal import visibility or
+> change `VIBE_EMIT_MERGED_SOURCE` output.
+>
+> なぜ raw concat を残せなかったか: あの walk は**相対 import しか辿らない**ので
+> `.vpkg` パッケージ import (#1269/#897) 以降は数ホップで止まり、~5MB のはずの
+> base が 67KB しか出ていなかった (= 全 driver が `unknown name` で死ぬ)。
+> 仮に walk を直しても、300 ファイルを無資格に連結した base は同名の private
+> ヘルパを first-match roulette で解決するので、どの関数のカバレッジを測ったのか
+> が決まらない。exposure が production の rename plan を経由するのはそのため。
 
 **分岐 5711/6694 (85.32%)**・関数 1037/1176 (88.18%) に到達（85% = 5690 に対し +21 のマージン、下限ガード 80% に対し +355）。
 74% で頭打ちだった主因（コンパイラ自身の unit test 120/148 が builtins⇄checker
 の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
 
-鍵は **no-DCE merged source** (`_build/coverage/merged_nodce.vibe`)。flat module
-source (`_cli_adapter_module_source.vibe`) は `build_module_source_from_source`
-が entry `cli_main` から DCE するため、テストだけが使う ~530 関数が欠落していた。
-代わりに `build_exact_adapter_merged_source` 相当の **DCE 前 merged source**
-（manifest 全ファイルを import 除去で連結 = 全 top-level 関数が in-scope、しかも
-import 文が無いので循環 re-export blocker も踏まない）を base にする。
+鍵は **DCE を跨いで関数へ到達する**こと。flat module source
+(`_cli_adapter_module_source.vibe`) は `build_module_source_from_source` が
+entry `cli_main` から DCE するため、テストだけが使う ~530 関数が欠落していた。
 
-この base へ小さな entry を append し、coverage 付き compile+run して実行分岐を
+当時の答えは **no-DCE merged source** (`_build/coverage/merged_nodce.vibe`)
+＝ manifest 全ファイルを import 除去で連結した base だった（全 top-level 関数が
+in-scope、import 文が無いので循環 re-export blocker も踏まない）。**この lane は
+#1633 で削除済み**（上の blockquote 参照）。今は driver 側が exact-path import で
+必要な関数を名指しし、その driver entry を根に DCE する — 目的（テストしか呼ばない
+関数へ到達する）は同じで、どの関数を測っているかが名前で決まる点だけが違う。
+
+driver を base へ足したものを coverage 付き compile+run し、実行分岐を
 corpus acc.json に (fn_name, local_branch_index) キーで union する。分母（seed
 コンパイラの分岐）は不変なので、seed に存在する関数の未踏 arm だけが点灯する。
 
@@ -245,7 +255,7 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
     — examples に async プログラムが無い (+32)。`Task::*` を叩いていた分は
     #1227 の eager prototype 撤去で外した。
   - `cov_lookup.vibe`: builtin name→Type dispatch chain
-    (`lookup_array_group_b`/`lookup_io_b`) を全 builtin 名で呼ぶ (+25)。
+    (`lookup_array`/`lookup_io_b`) を全 builtin 名で呼ぶ (+25)。
   - `cov_cachetext.vibe`: persistent-cache フォーマット parser の version/arity/
     unknown-tag/CR arm を crafted TSV で (+16)。
   - `cov_units.vibe` / `cov_units2.vibe`: 小 helper を直接呼ぶ
@@ -297,7 +307,7 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
 再現:
 ```bash
 scripts/coverage_corpus.sh        # base acc.json + compiler_cov.wasm
-scripts/coverage_unittests.sh     # VIBE_COV_FLAT=_build/coverage/merged_nodce.vibe で再実行も可
+scripts/coverage_unittests.sh     # base は flat module source (#1633 で no-DCE merged base は無くなった)
 scripts/coverage_drivers.sh       # async/lookup/cachetext/units/traitenv/link/helpers/…
 scripts/coverage_manifestcache.sh
 scripts/coverage_multimodule.sh
@@ -315,12 +325,23 @@ compile する役割だけ）。merge は command status と `base now total` sc
 検査し、`total > 0`、分母不変、hit 非減少、書込み後 stat 一致を満たさなければ
 coverage run 全体を失敗させる。
 
-#1633 の production exact-path exposure へ移行済みなのは現在 `cov_units.vibe`
-と `cov_traitenv.vibe`。登録済み active driver の残り **37 本**は legacy raw base
-のままで、個別に
-exact-path import を宣言して移行する必要がある。`cov_driver.vibe` は現在の
-`coverage_drivers.sh` に登録されない historical monolith なので、移行対象へ戻すか
-退役するかを別途決める。ここで件数へ含めたり暗黙に実行済みとは扱わない。
+#1633 の production exact-path exposure へは、`coverage_drivers.sh` に登録された
+**39 本すべてが移行済み**。legacy raw base (`_build/coverage/merged_nodce.vibe`)
+とそれを作っていた Python walk は削除した。`cov_driver.vibe` は現在の
+`coverage_drivers.sh` に登録されない historical monolith（`coverage_driver.sh`
+単数形からのみ参照され、そちらは flat module source への raw concat のまま）なので、
+移行対象へ戻すか退役するかを別途決める。ここで件数へ含めたり暗黙に実行済みとは
+扱わない。
+
+移行で分かったこと: 全 driver が壊れたまま放置されていた間に、driver が呼ぶ
+コンパイラ側 API が動いていた。AST ノードのアリティ (`EIdent`/`ECall`/`EDot` の
+byte offset スロット、`SEnum` の derives、`SStruct` の #829 スロット)、
+parser 内部の `starts: Array[Int]` (#1567 located diagnostics) と `parse_recur`
+コールバック、`check_pattern` の errors シンク、`flatten_module_body` が
+alias 配列ではなく rewriter を取るようになった点など。消えた target
+(`lookup_array_group_b` → `lookup_array`、`lookup_io_c` → `lookup_io_b` へ吸収、
+`lookup_assert` → checker.vibe のインライン名前判定、`parse_int_unwrap` →
+`parse_int_or`) は現行の後継へ差し替えるか、後継が無いものは理由付きで削った。
 
 #### 構造的に到達不能な残差（~19 dark）
 

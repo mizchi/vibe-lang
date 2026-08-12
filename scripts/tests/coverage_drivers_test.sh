@@ -11,13 +11,29 @@ DRIVER_DIR="$TMP/driver"
 mkdir -p "$DRIVER_DIR"
 : > "$DRIVER_DIR/src.vibe"
 
-# Routing: both migrated labels use exact exposure. A filtered run for either
-# label can therefore skip the legacy merged-source generator; legacy labels
-# still require it.
-coverage_driver_uses_exact_exposure units
-coverage_driver_uses_exact_exposure traitenv
-if coverage_driver_uses_exact_exposure units2; then
-  echo "coverage_drivers_test: units2 unexpectedly routed to exact exposure" >&2
+# Every driver goes through exact-path exposure (#1633), so every driver must
+# name the compiler values it uses with `import <exact file> { .. }`. A driver
+# with no imports only ever worked under the deleted raw-concatenation lane,
+# where it inherited whatever names the concatenation happened to expose; on the
+# exposure lane it compiles against nothing and dies with `unknown name`.
+driver_rows="$(grep -E '^run_driver ' scripts/coverage_drivers.sh | awk '{ print $2, $3, $4 }')"
+[ -n "$driver_rows" ] || { echo "coverage_drivers_test: no run_driver rows found" >&2; exit 1; }
+while read -r entry file label; do
+  [ -f "$file" ] || { echo "coverage_drivers_test: $label driver missing: $file" >&2; exit 1; }
+  grep -qE '^import [^ ]+\.vibe \{' "$file" || {
+    echo "coverage_drivers_test: $label ($file) has no exact-file import" >&2
+    exit 1
+  }
+  grep -qE "^export let $entry:" "$file" || {
+    echo "coverage_drivers_test: $label ($file) does not export its entry $entry" >&2
+    exit 1
+  }
+done <<< "$driver_rows"
+
+# The raw-concatenation lane and its truncated walk are gone; nothing may bring
+# a `merged_nodce` base back without also revisiting this test.
+if grep -q 'merged_nodce' scripts/coverage_drivers.sh; then
+  echo "coverage_drivers_test: legacy merged_nodce base reintroduced" >&2
   exit 1
 fi
 

@@ -1,3 +1,10 @@
+import ../../lib/@vibe/compiler/perceus/perceus.vibe {
+  expr_projects_or_matches
+}
+
+import ../../lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe {
+  is_mut_captured_in
+}
 
 // #cov walk3 driver: the residual recursion arms of expr_projects_or_matches and
 // is_mut_captured_in — reached only when the name appears in a *specific* sub-
@@ -7,27 +14,27 @@ let w3_proj: (Expr) -> Int = (e) -> { if expr_projects_or_matches("x", e) { 1 } 
 let w3_mut: (Expr) -> Int = (e) -> { if is_mut_captured_in(e, "x") { 1 } else { 0 } }
 let w3_both: (Expr) -> Int = (e) -> { w3_proj(e) + w3_mut(e) }
 
-let xi: () -> Expr = () -> { EIdent("x") }
-let arm_x: () -> Array[(Pat, Expr)] = () -> { Array::slice([(PWild, EIdent("x"))], 0, 1) }
+let xi: () -> Expr = () -> { EIdent("x", 0) }
+let arm_x: () -> Array[(Pat, Expr)] = () -> { Array::slice([(PWild, EIdent("x", 0))], 0, 1) }
 let arm_z: () -> Array[(Pat, Expr)] = () -> { Array::slice([(PWild, EInt(0))], 0, 1) }
 
 let w3_dot_match: () -> Int = () -> {
   let mut acc = 0
-  acc = acc + w3_both(EDot(EBinOp("+", xi(), EInt(1)), "f"))     // dot, non-ident obj recurse
-  acc = acc + w3_both(EDot(EIdent("z"), "f"))                    // dot, ident != name
+  acc = acc + w3_both(EDot(EBinOp("+", xi(), EInt(1)), "f", 0, 0))     // dot, non-ident obj recurse
+  acc = acc + w3_both(EDot(EIdent("z", 0), "f", 0, 0))                    // dot, ident != name
   acc = acc + w3_both(EMatch(xi(), arm_z()))                     // scrut is name
-  acc = acc + w3_both(EMatch(EIdent("z"), arm_x()))              // arm body has name
+  acc = acc + w3_both(EMatch(EIdent("z", 0), arm_x()))              // arm body has name
   acc = acc + w3_both(EMatch(EBinOp("+", xi(), EInt(1)), arm_z())) // scrut recurse
-  acc = acc + w3_both(EMatch(EIdent("z"), arm_z()))              // neither -> false
-  acc = acc + w3_both(EHandle(EIdent("z"), arm_x()))             // handle arm has name
+  acc = acc + w3_both(EMatch(EIdent("z", 0), arm_z()))              // neither -> false
+  acc = acc + w3_both(EHandle(EIdent("z", 0), arm_x()))             // handle arm has name
   acc = acc + w3_both(EHandle(xi(), arm_z()))                    // handle body has name
   acc
 }
 let w3_bind: () -> Int = () -> {
   let mut acc = 0
-  acc = acc + w3_both(ELet("a", xi(), EUnit)) + w3_both(ELet("a", EUnit, xi()))
+  acc = acc + w3_both(ELet("a", xi(), EUnit, 0)) + w3_both(ELet("a", EUnit, xi(), 0))
   acc = acc + w3_both(ELetRec("a", xi(), EUnit)) + w3_both(ELetRec("a", EUnit, xi()))
-  acc = acc + w3_both(ELetMut("a", xi(), EUnit)) + w3_both(ELetMut("a", EUnit, xi()))
+  acc = acc + w3_both(ELetMut("a", xi(), EUnit, 0)) + w3_both(ELetMut("a", EUnit, xi(), 0))
   acc = acc + w3_both(EAssign("a", xi(), EUnit)) + w3_both(EAssign("a", EUnit, xi()))
   acc = acc + w3_both(EAssignOp("+", "a", xi(), EUnit)) + w3_both(EAssignOp("+", "a", EUnit, xi()))
   acc
@@ -38,7 +45,7 @@ let w3_ctrl: () -> Int = () -> {
   acc = acc + w3_both(ESeq(xi(), EUnit)) + w3_both(ESeq(EUnit, xi()))
   acc = acc + w3_both(EWhile(xi(), EUnit)) + w3_both(EWhile(EInt(0), xi()))
   acc = acc + w3_both(EForIn("i", None, xi(), EUnit)) + w3_both(EForIn("i", None, EInt(0), xi()))
-  acc = acc + w3_both(ECall(xi(), Array::slice([EUnit], 0, 0))) + w3_both(ECall(EIdent("f"), Array::slice([EInt(1), xi()], 0, 2)))
+  acc = acc + w3_both(ECall(xi(), Array::slice([EUnit], 0, 0), 0)) + w3_both(ECall(EIdent("f", 0), Array::slice([EInt(1), xi()], 0, 2), 0))
   acc = acc + w3_both(EInt(1))
   acc
 }

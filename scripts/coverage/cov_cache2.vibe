@@ -1,3 +1,12 @@
+import ../../lib/@vibe/compiler/loader/manifest_sources.vibe {
+  parse_persistent_manifest_header_cache,
+  parse_source_manifest_rows
+}
+
+import ../../lib/@vibe/compiler/core/module_graph_path.vibe {
+  normalize_path
+}
+
 
 // #cov cache2 driver: string-input path/manifest/header-cache parsers —
 // normalize_path (absolute / '.' / '..' / empty / double-sep arms),
@@ -7,8 +16,14 @@ let c2_np: (String) -> Int = (p) -> { String::length(normalize_path(p)) }
 let c2_rows: (String) -> Int = (s) -> {
   handle { Array::length(parse_source_manifest_rows(s)) } with Exception { Throw(_) => 0 }
 }
+// `match` rather than `let r = ..; r.0`: a tuple projection off a let-bound value
+// inside a `handle` body makes codegen emit a module that fails wasm validation
+// ("invalid local index"), with both `vibe check` and `vibe build` reporting
+// success (#1643).
 let c2_hdr: (String) -> Int = (s) -> {
-  handle { let r = parse_persistent_manifest_header_cache(s); r.0 } with Exception { Throw(_) => 0 }
+  handle {
+    match parse_persistent_manifest_header_cache(s) { (v, _, _) => v }
+  } with Exception { Throw(_) => 0 }
 }
 
 export let cov_cache2_main: () -> Int = () -> {

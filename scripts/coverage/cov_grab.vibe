@@ -1,3 +1,59 @@
+import ../../lib/@vibe/parser/parser_expr_core.vibe {
+  has_non_pipe_infix_top
+}
+
+import ../../lib/@vibe/parser/parser_base.vibe {
+  collect_import_path,
+  skip_derive
+}
+
+import ../../lib/@vibe/parser/lexer.vibe {
+  lex
+}
+
+import ../../lib/@vibe/parser/printer.vibe {
+  print_stmt
+}
+
+import ../../lib/@vibe/compiler/core/import_alias_rewrite.vibe {
+  make_import_alias_rewriter
+}
+
+import ../../lib/@vibe/compiler/core/dce.vibe {
+  dce_reachable_names
+}
+
+import ../../lib/@vibe/compiler/normalize/normalize.vibe {
+  exported_value_names,
+  flatten_module_body,
+  module_value_aliases
+}
+
+import ../../lib/@vibe/compiler/checker/checker.vibe {
+  infer_binop_type
+}
+
+import ../../lib/@vibe/compiler/perceus/perceus.vibe {
+  all_calls_heap_at,
+  is_heap_literal,
+  type_contains_fn,
+  type_expr_is_heap
+}
+
+import ../../lib/@vibe/compiler/checker/checker_resolve.vibe {
+  subst_type_params
+}
+
+import ../../lib/@vibe/compiler/core/types.vibe {
+  env_cache,
+  env_flat_bindings,
+  env_lookup,
+  trait_defined,
+  trait_is_subtrait,
+  type_implements_check_env,
+  type_to_string
+}
+
 
 // #cov grab driver: sweep the long tail of small tractable type/trait/env/heap/
 // token/AST helpers, each driven directly with constructed inputs. Split into many
@@ -49,15 +105,15 @@ let grab_binop: () -> Int = () -> {
 }
 let grab_env: () -> Int = () -> {
   let mut acc = 0
-  let def_eq = EnvTraitDef("Eq", Array::slice([""], 0, 0), false, ArrayBuilder::freeze(ArrayBuilder::new()), EnvEmpty, Array::slice([""], 0, 0))
-  let def_ord = EnvTraitDef("Ord", Array::slice(["Eq"], 0, 1), false, ArrayBuilder::freeze(ArrayBuilder::new()), def_eq, Array::slice([""], 0, 0))
+  let def_eq = EnvTraitDef("Eq", Array::slice([""], 0, 0), false, ArrayBuilder::freeze(ArrayBuilder::new()), EnvEmpty, Array::slice([""], 0, 0), ArrayBuilder::freeze(ArrayBuilder::new()))
+  let def_ord = EnvTraitDef("Ord", Array::slice(["Eq"], 0, 1), false, ArrayBuilder::freeze(ArrayBuilder::new()), def_eq, Array::slice([""], 0, 0), ArrayBuilder::freeze(ArrayBuilder::new()))
   let env = EnvTraitImpl("Ord", CtInt, def_ord)
   acc = acc + (if trait_defined(env, "Ord") { 1 } else { 0 })
   acc = acc + (if trait_defined(env, "Nope") { 1 } else { 0 })
   acc = acc + (if trait_is_subtrait(env, "Ord", "Eq") { 1 } else { 0 })
   acc = acc + (if trait_is_subtrait(env, "Eq", "Ord") { 1 } else { 0 })
-  acc = acc + (if type_implements_check_env(env, "Ord", CtInt) { 1 } else { 0 })
-  acc = acc + (if type_implements_check_env(env, "Ord", CtBool) { 1 } else { 0 })
+  acc = acc + (if type_implements_check_env(env, env, "Ord", CtInt) { 1 } else { 0 })
+  acc = acc + (if type_implements_check_env(env, env, "Ord", CtBool) { 1 } else { 0 })
   acc = acc + Array::length(env_flat_bindings(EnvBind("x", CtInt, EnvFlat(Array::slice([("y", CtBool)], 0, 1)))))
   acc = acc + (match env_cache(EnvBind("x", CtInt, EnvEmpty)) { _ => 1 })
   acc = acc + (match env_lookup(EnvFlat(Array::slice([("x", CtInt)], 0, 1)), "x") { Some(_) => 1, None => 0 })
@@ -80,13 +136,13 @@ let grab_ast: () -> Int = () -> {
   let mut acc = 0
   let body = Array::slice([SExpr(EUnit)], 0, 0)
   Array::push(body, SLet(true, false, "k", None, EInt(1)))
-  Array::push(body, SLet(false, false, "p", None, ECall(EIdent("k"), Array::slice([EUnit], 0, 0))))
+  Array::push(body, SLet(false, false, "p", None, ECall(EIdent("k", 0), Array::slice([EUnit], 0, 0), 0)))
   Array::push(body, SExport(Array::slice(["k"], 0, 1)))
   acc = acc + Array::length(exported_value_names(body))
   acc = acc + Array::length(dce_reachable_names(body, Array::slice(["p"], 0, 1)))
   acc = acc + module_value_aliases(body, "M", Array::slice([("k", "M_k")], 0, 1))
   let out = Array::slice([SExpr(EUnit)], 0, 0)
-  acc = acc + flatten_module_body(body, "M", Array::slice([("k", "M_k")], 0, 1), out)
+  acc = acc + flatten_module_body(body, "M", make_import_alias_rewriter(Array::slice([("k", "M_k")], 0, 1)), out)
   acc = acc + String::length(print_stmt(SImport("m", Array::slice([("x", Some("y"))], 0, 1))))
   acc = acc + String::length(print_stmt(SExport(Array::slice(["a"], 0, 1))))
   acc

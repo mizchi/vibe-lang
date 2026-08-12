@@ -9,13 +9,22 @@
 #   - TypeEnv-walking trait helpers fed only checker-built shapes
 #   - the linked_imports>0 / library_mode arms of compile_wasi_module_linked_impl
 #
-# Drivers compile and run against a cycle-free no-DCE compiler source under
-# coverage, unioning executed branches into the corpus acc.json by
+# Every driver is merged by the compiler-owned exact-path exposure mode (#1633):
+# the driver names the exact source file each compiler value comes from, and the
+# instrumented compiler rewrites those references to the names the ordinary
+# production merge produced. Executed branches union into the corpus acc.json by
 # (fn_name, local_branch_index) — valid because every binary shares the same
-# per-function branch ordering. The migrated `units` and `traitenv` drivers are
-# merged by compiler-owned exact-path exposure mode; remaining drivers retain
-# the legacy raw base until later #1633 slices. Run coverage_corpus.sh FIRST (it
-# builds acc.json + the instrumented compiler_cov.wasm this suite reuses).
+# per-function branch ordering. Run coverage_corpus.sh FIRST (it builds acc.json
+# + the instrumented compiler_cov.wasm this suite reuses).
+#
+# There used to be a second lane: a Python walk that concatenated the compiler
+# sources with their imports stripped, which drivers were appended to verbatim.
+# It followed only RELATIVE imports, so after the .vpkg package-import migration
+# (#1269/#897) it walked a few hops and stopped — 67KB of a ~5MB compiler — and
+# every driver on it died with `unknown name`. Nothing can rescue that shape:
+# unqualified concatenation of 300 files resolves duplicate private helpers by
+# first-match roulette, which is why exposure resolves through the production
+# rename plan instead.
 #
 #   scripts/coverage_drivers.sh
 set -uo pipefail
@@ -27,14 +36,13 @@ COMPILER_COV="$OUTDIR/compiler_cov.wasm"
 COMPILER_ENTRY="lib/@vibe/compiler/cli_adapter.vibe"
 DRIVER_FILTER="${VIBE_COV_DRIVER_FILTER:-}"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"
-# Same node-stack requirement as coverage_corpus.sh: every driver compiles the
-# ~5MB merged source (plus the driver) under coverage instrumentation, which
-# recurses past node's default stack. Without this the host overflow surfaces as
-# `expression too deeply nested`, run_driver counts it as a compile failure, and
-# -- because that path used to `return 0` -- the whole suite reported success
-# with EVERY driver silently skipped. Keep in sync with coverage_corpus.sh.
+# Same node-stack requirement as coverage_corpus.sh: exposing a driver walks the
+# whole ~5MB compiler closure, which recurses past node's default stack. Without
+# this the host overflow surfaces as `expression too deeply nested`, run_driver
+# counts it as a failure, and -- because that path used to `return 0` -- the
+# whole suite reported success with EVERY driver silently skipped. Keep in sync
+# with coverage_corpus.sh.
 export VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --experimental-wasm-inlining --stack-size=131072}"
-MERGED="_build/coverage/merged_nodce.vibe"
 WORK="_build/coverage/drivers"
 
 # Split out one attempt so the deterministic-vs-transient retry contract has a
@@ -69,86 +77,6 @@ else
   [ -s "$ACC" ] || { echo "drivers: run coverage_corpus.sh first (no acc.json)" >&2; exit 1; }
   [ -s "$COMPILER_COV" ] || { echo "drivers: run coverage_corpus.sh first (no current compiler_cov.wasm)" >&2; exit 1; }
   mkdir -p "$WORK"
-fi
-
-coverage_driver_uses_exact_exposure() { # label
-  case "$1" in
-    units|traitenv) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# 1. Regenerate the legacy no-DCE source only for drivers not yet migrated to
-#    exact-path exposure. Filtered exact-exposure runs never construct or trust
-#    raw concatenation; an unfiltered run still needs it for legacy drivers.
-if [ "$COVERAGE_DRIVERS_SOURCED" = "0" ] && { [ -z "$DRIVER_FILTER" ] || ! coverage_driver_uses_exact_exposure "$DRIVER_FILTER"; }; then
-  echo "[drivers] regenerating legacy no-DCE source ..." >&2
-  python3 - "lib/@vibe/compiler" "lib/@vibe/compiler/compiler_sources_manifest.tsv" "cli_adapter.vibe" "$MERGED" <<'PY'
-import os, re, sys
-compiler_dir, manifest_path, root_rel, out_path = sys.argv[1:]
-rows=[]
-for raw in open(manifest_path):
-    line=raw.rstrip("\n")
-    if not line or line.startswith("#"): continue
-    p=line.split("\t")
-    if len(p)==2: rows.append((p[0],p[1]))
-src_by={}
-for _,rel in rows:
-    full=os.path.join(compiler_dir,rel)
-    if os.path.isfile(full): src_by[rel]=open(full,encoding="utf-8").read()
-dep=re.compile(r'^\s*(?:import|export)\s+(\.[\w./\s-]+?)(?:\.vibe)?\s*\{',re.M)
-drop=re.compile(r'^\s*(?:import|export)\s+[.][^\s{]+')
-def norm(p):
-    out=[]
-    for s in p.split("/"):
-        if s in("","."):continue
-        if s=="..":
-            if out:out.pop()
-            continue
-        out.append(s)
-    return "/".join(out)
-def resolve(base,raw):
-    bd=os.path.dirname(base); raw=re.sub(r'\s*/\s*','/',raw.strip())
-    j=norm((bd+"/"+raw) if (raw.startswith("./") or raw.startswith("../")) and bd else raw)
-    cands=[j] if j.endswith(".vibe") else [j+".vibe", j+"/index.vibe"]
-    for c in cands:
-        if c in src_by: return c
-    return cands[0]
-vis=set(); order=[]
-def visit(rel):
-    if rel in vis: return
-    s=src_by.get(rel)
-    if s is None: return
-    vis.add(rel)
-    for d in dep.findall(s): visit(resolve(rel,d))
-    order.append(rel)
-def strip(s):
-    out=[]; skip=False; depth=0
-    for line in s.splitlines(True):
-        st=line.lstrip()
-        if st.startswith("//"): continue
-        if not skip and drop.match(line):
-            depth=line.count("{")-line.count("}")
-            if depth>0: skip=True
-            continue
-        if skip:
-            depth+=line.count("{")-line.count("}")
-            if depth<=0: skip=False
-            continue
-        out.append(line)
-    m="".join(out)
-    return m if (not m or m.endswith("\n")) else m+"\n"
-visit(root_rel)
-first=True
-with open(out_path,"w",encoding="utf-8") as f:
-    for rel in order:
-        s=src_by.get(rel)
-        if s is None: continue
-        m=strip(s)
-        if first: m=m.lstrip("\r\n"); first=False
-        f.write(m)
-PY
-  [ -s "$MERGED" ] || { echo "drivers: merged source generation failed" >&2; exit 1; }
 fi
 
 # (fn_name, local_branch_index) union of a driver's raw coverage dump into
@@ -213,29 +141,25 @@ run_driver() { # entry driver_file label
   fi
   DRIVERS_RAN=$((DRIVERS_RAN + 1))
   local d="$WORK/$label"; rm -rf "$d"; mkdir -p "$d"
-  if coverage_driver_uses_exact_exposure "$label"; then
-    # The current instrumented compiler owns this internal emit mode. It
-    # collects the production compiler closure, resolves the driver's exact-file
-    # value requests, and rewrites them to the ordinary merge's final names.
-    # The pinned seed only compiles the emitted ordinary source; no seed bump.
-    rm -f "$d/src.vibe" "$d/src.vibe.diag"
-    VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 \
-      VIBE_COVERAGE_DRIVER_PATH="$file" \
-      VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
-      bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
-      "$COMPILER_ENTRY" "$d/src.vibe" "$entry" >"$d/expose.log" 2>&1 || true
-    if [ ! -s "$d/src.vibe" ]; then
-      echo "[$label] exact-path exposure failed" >&2
-      if [ -s "$d/src.vibe.diag" ]; then
-        awk '{ print "               " $0 }' "$d/src.vibe.diag" >&2
-      elif [ -s "$d/expose.log" ]; then
-        tail -3 "$d/expose.log" | awk '{ print "               " $0 }' >&2
-      fi
-      DRIVER_FAILS=$((DRIVER_FAILS + 1))
-      return 0
+  # The current instrumented compiler owns this internal emit mode. It
+  # collects the production compiler closure, resolves the driver's exact-file
+  # value requests, and rewrites them to the ordinary merge's final names.
+  # The pinned seed only compiles the emitted ordinary source; no seed bump.
+  rm -f "$d/src.vibe" "$d/src.vibe.diag"
+  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 \
+    VIBE_COVERAGE_DRIVER_PATH="$file" \
+    VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
+    bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
+    "$COMPILER_ENTRY" "$d/src.vibe" "$entry" >"$d/expose.log" 2>&1 || true
+  if [ ! -s "$d/src.vibe" ]; then
+    echo "[$label] exact-path exposure failed" >&2
+    if [ -s "$d/src.vibe.diag" ]; then
+      awk '{ print "               " $0 }' "$d/src.vibe.diag" >&2
+    elif [ -s "$d/expose.log" ]; then
+      tail -3 "$d/expose.log" | awk '{ print "               " $0 }' >&2
     fi
-  else
-    cat "$MERGED" "$file" > "$d/src.vibe"
+    DRIVER_FAILS=$((DRIVER_FAILS + 1))
+    return 0
   fi
   local compile_status=0
   coverage_driver_compile_with_retries "$d" "$entry" || compile_status=$?
@@ -262,7 +186,11 @@ run_driver() { # entry driver_file label
   VIBE_COV_OUT="$d/cov.json" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT" \
     bash "$RUNNER" "$d/m.wasm" >/dev/null 2>&1 || true
   if [ -s "$d/cov.json" ]; then
-    local merge_stat
+    # `local`, because the final suite summary reports `$base` -- the hit count
+    # taken BEFORE any driver ran. Unqualified, each driver overwrote it with
+    # its own pre-merge count, so the closing line reported only the last
+    # driver's delta (+9) as if it were the whole suite's (+633).
+    local merge_stat base now tot scaled pct
     if merge_stat="$(coverage_driver_merge_checked "$ACC" "$d/cov.json")"; then
       read -r base now tot <<<"$merge_stat"
       scaled=$(( (now * 10000 + tot / 2) / tot ))
