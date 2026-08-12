@@ -112,7 +112,12 @@ recorded claims to agree and still validates the implementation-closure owner.
 The opaque opt-in runtime producer derives both values only after successful
 checking. Ordinary `check_module` makes no artifact construction attempt;
 diagnosed opt-in checks also make none; successful opt-in checks make exactly
-one. This counter is test observation, not production telemetry.
+one. An explicit in-memory validator can compare retained v2 bytes with one
+current `ModuleJob.path/source/dep_envs`. It recomputes both identities from the
+already-ingested source, requires ordered dependency assumptions and exactly the
+singleton owner closure, and returns only `Bool`; v1, malformed, stale, or wider
+closure inputs fail closed. Ordinary checks never enter this validator. Its
+attempt counter is test observation, not production telemetry.
 
 The aggregate and its complete-encoding fingerprint are shadow comparison data
 only. They are not wired to TypeDb, the TypeEnv v5 transport and persistent cache

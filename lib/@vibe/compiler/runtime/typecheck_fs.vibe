@@ -26,6 +26,7 @@ import @vibe/compiler/checker {
 
 import @vibe/compiler/checker/artifacts {
   checked_exported_interface_artifact_from_checked_program,
+  checked_module_typing_artifact_v2_matches_exact_inputs,
   encode_checked_module_typing_artifact_v2,
   shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
 }
@@ -3292,6 +3293,10 @@ let checked_module_typing_artifact_construction_attempts: Array[Int] = [
   0
 ]
 
+let checked_module_typing_artifact_validation_attempts: Array[Int] = [
+  0
+]
+
 /// Test-observation counter. It measures entry into artifact construction, not
 /// checker execution: ordinary and diagnosed paths remain zero.
 export fn checked_module_typing_artifact_construction_attempt_count() -> Int {
@@ -3300,6 +3305,15 @@ export fn checked_module_typing_artifact_construction_attempt_count() -> Int {
 
 export fn reset_checked_module_typing_artifact_construction_attempt_count() -> Unit {
   Array::set(checked_module_typing_artifact_construction_attempts, 0, 0)
+}
+
+/// Test-only count of entries into the explicit freshness validator.
+export fn checked_module_typing_artifact_validation_attempt_count() -> Int {
+  Array::get(checked_module_typing_artifact_validation_attempts, 0)
+}
+
+export fn reset_checked_module_typing_artifact_validation_attempt_count() -> Unit {
+  Array::set(checked_module_typing_artifact_validation_attempts, 0, 0)
 }
 
 fn checked_module_typing_artifact_bytes(checked: CheckedProgram, job: ModuleJob) -> Option[String] with Exception {
@@ -3327,6 +3341,18 @@ export fn checked_module_typing_artifact_observation(outcome: ModuleOutcome) -> 
   match outcome {
     Checked(_, _, _, _, _, _, observation) => observation,
     Diagnosed(_, _) => None
+  }
+}
+
+/// Explicit in-memory freshness observation for one retained successful
+/// outcome against one current, already-ingested ModuleJob. This returns only
+/// Bool and does not publish, persist, plan, or reuse the decoded artifact.
+export fn checked_module_typing_artifact_observation_is_fresh_for_job(job: ModuleJob, outcome: ModuleOutcome) -> Bool with Exception {
+  Array::set(checked_module_typing_artifact_validation_attempts, 0, Array::get(checked_module_typing_artifact_validation_attempts, 0) + 1)
+  match outcome {
+    Checked(_, _, _, _, _, _, Some(bytes)) => checked_module_typing_artifact_v2_matches_exact_inputs(bytes, job.path, compact_string_fingerprint(job.source), incremental_implementation_identity(job.source), checked_module_dependency_interface_assumptions(job.dep_envs)),
+    Checked(_, _, _, _, _, _, None) => false,
+    Diagnosed(_, _) => false
   }
 }
 
