@@ -151,7 +151,7 @@ checker の静的型から、各スロット (パラメータ / 返り値 / ロ�
 | Phase | 越えられるようになる境界 | 主な作業 | issue / 備考 |
 |---|---|---|---|
 | **A** | **返り値・引数** (非ジェネリックな直接呼び出し) | 関数型を静的型から導出。呼び出し側と定義側で型が一致することの検証 | **#1541**。acceptance の1つ目。ここだけで実用価値が出る |
-| **B** | **別名・局所束縛** | 既存の `gc_native_array_locals` の追跡を関数間へ拡張 | **#1541** (A と同一スライス)。A の自然な帰結 |
+| **B** | **別名・局所束縛** | 既存の `gc_native_array_locals` の追跡を関数間へ拡張 | **#1541** (A と同一スライス)。private concrete `Array[Int]` の直接経路と 1 段の immutable local alias は着地済み。alias 経由で mutate し original 経由で読む identity fixture と native allocation site = 1 の gate で固定。それ以外の join / import / indirect call / aggregate / global は未対応のまま fail-closed |
 | **C** | **集約フィールド** | ユーザ構造体を実 wasm-gc struct へ (ADR-0052 の `struct.set` 経路の一般化) | **#1542**。ヒープモデルの変更を含み、最も重い |
 | **D** | **クロージャ捕捉** | funcref テーブルの型が現状 arity 別 `(i64...)->i64` のみ。型別に増やすか、捕捉は i64 固定にするか | **#1543**。表が型ごとに増える点が最大の論点 |
 

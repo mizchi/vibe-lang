@@ -12,8 +12,8 @@
 # Drivers compile and run against a cycle-free no-DCE compiler source under
 # coverage, unioning executed branches into the corpus acc.json by
 # (fn_name, local_branch_index) — valid because every binary shares the same
-# per-function branch ordering. The migrated `units` driver is merged by the
-# compiler-owned exact-path exposure mode; remaining drivers temporarily retain
+# per-function branch ordering. The migrated `units` and `traitenv` drivers are
+# merged by compiler-owned exact-path exposure mode; remaining drivers retain
 # the legacy raw base until later #1633 slices. Run coverage_corpus.sh FIRST (it
 # builds acc.json + the instrumented compiler_cov.wasm this suite reuses).
 #
@@ -71,12 +71,17 @@ else
   mkdir -p "$WORK"
 fi
 
+coverage_driver_uses_exact_exposure() { # label
+  case "$1" in
+    units|traitenv) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # 1. Regenerate the legacy no-DCE source only for drivers not yet migrated to
-#    exact-path exposure. #1633's first slice migrates `units`; the remaining
-#    drivers deliberately stay on their existing path until separate reviewed
-#    slices move them. A units-only smoke therefore never constructs or trusts
-#    the old raw concatenation.
-if [ "$COVERAGE_DRIVERS_SOURCED" = "0" ] && { [ -z "$DRIVER_FILTER" ] || [ "$DRIVER_FILTER" != "units" ]; }; then
+#    exact-path exposure. Filtered exact-exposure runs never construct or trust
+#    raw concatenation; an unfiltered run still needs it for legacy drivers.
+if [ "$COVERAGE_DRIVERS_SOURCED" = "0" ] && { [ -z "$DRIVER_FILTER" ] || ! coverage_driver_uses_exact_exposure "$DRIVER_FILTER"; }; then
   echo "[drivers] regenerating legacy no-DCE source ..." >&2
   python3 - "lib/@vibe/compiler" "lib/@vibe/compiler/compiler_sources_manifest.tsv" "cli_adapter.vibe" "$MERGED" <<'PY'
 import os, re, sys
@@ -208,9 +213,9 @@ run_driver() { # entry driver_file label
   fi
   DRIVERS_RAN=$((DRIVERS_RAN + 1))
   local d="$WORK/$label"; rm -rf "$d"; mkdir -p "$d"
-  if [ "$label" = "units" ]; then
+  if coverage_driver_uses_exact_exposure "$label"; then
     # The current instrumented compiler owns this internal emit mode. It
-    # collects the production compiler closure, resolves cov_units' exact-file
+    # collects the production compiler closure, resolves the driver's exact-file
     # value requests, and rewrites them to the ordinary merge's final names.
     # The pinned seed only compiles the emitted ordinary source; no seed bump.
     rm -f "$d/src.vibe" "$d/src.vibe.diag"

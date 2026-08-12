@@ -11,6 +11,16 @@ DRIVER_DIR="$TMP/driver"
 mkdir -p "$DRIVER_DIR"
 : > "$DRIVER_DIR/src.vibe"
 
+# Routing: both migrated labels use exact exposure. A filtered run for either
+# label can therefore skip the legacy merged-source generator; legacy labels
+# still require it.
+coverage_driver_uses_exact_exposure units
+coverage_driver_uses_exact_exposure traitenv
+if coverage_driver_uses_exact_exposure units2; then
+  echo "coverage_drivers_test: units2 unexpectedly routed to exact exposure" >&2
+  exit 1
+fi
+
 # A sidecar diagnostic is deterministic: one attempt and a nonzero status.
 deterministic_attempts=0
 coverage_driver_compile_once() {

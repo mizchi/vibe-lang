@@ -171,10 +171,12 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   **row-free closure パラメータの呼び出しのうち、全 by-name call site の
   実引数が suspend-inert と証明できるもの** (#1536 (a)。下記)、`if` condition /
   `match` scrutinee が direct target perform・concrete needing call・CPS-local call
-  そのものの形 (fresh let へ一回評価してから selection、ADR-0076 追記44)
+  そのものの形 (fresh let へ一回評価してから selection、ADR-0076 追記44)、
+  **継続 spine 上の通常代入 (`=`) の RHS が同じ direct 形そのもの** (fresh let
+  へ一回評価してから一回だけ代入、追記45)
 - **不適格**: ループ内 `break`/`continue`/`return`、配列 `for` / `loop` 形、
-  selection input が suspend を内包する複合式、代入 RHS 直書きの
-  perform (`acc = perform ..`)、実引数証明が成立しない
+  selection input / 代入 RHS が suspend を内包する複合式、compound assignment
+  (`+=` 等)、実引数証明が成立しない
   closure パラメータの呼び出し、row 変数 callee (`with e`)
 
 closure param を**無条件に**許すのは不健全 — closure literal 内の `perform`

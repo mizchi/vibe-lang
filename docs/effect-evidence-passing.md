@@ -2828,9 +2828,18 @@ fresh な binder を作り `ELet(tmp, input, EIf/EMatch(tmp, ...))` へ正規化
 positive fixtures は if/match の一回評価・tail 一回実行・名前/pattern capture 回避を、
 negative fixtures は compound input の fail-closed 診断を固定する。
 
-**残る不適格**: EForIn(array)/ELoop HEAD、代入 RHS 直書きの perform、compound
-selection input、row 変数
-callee、literal param flow。
+### 追記45 (2026-08-12): direct assignment RHS を継続 spine に名前付けする (#1536 (a) v6)
+
+継続 spine 上の通常代入 `x = rhs` で `rhs` が追記44と同じ **direct target
+perform、concrete needing call、または CPS-local call そのもの**なら、代入式全体を
+scope-blind probe して fresh binder を作り、`let fresh = rhs; x = fresh; rest` として
+既存 split に渡す。probe は identifier だけでなく assignment target も見るため、
+生成名と同じ綴りをユーザーが代入先に使っても capture しない。operation・代入・
+continuation は各一回だけ実行する。compound RHS と `+=` 等の EAssignOp は引き続き
+fail-closed であり、この追記は loop / nested handle / row-variable callee を広げない。
+
+**残る不適格**: EForIn(array)/ELoop HEAD、compound assignment RHS、compound
+selection input、row 変数 callee、literal param flow。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

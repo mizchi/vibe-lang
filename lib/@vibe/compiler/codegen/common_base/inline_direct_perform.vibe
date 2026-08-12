@@ -9293,11 +9293,12 @@ fn scps_need_clone(eff: String, fname: String, st: (Array[Int], Array[String], A
 // producing a __ScpsStep_E value. Suspendables (direct performs of E,
 // calls to needing functions) are only recognized on the
 // let/seq/tail/branch-tail spine. A direct recognized suspension may also
-// occupy an if condition or match scrutinee: it is first named by a fresh
-// ELet, then the existing spine machinery resumes into selection. Compound
-// selection inputs and every other nested suspension still fail closed.
+// occupy an if condition, match scrutinee, or plain-assignment RHS: it is
+// first named by a fresh ELet, then the existing spine machinery resumes into
+// selection/assignment. Compound inputs, compound assignment, and every other
+// nested suspension still fail closed.
 
-fn scps_direct_selection_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
+fn scps_direct_spine_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
   let (_, ops, _, _, _) = sctx
   scps_as_target_perform(e, ops) >= 0 || scps_as_needing_call(e, sctx) != "" || scps_as_cps_local_call(e, sctx) != ""
 }
@@ -9466,7 +9467,7 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           // branch and its continuation. Branch-local lets remain lexical
           // to their branch because `b` is an ESeq sibling, not their body.
           EIf(c, t, el) => if scps_contains_susp(a, sctx) {
-            if scps_direct_selection_input(c, sctx) {
+            if scps_direct_spine_input(c, sctx) {
               let sx = scps_selection_fresh(e, site)
               scps_split_tail(ELet(sx, c, EIf(EIdent(sx, -1), ESeq(t, b), ESeq(el, b)), -1), sctx, ctx, st)
             } else if scps_contains_susp(c, sctx) {
@@ -9483,7 +9484,7 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           // match originally; without the rename, a pattern binding could
           // capture an outer reference in the duplicated tail.
           EMatch(s, arms) => if scps_contains_susp(a, sctx) {
-            if scps_direct_selection_input(s, sctx) {
+            if scps_direct_spine_input(s, sctx) {
               let sx = scps_selection_fresh(e, site)
               scps_split_tail(ELet(sx, s, EMatch(EIdent(sx, -1), scps_seq_float_match_arms(arms, b, site)), -1), sctx, ctx, st)
             } else if scps_contains_susp(s, sctx) {
@@ -9549,7 +9550,7 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             }
           }
         },
-        EIf(c, t, el) => if scps_direct_selection_input(c, sctx) {
+        EIf(c, t, el) => if scps_direct_spine_input(c, sctx) {
           let sx = scps_selection_fresh(e, site)
           scps_split_tail(ELet(sx, c, EIf(EIdent(sx, -1), t, el), -1), sctx, ctx, st)
         } else if scps_contains_susp(c, sctx) {
@@ -9563,7 +9564,7 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             (false, e)
           }
         },
-        EMatch(s, arms) => if scps_direct_selection_input(s, sctx) {
+        EMatch(s, arms) => if scps_direct_spine_input(s, sctx) {
           let sx = scps_selection_fresh(e, site)
           scps_split_tail(ELet(sx, s, EMatch(EIdent(sx, -1), arms), -1), sctx, ctx, st)
         } else if scps_contains_susp(s, sctx) {
@@ -9589,6 +9590,17 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             (false, e)
           }
         },
+        // #1536 (a) v6: a plain assignment RHS that is itself one direct
+        // recognized suspension can use the established let spine. Probe the
+        // whole assignment when minting the binder so assignment targets and
+        // continuation names cannot collide with it. Compound RHS and
+        // EAssignOp deliberately keep the generic fail-closed path.
+        EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {
+          let ax = scps_seq_float_fresh("assign", e, EUnit, site)
+          scps_split_tail(ELet(ax, v, EAssign(x, EIdent(ax, -1), b), -1), sctx, ctx, st)
+        } else {
+          (false, e)
+        },
         ELetMut(x, v, b, off) => if scps_contains_susp(v, sctx) {
           (false, e)
         } else {
@@ -9607,7 +9619,11 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             mi = mi + 1
           }
           let sctx2 = (eff, s_ops, s_needing, s_site, masked)
-          let (bok, bexpr) = scps_split_tail(scps_cellify(b, x), sctx2, ctx, st)
+          // Float a direct assignment suspension before cellification turns a
+          // write to `x` into Array::set(...). After that rewrite the perform
+          // would be nested in a builtin argument and no longer recognizable.
+          let b2 = scps_float_direct_assign(b, sctx2, site)
+          let (bok, bexpr) = scps_split_tail(scps_cellify(b2, x), sctx2, ctx, st)
           let cell = array_empty_expr()
           Array::push(cell, v)
           (bok, ELet(x, EArray(cell), bexpr, off))
@@ -9616,6 +9632,37 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
         _ => (false, e)
       }
     }
+  }
+}
+
+/// Name direct suspension RHS values before mutable-local boxing. Traverse
+/// only continuation-spine positions; values, loop bodies, nested handles and
+/// closure bodies remain untouched and therefore fail closed as before.
+fn scps_float_direct_assign(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), site: Int) -> Expr {
+  match e {
+    EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {
+      let ax = scps_seq_float_fresh("assign", e, EUnit, site)
+      ELet(ax, v, EAssign(x, EIdent(ax, -1), scps_float_direct_assign(b, sctx, site)), -1)
+    } else {
+      EAssign(x, v, scps_float_direct_assign(b, sctx, site))
+    },
+    EAssignOp(op, x, v, b) => EAssignOp(op, x, v, scps_float_direct_assign(b, sctx, site)),
+    ELet(x, v, b, off) => ELet(x, v, scps_float_direct_assign(b, sctx, site), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_float_direct_assign(b, sctx, site), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_float_direct_assign(b, sctx, site)),
+    ESeq(a, b) => ESeq(a, scps_float_direct_assign(b, sctx, site)),
+    EIf(c, t, el) => EIf(c, scps_float_direct_assign(t, sctx, site), scps_float_direct_assign(el, sctx, site)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, scps_float_direct_assign(b, sctx, site)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
   }
 }
 

@@ -6852,6 +6852,11 @@ scps_run_expect "effect_seq_head_match_suspend.vibe" "3200" "seqheadmatch"
 scps_run_expect "effect_seq_head_if_condition_suspend.vibe" "3210" "seqheadifcond"
 scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadmatchscrut"
 scps_run_expect "effect_tail_selection_input_suspend.vibe" "3311" "tailselectinput"
+# #1536 direct plain-assignment RHS: name the resumed value on the CPS spine,
+# then assign and continue once. Compound RHS and EAssignOp remain fail-closed.
+scps_run_expect "effect_assignment_rhs_suspend.vibe" "41112" "assignrhs"
+scps_check_reject "err_effect_assignment_rhs_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "assignrhscompound"
+scps_check_reject "err_effect_assignment_op_rhs_suspend.vibe" "let/seq/tail/branch-tail spine" "assignoprhs"
 scps_check_reject "err_effect_seq_head_if_condition_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadifcompound"
 scps_check_reject "err_effect_seq_head_match_compound_scrutinee_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadmatchcompound"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
