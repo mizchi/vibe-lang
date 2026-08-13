@@ -9295,10 +9295,11 @@ fn scps_need_clone(eff: String, fname: String, st: (Array[Int], Array[String], A
 // producing a __ScpsStep_E value. Suspendables (direct performs of E,
 // calls to needing functions) are only recognized on the
 // let/seq/tail/branch-tail spine. A direct recognized suspension may also
-// occupy an if condition, match scrutinee, or plain-assignment RHS: it is
-// first named by a fresh ELet, then the existing spine machinery resumes into
-// selection/assignment or a while condition. Compound inputs, compound
-// assignment, and every other nested suspension still fail closed.
+// occupy an if condition, match scrutinee, or assignment RHS (plain or
+// compound-assignment): it is first named by a fresh ELet, then the existing
+// spine machinery resumes into selection/assignment or a while condition.
+// Inputs that merely contain a suspension and every other nested suspension
+// still fail closed.
 
 fn scps_direct_spine_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
   let (_, ops, _, _, _) = sctx
@@ -9592,14 +9593,22 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             (false, e)
           }
         },
-        // #1536 (a) v6: a plain assignment RHS that is itself one direct
-        // recognized suspension can use the established let spine. Probe the
-        // whole assignment when minting the binder so assignment targets and
-        // continuation names cannot collide with it. Compound RHS and
-        // EAssignOp deliberately keep the generic fail-closed path.
+        // #1536 (a) v6/v9: an assignment RHS that is itself one direct
+        // recognized suspension can use the established let spine. Keep the
+        // original EAssign/EAssignOp node after naming the resumed value: an
+        // assign-op must still read its target and apply its original operator.
+        // Probe the whole assignment so targets, operands, and continuation
+        // names cannot collide with the synthetic binder. RHS expressions that
+        // merely contain a suspension keep the generic fail-closed path.
         EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {
           let ax = scps_seq_float_fresh("assign", e, EUnit, site)
           scps_split_tail(ELet(ax, v, EAssign(x, EIdent(ax, -1), b), -1), sctx, ctx, st)
+        } else {
+          (false, e)
+        },
+        EAssignOp(x, op, v, b) => if scps_direct_spine_input(v, sctx) {
+          let ax = scps_seq_float_fresh("assignop", e, EUnit, site)
+          scps_split_tail(ELet(ax, v, EAssignOp(x, op, EIdent(ax, -1), b), -1), sctx, ctx, st)
         } else {
           (false, e)
         },
@@ -9648,7 +9657,12 @@ fn scps_float_direct_assign(e: Expr, sctx: (String, Array[String], Array[String]
     } else {
       EAssign(x, v, scps_float_direct_assign(b, sctx, site))
     },
-    EAssignOp(op, x, v, b) => EAssignOp(op, x, v, scps_float_direct_assign(b, sctx, site)),
+    EAssignOp(x, op, v, b) => if scps_direct_spine_input(v, sctx) {
+      let ax = scps_seq_float_fresh("assignop", e, EUnit, site)
+      ELet(ax, v, EAssignOp(x, op, EIdent(ax, -1), scps_float_direct_assign(b, sctx, site)), -1)
+    } else {
+      EAssignOp(x, op, v, scps_float_direct_assign(b, sctx, site))
+    },
     ELet(x, v, b, off) => ELet(x, v, scps_float_direct_assign(b, sctx, site), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_float_direct_assign(b, sctx, site), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_float_direct_assign(b, sctx, site)),
@@ -9866,10 +9880,10 @@ fn scps_cellify(e: Expr, x: String) -> Expr {
     } else {
       EAssign(nm, scps_cellify(v, x), scps_cellify(b, x))
     },
-    EAssignOp(op, nm, v, b) => if nm == x {
+    EAssignOp(nm, op, v, b) => if nm == x {
       ESeq(scps_cell_set(nm, EBinOp(op, scps_cell_get(nm, -1), scps_cellify(v, x))), scps_cellify(b, x))
     } else {
-      EAssignOp(op, nm, scps_cellify(v, x), scps_cellify(b, x))
+      EAssignOp(nm, op, scps_cellify(v, x), scps_cellify(b, x))
     },
     ELet(nm, v, b, off) => ELet(nm, scps_cellify(v, x), if nm == x {
       b

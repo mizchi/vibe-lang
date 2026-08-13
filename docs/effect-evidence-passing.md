@@ -2848,8 +2848,20 @@ check ごとに一回、body は true ごとに一回、loop 後の continuation
 compound condition、loop control、for-in/loop、nested-argument suspension は引き続き
 fail-closed。
 
-**残る不適格**: EForIn(array)/ELoop HEAD、compound while/selection input、compound
-assignment RHS、loop control、row 変数 callee、literal param flow。
+### 追記48 (2026-08-13): direct compound-assignment RHS を継続 spine に名前付けする (#1536 (a) v9)
+
+`x += rhs` / `x *= rhs` 等の EAssignOp でも、`rhs` が追記45と同じ direct recognized
+suspension **そのもの**なら、式全体を scope-blind probe して
+`let fresh = rhs; x op= fresh; rest` へ正規化する。元の EAssignOp と演算子を保持するため、
+resume 後に target の現在値を一回読み、演算と書き戻しを一回だけ行う。`let mut` の
+cellification より前に名前付けし、共有 cell の read-modify-write 意味論を保つ。
+
+`x += perform Op() + 1` のように RHS が suspension を**内包する** compound expression
+は direct shape ではないため拒否を維持する。一般の nested-expression CPS、loop、
+row-variable callee、literal provenance は広げない。
+
+**残る不適格**: EForIn(array)/ELoop HEAD、compound while/selection input、suspension を
+内包する compound assignment RHS、loop control、row 変数 callee、literal param flow。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

@@ -6854,9 +6854,13 @@ scps_run_expect "effect_seq_head_match_suspend.vibe" "3200" "seqheadmatch"
 scps_run_expect "effect_seq_head_if_condition_suspend.vibe" "3210" "seqheadifcond"
 scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadmatchscrut"
 scps_run_expect "effect_tail_selection_input_suspend.vibe" "3311" "tailselectinput"
-# #1536 direct plain-assignment RHS: name the resumed value on the CPS spine,
-# then assign and continue once. Compound RHS and EAssignOp remain fail-closed.
+# #1536 direct assignment RHS: name the resumed value on the CPS spine, then
+# preserve and execute the original plain/compound assignment exactly once.
+# The new compound-assignment regression is an inspect snapshot run as-is by
+# the freshly built stage2; nested compound RHS remains fail-closed.
 scps_run_expect "effect_assignment_rhs_suspend.vibe" "41112" "assignrhs"
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_assignment_op_rhs_suspend_test.vibe
 # #1536 direct while condition: resume into the existing recursive loop
 # closure once per condition check. Compound conditions remain fail-closed.
 scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
@@ -6877,7 +6881,6 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 scps_check_reject "err_effect_loop_return_suspend.vibe" "let/seq/tail/branch-tail spine" "loopreturn"
 scps_check_reject "err_effect_while_condition_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "whilecondcompound"
 scps_check_reject "err_effect_assignment_rhs_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "assignrhscompound"
-scps_check_reject "err_effect_assignment_op_rhs_suspend.vibe" "let/seq/tail/branch-tail spine" "assignoprhs"
 scps_check_reject "err_effect_seq_head_if_condition_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadifcompound"
 scps_check_reject "err_effect_seq_head_match_compound_scrutinee_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadmatchcompound"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
