@@ -135,7 +135,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 |---|---|---|
 | bare name | persistent/functional — every "mutating" op returns a NEW value, the receiver is untouched | `Map[K, V]`, `StringSet` (conceptually `Set[String]`) |
 | `Hash-` / `Sorted-` prefix | a deliberate MUTABLE variant with the same conceptual API — ops return `Unit` and mutate in place | `HashMap`, `HashSet`, `SortedMap`, `SortedSet` |
-| `XBuilder` suffix | a mutable, growable builder; not meant to be held onto — call `::freeze` to get the persistent value | `ArrayBuilder`, `MapBuilder`, `StringBuilder` |
+| `XBuilder` suffix | a mutable, growable builder; not meant to be held onto — call **`::build`** to get the persistent value | `ArrayBuilder`, `MapBuilder`, `StringBuilder` |
 | `Frozen-` prefix | immutable AND `Send`-eligible (structurally, when its element type is `Send`) — a narrower, stronger claim than plain persistence, tied to the structured-concurrency model (ADR-0068, #906) | `FrozenArray[T]` |
 
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
@@ -145,6 +145,28 @@ only scalars, `mut`-field-free structs/enums, `Option`/`Result` of those,
 same-nursery `Sender`, and `FrozenArray[T]` are. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
+
+**Builder の終端動詞は `build`** (ADR-0101 (3), #1262)。`StringBuilder::build()
+-> String` のように**型名と動詞が lexical に対応する**ようにしたもの。
+`freeze` は「Frozen-(persistent + `Send`)を産む動詞」に予約されていて、
+Builder の終端はそれではない —— 旧綴りの最悪例が
+`ArrayBuilder::freeze -> Array` で、**freeze の結果が可変**だった。
+
+```vibe
+fn greeting() -> String {
+  let b = StringBuilder::new()
+  StringBuilder::push(b, "hello ")
+  StringBuilder::push(b, "world")
+  StringBuilder::build(b)           // 終端 = build
+}
+```
+
+`StringBuilder::freeze` も同じ registry row・同じ codegen に落ちる
+(`canonical_builtin_name` のエイリアス、生成 wasm はバイト一致 —
+`compiler_gate.sh` 102/102 が pin) ので既存コードは動くが、新規コードは
+`build` を使うこと。**コンパイラ自身のソースの移行と `freeze` の
+`#deprecated` 化は bootstrap bump 待ち** —— seed が `build` を知るまで
+compiler source は `freeze` のままでなければならない (docs/bootstrap.md)。
 
 `Array`/`Bytes` themselves are NOT renamed under this convention — they
 predate it and a rename would be too disruptive. They remain low-level
