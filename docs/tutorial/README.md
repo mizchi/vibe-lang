@@ -36,10 +36,11 @@ pkf run vibe-md-tutorial                                # check を task 化し�
 
 チュートリアルの runnable block が現行コンパイラで壊れた場合は、ユーザーが正規の
 言語ツアーを実行できない **P1 (書けない / 落ちる)** として扱い、GitHub issue に
-`tutorial-breakage` ラベルを付けて他の P1 より先に直す。型検査を通り抜けて誤った
-値を返す場合は、通常どおり **P0 (silent-wrong)** である。修正か仕様見直しかは
-[issue triage](../issue-triage.md) とリポジトリ方針の「文法で詰まったとき」に従い、
-実装都合の制約を tutorial の暗記項目にしない。
+`tutorial-breakage` ラベルを付けて発見しやすくする。型検査を通り抜けて誤った値を
+返す場合は、通常どおり **P0 (silent-wrong)** である。このラベルは優先度を上書き
+せず、着手順は [issue triage](../issue-triage.md) の P0 / P1 と `blocker` から
+機械的に決める。修正か仕様見直しかも同じ triage とリポジトリ方針の「文法で
+詰まったとき」に従い、実装都合の制約を tutorial の暗記項目にしない。
 
 現在の全章は required な `compiler-gate` CI job で、同じ checkout から生成した
 stage2 を `VIBE_MD_STAGE2` に明示し、`scripts/vibe_md.sh check` を全章に対して
