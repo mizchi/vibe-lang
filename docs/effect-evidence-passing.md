@@ -2952,8 +2952,8 @@ condition / scrutinee は元の位置に残るので**ちょうど一回・枝�
 **`break` / `continue` / `return` を含む selection は fail-closed のまま** — transfer は
 このパスが組む loop 形に対して書き換えられるので、その下へ継続を複製するのは
 このスライスの範囲外。selection が compound の中にネストしている形
-(`1 + (if c { perform .. } else { 0 })`) も従来どおり reject
-(`fixtures/err_effect_compound_branch_suspend.vibe`)。
+(`1 + (if c { perform .. } else { 0 })`) もこの時点では reject
+(後述の追記52 が、そこでは selection を丸ごと名前に束ねてこの分配へ渡すことで解消した)。
 
 **残る不適格**: 追記48 の一覧から「`let` / `let mut` の値そのものである selection」を
 引いたもの。
@@ -3008,6 +3008,37 @@ x = { a; v }               REST  ==>  a;  x = v  REST
 両者が食い違うと綴りによって受理が変わるので、fixture を 2 本置いて同じ書き換えを pin した
 (`effect_assign_selection_suspend_test.vibe` / `effect_assign_outer_selection_suspend_test.vibe`)。
 `match` の腕の alpha-rename と `break` / `continue` / `return` の fail-closed は追記49 と同じ。
+
+### 追記52 (2026-08-13): compound の中の selection は「丸ごと名前を付ける」(#1536)
+
+追記48 の ANF が `if` / `match` の枝へ降りないのは正しい — 選ばれない枝の operation を
+走らせてしまう。だがそこから導かれるのは「枝の中の suspension に名前を付けられない」までで、
+**selection 自体に名前を付けられない**ではなかった。ANF が到達する位置は定義上すべて
+**必ず評価される**ので、selection は元の位置のまま 1 つの部分式として名前を付けられる:
+
+```
+value = 1 + (if c { perform Op(1) } else { 0 })
+  ==>  let h = if c { perform Op(1) } else { 0 };  value = 1 + h
+```
+
+そして `let h = <selection>` は追記49 が分配する形そのもの。つまり**新しい機構は要らず、
+ANF が「降りる」か「拒否する」の二択だったところに「丸ごと名前を付ける」を足すだけ**で、
+conditional 位置から何かを float することなく受理できる。
+
+これで #1536 が挙げていた「compound にネストした `if` / `match` の枝」は無くなる
+(旧 `err_effect_compound_branch_suspend` / `err_effect_compound_match_branch_suspend` は
+`effect_compound_selection_suspend_test.vibe` に置き換えた — `order` の桁が suspension を
+またぐ移動が無いことを pin する)。
+
+**残る条件付き位置は non-tail の `&&` / `||` の右辺だけ**。同じ「丸ごと名前を付ける」は
+そこには使えない: `let h = l && r` は追記49 ではなく #1667 の let-shortcircuit 経路に落ち、
+そちらは None を返しうる。None が返ると ANF がまた丸ごと名前を付けて**収束しない**ので、
+`&&` / `||` は blocked のまま残す。
+
+同じ理由で、transfer (`break` / `continue` / `return`) を含む selection もここでは
+blocked にしてある — 分配側が拒否するため、名前を付けると同じ非収束ループになる。
+(現在の型検査では `1 + (if c { break } else { .. })` は書けないので surface からは
+到達しないが、コンパイラが hang しないための fail-closed。)
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

@@ -9554,6 +9554,28 @@ fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
           (2, e)
         }
       },
+      // #1536: a selection is NOT walked into -- naming a suspension that
+      // lives in one branch would run the operation on the path that does not
+      // select that branch. But the selection AS A WHOLE is an ordinary
+      // subexpression of the compound, and this walk only reaches strictly
+      // evaluated positions, so it can be named exactly where it stands. That
+      // puts `let h = if c { .. } else { .. }` on the spine, which the binding
+      // distribution then lowers -- so `1 + (if c { perform .. } else { 0 })`
+      // is accepted without the conditional position ever being floated out of.
+      //
+      // A selection carrying `break` / `continue` / `return` is left blocked
+      // here rather than named: those transfers do not survive being moved
+      // into a binding, and the distribution refuses them anyway.
+      EIf(_, _, _) => if scps_has_loop_ctl(e) {
+        (2, e)
+      } else {
+        (1, scps_anf_bind(e, probe, site, ctr, bn, bv))
+      },
+      EMatch(_, _) => if scps_has_loop_ctl(e) {
+        (2, e)
+      } else {
+        (1, scps_anf_bind(e, probe, site, ctr, bn, bv))
+      },
       _ => (2, e)
     }
   }
@@ -11116,7 +11138,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
     } else {
       let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
       if !split_ok {
-        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch where the selection is nested inside a compound instead of being a statement, the tail, or the whole value of a `let` / `let mut`, or one in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
+        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension in the right operand of a non-tail `&&` / `||` are not eligible; tail `&&` / `||` and a whole `let` initializer `&&` / `||` are supported, and so is a suspension inside an `if` / `match` branch wherever the selection itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
         None
       } else {
         scps_ensure_effect_runtime(eff, ctx, st)
@@ -12433,7 +12455,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         } else {
           let (split_ok, split_body) = scps_split_tail(fbody2, sctx, ctx, st)
           if !split_ok {
-            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch where the selection is nested inside a compound instead of being a statement, the tail, or the whole value of a `let` / `let mut`, or one in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
+            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension in the right operand of a non-tail `&&` / `||` are not eligible; tail `&&` / `||` and a whole `let` initializer `&&` / `||` are supported, and so is a suspension inside an `if` / `match` branch wherever the selection itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
           } else {
             Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
           }
@@ -13079,7 +13101,7 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   } else {
     let (split_ok, split_body) = scps_split_tail(b, sctx, ctx, st)
     if !split_ok {
-      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch where the selection is nested inside a compound instead of being a statement, the tail, or the whole value of a `let` / `let mut`, or one in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
+      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension in the right operand of a non-tail `&&` / `||` are not eligible; tail `&&` / `||` and a whole `let` initializer `&&` / `||` are supported, and so is a suspension inside an `if` / `match` branch wherever the selection itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
       EFn(tps, tbs, params, None, None, b)
     } else {
       scps_ensure_effect_runtime(eff, ctx, st)

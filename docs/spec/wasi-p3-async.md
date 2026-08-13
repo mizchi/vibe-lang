@@ -185,10 +185,10 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   (`{ 文..; 値 }` — 束縛を文前置の内側へ移す。float した binder は alpha-rename される、
   追記50。これにより「文を含む枝」が通る)、**代入 (`=`) の RHS が同じ selection / block
   そのもの** (box した target は cellify の前に、spine 外の target は継続 spine 上で、
-  同じ 2 つの書き換えを受ける、追記51)
+  同じ 2 つの書き換えを受ける、追記51)、**compound の中にネストした `if` / `match`**
+  (枝へは降りず selection を丸ごと名前に束ねてから追記49 の分配へ渡す、追記52)
 - **不適格**: ループ内 `return`、配列 `for` 形、**必ず評価されるとは限らない位置に
-  埋まった suspension** (compound の中にネストした `if` / `match` の枝、
-  `&&` / `||` の右辺)、実引数証明が
+  埋まった suspension** (non-tail の `&&` / `||` の右辺)、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested
   different-effect handles は既存の handler-ownership lowering を維持するため、

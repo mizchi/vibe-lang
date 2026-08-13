@@ -6906,6 +6906,11 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_assign_selection_suspend_test.vibe \
   fixtures/effect_assign_outer_selection_suspend_test.vibe
+# #1536 selection nested in a compound: the linearization names the selection
+# WHOLE instead of walking into a branch, so the binding distribution lowers it.
+# The snapshot's `order` digits pin that nothing moved across the suspension.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_compound_selection_suspend_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6920,11 +6925,11 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_loop_nested_break_suspend_test.vibe \
   fixtures/effect_resume_store_loop_break_test.vibe \
   fixtures/effect_loop_ctl_name_collision_test.vibe
-# #1536 boundary: generic linearization walks only positions that every
-# execution reaching a compound also reaches. Tail && / || is supported via
-# EIf, but if/match branches and a non-tail short-circuit RHS remain rejected.
-scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
-scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
+# #1536 boundary: generic linearization still walks only positions that every
+# execution reaching a compound also reaches, so it never names a suspension
+# INSIDE a branch. A selection nested in a compound is instead named whole (the
+# snapshot above pins that), which leaves the non-tail short-circuit RHS as the
+# one conditional position with no such whole-expression home.
 scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
 # Immutable-let short-circuit support does not recursively admit another
 # short-circuit, hand a suspending call argument to generic compound ANF, or
