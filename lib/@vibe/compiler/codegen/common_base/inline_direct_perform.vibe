@@ -10837,9 +10837,13 @@ fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[St
   let (eff, s_ops, s_needing, s_site, s_cps) = sctx
   let orig = ESeq(EWhile(c, body), rest)
   let lsite = scps_next_site(st)
-  let lp = scps_local("__scps_lp", lsite)
-  let kname = scps_local("__scps_lpk", lsite)
-  let bv = scps_local("__scps_lpv", lsite)
+  // These names become binders around rewritten pieces of both the original
+  // loop and its continuation. A user may legally spell the same reserved-
+  // looking names, so mint each one with a scope-blind collision probe over
+  // the complete original expression before moving either piece beneath it.
+  let lp = scps_loop_ctl_fresh("__scps_lp", orig, lsite)
+  let kname = scps_loop_ctl_fresh("__scps_lpk", orig, lsite)
+  let bv = scps_loop_ctl_fresh("__scps_lpv", orig, lsite)
   let repeat = ECall(EIdent(lp, -1), array_empty_expr(), -1)
   let normalized = scps_loop_normalize_ctl(body, lsite)
   let rewritten = scps_loop_rewrite_ctl(scps_loop_append_repeat(normalized, repeat), lp, kname)
@@ -11416,6 +11420,21 @@ fn scps_refs_name_arms(arms: Array[(Pat, Expr)], x: String) -> Bool {
 
 fn scps_mentions_name(e: Expr, x: String) -> Bool {
   scps_binds_name(e, x) || scps_refs_name(e, x)
+}
+
+/// Mint a loop-control continuation name that cannot capture or be captured
+/// when the original loop body and continuation are moved beneath synthetic
+/// binders. The probe is deliberately scope-blind: any binding or reference
+/// in the complete original expression disqualifies the candidate spelling.
+fn scps_loop_ctl_fresh(prefix: String, orig: Expr, site: Int) -> String {
+  let base = scps_local(prefix, site)
+  let mut nx = base
+  let mut i = 0
+  while scps_mentions_name(orig, nx) {
+    i = i + 1
+    nx = String::concat(String::concat(base, "_"), Int::to_string(i))
+  }
+  nx
 }
 
 /// Mint the seq-float's alpha-renaming target: `__scps_seq<site>_<x>`,

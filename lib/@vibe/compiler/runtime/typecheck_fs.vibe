@@ -3275,6 +3275,14 @@ export enum ModuleOutcome {
   Diagnosed(String, Array[String])
 }
 
+/// Opaque proof that the exact retained v2 bytes in one successful
+/// ModuleOutcome matched one current, already-ingested ModuleJob. The package
+/// contract hides this constructor: decoded or caller-authored bytes cannot
+/// create an attestation.
+export enum CheckedModuleTypingArtifactFreshnessAttestation {
+  AttestedCheckedModuleTypingArtifact(String)
+}
+
 fn checked_module_dependency_interface_assumptions(dep_envs: Array[(String, TypeEnv)]) -> Array[(String, String)] with Exception {
   let assumptions = array_empty()
   let mut i = 0
@@ -3344,15 +3352,37 @@ export fn checked_module_typing_artifact_observation(outcome: ModuleOutcome) -> 
   }
 }
 
-/// Explicit in-memory freshness observation for one retained successful
-/// outcome against one current, already-ingested ModuleJob. This returns only
-/// Bool and does not publish, persist, plan, or reuse the decoded artifact.
-export fn checked_module_typing_artifact_observation_is_fresh_for_job(job: ModuleJob, outcome: ModuleOutcome) -> Bool with Exception {
+/// Validate one opaque successful outcome against one current, already-ingested
+/// ModuleJob and bind the authority to the exact retained bytes. Validation is
+/// strict v2 decoding plus exact owner, source, implementation, dependency, and
+/// singleton-closure matching. Missing, malformed, stale, or diagnosed inputs
+/// return None. Nothing is published, persisted, planned, cached, or reused.
+export fn checked_module_typing_artifact_freshness_attestation_for_job(job: ModuleJob, outcome: ModuleOutcome) -> Option[CheckedModuleTypingArtifactFreshnessAttestation] with Exception {
   Array::set(checked_module_typing_artifact_validation_attempts, 0, Array::get(checked_module_typing_artifact_validation_attempts, 0) + 1)
   match outcome {
-    Checked(_, _, _, _, _, _, Some(bytes)) => checked_module_typing_artifact_v2_matches_exact_inputs(bytes, job.path, compact_string_fingerprint(job.source), incremental_implementation_identity(job.source), checked_module_dependency_interface_assumptions(job.dep_envs)),
-    Checked(_, _, _, _, _, _, None) => false,
-    Diagnosed(_, _) => false
+    Checked(_, _, _, _, _, _, Some(bytes)) => if checked_module_typing_artifact_v2_matches_exact_inputs(bytes, job.path, compact_string_fingerprint(job.source), incremental_implementation_identity(job.source), checked_module_dependency_interface_assumptions(job.dep_envs)) {
+      Some(AttestedCheckedModuleTypingArtifact(bytes))
+    } else {
+      None
+    },
+    Checked(_, _, _, _, _, _, None) => None,
+    Diagnosed(_, _) => None
+  }
+}
+
+/// Return the exact retained bytes that were validated when the opaque
+/// attestation was minted. This does not decode or re-encode the artifact.
+export fn checked_module_typing_artifact_freshness_attestation_snapshot(attestation: CheckedModuleTypingArtifactFreshnessAttestation) -> String {
+  match attestation {
+    AttestedCheckedModuleTypingArtifact(bytes) => bytes
+  }
+}
+
+/// Compatibility observation over the opaque attestation API.
+export fn checked_module_typing_artifact_observation_is_fresh_for_job(job: ModuleJob, outcome: ModuleOutcome) -> Bool with Exception {
+  match checked_module_typing_artifact_freshness_attestation_for_job(job, outcome) {
+    Some(_) => true,
+    None => false
   }
 }
 

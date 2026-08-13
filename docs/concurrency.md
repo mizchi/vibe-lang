@@ -26,7 +26,8 @@ shared-everything-threads の実験を扱う。両者が本書と衝突する場
 記述する `Task[r,T]` / nursery / typed channel はその上に載る v0.4.0 の目標形。
 
 本書のコードは提案中の surface を示す疑似 vibe であり、まだコンパイルできない。
-「必須」は v0.4.0 の適合実装が満たす条件、「将来」は互換性を約束しない拡張を表す。
+そのためコードブロックは理由付きの `vibe skip` とする。「必須」は v0.4.0 の適合実装が
+満たす条件、「将来」は互換性を約束しない拡張を表す。
 
 ## 決定の要約
 
@@ -70,20 +71,9 @@ lower しても、以下の意味論を保つ。
 
 ## Core surface
 
-概念上の最小 surface は次のとおりとする。
-
-> **#1324 による読み替え (2026-08-04 追記)**: 以下の提案 surface と、本節から
-> 「Region と structured concurrency」節までの散文は `Result[T, TaskError]` /
-> `Err(Closed)` / `Err(Cancelled)` という綴りで書かれているが、**`Result` は
-> #1324 で言語からも prelude からも削除された**。実装済みの
-> `@vibex/concurrent` は既に row ベースへ移行しており
-> (`-> T with Exception[TaskError] + e`)、対応表は下の実装ノート
-> 「`Result` → 型付き `Exception[E]`」(#1324 slice 1 / slice 2) にある。
-> 本節の綴りは提案当時の記録としてそのまま残す — v0.4.0 の目標 surface 自体を
-> row ベースへ書き直すのは #1324 のスコープ外の設計作業。読むときは
-> `-> Result[T, E]` を `-> T with Exception[E]`、`Err(x)` を `throw(x)`、
-> `match .. { Ok(v) => .., Err(e) => .. }` を
-> `handle { .. } with Exception[E] { Throw(e) => .. }` と読み替えること。
+概念上の最小 surface は次のとおりとする。失敗は値ラッパではなく ADR-0085 の
+型付き `Exception[E]` row で表す。以下は未実装の region-bound API を含むため
+実行例ではなく、目標シグネチャを固定する疑似 vibe である。
 
 ```vibe skip
 effect Async {
@@ -121,22 +111,24 @@ enum ChannelConfigError {
 Task::spawn: [T: Send] (() -> T with e)
   -> Task[r, T] with Spawn[r]::spawn
 Task::join: (Task[r, T])
-  -> Result[T, TaskError] with Async::suspend
+  -> T with Exception[TaskError] + Async::suspend
 Task::cancel: (Task[r, T]) -> Unit with Spawn[r]::cancel
 Task::yield: () -> Unit with Async::suspend
 
 Channel::bounded: [T: Send] (Nursery[r], Int)
-  -> Result[(Sender[r, T], Receiver[r, T]), ChannelConfigError]
+  -> (Sender[r, T], Receiver[r, T]) with Exception[ChannelConfigError]
 Sender::send: (Sender[r, T], T)
-  -> Result[Unit, SendError] with Async::suspend
+  -> Unit with Exception[SendError] + Async::suspend
 Receiver::recv: (Receiver[r, T])
   -> Option[T] with Async::suspend
 ```
 
 `nursery { n => body }` は fresh な region `r` と `Nursery[r]` を導入し、
-`Spawn[r]` handler を設置する標準構文である。式の結果は
-`Result[T, TaskError]` とする。`Spawn[r]` は scope 外へ discharge されるが、
-body が使った `Async::suspend` その他の operation は通常どおり外側へ残る。
+`Spawn[r]` handler を設置する標準構文である。成功時の式の結果は body の `T`、
+nursery 自身の失敗は `Exception[TaskError]` とする。つまり式全体の概念型は
+`T with Exception[TaskError] + e` である。`Spawn[r]` は scope 外へ discharge
+されるが、body が使った `Async::suspend` その他の `e` は通常どおり外側へ残る。
+値と失敗を二重に包まないため、正常終了した `T` と nursery failure は混同しない。
 
 `Task::spawn` は child の完了を待たず handle を返し、親にとって suspend point
 ではない。cooperative backend は child を ready queue へ追加する。parallel
@@ -144,8 +136,11 @@ backend では handle が返る前に child が進む場合もあるため、spa
 プログラムから仮定してはならない。
 
 child の返り値も child heap から joiner へ渡るため `T: Send` を要求する。
-recover 可能な failure を `Result[U, E]` で返す場合は `U` と `E` も structural
-`Send` でなければならない。
+recover 可能な業務上の failure は、child 内で `Exception[E]` を処理し、
+`ModuleOutcome` のような application-defined enum の通常値へ変換して返す。その
+success / failure payload はどちらも structural `Send` でなければならない。
+child boundary まで未処理の exception は recoverable outcome ではなく task failure
+であり、この通常値の経路とは区別する。
 
 `race` と `timeout` は上記 primitive から構成できる library combinator とする。
 #1227 で撤去した eager `Task::race` / `Task::timeout` の挙動は契約に含めない。task handle の
@@ -167,18 +162,30 @@ affine consumption が定義されるまでは、loser を暗黙に所有・canc
   capability、continuation の capture は reject する。
 
 `nursery` の正常な body 終了は、未完了 child の join を開始する。body または child
-が `Failed` になると nursery は fail-fast で sibling に cancel を要求し、全 child
-の終了を待って `Err(Failed(...))` を返す。recover 可能な child failure は
-`T = Result[U, E]` の値として表現する。
+が task failure になると nursery は fail-fast で sibling に cancel を要求し、全 child
+の終了を待って `throw(TaskError::Failed(...))` する。recover 可能な child failure は
+前節の application-defined enum 値として返し、task failure に変換しない。
 
-child boundary まで未処理の `Error::Throw(message)` が到達した場合は
-`Failed(message)` へ変換する。child 内で handle された Error と、正常な返り値に
-含まれる `Err(e)` は task failure ではない。
+child boundary まで未処理の `throw(payload)` (`Exception[E]`) が到達した場合は、
+payload の安定した表示を `TaskError::Failed(message)` へ変換する。child 内で処理して通常値へ
+変換した exception は task failure ではない。この境界変換は元の `E` を nursery の
+row へ動的に追加せず、異なる child の failure を一つの閉じた `TaskError` family へ
+集約するためのものである。
 
-明示的に cancel された child の `Cancelled` は、それだけでは nursery 全体の
-failure にしない。外側から nursery 自身が cancel された場合は全 child を cancel
-し、`Err(Cancelled)` を返す。複数の failure が競合した場合、scheduler が最初に
-観測した failure を代表値とし、順序は非決定的である。
+明示的に cancel された child の `TaskError::Cancelled` は、その child の `join` では
+throw されるが、それだけでは nursery 全体の failure にしない。外側から nursery
+自身が cancel された場合は全 child を cancel し、全 child の終了後に
+`throw(TaskError::Cancelled)` する。複数の failure が競合した場合、scheduler が
+最初に観測した failure を代表値とし、順序は非決定的である。
+
+現行 ADR-0076 lowering では suspend-class closure literal の内側に `handle` を置けない。
+したがって `spawn_suspend` body 内の `send_wait` / `result_wait` が投げる typed
+exception はその場で別の値へ recover せず、task boundary まで伝播させる。捕捉する
+場合は row 変数 callee を generic helper で包まず、`TaskGroup::run` / nursery の
+**直接の呼び出し地点**を `handle ... with Exception[TaskError]` で囲む。そこで観測する
+値は境界変換後の `TaskError` であり、元の `SendError` ではない。この制約を外せるのは
+ADR-0076 の CPS 適格性が拡張された後だけで、提案 surface は現在の実装を先取りして
+inner recovery を約束しない。
 
 Wasm trap、process abort、host の強制終了は初期仕様では `TaskError` へ変換せず、
 instance 全体の failure とする。
@@ -337,8 +344,8 @@ backpressure を失うため core に含めない。
   message をすべて受信した後、`recv` は `None` を返す。
 - nursery の正常 close でも残る endpoint を close する。nursery cancel 時は
   waiter を cancel し、未配送 buffer を破棄して scope を閉じる。
-- closed channel への `send` は `Err(Closed)`。空文字列、`-1`、false 等を sentinel
-  に使わない。
+- closed channel への `send` は `throw(SendError::Closed)`。空文字列、`-1`、false
+  等を sentinel に使わない。
 - blocked send が cancel された場合、その message は enqueue されない。blocked
   recv が cancel された場合、message を消費しない。cancel と channel operation の
   競合は一つの linearization point で解決する。
@@ -360,7 +367,7 @@ nursery scope によって決まる。
 
 - `Unit`、`Bool`、`Int`、`Double`、`String`
 - 全 field が `Send` で mutable field を持たない tuple / struct / enum
-- 上記から構成される `Option` / `Result`
+- 上記から構成される `Option` / immutable な application-defined enum
 - runtime が特別に認識する同一 nursery 内の `Sender[r, T]`
 
 初期仕様で `Send` にならないもの:
@@ -588,7 +595,7 @@ Channel:
 
 - capacity 0 rendezvous、bounded backpressure、sender 内 FIFO
 - sender 間の許された順序違い、last-sender close、buffer drain 後 `None`
-- closed send の `Err(Closed)`
+- closed send の `throw(SendError::Closed)`
 - send / recv と cancel の競合で duplicate / loss が起きない
 - send 後の sender 側変更が receiver snapshot に見えない
 

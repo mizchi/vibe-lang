@@ -28,6 +28,8 @@ import @vibe/compiler/runtime {
   check_module,
   check_module_with_typing_artifact_observation,
   checked_module_typing_artifact_construction_attempt_count,
+  checked_module_typing_artifact_freshness_attestation_for_job,
+  checked_module_typing_artifact_freshness_attestation_snapshot,
   checked_module_typing_artifact_observation,
   checked_module_typing_artifact_observation_is_fresh_for_job,
   checked_module_typing_artifact_validation_attempt_count,
@@ -619,23 +621,33 @@ test "v1 canonical bytes remain unchanged after v2 introduction" {
   }
 }
 
-test "opt-in freshness validator accepts only current exact singleton inputs" {
+test "opaque freshness attestation binds current exact singleton inputs and retained bytes" {
   reset_checked_module_typing_artifact_validation_attempt_count()
   let source = "export let api: Int = 1\n"
   let job = mt_module_job("fresh.vibe", source)
   let outcome = check_module_with_typing_artifact_observation(job)
-  assert(checked_module_typing_artifact_observation_is_fresh_for_job(job, outcome))
+  match (checked_module_typing_artifact_observation(outcome), checked_module_typing_artifact_freshness_attestation_for_job(job, outcome)) {
+    (Some(bytes), Some(attestation)) => assert(checked_module_typing_artifact_freshness_attestation_snapshot(attestation) == bytes),
+    _ => assert(false)
+  }
   assert(checked_module_typing_artifact_validation_attempt_count() == 1)
-  // Exact source identity rejects trivia-only changes even when provisional
-  // token identity remains intentionally unchanged.
-  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("fresh.vibe", "// changed trivia\nexport let api: Int = 1\n"), outcome))
-  // Parser-visible edits, owner changes, v1/malformed bytes, and absent
-  // observations fail closed.
-  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("fresh.vibe", "export let api: Int = 2\n"), outcome))
-  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("other.vibe", source), outcome))
-  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(job, check_module(job)))
-  let diagnosed = check_module_with_typing_artifact_observation(mt_module_job("bad.vibe", "export let bad: Int = \"no\"\n"))
-  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(mt_module_job("bad.vibe", "export let bad: Int = \"no\"\n"), diagnosed))
+  // The Bool compatibility API validates through the same opaque path.
+  assert(checked_module_typing_artifact_observation_is_fresh_for_job(job, outcome))
+}
+
+test "opaque freshness attestation fails closed for stale missing and diagnosed outcomes" {
+  let source = "export let api: Int = 1\n"
+  let job = mt_module_job("fresh.vibe", source)
+  let outcome = check_module_with_typing_artifact_observation(job)
+  // Exact source identity rejects trivia-only and parser-visible edits.
+  assert(checked_module_typing_artifact_freshness_attestation_for_job(mt_module_job("fresh.vibe", "// changed trivia\nexport let api: Int = 1\n"), outcome) == None)
+  assert(checked_module_typing_artifact_freshness_attestation_for_job(mt_module_job("fresh.vibe", "export let api: Int = 2\n"), outcome) == None)
+  assert(checked_module_typing_artifact_freshness_attestation_for_job(mt_module_job("other.vibe", source), outcome) == None)
+  // Ordinary checks retain no bytes, and diagnosed outcomes cannot attest.
+  assert(checked_module_typing_artifact_freshness_attestation_for_job(job, check_module(job)) == None)
+  let bad_job = mt_module_job("bad.vibe", "export let bad: Int = \"no\"\n")
+  let diagnosed = check_module_with_typing_artifact_observation(bad_job)
+  assert(checked_module_typing_artifact_freshness_attestation_for_job(bad_job, diagnosed) == None)
 }
 
 test "strict v2 exact-input matcher rejects stale closure dependencies and non-v2 bytes" {

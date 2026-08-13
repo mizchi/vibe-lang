@@ -212,6 +212,20 @@ local testLintTrackedExperimentNames =
 // same artifacts purely to diff them against the tracked copies.)
 local checkSelfhostPortableBoundary =
   scriptTask("check-portable-boundary", "scripts/check_portable_boundary.sh")
+local checkHostRuntimeContract = new Task {
+  name = "check-host-runtime-contract"
+  description = "fail-closed conformance check for the documented vibe.* core host ABI"
+  cmd =
+    "python3 scripts/check_host_runtime_contract.py && python3 scripts/tests/host_runtime_contract_test.py"
+  inputs {
+    "docs/wasm/host-runtime-contract.json"
+    "scripts/check_host_runtime_contract.py"
+    "scripts/tests/host_runtime_contract_test.py"
+    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
+    "runtime/viberun/src/main.rs"
+    "scripts/wasm_vibe_host_runner.js"
+  }
+}
 local checkVibeFmt = scriptTask("check-vibe-fmt", "scripts/check_vibe_fmt.sh")
 // #1587: every fixture carrying `test` blocks is run by some lane, or listed
 // with a reason. Registered standalone (~2s, pure shell) so it can be run
@@ -956,9 +970,25 @@ local vibeMdTutorial = new Task {
   description =
     "run ```vibe run blocks in docs/tutorial/*.vibe.md and verify embedded ```output matches (#1142)"
   cmd = "bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md"
-  // same rationale as `doctest`: stage2 resolution depends on _build/selfhost
-  // state, so skip pkfire caching to avoid stale green.
+  // Developer convenience task: like plain `doctest`, this may fall back to
+  // the committed seed when no stage2 exists. The release/CI gate below must
+  // instead prove the docs against a compiler built from this checkout.
   cache = false
+}
+
+local vibeMdTutorialGated = new Task {
+  name = "vibe-md-tutorial-gated"
+  description =
+    "tutorial executable-docs check against a stage2 built for THIS checkout (release-check / CI form)"
+  cmd =
+    "gen=\"$(ls -dt _build/selfhost/generations/*/ | head -1)\"; VIBE_MD_COMPILER=\"${gen}stage2.wasm\" VIBE_MD_STAGE2=\"${gen}stage2.wasm\" bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md"
+  // Build and run both the markdown tool and its extracted blocks with the
+  // checkout's stage2. Naming both variables is deliberate: VIBE_MD_COMPILER
+  // selects the compiler for vibe_md.vibex itself, while VIBE_MD_STAGE2 is
+  // consumed by that tool for each tutorial block. Neither can fall back to
+  // the committed seed.
+  cache = false
+  deps { selfhostGeneration }
 }
 
 local vibeMdFmtCheck = new Task {
@@ -1011,6 +1041,7 @@ local releaseCheck = new Task {
     checkVibeFmt
     checkMethodStyleNaming
     doctestGated
+    vibeMdTutorialGated
     checkExamplesTypecheck
     checkPlaygroundPresets
   }
@@ -1046,6 +1077,7 @@ tasks {
   lintTrackedExperimentNames
   testLintTrackedExperimentNames
   checkSelfhostPortableBoundary
+  checkHostRuntimeContract
   checkVibeFmt
   checkFixtureExecution
   checkMethodStyleNaming
@@ -1153,6 +1185,7 @@ tasks {
   checkExamplesTypecheck
   checkPlaygroundPresets
   vibeMdTutorial
+  vibeMdTutorialGated
   vibeMdFmtCheck
   vibeMdFmt
   releaseSelfhostGates
