@@ -31,9 +31,27 @@ pkf run vibe-md-tutorial                                # check を task 化し�
 各 `*.vibe.md` の ` ```vibe run ` ブロックは、**現在の**ソースコードと出力だけを
 `bash scripts/vibe_md.sh check` (`pkf run vibe-md-tutorial`) でコンパイル・実行して
 突き合わせる。この検証は prose、API 選定、学習順序の正しさまでは保証しない。
-` ```vibe skip ` ブロックは目標設計の非実行例であり、コンパイル済みとは主張しない。
-目標の言語形式を示す skip block は
-[#1279 Exception](https://github.com/mizchi/vibe-lang/issues/1279)、
+
+## tutorial breakage の扱い
+
+チュートリアルの runnable block が現行コンパイラで壊れた場合は、ユーザーが正規の
+言語ツアーを実行できない **P1 (書けない / 落ちる)** として扱い、GitHub issue に
+`tutorial-breakage` ラベルを付けて他の P1 より先に直す。型検査を通り抜けて誤った
+値を返す場合は、通常どおり **P0 (silent-wrong)** である。修正か仕様見直しかは
+[issue triage](../issue-triage.md) とリポジトリ方針の「文法で詰まったとき」に従い、
+実装都合の制約を tutorial の暗記項目にしない。
+
+現在の全章は required な `compiler-gate` CI job で、同じ checkout から生成した
+stage2 を `VIBE_MD_STAGE2` に明示し、`scripts/vibe_md.sh check` を全章に対して
+実行する。`pkf run release-check` も同じ保証を持つ
+`vibe-md-tutorial-gated` に依存する。どちらも committed seed への silent fallback を
+許さないため、古い compiler で偶然 green にはならない。
+
+` ```vibe skip ` は、拒否される旧構文、未実装の目標構文、実在しない例示パスなど、
+**意図的に実行できない例だけ**に使う。block の先頭コメントに skip の理由を書き、
+未実装事項には追跡 issue を添える。実行できるようになったら `vibe run` と期待
+`output` に変える。単にテストが壊れているコードを skip に移してはならない。
+目標の言語形式を示す既存 skip block は
 [#1280 reserved fn](https://github.com/mizchi/vibe-lang/issues/1280) で追跡する
 ([#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) は
 実装済みで、03 の該当ブロックは runnable になった)。
