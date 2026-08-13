@@ -9465,7 +9465,22 @@ fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
       EBinOp(op, l, r) => if op == "&&" || op == "||" {
         // Only the left operand is unconditionally evaluated.
         if scps_contains_susp(r, sctx) {
-          (2, e)
+          // #1536: the whole short-circuit is nameable for the same reason a
+          // selection is -- this walk only reaches strictly evaluated
+          // positions -- but only if the spine will then accept
+          // `let h = l && r`. Unlike a selection, that acceptance is
+          // conditional, and a decline would send the value straight back
+          // here to be named again, which does not converge. So ask the
+          // decision procedure itself (its verdict depends only on the RHS,
+          // not on the binder or the continuation it would build).
+          if scps_contains_susp(l, sctx) {
+            (2, e)
+          } else {
+            match scps_let_shortcircuit_bind("__scps_sc_probe", r, EUnit, -1, site, sctx, false) {
+              Some(_) => (1, scps_anf_bind(e, probe, site, ctr, bn, bv)),
+              None => (2, e)
+            }
+          }
         } else {
           let (s, l2) = scps_anf_walk(l, sctx, probe, site, ctr, bn, bv)
           if s == 1 {
@@ -9728,12 +9743,14 @@ fn scps_let_shortcircuit_bind(result: String, rhs: Expr, continuation: Expr, res
     EReturn(_) => None,
     EBreak(_) => None,
     EContinue(_) => None,
+    // #1536: a COMPOUND terminal (`perform Op(1) > 0`) is bound as it stands.
+    // The binding this produces lives inside the SELECTED branch of the
+    // lowered conditional, so everything in it is strictly evaluated once the
+    // branch is taken -- which is exactly the precondition the spine's
+    // linearization needs. If that linearization cannot handle the compound
+    // after all, the split refuses there, as it would have here.
     _ => if scps_contains_susp(rhs, sctx) {
-      if scps_direct_spine_input(rhs, sctx) {
-        Some(ELet(result, rhs, continuation, result_off))
-      } else {
-        None
-      }
+      Some(ELet(result, rhs, continuation, result_off))
     } else if carried {
       Some(ELet(result, rhs, continuation, result_off))
     } else {
@@ -11138,7 +11155,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
     } else {
       let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
       if !split_ok {
-        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension in the right operand of a non-tail `&&` / `||` are not eligible; tail `&&` / `||` and a whole `let` initializer `&&` / `||` are supported, and so is a suspension inside an `if` / `match` branch wherever the selection itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
+        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
         None
       } else {
         scps_ensure_effect_runtime(eff, ctx, st)
@@ -12455,7 +12472,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         } else {
           let (split_ok, split_body) = scps_split_tail(fbody2, sctx, ctx, st)
           if !split_ok {
-            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension in the right operand of a non-tail `&&` / `||` are not eligible; tail `&&` / `||` and a whole `let` initializer `&&` / `||` are supported, and so is a suspension inside an `if` / `match` branch wherever the selection itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
+            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
           } else {
             Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
           }
@@ -13101,7 +13118,7 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   } else {
     let (split_ok, split_body) = scps_split_tail(b, sctx, ctx, st)
     if !split_ok {
-      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension in the right operand of a non-tail `&&` / `||` are not eligible; tail `&&` / `||` and a whole `let` initializer `&&` / `||` are supported, and so is a suspension inside an `if` / `match` branch wherever the selection itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
+      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
       EFn(tps, tbs, params, None, None, b)
     } else {
       scps_ensure_effect_runtime(eff, ctx, st)

@@ -6911,6 +6911,13 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # The snapshot's `order` digits pin that nothing moved across the suspension.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_compound_selection_suspend_test.vibe
+# #1536 non-tail short-circuit: named whole too, but only after asking the
+# immutable-let lowering whether it will take it (naming a form that lowering
+# declines would not converge). The snapshots pin bypass, compound RHS
+# terminals (comparison / nested short-circuit / call argument), and order.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_compound_shortcircuit_suspend_test.vibe \
+  fixtures/effect_shortcircuit_compound_rhs_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6927,15 +6934,10 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_loop_ctl_name_collision_test.vibe
 # #1536 boundary: generic linearization still walks only positions that every
 # execution reaching a compound also reaches, so it never names a suspension
-# INSIDE a branch. A selection nested in a compound is instead named whole (the
-# snapshot above pins that), which leaves the non-tail short-circuit RHS as the
-# one conditional position with no such whole-expression home.
-scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
-# Immutable-let short-circuit support does not recursively admit another
-# short-circuit, hand a suspending call argument to generic compound ANF, or
-# move a source return into the synthetic resume continuation.
-scps_check_reject "err_effect_let_shortcircuit_nested_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitnested"
-scps_check_reject "err_effect_let_shortcircuit_call_arg_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitcallarg"
+# INSIDE a branch or inside a short-circuit RHS. Both are instead named WHOLE
+# (the snapshots above pin that, bypass included). What stays closed is a
+# selected RHS that moves a source return into the synthetic resume
+# continuation -- it would target that closure rather than its source scope.
 scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitreturn"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on

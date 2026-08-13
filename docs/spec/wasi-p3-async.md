@@ -186,9 +186,12 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   追記50。これにより「文を含む枝」が通る)、**代入 (`=`) の RHS が同じ selection / block
   そのもの** (box した target は cellify の前に、spine 外の target は継続 spine 上で、
   同じ 2 つの書き換えを受ける、追記51)、**compound の中にネストした `if` / `match`**
-  (枝へは降りず selection を丸ごと名前に束ねてから追記49 の分配へ渡す、追記52)
-- **不適格**: ループ内 `return`、配列 `for` 形、**必ず評価されるとは限らない位置に
-  埋まった suspension** (non-tail の `&&` / `||` の右辺)、実引数証明が
+  (枝へは降りず selection を丸ごと名前に束ねてから追記49 の分配へ渡す、追記52)、
+  **non-tail の `&&` / `||`** (同じく右辺へは降りず短絡式を丸ごと名前に束ねる。
+  受け側の let-shortcircuit が受理すると判定手続き自身に訊いてからのみ、追記53。
+  bypass は保たれる)
+- **不適格**: ループ内 `return`、配列 `for` 形、**選ばれた `&&` / `||` 右辺が
+  `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested
   different-effect handles は既存の handler-ownership lowering を維持するため、

@@ -3030,15 +3030,41 @@ conditional 位置から何かを float することなく受理できる。
 `effect_compound_selection_suspend_test.vibe` に置き換えた — `order` の桁が suspension を
 またぐ移動が無いことを pin する)。
 
-**残る条件付き位置は non-tail の `&&` / `||` の右辺だけ**。同じ「丸ごと名前を付ける」は
-そこには使えない: `let h = l && r` は追記49 ではなく #1667 の let-shortcircuit 経路に落ち、
-そちらは None を返しうる。None が返ると ANF がまた丸ごと名前を付けて**収束しない**ので、
-`&&` / `||` は blocked のまま残す。
-
-同じ理由で、transfer (`break` / `continue` / `return`) を含む selection もここでは
-blocked にしてある — 分配側が拒否するため、名前を付けると同じ非収束ループになる。
+transfer (`break` / `continue` / `return`) を含む selection はここでは blocked にしてある —
+分配側が拒否するため、名前を付けると ANF がまた名前を付けて**収束しない**ループになる。
 (現在の型検査では `1 + (if c { break } else { .. })` は書けないので surface からは
 到達しないが、コンパイラが hang しないための fail-closed。)
+
+### 追記53 (2026-08-13): non-tail の `&&` / `||` も丸ごと名前を付ける (#1536)
+
+追記52 の理屈は `&&` / `||` にもそのまま当てはまる — 右辺へ降りないのは正しいが、
+**短絡式自体**は必ず評価される位置にあるので名前を付けられる。違うのは受け側で、
+`let h = l && r` は追記49 の分配ではなく #1667 の let-shortcircuit 経路に落ち、
+**そちらは None を返しうる**。None が返ると値がそのまま ANF に戻ってまた名前が付き、
+収束しない。
+
+そこで **判定手続き自身に訊く**: `scps_let_shortcircuit_bind` を probe として呼び、
+`Some` のときだけ丸ごと名前を付ける。この関数の Some/None は RHS と sctx だけで決まり、
+束縛名や継続には依存しないので、ダミーの名前と `EUnit` を渡した probe の答えが本番と
+一致する。判定を写した述語を別に書くと lockstep が崩れるが、本物を呼べば崩れようがない。
+
+同時に let-shortcircuit の**終端が compound でもよい**ようにした。生成される束縛は
+**選ばれた枝の中**に置かれるので、そこでは何もかもが必ず評価される — spine の線形化が
+要求する前提そのもの。これで次の 3 形が通る (どれも旧 reject fixture):
+
+```
+value = if value == 0 && perform Ask::Get(1) > 0 { 5 } else { 6 }  // non-tail、compound 終端
+let a = true && (true && perform Ask::Get(1) > 0)                  // 入れ子の短絡
+let b = true && twice(perform Ask::Get(2)) > 3                     // 呼び出し引数
+```
+
+bypass は保たれる (`effect_compound_shortcircuit_suspend_test.vibe` の `b` と
+`effect_shortcircuit_compound_rhs_test.vibe` の `c` が pin)。
+
+**残る不適格**: 選ばれた RHS が `return` / `break` / `continue` する形
+(`err_effect_let_shortcircuit_return_suspend` — transfer を合成 resume 継続へ移すと、
+元のスコープではなくその closure を指してしまう)、および RHS の spine 要素が
+direct でない suspension を持つ形。条件付き位置そのものはこれで塞がった。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
