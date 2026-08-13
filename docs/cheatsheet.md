@@ -60,7 +60,7 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // タプル/配列はまだ生ポインタの10進数 (#1392)
                                // prelude の `to_string(v)` も同じ描画になる
                                // (補間と同じ書き換えを call site で受ける)
-let c: Char = 'A'              // char code (Int alias)
+let c: Char = 'A'              // byte value 65; Char is a transparent Int alias
 let b: Bool = true
 let u: Unit = ()
 ```
@@ -1197,7 +1197,11 @@ vibe test dir/            # run all tests in directory (examples run too)
 
 ## Key Builtins
 
-**String**: `String::length`, `concat`, `substring`, `contains`, `index_of`, `split`, `trim`, `replace`, `starts_with`, `ends_with`, `join`
+**String**: byte string (`length`/indexes/slices use byte counts and offsets;
+iteration yields byte-valued `Int`). `String::length`, `byte_at`, `from_byte`,
+`concat`, `substring`, `contains`, `index_of`, `split`, `trim`, `replace`,
+`starts_with`, `ends_with`, `join`. Unicode code-point/grapheme operations are
+not part of this API.
 
 **Array**: `Array::length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`, `concat`
 
@@ -1256,7 +1260,7 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
                         // way now_us deltas attribute time (heap never shrinks)
 ```
 
-**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (符号・整数部・小数点付き小数部; 指数表記 `1e10` は非対応。linear backend のみ、gc backend は未対応)
+**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_byte`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (符号・整数部・小数点付き小数部; 指数表記 `1e10` は非対応。linear backend のみ、gc backend は未対応)
 
 ## Idioms
 

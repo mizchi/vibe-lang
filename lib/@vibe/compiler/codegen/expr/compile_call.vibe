@@ -1153,7 +1153,16 @@ fn http_client_surface_to_raw(name: String) -> String {
 
 fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) {
-    let fname00 = canonical_builtin_name(get_eident_name(callee))
+    let source_name = get_eident_name(callee)
+    // Builtin aliases are source-compatible fallbacks, not reserved names.
+    // Preserve the same shadowing rule as the checker: resolve the original
+    // spelling first, and canonicalize only when no function/local binds it.
+    let source_is_bound = func_table_index_of(ctx.func_table, source_name) >= 0 || array_contains_str(local_names, source_name)
+    let fname00 = if source_is_bound {
+      source_name
+    } else {
+      canonical_builtin_name(source_name)
+    }
     // #1508 second barrier: the five CLIENT-side `Http::*` builtins are
     // checker-legal as direct spellings (checker/builtins_net.vibe), but only
     // the raw dunder names lib/@vibe/http calls internally (#794) had codegen

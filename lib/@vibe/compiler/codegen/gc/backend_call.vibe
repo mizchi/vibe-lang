@@ -48,6 +48,7 @@ import @vibe/compiler/codegen/common_base {
   expr_tag,
   find_func_stmt,
   find_local_slot,
+  func_table_index_of,
   is_eident,
   resolve_func,
   resolve_local,
@@ -368,7 +369,15 @@ fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array[String
 
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   match callee {
-    EIdent(fname, _) => {
+    EIdent(source_name, _) => {
+      // Match checker/linear shadowing: an alias spelling is a builtin only
+      // when the original source name has no function or local binding.
+      let source_is_bound = func_table_index_of(ctx.func_table, source_name) >= 0 || find_local_slot(local_names, source_name) >= 0
+      let fname = if source_is_bound {
+        source_name
+      } else {
+        canonical_builtin_name(source_name)
+      }
       let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
       let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx))
       if native_receiver && fname == "Array::length" && Array::length(args) == 1 {
