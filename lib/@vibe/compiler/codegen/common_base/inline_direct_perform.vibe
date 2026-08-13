@@ -9837,12 +9837,19 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
                   ], -1))
                 }
               } else if scps_contains_susp(v, sctx) {
-                // #1536 (a) v8: the value is a compound around the suspension.
-                let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
-                if aok {
-                  scps_split_tail(scps_anf_wrap(abn, abv, ELet(x, av, b, off)), sctx, ctx, st)
-                } else {
-                  (false, e)
+                // #1536: a selection that IS the whole bound value distributes
+                // the binding and the continuation into its branches instead.
+                match scps_bind_selection_distribute(false, x, v, b, off, site) {
+                  Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+                  None => {
+                    // #1536 (a) v8: the value is a compound around the suspension.
+                    let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
+                    if aok {
+                      scps_split_tail(scps_anf_wrap(abn, abv, ELet(x, av, b, off)), sctx, ctx, st)
+                    } else {
+                      (false, e)
+                    }
+                  }
                 }
               } else {
                 // closure-CPS: a let-bound literal the prepass step-split makes
@@ -10099,13 +10106,21 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           (false, e)
         },
         ELetMut(x, v, b, off) => if scps_contains_susp(v, sctx) {
-          // #1536 (a) v8: compound initializer. The binders wrap outside the
-          // `let mut`, so the cell is still created after they run.
-          let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
-          if aok {
-            scps_split_tail(scps_anf_wrap(abn, abv, ELetMut(x, av, b, off)), sctx, ctx, st)
-          } else {
-            (false, e)
+          // #1536: selection-valued initializer -- distribute the `let mut`
+          // and its continuation into the branches. Each branch then boxes
+          // its own copy of the continuation, which is what the cell is for.
+          match scps_bind_selection_distribute(true, x, v, b, off, site) {
+            Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+            None => {
+              // #1536 (a) v8: compound initializer. The binders wrap outside
+              // the `let mut`, so the cell is still created after they run.
+              let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
+              if aok {
+                scps_split_tail(scps_anf_wrap(abn, abv, ELetMut(x, av, b, off)), sctx, ctx, st)
+              } else {
+                (false, e)
+              }
+            }
           }
         } else {
           // #1230: box the mutable local so every continuation closure on
@@ -11078,7 +11093,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
     } else {
       let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
       if !split_ok {
-        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
+        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch where the selection is nested inside a compound instead of being a statement, the tail, or the whole value of a `let` / `let mut`, or one in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
         None
       } else {
         scps_ensure_effect_runtime(eff, ctx, st)
@@ -11558,6 +11573,41 @@ fn scps_seq_float_fresh(x: String, k: Expr, b: Expr, site: Int) -> String {
   nx
 }
 
+/// Alpha-rename one arm's pattern binders away from every name the code that
+/// is about to be moved UNDER that arm (`b`) reads, and rename the arm body to
+/// match. `b` was outside the match originally, so any name free in it refers
+/// to an outer binding and must keep doing so once it sits inside the arm.
+/// Shared by every distribution below so they all get the same guarantee.
+fn scps_float_match_arm_rename(p: Pat, body: Expr, b: Expr, site: Int, arm: Int) -> (Pat, Expr) {
+  let names = array_empty()
+  scps_pat_collect_binds(p, names)
+  let mut p2 = p
+  let mut body2 = body
+  let mut ni = 0
+  while ni < Array::length(names) {
+    let nm = Array::get(names, ni)
+    let mut seen = false
+    let mut prev = 0
+    while prev < ni {
+      if Array::get(names, prev) == nm {
+        seen = true
+      } else {
+        ()
+      }
+      prev = prev + 1
+    }
+    if seen {
+      ()
+    } else {
+      let nx = scps_seq_float_match_fresh(nm, p2, body2, b, site, arm)
+      p2 = scps_rename_pat_ident(p2, nm, nx)
+      body2 = scps_rename_ident(body2, nm, nx)
+    }
+    ni = ni + 1
+  }
+  (p2, body2)
+}
+
 /// Append the original sequence tail to every match arm without letting a
 /// pattern binder capture a name in that tail. Each arm gets fresh binders
 /// and a correspondingly alpha-renamed body before `b` is placed under the
@@ -11567,36 +11617,67 @@ fn scps_seq_float_match_arms(arms: Array[(Pat, Expr)], b: Expr, site: Int) -> Ar
   let mut i = 0
   while i < Array::length(arms) {
     let (p, body) = Array::get(arms, i)
-    let names = array_empty()
-    scps_pat_collect_binds(p, names)
-    let mut p2 = p
-    let mut body2 = body
-    let mut ni = 0
-    while ni < Array::length(names) {
-      let nm = Array::get(names, ni)
-      let mut seen = false
-      let mut prev = 0
-      while prev < ni {
-        if Array::get(names, prev) == nm {
-          seen = true
-        } else {
-          ()
-        }
-        prev = prev + 1
-      }
-      if seen {
-        ()
-      } else {
-        let nx = scps_seq_float_match_fresh(nm, p2, body2, b, site, i)
-        p2 = scps_rename_pat_ident(p2, nm, nx)
-        body2 = scps_rename_ident(body2, nm, nx)
-      }
-      ni = ni + 1
-    }
+    let (p2, body2) = scps_float_match_arm_rename(p, body, b, site, i)
     Array::push(out, (p2, ESeq(body2, b)))
     i = i + 1
   }
   out
+}
+
+/// Rebuild the binding a distributed selection branch now owns.
+fn scps_mk_bind(is_mut: Bool, x: String, v: Expr, b: Expr, off: Int) -> Expr {
+  if is_mut {
+    ELetMut(x, v, b, off)
+  } else {
+    ELet(x, v, b, off)
+  }
+}
+
+/// Bind each arm's own value and continue there, capture-safely.
+fn scps_bind_float_match_arms(arms: Array[(Pat, Expr)], is_mut: Bool, x: String, b: Expr, off: Int, site: Int) -> Array[(Pat, Expr)] {
+  let out = scps_empty_arms()
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, body) = Array::get(arms, i)
+    let (p2, body2) = scps_float_match_arm_rename(p, body, b, site, i)
+    Array::push(out, (p2, scps_mk_bind(is_mut, x, body2, b, off)))
+    i = i + 1
+  }
+  out
+}
+
+/// #1536: `let x = <if/match> REST` where the selection is the WHOLE bound
+/// value. Naming a suspension that lives in one branch is not available here
+/// -- it would run the operation on the path that does not select that branch
+/// -- but the binding does not have to stay outside the selection:
+///
+///   let x = if c { t } else { e }  REST
+///     ==>  if c { let x = t  REST } else { let x = e  REST }
+///
+/// The condition/scrutinee stays where it was, so it is still evaluated
+/// exactly once and before exactly one branch; each branch's own value is
+/// what `x` is bound to there, and the continuation runs once after it. This
+/// is the same continuation distribution a selection in SEQUENCE HEAD
+/// position already gets (#1610) -- the only difference is that the branch
+/// value is consumed by a binder instead of discarded.
+///
+/// Match arms additionally alpha-rename their pattern binders, because the
+/// continuation was outside the match and its free names must not be
+/// captured by an arm binding.
+///
+/// A selection carrying `break` / `continue` / `return` stays fail-closed:
+/// those transfers are rewritten against the loop shape this pass builds, and
+/// duplicating the continuation under them is not part of this slice.
+fn scps_bind_selection_distribute(is_mut: Bool, x: String, v: Expr, b: Expr, off: Int, site: Int) -> Option[Expr] {
+  if scps_has_loop_ctl(v) {
+    None
+  } else {
+    match v {
+      EIf(c, t, el) => Some(EIf(c, scps_mk_bind(is_mut, x, t, b, off), scps_mk_bind(is_mut, x, el, b, off))),
+      EMatch(s, arms) => Some(EMatch(s, scps_bind_float_match_arms(arms, is_mut, x, b, off, site))),
+      _ => None
+    }
+  }
 }
 
 /// Fresh name for one distributed match arm. Besides the arm body and shared
@@ -12228,7 +12309,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         } else {
           let (split_ok, split_body) = scps_split_tail(fbody2, sctx, ctx, st)
           if !split_ok {
-            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
+            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch where the selection is nested inside a compound instead of being a statement, the tail, or the whole value of a `let` / `let mut`, or one in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
           } else {
             Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
           }
@@ -12874,7 +12955,7 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   } else {
     let (split_ok, split_body) = scps_split_tail(b, sctx, ctx, st)
     if !split_ok {
-      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
+      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch where the selection is nested inside a compound instead of being a statement, the tail, or the whole value of a `let` / `let mut`, or one in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
       EFn(tps, tbs, params, None, None, b)
     } else {
       scps_ensure_effect_runtime(eff, ctx, st)

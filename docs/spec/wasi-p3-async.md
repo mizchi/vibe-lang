@@ -178,9 +178,13 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   **ループ内の `break` / `continue`** (脱出継続を closure に切り出し、transfer を
   CPS spine 上の呼び出しにする、追記47)、**複合式に埋まった suspension**
   (被演算子・呼び出し引数・コンストラクタ引数・compound な `while` 条件・
-  `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)
+  `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)、
+  **`let` / `let mut` の値そのものである `if` / `match`** (束縛と継続を枝へ分配する。
+  condition / scrutinee は元の位置で一回だけ評価され、`match` の腕は継続を移す前に
+  alpha-rename される、追記49)
 - **不適格**: ループ内 `return`、配列 `for` 形、**必ず評価されるとは限らない位置に
-  埋まった suspension** (`if` / `match` の枝、`&&` / `||` の右辺)、実引数証明が
+  埋まった suspension** (compound の中にネストした `if` / `match` の枝、
+  `&&` / `||` の右辺)、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested
   different-effect handles は既存の handler-ownership lowering を維持するため、

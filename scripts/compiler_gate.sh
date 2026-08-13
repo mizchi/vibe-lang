@@ -6885,6 +6885,15 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_tail_shortcircuit_suspend.vibe \
   fixtures/effect_let_shortcircuit_suspend.vibe
+# #1536 selection-valued bindings: an `if` / `match` that IS the whole bound
+# value distributes the binding and the continuation into its branches. The
+# snapshots pin exact-once continuation runs, that the non-suspending branch is
+# still selected normally, that a `let mut` cell survives the distribution, and
+# that an arm binder cannot capture a name the moved continuation reads.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_let_selection_suspend_test.vibe \
+  fixtures/effect_let_selection_match_capture_test.vibe \
+  fixtures/effect_letmut_selection_suspend_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
