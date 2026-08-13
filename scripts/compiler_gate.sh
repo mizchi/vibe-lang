@@ -6939,13 +6939,15 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # stays closed -- now via the general rule below, since a `return` anywhere on
 # a split body's spine is refused before the split runs.
 scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "cannot contain a \`return\`" "letshortcircuitreturn"
-# #1536: a `return` anywhere on a split body's own spine. This used to compile
-# clean and trap at runtime on the path that took it, before AND after the
-# suspension alike, because the split makes those pieces return a step. The
-# `return` inside a NESTED CLOSURE targets that closure and stays accepted --
-# effect_resume_store_loop_nested_return above is the positive side.
-scps_check_reject "err_effect_return_in_split_body.vibe" "cannot contain a \`return\`" "returninsplit"
-scps_check_reject "err_effect_return_guard_in_split_body.vibe" "cannot contain a \`return\`" "returnguardsplit"
+# #1536: a `return` on a split body's own spine is hoisted to the tail it
+# already denotes (in a needing fn's clone / a closure literal, `return v` IS
+# that computation's value). It used to be left in place, compile clean, and
+# trap at runtime on the path that took it. The snapshots pin all four shapes
+# and the capture-safe match-arm distribution; a `return` this hoist cannot
+# reach -- inside a loop -- is still refused (err_effect_loop_return_suspend).
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_in_split_body_test.vibe \
+  fixtures/effect_return_match_arm_split_test.vibe
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other

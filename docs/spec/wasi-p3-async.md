@@ -190,10 +190,11 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   **non-tail の `&&` / `||`** (同じく右辺へは降りず短絡式を丸ごと名前に束ねる。
   受け側の let-shortcircuit が受理すると判定手続き自身に訊いてからのみ、追記53。
   bypass は保たれる)
-- **不適格**: **split される body 自身の spine 上の `return`** (ループ内に限らない。
-  変換後の部品は step を返すので `return` は関数を抜けない — 以前は compile が通って
-  実行時に trap していた。nested closure 内の `return` はその closure を指すので適格、
-  追記54)、配列 `for` 形、**選ばれた `&&` / `||` 右辺が
+- **不適格**: **ループ body 内・handle body 内の `return`** (前者は `bubble(lp(), k)` が
+  done 値をループの値として渡すので escape しない、後者は囲む関数から抜ける意味で handle の
+  値ではない)。**needing fn / closure literal の spine 上の `return` は適格** — そこでは
+  `return v` = 「この computation の値が v」なので、split の前に tail へ寄せる (追記55)。
+  寄せきれない `return` が残れば追記54 の refuse に落ちる、配列 `for` 形、**選ばれた `&&` / `||` 右辺が
   `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested

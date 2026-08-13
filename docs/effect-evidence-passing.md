@@ -3098,6 +3098,36 @@ positive 側、`err_effect_return_in_split_body` /
 本来の解 (escape 継続を lowering に持たせて `return` を通す) は残件のまま。今回のスライスは
 「黙って壊れる」を「その場で断る」に変えただけで、書けるコードは増えていない。
 
+### 追記55 (2026-08-13): `return` を tail へ寄せる — escape 継続は要らなかった (#1536)
+
+追記54 の時点では「escape 継続を step machine に通す」のが本来の解だと考えていた。実際には
+**needing fn の clone と closure literal に限れば、その機構は要らない**。そこでの
+`return v` は「**この computation の値が v**」という意味であり、それは**body の tail が
+既に意味していること**そのものだから。だから運ぶのではなく、**元から指している tail へ寄せる**:
+
+```
+return v;  REST                        ==>  v            (REST は到達不能)
+if c { .. return .. } else { .. }; REST ==>  if c { ..; REST } else { ..; REST }
+```
+
+2 つ目は suspension スライス群と同じ継続分配で、`match` の腕の capture 規則も同じ
+(`scps_seq_float_match_arms` を再利用)。**枝が実際に return するときだけ**発火するので、
+return しないコードの形は変わらない。
+
+**部分実装が安全な理由**: 寄せきれなかった `return` (ループの中、let 初期化子の中、被演算子の中)
+は**そのまま残し**、呼び出し側が「まだ `return` が残っていれば追記54 の refuse」を行う。
+つまりこの変換が不完全であることのコストは**拒否**であって、決して miscompile ではない。
+だから届く範囲から先に着地させられる。
+
+handle body は対象外 — そこの `return` は**囲む関数**から抜ける意味で、handle の値ではないので
+`done(v)` 化は誤り。追記54 の refuse のまま。ループの中も同じく refuse のまま
+(`bubble(lp(), k)` が done 値を**ループの値**として k に渡すため、escape しない)。
+
+実測 (`effect_return_in_split_body_test.vibe` = 5007560,
+`effect_return_match_arm_split_test.vibe` = 311): suspension の後の return、
+前の early exit (取る/取らない)、tail return、そして腕の binder が外側 `n` を shadow する
+match — 捕獲すると 311 ではなく 306 になる。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
