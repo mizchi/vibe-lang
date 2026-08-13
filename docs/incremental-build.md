@@ -618,16 +618,17 @@ variables and sorted/deduplicated bounds/effects, with `str_lt` value-name
 ordering and first-effective-binding deduplication. Traits, impls, type
 definitions, effect declarations, and bodies are out of scope. It is a
 trace-only format, explicitly not the production persistent TypeEnv codec.
-Schema 5 additionally observes `persistent_type_env_transport_fingerprint` as
-`compact_string_fingerprint(persistent_type_env_cache_text(env))`: the canonical
-complete persistent TypeEnv v5 transport bytes for the checked or reused
-environment. It covers transport state omitted by the value-only checked-env
-observation, including trait and impl state. Schema 6 changes only the
-trace-only interface observation: method-generic provenance is consumed from
-the source `STrait` to canonicalize trait methods. The provenance is now also
-retained in `EnvTraitDef` and the TypeEnv v5 transport, but no full checked
-artifact exists yet. The transport remains TypeEnv-only—not a `CheckedProgram`,
-typed IR, exported interface, cache key, or reuse decision.
+Schema 5 additionally introduced `persistent_type_env_transport_fingerprint` as
+`compact_string_fingerprint(persistent_type_env_cache_text(env))`: at that
+revision, the canonical complete persistent TypeEnv v3 transport bytes for the
+checked or reused environment. It covered transport state omitted by the
+value-only checked-env observation, including trait and impl state. Schema 6
+changed only the trace-only interface observation: method-generic provenance was
+consumed from the source `STrait` to canonicalize trait methods. The provenance
+was also retained in `EnvTraitDef` and the then-current TypeEnv v3 transport,
+but no full checked artifact existed. Current production has since moved to
+TypeEnv-v5; the transport remains TypeEnv-only—not a `CheckedProgram`, typed IR,
+exported interface, cache key, or reuse decision.
 
 These observation identities have intentionally different authorities.
 `vibe-module-interface:v2` covers only the exported API surface. In particular,
@@ -677,10 +678,11 @@ serialized: no invariant establishes that their maps are semantically equivalent
 to the rest chain, and v1 excludes them until the `Map[Type]` codegen issue is
 fixed. It is not a full
 CheckedProgram/TypeEnv artifact, typed IR, cache key/reuse input, interface,
-import contract, or trace schema; it leaves schema 6, interface v2, and
-TypeEnv v5 unchanged. `TDEffect` operation declarations, `CtFn` effect text, and
-accepted final `SubstEffBind` chains are therefore already inside that narrow
-artifact. Effect-set declarations are retained separately as the opaque
+import contract, or trace schema; that historical slice left schema 6,
+interface v2, and the then-current TypeEnv v3 unchanged. Current production has
+since moved to TypeEnv-v5. `TDEffect` operation declarations, `CtFn` effect text,
+and accepted final `SubstEffBind` chains are therefore already inside that
+narrow artifact. Effect-set declarations are retained separately as the opaque
 `CheckedEffectSetDeclarationsObservation`, derived from a successful
 `CheckedProgram` without reparsing source. Its deterministic length-delimited
 snapshot preserves recursive module-name paths, export bits, declaration order,
