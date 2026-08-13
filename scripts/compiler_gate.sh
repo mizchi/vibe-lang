@@ -6866,15 +6866,16 @@ scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
 # these pin evaluation order, not just acceptance (a handler that mutates shared
 # state between perform and resume would show up in the numbers). The `while`
 # case additionally pins that the chain stayed inside the loop closure.
-scps_run_expect "effect_assignment_rhs_compound_suspend.vibe" "1131" "assignrhscompound"
-scps_run_expect "effect_seq_head_if_condition_compound_suspend.vibe" "1011" "seqheadifcompound"
-scps_run_expect "effect_seq_head_match_compound_scrutinee_suspend.vibe" "411" "seqheadmatchcompound"
-scps_run_expect "effect_compound_call_arg_suspend.vibe" "1506" "compoundcallarg"
-scps_run_expect "effect_while_condition_compound_suspend.vibe" "23" "whilecondcompound"
-# Same slice, plus the scps_cellify EAssignOp field-order fix: `x op= v` on a
-# boxed mutable used to drop the write silently (the cell rewrite compared the
-# OPERATOR against the local's name, so it never fired).
-scps_run_expect "effect_assignment_op_rhs_suspend.vibe" "226" "assignoprhs"
+# New positive regressions own their expectations as inspect snapshots. Run
+# them unchanged with the freshly built stage2 that implements this lowering.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_assignment_rhs_compound_suspend.vibe \
+  fixtures/effect_seq_head_if_condition_compound_suspend.vibe \
+  fixtures/effect_seq_head_match_compound_scrutinee_suspend.vibe \
+  fixtures/effect_compound_call_arg_suspend.vibe \
+  fixtures/effect_while_condition_compound_suspend.vibe \
+  fixtures/effect_assignment_op_rhs_suspend.vibe \
+  fixtures/effect_assignment_op_name_collision_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6894,6 +6895,7 @@ scps_check_reject "err_effect_loop_return_suspend.vibe" "let/seq/tail/branch-tai
 # execution reaching the compound also reaches. An `if` branch and the right
 # operand of `&&` / `||` are not among them.
 scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
+scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
 scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"

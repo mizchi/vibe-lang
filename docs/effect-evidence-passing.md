@@ -2889,8 +2889,11 @@ identifier ではなく、ちゃんと名前が付いて元の位置で読まれ
 pass で拾われる。callee は名前を付けない — by-name call を local binding 経由の呼び出しに
 変えてしまうと、それこそ suspend lowering が see-through できない唯一の形になる。
 
-**必ず評価されるとは限らない位置だけが fail-closed のまま**: `if` / `match` の枝、
-`&&` / `||` の右辺、closure body、nested handle。
+**必ず評価されるとは限らない位置だけがこの ANF では fail-closed のまま**:
+`if` / `match` の枝、`&&` / `||` の右辺。closure literal は
+`scps_prepass_expr` が literal 自身の spine で step-split し、既存の
+nested different-effect handle は handler ownership を保った lowering を使うため、
+この compound ANF が外へ float する対象ではないが blanket reject でもない。
 
 同時に `scps_cellify` の **P0 silent-wrong** を 1 件直した。`EAssignOp` の
 フィールドは `(name, op, value, cont)` だが、この pass の 3 箇所が `(op, name, ..)` と
