@@ -1090,8 +1090,12 @@ closure param 経由の呼び出しのうち、その関数の全 by-name call s
 perform を含まない closure literal (または委譲元の同様に証明済みの
 param) を渡すと静的に証明できるもの** (#1536 (a) — `async_iter_find`
 の `pred(v)` がこの形。1 site でも perform する literal を渡すと従来
-どおり reject)。row 変数 (`with e`)
-付き callee・loop 内の perform は compile error。同じ継続の 2 回目の
+どおり reject)。**`while` / `loop` の中の perform も可** (#1230/#1536 —
+ループは step を返す再帰クロージャになる。`break` / `continue` を持つ本体も
+可で、`break` はループの脱出継続、`continue` はループ自身の呼び出しになる。
+`return` を含む本体だけは今も compile error — クロージャから関数を return
+できないため)。row 変数 (`with e`)
+付き callee・`for` 形式の中の perform は compile error。同じ継続の 2 回目の
 呼び出しは stderr 診断つきで trap する。post-processing は値経由
 (`let k = resume  let r = k(v)  r + 7`) で書く。see-through できない
 呼び出しで reject されるときの診断は、handle 適格性の診断と同じ形式で

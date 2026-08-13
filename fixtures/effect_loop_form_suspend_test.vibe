@@ -1,0 +1,36 @@
+// #1536: the surface `loop (p = e) { .. }` form on a suspend-class handle
+// body's spine. The parser desugars it into mutable parameter locals plus a
+// `while` carrying bare `break` / `continue` (desugar_loop_body), so this is
+// the same lowering the two while fixtures below exercise -- pinned from the
+// surface spelling because that is what the language document promises.
+// `trips` proves the body runs exactly three times (once per resumed value).
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut acc = 0
+    let mut trips = 0
+    loop (i = 0) {
+      if i >= 3 {
+        break
+      } else {
+        ()
+      }
+      let v = perform Ask::Get(i)
+      acc = acc + v
+      trips = trips + 1
+      continue (i + 1)
+    }
+    acc * 10 + trips
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+test "effect loop form suspend" {
+  inspect(_start(), "63")
+}

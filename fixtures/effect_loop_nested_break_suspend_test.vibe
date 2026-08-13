@@ -1,0 +1,34 @@
+// #1536: the transfer rewrite must stop at a nested loop. The inner `break`
+// belongs to the inner `while` and must keep meaning "leave the inner loop";
+// rewriting it into the outer loop's exit continuation would leave `acc` at 3
+// (one inner pass) instead of 7.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut acc = 0
+    let mut i = 0
+    while i < 2 {
+      let mut j = 0
+      while j < 5 {
+        if j >= 2 { break } else { () }
+        acc = acc + 1
+        j = j + 1
+      }
+      let v = perform Ask::Get(i)
+      acc = acc + v
+      i = i + 1
+    }
+    acc
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+test "effect loop nested break suspend" {
+  inspect(_start(), "7")
+}
