@@ -1,0 +1,725 @@
+// Derived-`==` coverage for this package's enums (#1556).
+//
+// `T::equals` is DERIVED: `desugar_derives` emits one for every declared enum
+// whether or not anything uses `==` on that type. Nothing in the suite called
+// these, so all of their branches sat unreached -- 1,710 across 96 types, 3.8%
+// of the whole branch denominator. That is worth a test beyond the number:
+// ADR-0097 / #1526 are actively changing what `==` means in each context, and a
+// structural comparison over a package's own data types is exactly the surface
+// those changes move.
+//
+// Shape of the generated function:
+//   match a { V(..) => match b { V(..) => fields..., _ => false }, ... }
+// so covering it takes each variant compared to ITSELF (the inner matching arm)
+// and to a DIFFERENT one (the inner `_`). The two loops per type do that.
+//
+// Both sides are bound to NAMES with an explicit type before comparing.
+// Comparing `Array::get(..)` results directly is the documented
+// reference-equality hole (AGENTS.md: "関数戻り値経由") -- the dispatch cannot
+// see the operand type through a call result, so `==` silently stays reference
+// equality. Measured on Token: 9/270 branches with the direct form, 270/270
+// with the bound form. The loops PASS either way, which is what makes it worth
+// spelling out here.
+//# Imports
+
+import .{
+  Expr, Pat, Stmt, TypeExpr
+}
+
+//# Helpers
+
+/// One literal per `TypeExpr` variant, in declaration order (#1556).
+fn every_typeexpr() -> Array[TypeExpr] {
+  [
+    TyName("s"),
+    TyApp("s", [
+      TyUnit
+    ]),
+    TyFn([
+      TyUnit
+    ], TyUnit, Some("s")),
+    TyTuple([
+      TyUnit
+    ]),
+    TyUnit
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_typeexpr`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_typeexpr_alt() -> Array[TypeExpr] {
+  [
+    TyName("t"),
+    TyApp("t", [
+      TyName("z")
+    ]),
+    TyFn([
+      TyName("z")
+    ], TyName("z"), Some("t")),
+    TyTuple([
+      TyName("z")
+    ]),
+    TyUnit
+  ]
+}
+
+/// One literal per `Pat` variant, in declaration order (#1556).
+fn every_pat() -> Array[Pat] {
+  [
+    PWild,
+    PBind("s"),
+    PInt(7),
+    PFloat(1.5),
+    PString("s"),
+    PBool(true),
+    PCtor("s", [
+      PWild
+    ]),
+    PTuple([
+      PWild
+    ]),
+    POr(PWild, PWild),
+    PStruct("s", [
+      ("f", PWild)
+    ])
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_pat`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_pat_alt() -> Array[Pat] {
+  [
+    PWild,
+    PBind("t"),
+    PInt(8),
+    PFloat(2.5),
+    PString("t"),
+    PBool(false),
+    PCtor("t", [
+      PBind("z")
+    ]),
+    PTuple([
+      PBind("z")
+    ]),
+    POr(PBind("z"), PBind("z")),
+    PStruct("t", [
+      ("g", PBind("z"))
+    ])
+  ]
+}
+
+/// One literal per `Expr` variant, in declaration order (#1556).
+fn every_expr() -> Array[Expr] {
+  [
+    EInt(7),
+    EFloat(1.5),
+    EString("s"),
+    EBool(true),
+    EIdent("s", 7),
+    ETuple([
+      EUnit
+    ]),
+    EArray([
+      EUnit
+    ]),
+    ERecord("s", [
+      ("f", EUnit)
+    ], [
+      TyUnit
+    ]),
+    EIf(EUnit, EUnit, EUnit),
+    ELet("s", EUnit, EUnit, 7),
+    ELetRec("s", EUnit, EUnit),
+    ELetMut("s", EUnit, EUnit, 7),
+    EAssign("s", EUnit, EUnit),
+    EAssignOp("s", "s", EUnit, EUnit),
+    ESeq(EUnit, EUnit),
+    EMatch(EUnit, [
+      (PWild, EUnit)
+    ]),
+    EHandle(EUnit, [
+      (PWild, EUnit)
+    ]),
+    EWhile(EUnit, EUnit),
+    ELoop([
+      ("f", EUnit)
+    ], EUnit),
+    EForIn("s", Some("s"), EUnit, EUnit),
+    ECall(EUnit, [
+      EUnit
+    ], 7),
+    EBinOp("s", EUnit, EUnit),
+    EUnaryOp("s", EUnit),
+    EFn([
+      "p"
+    ], [
+      ("t", [
+        "C"
+      ])
+    ], [
+      ("p", Some(TyUnit))
+    ], Some(TyUnit), Some("s"), EUnit),
+    EDot(EUnit, "s", 7, 7),
+    ELabeledArg("s", "s", EUnit),
+    EReturn(EUnit),
+    EBreak(Some(EUnit)),
+    EContinue([
+      EUnit
+    ]),
+    EMap([
+      ("f", EUnit)
+    ]),
+    ESpread(EUnit),
+    EStringInterp([
+      "p"
+    ]),
+    EUnit
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_expr`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_expr_alt() -> Array[Expr] {
+  [
+    EInt(8),
+    EFloat(2.5),
+    EString("t"),
+    EBool(false),
+    EIdent("t", 8),
+    ETuple([
+      EInt(9)
+    ]),
+    EArray([
+      EInt(9)
+    ]),
+    ERecord("t", [
+      ("g", EInt(9))
+    ], [
+      TyName("z")
+    ]),
+    EIf(EInt(9), EInt(9), EInt(9)),
+    ELet("t", EInt(9), EInt(9), 8),
+    ELetRec("t", EInt(9), EInt(9)),
+    ELetMut("t", EInt(9), EInt(9), 8),
+    EAssign("t", EInt(9), EInt(9)),
+    EAssignOp("t", "t", EInt(9), EInt(9)),
+    ESeq(EInt(9), EInt(9)),
+    EMatch(EInt(9), [
+      (PBind("z"), EInt(9))
+    ]),
+    EHandle(EInt(9), [
+      (PBind("z"), EInt(9))
+    ]),
+    EWhile(EInt(9), EInt(9)),
+    ELoop([
+      ("g", EInt(9))
+    ], EInt(9)),
+    EForIn("t", Some("t"), EInt(9), EInt(9)),
+    ECall(EInt(9), [
+      EInt(9)
+    ], 8),
+    EBinOp("t", EInt(9), EInt(9)),
+    EUnaryOp("t", EInt(9)),
+    EFn([
+      "q"
+    ], [
+      ("u", [
+        "D"
+      ])
+    ], [
+      ("q", Some(TyName("z")))
+    ], Some(TyName("z")), Some("t"), EInt(9)),
+    EDot(EInt(9), "t", 8, 8),
+    ELabeledArg("t", "t", EInt(9)),
+    EReturn(EInt(9)),
+    EBreak(Some(EInt(9))),
+    EContinue([
+      EInt(9)
+    ]),
+    EMap([
+      ("g", EInt(9))
+    ]),
+    ESpread(EInt(9)),
+    EStringInterp([
+      "q"
+    ]),
+    EUnit
+  ]
+}
+
+/// One literal per `Stmt` variant, in declaration order (#1556).
+fn every_stmt() -> Array[Stmt] {
+  [
+    SLet(true, true, "s", Some(TyUnit), EUnit),
+    SLetMut("s", Some(TyUnit), EUnit),
+    SEnum(true, "s", [
+      "p"
+    ], [
+      ("V", [
+        TyUnit
+      ])
+    ], [
+      "p"
+    ]),
+    SSuberror(true, "s", [
+      ("V", [
+        TyUnit
+      ])
+    ]),
+    SStruct(true, "s", [
+      ("f", TyUnit)
+    ], [
+      "p"
+    ], [
+      "p"
+    ], [
+      "p"
+    ]),
+    STypeAlias(true, "s", [
+      "p"
+    ], TyUnit),
+    STrait(true, "s", [
+      "p"
+    ], [
+      ("m", [
+        TyUnit
+      ], TyUnit)
+    ], [
+      ("m", [
+        "T"
+      ], [
+        ("T", [
+          "C"
+        ])
+      ])
+    ], [
+      "p"
+    ]),
+    SImpl([
+      "p"
+    ], [
+      ("t", [
+        "C"
+      ])
+    ], "s", "s"),
+    SExternLet("s", TyUnit),
+    SImport("s", [
+      ("n", Some("a"))
+    ]),
+    STest("s", EUnit),
+    SBench("s", EUnit),
+    SExample("s", EUnit),
+    SExpr(EUnit),
+    SExport([
+      "p"
+    ]),
+    SReExport("s", [
+      ("n", Some("a"))
+    ]),
+    SAliasDecl("s", "s"),
+    SQualifiedPatternRefs([
+      ("a", "b")
+    ]),
+    STestEffectRows([
+      ("a", "b")
+    ]),
+    SLetPat(PWild, EUnit),
+    SModule(true, "s", [
+      SExpr(EUnit)
+    ]),
+    SEffectDef(true, "s", [
+      "p"
+    ], [
+      ("m", [
+        TyUnit
+      ], TyUnit)
+    ]),
+    SEffectSet(true, "s", [
+      "p"
+    ]),
+    SResource("s", "s"),
+    SFnDecl(true, "s", EUnit, [
+      EUnit
+    ], [
+      EUnit
+    ])
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_stmt`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_stmt_alt() -> Array[Stmt] {
+  [
+    SLet(false, false, "t", Some(TyName("z")), EInt(9)),
+    SLetMut("t", Some(TyName("z")), EInt(9)),
+    SEnum(false, "t", [
+      "q"
+    ], [
+      ("W", [
+        TyName("z")
+      ])
+    ], [
+      "q"
+    ]),
+    SSuberror(false, "t", [
+      ("W", [
+        TyName("z")
+      ])
+    ]),
+    SStruct(false, "t", [
+      ("g", TyName("z"))
+    ], [
+      "q"
+    ], [
+      "q"
+    ], [
+      "q"
+    ]),
+    STypeAlias(false, "t", [
+      "q"
+    ], TyName("z")),
+    STrait(false, "t", [
+      "q"
+    ], [
+      ("n", [
+        TyName("z")
+      ], TyName("z"))
+    ], [
+      ("n", [
+        "U"
+      ], [
+        ("U", [
+          "D"
+        ])
+      ])
+    ], [
+      "q"
+    ]),
+    SImpl([
+      "q"
+    ], [
+      ("u", [
+        "D"
+      ])
+    ], "t", "t"),
+    SExternLet("t", TyName("z")),
+    SImport("t", [
+      ("o", Some("b"))
+    ]),
+    STest("t", EInt(9)),
+    SBench("t", EInt(9)),
+    SExample("t", EInt(9)),
+    SExpr(EInt(9)),
+    SExport([
+      "q"
+    ]),
+    SReExport("t", [
+      ("o", Some("b"))
+    ]),
+    SAliasDecl("t", "t"),
+    SQualifiedPatternRefs([
+      ("c", "d")
+    ]),
+    STestEffectRows([
+      ("c", "d")
+    ]),
+    SLetPat(PBind("z"), EInt(9)),
+    SModule(false, "t", [
+      SExpr(EInt(9))
+    ]),
+    SEffectDef(false, "t", [
+      "q"
+    ], [
+      ("n", [
+        TyName("z")
+      ], TyName("z"))
+    ]),
+    SEffectSet(false, "t", [
+      "q"
+    ]),
+    SResource("t", "t"),
+    SFnDecl(false, "t", EInt(9), [
+      EInt(9)
+    ], [
+      EInt(9)
+    ])
+  ]
+}
+
+//# Tests
+
+test "TypeExpr ==: every variant is structurally equal to itself" {
+  let vs = every_typeexpr()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: TypeExpr = Array::get(vs, i)
+    let b: TypeExpr = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_typeexpr` shows up as a count mismatch rather than as silence.
+  inspect(n, "5")
+  inspect(same, "5")
+}
+
+test "TypeExpr ==: distinct variants are never equal" {
+  let vs = every_typeexpr()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: TypeExpr = Array::get(vs, i)
+    let b: TypeExpr = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "5")
+}
+
+test "TypeExpr ==: same variant with different payloads is not equal" {
+  let vs = every_typeexpr()
+  let alt = every_typeexpr_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: TypeExpr = Array::get(vs, i)
+    let b: TypeExpr = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "5")
+  inspect(differ, "4")
+}
+
+test "Pat ==: every variant is structurally equal to itself" {
+  let vs = every_pat()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: Pat = Array::get(vs, i)
+    let b: Pat = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_pat` shows up as a count mismatch rather than as silence.
+  inspect(n, "10")
+  inspect(same, "10")
+}
+
+test "Pat ==: distinct variants are never equal" {
+  let vs = every_pat()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: Pat = Array::get(vs, i)
+    let b: Pat = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "10")
+}
+
+test "Pat ==: same variant with different payloads is not equal" {
+  let vs = every_pat()
+  let alt = every_pat_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: Pat = Array::get(vs, i)
+    let b: Pat = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "10")
+  inspect(differ, "9")
+}
+
+test "Expr ==: every variant is structurally equal to itself" {
+  let vs = every_expr()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: Expr = Array::get(vs, i)
+    let b: Expr = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_expr` shows up as a count mismatch rather than as silence.
+  inspect(n, "33")
+  inspect(same, "33")
+}
+
+test "Expr ==: distinct variants are never equal" {
+  let vs = every_expr()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: Expr = Array::get(vs, i)
+    let b: Expr = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "33")
+}
+
+test "Expr ==: same variant with different payloads is not equal" {
+  let vs = every_expr()
+  let alt = every_expr_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: Expr = Array::get(vs, i)
+    let b: Expr = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "33")
+  inspect(differ, "32")
+}
+
+test "Stmt ==: every variant is structurally equal to itself" {
+  let vs = every_stmt()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: Stmt = Array::get(vs, i)
+    let b: Stmt = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_stmt` shows up as a count mismatch rather than as silence.
+  inspect(n, "25")
+  inspect(same, "25")
+}
+
+test "Stmt ==: distinct variants are never equal" {
+  let vs = every_stmt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: Stmt = Array::get(vs, i)
+    let b: Stmt = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "25")
+}
+
+test "Stmt ==: same variant with different payloads is not equal" {
+  let vs = every_stmt()
+  let alt = every_stmt_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: Stmt = Array::get(vs, i)
+    let b: Stmt = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "25")
+  inspect(differ, "25")
+}

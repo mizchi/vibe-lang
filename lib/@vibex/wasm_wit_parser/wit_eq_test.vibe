@@ -1,0 +1,663 @@
+// Derived-`==` coverage for this package's enums (#1556).
+//
+// `T::equals` is DERIVED: `desugar_derives` emits one for every declared enum
+// whether or not anything uses `==` on that type. Nothing in the suite called
+// these, so all of their branches sat unreached -- 1,710 across 96 types, 3.8%
+// of the whole branch denominator. That is worth a test beyond the number:
+// ADR-0097 / #1526 are actively changing what `==` means in each context, and a
+// structural comparison over a package's own data types is exactly the surface
+// those changes move.
+//
+// Shape of the generated function:
+//   match a { V(..) => match b { V(..) => fields..., _ => false }, ... }
+// so covering it takes each variant compared to ITSELF (the inner matching arm)
+// and to a DIFFERENT one (the inner `_`). The two loops per type do that.
+//
+// Both sides are bound to NAMES with an explicit type before comparing.
+// Comparing `Array::get(..)` results directly is the documented
+// reference-equality hole (AGENTS.md: "関数戻り値経由") -- the dispatch cannot
+// see the operand type through a call result, so `==` silently stays reference
+// equality. Measured on Token: 9/270 branches with the direct form, 270/270
+// with the bound form. The loops PASS either way, which is what makes it worth
+// spelling out here.
+//# Imports
+
+import ./wit_parser.vibe {
+  WitFuncKind, WitInterfaceItem, WitToken, WitTypeDef, WitTypeExpr, WitWorldItem
+}
+
+//# Helpers
+
+/// One literal per `WitFuncKind` variant, in declaration order (#1556).
+fn every_witfunckind() -> Array[WitFuncKind] {
+  [
+    FKFreestanding,
+    FKConstructor("s"),
+    FKMethod("s"),
+    FKStatic("s")
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_witfunckind`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_witfunckind_alt() -> Array[WitFuncKind] {
+  [
+    FKFreestanding,
+    FKConstructor("t"),
+    FKMethod("t"),
+    FKStatic("t")
+  ]
+}
+
+/// One literal per `WitTypeExpr` variant, in declaration order (#1556).
+fn every_wittypeexpr() -> Array[WitTypeExpr] {
+  [
+    TyBool,
+    TyU8,
+    TyU16,
+    TyU32,
+    TyU64,
+    TyS8,
+    TyS16,
+    TyS32,
+    TyS64,
+    TyF32,
+    TyF64,
+    TyChar,
+    TyString,
+    TyId("s"),
+    TyList(TyBool),
+    TyOption(TyBool),
+    TyFuture(TyBool),
+    TyStream(TyBool),
+    TyResult(TyBool, Some(TyBool)),
+    TyTuple([
+      TyBool
+    ]),
+    TyOwn("s"),
+    TyBorrow("s")
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_wittypeexpr`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_wittypeexpr_alt() -> Array[WitTypeExpr] {
+  [
+    TyBool,
+    TyU8,
+    TyU16,
+    TyU32,
+    TyU64,
+    TyS8,
+    TyS16,
+    TyS32,
+    TyS64,
+    TyF32,
+    TyF64,
+    TyChar,
+    TyString,
+    TyId("t"),
+    TyList(TyU8),
+    TyOption(TyU8),
+    TyFuture(TyU8),
+    TyStream(TyU8),
+    TyResult(TyU8, Some(TyU8)),
+    TyTuple([
+      TyBool
+    ]),
+    TyOwn("t"),
+    TyBorrow("t")
+  ]
+}
+
+/// One literal per `WitToken` variant, in declaration order (#1556).
+fn every_wittoken() -> Array[WitToken] {
+  [
+    WTIdent("s"),
+    WTKeyword("s"),
+    WTSymbol("s"),
+    WTStringLit("s"),
+    WTNumber("s"),
+    WTDoc("s"),
+    WTEof
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_wittoken`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_wittoken_alt() -> Array[WitToken] {
+  [
+    WTIdent("t"),
+    WTKeyword("t"),
+    WTSymbol("t"),
+    WTStringLit("t"),
+    WTNumber("t"),
+    WTDoc("t"),
+    WTEof
+  ]
+}
+
+/// One literal per `WitTypeDef` variant, in declaration order (#1556).
+fn every_wittypedef() -> Array[WitTypeDef] {
+  [
+    TDRecord("s", [
+      ("f", TyBool)
+    ], Some("s")),
+    TDEnum("s", [
+      "p"
+    ], Some("s")),
+    TDFlags("s", [
+      "p"
+    ], Some("s")),
+    TDVariant("s", [
+      ("f", Some(TyBool))
+    ], Some("s")),
+    TDAlias("s", TyBool, Some("s")),
+    TDResource("s", [
+      ("m", FKFreestanding, [
+        ("p", TyBool)
+      ], Some(TyBool), Some("d"))
+    ], Some("s"))
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_wittypedef`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_wittypedef_alt() -> Array[WitTypeDef] {
+  [
+    TDRecord("t", [
+      ("g", TyU8)
+    ], Some("t")),
+    TDEnum("t", [
+      "q"
+    ], Some("t")),
+    TDFlags("t", [
+      "q"
+    ], Some("t")),
+    TDVariant("t", [
+      ("g", Some(TyU8))
+    ], Some("t")),
+    TDAlias("t", TyU8, Some("t")),
+    TDResource("t", [
+      ("n", FKMethod("m"), [
+        ("q", TyU8)
+      ], Some(TyU8), Some("e"))
+    ], Some("t"))
+  ]
+}
+
+/// One literal per `WitInterfaceItem` variant, in declaration order (#1556).
+fn every_witinterfaceitem() -> Array[WitInterfaceItem] {
+  [
+    IIUse("s", "s", Some("s"), "s", [
+      "p"
+    ]),
+    IITypeDef(TDAlias("a", TyBool, Some("d"))),
+    IIFunction("s", FKFreestanding, [
+      ("f", TyBool)
+    ], Some(TyBool), Some("s"))
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_witinterfaceitem`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_witinterfaceitem_alt() -> Array[WitInterfaceItem] {
+  [
+    IIUse("t", "t", Some("t"), "t", [
+      "q"
+    ]),
+    IITypeDef(TDAlias("b", TyU8, Some("e"))),
+    IIFunction("t", FKMethod("m"), [
+      ("g", TyU8)
+    ], Some(TyU8), Some("t"))
+  ]
+}
+
+/// One literal per `WitWorldItem` variant, in declaration order (#1556).
+fn every_witworlditem() -> Array[WitWorldItem] {
+  [
+    WIInterface("s", "s", Some("s"), "s"),
+    WIFunction("s", FKFreestanding, [
+      ("f", TyBool)
+    ], Some(TyBool), Some("s")),
+    WIInlineInterface("s", Some("s"), [
+      IITypeDef(TDAlias("a", TyBool, Some("d")))
+    ]),
+    WIInclude("s", "s", Some("s"), "s", [
+      ("a", "b")
+    ])
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_witworlditem`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_witworlditem_alt() -> Array[WitWorldItem] {
+  [
+    WIInterface("t", "t", Some("t"), "t"),
+    WIFunction("t", FKMethod("m"), [
+      ("g", TyU8)
+    ], Some(TyU8), Some("t")),
+    WIInlineInterface("t", Some("t"), [
+      IITypeDef(TDAlias("b", TyU8, Some("e")))
+    ]),
+    WIInclude("t", "t", Some("t"), "t", [
+      ("c", "d")
+    ])
+  ]
+}
+
+//# Tests
+
+test "WitFuncKind ==: every variant is structurally equal to itself" {
+  let vs = every_witfunckind()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: WitFuncKind = Array::get(vs, i)
+    let b: WitFuncKind = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_witfunckind` shows up as a count mismatch rather than as silence.
+  inspect(n, "4")
+  inspect(same, "4")
+}
+
+test "WitFuncKind ==: distinct variants are never equal" {
+  let vs = every_witfunckind()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: WitFuncKind = Array::get(vs, i)
+    let b: WitFuncKind = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "4")
+}
+
+test "WitFuncKind ==: same variant with different payloads is not equal" {
+  let vs = every_witfunckind()
+  let alt = every_witfunckind_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: WitFuncKind = Array::get(vs, i)
+    let b: WitFuncKind = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "4")
+  inspect(differ, "3")
+}
+
+test "WitTypeExpr ==: every variant is structurally equal to itself" {
+  let vs = every_wittypeexpr()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: WitTypeExpr = Array::get(vs, i)
+    let b: WitTypeExpr = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_wittypeexpr` shows up as a count mismatch rather than as silence.
+  inspect(n, "22")
+  inspect(same, "22")
+}
+
+test "WitTypeExpr ==: distinct variants are never equal" {
+  let vs = every_wittypeexpr()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: WitTypeExpr = Array::get(vs, i)
+    let b: WitTypeExpr = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "22")
+}
+
+test "WitTypeExpr ==: same variant with different payloads is not equal" {
+  let vs = every_wittypeexpr()
+  let alt = every_wittypeexpr_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: WitTypeExpr = Array::get(vs, i)
+    let b: WitTypeExpr = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "22")
+  inspect(differ, "8")
+}
+
+test "WitToken ==: every variant is structurally equal to itself" {
+  let vs = every_wittoken()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: WitToken = Array::get(vs, i)
+    let b: WitToken = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_wittoken` shows up as a count mismatch rather than as silence.
+  inspect(n, "7")
+  inspect(same, "7")
+}
+
+test "WitToken ==: distinct variants are never equal" {
+  let vs = every_wittoken()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: WitToken = Array::get(vs, i)
+    let b: WitToken = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "7")
+}
+
+test "WitToken ==: same variant with different payloads is not equal" {
+  let vs = every_wittoken()
+  let alt = every_wittoken_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: WitToken = Array::get(vs, i)
+    let b: WitToken = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "7")
+  inspect(differ, "6")
+}
+
+test "WitTypeDef ==: every variant is structurally equal to itself" {
+  let vs = every_wittypedef()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: WitTypeDef = Array::get(vs, i)
+    let b: WitTypeDef = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_wittypedef` shows up as a count mismatch rather than as silence.
+  inspect(n, "6")
+  inspect(same, "6")
+}
+
+test "WitTypeDef ==: distinct variants are never equal" {
+  let vs = every_wittypedef()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: WitTypeDef = Array::get(vs, i)
+    let b: WitTypeDef = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "6")
+}
+
+test "WitTypeDef ==: same variant with different payloads is not equal" {
+  let vs = every_wittypedef()
+  let alt = every_wittypedef_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: WitTypeDef = Array::get(vs, i)
+    let b: WitTypeDef = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "6")
+  inspect(differ, "6")
+}
+
+test "WitInterfaceItem ==: every variant is structurally equal to itself" {
+  let vs = every_witinterfaceitem()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: WitInterfaceItem = Array::get(vs, i)
+    let b: WitInterfaceItem = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_witinterfaceitem` shows up as a count mismatch rather than as silence.
+  inspect(n, "3")
+  inspect(same, "3")
+}
+
+test "WitInterfaceItem ==: distinct variants are never equal" {
+  let vs = every_witinterfaceitem()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: WitInterfaceItem = Array::get(vs, i)
+    let b: WitInterfaceItem = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "3")
+}
+
+test "WitInterfaceItem ==: same variant with different payloads is not equal" {
+  let vs = every_witinterfaceitem()
+  let alt = every_witinterfaceitem_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: WitInterfaceItem = Array::get(vs, i)
+    let b: WitInterfaceItem = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "3")
+  inspect(differ, "3")
+}
+
+test "WitWorldItem ==: every variant is structurally equal to itself" {
+  let vs = every_witworlditem()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: WitWorldItem = Array::get(vs, i)
+    let b: WitWorldItem = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_witworlditem` shows up as a count mismatch rather than as silence.
+  inspect(n, "4")
+  inspect(same, "4")
+}
+
+test "WitWorldItem ==: distinct variants are never equal" {
+  let vs = every_witworlditem()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: WitWorldItem = Array::get(vs, i)
+    let b: WitWorldItem = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "4")
+}
+
+test "WitWorldItem ==: same variant with different payloads is not equal" {
+  let vs = every_witworlditem()
+  let alt = every_witworlditem_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: WitWorldItem = Array::get(vs, i)
+    let b: WitWorldItem = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "4")
+  inspect(differ, "4")
+}

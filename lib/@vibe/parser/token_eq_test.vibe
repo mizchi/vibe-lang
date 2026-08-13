@@ -1,0 +1,301 @@
+// Derived-`==` coverage for this package's enums (#1556).
+//
+// `T::equals` is DERIVED: `desugar_derives` emits one for every declared enum
+// whether or not anything uses `==` on that type. Nothing in the suite called
+// these, so all of their branches sat unreached -- 1,710 across 96 types, 3.8%
+// of the whole branch denominator. That is worth a test beyond the number:
+// ADR-0097 / #1526 are actively changing what `==` means in each context, and a
+// structural comparison over a package's own data types is exactly the surface
+// those changes move.
+//
+// Shape of the generated function:
+//   match a { V(..) => match b { V(..) => fields..., _ => false }, ... }
+// so covering it takes each variant compared to ITSELF (the inner matching arm)
+// and to a DIFFERENT one (the inner `_`). The two loops per type do that.
+//
+// Both sides are bound to NAMES with an explicit type before comparing.
+// Comparing `Array::get(..)` results directly is the documented
+// reference-equality hole (AGENTS.md: "関数戻り値経由") -- the dispatch cannot
+// see the operand type through a call result, so `==` silently stays reference
+// equality. Measured on Token: 9/270 branches with the direct form, 270/270
+// with the bound form. The loops PASS either way, which is what makes it worth
+// spelling out here.
+//# Imports
+
+import ./token.vibe {
+  Token
+}
+
+//# Helpers
+
+/// One literal per `Token` variant, in declaration order (#1556).
+fn every_token() -> Array[Token] {
+  [
+    TInt(7),
+    TFloat(1.5),
+    TString("s"),
+    TIdent("s"),
+    TLet,
+    TRec,
+    TMut,
+    TFn,
+    TIf,
+    TElse,
+    TMatch,
+    TIs,
+    TGuard,
+    TDo,
+    TEnum,
+    TStruct,
+    TType,
+    TTrait,
+    TImpl,
+    TExport,
+    TTest,
+    TExample,
+    TWhile,
+    TFor,
+    TIn,
+    TLoop,
+    TBreak,
+    TContinue,
+    TReturn,
+    TWith,
+    THandle,
+    TTaskGroup,
+    TRegion,
+    TThrow,
+    TRaise,
+    TYield,
+    TBench,
+    TDeclare,
+    TAs,
+    TModule,
+    TSuberror,
+    TDerive,
+    TOpen,
+    TImport,
+    TPlus,
+    TMinus,
+    TStar,
+    TSlash,
+    TPercent,
+    TEqEq,
+    TNeq,
+    TLt,
+    TLte,
+    TGt,
+    TGte,
+    TAnd,
+    TOr,
+    TNot,
+    TBitAnd,
+    TBitOr,
+    TBitXor,
+    TLShift,
+    TRShift,
+    TPipeGt,
+    TArrow,
+    TThinArrow,
+    TEq,
+    TDot,
+    TColon,
+    TDoubleColon,
+    TComma,
+    TSemicolon,
+    THash,
+    TTilde,
+    TQuestion,
+    TPlusEq,
+    TMinusEq,
+    TStarEq,
+    TSlashEq,
+    TPercentEq,
+    TLParen,
+    TRParen,
+    TLBrace,
+    TRBrace,
+    TLBracket,
+    TRBracket,
+    TDotDot,
+    TDotDotDot,
+    TStringInterp([
+      "p"
+    ], [
+      3
+    ]),
+    TEof
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_token`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_token_alt() -> Array[Token] {
+  [
+    TInt(8),
+    TFloat(2.5),
+    TString("t"),
+    TIdent("t"),
+    TLet,
+    TRec,
+    TMut,
+    TFn,
+    TIf,
+    TElse,
+    TMatch,
+    TIs,
+    TGuard,
+    TDo,
+    TEnum,
+    TStruct,
+    TType,
+    TTrait,
+    TImpl,
+    TExport,
+    TTest,
+    TExample,
+    TWhile,
+    TFor,
+    TIn,
+    TLoop,
+    TBreak,
+    TContinue,
+    TReturn,
+    TWith,
+    THandle,
+    TTaskGroup,
+    TRegion,
+    TThrow,
+    TRaise,
+    TYield,
+    TBench,
+    TDeclare,
+    TAs,
+    TModule,
+    TSuberror,
+    TDerive,
+    TOpen,
+    TImport,
+    TPlus,
+    TMinus,
+    TStar,
+    TSlash,
+    TPercent,
+    TEqEq,
+    TNeq,
+    TLt,
+    TLte,
+    TGt,
+    TGte,
+    TAnd,
+    TOr,
+    TNot,
+    TBitAnd,
+    TBitOr,
+    TBitXor,
+    TLShift,
+    TRShift,
+    TPipeGt,
+    TArrow,
+    TThinArrow,
+    TEq,
+    TDot,
+    TColon,
+    TDoubleColon,
+    TComma,
+    TSemicolon,
+    THash,
+    TTilde,
+    TQuestion,
+    TPlusEq,
+    TMinusEq,
+    TStarEq,
+    TSlashEq,
+    TPercentEq,
+    TLParen,
+    TRParen,
+    TLBrace,
+    TRBrace,
+    TLBracket,
+    TRBracket,
+    TDotDot,
+    TDotDotDot,
+    TStringInterp([
+      "q"
+    ], [
+      4
+    ]),
+    TEof
+  ]
+}
+
+//# Tests
+
+test "Token ==: every variant is structurally equal to itself" {
+  let vs = every_token()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: Token = Array::get(vs, i)
+    let b: Token = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_token` shows up as a count mismatch rather than as silence.
+  inspect(n, "90")
+  inspect(same, "90")
+}
+
+test "Token ==: distinct variants are never equal" {
+  let vs = every_token()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: Token = Array::get(vs, i)
+    let b: Token = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "90")
+}
+
+test "Token ==: same variant with different payloads is not equal" {
+  let vs = every_token()
+  let alt = every_token_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: Token = Array::get(vs, i)
+    let b: Token = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "90")
+  inspect(differ, "5")
+}

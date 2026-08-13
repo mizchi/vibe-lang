@@ -1,0 +1,133 @@
+// Derived-`==` coverage for this package's enums (#1556).
+//
+// `T::equals` is DERIVED: `desugar_derives` emits one for every declared enum
+// whether or not anything uses `==` on that type. Nothing in the suite called
+// these, so all of their branches sat unreached -- 1,710 across 96 types, 3.8%
+// of the whole branch denominator. That is worth a test beyond the number:
+// ADR-0097 / #1526 are actively changing what `==` means in each context, and a
+// structural comparison over a package's own data types is exactly the surface
+// those changes move.
+//
+// Shape of the generated function:
+//   match a { V(..) => match b { V(..) => fields..., _ => false }, ... }
+// so covering it takes each variant compared to ITSELF (the inner matching arm)
+// and to a DIFFERENT one (the inner `_`). The two loops per type do that.
+//
+// Both sides are bound to NAMES with an explicit type before comparing.
+// Comparing `Array::get(..)` results directly is the documented
+// reference-equality hole (AGENTS.md: "関数戻り値経由") -- the dispatch cannot
+// see the operand type through a call result, so `==` silently stays reference
+// equality. Measured on Token: 9/270 branches with the direct form, 270/270
+// with the bound form. The loops PASS either way, which is what makes it worth
+// spelling out here.
+//# Imports
+
+import ./toml.vibe {
+  TomlValue
+}
+
+//# Helpers
+
+/// One literal per `TomlValue` variant, in declaration order (#1556).
+fn every_tomlvalue() -> Array[TomlValue] {
+  [
+    TString("s"),
+    TInt(7),
+    TFloat(1.5),
+    TBool(true),
+    TArray([
+      TBool(true)
+    ]),
+    TTable([
+      ("k", TBool(true))
+    ])
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_tomlvalue`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_tomlvalue_alt() -> Array[TomlValue] {
+  [
+    TString("t"),
+    TInt(8),
+    TFloat(2.5),
+    TBool(false),
+    TArray([
+      TInt(9)
+    ]),
+    TTable([
+      ("j", TInt(9))
+    ])
+  ]
+}
+
+//# Tests
+
+test "TomlValue ==: every variant is structurally equal to itself" {
+  let vs = every_tomlvalue()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: TomlValue = Array::get(vs, i)
+    let b: TomlValue = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_tomlvalue` shows up as a count mismatch rather than as silence.
+  inspect(n, "6")
+  inspect(same, "6")
+}
+
+test "TomlValue ==: distinct variants are never equal" {
+  let vs = every_tomlvalue()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: TomlValue = Array::get(vs, i)
+    let b: TomlValue = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "6")
+}
+
+test "TomlValue ==: same variant with different payloads is not equal" {
+  let vs = every_tomlvalue()
+  let alt = every_tomlvalue_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: TomlValue = Array::get(vs, i)
+    let b: TomlValue = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "6")
+  inspect(differ, "6")
+}

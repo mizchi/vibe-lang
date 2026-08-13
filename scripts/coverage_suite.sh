@@ -117,6 +117,12 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # Measured at 6df97b0 too (55.08%), so the metric is stable across bases.
 # Floors are set just under the actuals, same convention as the ratchets above.
 #
+# Raised 2026-08-13 (#1556, derived-`==` tests): 582 entries, branch union
+# 26,442/45,986 (57.50%), function union 12,950/14,995 (86.36%). The seven
+# `*_eq_test.vibe` files call the DERIVED `T::equals` that `desugar_derives`
+# emits for every enum -- 1,710 branches across 96 types that no test had ever
+# called. Floors moved 24,500 -> 26,000 and 54% -> 57%.
+#
 # Both figures went UP slightly when union_key started source-qualifying the
 # entry-local synthesized names (Codex review on #1668): the un-merged
 # `__test_<name>` collisions and the 575 separate `_start` wrappers are now
@@ -127,8 +133,8 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # Unlike the entry-weighted RATE floors, this rate is safe to ratchet: adding a
 # test entry cannot dilute it (a branch is counted once no matter how many
 # entries link it), so a new entry can only hold it level or push it up.
-MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-24500}"
-MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-54}"
+MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-26000}"
+MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-57}"
 
 ALLOWLIST="$(mktemp -t vibe-coverage-entries-XXXXXX)"
 trap 'rm -f "$ALLOWLIST"' EXIT

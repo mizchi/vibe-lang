@@ -1,0 +1,403 @@
+// Derived-`==` coverage for this package's enums (#1556).
+//
+// `T::equals` is DERIVED: `desugar_derives` emits one for every declared enum
+// whether or not anything uses `==` on that type. Nothing in the suite called
+// these, so all of their branches sat unreached -- 1,710 across 96 types, 3.8%
+// of the whole branch denominator. That is worth a test beyond the number:
+// ADR-0097 / #1526 are actively changing what `==` means in each context, and a
+// structural comparison over a package's own data types is exactly the surface
+// those changes move.
+//
+// Shape of the generated function:
+//   match a { V(..) => match b { V(..) => fields..., _ => false }, ... }
+// so covering it takes each variant compared to ITSELF (the inner matching arm)
+// and to a DIFFERENT one (the inner `_`). The two loops per type do that.
+//
+// Both sides are bound to NAMES with an explicit type before comparing.
+// Comparing `Array::get(..)` results directly is the documented
+// reference-equality hole (AGENTS.md: "関数戻り値経由") -- the dispatch cannot
+// see the operand type through a call result, so `==` silently stays reference
+// equality. Measured on Token: 9/270 branches with the direct form, 270/270
+// with the bound form. The loops PASS either way, which is what makes it worth
+// spelling out here.
+//# Imports
+
+import ./types.vibe {
+  Subst, Type, TypeDef
+}
+
+//# Helpers
+
+/// One literal per `Type` variant, in declaration order (#1556).
+fn every_type() -> Array[Type] {
+  [
+    CtInt,
+    CtDouble,
+    CtBool,
+    CtString,
+    CtChar,
+    CtUnit,
+    CtTuple([
+      CtUnit
+    ]),
+    CtArray(CtUnit),
+    CtOption(CtUnit),
+    CtFn([
+      CtUnit
+    ], CtUnit, Some("s")),
+    CtEnum("s"),
+    CtStruct("s"),
+    CtBytes,
+    CtNamed("s", [
+      CtUnit
+    ]),
+    CtVar(7),
+    CtForAll([
+      3
+    ], [
+      (1, [
+        "C"
+      ])
+    ], CtUnit),
+    CtUnknown
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_type`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_type_alt() -> Array[Type] {
+  [
+    CtInt,
+    CtDouble,
+    CtBool,
+    CtString,
+    CtChar,
+    CtUnit,
+    CtTuple([
+      CtInt
+    ]),
+    CtArray(CtInt),
+    CtOption(CtInt),
+    CtFn([
+      CtInt
+    ], CtInt, Some("t")),
+    CtEnum("t"),
+    CtStruct("t"),
+    CtBytes,
+    CtNamed("t", [
+      CtInt
+    ]),
+    CtVar(8),
+    CtForAll([
+      4
+    ], [
+      (2, [
+        "D"
+      ])
+    ], CtInt),
+    CtUnknown
+  ]
+}
+
+/// One literal per `TypeDef` variant, in declaration order (#1556).
+fn every_typedef() -> Array[TypeDef] {
+  [
+    TDEnum("s", [
+      "p"
+    ], [
+      ("V", [
+        CtUnit
+      ])
+    ]),
+    TDStruct("s", [
+      ("f", CtUnit)
+    ], [
+      "p"
+    ], [
+      "p"
+    ]),
+    TDAlias("s", [
+      "p"
+    ], CtUnit),
+    TDEffect("s", [
+      ("op", [
+        CtUnit
+      ], CtUnit)
+    ], [
+      "p"
+    ]),
+    TDEffectSet("s", [
+      "p"
+    ])
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_typedef`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_typedef_alt() -> Array[TypeDef] {
+  [
+    TDEnum("t", [
+      "q"
+    ], [
+      ("W", [
+        CtInt
+      ])
+    ]),
+    TDStruct("t", [
+      ("g", CtInt)
+    ], [
+      "q"
+    ], [
+      "q"
+    ]),
+    TDAlias("t", [
+      "q"
+    ], CtInt),
+    TDEffect("t", [
+      ("po", [
+        CtInt
+      ], CtInt)
+    ], [
+      "q"
+    ]),
+    TDEffectSet("t", [
+      "q"
+    ])
+  ]
+}
+
+/// One literal per `Subst` variant, in declaration order (#1556).
+/// Variants with payload types this file has no sample for are left
+/// out rather than faked, so their arms stay honestly uncovered: SubstCached
+fn every_subst() -> Array[Subst] {
+  [
+    SubstEmpty,
+    SubstBind(7, CtUnit, SubstEmpty),
+    SubstBound(7, [
+      "p"
+    ], SubstEmpty),
+    SubstEffBind("s", "s", SubstEmpty)
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_subst`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_subst_alt() -> Array[Subst] {
+  [
+    SubstEmpty,
+    SubstBind(8, CtInt, SubstBind(1, CtInt, SubstEmpty)),
+    SubstBound(8, [
+      "q"
+    ], SubstBind(1, CtInt, SubstEmpty)),
+    SubstEffBind("t", "t", SubstBind(1, CtInt, SubstEmpty))
+  ]
+}
+
+//# Tests
+
+test "Type ==: every variant is structurally equal to itself" {
+  let vs = every_type()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: Type = Array::get(vs, i)
+    let b: Type = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_type` shows up as a count mismatch rather than as silence.
+  inspect(n, "17")
+  inspect(same, "17")
+}
+
+test "Type ==: distinct variants are never equal" {
+  let vs = every_type()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: Type = Array::get(vs, i)
+    let b: Type = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "17")
+}
+
+test "Type ==: same variant with different payloads is not equal" {
+  let vs = every_type()
+  let alt = every_type_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: Type = Array::get(vs, i)
+    let b: Type = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "17")
+  inspect(differ, "9")
+}
+
+test "TypeDef ==: every variant is structurally equal to itself" {
+  let vs = every_typedef()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: TypeDef = Array::get(vs, i)
+    let b: TypeDef = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_typedef` shows up as a count mismatch rather than as silence.
+  inspect(n, "5")
+  inspect(same, "5")
+}
+
+test "TypeDef ==: distinct variants are never equal" {
+  let vs = every_typedef()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: TypeDef = Array::get(vs, i)
+    let b: TypeDef = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "5")
+}
+
+test "TypeDef ==: same variant with different payloads is not equal" {
+  let vs = every_typedef()
+  let alt = every_typedef_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: TypeDef = Array::get(vs, i)
+    let b: TypeDef = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "5")
+  inspect(differ, "5")
+}
+
+test "Subst ==: every variant is structurally equal to itself" {
+  let vs = every_subst()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: Subst = Array::get(vs, i)
+    let b: Subst = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Both numbers are pinned: a variant added to the enum but not to
+  // `every_subst` shows up as a count mismatch rather than as silence.
+  inspect(n, "4")
+  inspect(same, "4")
+}
+
+test "Subst ==: distinct variants are never equal" {
+  let vs = every_subst()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: Subst = Array::get(vs, i)
+    let b: Subst = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "4")
+}
+
+test "Subst ==: same variant with different payloads is not equal" {
+  let vs = every_subst()
+  let alt = every_subst_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: Subst = Array::get(vs, i)
+    let b: Subst = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "4")
+  inspect(differ, "3")
+}
