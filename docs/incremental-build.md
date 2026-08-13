@@ -150,7 +150,7 @@ for small, medium, and compiler-sized projects. The edit matrix is:
 | Case | Expected future invalidation |
 |---|---|
 | Exact no-op | No semantic work |
-| Comment or whitespace only | No semantic work after canonical hashing |
+| Comment or whitespace only | Current-source ingestion and parse; owner typing may be reused only after a lossless checked-body authority exists |
 | Private function body | Owning semantic unit; consumers keep typing results |
 | Private signature | Dependent declarations in the same module/package |
 | Export implementation, same interface | Consumer typechecking is reused |
@@ -206,13 +206,50 @@ A follow-up run with compiler SHA `4ceba401a979` added deterministic
 | Private body edit | 2 | 0 | 2 |
 | Public interface edit | 2 | 0 | 2 |
 
-This confirms a real no-op cache win hidden by process startup, but also confirms
-the current invalidation problem: even comment-only and private-body edits
-recheck the leaf and its consumer. `modules_reused` means any successful module
-that avoided a full body parse; it may come from in-memory or persistent state
-and is not yet a per-cache-class hit count. The next implementation target is
-therefore interface/implementation fingerprint separation, preceded by an
-invalidation model/oracle rather than more wall-time tuning.
+This confirmed a real no-op cache win hidden by process startup and, at that
+revision, showed that comment-only and private-body edits rechecked both the
+leaf and its consumer. `modules_reused` means any successful module that avoided
+a full body parse; it may come from in-memory or persistent state and is not yet
+a per-cache-class hit count. The invalidation conclusion in this historical
+result is superseded by the current TDRE5 result below; the timing numbers remain
+a valid negative startup-dominated baseline.
+
+### Current production result (2026-08-13)
+
+A fresh stage2 audit at compiler SHA `28d04e6abe7` used isolated persistent
+caches and deterministic `db_typecheck_fs` counters. For a graph of `N` modules,
+the current check-only production behavior is:
+
+| Case | rechecked | reused without body parse | parse operations |
+|---|---:|---:|---:|
+| Exact no-op | 0 | N | 0 |
+| Comment-only owner edit | 1 | N-1 | 1 |
+| Whitespace-only owner edit | 1 | N-1 | 1 |
+| Private-body owner edit | 1 | N-1 | 1 |
+| Propagated public-signature edit | N | 0 | N |
+
+These ratios were reproduced on two- and four-module graphs. In the four-module
+graph, adding an unused public export rechecked only its affected closure
+(`2 rechecked / 2 reused / 2 parses`); a public change need not invalidate
+unaffected modules merely because it is public.
+
+The edited owner misses because the production TDRE5 logical input includes its
+byte-exact source. After that owner is checked successfully, its checked public
+TypeEnv-v5 authority lets unchanged consumers reuse their existing typing
+results. This is consumer typing reuse only: final builds still merge and
+code-generate the whole program, and this evidence makes no build, codegen, or
+LSP incrementality claim.
+
+Owner reuse must not be authorized from the observation-only
+`implementation_fingerprint`. It is a provisional untyped token stream that
+omits comments and source offsets. In particular, `///` documentation comments
+are user-visible to `doc-at` and LSP hover, and current-source parse, location,
+and diagnostic provenance must remain accurate even when typing is reusable.
+This rules out token-based owner reuse, including a narrower no-newline
+whitespace/comment shortcut. The next safe authority milestone is a lossless
+checked-body or normalized typed-IR identity with deterministic differential
+coverage and clean-build parity. Multi-SCC persistence and production
+build/codegen/LSP integration remain later milestones.
 
 ### Host filesystem ingestion telemetry
 
@@ -268,7 +305,7 @@ The in-memory parser and checker retain bare trait-header parameter names and
 positional method-generic rows for provenance. The header names append a sixth
 field to transparent `STrait`; checker-retained `EnvTraitDef` appends method
 rows seventh, without shifting its prior slots. This is an explicit source
-migration for positional consumers. Persistent TypeEnv v3 transports those
+migration for positional consumers. Persistent TypeEnv v5 transports those
 trait definitions and method-generic rows, but remains a narrow environment
 transport, not a complete clean/warm typed artifact or lossless `CheckedProgram`
 claim.
@@ -581,23 +618,24 @@ variables and sorted/deduplicated bounds/effects, with `str_lt` value-name
 ordering and first-effective-binding deduplication. Traits, impls, type
 definitions, effect declarations, and bodies are out of scope. It is a
 trace-only format, explicitly not the production persistent TypeEnv codec.
-Schema 5 additionally observes `persistent_type_env_transport_fingerprint` as
-`compact_string_fingerprint(persistent_type_env_cache_text(env))`: the canonical
-complete persistent TypeEnv v3 transport bytes for the checked or reused
-environment. It covers transport state omitted by the value-only checked-env
-observation, including trait and impl state. Schema 6 changes only the
-trace-only interface observation: method-generic provenance is consumed from
-the source `STrait` to canonicalize trait methods. The provenance is now also
-retained in `EnvTraitDef` and the TypeEnv v3 transport, but no full checked
-artifact exists yet. The transport remains TypeEnv-only—not a `CheckedProgram`,
-typed IR, exported interface, cache key, or reuse decision.
+Schema 5 additionally introduced `persistent_type_env_transport_fingerprint` as
+`compact_string_fingerprint(persistent_type_env_cache_text(env))`: at that
+revision, the canonical complete persistent TypeEnv v3 transport bytes for the
+checked or reused environment. It covered transport state omitted by the
+value-only checked-env observation, including trait and impl state. Schema 6
+changed only the trace-only interface observation: method-generic provenance was
+consumed from the source `STrait` to canonicalize trait methods. The provenance
+was also retained in `EnvTraitDef` and the then-current TypeEnv v3 transport,
+but no full checked artifact existed. Current production has since moved to
+TypeEnv-v5; the transport remains TypeEnv-only—not a `CheckedProgram`, typed IR,
+exported interface, cache key, or reuse decision.
 
 These observation identities have intentionally different authorities.
 `vibe-module-interface:v2` covers only the exported API surface. In particular,
 `SImpl` has no exported/public bit, so impl declarations are excluded from that
 interface identity rather than being silently treated as public declarations.
 Impl bounds and targets are module-visible trait-resolution state and are
-observed by the complete persistent TypeEnv v3 transport identity instead.
+observed by the complete persistent TypeEnv v5 transport identity instead.
 Neither identity establishes final linked-artifact freshness: the current
 runnable-artifact lane continues to use its whole resolved source-group input
 identity and compile configuration. Consequently an impl-only edit is expected
@@ -632,7 +670,7 @@ clean/warm parity, alpha-rename invariance under method-over-header scope, and
 identity changes for binder association, arity, bounds, signatures, and free
 nominal names. The interface observation deliberately continues to read method
 generic rows from source `STrait`; the same provenance is independently retained
-in TypeEnv v3. Issue #1379 additionally defines a narrow, length-delimited
+in TypeEnv v5. Issue #1379 additionally defines a narrow, length-delimited
 `CheckedTypeDefsArtifact` v1 for retained `type_defs`, aligned declaration
 binders, and the authoritative semantic `final_subst` chain. `SubstCached`
 acceleration-bearing substitutions are rejected rather than normalized or
@@ -640,10 +678,11 @@ serialized: no invariant establishes that their maps are semantically equivalent
 to the rest chain, and v1 excludes them until the `Map[Type]` codegen issue is
 fixed. It is not a full
 CheckedProgram/TypeEnv artifact, typed IR, cache key/reuse input, interface,
-import contract, or trace schema; it leaves schema 6, interface v2, and
-TypeEnv v3 unchanged. `TDEffect` operation declarations, `CtFn` effect text, and
-accepted final `SubstEffBind` chains are therefore already inside that narrow
-artifact. Effect-set declarations are retained separately as the opaque
+import contract, or trace schema; that historical slice left schema 6,
+interface v2, and the then-current TypeEnv v3 unchanged. Current production has
+since moved to TypeEnv-v5. `TDEffect` operation declarations, `CtFn` effect text,
+and accepted final `SubstEffBind` chains are therefore already inside that
+narrow artifact. Effect-set declarations are retained separately as the opaque
 `CheckedEffectSetDeclarationsObservation`, derived from a successful
 `CheckedProgram` without reparsing source. Its deterministic length-delimited
 snapshot preserves recursive module-name paths, export bits, declaration order,
@@ -723,7 +762,7 @@ type-free, post-desugar/artifact-local rather than source- or edit-stable, and
 is not connected to full checked bodies, typed IR, imports, interfaces, traces,
 caches, or reuse policy.
 Trait/impl regressions prove impl-bound and impl-target edits change the
-complete persistent TypeEnv v3 transport observation while leaving the
+complete persistent TypeEnv v5 transport observation while leaving the
 exported-interface observation unchanged; the bound case also leaves the
 value-only checked-env observation unchanged. Exported type derives,
 trait-supertrait edges, effect operation signatures, and effectset members are
@@ -856,12 +895,12 @@ claim, and failed/no-nonce plus LSP/check-only stale-sidecar removal.
 1. Record the current edit-cycle baseline and add cache/invalidation telemetry.
 2. Observe source, canonical token-stream implementation, and interface
    identities; prove invalidation-plan properties in Lean and compare real traces
-   with the oracle. **Promotion gate:** replace the provisional token-stream
-   identity only after a
-   normalized typed-IR serializer has deterministic round-trip/differential
-   coverage and clean-build artifact parity; only then propose cache-key or
-   reuse-policy changes.
-3. Cache a minimal typed module/SCC artifact and require clean-build parity.
+   with the oracle. This observation phase is complete for the bounded corpus;
+   the provisional token stream is not production authority.
+3. Produce a lossless checked-body or normalized typed-IR identity with
+   deterministic round-trip/differential coverage and clean-build artifact
+   parity. Only then propose owner cache-key or reuse-policy changes, and cache a
+   minimal typed module/SCC artifact.
 4. Add generic-template and specialization caches only after their assumptions
    are explicit.
 5. Introduce deterministic object fragments and reduce whole-program barriers.
