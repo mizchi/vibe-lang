@@ -9837,9 +9837,10 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
                   ], -1))
                 }
               } else if scps_contains_susp(v, sctx) {
-                // #1536: a selection that IS the whole bound value distributes
-                // the binding and the continuation into its branches instead.
-                match scps_bind_selection_distribute(false, x, v, b, off, site) {
+                // #1536: a block or a selection that IS the whole bound value
+                // moves the binding inward instead of asking the compound ANF
+                // to walk a position it cannot.
+                match scps_bind_value_float(false, x, v, b, off, site) {
                   Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
                   None => {
                     // #1536 (a) v8: the value is a compound around the suspension.
@@ -10106,10 +10107,10 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           (false, e)
         },
         ELetMut(x, v, b, off) => if scps_contains_susp(v, sctx) {
-          // #1536: selection-valued initializer -- distribute the `let mut`
-          // and its continuation into the branches. Each branch then boxes
-          // its own copy of the continuation, which is what the cell is for.
-          match scps_bind_selection_distribute(true, x, v, b, off, site) {
+          // #1536: block- or selection-valued initializer -- move the
+          // `let mut` inward. A distributed branch then boxes its own copy of
+          // the continuation, which is what the cell is for.
+          match scps_bind_value_float(true, x, v, b, off, site) {
             Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
             None => {
               // #1536 (a) v8: compound initializer. The binders wrap outside
@@ -11646,6 +11647,37 @@ fn scps_bind_float_match_arms(arms: Array[(Pat, Expr)], is_mut: Bool, x: String,
   out
 }
 
+/// #1536: `let x = { stmt.. ; value } REST` -- a BLOCK as the whole bound
+/// value. The block's statement prefix runs before the value either way, so
+/// the binding can simply move inward past it and let the ordinary spine pick
+/// the prefix up:
+///
+///   let x = { a; v }        REST  ==>  a;              let x = v  REST
+///   let x = { let y = e; v} REST  ==>  let y' = e;     let x = v[y:=y']  REST
+///
+/// A floated `let` binder widens its scope over the continuation, so it is
+/// alpha-renamed first (`REST` was outside the block, so a name free there
+/// refers to an outer binding) -- the same rule and the same fresh-name probe
+/// the sequence-head float uses.
+///
+/// This is what makes a branch with statements in it work after the selection
+/// distribution below: `if c { log(); perform Op() }` becomes a block-valued
+/// binding in the branch it was distributed into.
+fn scps_bind_block_float(is_mut: Bool, x: String, v: Expr, b: Expr, off: Int, site: Int) -> Option[Expr] {
+  match v {
+    ESeq(a, v2) => Some(ESeq(a, scps_mk_bind(is_mut, x, v2, b, off))),
+    ELet(y, v1, v2, o) => {
+      let ny = scps_seq_float_fresh(y, v2, b, site)
+      Some(ELet(ny, v1, scps_mk_bind(is_mut, x, scps_rename_ident(v2, y, ny), b, off), o))
+    },
+    ELetMut(y, v1, v2, o) => {
+      let ny = scps_seq_float_fresh(y, v2, b, site)
+      Some(ELetMut(ny, v1, scps_mk_bind(is_mut, x, scps_rename_ident(v2, y, ny), b, off), o))
+    },
+    _ => None
+  }
+}
+
 /// #1536: `let x = <if/match> REST` where the selection is the WHOLE bound
 /// value. Naming a suspension that lives in one branch is not available here
 /// -- it would run the operation on the path that does not select that branch
@@ -11677,6 +11709,17 @@ fn scps_bind_selection_distribute(is_mut: Bool, x: String, v: Expr, b: Expr, off
       EMatch(s, arms) => Some(EMatch(s, scps_bind_float_match_arms(arms, is_mut, x, b, off, site))),
       _ => None
     }
+  }
+}
+
+/// #1536: move a `let` / `let mut` inward through the shape of its own value.
+/// Both rewrites below strictly shrink that value, so re-splitting the result
+/// converges: a block-valued selection branch floats its statement prefix out,
+/// then binds whatever the branch actually evaluates to.
+fn scps_bind_value_float(is_mut: Bool, x: String, v: Expr, b: Expr, off: Int, site: Int) -> Option[Expr] {
+  match scps_bind_block_float(is_mut, x, v, b, off, site) {
+    Some(lowered) => Some(lowered),
+    None => scps_bind_selection_distribute(is_mut, x, v, b, off, site)
   }
 }
 

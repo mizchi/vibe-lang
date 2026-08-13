@@ -6894,6 +6894,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_let_selection_suspend_test.vibe \
   fixtures/effect_let_selection_match_capture_test.vibe \
   fixtures/effect_letmut_selection_suspend_test.vibe
+# #1536 block-valued bindings: `let x = { stmt..; value }` moves the binding
+# inward past the statement prefix, so the ordinary spine picks the prefix up.
+# The snapshot pins the prefix running once per binding and that a `let` inside
+# the block cannot capture the continuation's outer name when it floats.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_let_block_value_suspend_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
