@@ -190,7 +190,10 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   **non-tail の `&&` / `||`** (同じく右辺へは降りず短絡式を丸ごと名前に束ねる。
   受け側の let-shortcircuit が受理すると判定手続き自身に訊いてからのみ、追記53。
   bypass は保たれる)
-- **不適格**: ループ内 `return`、配列 `for` 形、**選ばれた `&&` / `||` 右辺が
+- **不適格**: **split される body 自身の spine 上の `return`** (ループ内に限らない。
+  変換後の部品は step を返すので `return` は関数を抜けない — 以前は compile が通って
+  実行時に trap していた。nested closure 内の `return` はその closure を指すので適格、
+  追記54)、配列 `for` 形、**選ばれた `&&` / `||` 右辺が
   `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested
