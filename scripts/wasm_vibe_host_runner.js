@@ -1537,15 +1537,24 @@ function dumpCoverage(reason) {
       const fnName = cov.names[owner] ?? `#${owner}`;
       const hit = bytes[covb.base + i] ? 1 : 0;
       bhit += hit;
-      const e = perFn.get(fnName) ?? { total: 0, hit: 0 };
+      const e = perFn.get(fnName) ?? { total: 0, hit: 0, bits: [] };
       e.total += 1;
       e.hit += hit;
+      e.bits.push(hit);
       perFn.set(fnName, e);
     }
     const branchPerFn = {};
     const branchGaps = [];
     for (const [fn, e] of perFn) {
-      branchPerFn[fn] = e;
+      // #1556: `mask` gives each branch an identity that survives across
+      // separately-linked entry programs. Global branch indices are per-program
+      // and meaningless to compare, but the ORDINAL of a branch within its
+      // owning function comes from lowering that function's body, so
+      // (source-qualified fn name, ordinal) names the same source branch in
+      // every entry that links the function. That pair is what lets the suite
+      // report compute an exact branch UNION instead of only entry-weighted
+      // sums. One char per branch ('1' taken / '0' not), ordinal-ascending.
+      branchPerFn[fn] = { total: e.total, hit: e.hit, mask: e.bits.join("") };
       if (e.hit < e.total) {
         branchGaps.push({ fn, taken: e.hit, total: e.total });
       }

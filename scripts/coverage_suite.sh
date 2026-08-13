@@ -13,25 +13,33 @@
 # Report: _build/coverage/selfhost-suite/selfhost_suite.report.json
 #   { cases: [{entry_path, ok, fn_hit, fn_total, branch_hit, branch_total}],
 #     function_union: {hit, total, rate},
+#     branch_union: {hit, total, rate, exact},
 #     entry_weighted: {function: {hit, total, rate}, branch: {hit, total, rate}},
 #     entries_total/entries_passed/case_rate,
-#     top_branch_gaps: [{entry_path, branch_hit, branch_total, branch_miss}] }
-# `function_union` is the primary source-function metric. Entry-weighted
-# function/branch values retain the existing gate semantics; branch IDs are not
-# available in the per-entry JSON, so branch union cannot be computed exactly.
+#     top_branch_gaps: [{entry_path, branch_hit, branch_total, branch_miss}],
+#     top_branch_union_gaps: [{fn, branch_hit, branch_total, branch_miss}] }
+# `function_union` / `branch_union` (#1556) are the primary source metrics:
+# each source function / branch counted once no matter how many entries link
+# it. The entry-weighted values retain the existing gate semantics and are
+# NOT source coverage -- their denominator is summed per entry, so the same
+# imported module is counted once per test file that pulls it in.
 #
-# Thresholds (percent, env-overridable; shard defaults live in
-# scripts/pkfire/gates_shard.sh — raise them as coverage improves,
-# lowering needs a rationale in the PR):
-#   VIBE_SUITE_MIN_POINT_RATE  — minimum FUNCTION coverage (fn hit/total)
-#   VIBE_SUITE_MIN_LINE_RATE   — minimum CASE PASS rate (entries green)
-#   VIBE_SUITE_MIN_BRANCH_RATE — minimum BRANCH coverage (branch hit/total)
-#   VIBE_SUITE_MIN_FN_HIT      — minimum ABSOLUTE covered functions
-#   VIBE_SUITE_MIN_BRANCH_HIT  — minimum ABSOLUTE covered branches
+# Thresholds (percent, env-overridable; this file is the ONE place they are
+# defined — raise them as coverage improves, lowering needs a rationale in
+# the PR):
+#   VIBE_SUITE_MIN_POINT_RATE        — minimum entry-weighted FUNCTION rate
+#   VIBE_SUITE_MIN_LINE_RATE         — minimum CASE PASS rate (entries green)
+#   VIBE_SUITE_MIN_BRANCH_RATE       — minimum entry-weighted BRANCH rate
+#   VIBE_SUITE_MIN_FN_HIT            — minimum ABSOLUTE covered functions
+#   VIBE_SUITE_MIN_BRANCH_HIT        — minimum ABSOLUTE covered branches
+#   VIBE_SUITE_MIN_BRANCH_UNION_HIT  — minimum UNION covered branches
+#   VIBE_SUITE_MIN_BRANCH_UNION_RATE — minimum UNION branch rate
 #
-# The ABSOLUTE minimums are the primary ratchet: adding a test entry can only
-# raise them, while the RATE floors would punish it (a new entry grows the
-# denominator by its whole import closure). Rates are kept as loose floors.
+# Among the ENTRY-WEIGHTED metrics the ABSOLUTE minimums are the primary
+# ratchet: adding a test entry can only raise them, while their RATE floors
+# would punish it (a new entry grows the denominator by its whole import
+# closure). Those rates are kept as loose floors. The UNION rate has no such
+# problem and is ratcheted directly.
 #
 # Baseline (2026-07-03, 93 allowlist entries, full-visibility #716 stage2):
 #   functions 2263/6491 (34.86%), branches 3814/41967 (9.09%), cases 92/93
@@ -97,6 +105,30 @@ MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
 MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-6}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-42000}"
 MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
+# #1556: branch UNION floors. Unlike the entry-weighted numbers above, these
+# count each source branch once no matter how many entries link it, so the
+# rate is the one the issue's "branch coverage >= 60%" target is stated
+# against. Raise as coverage improves; lowering needs a rationale in the PR.
+#
+# Baseline (2026-08-13, 575 entries, all green, at 85f2ace): branch union
+# 25,131/45,638 (55.07%), function union 12,820/14,907 (86.00%). Note how far
+# these sit from the entry-weighted numbers on the SAME run (branches 6.23%,
+# functions 14.04%) -- that gap is entirely denominator dilution, not coverage.
+# Measured at 6df97b0 too (55.08%), so the metric is stable across bases.
+# Floors are set just under the actuals, same convention as the ratchets above.
+#
+# Both figures went UP slightly when union_key started source-qualifying the
+# entry-local synthesized names (Codex review on #1668): the un-merged
+# `__test_<name>` collisions and the 575 separate `_start` wrappers are now
+# counted individually instead of collapsing onto one key. The branch RATE is
+# unchanged (55.07%) -- numerator and denominator grew together, which is what
+# de-merging distinct functions should do.
+#
+# Unlike the entry-weighted RATE floors, this rate is safe to ratchet: adding a
+# test entry cannot dilute it (a branch is counted once no matter how many
+# entries link it), so a new entry can only hold it level or push it up.
+MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-24500}"
+MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-54}"
 
 ALLOWLIST="$(mktemp -t vibe-coverage-entries-XXXXXX)"
 trap 'rm -f "$ALLOWLIST"' EXIT
@@ -110,7 +142,12 @@ COV_DIR="_build/vibe_test/coverage"
 # from another revision, yielding stale coverage failures or false greens.
 cli="${VIBE_SUITE_CLI_WASM:-${VIBE_STAGE2_WASM:-}}"
 if [ -z "$cli" ]; then
-  revision="$(git rev-parse --short=8 HEAD 2>/dev/null || true)"
+  # Must match how scripts/generations.sh NAMES the directory, which uses a
+  # bare `--short` (core.abbrev, 7 by default). Asking for `--short=8` here
+  # made the glob miss every locally-built generation, so the lookup always
+  # fell through to the "no stage2 built for this checkout" error even
+  # straight after a successful build.
+  revision="$(git rev-parse --short HEAD 2>/dev/null || true)"
   if [ -n "$revision" ]; then
     gen="$(ls -d "_build/selfhost/generations/"*"_${revision}/" 2>/dev/null | head -1 || true)"
   else
@@ -203,4 +240,4 @@ esac
 VIBE_TEST_CLI_WASM="$cli_abs" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
   | tee "$run_log" || true
 
-python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT"
+python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" "$MIN_BRANCH_UNION_HIT" "$MIN_BRANCH_UNION"

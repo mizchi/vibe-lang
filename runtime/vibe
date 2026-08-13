@@ -57,6 +57,15 @@
 #                                         captures -- the ones codegen boxes into
 #                                         a heap ref cell instead of a wasm local
 #                                         (NAME START END per line; empty = none)
+#   vibe deps [--direct] <file.vibe>      print the resolved import closure, one
+#                                         path per line, dependency first (#988).
+#                                         The loader's OWN collection (what the
+#                                         build compiles), so it cannot drift
+#                                         from real resolution. Errors are fatal
+#                                         (a truncated list is a wrong answer).
+#                                         --direct = one hop only; use it to
+#                                         build an index, since a cache over
+#                                         direct edges invalidates per file.
 #   vibe diagnostics <file.vibe>          DEPRECATED (#1567): use
 #                                         `vibe check --single-file`. Kept
 #                                         unchanged (raw lines, always exit 0)
@@ -1239,6 +1248,59 @@ case "$cmd" in
     fi
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
+  deps)
+    # vibe deps <file.vibe>   (#988)
+    #
+    # Print the RESOLVED import closure of the file, one repo-relative path per
+    # line, dependency before dependent, the file itself excluded. Empty output
+    # means it imports nothing.
+    #
+    # This is the loader's own collection -- literally the source set the build
+    # compiles for this entry -- not a separately-derived import graph. That
+    # distinction is the point: a hand-rolled graph drifts from real resolution
+    # (`index.vibe` facades, `.vpkg` contracts plus their sibling impls,
+    # `@scope/pkg` resolving to `.vibe/store` vs `lib/`, directory-shared vpkg
+    # imports, re-exports), and a drifting graph UNDER-selects -- it silently
+    # skips the test that would have caught the change.
+    #
+    # Unlike every other query verb here, an error is FATAL (non-zero exit, no
+    # stdout). A truncated dep list is not a degraded answer, it is a wrong one:
+    # callers select tests from it, so half a list means silently skipping
+    # tests. Better to fail loudly and let the caller fall back to running
+    # everything.
+    #
+    # `--direct` reports one hop instead of the closure. Prefer it when
+    # BUILDING an index: a file's direct deps are a function of that file's
+    # text alone, so a cache over them invalidates per file, the same
+    # granularity the compiler's own header cache uses. A closure has no such
+    # property -- any edit anywhere inside it invalidates the whole thing.
+    deps_direct=0
+    src=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --direct) deps_direct=1; shift ;;
+        *) [ -z "$src" ] || die "usage: vibe deps [--direct] <file.vibe>"; src="$1"; shift ;;
+      esac
+    done
+    [ -n "$src" ] || die "usage: vibe deps [--direct] <file.vibe>"
+    [ -f "$src" ] || die "not found: $src"
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-deps-XXXXXX)"
+    trap 'rm -f "$out" "$out.diag"' EXIT
+    deps_direct_env=""
+    [ "$deps_direct" = "1" ] && deps_direct_env="VIBE_DEPS_DIRECT=1"
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_COVERAGE -u VIBE_DEBUG \
+        -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE -u VIBE_CHECK_ONLY \
+      VIBE_DEPS=1 ${deps_direct_env} \
+      VIBE_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out.diag" ]; then
+      echo "error: $(cat "$out.diag")" >&2
+      exit 1
+    fi
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
   diagnostics)
     # vibe diagnostics [--json] <file.vibe>
     #
@@ -1370,7 +1432,7 @@ case "$cmd" in
       # Clear inherited adapter-mode envs so a leaked selector can't divert this
       # into compiling and emitting wasm bytes as "matches".
       env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-          -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_COVERAGE -u VIBE_DEBUG \
+          -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
           -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_GREP=1 \
         VIBE_GREP_PATTERN="$g_pattern" \
@@ -1418,7 +1480,7 @@ case "$cmd" in
     # write a hash/report as $out and the default write mode would copy it
     # OVER the user's source file.
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_COVERAGE -u VIBE_DEBUG \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         -u VIBE_HASH -u VIBE_HASH_WRITE \
         -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \

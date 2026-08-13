@@ -8,7 +8,43 @@ import {
   computeNextBranchEntries,
   parseArgs,
   presetExtraEntries,
+  topBranchUnionGaps,
 } from "./coverage_suite_next_branches.mjs";
+
+test("topBranchUnionGaps: drops malformed rows and keeps well-formed ones", () => {
+  const report = {
+    top_branch_union_gaps: [
+      { fn: "f", branch_hit: 1, branch_total: 4, branch_miss: 3 },
+      { fn: "g", branch_hit: 1, branch_total: 2 },
+      { branch_hit: 0, branch_total: 2, branch_miss: 2 },
+    ],
+  };
+  assert.deepEqual(topBranchUnionGaps(report), [
+    { fn: "f", branch_hit: 1, branch_total: 4, branch_miss: 3 },
+  ]);
+});
+
+test("topBranchUnionGaps: absent section yields no rows", () => {
+  assert.deepEqual(topBranchUnionGaps({}), []);
+});
+
+test("buildTextReport: reports the branch union and its gaps", () => {
+  const text = buildTextReport({
+    branch_union: { hit: 3, total: 10, rate: 30.0, exact: true },
+    top_branch_union_gaps: [{ fn: "f", branch_hit: 1, branch_total: 4, branch_miss: 3 }],
+    cases: [],
+  }, "r.json");
+  assert.match(text, /branch_union: 3\/10 \(30%\)/);
+  assert.match(text, /- f 3 missed \(1\/4\)/);
+});
+
+test("buildTextReport: marks a non-exact branch union as a lower bound", () => {
+  const text = buildTextReport({
+    branch_union: { hit: 3, total: 10, rate: 30.0, exact: false },
+    cases: [],
+  }, "r.json");
+  assert.match(text, /branch_union: 3\/10 \(30%\) \(lower bound\)/);
+});
 
 test("parseArgs: default path and text format", () => {
   const args = parseArgs([]);
