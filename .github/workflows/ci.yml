@@ -507,6 +507,31 @@ jobs:
         run: |
           VIBE_SUITE_CLI_WASM="_build/_ci_shard_gen/stage2.wasm" \
             bash scripts/coverage_suite.sh
+      - name: Coverage summary (#1556)
+        # Put the union rates on the run's summary page so the current value is
+        # visible without downloading the artifact or scrolling the log -- the
+        # union numbers are the source-coverage ones (each function/branch
+        # counted once); the entry-weighted pair is kept for continuity with
+        # the older gate and is NOT source coverage.
+        if: always()
+        run: |
+          report=_build/coverage/selfhost-suite/selfhost_suite.report.json
+          [ -f "$report" ] || exit 0
+          python3 - "$report" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          fu, bu, w = r["function_union"], r["branch_union"], r["entry_weighted"]
+          print("### selfhost suite coverage\n")
+          print("| metric | hit | total | rate |")
+          print("| --- | ---: | ---: | ---: |")
+          for name, m in (("branch union", bu), ("function union", fu),
+                          ("branch (entry-weighted)", w["branch"]),
+                          ("function (entry-weighted)", w["function"])):
+              print(f"| {name} | {m['hit']} | {m['total']} | {m['rate']}% |")
+          print(f"\ncases {r['entries_passed']}/{r['entries_total']} ({r['case_rate']}%)")
+          if not bu["exact"]:
+              print("\n> branch union is a LOWER BOUND (some entries reported no branch mask).")
+          PY
       - name: Upload compiler suite coverage report
         if: always()
         uses: actions/upload-artifact@v4

@@ -48,6 +48,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/compiler/loader {
+  collect_source_groups_fs,
   contract_package_hashes_fs,
   fill_require_pins_fs_mode,
   find_deps_missing,
@@ -141,6 +142,65 @@ fn join_lines(items: Array[String]) -> String {
     }
     StringBuilder::freeze(acc)
   }
+}
+
+/// Flatten `collect_source_groups_fs`'s grouped `(path, source)` result into
+/// the dependency paths alone, one per line, entry excluded (#988).
+///
+/// The set is taken from the loader's OWN collection -- the very sources the
+/// build compiles for this entry -- rather than re-deriving an import graph.
+/// That is the whole point: a separately-maintained graph drifts from the
+/// resolution the compiler actually performs (`index.vibe` facades, `.vpkg`
+/// contracts + their sibling impls, `@scope/pkg` resolving to `.vibe/store`
+/// vs `lib/`, directory-shared vpkg imports, re-exports), and a resolver that
+/// drifts UNDER-selects -- it silently skips the test that would have caught
+/// the change.
+///
+/// Duplicate paths are dropped (a source can appear in more than one group);
+/// order follows collection order, which is dependency-before-dependent.
+fn join_dep_paths(groups: Array[(String, Array[(String, String)])], entry_path: String) -> String {
+  let acc = StringBuilder::new()
+  // Same typed-empty idiom as adapter_split_nonempty_lines below.
+  let seen = Array::slice([
+    ""
+  ], 0, 0)
+  let mut first = true
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, gsources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(gsources) {
+      let (path, _) = Array::get(gsources, si)
+      if path == entry_path || adapter_string_array_contains(seen, path) {
+        ()
+      } else {
+        Array::push(seen, path)
+        if first {
+          StringBuilder::push(acc, path)
+          first = false
+        } else {
+          StringBuilder::push(acc, String::concat("\n", path))
+        }
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn adapter_string_array_contains(items: Array[String], needle: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    if Array::get(items, i) == needle {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// Render `vibe symbols` records as one `NAME KIND START END` line per declared
@@ -1235,6 +1295,48 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       let src = Fs::read_file(input_path)
       let esc = escape_spans(src)
       Fs::write_bytes(output_path, adapter_string_to_bytes(join_escape_spans(esc)))
+      0
+    } with Exception {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  }
+  // `vibe deps` (#988): the resolved import closure of `input_path` -- one
+  // repo-relative path per line, the entry itself excluded, dependency before
+  // dependent. Empty output means the file imports nothing.
+  //
+  // This is the SAME collection the build performs (collect_source_groups_fs),
+  // not a re-derived graph, so it cannot drift from what the compiler actually
+  // resolves. It also rides the incremental build's persistent header cache
+  // (keyed by path + source fingerprint), so re-asking after an unrelated edit
+  // re-parses only the files that changed.
+  //
+  // An unresolvable import IS an error and goes to the `.diag` sidecar (same
+  // convention as VIBE_SYMBOLS), because a caller selecting tests from a
+  // truncated dep list would silently under-select.
+  //
+  // `VIBE_DEPS_DIRECT=1` (`vibe deps --direct`) reports ONE HOP instead: the
+  // file's own resolved imports. That is the form a dependency index wants,
+  // because its cache invalidation then matches the compiler's own -- a file's
+  // direct deps are a function of that file's text alone (which is exactly what
+  // load_or_parse_module_header_fs keys its persistent cache on), so editing
+  // one file re-queries one file. Transitive closures do not have that
+  // property: any edit anywhere in a closure invalidates the whole closure.
+  // Callers that want the closure can walk the direct edges themselves.
+  if Env::get("VIBE_DEPS") == "1" {
+    return handle {
+      if Env::get("VIBE_DEPS_DIRECT") == "1" {
+        // Ingest first, exactly as the collection walk does: a `.vpkg`
+        // contract's imports live in its DESUGARED facade, and a directory
+        // with shared vpkg imports injects them into each member. Reading the
+        // raw bytes instead would under-report both.
+        let raw = Fs::read_file(input_path)
+        let source = ingest_source_text_fs(input_path, raw)
+        let (deps, _, _) = load_or_parse_module_header_fs(input_path, source, 0)
+        Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(deps)))
+      } else {
+        let groups = collect_source_groups_fs(input_path)
+        Fs::write_bytes(output_path, adapter_string_to_bytes(join_dep_paths(groups, input_path)))
+      }
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)

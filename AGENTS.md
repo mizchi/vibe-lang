@@ -88,7 +88,8 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
 pkf list                  # show all tasks
 pkf run                   # default: release-check (full sign-off)
 pkf run test              # operation gate (commit 前の主チェック)
-pkf run test-local        # affected tests only (fast inner loop)
+pkf run test-affected     # affected tests only, import-graph selected (#988)
+pkf run test-local        # flaker lane (directory-based selection — see caveat)
 pkf run full-gate         # complete operation gate
 pkf run run -- args       # run main with args
 # 型検査 / 診断: vibe check <file.vibe> (空出力 = clean、診断ありは exit 1)
@@ -271,6 +272,19 @@ vibe check --single-file --json file.vibe
 # 空出力 = ファイル中の `let mut` は全部ただの local
 vibe escapes file.vibe
 
+# 解決済みの import closure (1行1パス、依存先が先、自分自身は除く。#988)。
+# ローダ自身の収集結果 = ビルドが実際にコンパイルする集合なので、実解決
+# (index.vibe facade・.vpkg contract とその兄弟実装・@scope/pkg の
+# store/lib 解決・directory-shared vpkg import・re-export) からずれない。
+# 空出力 = import 無し。**エラーは fatal** (途中まで出た依存リストは
+# 「劣化した答え」ではなく誤答なので、黙って返さない)
+vibe deps file.vibe
+# --direct は 1 hop だけ。index を作るならこちら — 直接エッジはそのファイルの
+# テキストだけの関数なので、キャッシュ無効化がコンパイラの header cache と
+# 同じ粒度になる (1 ファイル編集 → 1 ファイル再問い合わせ)。closure は
+# 中のどこが変わっても全体が無効になるのでこの性質を持たない
+vibe deps --direct file.vibe
+
 # AST パターン検索 (#1572)。上の4つが「位置 → 意味」なのに対しこれは逆向きの
 # 「構造 → 位置」。メタ変数は `$(name:kind)` (kind: exp/id/const/arg/args/pat/type)。
 # 出力は 1件1行 `path:line:col: <マッチ本文>` + tab 区切りの `$var=<capture>`。
@@ -338,7 +352,10 @@ completion / signature help を提供する。詳細は
 
 - `pkf run test` — operation gate (`scripts/compiler_gate.sh`)。commit 前の主チェック。
 - `pkf run release-check` — full gate (fmt + info + check + test + operation gates)。
-- `pkf run test-local` — 変更影響範囲のテストのみ (fast inner loop、flaker 経由)。
+- `pkf run test-affected` — 変更影響範囲のテストのみ (fast inner loop)。選択は
+  コンパイラ自身の解決済み import グラフ (`vibe deps`) を遡る。判定できない
+  変更は全件に倒れる。`pkf run test-local` (flaker) はディレクトリ選択なので
+  別ディレクトリの依存元を落とす — 詳細は "Local Test Execution" 節。
 - 型検査 / 診断は `vibe check <file.vibe>`（空出力 = clean、診断ありは stdout に
   1件1行 + exit 1）。import は FS から解決するので、これ単体で可否を判定できる。
   **未保存バッファ相当の単一ファイル解析が要るときだけ `--single-file`** を足す
@@ -429,21 +446,39 @@ P2 = 機能追加)。「重要そう」は優先度に入れない。新規起�
 
 ## Local Test Execution
 
-ローカルでのテスト実行には `pkf run test-local` を使う。全テスト（1162件、~2分）を毎回流す必要はない。
-これは `scripts/flaker_run.sh` 経由で `flaker` を起動するため、mise の symlink 経由で CLI が no-op になる問題を避けられる。
+**変更影響範囲だけ回すなら `pkf run test-affected` を使う** (#988)。全テストを
+毎回流す必要はない。
 
 ```bash
-# 変更に影響するテストだけ実行（推奨、時間制約120秒）
-pkf run test-local
-
-# CI と同じ hybrid サンプリング（30%）
-pkf run test-local -- --profile ci
-
-# 全テスト実行（データ蓄積用、定期的に）
-pkf run test-local -- --profile scheduled
+pkf run test-affected                       # origin/main との merge-base から差分を取る
+pkf run test-affected -- --dry-run          # 選ばれるファイルを出すだけ
+pkf run test-affected -- --explain          # なぜ選ばれたか (変更 → import 経路) を stderr へ
+pkf run test-affected -- --changed lib/@vibe/parser/token.vibe   # 明示指定
 ```
 
-`pkf run test-local` はデフォルトで `--profile local`（affected 戦略）を使い、`git diff` から影響範囲のテストだけを選択する。データが蓄積されるほど選択精度が上がる。
+選択は**コンパイラ自身が解決した import グラフ**を遡る (`vibe deps --direct` →
+`scripts/affected_tests.mjs`)。グラフを別途導出していないので、`index.vibe`
+facade・`.vpkg` contract とその兄弟実装・`@scope/pkg` の store/lib 解決・
+directory-shared vpkg import・re-export といった実際の解決規則から**ずれない**。
+インクリメンタルビルドの persistent header cache に乗るので、1 ファイル編集なら
+再問い合わせも 1 ファイル (index 全構築は 1068 files / ~32s、warm は ~0.3s)。
+
+**判定できないときは必ず全件に倒れる** (fail open)。import グラフの外の変更
+(`scripts/`・seed・`Taskfile.pkl`・`fixtures/`)、stage2 が無い、index が
+不完全 — いずれも selector が exit 2 を返し、`test_affected.sh` は全件実行に
+切り替える。「判定できなかった」と「影響なし」が同じ green になってはいけない。
+
+> **`pkf run test-local` (flaker) は選択が信用できない。** flaker.toml の
+> `[affected] resolver = "simple"` は**ディレクトリ**で選ぶので、別ディレクトリ
+> から import しているテストを落とす。実測 (575 entries): `core/types.vibe` の
+> 変更は実際には 217 件に影響するが **0 件**しか選ばれない (そのディレクトリに
+> `*_test.vibe` が無いため)。`parser/token.vibe` は 190 件に対して 1 件。
+> flaker 側に custom resolver フックを入れるのが #988 の残り半分。
+
+```bash
+pkf run test-local -- --profile ci          # CI と同じ hybrid サンプリング (30%)
+pkf run test-local -- --profile scheduled   # 全テスト (データ蓄積用)
+```
 
 `pkf run test` は全テスト実行。commit 前の最終確認や CI 用。
 

@@ -106,13 +106,45 @@ export function topNonAggregateBranchGaps(report) {
   );
 }
 
+// #1556: functions with unreached branches after unioning every entry.  Unlike
+// top_branch_gaps (which ranks ENTRIES, so it mostly surfaces whichever entry
+// links the largest import closure) this names the source to write tests
+// against.  One line per function so the output stays greppable.
+export function topBranchUnionGaps(report) {
+  if (!Array.isArray(report?.top_branch_union_gaps)) {
+    return [];
+  }
+  return report.top_branch_union_gaps.filter(
+    (item) =>
+      item &&
+      typeof item.fn === "string" &&
+      typeof item.branch_miss === "number" &&
+      typeof item.branch_total === "number" &&
+      typeof item.branch_hit === "number",
+  );
+}
+
 export function buildTextReport(report, reportPath) {
   const nextEntries = computeNextBranchEntries(report);
   const gaps = topBranchGaps(report);
   const nonAggregateGaps = topNonAggregateBranchGaps(report);
+  const unionGaps = topBranchUnionGaps(report);
   const lines = [];
   lines.push("selfhost suite next branch targets");
   lines.push(`report: ${reportPath}`);
+  if (report?.branch_union) {
+    const u = report.branch_union;
+    const bound = u.exact === false ? " (lower bound)" : "";
+    lines.push(`branch_union: ${u.hit}/${u.total} (${u.rate}%)${bound}`);
+  }
+  if (unionGaps.length > 0) {
+    lines.push("top_branch_union_gaps:");
+    for (const gap of unionGaps) {
+      lines.push(
+        `- ${gap.fn} ${gap.branch_miss} missed (${gap.branch_hit}/${gap.branch_total})`,
+      );
+    }
+  }
   if (gaps.length > 0) {
     lines.push("top_branch_gaps:");
     for (const gap of gaps) {
@@ -144,6 +176,8 @@ export function buildJsonReport(report, reportPath) {
   return JSON.stringify(
     {
       report_path: reportPath,
+      branch_union: report?.branch_union ?? null,
+      top_branch_union_gaps: topBranchUnionGaps(report),
       top_branch_gaps: topBranchGaps(report),
       top_non_aggregate_branch_gaps: topNonAggregateBranchGaps(report),
       suggested_extra_entries: computeNextBranchEntries(report),

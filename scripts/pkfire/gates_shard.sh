@@ -57,18 +57,14 @@ case "$shard" in
     bash scripts/test_check_direct_component.sh
     ;;
   coverage)
-    # Rebaselined 2026-07-05 (allowlist 110 -> 224 diluted the rates while
-    # absolute covered counts rose ~5x); rebaselined again 2026-07-15 (#801,
-    # a loader-cache fix let a previously-crashing bench test start
-    # contributing its (below-average) coverage ratio); rebaselined again
-    # 2026-07-15 (#847, mechanical index-facade reroutes grew the
-    # whole-program-merge denominator ~9.8% while absolute hit count rose)
-    # — keep in sync with the defaults in scripts/coverage_suite.sh.
-    VIBE_SUITE_MIN_POINT_RATE="${VIBE_SUITE_MIN_POINT_RATE:-20}" \
-    VIBE_SUITE_MIN_LINE_RATE="${VIBE_SUITE_MIN_LINE_RATE:-97}" \
-    VIBE_SUITE_MIN_BRANCH_RATE="${VIBE_SUITE_MIN_BRANCH_RATE:-7}" \
-    VIBE_SUITE_MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-12000}" \
-    VIBE_SUITE_MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-29000}" \
+    # The thresholds live in ONE place: the defaults in
+    # scripts/coverage_suite.sh (every one of them is env-overridable there).
+    # This shard used to duplicate them with a "keep in sync" comment and then
+    # drifted anyway -- it still pinned the pre-2026-07-25 rate floors
+    # (POINT 20 / BRANCH 7) after that rebaseline lowered them to 13/6 for
+    # actuals of 14.07%/6.35%, so running the shard failed on numbers CI (which
+    # invokes coverage_suite.sh directly) was passing. Don't re-add overrides
+    # here; change the defaults at the source instead.
     scripts/coverage_suite.sh
     ;;
   *)
