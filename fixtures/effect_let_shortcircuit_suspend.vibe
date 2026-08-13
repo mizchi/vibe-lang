@@ -1,0 +1,77 @@
+// #1536 immutable-let short-circuit lowering. Each whole let initializer may
+// conditionally suspend in its RHS. Events pin bypass/selected paths, source
+// continuation order, handler regain, and exact-once execution.
+effect Ask {
+  Get(Int) -> Bool
+}
+
+let events: Array[Int] = [
+]
+
+fn run_and(left: Bool, operation_id: Int) -> Bool {
+  handle {
+    Array::push(events, operation_id * 10 + 1)
+    let result = left && {
+      let answer = perform Ask::Get(operation_id)
+      Array::push(events, operation_id * 10 + 3)
+      answer
+    }
+    Array::push(events, operation_id * 10 + 5)
+    result
+  } with Ask {
+    Get(id) => {
+      Array::push(events, id * 10 + 2)
+      let k = resume
+      let result = k(id % 2 == 0)
+      Array::push(events, id * 10 + 4)
+      result
+    }
+  }
+}
+
+fn run_or(left: Bool, operation_id: Int) -> Bool {
+  handle {
+    Array::push(events, operation_id * 10 + 1)
+    let result = left || {
+      let answer = perform Ask::Get(operation_id)
+      Array::push(events, operation_id * 10 + 3)
+      answer
+    }
+    Array::push(events, operation_id * 10 + 5)
+    result
+  } with Ask {
+    Get(id) => {
+      Array::push(events, id * 10 + 2)
+      let k = resume
+      let result = k(id % 2 == 0)
+      Array::push(events, id * 10 + 4)
+      result
+    }
+  }
+}
+
+test "let short-circuit preserves bypass, order, and exact-once resume" {
+  let false_and = run_and(false, 1)
+  let true_and = run_and(true, 2)
+  let true_or = run_or(true, 3)
+  let false_or = run_or(false, 4)
+  inspect(false_and, "false")
+  inspect(true_and, "true")
+  inspect(true_or, "true")
+  inspect(false_or, "true")
+  inspect(Array::length(events), "14")
+  inspect(Array::get(events, 0), "11")
+  inspect(Array::get(events, 1), "15")
+  inspect(Array::get(events, 2), "21")
+  inspect(Array::get(events, 3), "22")
+  inspect(Array::get(events, 4), "23")
+  inspect(Array::get(events, 5), "25")
+  inspect(Array::get(events, 6), "24")
+  inspect(Array::get(events, 7), "31")
+  inspect(Array::get(events, 8), "35")
+  inspect(Array::get(events, 9), "41")
+  inspect(Array::get(events, 10), "42")
+  inspect(Array::get(events, 11), "43")
+  inspect(Array::get(events, 12), "45")
+  inspect(Array::get(events, 13), "44")
+}

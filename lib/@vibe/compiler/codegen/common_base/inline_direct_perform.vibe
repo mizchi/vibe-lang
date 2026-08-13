@@ -9668,6 +9668,52 @@ fn scps_anf_wrap(bn: Array[String], bv: Array[Expr], body: Expr) -> Expr {
   out
 }
 
+/// Push one immutable-let binding into the terminal of a selected short-circuit
+/// RHS block. Only parser-produced let/sequence continuation spines are
+/// traversed, and every suspending spine element must already be a direct input
+/// accepted by scps_split_tail. A plain terminal is valid only after that spine
+/// carried the selected suspension; arbitrary compound terminals stay closed.
+/// Moving the outer continuation under a traversed let widens that binder, so
+/// alpha-rename it first using the seq-float freshness contract.
+fn scps_let_shortcircuit_bind(result: String, rhs: Expr, continuation: Expr, result_off: Int, site: Int, sctx: (String, Array[String], Array[String], Int, Array[String]), carried: Bool) -> Option[Expr] {
+  match rhs {
+    ELet(x, v, b, off) => {
+      let susp = scps_contains_susp(v, sctx)
+      if susp && !scps_direct_spine_input(v, sctx) {
+        None
+      } else {
+        let nx = scps_seq_float_fresh(x, b, continuation, site)
+        match scps_let_shortcircuit_bind(result, scps_rename_ident(b, x, nx), continuation, result_off, site, sctx, carried || susp) {
+          Some(rest) => Some(ELet(nx, v, rest, off)),
+          None => None
+        }
+      }
+    },
+    ESeq(a, b) => {
+      let susp = scps_contains_susp(a, sctx)
+      if susp && !scps_direct_spine_input(a, sctx) {
+        None
+      } else {
+        match scps_let_shortcircuit_bind(result, b, continuation, result_off, site, sctx, carried || susp) {
+          Some(rest) => Some(ESeq(a, rest)),
+          None => None
+        }
+      }
+    },
+    _ => if scps_contains_susp(rhs, sctx) {
+      if scps_direct_spine_input(rhs, sctx) {
+        Some(ELet(result, rhs, continuation, result_off))
+      } else {
+        None
+      }
+    } else if carried {
+      Some(ELet(result, rhs, continuation, result_off))
+    } else {
+      None
+    }
+  }
+}
+
 fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, ops, _, site, cps_locals) = sctx
   if !scps_contains_susp(e, sctx) {
@@ -9724,78 +9770,104 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           }
         },
         ELet(x, v, b, off) => {
-          let vp = scps_as_target_perform(v, ops)
-          let vn = scps_as_needing_call(v, sctx)
-          let vc = scps_as_cps_local_call(v, sctx)
-          if vp >= 0 {
-            let vargs = scps_perform_args(v)
-            if scps_exprs_contain_susp(vargs, sctx) {
-              (false, e)
-            } else {
-              let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
-              (bok, scps_mk_yield(eff, scps_op_suffix(Array::get(ops, vp)), vargs, x, bexpr))
-            }
-          } else if vn != "" {
-            let vargs = scps_call_args(v)
-            if scps_exprs_contain_susp(vargs, sctx) {
-              (false, e)
-            } else {
-              scps_need_clone(eff, vn, st)
-              let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
-              (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
-                ECall(EIdent(scps_clone_name(eff, vn), -1), vargs, -1),
-                scps_mk_fn1(x, bexpr)
-              ], -1))
-            }
-          } else if vc != "" {
-            // closure-CPS: `let x = f(a) REST` where `f` is a step-typed
-            // closure binding -- bubble the step it returns, no clone.
-            let vargs = scps_call_args(v)
-            if scps_exprs_contain_susp(vargs, sctx) {
-              (false, e)
-            } else {
-              let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
-              (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
-                v,
-                scps_mk_fn1(x, bexpr)
-              ], -1))
-            }
-          } else if scps_contains_susp(v, sctx) {
-            // #1536 (a) v8: the value is a compound around the suspension.
-            let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
-            if aok {
-              scps_split_tail(scps_anf_wrap(abn, abv, ELet(x, av, b, off)), sctx, ctx, st)
-            } else {
-              (false, e)
-            }
-          } else {
-            // closure-CPS: a let-bound literal the prepass step-split makes
-            // `x` a step-typed binding for the rest of this spine; a
-            // non-step rebind of an existing cps-local name masks it.
-            let is_step_lit = scps_literal_is_step_for(v, eff)
-            let (_, s_ops, s_needing, s_site, s_cps) = sctx
-            let sctx2 = if is_step_lit {
-              let ext = Array::slice(s_cps, 0, Array::length(s_cps))
-              Array::push(ext, x)
-              (eff, s_ops, s_needing, s_site, ext)
-            } else if edp_str_array_contains(s_cps, x) {
-              let masked = array_empty_str()
-              let mut mi = 0
-              while mi < Array::length(s_cps) {
-                let mnm = Array::get(s_cps, mi)
-                if mnm == x {
-                  ()
+          // #1536 immutable-let short-circuit: only a whole initializer with
+          // a non-suspending left operand may distribute its binding and
+          // continuation into the conditionally evaluated branches. Generic
+          // compound ANF remains fail-closed for short-circuit RHS positions.
+          let shortcircuit = match v {
+            EBinOp(op, l, r) => if !scps_contains_susp(l, sctx) && scps_contains_susp(r, sctx) {
+              match scps_let_shortcircuit_bind(x, r, b, off, site, sctx, false) {
+                Some(selected) => if op == "&&" {
+                  Some(EIf(l, selected, ELet(x, EBool(false), b, off)))
+                } else if op == "||" {
+                  Some(EIf(l, ELet(x, EBool(true), b, off), selected))
                 } else {
-                  Array::push(masked, mnm)
-                }
-                mi = mi + 1
+                  None
+                },
+                None => None
               }
-              (eff, s_ops, s_needing, s_site, masked)
             } else {
-              sctx
+              None
+            },
+            _ => None
+          }
+          match shortcircuit {
+            Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+            None => {
+              let vp = scps_as_target_perform(v, ops)
+              let vn = scps_as_needing_call(v, sctx)
+              let vc = scps_as_cps_local_call(v, sctx)
+              if vp >= 0 {
+                let vargs = scps_perform_args(v)
+                if scps_exprs_contain_susp(vargs, sctx) {
+                  (false, e)
+                } else {
+                  let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+                  (bok, scps_mk_yield(eff, scps_op_suffix(Array::get(ops, vp)), vargs, x, bexpr))
+                }
+              } else if vn != "" {
+                let vargs = scps_call_args(v)
+                if scps_exprs_contain_susp(vargs, sctx) {
+                  (false, e)
+                } else {
+                  scps_need_clone(eff, vn, st)
+                  let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+                  (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
+                    ECall(EIdent(scps_clone_name(eff, vn), -1), vargs, -1),
+                    scps_mk_fn1(x, bexpr)
+                  ], -1))
+                }
+              } else if vc != "" {
+                // closure-CPS: `let x = f(a) REST` where `f` is a step-typed
+                // closure binding -- bubble the step it returns, no clone.
+                let vargs = scps_call_args(v)
+                if scps_exprs_contain_susp(vargs, sctx) {
+                  (false, e)
+                } else {
+                  let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+                  (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
+                    v,
+                    scps_mk_fn1(x, bexpr)
+                  ], -1))
+                }
+              } else if scps_contains_susp(v, sctx) {
+                // #1536 (a) v8: the value is a compound around the suspension.
+                let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
+                if aok {
+                  scps_split_tail(scps_anf_wrap(abn, abv, ELet(x, av, b, off)), sctx, ctx, st)
+                } else {
+                  (false, e)
+                }
+              } else {
+                // closure-CPS: a let-bound literal the prepass step-split makes
+                // `x` a step-typed binding for the rest of this spine; a
+                // non-step rebind of an existing cps-local name masks it.
+                let is_step_lit = scps_literal_is_step_for(v, eff)
+                let (_, s_ops, s_needing, s_site, s_cps) = sctx
+                let sctx2 = if is_step_lit {
+                  let ext = Array::slice(s_cps, 0, Array::length(s_cps))
+                  Array::push(ext, x)
+                  (eff, s_ops, s_needing, s_site, ext)
+                } else if edp_str_array_contains(s_cps, x) {
+                  let masked = array_empty_str()
+                  let mut mi = 0
+                  while mi < Array::length(s_cps) {
+                    let mnm = Array::get(s_cps, mi)
+                    if mnm == x {
+                      ()
+                    } else {
+                      Array::push(masked, mnm)
+                    }
+                    mi = mi + 1
+                  }
+                  (eff, s_ops, s_needing, s_site, masked)
+                } else {
+                  sctx
+                }
+                let (bok, bexpr) = scps_split_tail(b, sctx2, ctx, st)
+                (bok, ELet(x, v, bexpr, off))
+              }
             }
-            let (bok, bexpr) = scps_split_tail(b, sctx2, ctx, st)
-            (bok, ELet(x, v, bexpr, off))
           }
         },
         ESeq(a, b) => match a {

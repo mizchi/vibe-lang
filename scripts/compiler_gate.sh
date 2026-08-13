@@ -6883,7 +6883,8 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # operation order, handler visits, resumed source-continuation events, and the
 # handler regaining control afterward; exact event counts pin exact-once flow.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
-  fixtures/effect_tail_shortcircuit_suspend.vibe
+  fixtures/effect_tail_shortcircuit_suspend.vibe \
+  fixtures/effect_let_shortcircuit_suspend.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6904,6 +6905,10 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
 scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
 scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
+# Immutable-let short-circuit support does not recursively admit another
+# short-circuit or hand a suspending call argument to generic compound ANF.
+scps_check_reject "err_effect_let_shortcircuit_nested_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitnested"
+scps_check_reject "err_effect_let_shortcircuit_call_arg_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitcallarg"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other
