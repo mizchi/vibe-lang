@@ -151,7 +151,7 @@ checker の静的型から、各スロット (パラメータ / 返り値 / ロ�
 | Phase | 越えられるようになる境界 | 主な作業 | issue / 備考 |
 |---|---|---|---|
 | **A** | **返り値・引数** (非ジェネリックな直接呼び出し) | 関数型を静的型から導出。呼び出し側と定義側で型が一致することの検証 | **#1541**。acceptance の1つ目。ここだけで実用価値が出る |
-| **B** | **別名・局所束縛** | 既存の `gc_native_array_locals` の追跡を関数間へ拡張 | **#1541** (A と同一スライス)。private concrete `Array[Int]` の直接経路と 1 段の immutable local alias は着地済み。alias 経由で mutate し original 経由で読む identity fixture と native allocation site = 1 の gate で固定。それ以外の join / import / indirect call / aggregate / global は未対応のまま fail-closed |
+| **B** | **別名・局所束縛** | 既存の `gc_native_array_locals` の追跡を関数間へ拡張 | **#1541** (A と同一スライス)。private concrete `Array[Int]` の直接経路、1 段の immutable local alias、自己/相互再帰、ローカル配列の返却、両腕が参照レーンの `if` join は着地済み。identity fixture と native allocation site 数の gate で固定。import / indirect call / closure capture / aggregate / global、および裸リテラルを腕に持つ join は未対応のまま fail-closed |
 
 #### ジェネリックの共存 (2026-08-13)
 
@@ -178,6 +178,53 @@ binder は 2 か所を見る必要がある。`strip_generic_type_params` の**�
 対の fixture: `fixtures/gc_direct_array_generic_coexist_test.vibe` (島が生きる)
 と `fixtures/gc_direct_array_argument_fallback_test.vibe` (ジェネリック自身が
 `Array[Int]` を運ぶので落ちる)。
+
+#### 受理判定と escape gate の一致 (2026-08-13)
+
+**これは最適化ではなくバグ修正だった。** component 受理を決める
+`gc_direct_abi_expr_kind` と、ローカルが実際に native になるかを決める
+`gc_native_array_escape_gate` (旧 `gc_native_array_body_is_safe_tail`) は、
+別々に判断していた。前者が「この `let` は参照レーン」と受理したのに後者が
+native 化を拒否すると、呼び出し側が存在しない参照を要求し、codegen が
+`gc direct ABI proof mismatch` で**コンパイル自体に失敗する**。正しい vibe
+プログラムが落ちる:
+
+```vibe skip
+fn mutate_first(values: Array[Int]) -> Unit { Array::set(values, 0, 7) }
+
+test "..." {
+  let xs = [1, 2]
+  let peek = () -> Array::get(xs, 0)   // 捕獲 → escape gate は native を拒否
+  mutate_first(xs)                      // 受理側は参照だと思っている
+  inspect(peek(), "7")
+}
+```
+
+受理側が `let` を参照レーンへ入れる前に**同じ gate に問い合わせる**ようにした。
+gate が拒否したら束縛は普通の i64 ローカルのままで、参照を要求する呼び出しが
+あれば component ごと fallback する (fail-closed)。gate は ctx ではなく
+evidence table を直接読む形に分けてあり、両者が同じ述語を見る。
+
+副次的に、`Array::push` を使うローカルが**隣の束縛を巻き添えにしなくなった**
+— 従来は component 全体が落ちていたので、`gc_heap_churn_test` の
+`let xs = [8]; xs` (ローカル配列を返す) が linear fallback だった。今は
+参照レーンに乗り、同 fixture の guest bump 確保は 320 B → 244 B。
+
+#### 制御フロー join (2026-08-13)
+
+両腕が**すでに参照レーン**の値である `if` は、それ自体が
+`(ref null $native_i64_array)` を返す。位置は 2 つ: 参照結果を返す関数の tail と、
+証明済みの参照引数。
+
+typed reference には 1 バイトの value type 綴りが無いので、blocktype は
+**型インデックス**を指す (`(func (result (ref null 12)))` を base type 13 に予約、
+`emit_if_type_index`)。base type にしてあるのは、body が type section より先に
+生成されるため、インデックスが定数である必要があるから。
+
+**裸の配列リテラルを腕に持つ join は依然 fallback。** リテラルはまだ自分の表現を
+持っておらず (消費側が決める)、`if` には寄りかかれる消費側の証明が無い。
+対の fixture: `fixtures/gc_direct_array_join_test.vibe` /
+`fixtures/gc_direct_array_join_fallback_test.vibe`。
 | **C** | **集約フィールド** | ユーザ構造体を実 wasm-gc struct へ (ADR-0052 の `struct.set` 経路の一般化) | **#1542**。ヒープモデルの変更を含み、最も重い |
 | **D** | **クロージャ捕捉** | funcref テーブルの型が現状 arity 別 `(i64...)->i64` のみ。型別に増やすか、捕捉は i64 固定にするか | **#1543**。表が型ごとに増える点が最大の論点 |
 

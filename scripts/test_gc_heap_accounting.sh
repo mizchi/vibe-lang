@@ -34,17 +34,25 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   exit 1
 }
 
-# Churn, the if branch, the match branch, the #1332 nested-lambda sites, and
-# the #1541 plain local alias each have one eligible literal -- six in total.
-# Push/return (this mixed fixture disables the direct ABI island), a deeper
-# lambda capture, and an initializer-frame binding retain the linear fallback.
+# Churn, the if branch, the match branch, the #1332 nested-lambda sites, the
+# #1541 plain local alias, and the #1541 returned local each have one eligible
+# literal -- seven in total.
+#
+# The returned one is the newest: this mixed fixture used to disable the direct
+# ABI island outright, because `Array::push` on a local made the whole component
+# fail closed. Acceptance now asks the escape gate whether a binding can hold a
+# reference at all before treating it as one, so the pushed local is simply an
+# ordinary i64 local and stops poisoning its neighbours -- and the returned one
+# takes the reference lane. `Array::push` itself is still not a reference-lane
+# operation; a deeper lambda capture and an initializer-frame binding likewise
+# retain the linear fallback.
 python3 - "$OUT" <<'PY'
 import sys
 wasm = open(sys.argv[1], "rb").read()
 count = wasm.count(b"\xfb\x07\x0c")
-if count != 6:
+if count != 7:
     raise SystemExit(
-        "[gc-heap-accounting] FAIL: expected six eligible native "
+        "[gc-heap-accounting] FAIL: expected seven eligible native "
         f"array.new_default type 12 instructions, found {count}"
     )
 PY
@@ -118,10 +126,15 @@ compile_direct_abi_fallback fixtures/gc_direct_array_generic_coexist_test.vibe "
 RECURSION_OUT="$WORK/direct_array_recursion.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_recursion_test.vibe "$RECURSION_OUT"
 
-# #1541 dedicated control-flow join fallback. The annotated Array[Int]
-# parameter/result is a direct-ABI candidate, but joining reference values
-# through `if` is outside the current proof and must clear the whole island.
+# #1541 control-flow join pair. An `if` whose arms are BOTH already
+# reference-lane values produces a typed reference itself, in the tail of a
+# reference-result function and in a proven reference argument alike; two
+# caller literals cross it. The fallback keeps a bare array literal in one arm:
+# a literal has no representation of its own until a consumer picks one, and an
+# `if` has no consumer proof to lean on, so that still clears the whole island.
+JOIN_OUT="$WORK/direct_array_join.wasm"
 JOIN_FALLBACK_OUT="$WORK/direct_array_join_fallback.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_join_test.vibe "$JOIN_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_join_fallback_test.vibe "$JOIN_FALLBACK_OUT"
 
 # Count decoded instructions rather than byte patterns: raw scanning can match
@@ -249,6 +262,26 @@ if [ "$recursion" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 native literal across recursive crossings, found $recursion" >&2
   exit 1
 fi
+join="$(count_native_array_allocs "$JOIN_OUT")"
+if [ "$join" -ne 2 ]; then
+  echo "[gc-heap-accounting] FAIL: expected two #1541 native literals crossing a reference-lane join, found $join" >&2
+  exit 1
+fi
+# The join must actually be a typed-reference `if`, not two arms that happen to
+# agree: assert the reserved `(func (result (ref null ...)))` blocktype is both
+# declared and named by an `if` in the emitted code.
+JOIN_WAT="$WORK/direct_array_join.wat"
+wasm-tools print "$JOIN_OUT" > "$JOIN_WAT"
+join_block_type="$(grep -oE '^  \(type \(;[0-9]+;\) \(func \(result \(ref null [^)]+\)\)\)\)$' "$JOIN_WAT" | head -1 | sed -E 's/^  \(type \(;([0-9]+);\).*/\1/')"
+if [ -z "$join_block_type" ]; then
+  echo "[gc-heap-accounting] FAIL: no reserved typed-reference blocktype in the join module" >&2
+  exit 1
+fi
+join_typed_ifs="$(awk -v t="(type $join_block_type)" '$1 == "if" && index($0, t) { count += 1 } END { print count + 0 }' "$JOIN_WAT")"
+if [ "$join_typed_ifs" -lt 2 ]; then
+  echo "[gc-heap-accounting] FAIL: expected the tail and argument joins to name the typed blocktype, found $join_typed_ifs" >&2
+  exit 1
+fi
 for i in "${!fallback_outputs[@]}"; do
   count="$(count_native_array_allocs "${fallback_outputs[$i]}")"
   if [ "$count" -ne 0 ]; then
@@ -320,7 +353,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, control-flow joins, and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2

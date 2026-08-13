@@ -134,6 +134,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_trunc_f64_s,
   emit_i64_xor,
   emit_if_i64,
+  emit_if_type_index,
   emit_if_void,
   emit_import_section_func,
   emit_local_get,
@@ -186,7 +187,7 @@ import ./backend_builtins_string_extra.vibe {
 }
 
 import ./backend_call.vibe {
-  compile_call_gc
+  compile_call_gc, gc_join_is_native_ref
 }
 
 import ./backend_lambda_body.vibe {
@@ -508,12 +509,22 @@ fn gc_direct_abi_expr_index(ctx: CompileCtxGc, name: String) -> Int {
 /// proven reference-result body. `allow_tail` is reset for ordinary children,
 /// so aggregates, indirect calls, captures, and joins remain impossible.
 fn gc_native_array_body_is_safe_tail(expr: Expr, name: String, allow_tail: Bool, ctx: CompileCtxGc) -> Bool {
+  gc_native_array_escape_gate(expr, name, allow_tail, ctx.gc_direct_abi_names, ctx.gc_direct_abi_param_refs)
+}
+
+/// Same gate, reading the direct-ABI evidence tables directly instead of a
+/// compile context. The component-acceptance pass in backend_body.vibe runs
+/// before any context exists and MUST reach the same verdict as lowering does:
+/// when the two disagree, acceptance promises a reference that lowering cannot
+/// produce, and compilation dies on an internal proof mismatch rather than
+/// falling back (that was the failure this split fixes).
+fn gc_native_array_escape_gate(expr: Expr, name: String, allow_tail: Bool, abi_names: Array[String], abi_param_refs: Array[Array[Bool]]) -> Bool {
   match expr {
     EIdent(n, _) => n != name || allow_tail,
     ECall(EIdent(fname, _), args, _) => {
-      let direct_idx = gc_direct_abi_expr_index(ctx, fname)
+      let direct_idx = gc_direct_abi_name_slot(abi_names, fname)
       if direct_idx >= 0 {
-        let refs = Array::get(ctx.gc_direct_abi_param_refs, direct_idx)
+        let refs = Array::get(abi_param_refs, direct_idx)
         let mut i = 0
         let mut ok = Array::length(refs) == Array::length(args)
         while i < Array::length(args) {
@@ -527,7 +538,17 @@ fn gc_native_array_body_is_safe_tail(expr: Expr, name: String, allow_tail: Bool,
             } else {
               ()
             }
-          } else if !gc_native_array_body_is_safe_tail(Array::get(args, i), name, false, ctx) {
+          } else if Array::get(refs, i) && gc_arg_is_reference_join(Array::get(args, i)) {
+            // #1541 join: a reference parameter may be fed by an `if` whose
+            // arms are themselves reference-lane values, so `name` reaching
+            // the callee through an arm is the same proven crossing as
+            // reaching it directly. The condition is an ordinary i64 child.
+            if !gc_native_array_join_arg_is_safe(Array::get(args, i), name, abi_names, abi_param_refs) {
+              ok = false
+            } else {
+              ()
+            }
+          } else if !gc_native_array_escape_gate(Array::get(args, i), name, false, abi_names, abi_param_refs) {
             ok = false
           } else {
             ()
@@ -551,19 +572,19 @@ fn gc_native_array_body_is_safe_tail(expr: Expr, name: String, allow_tail: Bool,
               let mut i = 1
               let mut ok = true
               while i < Array::length(args) {
-                if !gc_native_array_body_is_safe_tail(Array::get(args, i), name, false, ctx) {
+                if !gc_native_array_escape_gate(Array::get(args, i), name, false, abi_names, abi_param_refs) {
                   ok = false
                 }
                 i = i + 1
               }
               ok
             } else {
-              gc_native_array_children_are_safe(expr, name, ctx)
+              gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
             },
-            _ => gc_native_array_children_are_safe(expr, name, ctx)
+            _ => gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
           }
         } else {
-          gc_native_array_children_are_safe(expr, name, ctx)
+          gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
         }
       }
     },
@@ -572,38 +593,75 @@ fn gc_native_array_body_is_safe_tail(expr: Expr, name: String, allow_tail: Bool,
     ELet(alias, EIdent(source, _), body, _) => if alias != name && source == name {
       // Check both spellings: the original binding remains in scope after a
       // plain alias and must not be smuggled into an unsupported i64 use.
-      gc_native_array_body_is_safe_tail(body, alias, allow_tail, ctx) && gc_native_array_body_is_safe_tail(body, name, allow_tail, ctx)
+      gc_native_array_escape_gate(body, alias, allow_tail, abi_names, abi_param_refs) && gc_native_array_escape_gate(body, name, allow_tail, abi_names, abi_param_refs)
     } else {
-      alias != name && gc_native_array_children_are_safe(expr, name, ctx)
+      alias != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
     },
-    ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
-    ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
-    ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
-    EAssign(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
-    EAssignOp(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, ctx),
+    ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
+    ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
+    ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
+    EAssign(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
+    EAssignOp(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
     EFn(_, _, _, _, _, _) => false,
     EMatch(_, _) => false,
     EHandle(_, _) => false,
     EForIn(_, _, _, _) => false,
     ELoop(_, _) => false,
-    EReturn(value) => gc_native_array_body_is_safe_tail(value, name, allow_tail, ctx),
+    // Both arms of a tail `if` are themselves tails, so a reference result may
+    // flow out through either. With `allow_tail` false this is exactly the
+    // generic child walk it replaces.
+    EIf(cond, then_e, else_e) => gc_native_array_escape_gate(cond, name, false, abi_names, abi_param_refs) && gc_native_array_escape_gate(then_e, name, allow_tail, abi_names, abi_param_refs) && gc_native_array_escape_gate(else_e, name, allow_tail, abi_names, abi_param_refs),
+    EReturn(value) => gc_native_array_escape_gate(value, name, allow_tail, abi_names, abi_param_refs),
     EBreak(_) => false,
     EContinue(_) => false,
-    _ => gc_native_array_children_are_safe(expr, name, ctx)
+    _ => gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
   }
 }
 
-fn gc_native_array_children_are_safe(expr: Expr, name: String, ctx: CompileCtxGc) -> Bool {
+fn gc_native_array_children_are_safe(expr: Expr, name: String, abi_names: Array[String], abi_param_refs: Array[Array[Bool]]) -> Bool {
   let children = expr_children(expr)
   let mut i = 0
   let mut ok = true
   while i < Array::length(children) {
-    if !gc_native_array_body_is_safe_tail(Array::get(children, i), name, false, ctx) {
+    if !gc_native_array_escape_gate(Array::get(children, i), name, false, abi_names, abi_param_refs) {
       ok = false
     }
     i = i + 1
   }
   ok
+}
+
+fn gc_arg_is_reference_join(arg: Expr) -> Bool {
+  match arg {
+    EIf(_, _, _) => true,
+    _ => false
+  }
+}
+
+/// `name` may reach a reference parameter through an `if` arm. Arms are
+/// checked in tail position (each arm IS the argument); the condition is an
+/// ordinary child, so a reference appearing there is still rejected.
+fn gc_native_array_join_arg_is_safe(arg: Expr, name: String, abi_names: Array[String], abi_param_refs: Array[Array[Bool]]) -> Bool {
+  match arg {
+    EIf(cond, then_e, else_e) => gc_native_array_escape_gate(cond, name, false, abi_names, abi_param_refs) && gc_native_array_join_arg_is_safe(then_e, name, abi_names, abi_param_refs) && gc_native_array_join_arg_is_safe(else_e, name, abi_names, abi_param_refs),
+    EIdent(_, _) => true,
+    _ => gc_native_array_escape_gate(arg, name, false, abi_names, abi_param_refs)
+  }
+}
+
+/// Index of `name` in the direct-ABI evidence table, or -1.
+fn gc_direct_abi_name_slot(abi_names: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(abi_names) {
+    if found < 0 && Array::get(abi_names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn gc_direct_abi_result_is_native(expr: Expr, ctx: CompileCtxGc) -> Bool {
@@ -1010,7 +1068,15 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           cnl
         }
       }
-      emit_if_i64(buf)
+      // #1541 reference-lane join: when both arms already hold a native array
+      // reference the result cannot be described by a single-byte blocktype,
+      // so the `if` names the reserved func type instead. Everything else stays
+      // on the i64 blocktype byte-for-byte.
+      if gc_join_is_native_ref(then_e, else_e, local_names, ctx) {
+        emit_if_type_index(buf, ctx.gc_native_array_block_type_idx)
+      } else {
+        emit_if_i64(buf)
+      }
       let ld_inner = if ld >= 0 {
         ld + 1
       } else {
@@ -1828,5 +1894,5 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
 //# Misc
 
 export {
-  compile_expr_gc
+  compile_expr_gc, gc_native_array_escape_gate
 }
