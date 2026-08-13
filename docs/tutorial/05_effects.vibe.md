@@ -7,11 +7,11 @@ vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect
 
 ## Exception 境界 — perform / handle
 
-`Exception` は現在、既存の `Error` と同じ Wasm tag を使う、型引数なしの
-**非再開 (abortive) エフェクト別名**である。`perform Exception::Throw` は継続を
+型引数なしの `Exception` は erased な **非再開 (abortive) エフェクト**で、
+typed `Exception[E]` のどの kind とも互換である。`perform Exception::Throw` は継続を
 再開せず、handler arm で `resume` は使えない。その arm の値が `handle` の結果になる。
-この暫定 alias の payload は既存 `Error` と同じ互換的な String/opaque 扱いで、handler を
-またぐ型引数の保存はしない。[ADR-0085](../exception-effect.md) の typed `Exception[E]` ではない。
+erased な handler の payload は String/opaque 扱いで、handler をまたぐ型引数の保存は
+しない。typed exception との使い分けは [ADR-0085](../exception-effect.md) を参照。
 
 ```vibe run
 import @vibe/prelude {
@@ -50,10 +50,24 @@ safe = -1
 fine = 25
 ```
 
-## Error との互換性
+## 旧 `Error` 綴りからの移行
 
-既存の `Error` と `throw("message")` はこの期間も使える互換名である。`Error` と
-`Exception` のどちらの handler も、同じ abortive `Throw` を捕捉できる。
+`Error` は effect row (`with Error`) とハンドラ名
+(`handle { ... } with Error { ... }`) のどちらでも parse error になる。旧ソースは
+`vibe fmt` で `Exception` へ書き換えられる。`throw("message")` は引き続き使える。
+
+operation 修飾子の `perform Error::Throw(...)` だけは古い生成物を読む内部互換として
+受理されるが、新しいソースでは `perform Exception::Throw(...)` を使う。
+
+拒否される旧綴りの例 (実行例ではなく、移行説明のため `skip`):
+
+```vibe skip
+// Rejected source (kept in comments so `vibe fmt` does not rewrite the example):
+// fn old_row() -> Int with Error { throw("old") }
+// fn old_handler() -> Int {
+//   handle { 1 } with Error { Throw(_) => 0 }
+// }
+```
 
 ## ユーザ定義エフェクト — perform / resume
 
