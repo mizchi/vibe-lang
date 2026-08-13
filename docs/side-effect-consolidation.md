@@ -508,7 +508,7 @@ acc 4019 4022      # 25 個の `let mut` のうち escape するのはこの1つ
 | | 場所 | 状態 | 誤りの向き |
 |---|---|---|---|
 | 1 | `codegen/common_analysis :: is_mut_captured_in` | live(lowering を決める) | **保守的**: `match` arm / `for-in` の束縛子の shadowing を引かないので、外側の `let mut` と同名の内側束縛を捕獲しても「捕獲」と報告する → 余計に box する(遅いだけで、誤りではない) |
-| 2 | `checker/checker_spawnable :: sp_walk_spawnable_mut` | live(spawn 診断) | **厳密**: false positive がそのまま誤診断になるので、shadowing を正しく引く(PR #1150/#1151/#1152 の3ラウンドで到達) |
+| 2 | `checker/checker_spawnable :: sp_walk_spawnable_mut` | live(spawn 診断) → **§4.6 で `checker/checker_escape :: mut_binding_escapes` + `TypeEnv` に置換、walk は削除** | **厳密**: false positive がそのまま誤診断になるので、shadowing を正しく引く(PR #1150/#1151/#1152 の3ラウンドで到達) |
 | 3 | `checker_capture.vibe` | **dead** | 自分の unit test 以外から参照ゼロ |
 
 1 と 2 は**意図的に向きが違う**ので統合してはいけない —— lowering は
@@ -523,6 +523,38 @@ acc 4019 4022      # 25 個の `let mut` のうち escape するのはこの1つ
 PR #1152 が 2 で直したのと同じ false positive を持っていた。
 「次にこの判定が要る人が踏む罠」として残す価値がないので消した
 (この作業中に実際に踏みかけた)。
+
+### 4.6 実装記録: escape 事実を `TypeEnv` に載せた(段階1の残り、着地済み)
+
+段階1 の「型を一切変えない診断」までは `vibe escapes` で着地していたが、
+**厳密側の判定は依然として AST を再走査していた** —— `TypeEnv` に可変性が
+無いので、Spawnable の `let mut` 捕獲検査は `check_spawnable_mut_captures_stmts`
+という**2本目の全プログラム walk** を持つしかなかった。ADR-0100 (1) の
+「`TypeEnv` に載せるのは厳密側」をそのまま実装して、これを畳んだ。
+
+- `TypeEnv` に **`EnvMutCell(name, escapes, rest)`** を追加。`env_bind_mut` が
+  通常の `EnvBind` の**前**に置くマーカーなので、型の引き方 (`env_lookup`) は
+  一切変わらず、新しい `env_mut_escape` だけがこれを見る。
+- 厳密述語は **`checker/checker_escape.vibe :: mut_binding_escapes`** に独立。
+  checker が `ELetMut` を検査する場所で答えを求めて env に焼き込む。
+- **shadowing が「走査で再導出するもの」から「env の連鎖の性質」になった**。
+  内側の immutable な同名束縛は `EnvBind` として手前に積まれるので、
+  `env_mut_escape` は連鎖順だけで正しく `None` を返す。PR #1150/#1151/#1152
+  の3ラウンドが直していたのは、まさにこの再導出のバグだった。
+- `check_spawnable_mut_captures_stmts` とその補助 (~230 行) を**削除**。
+  Spawnable の判定は捕獲が起きるスコープでの `env_mut_escape` 1 回になり、
+  副産物として診断に `line:col` が付いた(全プログラム walk は per-call の
+  offset を持てず、#1152 P2 で手当てされていた)。
+- 観測面: **`vibe escapes --strict`** を追加。既定レーン(lowering)と
+  同じ出力形式で厳密側の答えを出す。両者が**どこで食い違うか**
+  (= 束縛子の shadowing だけ、かつ strict ⊆ 既定 の一方向) を
+  `compiler_gate.sh` 101/101 と `escape_spans_test.vibe` で固定した ——
+  「意図的に食い違う2つの述語」は、放っておくと「事故で食い違う2つの述語」に
+  なるので、差の場所そのものを pin する。
+
+重複は 3 → **2** になった。残る 2 本 (lowering の `is_mut_captured_in` と
+enforcement の `mut_binding_escapes`) は上表のとおり**意図的に向きが違う**ので、
+これ以上は畳まない。
 
 **段階3**: ADR-0090 の `region r { }` を段1 の明示形として実装し、
 捕獲 `let mut` を暗黙 region として同じ検査に載せる。
@@ -707,7 +739,7 @@ lowering (1点)
 |---|---|---|---|
 | 1 | **scalar 引数の dup を消す** | 残り 0.44 ns/dup も消える。サイズは 1' より減る | 引数の静的型が codegen に届く (= 2 の配管) |
 | 1'| **[実装済]** タグ判定だけ inline、slow path は out-line | dup 1 個 2.37 → **0.44 ns**、+9 B/サイト。selfcompile への効きは方向のみ (§2.9) | 無し(codegen 内で完結) |
-| 2 | **[実装済]** escape 述語を可視化(`vibe escapes`、§4.5) | 権限規則の土台。重複3件を1件に整理 | 無し(codegen の述語を再利用) |
+| 2 | **[実装済]** escape 述語を可視化(`vibe escapes`、§4.5)+ 厳密側を `TypeEnv` に載せる(§4.6) | 権限規則の土台。重複3件 → 2件(向きが違う分だけ残す)。Spawnable の2本目の walk は削除 | 無し(codegen の述語 + `checker_escape.vibe`) |
 | 3 | **scalar replacement**(非 escape struct → local) | struct mut / 捕獲 `let mut` が段0 へ | 2 |
 | 4 | **unboxing**(非 escape tuple/enum → 複数 local) | `loop` の箱が消える。10–28× の surface 差が消える | 2 |
 | 5 | **handler inline**(monomorphic tail-resumptive) | State effect が段0 へ | 2 + inlining |

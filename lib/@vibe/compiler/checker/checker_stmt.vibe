@@ -72,10 +72,6 @@ import ./checked_expression_structure_core.vibe {
   checked_expression_structure_rows
 }
 
-import ./checker_spawnable.vibe {
-  check_spawnable_mut_captures_stmts
-}
-
 import ./checker_resolve.vibe {
   resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
@@ -2933,18 +2929,6 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
-  // #1081 step 3 Phase B (Codex review, PR #1151): `let mut` capture
-  // rejection is purely syntactic (no env/Subst needed) and must see the
-  // WHOLE program, not just one `TaskGroup::run` call's own body -- a
-  // `let mut` declared in the enclosing top-level function before calling
-  // `TaskGroup::run` is invisible to a per-call check. Run once per
-  // top-level declaration (checker_spawnable.vibe).
-  let spawnable_mut_errors = check_spawnable_mut_captures_stmts(stmts)
-  let mut smi = 0
-  while smi < Array::length(spawnable_mut_errors) {
-    Array::push(frozen_errors, Array::get(spawnable_mut_errors, smi))
-    smi = smi + 1
-  }
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
   check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
@@ -3236,15 +3220,6 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // rule as the standalone path.
       check_program_bounds(env, final_s, empty_defs, frozen_errors)
       collect_async_effect_errors(expanded_stmts, env, frozen_errors)
-      // #1081 step 3 Phase B (Codex review, PR #1151): see check_program's
-      // matching call for why this runs whole-program rather than per
-      // `TaskGroup::run` call.
-      let spawnable_mut_errors = check_spawnable_mut_captures_stmts(stmts)
-      let mut smi = 0
-      while smi < Array::length(spawnable_mut_errors) {
-        Array::push(frozen_errors, Array::get(spawnable_mut_errors, smi))
-        smi = smi + 1
-      }
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.
       check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)

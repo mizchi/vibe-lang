@@ -387,6 +387,7 @@ fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
       trait_projection_supers(rest, name)
     },
     EnvTraitImpl(_, _, rest) => trait_projection_supers(rest, name),
+    EnvMutCell(_, _, rest) => trait_projection_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_projection_supers(rest, name),
     EnvTypeDefs(_, _, rest) => trait_projection_supers(rest, name),
     EnvFlat(_) => array_empty(),
@@ -400,6 +401,7 @@ fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: St
     EnvBind(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
     EnvTraitDef(_, _, _, _, rest, _, _) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
     EnvTraitImpl(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
+    EnvMutCell(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
     EnvTraitImplGen(candidate, _, bounds, _, rest) => {
       if candidate == trait_name {
         let mut i = 0
@@ -862,6 +864,9 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
         done = true
       },
       EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
         cur = rest
       },
       EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
@@ -2016,6 +2021,10 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
         restricted
       }
     },
+    // #1262: `let mut` escape markers are function-local, so a module's export
+    // surface never carries one. Drop it with its scope rather than inventing
+    // a rule for publishing mutability across a boundary.
+    EnvMutCell(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest),
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
       let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
       if bsearch_leftmost(trait_surface, name) >= 0 {

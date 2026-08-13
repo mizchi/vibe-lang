@@ -10370,7 +10370,7 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
-echo "[compiler-gate] 98/100 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+echo "[compiler-gate] 98/101 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through
@@ -10459,7 +10459,7 @@ echo "[compiler-gate] vibe grep typed filters ok"
 #     found by review rather than by a gate (the second twice: expression
 #     binders in #1622, PATTERN binders after that), which is what this step is
 #     for. Each case below fails DIFFERENTLY if the guard regresses.
-echo "[compiler-gate] 99/100 the inspect rewrite neither captures nor hijacks (#1571)"
+echo "[compiler-gate] 99/101 the inspect rewrite neither captures nor hijacks (#1571)"
 inspdir="_build/_gate_inspect_guard"
 rm -rf "$inspdir"; mkdir -p "$inspdir"
 
@@ -10577,7 +10577,7 @@ echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
 #      rest made `check` a strictly worse answer to the same question -- three
 #      broken statements cost three edit-and-rerun cycles. This pins the two
 #      surfaces together so they cannot drift apart again.
-echo "[compiler-gate] 100/100 check and diagnostics report the SAME parse errors (#1567)"
+echo "[compiler-gate] 100/101 check and diagnostics report the SAME parse errors (#1567)"
 chkdir="_build/_gate_check_diag_parity"
 rm -rf "$chkdir"; mkdir -p "$chkdir"
 # Three top-level statements, two independently broken, one good between them.
@@ -10697,5 +10697,88 @@ if [ -s "$depdir/broken.txt" ] || [ ! -s "$depdir/broken.txt.diag" ]; then
 fi
 rm -rf "$depdir"
 echo "[compiler-gate] vibe deps import-closure ok (#988)"
+
+# 101. #1262 / ADR-0100 (1): vibe answers "does this `let mut` escape?" with
+#      TWO predicates on purpose -- lowering (`vibe escapes`, codegen's
+#      `is_mut_captured_in`: box when unsure, since over-boxing only costs
+#      speed) and enforcement (`vibe escapes --strict`, the checker's, whose
+#      answer `TypeEnv` now carries via `env_bind_mut`: stay silent when
+#      unsure, since a false positive is a wrong diagnostic). Two predicates
+#      that are SUPPOSED to disagree are exactly the shape that rots into two
+#      predicates that disagree by accident, so this pins WHERE they differ:
+#      only on binder shadowing, and only in the one direction (strict's
+#      output is a subset of the default's).
+echo "[compiler-gate] 101/101 the two escape predicates differ only on shadowing (#1262)"
+escdir="_build/_gate_escapes"
+rm -rf "$escdir"; mkdir -p "$escdir"
+
+esc_run() { # esc_run <out> <src> <strict>
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ESCAPES=1 VIBE_ESCAPES_STRICT="$3" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$2" "$escdir/$1" >/dev/null 2>&1 || true
+}
+
+# (a) A genuine capture: BOTH lanes must report it. If only one does, one of
+# the two is broken -- they are meant to agree everywhere except shadowing.
+cat > "$escdir/real.vibe" <<'ESCA'
+fn main() -> Int {
+  let mut acc = 0
+  let bump = () -> Unit { acc = acc + 1 }
+  bump()
+  acc
+}
+ESCA
+esc_run real_loose.txt "$escdir/real.vibe" 0
+esc_run real_strict.txt "$escdir/real.vibe" 1
+for lane in loose strict; do
+  if ! grep -q '^acc ' "$escdir/real_$lane.txt" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe escapes ($lane lane) missed a genuine closure capture (#1262)" >&2
+    cat "$escdir/real_$lane.txt" "$escdir/real_$lane.txt.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+
+# (b) A `for-in` binder that merely REUSES the outer `let mut`'s name. The
+# closure captures the LOOP variable, so no authority crosses the binding --
+# but codegen still boxes the outer cell on the name match. Loose must report
+# it (that box is real, and a cost query must say so); strict must not.
+cat > "$escdir/shadow.vibe" <<'ESCB'
+fn main(xs: Array[Int]) -> Int {
+  let mut n = 0
+  for n in xs {
+    let c = () -> Int { n }
+    let _ = c()
+  }
+  n
+}
+ESCB
+esc_run shadow_loose.txt "$escdir/shadow.vibe" 0
+esc_run shadow_strict.txt "$escdir/shadow.vibe" 1
+if ! grep -q '^n ' "$escdir/shadow_loose.txt" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the LOWERING escape lane stopped reporting a shadowed name -- it must stay conservative, because codegen really does box that cell (#1262)" >&2
+  cat "$escdir/shadow_loose.txt" "$escdir/shadow_loose.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if [ -s "$escdir/shadow_strict.txt" ]; then
+  echo "[compiler-gate] FAIL: \`vibe escapes --strict\` reported a binding a binder SHADOWS -- the enforcement predicate must subtract shadowing, or every check built on it (Spawnable today, region/Mut[c] next) inherits a false positive (#1262 / ADR-0100 (1))" >&2
+  cat "$escdir/shadow_strict.txt" >&2
+  exit 1
+fi
+
+# (c) A lex/parse failure goes to the .diag sidecar with EMPTY output, in both
+# lanes -- "the query broke" must stay distinguishable from "nothing escapes",
+# since empty output is this surface's clean signal.
+printf 'fn main() -> Int {\n  let mut = =\n}\n' > "$escdir/broken.vibe"
+esc_run broken_loose.txt "$escdir/broken.vibe" 0
+esc_run broken_strict.txt "$escdir/broken.vibe" 1
+for lane in loose strict; do
+  if [ -s "$escdir/broken_$lane.txt" ] || [ ! -s "$escdir/broken_$lane.txt.diag" ]; then
+    echo "[compiler-gate] FAIL: a broken source did not land on the .diag sidecar with empty output in the $lane escape lane (#1262)" >&2
+    cat "$escdir/broken_$lane.txt" "$escdir/broken_$lane.txt.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+rm -rf "$escdir"
+echo "[compiler-gate] escape predicate two-lane split ok (#1262)"
 
 echo "[compiler-gate] ok"
