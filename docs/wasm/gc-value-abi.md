@@ -225,6 +225,24 @@ typed reference には 1 バイトの value type 綴りが無いので、blockty
 持っておらず (消費側が決める)、`if` には寄りかかれる消費側の証明が無い。
 対の fixture: `fixtures/gc_direct_array_join_test.vibe` /
 `fixtures/gc_direct_array_join_fallback_test.vibe`。
+
+#### 要素型 (2026-08-13)
+
+§7 の未解決 2 のうち「`(array (mut f64))` にするか」は**やらない**で確定済み
+(#1542 の 2026-08-07 コメント)。一方、**認識できる要素型**の話はそれとは別で、
+`Array[Int]` だけに絞られていたのは保守的な制限だった — native 配列のセルは
+`(mut i64)` に**ただの tagged 値**を置いており、それは linear memory が同じ要素に
+対して置くバイトと同一なので、要素型は表現を変えない。
+
+`Array[String]` / `Array[Bool]` を許可した。**allowlist のままにしてあるのは
+fit の問題ではなく認識の問題** — `strip_generic_type_params` の後、
+`fn f[T](xs: Array[T])` の要素は `TyName("T")` と綴られ、同名の具体型と区別が
+つかない。よって型変数になり得ない綴り (builtin scalar) だけを入れる。
+
+**ネストした配列は別の理由で対象外**: `Array[Array[Int]]` のセルは参照を持つ
+必要があるが、i64 セルに参照を入れる手段は仕様上無い (§1.1 の根本制約そのもの)。
+
+fixture: `fixtures/gc_direct_array_element_types_test.vibe`。
 | **C** | **集約フィールド** | ユーザ構造体を実 wasm-gc struct へ (ADR-0052 の `struct.set` 経路の一般化) | **#1542**。ヒープモデルの変更を含み、最も重い |
 | **D** | **クロージャ捕捉** | funcref テーブルの型が現状 arity 別 `(i64...)->i64` のみ。型別に増やすか、捕捉は i64 固定にするか | **#1543**。表が型ごとに増える点が最大の論点 |
 

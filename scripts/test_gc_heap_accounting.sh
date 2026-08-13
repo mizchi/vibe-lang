@@ -126,6 +126,14 @@ compile_direct_abi_fallback fixtures/gc_direct_array_generic_coexist_test.vibe "
 RECURSION_OUT="$WORK/direct_array_recursion.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_recursion_test.vibe "$RECURSION_OUT"
 
+# #1541 element types. The native array's cells are `(mut i64)` holding tagged
+# values, so `Array[String]` and `Array[Bool]` cross the same lane as
+# `Array[Int]` with no representation change -- two literals here. The element
+# allowlist exists because erased generic binders are spelled like concrete type
+# names, not because other element types would not fit.
+ELEMENT_TYPES_OUT="$WORK/direct_array_element_types.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_element_types_test.vibe "$ELEMENT_TYPES_OUT"
+
 # #1541 control-flow join pair. An `if` whose arms are BOTH already
 # reference-lane values produces a typed reference itself, in the tail of a
 # reference-result function and in a proven reference argument alike; two
@@ -262,6 +270,11 @@ if [ "$recursion" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 native literal across recursive crossings, found $recursion" >&2
   exit 1
 fi
+element_types="$(count_native_array_allocs "$ELEMENT_TYPES_OUT")"
+if [ "$element_types" -ne 2 ]; then
+  echo "[gc-heap-accounting] FAIL: expected two #1541 native literals for String/Bool elements, found $element_types" >&2
+  exit 1
+fi
 join="$(count_native_array_allocs "$JOIN_OUT")"
 if [ "$join" -ne 2 ]; then
   echo "[gc-heap-accounting] FAIL: expected two #1541 native literals crossing a reference-lane join, found $join" >&2
@@ -364,6 +377,7 @@ report_boundary_size "direct-argument" "$ARGUMENT_OUT" fixtures/gc_direct_array_
 report_boundary_size "generic-coexist" "$COEXIST_OUT" fixtures/gc_direct_array_generic_coexist_test.vibe
 report_boundary_size "recursion" "$RECURSION_OUT" fixtures/gc_direct_array_recursion_test.vibe
 report_boundary_size "control-flow-join" "$JOIN_OUT" fixtures/gc_direct_array_join_test.vibe
+report_boundary_size "element-types" "$ELEMENT_TYPES_OUT" fixtures/gc_direct_array_element_types_test.vibe
 
 argument_fallback="$(count_native_array_allocs "$ARGUMENT_FALLBACK_OUT")"
 if [ "$argument_fallback" -ne 0 ]; then
@@ -386,7 +400,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, control-flow joins, and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, control-flow joins, String/Bool elements, and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2

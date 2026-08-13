@@ -239,18 +239,34 @@ fn gc_type_expr_is_unit(t: TypeExpr) -> Bool {
   }
 }
 
-/// #1541 deliberately starts with the single element representation already
-/// implemented by `$native_i64_array`. Nested arrays and erased/generic
-/// element names stay on the tagged-i64 ABI until an explicit conversion
-/// exists; guessing here would create an untraceable reference in an i64 cell.
+/// #1541 uses the single element representation already implemented by
+/// `$native_i64_array`, whose cells are `(mut i64)` holding ordinary tagged
+/// values -- exactly the bytes linear memory would hold for the same element.
+/// The element TYPE therefore does not change the representation, and the
+/// allowlist below is about what can be RECOGNIZED, not about what fits.
+///
+/// It stays an allowlist because `strip_generic_type_params` erases binders:
+/// after it runs, the type variable in `fn f[T](xs: Array[T])` is spelled
+/// `TyName("T")`, indistinguishable from a concrete type of that name. Erased
+/// element names must not enter the lane, so only spellings that cannot be a
+/// type variable are admitted -- the builtin scalars, which shadowing would
+/// have to break first.
+///
+/// Nested arrays stay out for a different reason: an `Array[Array[Int]]` cell
+/// would have to hold a reference, and there is no way to put one in an i64
+/// cell without losing it. That is the root constraint, not a conservatism.
 fn gc_direct_abi_is_native_array_type(t: TypeExpr) -> Bool {
   match t {
     TyApp(name, args) => name == "Array" && Array::length(args) == 1 && (match Array::get(args, 0) {
-      TyName(elem) => elem == "Int",
+      TyName(elem) => gc_direct_abi_is_tagged_scalar_element(elem),
       _ => false
     }),
     _ => false
   }
+}
+
+fn gc_direct_abi_is_tagged_scalar_element(elem: String) -> Bool {
+  elem == "Int" || elem == "String" || elem == "Bool"
 }
 
 fn gc_direct_abi_type_mentions_array(t: TypeExpr) -> Bool {
