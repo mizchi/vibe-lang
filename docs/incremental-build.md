@@ -125,7 +125,7 @@ validator. Its attempt counter is test observation, not production telemetry.
 
 The aggregate and its complete-encoding fingerprint are shadow comparison data
 only. They are not wired to TypeDb, the TypeEnv v5 transport and persistent cache
-namespace v18, TDRE4, interface-v2, artifact-input traces, planner decisions,
+namespace v19, TDRE5, interface-v2, artifact-input traces, planner decisions,
 reuse, CLI, or a persistent cache namespace. Decoded values establish canonical
 bytes, not a checker invocation. Runtime retains v2 bytes only in an opaque,
 in-memory successful `ModuleOutcome`; it does not publish or persist them.
@@ -275,10 +275,10 @@ claim.
 
 ## Dependency transport-environment typing reuse
 
-TDRE4 TypeEnv reuse is enabled by default for the `vibe check` filesystem
+TDRE5 TypeEnv reuse is enabled by default for the `vibe check` filesystem
 check-only lane. Build, codegen, LSP, and direct FS typecheck consumers remain
 conservative pending a compact exact-publication design: publishing the current
-exact TDRE4A/TDRE4W texts on a fresh selfcompile exceeds the signed 2 GiB guest
+exact TDRE5A/TDRE5W texts on a fresh selfcompile exceeds the signed 2 GiB guest
 heap boundary, while the conservative compile lane remains near 1.11 GB.
 `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` is the strict emergency opt-out for
 check-only reuse;
@@ -289,16 +289,17 @@ invalidation trace automatically forces reuse off so the trace stays
 observation-only. For compatibility, explicitly combining legacy `1` with an
 invalidation trace remains rejected.
 
-TDRE4 aliases the exact logical
+TDRE5 aliases the exact logical
 `ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,
-byte-exact owner source, `resolution_env_seed()`, and every `(path, canonical
-TypeEnv-v3 transport text)` row in the exact ordered resolved direct-dependency
-projection. The coordinator retains the full accumulated environment cache only
+byte-exact owner source, the canonical effective typing-semantics seed (currently
+checked versus unchecked `Exception` rows), `resolution_env_seed()`, and every
+`(path, canonical TypeEnv-v5 transport text)` row in the exact ordered resolved
+direct-dependency projection. The coordinator retains the full accumulated environment cache only
 for graph coordination and upsert; it projects each `deps` occurrence in order,
 preserves duplicate paths and first-match cache lookup, and fails closed if any
 resolved row is missing. The same projected array is passed to `check_module`
-and to TDRE4 lookup/publication, so ambient non-direct cache mutations are
-semantically irrelevant and avoid quadratic canonical serialization. TDRE4 does
+and to TDRE5 lookup/publication, so ambient non-direct cache mutations are
+semantically irrelevant and avoid quadratic canonical serialization. TDRE5 does
 not replace exact transport text with a compact fingerprint. It validates and
 republishes the decoded environment under the ordinary conservative fingerprint.
 It does not use the
@@ -307,16 +308,16 @@ malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and target
 fall back to a full check. The alias remains incompatible with the incremental
 invalidation trace lane so the two identities cannot be confused.
 
-The v3 TypeEnv codec round-trips every current `TypeEnv` variant, including
+The v5 TypeEnv codec round-trips every current `TypeEnv` variant, including
 trait definitions, impls, generic impl bounds, trait-header parameters,
 positional method-generic binders/bounds, and method `TypeExpr` metadata. The
-production-default promotion bumps the global persistent cache namespace from
-v16 to v17 because reuse policy changed. It keeps the TypeEnv-v3 envelope,
-TDRE4 alias and eligibility-witness namespaces, and `TDRE4A` / `TDRE4W`
-envelopes unchanged. A sidecar is still only an alias to a conservative
+checked-row cache isolation bumps the global persistent cache namespace from
+v18 to v19 and replaces TDRE4 aliases/witnesses with disjoint TDRE5 namespaces
+and `TDRE5A` / `TDRE5W` envelopes. Old entries are never reinterpreted. A
+sidecar is still only an alias to a conservative
 TypeEnv commit, not a `CheckedProgram` or lossless typed-IR transport.
 
-A witness is published only after that module's canonical TypeEnv-v3 target and
+A witness is published only after that module's canonical TypeEnv-v5 target and
 when every direct dependency already has a validated witness for its conservative
 fingerprint. Alias and witness both bind the logical input, target conservative
 fingerprint, and exact canonical target text. Reuse reads the raw target,
