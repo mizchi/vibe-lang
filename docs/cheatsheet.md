@@ -1079,8 +1079,14 @@ body から呼べるのはこれ)。**`if` condition / `match` scrutinee が dir
 perform・concrete needing call・CPS-local call そのものなら、fresh let へ
 一回評価してから selection する形も可** (追記44)。同じ direct 形そのものは
 **継続 spine 上の通常代入 (`x = perform Op()`) の RHS** でも fresh let を介して
-一回だけ代入できる (追記45)。`perform Op() + 1` のような compound RHS、`+=`
-等の compound assignment、compound selection input は reject のまま。
+一回だけ代入できる (追記45)。**compound の中に埋まった perform も可** —
+被演算子 (`acc + perform Op(i)`)・呼び出し引数
+(`Array::push(out, perform Op(i))`)・コンストラクタ引数
+(`Some(perform Op(i))`)・compound な `while` 条件 (`perform Next() > 0`)・
+`+=` 等の compound assignment は、**元の評価順で let 連鎖へ線形化**されてから
+spine に乗る (#1536 (a) v8)。perform より前に評価されるものは先に名前が付くので
+順序は変わらない。**必ず評価されるとは限らない位置に埋まった perform だけは
+reject のまま** — `if` / `match` の枝の中、`&&` / `||` の右辺。
 **concrete な row に
 対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
 再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
