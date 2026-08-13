@@ -103,6 +103,12 @@ ARGUMENT_FALLBACK_OUT="$WORK/direct_array_argument_fallback.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_argument_identity_test.vibe "$ARGUMENT_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_argument_fallback_test.vibe "$ARGUMENT_FALLBACK_OUT"
 
+# #1541 dedicated control-flow join fallback. The annotated Array[Int]
+# parameter/result is a direct-ABI candidate, but joining reference values
+# through `if` is outside the current proof and must clear the whole island.
+JOIN_FALLBACK_OUT="$WORK/direct_array_join_fallback.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_join_fallback_test.vibe "$JOIN_FALLBACK_OUT"
+
 # Count decoded instructions rather than byte patterns: raw scanning can match
 # non-code sections and also couples this gate to an incidental numeric type
 # index. `wasm-tools print` parses the module and renders instructions with the
@@ -208,8 +214,8 @@ PY
 
 positive="$(count_native_array_allocs "$DIRECT_OUT")"
 alias="$(count_native_array_allocs "$ALIAS_OUT")"
-declare -a fallback_labels=("generic" "spelling shadow" "export")
-declare -a fallback_outputs=("$FALLBACK_OUT" "$SHADOW_FALLBACK_OUT" "$EXPORT_FALLBACK_OUT")
+declare -a fallback_labels=("generic" "spelling shadow" "export" "control-flow join")
+declare -a fallback_outputs=("$FALLBACK_OUT" "$SHADOW_FALLBACK_OUT" "$EXPORT_FALLBACK_OUT" "$JOIN_FALLBACK_OUT")
 if [ "$positive" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 direct-ABI native literal, found $positive" >&2
   exit 1
