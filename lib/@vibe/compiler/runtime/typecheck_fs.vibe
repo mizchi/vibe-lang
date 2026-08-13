@@ -33,6 +33,7 @@ import @vibe/compiler/checker/artifacts {
 }
 
 import @vibe/compiler/core {
+  BindingOrigin,
   Expr,
   Stmt,
   Type,
@@ -41,11 +42,13 @@ import @vibe/compiler/core {
   bsearch_leftmost,
   dir_of_path,
   env_bind,
+  env_bind_with_origin,
   env_flat_bindings,
   env_lookup,
   env_lookup_flat,
   env_selectable_type_defs,
   env_type_defs,
+  env_value_binding,
   has_standard_effect_policy,
   lookup_registry_builtin,
   normalize_path,
@@ -228,14 +231,14 @@ fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String
 /// coincidence) but "unknown name: Json::string" for the other 8 of the
 /// 11 documented accessors. The bundle-merge lane resolves these by name
 /// against the merged unit and never had the gap; only this FS lane did.
-fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)]) -> TypeEnv {
+fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)]) -> TypeEnv {
   let qual_prefix = String::concat(enum_name, "::")
   let mut out = acc
   let mut i = 0
   while i < Array::length(dep_bindings) {
     let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
     if candidate_name != enum_name && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, enum_name) || String::starts_with(candidate_name, qual_prefix)) {
-      out = env_bind(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings))
+      out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), BindingOriginModuleExport(resolved, candidate_name))
     }
     i = i + 1
   }
@@ -955,7 +958,8 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         Some(a) => a,
         None => name
       }
-      let ty = match env_lookup_flat(dep_bindings, name) {
+      let imported_ty = env_lookup_flat(dep_bindings, name)
+      let ty = match imported_ty {
         Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
         None => {
           // Declaration authority travels explicitly in EnvTypeDefs, so
@@ -969,11 +973,14 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
           CtUnknown
         }
       }
-      let with_name = env_bind(nacc, bound_name, ty)
+      let with_name = match imported_ty {
+        Some(_) => env_bind_with_origin(nacc, bound_name, ty, BindingOriginModuleExport(resolved, name)),
+        None => env_bind(nacc, bound_name, ty)
+      }
       let with_companions = match ty {
-        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_bindings, enum_name, trait_mappings),
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, resolved, dep_bindings, enum_name, trait_mappings),
         _ => if starts_with_upper(name) {
-          bind_enum_constructor_companions(with_name, dep_bindings, name, trait_mappings)
+          bind_enum_constructor_companions(with_name, resolved, dep_bindings, name, trait_mappings)
         } else {
           with_name
         }
@@ -2001,10 +2008,10 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
-    EnvBind(name, ty, rest) => {
+    EnvBind(name, binding, rest) => {
       let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
-      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, ty, type_surface) {
-        EnvBind(name, ty, restricted)
+      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
+        EnvBind(name, env_value_binding(binding.ty), restricted)
       } else {
         restricted
       }
@@ -2067,9 +2074,9 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(bindings) {
-        let (name, ty) = Array::get(bindings, i)
-        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, ty, type_surface) {
-          Array::push(kept, (name, ty))
+        let (name, binding) = Array::get(bindings, i)
+        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
+          Array::push(kept, (name, env_value_binding(binding.ty)))
         } else {
           ()
         }
@@ -2100,7 +2107,7 @@ fn prepend_explicit_builtin_value_markers(value_surface: Array[String], env: Typ
   while i < Array::length(value_surface) {
     let name = Array::get(value_surface, i)
     if is_explicit_builtin_declaration(name) && env_lookup(env, name) == None {
-      out = EnvBind(name, CtUnknown, out)
+      out = EnvBind(name, env_value_binding(CtUnknown), out)
     } else {
       ()
     }

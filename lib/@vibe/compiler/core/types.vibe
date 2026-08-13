@@ -57,9 +57,35 @@ export enum TypeDef {
   TDEffectSet(String, Array[String])
 }
 
+/// Checker-internal authority for where a value binding was resolved.
+/// Persistent/public TypeEnv transport intentionally drops this payload.
+export enum BindingOrigin {
+  BindingOriginUnavailable;
+  BindingOriginModuleExport(String, String)
+}
+
+export struct EnvValueBinding {
+  ty: Type;
+  origin: BindingOrigin
+}
+
+export fn env_value_binding(ty: Type) -> EnvValueBinding {
+  EnvValueBinding::{
+    ty: ty,
+    origin: BindingOriginUnavailable
+  }
+}
+
+export fn env_value_binding_with_origin(ty: Type, origin: BindingOrigin) -> EnvValueBinding {
+  EnvValueBinding::{
+    ty: ty,
+    origin: origin
+  }
+}
+
 export enum TypeEnv {
   EnvEmpty;
-  EnvBind(String, Type, TypeEnv);
+  EnvBind(String, EnvValueBinding, TypeEnv);
   // Header params are sixth and method generic provenance is appended seventh,
   // so every older positional slot, including rest, retains its meaning.
   // Both are retained checker provenance.
@@ -73,14 +99,14 @@ export enum TypeEnv {
   // separate prevents a private dependency of an exported signature from
   // becoming importable by name.
   EnvTypeDefs(Array[TypeDef], Array[String], TypeEnv);
-  EnvFlat(Array[(String, Type)]);
+  EnvFlat(Array[(String, EnvValueBinding)]);
   // Sorted names/types pair (see core/sorted_index.vibe), instead of a
   // Map[String, Type]: this compiler's `Map` is a flat assoc list, so
   // `Map::has_key` + `Map::get` were TWO O(entries) linear scans per lookup
   // -- exactly the "Map membership index is still linear" trap from #799.
   // Names are unique (built by env_cache below), so a stable sort + leftmost
   // bsearch gives the same result in O(log N) with no dedup step needed.
-  EnvCached(Array[String], Array[Type], TypeEnv)
+  EnvCached(Array[String], Array[EnvValueBinding], TypeEnv)
 }
 
 export enum Subst {
@@ -99,6 +125,11 @@ export enum Subst {
 //# Functions
 
 export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
+  env_bind_with_origin(env, name, ty, BindingOriginUnavailable)
+}
+
+export fn env_bind_with_origin(env: TypeEnv, name: String, ty: Type, origin: BindingOrigin) -> TypeEnv {
+  let binding = env_value_binding_with_origin(ty, origin)
   match env {
     // Keeping the cache at the head is only sound while the new binding's
     // name is NOT in the cached index: env_lookup consults the index first,
@@ -107,11 +138,11 @@ export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
     // function body is checked, and a parameter named like an import then
     // resolved to the import). Bind shadowing names IN FRONT of the cache.
     EnvCached(names_sorted, types_sorted, rest) => if bsearch_leftmost(names_sorted, name) >= 0 {
-      EnvBind(name, ty, env)
+      EnvBind(name, binding, env)
     } else {
-      EnvCached(names_sorted, types_sorted, EnvBind(name, ty, rest))
+      EnvCached(names_sorted, types_sorted, EnvBind(name, binding, rest))
     },
-    _ => EnvBind(name, ty, env)
+    _ => EnvBind(name, binding, env)
   }
 }
 
@@ -217,9 +248,9 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvEmpty => {
           done = true
         },
-        EnvBind(n, ty, rest) => {
+        EnvBind(n, binding, rest) => {
           ArrayBuilder::push(names, n)
-          ArrayBuilder::push(types, ty)
+          ArrayBuilder::push(types, binding)
           cur = rest
         },
         EnvTraitDef(_, _, _, _, rest, _, _) => {
@@ -237,9 +268,9 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvFlat(bindings) => {
           let mut j = 0
           while j < Array::length(bindings) {
-            let (n, ty) = Array::get(bindings, j)
+            let (n, binding) = Array::get(bindings, j)
             ArrayBuilder::push(names, n)
-            ArrayBuilder::push(types, ty)
+            ArrayBuilder::push(types, binding)
             j = j + 1
           }
           done = true
@@ -310,6 +341,13 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
 }
 
 export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
+  match env_lookup_binding(env, name) {
+    Some(binding) => Some(binding.ty),
+    None => None
+  }
+}
+
+export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
   let mut cur = env
   let mut result = None
   let mut done = false
@@ -318,8 +356,8 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
       EnvEmpty => {
         done = true
       },
-      EnvBind(n, ty, rest) => if n == name {
-        result = Some(ty)
+      EnvBind(n, binding, rest) => if n == name {
+        result = Some(binding)
         done = true
       } else {
         cur = rest
@@ -339,9 +377,9 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
       EnvFlat(bindings) => {
         let mut j = 0
         while j < Array::length(bindings) && !done {
-          let (n, ty) = Array::get(bindings, j)
+          let (n, binding) = Array::get(bindings, j)
           if n == name {
-            result = Some(ty)
+            result = Some(binding)
             done = true
           } else {
             j = j + 1
@@ -1470,10 +1508,18 @@ fn empty_env_bindings() -> Array[(String, Type)] {
 }
 
 export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
+  let out = empty_env_bindings()
   match env {
-    EnvFlat(bindings) => bindings,
+    EnvFlat(bindings) => {
+      let mut i = 0
+      while i < Array::length(bindings) {
+        let (name, binding) = Array::get(bindings, i)
+        Array::push(out, (name, binding.ty))
+        i = i + 1
+      }
+      out
+    },
     _ => {
-      let out = empty_env_bindings()
       let mut cur = env
       let mut done = false
       while !done {
@@ -1481,8 +1527,8 @@ export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
           EnvEmpty => {
             done = true
           },
-          EnvBind(name, ty, rest) => {
-            Array::push(out, (name, ty))
+          EnvBind(name, binding, rest) => {
+            Array::push(out, (name, binding.ty))
             cur = rest
           },
           EnvTraitDef(_, _, _, _, rest, _, _) => {
@@ -1500,7 +1546,8 @@ export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
           EnvFlat(bindings) => {
             let mut j = 0
             while j < Array::length(bindings) {
-              Array::push(out, Array::get(bindings, j))
+              let (name, binding) = Array::get(bindings, j)
+              Array::push(out, (name, binding.ty))
               j = j + 1
             }
             done = true
