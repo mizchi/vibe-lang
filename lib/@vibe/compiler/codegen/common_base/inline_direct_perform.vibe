@@ -9300,8 +9300,9 @@ fn scps_need_clone(eff: String, fname: String, st: (Array[Int], Array[String], A
 // selection/assignment or a while condition. A suspension nested in a COMPOUND
 // -- an operand, a call argument, a constructor payload -- is linearized onto
 // the same spine first (scps_anf_compound). A suspension some execution would
-// not reach (an if/match branch, the right operand of `&&` / `||`, a closure
-// body, a nested handle) still fails closed.
+// not reach (an if/match branch or the right operand of `&&` / `||`) still
+// fails closed. Closure literals are handled on their own prepass step spine;
+// supported nested different-effect handles keep their existing ownership path.
 
 fn scps_direct_spine_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
   let (_, ops, _, _, _) = sctx
@@ -9340,9 +9341,11 @@ fn scps_selection_fresh(e: Expr, site: Int) -> String {
 // rounds as it has suspensions.
 //
 // Only strictly-evaluated positions are traversed. A suspension that some
-// execution reaching the compound would NOT reach -- inside a branch, a loop
-// body, a closure, a handler, or the right operand of `&&` / `||` -- is not
-// linearizable this way and stays fail-closed.
+// execution reaching the compound would NOT reach -- inside an if/match branch
+// or the right operand of `&&` / `||` -- is not linearizable this way and
+// stays fail-closed. Closure literals are step-split by `scps_prepass_expr` on
+// their own spine, and supported nested different-effect handles keep their
+// existing handler-ownership lowering; neither is floated by this helper.
 
 /// Is `e` a recognized suspension whose own inputs are already suspension-free
 /// -- i.e. one the spine can name as it stands?
@@ -10049,9 +10052,9 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
   }
 }
 
-/// Name direct suspension RHS values before mutable-local boxing. Traverse
-/// only continuation-spine positions; values, loop bodies, nested handles and
-/// closure bodies remain untouched and therefore fail closed as before.
+/// Name direct suspension RHS values before mutable-local boxing. This pass
+/// traverses continuation-spine positions; expression normalization separately
+/// handles supported closure and nested-handle forms before this pass.
 fn scps_float_direct_assign(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), site: Int) -> Expr {
   match e {
     EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {

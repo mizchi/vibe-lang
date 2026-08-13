@@ -181,7 +181,10 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)
 - **不適格**: ループ内 `return`、配列 `for` 形、**必ず評価されるとは限らない位置に
   埋まった suspension** (`if` / `match` の枝、`&&` / `||` の右辺)、実引数証明が
-  成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)
+  成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
+  literal は prepass が literal 自身の spine で step-split し、supported nested
+  different-effect handles は既存の handler-ownership lowering を維持するため、
+  compound ANF の blanket rejection には含めない
 
 closure param を**無条件に**許すのは不健全 — closure literal 内の `perform`
 は「リテラルが置かれた関数の row」に字句的に計上されるので (#761)、「宣言
