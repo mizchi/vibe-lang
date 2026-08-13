@@ -1085,8 +1085,11 @@ perform・concrete needing call・CPS-local call そのものなら、fresh let 
 (`Some(perform Op(i))`)・compound な `while` 条件 (`perform Next() > 0`)・
 `+=` 等の compound assignment は、**元の評価順で let 連鎖へ線形化**されてから
 spine に乗る (#1536 (a) v8)。perform より前に評価されるものは先に名前が付くので
-順序は変わらない。**必ず評価されるとは限らない位置に埋まった perform だけは
-reject のまま** — `if` / `match` の枝の中、`&&` / `||` の右辺。
+順序は変わらない。条件付き位置は原則 reject だが、`&&` / `||` 全体が**不変の
+`let` initializer** で、左辺が suspend せず、選択される右辺が直接対応済みの
+suspension またはその `let` / sequence spine である場合だけ対応する。入れ子の
+short-circuit、呼び出し引数等の compound、`return` / `break` / `continue` で
+終わる spine、`if` / `match` の枝など、より広い条件付き・制御移譲形は reject のまま。
 **concrete な row に
 対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
 再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
