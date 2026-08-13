@@ -332,6 +332,39 @@ assert_linear_lane_has_no_gc_construct fixtures/gc_direct_array_argument_identit
 assert_linear_lane_has_no_gc_construct fixtures/gc_direct_array_generic_coexist_test.vibe
 echo "[gc-heap-accounting] ok: linear lane keeps the reference-lane fixtures free of wasm-gc constructs"
 
+# #1541 asks for deterministic generated-size evidence per reference-lane
+# boundary. A pinned byte count would be the strongest form and the first to be
+# deleted -- it moves on every unrelated codegen change. What is reported here
+# is each boundary fixture's gc-lane module size next to its linear-lane size,
+# every run, so drift is visible in the log; the assertion is only a gross
+# trip wire. The reference lane REPLACES linear-memory allocation rather than
+# adding to it, so a gc module that has run away to several times its linear
+# counterpart means the lane is emitting conversions or duplicate bodies, not
+# that codegen grew a little.
+report_boundary_size() {
+  local label="$1"
+  local gc_wasm="$2"
+  local linear_wasm="$WORK/$(basename "$gc_wasm" .wasm)_size_linear.wasm"
+  local linear_rel="${linear_wasm#"$ROOT_DIR"/}"
+  local fixture="$3"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+    "$fixture" "$linear_rel" __no_entry__ >/dev/null
+  local gc_size linear_size
+  gc_size="$(wc -c < "$gc_wasm")"
+  linear_size="$(wc -c < "$linear_wasm")"
+  echo "[gc-heap-accounting] size: $label gc=${gc_size}B linear=${linear_size}B"
+  if [ "$gc_size" -gt $((linear_size * 3)) ]; then
+    echo "[gc-heap-accounting] FAIL: $label gc module ${gc_size}B is more than 3x its linear counterpart ${linear_size}B" >&2
+    exit 1
+  fi
+}
+
+report_boundary_size "direct-argument" "$ARGUMENT_OUT" fixtures/gc_direct_array_argument_identity_test.vibe
+report_boundary_size "generic-coexist" "$COEXIST_OUT" fixtures/gc_direct_array_generic_coexist_test.vibe
+report_boundary_size "recursion" "$RECURSION_OUT" fixtures/gc_direct_array_recursion_test.vibe
+report_boundary_size "control-flow-join" "$JOIN_OUT" fixtures/gc_direct_array_join_test.vibe
+
 argument_fallback="$(count_native_array_allocs "$ARGUMENT_FALLBACK_OUT")"
 if [ "$argument_fallback" -ne 0 ]; then
   echo "[gc-heap-accounting] FAIL: generic argument boundary emitted $argument_fallback native literals" >&2
