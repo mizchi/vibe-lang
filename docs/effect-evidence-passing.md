@@ -2851,6 +2851,62 @@ fail-closed。
 **残る不適格**: EForIn(array)/ELoop HEAD、compound while/selection input、compound
 assignment RHS、loop control、row 変数 callee、literal param flow。
 
+### 追記47 (2026-08-13): loop control (`break` / `continue`) を CPS spine に載せる (#1536)
+
+`while c { body }` の body が `break` / `continue` を持つとき、脱出継続を独立した
+closure に切り出す。`let k = (bv) -> <rest の split>` と
+`let rec lp = () -> <body' の split>` を作り、body' では `break` を `k(unit)`、
+`continue` を `lp()` へ書き換え、残った tail には `lp()` を append する
+(末尾まで落ちたら再入、という surface の意味論と一致する)。書き換えの前に
+`scps_loop_normalize_ctl` が「seq head の if/match が transfer を持つ形」を各枝へ
+分配し、transfer の後ろの dead statement を落とす — これが無いと `break` の後に
+body の残りが走る。両 closure は step-typed cps-local として登録されるので、既存の
+closure-CPS bubbling がそのまま結果を運ぶ。`return` を含む body は fail-closed
+(closure から関数の return は表現できない)。surface の `loop (p = e, ..) { .. }` は
+parser (`desugar_loop_body`) がこの形へ脱糖するので、ELoop のケースは持たない。
+
+### 追記48 (2026-08-13): compound input を評価順のまま線形化する (#1536 (a) v8)
+
+追記44/45/46 は「spine の slot が **direct recognized suspension そのもの**」の形
+だけを受けていた。同じ操作を別の綴りで書いた瞬間 — 被演算子
+(`acc + perform Op(i)`)、呼び出し引数 (`Array::push(out, perform Op(i))`)、
+コンストラクタ引数 (`Some(perform Op(i))`)、compound な `while` 条件
+(`perform Next() > 0`)、`+=` — reject されるので、**受理される綴りが「何をしたか」
+ではなく「どこに置いたか」で決まっていた**。
+
+`scps_anf_compound` が最初の suspension で止まる A-normalization を行う:
+
+```
+f(g(x), perform Op(i)) + 1
+  ==>  let h0 = g(x); let h1 = perform Op(i); f(h0, h1) + 1
+```
+
+**元が suspension より前に評価するものは、評価順のまま先に名前を付ける**ので並べ替えは
+起きない (リテラルと identifier だけは名前を付けない — 値が変わりようがないため。
+`let mut` の読みは `scps_cellify` が既に `Array::get(cell, 0)` にしているので
+identifier ではなく、ちゃんと名前が付いて元の位置で読まれる)。suspension より後ろは
+そのまま残るので resume 後に走る。2 個目以降の suspension は residual に残り、次の
+pass で拾われる。callee は名前を付けない — by-name call を local binding 経由の呼び出しに
+変えてしまうと、それこそ suspend lowering が see-through できない唯一の形になる。
+
+**必ず評価されるとは限らない位置だけが fail-closed のまま**: `if` / `match` の枝、
+`&&` / `||` の右辺、closure body、nested handle。
+
+同時に `scps_cellify` の **P0 silent-wrong** を 1 件直した。`EAssignOp` の
+フィールドは `(name, op, value, cont)` だが、この pass の 3 箇所が `(op, name, ..)` と
+読んでいた。cellify では「これは box した local か?」の比較が `"+"` と変数名の比較に
+なるため**一度も成立せず**、`value += ..` は raw local に書き続ける一方で周囲の読みは
+cell 読みになっており、**書き込みが suspension を跨いで黙って消えていた**
+(`effect_assignment_op_rhs_suspend` が pin)。残り 2 箇所は `scps_rename_ident`
+(float した binder の rename が代入先を飛ばす) と `scps_refs_name`
+(代入先としてしか使われない名前が「言及されていない」と判定され、生成 binder の
+衝突 probe が漏れる)。同じフィールド順の取り違えは suspend lowering の外にも残っている
+— 一覧は #1657。
+
+**残る不適格**: EForIn(array) HEAD (反復対象が Array であることの静的証明が要る —
+codegen は String を実行時判別する #807)、loop body 内の `return`、row 変数 callee、
+literal param flow、条件付き評価位置の suspension。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

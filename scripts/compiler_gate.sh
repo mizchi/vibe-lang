@@ -6850,16 +6850,31 @@ scps_run_expect "effect_seq_head_if_suspend.vibe" "41100" "seqheadif"
 scps_run_expect "effect_seq_head_match_suspend.vibe" "3200" "seqheadmatch"
 # #1536 direct selection input: a recognized direct perform is first named on
 # the CPS spine, evaluates once, then selects a branch/arm whose continuation
-# runs once. Compound inputs remain fail-closed.
+# runs once.
 scps_run_expect "effect_seq_head_if_condition_suspend.vibe" "3210" "seqheadifcond"
 scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadmatchscrut"
 scps_run_expect "effect_tail_selection_input_suspend.vibe" "3311" "tailselectinput"
 # #1536 direct plain-assignment RHS: name the resumed value on the CPS spine,
-# then assign and continue once. Compound RHS and EAssignOp remain fail-closed.
+# then assign and continue once.
 scps_run_expect "effect_assignment_rhs_suspend.vibe" "41112" "assignrhs"
 # #1536 direct while condition: resume into the existing recursive loop
-# closure once per condition check. Compound conditions remain fail-closed.
+# closure once per condition check.
 scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
+# #1536 (a) v8: COMPOUND inputs -- an operand, a call argument, a constructor
+# payload, a comparison in a condition. The suspension is named on the spine and
+# everything the original evaluated before it is named in order ahead of it, so
+# these pin evaluation order, not just acceptance (a handler that mutates shared
+# state between perform and resume would show up in the numbers). The `while`
+# case additionally pins that the chain stayed inside the loop closure.
+scps_run_expect "effect_assignment_rhs_compound_suspend.vibe" "1131" "assignrhscompound"
+scps_run_expect "effect_seq_head_if_condition_compound_suspend.vibe" "1011" "seqheadifcompound"
+scps_run_expect "effect_seq_head_match_compound_scrutinee_suspend.vibe" "411" "seqheadmatchcompound"
+scps_run_expect "effect_compound_call_arg_suspend.vibe" "1506" "compoundcallarg"
+scps_run_expect "effect_while_condition_compound_suspend.vibe" "23" "whilecondcompound"
+# Same slice, plus the scps_cellify EAssignOp field-order fix: `x op= v` on a
+# boxed mutable used to drop the write silently (the cell rewrite compared the
+# OPERATOR against the local's name, so it never fired).
+scps_run_expect "effect_assignment_op_rhs_suspend.vibe" "226" "assignoprhs"
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6875,11 +6890,11 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_resume_store_loop_break_test.vibe \
   fixtures/effect_loop_ctl_name_collision_test.vibe
 scps_check_reject "err_effect_loop_return_suspend.vibe" "let/seq/tail/branch-tail spine" "loopreturn"
-scps_check_reject "err_effect_while_condition_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "whilecondcompound"
-scps_check_reject "err_effect_assignment_rhs_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "assignrhscompound"
-scps_check_reject "err_effect_assignment_op_rhs_suspend.vibe" "let/seq/tail/branch-tail spine" "assignoprhs"
-scps_check_reject "err_effect_seq_head_if_condition_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadifcompound"
-scps_check_reject "err_effect_seq_head_match_compound_scrutinee_suspend.vibe" "let/seq/tail/branch-tail spine" "seqheadmatchcompound"
+# #1536 (a) v8 boundary: linearization walks only positions that every
+# execution reaching the compound also reaches. An `if` branch and the right
+# operand of `&&` / `||` are not among them.
+scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
+scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"
