@@ -10367,6 +10367,23 @@ if insp_hyg="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runn
   exit 1
 fi
 
+# The same freshness boundary when the candidate appears ONLY as a compound-
+# assignment target inside the value expression. A target-blind scan reuses the
+# name, so the generated let captures the mutation and the snapshot observes 1.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/inspect_assignop_target_freshness.vibe "$inspdir/assignop.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$inspdir/assignop.wasm" ]; then
+  echo "[compiler-gate] FAIL: inspect EAssignOp target-only freshness fixture did not compile" >&2
+  cat "$inspdir/assignop.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$inspdir/assignop.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: inspect temporary captured a target-only __vibe_inspect_actual" >&2
+  exit 1
+fi
+
 # (b) Shadow, expression binder: a user function named `inspect` must keep its
 # own body. 2 + 5 = 7; the rewrite would return Unit and not type.
 cat > "$inspdir/shadow_fn.vibe" <<'INSPF'
