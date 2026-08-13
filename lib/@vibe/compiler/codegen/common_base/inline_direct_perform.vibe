@@ -10621,6 +10621,164 @@ fn scps_return_in_split_msg(subject: String) -> String {
 ///
 /// A nested closure is not entered: its `return` targets that closure and is
 /// already correct (`_ => e` covers EFn, EWhile, ELoop and EForIn alike).
+/// Does this expression contain a `return` that the loop rewrite below cannot
+/// reach -- one inside a loop NESTED in the loop it is rewriting? `break` only
+/// leaves the innermost loop, so such a return would stop at the wrong level.
+/// Nested closures are not entered (their `return` is their own).
+fn scps_loop_return_nested(e: Expr) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => false,
+    EWhile(_, b) => scps_body_has_return(b),
+    ELoop(_, b) => scps_body_has_return(b),
+    EForIn(_, _, _, b) => scps_body_has_return(b),
+    ELet(_, v, b, _) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    ELetMut(_, v, b, _) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    ELetRec(_, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    ESeq(a, b) => scps_loop_return_nested(a) || scps_loop_return_nested(b),
+    EAssign(_, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    EAssignOp(_, _, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    EIf(c, t, el) => scps_loop_return_nested(c) || scps_loop_return_nested(t) || scps_loop_return_nested(el),
+    EMatch(s, arms) => scps_loop_return_nested(s) || scps_loop_arms_return_nested(arms),
+    EHandle(b, arms) => scps_loop_return_nested(b) || scps_loop_arms_return_nested(arms),
+    _ => false
+  }
+}
+
+fn scps_loop_arms_return_nested(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if scps_loop_return_nested(ex) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Replace every `return v` in a loop body with "record and leave the loop".
+/// The recorded value is picked up by the `if returned { return .. }` the
+/// caller places after the loop, where the ordinary hoist can reach it.
+/// Nested closures keep their own `return` (`_ => e` covers EFn).
+fn scps_loop_return_to_break(e: Expr, flag: String, slot: String) -> Expr {
+  match e {
+    EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
+    ESeq(a, b) => match a {
+      EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
+      _ => ESeq(scps_loop_return_to_break(a, flag, slot), scps_loop_return_to_break(b, flag, slot))
+    },
+    ELet(x, v, b, off) => ELet(x, v, scps_loop_return_to_break(b, flag, slot), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_return_to_break(b, flag, slot), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_loop_return_to_break(b, flag, slot)),
+    EAssign(x, v, b) => EAssign(x, v, scps_loop_return_to_break(b, flag, slot)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_loop_return_to_break(b, flag, slot)),
+    EIf(c, t, el) => EIf(c, scps_loop_return_to_break(t, flag, slot), scps_loop_return_to_break(el, flag, slot)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        Array::push(out, (p, scps_loop_return_to_break(body, flag, slot)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
+  }
+}
+
+/// #1536: a `return` inside a suspending `while` body. The hoist below cannot
+/// move it to the body's tail -- a loop body's tail is the NEXT ITERATION, not
+/// the function's value -- and the loop closure the split builds cannot return
+/// from the function around it. Nothing new is needed to express it, though:
+/// `break` already leaves such a loop (追記47), and a `return` on the spine
+/// AFTER the loop is already handled. So record the value, leave the loop, and
+/// return it outside:
+///
+///   while c { .. return v .. }   ==>  let mut returned = false
+///   REST                              let mut slot = 0
+///                                     while c { .. slot = v; returned = true; break .. }
+///                                     if returned { return slot } else { REST }
+///
+/// The trailing `return` is then hoisted by scps_elim_returns like any other.
+/// Both binders are minted with the usual scope-blind freshness probe.
+///
+/// Returns None -- leaving the body untouched for the caller to refuse -- when
+/// a `return` sits inside a loop NESTED in this one, because `break` would stop
+/// at the wrong level.
+fn scps_elim_loop_returns(e: Expr, site: Int) -> Option[Expr] {
+  match e {
+    ESeq(a, b) => match a {
+      EWhile(c, wb) => if scps_body_has_return(wb) {
+        if scps_loop_return_nested(wb) {
+          None
+        } else {
+          let flag = scps_seq_float_fresh("returned", e, EUnit, site)
+          let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
+          let wb2 = scps_loop_return_to_break(wb, flag, slot)
+          Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), b)), -1), -1))
+        }
+      } else {
+        match scps_elim_loop_returns(b, site) {
+          Some(b2) => Some(ESeq(a, b2)),
+          None => None
+        }
+      },
+      _ => match scps_elim_loop_returns(b, site) {
+        Some(b2) => Some(ESeq(a, b2)),
+        None => None
+      }
+    },
+    ELet(x, v, b, off) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(ELet(x, v, b2, off)),
+      None => None
+    },
+    ELetMut(x, v, b, off) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(ELetMut(x, v, b2, off)),
+      None => None
+    },
+    ELetRec(x, v, b) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(ELetRec(x, v, b2)),
+      None => None
+    },
+    EAssign(x, v, b) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(EAssign(x, v, b2)),
+      None => None
+    },
+    EAssignOp(x, op, v, b) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(EAssignOp(x, op, v, b2)),
+      None => None
+    },
+    // A bare loop in TAIL position has no continuation to guard; the `return`
+    // becomes the value of what follows it, which is nothing.
+    EWhile(c, wb) => if scps_body_has_return(wb) {
+      if scps_loop_return_nested(wb) {
+        None
+      } else {
+        let flag = scps_seq_float_fresh("returned", e, EUnit, site)
+        let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
+        let wb2 = scps_loop_return_to_break(wb, flag, slot)
+        Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EUnit)), -1), -1))
+      }
+    } else {
+      Some(e)
+    },
+    // Everything else passes through UNCHANGED. A plain `return` here is not
+    // this rewrite's business -- scps_elim_returns hoists it. Only a `return`
+    // sitting inside a loop this walk did not reach (one held by a selection
+    // branch, an initializer, an operand) is refused, by returning None for
+    // the caller to turn into the #1691 diagnostic.
+    _ => if scps_loop_return_nested(e) {
+      None
+    } else {
+      Some(e)
+    }
+  }
+}
+
 fn scps_elim_returns(e: Expr, site: Int) -> Expr {
   match e {
     EReturn(v) => v,
@@ -10744,12 +10902,48 @@ fn scps_body_fields_have_return(fields: Array[(String, Expr)]) -> Bool {
 /// #1536: is this expression an unconditional transfer out of the enclosing
 /// loop iteration? Nothing sequenced after one runs, which is what lets the
 /// repeat-append and the ctl rewrite below drop the dead tail.
+/// Does every execution of `e` leave the loop (or restart it)?
+///
+/// #1536 P0: this used to recognize only a BARE `break` / `continue`, so the
+/// ordinary spelling `if done { acc = v; break }` -- a transfer with a
+/// statement in front of it -- was not seen as a transfer at all. The
+/// continuation was then neither dropped by the normalizer nor cut by the
+/// rewrite, and since a rewritten transfer is a plain CALL (`k(v)`), execution
+/// FELL THROUGH it and kept looping. That compiled clean and silently returned
+/// a different answer than the same loop without a suspension in it.
+///
+/// A selection counts only when EVERY branch transfers. Nested loops, closures
+/// and handles are not entered: their transfers are not this loop's.
 fn scps_is_ctl_terminator(e: Expr) -> Bool {
   match e {
     EBreak(_) => true,
     EContinue(_) => true,
+    ESeq(_, b) => scps_is_ctl_terminator(b),
+    ELet(_, _, b, _) => scps_is_ctl_terminator(b),
+    ELetMut(_, _, b, _) => scps_is_ctl_terminator(b),
+    ELetRec(_, _, b) => scps_is_ctl_terminator(b),
+    EAssign(_, _, b) => scps_is_ctl_terminator(b),
+    EAssignOp(_, _, _, b) => scps_is_ctl_terminator(b),
+    EIf(_, t, el) => scps_is_ctl_terminator(t) && scps_is_ctl_terminator(el),
+    EMatch(_, arms) => scps_arms_are_ctl_terminators(arms),
     _ => false
   }
+}
+
+/// Every arm transfers -- and an empty arm list does not (nothing transfers).
+fn scps_arms_are_ctl_terminators(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut all = Array::length(arms) > 0
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if scps_is_ctl_terminator(ex) {
+      ()
+    } else {
+      all = false
+    }
+    i = i + 1
+  }
+  all
 }
 
 /// Put every transfer of THIS loop in a TAIL slot of the body, so the append
@@ -12550,7 +12744,10 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
           // #1536: `return v` in this body means "this function's value is v",
           // which is what its tail means -- hoist it there. Anything left
           // unreachable by that hoist is refused below rather than split.
-          let fbody3 = scps_elim_returns(fbody2, site)
+          let fbody3 = scps_elim_returns(match scps_elim_loop_returns(fbody2, site) {
+            Some(lifted) => lifted,
+            None => fbody2
+          }, site)
           if scps_body_has_return(fbody3) {
             Array::push(errs, scps_return_in_split_msg(String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, so its body")))
           } else {
@@ -13200,13 +13397,19 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
     scps_msg = String::concat(scps_msg, culprit_marker)
     Array::push(errs, scps_msg)
     EFn(tps, tbs, params, None, None, b)
-  } else if scps_body_has_return(scps_elim_returns(b, site)) {
+  } else if scps_body_has_return(scps_elim_returns(match scps_elim_loop_returns(b, site) {
+    Some(lifted) => lifted,
+    None => b
+  }, site)) {
     Array::push(errs, scps_return_in_split_msg(String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class) is split into continuations, so its body")))
     EFn(tps, tbs, params, None, None, b)
   } else {
     // #1536: same hoist -- `return v` in a closure literal is that closure's
     // own value, which is what its tail is.
-    let (split_ok, split_body) = scps_split_tail(scps_elim_returns(b, site), sctx, ctx, st)
+    let (split_ok, split_body) = scps_split_tail(scps_elim_returns(match scps_elim_loop_returns(b, site) {
+      Some(lifted) => lifted,
+      None => b
+    }, site), sctx, ctx, st)
     if !split_ok {
       Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
       EFn(tps, tbs, params, None, None, b)
