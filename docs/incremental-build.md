@@ -114,10 +114,14 @@ checking. Ordinary `check_module` makes no artifact construction attempt;
 diagnosed opt-in checks also make none; successful opt-in checks make exactly
 one. An explicit in-memory validator can compare retained v2 bytes with one
 current `ModuleJob.path/source/dep_envs`. It recomputes both identities from the
-already-ingested source, requires ordered dependency assumptions and exactly the
-singleton owner closure, and returns only `Bool`; v1, malformed, stale, or wider
-closure inputs fail closed. Ordinary checks never enter this validator. Its
-attempt counter is test observation, not production telemetry.
+already-ingested source and requires ordered dependency assumptions plus exactly
+the singleton owner closure. Success returns an opaque freshness attestation
+bound to the exact retained bytes; its snapshot accessor returns those bytes
+without decoding or re-encoding. Only an opaque successful `ModuleOutcome` can
+mint it—decoded or manually authored bytes cannot. V1, malformed, stale, missing,
+diagnosed, or wider-closure inputs return `None`. The legacy `Bool` observation
+is only a wrapper over this attestation path. Ordinary checks never enter this
+validator. Its attempt counter is test observation, not production telemetry.
 
 The aggregate and its complete-encoding fingerprint are shadow comparison data
 only. They are not wired to TypeDb, the TypeEnv v5 transport and persistent cache
