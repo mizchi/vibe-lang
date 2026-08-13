@@ -24,6 +24,17 @@
 # NOT source coverage -- their denominator is summed per entry, so the same
 # imported module is counted once per test file that pulls it in.
 #
+# WHAT THIS MEASURES: the compiled TEST PROGRAM's own execution. Compiler
+# passes that ran while COMPILING a test are inside the (uninstrumented)
+# stage2, so they contribute nothing -- a compiler pass appears here only when
+# some test calls it IN-PROCESS. Measured both directions: grep_test.vibe
+# calls grep_scan_source directly and lights 264/587 of grep.vibe, while
+# import_private_ctor_collision_test.vibe (which exercises private-ctor
+# namespacing at COMPILE time) yields a program with 8 branches total and no
+# import_alias_rewrite function in it at all. So a 0% module here means "no
+# test calls it in-process", NOT "untested" -- see docs/coverage.md before
+# treating top_branch_union_gaps as a to-do list.
+#
 # Thresholds (percent, env-overridable; this file is the ONE place they are
 # defined — raise them as coverage improves, lowering needs a rationale in
 # the PR):
