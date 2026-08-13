@@ -111,6 +111,13 @@ compile_direct_abi_fallback fixtures/gc_direct_array_argument_fallback_test.vibe
 COEXIST_OUT="$WORK/direct_array_generic_coexist.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_generic_coexist_test.vibe "$COEXIST_OUT"
 
+# #1541 recursion / SCC characterization. Self-recursion and a two-function
+# cycle (one call site precedes its callee's definition) both keep the single
+# native allocation: the reference is threaded through every frame instead of
+# being materialized per call.
+RECURSION_OUT="$WORK/direct_array_recursion.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_recursion_test.vibe "$RECURSION_OUT"
+
 # #1541 dedicated control-flow join fallback. The annotated Array[Int]
 # parameter/result is a direct-ABI candidate, but joining reference values
 # through `if` is outside the current proof and must clear the whole island.
@@ -235,6 +242,11 @@ fi
 coexist="$(count_native_array_allocs "$COEXIST_OUT")"
 if [ "$coexist" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 native literal beside an unrelated generic, found $coexist" >&2
+  exit 1
+fi
+recursion="$(count_native_array_allocs "$RECURSION_OUT")"
+if [ "$recursion" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one #1541 native literal across recursive crossings, found $recursion" >&2
   exit 1
 fi
 for i in "${!fallback_outputs[@]}"; do
