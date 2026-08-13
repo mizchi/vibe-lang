@@ -6906,9 +6906,11 @@ scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch
 scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
 scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
 # Immutable-let short-circuit support does not recursively admit another
-# short-circuit or hand a suspending call argument to generic compound ANF.
+# short-circuit, hand a suspending call argument to generic compound ANF, or
+# move a source return into the synthetic resume continuation.
 scps_check_reject "err_effect_let_shortcircuit_nested_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitnested"
 scps_check_reject "err_effect_let_shortcircuit_call_arg_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitcallarg"
+scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitreturn"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other

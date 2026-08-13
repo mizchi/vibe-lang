@@ -9672,7 +9672,8 @@ fn scps_anf_wrap(bn: Array[String], bv: Array[Expr], body: Expr) -> Expr {
 /// RHS block. Only parser-produced let/sequence continuation spines are
 /// traversed, and every suspending spine element must already be a direct input
 /// accepted by scps_split_tail. A plain terminal is valid only after that spine
-/// carried the selected suspension; arbitrary compound terminals stay closed.
+/// carried the selected suspension; control-transfer and arbitrary compound
+/// terminals stay closed.
 /// Moving the outer continuation under a traversed let widens that binder, so
 /// alpha-rename it first using the seq-float freshness contract.
 fn scps_let_shortcircuit_bind(result: String, rhs: Expr, continuation: Expr, result_off: Int, site: Int, sctx: (String, Array[String], Array[String], Int, Array[String]), carried: Bool) -> Option[Expr] {
@@ -9700,6 +9701,11 @@ fn scps_let_shortcircuit_bind(result: String, rhs: Expr, continuation: Expr, res
         }
       }
     },
+    // A source control transfer cannot be rebound inside the synthetic resume
+    // continuation: it would target that closure rather than its source scope.
+    EReturn(_) => None,
+    EBreak(_) => None,
+    EContinue(_) => None,
     _ => if scps_contains_susp(rhs, sctx) {
       if scps_direct_spine_input(rhs, sctx) {
         Some(ELet(result, rhs, continuation, result_off))
