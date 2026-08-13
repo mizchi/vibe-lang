@@ -2890,7 +2890,12 @@ pass で拾われる。callee は名前を付けない — by-name call を loca
 変えてしまうと、それこそ suspend lowering が see-through できない唯一の形になる。
 
 **必ず評価されるとは限らない位置だけがこの ANF では fail-closed のまま**:
-`if` / `match` の枝、`&&` / `||` の右辺。closure literal は
+`if` / `match` の枝、`&&` / `||` の右辺。後続スライスでは、式全体が tail の
+`l && r` / `l || r` だけをそれぞれ `if l { r } else { false }` /
+`if l { true } else { r }` に変換し、既存の branch splitter へ渡す。これにより
+selected RHS は suspend できるが、assignment/call/selection/sequence-head 等に
+ネストした non-tail short-circuit は引き続き fail-closed であり、generic ANF は
+conditional RHS を走査しない。closure literal は
 `scps_prepass_expr` が literal 自身の spine で step-split し、既存の
 nested different-effect handle は handler ownership を保った lowering を使うため、
 この compound ANF が外へ float する対象ではないが blanket reject でもない。
@@ -2908,7 +2913,8 @@ cell 読みになっており、**書き込みが suspension を跨いで黙っ�
 
 **残る不適格**: EForIn(array) HEAD (反復対象が Array であることの静的証明が要る —
 codegen は String を実行時判別する #807)、loop body 内の `return`、row 変数 callee、
-literal param flow、条件付き評価位置の suspension。
+literal param flow、`if` / `match` branch および non-tail `&&` / `||` RHS の
+条件付き suspension。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

@@ -9299,9 +9299,10 @@ fn scps_need_clone(eff: String, fname: String, st: (Array[Int], Array[String], A
 // first named by a fresh ELet, then the existing spine machinery resumes into
 // selection/assignment or a while condition. A suspension nested in a COMPOUND
 // -- an operand, a call argument, a constructor payload -- is linearized onto
-// the same spine first (scps_anf_compound). A suspension some execution would
-// not reach (an if/match branch or the right operand of `&&` / `||`) still
-// fails closed. Closure literals are handled on their own prepass step spine;
+// the same spine first (scps_anf_compound). Tail `&&` / `||` is first lowered
+// to an equivalent EIf, so its condition and selected RHS can use the existing
+// branch splitter; conditional positions nested in non-tail compounds still
+// fail closed. Closure literals are handled on their own prepass step spine;
 // supported nested different-effect handles keep their existing ownership path.
 
 fn scps_direct_spine_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
@@ -9704,6 +9705,24 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
       }
     } else {
       match e {
+        // #1536 tail short-circuit: preserve conditional RHS evaluation by
+        // expressing the whole tail boolean as the equivalent conditional.
+        // Re-entering this function reuses the established EIf condition and
+        // branch splitting, including exact-once resume behavior. This arm is
+        // deliberately tail-only; generic compound ANF still refuses to walk
+        // the RHS of && / || in assignments, calls, selections and seq heads.
+        EBinOp(op, l, r) => if op == "&&" {
+          scps_split_tail(EIf(l, r, EBool(false)), sctx, ctx, st)
+        } else if op == "||" {
+          scps_split_tail(EIf(l, EBool(true), r), sctx, ctx, st)
+        } else {
+          let (aok, abn, abv, e2) = scps_anf_compound(e, sctx, e, site)
+          if aok {
+            scps_split_tail(scps_anf_wrap(abn, abv, e2), sctx, ctx, st)
+          } else {
+            (false, e)
+          }
+        },
         ELet(x, v, b, off) => {
           let vp = scps_as_target_perform(v, ops)
           let vn = scps_as_needing_call(v, sctx)
@@ -10037,8 +10056,10 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
         },
         EWhile(c, b) => scps_split_while(c, b, EUnit, sctx, ctx, st),
         // #1536 (a) v8: a compound in TAIL position (`1 + perform Op()`,
-        // `Some(perform Op())`). Everything not linearizable -- a for form, a
-        // nested closure or handle, a transfer -- still lands on (false, e).
+        // `Some(perform Op())`). Tail && / || was handled above without asking
+        // generic ANF to traverse its conditional RHS. Everything else not
+        // linearizable -- a for form, nested closure/handle, or transfer --
+        // still lands on (false, e).
         _ => {
           let (aok, abn, abv, e2) = scps_anf_compound(e, sctx, e, site)
           if aok {
@@ -10979,7 +11000,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
     } else {
       let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
       if !split_ok {
-        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of `&&` / `||` -- are not eligible; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
+        Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
         None
       } else {
         scps_ensure_effect_runtime(eff, ctx, st)
@@ -12129,7 +12150,7 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
         } else {
           let (split_ok, split_body) = scps_split_tail(fbody2, sctx, ctx, st)
           if !split_ok {
-            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of `&&` / `||` -- are not eligible; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
+            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
           } else {
             Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
           }
@@ -12775,7 +12796,7 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   } else {
     let (split_ok, split_body) = scps_split_tail(b, sctx, ctx, st)
     if !split_ok {
-      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of `&&` / `||` -- are not eligible; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
+      Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a suspension some execution would not reach -- one inside an `if` / `match` branch, or in the right operand of a non-tail `&&` / `||` -- are not eligible; tail `&&` / `||` is supported; a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
       EFn(tps, tbs, params, None, None, b)
     } else {
       scps_ensure_effect_runtime(eff, ctx, st)

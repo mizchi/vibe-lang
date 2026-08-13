@@ -6878,6 +6878,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_assignment_op_name_collision_test.vibe \
   fixtures/effect_compound_anf_name_collision_test.vibe \
   fixtures/effect_compound_closure_literal_suspend_test.vibe
+# #1536 tail-only short-circuit: the whole boolean expression lowers to EIf,
+# preserving bypass and selected-RHS suspension. The snapshot pins four paths,
+# operation order, handler visits, resumed source-continuation events, and the
+# handler regaining control afterward; exact event counts pin exact-once flow.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_tail_shortcircuit_suspend.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6892,10 +6898,9 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_loop_nested_break_suspend_test.vibe \
   fixtures/effect_resume_store_loop_break_test.vibe \
   fixtures/effect_loop_ctl_name_collision_test.vibe
-scps_check_reject "err_effect_loop_return_suspend.vibe" "let/seq/tail/branch-tail spine" "loopreturn"
-# #1536 (a) v8 boundary: linearization walks only positions that every
-# execution reaching the compound also reaches. An `if` branch and the right
-# operand of `&&` / `||` are not among them.
+# #1536 boundary: generic linearization walks only positions that every
+# execution reaching a compound also reaches. Tail && / || is supported via
+# EIf, but if/match branches and a non-tail short-circuit RHS remain rejected.
 scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
 scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
 scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
