@@ -70,6 +70,15 @@ entry ごとの program 固有**なので entry 間で比較してはいけな�
   entry-weighted の branch rate は分母が entry 数で膨らむので目標には使えない
 - 同じ source 関数が entry ごとに異なる branch 数へ lower される
   (特殊化・辞書渡し) ことがあるため、union は**見えた最大の shape** に広げる
+- **entry ごとに合成される名前 (`_start` / `__test_<名前>` / `__bench_<名前>`)
+  だけは entry path で修飾する** (`union_key`)。これらは source 修飾を持たない
+  ので、別 entry が同じ綴りの test ブロックを持つと同一名に落ちる (実例:
+  `hashmap_test.vibe` と `sortedmap_test.vibe` の `test "empty map"` は branch
+  数が 2 と 4 で違う)。名前だけで束ねると分母から小さい方が消え、片方で踏んだ
+  branch がもう片方の別の branch を covered にしてしまう。逆に `Array::map` /
+  `T::equals` のように source 修飾を持たないが**本当に共通**の名前もあるので、
+  修飾してよいのは合成名だけ (test/bench ブロックは import されないので、
+  この class に限り「同名 = 別関数」が常に成り立つ)
 - mask を持たない (mask 導入前の) coverage JSON が1つでも混ざると
   `branch_union.exact` が `false` になり、値は**下限**として表示される。
   この場合 ratchet は測れなかった数値で落とさないようスキップされる

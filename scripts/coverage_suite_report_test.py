@@ -89,6 +89,53 @@ class CoverageSuiteReportTest(unittest.TestCase):
 
         self.assertEqual(report["branch_union"], {"hit": 0, "total": 2, "rate": 0.0, "exact": False})
 
+    def test_same_named_test_blocks_in_different_entries_stay_distinct(self):
+        # Codex review on #1668: `__test_<name>` carries no source qualification,
+        # so two entries that spell a test block the same lower to the same
+        # function name. Real case in the suite: hashmap_test.vibe and
+        # sortedmap_test.vibe both declare `test "empty map"` and their blocks
+        # have DIFFERENT branch counts (2 vs 4). Keyed on the name alone the
+        # union merges them -- the denominator loses the smaller one and a
+        # branch taken in one test marks a different branch covered in the
+        # other. Both blocks must be counted separately: 1 + 2 of 2 + 4.
+        common = dict(hit=1, total=1, hit_fns=[], missed_fns=[])
+        report = self.build({
+            "a_test.vibe": dict(**common, branch_hit=1, branch_total=2,
+                                branch_per_fn={"__test_empty map": {"total": 2, "hit": 1, "mask": "10"}}),
+            "b_test.vibe": dict(**common, branch_hit=2, branch_total=4,
+                                branch_per_fn={"__test_empty map": {"total": 4, "hit": 2, "mask": "0110"}}),
+        })
+
+        self.assertEqual(report["branch_union"], {"hit": 3, "total": 6, "rate": 50.0, "exact": True})
+
+    def test_entry_local_names_do_not_split_genuinely_shared_functions(self):
+        # The other half of the same rule: plenty of genuinely shared ids also
+        # lack a source suffix (`Array::map`, `T::equals`). Folding the entry
+        # into THOSE would inflate the denominator instead, so only the
+        # synthesized per-entry names may be qualified.
+        common = dict(hit=1, total=1, hit_fns=[], missed_fns=[])
+        report = self.build({
+            "a_test.vibe": dict(**common, branch_hit=1, branch_total=2,
+                                branch_per_fn={"Array::map": {"total": 2, "hit": 1, "mask": "10"}}),
+            "b_test.vibe": dict(**common, branch_hit=1, branch_total=2,
+                                branch_per_fn={"Array::map": {"total": 2, "hit": 1, "mask": "01"}}),
+        })
+
+        self.assertEqual(report["branch_union"], {"hit": 2, "total": 2, "rate": 100.0, "exact": True})
+
+    def test_function_union_separates_per_entry_start_wrappers(self):
+        # Every entry emits its own `_start`. Counting them as one function is
+        # the same merge bug on the function metric -- it was there before the
+        # branch union existed.
+        report = self.build({
+            "a_test.vibe": dict(hit=1, total=2, hit_fns=["_start"], missed_fns=["shared"]),
+            "b_test.vibe": dict(hit=0, total=2, hit_fns=[], missed_fns=["_start", "shared"]),
+        })
+
+        # `shared` counted once (missed in both); the two `_start`s counted
+        # separately, one hit.
+        self.assertEqual(report["function_union"], {"hit": 1, "total": 3, "rate": 33.33})
+
     def test_failing_entries_contribute_no_branch_union(self):
         report = self.build(
             {"test_a.vibe": dict(hit=0, total=1, hit_fns=[], missed_fns=["f"],

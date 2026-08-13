@@ -52,27 +52,55 @@ def read_cases(run_log, cov_dir):
     return cases
 
 
+# Names the compiler synthesizes PER ENTRY PROGRAM rather than from an imported
+# source file: the `_start` wrapper, and one `__test_<name>` / `__bench_<name>`
+# per block in the entry itself.  Unlike every other id in the coverage JSON
+# these carry no source qualification, so two entries that happen to spell a
+# block the same lower to the SAME name -- `hashmap_test.vibe` and
+# `sortedmap_test.vibe` both declare `test "empty map"`, both emit
+# `__test_empty map`, and a union keyed on the name alone silently merges two
+# unrelated functions (their branch counts differ: 2 vs 4).  Merging them
+# undercounts the denominator and lets a branch taken in one test mark a
+# different branch covered in another.
+#
+# Test/bench blocks are never imported, so a name in this class appearing in
+# two entries is ALWAYS two distinct functions -- folding the entry in is
+# unconditionally right here.  It would be wrong for anything else: plenty of
+# genuinely shared ids also lack a source suffix (`Array::map`, `T::equals`),
+# and splitting those per entry would inflate the denominator instead.
+_ENTRY_LOCAL_PREFIXES = ("__test_", "__bench_", "_start")
+
+
+def union_key(entry_path, name):
+    if name.startswith(_ENTRY_LOCAL_PREFIXES):
+        return f"{entry_path}::{name}"
+    return name
+
+
 def function_union(cases):
     # Function ids are source-qualified in coverage JSON.  A function is hit
     # if any separately-linked entry executed it; this avoids counting an
-    # imported closure once for every test entry.
+    # imported closure once for every test entry.  Entry-local synthesized
+    # names are the exception -- see union_key.
     states = {}
     for case in cases:
         for name in case["_functions"]["missed"]:
             if isinstance(name, str):
-                states.setdefault(name, False)
+                states.setdefault(union_key(case["entry_path"], name), False)
         for name in case["_functions"]["hit"]:
             if isinstance(name, str):
-                states[name] = True
+                states[union_key(case["entry_path"], name)] = True
     hit, total = sum(states.values()), len(states)
     return {"hit": hit, "total": total, "rate": rate(hit, total)}
 
 
 def branch_union(cases):
     # #1556: the exact branch analogue of function_union.  Branch identity is
-    # (source-qualified owning function, ordinal within that function) -- see
-    # the `mask` note in wasm_vibe_host_runner.js's dumpCoverage.  Global
-    # branch indices differ per entry program and must never be compared.
+    # (owning function, ordinal within that function) -- see the `mask` note in
+    # wasm_vibe_host_runner.js's dumpCoverage.  Global branch indices differ per
+    # entry program and must never be compared.  The owning function is named by
+    # union_key, which source-qualifies the entry-local synthesized ones so two
+    # same-named test blocks in different entries stay distinct.
     #
     # `exact` is False when any passing entry reported branch data without a
     # mask (a coverage JSON produced before masks existed).  Those entries
@@ -85,15 +113,16 @@ def branch_union(cases):
         for fn, entry in case["_branch_per_fn"].items():
             if not isinstance(entry, dict):
                 continue
+            key = union_key(case["entry_path"], fn)
             mask = entry.get("mask")
             total = entry.get("total", 0)
             if mask is None:
                 exact = False
                 mask = ""
-            taken = states.get(fn)
+            taken = states.get(key)
             if taken is None:
                 taken = []
-                states[fn] = taken
+                states[key] = taken
             # A function's branch count can differ between entry programs when
             # the same source function is lowered differently (specialization,
             # dictionary passing).  Widen to the largest shape seen; ordinals

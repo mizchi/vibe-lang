@@ -111,12 +111,18 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # against. Raise as coverage improves; lowering needs a rationale in the PR.
 #
 # Baseline (2026-08-13, 575 entries, all green, at 85f2ace): branch union
-# 25,081/45,543 (55.07%), function union 12,697/14,784 (85.88%). Note how far
+# 25,131/45,638 (55.07%), function union 12,820/14,907 (86.00%). Note how far
 # these sit from the entry-weighted numbers on the SAME run (branches 6.23%,
 # functions 14.04%) -- that gap is entirely denominator dilution, not coverage.
-# Measured at 6df97b0 too (25,078/45,530 = 55.08%), so the metric is stable
-# across bases. Floors are set just under the actuals, same convention as the
-# ratchets above.
+# Measured at 6df97b0 too (55.08%), so the metric is stable across bases.
+# Floors are set just under the actuals, same convention as the ratchets above.
+#
+# Both figures went UP slightly when union_key started source-qualifying the
+# entry-local synthesized names (Codex review on #1668): the un-merged
+# `__test_<name>` collisions and the 575 separate `_start` wrappers are now
+# counted individually instead of collapsing onto one key. The branch RATE is
+# unchanged (55.07%) -- numerator and denominator grew together, which is what
+# de-merging distinct functions should do.
 #
 # Unlike the entry-weighted RATE floors, this rate is safe to ratchet: adding a
 # test entry cannot dilute it (a branch is counted once no matter how many
