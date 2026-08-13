@@ -646,16 +646,26 @@ fn gc_body_is_to_string_forward(body: Expr, pname: String) -> Bool {
 
 /// Preserve the one pre-erasure fact the direct Array ABI must consume.
 /// `strip_generic_type_params` deliberately removes every EFn binder, so the
-/// gc-only source pipeline computes this before stripping and passes it into
-/// codegen. One generic declaration disables the component-wide island: there
-/// is no trustworthy post-strip way to distinguish its erased signature.
-export fn gc_direct_abi_pre_erasure_safe(stmts: Array[Stmt]) -> Bool {
+/// gc-only source pipeline collects the generic declaration NAMES before
+/// stripping and passes them into codegen. Post-strip an erased signature is
+/// indistinguishable from a monomorphic one, so without this list a generic
+/// `fn f[T](values: Array[Int], marker: T)` would be handed a typed
+/// `(ref null $array)` parameter it cannot honor.
+///
+/// This used to be a single Bool ("no generic declaration anywhere"), which
+/// disabled the island for every component containing any generic at all --
+/// in practice, all real code. Carrying the names instead keeps exactly the
+/// same rejection for generic declarations while letting a generic that never
+/// touches a reference-lane value coexist with the island: it simply is not a
+/// candidate, and any attempt to pass a reference into it is still rejected
+/// component-wide by `gc_direct_abi_expr_kind`.
+export fn gc_direct_abi_pre_erasure_generic_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
   let mut i = 0
-  let mut safe = true
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, EFn(type_params, _, _, _, _, _)) => if Array::length(type_params) > 0 {
-        safe = false
+      SLet(_, _, name, _, EFn(type_params, _, _, _, _, _)) => if Array::length(type_params) > 0 {
+        Array::push(names, name)
       } else {
         ()
       },
@@ -663,7 +673,7 @@ export fn gc_direct_abi_pre_erasure_safe(stmts: Array[Stmt]) -> Bool {
     }
     i = i + 1
   }
-  safe
+  names
 }
 
 /// Names intercepted by spelling before ordinary func-table dispatch in
@@ -717,7 +727,7 @@ fn gc_direct_abi_name_is_exported(stmts: Array[Stmt], name: String) -> Bool {
   found
 }
 
-export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_pre_erasure_safe: Bool) -> Bytes with Exception {
+export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   // #1015: `gc_to_string_is_wrapper` is a PARAMETER, not computed here --
@@ -783,7 +793,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   let gc_direct_abi_names_l = array_empty()
   let gc_direct_abi_param_refs_l = array_empty()
   let gc_direct_abi_return_refs_l = array_empty()
-  let mut gc_direct_abi_ok = direct_abi_pre_erasure_safe
+  let mut gc_direct_abi_ok = true
   let mut dai = 0
   while dai < Array::length(user_func_stmts) {
     match Array::get(user_func_stmts, dai) {
@@ -849,11 +859,18 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           } else {
             ()
           }
-          // A generic signature cannot enter the reference lane. The common
-          // preprocessor may erase the parameter list, so concrete Array[Int]
-          // is additionally required above; a surviving type parameter in the
-          // element position has already made gc_direct_abi_ok false.
-          if Array::length(dai_tparams) > 0 && has_ref {
+          // A generic signature cannot enter the reference lane. Two binders
+          // must be consulted, and neither subsumes the other:
+          //   * `dai_tparams` is the POST-strip binder. It is non-empty only
+          //     for the impl methods `inject_method_generics` re-generifies
+          //     AFTER `strip_generic_type_params` ran.
+          //   * `direct_abi_generic_names` is the PRE-erasure name list, the
+          //     only surviving evidence for source-level generics.
+          // Concrete Array[Int] is additionally required above; a surviving
+          // type parameter in the element position has already made
+          // gc_direct_abi_ok false.
+          let dai_is_generic = Array::length(dai_tparams) > 0 || gc_direct_abi_name_in(direct_abi_generic_names, dai_name)
+          if dai_is_generic && has_ref {
             gc_direct_abi_ok = false
           } else {
             ()

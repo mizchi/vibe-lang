@@ -103,6 +103,14 @@ ARGUMENT_FALLBACK_OUT="$WORK/direct_array_argument_fallback.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_argument_identity_test.vibe "$ARGUMENT_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_argument_fallback_test.vibe "$ARGUMENT_FALLBACK_OUT"
 
+# #1541 generic coexistence. The island used to be cleared component-wide by
+# the mere PRESENCE of any source-level generic, which is every real program.
+# A generic that never carries a reference-lane value now stays on the
+# tagged-i64 lane beside a live island; its fallback pair (the generic that
+# does carry the Array[Int]) is ARGUMENT_FALLBACK_OUT above.
+COEXIST_OUT="$WORK/direct_array_generic_coexist.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_generic_coexist_test.vibe "$COEXIST_OUT"
+
 # #1541 dedicated control-flow join fallback. The annotated Array[Int]
 # parameter/result is a direct-ABI candidate, but joining reference values
 # through `if` is outside the current proof and must clear the whole island.
@@ -224,6 +232,11 @@ if [ "$alias" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 local-alias native literal, found $alias" >&2
   exit 1
 fi
+coexist="$(count_native_array_allocs "$COEXIST_OUT")"
+if [ "$coexist" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one #1541 native literal beside an unrelated generic, found $coexist" >&2
+  exit 1
+fi
 for i in "${!fallback_outputs[@]}"; do
   count="$(count_native_array_allocs "${fallback_outputs[$i]}")"
   if [ "$count" -ne 0 ]; then
@@ -232,6 +245,48 @@ for i in "${!fallback_outputs[@]}"; do
   fi
 done
 assert_direct_argument_structure "$ARGUMENT_OUT"
+
+# #1541 acceptance, linear side: "linear backend output remains unchanged".
+# A committed byte baseline would be the literal reading, but it would also
+# fail on every unrelated linear codegen change, so it would be deleted the
+# first week. The durable property is the one the acceptance criterion is
+# actually protecting: the reference lane must not leak out of the gc lane.
+# Compile the very fixtures that DO take the typed reference lane under gc
+# with the linear backend and assert the result carries no wasm-gc construct
+# at all, and still runs. Semantic parity for the same files is covered by
+# scripts/unit_test_runner.sh, which globs them on the linear lane.
+assert_linear_lane_has_no_gc_construct() {
+  local fixture="$1"
+  local output="$WORK/$(basename "$fixture" .vibe)_linear.wasm"
+  local output_rel="${output#"$ROOT_DIR"/}"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+    "$fixture" "$output_rel" __no_entry__ >/dev/null
+  wasm-tools validate --features all "$output" >/dev/null
+  "$RUNNER" "$output" >/dev/null
+  local printed="$output.wat"
+  wasm-tools print "$output" > "$printed"
+  local gc_instructions
+  gc_instructions="$(awk '
+    $1 == "array.new_default" || $1 == "array.new" || $1 == "array.get" ||
+    $1 == "array.set" || $1 == "struct.new" || $1 == "struct.get" ||
+    $1 == "struct.set" || $1 == "ref.cast" { count += 1 }
+    END { print count + 0 }
+  ' "$printed")"
+  if [ "$gc_instructions" -ne 0 ]; then
+    echo "[gc-heap-accounting] FAIL: linear lane emitted $gc_instructions wasm-gc instructions for $fixture" >&2
+    exit 1
+  fi
+  if grep -q '(ref null' "$printed"; then
+    echo "[gc-heap-accounting] FAIL: linear lane declared a typed reference for $fixture" >&2
+    exit 1
+  fi
+}
+
+assert_linear_lane_has_no_gc_construct fixtures/gc_direct_array_argument_identity_test.vibe
+assert_linear_lane_has_no_gc_construct fixtures/gc_direct_array_generic_coexist_test.vibe
+echo "[gc-heap-accounting] ok: linear lane keeps the reference-lane fixtures free of wasm-gc constructs"
+
 argument_fallback="$(count_native_array_allocs "$ARGUMENT_FALLBACK_OUT")"
 if [ "$argument_fallback" -ne 0 ]; then
   echo "[gc-heap-accounting] FAIL: generic argument boundary emitted $argument_fallback native literals" >&2
@@ -253,7 +308,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2

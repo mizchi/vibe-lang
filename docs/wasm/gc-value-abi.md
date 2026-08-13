@@ -152,6 +152,32 @@ checker の静的型から、各スロット (パラメータ / 返り値 / ロ�
 |---|---|---|---|
 | **A** | **返り値・引数** (非ジェネリックな直接呼び出し) | 関数型を静的型から導出。呼び出し側と定義側で型が一致することの検証 | **#1541**。acceptance の1つ目。ここだけで実用価値が出る |
 | **B** | **別名・局所束縛** | 既存の `gc_native_array_locals` の追跡を関数間へ拡張 | **#1541** (A と同一スライス)。private concrete `Array[Int]` の直接経路と 1 段の immutable local alias は着地済み。alias 経由で mutate し original 経由で読む identity fixture と native allocation site = 1 の gate で固定。それ以外の join / import / indirect call / aggregate / global は未対応のまま fail-closed |
+
+#### ジェネリックの共存 (2026-08-13)
+
+Phase A/B の島は当初、**モジュール内にジェネリック宣言が 1 つでもあれば
+component 全体で無効**だった。`strip_generic_type_params` が binder を消すので、
+消去後の署名を単相なものと区別する手段が無かったためである。これは fail-closed
+としては正しいが、実コードにジェネリックが無いことはまずないので、島は
+fixture の中でしか点かないという状態だった。
+
+現在は消去前に**ジェネリック宣言の名前**を集めて codegen へ渡す
+(`gc_direct_abi_pre_erasure_generic_names`)。拒否の強さは変えていない:
+
+- ジェネリック宣言が参照レーンの型 (`Array[Int]`) を署名に持つ →
+  **従来どおり component 全体を i64 レーンへ落とす** (変換点がまだ無い)
+- ジェネリック宣言が参照レーンの値を触らない → 島の候補にならないだけで、
+  **島は生きたまま**。参照をそこへ渡そうとすれば `gc_direct_abi_expr_kind` が
+  従来どおり component 全体を拒否する
+
+binder は 2 か所を見る必要がある。`strip_generic_type_params` の**後**に
+`inject_method_generics` が impl メソッドへ binder を貼り直すので、消去前の
+名前リストだけでは足りず、post-strip の `type_params` も併せて見る
+(`backend_body.vibe` の `dai_is_generic`)。
+
+対の fixture: `fixtures/gc_direct_array_generic_coexist_test.vibe` (島が生きる)
+と `fixtures/gc_direct_array_argument_fallback_test.vibe` (ジェネリック自身が
+`Array[Int]` を運ぶので落ちる)。
 | **C** | **集約フィールド** | ユーザ構造体を実 wasm-gc struct へ (ADR-0052 の `struct.set` 経路の一般化) | **#1542**。ヒープモデルの変更を含み、最も重い |
 | **D** | **クロージャ捕捉** | funcref テーブルの型が現状 arity 別 `(i64...)->i64` のみ。型別に増やすか、捕捉は i64 固定にするか | **#1543**。表が型ごとに増える点が最大の論点 |
 
