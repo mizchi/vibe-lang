@@ -330,11 +330,13 @@ local testSimdEmitWasmtime =
 local testCoverageScripts = new Task {
   name = "test-coverage-scripts"
   cmd =
-    "node --test scripts/coverage_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs scripts/select_test_shard.test.mjs && python3 scripts/coverage_suite_report_test.py && bash scripts/tests/coverage_drivers_test.sh && bash scripts/tests/coverage_pipeline_contract_test.sh"
+    "node --test scripts/coverage_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs scripts/select_test_shard.test.mjs && python3 scripts/coverage_suite_report_test.py && python3 scripts/coverage_tracks_test.py && bash scripts/tests/coverage_drivers_test.sh && bash scripts/tests/coverage_pipeline_contract_test.sh"
   inputs {
     "scripts/**/*.mjs"
     "scripts/coverage_suite_report.py"
     "scripts/coverage_suite_report_test.py"
+    "scripts/coverage_tracks.py"
+    "scripts/coverage_tracks_test.py"
     "scripts/coverage_corpus.sh"
     "scripts/coverage_drivers.sh"
     "scripts/coverage_local_merge_run.sh"
@@ -519,6 +521,29 @@ local coverageSelfhostSuite = new Task {
   cmd = "bash scripts/coverage_suite.sh"
   cache = false
   deps { selfhostGeneration }
+}
+
+// #1556: the SECOND track. `coverage-suite` measures what the compiled test
+// programs execute, which is structurally blind to compiler passes -- a pass
+// that runs while COMPILING a test lives in the uninstrumented stage2. This
+// one instruments the COMPILER and runs it over a corpus of real programs, so
+// parser/checker/codegen are what it sees. Neither track subsumes the other;
+// `coverage-tracks` prints both. Slow (one instrumented compile per file), so
+// it is not a dep of `coverage`.
+local coverageCorpus = new Task {
+  name = "coverage-corpus"
+  description = "compiler-side (self-compile) branch coverage over a corpus of .vibe programs (#1556 track B)"
+  cmd = "bash scripts/coverage_corpus.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local coverageTracks = new Task {
+  name = "coverage-tracks"
+  description = "print both coverage tracks (in-process / self-compile) side by side (#1556)"
+  cmd = "python3 scripts/coverage_tracks.py $@"
+  acceptsArgs = true
+  cache = false
 }
 
 local coverageSelfhostSuiteNextBranches = new Task {
@@ -1146,6 +1171,8 @@ tasks {
   selfhostGenerationSeedInfo
   selfhostGenerationStatus
   coverageSelfhostSuite
+  coverageCorpus
+  coverageTracks
   coverageSelfhostSuiteNextBranches
   coverageSelfhostSuiteBranch
   coverageSelfhostSuiteBranchGate

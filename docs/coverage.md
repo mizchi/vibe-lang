@@ -47,6 +47,58 @@ per-file の JSON は `_build/vibe_test/coverage/<file>.json`
 （`compile_file_fs_mode_coverage`）するだけで、下記の self-compile 計測と同じ
 instrumentation を共有する。
 
+### カバレッジは 2 本立てで見る (#1556)
+
+**1 つの数字にまとめない。** 分母が違い、どちらも他方を含まない。片方だけ見ると、
+それぞれが得意な部分がちょうど隠れる。
+
+| track | 何を測るか | 走らせ方 | 見える所 / 見えない所 |
+|---|---|---|---|
+| **in-process** | コンパイルされた**テストプログラム自身**が実行した分岐 | `pkf run coverage` (`coverage_suite.sh` の `branch_union`) | stdlib・`@vibex` はよく見える。**コンパイラのパスは構造的に見えない** |
+| **self-compile** | **コンパイラ**が実プログラムをコンパイルする間に実行した分岐 | `pkf run coverage-corpus` (`coverage_corpus.sh` の `merged.json`) | parser/checker/codegen はここに出る。stdlib は**呼び出しを emit するだけで実行しない**ので見えない |
+
+```bash
+pkf run coverage-tracks          # 両方を並べて表示
+pkf run coverage-tracks -- --check   # それぞれの床を検査
+```
+
+実測 (2026-08-13, 同一 checkout):
+
+```
+[coverage-tracks] in-process    branches 26894/46469 (57.88%)  min 57.0%
+[coverage-tracks] self-compile  branches 10703/26738 (40.03%)  min 0.0%
+```
+
+**床は in-process にしか張っていない。** in-process の分母はテストスイート
+そのもので、増えることはあっても設定で変わらないのでラチェットとして機能する。
+self-compile の率は**コンパイラに何本のプログラムを食わせたか**の関数で、
+`VIBE_COV_MAX` ひとつで動く:
+
+- `VIBE_COV_MAX=12` → 10,703/26,738 (40.03%)
+- 上記の 626 ファイル実行 → 4,695/6,694 (70.1%)。ただし**当時の分母は 6,694**で
+  今は 26,738 なので、この数字は今日の値と比較できない
+
+corpus を固定 (「examples + fixtures を env var で打ち切る」ではなく**コミット
+されたファイル一覧**) するまで、self-compile に床を張ると「誰がどれだけ待つ気が
+あったか」で通ったり落ちたりする**偽のラチェット**になる。固定が先。
+
+> 片方の track のレポートが無い場合、`coverage-tracks` は
+> `NOT MEASURED in this run` と明示し、`--check` では**失敗させる**。
+> 測れなかった track を黙って pass 扱いにしない (退行しているとき、
+> 最も怪しいのは値の出ていない方なので)。
+
+**なぜ in-process がコンパイラのパスを見られないか**: `vibe test --coverage` は
+テストファイルを**コンパイルして得た wasm** を計測ビルドして実行する。テストを
+**コンパイルする過程**で走ったコンパイラのパスは、計測されていない別バイナリ
+(stage2) の中の出来事なので 1 branch も計上されない。fixture やゲートでどれだけ
+厚く検証されていても 0% のままになる。
+
+したがって:
+
+- `cli_adapter.vibe 0/250` は「未テスト」ではなく「**in-process で呼ばれていない**」
+- コンパイラのパスの実態を知りたいなら **self-compile を見る**
+- stdlib の実態を知りたいなら **in-process を見る**
+
 ### selfhost test suite の集計指標
 
 `pkf run coverage` は全 `*_test.vibe` をそれぞれ別バイナリとして実行する。
