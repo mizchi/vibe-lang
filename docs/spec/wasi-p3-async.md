@@ -181,7 +181,9 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)、
   **`let` / `let mut` の値そのものである `if` / `match`** (束縛と継続を枝へ分配する。
   condition / scrutinee は元の位置で一回だけ評価され、`match` の腕は継続を移す前に
-  alpha-rename される、追記49)
+  alpha-rename される、追記49)、**`let` / `let mut` の値そのものである block**
+  (`{ 文..; 値 }` — 束縛を文前置の内側へ移す。float した binder は alpha-rename される、
+  追記50。これにより「文を含む枝」が通る)
 - **不適格**: ループ内 `return`、配列 `for` 形、**必ず評価されるとは限らない位置に
   埋まった suspension** (compound の中にネストした `if` / `match` の枝、
   `&&` / `||` の右辺)、実引数証明が

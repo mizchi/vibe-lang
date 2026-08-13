@@ -2958,6 +2958,28 @@ condition / scrutinee は元の位置に残るので**ちょうど一回・枝�
 **残る不適格**: 追記48 の一覧から「`let` / `let mut` の値そのものである selection」を
 引いたもの。
 
+### 追記50 (2026-08-13): block が束縛値そのものなら束縛を内側へ移す (#1536)
+
+追記49 と同じ「どこに置いたか」問題がもう一段ある。分配した枝の中に**文がある**と、
+枝の値は `{ log(); perform Op() }` という block になり、`ELet(x, ESeq(a, v), b)` の形で
+また generic ANF に落ちて reject される。文位置の同じ block は追記42 の
+sequence-HEAD float が既に受けているので、値位置だけが取り残されていた。
+
+block の文前置は値より先に走るので、**束縛はそれを追い越して内側へ入れる**だけでよい:
+
+```
+let x = { a; v }         REST  ==>  a;           let x = v  REST
+let x = { let y = e; v } REST  ==>  let y' = e;  let x = v[y:=y']  REST
+```
+
+float した `let` binder は継続の上へスコープが広がるので、追記42 と同じ
+`scps_seq_float_fresh` の probe で alpha-rename する (`REST` は元々 block の外に
+あったので、そこで自由な名前は外側の束縛を指す)。`fixtures/effect_let_block_value_suspend_test.vibe`
+が pin — 捕獲すると 762 ではなく 812 を返す。
+
+どちらの書き換えも値を**厳密に小さく**するので、結果を再 split すれば収束する。
+追記49 の分配と合わせて、「文を含む枝」が初めて通る。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
