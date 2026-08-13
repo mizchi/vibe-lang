@@ -751,19 +751,18 @@ it, making the over-invalidation residual visible per run. The artifact
 records current conservative behavior only — none of its fields is a
 production cache key or reuse decision.
 
-The existing private body case is also emitted under the explicit observation
+The historical private-body observation is emitted under the explicit
 classification `private_dependency_edit_externally_unchanged`. That classifier
 fails closed unless `app` has exactly `library` as its sole direct dependency in
 both snapshots, the dependency's source and provisional token-stream
 implementation identities change, its interface-v2 identity does not change,
 and all of the consumer's own observed identities stay unchanged. The
-persistent TypeEnv-v3 transport result for the dependency is reported as a
+persistent TypeEnv-v5 transport result for the dependency is reported as a
 separate `changed`/`unchanged` observation rather than being treated as the
-exported interface. The current consumer decision must still be `rechecked` and
-is reported as `conservative_rechecked`; this is a record of current
-conservative behavior, not a new reuse rule. This classifier does not change
-trace schema 6, cache namespace v17, TypeEnv-v3/TDRE4 transport, production
-artifact reuse, or default-gate wiring; it strengthens the existing observation gate's assertions.
+exported interface. Production TDRE5 may reuse the unaffected consumer; the
+shadow classifier remains observation-only and does not authorize that reuse.
+It does not change trace schema 6, cache namespace v19, TypeEnv-v5/TDRE5
+transport, production artifact reuse, or default-gate wiring.
 
 For this comparison, `source_fingerprint` is ingestion telemetry only;
 `implementation_fingerprint` is the provisional owner-change trigger. It is
@@ -837,9 +836,9 @@ context evidence is explicit trace-only extra filesystem work after the
 ordinary production compile. Because it is a post-compile recollection, the
 sidecar is not an atomic snapshot of the bytes used to produce the wasm; a
 concurrent filesystem or resolution-context change may describe a later
-snapshot. It never changes cache namespace `v17`, artifact
-fingerprints, artifact lookup/store/reuse decisions, interface-v2, TypeEnv-v3,
-TDRE4, or trace schema 6. A separately named shadow fingerprint uses a versioned,
+snapshot. It never changes cache namespace `v19`, artifact
+fingerprints, artifact lookup/store/reuse decisions, interface-v2, TypeEnv-v5,
+TDRE5, or trace schema 6. A separately named shadow fingerprint uses a versioned,
 fixed-order, length-prefixed `vibe-artifact-input-observation:v2` preimage and
 existing compact fingerprint. It is observation-only and is never passed to a
 load/store/database reuse API. This remains neither a normalized implementation

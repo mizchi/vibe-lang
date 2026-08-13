@@ -148,7 +148,7 @@ function check(stage2, project, cache, gate, name, allowFailure = false, extraEn
   }
 }
 
-function compile(stage2, project, cache, enabled, name) {
+function compile(stage2, project, cache, enabled, name, allowFailure = false, extraEnv = {}) {
   const out = `${name}.wasm`;
   const result = spawnSync("bash", [join(root, "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main", stage2, "app.vibe", out, "main"], {
     cwd: project,
@@ -163,10 +163,15 @@ function compile(stage2, project, cache, enabled, name) {
       VIBE_PREOPEN_DIR: project,
       VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: enabled ? "" : "1",
       VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
+      ...extraEnv,
     },
   });
-  if (result.status !== 0) fail(`${name} failed: ${(result.stderr || result.stdout).trim()}`);
-  return readFileSync(join(project, out));
+  const outputPath = join(project, out);
+  if (result.status !== 0) {
+    if (!allowFailure) fail(`${name} failed: ${(result.stderr || result.stdout).trim()}`);
+    return { status: result.status, diagnostic: readFileSync(`${outputPath}.diag`, "utf8") };
+  }
+  return { status: result.status, bytes: readFileSync(outputPath) };
 }
 
 function expectCounts(name, actual, rechecked, reused, planned = 2) {
@@ -448,7 +453,24 @@ function run(stage2) {
     makeProject(compileDefaultProject);
     const compileControl = compile(stage2, compileControlProject, join(work, "compile-control-cache"), false, "compile-control");
     const compileDefault = compile(stage2, compileDefaultProject, join(work, "compile-default-cache"), true, "compile-default");
-    if (!compileControl.equals(compileDefault)) fail("FS compile default-on/explicit-disable output mismatch");
+    if (!compileControl.bytes.equals(compileDefault.bytes)) fail("FS compile default-on/explicit-disable output mismatch");
+
+    const buildUncheckedFirstProject = join(work, "build-row-unchecked-first-project");
+    const buildUncheckedFirstCache = join(work, "build-row-unchecked-first-cache");
+    makeCheckedRowProject(buildUncheckedFirstProject);
+    const buildUncheckedCold = compile(stage2, buildUncheckedFirstProject, buildUncheckedFirstCache, true, "build-row-unchecked-cold", false, { VIBE_CHECK_ERROR_ROW: "0" });
+    const buildUncheckedWarm = compile(stage2, buildUncheckedFirstProject, buildUncheckedFirstCache, true, "build-row-unchecked-warm", false, { VIBE_CHECK_ERROR_ROW: "0" });
+    if (!buildUncheckedCold.bytes.equals(buildUncheckedWarm.bytes)) fail("same-mode unchecked build cache changed output");
+    const buildCheckedAfterUnchecked = compile(stage2, buildUncheckedFirstProject, buildUncheckedFirstCache, true, "build-row-checked-after-unchecked", true, { VIBE_CHECK_ERROR_ROW: "1" });
+    if (buildCheckedAfterUnchecked.status === 0 || !buildCheckedAfterUnchecked.diagnostic.includes("missing { Exception }")) fail("checked build reused unchecked compiled artifact");
+
+    const buildCheckedFirstProject = join(work, "build-row-checked-first-project");
+    const buildCheckedFirstCache = join(work, "build-row-checked-first-cache");
+    makeCheckedRowProject(buildCheckedFirstProject);
+    const buildCheckedCold = compile(stage2, buildCheckedFirstProject, buildCheckedFirstCache, true, "build-row-checked-cold", true, { VIBE_CHECK_ERROR_ROW: "1" });
+    const buildCheckedWarm = compile(stage2, buildCheckedFirstProject, buildCheckedFirstCache, true, "build-row-checked-warm", true, { VIBE_CHECK_ERROR_ROW: "1" });
+    if (buildCheckedCold.status === 0 || buildCheckedWarm.status === 0 || !buildCheckedCold.diagnostic.includes("missing { Exception }") || !buildCheckedWarm.diagnostic.includes("missing { Exception }")) fail("checked cold/warm build did not reject row-less caller");
+    const buildUncheckedAfterChecked = compile(stage2, buildCheckedFirstProject, buildCheckedFirstCache, true, "build-row-unchecked-after-checked", false, { VIBE_CHECK_ERROR_ROW: "0" });
 
     privateEdit(offProject);
     privateEdit(onProject);
@@ -721,6 +743,12 @@ function run(stage2) {
           unchecked_same_mode_warm: uncheckedWarm.telemetry,
           checked_after_unchecked_rejected: true,
           unchecked_after_checked: uncheckedAfterChecked.telemetry,
+          compiled_artifact: {
+            unchecked_same_mode_bytes_equal: buildUncheckedCold.bytes.equals(buildUncheckedWarm.bytes),
+            checked_after_unchecked_rejected: true,
+            checked_cold_and_warm_rejected: true,
+            unchecked_after_checked_succeeded: buildUncheckedAfterChecked.status === 0,
+          },
         },
       },
       comment_only: { default_on: commentOn.telemetry },
