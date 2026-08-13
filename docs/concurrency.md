@@ -595,7 +595,7 @@ Channel:
 
 - capacity 0 rendezvous、bounded backpressure、sender 内 FIFO
 - sender 間の許された順序違い、last-sender close、buffer drain 後 `None`
-- closed send の `Exception[SendError]::Throw(Closed)`
+- closed send の `throw(SendError::Closed)`
 - send / recv と cancel の競合で duplicate / loss が起きない
 - send 後の sender 側変更が receiver snapshot に見えない
 
