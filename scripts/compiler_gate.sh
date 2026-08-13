@@ -4474,6 +4474,8 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
   bash scripts/vibe_test.sh \
     fixtures/eq_structural_aggregates_test.vibe \
     fixtures/map_builder_growth_test.vibe \
+    fixtures/string_byte_alias_shadow_test.vibe \
+    fixtures/string_byte_semantics_test.vibe \
     fixtures/struct_field_collision_test.vibe \
     fixtures/to_string_shadow_gc_test.vibe; then
   echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
