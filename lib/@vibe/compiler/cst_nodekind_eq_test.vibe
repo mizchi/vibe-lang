@@ -28,8 +28,172 @@ import ./cst.vibe {
 
 //# Helpers
 
+/// Exhaustive over the DECLARATION: one arm per declared variant, no `_`.
+///
+/// This is the completeness ratchet, and it is a BUILD-time one. Pinning
+/// `Array::length(every_nodekind())` against a literal cannot work -- that number
+/// is the array's own length, so a variant added to the enum but not to the
+/// array leaves it unchanged and the test still passes. Adding a variant here
+/// instead makes this match non-exhaustive, which the checker rejects
+/// ("non-exhaustive match: variant `X` of enum NodeKind is not handled"), so the
+/// file stops compiling until the new variant is represented.
+fn nodekind_tag(v: NodeKind) -> Int {
+  match v {
+    NSourceFile => 0,
+    NLetStmt => 1,
+    NLetMutStmt => 2,
+    NEnumStmt => 3,
+    NStructStmt => 4,
+    NTypeAliasStmt => 5,
+    NTraitStmt => 6,
+    NImplStmt => 7,
+    NExternLetStmt => 8,
+    NImportStmt => 9,
+    NTestStmt => 10,
+    NBenchStmt => 11,
+    NExprStmt => 12,
+    NExportStmt => 13,
+    NReExportStmt => 14,
+    NModuleStmt => 15,
+    NSuberrorStmt => 16,
+    NIntExpr => 17,
+    NFloatExpr => 18,
+    NStringExpr => 19,
+    NBoolExpr => 20,
+    NIdentExpr => 21,
+    NUnitExpr => 22,
+    NTupleExpr => 23,
+    NArrayExpr => 24,
+    NRecordExpr => 25,
+    NRecordField => 26,
+    NIfExpr => 27,
+    NLetExpr => 28,
+    NLetRecExpr => 29,
+    NLetMutExpr => 30,
+    NAssignExpr => 31,
+    NAssignOpExpr => 32,
+    NSeqExpr => 33,
+    NMatchExpr => 34,
+    NHandleExpr => 35,
+    NWhileExpr => 36,
+    NForInExpr => 37,
+    NCallExpr => 38,
+    NBinOpExpr => 39,
+    NUnaryOpExpr => 40,
+    NFnExpr => 41,
+    NDotExpr => 42,
+    NThrowExpr => 43,
+    NBreakExpr => 44,
+    NContinueExpr => 45,
+    NLabeledArgExpr => 46,
+    NWildPat => 47,
+    NBindPat => 48,
+    NIntPat => 49,
+    NStringPat => 50,
+    NBoolPat => 51,
+    NCtorPat => 52,
+    NTuplePat => 53,
+    NOrPat => 54,
+    NMatchArm => 55,
+    NNameType => 56,
+    NAppType => 57,
+    NFnType => 58,
+    NTupleType => 59,
+    NUnitType => 60,
+    NParam => 61,
+    NTypeParam => 62,
+    NVariant => 63,
+    NEnumVariant => 64,
+    NStructField => 65,
+    NImportItem => 66,
+    NEffectClause => 67,
+    NError => 68
+  }
+}
+
 /// One literal per `NodeKind` variant, in declaration order (#1556).
 fn every_nodekind() -> Array[NodeKind] {
+  [
+    NSourceFile,
+    NLetStmt,
+    NLetMutStmt,
+    NEnumStmt,
+    NStructStmt,
+    NTypeAliasStmt,
+    NTraitStmt,
+    NImplStmt,
+    NExternLetStmt,
+    NImportStmt,
+    NTestStmt,
+    NBenchStmt,
+    NExprStmt,
+    NExportStmt,
+    NReExportStmt,
+    NModuleStmt,
+    NSuberrorStmt,
+    NIntExpr,
+    NFloatExpr,
+    NStringExpr,
+    NBoolExpr,
+    NIdentExpr,
+    NUnitExpr,
+    NTupleExpr,
+    NArrayExpr,
+    NRecordExpr,
+    NRecordField,
+    NIfExpr,
+    NLetExpr,
+    NLetRecExpr,
+    NLetMutExpr,
+    NAssignExpr,
+    NAssignOpExpr,
+    NSeqExpr,
+    NMatchExpr,
+    NHandleExpr,
+    NWhileExpr,
+    NForInExpr,
+    NCallExpr,
+    NBinOpExpr,
+    NUnaryOpExpr,
+    NFnExpr,
+    NDotExpr,
+    NThrowExpr,
+    NBreakExpr,
+    NContinueExpr,
+    NLabeledArgExpr,
+    NWildPat,
+    NBindPat,
+    NIntPat,
+    NStringPat,
+    NBoolPat,
+    NCtorPat,
+    NTuplePat,
+    NOrPat,
+    NMatchArm,
+    NNameType,
+    NAppType,
+    NFnType,
+    NTupleType,
+    NUnitType,
+    NParam,
+    NTypeParam,
+    NVariant,
+    NEnumVariant,
+    NStructField,
+    NImportItem,
+    NEffectClause,
+    NError
+  ]
+}
+
+/// The same variants rebuilt with the SAME payloads, INDEPENDENTLY constructed.
+///
+/// `every_nodekind()` compared against itself would pass under reference equality,
+/// because both operands are the very same object out of one array -- and the
+/// negative tests pass under reference equality too, since their payloads
+/// genuinely differ. Only comparing two structurally-equal but distinct objects
+/// separates "compares fields" from "compares identity".
+fn every_nodekind_same() -> Array[NodeKind] {
   [
     NSourceFile,
     NLetStmt,
@@ -198,9 +362,6 @@ test "NodeKind ==: every variant is structurally equal to itself" {
     }
     i = i + 1
   }
-  // Both numbers are pinned: a variant added to the enum but not to
-  // `every_nodekind` shows up as a count mismatch rather than as silence.
-  inspect(n, "69")
   inspect(same, "69")
 }
 
@@ -225,6 +386,124 @@ test "NodeKind ==: distinct variants are never equal" {
     i = i + 1
   }
   inspect(differ, "69")
+}
+
+test "NodeKind ==: structurally equal but distinct values are equal" {
+  let vs = every_nodekind()
+  let same = every_nodekind_same()
+  let n = Array::length(vs)
+  let mut equal = 0
+  let mut i = 0
+  while i < n {
+    let a: NodeKind = Array::get(vs, i)
+    let b: NodeKind = Array::get(same, i)
+    if a == b {
+      equal = equal + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Every variant, including the ones carrying arrays and nested values. A
+  // regression from structural to reference comparison drops this below n.
+  inspect(equal, "69")
+}
+
+test "NodeKind: every represented variant is the declared one, in order" {
+  // `nodekind_tag` is exhaustive over the DECLARATION (see its doc comment), so a
+  // new variant breaks compilation of this file. This pins the other half:
+  // that `every_nodekind` holds the variants it claims to, in declaration order.
+  //
+  // `want` is the declaration index of each entry -- NOT `0..n`, because a
+  // variant this file has no sample for is omitted and leaves a gap. Writing
+  // `tag(vs[i]) == i` instead was wrong for exactly that reason, and this test
+  // is what caught it.
+  let want = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68
+  ]
+  let vs = every_nodekind()
+  let n = Array::length(vs)
+  let mut in_order = 0
+  let mut i = 0
+  while i < n {
+    let a: NodeKind = Array::get(vs, i)
+    if nodekind_tag(a) == Array::get(want, i) {
+      in_order = in_order + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(Array::length(want), "69")
+  inspect(in_order, "69")
 }
 
 test "NodeKind ==: same variant with different payloads is not equal" {

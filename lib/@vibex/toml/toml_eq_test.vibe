@@ -28,8 +28,50 @@ import ./toml.vibe {
 
 //# Helpers
 
+/// Exhaustive over the DECLARATION: one arm per declared variant, no `_`.
+///
+/// This is the completeness ratchet, and it is a BUILD-time one. Pinning
+/// `Array::length(every_tomlvalue())` against a literal cannot work -- that number
+/// is the array's own length, so a variant added to the enum but not to the
+/// array leaves it unchanged and the test still passes. Adding a variant here
+/// instead makes this match non-exhaustive, which the checker rejects
+/// ("non-exhaustive match: variant `X` of enum TomlValue is not handled"), so the
+/// file stops compiling until the new variant is represented.
+fn tomlvalue_tag(v: TomlValue) -> Int {
+  match v {
+    TString(_) => 0,
+    TInt(_) => 1,
+    TFloat(_) => 2,
+    TBool(_) => 3,
+    TArray(_) => 4,
+    TTable(_) => 5
+  }
+}
+
 /// One literal per `TomlValue` variant, in declaration order (#1556).
 fn every_tomlvalue() -> Array[TomlValue] {
+  [
+    TString("s"),
+    TInt(7),
+    TFloat(1.5),
+    TBool(true),
+    TArray([
+      TBool(true)
+    ]),
+    TTable([
+      ("k", TBool(true))
+    ])
+  ]
+}
+
+/// The same variants rebuilt with the SAME payloads, INDEPENDENTLY constructed.
+///
+/// `every_tomlvalue()` compared against itself would pass under reference equality,
+/// because both operands are the very same object out of one array -- and the
+/// negative tests pass under reference equality too, since their payloads
+/// genuinely differ. Only comparing two structurally-equal but distinct objects
+/// separates "compares fields" from "compares identity".
+fn every_tomlvalue_same() -> Array[TomlValue] {
   [
     TString("s"),
     TInt(7),
@@ -80,9 +122,6 @@ test "TomlValue ==: every variant is structurally equal to itself" {
     }
     i = i + 1
   }
-  // Both numbers are pinned: a variant added to the enum but not to
-  // `every_tomlvalue` shows up as a count mismatch rather than as silence.
-  inspect(n, "6")
   inspect(same, "6")
 }
 
@@ -107,6 +146,61 @@ test "TomlValue ==: distinct variants are never equal" {
     i = i + 1
   }
   inspect(differ, "6")
+}
+
+test "TomlValue ==: structurally equal but distinct values are equal" {
+  let vs = every_tomlvalue()
+  let same = every_tomlvalue_same()
+  let n = Array::length(vs)
+  let mut equal = 0
+  let mut i = 0
+  while i < n {
+    let a: TomlValue = Array::get(vs, i)
+    let b: TomlValue = Array::get(same, i)
+    if a == b {
+      equal = equal + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Every variant, including the ones carrying arrays and nested values. A
+  // regression from structural to reference comparison drops this below n.
+  inspect(equal, "6")
+}
+
+test "TomlValue: every represented variant is the declared one, in order" {
+  // `tomlvalue_tag` is exhaustive over the DECLARATION (see its doc comment), so a
+  // new variant breaks compilation of this file. This pins the other half:
+  // that `every_tomlvalue` holds the variants it claims to, in declaration order.
+  //
+  // `want` is the declaration index of each entry -- NOT `0..n`, because a
+  // variant this file has no sample for is omitted and leaves a gap. Writing
+  // `tag(vs[i]) == i` instead was wrong for exactly that reason, and this test
+  // is what caught it.
+  let want = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ]
+  let vs = every_tomlvalue()
+  let n = Array::length(vs)
+  let mut in_order = 0
+  let mut i = 0
+  while i < n {
+    let a: TomlValue = Array::get(vs, i)
+    if tomlvalue_tag(a) == Array::get(want, i) {
+      in_order = in_order + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(Array::length(want), "6")
+  inspect(in_order, "6")
 }
 
 test "TomlValue ==: same variant with different payloads is not equal" {
