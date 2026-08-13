@@ -3066,6 +3066,38 @@ bypass は保たれる (`effect_compound_shortcircuit_suspend_test.vibe` の `b`
 元のスコープではなくその closure を指してしまう)、および RHS の spine 要素が
 direct でない suspension を持つ形。条件付き位置そのものはこれで塞がった。
 
+### 追記54 (2026-08-13): split される body の `return` を fail-closed にする (#1536)
+
+上の条件付き位置を潰す作業中に実測で見つけた**先行するバグ**。suspend lowering は body を
+「step を返す部品」へ書き換えるので、その body に書かれた `return` は**もう関数を抜けない** —
+自分の値を step のつもりで driver に手渡す。結果、**型検査を通り、clean にコンパイルされ、
+`return` を通った実行だけが runtime で trap する** (`unreachable`)。
+
+```
+fn helper() -> Int with Ask {
+  let a = perform Ask::Get(1)
+  if a > 0 { return a * 100 } else { () }   // ← compile 成功 / 実行で trap
+  a
+}
+```
+
+チェックされていたのは**ループ body の `return` だけ** (`scps_body_has_return` は
+loop→再帰変換の適格性判定にしか使われていなかった)。ループの外も、そして
+**suspension より前の guard-clause 形も**同じ理由で壊れている — `return` が抜ける先の
+部品は「変換後の関数」であって元の関数ではない。
+
+split する 3 箇所 (handle body / needing fn clone / closure literal) すべてで、split の前に
+`scps_body_has_return` で refuse する。診断は**効く編集を述べる**: 「早期脱出の値を返すのでは
+なく作れ (束縛して後で選べ)、または `return` を handle の外へ出せ」。
+
+**nested closure の `return` はそのまま受理される** — それはその closure を指すので正しく、
+`scps_body_has_return` は `EFn` で走査を止める (`effect_resume_store_loop_nested_return` が
+positive 側、`err_effect_return_in_split_body` /
+`err_effect_return_guard_in_split_body` が negative 側)。
+
+本来の解 (escape 継続を lowering に持たせて `return` を通す) は残件のまま。今回のスライスは
+「黙って壊れる」を「その場で断る」に変えただけで、書けるコードは増えていない。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

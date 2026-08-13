@@ -6935,10 +6935,17 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # #1536 boundary: generic linearization still walks only positions that every
 # execution reaching a compound also reaches, so it never names a suspension
 # INSIDE a branch or inside a short-circuit RHS. Both are instead named WHOLE
-# (the snapshots above pin that, bypass included). What stays closed is a
-# selected RHS that moves a source return into the synthetic resume
-# continuation -- it would target that closure rather than its source scope.
-scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitreturn"
+# (the snapshots above pin that, bypass included). A selected RHS that returns
+# stays closed -- now via the general rule below, since a `return` anywhere on
+# a split body's spine is refused before the split runs.
+scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "cannot contain a \`return\`" "letshortcircuitreturn"
+# #1536: a `return` anywhere on a split body's own spine. This used to compile
+# clean and trap at runtime on the path that took it, before AND after the
+# suspension alike, because the split makes those pieces return a step. The
+# `return` inside a NESTED CLOSURE targets that closure and stays accepted --
+# effect_resume_store_loop_nested_return above is the positive side.
+scps_check_reject "err_effect_return_in_split_body.vibe" "cannot contain a \`return\`" "returninsplit"
+scps_check_reject "err_effect_return_guard_in_split_body.vibe" "cannot contain a \`return\`" "returnguardsplit"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other

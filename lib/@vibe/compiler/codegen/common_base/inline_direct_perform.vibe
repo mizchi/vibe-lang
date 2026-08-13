@@ -10585,6 +10585,19 @@ fn scps_cellify_arms(arms: Array[(Pat, Expr)], x: String) -> Array[(Pat, Expr)] 
   out
 }
 
+/// #1536: the suspend lowering rewrites a body into a machine whose pieces
+/// return a STEP, not the body's own value. A `return` written in that body
+/// therefore no longer leaves the enclosing function -- it hands its value to
+/// the driver as if it were a step. Until the lowering can carry an escape,
+/// this is refused up front rather than compiled into a runtime trap: it used
+/// to type-check, compile clean, and trap on the path that took the `return`.
+///
+/// The `return` inside a nested closure is unaffected (it targets that
+/// closure) and stays accepted -- scps_body_has_return stops at EFn.
+fn scps_return_in_split_msg(subject: String) -> String {
+  String::concat(subject, " cannot contain a `return`: the suspend lowering turns the body into continuations that return a step, so the `return` would hand its own value to the driver instead of leaving the function. Produce the early-exit value instead of returning it (bind it and select on it), or move the `return` outside the handle. A `return` inside a nested closure targets that closure and is fine (#1536, ADR-0076 Phase 3a/3b)")
+}
+
 /// A `return` inside the loop body targets the FUNCTION, which a loop closure
 /// cannot express. Nested closures own their own `return`, so the scan stops
 /// at them (the same boundary scps_has_loop_ctl uses).
@@ -11151,6 +11164,9 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
       scps_msg = String::concat(scps_msg, " -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body (#817)")
       scps_msg = String::concat(scps_msg, culprit_marker)
       Array::push(errs, scps_msg)
+      None
+    } else if scps_body_has_return(body) {
+      Array::push(errs, scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle body"))
       None
     } else {
       let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
@@ -12469,6 +12485,8 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
           scps_msg = String::concat(scps_msg, " (#817, ADR-0076 Phase 3b)")
           scps_msg = String::concat(scps_msg, culprit_marker)
           Array::push(errs, scps_msg)
+        } else if scps_body_has_return(fbody2) {
+          Array::push(errs, scps_return_in_split_msg(String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, so its body")))
         } else {
           let (split_ok, split_body) = scps_split_tail(fbody2, sctx, ctx, st)
           if !split_ok {
@@ -13114,6 +13132,9 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
     scps_msg = String::concat(scps_msg, " (#817)")
     scps_msg = String::concat(scps_msg, culprit_marker)
     Array::push(errs, scps_msg)
+    EFn(tps, tbs, params, None, None, b)
+  } else if scps_body_has_return(b) {
+    Array::push(errs, scps_return_in_split_msg(String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class) is split into continuations, so its body")))
     EFn(tps, tbs, params, None, None, b)
   } else {
     let (split_ok, split_body) = scps_split_tail(b, sctx, ctx, st)
