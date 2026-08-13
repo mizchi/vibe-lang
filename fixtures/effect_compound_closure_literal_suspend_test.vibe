@@ -1,0 +1,40 @@
+// #1536 (a) v8, measured boundary correction: a closure literal inside a
+// compound is NOT a fail-closed position, even though its body performs the
+// handled effect.
+//
+// scps_anf_walk has no EFn case, so on its own it would refuse. It never gets
+// the chance: the closure-CPS prepass (ADR-0076 追記31) step-splits an
+// annotated literal before the split runs, so by then the literal's body holds
+// step constructors rather than a recognized suspension, and the compound
+// around it is ordinary. Both spellings below are pinned -- a literal that is
+// only CONSTRUCTED inside the compound (the suspension never runs; 1 + 1) and
+// one that is called there (the suspension runs on the spine of the literal's
+// own step body; 1 + 1).
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut built = 0
+    built = 1 + Array::length([
+      () -> Int with Ask {
+        perform Ask::Get(1)
+      }
+    ])
+    let mut called = 0
+    called = 1 + (() -> Int with Ask {
+      perform Ask::Get(1)
+    })()
+    built * 10 + called
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n)
+    }
+  }
+}
+
+test "a closure literal in a compound is closure-CPS, not fail-closed" {
+  inspect(_start(), "22")
+}

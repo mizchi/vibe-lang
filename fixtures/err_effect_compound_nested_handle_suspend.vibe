@@ -1,0 +1,36 @@
+// #1536 (a) v8 boundary, but enforced by an OLDER rule: a nested `handle`
+// inside a compound. The linearization does not widen this -- the body is
+// refused before the split even runs, by the see-through check that already
+// rejects a nested handle anywhere in a suspend-class handle body. The gate
+// pins that diagnostic (`cannot see through`) rather than the spine one, so the
+// fixture cannot quietly start passing for the other reason.
+effect Ask {
+  Get(Int) -> Int
+}
+
+effect Log {
+  Note(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut value = 0
+    value = 1 + handle {
+      perform Log::Note(0) + perform Ask::Get(1)
+    } with Log {
+      Note(n) => resume(n)
+    }
+    value
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n)
+    }
+  }
+}
+_start()
+
+__DATA__
+{
+  "error_contains": "cannot see through"
+}

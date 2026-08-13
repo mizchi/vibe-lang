@@ -6875,7 +6875,9 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_compound_call_arg_suspend.vibe \
   fixtures/effect_while_condition_compound_suspend.vibe \
   fixtures/effect_assignment_op_rhs_suspend.vibe \
-  fixtures/effect_assignment_op_name_collision_test.vibe
+  fixtures/effect_assignment_op_name_collision_test.vibe \
+  fixtures/effect_compound_anf_name_collision_test.vibe \
+  fixtures/effect_compound_closure_literal_suspend_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6897,6 +6899,11 @@ scps_check_reject "err_effect_loop_return_suspend.vibe" "let/seq/tail/branch-tai
 scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
 scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
 scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
+# A nested handle inside a compound is refused EARLIER, by the pre-existing
+# see-through rule -- the linearization neither widens nor narrows it. Gated on
+# THAT diagnostic, so the fixture cannot silently start passing for the other
+# reason if the boundary ever moves.
+scps_check_reject "err_effect_compound_nested_handle_suspend.vibe" "cannot see through" "compoundnestedhandle"
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "inerttaint"
