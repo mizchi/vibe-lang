@@ -6947,7 +6947,19 @@ scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "cannot cont
 # reach -- inside a loop -- is still refused (err_effect_loop_return_suspend).
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_return_in_split_body_test.vibe \
-  fixtures/effect_return_match_arm_split_test.vibe
+  fixtures/effect_return_match_arm_split_test.vibe \
+  fixtures/effect_return_in_loop_test.vibe
+# #1536 P0: a transfer with a STATEMENT in front of it, after a resume. The
+# transfer test used to see only a BARE break/continue, so `if d { acc = v;
+# break }` was not a transfer, the continuation was not dropped, and execution
+# fell through the rewritten call and kept looping -- silently answering
+# differently than the same loop without a suspension. `scan` is 700 with and
+# without effects; it used to be 800 here.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_transfer_after_resume_test.vibe
+# `break` leaves only the INNERMOST loop, so a return nested one loop deeper
+# would stop at the wrong level: refused rather than guessed at.
+scps_check_reject "err_effect_return_nested_loop_suspend.vibe" "cannot contain a \`return\`" "returnnestedloop"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other

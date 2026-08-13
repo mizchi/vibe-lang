@@ -3128,6 +3128,49 @@ handle body は対象外 — そこの `return` は**囲む関数**から抜け�
 前の early exit (取る/取らない)、tail return、そして腕の binder が外側 `n` を shadow する
 match — 捕獲すると 311 ではなく 306 になる。
 
+### 追記56 (2026-08-13): loop 内の `return` と、その下で見つかった P0 (#1536)
+
+ループ body の `return` は追記55 の hoist では扱えない — **loop body の tail は「次の反復」で
+あって関数の値ではない**から。だが新しい機構は要らなかった: `break` は既にこの loop を
+出られる (追記47) し、loop の**後ろ**の spine 上の `return` は追記55 が扱える。だから
+「値を控えて、loop を出て、外で返す」に書き換えるだけでよい:
+
+```
+while c { .. return v .. }   ==>  let mut returned = false
+REST                              let mut slot = 0
+                                  while c { .. slot = v; returned = true; break .. }
+                                  if returned { return slot } else { REST }
+```
+
+**入れ子の loop の中の `return` は refuse** (`break` は最内 loop しか出ないので、間違った
+段で止まる)。`err_effect_return_nested_loop_suspend` が pin。
+
+#### この書き換えが最初に誤答した — 原因は先行する P0 だった
+
+実装後の最初の実測が **700 ではなく 800** を返した。切り分けると、原因は `return` ではなく
+**`break` そのもの**だった:
+
+```vibe
+while i < 5 {
+  let v = perform Ask::Get(i)
+  if v > 6 { acc = v * 100; break } else { () }   // ← 前に文が 1 つある
+  i = i + 1
+}
+```
+
+`scps_is_ctl_terminator` が**裸の** `break` / `continue` しか transfer と認めていなかったため、
+「文が 1 つ前に付いた transfer」= 普通の綴りが transfer と見なされず、normalizer は継続を
+落とさず、rewrite も切らなかった。rewrite 後の transfer は**ただの呼び出し** (`k(v)`) なので、
+実行は**それを素通りして loop を続けた**。同じ loop を effect 抜きで書けば 700、
+suspension を入れると 800 — **黙って別の答えを返していた** (P0)。
+
+`scps_is_ctl_terminator` を「この式は必ず transfer するか」に広げた (spine の tail を辿り、
+selection は**全枝が transfer するときだけ**真。nested loop / closure / handle には入らない)。
+`effect_transfer_after_resume_test.vibe` が pin (70011302)。
+
+**教訓**: 追記55 の hoist は設計上正しかったが、土台が壊れていた。既存 fixture は transfer を
+**suspension より前**にしか置いておらず、resume の後ろの transfer を誰も見ていなかった。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
