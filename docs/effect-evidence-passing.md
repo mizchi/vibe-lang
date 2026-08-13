@@ -3142,8 +3142,10 @@ REST                              let mut slot = 0
                                   if returned { return slot } else { REST }
 ```
 
-**入れ子の loop の中の `return` は refuse** (`break` は最内 loop しか出ないので、間違った
-段で止まる)。`err_effect_return_nested_loop_suspend` が pin。
+**入れ子の loop の中の `return`** も同じ書き換えで通る: `break` は 1 段しか出ないので、
+**各段が record-and-break し、その直後に `if returned { break }` の guard を置いて
+exit を 1 段ずつ外へ運ぶ**。3 段でも同じ (`effect_return_nested_loop_test.vibe` が
+2 段 / 3 段 / return を取らない場合を pin)。
 
 #### この書き換えが最初に誤答した — 原因は先行する P0 だった
 
