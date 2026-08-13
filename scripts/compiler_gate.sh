@@ -6864,9 +6864,16 @@ scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
 # body stays fail-closed.
-scps_run_expect "effect_loop_form_suspend.vibe" "63" "loopform"
-scps_run_expect "effect_while_break_continue_suspend.vibe" "22" "whilebrkcont"
-scps_run_expect "effect_loop_nested_break_suspend.vibe" "7" "loopnestedbrk"
+# New positive regressions use source-owned inspect snapshots and run as-is;
+# do not add another __DATA__ + shell-duplicated expectation to this legacy
+# helper. VIBE_TEST_CLI_WASM pins the freshly built stage2 that knows this
+# lowering while the checked-in seed catches up through normal bootstrap.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_loop_form_suspend_test.vibe \
+  fixtures/effect_while_break_continue_suspend_test.vibe \
+  fixtures/effect_loop_nested_break_suspend_test.vibe \
+  fixtures/effect_resume_store_loop_break_test.vibe \
+  fixtures/effect_loop_ctl_name_collision_test.vibe
 scps_check_reject "err_effect_loop_return_suspend.vibe" "let/seq/tail/branch-tail spine" "loopreturn"
 scps_check_reject "err_effect_while_condition_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "whilecondcompound"
 scps_check_reject "err_effect_assignment_rhs_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "assignrhscompound"
@@ -6880,10 +6887,9 @@ scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "in
 # closure and launders it into an eff-free helper must stay rejected --
 # only names bound within the literal are trusted by the inert scan.
 scps_check_reject "err_effect_closure_param_capture_launder.vibe" "cannot see through" "inertlaunder"
-# #1536: what used to be the `break`-in-a-suspending-loop rejection. The arm
-# stores `resume` and never resumes, so the first perform escapes with its
-# value; the loop shape is what changed, not this outcome.
-scps_run_expect "effect_resume_store_loop_break.vibe" "0" "loopbreak"
+# #1536: the former `break`-in-a-suspending-loop rejection now lives in the
+# inspect snapshot suite above. Its arm stores `resume` and never resumes, so
+# the first perform escapes with its value; the loop shape is what changed.
 # #1261: an unannotated performing closure is row-backfilled by
 # dlh_hoist_expr and so gets the evidence dict prepended; handing that value
 # to a row-FREE fn-typed slot used to compile clean and trap at runtime with
