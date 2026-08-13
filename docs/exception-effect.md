@@ -8,13 +8,14 @@ Related: #1218, #1136, #1344, ADR-0016(`handle`/`throw`), ADR-0050(generic effec
 handler), ADR-0071(effectset), ADR-0073(checked `Error`), ADR-0084(effect
 taxonomy)。
 
-> **綴りの追記 (#1461, 2026-08-06):** この文書は当時の綴りのまま `with Error`
-> / `handle .. with Error` を書いている箇所がある。その後 #1461 が **effect
-> row 上の `Error` を退役させた** ので、下記の「compatibility alias」はもう
-> alias ではなく **parse error** である。row を書く場所では読み替えて
-> `with Exception` を使うこと (`vibe fmt` が旧綴りを書き換える)。ハンドラ側の
-> `handle .. with Error` と operation 修飾子 `perform Error::Throw` は row 項目
-> ではないので、この退役の対象外で今も通る。
+> **綴りの追記 (#1461 / #1501, 2026-08-06):** この文書は当時の綴りのまま
+> `with Error` / `handle .. with Error` を書いている箇所がある。その後 #1461 と
+> #1501 が effect row とハンドラ名の `Error` を退役させたので、下記の
+> 「compatibility alias」は現在の surface では **parse error** である。どちらの
+> 位置でも `Exception` を使うこと (`vibe fmt` が旧綴りを書き換える)。operation
+> 修飾子 `perform Error::Throw` だけは row やハンドラ名ではないため、古い生成物を
+> 読む内部互換として今も受理する。新しいソースでは `perform Exception::Throw` を
+> 使う。
 >
 > **実装状況 (2026-08-02, #1344):** typed `Exception[E]` の row は
 > **checker に入った**。`throw(v)` は `Exception[typeof(v)]` を要求し、
