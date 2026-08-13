@@ -2916,6 +2916,48 @@ codegen は String を実行時判別する #807)、loop body 内の `return`、
 literal param flow、`if` / `match` branch および non-tail `&&` / `||` RHS の
 条件付き suspension。
 
+### 追記49 (2026-08-13): selection が束縛値そのものなら束縛ごと枝へ分配する (#1536)
+
+追記43 は `if` / `match` が **sequence HEAD** (= 文位置) に立つときだけ継続を枝へ
+分配していた。値として使われる同じ selection —
+
+```
+let v = if ready { perform Op(1) } else { 0 }
+v + 1
+```
+
+— は追記48 の generic ANF に落ちて reject される。ANF は「必ず評価される位置」しか
+歩かないので、枝の中の suspension に名前を付けることはできない (選ばれない枝の
+operation を走らせてしまう)。つまりここでも**受理される綴りが「何をしたか」ではなく
+「どこに置いたか」で決まっていた** — 文位置の `if` は通り、同じ `if` を `let` に
+束縛した瞬間に通らない。
+
+名前を付けられないだけで、**束縛を selection の外に置いておく理由は無い**:
+
+```
+let x = if c { t } else { e }  REST
+  ==>  if c { let x = t  REST } else { let x = e  REST }
+```
+
+condition / scrutinee は元の位置に残るので**ちょうど一回・枝より先に**評価され、
+各枝は自分の値を `x` に束縛して継続を一回だけ走らせる。追記43 が sequence HEAD で
+やっている継続分配と同じ機構で、違いは枝の値が捨てられるか binder に食われるかだけ。
+`let mut` 初期化子も同じ (分配後は枝ごとに継続を box する — cell はそのためにある)。
+
+`match` の腕は追記43 と同様、継続を腕の下へ移す前に**パターン binder を alpha-rename**
+する: 継続は元々 match の外にあったので、そこで自由な名前が腕の束縛に捕まっては
+ならない (`fixtures/effect_let_selection_match_capture_test.vibe` が pin。捕獲すると
+17 ではなく 16 を返す)。追記43 と共有の `scps_float_match_arm_rename` に切り出した。
+
+**`break` / `continue` / `return` を含む selection は fail-closed のまま** — transfer は
+このパスが組む loop 形に対して書き換えられるので、その下へ継続を複製するのは
+このスライスの範囲外。selection が compound の中にネストしている形
+(`1 + (if c { perform .. } else { 0 })`) も従来どおり reject
+(`fixtures/err_effect_compound_branch_suspend.vibe`)。
+
+**残る不適格**: 追記48 の一覧から「`let` / `let mut` の値そのものである selection」を
+引いたもの。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
