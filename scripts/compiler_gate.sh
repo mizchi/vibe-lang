@@ -6900,6 +6900,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # the block cannot capture the continuation's outer name when it floats.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_let_block_value_suspend_test.vibe
+# #1536 assignment mirror: `x = <if/match>` / `x = { stmt..; value }`. A boxed
+# target is reshaped before cellification, a target bound outside the spine on
+# the continuation spine; the two snapshots pin both arms agreeing.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_assign_selection_suspend_test.vibe \
+  fixtures/effect_assign_outer_selection_suspend_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
