@@ -1,0 +1,35 @@
+// #1536 (a) v8: a compound assignment RHS is linearized around the suspension.
+// The pin is evaluation ORDER, not just acceptance: `probe` is read once on
+// each side of the perform, and the handler changes it in between. Everything
+// left of the suspension is named before it (1 * 100), everything right of it
+// still runs after the resume (probe is 9 by then) -- so 100 + 4 + 9. Hoisting
+// the suspension past the left operand instead would print 913 * 10 + 1.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let probe = [
+  1
+]
+let tails = [
+  0
+]
+
+let _start = () -> Int {
+  handle {
+    let mut value = 0
+    value = Array::get(probe, 0) * 100 + perform Ask::Get(3) + Array::get(probe, 0)
+    Array::set(tails, 0, Array::get(tails, 0) + 1)
+    value * 10 + Array::get(tails, 0)
+  } with Ask {
+    Get(n) => {
+      Array::set(probe, 0, 9)
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+
+test "compound assignment RHS preserves evaluation order" {
+  inspect(_start(), "1131")
+}

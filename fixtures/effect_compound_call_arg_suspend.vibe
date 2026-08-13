@@ -1,0 +1,31 @@
+// #1536 (a) v8: suspensions in call arguments and in tail position, including
+// two in one operand chain. Arguments left of the suspension are named before
+// it and arguments right of it stay put, so `Array::set` still writes slot 0 of
+// `slots` with the value resumed in between; the tail then adds a second
+// suspension to the first one's result.
+//
+//   Array::set(slots, 0, 5)   -> slots[0] = 5
+//   5 * 100 * 3 + 6           -> 1506
+effect Ask {
+  Get(Int) -> Int
+}
+
+let slots = [
+  0
+]
+
+let _start = () -> Int {
+  handle {
+    Array::set(slots, 0, perform Ask::Get(4))
+    Array::get(slots, 0) * 100 * perform Ask::Get(2) + perform Ask::Get(5)
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+
+test "compound call arguments preserve evaluation order" {
+  inspect(_start(), "1506")
+}

@@ -174,11 +174,17 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   そのものの形 (fresh let へ一回評価してから selection、ADR-0076 追記44)、
   **継続 spine 上の通常代入 (`=`) の RHS が同じ direct 形そのもの** (fresh let
   へ一回評価してから一回だけ代入、追記45)、**`while` condition が同じ direct
-  形そのもの** (再帰 loop closure 内で check ごとに一回評価、追記46)
-- **不適格**: ループ内 `break`/`continue`/`return`、配列 `for` / `loop` 形、
-  selection input / 代入 RHS / while condition が suspend を内包する複合式、compound assignment
-  (`+=` 等)、実引数証明が成立しない
-  closure パラメータの呼び出し、row 変数 callee (`with e`)
+  形そのもの** (再帰 loop closure 内で check ごとに一回評価、追記46)、
+  **ループ内の `break` / `continue`** (脱出継続を closure に切り出し、transfer を
+  CPS spine 上の呼び出しにする、追記47)、**複合式に埋まった suspension**
+  (被演算子・呼び出し引数・コンストラクタ引数・compound な `while` 条件・
+  `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)
+- **不適格**: ループ内 `return`、配列 `for` 形、**必ず評価されるとは限らない位置に
+  埋まった suspension** (`if` / `match` の枝、`&&` / `||` の右辺)、実引数証明が
+  成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
+  literal は prepass が literal 自身の spine で step-split し、supported nested
+  different-effect handles は既存の handler-ownership lowering を維持するため、
+  compound ANF の blanket rejection には含めない
 
 closure param を**無条件に**許すのは不健全 — closure literal 内の `perform`
 は「リテラルが置かれた関数の row」に字句的に計上されるので (#761)、「宣言

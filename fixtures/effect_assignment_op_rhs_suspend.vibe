@@ -1,0 +1,36 @@
+// #1536 (a) v8 plus the scps_cellify fix: `x op= v` on a mutable the suspend
+// lowering has boxed. scps_cellify read EAssignOp's fields as (op, name, ..)
+// when they are (name, op, ..), so its "is this the boxed local?" test compared
+// `"+"` against a variable name and never fired: `value += ..` kept writing the
+// raw local while every read around it had become a cell read, and the write
+// vanished across the suspension. The three lines below pin all of it -- a
+// compound assignment whose RHS suspends, one whose RHS is a value resumed
+// earlier, and a non-`+` operator.
+//
+//   value = 1
+//   value += 11   -> 12     (RHS is the suspension itself)
+//   value += 101  -> 113    (RHS resumed one step earlier)
+//   value *= 2    -> 226
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut value = 1
+    value += perform Ask::Get(10)
+    let extra = perform Ask::Get(100)
+    value += extra
+    value *= 2
+    value
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+
+test "compound assignment suspension preserves operators" {
+  inspect(_start(), "226")
+}
