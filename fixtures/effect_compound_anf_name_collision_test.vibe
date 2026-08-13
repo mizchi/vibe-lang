@@ -1,0 +1,61 @@
+// #1536 (a) v8: the linearization's generated binder is spelled
+// `__scps_seq<site>_anf<n>` -- `scps_local` concatenates the site DIRECTLY onto
+// the prefix, so there is no underscore before it (`__scps_seq0_anf0`, the same
+// shape effect_seq_head_reserved_name_collision.vibe already relies on).
+// Nothing stops user code from spelling one, and because these binders wrap the
+// whole rebuilt slot they scope over the continuation as well as the compound:
+// a collision would silently rebind a name the continuation still reads.
+// scps_anf_fresh probes the WHOLE enclosing expression (scope-blind: any
+// occurrence of the candidate disqualifies it) and bumps a numeric suffix.
+//
+// Both candidate ordinals are laid here, under two site spellings, and each is
+// read AFTER the suspension so capture shifts the answer. `anf0_1` / `anf1_1`
+// are the spellings the bump lands on, so they are the second-order collision.
+//
+// CONTROL-MEASURED: with scps_anf_fresh replaced by its bare base this prints
+// 6011823 instead of 3045823 -- `__scps_seq0_anf0` is rebound to the left
+// operand (300) that the first binding names, so the trailing read of it
+// returns 300 instead of 3, and `__scps_seq0_anf1` is rebound to the resumed
+// value. That measurement is why this fixture is here rather than
+// effect_assignment_op_name_collision_test.vibe, which spells its candidate
+// `__scps_seq_0_assignop`: the compiler emits no `assignop` binder at all
+// (`grep assignop` over the compiler is empty -- a compound assignment reaches
+// this pass as the `Array::set` scps_cellify makes of it), and the extra
+// underscore does not match the generated shape either, so that fixture passes
+// with the freshness probe disabled.
+//
+// The target-only EAssignOp case is deliberately NOT covered here: it is not
+// reachable. A `let mut` inside a handle body is boxed by scps_cellify before
+// this probe runs (its occurrences become `Array::get` / `Array::set`
+// arguments, i.e. ordinary identifiers), a `let mut` outside the handle cannot
+// be written from the continuation closures at all
+// (err_type_closure_capture_mut), and any binder inside the probed expression
+// is already found by scps_binds_name. The EAssignOp field-order fix in
+// scps_refs_name is a hardening of the predicate, not a fixed silent-wrong; the
+// one that WAS silent-wrong is scps_cellify (see
+// effect_assignment_op_rhs_suspend.vibe).
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let __scps_seq0_anf0 = 3
+    let __scps_seq0_anf1 = 5
+    let __scps_seq1_anf0 = 7
+    let __scps_seq0_anf0_1 = 11
+    let __scps_seq1_anf0_1 = 13
+    let mut value = 0
+    value = __scps_seq0_anf0 * 100 + perform Ask::Get(0) + __scps_seq0_anf0
+    value * 10000 + __scps_seq0_anf1 * 1000 + __scps_seq1_anf0 * 100 + __scps_seq0_anf0_1 * 10 + __scps_seq1_anf0_1
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 1)
+    }
+  }
+}
+
+test "generated linearization binders never capture a user spelling" {
+  inspect(_start(), "3045823")
+}
