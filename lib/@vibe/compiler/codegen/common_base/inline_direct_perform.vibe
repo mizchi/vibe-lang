@@ -10095,13 +10095,23 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           let ax = scps_seq_float_fresh("assign", e, EUnit, site)
           scps_split_tail(ELet(ax, v, EAssign(x, EIdent(ax, -1), b), -1), sctx, ctx, st)
         } else if scps_contains_susp(v, sctx) {
-          // #1536 (a) v8: compound RHS (`x = f(perform Op())`). An `x op=` RHS
-          // arrives here too, as the `Array::set` head scps_cellify makes of it.
-          let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
-          if aok {
-            scps_split_tail(scps_anf_wrap(abn, abv, EAssign(x, av, b)), sctx, ctx, st)
-          } else {
-            (false, e)
+          // #1536: a block or a selection as the whole RHS moves the assignment
+          // inward, exactly as a binding does. A target boxed by cellification
+          // was already reshaped before that rewrite (scps_float_direct_assign);
+          // this arm covers targets bound outside this spine.
+          match scps_assign_value_float(x, v, b, site) {
+            Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+            None => {
+              // #1536 (a) v8: compound RHS (`x = f(perform Op())`). An `x op=`
+              // RHS arrives here too, as the `Array::set` head scps_cellify
+              // makes of it.
+              let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
+              if aok {
+                scps_split_tail(scps_anf_wrap(abn, abv, EAssign(x, av, b)), sctx, ctx, st)
+              } else {
+                (false, e)
+              }
+            }
           }
         } else {
           (false, e)
@@ -10170,11 +10180,23 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
 /// Name direct suspension RHS values before mutable-local boxing. This pass
 /// traverses continuation-spine positions; expression normalization separately
 /// handles supported closure and nested-handle forms before this pass.
+///
+/// #1536: a block- or selection-valued RHS is reshaped here too, and for the
+/// same reason it has to happen BEFORE cellification: once `x = v` has become
+/// `Array::set(x, 0, v)`, `v` is a builtin argument, and floating it out of
+/// there would mean duplicating the evaluation of the other arguments.
 fn scps_float_direct_assign(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), site: Int) -> Expr {
   match e {
     EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {
       let ax = scps_seq_float_fresh("assign", e, EUnit, site)
       ELet(ax, v, EAssign(x, EIdent(ax, -1), scps_float_direct_assign(b, sctx, site)), -1)
+    } else if scps_contains_susp(v, sctx) {
+      match scps_assign_value_float(x, v, b, site) {
+        // Each float strictly shrinks the RHS, so re-running this walk on the
+        // result converges instead of looping.
+        Some(lowered) => scps_float_direct_assign(lowered, sctx, site),
+        None => EAssign(x, v, scps_float_direct_assign(b, sctx, site))
+      }
     } else {
       EAssign(x, v, scps_float_direct_assign(b, sctx, site))
     },
@@ -11666,6 +11688,13 @@ fn scps_bind_float_match_arms(arms: Array[(Pat, Expr)], is_mut: Bool, x: String,
 fn scps_bind_block_float(is_mut: Bool, x: String, v: Expr, b: Expr, off: Int, site: Int) -> Option[Expr] {
   match v {
     ESeq(a, v2) => Some(ESeq(a, scps_mk_bind(is_mut, x, v2, b, off))),
+    // An assignment statement inside the block carries the rest of the block
+    // as its own continuation rather than appearing as an ESeq head. It binds
+    // nothing, so it moves out unchanged. (A write to a mutable this spine
+    // boxed has already become an `Array::set` statement by now; this is the
+    // spelling a target bound outside the spine still has.)
+    EAssign(y, v1, v2) => Some(EAssign(y, v1, scps_mk_bind(is_mut, x, v2, b, off))),
+    EAssignOp(y, op, v1, v2) => Some(EAssignOp(y, op, v1, scps_mk_bind(is_mut, x, v2, b, off))),
     ELet(y, v1, v2, o) => {
       let ny = scps_seq_float_fresh(y, v2, b, site)
       Some(ELet(ny, v1, scps_mk_bind(is_mut, x, scps_rename_ident(v2, y, ny), b, off), o))
@@ -11709,6 +11738,58 @@ fn scps_bind_selection_distribute(is_mut: Bool, x: String, v: Expr, b: Expr, off
       EMatch(s, arms) => Some(EMatch(s, scps_bind_float_match_arms(arms, is_mut, x, b, off, site))),
       _ => None
     }
+  }
+}
+
+/// Assign each arm's own value to the same target and continue there.
+fn scps_assign_float_match_arms(arms: Array[(Pat, Expr)], x: String, b: Expr, site: Int) -> Array[(Pat, Expr)] {
+  let out = scps_empty_arms()
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, body) = Array::get(arms, i)
+    let (p2, body2) = scps_float_match_arm_rename(p, body, b, site, i)
+    Array::push(out, (p2, EAssign(x, body2, b)))
+    i = i + 1
+  }
+  out
+}
+
+/// #1536: the assignment mirror of `scps_bind_value_float`. `x = { a; v } REST`
+/// and `x = if c { t } else { e } REST` are the same two shapes, and the same
+/// two rewrites apply -- the only difference is that the value lands in an
+/// existing target instead of a new binder, so no binder needs minting.
+///
+/// The target name is untouched, so it still refers to whatever it referred to
+/// before: a `let` floated out of the block is alpha-renamed (it would
+/// otherwise widen its scope over the continuation), and a distributed match
+/// arm renames its pattern binders (the continuation was outside the match).
+fn scps_assign_value_float(x: String, v: Expr, b: Expr, site: Int) -> Option[Expr] {
+  match v {
+    ESeq(a, v2) => Some(ESeq(a, EAssign(x, v2, b))),
+    // An assignment statement inside the block carries the rest of the block
+    // as its own continuation, so the prefix is already spelled this way
+    // rather than as an ESeq. It binds nothing, so it just moves out.
+    EAssign(y, v1, v2) => Some(EAssign(y, v1, EAssign(x, v2, b))),
+    EAssignOp(y, op, v1, v2) => Some(EAssignOp(y, op, v1, EAssign(x, v2, b))),
+    ELet(y, v1, v2, o) => {
+      let ny = scps_seq_float_fresh(y, v2, b, site)
+      Some(ELet(ny, v1, EAssign(x, scps_rename_ident(v2, y, ny), b), o))
+    },
+    ELetMut(y, v1, v2, o) => {
+      let ny = scps_seq_float_fresh(y, v2, b, site)
+      Some(ELetMut(ny, v1, EAssign(x, scps_rename_ident(v2, y, ny), b), o))
+    },
+    EIf(c, t, el) => if scps_has_loop_ctl(v) {
+      None
+    } else {
+      Some(EIf(c, EAssign(x, t, b), EAssign(x, el, b)))
+    },
+    EMatch(s, arms) => if scps_has_loop_ctl(v) {
+      None
+    } else {
+      Some(EMatch(s, scps_assign_float_match_arms(arms, x, b, site)))
+    },
+    _ => None
   }
 }
 

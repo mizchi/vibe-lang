@@ -2980,6 +2980,35 @@ float した `let` binder は継続の上へスコープが広がるので、追
 どちらの書き換えも値を**厳密に小さく**するので、結果を再 split すれば収束する。
 追記49 の分配と合わせて、「文を含む枝」が初めて通る。
 
+block の文前置は `ESeq` とは限らない — 中の代入文は**残りの block を自分の継続として
+持つ** (`EAssign(y, v1, <残り>)`) ので、`ESeq` / `EAssign` / `EAssignOp` の 3 綴りを
+同じ「何も束縛しない前置」として扱う。
+
+### 追記51 (2026-08-13): 代入の RHS にも同じ 2 つの書き換えを与える (#1536)
+
+追記49/50 は束縛 (`let` / `let mut`) だけだった。同じ形を代入で書くと
+(`acc = if c { perform .. } else { 0 }`, `acc = { log(); perform .. }`) まだ reject される。
+値が新しい binder に入るか既存の target に入るかは、suspension の位置とは無関係な違い。
+
+書き換えは同じ (binder を作らない分だけ簡単):
+
+```
+x = if c { t } else { e }  REST  ==>  if c { x = t  REST } else { x = e  REST }
+x = { a; v }               REST  ==>  a;  x = v  REST
+```
+
+**適用箇所が 2 つある**のがこのスライスの本質:
+
+- **cellify より前** (`scps_float_direct_assign`) — この spine が box した target 向け。
+  `x = v` が `Array::set(x, 0, v)` になった後では `v` は builtin の引数であり、そこから
+  float すると**他の引数の評価を複製する**ことになる。だから box 化の前に形を直す
+- **継続 spine 上** (`scps_split_tail` の `EAssign` arm) — spine の外で束縛された target 向け。
+  こちらは代入のまま split に届く
+
+両者が食い違うと綴りによって受理が変わるので、fixture を 2 本置いて同じ書き換えを pin した
+(`effect_assign_selection_suspend_test.vibe` / `effect_assign_outer_selection_suspend_test.vibe`)。
+`match` の腕の alpha-rename と `break` / `continue` / `return` の fail-closed は追記49 と同じ。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
