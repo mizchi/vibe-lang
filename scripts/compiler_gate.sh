@@ -6957,9 +6957,11 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # without effects; it used to be 800 here.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_transfer_after_resume_test.vibe
-# `break` leaves only the INNERMOST loop, so a return nested one loop deeper
-# would stop at the wrong level: refused rather than guessed at.
-scps_check_reject "err_effect_return_nested_loop_suspend.vibe" "cannot contain a \`return\`" "returnnestedloop"
+# `break` leaves only the INNERMOST loop, so each level records-and-breaks and
+# is followed by a guard that carries the exit outward one level at a time.
+# The snapshot covers two and three levels deep, and a return never taken.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_nested_loop_test.vibe
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other

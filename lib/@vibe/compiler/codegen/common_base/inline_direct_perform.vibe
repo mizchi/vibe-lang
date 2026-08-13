@@ -10621,10 +10621,10 @@ fn scps_return_in_split_msg(subject: String) -> String {
 ///
 /// A nested closure is not entered: its `return` targets that closure and is
 /// already correct (`_ => e` covers EFn, EWhile, ELoop and EForIn alike).
-/// Does this expression contain a `return` that the loop rewrite below cannot
-/// reach -- one inside a loop NESTED in the loop it is rewriting? `break` only
-/// leaves the innermost loop, so such a return would stop at the wrong level.
-/// Nested closures are not entered (their `return` is their own).
+/// Does this expression hold a `return` inside a LOOP? Used only by the
+/// walk's fallback, to tell "a plain return the hoist will handle" from "a
+/// loop return this walk did not reach and must refuse". Nested closures are
+/// not entered (their `return` is their own).
 fn scps_loop_return_nested(e: Expr) -> Bool {
   match e {
     EFn(_, _, _, _, _, _) => false,
@@ -10659,6 +10659,12 @@ fn scps_loop_arms_return_nested(arms: Array[(Pat, Expr)]) -> Bool {
   hit
 }
 
+/// `if returned { break } else { () }` -- placed after a nested returning loop
+/// so the exit keeps travelling outward one level at a time.
+fn scps_loop_return_guard(flag: String) -> Expr {
+  EIf(EIdent(flag, -1), EBreak(None), EUnit)
+}
+
 /// Replace every `return v` in a loop body with "record and leave the loop".
 /// The recorded value is picked up by the `if returned { return .. }` the
 /// caller places after the loop, where the ordinary hoist can reach it.
@@ -10668,7 +10674,22 @@ fn scps_loop_return_to_break(e: Expr, flag: String, slot: String) -> Expr {
     EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
     ESeq(a, b) => match a {
       EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
+      // A NESTED loop that returns: rewrite it the same way, then guard the
+      // enclosing loop's continuation. `break` leaves one level, so each level
+      // needs its own -- that is what carries the exit outward.
+      EWhile(c, wb) => if scps_body_has_return(wb) {
+        ESeq(EWhile(c, scps_loop_return_to_break(wb, flag, slot)), ESeq(scps_loop_return_guard(flag), scps_loop_return_to_break(b, flag, slot)))
+      } else {
+        ESeq(a, scps_loop_return_to_break(b, flag, slot))
+      },
       _ => ESeq(scps_loop_return_to_break(a, flag, slot), scps_loop_return_to_break(b, flag, slot))
+    },
+    // A nested returning loop in TAIL position still needs the guard: without
+    // it the enclosing loop would simply iterate again.
+    EWhile(c, wb) => if scps_body_has_return(wb) {
+      ESeq(EWhile(c, scps_loop_return_to_break(wb, flag, slot)), scps_loop_return_guard(flag))
+    } else {
+      e
     },
     ELet(x, v, b, off) => ELet(x, v, scps_loop_return_to_break(b, flag, slot), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_return_to_break(b, flag, slot), off),
@@ -10706,21 +10727,18 @@ fn scps_loop_return_to_break(e: Expr, flag: String, slot: String) -> Expr {
 /// The trailing `return` is then hoisted by scps_elim_returns like any other.
 /// Both binders are minted with the usual scope-blind freshness probe.
 ///
-/// Returns None -- leaving the body untouched for the caller to refuse -- when
-/// a `return` sits inside a loop NESTED in this one, because `break` would stop
-/// at the wrong level.
+/// A `return` nested several loops deep works too: each level records-and-breaks
+/// and is followed by a guard that carries the exit outward one level at a time
+/// (scps_loop_return_guard). Returns None only for a loop return this walk did
+/// not reach at all, leaving the body for the caller to refuse.
 fn scps_elim_loop_returns(e: Expr, site: Int) -> Option[Expr] {
   match e {
     ESeq(a, b) => match a {
       EWhile(c, wb) => if scps_body_has_return(wb) {
-        if scps_loop_return_nested(wb) {
-          None
-        } else {
-          let flag = scps_seq_float_fresh("returned", e, EUnit, site)
-          let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
-          let wb2 = scps_loop_return_to_break(wb, flag, slot)
-          Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), b)), -1), -1))
-        }
+        let flag = scps_seq_float_fresh("returned", e, EUnit, site)
+        let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
+        let wb2 = scps_loop_return_to_break(wb, flag, slot)
+        Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), b)), -1), -1))
       } else {
         match scps_elim_loop_returns(b, site) {
           Some(b2) => Some(ESeq(a, b2)),
@@ -10755,14 +10773,10 @@ fn scps_elim_loop_returns(e: Expr, site: Int) -> Option[Expr] {
     // A bare loop in TAIL position has no continuation to guard; the `return`
     // becomes the value of what follows it, which is nothing.
     EWhile(c, wb) => if scps_body_has_return(wb) {
-      if scps_loop_return_nested(wb) {
-        None
-      } else {
-        let flag = scps_seq_float_fresh("returned", e, EUnit, site)
-        let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
-        let wb2 = scps_loop_return_to_break(wb, flag, slot)
-        Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EUnit)), -1), -1))
-      }
+      let flag = scps_seq_float_fresh("returned", e, EUnit, site)
+      let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
+      let wb2 = scps_loop_return_to_break(wb, flag, slot)
+      Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EUnit)), -1), -1))
     } else {
       Some(e)
     },

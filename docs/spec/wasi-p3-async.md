@@ -190,11 +190,11 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   **non-tail の `&&` / `||`** (同じく右辺へは降りず短絡式を丸ごと名前に束ねる。
   受け側の let-shortcircuit が受理すると判定手続き自身に訊いてからのみ、追記53。
   bypass は保たれる)
-- **不適格**: **入れ子 loop 内・handle body 内の `return`** (前者は `break` が最内 loop しか
-  出ないため間違った段で止まる、後者は囲む関数から抜ける意味で handle の値ではない)。
+- **不適格**: **handle body 内の `return`** (囲む関数から抜ける意味で handle の値ではない)。
   **needing fn / closure literal の spine 上の `return` は適格** — そこでは
   `return v` = 「この computation の値が v」なので split の前に tail へ寄せる (追記55)。
-  **単一 loop 内の `return` も適格** — 値を控えて `break` で出て loop の外で返す (追記56)。
+  **loop 内の `return` も適格** — 値を控えて `break` で出て loop の外で返す。入れ子 loop でも
+  各段に guard を置いて exit を 1 段ずつ外へ運ぶ (追記56)。
   寄せきれない `return` が残れば追記54 の refuse に落ちる、配列 `for` 形、**選ばれた `&&` / `||` 右辺が
   `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
