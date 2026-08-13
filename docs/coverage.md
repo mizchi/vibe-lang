@@ -58,8 +58,26 @@ coverage として解釈してはいけない。これは既存 gate の安定�
 `function_union` は per-entry の `hit_fns` / `missed_fns` を source-qualified
 function ID で union した primary 指標である。いずれかの entry で実行された
 関数を一度だけ数えるため、suite 全体が到達した compiler 関数の実態を表す。
-branch JSON は branch ID bitmap を公開していないため、正確な branch union は
-まだ算出できない。branch の report 値は常に entry-weighted と表示される。
+`branch_union` は branch の同じ指標 (#1556)。branch の**大域 index は
+entry ごとの program 固有**なので entry 間で比較してはいけないが、
+**owner 関数の中での ordinal** はその関数の本体を lower した順序そのものなので、
+`(source-qualified な owner 関数名, ordinal)` は同じ source 上の branch を
+どの entry でも同じように名指す。per-entry JSON の
+`branch.per_fn[fn].mask` (branch 1つにつき `'1'`/`'0'` 1文字、ordinal 昇順)
+がこの ordinal を公開しており、report 側はこれを OR して union を出す。
+
+- **`branch_union.rate` が #1556 の「分岐カバレッジ N%」目標の指標**。
+  entry-weighted の branch rate は分母が entry 数で膨らむので目標には使えない
+- 同じ source 関数が entry ごとに異なる branch 数へ lower される
+  (特殊化・辞書渡し) ことがあるため、union は**見えた最大の shape** に広げる
+- mask を持たない (mask 導入前の) coverage JSON が1つでも混ざると
+  `branch_union.exact` が `false` になり、値は**下限**として表示される。
+  この場合 ratchet は測れなかった数値で落とさないようスキップされる
+
+ratchet: `VIBE_SUITE_MIN_BRANCH_UNION_HIT` (絶対数) と
+`VIBE_SUITE_MIN_BRANCH_UNION_RATE` (率)。entry を足すと分母がその import
+closure ぶん増える entry-weighted rate と違い、union の rate は
+「テストを足せば上がる」ので率のラチェットとして意味を持つ。
 
 ### コンパイラ自身を計測
 
@@ -378,7 +396,10 @@ seed に新関数が増えても (fn,local) merge でそのままスケールす
 生成物 (`_build/coverage/selfhost-fn/`):
 - `compiler_cov.wasm` — 計測コンパイラ
 - `report.json` — `{total, hit, missed, rate, hit_fns[], missed_fns[],
-  branch: {total, hit, missed, rate, per_fn{}, top_gaps[]}}`
+  branch: {total, hit, missed, rate, per_fn{}, top_gaps[]}}`。
+  `per_fn[fn]` は `{total, hit, mask}` で、`mask` は branch 1つにつき
+  `'1'`/`'0'` 1文字 (owner 関数内 ordinal の昇順) — 別 program 間で branch を
+  同定できる唯一の鍵 (#1556)
 
 環境変数:
 - `VIBE_COV_SEED` (計測ビルドに使う seed; 既定は committed seed)
