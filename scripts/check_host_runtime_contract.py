@@ -35,6 +35,53 @@ def emitter_imports(text: str) -> dict[str, str]:
     return found
 
 
+def emitter_dynamic_imports(text: str) -> dict[str, tuple[str, str]]:
+    """Extract generated `<prefix><Array::get(names, i)>` import descriptors."""
+    pattern = re.compile(
+        r'emit_name\(import_content, "vibe"\)\s*\n\s*'
+        r'emit_name\(import_content, String::concat\("([^"]+)",\s*'
+        r'Array::get\(([A-Za-z_][A-Za-z0-9_]*),\s*[A-Za-z_][A-Za-z0-9_]*\)\)\)\s*\n\s*'
+        r'bytebuf_push\(import_content, 0\)\s*\n\s*'
+        r'leb128_encode_u32\(import_content, ([^)]+)\)'
+    )
+    found: dict[str, tuple[str, str]] = {}
+    for prefix, names_array, type_id in pattern.findall(text):
+        if prefix in found:
+            die(f"duplicate dynamic emitter import prefix: {prefix}")
+        found[prefix] = (names_array, type_id.strip())
+    return found
+
+
+def validate_emitter_contract(manifest: dict, text: str) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    emitted = emitter_imports(text)
+    expected_types = manifest.get("importTypes")
+    if not isinstance(expected_types, dict):
+        die("manifest importTypes must map each static import to its type id")
+    if emitted != expected_types:
+        missing = sorted(set(expected_types) - set(emitted))
+        extra = sorted(set(emitted) - set(expected_types))
+        changed = sorted(name for name in set(emitted) & set(expected_types) if emitted[name] != expected_types[name])
+        die(f"emitter signature drift: missing={missing} extra={extra} changed={changed}")
+
+    patterns = manifest.get("componentAdapterPatterns")
+    if not isinstance(patterns, list):
+        die("manifest componentAdapterPatterns must be a list")
+    expected_dynamic: dict[str, tuple[str, str]] = {}
+    for item in patterns:
+        if not isinstance(item, dict) or set(item) != {"pattern", "prefix", "namesArray", "type"}:
+            die("each componentAdapterPatterns entry must contain pattern, prefix, namesArray, and type")
+        if item["pattern"] != item["prefix"] + "<name>":
+            die(f"dynamic manifest pattern disagrees with prefix: {item['pattern']}")
+        prefix = item["prefix"]
+        if prefix in expected_dynamic:
+            die(f"duplicate manifest dynamic prefix: {prefix}")
+        expected_dynamic[prefix] = (item["namesArray"], item["type"])
+    dynamic = emitter_dynamic_imports(text)
+    if dynamic != expected_dynamic:
+        die(f"dynamic emitter drift: expected={expected_dynamic} actual={dynamic}")
+    return emitted, dynamic
+
+
 def rust_imports(text: str) -> set[str]:
     found = set(re.findall(r'linker\.func_wrap\(\s*"vibe",\s*"([^"]+)"', text))
     if not found:
@@ -66,14 +113,14 @@ def main() -> None:
             die(f"imports occur in multiple bands ({key}): {sorted(overlap)}")
         all_names |= names
 
-    emitted = emitter_imports(EMITTER.read_text())
+    emitted, dynamic = validate_emitter_contract(manifest, EMITTER.read_text())
     emitted_names = set(emitted)
     expected_emitted = all_names
     if emitted_names != expected_emitted:
-        die(f"emitter drift: missing={sorted(expected_emitted-emitted_names)} extra={sorted(emitted_names-expected_emitted)}")
+        die(f"emitter bands drift: missing={sorted(expected_emitted-emitted_names)} extra={sorted(emitted_names-expected_emitted)}")
 
     types = manifest.get("coreTypeSignatures", {})
-    unknown_types = sorted({type_id for type_id in emitted.values() if type_id not in types})
+    unknown_types = sorted({type_id for type_id in emitted.values() if type_id not in types} | {type_id for _, type_id in dynamic.values() if type_id not in types})
     if unknown_types:
         die(f"emitter uses undocumented type indices: {unknown_types}")
 
@@ -91,11 +138,7 @@ def main() -> None:
     if bands["componentAdapterOnly"] & (rust | node):
         die("component-adapter-only imports leaked into a standalone provider")
 
-    emitter_text = EMITTER.read_text()
-    for marker in ("host_future_get$", "host_stream_get$"):
-        if marker not in emitter_text:
-            die(f"dynamic component import pattern disappeared: {marker}<name>")
-    print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(portable)} portable)")
+    print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(dynamic)} dynamic patterns; {len(portable)} portable)")
 
 
 if __name__ == "__main__":
