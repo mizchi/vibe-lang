@@ -23,8 +23,28 @@ list = "node scripts/flaker_vibe_runner.mjs list"
 
 [affected]
 # Path/directory-based (git diff vs origin/main merge-base): a changed file
-# selects the *_test.vibe suites living in/under its directory. Coarse but
-# simple; an import-graph resolver is future work (#988).
+# selects the *_test.vibe suites living in/under its directory.
+#
+# #988: "coarse but simple" undersells the problem -- this resolver does not
+# merely over-select, it UNDER-selects, badly. Measured against the real
+# import graph (575 entries):
+#
+#   changed file                                    graph  directory
+#   lib/@vibe/compiler/core/types.vibe                217          0
+#   lib/@vibe/parser/token.vibe                       190          1
+#   lib/@vibe/compiler/codegen/.../inline_direct_perform.vibe  60   0
+#   lib/@vibex/zlib/zlib.vibe                           1          1
+#
+# The `0` rows are the dangerous ones: those directories hold no *_test.vibe,
+# so a change to the compiler's core types selects NOTHING and the run reports
+# green having exercised none of the 217 tests that import it.
+#
+# Until this points at an import-graph resolver, prefer `pkf run test-affected`
+# (scripts/test_affected.sh) for the affected inner loop: it walks the
+# compiler's own resolved edges (`vibe deps`) and falls back to the full
+# battery whenever it cannot prove an answer. This key is left on "simple"
+# because flaker resolves it in-process; rewiring it needs a flaker-side
+# custom-resolver hook, which is the remaining half of #988.
 resolver = "simple"
 config = ""
 

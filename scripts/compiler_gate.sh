@@ -10532,4 +10532,69 @@ fi
 rm -rf "$chkdir"
 echo "[compiler-gate] check/diagnostics parse-error parity ok (#1567)"
 
+# --- #988: `vibe deps` -- the resolved import closure ------------------------
+#
+# This verb exists to be MACHINE-consumed (scripts/affected_tests.mjs selects
+# which tests to run from it), so the failure that matters is a list that is
+# quietly incomplete: a caller then skips tests and reports green. Every check
+# below is aimed at that, not at pretty output.
+depdir="_build/_gate_vibe_deps"
+rm -rf "$depdir"; mkdir -p "$depdir"
+dep_run() {
+  # $1 = output basename, $2 = input path, $3.. = extra env assignments
+  local dep_out="$depdir/$1"; local dep_in="$2"; shift 2
+  rm -f "$dep_out" "$dep_out.diag"
+  env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DEPS=1 "$@" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dep_in" "$dep_out" __no_entry__ >/dev/null 2>&1 || true
+}
+
+# (a) --direct resolves an `@scope/pkg` import to the package CONTRACT. The
+# import line says `@vibe/ast`; only real resolution turns that into a path,
+# which is precisely what a text scan of import lines cannot do.
+dep_run direct.txt lib/@vibe/parser/parser_smoke_test.vibe VIBE_DEPS_DIRECT=1
+if ! grep -qx 'lib/@vibe/ast/index.vpkg' "$depdir/direct.txt"; then
+  echo "[compiler-gate] FAIL: vibe deps --direct did not resolve '@vibe/ast' to its index.vpkg (#988)" >&2
+  cat "$depdir/direct.txt" "$depdir/direct.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# (b) The closure reaches a contract's SIBLING IMPLEMENTATION. No import line
+# anywhere names lib/@vibe/ast/ast.vibe -- it enters the build only because the
+# loader pulls a .vpkg's impls in. A selection built on anything less would
+# miss every change to that file.
+dep_run closure.txt lib/@vibe/parser/parser_smoke_test.vibe
+if ! grep -qx 'lib/@vibe/ast/ast.vibe' "$depdir/closure.txt"; then
+  echo "[compiler-gate] FAIL: vibe deps closure missed the .vpkg sibling impl lib/@vibe/ast/ast.vibe (#988)" >&2
+  cat "$depdir/closure.txt" "$depdir/closure.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The closure must cover the direct deps; a closure smaller than one hop means
+# the walk terminated early and every caller under-selects.
+while IFS= read -r dep_line; do
+  [ -n "$dep_line" ] || continue
+  if ! grep -qxF "$dep_line" "$depdir/closure.txt"; then
+    echo "[compiler-gate] FAIL: vibe deps closure is missing direct dep '$dep_line' (#988)" >&2
+    exit 1
+  fi
+done < "$depdir/direct.txt"
+# The entry never lists itself (callers treat the output as "other files").
+if grep -qx 'lib/@vibe/parser/parser_smoke_test.vibe' "$depdir/closure.txt"; then
+  echo "[compiler-gate] FAIL: vibe deps listed the entry itself (#988)" >&2
+  exit 1
+fi
+
+# (c) An unresolvable import is an ERROR on the .diag sidecar with EMPTY output
+# -- never a truncated list. A partial dep list is not a degraded answer, it is
+# a wrong one, and it is the shape that makes a caller silently skip tests.
+printf 'import ./does_not_exist.vibe {\n  nope\n}\n\nexport let a = 1\n' > "$depdir/broken.vibe"
+dep_run broken.txt "$depdir/broken.vibe" VIBE_DEPS_DIRECT=1
+if [ -s "$depdir/broken.txt" ] || [ ! -s "$depdir/broken.txt.diag" ]; then
+  echo "[compiler-gate] FAIL: an unresolvable import did not land on the .diag sidecar with empty output (#988)" >&2
+  cat "$depdir/broken.txt" "$depdir/broken.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$depdir"
+echo "[compiler-gate] vibe deps import-closure ok (#988)"
+
 echo "[compiler-gate] ok"
