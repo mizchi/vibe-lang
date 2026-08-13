@@ -1,0 +1,36 @@
+// #1536: a suspending `while` body carrying BOTH transfers. `continue` skips
+// the perform for i == 2 and i == 4, so only i == 1 and i == 3 resume (values
+// 0 and 2 -- the handler answers n - 1), and the exit continuation runs once.
+// Getting the dead-code drop wrong shows up here: if the statements after a
+// `continue` still ran, `trips` would count 4 instead of 2.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut acc = 0
+    let mut trips = 0
+    let mut i = 0
+    while i < 4 {
+      i = i + 1
+      if i == 2 { continue } else { () }
+      if i == 4 { continue } else { () }
+      let v = perform Ask::Get(i)
+      acc = acc + v
+      trips = trips + 1
+    }
+    acc * 10 + trips
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n - 1)
+    }
+  }
+}
+_start()
+
+__DATA__
+{
+  "last": "22"
+}

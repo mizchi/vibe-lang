@@ -6860,6 +6860,14 @@ scps_run_expect "effect_assignment_rhs_suspend.vibe" "41112" "assignrhs"
 # #1536 direct while condition: resume into the existing recursive loop
 # closure once per condition check. Compound conditions remain fail-closed.
 scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
+# #1536: loop bodies carrying `break` / `continue`. The transfers become calls
+# on the CPS spine (exit continuation / loop self-call), dead statements behind
+# a transfer drop, and a nested loop keeps its own transfers. `return` in the
+# body stays fail-closed.
+scps_run_expect "effect_loop_form_suspend.vibe" "63" "loopform"
+scps_run_expect "effect_while_break_continue_suspend.vibe" "22" "whilebrkcont"
+scps_run_expect "effect_loop_nested_break_suspend.vibe" "7" "loopnestedbrk"
+scps_check_reject "err_effect_loop_return_suspend.vibe" "let/seq/tail/branch-tail spine" "loopreturn"
 scps_check_reject "err_effect_while_condition_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "whilecondcompound"
 scps_check_reject "err_effect_assignment_rhs_compound_suspend.vibe" "let/seq/tail/branch-tail spine" "assignrhscompound"
 scps_check_reject "err_effect_assignment_op_rhs_suspend.vibe" "let/seq/tail/branch-tail spine" "assignoprhs"
@@ -6872,7 +6880,10 @@ scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "in
 # closure and launders it into an eff-free helper must stay rejected --
 # only names bound within the literal are trusted by the inert scan.
 scps_check_reject "err_effect_closure_param_capture_launder.vibe" "cannot see through" "inertlaunder"
-scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail spine" "loopbreak"
+# #1536: what used to be the `break`-in-a-suspending-loop rejection. The arm
+# stores `resume` and never resumes, so the first perform escapes with its
+# value; the loop shape is what changed, not this outcome.
+scps_run_expect "effect_resume_store_loop_break.vibe" "0" "loopbreak"
 # #1261: an unannotated performing closure is row-backfilled by
 # dlh_hoist_expr and so gets the evidence dict prepended; handing that value
 # to a row-FREE fn-typed slot used to compile clean and trap at runtime with
