@@ -21,7 +21,8 @@ import @vibe/compiler/checker {
   check_program_type_table,
   check_program_with_env_result,
   detect_unbound_nonunit_returns,
-  detect_unused_imports
+  detect_unused_imports,
+  typing_semantics_seed
 }
 
 import @vibe/compiler/checker/artifacts {
@@ -105,7 +106,7 @@ fn valid_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Except
 }
 
 fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with Exception + Fs {
-  match load_persistent_leaf_fingerprint(path, source) {
+  match load_persistent_leaf_fingerprint(path, source, typing_semantics_seed()) {
     Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
       Some(_) => Some(fingerprint),
       None => None
@@ -1100,8 +1101,8 @@ export fn projected_import_env_for_test(source: String, path: String, deps: Arra
   build_import_env(parse_program_with_path(path, source), dir_of_path(path), dep_envs)
 }
 
-fn build_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
-  let mut acc = compact_string_fingerprint(source)
+fn build_fingerprint(source: String, dep_fps: Array[(String, String)], semantics_seed: String) -> String {
+  let mut acc = compact_string_fingerprint(String::concat("typing-semantics:", String::concat(semantics_seed, String::concat("|source:", source))))
   let mut i = 0
   while i < Array::length(dep_fps) {
     let dep_pair = Array::get(dep_fps, i)
@@ -2670,14 +2671,14 @@ let parse_memo_paths: Array[String] = [
   text
 }
 
-// TDRE4 is deliberately independent from the TypeEnv v4 envelope and from
-// every production artifact/cache identity. Both v4 envelopes use strict
+// TDRE5 is deliberately independent from the TypeEnv v5 envelope and from
+// every production artifact/cache identity. Both v5 envelopes use strict
 // decimal length-delimited fields and bind the logical checker input, target
-// conservative fingerprint, and exact canonical TypeEnv-v4 transport text.
+// conservative fingerprint, and exact canonical TypeEnv-v5 transport text.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
-let typing_dependency_env_reuse_alias_v4_tag = "TDRE4A"
-let typing_dependency_env_reuse_witness_v4_tag = "TDRE4W"
+let typing_dependency_env_reuse_alias_v5_tag = "TDRE5A"
+let typing_dependency_env_reuse_witness_v5_tag = "TDRE5W"
 
 fn typing_reuse_segment(text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
@@ -2741,16 +2742,17 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 }
 
 /// Exact logical input to check_module: canonical owner path, byte-exact owner
-/// source, resolution authority, and every resolved direct dependency row of
+/// source, effective typing semantics, resolution authority, and every resolved direct dependency row of
 /// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
 /// this table once with project_exact_dependency_envs and gives the same value
 /// to both check_module and TDRE4 lookup/publication, so ambient coordinator
 /// cache rows are neither checker-visible nor part of this canonical text.
-fn typing_dependency_transport_input_key(path: String, source: String, dep_envs: Array[(String, TypeEnv)]) -> String {
+fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v4")
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v5")
   StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
   StringBuilder::push(out, typing_reuse_segment(source))
+  StringBuilder::push(out, typing_reuse_segment(semantics_seed))
   StringBuilder::push(out, typing_reuse_segment(resolution_env_seed()))
   StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(dep_envs))))
   let mut i = 0
@@ -2796,7 +2798,7 @@ fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(S
   if !Fs::exists(witness_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v4_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v5_tag) {
       Some((input_key, target_fingerprint, target_text)) =>
       if target_fingerprint != fingerprint {
         None
@@ -2818,7 +2820,7 @@ fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool
   }
 }
 
-/// Eligibility is transitively witnessed by successful canonical TypeEnv-v4
+/// Eligibility is transitively witnessed by successful canonical TypeEnv-v5
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
@@ -2837,7 +2839,7 @@ fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> 
 }
 
 fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Fs {
-  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v4_tag, input_key, fingerprint, target_text)
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v5_tag, input_key, fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
 }
 
@@ -2846,7 +2848,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
   if !Fs::exists(sidecar_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v4_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v5_tag) {
       Some((alias_input_key, target_fingerprint, target_text)) =>
       if alias_input_key != input_key {
         None
@@ -2873,7 +2875,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
 }
 
 fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Fs {
-  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v4_tag, input_key, target_fingerprint, target_text)
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v5_tag, input_key, target_fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 
@@ -3409,7 +3411,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
   // handed to it -- could publish a checked environment that the serial
   // driver would never look up, which would make a parallel pre-check pass
   // silently do nothing.
-  let fingerprint = build_fingerprint(job.source, job.dep_fps)
+  let fingerprint = build_fingerprint(job.source, job.dep_fps, typing_semantics_seed())
   if Array::length(unresolved_imports) > 0 {
     Diagnosed(job.path, for msg in unresolved_imports {
       String::concat(String::concat(job.path, ": "), msg)
@@ -3494,7 +3496,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       // the extra canonical target text and input serialization wholly inside
       // the enabled, transitively eligible experimental lane.
       if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(job.dep_fps) {
-        let input_key = typing_dependency_transport_input_key(path, job.source, job.dep_envs)
+        let input_key = typing_dependency_transport_input_key(path, job.source, typing_semantics_seed(), job.dep_envs)
         publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
         write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
       } else {
@@ -3510,7 +3512,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
         ()
       }
       if Array::length(job.deps) == 0 {
-        Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(job.source)), persistent_leaf_fingerprint_text(fingerprint))
+        Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(job.source)), persistent_leaf_fingerprint_text(fingerprint, typing_semantics_seed()))
       } else {
         ()
       }
@@ -3769,7 +3771,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
       let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
       let reused_env = if experimental_typing_dependency_env_reuse_enabled() {
         if typing_dependency_env_reuse_is_eligible(dep_fps) {
-          let input_key = typing_dependency_transport_input_key(path, source, projected_dep_envs)
+          let input_key = typing_dependency_transport_input_key(path, source, typing_semantics_seed(), projected_dep_envs)
           match load_typing_dependency_env_reuse_target(input_key) {
             Some((target_fingerprint, target_text, target_env)) => Some((input_key, target_fingerprint, target_text, target_env)),
             None => None
@@ -4005,7 +4007,7 @@ fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
       let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
       (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
     },
-    None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(source, empty_dep_fps()))
+    None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(source, empty_dep_fps(), typing_semantics_seed()))
   }
 }
 /// One module's step, once its dependency list is known and every dependency
@@ -4028,7 +4030,7 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     }
     i = i + 1
   }
-  let fingerprint = build_fingerprint(source, dep_fps)
+  let fingerprint = build_fingerprint(source, dep_fps, typing_semantics_seed())
   match ripple_get_fingerprint(rdb, path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {
