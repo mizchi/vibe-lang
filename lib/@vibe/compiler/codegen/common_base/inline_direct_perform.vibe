@@ -10598,6 +10598,67 @@ fn scps_return_in_split_msg(subject: String) -> String {
   String::concat(subject, " cannot contain a `return`: the suspend lowering turns the body into continuations that return a step, so the `return` would hand its own value to the driver instead of leaving the function. Produce the early-exit value instead of returning it (bind it and select on it), or move the `return` outside the handle. A `return` inside a nested closure targets that closure and is fine (#1536, ADR-0076 Phase 3a/3b)")
 }
 
+/// #1536: hoist `return` to the tail position it already denotes, so the split
+/// never sees one.
+///
+/// In a needing fn's clone, and in a closure literal, `return v` means exactly
+/// "this computation's value is v" -- which is what the TAIL of the body means
+/// too. So the fix is not to carry an escape through the step machine; it is to
+/// move the `return` to the tail it is already talking about:
+///
+///   return v;  REST                    ==>  v                (REST is dead)
+///   if c { .. return .. } else { .. };  REST
+///                                      ==>  if c { ..; REST } else { ..; REST }
+///
+/// The second rule is the continuation distribution the suspension slices
+/// already use, with the same capture rule for match arms. It fires only when a
+/// branch actually returns, so non-returning code keeps its shape.
+///
+/// Whatever this cannot reach -- a `return` inside a loop, a let initializer, an
+/// operand -- is LEFT IN PLACE, and the caller rejects the body when any
+/// `return` survives. Being incomplete here therefore costs a rejection, never
+/// a miscompile, which is what makes it safe to land the reachable half first.
+///
+/// A nested closure is not entered: its `return` targets that closure and is
+/// already correct (`_ => e` covers EFn, EWhile, ELoop and EForIn alike).
+fn scps_elim_returns(e: Expr, site: Int) -> Expr {
+  match e {
+    EReturn(v) => v,
+    ESeq(a, b) => match a {
+      // A transfer makes the rest of the sequence unreachable.
+      EReturn(v) => v,
+      EIf(c, t, el) => if scps_body_has_return(t) || scps_body_has_return(el) {
+        scps_elim_returns(EIf(c, ESeq(t, b), ESeq(el, b)), site)
+      } else {
+        ESeq(a, scps_elim_returns(b, site))
+      },
+      EMatch(s, arms) => if scps_body_arms_have_return(arms) {
+        scps_elim_returns(EMatch(s, scps_seq_float_match_arms(arms, b, site)), site)
+      } else {
+        ESeq(a, scps_elim_returns(b, site))
+      },
+      _ => ESeq(a, scps_elim_returns(b, site))
+    },
+    ELet(x, v, b, off) => ELet(x, v, scps_elim_returns(b, site), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_returns(b, site), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_elim_returns(b, site)),
+    EAssign(x, v, b) => EAssign(x, v, scps_elim_returns(b, site)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_returns(b, site)),
+    EIf(c, t, el) => EIf(c, scps_elim_returns(t, site), scps_elim_returns(el, site)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        Array::push(out, (p, scps_elim_returns(body, site)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
+  }
+}
+
 /// A `return` inside the loop body targets the FUNCTION, which a loop closure
 /// cannot express. Nested closures own their own `return`, so the scan stops
 /// at them (the same boundary scps_has_loop_ctl uses).
@@ -12485,14 +12546,20 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
           scps_msg = String::concat(scps_msg, " (#817, ADR-0076 Phase 3b)")
           scps_msg = String::concat(scps_msg, culprit_marker)
           Array::push(errs, scps_msg)
-        } else if scps_body_has_return(fbody2) {
-          Array::push(errs, scps_return_in_split_msg(String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, so its body")))
         } else {
-          let (split_ok, split_body) = scps_split_tail(fbody2, sctx, ctx, st)
-          if !split_ok {
-            Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
+          // #1536: `return v` in this body means "this function's value is v",
+          // which is what its tail means -- hoist it there. Anything left
+          // unreachable by that hoist is refused below rather than split.
+          let fbody3 = scps_elim_returns(fbody2, site)
+          if scps_body_has_return(fbody3) {
+            Array::push(errs, scps_return_in_split_msg(String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, so its body")))
           } else {
-            Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
+            let (split_ok, split_body) = scps_split_tail(fbody3, sctx, ctx, st)
+            if !split_ok {
+              Array::push(errs, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but a perform of that effect (or a call to a function that performs it) is not directly on its body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817, ADR-0076 Phase 3b)"))
+            } else {
+              Array::push(scps_st_inj(st), SLet(false, true, scps_clone_name(eff, fname), None, EFn(tps, tbs, cparams, None, None, split_body)))
+            }
           }
         }
       },
@@ -13133,11 +13200,13 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
     scps_msg = String::concat(scps_msg, culprit_marker)
     Array::push(errs, scps_msg)
     EFn(tps, tbs, params, None, None, b)
-  } else if scps_body_has_return(b) {
+  } else if scps_body_has_return(scps_elim_returns(b, site)) {
     Array::push(errs, scps_return_in_split_msg(String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class) is split into continuations, so its body")))
     EFn(tps, tbs, params, None, None, b)
   } else {
-    let (split_ok, split_body) = scps_split_tail(b, sctx, ctx, st)
+    // #1536: same hoist -- `return v` in a closure literal is that closure's
+    // own value, which is what its tail is.
+    let (split_ok, split_body) = scps_split_tail(scps_elim_returns(b, site), sctx, ctx, st)
     if !split_ok {
       Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
       EFn(tps, tbs, params, None, None, b)
