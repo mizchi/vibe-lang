@@ -3461,3 +3461,61 @@ guard は `scps_call_ret_ty` に置いた**スコープ盲な `scps_binds_name(r
 一緒に問う。ここでは証明を足した PR (#1705) 単体では踏めず、無関係に見える別の緩和
 (#1710) が入った後に初めて到達可能になった。緩和は**単独ではなく組み合わせで**健全性を
 見る必要がある。
+
+### 追記64 (2026-08-14): 適格性判定の callee 引き当ても局所シャドウで嘘をつく (#1718, P0)
+
+追記63 (#1714) と**同じ根**の 2 件目。あちらは `for` の iterand 証明
+(`scps_fn_ret_ty`)、こちらは**適格性判定そのもの** (`scps_calls_ok_in` が最後に落ちる
+`scps_fn_row_of` / `scps_callee_first_order`)。どちらも **top-level 文を名前で引き、
+局所束縛を見ていない**。
+
+#### 実測
+
+```vibe
+fn pick() -> Int { 5 }                     // 空 row
+fn maker() -> () -> Int with Ask { () -> Int with Ask { perform Ask::Get(1) } }
+// handle body の中:
+let pick = maker()                         // ← top-level の pick を隠す
+let a = pick()
+a * 10
+```
+
+| 局所名 | 結果 |
+|---|---|
+| `chosen` (シャドウ無し) | **REFUSED** — "calls an opaque function value" |
+| `pick` (シャドウ有り) | **COMPILED → 2285** (正解 110、診断も trap も無し) |
+
+**綴りを変えるだけで refuse が silent-wrong になる。**
+
+#### なぜ `inert_locals` / `cps_locals` では捕まらなかったか
+
+`let pick = maker()` は **literal ではない**ので #1710 の `inert_locals` に入らず、
+prepass が step-split する対象でもないので `cps_locals` にも入らない。判定は
+「見えている局所」でも「予約名」でもない残りへ落ち、そこが top-level を引く。
+
+#### 直し方 — スコープ盲ではなくスコープ正確に
+
+#1714 の guard はスコープ盲な `scps_binds_name` プローブだった (そちらの walk は
+`root` しか持たない)。**この walk は既に `ELet` / `ELetMut` / `ELetRec` / closure params /
+match binder / `for` binder / `loop` params を降りている**ので、`locals: Array[String]` を
+1 つ増やすだけで**正確な集合**が作れる。過剰 refuse も無い。
+
+判定の**順序**も直した。以前は
+
+```
+perform → builtin/ctor/needing → inert_locals → cps_locals → fn_row_of
+```
+
+で、**`needing` が局所シャドウより先**に効いていた (needing fn と同名の局所があると、
+clone を呼ぶつもりで局所を呼ぶ)。今は
+
+```
+perform → inert_locals → cps_locals/予約名 → 局所なら false → builtin/ctor/needing → fn_row_of
+```
+
+**「この pass が見通せる局所」を先に全部拾い、残った局所は opaque として refuse する。**
+この順序なら、名前解決を伴うすべての受理が局所シャドウの後ろに来る。
+
+**教訓 (追記63 と同じものの再確認)**: 名前から宣言を引く判定は、**引く前に**その名前が
+局所で隠されていないかを問う。#1714 を直したときにこの 2 件目を探しに行ったから見つかった —
+**同じ根の穴は 1 つでは済まないと仮定して、同型の引き当てを全部数える**。

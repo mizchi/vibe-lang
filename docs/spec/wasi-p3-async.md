@@ -205,7 +205,13 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   Array 形へ書き換えれば 0 回反復で黙って誤る、追記58/60/63)。
   **callee 名の引き当てはスコープ盲な binder プローブで守る** — 同じ綴りの局所束縛が
   歩いている式のどこかにあれば証明を捨てる。守らないと top-level の宣言を信じて
-  String を Array として index し、診断も trap も無く誤答する (#1714、追記63)
+  String を Array として index し、診断も trap も無く誤答する (#1714、追記63)。
+  **適格性判定の callee 引き当ても同じ guard を持つ** — `scps_fn_row_of` /
+  `scps_callee_first_order` / needing 集合はどれも名前解決を伴うので、
+  「この pass が見通せる局所」(inert literal / step-split 束縛) を先に拾い、
+  **残った局所は opaque として refuse** してからでないと引かない。守らないと
+  同名 top-level fn の空 row を信じて perform する値への呼び出しを受理する
+  (#1718、追記64)
 - **不適格**: **種別を示せない `for` 形**、**選ばれた `&&` / `||` 右辺が
   `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure

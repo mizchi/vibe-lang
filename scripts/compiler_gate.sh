@@ -7000,6 +7000,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # function -- lowering a String iterand to the indexed ARRAY form, which
 # compiled clean and answered 0 instead of 215. Refused now.
 scps_check_reject "err_effect_for_shadowed_callee.vibe" "is not directly on the handle body" "forshadow"
+# #1718 P0: the same root in the ELIGIBILITY check. A local `let pick = maker()`
+# shadowing a top-level `fn pick() -> Int` (empty row) made scps_fn_row_of admit
+# a call to a PERFORMING value -- compiled clean and answered 2285 instead of
+# 110. Rename the local and the same program is (correctly) refused as an opaque
+# callee; that is now the answer for the shadowed spelling too.
+scps_check_reject "err_effect_shadowed_toplevel_callee.vibe" "cannot see through" "shadowtop"
 # #1536: a `with e` callee is admitted when its declared parameters mention no
 # function type anywhere -- there is then no argument able to instantiate the
 # row variable, so the call cannot perform the handled effect. A callee that
