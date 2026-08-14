@@ -1117,6 +1117,42 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
   }
 }
 
+/// ADR-0090's sanctioned region exits, lowered as a real COPY out of the
+/// list's storage rather than the identity cast the rest of the FrozenArray
+/// surface uses.
+///
+/// `FrozenArray::from_array` / `to_array` are pure identity casts
+/// (docs/compiler-parallelism.md) -- the Frozen claim is type-level, and the
+/// caller is trusted not to keep mutating the source. `MutList` cannot borrow
+/// that convention, for two reasons:
+///
+/// 1. **It is already observably wrong.** `let out = MutList::freeze(l);
+///    MutList::push(l, 3); out` sees the 3 -- a `FrozenArray` that changes
+///    under you, which is the silent-wrong direction. The list handle is
+///    still in scope at the exit, unlike the consuming builder idiom
+///    `ArrayBuilder::freeze` was written for.
+/// 2. **The arena needs it.** ADR-0090's release is a watermark reset over
+///    the whole region segment. An identity cast hands the caller a pointer
+///    INTO that segment, so the escaping value would dangle the moment the
+///    arena slice lands. "Escape only via freeze / copy-out" is exactly this
+///    copy; without it there is no sound release point.
+///
+/// The value is bound to a temp first so an effectful argument
+/// (`MutList::freeze(make_list(r))`) is evaluated once, not twice.
+fn mutlist_exit_copy(arg: Expr) -> Expr {
+  let tmp = "__mutlist_exit"
+  let frozen = ECall(EIdent("ArrayBuilder::freeze", -1), [
+    arg
+  ], -1)
+  ELet(tmp, frozen, ECall(EIdent("Array::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Array::length", -1), [
+      EIdent(tmp, -1)
+    ], -1)
+  ], -1), -1)
+}
+
 /// ADR-0090 Phase 1 arity rewrites, applied before the main dispatch:
 /// - `__region_run(lam)` (the reserved lowering of `region r { body }`)
 ///   runs the body closure immediately with a dummy region token (0). The
@@ -1125,6 +1161,8 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
 /// - `MutList::empty(r)` allocates a fresh growable array, ignoring the
 ///   region token argument. The token is not evaluated: by construction it
 ///   is the pure region binder ident the parser emitted.
+/// - `MutList::freeze(l)` / `MutList::to_array(l)` copy out -- see
+///   `mutlist_exit_copy` for why these two do not share the identity cast.
 export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     ce(buf, ECall(Array::get(args, 0), [
@@ -1135,6 +1173,8 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       EInt(0)
     ], 0, 0)
     ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
+    ce(buf, mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }
@@ -1189,9 +1229,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     //
     // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over the
     // same growable-array runtime layout ArrayBuilder uses, so push aliases
-    // ArrayBuilder::push and freeze/to_array alias the identity cast
-    // (ArrayBuilder::freeze). MutList::empty and __region_run need arity
-    // rewrites and are handled in compile_call before dispatching here.
+    // ArrayBuilder::push. `MutList::empty` / `freeze` / `to_array` and
+    // `__region_run` are rewritten in compile_call before dispatching here --
+    // in particular the two exits COPY (mutlist_exit_copy) instead of
+    // aliasing, so these freeze rows are only a fallback for a call that got
+    // past the checker with the wrong arity.
     let fname = if fname0 == "Stream::map" {
       "Array::map"
     } else if fname0 == "MutList::push" {

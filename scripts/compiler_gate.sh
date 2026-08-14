@@ -8538,6 +8538,25 @@ if ! r90_cap_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host
   echo "[compiler-gate] FAIL: region_ok_closure_local.vibe got '$r90_cap_out' (want 48)" >&2
   exit 1
 fi
+# ADR-0090's sanctioned exits COPY. The rest of the FrozenArray surface is
+# identity casts, so this is the one place the distinction is load-bearing:
+# an aliasing exit both changes under the caller (the list handle is still in
+# scope) and hands out a pointer into the segment the arena slice will
+# release by watermark reset. Pushing after the exit must not reach the
+# result -- inspect prints actual/expected itself on a regression.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_freeze_copies_out.vibe "$r90dir/copyout.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/copyout.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_freeze_copies_out.vibe did not compile" >&2
+  cat "$r90dir/copyout.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! r90_copy_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/copyout.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: MutList::freeze/to_array aliased the list instead of copying out (want 250, aliasing gives 330)" >&2
+  echo "$r90_copy_out" >&2
+  exit 1
+fi
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 

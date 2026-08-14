@@ -152,10 +152,18 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
   dispatch から隠すため。
 - **codegen**(linear のみ): `compile_call` が `__region_run(lam)` を
   「dummy token 0 での即時 closure call」に、`MutList::empty(r)` を
-  `ArrayBuilder::new()`(token 非評価)に書き換え。push/freeze/to_array は
-  ArrayBuilder lowering への alias。arena セグメント + Perceus 免除は
-  未実装(次スライス — 現状 runtime は通常の RC heap)。wasm-gc backend は
-  未対応。
+  `ArrayBuilder::new()`(token 非評価)に書き換え。push は ArrayBuilder
+  lowering への alias。**`freeze` / `to_array` は copy-out** (#1262,
+  2026-08-14) —— FrozenArray の他の面 (`from_array`/`to_array`) は
+  identity cast だが、この2つだけは実体をコピーする。理由は2つあり、
+  (a) exit の時点で list ハンドルがまだスコープに居るので、alias だと
+  `let out = MutList::freeze(l); MutList::push(l, 3)` が「凍った」配列を
+  後から書き換える (黙って誤る)、(b) arena はセグメント全体の watermark
+  リセットで解放するので、identity cast は**解放予定のメモリへのポインタ**を
+  呼び出し側に渡すことになる。§4 の「脱出は freeze / copy-out のみ」の
+  copy-out がこれ。gate 75 の `fixtures/region_ok_freeze_copies_out.vibe`
+  が両 exit を pin。arena セグメント + Perceus 免除は未実装
+  (次スライス — 現状 runtime は通常の RC heap)。wasm-gc backend は未対応。
 - **gate**: `compiler_gate.sh` §74 が positive
   (`fixtures/region_arena_ok.vibe`、42)と negative
   (`fixtures/err_region_escape_return_value.vibe`、needle
