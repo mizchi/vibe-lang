@@ -90,6 +90,7 @@ if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
       || ! printf '%s\n' "$ast_output" | rg -q '^review-lint:finding\t'; then
       # The runner also uses exit 1 for bootstrap and compile failures. Only a
       # completed lint result with machine-identifiable findings is filterable.
+      ast_tool_error=1
       violations="$ast_output"
     else
       # `vibe grep` sees the complete staged file so it can match multiline AST
@@ -153,7 +154,7 @@ else
     ')"
 fi
 
-if [ -n "$violations" ]; then
+if [ -n "$violations" ] || [ "$ast_tool_error" -eq 1 ]; then
   if [ "$ast_tool_error" -eq 1 ]; then
     echo "review-regressions lint: the AST scan did not run (no finding was made)" >&2
   else
