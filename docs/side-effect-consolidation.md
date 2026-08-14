@@ -564,6 +564,55 @@ enforcement の `mut_binding_escapes`) は上表のとおり**意図的に向き
 
 段階1〜2 は seed に手を入れずに始められる。
 
+### 4.7 実装記録: region の escape に closure 捕獲を足した (#1725、着地済み)
+
+§4.3 が「region 推論と `let mut` の可変性は軸 B の同じ問いに別々に答えている」
+と書いた**合流点で、実際に穴が開いていた**。ADR-0090 の escape の列挙は
+「return / outer binding / generalization / spawn 境界」で、**closure 捕獲が
+無い**。同じ epic の ADR-0100 (1) は「escape の初期定義 = closure 捕獲のみ」と
+書いているので、2 本の ADR が同じ語に別の意味を与えていた形になる。
+
+食い違いはそのまま検査の穴になる:
+
+```
+region r {
+  let l = MutList::empty(r)
+  () -> Array[Int] { MutList::to_array(l) }   // 結果型は () -> Array[Int]
+}
+```
+
+結果型に region skolem が現れない —— **型は捕獲を記録しない**ので、結果型を
+走査する検査からは構造的に見えない。`MutList` が checker-only phantom である
+現在は無害だが、ADR-0090 の arena + watermark 一括解放が入った瞬間に
+**解放済みメモリの読み出し**になる。落ちるとは限らないので P0 の
+「黙って誤る」側の壊れ方で、**arena の blocker** として扱った。
+
+実装は `checker/checker_escape.vibe :: region_token_escapes_in_closure`
+(gate 75 が両方向を pin)。**規則の書き方に注意が要る**のがこの検査の本体で、
+「region 値を closure が捕獲したらエラー」は**強すぎる** —— region 内で完結
+する closure は正当な書き方だからである:
+
+```
+region r {
+  let l = MutList::empty(r)
+  let add = (v: Int) -> Unit { MutList::push(l, v) }   // 正当
+  add(1)
+  MutList::freeze(l)
+}
+```
+
+必要な規則は「**region 値を捕獲した closure が region を脱出しないこと**」。
+enforcement なので上表の「迷ったら黙る」側に倒し、確実に言える形 ——
+region body の**結果そのもの**がその場の closure literal で、その closure が
+region token から直に束縛された名前を自由変数に持つ —— にだけ発火させた。
+`MutList::freeze` / `MutList::to_array` は ADR-0090 が定めた脱出口なので、
+そこから束縛された名前は汚染しない (でないと region の目的そのものが落ちる)。
+
+取りこぼしは残る (outer binding や container 経由、helper 関数経由の汚染)。
+**完全な規則は §4.3 が指した ADR-0071 の region 引数 kind** —— region メモリに
+触る関数が row に `r` を運べば、既存の型ベース検査がそのまま見る —— で、
+今回のものはその設計までの stopgap である。段階3 の入口がここに来た。
+
 ---
 
 ## 5. コレクション命名: 2軸を分離する
