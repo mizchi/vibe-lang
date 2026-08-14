@@ -720,6 +720,15 @@ fn gc_native_array_join_arg_is_safe(arg: Expr, name: String, abi_names: Array[St
 
 /// Index of `name` in the direct-ABI evidence table, or -1.
 fn gc_direct_abi_name_slot(abi_names: Array[String], name: String) -> Int {
+  let exact = gc_direct_abi_name_slot_exact(abi_names, name)
+  if exact >= 0 {
+    exact
+  } else {
+    gc_direct_abi_name_slot_exact(abi_names, String::concat(name, "$ref"))
+  }
+}
+
+fn gc_direct_abi_name_slot_exact(abi_names: Array[String], name: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < Array::length(abi_names) {
@@ -735,18 +744,14 @@ fn gc_direct_abi_name_slot(abi_names: Array[String], name: String) -> Int {
 
 fn gc_direct_abi_result_is_native(expr: Expr, ctx: CompileCtxGc) -> Bool {
   match expr {
+    // Delegates rather than scanning `gc_direct_abi_names` itself: this asks
+    // "is this CALLEE on the lane", so it has to answer exactly as the escape
+    // gate and acceptance do -- #1722's ref-twin fallback included. A private
+    // copy of the scan silently omitted that fallback, so a `let` bound to a
+    // twin call was given an i64 local while the call returned a reference.
     ECall(EIdent(name, _), _, _) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(ctx.gc_direct_abi_names) {
-        if Array::get(ctx.gc_direct_abi_names, i) == name && Array::get(ctx.gc_direct_abi_return_refs, i) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
+      let idx = gc_direct_abi_name_slot(ctx.gc_direct_abi_names, name)
+      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
     _ => false
   }

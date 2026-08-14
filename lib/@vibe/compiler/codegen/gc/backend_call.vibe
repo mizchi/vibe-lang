@@ -294,6 +294,15 @@ fn gc_native_array_receiver_slot(args: Array[Expr], local_names: Array[String], 
 }
 
 fn gc_direct_abi_call_index(ctx: CompileCtxGc, name: String) -> Int {
+  let exact = gc_direct_abi_call_index_exact(ctx, name)
+  if exact >= 0 {
+    exact
+  } else {
+    gc_direct_abi_call_index_exact(ctx, String::concat(name, "$ref"))
+  }
+}
+
+fn gc_direct_abi_call_index_exact(ctx: CompileCtxGc, name: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < Array::length(ctx.gc_direct_abi_names) {
@@ -305,6 +314,19 @@ fn gc_direct_abi_call_index(ctx: CompileCtxGc, name: String) -> Int {
     i = i + 1
   }
   found
+}
+
+fn gc_direct_abi_twin_callee(ctx: CompileCtxGc, fname: String) -> String {
+  if gc_direct_abi_call_index_exact(ctx, fname) >= 0 {
+    fname
+  } else {
+    let twin = String::concat(fname, "$ref")
+    if gc_direct_abi_call_index_exact(ctx, twin) >= 0 {
+      twin
+    } else {
+      fname
+    }
+  }
 }
 
 fn gc_expr_is_native_array_ref(expr: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
@@ -2067,10 +2089,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       }
       else {
         let fn_len2 = Array::length(ctx.func_table.names)
+        let eff_fname = gc_direct_abi_twin_callee(ctx, fname)
         let mut fn_idx_in_list = -1
         let mut __fi = 0
         while __fi < fn_len2 {
-          if Array::get(ctx.func_table.names, __fi) == fname {
+          if Array::get(ctx.func_table.names, __fi) == eff_fname {
             fn_idx_in_list = __fi
             __fi = fn_len2
           } else {
@@ -2080,7 +2103,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         if fn_idx_in_list >= 0 {
           let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
           let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
-          let direct_idx = gc_direct_abi_call_index(ctx, fname)
+          let direct_idx = gc_direct_abi_call_index(ctx, eff_fname)
           let mut nl = next_local
           let mut ci = 0
           while ci < Array::length(args) {
