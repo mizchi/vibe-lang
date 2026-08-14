@@ -542,7 +542,16 @@ fn lsp_diag_severity(text: String) -> Int {
   }
 }
 
-fn lsp_parse_diag_line(msg: String) -> Json {
+/// `line L:C: message` -> LSP Diagnostic.
+///
+/// `C` is a BYTE column (that is what the compiler's diagnostics carry, and
+/// what every other consumer of these strings wants). LSP positions are UTF-16
+/// code units, so it has to be converted against the source -- passing the byte
+/// column straight through puts the editor's caret too far right on any line
+/// with non-ASCII before the error, and silently: the diagnostic still renders,
+/// just at the wrong place. `let 日本 = 1` reports byte column 10 for `本`
+/// where LSP wants 8.
+fn lsp_parse_diag_line(source: String, msg: String) -> Json {
   if String::starts_with(msg, "line ") {
     let after = msg[5: String::length(msg)]
     let colon1 = String::index_of(after, ":")
@@ -564,11 +573,12 @@ fn lsp_parse_diag_line(msg: String) -> Json {
         } else {
           0
         }
-        let col0 = if col1 > 0 {
+        let byte_col0 = if col1 > 0 {
           col1 - 1
         } else {
           0
         }
+        let col0 = lsp_byte_col_to_utf16(source, lsp_line_start_offset(source, line0), byte_col0)
         // #820 sub-item 2: `data` follows the LSP Diagnostic.data convention
         // (present, JNull when there's no structured fix -- e.g. every
         // diagnostic that isn't an effect-row mismatch).
@@ -690,7 +700,7 @@ fn lsp_handle_document_symbol(source: String) -> Json with Exception {
 fn lsp_handle_diagnostics(source: String) -> Json with Exception {
   let diags = collect_all_diagnostics(source)
   JArr(for msg in diags {
-    lsp_parse_diag_line(msg)
+    lsp_parse_diag_line(source, msg)
   })
 }
 
