@@ -1,0 +1,45 @@
+// #1536 boundary, measured 2026-08-14. A `for` iterand is lowered only when it
+// is PROVED to be an Array or a String: an annotated parameter, a literal
+// binding, or a call whose callee declares its return type. A selection is none
+// of those, so nothing proves it and the loop keeps its refusal.
+//
+// That refusal is the point: codegen decides String-ness at RUN TIME (#807), so
+// rewriting an unproved iterand could turn a String into a zero-iteration loop
+// and silently answer wrong. Widening the proof is fine; dropping it is not.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn helper(flag: Bool, xs: Array[Int], ys: Array[Int]) -> Int with Ask {
+  let mut acc = 0
+  for x in if flag {
+    xs
+  } else {
+    ys
+  } {
+    acc = acc + perform Ask::Get(x)
+  }
+  acc
+}
+
+let _start = () -> Int {
+  handle {
+    helper(true, [
+      1,
+      2
+    ], [
+      5
+    ])
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+_start()
+
+__DATA__
+{
+  "error_contains": "let/seq/tail/branch-tail spine"
+}
