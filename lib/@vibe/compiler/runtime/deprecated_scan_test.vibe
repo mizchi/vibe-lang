@@ -5,7 +5,7 @@
 //# Imports
 
 import ./deprecated_scan.vibe {
-  deprecated_warning_lines
+  deprecated_warning_lines, deprecated_warning_lines_visible
 }
 
 //# Helpers
@@ -104,4 +104,92 @@ test "each use warns once, in source order" {
 test "a different name that merely contains the deprecated one is silent" {
   let src = "#deprecated\nfn old() -> Int {\n  1\n}\nfn old_two() -> Int {\n  2\n}\nfn caller() -> Int {\n  old_two()\n}"
   assert_eq(warn_count(src, no_deps()), 0)
+}
+
+//# The real ADR-0100 (3) collection aliases
+//#
+//# The rename SHIPPED a promise: "旧綴りの関数は #deprecated エイリアスとして
+//# 残り、`vibe check` が移行先を名指しする警告を1行出す". Every other test here
+//# feeds the scanner a hand-written snippet, which proves the scanner works but
+//# NOT that the shipped aliases are shaped the way it expects -- the marker
+//# could be attached wrong, or sit on a form the keyword lookahead skips, and
+//# the promise would be silently false. So this one feeds it the ACTUAL
+//# declaration text from lib/@vibe/core/hashmap.vibe.
+
+fn collection_alias_dep() -> Array[String] {
+  [
+    "#deprecated(\"use MutMap\")\nexport type HashMap[K, V] = MutMap[K, V]\n\n#deprecated(\"use MutMap::new_string\")\nexport fn HashMap::new_string[V]() -> MutMap[String, V] {\n  MutMap::new_string()\n}\n\n#deprecated(\"use MutMap::set\")\nexport fn HashMap::set[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {\n  MutMap::set(m, k, v)\n}"
+  ]
+}
+
+test "the shipped MutMap aliases warn and name their replacement" {
+  let entry = "fn build() -> Int {\n  let m = HashMap::new_string()\n  HashMap::set(m, \"a\", 1)\n  1\n}"
+  let lines = deprecated_warning_lines(entry, collection_alias_dep())
+  // one per USE, not one per declaration
+  assert_eq(Array::length(lines), 2)
+  assert(contains(Array::get(lines, 0), "'HashMap::new_string' is deprecated: use MutMap::new_string"))
+  assert(contains(Array::get(lines, 1), "'HashMap::set' is deprecated: use MutMap::set"))
+  // and they are WARNINGS, not errors -- the migration must not break builds
+  assert(contains(Array::get(lines, 0), "warning:"))
+}
+
+test "the new MutMap spelling is silent" {
+  let entry = "fn build() -> Int {\n  let m = MutMap::new_string()\n  MutMap::set(m, \"a\", 1)\n  1\n}"
+  assert_eq(warn_count(entry, collection_alias_dep()), 0)
+}
+
+test "the deprecated TYPE alias warns from an annotation" {
+  // The type row is the half that could NOT be kept working across a module
+  // boundary (#1700). Within one module it still resolves, and the marker
+  // still fires -- so if #1700 is fixed, the warning is already in place.
+  let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
+  assert(contains(first_warning(entry, collection_alias_dep()), "'HashMap' is deprecated: use MutMap"))
+}
+
+//# Visibility filter (Codex review, PR #1713, P2)
+//#
+//# `vibe check` hands the scanner the whole compile closure, because that is
+//# the only way a PACKAGE's markers are reachable at all -- the marker for
+//# `HashMap::new_string` lives in a sibling file the entry never names. Wide
+//# collection plus a token-level scanner is too wide the other way, so a
+//# dependency's marker only counts for a name the entry actually imported.
+
+fn visible(names: Array[String]) -> Option[Array[String]] {
+  Some(names)
+}
+
+test "a dep marker for a name the entry did NOT import is ignored" {
+  // The entry declares and calls its OWN HashMap::new_string. Telling it to
+  // use MutMap::new_string would be prescribing a WRONG edit.
+  let entry = "fn HashMap::new_string() -> Int {\n  1\n}\nfn use_it() -> Int {\n  HashMap::new_string()\n}"
+  let deps = [
+    "#deprecated(\"use MutMap::new_string\")\nexport fn HashMap::new_string() -> Int {\n  2\n}"
+  ]
+  assert_eq(Array::length(deprecated_warning_lines_visible(entry, deps, visible([
+    "MutMap"
+  ]))), 0)
+  // ... and the unfiltered form is exactly what would have warned wrongly,
+  // which is why the filter has to exist rather than be assumed unnecessary.
+  assert(Array::length(deprecated_warning_lines(entry, deps)) > 0)
+}
+
+test "a dep marker for a name the entry DID import still warns" {
+  let entry = "import @vibe/core {\n  HashMap::new_string\n}\nfn use_it() -> Int {\n  HashMap::new_string()\n}"
+  let deps = [
+    "#deprecated(\"use MutMap::new_string\")\nexport fn HashMap::new_string() -> Int {\n  2\n}"
+  ]
+  let lines = deprecated_warning_lines_visible(entry, deps, visible([
+    "HashMap::new_string"
+  ]))
+  assert(Array::length(lines) > 0)
+  assert(contains(Array::get(lines, 0), "use MutMap::new_string"))
+}
+
+test "a marker the ENTRY declares needs no import to count" {
+  let entry = "#deprecated(\"use fresh\")\nfn stale() -> Int {\n  1\n}\nfn caller() -> Int {\n  stale()\n}"
+  let lines = deprecated_warning_lines_visible(entry, no_deps(), visible(Array::slice([
+    ""
+  ], 0, 0)))
+  assert_eq(Array::length(lines), 1)
+  assert(contains(Array::get(lines, 0), "'stale' is deprecated: use fresh"))
 }

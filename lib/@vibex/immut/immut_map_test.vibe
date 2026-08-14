@@ -1,21 +1,26 @@
 //# Imports
 
 import ./immut_map.vibe {
-  ImmutMap,
   ImmutMap::delete,
   ImmutMap::empty,
-  ImmutMap::get,
   ImmutMap::has_key,
-  ImmutMap::hash_key,
-  ImmutMap::keys,
   ImmutMap::set,
-  ImmutMap::size
+  ImmutMap::size,
+  MapHamt,
+  MapHamt::delete,
+  MapHamt::empty,
+  MapHamt::get,
+  MapHamt::has_key,
+  MapHamt::hash_key,
+  MapHamt::keys,
+  MapHamt::set,
+  MapHamt::size
 }
 
 //# Helpers
 
-fn get_or[V](m: ImmutMap[V], key: String, fallback: V) -> V {
-  match ImmutMap::get(m, key) {
+fn get_or[V](m: MapHamt[V], key: String, fallback: V) -> V {
+  match MapHamt::get(m, key) {
     Some(v) => v,
     None => fallback
   }
@@ -41,30 +46,30 @@ fn int_key(i: Int) -> String {
 //# Basics
 
 test "empty map has size 0 and no keys" {
-  let m: ImmutMap[Int] = ImmutMap::empty()
-  assert_eq(ImmutMap::size(m), 0)
-  assert(ImmutMap::get(m, "missing") is None)
-  assert(not(ImmutMap::has_key(m, "missing")))
-  assert_eq(Array::length(ImmutMap::keys(m)), 0)
+  let m: MapHamt[Int] = MapHamt::empty()
+  assert_eq(MapHamt::size(m), 0)
+  assert(MapHamt::get(m, "missing") is None)
+  assert(not(MapHamt::has_key(m, "missing")))
+  assert_eq(Array::length(MapHamt::keys(m)), 0)
 }
 
 test "set then get" {
-  let m = ImmutMap::set(ImmutMap::empty(), "a", 1)
-  let m2 = ImmutMap::set(m, "b", 2)
+  let m = MapHamt::set(MapHamt::empty(), "a", 1)
+  let m2 = MapHamt::set(m, "b", 2)
   assert_eq(get_or(m2, "a", -1), 1)
   assert_eq(get_or(m2, "b", -1), 2)
-  assert(ImmutMap::get(m2, "c") is None)
-  assert_eq(ImmutMap::size(m2), 2)
+  assert(MapHamt::get(m2, "c") is None)
+  assert_eq(MapHamt::size(m2), 2)
 }
 
 test "set overwrites without growing" {
-  let m = ImmutMap::set(ImmutMap::set(ImmutMap::empty(), "a", 1), "a", 42)
+  let m = MapHamt::set(MapHamt::set(MapHamt::empty(), "a", 1), "a", 42)
   assert_eq(get_or(m, "a", -1), 42)
-  assert_eq(ImmutMap::size(m), 1)
+  assert_eq(MapHamt::size(m), 1)
 }
 
 test "string values" {
-  let m = ImmutMap::set(ImmutMap::set(ImmutMap::empty(), "name", "vibe"), "kind", "lang")
+  let m = MapHamt::set(MapHamt::set(MapHamt::empty(), "name", "vibe"), "kind", "lang")
   assert_eq(get_or(m, "name", "?"), "vibe")
   assert_eq(get_or(m, "kind", "?"), "lang")
 }
@@ -72,108 +77,108 @@ test "string values" {
 //# Persistence (old version stays unchanged)
 
 test "set does not mutate the old map" {
-  let m0: ImmutMap[Int] = ImmutMap::empty()
-  let m1 = ImmutMap::set(m0, "a", 1)
-  let m2 = ImmutMap::set(m1, "b", 2)
-  let m3 = ImmutMap::set(m2, "a", 99)
+  let m0: MapHamt[Int] = MapHamt::empty()
+  let m1 = MapHamt::set(m0, "a", 1)
+  let m2 = MapHamt::set(m1, "b", 2)
+  let m3 = MapHamt::set(m2, "a", 99)
   // every older version still sees its own state
-  assert_eq(ImmutMap::size(m0), 0)
-  assert(ImmutMap::get(m0, "a") is None)
+  assert_eq(MapHamt::size(m0), 0)
+  assert(MapHamt::get(m0, "a") is None)
   assert_eq(get_or(m1, "a", -1), 1)
-  assert(ImmutMap::get(m1, "b") is None)
+  assert(MapHamt::get(m1, "b") is None)
   assert_eq(get_or(m2, "a", -1), 1)
   assert_eq(get_or(m2, "b", -1), 2)
   assert_eq(get_or(m3, "a", -1), 99)
   assert_eq(get_or(m3, "b", -1), 2)
-  assert_eq(ImmutMap::size(m2), 2)
-  assert_eq(ImmutMap::size(m3), 2)
+  assert_eq(MapHamt::size(m2), 2)
+  assert_eq(MapHamt::size(m3), 2)
 }
 
 test "delete does not mutate the old map" {
-  let m1 = ImmutMap::set(ImmutMap::set(ImmutMap::empty(), "a", 1), "b", 2)
-  let m2 = ImmutMap::delete(m1, "a")
-  assert(ImmutMap::get(m2, "a") is None)
-  assert_eq(ImmutMap::size(m2), 1)
+  let m1 = MapHamt::set(MapHamt::set(MapHamt::empty(), "a", 1), "b", 2)
+  let m2 = MapHamt::delete(m1, "a")
+  assert(MapHamt::get(m2, "a") is None)
+  assert_eq(MapHamt::size(m2), 1)
   // old version keeps both entries
   assert_eq(get_or(m1, "a", -1), 1)
   assert_eq(get_or(m1, "b", -1), 2)
-  assert_eq(ImmutMap::size(m1), 2)
+  assert_eq(MapHamt::size(m1), 2)
 }
 
 test "old map fully intact after many sets (structural sharing)" {
-  let mut base: ImmutMap[Int] = ImmutMap::empty()
+  let mut base: MapHamt[Int] = MapHamt::empty()
   let mut i = 0
   while i < 50 {
-    base = ImmutMap::set(base, int_key(i), i * 7)
+    base = MapHamt::set(base, int_key(i), i * 7)
     i = i + 1
   }
   // derive a heavily modified new version
   let mut derived = base
   let mut j = 0
   while j < 50 {
-    derived = ImmutMap::set(derived, int_key(j), 0 - j)
+    derived = MapHamt::set(derived, int_key(j), 0 - j)
     j = j + 1
   }
-  derived = ImmutMap::set(derived, "extra", 12345)
+  derived = MapHamt::set(derived, "extra", 12345)
   // base still has every original value
   let mut k = 0
   while k < 50 {
     assert_eq(get_or(base, int_key(k), -1), k * 7)
     k = k + 1
   }
-  assert(ImmutMap::get(base, "extra") is None)
-  assert_eq(ImmutMap::size(base), 50)
-  assert_eq(ImmutMap::size(derived), 51)
+  assert(MapHamt::get(base, "extra") is None)
+  assert_eq(MapHamt::size(base), 50)
+  assert_eq(MapHamt::size(derived), 51)
   assert_eq(get_or(derived, "extra", -1), 12345)
 }
 
 //# Deletion
 
 test "delete missing key is a no-op" {
-  let m = ImmutMap::set(ImmutMap::empty(), "a", 1)
-  let m2 = ImmutMap::delete(m, "nope")
-  assert_eq(ImmutMap::size(m2), 1)
+  let m = MapHamt::set(MapHamt::empty(), "a", 1)
+  let m2 = MapHamt::delete(m, "nope")
+  assert_eq(MapHamt::size(m2), 1)
   assert_eq(get_or(m2, "a", -1), 1)
-  let e: ImmutMap[Int] = ImmutMap::empty()
-  assert_eq(ImmutMap::size(ImmutMap::delete(e, "x")), 0)
+  let e: MapHamt[Int] = MapHamt::empty()
+  assert_eq(MapHamt::size(MapHamt::delete(e, "x")), 0)
 }
 
 test "delete everything returns to empty" {
-  let mut m: ImmutMap[Int] = ImmutMap::empty()
+  let mut m: MapHamt[Int] = MapHamt::empty()
   let mut i = 0
   while i < 20 {
-    m = ImmutMap::set(m, int_key(i), i)
+    m = MapHamt::set(m, int_key(i), i)
     i = i + 1
   }
   let mut j = 0
   while j < 20 {
-    m = ImmutMap::delete(m, int_key(j))
+    m = MapHamt::delete(m, int_key(j))
     j = j + 1
   }
-  assert_eq(ImmutMap::size(m), 0)
+  assert_eq(MapHamt::size(m), 0)
   assert(m is MEmpty)
 }
 
 test "delete collapses branch chains back to a leaf" {
-  let mut m: ImmutMap[Int] = ImmutMap::empty()
+  let mut m: MapHamt[Int] = MapHamt::empty()
   let mut i = 0
   while i < 40 {
-    m = ImmutMap::set(m, int_key(i), i)
+    m = MapHamt::set(m, int_key(i), i)
     i = i + 1
   }
   // remove all but one entry: the trie must shrink to a single leaf
   let mut j = 0
   while j < 40 {
     if j != 17 {
-      m = ImmutMap::delete(m, int_key(j))
+      m = MapHamt::delete(m, int_key(j))
     }
     j = j + 1
   }
-  assert_eq(ImmutMap::size(m), 1)
+  assert_eq(MapHamt::size(m), 1)
   assert_eq(get_or(m, int_key(17), -1), 17)
   match m {
     MLeaf(h, k, v) => {
-      assert_eq(h, ImmutMap::hash_key(int_key(17)))
+      assert_eq(h, MapHamt::hash_key(int_key(17)))
       assert_eq(k, int_key(17))
       assert_eq(v, 17)
     },
@@ -182,28 +187,28 @@ test "delete collapses branch chains back to a leaf" {
 }
 
 //# Hash & collisions
-// "c2ya8" and "czki6" collide under the 31-bit FNV-1a used by ImmutMap
+// "c2ya8" and "czki6" collide under the 31-bit FNV-1a used by MapHamt
 // (both hash to 713304578) — found by brute force over short keys.
 
 test "hash_key stays in 31 bits" {
-  assert(ImmutMap::hash_key("") >= 0)
-  assert(ImmutMap::hash_key("") <= 0x7FFFFFFF)
-  assert(ImmutMap::hash_key("hello world") >= 0)
-  assert(ImmutMap::hash_key("hello world") <= 0x7FFFFFFF)
+  assert(MapHamt::hash_key("") >= 0)
+  assert(MapHamt::hash_key("") <= 0x7FFFFFFF)
+  assert(MapHamt::hash_key("hello world") >= 0)
+  assert(MapHamt::hash_key("hello world") <= 0x7FFFFFFF)
   // distinct short keys should hash differently (sanity, not a guarantee)
-  assert(ImmutMap::hash_key("a") != ImmutMap::hash_key("b"))
+  assert(MapHamt::hash_key("a") != MapHamt::hash_key("b"))
 }
 
 test "colliding keys both live in a Collision node" {
-  assert_eq(ImmutMap::hash_key("c2ya8"), ImmutMap::hash_key("czki6"))
-  let m = ImmutMap::set(ImmutMap::set(ImmutMap::empty(), "c2ya8", 111), "czki6", 222)
-  assert_eq(ImmutMap::size(m), 2)
+  assert_eq(MapHamt::hash_key("c2ya8"), MapHamt::hash_key("czki6"))
+  let m = MapHamt::set(MapHamt::set(MapHamt::empty(), "c2ya8", 111), "czki6", 222)
+  assert_eq(MapHamt::size(m), 2)
   assert_eq(get_or(m, "c2ya8", -1), 111)
   assert_eq(get_or(m, "czki6", -1), 222)
   // the two equal-hash leaves must have fused into a Collision node
   match m {
     MCollision(h, ks, vs) => {
-      assert_eq(h, ImmutMap::hash_key("c2ya8"))
+      assert_eq(h, MapHamt::hash_key("c2ya8"))
       assert_eq(Array::length(ks), 2)
       assert_eq(Array::length(vs), 2)
     },
@@ -212,31 +217,31 @@ test "colliding keys both live in a Collision node" {
 }
 
 test "collision set overwrite and delete" {
-  let m = ImmutMap::set(ImmutMap::set(ImmutMap::empty(), "c2ya8", 1), "czki6", 2)
+  let m = MapHamt::set(MapHamt::set(MapHamt::empty(), "c2ya8", 1), "czki6", 2)
   // overwrite inside the collision node
-  let m2 = ImmutMap::set(m, "czki6", 20)
+  let m2 = MapHamt::set(m, "czki6", 20)
   assert_eq(get_or(m2, "czki6", -1), 20)
   assert_eq(get_or(m2, "c2ya8", -1), 1)
-  assert_eq(ImmutMap::size(m2), 2)
+  assert_eq(MapHamt::size(m2), 2)
   // old version unchanged
   assert_eq(get_or(m, "czki6", -1), 2)
   // deleting one member collapses Collision back to a Leaf
-  let m3 = ImmutMap::delete(m2, "c2ya8")
-  assert_eq(ImmutMap::size(m3), 1)
+  let m3 = MapHamt::delete(m2, "c2ya8")
+  assert_eq(MapHamt::size(m3), 1)
   assert_eq(get_or(m3, "czki6", -1), 20)
   assert(m3 is MLeaf(_, _, _))
   // get of a same-hash but absent key misses inside the collision node
-  assert(ImmutMap::get(m2, "c2ya9") is None)
+  assert(MapHamt::get(m2, "c2ya9") is None)
 }
 
 test "collision node with a third same-slot key" {
   // a non-colliding key still routes past the collision node fine
-  let m = ImmutMap::set(ImmutMap::set(ImmutMap::set(ImmutMap::empty(), "c2ya8", 1), "czki6", 2), "other", 3)
-  assert_eq(ImmutMap::size(m), 3)
+  let m = MapHamt::set(MapHamt::set(MapHamt::set(MapHamt::empty(), "c2ya8", 1), "czki6", 2), "other", 3)
+  assert_eq(MapHamt::size(m), 3)
   assert_eq(get_or(m, "c2ya8", -1), 1)
   assert_eq(get_or(m, "czki6", -1), 2)
   assert_eq(get_or(m, "other", -1), 3)
-  let keys = ImmutMap::keys(m)
+  let keys = MapHamt::keys(m)
   assert_eq(Array::length(keys), 3)
   assert(contains(keys, "c2ya8"))
   assert(contains(keys, "czki6"))
@@ -246,41 +251,41 @@ test "collision node with a third same-slot key" {
 //# Scale
 
 test "1000 inserts then all gets" {
-  let mut m: ImmutMap[Int] = ImmutMap::empty()
+  let mut m: MapHamt[Int] = MapHamt::empty()
   let mut i = 0
   while i < 1000 {
-    m = ImmutMap::set(m, int_key(i), i * 3 + 1)
+    m = MapHamt::set(m, int_key(i), i * 3 + 1)
     i = i + 1
   }
-  assert_eq(ImmutMap::size(m), 1000)
+  assert_eq(MapHamt::size(m), 1000)
   let mut j = 0
   while j < 1000 {
     assert_eq(get_or(m, int_key(j), -1), j * 3 + 1)
     j = j + 1
   }
-  assert(ImmutMap::get(m, "k1000") is None)
-  assert(ImmutMap::get(m, "unrelated") is None)
+  assert(MapHamt::get(m, "k1000") is None)
+  assert(MapHamt::get(m, "unrelated") is None)
 }
 
 test "1000 inserts then delete half" {
-  let mut m: ImmutMap[Int] = ImmutMap::empty()
+  let mut m: MapHamt[Int] = MapHamt::empty()
   let mut i = 0
   while i < 1000 {
-    m = ImmutMap::set(m, int_key(i), i)
+    m = MapHamt::set(m, int_key(i), i)
     i = i + 1
   }
   let mut j = 0
   while j < 1000 {
     if j % 2 == 0 {
-      m = ImmutMap::delete(m, int_key(j))
+      m = MapHamt::delete(m, int_key(j))
     }
     j = j + 1
   }
-  assert_eq(ImmutMap::size(m), 500)
+  assert_eq(MapHamt::size(m), 500)
   let mut k = 0
   while k < 1000 {
     if k % 2 == 0 {
-      assert(ImmutMap::get(m, int_key(k)) is None)
+      assert(MapHamt::get(m, int_key(k)) is None)
     } else {
       assert_eq(get_or(m, int_key(k), -1), k)
     }
@@ -289,18 +294,18 @@ test "1000 inserts then delete half" {
 }
 
 test "keys returns every key exactly once" {
-  let mut m: ImmutMap[Int] = ImmutMap::empty()
+  let mut m: MapHamt[Int] = MapHamt::empty()
   let mut i = 0
   while i < 100 {
-    m = ImmutMap::set(m, int_key(i), i)
+    m = MapHamt::set(m, int_key(i), i)
     i = i + 1
   }
   // overwrite a few — must not duplicate keys
-  m = ImmutMap::set(m, int_key(3), 33)
-  m = ImmutMap::set(m, int_key(77), 777)
-  let ks = ImmutMap::keys(m)
+  m = MapHamt::set(m, int_key(3), 33)
+  m = MapHamt::set(m, int_key(77), 777)
+  let ks = MapHamt::keys(m)
   assert_eq(Array::length(ks), 100)
-  assert_eq(ImmutMap::size(m), 100)
+  assert_eq(MapHamt::size(m), 100)
   // no duplicates: every listed key occurs exactly once
   let n = Array::length(ks)
   let mut a = 0
@@ -323,4 +328,29 @@ test "keys returns every key exactly once" {
     assert(contains(ks, int_key(c)))
     c = c + 1
   }
+}
+
+//# The deprecated `ImmutMap::*` spelling (ADR-0100 (3) / #1262)
+//#
+//# The rename keeps working for code that never spells the type out, which is
+//# the whole point of shipping aliases rather than a hard break. Pinning it
+//# here means the alias block cannot be dropped by accident -- and the
+//# `vibe check` warning that names the replacement is pinned separately, in
+//# compiler_gate.sh 103.
+
+test "the legacy ImmutMap spelling still builds and reads the same map" {
+  let m = ImmutMap::set(ImmutMap::set(ImmutMap::empty(), "a", 1), "b", 2)
+  assert(ImmutMap::size(m) == 2)
+  assert(ImmutMap::has_key(m, "a"))
+  // ... and it is the SAME type, so the new spelling reads what the old wrote
+  assert(MapHamt::size(m) == 2)
+  match MapHamt::get(m, "b") {
+    Some(v) => assert(v == 2),
+    None => assert(false)
+  }
+  let dropped = ImmutMap::delete(m, "a")
+  assert(MapHamt::size(dropped) == 1)
+  assert(!MapHamt::has_key(dropped, "a"))
+  // the older version is untouched -- persistence survives the alias hop
+  assert(ImmutMap::size(m) == 2)
 }
