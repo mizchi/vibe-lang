@@ -6987,6 +6987,13 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_rowvar_first_order_call_test.vibe
 scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvarhof"
+# #1536 boundary, measured 2026-08-14. Both of these are narrower than the
+# residual list implied, so they are pinned rather than described: a closure may
+# capture a scalar param, an outer scalar let, or a function param (all compile)
+# -- only capturing another LOCAL CLOSURE is refused. And a `for` iterand is
+# lowered only when proved; an unannotated callee proves nothing.
+scps_check_reject "err_effect_capture_local_closure.vibe" "cannot see through" "capturelocalclosure"
+scps_check_reject "err_effect_for_unproved_iterand.vibe" "let/seq/tail/branch-tail spine" "forunproved"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other
