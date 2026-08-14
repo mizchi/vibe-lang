@@ -11599,7 +11599,12 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
       Array::push(errs, scps_msg)
       None
     } else {
-      let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
+      // #1536: a `for` over a proved array is lowered here too, not only in a
+      // needing fn's clone -- the handle body is a spine like any other. It has
+      // no parameters of its own, so the proof comes from array literals bound
+      // on that spine.
+      let body2 = scps_elim_array_for(body, array_empty_str(), site, scps_anf_ctr())
+      let (split_ok, split_body) = scps_split_tail(body2, sctx, ctx, st)
       if !split_ok {
         Array::push(errs, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but a perform of the handled effect (or a call to a function that performs it) is not directly on the handle body's let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)")
         None
@@ -13618,10 +13623,10 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   } else {
     // #1536: same hoist -- `return v` in a closure literal is that closure's
     // own value, which is what its tail is.
-    let (split_ok, split_body) = scps_split_tail(scps_elim_returns(match scps_elim_loop_returns(b, site) {
+    let (split_ok, split_body) = scps_split_tail(scps_elim_array_for(scps_elim_returns(match scps_elim_loop_returns(b, site) {
       Some(lifted) => lifted,
       None => b
-    }, site), sctx, ctx, st)
+    }, site), scps_array_names_seed(params), site, scps_anf_ctr()), sctx, ctx, st)
     if !split_ok {
       Array::push(errs, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) performs it (or calls a function that performs it) off the let/seq/tail/branch-tail spine (a loop body containing `return`, a `for` form, nested closures/handles, and a selected `&&` / `||` right operand that transfers control with `return` / `break` / `continue` are not eligible; a suspension inside an `if` / `match` branch or a `&&` / `||` right operand IS eligible wherever the selection or the short-circuit itself is strictly evaluated (a statement, the tail, the whole value of a `let` / `let mut` / assignment, or a strictly evaluated part of a compound); a `while` / `loop` spine is, including one carrying `break` / `continue`, and so is a suspension inside an operand, a call argument or a constructor payload, #1230/#1536) (#817)"))
       EFn(tps, tbs, params, None, None, b)
