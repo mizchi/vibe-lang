@@ -50,14 +50,15 @@ let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
-                               // #1392: 補間の値の型がコンパイラに解決でき、
-                               // その型に `T::to_string` (derive(Show)/
-                               // derive(Hash) 生成物、または手書き) があれば
-                               // それを呼ぶ。`Option`/`Result` と、その場に
-                               // 書かれたタプル/配列リテラルは構造的に展開
-                               // される (`"\{Some(p)}"` -> `Some(P { .. })`)。
-                               // 型が解決できない値、および変数越しの
-                               // タプル/配列はまだ生ポインタの10進数 (#1392)
+                               // #1392: 補間の値に `T::to_string`
+                               // (derive(Show)/derive(Hash) 生成物、または
+                               // 手書き) があればそれを呼ぶ。`Option`/`Result`/
+                               // タプル/配列は変数・generic 経由でも構造的に
+                               // 展開される (`"\{Some(p)}"` -> `Some(P { .. })`,
+                               // `"\{xs}"` -> `[1, 2]`)。描画できない型
+                               // (to_string の無い集約型) は check 時に
+                               // `cannot interpolate a value of type ...` で
+                               // 落ちる (#1445) — 生ポインタが出る経路は無い
                                // prelude の `to_string(v)` も同じ描画になる
                                // (補間と同じ書き換えを call site で受ける)
 let c: Char = 'A'              // byte value 65; Char is a transparent Int alias
@@ -1186,9 +1187,11 @@ row へ継承されるため、#761)。同じ effect を「resume 値参照の h
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
 (`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
 専用だった機能で、現行 build path では未サポート** — checker が
-`non-tail continuation binder (k-convention) is not supported by the build
-path` と reject する (#814)。非 tail 継続は evidence-passing handler 移行
-(#817) で対応予定。継続呼び出しは `resume(v)` を使う。
+`handler arm ... expects 0 payload binding(s), got 1` で reject する
+(#814)。evidence-passing 移行 (#817) は完了したが非 tail 継続は入って
+おらず、`resume(v)` も **arm の tail 位置限定** (`resume(10) + 1` は
+`resume(...) must be the last expression of the handler arm` で reject、
+#942/ADR-0050)。継続呼び出しは tail の `resume(v)` を使う。
 規約の詳細は [archive/mut-effect-plan.md](archive/mut-effect-plan.md) の
 「継続呼び出し規約」(#627) を参照。
 
@@ -1532,23 +1535,20 @@ cannot interpolate a value of type `F`: it has no Show renderer
 値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
 のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
 
-### capability builtin の呼び出しは arity も引数型も検査されない (#1513)
+### capability builtin の呼び出しも arity と引数型が検査される (#1513 で解決)
 
-**通ったことを正しさの証拠にしないこと。** これは compile も実行も成功して
-garbage を出す:
+かつて `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file` は未検査で、
+`Stdout::write_stream(42)` が compile も実行も成功して garbage を出した。
+今は両方とも check 時にスパン付きで落ちる:
 
 ```vibe skip
-// doctest-skip: this is the silent miscompile the section documents
-Stdout::write_stream(42)      // Int を String の位置に — 診断なし、実行も成功
-Stdout::write_stream()        // 0 引数 — 診断なし、不正な wasm を吐く
+// doctest-skip: intentionally rejected — the diagnostics are the point
+Stdout::write_stream(42)      // argument type mismatch for Stdout::write_stream
+Stdout::write_stream()        // function arity mismatch: expected 1 args, got 0
 ```
 
-未検査: `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file`。
-検査あり: `Array::*` / `String::*` / `Bytes::*` / `Profiler::now_us` および
-ユーザー定義関数 (`function arity mismatch ...` がスパン付きで出る)。
-
-capability かどうかでは分かれない — checker の fast path に載っているかどうか。
-host import が絡む呼び出しで挙動が変なときは、まず引数の数と型を目で確認する。
+`Array::*` / `String::*` / `Bytes::*` / ユーザー定義関数と同じ扱いに
+揃っている。
 
 ### 区切り文字は文脈で違う
 
@@ -1623,8 +1623,9 @@ f(1, 2)             // ok  — 全部 positional
 f(1, y = 2)         // NG: mixes positional and labeled arguments
 ```
 
-`x?` (optional) は**パーサが受理するだけで semantics は未実装** (#1500)。
-省略すると `arity mismatch`、body 内では `Option[T]` ではなく `T` に束縛される。
+`x?` (optional) は **semantics まで着地済み** (#1500): body 内では `Option[T]`
+に束縛され、省略した呼び出し (`f()`) は `None`、渡すと (`f(7)` / `f(x = 7)`)
+`Some(7)` になる。
 
 ### `Error` は effect の綴りとしては退役、operation 修飾子としては生存
 
