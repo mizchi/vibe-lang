@@ -364,6 +364,17 @@ fn print_fn_type_params(type_params: Array[String], bounds: Array[(String, Array
   }
 }
 
+fn peel_empty_handles(expr: Expr) -> Expr {
+  match expr {
+    EHandle(body, arms) => if Array::length(arms) == 0 {
+      peel_empty_handles(body)
+    } else {
+      expr
+    },
+    _ => expr
+  }
+}
+
 export fn print_expr(e: Expr) -> String {
   match e {
     EInt(n) => __to_string(n),
@@ -450,7 +461,7 @@ export fn print_expr(e: Expr) -> String {
       }
       String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))))
     },
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _) => match peel_empty_handles(callee) {
       EIdent("perform", _) => if Array::length(args) == 1 {
         // #640 Stage 2: re-sugar the parser's `throw(x)` desugar (`perform
         // Exception::Throw(x)` shape) back to `throw(x)`. This keeps print
@@ -491,8 +502,8 @@ export fn print_expr(e: Expr) -> String {
       // `(x: T) -> { x }(args)` re-parses with the CALL inside the lambda
       // body (`{ x }(args)`, "calling a non-function value"), so print
       // `((x: T) -> { x })(args)`.
-      EFn(_, _, _, _, _, _) => String::concat("(", String::concat(print_expr(callee), String::concat(")(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))),
-      _ => String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
+      EFn(_, _, _, _, _, _) => String::concat("(", String::concat(print_expr(peel_empty_handles(callee)), String::concat(")(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))),
+      _ => String::concat(print_expr(peel_empty_handles(callee)), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
     },
     EBinOp(op, left, right) => String::concat("(", String::concat(print_expr(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr(right), ")")))))),
     EUnaryOp(op, expr) => String::concat("(", String::concat(op, String::concat(print_expr(expr), ")"))),
