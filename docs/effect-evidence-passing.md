@@ -3617,3 +3617,39 @@ param row が違う形は checker を通らないので、prepass の引き当�
 **教訓**: 同じパターンでも層が変わると**壊れ方が変わる** (silent-wrong / 偽拒否)。
 そして偽拒否は、その先にある silent-wrong を**偶然塞いでいることがある** — 偽拒否を
 直すときは「これは何を守っていたか」を必ず問う。
+
+### 追記66 (2026-08-14): iterand の証明を builtin registry へ届かせる (#1536)
+
+追記60/63 で `for` の iterand は「top-level `fn` の宣言戻り値型」「リテラル」「その
+呼び出しに束縛された名前」から証明できるようにした。**builtin だけが取り残されていた** —
+`Array::concat` には読むべき top-level `fn` が無いので `scps_fn_ret_ty` は何も答えない。
+
+だが**registry にはずっと署名があった** (`builtin_registry.vibe` の
+`(Array[_], Array[_]) -> Array[_]`)。`lookup_registry_builtin` を引いて
+`CtArray(_) -> "array"` / `CtString -> "string"` に写すだけで済む。証明の入口を
+`scps_call_kind` に一本化し、宣言 → registry の順に訊く (どちらも #1714 の
+スコープ盲 guard の後ろ)。
+
+#### 詰まりは証明ではなく**適格性**の側だった
+
+registry を引くようにしても最初は refuse のままで、診断が理由を名指ししていた:
+
+```
+(here: the call to 'Array::concat')
+```
+
+`Array::concat` が `idp_pure_builtin_names` (手検証済み pure builtin のリスト) に
+**入っていなかった**。兄弟の `Array::slice` は `scps_is_safe_mut_builtin` 経由で、
+`String::concat` はこのリスト経由で既に通っていたので、穴はこの 1 名前だけ。
+リストの判定基準 (「ユーザ effect を perform できず、関数型引数を呼ばない」) は
+満たしているので、同じ形式で監査コメントを付けて追加した。
+
+**教訓**: 「証明を広げたのに通らない」ときは、**証明の手前で別のゲートが落としていないか**を
+診断の `here:` 節で確かめる (追記62 と同じ道具、逆向きの使い方)。
+
+#### 残る unproved
+
+局所束縛経由の呼び出し (`let mk = () -> Array[Int] { .. }` → `for j in mk()`) は
+**意図的に refuse のまま**。#1714 の guard が「局所が隠している名前の宣言は信じない」と
+決めているので、その名前からは種別を証明しない。これは guard のコストであって穴ではない
+(`cli_support_test.vibe` の不適格テストがこの形を留めている)。
