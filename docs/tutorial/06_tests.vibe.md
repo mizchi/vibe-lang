@@ -19,8 +19,9 @@ String も内容で比較されるので、連結・関数の返り値・変数�
 `assert_eq` をそのまま使える。
 
 ```bash
-vibe test file_test.vibe     # 1 ファイル
-vibe test docs/tutorial/     # ディレクトリ一括
+vibe test file_test.vibe             # 1 ファイル
+vibe test a_test.vibe b_test.vibe    # 複数ファイル (ディレクトリは渡せない —
+                                     # 引数はファイルのみ、glob はシェルで展開する)
 ```
 
 ## CLI ツーリング
