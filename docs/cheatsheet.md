@@ -53,9 +53,10 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // #1392: 補間の値に `T::to_string`
                                // (derive(Show)/derive(Hash) 生成物、または
                                // 手書き) があればそれを呼ぶ。`Option`/`Result`/
-                               // タプル/配列は変数・generic 経由でも構造的に
-                               // 展開される (`"\{Some(p)}"` -> `Some(P { .. })`,
-                               // `"\{xs}"` -> `[1, 2]`)。描画できない型
+                               // タプル/配列は変数・注釈付き名前関数の戻り値・
+                               // generic の pass-through 経由でも構造的に展開される
+                               // (`"\{Some(p)}"` -> `Some(P { .. })`,
+                               // `"\{make_xs()}"` -> `[1, 2]`)。描画できない型
                                // (to_string の無い集約型) は check 時に
                                // `cannot interpolate a value of type ...` で
                                // 落ちる (#1445)。ただし effect handler の

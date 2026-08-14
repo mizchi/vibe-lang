@@ -2115,6 +2115,13 @@ fn shape_key(pname: String) -> String {
   String::concat("__shape$", pname)
 }
 
+/// Complete structural shape of an annotated function result, stored in the
+/// shared sorted `fn_returns` table under a collision-proof reserved key.
+/// The ordinary entry remains the head (`Array` / `Tuple`) for routing users.
+fn fn_return_shape_key(fname: String) -> String {
+  String::concat("__retshape$", fname)
+}
+
 fn shape_is_composite(sh: String) -> Bool {
   String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:")
 }
@@ -2203,6 +2210,25 @@ fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: 
         }
       }
     },
+    ECall(callee, _, _) => match callee {
+      EIdent(fname, _) => match lookup_var_type(var_types, fn_return_shape_key(fname)) {
+        // A local binding is the closer answer, including the empty sentinel:
+        // it may shadow a top-level function with the same name but a different
+        // return shape. Falling through would render with the global ABI.
+        Some(sh) => sh,
+        None => match fn_return_type(fn_returns, fn_return_shape_key(fname)) {
+          Some(sh) => sh,
+          None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+            Some(t) => t,
+            None => ""
+          }
+        }
+      },
+      _ => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+        Some(t) => t,
+        None => ""
+      }
+    },
     _ => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
       Some(t) => t,
       None => ""
@@ -2243,7 +2269,29 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
   let c = ctor_payload_bind(b, name, val, struct_sets, fn_returns)
   // LAST: infer_shape reads the sentinels the three above just wrote, so a
   // binding whose elements are themselves named bindings resolves in one pass.
-  shape_bind(c, name, val, struct_sets, fn_returns)
+  let shaped = shape_bind(c, name, val, struct_sets, fn_returns)
+  let out = array_empty()
+  push_all_var_types(out, shaped)
+  let call_result_shape = match val {
+    EFn(tparams, _, _, ret, _, _) => match ret {
+      Some(rt) => if ty_mentions_name_in(rt, tparams) {
+        ""
+      } else {
+        let sh = texpr_shape(rt)
+        if shape_is_composite(sh) {
+          sh
+        } else {
+          ""
+        }
+      },
+      None => ""
+    },
+    _ => ""
+  }
+  // Always append, even for non-functions/scalar functions: an empty entry is
+  // what prevents a closer local binding from inheriting a top-level shape.
+  Array::push(out, (fn_return_shape_key(name), call_result_shape))
+  out
 }
 
 /// Equality keeps a deeper type shape than the general rendering/type-head
@@ -2643,6 +2691,32 @@ fn collect_struct_field_types(stmts: Array[Stmt], out: Array[(String, String)]) 
   }
 }
 
+/// Record the two consumers' full return shapes without making either derive
+/// its answer from the other's deliberately different grammar. Equality keeps
+/// Option/Result sentinels; interpolation only records shapes its structural
+/// renderer understands. Generic results stay unknown in both lanes.
+fn collect_fn_return_shapes(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr]) -> Unit {
+  match ret {
+    Some(rt) => if ty_mentions_name_in(rt, tparams) {
+      ()
+    } else {
+      let eq_sh = ty_to_eq_shape(rt)
+      if shape_is_composite(eq_sh) {
+        Array::push(out, (fn_eq_shape_key(fname), eq_sh))
+      } else {
+        ()
+      }
+      let interp_sh = texpr_shape(rt)
+      if shape_is_composite(interp_sh) {
+        Array::push(out, (fn_return_shape_key(fname), interp_sh))
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+}
+
 fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
@@ -2651,19 +2725,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SLet(_, _, fname, _, body) => match body {
         EFn(tparams, _, _, ret, _, fbody) => {
           Array::push(out, (fname, fn_return_head_of(ret, fbody)))
-          match ret {
-            Some(rt) => if !ty_mentions_name_in(rt, tparams) {
-              let sh = ty_to_eq_shape(rt)
-              if shape_is_composite(sh) {
-                Array::push(out, (fn_eq_shape_key(fname), sh))
-              } else {
-                ()
-              }
-            } else {
-              ()
-            },
-            None => ()
-          }
+          collect_fn_return_shapes(out, fname, tparams, ret)
         },
         _ => ()
       },
@@ -2675,19 +2737,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SFnDecl(_, fname, body, _, _) => match body {
         EFn(tparams, _, _, ret, _, fbody) => {
           Array::push(out, (fname, fn_return_head_of(ret, fbody)))
-          match ret {
-            Some(rt) => if !ty_mentions_name_in(rt, tparams) {
-              let sh = ty_to_eq_shape(rt)
-              if shape_is_composite(sh) {
-                Array::push(out, (fn_eq_shape_key(fname), sh))
-              } else {
-                ()
-              }
-            } else {
-              ()
-            },
-            None => ()
-          }
+          collect_fn_return_shapes(out, fname, tparams, ret)
         },
         _ => ()
       },
@@ -4270,13 +4320,20 @@ fn interp_expand_local(arg: Expr, head: String, derived_only: Bool, gens: Array[
         }
       }
     },
-    ECall(callee, cargs, _) => match callee {
-      EIdent(cn, _) => if Array::length(cargs) == 1 && ((head == "Option" && cn == "Some") || (head == "Result" && (cn == "Ok" || cn == "Err"))) {
-        Some(interp_wrap1(cn, Array::get(cargs, 0), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+    ECall(callee, cargs, _) => {
+      let sh = infer_shape(arg, struct_sets, var_types, fn_returns)
+      if shape_is_composite(sh) {
+        Some(interp_expand_shape(arg, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
       } else {
-        interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      },
-      _ => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        match callee {
+          EIdent(cn, _) => if Array::length(cargs) == 1 && ((head == "Option" && cn == "Some") || (head == "Result" && (cn == "Ok" || cn == "Err"))) {
+            Some(interp_wrap1(cn, Array::get(cargs, 0), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+          } else {
+            interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          },
+          _ => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        }
+      }
     },
     _ => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   }

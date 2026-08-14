@@ -9609,6 +9609,39 @@ fi
 rm -rf "$showdir"
 echo "[compiler-gate] interpolation Show rendering ok"
 
+# #1766: Array/tuple type arguments used to be discarded from fn_returns, so
+# interpolation of a structural function result passed check and printed its
+# raw pointer. The positive fixture covers direct and let-bound results,
+# nesting under Option, plus nominal controls. The negative fixture locks the
+# fail-closed diagnostic for a nominal result without a renderer.
+retshowdir="_build/_gate_interp_function_return"
+rm -rf "$retshowdir"; mkdir -p "$retshowdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$stage2_wasm" fixtures/interp_function_return_test.vibe "$retshowdir/show.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$retshowdir/show.wasm" ]; then
+  echo "[compiler-gate] FAIL: structural function-return interpolation fixture did not compile (#1766)" >&2
+  exit 1
+fi
+if ! retshow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$retshowdir/show.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: structural function-return interpolation rendered incorrectly (#1766)" >&2
+  printf '%s\n' "$retshow_out" >&2
+  exit 1
+fi
+set +e
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$stage2_wasm" fixtures/interp_function_return_missing_show_error.vibe "$retshowdir/missing.wasm" main >/dev/null 2>&1
+retshow_status=$?
+set -e
+if [ "$retshow_status" -eq 0 ] || [ -s "$retshowdir/missing.wasm" ] || ! grep -q 'cannot interpolate a value of type `Hidden`' "$retshowdir/missing.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: missing renderer function result was not rejected actionably (#1766)" >&2
+  cat "$retshowdir/missing.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$retshowdir"
+echo "[compiler-gate] structural function-return interpolation ok"
+
 echo "[compiler-gate] 87/87 uncaught throw reports the payload VALUE (#1374 / #1392 slice 3)"
 # ADR-0085's runtime carries one abortive tag with no kind, so the entry
 # boundary's erased `with Error` arm binds the payload at CtUnknown and can
