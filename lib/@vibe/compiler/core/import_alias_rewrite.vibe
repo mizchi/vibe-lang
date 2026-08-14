@@ -5,15 +5,15 @@ import ./ast.vibe {
 }
 
 import @vibe/core {
-  type HashMap,
-  type HashSet,
-  HashMap::get,
-  HashMap::has,
-  HashMap::new_string,
-  HashMap::set,
-  HashSet::add,
-  HashSet::has,
-  HashSet::new_string,
+  type MutMap,
+  type MutSet,
+  MutMap::get,
+  MutMap::has,
+  MutMap::new_string,
+  MutMap::set,
+  MutSet::add,
+  MutSet::has,
+  MutSet::new_string,
   array_empty
 }
 
@@ -399,26 +399,26 @@ fn alias_map_without_params(aliases: Array[(String, String)], params: Array[(Str
 /// scans at ~8% of total CPU before this index.
 struct AliasIdx {
   entries: Array[(String, String)];
-  idx: HashMap[String, String];
-  shadow_keys: HashSet[String]
+  idx: MutMap[String, String];
+  shadow_keys: MutSet[String]
 }
 
 fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
-  let idx: HashMap[String, String] = HashMap::new_string()
-  let shadow_keys = HashSet::new_string()
+  let idx: MutMap[String, String] = MutMap::new_string()
+  let shadow_keys = MutSet::new_string()
   let mut i = 0
   while i < Array::length(entries) {
     let (alias, original) = Array::get(entries, i)
-    if !HashMap::has(idx, alias) {
-      HashMap::set(idx, alias, original)
+    if !MutMap::has(idx, alias) {
+      MutMap::set(idx, alias, original)
     } else {
       ()
     }
-    HashSet::add(shadow_keys, alias)
+    MutSet::add(shadow_keys, alias)
     let mut ci = 0
     while ci < String::length(alias) {
       if String::char_code_at(alias, ci) == '.' {
-        HashSet::add(shadow_keys, alias[0: ci])
+        MutSet::add(shadow_keys, alias[0: ci])
       } else {
         ()
       }
@@ -435,7 +435,7 @@ fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
 
 /// alias_map_has_name, O(1): does binding `name` shadow any alias?
 fn aliasidx_shadows(am: AliasIdx, name: String) -> Bool {
-  HashSet::has(am.shadow_keys, name)
+  MutSet::has(am.shadow_keys, name)
 }
 
 fn aliasidx_without_name(am: AliasIdx, name: String) -> AliasIdx {
@@ -568,7 +568,7 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
     expr
   } else {
     let head = String::substring(name, 0, qi)
-    match HashMap::get(am.idx, head) {
+    match MutMap::get(am.idx, head) {
       Some(original) => EIdent(String::concat(original, String::substring(name, qi, String::length(name))), -1),
       None => expr
     }
@@ -599,7 +599,7 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
     expr
   } else {
     match expr {
-      EIdent(name, _) => match HashMap::get(am.idx, name) {
+      EIdent(name, _) => match MutMap::get(am.idx, name) {
         Some(original) => EIdent(original, -1),
         // #1502: a qualified constructor reference carries the alias in its
         // HEAD (`import { Hue as H }` then `H::Crimson`), and the whole string
@@ -680,7 +680,7 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       // that desugaring; anything else falls through to the ordinary EDot
       // rewrite (ordinary struct/record field access).
       EDot(obj, field, off, fdoff) => match obj {
-        EIdent(ns, _) => match HashMap::get(am.idx, String::concat(ns, String::concat(".", field))) {
+        EIdent(ns, _) => match MutMap::get(am.idx, String::concat(ns, String::concat(".", field))) {
           Some(original) => EIdent(original, -1),
           None => EDot(rewrite_alias_expr_ix(obj, am), field, off, fdoff)
         },
@@ -825,12 +825,12 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
 /// that names an import alias with the name it aliases (#1502).
 fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
   match te {
-    TyName(n) => match HashMap::get(am.idx, n) {
+    TyName(n) => match MutMap::get(am.idx, n) {
       Some(original) => TyName(original),
       None => te
     },
     TyApp(n, args) => {
-      let next_name = match HashMap::get(am.idx, n) {
+      let next_name = match MutMap::get(am.idx, n) {
         Some(original) => original,
         None => n
       }
@@ -1434,14 +1434,14 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
   let namespace_private_stmt_local: (Stmt, AliasIdx) -> Stmt = (stmt, ram) -> {
     match stmt {
       SLet(exported, is_rec, name, ty, body) => {
-        let next_name = match HashMap::get(ram.idx, name) {
+        let next_name = match MutMap::get(ram.idx, name) {
           Some(renamed) => renamed,
           None => name
         }
         SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
       },
       SLetMut(name, ty, body) => {
-        let next_name = match HashMap::get(ram.idx, name) {
+        let next_name = match MutMap::get(ram.idx, name) {
           Some(renamed) => renamed,
           None => name
         }
@@ -1585,14 +1585,14 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
 fn namespace_private_stmt(stmt: Stmt, ram: AliasIdx) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => {
-      let next_name = match HashMap::get(ram.idx, name) {
+      let next_name = match MutMap::get(ram.idx, name) {
         Some(renamed) => renamed,
         None => name
       }
       SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
     },
     SLetMut(name, ty, body) => {
-      let next_name = match HashMap::get(ram.idx, name) {
+      let next_name = match MutMap::get(ram.idx, name) {
         Some(renamed) => renamed,
         None => name
       }
@@ -1718,7 +1718,7 @@ export struct ExportRenamePlan {
   // above (plan_rename_key encoding). Built once in build_export_rename_plan
   // -- which needs it for its own facade-closure fixpoint -- and reused by
   // collect_import_value_renames' per-import-item lookups.
-  rename_idx: HashMap[String, String]
+  rename_idx: MutMap[String, String]
 }
 
 /// Composite key for rename_idx. '\n' can appear in neither a module path
@@ -1922,7 +1922,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let rename_paths = empty_strings()
   let rename_names = empty_strings()
   let rename_mangled = empty_strings()
-  let rename_idx: HashMap[String, String] = HashMap::new_string()
+  let rename_idx: MutMap[String, String] = MutMap::new_string()
   let mut ri = 0
   while ri < file_count {
     let path = Array::get(paths, ri)
@@ -1945,8 +1945,8 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
           Array::push(rename_names, name)
           Array::push(rename_mangled, mangled)
           let key = plan_rename_key(path, name)
-          if !HashMap::has(rename_idx, key) {
-            HashMap::set(rename_idx, key, mangled)
+          if !MutMap::has(rename_idx, key) {
+            MutMap::set(rename_idx, key, mangled)
           } else {
             ()
           }
@@ -1969,16 +1969,16 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       if from == entry_path {
         ()
       } else {
-        match HashMap::get(rename_idx, plan_rename_key(Array::get(edge_tpath, ci), Array::get(edge_tname, ci))) {
+        match MutMap::get(rename_idx, plan_rename_key(Array::get(edge_tpath, ci), Array::get(edge_tname, ci))) {
           Some(mangled) => {
             let from_key = plan_rename_key(from, pub_name)
-            if HashMap::has(rename_idx, from_key) {
+            if MutMap::has(rename_idx, from_key) {
               ()
             } else {
               Array::push(rename_paths, from)
               Array::push(rename_names, pub_name)
               Array::push(rename_mangled, mangled)
-              HashMap::set(rename_idx, from_key, mangled)
+              MutMap::set(rename_idx, from_key, mangled)
               changed = true
             }
           },
@@ -2065,7 +2065,7 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
               None => original
             }
             if String::index_of(original, "::") < 0 && !string_array_contains(locals_seen, local) {
-              match HashMap::get(plan.rename_idx, plan_rename_key(target, original)) {
+              match MutMap::get(plan.rename_idx, plan_rename_key(target, original)) {
                 Some(mangled) => {
                   Array::push(out, (local, mangled))
                   Array::push(locals_seen, local)
@@ -2108,7 +2108,7 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
     for stmt in stmts {
       match stmt {
         SLet(exported, is_rec, name, ty, body) => {
-          let next_name = match HashMap::get(am.idx, name) {
+          let next_name = match MutMap::get(am.idx, name) {
             Some(renamed) => renamed,
             None => name
           }
@@ -2116,7 +2116,7 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
         },
         SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, am)),
         SExport(items) => SExport(for item in items {
-          match HashMap::get(am.idx, item) {
+          match MutMap::get(am.idx, item) {
             Some(renamed) => renamed,
             None => item
           }

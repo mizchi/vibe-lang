@@ -631,6 +631,26 @@ renames + 旧名の deprecated alias。`vibe` は selfhost なので、
 コンパイラ自身の利用箇所が最大の呼び出し元になる。ADR-0082 の子タスクとして
 段階実施(#1140 系列)。**§4 の段階3 より前に着手できる**(独立)。
 
+> **2026-08-13 着地、ただし「旧名の deprecated alias」は半分しか置けなかった。**
+> 4 型を改名し、リポジトリ内の全使用箇所を移行した。旧綴りは **関数だけ**
+> `#deprecated` エイリアスとして残っている(`Mut-` 型を返すので
+> `let m = HashMap::new_string()` はそのまま動き、`vibe check` が移行先を
+> 名指しする警告を1行出す)。
+>
+> **旧綴りの型注釈は残せなかった。** `type HashMap[K, V] = MutMap[K, V]` は
+> **モジュール境界を越えると展開されない** —— 2 通りの置き方を実測した:
+> (a) contract (`index.vpkg`) に transparent な alias 行として置く、
+> (b) 実装ファイルから `export type` する。**どちらも同じ結果**で、別名は
+> merge 後のソースには確かに現れる(`VIBE_EMIT_MERGED_SOURCE=1` で確認)のに、
+> checker は `HashMap[Int]` と `MutMap[Int]` を別の nominal 型として扱う。
+> 同一ファイル内の generic type alias は正しく透過するので、これは
+> **cross-module type alias の透過性**という別の穴。
+>
+> 守れない約束を contract に置く(旧名が単独ファイルでは型検査を通り、
+> 2 つの綴りが出会う場所で初めて落ちる = いちばん悪い壊れ方)より、
+> **破れる場所を1点に絞って明示する**方を採った。この穴が埋まれば型注釈も
+> 無停止で移行できる。
+
 ---
 
 ### 5.4 Builder 族の決着 (2026-08-07, ADR-0101)

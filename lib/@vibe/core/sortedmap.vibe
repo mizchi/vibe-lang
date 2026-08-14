@@ -1,13 +1,13 @@
-// @vibex/collections — SortedMap[K, V]: ordered map on an AVL tree.
+// @vibex/collections — MutSortedMap[K, V]: ordered map on an AVL tree.
 //
 // Nodes are immutable enum values (AvlNode carries its height); mutation is
-// "rebuild the spine, swap the root" — the SortedMap struct holds `mut root`
+// "rebuild the spine, swap the root" — the MutSortedMap struct holds `mut root`
 // / `mut size` (ADR-0052) so set/delete update the same handle in place.
 // This keeps the tree code purely functional (no mut-field aliasing inside
-// nodes) while the container API stays mutable like HashMap's.
+// nodes) while the container API stays mutable like MutMap's.
 // Ordering is explicit-dict style: `cmp(a, b) -> Int` (< 0 / 0 / > 0) is
-// closed into the struct at construction; SortedMap::new_int /
-// SortedMap::new_string specialize it (see key.vibe).
+// closed into the struct at construction; MutSortedMap::new_int /
+// MutSortedMap::new_string specialize it (see key.vibe).
 // `range(m, lo, hi)` returns the entries with lo <= k <= hi (both ends
 // inclusive) in ascending key order.
 
@@ -26,7 +26,7 @@ enum AvlTree[K, V] {
   AvlNode(Int, AvlTree[K, V], K, V, AvlTree[K, V])
 }
 
-export struct SortedMap[K, V] {
+export struct MutSortedMap[K, V] {
   mut root: AvlTree[K, V];
   mut size: Int;
   cmp: (K, K) -> Int
@@ -247,8 +247,8 @@ fn avl_range_rec[K, V](t: AvlTree[K, V], cmp: (K, K) -> Int, lo: K, hi: K, b: Ar
 
 //# Constructors
 
-export fn SortedMap::new[K, V](cmp: (K, K) -> Int) -> SortedMap[K, V] {
-  SortedMap::{
+export fn MutSortedMap::new[K, V](cmp: (K, K) -> Int) -> MutSortedMap[K, V] {
+  MutSortedMap::{
     root: AvlLeaf,
     size: 0,
     cmp: cmp
@@ -256,19 +256,19 @@ export fn SortedMap::new[K, V](cmp: (K, K) -> Int) -> SortedMap[K, V] {
 }
 
 /// Specialized constructors (annotation workaround as in hashmap.vibe).
-export fn SortedMap::new_int[V]() -> SortedMap[Int, V] {
-  let m: SortedMap[Int, V] = SortedMap::new(compare_int)
+export fn MutSortedMap::new_int[V]() -> MutSortedMap[Int, V] {
+  let m: MutSortedMap[Int, V] = MutSortedMap::new(compare_int)
   m
 }
 
-export fn SortedMap::new_string[V]() -> SortedMap[String, V] {
-  let m: SortedMap[String, V] = SortedMap::new(compare_string)
+export fn MutSortedMap::new_string[V]() -> MutSortedMap[String, V] {
+  let m: MutSortedMap[String, V] = MutSortedMap::new(compare_string)
   m
 }
 
 //# Operations
 
-export fn SortedMap::set[K, V](m: SortedMap[K, V], k: K, v: V) -> Unit {
+export fn MutSortedMap::set[K, V](m: MutSortedMap[K, V], k: K, v: V) -> Unit {
   let (nt, replaced) = avl_insert(m.root, m.cmp, k, v)
   m.root = nt
   if not(replaced) {
@@ -276,18 +276,18 @@ export fn SortedMap::set[K, V](m: SortedMap[K, V], k: K, v: V) -> Unit {
   }
 }
 
-export fn SortedMap::get[K, V](m: SortedMap[K, V], k: K) -> Option[V] {
+export fn MutSortedMap::get[K, V](m: MutSortedMap[K, V], k: K) -> Option[V] {
   avl_get(m.root, m.cmp, k)
 }
 
-export fn SortedMap::has[K, V](m: SortedMap[K, V], k: K) -> Bool {
+export fn MutSortedMap::has[K, V](m: MutSortedMap[K, V], k: K) -> Bool {
   match avl_get(m.root, m.cmp, k) {
     Some(_) => true,
     None => false
   }
 }
 
-export fn SortedMap::delete[K, V](m: SortedMap[K, V], k: K) -> Bool {
+export fn MutSortedMap::delete[K, V](m: MutSortedMap[K, V], k: K) -> Bool {
   let (nt, removed) = avl_remove(m.root, m.cmp, k)
   if removed {
     m.root = nt
@@ -296,38 +296,124 @@ export fn SortedMap::delete[K, V](m: SortedMap[K, V], k: K) -> Bool {
   removed
 }
 
-export fn SortedMap::size[K, V](m: SortedMap[K, V]) -> Int {
+export fn MutSortedMap::size[K, V](m: MutSortedMap[K, V]) -> Int {
   m.size
 }
 
-export fn SortedMap::min[K, V](m: SortedMap[K, V]) -> Option[(K, V)] {
+export fn MutSortedMap::min[K, V](m: MutSortedMap[K, V]) -> Option[(K, V)] {
   avl_min(m.root)
 }
 
-export fn SortedMap::max[K, V](m: SortedMap[K, V]) -> Option[(K, V)] {
+export fn MutSortedMap::max[K, V](m: MutSortedMap[K, V]) -> Option[(K, V)] {
   avl_max(m.root)
 }
 
-export fn SortedMap::keys[K, V](m: SortedMap[K, V]) -> Array[K] {
+export fn MutSortedMap::keys[K, V](m: MutSortedMap[K, V]) -> Array[K] {
   let b = ArrayBuilder::new()
   avl_keys_rec(m.root, b)
   ArrayBuilder::freeze(b)
 }
 
-export fn SortedMap::values[K, V](m: SortedMap[K, V]) -> Array[V] {
+export fn MutSortedMap::values[K, V](m: MutSortedMap[K, V]) -> Array[V] {
   let b = ArrayBuilder::new()
   avl_values_rec(m.root, b)
   ArrayBuilder::freeze(b)
 }
 
-export fn SortedMap::to_array[K, V](m: SortedMap[K, V]) -> Array[(K, V)] {
+export fn MutSortedMap::to_array[K, V](m: MutSortedMap[K, V]) -> Array[(K, V)] {
   let b = ArrayBuilder::new()
   avl_entries_rec(m.root, b)
   ArrayBuilder::freeze(b)
 }
 
-export fn SortedMap::range[K, V](m: SortedMap[K, V], lo: K, hi: K) -> Array[(K, V)] {
+export fn MutSortedMap::range[K, V](m: MutSortedMap[K, V], lo: K, hi: K) -> Array[(K, V)] {
   let b = ArrayBuilder::new()
   avl_range_rec(m.root, m.cmp, lo, hi, b)
   ArrayBuilder::freeze(b)
+}
+
+//# Deprecated legacy spellings (ADR-0100 (3) / #1262)
+//#
+//# ADR-0082 read the `Hash-` / `Sorted-` PREFIX as "this one is mutable",
+//# which collided head-on with ADR-0090's `Mut-` prefix and made one word
+//# carry two independent axes. ADR-0100 (3) splits them: **mutability is the
+//# prefix** (bare = persistent / `Mut` = mutable handle / `Frozen` /
+//# `-Builder`) and the implementation/performance story is a suffix or the
+//# module it lives in. `SortedMap` therefore became `MutSortedMap`, and `Sorted` went
+//# back to naming an ORDERED INTERFACE rather than mutability.
+//#
+//# Everything below is a transparent alias kept for source compatibility and
+//# marked `#deprecated`, so `vibe check` names the replacement at every use
+//# without breaking anyone. The type alias being TRANSPARENT is what makes the
+//# migration safe to do file by file: an old annotation and a new one are the
+//# SAME type, so the two spellings can meet at any boundary.
+
+#deprecated("use MutSortedMap::new")
+export fn SortedMap::new[K, V](cmp: (K, K) -> Int) -> MutSortedMap[K, V] {
+  MutSortedMap::new(cmp)
+}
+
+#deprecated("use MutSortedMap::new_int")
+export fn SortedMap::new_int[V]() -> MutSortedMap[Int, V] {
+  MutSortedMap::new_int()
+}
+
+#deprecated("use MutSortedMap::new_string")
+export fn SortedMap::new_string[V]() -> MutSortedMap[String, V] {
+  MutSortedMap::new_string()
+}
+
+#deprecated("use MutSortedMap::set")
+export fn SortedMap::set[K, V](m: MutSortedMap[K, V], k: K, v: V) -> Unit {
+  MutSortedMap::set(m, k, v)
+}
+
+#deprecated("use MutSortedMap::get")
+export fn SortedMap::get[K, V](m: MutSortedMap[K, V], k: K) -> Option[V] {
+  MutSortedMap::get(m, k)
+}
+
+#deprecated("use MutSortedMap::has")
+export fn SortedMap::has[K, V](m: MutSortedMap[K, V], k: K) -> Bool {
+  MutSortedMap::has(m, k)
+}
+
+#deprecated("use MutSortedMap::delete")
+export fn SortedMap::delete[K, V](m: MutSortedMap[K, V], k: K) -> Bool {
+  MutSortedMap::delete(m, k)
+}
+
+#deprecated("use MutSortedMap::size")
+export fn SortedMap::size[K, V](m: MutSortedMap[K, V]) -> Int {
+  MutSortedMap::size(m)
+}
+
+#deprecated("use MutSortedMap::min")
+export fn SortedMap::min[K, V](m: MutSortedMap[K, V]) -> Option[(K, V)] {
+  MutSortedMap::min(m)
+}
+
+#deprecated("use MutSortedMap::max")
+export fn SortedMap::max[K, V](m: MutSortedMap[K, V]) -> Option[(K, V)] {
+  MutSortedMap::max(m)
+}
+
+#deprecated("use MutSortedMap::keys")
+export fn SortedMap::keys[K, V](m: MutSortedMap[K, V]) -> Array[K] {
+  MutSortedMap::keys(m)
+}
+
+#deprecated("use MutSortedMap::values")
+export fn SortedMap::values[K, V](m: MutSortedMap[K, V]) -> Array[V] {
+  MutSortedMap::values(m)
+}
+
+#deprecated("use MutSortedMap::to_array")
+export fn SortedMap::to_array[K, V](m: MutSortedMap[K, V]) -> Array[(K, V)] {
+  MutSortedMap::to_array(m)
+}
+
+#deprecated("use MutSortedMap::range")
+export fn SortedMap::range[K, V](m: MutSortedMap[K, V], lo: K, hi: K) -> Array[(K, V)] {
+  MutSortedMap::range(m, lo, hi)
 }
