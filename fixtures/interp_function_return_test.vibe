@@ -1,0 +1,106 @@
+// #1766: structural values retain their renderer shape through a function
+// return. Before the fix every Array/tuple case below passed the checker but
+// rendered its linear-memory address as a decimal integer.
+
+struct Point {
+  x: Int;
+  y: Int
+} derive (Show)
+
+enum Choice {
+  Pick(Int);
+  Skip
+} derive (Show)
+
+fn ints() -> Array[Int] {
+  [
+    1,
+    2,
+    3
+  ]
+}
+
+fn pair() -> (Int, String) {
+  (7, "seven")
+}
+
+fn point() -> Point {
+  Point::{
+    x: 8, y: 9
+  }
+}
+
+fn choice() -> Choice {
+  Pick(6)
+}
+
+fn scalar() -> Int {
+  9
+}
+
+fn show_generic[T](value: T) -> String {
+  "\{value}"
+}
+
+test "interpolation preserves structural function return shape" {
+  inspect("\{ints()}", "[1, 2, 3]")
+  let xs = ints()
+  inspect("\{xs}", "[1, 2, 3]")
+  inspect("\{pair()}", "(7, seven)")
+  let p = pair()
+  inspect("\{p}", "(7, seven)")
+  inspect("\{Some(ints())}", "Some([1, 2, 3])")
+  inspect(show_generic(ints()), "[1, 2, 3]")
+  // Nominal function returns already worked; keep them as controls so the
+  // structural path cannot steal ordinary T::to_string dispatch.
+  inspect("\{point()}", "Point { x: 8, y: 9 }")
+  inspect("\{choice()}", "Pick(6)")
+}
+
+test "local function return shape shadows the top-level function" {
+  // Aggregate -> scalar: the empty local sentinel must mask the global shape.
+  let ints = () -> Int {
+    1
+  }
+  inspect("\{ints()}", "1")
+  // Scalar -> aggregate: the local annotation must supply the closer shape.
+  let scalar = () -> Array[Int] {
+    [
+      4,
+      5
+    ]
+  }
+  inspect("\{scalar()}", "[4, 5]")
+}
+
+let arr_no_annot = () -> {
+  [
+    4,
+    5
+  ]
+}
+
+let tup_no_annot = () -> {
+  (1, "a")
+}
+
+let scalar_no_annot = () -> {
+  42
+}
+
+test "interpolation reads the body when a lambda has no return annotation" {
+  inspect("\{arr_no_annot()}", "[4, 5]")
+  inspect("\{tup_no_annot()}", "(1, a)")
+  inspect("\{Some(arr_no_annot())}", "Some([4, 5])")
+  inspect("\{scalar_no_annot()}", "42")
+}
+
+test "the body fallback also applies to a local unannotated lambda" {
+  let local_arr = () -> {
+    [
+      7,
+      8
+    ]
+  }
+  inspect("\{local_arr()}", "[7, 8]")
+}
