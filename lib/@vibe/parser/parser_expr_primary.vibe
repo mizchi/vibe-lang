@@ -14,6 +14,7 @@ import ./parser_base.vibe {
   is_lambda_start,
   parse_effect_row,
   parse_param_list,
+  parse_param_list_with_binder_context,
   parse_type_impl,
   peek,
   tk_name
@@ -620,7 +621,9 @@ fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, 
   }
 }
 
-fn parse_generic_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
+// Trait-bound names are references, not binders. Context is threaded only to
+// keep the collector call graph explicit and records no authority.
+fn parse_generic_type_param_bound_names_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Int) with Exception {
   let bounds = ArrayBuilder::new()
   let mut p = pos
   let mut done = false
@@ -644,10 +647,14 @@ fn parse_generic_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Arra
   (ArrayBuilder::freeze(bounds), p)
 }
 
+fn parse_generic_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
+  parse_generic_type_param_bound_names_with_binder_context(tokens, pos, None)
+}
+
 /// Parse an expression-position `[T: Bound, U]` header. This intentionally
 /// stays private to the primary-expression parser: unlike declaration headers,
 /// it is not part of the public parser contract.
-fn parse_generic_fn_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn parse_generic_fn_type_params_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let names = ArrayBuilder::new()
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -662,7 +669,7 @@ fn parse_generic_fn_type_params(tokens: Array[Token], pos: Int) -> (Array[String
         p = p + 1
         match peek(tokens, p) {
           TColon => {
-            let (bound_names, next) = parse_generic_type_param_bound_names(tokens, p + 1)
+            let (bound_names, next) = parse_generic_type_param_bound_names_with_binder_context(tokens, p + 1, context)
             ArrayBuilder::push(bounds, (name, bound_names))
             p = next
           },
@@ -685,10 +692,14 @@ fn parse_generic_fn_type_params(tokens: Array[Token], pos: Int) -> (Array[String
   (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
 }
 
+fn parse_generic_fn_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+  parse_generic_fn_type_params_with_binder_context(tokens, pos, None)
+}
+
 fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (type_params, type_bounds, after_header) = parse_generic_fn_type_params(tokens, pos + 1)
+  let (type_params, type_bounds, after_header) = parse_generic_fn_type_params_with_binder_context(tokens, pos + 1, context)
   let params_pos = expect_tk(tokens, after_header, "(")
-  let (params, after_params) = parse_param_list(tokens, params_pos)
+  let (params, after_params) = parse_param_list_with_binder_context(tokens, params_pos, context)
   match peek(tokens, after_params) {
     TThinArrow => {
       let (ret_ty, ret_pos) = parse_type_impl(tokens, after_params + 1, 0)
@@ -773,7 +784,7 @@ fn parse_paren_tuple_primary(tokens: Array[Token], starts: Array[Int], pos: Int,
 }
 
 fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let (params, after_params) = parse_param_list(tokens, pos + 1)
+  let (params, after_params) = parse_param_list_with_binder_context(tokens, pos + 1, context)
   match peek(tokens, after_params) {
     TThinArrow => {
       let after_arrow = after_params + 1
