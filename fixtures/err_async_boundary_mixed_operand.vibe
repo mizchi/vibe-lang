@@ -1,0 +1,35 @@
+// #1342: the mixing guard must not depend on WHERE the `spawn_suspend` call
+// sits.
+//
+// Its walker was missing most expression arms -- no `EBinOp`, no `EMatch`, no
+// `EWhile`, no container arms -- so the same program was rejected or accepted
+// depending on the call's position. Measured, before the fix:
+//
+//   let h = TaskGroup::spawn_suspend(..)     -> rejected
+//   TaskGroup::spawn_suspend(..) + n         -> COMPILED
+//
+// A partial walk is the worst shape for a guard: it reads as "this is checked"
+// while answering a narrower question than its message claims.
+//
+// This fixture puts the call in an OPERAND, the position that used to slip
+// through. The let-bound position is covered by
+// `err_async_boundary_mixed_convention.vibe`; the two together are what pin
+// position-independence.
+//
+// `spawn_suspend` here is a plain local function -- the guard is a name-based
+// over-approximation, which is exactly why it has to be applied consistently
+// rather than by accident of where the call landed.
+fn spawn_suspend(x: Int) -> Int {
+  x
+}
+
+fn apply(f: (Int) -> Int) -> Int {
+  f(1)
+}
+
+fn main() -> Int with Async {
+  sleep(1)
+  apply((n) -> {
+    spawn_suspend(41) + n
+  })
+}
