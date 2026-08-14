@@ -1,0 +1,28 @@
+// #1541: a callee that MUTATES its array parameter and returns the same
+// reference -- the shape where passing a reference instead of a copy is what
+// makes the call mean anything at all.
+//
+// This used to clear the island component-wide. Acceptance had no `ESeq` arm,
+// so `Array::set(values, 0, ..); values` fell into the catch-all that requires
+// every child to be kind 0, and the tail legitimately yielding the reference
+// read as a violation. The lane was declining exactly the work it exists for.
+//
+// The assertions below are the point: the mutation has to be visible through
+// the ORIGINAL binding, which is only true if one array crossed both call
+// boundaries rather than a copy coming back.
+
+let bump_first: (Array[Int]) -> Array[Int] = (values) -> {
+  Array::set(values, 0, Array::get(values, 0) + 1)
+  values
+}
+
+test "a mutating transform keeps one array across both boundaries" {
+  let xs = [
+    1,
+    2
+  ]
+  let out = bump_first(bump_first(xs))
+  inspect(Array::get(out, 0), "3")
+  inspect(Array::get(xs, 0), "3")
+  inspect(Array::get(out, 1), "2")
+}

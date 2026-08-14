@@ -1,0 +1,44 @@
+// #1701 candidate 2 (materializing copy), priced WITHOUT implementing it.
+//
+// A copy at the conversion point is what ADR-0095 §4.3 literally describes.
+// `refresh` is a hand-written materialization of exactly what such a point would
+// emit -- read every cell, build a new array -- so the delta against
+// gc_boundary_bench.vibe's boundary_cross_6 is the per-crossing price.
+//
+// It lives in its OWN file on purpose. A function that returns a bare array
+// literal cannot be admitted to the reference lane (nothing decides the
+// literal's representation in result position), so keeping it beside the
+// reference-lane benches would fail that whole component closed and quietly
+// turn those benches back into linear ones -- the exact trap this bench exists
+// to expose.
+//
+// The hazard the timing cannot show: `bump_first` mutates the copy, so the
+// caller's array never sees the change. That silent-wrong is what candidate 2
+// has to solve before its cost even matters.
+
+let bump_first: (Array[Int]) -> Array[Int] = (values) -> {
+  Array::set(values, 0, Array::get(values, 0) + 1)
+  values
+}
+
+// A materializing conversion point, written out by hand.
+let refresh: (Array[Int]) -> Array[Int] = (values) -> {
+  [
+    Array::get(values, 0),
+    Array::get(values, 1),
+    Array::get(values, 2)
+  ]
+}
+
+let sum_three: (Array[Int]) -> Int = (values) -> {
+  Array::get(values, 0) + Array::get(values, 1) + Array::get(values, 2)
+}
+
+bench "boundary_copy_cross_6" {
+  let values = [
+    1,
+    2,
+    3
+  ]
+  let _ = sum_three(refresh(bump_first(refresh(bump_first(refresh(bump_first(values)))))))
+}
