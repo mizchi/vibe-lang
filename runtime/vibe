@@ -311,7 +311,7 @@ pick_cli() {
 # Compile $1 (.vibe) → $2 (.wasm) with entry $3, resolving imports from the FS.
 # Returns non-zero on a parse/type/codegen error so callers can report cleanly.
 compile_to() {
-  local src="$1" out="$2" entry="$3" debug="${4:-}" brk="${5:-}" keep_names="${6:-}"
+  local src="$1" out="$2" entry="$3" debug="${4:-}" brk="${5:-}" keep_names="${6:-}" backend="${7:-linear}"
   local cli; cli="$(pick_cli)"
   mkdir -p "$(dirname "$out")"
   rm -f "$out" "$out.diag"
@@ -333,7 +333,17 @@ compile_to() {
   # funcmap annotator below matches frames by those names).
   local names_env=""
   [ "$keep_names" = "1" ] && names_env="VIBE_WASM_NAMES=1"
-  env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw $debug_env $names_env \
+  # The wasm-gc lane is a SINGLE-FILE compile, so it selects VIBE_BACKEND=gc
+  # instead of VIBE_FS_COMPILE=1 rather than alongside it -- the same pairing
+  # scripts/vibe_test.sh uses for VIBE_TEST_BACKEND=gc. Anything other than
+  # "gc" keeps the default linear lane untouched.
+  local fs_env="VIBE_FS_COMPILE=1"
+  local backend_env=""
+  if [ "$backend" = "gc" ]; then
+    fs_env=""
+    backend_env="VIBE_BACKEND=gc"
+  fi
+  env $fs_env $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
     "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   if [ -s "$out" ]; then
     rm -f "$out.diag" "$rerr"
@@ -1788,7 +1798,20 @@ case "$cmd" in
     [ -f "$bsrc" ] || die "not found: $bsrc"
     out="$(mktemp -t vibe-bench-XXXXXX.wasm)"
     trap 'rm -f "$out"' EXIT
-    compile_to "$bsrc" "$out" "__no_entry__" || die "compilation failed: $bsrc"
+    # VIBE_BENCH_BACKEND=gc was documented as switching `vibe bench` to the
+    # wasm-gc backend, but nothing read it: benches asked for gc and silently
+    # got linear, with no way to tell from the output. That is what made the
+    # #1701 boundary measurements meaningless. Now it selects the lane the same
+    # way VIBE_TEST_BACKEND=gc does for `vibe test`.
+    compile_to "$bsrc" "$out" "__no_entry__" "" "" "" "${VIBE_BENCH_BACKEND:-linear}" \
+      || die "compilation failed: $bsrc"
+    # The wasm-gc backend compiles the file but emits no `__bench_<name>`
+    # entry points, so the runner finds nothing to time and reports a single
+    # nameless line with invented numbers. Refuse instead: a bench run that
+    # silently measures something other than the benches is worse than no run.
+    if [ "${VIBE_BENCH_BACKEND:-linear}" = "gc" ] && ! grep -qa "__bench_" "$out"; then
+      die "VIBE_BENCH_BACKEND=gc: the wasm-gc backend emitted no bench entry points for $bsrc -- bench blocks are not supported on that lane yet (see #1701); re-run without VIBE_BENCH_BACKEND"
+    fi
     # #1701: the compiled module is a temp file deleted on exit, so there was no
     # way to ask what a bench actually ran. That made backend comparisons
     # unfalsifiable: a boundary benchmark reported a wall-clock delta while the
