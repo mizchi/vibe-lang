@@ -1,0 +1,48 @@
+// #1725 / ADR-0090 (positive): a closure that captures a region value is
+// FINE as long as the closure itself stays inside the region. Only escape
+// is forbidden, not capture -- "a region value captured by a closure is
+// always an error" would reject the natural way to write a region body.
+//
+// This is the false-positive guard for err_region_escape_closure_capture.vibe:
+// `add` captures `l` (built from the region token) and the body still exits
+// the sanctioned way, via `MutList::freeze`.
+fn total() -> Int {
+  let frozen = region r {
+    let l = MutList::empty(r)
+    let add = (v: Int) -> Unit { MutList::push(l, v) }
+    add(1)
+    add(2)
+    add(3)
+    MutList::freeze(l)
+  }
+  let mut i = 0
+  let mut acc = 0
+  while i < FrozenArray::length(frozen) {
+    acc = acc + FrozenArray::get(frozen, i)
+    i = i + 1
+  }
+  acc
+}
+
+// Second guard: shadowing. `l` names region memory and then names an
+// ordinary Int, and the closure captures the Int. A taint set that only ever
+// grows would still call `l` region memory here and reject.
+fn shadowed() -> Int {
+  let f = region r {
+    let l = MutList::empty(r)
+    MutList::push(l, 1)
+    let l = 6
+    () -> Int {
+      l
+    }
+  }
+  f()
+}
+
+export let main = () -> Int {
+  total() * 7 + shadowed()
+}
+
+test "region ok closure local" {
+  inspect(main(), "48")
+}

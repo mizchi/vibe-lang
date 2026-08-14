@@ -8456,7 +8456,9 @@ echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 coll
 # region-tainted MutList itself out of the region body is a STATIC error
 # (err_region_escape_return_value.vibe). Same known generalize-gap caveat
 # as the ADR-0068 section above: the return-position escape is the hard
-# guarantee in this slice.
+# guarantee in this slice. #1725 added the closure-capture direction, which
+# the result-TYPE scan structurally cannot see (types do not record
+# captures) -- both a negative and a false-positive guard, at the end.
 echo "[compiler-gate] 75/75 ADR-0090 region + MutList vertical slice (#1262)"
 r90dir="_build/_gate_region90"
 rm -rf "$r90dir"; mkdir -p "$r90dir"
@@ -8503,6 +8505,37 @@ fi
 if ! grep -qF 'region token' "$r90dir/forged.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_region_token_forged.vibe did not produce the expected diagnostic" >&2
   cat "$r90dir/forged.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# #1725: the return-position check above scans the region body's RESULT TYPE
+# for the skolem, so a region value hidden in a CLOSURE's captured
+# environment slips past it -- the result type `() -> Array[Int]` mentions no
+# region. These two fixtures pin BOTH directions, which is the whole
+# difficulty: capture is legitimate, only escape is not.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_region_escape_closure_capture.vibe "$r90dir/cap.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/cap.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_escape_closure_capture.vibe compiled successfully -- a region value must not escape inside a closure (#1725)" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its scope' "$r90dir/cap.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_escape_closure_capture.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/cap.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The false-positive guard: a closure that captures a region value but stays
+# inside the region is valid, and the body still exits via freeze.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_closure_local.vibe "$r90dir/caplocal.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/caplocal.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_closure_local.vibe did not compile -- the #1725 capture check is over-approximating" >&2
+  cat "$r90dir/caplocal.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! r90_cap_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/caplocal.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_closure_local.vibe got '$r90_cap_out' (want 48)" >&2
   exit 1
 fi
 rm -rf "$r90dir"

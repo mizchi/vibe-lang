@@ -62,7 +62,7 @@ import ./checker_spawnable.vibe {
 }
 
 import ./checker_escape.vibe {
-  mut_binding_escapes
+  mut_binding_escapes, region_token_escapes_in_closure
 }
 
 //# Functions
@@ -5169,6 +5169,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let zonked_ret = subst_apply(s1, body_ty)
               if type_mentions_named(zonked_ret, skolem_name) {
                 Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
+              } else {
+                ()
+              }
+              // #1725: the type check above cannot see a region value that
+              // leaves inside a CLOSURE -- `region r { let l =
+              // MutList::empty(r); () -> Array[Int] { MutList::to_array(l) } }`
+              // has result type `() -> Array[Int]`, which mentions no skolem,
+              // because types do not record captures. Harmless while MutList
+              // is a checker-only phantom; a use-after-free once the arena
+              // releases at region end. See checker_escape.vibe for why this
+              // companion check is deliberately narrow.
+              if region_token_escapes_in_closure(fn_body, binder_name) {
+                Array::push(errors, String::concat("region escapes its scope: a closure returned from this region body captures a value built from the region's own token -- return `MutList::freeze(..)` / `MutList::to_array(..)` instead of a closure over it", off_marker_len(callee_off, String::length(name))))
               } else {
                 ()
               }
