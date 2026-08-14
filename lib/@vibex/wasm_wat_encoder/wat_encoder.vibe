@@ -117,7 +117,7 @@ fn is_id_char(c: Int) -> Bool {
   ((c >= 97) && (c <= 122)) ||
   ((c >= 65) && (c <= 90)) ||
   ((c >= 48) && (c <= 57)) ||
-  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45)
+  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45) || (c == 61)
 }
 
 let tok_lparen: Int = 1
@@ -959,6 +959,11 @@ fn emit_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], pos
       else if kw == "if" {
         Bytes::push(buf, 0x04)
         let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
+          let lbl = tok_text(src, tokens, next)
+          map_set(label_names, label_indices, lbl, label_depth)
+          next = next + 1
+        }
         if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
           let rpos = next + 2
           if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
@@ -1821,6 +1826,141 @@ fn emit_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], pos
   }
 }
 
+/// Return the `)` paired with `open_pos`, or `end_pos` for malformed input.
+/// Keeping this structural (rather than searching source text) also makes
+/// comments and quoted parentheses harmless here.
+fn folded_close(tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int) -> Int {
+  let mut depth = 0
+  let mut pos = open_pos
+  let mut close = end_pos
+  while pos < end_pos && close == end_pos {
+    let ty = tok_type(tokens, pos)
+    if ty == tok_lparen {
+      depth = depth + 1
+    } else if ty == tok_rparen {
+      depth = depth - 1
+      if depth == 0 {
+        close = pos
+      }
+    }
+    pos = pos + 1
+  }
+  close
+}
+
+fn folded_group_kind(src: String, tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int) -> String {
+  if open_pos + 1 < end_pos && tok_type(tokens, open_pos) == tok_lparen {
+    tok_text(src, tokens, open_pos + 1)
+  } else {
+    ""
+  }
+}
+
+/// Emit a sequence of flat and folded instructions. Folded operands recurse
+/// through `emit_folded_instruction`; flat instructions keep using the one
+/// opcode/immediate encoder above, so the two syntaxes cannot drift apart.
+fn emit_instruction_range(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], start_pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Unit {
+  let mut pos = start_pos
+  while pos < end_pos {
+    if tok_type(tokens, pos) == tok_lparen {
+      pos = emit_folded_instruction(buf, src, tokens, pos, end_pos, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    } else if tok_type(tokens, pos) == tok_rparen {
+      pos = end_pos
+    } else {
+      pos = emit_instruction(buf, src, tokens, pos, end_pos, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    }
+  }
+}
+
+/// Lower one WAT folded instruction `(op operand...)` to stack-machine order:
+/// each nested operand is emitted first, then `op`. Immediate arguments such
+/// as the index in `local.set 1` remain attached to `op`.
+///
+/// Structured control is the exception to the final-op rule: `block`/`loop`
+/// open before their bodies, while folded `if` evaluates its condition before
+/// opening the if and then emits its `then`/`else` groups.
+fn emit_folded_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Int {
+  let close = folded_close(tokens, open_pos, end_pos)
+  let head = open_pos + 1
+  if head >= close || tok_type(tokens, head) != tok_keyword {
+    if close < end_pos {
+      close + 1
+    } else {
+      end_pos
+    }
+  } else {
+    let kw = tok_text(src, tokens, head)
+    let mut prefix_end = head + 1
+    if kw == "br_table" {
+      while prefix_end < close && (tok_type(tokens, prefix_end) == tok_int || tok_type(tokens, prefix_end) == tok_ident) {
+        prefix_end = prefix_end + 1
+      }
+    } else if prefix_end < close && tok_type(tokens, prefix_end) == tok_ident {
+      prefix_end = prefix_end + 1
+    } else if (kw == "br" || kw == "br_if" || kw == "call" || kw == "local.get" || kw == "local.set" || kw == "local.tee" || kw == "global.get" || kw == "global.set") && prefix_end < close && tok_type(tokens, prefix_end) != tok_lparen {
+      prefix_end = prefix_end + 1
+    } else if (kw == "i32.const" || kw == "i64.const" || kw == "f32.const" || kw == "f64.const") && prefix_end < close {
+      prefix_end = prefix_end + 1
+    } else if String::starts_with(kw, "i32.load") || String::starts_with(kw, "i64.load") || String::starts_with(kw, "f32.load") || String::starts_with(kw, "f64.load") || String::starts_with(kw, "i32.store") || String::starts_with(kw, "i64.store") || String::starts_with(kw, "f32.store") || String::starts_with(kw, "f64.store") {
+      while prefix_end < close && tok_type(tokens, prefix_end) == tok_keyword && (String::starts_with(tok_text(src, tokens, prefix_end), "offset=") || String::starts_with(tok_text(src, tokens, prefix_end), "align=")) {
+        prefix_end = prefix_end + 1
+      }
+    }
+    // `(result ...)` and call_indirect's `(type ...)` are annotations, not
+    // operand expressions. Leave them in the prefix consumed by the flat
+    // immediate encoder.
+    let annotation = if prefix_end < close {
+      folded_group_kind(src, tokens, prefix_end, close)
+    } else {
+      ""
+    }
+    if annotation == "result" || (kw == "call_indirect" && annotation == "type") {
+      let annotation_close = folded_close(tokens, prefix_end, close)
+      prefix_end = if annotation_close < close {
+        annotation_close + 1
+      } else {
+        close
+      }
+    }
+    if kw == "block" || kw == "loop" {
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      emit_instruction_range(buf, src, tokens, prefix_end, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+      Bytes::push(buf, 0x0B)
+    } else if kw == "if" {
+      let mut then_pos = prefix_end
+      while then_pos < close && folded_group_kind(src, tokens, then_pos, close) != "then" {
+        if tok_type(tokens, then_pos) == tok_lparen {
+          let child_close = folded_close(tokens, then_pos, close)
+          emit_instruction_range(buf, src, tokens, then_pos, child_close + 1, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+          then_pos = child_close + 1
+        } else {
+          then_pos = emit_instruction(buf, src, tokens, then_pos, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+        }
+      }
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      if then_pos < close {
+        let then_close = folded_close(tokens, then_pos, close)
+        emit_instruction_range(buf, src, tokens, then_pos + 2, then_close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+        let else_pos = then_close + 1
+        if else_pos < close && folded_group_kind(src, tokens, else_pos, close) == "else" {
+          Bytes::push(buf, 0x05)
+          let else_close = folded_close(tokens, else_pos, close)
+          emit_instruction_range(buf, src, tokens, else_pos + 2, else_close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+        }
+      }
+      Bytes::push(buf, 0x0B)
+    } else {
+      emit_instruction_range(buf, src, tokens, prefix_end, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    }
+    if close < end_pos {
+      close + 1
+    } else {
+      end_pos
+    }
+  }
+}
+
 fn compile_func_body(src: String, tokens: Array[(Int, Int, Int)], body_start: Int, body_end: Int, func_names: Array[String], func_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], param_names: Array[String], param_count: Int, local_types: Array[Int], local_decl_names: Array[String]) -> Bytes {
   let code = Bytes::new()
   let ln = map_names_new()
@@ -1871,44 +2011,7 @@ fn compile_func_body(src: String, tokens: Array[(Int, Int, Int)], body_start: In
       k = k + 1
     }
   }
-  let paren_is_block = Array::slice([
-    0
-  ], 0, 0)
-  let mut ip = body_start
-  while ip < body_end {
-    let cur_ty = tok_type(tokens, ip)
-    if cur_ty == tok_lparen {
-      let nxt = ip + 1
-      if (nxt < body_end) && (tok_type(tokens, nxt) == tok_keyword) {
-        let nkw = tok_text(src, tokens, nxt)
-        if (nkw == "block") || (nkw == "loop") || (nkw == "if") {
-          Array::push(paren_is_block, 1)
-          ip = ip + 1
-        } else if (nkw == "result") || (nkw == "then") || (nkw == "else") {
-          Array::push(paren_is_block, 0)
-          ip = ip + 1
-        } else {
-          Array::push(paren_is_block, 0)
-          ip = ip + 1
-        }
-      } else {
-        Array::push(paren_is_block, 0)
-        ip = ip + 1
-      }
-    } else if cur_ty == tok_rparen {
-      let plen = Array::length(paren_is_block)
-      if plen > 0 {
-        let is_block = Array::get(paren_is_block, plen - 1)
-        Array::truncate(paren_is_block, plen - 1)
-        if is_block == 1 {
-          Bytes::push(code, 0x0B)
-        }
-      }
-      ip = ip + 1
-    } else {
-      ip = emit_instruction(code, src, tokens, ip, body_end, func_names, func_indices, ln, li, global_names, global_indices, lbl_names, lbl_indices, 0)
-    }
-  }
+  emit_instruction_range(code, src, tokens, body_start, body_end, func_names, func_indices, ln, li, global_names, global_indices, lbl_names, lbl_indices, 0)
   Bytes::push(code, 0x0B)
   code
 }
