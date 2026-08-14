@@ -103,7 +103,7 @@ v = 42
 
 ユーザー定義 effect は、実装を呼び出し側から差し替える必要がある場合の advanced な
 手段である。これは resumptive かつ one-shot/tail-resumptive という制約を持つ。通常の
-失敗は `Exception`（実装後）を使い、局所的な状態はまず `let mut` を検討する。判断基準は
+失敗は `Exception` を使い、局所的な状態はまず `let mut` を検討する。判断基準は
 [Effects vs let mut](../guide/when-to-use-effects.md) を参照。
 
 ## エフェクト多相

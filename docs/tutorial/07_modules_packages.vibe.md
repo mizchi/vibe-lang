@@ -89,13 +89,16 @@ hex_encode("hi") = 6869
 **契約**で、実装との一致はコンパイラが照合する。#1128 以降は構造化ヘッダー
 (`name =` / `version =` / `description =` / `deps = { ... }`) が標準形:
 
-```vibe skip
-// skip: index.vpkg ヘッダー例 (docs/adding-modules.md 参照)
-name = @you / counter
+```text
+// index.vpkg ヘッダー例 (docs/adding-modules.md 参照)。ヘッダ部は vibe 構文
+// ではないので ```text — 実物の綴りは lib/@vibe/*/index.vpkg を見る
+name = @you/counter
 version = 1.0.0
 description =
-"|A tiny counter contract"deps = {
-}
+  #|A tiny counter contract
+deps = {}
+
+generated_hash =
 
 type Counter
 // bodyless: 定義は impl 側
@@ -115,10 +118,12 @@ fn add(x: Int, y: Int) -> Int
 再現可能ビルドでは require 行で **内容 hash** を固定する。ビルドは毎回
 オフラインで hash を再検証するので、置き場所や取得経路は信頼しなくてよい。
 
-```vibe skip
-// skip: require directive は import/export と独立に module header に置く例示
-require @vibe / core0.2.0 = #pkg: sha1: < 40hex >
-// `vibe hash` で計算
+```text
+// require directive は import/export と独立に module header に置く。
+// directive は vibe 構文ではないので ```text (loader の受理形は
+// contract.vibe の "malformed require line" 診断が正)
+require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
+// <40hex> は `vibe hash` で計算
 
 import @vibe/core {
   sha1

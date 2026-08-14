@@ -25,8 +25,10 @@ v = yes
 
 ## while と早期 return（現行）
 
-`return` は関数全体から抜ける (ループだけではない)。これは現行構文であり、
-維持するか代替構文へ移行するかは [#1283](https://github.com/mizchi/vibe-lang/issues/1283) で決める。
+`return` は関数全体から抜ける (ループだけではない)。この構文は
+[#1283](https://github.com/mizchi/vibe-lang/issues/1283) で「維持する」と決着した —
+同じ issue で追加された、パターン束縛付きの早期脱出 `guard ... else { ... }` は
+[04 Option](04_option.vibe.md#guard--束縛するか脱出) で扱う。
 
 ```vibe run
 import @vibe/prelude {
