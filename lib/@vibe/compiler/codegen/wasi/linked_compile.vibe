@@ -37,6 +37,7 @@ import @vibe/compiler/perceus {
   PerceusAction,
   build_perceus_plan,
   build_perceus_plan_with_params,
+  build_perceus_plan_with_params_split,
   compute_borrow_returning_names,
   compute_heap_returning,
   compute_scalar_returning_names,
@@ -5978,7 +5979,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           __bi_expr
         }
         if enable_rc {
-          let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_param_user_srt, lc_borrow_param_mask, lc_borrow_view_ret)
+          let bfn_drop_start_cell = lc_fresh_int_array()
+          let plan = build_perceus_plan_with_params_split(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_param_user_srt, lc_borrow_param_mask, lc_borrow_view_ret, bfn_drop_start_cell)
+          let bfn_drop_start = if Array::length(bfn_drop_start_cell) > 0 {
+            Array::get(bfn_drop_start_cell, 0)
+          } else {
+            0
+          }
           let mut lhpi = 0
           while lhpi < Array::length(lc_norm_params) {
             let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -6015,16 +6022,30 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           while di < Array::length(plan) {
             let pa = Array::get(plan, di)
             if pa_is_drop(pa) {
-              // Skip ONLY the drops for the borrowed params -- the plan is
-              // name-keyed, so a shadowing local sharing a borrowed param's
-              // name can carry dup/alias-dup actions of its own, and filtering
-              // those out under-counts references (use-after-free that only
-              // surfaces under allocation churn -- codegen_heap_e2e_test
-              // caught it after ~90 compiles). A same-named shadow's own
-              // scope-end drop is also skipped here (a bounded leak, safe
-              // direction); eligibility makes that rare since a bare read of
-              // the shadow disqualifies the position.
-              if array_contains_str(bfn_borrowed, pa.name) {
+              // Skip ONLY the drops for the borrowed params. The plan is
+              // name-keyed, so matching by name across the WHOLE plan also
+              // swallowed the scope-end drop of any body-local binding that
+              // shadows a borrowed parameter's name -- a leak this filter used
+              // to accept ("bounded, safe direction") on the grounds that the
+              // narrow eligibility rule made same-named shadows rare.
+              //
+              // That is a bad thing to lean on: the shadow exclusion is not a
+              // check of its own, it is a side effect of md_consume_count
+              // counting ANY bare mention as a consume (see
+              // compute_borrow_param_user_fns). Anything that makes the
+              // consume count more precise -- e.g. the transitive borrow
+              // inference of #1740 -- widens eligibility and turns the "rare"
+              // leak into a real one. Positional filtering removes the
+              // dependency: the params' own scope-end drops are a SUFFIX of
+              // the plan (build_perceus_plan_with_params_split records where
+              // it starts), so a body-local drop can no longer be confused
+              // with a parameter's.
+              //
+              // Only DROPS are filtered, never dup/alias-dup: a shadow's dups
+              // are its own and removing them under-counts references
+              // (use-after-free that only surfaces under allocation churn --
+              // codegen_heap_e2e_test caught it after ~90 compiles).
+              if di >= bfn_drop_start && array_contains_str(bfn_borrowed, pa.name) {
                 ()
               } else {
                 Array::push(rc_drops, pa.name)
