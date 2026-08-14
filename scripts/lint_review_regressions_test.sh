@@ -164,7 +164,7 @@ EOF
 git -C "$TMP_ROOT" add .
 git -C "$TMP_ROOT" commit -qm historical-violation
 cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EOF'
-fn unrelated(e: Expr) -> Expr { e }
+// Documentation-only edit: the historical binder above is unchanged.
 EOF
 git -C "$TMP_ROOT" add .
 
@@ -246,6 +246,38 @@ fi
 if ! rg -q 'bootstrap failed before lint execution' "$TMP_ROOT/runner-fail.out"; then
   echo "review-regressions lint self-test: runner failure diagnostic was lost" >&2
   cat "$TMP_ROOT/runner-fail.out" >&2
+  exit 1
+fi
+if ! rg -q 'the AST scan did not run' "$TMP_ROOT/runner-fail.out"; then
+  echo "review-regressions lint self-test: runner exit 1 was reported as a finding" >&2
+  cat "$TMP_ROOT/runner-fail.out" >&2
+  exit 1
+fi
+if rg -q 'structural regression\(s\) added' "$TMP_ROOT/runner-fail.out"; then
+  echo "review-regressions lint self-test: runner exit 1 accused the staged diff" >&2
+  cat "$TMP_ROOT/runner-fail.out" >&2
+  exit 1
+fi
+
+# A silent runner failure must also fail closed. In this case there is no
+# diagnostic text to make `violations` non-empty, so the tool-error flag itself
+# must drive the final exit status.
+cat > "$TMP_ROOT/fake-vibe-runner-silent-failure" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-runner-silent-failure"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-runner-silent-failure" \
+  VIBE_REVIEW_LINT_RUNNER="$TMP_ROOT/fake-vibe-runner-silent-failure" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/runner-silent-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: silent runner exit 1 was ignored" >&2
+  exit 1
+fi
+if ! rg -q 'the AST scan did not run' "$TMP_ROOT/runner-silent-fail.out"; then
+  echo "review-regressions lint self-test: silent runner failure diagnostic was lost" >&2
+  cat "$TMP_ROOT/runner-silent-fail.out" >&2
   exit 1
 fi
 
