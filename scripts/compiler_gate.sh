@@ -6975,9 +6975,11 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # pins break / continue / index advance / length re-read, not just acceptance.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_array_for_suspend_test.vibe
-# The same loop over a String stays refused: rewriting it would iterate zero
-# times and silently answer wrong.
-scps_check_reject "err_effect_string_for_suspend.vibe" "let/seq/tail/branch-tail spine" "stringforsusp"
+# The same loop over a PROVED String indexes the string directly, using the
+# builtins codegen itself uses to materialize one. An UNPROVED iterand is still
+# never rewritten -- that is what keeps a runtime String out of the array form.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_string_for_suspend_test.vibe
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other
