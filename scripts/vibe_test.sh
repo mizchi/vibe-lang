@@ -60,6 +60,18 @@ fi
 # seed). The gc lane's test-block lowering (#683) postdates older seeds, so
 # gc runs typically pass a freshly built stage2 here.
 cli_wasm="${VIBE_TEST_CLI_WASM:-$seed}"
+# A missing compiling CLI used to surface as `FAIL (compile)` on EVERY file --
+# the same line a genuinely broken test file produces. That reads as "the tests
+# are broken" when the truth is "there is no compiler here", and the usual
+# cause is a stale VIBE_TEST_CLI_WASM naming a generation directory that no
+# longer matches HEAD. Say which it is.
+if [ ! -f "$cli_wasm" ]; then
+  echo "vibe_test.sh: compiling CLI not found: $cli_wasm" >&2
+  if [ -n "${VIBE_TEST_CLI_WASM:-}" ]; then
+    echo "  (from VIBE_TEST_CLI_WASM; a generation dir is named for the commit it was built at)" >&2
+  fi
+  exit 2
+fi
 covdir="$outdir/coverage"
 if [ "$coverage" = "1" ]; then
   mkdir -p "$covdir"

@@ -1,0 +1,333 @@
+// Derived-`==` coverage for this package's enums (#1556).
+//
+// `T::equals` is DERIVED: `desugar_derives` emits one for every declared enum
+// whether or not anything uses `==` on that type. Nothing in the suite called
+// these, so all of their branches sat unreached -- 1,710 across 96 types, 3.8%
+// of the whole branch denominator. That is worth a test beyond the number:
+// ADR-0097 / #1526 are actively changing what `==` means in each context, and a
+// structural comparison over a package's own data types is exactly the surface
+// those changes move.
+//
+// Shape of the generated function:
+//   match a { V(..) => match b { V(..) => fields..., _ => false }, ... }
+// so covering it takes each variant compared to ITSELF (the inner matching arm)
+// and to a DIFFERENT one (the inner `_`). The two loops per type do that.
+//
+// Both sides are bound to NAMES with an explicit type before comparing.
+// Comparing `Array::get(..)` results directly is the documented
+// reference-equality hole (AGENTS.md: "関数戻り値経由") -- the dispatch cannot
+// see the operand type through a call result, so `==` silently stays reference
+// equality. Measured on Token: 9/270 branches with the direct form, 270/270
+// with the bound form. The loops PASS either way, which is what makes it worth
+// spelling out here.
+//# Imports
+
+import ./regexp.vibe {
+  Re
+}
+
+//# Helpers
+
+/// Exhaustive over the DECLARATION: one arm per declared variant, no `_`.
+///
+/// This is the completeness ratchet, and it is a BUILD-time one. Pinning
+/// `Array::length(every_re())` against a literal cannot work -- that number
+/// is the array's own length, so a variant added to the enum but not to the
+/// array leaves it unchanged and the test still passes. Adding a variant here
+/// instead makes this match non-exhaustive, which the checker rejects
+/// ("non-exhaustive match: variant `X` of enum Re is not handled"), so the
+/// file stops compiling until the new variant is represented.
+fn re_tag(v: Re) -> Int {
+  match v {
+    RChar(_) => 0,
+    RDot => 1,
+    RSeq(_) => 2,
+    RAlt(_, _) => 3,
+    RStar(_) => 4,
+    RStarLazy(_) => 5,
+    RPlus(_) => 6,
+    RPlusLazy(_) => 7,
+    ROpt(_) => 8,
+    ROptLazy(_) => 9,
+    RClass(_) => 10,
+    RNClass(_) => 11,
+    RAnchorStart => 12,
+    RAnchorEnd => 13,
+    RRepeat(_, _, _) => 14,
+    RRepeatLazy(_, _, _) => 15,
+    RWordBound => 16,
+    RNotWordBound => 17,
+    RLookAhead(_) => 18,
+    RNegLookAhead(_) => 19,
+    RLookBehind(_) => 20,
+    RNegLookBehind(_) => 21,
+    RAtomic(_) => 22,
+    RCapture(_, _) => 23,
+    RBackRef(_) => 24,
+    RFlags(_, _) => 25
+  }
+}
+
+/// One literal per `Re` variant, in declaration order (#1556).
+fn every_re() -> Array[Re] {
+  [
+    RChar(7),
+    RDot,
+    RSeq([
+      RDot
+    ]),
+    RAlt(RDot, RDot),
+    RStar(RDot),
+    RStarLazy(RDot),
+    RPlus(RDot),
+    RPlusLazy(RDot),
+    ROpt(RDot),
+    ROptLazy(RDot),
+    RClass([
+      (1, 2)
+    ]),
+    RNClass([
+      (1, 2)
+    ]),
+    RAnchorStart,
+    RAnchorEnd,
+    RRepeat(RDot, 7, 7),
+    RRepeatLazy(RDot, 7, 7),
+    RWordBound,
+    RNotWordBound,
+    RLookAhead(RDot),
+    RNegLookAhead(RDot),
+    RLookBehind(RDot),
+    RNegLookBehind(RDot),
+    RAtomic(RDot),
+    RCapture(RDot, 7),
+    RBackRef(7),
+    RFlags(RDot, 7)
+  ]
+}
+
+/// The same variants rebuilt with the SAME payloads, INDEPENDENTLY constructed.
+///
+/// `every_re()` compared against itself would pass under reference equality,
+/// because both operands are the very same object out of one array -- and the
+/// negative tests pass under reference equality too, since their payloads
+/// genuinely differ. Only comparing two structurally-equal but distinct objects
+/// separates "compares fields" from "compares identity".
+fn every_re_same() -> Array[Re] {
+  [
+    RChar(7),
+    RDot,
+    RSeq([
+      RDot
+    ]),
+    RAlt(RDot, RDot),
+    RStar(RDot),
+    RStarLazy(RDot),
+    RPlus(RDot),
+    RPlusLazy(RDot),
+    ROpt(RDot),
+    ROptLazy(RDot),
+    RClass([
+      (1, 2)
+    ]),
+    RNClass([
+      (1, 2)
+    ]),
+    RAnchorStart,
+    RAnchorEnd,
+    RRepeat(RDot, 7, 7),
+    RRepeatLazy(RDot, 7, 7),
+    RWordBound,
+    RNotWordBound,
+    RLookAhead(RDot),
+    RNegLookAhead(RDot),
+    RLookBehind(RDot),
+    RNegLookBehind(RDot),
+    RAtomic(RDot),
+    RCapture(RDot, 7),
+    RBackRef(7),
+    RFlags(RDot, 7)
+  ]
+}
+
+/// The same variants rebuilt with DIFFERENT payloads, in lockstep with
+/// `every_re`. Comparing the two arrays element-wise keeps the tag fixed and
+/// varies only the fields, which is the only way into the field-comparison
+/// branches of a matched arm.
+fn every_re_alt() -> Array[Re] {
+  [
+    RChar(8),
+    RDot,
+    RSeq([
+      RDot
+    ]),
+    RAlt(RDot, RDot),
+    RStar(RDot),
+    RStarLazy(RDot),
+    RPlus(RDot),
+    RPlusLazy(RDot),
+    ROpt(RDot),
+    ROptLazy(RDot),
+    RClass([
+      (3, 4)
+    ]),
+    RNClass([
+      (3, 4)
+    ]),
+    RAnchorStart,
+    RAnchorEnd,
+    RRepeat(RDot, 8, 8),
+    RRepeatLazy(RDot, 8, 8),
+    RWordBound,
+    RNotWordBound,
+    RLookAhead(RDot),
+    RNegLookAhead(RDot),
+    RLookBehind(RDot),
+    RNegLookBehind(RDot),
+    RAtomic(RDot),
+    RCapture(RDot, 8),
+    RBackRef(8),
+    RFlags(RDot, 8)
+  ]
+}
+
+//# Tests
+
+test "Re ==: every variant is structurally equal to itself" {
+  let vs = every_re()
+  let n = Array::length(vs)
+  let mut same = 0
+  let mut i = 0
+  while i < n {
+    let a: Re = Array::get(vs, i)
+    let b: Re = Array::get(vs, i)
+    if a == b {
+      same = same + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(same, "26")
+}
+
+test "Re ==: distinct variants are never equal" {
+  let vs = every_re()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let j = if i + 1 < n {
+      i + 1
+    } else {
+      0
+    }
+    let a: Re = Array::get(vs, i)
+    let b: Re = Array::get(vs, j)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  inspect(differ, "26")
+}
+
+test "Re ==: structurally equal but distinct values are equal" {
+  let vs = every_re()
+  let same = every_re_same()
+  let n = Array::length(vs)
+  let mut equal = 0
+  let mut i = 0
+  while i < n {
+    let a: Re = Array::get(vs, i)
+    let b: Re = Array::get(same, i)
+    if a == b {
+      equal = equal + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Every variant, including the ones carrying arrays and nested values. A
+  // regression from structural to reference comparison drops this below n.
+  inspect(equal, "26")
+}
+
+test "Re: every represented variant is the declared one, in order" {
+  // `re_tag` is exhaustive over the DECLARATION (see its doc comment), so a
+  // new variant breaks compilation of this file. This pins the other half:
+  // that `every_re` holds the variants it claims to, in declaration order.
+  //
+  // `want` is the declaration index of each entry -- NOT `0..n`, because a
+  // variant this file has no sample for is omitted and leaves a gap. Writing
+  // `tag(vs[i]) == i` instead was wrong for exactly that reason, and this test
+  // is what caught it.
+  let want = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25
+  ]
+  let vs = every_re()
+  let n = Array::length(vs)
+  let mut in_order = 0
+  let mut i = 0
+  while i < n {
+    let a: Re = Array::get(vs, i)
+    if re_tag(a) == Array::get(want, i) {
+      in_order = in_order + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(Array::length(want), "26")
+  inspect(in_order, "26")
+}
+
+test "Re ==: same variant with different payloads is not equal" {
+  let vs = every_re()
+  let alt = every_re_alt()
+  let n = Array::length(vs)
+  let mut differ = 0
+  let mut i = 0
+  while i < n {
+    let a: Re = Array::get(vs, i)
+    let b: Re = Array::get(alt, i)
+    if a == b {
+      ()
+    } else {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  // Exactly the variants that CARRY a payload must differ; the nullary ones
+  // rebuild identically and must still compare equal. A derive that compared
+  // tags only would report 0 here.
+  inspect(Array::length(alt), "26")
+  inspect(differ, "8")
+}
