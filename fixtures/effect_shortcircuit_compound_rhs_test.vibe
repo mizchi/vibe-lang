@@ -1,0 +1,48 @@
+// #1536: the selected right operand of a short-circuit may now be a compound
+// -- a comparison, a nested short-circuit, a call argument. The binding it
+// produces lives inside the SELECTED branch of the lowered conditional, so
+// everything in it is strictly evaluated once that branch is taken, which is
+// exactly what the spine's linearization needs.
+//
+// `c` pins that this did not cost the bypass: the inner left operand is false,
+// so its operation never runs and `c` stays false.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn twice(value: Int) -> Int {
+  value * 2
+}
+
+let _start = () -> Int {
+  handle {
+    let a = true && (true && perform Ask::Get(1) > 0)
+    let b = true && twice(perform Ask::Get(2)) > 3
+    let c = true && (false && perform Ask::Get(9) > 0)
+    let av = if a {
+      1
+    } else {
+      0
+    }
+    let bv = if b {
+      1
+    } else {
+      0
+    }
+    let cv = if c {
+      1
+    } else {
+      0
+    }
+    av * 100 + bv * 10 + cv
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n)
+    }
+  }
+}
+
+test "effect shortcircuit compound rhs" {
+  inspect(_start(), "110")
+}

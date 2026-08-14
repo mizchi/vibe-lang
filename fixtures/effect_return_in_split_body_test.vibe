@@ -1,0 +1,56 @@
+// #1536: `return` in a body the suspend lowering splits. In a needing fn's
+// clone (and in a closure literal) `return v` means "this computation's value
+// is v" -- which is exactly what the body's TAIL means -- so the return is
+// hoisted to that tail before the split runs. It used to be left in place,
+// where the split turned it into a value handed to the driver as if it were a
+// step: that type-checked, compiled clean, and trapped at runtime.
+//
+// Four shapes: a return AFTER the suspension, an early exit BEFORE it (taken
+// and not taken), and a tail return.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn after_suspension() -> Int with Ask {
+  let a = perform Ask::Get(1)
+  if a > 0 {
+    return a * 100
+  } else {
+    ()
+  }
+  a
+}
+
+fn early(x: Int) -> Int with Ask {
+  if x < 0 {
+    return 7
+  } else {
+    ()
+  }
+  let a = perform Ask::Get(1)
+  a
+}
+
+fn tail_return() -> Int with Ask {
+  let a = perform Ask::Get(2)
+  return a * 10
+}
+
+let _start = () -> Int {
+  handle {
+    let a = after_suspension()
+    let b = early(-1)
+    let c = early(0)
+    let d = tail_return()
+    a * 10000 + b * 1000 + c * 100 + d
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+
+test "effect return in split body" {
+  inspect(_start(), "5007560")
+}

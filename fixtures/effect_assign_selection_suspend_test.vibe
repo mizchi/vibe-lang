@@ -1,0 +1,46 @@
+// #1536: the assignment mirror of the binding distribution. `x = <if/match>`
+// and `x = { stmt..; value }` move the assignment inward the same way a
+// binding does, so a suspension in a branch or after a statement prefix is on
+// the spine. For a target this spine boxed, that has to happen BEFORE
+// cellification -- once `x = v` is `Array::set(x, 0, v)`, `v` is a builtin
+// argument and floating it out would duplicate the other arguments.
+//
+// The `match` step pins capture safety: the selected arm binds `n`, shadowing
+// the outer `n = 6` inside the arm only. The continuation moved under that arm
+// still reads 6, so `acc` becomes 12 and the last operation sees 12. Capturing
+// the arm binder instead would read 5 and print 551.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut acc = 0
+    let mut log = 0
+    acc = if acc == 0 {
+      perform Ask::Get(1)
+    } else {
+      0
+    }
+    let n = 6
+    acc = match acc {
+      99 => perform Ask::Get(2),
+      n => n + 1
+    }
+    acc = acc + n
+    acc = {
+      log = log + 1
+      perform Ask::Get(acc)
+    }
+    acc * 10 + log
+  } with Ask {
+    Get(m) => {
+      let k = resume
+      k(m * 5)
+    }
+  }
+}
+
+test "effect assign selection suspend" {
+  inspect(_start(), "601")
+}

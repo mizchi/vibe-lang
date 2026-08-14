@@ -1,0 +1,48 @@
+// #1536: an `if` / `match` that IS the whole bound value distributes the
+// binding and its continuation into the selected branch, so a suspension
+// living in one branch sits on the CPS spine after all. Nothing is floated
+// out of a branch: the operation still runs only on the path that selects it.
+//
+// `steps` counts how many times each distributed continuation ran -- one per
+// binding, never twice -- and the third selection pins that the branch WITHOUT
+// the suspension is still selected normally.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut acc = 0
+    let mut steps = 0
+    let a = if acc == 0 {
+      perform Ask::Get(3)
+    } else {
+      0
+    }
+    steps = steps + 1
+    acc = acc + a
+    let b = match acc {
+      15 => perform Ask::Get(5),
+      _ => 0
+    }
+    steps = steps + 1
+    acc = acc + b
+    let c = if acc > 1000 {
+      perform Ask::Get(7)
+    } else {
+      2
+    }
+    steps = steps + 1
+    acc = acc + c
+    acc * 100 + steps
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n * 5)
+    }
+  }
+}
+
+test "effect let selection suspend" {
+  inspect(_start(), "4203")
+}

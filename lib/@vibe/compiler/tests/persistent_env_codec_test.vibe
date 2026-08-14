@@ -1,7 +1,20 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Type, TypeDef, TypeEnv, TypeExpr, env_lookup, env_selectable_type_defs, env_type_defs, trait_method_sig, trait_supers, types_equal
+  BindingOrigin,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_bind_with_origin,
+  env_lookup,
+  env_lookup_binding,
+  env_selectable_type_defs,
+  env_type_defs,
+  env_value_binding,
+  trait_method_sig,
+  trait_supers,
+  types_equal
 }
 
 import @vibe/compiler/runtime {
@@ -30,12 +43,12 @@ fn cached_polymorphic_type() -> Type {
 
 fn cached_flat_rest() -> TypeEnv {
   EnvFlat([
-    ("shadow", CtInt),
-    ("flat", CtTuple([
+    ("shadow", env_value_binding(CtInt)),
+    ("flat", env_value_binding(CtTuple([
       CtChar,
       CtBytes
-    ])),
-    ("cached", cached_polymorphic_type())
+    ]))),
+    ("cached", env_value_binding(cached_polymorphic_type()))
   ])
 }
 
@@ -58,7 +71,7 @@ fn codec_fixture() -> TypeEnv {
       TyName("T")
     ]), None))
   ]
-  EnvBind("shadow", CtString, EnvTraitImplGen("Functor", [
+  EnvBind("shadow", env_value_binding(CtString), EnvTraitImplGen("Functor", [
     "T"
   ], [
     ("T", [
@@ -77,12 +90,12 @@ fn codec_fixture() -> TypeEnv {
     "flat",
     "shadow"
   ], [
-    cached_polymorphic_type(),
-    CtTuple([
+    env_value_binding(cached_polymorphic_type()),
+    env_value_binding(CtTuple([
       CtChar,
       CtBytes
-    ]),
-    CtInt
+    ])),
+    env_value_binding(CtInt)
   ], cached_flat_rest()), [
     "T",
     "E"
@@ -166,6 +179,24 @@ fn malformed_rejected(text: String) -> Bool {
 
 //# Tests
 
+test "persistent TypeEnv v5 bytes ignore binding provenance and decode it unavailable" {
+  let plain = EnvBind("x", env_value_binding(CtInt), EnvEmpty)
+  let originated = env_bind_with_origin(EnvEmpty, "x", CtInt, BindingOriginModuleExport("/dep.vibe", "source_x"))
+  let plain_text = persistent_type_env_cache_text(plain)
+  let originated_text = persistent_type_env_cache_text(originated)
+  assert(plain_text == originated_text)
+  match parse_persistent_type_env(originated_text) {
+    Some(decoded) => match env_lookup_binding(decoded, "x") {
+      Some(binding) => match binding.origin {
+        BindingOriginUnavailable => assert(true),
+        _ => assert(false)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
 test "persistent module interface v5 round-trips every variant and trait payload" {
   let env = codec_fixture()
   let encoded = persistent_type_env_cache_text(env)
@@ -248,7 +279,7 @@ test "persistent module interface v5 round-trips enum struct and alias authority
     "Choice",
     "Box",
     "ChoiceBox"
-  ], EnvBind("Choice", CtEnum("Choice"), EnvEmpty))
+  ], EnvBind("Choice", env_value_binding(CtEnum("Choice")), EnvEmpty))
   match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
     Some(decoded) => {
       let decoded_defs = env_type_defs(decoded)
@@ -320,11 +351,11 @@ test "legacy enum carrier bytes cannot alter v5 typedef authority" {
     declared
   ], [
     "Choice"
-  ], EnvBind("Choice::__variants__", CtNamed("__variants__", [
+  ], EnvBind("Choice::__variants__", env_value_binding(CtNamed("__variants__", [
     CtNamed("Corrupt", [
       CtString
     ])
-  ]), EnvEmpty))
+  ])), EnvEmpty))
   match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
     Some(decoded) => {
       let defs = env_type_defs(decoded)
@@ -350,9 +381,9 @@ test "persistent module interface v5 rebuilds untrusted cached lookup indexes" {
     "shadow",
     "cached"
   ], [
-    CtBool,
-    CtString,
-    CtUnit
+    env_value_binding(CtBool),
+    env_value_binding(CtString),
+    env_value_binding(CtUnit)
   ], cached_flat_rest())
   match parse_persistent_type_env(persistent_type_env_cache_text(corrupt)) {
     Some(decoded) => {

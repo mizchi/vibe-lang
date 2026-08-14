@@ -6885,6 +6885,39 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_tail_shortcircuit_suspend.vibe \
   fixtures/effect_let_shortcircuit_suspend.vibe
+# #1536 selection-valued bindings: an `if` / `match` that IS the whole bound
+# value distributes the binding and the continuation into its branches. The
+# snapshots pin exact-once continuation runs, that the non-suspending branch is
+# still selected normally, that a `let mut` cell survives the distribution, and
+# that an arm binder cannot capture a name the moved continuation reads.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_let_selection_suspend_test.vibe \
+  fixtures/effect_let_selection_match_capture_test.vibe \
+  fixtures/effect_letmut_selection_suspend_test.vibe
+# #1536 block-valued bindings: `let x = { stmt..; value }` moves the binding
+# inward past the statement prefix, so the ordinary spine picks the prefix up.
+# The snapshot pins the prefix running once per binding and that a `let` inside
+# the block cannot capture the continuation's outer name when it floats.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_let_block_value_suspend_test.vibe
+# #1536 assignment mirror: `x = <if/match>` / `x = { stmt..; value }`. A boxed
+# target is reshaped before cellification, a target bound outside the spine on
+# the continuation spine; the two snapshots pin both arms agreeing.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_assign_selection_suspend_test.vibe \
+  fixtures/effect_assign_outer_selection_suspend_test.vibe
+# #1536 selection nested in a compound: the linearization names the selection
+# WHOLE instead of walking into a branch, so the binding distribution lowers it.
+# The snapshot's `order` digits pin that nothing moved across the suspension.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_compound_selection_suspend_test.vibe
+# #1536 non-tail short-circuit: named whole too, but only after asking the
+# immutable-let lowering whether it will take it (naming a form that lowering
+# declines would not converge). The snapshots pin bypass, compound RHS
+# terminals (comparison / nested short-circuit / call argument), and order.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_compound_shortcircuit_suspend_test.vibe \
+  fixtures/effect_shortcircuit_compound_rhs_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6899,18 +6932,42 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_loop_nested_break_suspend_test.vibe \
   fixtures/effect_resume_store_loop_break_test.vibe \
   fixtures/effect_loop_ctl_name_collision_test.vibe
-# #1536 boundary: generic linearization walks only positions that every
-# execution reaching a compound also reaches. Tail && / || is supported via
-# EIf, but if/match branches and a non-tail short-circuit RHS remain rejected.
-scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
-scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
-scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
-# Immutable-let short-circuit support does not recursively admit another
-# short-circuit, hand a suspending call argument to generic compound ANF, or
-# move a source return into the synthetic resume continuation.
-scps_check_reject "err_effect_let_shortcircuit_nested_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitnested"
-scps_check_reject "err_effect_let_shortcircuit_call_arg_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitcallarg"
-scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitreturn"
+# #1536 boundary: generic linearization still walks only positions that every
+# execution reaching a compound also reaches, so it never names a suspension
+# INSIDE a branch or inside a short-circuit RHS. Both are instead named WHOLE
+# (the snapshots above pin that, bypass included). A selected RHS that returns
+# stays closed -- now via the general rule below, since a `return` anywhere on
+# a split body's spine is refused before the split runs.
+scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "cannot contain a \`return\`" "letshortcircuitreturn"
+# #1536: a `return` on a split body's own spine is hoisted to the tail it
+# already denotes (in a needing fn's clone / a closure literal, `return v` IS
+# that computation's value). It used to be left in place, compile clean, and
+# trap at runtime on the path that took it. The snapshots pin all four shapes
+# and the capture-safe match-arm distribution; a `return` this hoist cannot
+# reach -- inside a loop -- is still refused (err_effect_loop_return_suspend).
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_in_split_body_test.vibe \
+  fixtures/effect_return_match_arm_split_test.vibe \
+  fixtures/effect_return_in_loop_test.vibe
+# #1536 P0: a transfer with a STATEMENT in front of it, after a resume. The
+# transfer test used to see only a BARE break/continue, so `if d { acc = v;
+# break }` was not a transfer, the continuation was not dropped, and execution
+# fell through the rewritten call and kept looping -- silently answering
+# differently than the same loop without a suspension. `scan` is 700 with and
+# without effects; it used to be 800 here.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_transfer_after_resume_test.vibe
+# `break` leaves only the INNERMOST loop, so each level records-and-breaks and
+# is followed by a guard that carries the exit outward one level at a time.
+# The snapshot covers two and three levels deep, and a return never taken.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_nested_loop_test.vibe
+# #1536: `return` in a HANDLE body means "leave the enclosing function", not
+# "the handle's value", so it is captured in a cell declared outside the handle
+# and returned after it. The snapshot pins taken / not-taken / from inside a
+# suspending loop nested in the handle body.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_in_handle_body_test.vibe
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other
