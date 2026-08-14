@@ -27,6 +27,12 @@ bash scripts/check_inline_builtin_capture.sh
 # selfbuild rather than after it.
 bash scripts/check_fixture_execution.sh
 
+# B2 parser binder-context routing is intentionally semantically inert, so its
+# no-fallback proof is structural. Keep the large source-body assertion table
+# out of the Vibe unit and run the strict scanner directly under Node.
+echo "[compiler-gate] parser binder-context spine"
+node --test scripts/parser_binder_context_spine.test.mjs
+
 # Capability-only gate for the future TDRE5 immutable cache publisher. The
 # builtin remains unused by compiler source until the bootstrap seed is bumped.
 node scripts/test_immutable_publish_plumbing.js
