@@ -1,0 +1,42 @@
+// #1536 / #1707 boundary: capturing a local closure that PERFORMS the handled
+// effect. That literal is step-split, so the capturing literal performs too and
+// is itself step-split -- handing it to `run`'s plain `(Int) -> Int` parameter
+// would make the callee return the step object as the value. Measured before
+// #1709 guarded it: 5 came back as 177.
+//
+// This is the inverse of effect_capture_inert_local_closure, and it is what
+// makes admitting the inert case sound: the proof is "not step-split AND body
+// passes the taint scan", not merely "it is a local closure".
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn run(f: (Int) -> Int, n: Int) -> Int {
+  f(n)
+}
+
+fn helper() -> Int with Ask {
+  let performer = (y: Int) -> Int with Ask {
+    perform Ask::Get(y)
+  }
+  run((y: Int) -> Int {
+    performer(y)
+  }, 1)
+}
+
+let _start = () -> Int {
+  handle {
+    helper()
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+_start()
+
+__DATA__
+{
+  "error_contains": "hand the step object back as the value"
+}
