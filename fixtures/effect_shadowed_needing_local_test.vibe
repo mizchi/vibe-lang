@@ -1,0 +1,63 @@
+// #1721 (P0, #1536 boundary): a local binding that SHADOWS a needing function
+// must be called, not the needing function's CPS clone.
+//
+// `suspend_cps_pass` matches a call's callee by NAME ONLY against the needing
+// set and retargets it to `__scps_cps_E_*`. The alpha-rename that exists to
+// make that safe (`edp_alpha_rename_shadowed`) lives in `evidence_dict_pass`,
+// which `linked_compile` runs AFTER this pass -- so this pass always sees the
+// un-renamed local. Measured 1511 where 1507 is correct, with no diagnostic:
+// `b` came back 11 (the clone performed `Ask::Get(1)` and the handler resumed
+// with 1 + 10) instead of the 7 the local closure returns.
+//
+// The fix runs the needing set through `edp_drop_shadowed_needing`, so `helper`
+// stops being a needing name program-wide and the local call is admitted as an
+// ordinary provably-inert local closure (#1710) instead of being retargeted.
+//
+// The two numbers are the pin, and they must be EQUAL:
+//   shadowed  1507  local named `helper` (shadows the needing fn)
+//   renamed   1507  local named `other`  (control -- correct on main too)
+//
+// a = 15 in both (5 + 10 through the handler); b = 7 in both (the LOCAL
+// closure's own value). Any retargeting shows up as b = 11.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn helper() -> Int with Ask {
+  perform Ask::Get(1)
+}
+
+fn shadowed() -> Int with Ask {
+  let a = perform Ask::Get(5)
+  let helper = () -> Int {
+    7
+  }
+  let b = helper()
+  a * 100 + b
+}
+
+fn renamed() -> Int with Ask {
+  let a = perform Ask::Get(5)
+  let other = () -> Int {
+    7
+  }
+  let b = other()
+  a * 100 + b
+}
+
+let _start = () -> Int {
+  handle {
+    let s = shadowed()
+    let r = renamed()
+    s * 10000 + r
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+test "effect shadowed needing local" {
+  inspect(_start(), "15071507")
+}

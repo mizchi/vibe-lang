@@ -3519,3 +3519,58 @@ perform → inert_locals → cps_locals/予約名 → 局所なら false → bui
 **教訓 (追記63 と同じものの再確認)**: 名前から宣言を引く判定は、**引く前に**その名前が
 局所で隠されていないかを問う。#1714 を直したときにこの 2 件目を探しに行ったから見つかった —
 **同じ根の穴は 1 つでは済まないと仮定して、同型の引き当てを全部数える**。
+
+### 追記65 (2026-08-14): 3 件目は判定ではなく**書き換え** — needing 名のシャドウ (#1721, P0)
+
+追記63 (#1714) / 追記64 (#1718) と同じ根の 3 件目。前 2 件は「受理するかどうか」の
+判定だったが、これは**受理した後の書き換え**が名前だけで callee を解決する。
+
+```vibe
+fn helper() -> Int with Ask { perform Ask::Get(1) }   // needing fn
+// handle body の中:
+let a = perform Ask::Get(5)
+let helper = () -> Int { 7 }      // ← needing fn を隠す inert な literal
+let b = helper()
+a * 100 + b
+```
+
+| 局所名 | 結果 |
+|---|---|
+| `other` (シャドウ無し) | **1507** ✅ |
+| `helper` (シャドウ有り) | **1511** ❌ 診断も trap も無し |
+
+`b` が 7 ではなく **11**。局所 closure ではなく **top-level `helper` の CPS clone** が
+呼ばれ、`perform Ask::Get(1)` → handler が `k(1 + 10)` を返している。
+
+#### 保険は既にあった。順番のせいで効いていなかった
+
+`edp_alpha_rename_shadowed` — 局所 binder を `__edpsh_N_<name>` へ α-rename する —
+は **まさにこれを防ぐために存在する**。しかし `evidence_dict_pass` の中にあり、
+`linked_compile` の呼び出し順は
+
+```
+suspend_cps_pass(stmts)      ← 局所名はまだ元の綴り
+  → inline_direct_performs
+  → evidence_dict_pass       ← α-rename はここ
+```
+
+**scps は必ず rename 前の木を見る。** もう一つの保険 `edp_drop_shadowed_needing`
+(#1074) も scps の needing 集合には通っていなかった。
+
+修正は `scps_needing_for` をその drop に通すだけ。スコープを追わない全体保守的な
+落とし方で、needing 関数は**適格性を失うが正しさは失わない**。
+
+#### 教訓 — 「保険がある」と「保険が効いている」は別
+
+3 件とも「名前から宣言を引く」パターンだが、**壊れ方の層が違う**:
+
+| | 引き当て | 層 |
+|---|---|---|
+| #1714 | `scps_fn_ret_ty` | iterand の**種別証明** |
+| #1718 | `scps_fn_row_of` / needing / ctor | **適格性判定** |
+| #1721 | needing (retarget) | **書き換え** |
+
+1 件目を直したときに「同型の引き当てを全部数える」と決めたから 2 件目が出て、
+2 件目で `needing` の順序を直したときに「**判定は直ったが書き換えは？**」と
+問い直したから 3 件目が出た。**パターンを見つけたら、そのパターンが現れる
+すべての層を数えるまで終わらない。**

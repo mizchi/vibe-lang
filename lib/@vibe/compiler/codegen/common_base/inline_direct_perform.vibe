@@ -8264,9 +8264,23 @@ fn scps_effect_decl_ops(ctx: (Array[Stmt], Array[(String, Array[(String, Array[T
 
 /// Top-level functions whose declared row CONTAINS eff (effectset-aware,
 /// via the same edp_row_is_exactly containment evidence_dict_pass uses).
+/// #1721 (P0): the same whole-program shadowing drop the evidence pass does.
+///
+/// This pass matches a call's callee by NAME ONLY against `needing` and
+/// retargets it to the `__scps_cps_E_*` clone. `edp_alpha_rename_shadowed`
+/// exists to make that safe, but it runs inside `evidence_dict_pass`, which
+/// `linked_compile` calls AFTER `suspend_cps_pass` -- so this pass sees the
+/// un-renamed local. A local `let helper = () -> Int { 7 }` shadowing a needing
+/// `fn helper() -> Int with Ask` had its call rewritten to the top-level
+/// function's clone: measured 1511 where 1507 is correct, no diagnostic.
+///
+/// Dropping is whole-program-conservative rather than scope-threaded, matching
+/// `edp_drop_shadowed_needing`'s own established trade (see its doc comment):
+/// a needing function whose name is ALSO reused as a binder somewhere loses its
+/// needing status here, which costs eligibility, never correctness.
 fn scps_needing_for(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), eff: String) -> Array[String] {
-  let (_, _, fn_defs, es_names, es_members_list, _) = ctx
-  edp_needing_names(fn_defs, eff, es_names, es_members_list)
+  let (stmts, _, fn_defs, es_names, es_members_list, _) = ctx
+  edp_drop_shadowed_needing(edp_needing_names(fn_defs, eff, es_names, es_members_list), stmts)
 }
 
 /// (is a known top-level fn, its declared row string -- "" for none).

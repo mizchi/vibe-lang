@@ -7006,6 +7006,12 @@ scps_check_reject "err_effect_for_shadowed_callee.vibe" "is not directly on the 
 # 110. Rename the local and the same program is (correctly) refused as an opaque
 # callee; that is now the answer for the shadowed spelling too.
 scps_check_reject "err_effect_shadowed_toplevel_callee.vibe" "cannot see through" "shadowtop"
+# #1721 P0: the third instance, in the REWRITE rather than the check. A local
+# shadowing a needing fn had its call retargeted to that fn's CPS clone, so it
+# performed instead of returning the local closure's value -- 1511 instead of
+# 1507. The fixture's two halves (shadowed / renamed) must agree.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_shadowed_needing_local_test.vibe
 # #1536: a `with e` callee is admitted when its declared parameters mention no
 # function type anywhere -- there is then no argument able to instantiate the
 # row variable, so the call cannot perform the handled effect. A callee that
