@@ -30,6 +30,15 @@ while read -r entry file label; do
   }
 done <<< "$driver_rows"
 
+# `Stream::next` is effectful and returns a Future.  A coverage probe that
+# matches the Future directly is rejected by `check_program`; cov_async_one
+# catches that exception and returns 0, making the driver look healthy while
+# the intended codegen branch stays dark.
+grep -Fq 'export let main: () -> Int with Async = () -> { match await(Stream::next' scripts/coverage/cov_async.vibe || {
+  echo "coverage_drivers_test: Stream::next probe must await inside an Async entry" >&2
+  exit 1
+}
+
 # The one way a driver can still bind a compiler value WITHOUT asking for it:
 # the production merge leaves the ENTRY file's own top-level names unrenamed
 # (`transformed_file_stmts` returns the entry's statements as-is), so a bare
