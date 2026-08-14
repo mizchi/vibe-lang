@@ -362,6 +362,47 @@ fn cc_ft_has(ft: FuncTable, name: String) -> Bool {
 /// Perceus emits no action for bare projections, so this guarded dup is the only
 /// owner-increment. Scalars are no-ops; this is NOT applied to borrow-arg0
 /// builtins (Array::get/length etc.), which do not drop their argument.
+/// #1746: does the RC raw-ABI shim (the #705/#930/#1460 group below) actually
+/// apply to this call?
+///
+/// The shim rewrites the call for the HOST IMPORT's ABI -- it untags the Int
+/// argument and, for the void half, pushes the `Unit` the import does not
+/// return. Dispatching on the NAME alone assumed the name still denotes that
+/// import. A program defining its own top-level `fn sleep(ms: Int) -> Unit`
+/// resolves it to that function instead, and the shim then emitted
+/// `call <guest fn>` followed by the extra `i64.const 0` -- a module that
+/// FAILED VALIDATION with no diagnostic at all (measured under VIBE_RC=1;
+/// VIBE_RC=0 was fine, which is why no gate saw it).
+///
+/// The discriminator is the resolved function INDEX. User functions are laid
+/// out at `fi + func_offset` (linked_compile.vibe, where
+/// `func_offset = num_imported_funcs + num_generated`), so an index below
+/// `func_offset` is an import or a generated builtin body and anything at or
+/// above it is the program's own code. This is the same test the wasm-gc
+/// backend already uses to recover a user function's table slot
+/// (`fidx - ctx.func_offset`, gc/backend_expr.vibe).
+///
+/// The return COUNT does not work here, and measuring is what showed it: the
+/// count comes from the registry row's `CtUnit`, so the import reports 1 just
+/// as a guest `-> Unit` function does. Gating on it left the shim off the real
+/// import, and `sleep(400)` then took ~795ms instead of ~400ms -- the exact
+/// doubling #930 recorded when the shim was missing.
+///
+/// Only `sleep` is reachable today: for the five `::`-qualified names the
+/// checker demands their capability row at the call site and a plain guest
+/// function does not discharge it (`effect row mismatch for 'main': missing
+/// { Stdin::... }`, measured for all five). `sleep` gets through because for an
+/// UNQUALIFIED name the checker does honour the user's shadowing definition.
+/// The index test covers all seven anyway rather than relying on that.
+fn cc_raw_abi_shim_applies(ft: FuncTable, func_offset: Int, fname: String) -> Bool with Exception {
+  if fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" || fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream" {
+    let (idx, _, _) = resolve_func(ft, fname)
+    idx < func_offset
+  } else {
+    false
+  }
+}
+
 fn cc_is_projection(e: Expr) -> Bool {
   match e {
     EDot(_, _, _, _) => true,
@@ -4806,13 +4847,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       nl
     }
-    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" ||
     // #1460: the `Console` spellings share the imports, so they inherit the
     // gap too -- they are registered into the func table the same way, with
     // no shim. Caught by running the probe rather than by a type error: the
     // tagged byte is invisible output (write_char(65) sends 130, a control
     // character), so the calls looked like silent no-ops.
-    fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream") {
+    // #1746: the name list moved into cc_raw_abi_shim_applies, which also
+    // checks the name still DENOTES the host import -- see its doc comment.
+    else if ctx.enable_rc && cc_raw_abi_shim_applies(ctx.func_table, ctx.func_offset, fname) {
       // #930: same raw-ABI shim shape as the #705 Fs::exists family and the
       // #865 vibe_process_exit_raw case above -- these three were registered
       // straight into the func table (linked_compile's name->import map) with
