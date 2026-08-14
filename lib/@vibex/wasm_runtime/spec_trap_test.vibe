@@ -1,0 +1,169 @@
+// Trap conditions (#1745).
+//
+// These were found by running the SAME module bytes through this interpreter
+// and through the host platform's WebAssembly engine and comparing: 538 cases
+// over the i32 opcodes, memory, and select, of which 532 already agreed. The
+// six that did not are pinned here, plus the negative-address case that used
+// to kill the host process before it could be compared at all.
+//
+// Expected results come from the wasm spec (and agree with the engine), not
+// from this implementation. A trap is `exit_code = 1` from
+// `exec_module_with_args`; the accompanying value is meaningless.
+//
+// Why none of this showed up before: every other test here asks only "what
+// value came back". A read past the end of memory returned 0, which is a
+// perfectly ordinary value, so "the guest read out of bounds" and "that byte
+// really was 0" were the same answer.
+
+//# Imports
+
+import ./wasm_runtime.vibe {
+  exec_module_with_args
+}
+
+import @vibex/wasm_wat_encoder {
+  compile
+}
+
+//# Functions
+
+fn args1(a: Int) -> Array[Int] {
+  let xs = Array::slice([
+    0
+  ], 0, 0)
+  Array::push(xs, a)
+  xs
+}
+
+fn args0() -> Array[Int] {
+  Array::slice([
+    0
+  ], 0, 0)
+}
+
+fn args2(a: Int, b: Int) -> Array[Int] {
+  let xs = Array::slice([
+    0
+  ], 0, 0)
+  Array::push(xs, a)
+  Array::push(xs, b)
+  xs
+}
+
+/// `true` when the call trapped. `exec_module_with_args` reports a trap as a
+/// non-zero exit code, the same channel division by zero already used.
+fn traps(wasm: Bytes, args: Array[Int]) -> Bool {
+  let (ec, _) = exec_module_with_args(wasm, "f", args)
+  ec != 0
+}
+
+fn value(wasm: Bytes, args: Array[Int]) -> Int {
+  let (ec, res) = exec_module_with_args(wasm, "f", args)
+  if ec != 0 {
+    -99999
+  } else {
+    res
+  }
+}
+
+/// One linear memory of a single page, so the last in-bounds i32 address is
+/// 65536 - 4 = 65532.
+fn mem_module(body: String) -> Bytes {
+  compile("(module (memory 1) (func (export \"f\") (param i32) (result i32) " + body + "))")
+}
+
+fn load_i32_module() -> Bytes {
+  mem_module("local.get 0 i32.load")
+}
+
+fn load8_u_module() -> Bytes {
+  mem_module("local.get 0 i32.load8_u")
+}
+
+fn store_i32_module() -> Bytes {
+  mem_module("local.get 0 i32.const 7 i32.store local.get 0 i32.load")
+}
+
+fn div_s_module() -> Bytes {
+  compile("(module (func (export \"f\") (param i32 i32) (result i32) local.get 0 local.get 1 i32.div_s))")
+}
+
+fn folded_int_min_div_s_module() -> Bytes {
+  compile("(module (func (export \"f\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const -1 i32.div_s))")
+}
+
+//# Tests
+
+test "spec trap: i32.load inside the page does not trap" {
+  assert(value(load_i32_module(), args1(0)) == 0)
+  assert(value(load_i32_module(), args1(65532)) == 0)
+}
+
+test "spec trap: i32.load straddling the end of memory traps" {
+  // Starts in bounds, ends one byte past. Returned 0 before -- the case a
+  // check written as `addr < length` cannot see.
+  assert(traps(load_i32_module(), args1(65533)))
+  assert(traps(load_i32_module(), args1(65534)))
+  assert(traps(load_i32_module(), args1(65535)))
+}
+
+test "spec trap: i32.load past the end of memory traps" {
+  assert(traps(load_i32_module(), args1(65536)))
+  assert(traps(load_i32_module(), args1(70000)))
+}
+
+test "spec trap: a wasm address is unsigned, so a negative host value is huge" {
+  // wasm memory addresses are unsigned i32: -1 on the operand stack means
+  // 0xFFFFFFFF. Indexing `Bytes` at -1 used to trap the HOST -- an
+  // uncatchable process exit driven by a value the guest picks.
+  assert(traps(load_i32_module(), args1(-1)))
+  assert(traps(load_i32_module(), args1(-4)))
+  assert(traps(load_i32_module(), args1(-2147483648)))
+}
+
+test "spec trap: narrower loads use their own width" {
+  // 65535 is the last addressable byte, so a byte load there is fine while an
+  // i32 load at the same address is not.
+  assert(value(load8_u_module(), args1(65535)) == 0)
+  assert(traps(load8_u_module(), args1(65536)))
+  assert(traps(load8_u_module(), args1(-1)))
+}
+
+test "spec trap: out-of-bounds stores trap instead of being discarded" {
+  // The store used to be silently dropped, so the guest saw a successful write
+  // that never happened.
+  assert(value(store_i32_module(), args1(0)) == 7)
+  assert(value(store_i32_module(), args1(65532)) == 7)
+  assert(traps(store_i32_module(), args1(65533)))
+  assert(traps(store_i32_module(), args1(65536)))
+  assert(traps(store_i32_module(), args1(-1)))
+}
+
+test "spec trap: i32.div_s traps on overflow, not just on zero" {
+  // The spec traps div_s when the divisor is zero OR the division overflows.
+  // Only the zero case was implemented, so INT_MIN / -1 returned the
+  // two's-complement wrap (INT_MIN) where the engine traps.
+  assert(traps(div_s_module(), args2(-2147483648, -1)))
+  assert(traps(div_s_module(), args2(7, 0)))
+  assert(traps(div_s_module(), args2(-2147483648, 0)))
+  // Neighbours that must NOT trap, so the new condition is not over-broad.
+  assert(value(div_s_module(), args2(-2147483648, 1)) == -2147483648)
+  assert(value(div_s_module(), args2(-2147483647, -1)) == 2147483647)
+  assert(value(div_s_module(), args2(2147483647, -1)) == -2147483647)
+  assert(value(div_s_module(), args2(-7, -1)) == 7)
+}
+
+test "spec trap: i32.div_s normalizes computed operands before overflow check" {
+  // i32.add leaves 0x80000000 in the host stack as positive 2147483648.
+  // div_s must interpret that low-32-bit value as signed INT_MIN.
+  assert(traps(folded_int_min_div_s_module(), args0()))
+}
+
+test "spec trap: i32.rem_s does NOT trap on overflow" {
+  // Same operands as the div_s overflow case. The spec singles out div_s
+  // here: rem_s(INT_MIN, -1) is 0, not a trap.
+  let rem =
+  compile("(module (func (export \"f\") (param i32 i32) (result i32) local.get 0 local.get 1 i32.rem_s))")
+  assert(value(rem, args2(-2147483648, -1)) == 0)
+  assert(traps(rem, args2(7, 0)))
+}
