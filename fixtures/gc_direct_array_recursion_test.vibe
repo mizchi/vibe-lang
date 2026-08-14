@@ -1,0 +1,43 @@
+// #1541 recursion / SCC characterization: the direct Array[Int] reference lane
+// crosses self-recursive and mutually recursive call boundaries. The evidence
+// table is built for the whole component before any body is analyzed, so a
+// callee that is not yet defined at its call site resolves the same way as a
+// forward one -- but nothing pinned that, so this fixture does.
+//
+// One native allocation for the whole run: the reference is threaded through
+// every recursive frame rather than materialized per call.
+
+fn fill_from(values: Array[Int], index: Int) -> Unit {
+  if index < Array::length(values) {
+    Array::set(values, index, index * 2)
+    fill_from(values, index + 1)
+  } else {
+    ()
+  }
+}
+
+fn bump_then_recur(values: Array[Int], n: Int) -> Unit {
+  Array::set(values, 0, Array::get(values, 0) + 1)
+  recur_while_positive(values, n)
+}
+
+fn recur_while_positive(values: Array[Int], n: Int) -> Unit {
+  if n <= 0 {
+    ()
+  } else {
+    bump_then_recur(values, n - 1)
+  }
+}
+
+test "gc direct array reference crosses recursive and mutually recursive calls" {
+  let xs = [
+    0,
+    0,
+    0
+  ]
+  fill_from(xs, 0)
+  inspect(Array::get(xs, 1), "2")
+  inspect(Array::get(xs, 2), "4")
+  recur_while_positive(xs, 3)
+  inspect(Array::get(xs, 0), "3")
+}
