@@ -468,6 +468,10 @@ Array::map(xs, _ * 2)
 point.x
 tuple.0
 arr[0]
+arr[:]
+arr[:end]
+arr[start:]
+arr[start:end]
 map_value["key"]
 arr[0] = value
 ```
@@ -479,6 +483,13 @@ that rewrite only when it can recover the receiver type locally, and otherwise
 leaves the dot form unchanged rather than guessing. Builtins use qualified or
 pipe-style calls (for example `String::length(s)`), while a function stored in
 a field must be invoked as `(obj.callback)(args)`.
+
+Slice syntax accepts exactly the four forms `value[:]`, `value[:end]`,
+`value[start:]`, and `value[start:end]`. The receiver must be a `String`,
+`Bytes`, or `Array[T]`; the result has the same type as the receiver (including
+the `T` in `Array[T]`). An omitted start means `0`, and an omitted end means the
+receiver's length. Both explicit bounds are `Int`. String bounds are byte
+offsets, not Unicode code-point or grapheme offsets.
 
 ### Collections
 

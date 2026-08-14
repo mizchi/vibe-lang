@@ -729,6 +729,33 @@ fn head_kind(t: Type) -> Int {
   }
 }
 
+/// The surface slice forms lower to `__slice(receiver, start, end)`. Runtime
+/// dispatch supports exactly these three receiver representations and returns
+/// the same representation (including an Array's element slot).
+fn slice_result_type(receiver: Type) -> Type {
+  match receiver {
+    CtString => CtString,
+    CtBytes => CtBytes,
+    CtArray(elem) => CtArray(elem),
+    _ => CtUnknown
+  }
+}
+
+/// Unknown is retained only when checking THIS receiver expression already
+/// emitted a diagnostic. `CtUnknown` is also a legitimate result of tolerant
+/// builtins such as `iter_get`, so accepting every unknown receiver would leave
+/// `iter_get(xs, 0)[:]` to unsafe runtime representation dispatch (#1682).
+/// A fresh/generic/named type has no Sliceable bound in the language either.
+fn slice_receiver_is_invalid(receiver: Type, receiver_had_error: Bool) -> Bool {
+  match receiver {
+    CtString => false,
+    CtBytes => false,
+    CtArray(_) => false,
+    CtUnknown => !receiver_had_error,
+    _ => true
+  }
+}
+
 /// #827: `Stream[T]` is `CtNamed` (head_kind 0 = tolerated), so the Array
 /// builtins' receiver head check let `Array::length(stream)` / `Array::get(s,
 /// 0)` through — observably leaking the eager Array-backed representation
@@ -4510,6 +4537,40 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+        } else if name == "__slice" && Array::length(args) == 3 {
+          // #1682: the old fallback signature was
+          // `(CtUnknown, Int, Int) -> CtUnknown`, so both the receiver and
+          // result unified with anything. In particular
+          // `let n: Int = "hello"[0:2]` checked clean and then performed
+          // pointer arithmetic at runtime. Mirror the runtime's three-way
+          // dispatch explicitly and preserve an Array receiver's element type.
+          let receiver_errors_before = Array::length(errors)
+          let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let receiver_had_error = Array::length(errors) > receiver_errors_before
+          let (start_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, start_ty), s2, errors, "slice start must be Int", call_off)
+          let (end_ty, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2b, c2, errors, tytab, capture, lane)
+          let s3b = check_assignable(CtInt, subst_apply(s3, end_ty), s3, errors, "slice end must be Int", call_off)
+          let receiver = subst_apply(s3b, obj_ty)
+          if slice_receiver_is_invalid(receiver, receiver_had_error) {
+            Array::push(errors, String::concat("slice receiver must be String, Bytes, or Array, got ", String::concat(type_to_string(receiver), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          (tab_call_ty(tytab, call_off, slice_result_type(receiver), capture, lane), s3b, c3)
+        } else if name == "__len" && Array::length(args) == 1 {
+          // Open-ended slices synthesize `__len(receiver)`. Keep its accepted
+          // receiver set identical to `__slice` and the runtime dispatch.
+          let receiver_errors_before = Array::length(errors)
+          let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let receiver_had_error = Array::length(errors) > receiver_errors_before
+          let receiver = subst_apply(s1, obj_ty)
+          if slice_receiver_is_invalid(receiver, receiver_had_error) {
+            Array::push(errors, String::concat("slice receiver must be String, Bytes, or Array, got ", String::concat(type_to_string(receiver), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
         } else if name == "ArrayBuilder::new" && Array::length(args) == 0 {
           // #938: the builder ops were typed all-CtUnknown, so
           // `ArrayBuilder::push(b, 1); ArrayBuilder::push(b, "two")` compiled

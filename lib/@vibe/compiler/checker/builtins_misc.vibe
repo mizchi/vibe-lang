@@ -91,21 +91,6 @@ fn lookup_throw(name: String) -> Option[Type] {
   else None
 }
 
-fn misc_three_params(a: Type, b: Type, c: Type) -> Array[Type] {
-  let arr = misc_no_params()
-  Array::push(arr, a)
-  Array::push(arr, b)
-  Array::push(arr, c)
-  arr
-}
-
-fn lookup_slice(name: String) -> Option[Type] {
-  if name == "__slice" {
-    Some(CtFn(misc_three_params(CtUnknown, CtInt, CtInt), CtUnknown, None))
-  }
-  else None
-}
-
 /// #1374: the static type name of the payload of the throw currently being
 /// handled, or "" when the throw site's payload type was not syntactically
 /// resolvable. Only meaningful INSIDE an exception handler arm.
@@ -128,13 +113,6 @@ fn lookup_slice(name: String) -> Option[Type] {
 fn lookup_exn_kind(name: String) -> Option[Type] {
   if name == "__exn_kind" || name == "__exn_message" {
     Some(CtFn(misc_no_params(), CtString, None))
-  }
-  else None
-}
-
-fn lookup_len(name: String) -> Option[Type] {
-  if name == "__len" {
-    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
   }
   else None
 }
@@ -166,10 +144,11 @@ fn lookup_misc_group_a(name: String) -> Option[Type] {
       Some(t) => Some(t),
       None => match lookup_exn_kind(name) {
         Some(t) => Some(t),
-        None => match lookup_len(name) {
-          Some(t) => Some(t),
-          None => lookup_index(name)
-        }
+        // `__slice` / `__len` are deliberately NOT first-class builtins.
+        // Their direct parser-generated calls are type-directed in checker.vibe;
+        // exposing an all-Unknown function signature here would let an alias
+        // bypass those receiver and same-result-type checks (#1682).
+        None => lookup_index(name)
       }
     }
   }
@@ -290,16 +269,13 @@ fn lookup_misc_group_f(name: String) -> Option[Type] {
 export fn lookup_misc(name: String) -> Option[Type] {
   match lookup_misc_group_a(name) {
     Some(t) => Some(t),
-    None => match lookup_slice(name) {
+    None => match lookup_misc_group_c(name) {
       Some(t) => Some(t),
-      None => match lookup_misc_group_c(name) {
+      None => match lookup_misc_group_d(name) {
         Some(t) => Some(t),
-        None => match lookup_misc_group_d(name) {
+        None => match lookup_misc_group_e(name) {
           Some(t) => Some(t),
-          None => match lookup_misc_group_e(name) {
-            Some(t) => Some(t),
-            None => lookup_misc_group_f(name)
-          }
+          None => lookup_misc_group_f(name)
         }
       }
     }

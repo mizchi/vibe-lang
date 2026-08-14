@@ -331,6 +331,21 @@ Array::fold(xs, 0, _ + _)
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
 
+Slice is a postfix `[]` form with four spellings:
+
+```vibe
+let s = "hello"
+let whole: String = s[:]       // start = 0, end = length
+let prefix: String = s[:2]     // start = 0
+let suffix: String = s[2:]     // end = length
+let middle: String = s[1:4]
+```
+
+The receiver must be `String`, `Bytes`, or `Array[T]`, and the result has the
+same type as the receiver. Explicit `start` and `end` values are `Int`.
+`String` slicing uses byte offsets; it does not imply Unicode code-point or
+grapheme boundaries.
+
 ### `Array` / `Bytes` の `==` (#1526)
 
 ランタイムの `eq` は型を見ないので、配列の `==` は**コンパイル時に要素型を
