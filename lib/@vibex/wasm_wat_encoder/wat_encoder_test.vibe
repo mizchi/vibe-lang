@@ -16,6 +16,41 @@ fn check_magic(bytes: Bytes) -> Bool {
   }
 }
 
+fn hex1(d: Int) -> String {
+  if d < 10 {
+    String::from_char_code(48 + d)
+  } else {
+    String::from_char_code(55 + d)
+  }
+}
+
+fn hex2(n: Int) -> String {
+  String::concat(hex1((n>>4)&15), hex1(n&15))
+}
+
+/// Encode `(f32.const <lit>)` and return the 4 literal bytes as big-endian
+/// hex -- the IEEE-754 bit pattern the module actually carries, which is the
+/// part every other float test here leaves unchecked.
+fn f32_const_bits(lit: String) -> String {
+  let src = String::concat(String::concat("(module (func (export \"f\") (result f32) f32.const ", lit), "))",)
+  let bytes = compile(src)
+  let len = Bytes::length(bytes)
+  let mut i = 0
+  let mut out = "NOT-FOUND"
+  while i + 5 < len {
+    // 0x43 is f32.const; in this one-instruction body it is followed by the 4
+    // literal bytes and then 0x0B (end). Requiring the 0x0B keeps a stray 0x43
+    // length or index byte from matching.
+    if bytes[i] == 0x43 && bytes[i + 5] == 0x0B {
+      out = String::concat(String::concat(hex2(bytes[i + 4]), hex2(bytes[i + 3])), String::concat(hex2(bytes[i + 2]), hex2(bytes[i + 1])),)
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
 fn find_export(bytes: Bytes, name: String) -> Bool {
   let len = Bytes::length(bytes)
   let mut i = 8
@@ -300,6 +335,47 @@ test "f32 const" {
   assert(check_magic(bytes))
   assert(check_sections_ordered(bytes))
   assert(find_export(bytes, "f"))
+}
+
+// The test above -- and every other float test here -- only checks that a
+// module came out with the right shape. None of them look at the literal
+// bytes, so the encoder was free to emit a different number than the source
+// asked for, which is exactly what it did: f64->f32 narrowing truncated the
+// mantissa instead of rounding to nearest-even, and flushed f32 subnormals to
+// zero. `f32.const 1.5` is exactly representable, so the one value under test
+// could not show either bug.
+//
+// Expected bit patterns come from IEEE-754, not from this implementation.
+test "f32 const literal bits: round to nearest, ties to even" {
+  // Exactly representable -- unchanged by rounding.
+  inspect(f32_const_bits("1.5"), "3FC00000")
+  inspect(f32_const_bits("2.5"), "40200000")
+  inspect(f32_const_bits("0.0"), "00000000")
+  // Not representable: the discarded bits round the mantissa UP. Truncation
+  // produced 3DCCCCCC / 3E4CCCCC / 40490FCF here, each 1 ULP low.
+  inspect(f32_const_bits("0.1"), "3DCCCCCD")
+  inspect(f32_const_bits("0.2"), "3E4CCCCD")
+  inspect(f32_const_bits("3.14159"), "40490FD0")
+  inspect(f32_const_bits("-0.1"), "BDCCCCCD")
+  // A tie: 16777217 sits halfway between two f32s, and ties-to-even picks the
+  // one with an even mantissa (16777216).
+  inspect(f32_const_bits("16777217.0"), "4B800000")
+}
+
+test "f32 const literal bits: subnormals and overflow" {
+  // Below the smallest normal f32 (2^-126) but above zero. These were all
+  // flushed to 00000000.
+  inspect(f32_const_bits("1e-40"), "000116C2")
+  inspect(f32_const_bits("1e-45"), "00000001")
+  // 1.5e-45 is under the midpoint between the first two subnormals
+  // (2.1e-45), so it rounds DOWN to the first one.
+  inspect(f32_const_bits("1.5e-45"), "00000001")
+  inspect(f32_const_bits("2.8e-45"), "00000002")
+  // Genuinely too small to represent.
+  inspect(f32_const_bits("1e-46"), "00000000")
+  // The largest finite f32, and the first value that overflows to infinity.
+  inspect(f32_const_bits("3.4028235e38"), "7F7FFFFF")
+  inspect(f32_const_bits("3.5e38"), "7F800000")
 }
 
 test "f64 arithmetic" {
