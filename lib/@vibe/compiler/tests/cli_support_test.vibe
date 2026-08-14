@@ -333,12 +333,19 @@ test "check_linked_file: eligible handle still checks clean (#1511)" {
 }
 
 /// #1536(c): the suspend class (an arm capturing `resume` as a value) with a
-/// perform OFF the eligible spine — inside a `for` form (docs/cheatsheet.md
-/// 制約: loop 内の perform は compile error). suspend_cps_pass rejects this at
-/// codegen; check_linked_file must now surface the same error.
+/// perform OFF the eligible spine — inside a `for` form whose iterand proves
+/// nothing. suspend_cps_pass rejects this at codegen; check_linked_file must
+/// surface the same error.
+///
+/// The iterand matters. A `for` over a PROVED Array/String is rewritten to the
+/// indexed while form and accepted (#1536: a parameter annotation, an array or
+/// string literal, or a call whose callee declares the return type). Codegen
+/// decides String-ness at RUN TIME (#807), so an iterand it cannot prove — here
+/// a call to a BUILTIN, which has no top-level `fn` to read a return type off —
+/// keeps the refusal, and that is what this test pins.
 test "check_linked_file: suspend-class handle with perform in a for loop fails at check (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_ineligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    for j in [1, 2] {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    for j in Array::concat([1], [2]) {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""

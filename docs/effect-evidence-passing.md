@@ -3407,3 +3407,57 @@ perform することになり、それを plain な param へ渡す形は追記6
 
 **教訓**: 「広げたのに効かない」ときは、**その集合が目的の位置まで実際に届いているか**を疑う。
 診断の `here:` 節がどの呼び出しで落ちたかを名指ししてくれるので、そこから逆に辿るのが速い。
+
+### 追記63 (2026-08-14): iterand の自己証明を 2 つ足し、その証明が嘘をつく穴 (#1714, P0) を塞ぐ
+
+追記60 で `for` の iterand が **CALL** のとき callee の宣言戻り値型で種別を証明できる
+ようにした。今回はその証明が**届いていなかった 2 つの形**に広げ、同時にその証明が
+**黙って誤る** 1 つの形を塞いだ。
+
+#### 広げた 2 つ
+
+| 形 | 証明 |
+|---|---|
+| `for x in [1, 2]` / `for c in "ab"` | **リテラルが自分で綴っている** — 注釈も callee 引きも要らない |
+| `let ys = items()` → `for y in ys` | 追記60 と同じ証拠を、束縛された**名前**まで届かせる |
+
+前者は `scps_elim_for_walk` の iterand 判定に `EArray` / `EString` を足しただけ。後者は
+`scps_array_names_with` / `scps_string_names_with` に `ctx` を渡し、初期化式が
+`ECall(EIdent(cn), ..)` なら `scps_fn_ret_ty` を引くようにした (`ELet` は注釈スロットを
+持たないので、これまで名前側の証明はリテラルだけだった)。
+
+snapshot は**受理ではなく意味論**を留めている (`effect_for_proved_iterand_suspend_test.vibe`):
+文字列側の期待値は `107 + 108` = **char code** であって index (`0 + 1`) ではない。片方の
+lowering がもう片方の indexing を選んだ瞬間に落ちる。
+
+#### 塞いだ 1 つ — #1714
+
+`scps_fn_ret_ty` は **module の top-level 文**を名前で引く。スコープを見ていないので、
+同じ綴りの**局所束縛**があると別の関数について答える。
+
+```vibe
+fn items() -> Array[Int] { [1, 2] }
+// handle body の中:
+let items = () -> String { "ab" }
+for z in items() { acc = acc + perform Ask::Get(z) }
+```
+
+正しい答えは **215**。guard を外した stage2 の実測は **0** — 診断も trap も無い。`for` が
+`Array::length` / `Array::get` の indexed while 形に落ち、String の
+`(offset << 32) | length` fat pointer を heap pointer として読んでいる。#807 が存在する
+理由そのものの壊れ方で、triage の P0 に当たる。
+
+`main` の 2 つの受理が重なったところに出る: 追記60 (#1705) の callee-return 証明と、
+追記62 (#1710) の inert local closure 呼び出しの受理。**どちらか片方だけでは踏めない** —
+これが「個々には健全な緩和が、重なって初めて silent-wrong を作る」実例。
+
+guard は `scps_call_ret_ty` に置いた**スコープ盲な `scps_binds_name(root, cn)` プローブ**。
+歩いている式のどこかに `cn` を束縛する binder があれば証明を捨てる。無関係な枝の束縛でも
+数えるので**過剰に refuse する**が、**過剰に accept はしない** — このパスが倒れるべき向き。
+`root` (walk に渡された式そのもの) を再帰へそのまま通すために、walker を
+`scps_elim_for_walk` に改名して薄い入口 `scps_elim_array_for` を残した。
+
+**教訓**: 名前から宣言を引く証明を足すときは、**その名前が局所で隠されていないか**を必ず
+一緒に問う。ここでは証明を足した PR (#1705) 単体では踏めず、無関係に見える別の緩和
+(#1710) が入った後に初めて到達可能になった。緩和は**単独ではなく組み合わせで**健全性を
+見る必要がある。

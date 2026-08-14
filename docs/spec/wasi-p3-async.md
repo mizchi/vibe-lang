@@ -196,11 +196,17 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   「囲む関数から抜ける」意味なので **cell を handle の外に置いて handle の後で返す**。
   **寄せきれない `return` が残ればその body は refuse される** (追記54) ので、この書き換えが
   不完全であることのコストは拒否であって miscompile ではない
-  、**Array と構文的に示せる `for-in`** (`Array[..]` 注釈の引数 / 配列リテラル束縛。
-  split の前に indexed while 形へ落とす。示せない iterand — 特に String — は
-  書き換えない: codegen は実行時に String を判別して byte を materialize するので
-  (#807)、書き換えれば 0 回反復で黙って誤る、追記58)
-- **不適格**: **Array と示せない `for` 形**、**選ばれた `&&` / `||` 右辺が
+  、**iterand の種別を構文的に示せる `for-in`** (`Array[..]` / `String` 注釈の引数、
+  配列 / 文字列リテラルの束縛、**iterand 位置のリテラル** (`for x in [1, 2]` /
+  `for c in "ab"`)、宣言戻り値型を持つ callee への**呼び出し** — iterand 位置でも、
+  その呼び出しに束縛された名前経由でも。split の前に Array なら indexed while 形、
+  String なら `String::char_code_at` 形へ落とす。示せない iterand は書き換えない:
+  codegen は実行時に String を判別して byte を materialize するので (#807)、
+  Array 形へ書き換えれば 0 回反復で黙って誤る、追記58/60/63)。
+  **callee 名の引き当てはスコープ盲な binder プローブで守る** — 同じ綴りの局所束縛が
+  歩いている式のどこかにあれば証明を捨てる。守らないと top-level の宣言を信じて
+  String を Array として index し、診断も trap も無く誤答する (#1714、追記63)
+- **不適格**: **種別を示せない `for` 形**、**選ばれた `&&` / `||` 右辺が
   `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested

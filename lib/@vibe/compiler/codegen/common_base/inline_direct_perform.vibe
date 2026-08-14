@@ -10783,6 +10783,33 @@ fn scps_ty_is_string(ty: Option[TypeExpr]) -> Bool {
   }
 }
 
+/// #1536: the declared return type of `v`, when `v` is a call to a top-level
+/// function named by a bare identifier.
+///
+/// The `scps_binds_name` probe is the soundness guard, not a nicety (#1714,
+/// P0 -- measured answering 0 where 215 is correct, with no diagnostic).
+/// `scps_fn_ret_ty` looks a name up in the module's top-level statements, so a
+/// LOCAL binding of the same spelling -- `let make = () -> "s"` shadowing a
+/// top-level `fn make() -> Array[Int]` -- would answer about the wrong
+/// function and hand the walk a proof that indexes a String with `Array::get`.
+/// The probe is deliberately scope-blind: any binder anywhere in the walked
+/// expression that spells `cn` disqualifies the proof. That over-refuses (a
+/// binding in an unrelated branch counts) and never over-accepts, which is the
+/// direction this pass has to err in.
+fn scps_call_ret_ty(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Option[TypeExpr] {
+  match v {
+    ECall(callee, _, _) => match callee {
+      EIdent(cn, _) => if scps_binds_name(root, cn) {
+        None
+      } else {
+        scps_fn_ret_ty(ctx, cn)
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
 fn scps_string_names_seed(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   let out = array_empty_str()
   let mut i = 0
@@ -10798,7 +10825,7 @@ fn scps_string_names_seed(params: Array[(String, Option[TypeExpr])]) -> Array[St
   out
 }
 
-fn scps_string_names_with(known: Array[String], nm: String, v: Expr, ty: Option[TypeExpr]) -> Array[String] {
+fn scps_string_names_with(known: Array[String], nm: String, v: Expr, ty: Option[TypeExpr], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Array[String] {
   let out = array_empty_str()
   let mut i = 0
   while i < Array::length(known) {
@@ -10812,7 +10839,7 @@ fn scps_string_names_with(known: Array[String], nm: String, v: Expr, ty: Option[
   }
   let proved = match v {
     EString(_) => true,
-    _ => scps_ty_is_string(ty)
+    _ => scps_ty_is_string(ty) || scps_ty_is_string(scps_call_ret_ty(v, ctx, root))
   }
   if proved {
     Array::push(out, nm)
@@ -10858,7 +10885,7 @@ fn scps_array_names_seed(params: Array[(String, Option[TypeExpr])]) -> Array[Str
   out
 }
 
-fn scps_array_names_with(known: Array[String], nm: String, v: Expr, ty: Option[TypeExpr]) -> Array[String] {
+fn scps_array_names_with(known: Array[String], nm: String, v: Expr, ty: Option[TypeExpr], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Array[String] {
   let out = array_empty_str()
   let mut i = 0
   while i < Array::length(known) {
@@ -10872,7 +10899,7 @@ fn scps_array_names_with(known: Array[String], nm: String, v: Expr, ty: Option[T
   }
   let proved = match v {
     EArray(_) => true,
-    _ => scps_ty_is_array(ty)
+    _ => scps_ty_is_array(ty) || scps_ty_is_array(scps_call_ret_ty(v, ctx, root))
   }
   if proved {
     Array::push(out, nm)
@@ -10920,7 +10947,14 @@ fn scps_array_for_rewrite(name: String, arr: String, body: Expr, iname: String) 
 /// Walk the spine, tracking which names are proved arrays, and rewrite the
 /// statement-position `for` loops over them. `ctr` keeps generated index names
 /// distinct between sibling loops.
+/// Walk entry: `root` is the whole expression this walk was handed, and is
+/// threaded down unchanged so the deep cases can run the scope-blind shadowing
+/// probe below against it.
 fn scps_elim_array_for(e: Expr, known: Array[String], kstr: Array[String], site: Int, ctr: Array[Int], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Expr {
+  scps_elim_for_walk(e, known, kstr, site, ctr, ctx, e)
+}
+
+fn scps_elim_for_walk(e: Expr, known: Array[String], kstr: Array[String], site: Int, ctr: Array[Int], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Expr {
   match e {
     ESeq(a, b) => match a {
       EForIn(nm, idx, it, fbody) => {
@@ -10947,19 +10981,24 @@ fn scps_elim_array_for(e: Expr, known: Array[String], kstr: Array[String], site:
         // #1536: a CALL iterand is proved by the callee's declared return type.
         // The value is bound once before the loop, exactly as `for` evaluates
         // its iterand once -- the name-based cases already have a name to reuse.
-        let callret = match it {
-          ECall(callee, _, _) => match callee {
-            EIdent(cn, _) => scps_fn_ret_ty(ctx, cn),
-            _ => None
-          },
-          _ => None
+        let callret = scps_call_ret_ty(it, ctx, root)
+        // #1536: a LITERAL iterand proves itself. `for x in [1, 2, 3]` and
+        // `for c in "abc"` carry their kind in the syntax, so they need no
+        // annotation and no callee lookup.
+        let lit_is_arr = match it {
+          EArray(_) => true,
+          _ => false
         }
-        let call_is_arr = scps_ty_is_array(callret)
-        let call_is_str = scps_ty_is_string(callret)
+        let lit_is_str = match it {
+          EString(_) => true,
+          _ => false
+        }
+        let call_is_arr = scps_ty_is_array(callret) || lit_is_arr
+        let call_is_str = scps_ty_is_string(callret) || lit_is_str
         if indexed {
-          ESeq(a, scps_elim_array_for(b, known, kstr, site, ctr, ctx))
+          ESeq(a, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root))
         } else if arr == "" && sname == "" && !call_is_arr && !call_is_str {
-          ESeq(a, scps_elim_array_for(b, known, kstr, site, ctr, ctx))
+          ESeq(a, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root))
         } else {
           // One fresh counter per loop: the ordinal keeps sibling loops apart
           // and the scope-blind probe keeps it clear of anything the user
@@ -10967,7 +11006,7 @@ fn scps_elim_array_for(e: Expr, known: Array[String], kstr: Array[String], site:
           let n = Array::get(ctr, 0)
           Array::set(ctr, 0, n + 1)
           let iname = scps_seq_float_fresh(String::concat("foriter", Int::to_string(n)), e, EUnit, site)
-          let inner = scps_elim_array_for(fbody, known, kstr, site, ctr, ctx)
+          let inner = scps_elim_for_walk(fbody, known, kstr, site, ctr, ctx, root)
           let srcname = if arr != "" {
             arr
           } else if sname != "" {
@@ -10987,7 +11026,7 @@ fn scps_elim_array_for(e: Expr, known: Array[String], kstr: Array[String], site:
           } else {
             scps_array_for_rewrite(nm, srcname, inner, iname)
           }
-          let loop_part = ELetMut(iname, EInt(0), ESeq(lowered, scps_elim_array_for(b, known, kstr, site, ctr, ctx)), -1)
+          let loop_part = ELetMut(iname, EInt(0), ESeq(lowered, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)), -1)
           if arr == "" && sname == "" {
             ELet(srcname, it, loop_part, -1)
           } else {
@@ -10995,21 +11034,21 @@ fn scps_elim_array_for(e: Expr, known: Array[String], kstr: Array[String], site:
           }
         }
       },
-      _ => ESeq(a, scps_elim_array_for(b, known, kstr, site, ctr, ctx))
+      _ => ESeq(a, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root))
     },
-    ELet(x, v, b, off) => ELet(x, v, scps_elim_array_for(b, scps_array_names_with(known, x, v, None), scps_string_names_with(kstr, x, v, None), site, ctr, ctx), off),
-    ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_array_for(b, scps_array_names_with(known, x, v, None), scps_string_names_with(kstr, x, v, None), site, ctr, ctx), off),
-    ELetRec(x, v, b) => ELetRec(x, v, scps_elim_array_for(b, known, kstr, site, ctr, ctx)),
-    EAssign(x, v, b) => EAssign(x, v, scps_elim_array_for(b, known, kstr, site, ctr, ctx)),
-    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_array_for(b, known, kstr, site, ctr, ctx)),
-    EIf(c, t, el) => EIf(c, scps_elim_array_for(t, known, kstr, site, ctr, ctx), scps_elim_array_for(el, known, kstr, site, ctr, ctx)),
-    EWhile(c, b) => EWhile(c, scps_elim_array_for(b, known, kstr, site, ctr, ctx)),
+    ELet(x, v, b, off) => ELet(x, v, scps_elim_for_walk(b, scps_array_names_with(known, x, v, None, ctx, root), scps_string_names_with(kstr, x, v, None, ctx, root), site, ctr, ctx, root), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_for_walk(b, scps_array_names_with(known, x, v, None, ctx, root), scps_string_names_with(kstr, x, v, None, ctx, root), site, ctr, ctx, root), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EAssign(x, v, b) => EAssign(x, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EIf(c, t, el) => EIf(c, scps_elim_for_walk(t, known, kstr, site, ctr, ctx, root), scps_elim_for_walk(el, known, kstr, site, ctr, ctx, root)),
+    EWhile(c, b) => EWhile(c, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
     EMatch(sc, arms) => {
       let out = scps_empty_arms()
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ex) = Array::get(arms, i)
-        Array::push(out, (p, scps_elim_array_for(ex, known, kstr, site, ctr, ctx)))
+        Array::push(out, (p, scps_elim_for_walk(ex, known, kstr, site, ctr, ctx, root)))
         i = i + 1
       }
       EMatch(sc, out)

@@ -1,0 +1,45 @@
+// #1714 (P0, #1536 boundary): the `for` iterand's callee-return proof reads the MODULE's
+// top-level statements, so a local binding that spells the same name would make
+// it answer about the wrong function.
+//
+// Here `items` is a top-level `fn items() -> Array[Int]`, but inside the handle
+// body the name is rebound to a closure returning a String. Believing the
+// top-level annotation would lower `for z in items()` to the indexed ARRAY form
+// over a String fat pointer -- `Array::length` / `Array::get` reading a
+// `(offset << 32) | length` word as a heap pointer, which is exactly the
+// silently-wrong shape #807 exists to prevent.
+//
+// The scope-blind `scps_binds_name` probe disqualifies the proof, so this stays
+// refused. The probe over-refuses (a binding of that spelling ANYWHERE in the
+// walked expression counts, even in an unrelated branch) and never
+// over-accepts, which is the direction this pass has to err in.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn items() -> Array[Int] {
+  [
+    1,
+    2
+  ]
+}
+
+let _start = () -> Int {
+  handle {
+    let items = () -> String {
+      "ab"
+    }
+    let mut acc = 0
+    for z in items() {
+      acc = acc + perform Ask::Get(z)
+    }
+    acc
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+_start()
