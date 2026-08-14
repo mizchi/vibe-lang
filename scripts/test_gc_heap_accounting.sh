@@ -117,8 +117,13 @@ compile_direct_abi_fallback fixtures/gc_direct_array_abi_shadow_fallback_test.vi
 # is copied here, so one literal serves both names.
 MONOMORPH_OUT="$WORK/direct_array_export_monomorph.wasm"
 TWIN_OUT="$WORK/direct_array_export_twin.wasm"
+# Both export spellings: `export let f = ...` sets a flag on the declaration,
+# `let f = ...; export { f }` records it separately. Checking the flag alone
+# skipped the second one silently (review finding on PR #1735).
+LIST_TWIN_OUT="$WORK/direct_array_export_list_twin.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_monomorph_test.vibe "$MONOMORPH_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_twin_test.vibe "$TWIN_OUT"
+compile_direct_abi_fallback fixtures/gc_direct_array_export_list_twin_test.vibe "$LIST_TWIN_OUT"
 # #1541 isolated direct-argument characterization. The native fixture crosses
 # exactly one private concrete Array[Int] parameter boundary; the generic pair
 # must retain the component-wide tagged-i64 fallback.
@@ -355,8 +360,9 @@ if [ "$mutating_transform" -ne 1 ]; then
 fi
 monomorph_native="$(count_native_array_allocs "$MONOMORPH_OUT")"
 twin_native="$(count_native_array_allocs "$TWIN_OUT")"
-if [ "$monomorph_native" -ne 1 ] || [ "$twin_native" -ne 1 ]; then
-  echo "[gc-heap-accounting] FAIL: expected one #1722 native literal per monomorphized export, found $monomorph_native/$twin_native" >&2
+list_twin_native="$(count_native_array_allocs "$LIST_TWIN_OUT")"
+if [ "$monomorph_native" -ne 1 ] || [ "$twin_native" -ne 1 ] || [ "$list_twin_native" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one #1722 native literal per monomorphized export, found $monomorph_native/$twin_native/$list_twin_native" >&2
   exit 1
 fi
 # The export itself must KEEP its tagged-i64 signature -- monomorphization means
