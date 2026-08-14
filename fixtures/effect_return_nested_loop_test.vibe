@@ -1,0 +1,90 @@
+// #1536: a `return` nested several suspending loops deep. `break` leaves only
+// the innermost loop, so each level records-and-breaks and is followed by a
+// guard (`if returned { break }`) that carries the exit outward one level at a
+// time. The value is returned once, outside all of them.
+//
+// `first_big` returns from two levels in (600), `sums` never takes its return
+// and both loops run to completion (3 x (4+5+6) = 45), `deep` returns from
+// three levels in (60).
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn first_big() -> Int with Ask {
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut j = 0
+    while j < 3 {
+      let v = perform Ask::Get(j)
+      if v > 5 {
+        return v * 100
+      } else {
+        acc = acc + v
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  acc
+}
+
+fn sums() -> Int with Ask {
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut j = 0
+    while j < 3 {
+      let v = perform Ask::Get(j)
+      if v > 100 {
+        return 1
+      } else {
+        acc = acc + v
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  acc
+}
+
+fn deep() -> Int with Ask {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2 {
+    let mut j = 0
+    while j < 2 {
+      let mut n = 0
+      while n < 3 {
+        let v = perform Ask::Get(n)
+        if v > 5 {
+          return v * 10
+        } else {
+          acc = acc + v
+        }
+        n = n + 1
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  acc
+}
+
+let _start = () -> Int {
+  handle {
+    let a = first_big()
+    let b = sums()
+    let c = deep()
+    a * 10000 + b * 100 + c
+  } with Ask {
+    Get(m) => {
+      let k = resume
+      k(m + 4)
+    }
+  }
+}
+
+test "effect return nested loop" {
+  inspect(_start(), "6004560")
+}

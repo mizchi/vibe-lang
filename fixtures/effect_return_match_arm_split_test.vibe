@@ -1,0 +1,39 @@
+// #1536 capture pin for the return hoist: when a `match` arm returns, the rest
+// of the body is distributed into every arm so the returning arm can end at
+// its own tail. That moves code UNDER the arm's pattern binders, so they are
+// alpha-renamed first -- the continuation was outside the match and its free
+// names must keep meaning what they meant.
+//
+// The selected arm binds `n`, shadowing the outer `n = 6` inside the arm only.
+// The moved continuation `a + n` must still read 6, so `not_taken` is 11.
+// Capturing the arm binder would read the scrutinee (1) and give 6.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn match_return(x: Int) -> Int with Ask {
+  let n = 6
+  match x {
+    0 => return 3,
+    n => ()
+  }
+  let a = perform Ask::Get(1)
+  a + n
+}
+
+let _start = () -> Int {
+  handle {
+    let taken = match_return(0)
+    let not_taken = match_return(1)
+    taken * 100 + not_taken
+  } with Ask {
+    Get(m) => {
+      let k = resume
+      k(m + 4)
+    }
+  }
+}
+
+test "effect return match arm split" {
+  inspect(_start(), "311")
+}
