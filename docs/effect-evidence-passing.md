@@ -3337,3 +3337,35 @@ for x in items() { .. perform .. }        // ← 通るようになった
 stmts を走査して `SLet(_, _, name, _, EFn(_, _, _, ret, _, _))` から読む。最初これを
 取り違えて「証明が効かない」状態になった — **構築側 (`edp_collect_fn_defs`) を読めば
 ビルド 0 回で分かった**。
+
+### 追記61 (2026-08-14): step-split literal を plain な param へ渡す形は reject する (#1707)
+
+**P0 (黙って誤る)。** effect を perform する closure literal は **step を返す**ようにコンパイル
+されるので、**その effect を row に持つパラメータにしか渡せない**。plain なパラメータへ渡すと
+callee は普通の規約で呼び、**step オブジェクトがそのまま値**になる (実測: 5 が 177、15 が 301 —
+ヒープポインタが Int として読まれている)。
+
+prepass には**逆向きの fixup が既にあった** — pure な literal が row 付きパラメータへ来たら
+Done-wrap する。それが `if prow != ""` の内側にあり、**step-split 済み literal が row を持たない
+パラメータへ来る場合**を素通りしていた。
+
+**row 変数のパラメータは免除**する。`TaskGroup::run[T, rg, e](body: (..) -> T with e)` は
+呼び出し側で `e` にその effect を具体化できるので、step 返しの literal を受け取れる。
+**具体的な row が effect を含まない場合だけ**が plain 規約のパラメータ。
+
+#### 3 回失敗してから通った — 手順の記録
+
+| 試行 | 仮説 | 結果 |
+|---|---|---|
+| 1 | `scps_calls_ok` の `EFn` arm が cps_locals を保持している | **効果ゼロ** → literal は既に step-split 済みで、問題は body でなく**渡され方**だと判明 |
+| 2 | arg-position fixup の「鏡」が無い | **P0 は直ったが** `lib/@vibex/concurrent/suspend_test.vibe` (supported な形) を壊した |
+| 3 | needing callee を免除 | `TaskGroup::run` は cneeding に無く、**変わらず** |
+| 4 | **row 変数のパラメータを免除** | **通った** — P0 は reject、suspend_test は 27 tests pass、601/601、gate green |
+
+**教訓 A**: `scripts/compiler_gate.sh` はこの regression を捕まえない。
+**`VIBE_STAGE2_WASM=<stage2> bash scripts/unit_test_runner.sh` (601 files) が捕まえる。**
+この領域を触るときは両方回す。
+
+**教訓 B (追記59 の修正)**: 生成ソースの鮮度を識別子で grep してはいけない — **bundler が
+識別子を潰す**ので、変更が入っていても 0 件になる。**新しい文字列リテラル**
+(診断メッセージなど) で grep すること。
