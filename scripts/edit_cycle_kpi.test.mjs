@@ -8,12 +8,16 @@ import {
 } from "./edit_cycle_kpi.mjs";
 
 const validSidecar = JSON.stringify({
-  schema: 1,
+  schema: 2,
   modules_planned: 2,
   modules_rechecked: 1,
   modules_reused: 1,
   parse_operations: 3,
   modules_failed_or_blocked: 0,
+  current_source_parse_executions: 1,
+  checker_executions: 1,
+  modules_reused_conservative_fingerprint: 0,
+  modules_reused_dependency_transport_env: 1,
 });
 
 const validIngestionFingerprint = {
@@ -55,14 +59,28 @@ test("edit-cycle KPI rejects malformed or internally inconsistent telemetry", ()
   );
   assert.throws(
     () => parseIncrementalTelemetry(JSON.stringify({
-      schema: 1,
-      modules_planned: 2,
+      ...JSON.parse(validSidecar),
       modules_rechecked: 2,
-      modules_reused: 1,
-      parse_operations: 3,
-      modules_failed_or_blocked: 0,
     })),
     /must equal modules_planned/,
+  );
+  assert.throws(
+    () => parseIncrementalTelemetry(JSON.stringify({
+      ...JSON.parse(validSidecar),
+      modules_reused_conservative_fingerprint: 1,
+      modules_reused_dependency_transport_env: 1,
+    })),
+    /reuse-class counters must sum/,
+  );
+  const missing = JSON.parse(validSidecar);
+  delete missing.checker_executions;
+  assert.throws(
+    () => parseIncrementalTelemetry(JSON.stringify(missing)),
+    /exactly the incremental telemetry v2 fields/,
+  );
+  assert.throws(
+    () => parseIncrementalTelemetry(JSON.stringify({ ...JSON.parse(validSidecar), extra: 1 })),
+    /exactly the incremental telemetry v2 fields/,
   );
 });
 

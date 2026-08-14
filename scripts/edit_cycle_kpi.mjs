@@ -30,6 +30,10 @@ const telemetryKeys = [
   "modules_reused",
   "parse_operations",
   "modules_failed_or_blocked",
+  "current_source_parse_executions",
+  "checker_executions",
+  "modules_reused_conservative_fingerprint",
+  "modules_reused_dependency_transport_env",
 ];
 const hostFsScopeKeys = [
   "schema",
@@ -73,8 +77,12 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
   if (telemetry === null || typeof telemetry !== "object" || Array.isArray(telemetry)) {
     throw new Error(`${source}: expected a JSON object`);
   }
-  if (telemetry.schema !== 1) {
+  if (telemetry.schema !== 2) {
     throw new Error(`${source}: unsupported schema ${JSON.stringify(telemetry.schema)}`);
+  }
+  const exactKeys = ["schema", ...telemetryKeys];
+  if (Object.keys(telemetry).length !== exactKeys.length || exactKeys.some((key) => !Object.hasOwn(telemetry, key))) {
+    throw new Error(`${source}: expected exactly the incremental telemetry v2 fields`);
   }
   for (const key of telemetryKeys) {
     if (!Number.isSafeInteger(telemetry[key]) || telemetry[key] < 0) {
@@ -90,6 +98,13 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
     throw new Error(
       `${source}: modules_rechecked + modules_reused + modules_failed_or_blocked must equal modules_planned`,
     );
+  }
+  if (
+    telemetry.modules_reused_conservative_fingerprint
+      + telemetry.modules_reused_dependency_transport_env
+      !== telemetry.modules_reused
+  ) {
+    throw new Error(`${source}: reuse-class counters must sum to modules_reused`);
   }
   return telemetry;
 }
@@ -272,7 +287,7 @@ function main() {
       `edit-cycle-kpi: ${caseName} host filesystem telemetry`,
     );
     records.push({
-      schema: 4,
+      schema: 5,
       benchmark: "user-edit-cycle-check",
       compiler_sha256: compilerSha,
       compiler_file: basename(stage2),

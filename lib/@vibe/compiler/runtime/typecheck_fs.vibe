@@ -103,7 +103,7 @@ fn empty_dep_fps() -> Array[(String, String)] {
   array_empty()
 }
 
-/// Every acceptance of a persistent fingerprint must first decode its v4
+/// Every acceptance of a persistent fingerprint must first decode its v5
 /// interface. Old/corrupt bytes are ordinary cold-cache misses.
 fn valid_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Exception + Fs {
   load_persistent_type_env(fingerprint)
@@ -1090,7 +1090,7 @@ fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
 ///
 /// Order and duplicate paths are preserved verbatim. lookup_env_cache's
 /// first-match rule is intentional: it is the same rule build_import_env uses,
-/// so a duplicate cache path cannot select one interface while TDRE4 keys a
+/// so a duplicate cache path cannot select one interface while TDRE5 keys a
 /// different one. A missing row is an infrastructure error, never EnvEmpty:
 /// continuing would let an unreadable dependency silently weaken checking.
 fn project_exact_dependency_envs(deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> Array[(String, TypeEnv)] with Exception {
@@ -1328,6 +1328,10 @@ fn collect_module_diagnostics() -> Bool {
 ///   2 modules reused
 ///   3 parse operations
 ///   4 modules failed or blocked (nonzero only in collected-diagnostics walks)
+///   5 current-source parse executions (ModuleJob parse memo misses)
+///   6 checker executions
+///   7 modules reused by conservative fingerprint authority
+///   8 modules reused by validated TDRE5 dependency transport authority
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
@@ -1354,9 +1358,9 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = [
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// TDRE4 aliases only an exact v4 decoded TypeEnv when every direct dependency
+// TDRE5 aliases only an exact v5 decoded TypeEnv when every direct dependency
 // transport environment is unchanged. It is not a CheckedProgram or typed-IR
-// transport; v4 retains the TypeEnv declaration, trait, and impl chain. The empty cell is
+// transport; v5 retains the TypeEnv declaration, trait, and impl chain. The empty cell is
 // conservative for direct FS consumers. The CLI check-only lane explicitly
 // enables production reuse after validating its per-invocation policy; build,
 // codegen, and other FS consumers remain off pending compact publication.
@@ -1389,7 +1393,7 @@ export fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
   Array::truncate(incremental_typecheck_telemetry_counters, 0)
   Array::truncate(incremental_typecheck_telemetry_decisions, 0)
   let mut i = 0
-  while i < 5 {
+  while i < 9 {
     Array::push(incremental_typecheck_telemetry_counters, 0)
     i = i + 1
   }
@@ -1479,7 +1483,7 @@ fn incremental_typecheck_telemetry_counter(index: Int) -> Int {
 /// a JSON library in the hot compiler package: all values are non-negative
 /// integers and the fixed key order makes the result byte-for-byte
 /// deterministic for an identical walk.
-export fn incremental_typecheck_telemetry_json() -> String {
+fn incremental_typecheck_telemetry_v1_json() -> String {
   let out = StringBuilder::new()
   StringBuilder::push(out, "{\"schema\":1,\"modules_planned\":")
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
@@ -1491,6 +1495,30 @@ export fn incremental_typecheck_telemetry_json() -> String {
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(3)))
   StringBuilder::push(out, ",\"modules_failed_or_blocked\":")
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(4)))
+  StringBuilder::push(out, "}")
+  StringBuilder::freeze(out)
+}
+
+export fn incremental_typecheck_telemetry_json() -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "{\"schema\":2,\"modules_planned\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
+  StringBuilder::push(out, ",\"modules_rechecked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(1)))
+  StringBuilder::push(out, ",\"modules_reused\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(2)))
+  StringBuilder::push(out, ",\"parse_operations\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(3)))
+  StringBuilder::push(out, ",\"modules_failed_or_blocked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(4)))
+  StringBuilder::push(out, ",\"current_source_parse_executions\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(5)))
+  StringBuilder::push(out, ",\"checker_executions\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(6)))
+  StringBuilder::push(out, ",\"modules_reused_conservative_fingerprint\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(7)))
+  StringBuilder::push(out, ",\"modules_reused_dependency_transport_env\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(8)))
   StringBuilder::push(out, "}")
   StringBuilder::freeze(out)
 }
@@ -2000,7 +2028,7 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// name the module itself imported -- so testing an import against it let
 /// `import ./dep.vibe { private_fn }` through to die in codegen. Dropping
 /// the non-exported bindings here, at the single point every publication
-/// path flows through (persistent store, env cache, worker env.out, TDRE4),
+/// path flows through (persistent store, env cache, worker env.out, TDRE5),
 /// makes the existing membership check in
 /// bind_import_names_from_cache_collecting the export test itself.
 ///
@@ -2442,7 +2470,7 @@ fn incremental_checked_env_identity(env: TypeEnv) -> String with Exception {
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
-/// A trace-only observation of the complete persistent TypeEnv v4 transport.
+/// A trace-only observation of the complete persistent TypeEnv v5 transport.
 /// The canonical cache-text bytes are the sole input. This is not a
 /// CheckedProgram, typed IR, exported interface, cache key, or reuse decision.
 fn incremental_persistent_type_env_transport_identity(env: TypeEnv) -> String {
@@ -2496,7 +2524,7 @@ fn incremental_trace_json_string(text: String) -> String {
 /// provisional canonical token-stream identity, not normalized typed IR.
 /// `checked_env_fingerprint` is a complete value-environment observation.
 /// `persistent_type_env_transport_fingerprint` observes only the complete
-/// persistent TypeEnv v4 transport, not a CheckedProgram, typed IR, exported
+/// persistent TypeEnv v5 transport, not a CheckedProgram, typed IR, exported
 /// interface, cache key, or reuse decision. `decision` records what this current TypeDb
 /// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
@@ -2567,7 +2595,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
     i = i + 1
   }
   StringBuilder::push(out, "],\"aggregate_telemetry\":")
-  StringBuilder::push(out, incremental_typecheck_telemetry_json())
+  StringBuilder::push(out, incremental_typecheck_telemetry_v1_json())
   StringBuilder::push(out, "}")
   StringBuilder::freeze(out)
 }
@@ -2628,7 +2656,7 @@ fn dep_visit_order(n: Int) -> Array[Int] {
 let parse_memo_paths: Array[String] = [
 ] let parse_memo_sources: Array[String] = [
 ] let parse_memo_stmts: Array[Array[Stmt]] = [
-] export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
+] fn parse_program_with_path_impl(path: String, source: String, observe_current_source_parse: Bool) -> Array[Stmt] with Exception {
   let n = Array::length(parse_memo_paths)
   let mut i = 0
   let mut hit = -1
@@ -2644,6 +2672,11 @@ let parse_memo_paths: Array[String] = [
     let cached = Array::get(parse_memo_stmts, hit)
     Array::slice(cached, 0, Array::length(cached))
   } else {
+    if observe_current_source_parse {
+      incremental_typecheck_telemetry_add(5, 1)
+    } else {
+      ()
+    }
     let parsed = handle {
       // Located lex+parse so EIdent (and other) nodes carry real source char
       // offsets; the checker rides those offsets into type diagnostics via the
@@ -2682,7 +2715,13 @@ let parse_memo_paths: Array[String] = [
     Array::push(parse_memo_stmts, parsed)
     Array::slice(parsed, 0, Array::length(parsed))
   }
-} fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Exception + Fs {
+}
+
+export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
+  parse_program_with_path_impl(path, source, false)
+}
+
+fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Exception + Fs {
   let text = persistent_type_env_cache_text(env)
   Fs::write_file(persistent_type_env_cache_path(fingerprint), text)
   text
@@ -2762,7 +2801,7 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 /// source, effective typing semantics, resolution authority, and every resolved direct dependency row of
 /// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
 /// this table once with project_exact_dependency_envs and gives the same value
-/// to both check_module and TDRE4 lookup/publication, so ambient coordinator
+/// to both check_module and TDRE5 lookup/publication, so ambient coordinator
 /// cache rows are neither checker-visible nor part of this canonical text.
 fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String {
   let out = StringBuilder::new()
@@ -2783,7 +2822,7 @@ fn typing_dependency_transport_input_key(path: String, source: String, semantics
 }
 
 /// Decode untrusted target bytes strictly and require the decoder's canonical
-/// v4 re-encoding to equal both the raw file and the binding's exact text.
+/// v5 re-encoding to equal both the raw file and the binding's exact text.
 /// parse_persistent_type_env accepts normalized line endings for ordinary cache
 /// compatibility; this additional equality makes the experimental lane strict.
 fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[TypeEnv] with Fs {
@@ -3284,7 +3323,7 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
   // The final strings are trace-only interface, checked-value-env, and
-  // complete persistent TypeEnv v4 transport identities. They are computed
+  // complete persistent TypeEnv v5 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
   // inputs, and are empty unless the invalidation trace is enabled. The final
   // optional string is a canonical in-memory-only #1550 module artifact
@@ -3412,7 +3451,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
-  let stmts = parse_program_with_path(job.path, job.source)
+  let stmts = parse_program_with_path_impl(job.path, job.source, true)
   // #1521: importing a name the dependency does not export used to bind
   // CtUnknown silently, so `vibe check` said ok and `vibe build` died in
   // codegen with `undefined variable (ident): X` -- no file, no line. The
@@ -3438,6 +3477,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // Retain the opaque-producing checker result from this exact production
       // invocation. No caller-supplied CheckedProgram or diagnostic assertion
       // participates in the #1550 observation.
+      incremental_typecheck_telemetry_add(6, 1)
       let checked_program = match import_env {
         EnvEmpty => check_program_result(stmts),
         _ => check_program_with_projected_import_env_result(stmts, import_env)
@@ -3446,7 +3486,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
       // consumer of `Checked`'s env (env cache, persistent store, worker
-      // transport, TDRE4, trace identities) is a publication path. The full
+      // transport, TDRE5, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
       let checked_env = checked_module_public_env(stmts, full_checked_env)
       let interface_identity = if incremental_interface_trace_enabled() {
@@ -3504,7 +3544,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       throw(String::concat(job.path, ": type error"))
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, _) => {
-      // Serialize the TypeEnv once. Production-default TDRE4 publication binds
+      // Serialize the TypeEnv once. Production-default TDRE5 publication binds
       // the exact same text as the conservative target; serializing it a second
       // time materially inflates fresh selfcompile heap without adding evidence.
       let target_text = store_persistent_type_env(fingerprint, checked_env)
@@ -3778,11 +3818,12 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
         ()
       }
       let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+      incremental_typecheck_telemetry_add(7, 1)
       (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
     },
     None => {
       // Keep the accumulated cache as coordinator state, but expose exactly the
-      // resolved dependency sequence to the checker and TDRE4. Construct this
+      // resolved dependency sequence to the checker and TDRE5. Construct this
       // once: lookup, check, and publication must describe the same value.
       let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
       let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
@@ -3809,6 +3850,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
           write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
           let next_env_cache = upsert_env_cache(coordinated_env_cache, path, target_env)
           let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+          incremental_typecheck_telemetry_add(8, 1)
           (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
         },
         None => {
@@ -4022,6 +4064,7 @@ fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
       write_persistent_dep_list_if_missing(path, source, empty_stack())
       let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
       let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
+      incremental_typecheck_telemetry_add(7, 1)
       (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
     },
     None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(source, empty_dep_fps(), typing_semantics_seed()))
@@ -4052,7 +4095,10 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     Some(cached_fp) =>
     if cached_fp == fingerprint {
       match valid_persistent_type_env(fingerprint) {
-        Some(_) => (fingerprint, rdb, env_cache, dep_source_cache, parse_count),
+        Some(_) => {
+          incremental_typecheck_telemetry_add(7, 1)
+          (fingerprint, rdb, env_cache, dep_source_cache, parse_count)
+        },
         None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
       }
     } else {
@@ -4115,6 +4161,7 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
           } else {
             ()
           }
+          incremental_typecheck_telemetry_add(7, 1)
           (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count)
         }
         None =>

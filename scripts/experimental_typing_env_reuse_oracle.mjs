@@ -13,9 +13,20 @@ const fail = (message) => { throw new Error(`experimental-typing-env-reuse-oracl
 
 function telemetry(path) {
   const value = JSON.parse(readFileSync(path, "utf8"));
-  if (value.schema !== 1) fail(`unexpected telemetry schema in ${path}`);
-  for (const key of ["modules_planned", "modules_rechecked", "modules_reused", "modules_failed_or_blocked"]) {
+  if (value.schema !== 2) fail(`unexpected telemetry schema in ${path}`);
+  const keys = [
+    "modules_planned", "modules_rechecked", "modules_reused", "parse_operations",
+    "modules_failed_or_blocked", "current_source_parse_executions", "checker_executions",
+    "modules_reused_conservative_fingerprint", "modules_reused_dependency_transport_env",
+  ];
+  if (Object.keys(value).length !== keys.length + 1 || keys.some((key) => !Object.hasOwn(value, key))) {
+    fail(`unexpected telemetry fields in ${path}`);
+  }
+  for (const key of keys) {
     if (!Number.isInteger(value[key]) || value[key] < 0) fail(`invalid ${key} in ${path}`);
+  }
+  if (value.modules_reused_conservative_fingerprint + value.modules_reused_dependency_transport_env !== value.modules_reused) {
+    fail(`reuse-class counters do not sum to modules_reused in ${path}`);
   }
   return value;
 }
@@ -174,9 +185,15 @@ function compile(stage2, project, cache, enabled, name, allowFailure = false, ex
   return { status: result.status, bytes: readFileSync(outputPath) };
 }
 
-function expectCounts(name, actual, rechecked, reused, planned = 2) {
+function expectCounts(name, actual, rechecked, reused, planned = 2, dependencyTransportReuse = 0) {
   if (actual.modules_rechecked !== rechecked || actual.modules_reused !== reused || actual.modules_planned !== planned) {
     fail(`${name}: expected planned/rechecked/reused ${planned}/${rechecked}/${reused}, got ${actual.modules_planned}/${actual.modules_rechecked}/${actual.modules_reused}`);
+  }
+  const conservativeReuse = reused - dependencyTransportReuse;
+  if (actual.current_source_parse_executions !== rechecked || actual.checker_executions !== rechecked ||
+      actual.modules_reused_conservative_fingerprint !== conservativeReuse ||
+      actual.modules_reused_dependency_transport_env !== dependencyTransportReuse) {
+    fail(`${name}: expected parse/check/conservative/TDRE5 ${rechecked}/${rechecked}/${conservativeReuse}/${dependencyTransportReuse}, got ${actual.current_source_parse_executions}/${actual.checker_executions}/${actual.modules_reused_conservative_fingerprint}/${actual.modules_reused_dependency_transport_env}`);
   }
 }
 
@@ -445,7 +462,7 @@ function run(stage2) {
     expectCounts("legacy 1 compatibility no-op", legacyCompat.telemetry, 0, 2);
     commentEdit(onProject);
     const commentOn = check(stage2, onProject, onCache, true, "comment-on");
-    expectCounts("comment-only consumer reuse", commentOn.telemetry, 1, 1);
+    expectCounts("comment-only consumer reuse", commentOn.telemetry, 1, 1, 2, 1);
 
     const compileControlProject = join(work, "compile-control-project");
     const compileDefaultProject = join(work, "compile-default-project");
@@ -477,7 +494,7 @@ function run(stage2) {
     const privateOff = check(stage2, offProject, offCache, false, "private-off");
     const privateOn = check(stage2, onProject, onCache, true, "private-on");
     expectCounts("private gate off", privateOff.telemetry, 2, 0);
-    expectCounts("private gate on", privateOn.telemetry, 1, 1);
+    expectCounts("private gate on", privateOn.telemetry, 1, 1, 2, 1);
     if (privateOff.output !== privateOn.output) fail("private edit gate-off/on output mismatch");
 
     publicEdit(offProject);
@@ -616,7 +633,7 @@ function run(stage2) {
     }
     ambientOnlyTransportEdit(ambientProject);
     const ambientReuse = check(stage2, ambientProject, ambientCache, true, "ambient-change-reuse");
-    expectCounts("ambient non-direct cache change reuse", ambientReuse.telemetry, 2, 1, 3);
+    expectCounts("ambient non-direct cache change reuse", ambientReuse.telemetry, 2, 1, 3, 1);
     const ambientWarmApp = appSidecar(ambientCache, readFileSync(join(ambientProject, "app.vibe"), "utf8"));
     if (ambientWarmApp.input !== ambientColdApp.input || ambientWarmApp.path !== ambientColdApp.path) {
       fail("ambient non-direct cache mutation changed the app TDRE5 input key");
@@ -679,10 +696,10 @@ function run(stage2) {
     check(stage2, traitProject, traitCache, true, "trait-cold");
     privateTraitModuleBodyEdit(traitProject);
     const traitPrivate = check(stage2, traitProject, traitCache, true, "trait-private-body");
-    expectCounts("trait module private body reuse", traitPrivate.telemetry, 1, 1);
+    expectCounts("trait module private body reuse", traitPrivate.telemetry, 1, 1, 2, 1);
     supertraitDependencyEdit(traitProject);
     const supertraitFallback = check(stage2, traitProject, traitCache, true, "supertrait-dependency-fallback");
-    expectCounts("unselected supertrait dependency change reuses consumer", supertraitFallback.telemetry, 1, 1);
+    expectCounts("unselected supertrait dependency change reuses consumer", supertraitFallback.telemetry, 1, 1, 2, 1);
 
     const traitChangeProject = join(work, "trait-change-project");
     const traitChangeCache = join(work, "trait-change-cache");
@@ -690,7 +707,7 @@ function run(stage2) {
     check(stage2, traitChangeProject, traitChangeCache, true, "trait-change-cold");
     traitDependencyEdit(traitChangeProject);
     const traitFallback = check(stage2, traitChangeProject, traitChangeCache, true, "trait-dependency-fallback");
-    expectCounts("unselected trait method/impl dependency change reuses consumer", traitFallback.telemetry, 1, 1);
+    expectCounts("unselected trait method/impl dependency change reuses consumer", traitFallback.telemetry, 1, 1, 2, 1);
 
     const chainProject = join(work, "chain-project");
     const chainCache = join(work, "chain-cache");
@@ -699,7 +716,7 @@ function run(stage2) {
     expectCounts("chain cold", chainCold.telemetry, 4, 0, 4);
     privateChainEdit(chainProject);
     const chainPrivate = check(stage2, chainProject, chainCache, true, "chain-private");
-    expectCounts("chain private leaf body", chainPrivate.telemetry, 1, 3, 4);
+    expectCounts("chain private leaf body", chainPrivate.telemetry, 1, 3, 4, 3);
     publicChainEdit(chainProject);
     const chainPublic = check(stage2, chainProject, chainCache, true, "chain-public");
     expectCounts("chain public leaf signature", chainPublic.telemetry, 4, 0, 4);
@@ -726,7 +743,7 @@ function run(stage2) {
     if (noPublishAliases.some((path) => readFileSync(path, "utf8").includes(failingSource))) fail("diagnosed owner source appeared in TDRE5 alias");
 
     console.log(JSON.stringify({
-      schema: 1,
+      schema: 2,
       scenario: "production-typing-dependency-transport-env-reuse",
       default_policy: {
         cold: coldOn.telemetry,
