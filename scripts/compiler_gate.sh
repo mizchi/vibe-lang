@@ -6962,6 +6962,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # The snapshot covers two and three levels deep, and a return never taken.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_return_nested_loop_test.vibe
+# #1536: `return` in a HANDLE body means "leave the enclosing function", not
+# "the handle's value", so it is captured in a cell declared outside the handle
+# and returned after it. The snapshot pins taken / not-taken / from inside a
+# suspending loop nested in the handle body.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_in_handle_body_test.vibe
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other

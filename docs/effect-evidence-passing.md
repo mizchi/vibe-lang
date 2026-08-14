@@ -3173,6 +3173,37 @@ selection は**全枝が transfer するときだけ**真。nested loop / closur
 **教訓**: 追記55 の hoist は設計上正しかったが、土台が壊れていた。既存 fixture は transfer を
 **suspension より前**にしか置いておらず、resume の後ろの transfer を誰も見ていなかった。
 
+### 追記57 (2026-08-13): handle body の `return` は cell で外へ出す (#1536)
+
+needing fn の clone と違い、handle body の `return v` は「**handle の値**」ではなく
+「**囲む関数から抜ける**」意味なので、追記55 の hoist (tail へ寄せる) は使えない。
+代わりに **cell を handle の外に置く**:
+
+```
+let r = handle { .. return v .. } with E { .. }   REST
+  ==>  let mut returned = false
+       let mut slot = 0
+       let r = handle { .. slot = v; returned = true; 0 .. } with E { .. }
+       if returned { return slot } else { REST }
+```
+
+handle の外に出た `return` は**普通の spine 上の return** なので、この handle 式自体が
+split される body の中にあれば追記55 がそれを拾う。loop pass が spine 上へ持ち上げた
+`return` も、この capture が cell 書き込みへ変換するので合成できる (`loop_early` が pin)。
+
+hoist の終端を `flag == ""` で分岐させただけで、走査そのものは追記55 と同じものを共有する。
+
+#### 撤回して戻した経緯 — 原因は async ではなかった
+
+最初の実測で **`return 777` が 1554**、`return a * 100` (a=5) が 1000 と、**きっちり 2 倍**の
+値が返った。`return` を取らない経路は正しかった。黙って誤るので一度撤回したが、原因は
+**probe スクリプトが `VIBE_RC` を pin しておらず RC レーンで走っていた**ことで、
+**RC backend では entry 関数の `return` が untag されない** (#1696、P0) という別のバグだった。
+`VIBE_RC=0` (ゲートと同じ) で測り直すと 500 / 6 / 777 と正しい。
+
+**教訓 2**: 誤った値を見て止めたのは正しかったが、原因の見立ては外れていた。計測環境が
+ゲートと同じ設定かどうかを先に確かめること。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

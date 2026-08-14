@@ -10793,36 +10793,53 @@ fn scps_elim_loop_returns(e: Expr, site: Int) -> Option[Expr] {
   }
 }
 
+/// What a hoisted `return v` becomes. With no cell (`flag == ""`) the value IS
+/// the result -- the function case, where the body's tail is what `return`
+/// already denotes. With a cell, the value is recorded and the body finishes
+/// with a placeholder, because the caller (a handle) must hand its own value
+/// back before the real return can happen outside it.
+fn scps_return_terminal(v: Expr, flag: String, slot: String) -> Expr {
+  if flag == "" {
+    v
+  } else {
+    EAssign(slot, v, EAssign(flag, EBool(true), EInt(0)))
+  }
+}
+
 fn scps_elim_returns(e: Expr, site: Int) -> Expr {
+  scps_elim_returns_to(e, site, "", "")
+}
+
+fn scps_elim_returns_to(e: Expr, site: Int, flag: String, slot: String) -> Expr {
   match e {
-    EReturn(v) => v,
+    EReturn(v) => scps_return_terminal(v, flag, slot),
     ESeq(a, b) => match a {
       // A transfer makes the rest of the sequence unreachable.
-      EReturn(v) => v,
+      EReturn(v) => scps_return_terminal(v, flag, slot),
       EIf(c, t, el) => if scps_body_has_return(t) || scps_body_has_return(el) {
-        scps_elim_returns(EIf(c, ESeq(t, b), ESeq(el, b)), site)
+        scps_elim_returns_to(EIf(c, ESeq(t, b), ESeq(el, b)), site, flag, slot)
       } else {
-        ESeq(a, scps_elim_returns(b, site))
+        ESeq(a, scps_elim_returns_to(b, site, flag, slot))
       },
       EMatch(s, arms) => if scps_body_arms_have_return(arms) {
-        scps_elim_returns(EMatch(s, scps_seq_float_match_arms(arms, b, site)), site)
+        scps_elim_returns_to(EMatch(s, scps_seq_float_match_arms(arms, b, site)), site, flag, slot)
       } else {
-        ESeq(a, scps_elim_returns(b, site))
+        ESeq(a, scps_elim_returns_to(b, site, flag, slot))
       },
-      _ => ESeq(a, scps_elim_returns(b, site))
+      _ => ESeq(a, scps_elim_returns_to(b, site, flag, slot))
     },
-    ELet(x, v, b, off) => ELet(x, v, scps_elim_returns(b, site), off),
-    ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_returns(b, site), off),
-    ELetRec(x, v, b) => ELetRec(x, v, scps_elim_returns(b, site)),
-    EAssign(x, v, b) => EAssign(x, v, scps_elim_returns(b, site)),
-    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_returns(b, site)),
-    EIf(c, t, el) => EIf(c, scps_elim_returns(t, site), scps_elim_returns(el, site)),
+    ELet(x, v, b, off) => ELet(x, v, scps_elim_returns_to(b, site, flag, slot), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_returns_to(b, site, flag, slot), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_elim_returns_to(b, site, flag, slot)),
+    EAssign(x, v, b) => EAssign(x, v, scps_elim_returns_to(b, site, flag, slot)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_returns_to(b, site, flag, slot)),
+    EIf(c, t, el) => EIf(c, scps_elim_returns_to(t, site, flag, slot), scps_elim_returns_to(el, site, flag, slot)),
     EMatch(s, arms) => {
       let out = scps_empty_arms()
       let mut i = 0
       while i < Array::length(arms) {
         let (p, body) = Array::get(arms, i)
-        Array::push(out, (p, scps_elim_returns(body, site)))
+        Array::push(out, (p, scps_elim_returns_to(body, site, flag, slot)))
         i = i + 1
       }
       EMatch(s, out)
@@ -11433,9 +11450,6 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
       scps_msg = String::concat(scps_msg, " -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body (#817)")
       scps_msg = String::concat(scps_msg, culprit_marker)
       Array::push(errs, scps_msg)
-      None
-    } else if scps_body_has_return(body) {
-      Array::push(errs, scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle body"))
       None
     } else {
       let (split_ok, split_body) = scps_split_tail(body, sctx, ctx, st)
@@ -12861,9 +12875,41 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         ai = ai + 1
       }
       if triggered {
-        match scps_transform_handle(rbody, rarms, ctx, st, scope) {
-          Some(t) => t,
-          None => EHandle(rbody, rarms)
+        // #1536: a `return` in a HANDLE body means "leave the enclosing
+        // function", not "the handle's value", so it cannot be hoisted to the
+        // body's tail the way a function's own return is. The value is
+        // recorded in a cell declared OUTSIDE the handle, the body finishes
+        // with a placeholder, and the real return happens after the handle --
+        // where it is an ordinary spine return the hoist handles if this whole
+        // thing is itself inside a body being split.
+        if scps_body_has_return(rbody) {
+          let hsite = scps_next_site(st)
+          let probe = EHandle(rbody, rarms)
+          let flag = scps_seq_float_fresh("hreturned", probe, EUnit, hsite)
+          let slot = scps_seq_float_fresh("hretslot", probe, EUnit, hsite)
+          let hv = scps_seq_float_fresh("hvalue", probe, EUnit, hsite)
+          // The loop pass lifts a loop return onto the spine as an ordinary
+          // `return`; the capture then turns THAT into the cell write, so the
+          // two compose without the loop pass knowing about the cell.
+          let captured = scps_elim_returns_to(match scps_elim_loop_returns(rbody, hsite) {
+            Some(lifted) => lifted,
+            None => rbody
+          }, hsite, flag, slot)
+          if scps_body_has_return(captured) {
+            Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle body"))
+            EHandle(rbody, rarms)
+          } else {
+            let inner = match scps_transform_handle(captured, rarms, ctx, st, scope) {
+              Some(t) => t,
+              None => EHandle(captured, rarms)
+            }
+            ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ELet(hv, inner, EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EIdent(hv, -1)), -1), -1), -1)
+          }
+        } else {
+          match scps_transform_handle(rbody, rarms, ctx, st, scope) {
+            Some(t) => t,
+            None => EHandle(rbody, rarms)
+          }
         }
       } else {
         EHandle(rbody, rarms)
