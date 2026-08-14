@@ -29,7 +29,7 @@ const validTrace = {
       checked_env_fingerprint: "32:1:2",
       checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)",
       persistent_type_env_transport_fingerprint: "33:1:2",
-      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v3 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
+      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v5 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
       decision: "reused",
     },
   ],
@@ -243,7 +243,7 @@ test("shadow planner keeps implementation edits local and propagates interface e
   assert.deepEqual(planObservedTypingInvalidation(before, removedEdgeAfter), ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"]);
 });
 
-test("private dependency classifier is explicit, fail-closed, and reports TypeEnv-v3 separately", () => {
+test("private dependency classifier is explicit, fail-closed, and reports TypeEnv-v5 separately", () => {
   const before = plannerTrace();
   const after = plannerTrace({
     source: { "/p/library.vibe": "source:library:private-edit" },
@@ -263,7 +263,7 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
       implementation_token_stream_v1: "changed",
       interface_v2: "unchanged",
     },
-    dependency_type_env_transport_v3: "unchanged",
+    dependency_type_env_transport_v5: "unchanged",
     consumer_own_identities: {
       source_fingerprint: "unchanged",
       implementation_fingerprint: "unchanged",
@@ -277,7 +277,7 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
   const transportChanged = structuredClone(after);
   transportChanged.modules[1].persistent_type_env_transport_fingerprint = "persistent-type-env-transport:library:changed";
   assert.equal(
-    classifyPrivateDependencyEditExternallyUnchanged(before, transportChanged, "library", "app").dependency_type_env_transport_v3,
+    classifyPrivateDependencyEditExternallyUnchanged(before, transportChanged, "library", "app").dependency_type_env_transport_v5,
     "changed",
   );
 
