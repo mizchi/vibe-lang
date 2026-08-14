@@ -526,9 +526,9 @@ Taskfile から参照されなくなったため削除済み。
 CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
 詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。
-## レビュー起点の再発防止
+## レビュー・Bug Issue 起点の再発防止
 
-PR レビューで、同種の指摘が今後も起こり得る構造的パターンを見つけたら、
+PR レビューや Bug Issue の修正で、同種の問題が今後も起こり得る構造的パターンを見つけたら、
 その場限りの修正で終わらせず、決定的に検出する仕組みを追加する。
 
 - 型、effect row、名前解決、capture/escape、公開 contract など、言語の静的意味として
