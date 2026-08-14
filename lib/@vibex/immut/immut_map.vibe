@@ -1,4 +1,4 @@
-//# @vibex/immut — ImmutMap: persistent (immutable) hash map, HAMT.
+//# @vibex/immut — MapHamt: persistent (immutable) hash map, HAMT.
 //#
 //# Hash array mapped trie with 5-bit branching (32-way), String keys.
 //# Every update (set / delete) returns a NEW map; the old version stays
@@ -18,12 +18,12 @@
 /// The map IS its root node. Exported so package-internal tests can assert
 /// structural properties (collision path, branch collapse); external users
 /// go through the index.vibei contract, which only exposes the bodyless type.
-export enum ImmutMap[V] {
+export enum MapHamt[V] {
   MEmpty;
   MLeaf(Int, String, V);
   // 32-bit occupancy bitmap + compressed child array (bit i set <=> a child
   // for 5-bit index i exists; its slot is popcount of the bits below i).
-  MBranch(Int, Array[ImmutMap[V]]);
+  MBranch(Int, Array[MapHamt[V]]);
   // All keys share the same full 31-bit hash.
   MCollision(Int, Array[String], Array[V])
 }
@@ -128,7 +128,7 @@ fn collision_index(ks: Array[String], key: String) -> Int {
 
 /// Combine two nodes whose full hashes DIFFER into branch structure at
 /// `shift`, descending one level per 5-bit collision until the hashes split.
-fn merge_nodes[V](shift: Int, h1: Int, n1: ImmutMap[V], h2: Int, n2: ImmutMap[V]) -> ImmutMap[V] {
+fn merge_nodes[V](shift: Int, h1: Int, n1: MapHamt[V], h2: Int, n2: MapHamt[V]) -> MapHamt[V] {
   let i1 = (h1>>shift)&0x1F
   let i2 = (h2>>shift)&0x1F
   if i1 == i2 {
@@ -142,7 +142,7 @@ fn merge_nodes[V](shift: Int, h1: Int, n1: ImmutMap[V], h2: Int, n2: ImmutMap[V]
   }
 }
 
-fn map_get_at[V](node: ImmutMap[V], h: Int, key: String, shift: Int) -> Option[V] {
+fn map_get_at[V](node: MapHamt[V], h: Int, key: String, shift: Int) -> Option[V] {
   match node {
     MEmpty => None,
     MLeaf(lh, lk, lv) =>
@@ -174,7 +174,7 @@ fn map_get_at[V](node: ImmutMap[V], h: Int, key: String, shift: Int) -> Option[V
   }
 }
 
-fn map_set_at[V](node: ImmutMap[V], h: Int, key: String, value: V, shift: Int) -> ImmutMap[V] {
+fn map_set_at[V](node: MapHamt[V], h: Int, key: String, value: V, shift: Int) -> MapHamt[V] {
   match node {
     MEmpty => MLeaf(h, key, value),
     MLeaf(lh, lk, lv) => {
@@ -213,7 +213,7 @@ fn map_set_at[V](node: ImmutMap[V], h: Int, key: String, value: V, shift: Int) -
   }
 }
 
-fn map_delete_at[V](node: ImmutMap[V], h: Int, key: String, shift: Int) -> ImmutMap[V] {
+fn map_delete_at[V](node: MapHamt[V], h: Int, key: String, shift: Int) -> MapHamt[V] {
   match node {
     MEmpty => MEmpty,
     MLeaf(lh, lk, lv) =>
@@ -285,7 +285,7 @@ fn map_delete_at[V](node: ImmutMap[V], h: Int, key: String, shift: Int) -> Immut
   }
 }
 
-fn map_size[V](node: ImmutMap[V]) -> Int {
+fn map_size[V](node: MapHamt[V]) -> Int {
   match node {
     MEmpty => 0,
     MLeaf(_, _, _) => 1,
@@ -303,7 +303,7 @@ fn map_size[V](node: ImmutMap[V]) -> Int {
   }
 }
 
-fn map_keys_acc[V](node: ImmutMap[V], acc: Array[String]) -> Array[String] {
+fn map_keys_acc[V](node: MapHamt[V], acc: Array[String]) -> Array[String] {
   match node {
     MEmpty => acc,
     MLeaf(_, k, _) => arr_append_one(acc, k),
@@ -325,7 +325,7 @@ fn map_keys_acc[V](node: ImmutMap[V], acc: Array[String]) -> Array[String] {
 
 /// FNV-1a hash of a key, masked to 31 bits at every step. Exported so tests
 /// (and users constructing adversarial inputs) can predict collisions.
-export fn ImmutMap::hash_key(key: String) -> Int {
+export fn MapHamt::hash_key(key: String) -> Int {
   let len = String::length(key)
   let mut h = 2166136261&0x7FFFFFFF
   let mut i = 0
@@ -336,37 +336,96 @@ export fn ImmutMap::hash_key(key: String) -> Int {
   h
 }
 
-export fn ImmutMap::empty[V]() -> ImmutMap[V] {
+export fn MapHamt::empty[V]() -> MapHamt[V] {
   MEmpty
 }
 
 /// Returns a NEW map with key set to value; the receiver is unchanged.
-export fn ImmutMap::set[V](m: ImmutMap[V], key: String, value: V) -> ImmutMap[V] {
-  map_set_at(m, ImmutMap::hash_key(key), key, value, 0)
+export fn MapHamt::set[V](m: MapHamt[V], key: String, value: V) -> MapHamt[V] {
+  map_set_at(m, MapHamt::hash_key(key), key, value, 0)
 }
 
-export fn ImmutMap::get[V](m: ImmutMap[V], key: String) -> Option[V] {
-  map_get_at(m, ImmutMap::hash_key(key), key, 0)
+export fn MapHamt::get[V](m: MapHamt[V], key: String) -> Option[V] {
+  map_get_at(m, MapHamt::hash_key(key), key, 0)
 }
 
-export fn ImmutMap::has_key[V](m: ImmutMap[V], key: String) -> Bool {
-  match ImmutMap::get(m, key) {
+export fn MapHamt::has_key[V](m: MapHamt[V], key: String) -> Bool {
+  match MapHamt::get(m, key) {
     Some(_) => true,
     None => false
   }
 }
 
 /// Returns a NEW map without key; the receiver is unchanged.
-export fn ImmutMap::delete[V](m: ImmutMap[V], key: String) -> ImmutMap[V] {
-  map_delete_at(m, ImmutMap::hash_key(key), key, 0)
+export fn MapHamt::delete[V](m: MapHamt[V], key: String) -> MapHamt[V] {
+  map_delete_at(m, MapHamt::hash_key(key), key, 0)
 }
 
-export fn ImmutMap::size[V](m: ImmutMap[V]) -> Int {
+export fn MapHamt::size[V](m: MapHamt[V]) -> Int {
   map_size(m)
 }
 
 /// All keys, hash-trie order (unordered from the caller's viewpoint).
-export fn ImmutMap::keys[V](m: ImmutMap[V]) -> Array[String] {
+export fn MapHamt::keys[V](m: MapHamt[V]) -> Array[String] {
   map_keys_acc(m, ArrayBuilder::freeze(ArrayBuilder::new()))
 }
 
+//# Deprecated legacy spelling (ADR-0100 (3) / #1262)
+//#
+//# `ImmutMap` was the name before the 2-axis rule landed. Under that rule the
+//# PREFIX slot carries mutability (bare = persistent / `Mut` / `Frozen` /
+//# `-Builder`), so an `Immut` prefix is both redundant (a bare name already
+//# means persistent) and in the wrong slot. The implementation belongs in a
+//# SUFFIX: `Map` names the interface, `-Hamt` names how this one is built.
+//#
+//# ADR-0100 (3) asked whether this could just be folded into the builtin
+//# `Map`. bench/bench_map_vs_immutmap.vibe answers no -- and not for the
+//# expected reason: builtin `Map` is a flat assoc list and is 27.7x slower
+//# while allocating 22x more at n=1000. The two must coexist, so the ADR's
+//# own fallback ("drop to the implementation suffix `MapHamt`") applies.
+//#
+//# Function aliases only, `#deprecated` so `vibe check` names the
+//# replacement. As with the ADR-0100 (3) collection rename, the legacy TYPE
+//# spelling could not be kept: a `type ImmutMap[V] = MapHamt[V]` alias is not
+//# expanded across a module boundary (#1700), so `ImmutMap[V]` in an
+//# ANNOTATION is the one thing this rename breaks.
+
+#deprecated("use MapHamt::hash_key")
+export fn ImmutMap::hash_key(key: String) -> Int {
+  MapHamt::hash_key(key)
+}
+
+#deprecated("use MapHamt::empty")
+export fn ImmutMap::empty[V]() -> MapHamt[V] {
+  MapHamt::empty()
+}
+
+#deprecated("use MapHamt::set")
+export fn ImmutMap::set[V](m: MapHamt[V], key: String, value: V) -> MapHamt[V] {
+  MapHamt::set(m, key, value)
+}
+
+#deprecated("use MapHamt::get")
+export fn ImmutMap::get[V](m: MapHamt[V], key: String) -> Option[V] {
+  MapHamt::get(m, key)
+}
+
+#deprecated("use MapHamt::has_key")
+export fn ImmutMap::has_key[V](m: MapHamt[V], key: String) -> Bool {
+  MapHamt::has_key(m, key)
+}
+
+#deprecated("use MapHamt::delete")
+export fn ImmutMap::delete[V](m: MapHamt[V], key: String) -> MapHamt[V] {
+  MapHamt::delete(m, key)
+}
+
+#deprecated("use MapHamt::size")
+export fn ImmutMap::size[V](m: MapHamt[V]) -> Int {
+  MapHamt::size(m)
+}
+
+#deprecated("use MapHamt::keys")
+export fn ImmutMap::keys[V](m: MapHamt[V]) -> Array[String] {
+  MapHamt::keys(m)
+}

@@ -3369,3 +3369,287 @@ Done-wrap する。それが `if prow != ""` の内側にあり、**step-split �
 **教訓 B (追記59 の修正)**: 生成ソースの鮮度を識別子で grep してはいけない — **bundler が
 識別子を潰す**ので、変更が入っていても 0 件になる。**新しい文字列リテラル**
 (診断メッセージなど) で grep すること。
+
+### 追記62 (2026-08-14): inert と証明できる local closure literal の capture / call を許す (#1536)
+
+`scps_inert_taint` は「capture された名前は step-compiled closure を alias しうる」として
+一律 taint し、`scps_calls_ok` はローカル束縛経由の呼び出しを一律 reject していた。だが
+**束縛が spine 上に見えていれば、何を持っているかは分かる**:
+
+```
+scps_is_inert_literal(v, eff, ..) =
+     literal の row が eff を含まず、row 変数でもない
+  && !scps_literal_is_step_for(v, eff)   // step-split されていない
+  && !scps_inert_taint(<body>, ..)       // body 自身が inert
+```
+
+これを満たす literal に束縛された名前は、**呼んでも捕獲しても安全**。呼び出しは perform せず、
+step ではなく普通の値を返す。
+
+**step-split 済みの literal は対象外**のままで、そこが健全性の線。捕獲すれば捕獲した側も
+perform することになり、それを plain な param へ渡す形は追記61 (#1707) が捕まえる。
+
+ゲートは **2 つある**: 適格性 (`scps_calls_ok`) と引数の inert 判定 (`scps_arg_is_inert`)。
+**両方**に同じ述語を通す必要がある。
+
+#### 4 回目で通った。1〜3 回目が何を否定したか
+
+| 試行 | 広げた場所 | 結果 |
+|---|---|---|
+| 1 | `scps_arg_is_inert` だけ | 発火せず |
+| 2 | `scps_calls_ok` だけ | 発火せず |
+| 3 | 両方同時 | **まだ**発火せず |
+| 4 | 両方 + **`scps_exprs_calls_ok` / `scps_fields_calls_ok` にも集合を通す** | **通った** |
+
+3 回目が落ちた理由は診断が名指ししていた (`here: the call to 'inner'`): 引数リストを歩く
+`scps_exprs_calls_ok` が **3 引数の旧エントリを呼んで `inert_locals` を空にリセット**していた。
+リスト/フィールドのヘルパにも通して初めて、literal 引数の body まで集合が届く。
+
+**教訓**: 「広げたのに効かない」ときは、**その集合が目的の位置まで実際に届いているか**を疑う。
+診断の `here:` 節がどの呼び出しで落ちたかを名指ししてくれるので、そこから逆に辿るのが速い。
+
+### 追記63 (2026-08-14): iterand の自己証明を 2 つ足し、その証明が嘘をつく穴 (#1714, P0) を塞ぐ
+
+追記60 で `for` の iterand が **CALL** のとき callee の宣言戻り値型で種別を証明できる
+ようにした。今回はその証明が**届いていなかった 2 つの形**に広げ、同時にその証明が
+**黙って誤る** 1 つの形を塞いだ。
+
+#### 広げた 2 つ
+
+| 形 | 証明 |
+|---|---|
+| `for x in [1, 2]` / `for c in "ab"` | **リテラルが自分で綴っている** — 注釈も callee 引きも要らない |
+| `let ys = items()` → `for y in ys` | 追記60 と同じ証拠を、束縛された**名前**まで届かせる |
+
+前者は `scps_elim_for_walk` の iterand 判定に `EArray` / `EString` を足しただけ。後者は
+`scps_array_names_with` / `scps_string_names_with` に `ctx` を渡し、初期化式が
+`ECall(EIdent(cn), ..)` なら `scps_fn_ret_ty` を引くようにした (`ELet` は注釈スロットを
+持たないので、これまで名前側の証明はリテラルだけだった)。
+
+snapshot は**受理ではなく意味論**を留めている (`effect_for_proved_iterand_suspend_test.vibe`):
+文字列側の期待値は `107 + 108` = **char code** であって index (`0 + 1`) ではない。片方の
+lowering がもう片方の indexing を選んだ瞬間に落ちる。
+
+#### 塞いだ 1 つ — #1714
+
+`scps_fn_ret_ty` は **module の top-level 文**を名前で引く。スコープを見ていないので、
+同じ綴りの**局所束縛**があると別の関数について答える。
+
+```vibe
+fn items() -> Array[Int] { [1, 2] }
+// handle body の中:
+let items = () -> String { "ab" }
+for z in items() { acc = acc + perform Ask::Get(z) }
+```
+
+正しい答えは **215**。guard を外した stage2 の実測は **0** — 診断も trap も無い。`for` が
+`Array::length` / `Array::get` の indexed while 形に落ち、String の
+`(offset << 32) | length` fat pointer を heap pointer として読んでいる。#807 が存在する
+理由そのものの壊れ方で、triage の P0 に当たる。
+
+`main` の 2 つの受理が重なったところに出る: 追記60 (#1705) の callee-return 証明と、
+追記62 (#1710) の inert local closure 呼び出しの受理。**どちらか片方だけでは踏めない** —
+これが「個々には健全な緩和が、重なって初めて silent-wrong を作る」実例。
+
+guard は `scps_call_ret_ty` に置いた**スコープ盲な `scps_binds_name(root, cn)` プローブ**。
+歩いている式のどこかに `cn` を束縛する binder があれば証明を捨てる。無関係な枝の束縛でも
+数えるので**過剰に refuse する**が、**過剰に accept はしない** — このパスが倒れるべき向き。
+`root` (walk に渡された式そのもの) を再帰へそのまま通すために、walker を
+`scps_elim_for_walk` に改名して薄い入口 `scps_elim_array_for` を残した。
+
+**教訓**: 名前から宣言を引く証明を足すときは、**その名前が局所で隠されていないか**を必ず
+一緒に問う。ここでは証明を足した PR (#1705) 単体では踏めず、無関係に見える別の緩和
+(#1710) が入った後に初めて到達可能になった。緩和は**単独ではなく組み合わせで**健全性を
+見る必要がある。
+
+### 追記64 (2026-08-14): 適格性判定の callee 引き当ても局所シャドウで嘘をつく (#1718, P0)
+
+追記63 (#1714) と**同じ根**の 2 件目。あちらは `for` の iterand 証明
+(`scps_fn_ret_ty`)、こちらは**適格性判定そのもの** (`scps_calls_ok_in` が最後に落ちる
+`scps_fn_row_of` / `scps_callee_first_order`)。どちらも **top-level 文を名前で引き、
+局所束縛を見ていない**。
+
+#### 実測
+
+```vibe
+fn pick() -> Int { 5 }                     // 空 row
+fn maker() -> () -> Int with Ask { () -> Int with Ask { perform Ask::Get(1) } }
+// handle body の中:
+let pick = maker()                         // ← top-level の pick を隠す
+let a = pick()
+a * 10
+```
+
+| 局所名 | 結果 |
+|---|---|
+| `chosen` (シャドウ無し) | **REFUSED** — "calls an opaque function value" |
+| `pick` (シャドウ有り) | **COMPILED → 2285** (正解 110、診断も trap も無し) |
+
+**綴りを変えるだけで refuse が silent-wrong になる。**
+
+#### なぜ `inert_locals` / `cps_locals` では捕まらなかったか
+
+`let pick = maker()` は **literal ではない**ので #1710 の `inert_locals` に入らず、
+prepass が step-split する対象でもないので `cps_locals` にも入らない。判定は
+「見えている局所」でも「予約名」でもない残りへ落ち、そこが top-level を引く。
+
+#### 直し方 — スコープ盲ではなくスコープ正確に
+
+#1714 の guard はスコープ盲な `scps_binds_name` プローブだった (そちらの walk は
+`root` しか持たない)。**この walk は既に `ELet` / `ELetMut` / `ELetRec` / closure params /
+match binder / `for` binder / `loop` params を降りている**ので、`locals: Array[String]` を
+1 つ増やすだけで**正確な集合**が作れる。過剰 refuse も無い。
+
+判定の**順序**も直した。以前は
+
+```
+perform → builtin/ctor/needing → inert_locals → cps_locals → fn_row_of
+```
+
+で、**`needing` が局所シャドウより先**に効いていた (needing fn と同名の局所があると、
+clone を呼ぶつもりで局所を呼ぶ)。今は
+
+```
+perform → inert_locals → cps_locals/予約名 → 局所なら false → builtin/ctor/needing → fn_row_of
+```
+
+**「この pass が見通せる局所」を先に全部拾い、残った局所は opaque として refuse する。**
+この順序なら、名前解決を伴うすべての受理が局所シャドウの後ろに来る。
+
+**教訓 (追記63 と同じものの再確認)**: 名前から宣言を引く判定は、**引く前に**その名前が
+局所で隠されていないかを問う。#1714 を直したときにこの 2 件目を探しに行ったから見つかった —
+**同じ根の穴は 1 つでは済まないと仮定して、同型の引き当てを全部数える**。
+
+### 追記65 (2026-08-14): 3 件目は判定ではなく**書き換え** — needing 名のシャドウ (#1721, P0)
+
+追記63 (#1714) / 追記64 (#1718) と同じ根の 3 件目。前 2 件は「受理するかどうか」の
+判定だったが、これは**受理した後の書き換え**が名前だけで callee を解決する。
+
+```vibe
+fn helper() -> Int with Ask { perform Ask::Get(1) }   // needing fn
+// handle body の中:
+let a = perform Ask::Get(5)
+let helper = () -> Int { 7 }      // ← needing fn を隠す inert な literal
+let b = helper()
+a * 100 + b
+```
+
+| 局所名 | 結果 |
+|---|---|
+| `other` (シャドウ無し) | **1507** ✅ |
+| `helper` (シャドウ有り) | **1511** ❌ 診断も trap も無し |
+
+`b` が 7 ではなく **11**。局所 closure ではなく **top-level `helper` の CPS clone** が
+呼ばれ、`perform Ask::Get(1)` → handler が `k(1 + 10)` を返している。
+
+#### 保険は既にあった。順番のせいで効いていなかった
+
+`edp_alpha_rename_shadowed` — 局所 binder を `__edpsh_N_<name>` へ α-rename する —
+は **まさにこれを防ぐために存在する**。しかし `evidence_dict_pass` の中にあり、
+`linked_compile` の呼び出し順は
+
+```
+suspend_cps_pass(stmts)      ← 局所名はまだ元の綴り
+  → inline_direct_performs
+  → evidence_dict_pass       ← α-rename はここ
+```
+
+**scps は必ず rename 前の木を見る。** もう一つの保険 `edp_drop_shadowed_needing`
+(#1074) も scps の needing 集合には通っていなかった。
+
+修正は `scps_needing_for` をその drop に通すだけ。スコープを追わない全体保守的な
+落とし方で、needing 関数は**適格性を失うが正しさは失わない**。
+
+#### 教訓 — 「保険がある」と「保険が効いている」は別
+
+3 件とも「名前から宣言を引く」パターンだが、**壊れ方の層が違う**:
+
+| | 引き当て | 層 |
+|---|---|---|
+| #1714 | `scps_fn_ret_ty` | iterand の**種別証明** |
+| #1718 | `scps_fn_row_of` / needing / ctor | **適格性判定** |
+| #1721 | needing (retarget) | **書き換え** |
+
+1 件目を直したときに「同型の引き当てを全部数える」と決めたから 2 件目が出て、
+2 件目で `needing` の順序を直したときに「**判定は直ったが書き換えは？**」と
+問い直したから 3 件目が出た。**パターンを見つけたら、そのパターンが現れる
+すべての層を数えるまで終わらない。**
+
+### 追記65b (2026-08-14): 4 件目は checker、そしてそれが 5 件目を隠している (#1723)
+
+追記65 で「パターンが現れるすべての層を数えるまで終わらない」と書いたので、数え続けた。
+4 件目は codegen ではなく **checker の effect row 推論**にあり、壊れ方が違う。
+
+```vibe
+fn take(f: () -> Int with Ask) -> Int with Ask { f() }
+fn probe() -> Int {
+  let take = (f: () -> Int) -> Int { f() + 1 }   // ← 隠す
+  take(() -> Int { 7 })
+}
+```
+
+`probe` は 8 を返す正しいプログラムだが、`effect row mismatch for 'probe':
+missing { Ask }` で**拒否される**。局所束縛が無視され top-level の row が計上される。
+値の解決では局所が正しく勝つ (`let pick = ..; pick()` は 7) ので、**実行時の解決と
+row の計上が食い違っている**。silent-wrong ではないので P1。
+
+#### この偽拒否が 5 件目を塞き止めている
+
+`scps_prepass_expr` は `ECall(EIdent(fname), ..)` で `scps_fn_def_params(ctx, fname)` を
+引き、その row に応じて引数 literal を **Done-wrap する / step 規約違反として拒否する**
+(#1707)。この walk は**局所束縛を追っていない**。
+
+今それが踏めないのは、**#1723 の偽拒否が先に落としているから**だけ。top-level と局所で
+param row が違う形は checker を通らないので、prepass の引き当てまで届かない。
+
+**#1723 を直すと prepass の穴が開く。** issue にその連動を明記した。
+
+#### 数え方のまとめ
+
+| | 引き当て | 層 | 壊れ方 |
+|---|---|---|---|
+| #1714 | `scps_fn_ret_ty` | iterand の種別証明 | silent-wrong (0 / 215) |
+| #1718 | `scps_fn_row_of` / needing / ctor | 適格性判定 | silent-wrong (2285 / 110) |
+| #1721 | needing (retarget) | 書き換え | silent-wrong (1511 / 1507) |
+| #1723 | checker の row 推論 | 型検査 | 偽拒否 |
+| (連動) | `scps_fn_def_params` | prepass の引数規約 | #1723 が直ると silent-wrong |
+
+**教訓**: 同じパターンでも層が変わると**壊れ方が変わる** (silent-wrong / 偽拒否)。
+そして偽拒否は、その先にある silent-wrong を**偶然塞いでいることがある** — 偽拒否を
+直すときは「これは何を守っていたか」を必ず問う。
+
+### 追記66 (2026-08-14): iterand の証明を builtin registry へ届かせる (#1536)
+
+追記60/63 で `for` の iterand は「top-level `fn` の宣言戻り値型」「リテラル」「その
+呼び出しに束縛された名前」から証明できるようにした。**builtin だけが取り残されていた** —
+`Array::concat` には読むべき top-level `fn` が無いので `scps_fn_ret_ty` は何も答えない。
+
+だが**registry にはずっと署名があった** (`builtin_registry.vibe` の
+`(Array[_], Array[_]) -> Array[_]`)。`lookup_registry_builtin` を引いて
+`CtArray(_) -> "array"` / `CtString -> "string"` に写すだけで済む。証明の入口を
+`scps_call_kind` に一本化し、宣言 → registry の順に訊く (どちらも #1714 の
+スコープ盲 guard の後ろ)。
+
+#### 詰まりは証明ではなく**適格性**の側だった
+
+registry を引くようにしても最初は refuse のままで、診断が理由を名指ししていた:
+
+```
+(here: the call to 'Array::concat')
+```
+
+`Array::concat` が `idp_pure_builtin_names` (手検証済み pure builtin のリスト) に
+**入っていなかった**。兄弟の `Array::slice` は `scps_is_safe_mut_builtin` 経由で、
+`String::concat` はこのリスト経由で既に通っていたので、穴はこの 1 名前だけ。
+リストの判定基準 (「ユーザ effect を perform できず、関数型引数を呼ばない」) は
+満たしているので、同じ形式で監査コメントを付けて追加した。
+
+**教訓**: 「証明を広げたのに通らない」ときは、**証明の手前で別のゲートが落としていないか**を
+診断の `here:` 節で確かめる (追記62 と同じ道具、逆向きの使い方)。
+
+#### 残る unproved
+
+局所束縛経由の呼び出し (`let mk = () -> Array[Int] { .. }` → `for j in mk()`) は
+**意図的に refuse のまま**。#1714 の guard が「局所が隠している名前の宣言は信じない」と
+決めているので、その名前からは種別を証明しない。これは guard のコストであって穴ではない
+(`cli_support_test.vibe` の不適格テストがこの形を留めている)。

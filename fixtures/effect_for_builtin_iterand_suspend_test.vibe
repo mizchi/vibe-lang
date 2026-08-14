@@ -1,0 +1,43 @@
+// #1536: a BUILTIN callee proves the iterand's kind too.
+//
+// `scps_fn_ret_ty` reads a return type off a top-level `fn`, and a builtin has
+// none -- but the builtin registry has carried its signature all along, so the
+// kind lookup consults it rather than refuse. `Array::concat` also had to join
+// the hand-audited pure-builtin list: it allocates a fresh array from two
+// existing ones and can neither perform a user effect nor invoke a
+// function-typed argument, and without it the body was refused naming the
+// concat rather than the loop.
+//
+// The numbers pin the semantics, not just acceptance:
+//   arr  23   11 + 12 over the concatenated array
+//   str  215  107 + 108, i.e. the CHAR CODES of "ab" and not the indices
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut arr = 0
+    for x in Array::concat([
+      1
+    ], [
+      2
+    ]) {
+      arr = arr + perform Ask::Get(x)
+    }
+    let mut str = 0
+    for c in String::concat("a", "b") {
+      str = str + perform Ask::Get(c)
+    }
+    arr * 1000 + str
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+test "effect for builtin iterand suspend" {
+  inspect(_start(), "23215")
+}

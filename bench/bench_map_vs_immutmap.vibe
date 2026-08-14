@@ -1,0 +1,192 @@
+//# persistent map: builtin `Map` と `@vibex/immut` の `MapHamt` (#1262 / ADR-0100 (3))
+//#
+//# 問い: ADR-0100 (3) が最後に残した一点 —— **旧 `ImmutMap` は builtin `Map` に
+//# 統合できるか**。ADR の文言は「統合を**試みる**(性能上併存が要ると判明したら
+//# 実装接尾辞 `MapHamt` に落とす)」なので、判定条件は性能であり、この実測が
+//# その判定そのものになる。
+//#
+//# **答え: 統合できない。併存が要る**ので ADR の fallback どおり
+//# `ImmutMap` → **`MapHamt`** に改名した (bare `Map` = インタフェース、
+//# `-Hamt` = 実装接尾辞、という2軸命名にそのまま乗る)。ただし**向きが
+//# ADR の想定と逆**だった —— 遅くて併存が要らないと疑われていたのは HAMT の
+//# ほうだが、実測では **builtin `Map` (flat assoc list) が n=1000 で 27.7×
+//# 遅く 22× 多く確保する**。下の数字がその根拠。
+//#
+//# 両者は同じ契約 (persistent: `set` は新しい map を返し、元は不変) を持つ
+//# 別実装:
+//#   `Map`       — flat assoc list。`set` は付け替え、`get`/`has_key` は
+//#                 線形走査 (core/types.vibe の #799 の注記が同じ性質を
+//#                 コンパイラ内部で踏んだ記録)
+//#   `MapHamt`  — HAMT (5-bit 分岐 / 32-way)、構造共有
+//#
+//# 計測は 2 軸で、**両方を見ないと判定できない**:
+//#   build/*   n 件を順に `set` して map を作る            → 構築のコスト
+//#   lookup/*  **同じ構築 + そのあと n 回 `has_key` する** → 構築 + 参照
+//# assoc list は参照が O(n)、HAMT は木の確保と引き換えに O(log32 n)。片方だけ
+//# 測ると必ず誤った結論になる。**`lookup/*` は構築を含む** (bench ブロックが
+//# 測定単位なので、構築を外に出せない) ので、**参照だけのコストは同じ n の
+//# `lookup/* − build/*` の差**として読むこと。n=1000 では HAMT が
+//# 755−653 = 約 102 µs / 1000 回 ≒ 102 ns/参照、assoc list 側は 18 ms の
+//# 構築ノイズに埋もれて差が出ない。判定を決めているのは構築側の桁差のほう。
+//#
+//# n は 2 点。**小さい n で assoc list が勝つのは既知**なので、判定に効くのは
+//# 「実アプリの規模でどうか」のほう:
+//#   n=64    小さい map (設定・小さな環境)
+//#   n=1000  実アプリ規模 (bench_builder_vs_mut.vibe と同じ n)
+//#
+//# 走らせ方:
+//#   VIBE_RC=0 vibe bench bench/bench_map_vs_immutmap.vibe --iters 20
+//# bytes_per_op は VIBE_RC=0 (bump) の値だけを確保量として信用すること
+//# (RC は exact-fit free list が再利用するため)。
+//# tracked_benches.txt には入れない (CI micro bench は短く保つ)。
+//#
+//# 結果と決定: docs/side-effect-consolidation.md §5.5 / ADR-0100 (3)。
+
+//# Imports
+
+import ../lib/@vibex/immut {
+  MapHamt, MapHamt::empty, MapHamt::get, MapHamt::has_key, MapHamt::set, MapHamt::size
+}
+
+//# ---- build: n 件を順に set する
+
+fn build_map(n: Int) -> Map[String, Int] {
+  let mut m: Map[String, Int] = {
+  }
+  let mut i = 0
+  while i < n {
+    m = Map::set(m, Int::to_string(i), i)
+    i = i + 1
+  }
+  m
+}
+
+fn build_immut(n: Int) -> MapHamt[Int] {
+  let mut m = MapHamt::empty()
+  let mut i = 0
+  while i < n {
+    m = MapHamt::set(m, Int::to_string(i), i)
+    i = i + 1
+  }
+  m
+}
+
+//# ---- lookup: 作った map に n 回 get する
+//# key 生成 (Int::to_string) は両形に同じだけ入るので相対比較を汚さない。
+
+fn lookup_map(m: Map[String, Int], n: Int) -> Int {
+  let mut hits = 0
+  let mut i = 0
+  while i < n {
+    if Map::has_key(m, Int::to_string(i)) {
+      hits = hits + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hits
+}
+
+fn lookup_immut(m: MapHamt[Int], n: Int) -> Int {
+  let mut hits = 0
+  let mut i = 0
+  while i < n {
+    if MapHamt::has_key(m, Int::to_string(i)) {
+      hits = hits + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hits
+}
+
+//# ---- agreement: 2 実装が同じ答えを出すことを固定する
+//# これが無いと「速いほうが実は違う仕事をしていた」を見逃す。
+
+test "Map and MapHamt agree on build + lookup" {
+  let n = 64
+  let pm = build_map(n)
+  let im = build_immut(n)
+  assert(Map::size(pm) == n)
+  assert(MapHamt::size(im) == n)
+  assert(lookup_map(pm, n) == n)
+  assert(lookup_immut(im, n) == n)
+  let mut i = 0
+  let mut ok = true
+  while i < n {
+    let k = Int::to_string(i)
+    if Map::get(pm, k) != i {
+      ok = false
+    } else {
+      ()
+    }
+    match MapHamt::get(im, k) {
+      Some(v) => if v != i {
+        ok = false
+      } else {
+        ()
+      },
+      None => {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  assert(ok)
+  // 不在キーでも一致すること (has_key の false 側)
+  assert(!Map::has_key(pm, "absent"))
+  assert(!MapHamt::has_key(im, "absent"))
+}
+
+test "both stay persistent: set does not disturb the older version" {
+  let base_map = build_map(8)
+  let base_immut = build_immut(8)
+  let next_map = Map::set(base_map, "extra", 99)
+  let next_immut = MapHamt::set(base_immut, "extra", 99)
+  assert(Map::size(base_map) == 8)
+  assert(MapHamt::size(base_immut) == 8)
+  assert(Map::size(next_map) == 9)
+  assert(MapHamt::size(next_immut) == 9)
+  assert(!Map::has_key(base_map, "extra"))
+  assert(!MapHamt::has_key(base_immut, "extra"))
+}
+
+//# ---- benches
+
+bench "build/1_map_64" {
+  let _ = build_map(64)
+}
+
+bench "build/2_immut_64" {
+  let _ = build_immut(64)
+}
+
+bench "build/3_map_1000" {
+  let _ = build_map(1000)
+}
+
+bench "build/4_immut_1000" {
+  let _ = build_immut(1000)
+}
+
+bench "lookup/1_map_64" {
+  let m = build_map(64)
+  let _ = lookup_map(m, 64)
+}
+
+bench "lookup/2_immut_64" {
+  let m = build_immut(64)
+  let _ = lookup_immut(m, 64)
+}
+
+bench "lookup/3_map_1000" {
+  let m = build_map(1000)
+  let _ = lookup_map(m, 1000)
+}
+
+bench "lookup/4_immut_1000" {
+  let m = build_immut(1000)
+  let _ = lookup_immut(m, 1000)
+}

@@ -653,6 +653,37 @@ renames + 旧名の deprecated alias。`vibe` は selfhost なので、
 
 ---
 
+### 5.5 `ImmutMap` の決着 (2026-08-14, ADR-0100 (3) の残り)
+
+ADR-0100 (3) が最後に開けていた一点は「**`ImmutMap` は builtin `Map` へ統合
+できるか**(性能上併存が要ると判明したら実装接尾辞 `MapHamt` に落とす)」。
+判定条件が性能なので、[bench/bench_map_vs_immutmap.vibe](../bench/bench_map_vs_immutmap.vibe)
+で測った (n=1000、`VIBE_RC=0` の B/op が確保の真値、--iters 20):
+
+| | builtin `Map` (flat assoc list) | `MapHamt` (HAMT) | |
+|---|---|---|---|
+| build p50 | 18.08 ms | **653 µs** | **27.7× 速い** |
+| build B/op | 18,822,984 | **856,828** | **22.0× 少ない** |
+| build+lookup p50 | 17.91 ms | **755 µs** | **23.7× 速い** |
+| build p50 (n=64) | 75.4 µs | **24.8 µs** | 3.0× 速い |
+
+**決定: 統合しない。併存が要る**ので ADR の fallback どおり
+**`ImmutMap` → `MapHamt`** に改名した。bare `Map` がインタフェース、
+`-Hamt` が実装接尾辞で、§5.2 の2軸命名にそのまま乗る。旧綴りは
+**関数だけ** `#deprecated` エイリアスとして残る(型注釈が残せないのは
+コレクション改名と同じ #1700 の制約)。
+
+> **向きが ADR の想定と逆だった。** 「`ImmutMap` は builtin `Map` に統合を
+> 試みる」という書き方は、暗に *`Map` で足りるのでは* を疑っている。実測は
+> 逆で、**足りないのは `Map` のほう** —— flat assoc list なので構築も参照も
+> O(n²) に落ちる。同じ性質はコンパイラ内部で既に踏んでいて、
+> `core/types.vibe` の `EnvCached` は「`Map::has_key` + `Map::get` が
+> **2 回の O(entries) 線形走査**だった」(#799) から入った索引である。
+>
+> つまり**「persistent map が要るなら `MapHamt`、`Map` は小さい固定表向け」**
+> が現在の正しい使い分けで、builtin `Map` の実装を差し替えるかどうかは
+> それ自体が別の決定として残っている(この PR では触っていない)。
+
 ### 5.4 Builder 族の決着 (2026-08-07, ADR-0101)
 
 `-Builder` も「可変」の一種なので、§5.2 の軸に載せる前に

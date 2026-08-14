@@ -1,0 +1,46 @@
+// #1718 (P0, #1536 boundary): the eligibility check's callee lookup
+// (`scps_fn_row_of` / `scps_callee_first_order`) reads the MODULE's top-level
+// statements, so a local binding of the same spelling made it answer about the
+// wrong function.
+//
+// Here `pick` is a top-level `fn pick() -> Int` with an EMPTY declared row, but
+// inside the handle body the name is rebound to the closure `maker()` returns,
+// which performs. Believing the top-level row admits a call to a performing
+// value into a body being split -- measured COMPILING and answering 2285 where
+// 110 is correct, with no diagnostic and no trap.
+//
+// Rename the local to anything else and the same program is refused, because
+// the call is then correctly seen as an opaque function value. That is the
+// answer this fixture pins for the shadowed spelling too.
+//
+// The two LOCAL forms this pass can see through -- a provably-inert closure
+// literal (#1710) and a step-split binding -- are admitted before this point,
+// so the refusal costs them nothing.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn pick() -> Int {
+  5
+}
+
+fn maker() -> () -> Int with Ask {
+  () -> Int with Ask {
+    perform Ask::Get(1)
+  }
+}
+
+let _start = () -> Int {
+  handle {
+    let pick = maker()
+    let a = pick()
+    a * 10
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+_start()
