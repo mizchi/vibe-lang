@@ -112,6 +112,15 @@ echo "[compiler-gate] FS heap mark lanes ok (rc + bump)"
 echo "[compiler-gate] 3a/3 artifact-input trace oracle"
 VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 
+# 3b (#1696). This gate pins VIBE_RC=0 at the top -- a deliberate cutover pin --
+# which meant NOTHING here ever exercised the RC lane, and a silently-wrong entry
+# result (`return 777` handing the host 1554) survived in it. The pin stays; this
+# step reaches into the RC lane explicitly and asserts only that the entry's
+# observable result is the SAME in both lanes, which is cheap and cannot drift
+# into a table of constants.
+echo "[compiler-gate] 3b/3 RC entry-result parity (#1696)"
+bash scripts/test_rc_entry_result_parity.sh "$stage2_wasm"
+
 # 3aa. Schema-4 incremental observations: this isolated clean-vs-warm bridge
 # checks source/token-stream/interface/checked-env parity without incorporating
 # the new observation into a production cache key, cache format, or reuse
