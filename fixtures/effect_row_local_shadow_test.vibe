@@ -1,0 +1,57 @@
+// A local binding shadows a same-named top-level function for effect rows too
+// (#1723).
+//
+// Runtime resolution has always picked the local one. The effect walk consulted
+// the top-level call-graph map FIRST and only reached the overlay when that
+// missed, so a pure local closure could not shadow an effectful top-level
+// function -- the enclosing function was charged a row it does not need, and
+// the hint told the reader to declare it. That is a false rejection: the
+// program below is correct and returns 8.
+
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn take(f: () -> Int with Ask) -> Int with Ask {
+  f()
+}
+
+fn probe() -> Int {
+  let take = (f: () -> Int) -> Int {
+    f() + 1
+  }
+  take(() -> Int {
+    7
+  })
+}
+
+fn pick() -> Int {
+  5
+}
+
+test "a pure local closure shadows an effectful top-level fn" {
+  // Needs no `with Ask`: the call resolves to the local binding.
+  assert(probe() == 8)
+}
+
+test "the value the shadow resolves to is the local one" {
+  // The control the issue used to show runtime and the row disagreed: value
+  // resolution already picked the local binding.
+  let pick = () -> Int {
+    7
+  }
+  assert(pick() == 7)
+}
+
+test "an effectful top-level fn is still charged when NOT shadowed" {
+  // The fix must not stop charging rows for genuinely un-shadowed calls, or it
+  // would trade a false rejection for a missed one.
+  let inner = handle {
+    take(() -> Int with Ask {
+      perform Ask::Get(1)
+    })
+  } with Ask {
+    Get(n) => resume(n * 10)
+  }
+  assert(inner == 10)
+}

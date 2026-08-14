@@ -1585,6 +1585,23 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
 /// arrays (names[i] <-> effs[i]). A `Map` here allocates per lookup and, across
 /// the compiler's tens of thousands of call sites, exhausts the GC-less bump heap
 /// (#626 OOM); the linear scan allocates nothing.
+/// #1723: the top-level call-graph row answers for `name` only when nothing
+/// local shadows it.
+///
+/// `alias_fn_overlay_labels` already states the intended order -- "the OVERLAY
+/// first (an inner binding shadows an outer one), then the top-level call-graph
+/// map" -- and the alias path follows it. The `ECall` arm of the walk did the
+/// opposite: it consulted `fn_names` first and only reached the overlay branch
+/// when that missed, so a local closure never got the chance to shadow a
+/// same-named top-level function. Runtime resolution has always picked the
+/// local one; this is what made the two disagree.
+fn top_level_effs_unshadowed(fn_names: Array[String], fn_effs: Array[Array[String]], ov_names: Array[String], ov_effs: Array[Array[String]], name: String) -> Option[Array[String]] {
+  match lookup_fn_effs(ov_names, ov_effs, name) {
+    Some(_) => None,
+    None => lookup_fn_effs(fn_names, fn_effs, name)
+  }
+}
+
 fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -1733,24 +1750,46 @@ fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: St
   // #1515: resolve an ALIAS against the pre-shadow overlay -- `let f = f`
   // rebinds to the OUTER `f`, so the lookup must see the entry the shadow is
   // about to remove.
-  let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs)
-  if Array::length(labels) == 0 {
-    shadowed
-  } else {
-    let out_names = [
-      name
-    ]
-    let out_effs = [
-      labels
-    ]
-    let (sn, se) = shadowed
-    let mut i = 0
-    while i < Array::length(sn) {
-      Array::push(out_names, Array::get(sn, i))
-      Array::push(out_effs, Array::get(se, i))
-      i = i + 1
+  // #1723: an `EFn` literal binds `name` to a function whose row we know
+  // EXACTLY -- and "no row" is a row. Recording only non-empty rows made a
+  // pure local closure indistinguishable from no local binding at all, so the
+  // lookup fell through to a same-named top-level function and charged the
+  // caller ITS row. `let take = (f: () -> Int) -> Int { f() + 1 }` shadowing a
+  // top-level `take(...) with Ask` made the enclosing fn require `Ask`, and the
+  // hint told the reader to declare a row the code does not need. Runtime
+  // resolution already picks the local one, so the two disagreed.
+  //
+  // An alias or a non-function value still only shadows: for those the value
+  // does not tell us the name is a function, let alone which row it carries.
+  let bound = match val {
+    EFn(_, _, _, _, eff, _) => Some(effect_row_labels(effect_row_parse(eff))),
+    _ => {
+      let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs)
+      if Array::length(labels) == 0 {
+        None
+      } else {
+        Some(labels)
+      }
     }
-    (out_names, out_effs)
+  }
+  match bound {
+    None => shadowed,
+    Some(labels) => {
+      let out_names = [
+        name
+      ]
+      let out_effs = [
+        labels
+      ]
+      let (sn, se) = shadowed
+      let mut i = 0
+      while i < Array::length(sn) {
+        Array::push(out_names, Array::get(sn, i))
+        Array::push(out_effs, Array::get(se, i))
+        i = i + 1
+      }
+      (out_names, out_effs)
+    }
   }
 }
 
@@ -1941,7 +1980,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // unification (#885 tracks that separately); naively requiring the
             // row-variable TOKEN itself in the caller's declared row produces
             // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
-            match lookup_fn_effs(fn_names, fn_effs, name) {
+            match top_level_effs_unshadowed(fn_names, fn_effs, ov_names, ov_effs, name) {
               Some(callee_effs) => {
                 // #639: aggregate every effect this call site leaks into ONE
                 // set-difference diagnostic ("missing { Env, Fs }") instead of
