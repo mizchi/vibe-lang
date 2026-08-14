@@ -3284,3 +3284,37 @@ closure literal。最初は clone だけに入れており、`handle { for x in 
   はその制約下で設計している (「並行モデル (ADR-0068) との整合」節参照)。
 - `docs/pl-survey-2026-07.md` — 本 ADR の元になったサーベイ項目。
 - `eval/lang-review/findings/2026-07-12-r2.md` M2 — replay の実測バグ。
+
+### 追記59 (2026-08-14): row 変数 callee は「一階なら安全」(#1536)
+
+`with e` を宣言した callee は「provably effect-free」ではないとして一律 reject していた。
+理由は「row 変数は closure 引数経由で migrated effect に具体化されうる」。正しいが、
+**その具体化は引数を通してしか起きない**。
+
+したがって: **宣言された引数の型がどこにも関数型を含まない callee は、call site が
+どうであれ `e` を空 row にしか具体化できない** — 呼び出しは handled effect を perform しえない。
+
+```vibe
+fn twice(x: Int) -> Int with e { x * 2 }        // ← 一階。suspend body から呼べる
+fn apply(f: (Int) -> Int with e, x: Int) -> Int with e { f(x) }   // ← 拒否のまま
+```
+
+判定は宣言だけで閉じる (call site の型推論は要らない)。`Array[(Int) -> Int with e]` のように
+**型引数の中の関数型も数える**ので、`TyFn` を再帰的に探す。注釈の無い引数・定義が見つからない
+callee は従来どおり拒否。
+
+#### 見つけ方 — 5 連続の誤診の原因は「stale な生成ソース」だった
+
+実装後の実測が `REJECTED` のままだったので、また誤診を重ねかけた。今度は最初から
+instrumentation を入れたところ、**そのデバッグ出力自体が現れなかった**。調べると
+`lib/@vibe/compiler/_cli_adapter_module_source.vibe` (生成物) が編集より**古いまま**で、
+`VIBE_PREBUILT_MODULE_SOURCE` でそれを食わせていたため、**ここ数回のビルドは変更を
+一切含んでいなかった**。生成物を消して再生成させたら `generate_bundle: seed could not
+flatten the live tree / unexpected in pattern: =1` — instrumentation の中に書いた
+`None => all = false` (波括弧なしの代入) が seed の parse error だった。
+
+つまり **`ensure_generated.sh` が "ok" を返しても生成物が最新とは限らない**。この直前の
+String iterand の 5 連続誤診も、同じ stale ビルドを見ていた可能性が高い。
+
+**教訓 (今夜 3 つ目)**: 否定的な実測が続いたら、まず**測っている対象が自分の変更を含んで
+いるか**を確かめる。`grep <新しい識別子> <生成ソース>` の一行で済む。
