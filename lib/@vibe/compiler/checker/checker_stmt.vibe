@@ -1239,7 +1239,7 @@ fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
   out
 }
 
-fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> (TypeEnv, Subst, Int) {
+fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
@@ -1920,7 +1920,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SModule(_, _, body) => {
         // `statement_path` is None in ordinary checking, so nested modules
         // recurse without allocating retained path state.
-        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture)
+        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture, false)
         // Preserve the historical checker flow when this opt-in observation is
         // absent. The root observation alone needs nested substitutions to
         // canonicalize its nested raw types; module bindings remain lexical.
@@ -1930,10 +1930,16 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           (env, s, c)
         }
       },
-      SImport(_, names) => (bind_stmt_imports(env, names), s, c)
-      ,
-      SReExport(_, names) => (bind_stmt_imports(env, names), s, c)
-      ,
+      SImport(_, names) => if imports_already_projected {
+        (env, s, c)
+      } else {
+        (bind_stmt_imports(env, names), s, c)
+      },
+      SReExport(_, names) => if imports_already_projected {
+        (env, s, c)
+      } else {
+        (bind_stmt_imports(env, names), s, c)
+      },
       SAliasDecl(_, _) => (env, s, c)
       ,
       STrait(_, name, supers, methods, method_gens, tparams) => {
@@ -2853,7 +2859,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
   // #1455: this compatibility entry point is handed a caller-owned `defs`
   // that never contains seeded imported enums, so every declaration in it is
   // local and the #1078 scan starts at 0.
-  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, 0, s, c, errors, tytab, None, None, None)
+  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, 0, s, c, errors, tytab, None, None, None, false)
 }
 
 /// Run the production whole-program check and retain every successful output
@@ -2926,7 +2932,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
       None => None
     }
   }
-  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
+  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
@@ -3165,7 +3171,7 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
-fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
+fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
     _ => {
@@ -3214,7 +3220,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
           None => None
         }
       }
-      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture)
+      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected)
       // Selected import projection carries trait definitions and impls into
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.
@@ -3243,14 +3249,14 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
 /// Run the production checker once with an initial environment and expose
 /// retained type-definition binder provenance for canonical observation.
 export fn check_program_with_env_type_defs_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgramTypeDefsObservation with Exception {
-  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, None)
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, None, false)
 }
 
 /// As the ordinary statement-owner observation, seeded with an importing
 /// environment. Validation failure is fail-closed as None.
 export fn check_program_with_env_typed_occurrence_statement_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceStatementObservation] with Exception {
   let entries = array_empty()
-  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementTypedOccurrences(entries)), None).checked_program
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementTypedOccurrences(entries)), None, false).checked_program
   typed_occurrence_statement_observation_from_capture(checked, entries)
 }
 
@@ -3258,7 +3264,7 @@ export fn check_program_with_env_typed_occurrence_statement_observation(stmts: A
 /// seeds checking only; nested module environments remain lexical.
 export fn check_program_with_env_statement_root_type_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedStatementRootTypeObservation] with Exception {
   let entries = array_empty()
-  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementRootTypes(entries)), None).checked_program
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementRootTypes(entries)), None, false).checked_program
   statement_root_type_observation_from_capture(checked, entries)
 }
 
@@ -3266,7 +3272,7 @@ export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: A
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_expected_children: array_empty(), frame_direct_recorded: array_empty(), direct_entries: array_empty(), direct_enabled: false, frame_depth: 0, complete: true
   }
-  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries)).checked_program
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries), false).checked_program
   typed_occurrence_role_lane_observation_from_capture(checked, entries)
 }
 
@@ -3274,7 +3280,7 @@ export fn check_program_with_env_typed_occurrence_expression_path_observation(st
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(), provenance_entries: array_empty(), statement_path: array_empty(), frame_paths: array_empty(), frame_next_children: array_empty(), frame_expected_children: array_empty(), frame_direct_recorded: array_empty(), direct_entries: array_empty(), direct_enabled: false, frame_depth: 0, complete: true
   }
-  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries)).checked_program
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries), false).checked_program
   typed_occurrence_expression_path_observation_from_capture(checked, entries)
 }
 
@@ -3284,7 +3290,7 @@ export fn check_program_with_env_direct_expression_return_observation(stmts: Arr
     None => None,
     Some(_) => {
       let capture = direct_expression_return_capture()
-      let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementDirectExpressionReturns), Some(capture)).checked_program
+      let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, Some(StatementDirectExpressionReturns), Some(capture), false).checked_program
       direct_expression_return_observation_from_capture(checked, capture)
     }
   }
@@ -3292,7 +3298,15 @@ export fn check_program_with_env_direct_expression_return_observation(stmts: Arr
 
 /// Successful production-check result, preserving the original public shape.
 export fn check_program_with_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with Exception {
-  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, None).checked_program
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, None, false).checked_program
+}
+
+/// Production-only checker entry for an environment already projected from
+/// this root module's import declarations. Root import statements must not
+/// replay type-only bindings over that authoritative environment; nested
+/// modules deliberately retain the historical replay path.
+export fn check_program_with_projected_import_env_result(stmts: Array[Stmt], initial_env: TypeEnv) -> CheckedProgram with Exception {
+  check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, None, true).checked_program
 }
 
 /// Compatibility API: preserve the historical TypeEnv result and error
