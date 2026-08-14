@@ -1,0 +1,46 @@
+// #1707 (P0 regression): a closure literal that performs the handled effect is
+// compiled to return a STEP. It may therefore only land in a parameter whose
+// declared row carries that effect. Passed to a plain-convention parameter,
+// the callee calls it normally and hands the step OBJECT back as the value --
+// which compiled clean and silently returned a heap pointer read as an Int.
+//
+// Measured before the fix: this returned 177 where the answer is 5, and the
+// `+ 1` variant returned 301 where the answer is 15. The equivalent without
+// the intermediate closure, and the effect-free equivalent, both answer
+// correctly -- so the suspending version silently disagreed with them.
+//
+// The arg-position fixup already Done-wrapped a PURE literal landing in a
+// row-carrying parameter; this is that rule's missing mirror.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn run(f: (Int) -> Int, n: Int) -> Int {
+  f(n)
+}
+
+fn helper() -> Int with Ask {
+  let performer = (y: Int) -> Int with Ask {
+    perform Ask::Get(y)
+  }
+  run((y: Int) -> Int {
+    performer(y)
+  }, 1)
+}
+
+let _start = () -> Int {
+  handle {
+    helper()
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+_start()
+
+__DATA__
+{
+  "error_contains": "hand the step object back as the value"
+}
