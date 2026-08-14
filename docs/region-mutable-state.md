@@ -204,7 +204,21 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
     `fixtures/region_arena_bounded.vibe` を bump レーンで **測って** pin する
     —— 解放をやめた region も値は正しいままなので、値の assertion では
     見えない。
-- **Perceus 免除**は未実装 (RC レーンで arena を有効にする前提)。
+- **Perceus 免除**は未実装 (RC レーンで arena を有効にする前提)。設計の当たりは
+  ついている: **プランナ側で「この束縛は region メモリだから dup/drop を出さない」
+  と判定するのではなく、`vibe_rc_drop` の先頭でポインタが arena セグメント内かを
+  見て no-op にする**。理由は arr_push のレーン選択と同じで、**region メモリか
+  どうかはアドレスの性質であって呼び出し位置の性質ではない**から。プランナを
+  触らないので、region 値が helper 経由や container 経由でどこへ流れても
+  免除が効く (プランナ側判定はそこで必ず取りこぼす)。RC レーンで必要な残りは
+  3 点:
+  1. `MutList::empty` の RC 版 body (RC ブロックレイアウト = ヘッダ + 奇数タグ
+     を保ったまま arena から確保する)
+  2. `arr_push` の RC regrow が arena から確保し、**古いバッファが arena 内なら
+     free list に返さない** —— 返すと一括解放後に別の確保として配られる
+  3. `vibe_rc_drop` の range 判定 (上記)
+  この 3 点が揃うまで RC レーンでは `need_region_arena` を false のままにして
+  ある。
 - **gate**: `compiler_gate.sh` §74 が positive
   (`fixtures/region_arena_ok.vibe`、42)と negative
   (`fixtures/err_region_escape_return_value.vibe`、needle
