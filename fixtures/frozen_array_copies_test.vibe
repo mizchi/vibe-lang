@@ -57,3 +57,22 @@ test "the argument is evaluated once" {
   inspect(calls, "1")
   inspect(FrozenArray::length(fz), "1")
 }
+
+// A source-level call rewrite is not enough: builtin functions are values, so
+// aliases go through the runtime function table instead of the direct-call
+// branch in compile_call. Both conversions must keep the same copy contract
+// on that path too.
+test "conversion aliases cannot bypass the copy boundary" {
+  let freeze: (Array[Int]) -> FrozenArray[Int] = FrozenArray::from_array
+  let thaw: (FrozenArray[Int]) -> Array[Int] = FrozenArray::to_array
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 10)
+  ArrayBuilder::push(b, 20)
+  let raw = ArrayBuilder::freeze(b)
+  let fz = freeze(raw)
+  ArrayBuilder::push(b, 30)
+  let out = thaw(fz)
+  Array::push(out, 40)
+  inspect(FrozenArray::length(fz), "2")
+  inspect(FrozenArray::get(fz, 0) + FrozenArray::get(fz, 1), "30")
+}

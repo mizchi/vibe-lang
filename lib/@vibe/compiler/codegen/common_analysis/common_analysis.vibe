@@ -3198,7 +3198,14 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
 /// constants to a table slot nothing installs.
 export fn count_lambda_sites_expr(expr: Expr) -> Int {
   match expr {
-    EIdent(_, _) => 0,
+    // #1733: these generated builtins live before func_offset, so their value
+    // form is materialized by both backends as a tiny ordinary lambda with a
+    // valid table slot. Count that synthetic site in the frozen plan.
+    EIdent(name, _) => if name == "FrozenArray::from_array" || name == "FrozenArray::to_array" {
+      1
+    } else {
+      0
+    },
     EInt(_) => 0,
     EFloat(_) => 0,
     EString(_) => 0,
@@ -3218,7 +3225,19 @@ export fn count_lambda_sites_expr(expr: Expr) -> Int {
     EMap(fields) => count_lambda_sites_fields(fields),
     EBinOp(_, l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
     ESeq(l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
-    ECall(callee, args, _) => count_lambda_sites_expr(callee) + count_lambda_sites_exprs(args),
+    // A direct conversion call stays direct; only a value-position identifier
+    // is materialized as the synthetic lambda above.
+    ECall(callee, args, _) => {
+      let callee_count = match callee {
+        EIdent(name, _) => if name == "FrozenArray::from_array" || name == "FrozenArray::to_array" {
+          0
+        } else {
+          count_lambda_sites_expr(callee)
+        },
+        _ => count_lambda_sites_expr(callee)
+      }
+      callee_count + count_lambda_sites_exprs(args)
+    },
     EIf(cond, then_e, else_e) =>
     count_lambda_sites_expr(cond) + count_lambda_sites_expr(then_e) + count_lambda_sites_expr(else_e),
     ELet(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
