@@ -2341,7 +2341,7 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 /// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
-export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
+export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
   let ctx = pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
@@ -2366,6 +2366,14 @@ export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr]
     pj = pj + 1
   }
   pc_emit(ctx, scope2, body)
+  // The parameters' own scope-end drops are pushed AFTER the whole body, so
+  // they are a suffix of the plan. `out_param_drop_start` records where that
+  // suffix begins, which is what lets the borrowed-param drop filter in
+  // wasi/linked_compile.vibe target the params THEMSELVES instead of matching
+  // by name across the entire plan (a body-local binding that shadows a
+  // borrowed parameter's name would otherwise lose its own drop -- a leak the
+  // filter's comment acknowledges).
+  Array::push(out_param_drop_start, Array::length(ctx.actions))
   let mut pk = 0
   while pk < Array::length(params) {
     let (pname, _) = Array::get(params, pk)
@@ -2373,4 +2381,12 @@ export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr]
     pk = pk + 1
   }
   ctx.actions
+}
+
+/// The plan without the param-drop split index, for callers that do not
+/// filter borrowed-parameter drops (lambdas: a lambda has no top-level name,
+/// so it is never in the borrow-param set).
+export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
+  let ignored = array_empty()
+  build_perceus_plan_with_params_split(params, body, borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns, ignored)
 }
