@@ -728,14 +728,20 @@ let arr2 = {
   ArrayBuilder::freeze(b)     // -> Array[Int]
 }
 
-// 汎用コンテナは @vibe/core — HashMap/HashSet (open addressing) と
-// SortedMap/SortedSet (AVL、keys/to_array 昇順、range(lo, hi) 両端 inclusive)。
+// 汎用コンテナは @vibe/core — MutMap/MutSet (open addressing) と
+// MutSortedMap/MutSortedSet (AVL、keys/to_array 昇順、range(lo, hi) 両端 inclusive)。
 // 比較/ハッシュは関数を渡す explicit-dict 方式 + Int/String key 特化
-// (HashMap::new_int() / SortedSet::new_string() 等)。
+// (MutMap::new_int() / MutSortedSet::new_string() 等)。
 // 永続 (immutable) コレクションは @vibex/immut — 更新は常に新版を返し旧版不変
 // (構造共有、0.4.0 並行モデルの sendable データ):
-//   ImmutMap[V] (HAMT, String key): empty/set/get/delete/size/keys/has_key
+//   MapHamt[V] (HAMT, String key): empty/set/get/delete/size/keys/has_key
+//     旧名 ImmutMap は #deprecated エイリアス (ADR-0100 (3), #1262)
 //   ImmutArray[T] (persistent vector): empty/push/get/set/length/from_array/to_array
+
+// **persistent map が要るなら `MapHamt`。builtin `Map` は小さい固定表向け** ——
+// `Map` は flat assoc list なので構築も参照も O(n²) に落ちる。n=1000 の実測で
+// `MapHamt` が 27.7× 速く 22× 確保が少ない (ADR-0100 (3) /
+// bench/bench_map_vs_immutmap.vibe)。同じ性質はコンパイラ内部でも踏んでいる (#799)。
 
 // 両端キュー / 優先度付きキューは @vibex/deque / @vibex/pqueue:
 //   Deque::new/push_back/pop_front (ring buffer、両端 O(1))
