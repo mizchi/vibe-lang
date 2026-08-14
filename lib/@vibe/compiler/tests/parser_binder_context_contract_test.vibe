@@ -46,6 +46,20 @@ fn assert_expression_context_parity(source: String) -> Unit with Exception {
   inspect(forged_next == legacy_next, "true")
 }
 
+fn assert_statement_context_parity(source: String) -> Unit with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let (legacy, legacy_next) = parse_stmt_preserving(tokens, starts, 0)
+  let (none, none_next) = parse_stmt_preserving_with_binder_context(tokens, starts, 0, None)
+  let forged_context = ParserBinderContext::{
+    nonce: 73
+  }
+  let (forged, forged_next) = parse_stmt_preserving_with_binder_context(tokens, starts, 0, Some(forged_context))
+  inspect(print_stmt(none) == print_stmt(legacy), "true")
+  inspect(none_next == legacy_next, "true")
+  inspect(print_stmt(forged) == print_stmt(legacy), "true")
+  inspect(forged_next == legacy_next, "true")
+}
+
 //# Tests
 
 test "parser binder context low-level contract accepts None without changing parsing" {
@@ -118,6 +132,56 @@ test "parser binder context B1 source spine has no expression collector fallback
   inspect(!String::contains(dispatch, "parse_pattern(tokens,"), "true")
   inspect(!String::contains(dispatch, "parse_enum_stmt(tokens,"), "true")
   inspect(!String::contains(dispatch, "parse_struct_stmt(tokens,"), "true")
+}
+
+test "parser binder context B2 statements preserve None and forged-Some parity" {
+  assert_statement_context_parity("let rec id: [T: Eq](T) -> T = [T: Eq](x: T) -> T { x }")
+  assert_statement_context_parity("let (left, right) = (1, 2)")
+  assert_statement_context_parity("fn id[T: Eq](x: T) -> T where { requires: true } { x }")
+  assert_statement_context_parity("import ./dep.vibe { Thing as Local }")
+  assert_statement_context_parity("export enum Wrap[T] { Only(T); Nothing }")
+  assert_statement_context_parity("export struct Cell[T] { value: T }")
+  assert_statement_context_parity("export trait Boxed[T] { unwrap(Self) -> T }")
+  assert_statement_context_parity("export type Box[T] = T")
+  assert_statement_context_parity("effect Audit { Emit(String) -> Unit }")
+  assert_statement_context_parity("effectset Audits = { Audit }")
+  assert_statement_context_parity("resource Posts : S3::Bucket")
+  assert_statement_context_parity("extern let %read_file: (String) -> String")
+  assert_statement_context_parity("test \"case\" { let value = 1; value }")
+  assert_statement_context_parity("example \"sample\" { (x) -> { x } }")
+  assert_statement_context_parity("bench \"speed\" { let mut total = 0; total }")
+}
+
+test "parser binder context B2 source spine has no top-level collector fallback" {
+  let expr = Fs::read_file("lib/@vibe/parser/parser_expr.vibe")
+  let parser = Fs::read_file("lib/@vibe/parser/parser.vibe")
+  inspect(String::contains(expr, "export fn parse_let_stmt_with_binder_context"), "true")
+  inspect(String::contains(expr, "parse_pattern_with_binder_context(tokens, pos, context)"), "true")
+  inspect(String::contains(expr, "parse_value_bracket_header_with_binder_context(tokens, ep, context)"), "true")
+  inspect(String::contains(expr, "parse_fn_signature_with_binder_context(tokens, pos, context)"), "true")
+  inspect(String::contains(expr, "parse_binding_name_with_binder_context(tokens, pos, context)"), "true")
+  inspect(String::contains(expr, "parse_param_list_with_binder_context(tokens, lp, context)"), "true")
+  inspect(String::contains(expr, "parse_impl_with_binder_context(tokens, starts, br, mode_block, context)"), "true")
+  inspect(String::contains(parser, "TLet => parse_let_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "_ => parse_export_stmt_with_binder_context(tokens, starts, pos + 1, context)"), "true")
+  inspect(String::contains(parser, "TImport => parse_import_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "parse_import_item_with_binder_context(tokens, pos, context)"), "true")
+  inspect(String::contains(parser, "TTest => parse_test_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "TExample => parse_example_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "TBench => parse_bench_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "TEnum => parse_enum_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "TSuberror => parse_suberror_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "TStruct => parse_toplevel_struct_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "TType => parse_type_alias_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "TTrait => parse_trait_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "\"effect\" => parse_effect_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "\"effectset\" => parse_effectset_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "\"resource\" => parse_resource_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "\"extern\" => parse_extern_let_stmt_with_binder_context"), "true")
+  inspect(String::contains(parser, "parse_struct_field_with_binder_context(tokens, pos, context)"), "true")
+  inspect(String::contains(parser, "parse_impl_stmt_dispatch_with_binder_context(tokens, pos + 1, context)"), "true")
+  inspect(String::contains(parser, "parse_impl_methods_with_binder_context(tokens, hp, simpl, context)"), "true")
+  inspect(String::contains(parser, "parse_stmt_with_binder_context(tokens, starts, pos, context)"), "true")
 }
 
 test "parser binder context statement and dispatch contracts accept None" {
