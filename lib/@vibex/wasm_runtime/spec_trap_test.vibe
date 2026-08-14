@@ -92,6 +92,10 @@ fn folded_int_min_div_s_module() -> Bytes {
   compile("(module (func (export \"f\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const -1 i32.div_s))")
 }
 
+fn wrapped_i64_int_min_div_s_module() -> Bytes {
+  compile("(module (func (export \"f\") (result i32) i64.const 2147483648 i32.wrap_i64 i32.const -1 i32.div_s))")
+}
+
 //# Tests
 
 test "spec trap: i32.load inside the page does not trap" {
@@ -157,6 +161,13 @@ test "spec trap: i32.div_s normalizes computed operands before overflow check" {
   // i32.add leaves 0x80000000 in the host stack as positive 2147483648.
   // div_s must interpret that low-32-bit value as signed INT_MIN.
   assert(traps(folded_int_min_div_s_module(), args0()))
+}
+
+test "spec trap: i32.div_s traps after i32.wrap_i64 produces INT_MIN" {
+  // The same wasm i32 bit pattern must trap regardless of its producer. Before
+  // i32 values were canonicalized on the host stack, wrap_i64 left 0x80000000
+  // as positive 2147483648 and the signed overflow check missed it (#1778).
+  assert(traps(wrapped_i64_int_min_div_s_module(), args0()))
 }
 
 test "spec trap: i32.rem_s does NOT trap on overflow" {
