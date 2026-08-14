@@ -3,78 +3,47 @@
 // The conversion-point decision (reference lane <-> tagged i64) has no cost
 // evidence behind it -- ADR-0095 §7 open question 3 was never collected, because
 // until #1541 landed nothing crossed a boundary on the reference lane at all.
-// Now it does, so the baseline is measurable: run the SAME source on the linear
-// lane and on the gc lane and compare.
+// Now something does, so a baseline is measurable: run the SAME source on the
+// linear lane and on the gc lane and compare.
 //
 //   vibe bench bench/regression/gc_boundary_bench.vibe                      # linear
 //   VIBE_BENCH_BACKEND=gc vibe bench bench/regression/gc_boundary_bench.vibe # wasm-gc
 //
-// Every function here is private and non-generic with a concrete `Array[Int]`
-// signature, which is exactly the shape #1541 admits onto the lane -- so the gc
-// numbers are the lane doing its job, not a fallback. Deliberately no `export`
-// and no generic in the crossing path: those are the boundaries that would need
-// the conversion point, and measuring them is only possible once one exists.
+// The shape here is deliberately the one #1541 ADMITS -- `let`-bound
+// non-generic functions with concrete `Array[Int]` signatures and straight-line
+// bodies -- so the gc numbers are the lane working rather than a silent
+// fallback. That is a real constraint, not a stylistic choice: written the
+// obvious way (a `while` loop carrying the array across the boundary) the lane
+// declines and both backends run identical linear code, which measures nothing.
+// Verify with `VIBE_BACKEND=gc` + `array.new_default` before trusting a delta.
 
-fn fill(values: Array[Int], n: Int) -> Array[Int] {
-  let mut i = 0
-  while i < n {
-    Array::set(values, i, i * 2)
-    i = i + 1
-  }
+let bump_first: (Array[Int]) -> Array[Int] = (values) -> {
+  Array::set(values, 0, Array::get(values, 0) + 1)
   values
 }
 
-fn total(values: Array[Int], n: Int) -> Int {
-  let mut acc = 0
-  let mut i = 0
-  while i < n {
-    acc = acc + Array::get(values, i)
-    i = i + 1
-  }
-  acc
+let sum_three: (Array[Int]) -> Int = (values) -> {
+  Array::get(values, 0) + Array::get(values, 1) + Array::get(values, 2)
 }
 
-// One literal crossing two boundaries (argument in, result out) per round.
-fn round_trip(n: Int) -> Int {
+// One literal crossing six boundaries: three arguments in, three results out.
+bench "boundary_cross_6" {
   let values = [
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0
+    1,
+    2,
+    3
   ]
-  total(fill(values, n), n)
+  let _ = sum_three(bump_first(bump_first(bump_first(values))))
 }
 
-// Repeated crossings of the same reference: if the lane is doing what it should
-// the array is threaded through every frame instead of being re-materialized.
-fn threaded(rounds: Int) -> Int {
+// Same crossings, but the literal is aliased first so the alias boundary
+// (#1541 Phase B) is on the path too.
+bench "boundary_alias_cross_6" {
   let values = [
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0
+    1,
+    2,
+    3
   ]
-  let mut acc = 0
-  let mut r = 0
-  while r < rounds {
-    acc = acc + total(fill(values, 8), 8)
-    r = r + 1
-  }
-  acc
-}
-
-bench "boundary_round_trip_8" {
-  let _ = round_trip(8)
-}
-
-bench "boundary_threaded_100" {
-  let _ = threaded(100)
+  let alias = values
+  let _ = sum_three(bump_first(bump_first(bump_first(alias))))
 }
