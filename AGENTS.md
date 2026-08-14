@@ -271,6 +271,14 @@ vibe check --single-file --json file.vibe
 # = codegen が wasm local ではなく heap ref cell に落とすもの (#1262)。
 # 空出力 = ファイル中の `let mut` は全部ただの local
 vibe escapes file.vibe
+# --strict は checker 側の**厳密**述語で同じ質問に答える (ADR-0100 (1)、
+# `TypeEnv` が `env_bind_mut` で運ぶのがこちら)。既定は lowering の答え
+# (「codegen が box するか」= 迷ったら box なので、内側の束縛が外側の
+# `let mut` と同名なだけでも報告する)、`--strict` は enforcement の答え
+# (「その closure が本当にこの束縛に届くか」= shadowing を引く)。
+# **コストを訊くなら既定、権限を訊くなら --strict**。--strict の出力は
+# 常に既定の部分集合
+vibe escapes --strict file.vibe
 
 # 解決済みの import closure (1行1パス、依存先が先、自分自身は除く。#988)。
 # ローダ自身の収集結果 = ビルドが実際にコンパイルする集合なので、実解決
