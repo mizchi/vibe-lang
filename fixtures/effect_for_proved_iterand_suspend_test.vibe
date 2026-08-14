@@ -1,0 +1,69 @@
+// #1536: two more ways a `for` iterand proves its own kind, so a suspending
+// body over it is admitted instead of refused.
+//
+//   1. a LITERAL iterand -- `for x in [1, 2]` / `for c in "ab"` carry the kind
+//      in the syntax, so no annotation and no callee lookup is needed
+//   2. a `let` bound to a CALL whose callee declares an `Array[..]` / `String`
+//      return -- the same evidence the iterand-position call case already used,
+//      now also reaching the name it was bound to
+//
+// Codegen decides String-ness at RUN TIME (#807), so an unproved iterand still
+// must not be rewritten -- see err_effect_for_shadowed_callee, which pins the
+// one way this evidence can lie.
+//
+// The numbers pin the loop's semantics, not just acceptance:
+//   arr_lit   23  array literal directly in iterand position (11 + 12)
+//   str_lit   215 string literal iterand -- 107 + 108, i.e. the CHAR CODES of
+//                 "ab" (97, 98) and not the indices (0, 1)
+//   let_arr   27  a let bound to a call declaring Array[Int] (13 + 14)
+//   let_str   217 a let bound to a call declaring String (108 + 109)
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn items() -> Array[Int] {
+  [
+    1,
+    2
+  ]
+}
+
+fn label() -> String {
+  "ab"
+}
+
+let _start = () -> Int {
+  handle {
+    let mut arr_lit = 0
+    for x in [
+      1,
+      2
+    ] {
+      arr_lit = arr_lit + perform Ask::Get(x)
+    }
+    let mut str_lit = 0
+    for c in "ab" {
+      str_lit = str_lit + perform Ask::Get(c)
+    }
+    let ys = items()
+    let mut let_arr = 0
+    for y in ys {
+      let_arr = let_arr + perform Ask::Get(y + 2)
+    }
+    let s = label()
+    let mut let_str = 0
+    for d in s {
+      let_str = let_str + perform Ask::Get(d + 1)
+    }
+    ((arr_lit * 1000 + str_lit) * 1000 + let_arr) * 1000 + let_str
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+test "effect for proved iterand suspend" {
+  inspect(_start(), "23215027217")
+}

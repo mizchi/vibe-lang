@@ -6989,6 +6989,29 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # never rewritten -- that is what keeps a runtime String out of the array form.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_string_for_suspend_test.vibe
+# #1536: two more self-proving iterands -- a LITERAL (`for x in [1, 2]` /
+# `for c in "ab"`), and a name bound to a call whose callee declares an
+# Array[..] / String return. The snapshot pins CHAR CODES for the string forms,
+# so it fails if either lowering picks the other kind's indexing.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_for_proved_iterand_suspend_test.vibe
+# #1714 P0: the callee-return proof reads the module's TOP-LEVEL statements, so
+# a local binding spelling the same name made it answer about the wrong
+# function -- lowering a String iterand to the indexed ARRAY form, which
+# compiled clean and answered 0 instead of 215. Refused now.
+scps_check_reject "err_effect_for_shadowed_callee.vibe" "is not directly on the handle body" "forshadow"
+# #1718 P0: the same root in the ELIGIBILITY check. A local `let pick = maker()`
+# shadowing a top-level `fn pick() -> Int` (empty row) made scps_fn_row_of admit
+# a call to a PERFORMING value -- compiled clean and answered 2285 instead of
+# 110. Rename the local and the same program is (correctly) refused as an opaque
+# callee; that is now the answer for the shadowed spelling too.
+scps_check_reject "err_effect_shadowed_toplevel_callee.vibe" "cannot see through" "shadowtop"
+# #1721 P0: the third instance, in the REWRITE rather than the check. A local
+# shadowing a needing fn had its call retargeted to that fn's CPS clone, so it
+# performed instead of returning the local closure's value -- 1511 instead of
+# 1507. The fixture's two halves (shadowed / renamed) must agree.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_shadowed_needing_local_test.vibe
 # #1536: a `with e` callee is admitted when its declared parameters mention no
 # function type anywhere -- there is then no argument able to instantiate the
 # row variable, so the call cannot perform the handled effect. A callee that
