@@ -58,7 +58,12 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // `"\{xs}"` -> `[1, 2]`)。描画できない型
                                // (to_string の無い集約型) は check 時に
                                // `cannot interpolate a value of type ...` で
-                               // 落ちる (#1445) — 生ポインタが出る経路は無い
+                               // 落ちる (#1445)。ただし effect handler の
+                               // pattern binder (`Throw(err) => "\{err}"`) は
+                               // binder の型を補間 rewrite が回収できず、まだ
+                               // 生ポインタの10進値になる。variant を match して
+                               // payload を補間する (`Throw(err) => match err {`
+                               // `  Kind::Case(v) => "\{v}" })` と回避する
                                // prelude の `to_string(v)` も同じ描画になる
                                // (補間と同じ書き換えを call site で受ける)
 let c: Char = 'A'              // byte value 65; Char is a transparent Int alias
@@ -1623,9 +1628,12 @@ f(1, 2)             // ok  — 全部 positional
 f(1, y = 2)         // NG: mixes positional and labeled arguments
 ```
 
-`x?` (optional) は **semantics まで着地済み** (#1500): body 内では `Option[T]`
-に束縛され、省略した呼び出し (`f()`) は `None`、渡すと (`f(7)` / `f(x = 7)`)
-`Some(7)` になる。
+`x?` (optional) は **top-level function への直接呼び出しでは semantics まで
+着地済み** (#1500): body 内では `Option[T]` に束縛され、省略した呼び出し
+(`f()`) は `None`、渡すと (`f(7)` / `f(x = 7)`) `Some(7)` になる。call-site の
+補完は top-level 宣言を直接 identifier で呼ぶ形だけを追跡する。local optional
+lambda (`let f = (x?: Int) -> ...`) や alias 経由の呼び出しには適用されず、通常の
+arity/type check に進む。
 
 ### `Error` は effect の綴りとしては退役、operation 修飾子としては生存
 
