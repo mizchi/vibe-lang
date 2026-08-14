@@ -55,6 +55,7 @@ import @vibe/compiler/codegen/common_base {
   emit_str_ref,
   evidence_dict_pass,
   fn_type_param_types,
+  gc_slot_map_get,
   inline_direct_performs,
   lookup_ctor,
   resolve_func,
@@ -511,6 +512,21 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
       }
     },
     EReturn(value) => gc_direct_abi_expr_kind(value, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref),
+    // #1541: a sequence's VALUE is its tail. Falling through to the catch-all
+    // below was wrong here -- that clause requires EVERY child to be kind 0,
+    // which is right for an operand list but rejects `Array::set(xs, 0, 9); xs`
+    // because the tail legitimately yields the reference. That shape is exactly
+    // a mutating transform, i.e. the case where passing a reference instead of a
+    // copy is what makes the call mean anything, so the lane was declining the
+    // work it exists to do and taking the whole component down with it.
+    //
+    // The leading statement still has to be reference-free: a discarded
+    // reference would be a crossing nobody proved.
+    ESeq(first, second) => if gc_direct_abi_expr_kind(first, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref) != 0 {
+      -1
+    } else {
+      gc_direct_abi_expr_kind(second, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+    },
     _ => {
       let children = expr_children(expr)
       let mut ok = true
@@ -529,6 +545,25 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
         -1
       }
     }
+  }
+}
+
+/// #1541: does this expression's VALUE come straight from an array literal?
+///
+/// A bare literal is kind 1 but has not chosen its own representation -- the
+/// consumer does. As a call argument that is fine: the callee's proven ref
+/// parameter decides. As a ref RESULT nothing decides, and the lowering builds
+/// an ordinary linear array, so accepting it produced a function whose type says
+/// `(result (ref null $array))` while its body returns i64 -- wasm that fails
+/// validation rather than a clean fallback.
+fn gc_direct_abi_tail_is_bare_array(expr: Expr) -> Bool {
+  match expr {
+    EArray(_) => true,
+    ESeq(_, second) => gc_direct_abi_tail_is_bare_array(second),
+    ELet(_, _, body, _) => gc_direct_abi_tail_is_bare_array(body),
+    ELetMut(_, _, body, _) => gc_direct_abi_tail_is_bare_array(body),
+    EIf(_, then_e, else_e) => gc_direct_abi_tail_is_bare_array(then_e) || gc_direct_abi_tail_is_bare_array(else_e),
+    _ => false
   }
 }
 
@@ -1024,6 +1059,16 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           } else {
             ()
           }
+          // A ref result whose value is a bare literal has no proof behind it:
+          // the lowering emits an ordinary linear array, and the emitted
+          // function would claim `(result (ref null $array))` while returning
+          // i64. Fail the component closed instead of shipping wasm that fails
+          // validation.
+          if si_return_ref && gc_direct_abi_tail_is_bare_array(si_body) {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
         },
         _ => ()
       }
@@ -1468,7 +1513,27 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // body emitters can use -- bodies are generated before the type section is
   // laid out. `emit_if_type_index` requires it to stay below 64.
   let gc_native_array_block_type_idx = 13
-  let closure_type_base = 14
+  // #1702: one wasm-gc struct type per FIELD COUNT, `(struct (mut i64) x N)`.
+  // Cells stay tagged i64 exactly like the native array's -- this changes where
+  // a non-escaping local record LIVES, not how its fields are represented.
+  //
+  // These sit BEFORE the closure types, and that ordering is forced: bodies are
+  // generated before the type section is laid out, so any index a body names
+  // must be a constant here. The struct count is known now (it comes from the
+  // declared structs); `num_closure_types` is only known after the walk.
+  let mut gc_native_struct_max_fields = 0
+  let mut nsi = 0
+  while nsi < Array::length(struct_field_names) {
+    let nsf = Array::length(Array::get(struct_field_names, nsi))
+    if nsf > gc_native_struct_max_fields {
+      gc_native_struct_max_fields = nsf
+    } else {
+      ()
+    }
+    nsi = nsi + 1
+  }
+  let gc_native_struct_type_base = 14
+  let closure_type_base = 14 + gc_native_struct_max_fields
   let fresh_bytes_array: () -> Array[Bytes] = () -> {
     ArrayBuilder::freeze(ArrayBuilder::new())
   }
@@ -1503,6 +1568,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // Absolute local slots of typed native-array locals, one entry per user
   // body; ref-cell metadata remains separate because it is still i64.
   let user_native_array_local_indices_all = array_empty()
+  // #1702: parallel to the above; each entry is a slot -> struct-index map so
+  // the code section can give a struct local its own `(ref null $S_N)`.
+  let user_native_struct_decl_all = array_empty()
   // #415 B-1: one call = one gc builtin body — body bytes, extra local
   // counts, the (always empty here) user-ref locals row, and the
   // function-section type index together. The function section splices
@@ -1515,6 +1583,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     Array::push(meta_i64, m64)
     Array::push(user_ref_local_indices_all, array_empty())
     Array::push(user_native_array_local_indices_all, array_empty())
+    Array::push(user_native_struct_decl_all, array_empty())
     Array::push(body_param_counts, -1)
     Array::push(gc_builtin_type_idxs, type_idx)
   }
@@ -1714,6 +1783,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             gc_native_array_local_types: array_empty(),
             gc_native_array_type_idx: gc_native_array_type_idx,
             gc_native_array_block_type_idx: gc_native_array_block_type_idx,
+            gc_native_struct_scope: array_empty(),
+            gc_native_struct_decl: array_empty(),
+            gc_native_struct_type_base: gc_native_struct_type_base,
             gc_native_array_frame_ok: true,
             gc_lambda_native_array_locals: gc_lambda_native_array_locals_l,
             gc_direct_abi_names: gc_direct_abi_names_l,
@@ -1737,6 +1809,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           Array::push(meta_i64, extra)
           Array::push(user_ref_local_indices_all, ref_local_indices_f)
           Array::push(user_native_array_local_indices_all, func_ctx.gc_native_array_local_types)
+          Array::push(user_native_struct_decl_all, func_ctx.gc_native_struct_decl)
           Array::push(body_param_counts, param_count)
         },
         _ => throw("expected function")
@@ -1808,6 +1881,11 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       // backend_lambda_ctx.vibe). Still one predicate, read in one place.
       gc_native_array_type_idx: gc_native_array_type_idx,
       gc_native_array_block_type_idx: gc_native_array_block_type_idx,
+      // Module initializers share _start's frame, whose typed-local row is
+      // never emitted (same reason the array lane stays off here).
+      gc_native_struct_scope: array_empty(),
+      gc_native_struct_decl: array_empty(),
+      gc_native_struct_type_base: 0 - 1,
       gc_native_array_frame_ok: false,
       gc_lambda_native_array_locals: gc_lambda_native_array_locals_l,
       // `_start` stays entirely outside the private direct-call ABI island.
@@ -1883,6 +1961,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   Array::push(meta_i64, start_extra_locals)
   Array::push(user_ref_local_indices_all, array_empty())
   Array::push(user_native_array_local_indices_all, array_empty())
+  Array::push(user_native_struct_decl_all, array_empty())
   // `_start` takes no parameters (enforced above), so its extra locals begin
   // at slot 0.
   Array::push(body_param_counts, 0)
@@ -1895,6 +1974,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     // #1332: the lambda's own typed-local row, recorded parallel to
     // lt_w.bodies by record_lambda_meta_gc.
     Array::push(user_native_array_local_indices_all, Array::get(gc_lambda_native_array_locals_l, li))
+    Array::push(user_native_struct_decl_all, array_empty())
     // lt_w.param_counts already counts the trailing `__env` parameter.
     Array::push(body_param_counts, Array::get(lt_w.param_counts, li))
     li = li + 1
@@ -1921,7 +2001,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   } else {
     0
   }
-  let num_base_types = 14
+  let num_base_types = 14 + gc_native_struct_max_fields
   let gc_direct_type_indices = array_empty()
   let mut gc_direct_type_count = 0
   let mut dti = 0
@@ -1993,6 +2073,21 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   emit_array_type_raw(type_content, 126, 0)
   emit_array_type_raw(type_content, 126, 1)
   emit_func_type_ref_result(type_content, gc_native_array_type_idx)
+  // #1702: `(struct (mut i64) x N)` for N = 1..max, so an N-field record uses
+  // gc_native_struct_type_base + (N - 1).
+  let mut nst = 0
+  while nst < gc_native_struct_max_fields {
+    let nst_fields = array_empty()
+    let nst_muts = array_empty()
+    let mut nstf = 0
+    while nstf <= nst {
+      Array::push(nst_fields, 126)
+      Array::push(nst_muts, 1)
+      nstf = nstf + 1
+    }
+    emit_struct_type_raw(type_content, nst_fields, nst_muts)
+    nst = nst + 1
+  }
   let mut cti = 0
   while cti < num_closure_types {
     let num_params = cti + 1
@@ -2131,13 +2226,39 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // fs_read_file results) heap-bumps through the exported __heap_ptr global;
   // without it the runner falls back to an end-of-memory arena that the
   // guest's own bump allocator grows into and clobbers mid-compile.
+  // #1701: per-block `__test_<name>` / `__bench_<name>` exports, mirroring the
+  // linear backend (codegen/wasi/linked_compile.vibe). Without them `vibe bench`
+  // has nothing to call on this lane: the synthesized `_start` runs every block
+  // in one go, so the runner found no entry point, timed nothing, and printed a
+  // single nameless line of invented numbers.
+  //
+  // Only `__no_entry__` test/bench builds produce these names, so ordinary
+  // builds -- including the compiler's own self-compile -- keep the exact export
+  // set they had. The wasm index of user function `j` is `j + func_offset`, the
+  // same mapping the linear twin uses.
+  //
+  // This does NOT make `export let` work on the gc lane; that surface is still
+  // unimplemented here, and widening it interacts with the #1541 export rule.
+  let block_export_names = array_empty()
+  let block_export_indices = array_empty()
+  let mut bxi = 0
+  while bxi < num_user_funcs {
+    let bname = Array::get(fn_names_list, bxi)
+    if String::starts_with(bname, "__bench_") || String::starts_with(bname, "__test_") {
+      Array::push(block_export_names, bname)
+      Array::push(block_export_indices, bxi + func_offset)
+    } else {
+      ()
+    }
+    bxi = bxi + 1
+  }
   let export_content = bytebuf_new()
   let export_entry_too = entry_name != "_start"
-  bytebuf_push_vec_header(export_content, if export_entry_too {
+  bytebuf_push_vec_header(export_content, Array::length(block_export_names) + (if export_entry_too {
     4
   } else {
     3
-  })
+  }))
   emit_name(export_content, "_start")
   bytebuf_push(export_content, 0)
   leb128_encode_u32(export_content, start_func_idx)
@@ -2154,6 +2275,13 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   emit_name(export_content, "__heap_ptr")
   bytebuf_push(export_content, 3)
   leb128_encode_u32(export_content, 0)
+  let mut bxe = 0
+  while bxe < Array::length(block_export_names) {
+    emit_name(export_content, Array::get(block_export_names, bxe))
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, Array::get(block_export_indices, bxe))
+    bxe = bxe + 1
+  }
   bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
     // #1109 gc parity (linear twin: linked_compile.vibe's element-section
@@ -2210,8 +2338,24 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     let ni64 = Array::get(meta_i64, ci)
     let ref_indices = Array::get(user_ref_local_indices_all, ci)
     let native_indices = Array::get(user_native_array_local_indices_all, ci)
+    let native_struct_decl = Array::get(user_native_struct_decl_all, ci)
+    let mut num_native_struct_locals = 0
+    let mut nsdi = 0
+    while nsdi < Array::length(native_struct_decl) {
+      if Array::get(native_struct_decl, nsdi) >= 0 {
+        num_native_struct_locals = num_native_struct_locals + 1
+      } else {
+        ()
+      }
+      nsdi = nsdi + 1
+    }
     let num_ref_locals = Array::length(ref_indices)
-    let num_native_locals = Array::length(native_indices)
+    let num_native_array_locals = Array::length(native_indices)
+    // Only the fast-path test below may use the COMBINED count. The array-lane
+    // scan further down indexes `native_indices` and must stay bounded by that
+    // list's own length -- the two were interchangeable until struct locals
+    // started contributing to the total (#1702).
+    let num_native_locals = num_native_array_locals + num_native_struct_locals
     if num_ref_locals == 0 && num_native_locals == 0 {
       if ni32 == 0 {
         if ni64 == 0 {
@@ -2260,12 +2404,15 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
         }
         let mut is_native_array = false
         let mut nai = 0
-        while nai < num_native_locals {
+        while nai < num_native_array_locals {
           if Array::get(native_indices, nai) == actual_local_idx {
             is_native_array = true
           }
           nai = nai + 1
         }
+        // #1702: a struct local's wasm type depends on its FIELD COUNT, so the
+        // slot is looked up in the map rather than tested for membership.
+        let ns_decl_struct_idx = gc_slot_map_get(native_struct_decl, actual_local_idx)
         leb128_encode_u32(func_buf, 1)
         // #538 ref cells remain linear-memory i64 cells. Only proven local
         // literals use a nullable typed GC reference.
@@ -2273,6 +2420,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
         if is_native_array {
           bytebuf_push(func_buf, 99)
           leb128_encode_u32(func_buf, gc_native_array_type_idx)
+        } else if ns_decl_struct_idx >= 0 {
+          bytebuf_push(func_buf, 99)
+          leb128_encode_u32(func_buf, gc_native_struct_type_base + Array::length(Array::get(struct_field_names, ns_decl_struct_idx)) - 1)
         } else {
           bytebuf_push(func_buf, 126)
         }
