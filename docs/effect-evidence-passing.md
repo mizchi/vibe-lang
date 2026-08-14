@@ -3369,3 +3369,41 @@ Done-wrap する。それが `if prow != ""` の内側にあり、**step-split �
 **教訓 B (追記59 の修正)**: 生成ソースの鮮度を識別子で grep してはいけない — **bundler が
 識別子を潰す**ので、変更が入っていても 0 件になる。**新しい文字列リテラル**
 (診断メッセージなど) で grep すること。
+
+### 追記62 (2026-08-14): inert と証明できる local closure literal の capture / call を許す (#1536)
+
+`scps_inert_taint` は「capture された名前は step-compiled closure を alias しうる」として
+一律 taint し、`scps_calls_ok` はローカル束縛経由の呼び出しを一律 reject していた。だが
+**束縛が spine 上に見えていれば、何を持っているかは分かる**:
+
+```
+scps_is_inert_literal(v, eff, ..) =
+     literal の row が eff を含まず、row 変数でもない
+  && !scps_literal_is_step_for(v, eff)   // step-split されていない
+  && !scps_inert_taint(<body>, ..)       // body 自身が inert
+```
+
+これを満たす literal に束縛された名前は、**呼んでも捕獲しても安全**。呼び出しは perform せず、
+step ではなく普通の値を返す。
+
+**step-split 済みの literal は対象外**のままで、そこが健全性の線。捕獲すれば捕獲した側も
+perform することになり、それを plain な param へ渡す形は追記61 (#1707) が捕まえる。
+
+ゲートは **2 つある**: 適格性 (`scps_calls_ok`) と引数の inert 判定 (`scps_arg_is_inert`)。
+**両方**に同じ述語を通す必要がある。
+
+#### 4 回目で通った。1〜3 回目が何を否定したか
+
+| 試行 | 広げた場所 | 結果 |
+|---|---|---|
+| 1 | `scps_arg_is_inert` だけ | 発火せず |
+| 2 | `scps_calls_ok` だけ | 発火せず |
+| 3 | 両方同時 | **まだ**発火せず |
+| 4 | 両方 + **`scps_exprs_calls_ok` / `scps_fields_calls_ok` にも集合を通す** | **通った** |
+
+3 回目が落ちた理由は診断が名指ししていた (`here: the call to 'inner'`): 引数リストを歩く
+`scps_exprs_calls_ok` が **3 引数の旧エントリを呼んで `inert_locals` を空にリセット**していた。
+リスト/フィールドのヘルパにも通して初めて、literal 引数の body まで集合が届く。
+
+**教訓**: 「広げたのに効かない」ときは、**その集合が目的の位置まで実際に届いているか**を疑う。
+診断の `here:` 節がどの呼び出しで落ちたかを名指ししてくれるので、そこから逆に辿るのが速い。
