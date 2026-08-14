@@ -339,13 +339,18 @@ test "check_linked_file: eligible handle still checks clean (#1511)" {
 ///
 /// The iterand matters. A `for` over a PROVED Array/String is rewritten to the
 /// indexed while form and accepted (#1536: a parameter annotation, an array or
-/// string literal, or a call whose callee declares the return type). Codegen
-/// decides String-ness at RUN TIME (#807), so an iterand it cannot prove — here
-/// a call to a BUILTIN, which has no top-level `fn` to read a return type off —
-/// keeps the refusal, and that is what this test pins.
+/// string literal, a call whose callee declares the return type, or a builtin
+/// whose registry row does). Codegen decides String-ness at RUN TIME (#807), so
+/// an iterand the pass cannot prove keeps the refusal, and that is what this
+/// test pins.
+///
+/// Here the iterand is a call through a LOCAL binding. The pass can see that
+/// the local holds an inert closure — that is what admits the call at all — but
+/// the kind proof deliberately refuses any name a local binder shadows (#1714),
+/// so the loop stays unproved. This is the cost of that guard, pinned.
 test "check_linked_file: suspend-class handle with perform in a for loop fails at check (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_ineligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    for j in Array::concat([1], [2]) {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    let mk = () -> Array[Int] { [1, 2] }\n    for j in mk() {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""

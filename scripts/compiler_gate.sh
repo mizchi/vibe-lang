@@ -6995,6 +6995,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # so it fails if either lowering picks the other kind's indexing.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_for_proved_iterand_suspend_test.vibe
+# #1536: and a BUILTIN callee proves it via the registry row, which is where a
+# builtin's signature has lived all along. `Array::concat` also joins the
+# hand-audited pure-builtin list -- without it the body was refused naming the
+# concat, not the loop.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_for_builtin_iterand_suspend_test.vibe
 # #1714 P0: the callee-return proof reads the module's TOP-LEVEL statements, so
 # a local binding spelling the same name made it answer about the wrong
 # function -- lowering a String iterand to the indexed ARRAY form, which
