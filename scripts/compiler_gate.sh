@@ -10677,7 +10677,7 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
-echo "[compiler-gate] 98/103 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+echo "[compiler-gate] 98/104 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through
@@ -10766,7 +10766,7 @@ echo "[compiler-gate] vibe grep typed filters ok"
 #     found by review rather than by a gate (the second twice: expression
 #     binders in #1622, PATTERN binders after that), which is what this step is
 #     for. Each case below fails DIFFERENTLY if the guard regresses.
-echo "[compiler-gate] 99/103 the inspect rewrite neither captures nor hijacks (#1571)"
+echo "[compiler-gate] 99/104 the inspect rewrite neither captures nor hijacks (#1571)"
 inspdir="_build/_gate_inspect_guard"
 rm -rf "$inspdir"; mkdir -p "$inspdir"
 
@@ -10884,7 +10884,7 @@ echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
 #      rest made `check` a strictly worse answer to the same question -- three
 #      broken statements cost three edit-and-rerun cycles. This pins the two
 #      surfaces together so they cannot drift apart again.
-echo "[compiler-gate] 100/103 check and diagnostics report the SAME parse errors (#1567)"
+echo "[compiler-gate] 100/104 check and diagnostics report the SAME parse errors (#1567)"
 chkdir="_build/_gate_check_diag_parity"
 rm -rf "$chkdir"; mkdir -p "$chkdir"
 # Three top-level statements, two independently broken, one good between them.
@@ -11015,7 +11015,74 @@ echo "[compiler-gate] vibe deps import-closure ok (#988)"
 #      predicates that disagree by accident, so this pins WHERE they differ:
 #      only on binder shadowing, and only in the one direction (strict's
 #      output is a subset of the default's).
-echo "[compiler-gate] 101/103 the two escape predicates differ only on shadowing (#1262)"
+# 104/104. ADR-0091 (#1262): `vibe allocs` -- every heap-allocating site, as
+#      `FN KIND OFFSET`. The direction is what matters and what this pins:
+#      over-report, never under-report. A site this query misses lets
+#      `@zero_alloc` certify something untrue, silently; a site it reports in
+#      error costs the reader one line and argues back through a diagnostic.
+#      So both halves are checked -- a function that allocates nothing really
+#      produces EMPTY output (otherwise "clean" is worthless), and the sites
+#      the source does not spell out (a closure's environment, a captured
+#      `let mut` becoming a heap ref cell) really appear.
+echo "[compiler-gate] 104/104 vibe allocs reports heap sites, and nothing else (ADR-0091 / #1262)"
+alcdir="_build/_gate_allocs"
+rm -rf "$alcdir"; mkdir -p "$alcdir"
+cat > "$alcdir/in.vibe" <<'ALCA'
+fn pure_sum(a: Array[Int], n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < n {
+    acc = acc + Array::get(a, i)
+    i = i + 1
+  }
+  acc
+}
+
+fn counter() -> () -> Int {
+  let mut c = 0
+  () -> Int {
+    c = c + 1
+    c
+  }
+}
+ALCA
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ALLOCS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$alcdir/in.vibe" "$alcdir/out.txt" >/dev/null 2>&1 || true
+if [ -s "$alcdir/out.txt.diag" ]; then
+  echo "[compiler-gate] FAIL: vibe allocs failed on a valid file (ADR-0091 / #1262)" >&2
+  cat "$alcdir/out.txt.diag" >&2 || true
+  exit 1
+fi
+# The reads-only function must contribute NOTHING: "empty means zero-alloc" is
+# the whole contract.
+if grep -q '^pure_sum ' "$alcdir/out.txt" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe allocs reported a site in an allocation-free function (ADR-0091 / #1262)" >&2
+  cat "$alcdir/out.txt" >&2 || true
+  exit 1
+fi
+# The two implicit sites -- neither is visible in the source text.
+for want in "counter mut-cell" "counter closure"; do
+  if ! grep -q "^$want " "$alcdir/out.txt" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe allocs missed '$want' -- an implicit allocation ADR-0091 exists to surface (#1262)" >&2
+    cat "$alcdir/out.txt" >&2 || true
+    exit 1
+  fi
+done
+# A file with no functions at all is empty output, not an error.
+printf 'enum Empty {\n  E0\n}\n' > "$alcdir/none.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ALLOCS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$alcdir/none.vibe" "$alcdir/none.txt" >/dev/null 2>&1 || true
+if [ -s "$alcdir/none.txt" ] || [ -s "$alcdir/none.txt.diag" ]; then
+  echo "[compiler-gate] FAIL: vibe allocs on a function-free file should be empty and clean (#1262)" >&2
+  cat "$alcdir/none.txt" "$alcdir/none.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$alcdir"
+echo "[compiler-gate] vibe allocs ok (ADR-0091 / #1262)"
+
+echo "[compiler-gate] 101/104 the two escape predicates differ only on shadowing (#1262)"
 escdir="_build/_gate_escapes"
 rm -rf "$escdir"; mkdir -p "$escdir"
 
