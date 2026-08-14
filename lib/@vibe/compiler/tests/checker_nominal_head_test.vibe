@@ -59,8 +59,17 @@ test "1538: HostStream is rejected by a legacy Stream consumer" {
   assert(check_source_err("fn consume(s: Stream[Int]) -> Int { 0 }\nfn main() -> Int { consume(host_stream_named(\"body\")) }"))
 }
 
-test "1538: an eager Stream still reaches its legacy consumer" {
-  assert(check_source_ok("fn consume(s: Stream[Int]) -> Int { 0 }\nfn main() -> Int { consume(Stream::once(42)) }"))
+/// #1538 retired the eager producers; `String::to_bytes` is the ByteStream half
+/// that keeps the `Stream[Int]` head inhabited, so a `Stream[Int]` parameter is
+/// still writable and still reachable.
+test "1538: a Stream[Int] parameter still reaches its ByteStream producer" {
+  assert(check_source_ok("fn consume(s: Stream[Int]) -> Int { 0 }\nfn main() -> Int { consume(String::to_bytes(\"*\")) }"))
+}
+
+/// The retired names must not resolve -- an unknown name is the error now.
+test "1538: the eager Stream combinators are gone" {
+  assert(check_source_err("fn main() -> Int { let s = Stream::once(42); 0 }"))
+  assert(check_source_err("fn main() -> Int { let s = Stream::empty(); 0 }"))
 }
 
 test "1538: HostStream retains its direct read lane" {
@@ -74,7 +83,7 @@ test "1539: exact StdinStream token is accepted" {
 test "1539: StdinStream cannot cross Int, HostStream, Stream, or user-struct boundaries" {
   assert(check_source_err("fn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(1) }"))
   assert(check_source_err("fn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(host_stream_named(\"body\")) }"))
-  assert(check_source_err("fn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(Stream::once(1)) }"))
+  assert(check_source_err("fn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(String::to_bytes(\"a\")) }"))
   assert(check_source_err("struct Fake { value: Int }\nfn use(s: StdinStream) -> Int { 0 }\nfn run() -> Int { use(Fake::{ value: 1 }) }"))
   assert(check_source_err("fn use(i: Int) -> Int { i }\nfn run() -> Int with Stdin { use(Stdin::read_via_stream()) }"))
   assert(check_source_err("fn use(s: HostStream) -> Int { 0 }\nfn run() -> Int with Stdin { use(Stdin::read_via_stream()) }"))

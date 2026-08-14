@@ -2707,7 +2707,7 @@ let consume: (Stream[Int]) -> Int = (s) -> {
   }
   sum
 }
-export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+export let _start: () -> Int = () -> { consume(String::to_bytes("*")) }
 EOF
 cat > "$fadir/ok_unannot.vibe" <<'EOF'
 let consume = (s) -> Int {
@@ -2717,7 +2717,7 @@ let consume = (s) -> Int {
   }
   sum
 }
-export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+export let _start: () -> Int = () -> { consume(String::to_bytes("*")) }
 EOF
 # #1350 (Codex P1): the pull-closure loop must fire only when the source
 # POSITIVELY returns a function. A call to a function whose return annotation
@@ -3113,13 +3113,13 @@ EOF
 # #827: Stream[T] is CtNamed (head 0 = tolerated), so the eager Array-backed
 # representation leaked through the Array builtins — these compiled AND ran.
 cat > "$tdir/bad_streamlen.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::length(Stream::once(41)) }
+export let _start: () -> Int = () -> { Array::length(String::to_bytes("*")) }
 EOF
 cat > "$tdir/bad_streamget.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::get(Stream::once(41), 0) }
+export let _start: () -> Int = () -> { Array::get(String::to_bytes("*"), 0) }
 EOF
 cat > "$tdir/bad_streamset.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::set(Stream::once(41), 0, 1); 0 }
+export let _start: () -> Int = () -> { Array::set(String::to_bytes("*"), 0, 1); 0 }
 EOF
 # #805 (0.3.0 redundant-syntax removal): the `\(expr)` string-interpolation
 # spelling was removed — only `\{expr}` remains. A source using the old form

@@ -1050,7 +1050,7 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
 /// `Future[T]` — the two-element array `[state, payload]`.
 ///
 /// Slot 0 is the state, slot 1 the value. Only `ready` (0) exists today: every
-/// in-tree future source (`Future::ready`, `Stream::next`, `Stream::fold`, and
+/// in-tree future source (`Future::ready`, `Stream::next`, and
 /// user code that returns `Future[T]` by calling `Future::ready`) resolves
 /// eagerly, so `await` reads slot 1 unconditionally. Carrying the state slot
 /// now is what lets a PENDING source be added without a second representation
@@ -1392,13 +1392,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     } else {
       fname00
     }
-    // Stream[T] (docs/spec/wasi-p3-async.md §2.4) is backed by the eager Array
-    // machinery on the linear backend: map/fold reuse the existing inline
-    // Array::map / Array::fold lowering verbatim (same arg order, same value
-    // representation). empty/once/filter are handled explicitly below.
-    // Stream::fold is NOT aliased here: it returns `Future[A]`, so it needs its
-    // own branch below to wrap the fold's result (a bare alias would hand back
-    // the accumulator where a future is expected).
+    // #1538: the eager `Stream::empty` / `once` / `map` / `filter` / `fold`
+    // aliases used to live here, backed by the Array machinery. They are
+    // retired -- ADR-0089 Decision 3 makes AsyncIter the one iteration story.
+    // `Stream::next` and the `ByteStream` pair keep their own branches below.
     //
     // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over the
     // same growable-array runtime layout ArrayBuilder uses, so push aliases
@@ -1407,9 +1404,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     // in particular the two exits COPY (mutlist_exit_copy) instead of
     // aliasing, so these freeze rows are only a fallback for a call that got
     // past the checker with the wrong arity.
-    let fname = if fname0 == "Stream::map" {
-      "Array::map"
-    } else if fname0 == "MutList::push" {
+    let fname = if fname0 == "MutList::push" {
       "ArrayBuilder::push"
     } else if fname0 == "MutList::freeze" {
       "ArrayBuilder::freeze"
@@ -1881,94 +1876,6 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       ce(buf, resolved, local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "Stream::empty" {
-      // Empty stream = empty backing array.
-      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-      emit_call(buf, arr_new_fi)
-      next_local
-    }
-    else if !prefer_bound_call && fname == "Stream::once" {
-      // Singleton stream = one-element backing array.
-      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      let val_l = nl
-      let arr_l = nl + 1
-      Array::push(local_names, "__once_val")
-      Array::push(local_names, "__once_arr")
-      emit_local_set(buf, val_l)
-      emit_call(buf, arr_new_fi)
-      emit_local_set(buf, arr_l)
-      emit_local_get(buf, arr_l)
-      emit_local_get(buf, val_l)
-      emit_call(buf, arr_push_fi)
-      emit_local_get(buf, arr_l)
-      nl + 2
-    }
-    else if !prefer_bound_call && fname == "Stream::filter" {
-      // Eager filter: walk the backing array, keep elements whose predicate is
-      // truthy. Mirrors the Array::map loop but pushes conditionally.
-      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
-      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
-      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      let arr_l = nl
-      let fn_l = nl + 1
-      let res_l = nl + 2
-      let len_l = nl + 3
-      let i_l = nl + 4
-      let slot_l = nl + 5
-      let env_l = nl + 6
-      let elem_l = nl + 7
-      Array::push(local_names, "__filter_arr")
-      Array::push(local_names, "__filter_fn")
-      Array::push(local_names, "__filter_res")
-      Array::push(local_names, "__filter_len")
-      Array::push(local_names, "__filter_i")
-      Array::push(local_names, "__filter_slot")
-      Array::push(local_names, "__filter_env")
-      Array::push(local_names, "__filter_elem")
-      emit_local_set(buf, fn_l)
-      emit_local_set(buf, arr_l)
-      emit_call(buf, arr_new_fi)
-      emit_local_set(buf, res_l)
-      emit_local_get(buf, arr_l)
-      emit_call(buf, arr_len_fi)
-      emit_local_set(buf, len_l)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, i_l)
-      emit_closure_resolve(buf, fn_l, slot_l, env_l)
-      emit_block_void(buf)
-      emit_loop_void(buf)
-      emit_local_get(buf, i_l)
-      emit_local_get(buf, len_l)
-      emit_i64_ge_s(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, arr_l)
-      emit_local_get(buf, i_l)
-      emit_call(buf, arr_get_fi)
-      emit_local_set(buf, elem_l)
-      emit_local_get(buf, elem_l)
-      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
-      emit_i64_const(buf, 0)
-      emit_i64_ne(buf)
-      emit_if_void(buf)
-      emit_local_get(buf, res_l)
-      emit_local_get(buf, elem_l)
-      emit_call(buf, arr_push_fi)
-      emit_end(buf)
-      emit_local_get(buf, i_l)
-      emit_index_one(buf, ctx)
-      emit_i64_add(buf)
-      emit_local_set(buf, i_l)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
-      emit_local_get(buf, res_l)
-      nl + 8
-    }
     else if !prefer_bound_call && fname == "Stream::next" {
       // Stream::next(s) : Future[Option[T]] (docs/spec §2.4). On the eager
       // Array-backed model `next` peeks the head: Some(s[0]) if non-empty else
@@ -1987,14 +1894,6 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         ], -1)
       ], -1), ECall(EIdent("None", -1), array_empty(), -1)), -1)
       ce(buf, future_ready_expr(synth), local_names, next_local, ctx, ld)
-    }
-    else if !prefer_bound_call && fname == "Stream::fold" {
-      // Stream::fold(s, init, f) : Future[A] (docs/spec §2.4). The fold itself
-      // is the existing inline Array::fold lowering verbatim -- same arg order,
-      // same value representation -- so synthesize that call and wrap its
-      // result in a ready future. (Stream::map/filter return Streams, not
-      // futures, so they stay plain name aliases of the Array combinators.)
-      ce(buf, future_ready_expr(ECall(EIdent("Array::fold", -1), args, -1)), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "String::to_bytes" {
       // String::to_bytes(s) : Stream[Int]  (ByteStream, docs/spec §2.4/§4.1).

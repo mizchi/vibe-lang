@@ -10,8 +10,7 @@
 #
 # Entries covered (spec milestone table M1b-3b / M-conc-1 / M2a / M2b / M2c):
 #   await      await(Future::ready(42))
-#   stream     Stream once / map / filter / fold (fold is async -> await)
-#   option     Stream::next Some/None
+#   option     Stream::next Some/None over a ByteStream ("*" = 42, "" = None)
 #   body       ByteStream consume: String::to_bytes fold
 #   roundtrip  Stream::to_string(String::to_bytes(...))
 #   control    non-async entry stays a core module (magic layer 0x01)
@@ -66,34 +65,26 @@ let run: () -> Int with Async = () -> {
   await(Future::ready(42))
 }
 EOF
-  cat >"$OUT_DIR/stream.vibe" <<'EOF'
-let run: () -> Int with Async = () -> {
-  let s = Stream::once(20)
-  let m = Stream::map(s, (x) -> { x * 2 })
-  let f = Stream::filter(m, (x) -> { x > 10 })
-  await(Stream::fold(f, 2, (acc, x) -> { acc + x }))
-}
-EOF
   cat >"$OUT_DIR/option.vibe" <<'EOF'
 let run: () -> Int with Async = () -> {
-  let a = match await(Stream::next(Stream::once(40))) {
+  let a = match await(Stream::next(String::to_bytes("*"))) {
     Some(v) => v,
     None => 0
   }
-  let b = match await(Stream::next(Stream::empty())) {
-    Some(v) => v,
-    None => 1
-  }
-  let c = match await(Stream::next(Stream::once(1))) {
+  let b = match await(Stream::next(String::to_bytes(""))) {
     Some(v) => v,
     None => 0
   }
-  a + b + c
+  a + b
 }
 EOF
   cat >"$OUT_DIR/body.vibe" <<'EOF'
 let run: () -> Int with Async = () -> {
-  await(Stream::fold(String::to_bytes("*"), 0, (acc, b) -> { acc + b }))
+  let mut acc = 0
+  for b in String::to_bytes("\n ") {
+    acc = acc + b
+  }
+  acc
 }
 EOF
   cat >"$OUT_DIR/roundtrip.vibe" <<'EOF'
@@ -104,7 +95,7 @@ let run: () -> Int with Async = () -> {
 EOF
   cat >"$OUT_DIR/forawait.vibe" <<'EOF'
 let run: () -> Int with Async = () -> {
-  let s = Stream::once(42)
+  let s = String::to_bytes("*")
   let mut sum = 0
   for x in s {
     sum = sum + x
@@ -158,7 +149,7 @@ run_component_42() {
 
 write_fixtures
 
-ENTRIES="await stream option body roundtrip forawait"
+ENTRIES="await option body roundtrip forawait"
 for name in $ENTRIES; do
   run_component_42 "$name"
 done
