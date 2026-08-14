@@ -86,10 +86,31 @@ the compiler multi-worker gate. Serializing every AST/interface through
 compiler dogfood into a serialization benchmark. Mutable `Array`, `Bytes`,
 handler evidence, and continuation values remain non-`Send`.
 
-**Status (#906):** `FrozenArray[T]` is implemented as a checker-only
+**Status (#906, amended by #1733):** `FrozenArray[T]` is a checker-only
 phantom-type distinction over `Array[T]`'s exact same runtime layout — the
 same technique `ArrayBuilder[T]` already uses (`ArrayBuilder::freeze` is a
-pure identity cast; so are `FrozenArray::from_array`/`FrozenArray::to_array`).
+pure identity cast). **The two `FrozenArray` conversions are not identity
+casts: `from_array` and `to_array` both COPY** (`frozen_conv_copy`,
+codegen/expr/compile_call.vibe, mirrored in the gc lane's
+`compile_call_gc`). They were identity casts, on the convention that the
+caller is trusted not to keep mutating the source, and nothing enforced that
+trust — breaking it needed no unsafe:
+
+- `from_array`: `ArrayBuilder::freeze` does not consume the builder, so the
+  handle stays in scope. `let fz = FrozenArray::from_array(raw)` followed by
+  `ArrayBuilder::push(b, 3)` grew `fz`.
+- `to_array`: the result is an ordinary `Array[T]`, which `Array::set` /
+  `Array::push` / `Array::truncate` all accept. `Array::set(escaped, 0, 999)`
+  wrote straight through into the frozen value — no builder handle needed, so
+  this side was the easier of the two to hit by accident.
+
+Since `Send` admits `FrozenArray[T]` *because* it is immutable, a frozen
+array that changes under its receiver removed that reason silently. This is
+the same resolution `MutList::freeze`/`MutList::to_array` got in #1262. The
+price is O(n) per conversion; `ArrayBuilder::freeze` itself stays identity, so
+the build-then-freeze path is unchanged. Pinned by
+`fixtures/frozen_array_copies_test.vibe`.
+
 Surface: `FrozenArray::from_array`, `FrozenArray::get`, `FrozenArray::length`,
 `FrozenArray::to_array` — no mutation methods, deliberately. `Send`'s
 structural judgment (`send_ok_rec`, checker/checker_trait.vibe) treats
