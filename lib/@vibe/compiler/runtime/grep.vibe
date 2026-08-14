@@ -1368,11 +1368,11 @@ fn grep_stmt_spans(source: String, lo: Array[Int], hi: Array[Int]) -> Unit {
 }
 
 /// Type one file with `import_env` already resolved, and package everything
-/// the filters read. A type error is NOT propagated: it becomes `type_error`,
-/// which is exactly what `--only-ill-typed` is asking about. A file that does
-/// not even parse yields the empty context (its structural matches, if any,
-/// came from a parse this one just failed to repeat, so there is nothing to
-/// type).
+/// the filters read. A type error becomes `type_error`: `--only-ill-typed`
+/// classifies with it, while `grep_emit_hits` refuses typed filters rather than
+/// returning a plausible empty result. A file that does not even parse yields
+/// the empty context (its structural matches, if any, came from a parse this
+/// one just failed to repeat, so there is nothing to type).
 export fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv) -> GrepTyped {
   let delta = String::length(typed_source) - String::length(source)
   if delta < 0 {
@@ -1422,9 +1422,9 @@ export fn grep_typed_context(source: String, typed_source: String, import_env: T
 ///
 /// `type_error` is set, which is the whole point: the alternative (an empty
 /// context) reports the file as clean, so `--only-well-typed` would hand back
-/// sites from a program that does not compile. Every `--where` filter drops
-/// its matches here, because "we do not know this capture's type" must not
-/// read as "it is not an Array[Int]".
+/// sites from a program that does not compile. Typed filters fail closed on
+/// this context, because "we do not know this capture's type" must not read as
+/// "it is not an Array[Int]".
 ///
 /// The error may belong to a DEPENDENCY rather than to this file. Covering the
 /// whole file over-reports for `--only-ill-typed`, which is the safe direction
@@ -1886,7 +1886,8 @@ fn grep_filter_keeps(ctx: GrepTyped, hit: GrepHit, clause: String, what: String)
       // there; this one claimed to have RESOLVED a name it only spelled out.
       // A resolved-name filter that degrades to syntax when the graph is
       // broken is exactly the silently-wrong answer the typed tier exists to
-      // avoid, so it drops too. Pure syntax is what the parse-only tier is for.
+      // avoid. `grep_emit_hits` refuses that context before this defensive
+      // check; pure syntax is what the parse-only tier is for.
       ctx.type_error == "" && grep_resolve_name(ctx, text) == rhs
     } else if op == ":" {
       let expected = resolve_type_expr(parse_type(lex(rhs), 0).0, ctx.defs)
@@ -2028,6 +2029,13 @@ export fn grep_needs_typing(wheres: Array[String], where_rows: Array[String], on
 
 /// Filter `hits` and append their rendered form to `out`.
 export fn grep_emit_hits(source: String, hits: Array[GrepHit], ctx: GrepTyped, typed: Bool, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, out: Array[String]) -> Unit with Exception {
+  let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
+  if has_typed_filter && Array::length(hits) > 0 && ctx.type_error != "" {
+    let path = Array::get(hits, 0).path
+    throw(String::concat("grep: cannot apply --where/--where-row to `", String::concat(path, String::concat("` because it could not be typed; fix the type error or rerun without typed filters: ", ctx.type_error))))
+  } else {
+    ()
+  }
   let mut i = 0
   while i < Array::length(hits) {
     let hit = Array::get(hits, i)
