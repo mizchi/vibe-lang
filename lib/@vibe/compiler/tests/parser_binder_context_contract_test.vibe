@@ -32,6 +32,20 @@ fn opaque_context_identity(context: Option[ParserBinderContext]) -> Option[Parse
   context
 }
 
+fn assert_expression_context_parity(source: String) -> Unit with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let (legacy, legacy_next) = parse_impl(tokens, starts, 0, 0)
+  let (none, none_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, None)
+  let forged_context = ParserBinderContext::{
+    nonce: 41
+  }
+  let (forged, forged_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, Some(forged_context))
+  inspect(print_expr(none) == print_expr(legacy), "true")
+  inspect(none_next == legacy_next, "true")
+  inspect(print_expr(forged) == print_expr(legacy), "true")
+  inspect(forged_next == legacy_next, "true")
+}
+
 //# Tests
 
 test "parser binder context low-level contract accepts None without changing parsing" {
@@ -68,6 +82,42 @@ test "parser binder context low-level contract accepts None without changing par
   let (forged_impl, forged_impl_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, Some(forged_context))
   inspect(print_expr(forged_impl) == print_expr(legacy_impl), "true")
   inspect(forged_impl_next == legacy_impl_next, "true")
+}
+
+test "parser binder context B1 expression collectors preserve None and forged-Some parity" {
+  assert_expression_context_parity("(x: Int, y) -> { x }")
+  assert_expression_context_parity("[T: Eq](x: T) -> T { x }")
+  assert_expression_context_parity("value is Some(x)")
+  assert_expression_context_parity("match value { Some(x) => x, _ => 0 }")
+  assert_expression_context_parity("{ let (x, y) = pair; x }")
+  assert_expression_context_parity("{ let rec f: [T: Eq](T) -> T = [T: Eq](x: T) -> T { x }; f }")
+  assert_expression_context_parity("{ struct Local { value: Int } 1 }")
+}
+
+test "parser binder context B1 source spine has no expression collector fallback" {
+  let base = Fs::read_file("lib/@vibe/parser/parser_base.vibe")
+  let primary = Fs::read_file("lib/@vibe/parser/parser_expr_primary.vibe")
+  let core = Fs::read_file("lib/@vibe/parser/parser_expr_core.vibe")
+  let dispatch = Fs::read_file("lib/@vibe/parser/parser_expr_dispatch.vibe")
+  inspect(String::contains(base, "parse_pattern_with_binder_context(tokens, pos + 1, context)"), "true")
+  inspect(String::contains(base, "parse_pat_cont(tokens, pn, b, context)"), "true")
+  inspect(String::contains(base, "parse_one_param_with_binder_context(tokens, pos, context)"), "true")
+  inspect(String::contains(base, "parse_param_cont_with_binder_context(tokens, fn1, b, context)"), "true")
+  inspect(String::contains(base, "parse_enum_ctors_rest_with_binder_context(tokens, next, b, context)"), "true")
+  inspect(String::contains(base, "parse_struct_fields_rest_with_binder_context(tokens, next, b, mb, context)"), "true")
+  inspect(String::contains(base, "parse_pattern_with_binder_context(tokens, pos, None)"), "true")
+  inspect(String::contains(base, "parse_param_list_with_binder_context(tokens, pos, None)"), "true")
+  inspect(String::contains(primary, "parse_param_list_with_binder_context(tokens, params_pos, context)"), "true")
+  inspect(String::contains(primary, "parse_param_list_with_binder_context(tokens, pos + 1, context)"), "true")
+  inspect(!String::contains(primary, "parse_param_list(tokens,"), "true")
+  inspect(String::contains(core, "parse_pattern_with_binder_context(tokens, next + 1, context)"), "true")
+  inspect(!String::contains(core, "parse_pattern(tokens,"), "true")
+  inspect(String::contains(dispatch, "parse_pattern_with_binder_context(tokens, pos, context)"), "true")
+  inspect(String::contains(dispatch, "parse_enum_stmt_with_binder_context(tokens, p + 1, false, context)"), "true")
+  inspect(String::contains(dispatch, "parse_struct_stmt_with_binder_context(tokens, p + 1, false, context)"), "true")
+  inspect(!String::contains(dispatch, "parse_pattern(tokens,"), "true")
+  inspect(!String::contains(dispatch, "parse_enum_stmt(tokens,"), "true")
+  inspect(!String::contains(dispatch, "parse_struct_stmt(tokens,"), "true")
 }
 
 test "parser binder context statement and dispatch contracts accept None" {
