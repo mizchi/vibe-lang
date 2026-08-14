@@ -139,8 +139,10 @@ no bootstrap risk):
 >      trap for user code too, not just codegen: under the production default
 >      (`VIBE_RC=1`) it returns exactly half the true pattern for every double
 >      (`2.0` → 2305843009213693952 = `Int::max_value + 1`, not
->      4611686018427387904). `lib/@vibex/wasm_wat_encoder`'s `parse_f64_bits`
->      still routes through it. Callers must use the `_lo` / `_hi` pair.
+>      4611686018427387904). Callers must use the `_lo` / `_hi` pair.
+>      `lib/@vibex/wasm_wat_encoder` no longer converts decimal WAT literals
+>      through a `Double` at all: it keeps an exact BigInt ratio, rounds once
+>      to nearest-even, and returns the two 32-bit halves directly (#1737).
 > 3. ✅ **Float-ness through `let` bindings (Blocker-3) — FIXED.** The AST is
 >    untyped, so `expr_is_floatish` was purely syntactic and could not see that
 >    a *variable* held a float (`let x = 1.5; x + y` took the integer `+`).
