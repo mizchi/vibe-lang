@@ -3487,34 +3487,32 @@ a * 10
 
 **綴りを変えるだけで refuse が silent-wrong になる。**
 
-#### なぜ `inert_locals` / `cps_locals` では捕まらなかったか
+#### なぜ独立した `inert_locals` / `cps_locals` / `locals` では不十分だったか
 
-`let pick = maker()` は **literal ではない**ので #1710 の `inert_locals` に入らず、
-prepass が step-split する対象でもないので `cps_locals` にも入らない。判定は
-「見えている局所」でも「予約名」でもない残りへ落ち、そこが top-level を引く。
+最初の修正は「見えている名前」を追加したが、3 集合は**加算しかされなかった**。そのため
+`let pick = inert_literal` の後に `let pick = maker()` が来ても古い inert 証明が残り、
+後者より先に受理された。実測は正解 120 に対して **3075**。同じ問題は CPS 証明、parameter、
+match / for / loop binder にもあり、source が `__scps_*` を綴る場合は予約 prefix まで
+opaque な現在束縛を飛び越えられた。
 
-#### 直し方 — スコープ盲ではなくスコープ正確に
+#### 直し方 — 1 本の lexical classification stack
 
-#1714 の guard はスコープ盲な `scps_binds_name` プローブだった (そちらの walk は
-`root` しか持たない)。**この walk は既に `ELet` / `ELetMut` / `ELetRec` / closure params /
-match binder / `for` binder / `loop` params を降りている**ので、`locals: Array[String]` を
-1 つ増やすだけで**正確な集合**が作れる。過剰 refuse も無い。
+#1714 の guard はスコープ盲な `scps_binds_name` プローブのまま fail-closed に保つ。一方、
+適格性と診断の walk は `(name, opaque|inert|CPS)` の immutable stack を共有し、逆引きで
+**最後の binder だけ**を authority にする。`ELet` / `ELetMut` / `ELetRec` / closure params /
+match binder / `for` binder / parser-lowered loop binder の各 lexical 範囲で分類を積む。
+handle の外側で見えている binding と CPS clone / literal の全 parameter も入口で seed する。
 
-判定の**順序**も直した。以前は
-
-```
-perform → builtin/ctor/needing → inert_locals → cps_locals → fn_row_of
-```
-
-で、**`needing` が局所シャドウより先**に効いていた (needing fn と同名の局所があると、
-clone を呼ぶつもりで局所を呼ぶ)。今は
+判定順は次だけ:
 
 ```
-perform → inert_locals → cps_locals/予約名 → 局所なら false → builtin/ctor/needing → fn_row_of
+perform → 現在の lexical 分類 (inert/CPS は受理、opaque は拒否)
+        → 未束縛の generated prefix → builtin/ctor/needing → fn_row_of
 ```
 
-**「この pass が見通せる局所」を先に全部拾い、残った局所は opaque として refuse する。**
-この順序なら、名前解決を伴うすべての受理が局所シャドウの後ろに来る。
+生成された inert parameter は rename 時の明示リストだけで受理し、prefix から推測しない。
+適格性と culprit 診断は同じ named-call predicate と同じ scope 遷移を使う。これで、名前解決を
+伴う受理も予約 prefix も、現在の局所束縛を飛び越えない。
 
 **教訓 (追記63 と同じものの再確認)**: 名前から宣言を引く判定は、**引く前に**その名前が
 局所で隠されていないかを問う。#1714 を直したときにこの 2 件目を探しに行ったから見つかった —
@@ -3617,3 +3615,39 @@ param row が違う形は checker を通らないので、prepass の引き当�
 **教訓**: 同じパターンでも層が変わると**壊れ方が変わる** (silent-wrong / 偽拒否)。
 そして偽拒否は、その先にある silent-wrong を**偶然塞いでいることがある** — 偽拒否を
 直すときは「これは何を守っていたか」を必ず問う。
+
+### 追記66 (2026-08-14): iterand の証明を builtin registry へ届かせる (#1536)
+
+追記60/63 で `for` の iterand は「top-level `fn` の宣言戻り値型」「リテラル」「その
+呼び出しに束縛された名前」から証明できるようにした。**builtin だけが取り残されていた** —
+`Array::concat` には読むべき top-level `fn` が無いので `scps_fn_ret_ty` は何も答えない。
+
+だが**registry にはずっと署名があった** (`builtin_registry.vibe` の
+`(Array[_], Array[_]) -> Array[_]`)。`lookup_registry_builtin` を引いて
+`CtArray(_) -> "array"` / `CtString -> "string"` に写すだけで済む。証明の入口を
+`scps_call_kind` に一本化し、宣言 → registry の順に訊く (どちらも #1714 の
+スコープ盲 guard の後ろ)。
+
+#### 詰まりは証明ではなく**適格性**の側だった
+
+registry を引くようにしても最初は refuse のままで、診断が理由を名指ししていた:
+
+```
+(here: the call to 'Array::concat')
+```
+
+`Array::concat` が `idp_pure_builtin_names` (手検証済み pure builtin のリスト) に
+**入っていなかった**。兄弟の `Array::slice` は `scps_is_safe_mut_builtin` 経由で、
+`String::concat` はこのリスト経由で既に通っていたので、穴はこの 1 名前だけ。
+リストの判定基準 (「ユーザ effect を perform できず、関数型引数を呼ばない」) は
+満たしているので、同じ形式で監査コメントを付けて追加した。
+
+**教訓**: 「証明を広げたのに通らない」ときは、**証明の手前で別のゲートが落としていないか**を
+診断の `here:` 節で確かめる (追記62 と同じ道具、逆向きの使い方)。
+
+#### 残る unproved
+
+局所束縛経由の呼び出し (`let mk = () -> Array[Int] { .. }` → `for j in mk()`) は
+**意図的に refuse のまま**。#1714 の guard が「局所が隠している名前の宣言は信じない」と
+決めているので、その名前からは種別を証明しない。これは guard のコストであって穴ではない
+(`cli_support_test.vibe` の不適格テストがこの形を留めている)。

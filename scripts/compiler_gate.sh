@@ -6995,6 +6995,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # so it fails if either lowering picks the other kind's indexing.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_for_proved_iterand_suspend_test.vibe
+# #1536: and a BUILTIN callee proves it via the registry row, which is where a
+# builtin's signature has lived all along. `Array::concat` also joins the
+# hand-audited pure-builtin list -- without it the body was refused naming the
+# concat, not the loop.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_for_builtin_iterand_suspend_test.vibe
 # #1714 P0: the callee-return proof reads the module's TOP-LEVEL statements, so
 # a local binding spelling the same name made it answer about the wrong
 # function -- lowering a String iterand to the indexed ARRAY form, which
@@ -7006,6 +7012,19 @@ scps_check_reject "err_effect_for_shadowed_callee.vibe" "is not directly on the 
 # 110. Rename the local and the same program is (correctly) refused as an opaque
 # callee; that is now the answer for the shadowed spelling too.
 scps_check_reject "err_effect_shadowed_toplevel_callee.vibe" "cannot see through" "shadowtop"
+# #1720 follow-up: authorization is lexical, not an additive set. Every newer
+# binder masks an older inert/CPS proof, and source-spelled generated prefixes
+# remain opaque. Pin the exact culprit so diagnostics and eligibility cannot
+# drift apart again. The loop fixture exercises the parser-lowered local form;
+# the plain closure-parameter convention also remains pinned by #1707 below.
+scps_check_reject "err_effect_inert_local_reshadow.vibe" "here: the call to 'pick'" "inertreshadow"
+scps_check_reject "err_effect_cps_local_reshadow.vibe" "here: the call to 'pick'" "cpsreshadow"
+scps_check_reject "err_effect_reserved_local_opaque.vibe" "here: the call to '__scps_user'" "reservedopaque"
+scps_check_reject "err_effect_enclosing_param_shadow.vibe" "here: the call to 'pick'" "paramshadow"
+scps_check_reject "err_effect_clone_param_shadow.vibe" "here: the call to 'pick'" "cloneparamshadow"
+scps_check_reject "err_effect_match_binder_reshadow.vibe" "here: the call to 'pick'" "matchreshadow"
+scps_check_reject "err_effect_for_binder_reshadow.vibe" "here: the call to 'pick'" "forreshadow"
+scps_check_reject "err_effect_loop_binder_reshadow.vibe" "here: the call to 'pick'" "loopreshadow"
 # #1721 P0: the third instance, in the REWRITE rather than the check. A local
 # shadowing a needing fn had its call retargeted to that fn's CPS clone, so it
 # performed instead of returning the local closure's value -- 1511 instead of
