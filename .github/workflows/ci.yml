@@ -239,6 +239,32 @@ jobs:
       - name: vibe-fmt lint
         run: bash scripts/check_vibe_fmt.sh
 
+  # Structural debt ratchet (scripts/lint_architecture_debt.sh). The comment on
+  # vibe-fmt-check above calls itself a mirror of this lint, but this one had no
+  # CI job at all: it ran only from the local pre-commit hook. #1729 then made
+  # that single checkpoint fail on untouched code, and the way past a failing
+  # hook is `--no-verify`, which switches the ratchet off for the whole commit.
+  # A ratchet whose only enforcement point is bypassable enforces nothing.
+  #
+  # Needs neither a seed nor a build -- it is ripgrep over the tree plus a
+  # baseline file -- so it is a standalone job that overlaps everything else.
+  # scripts/lint_review_regressions.sh is intentionally NOT run here: it lints
+  # `git diff --cached`, so with nothing staged it would pass vacuously. Its
+  # self-test is what carries meaning away from the hook, and that does run.
+  structural-lint:
+    name: structural-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ripgrep
+        run: command -v rg >/dev/null || sudo apt-get install -y ripgrep
+      - name: architecture-debt lint self-test
+        run: bash scripts/lint_architecture_debt_test.sh
+      - name: architecture-debt lint
+        run: bash scripts/lint_architecture_debt.sh
+      - name: review-regressions lint self-test
+        run: bash scripts/lint_review_regressions_test.sh
+
   # wasm-gc lane gate (#1332). The gc backend's native-array lowering is the
   # one path whose failure mode is a module that does not VALIDATE, and it was
   # invisible to every other job: #1329's work sat un-merged for days because
@@ -647,7 +673,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, unit-tests, vibe-fmt-check, gc-gate]
+    needs: [compiler-gate, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -667,6 +693,10 @@ jobs:
           fi
           if [ "${{ needs.gc-gate.result }}" != "success" ]; then
             echo "::error::gc-gate did not succeed (${{ needs.gc-gate.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.structural-lint.result }}" != "success" ]; then
+            echo "::error::structural-lint did not succeed (${{ needs.structural-lint.result }})"
             exit 1
           fi
           echo "all required jobs passed"

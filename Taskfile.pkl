@@ -199,7 +199,20 @@ local checkLockClean = new Task {
 }
 
 local testLockClean = scriptTask("test-lock-clean", "scripts/check_lock_clean_test.sh")
-local lintArchitectureDebt = scriptTask("lint-architecture", "scripts/lint_architecture_debt.sh")
+// Not `scriptTask`: the rules table and the baseline are inputs too, and
+// `scriptSources` only globs scripts/**/*.sh. Without them, editing the
+// allowlist replays a cached "ok" and the ratchet answers a stale question.
+local lintArchitectureDebt = new Task {
+  name = "lint-architecture"
+  description = "structural debt ratchet: fail on new matches outside the recorded baseline"
+  cmd = "bash scripts/lint_architecture_debt.sh"
+  inputs {
+    ...vibeSources
+    ...scriptSources
+    "scripts/architecture_debt_rules.tsv"
+    "scripts/architecture_debt_allowlist.txt"
+  }
+}
 local testLintArchitecture =
   scriptTask("test-lint-architecture", "scripts/lint_architecture_debt_test.sh")
 local lintReviewRegressions =
@@ -1114,6 +1127,19 @@ local releaseCheck = new Task {
     selfhostOnlyGate
     checkVibeFmt
     checkTaskfileFmt
+    // These ran ONLY from the local pre-commit hook -- CI never invoked them.
+    // That made the hook the single enforcement point, so #1729 (a stale
+    // baseline failing untouched code) pushed everyone to `--no-verify` and
+    // took the ratchet off entirely. A gate with one bypassable checkpoint is
+    // not a gate.
+    //
+    // `lint-review-regressions` is deliberately NOT here: it lints
+    // `git diff --cached`, so outside a pre-commit run there is nothing staged
+    // and it passes vacuously. Its self-test is the part that carries meaning
+    // away from the hook.
+    lintArchitectureDebt
+    testLintArchitecture
+    testLintReviewRegressions
     checkMethodStyleNaming
     doctestGated
     vibeMdTutorialGated
