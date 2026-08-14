@@ -7006,6 +7006,19 @@ scps_check_reject "err_effect_for_shadowed_callee.vibe" "is not directly on the 
 # 110. Rename the local and the same program is (correctly) refused as an opaque
 # callee; that is now the answer for the shadowed spelling too.
 scps_check_reject "err_effect_shadowed_toplevel_callee.vibe" "cannot see through" "shadowtop"
+# #1720 follow-up: authorization is lexical, not an additive set. Every newer
+# binder masks an older inert/CPS proof, and source-spelled generated prefixes
+# remain opaque. Pin the exact culprit so diagnostics and eligibility cannot
+# drift apart again. The loop fixture exercises the parser-lowered local form;
+# the plain closure-parameter convention also remains pinned by #1707 below.
+scps_check_reject "err_effect_inert_local_reshadow.vibe" "here: the call to 'pick'" "inertreshadow"
+scps_check_reject "err_effect_cps_local_reshadow.vibe" "here: the call to 'pick'" "cpsreshadow"
+scps_check_reject "err_effect_reserved_local_opaque.vibe" "here: the call to '__scps_user'" "reservedopaque"
+scps_check_reject "err_effect_enclosing_param_shadow.vibe" "here: the call to 'pick'" "paramshadow"
+scps_check_reject "err_effect_clone_param_shadow.vibe" "here: the call to 'pick'" "cloneparamshadow"
+scps_check_reject "err_effect_match_binder_reshadow.vibe" "here: the call to 'pick'" "matchreshadow"
+scps_check_reject "err_effect_for_binder_reshadow.vibe" "here: the call to 'pick'" "forreshadow"
+scps_check_reject "err_effect_loop_binder_reshadow.vibe" "here: the call to 'pick'" "loopreshadow"
 # #1721 P0: the third instance, in the REWRITE rather than the check. A local
 # shadowing a needing fn had its call retargeted to that fn's CPS clone, so it
 # performed instead of returning the local closure's value -- 1511 instead of
