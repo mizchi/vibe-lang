@@ -1,0 +1,101 @@
+//# Imports
+
+import ./wasm_runtime.vibe {
+  exec_module_with_args
+}
+
+import @vibex/wasm_wat_encoder {
+  compile
+}
+
+//# Functions
+
+fn call0(wasm: Bytes, name: String) -> Int {
+  let (ec, result) = exec_module_with_args(wasm, name, Array::slice([
+    0
+  ], 0, 0))
+  if ec != 0 {
+    -99999
+  } else {
+    result
+  }
+}
+
+/// Every export here PRODUCES its operand with `i32.add` instead of taking it as
+/// an argument. That is the whole point: an argument arrives already in signed
+/// host form, so the existing spec_i32 battery cannot reach the case where a
+/// 32-bit overflow leaves a host value whose low bits are right and whose sign
+/// is not. `2147483647 + 1` is `INT_MIN`, and every signed opcode below has to
+/// agree with the engine about that.
+fn wrap_module() -> Bytes {
+  compile("(module\n    (func (export \"produced\") (result i32) i32.const 2147483647 i32.const 1 i32.add)\n    (func (export \"lt_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const -1 i32.lt_s)\n    (func (export \"ge_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const 0 i32.ge_s)\n    (func (export \"shr_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const 1 i32.shr_s)\n    (func (export \"rem_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const 3 i32.rem_s)\n    (func (export \"eq_min\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const -2147483648 i32.eq)\n    (func (export \"mul_wrap\") (result i32) i32.const 65536 i32.const 65536 i32.mul)\n    (func (export \"shl_wrap\") (result i32) i32.const 1 i32.const 31 i32.shl)\n    (func (export \"rotl_wrap\") (result i32) i32.const 1 i32.const 31 i32.rotl)\n    (func (export \"shru_all_ones\") (result i32) i32.const -1 i32.const 0 i32.shr_u)\n    (func (export \"divu_high\") (result i32) i32.const -1 i32.const 1 i32.div_u)\n    (func (export \"wrap_i64_high\") (result i32) i64.const 2147483648 i32.wrap_i64)\n    (func (export \"eq_shl_rotl\") (result i32) i32.const 1 i32.const 31 i32.shl i32.const 1 i32.const 31 i32.rotl i32.eq)\n    (func (export \"eq_shru_const\") (result i32) i32.const -1 i32.const 0 i32.shr_u i32.const -1 i32.eq)\n    (func (export \"eq_load_const\") (result i32) i32.const 0 i32.const -2147483648 i32.store i32.const 0 i32.load i32.const -2147483648 i32.eq)\n    (memory 1)\n  )")
+}
+
+//# Misc
+
+test "spec i32 wrap: an overflowing add produces INT_MIN, not 2147483648" {
+  inspect(call0(wrap_module(), "produced"), "-2147483648")
+}
+
+test "spec i32 wrap: lt_s reads the produced value as signed" {
+  inspect(call0(wrap_module(), "lt_s"), "1")
+}
+
+test "spec i32 wrap: ge_s reads the produced value as signed" {
+  inspect(call0(wrap_module(), "ge_s"), "0")
+}
+
+test "spec i32 wrap: shr_s shifts the sign bit in, not a zero" {
+  inspect(call0(wrap_module(), "shr_s"), "-1073741824")
+}
+
+test "spec i32 wrap: rem_s keeps the sign of the dividend" {
+  inspect(call0(wrap_module(), "rem_s"), "-2")
+}
+
+test "spec i32 wrap: a produced INT_MIN equals the INT_MIN constant" {
+  inspect(call0(wrap_module(), "eq_min"), "1")
+}
+
+test "spec i32 wrap: mul that overflows 32 bits wraps to 0" {
+  inspect(call0(wrap_module(), "mul_wrap"), "0")
+}
+
+test "spec i32 wrap: shl into the sign bit produces INT_MIN" {
+  inspect(call0(wrap_module(), "shl_wrap"), "-2147483648")
+}
+
+// #1764 review (P0): normalizing only SOME producers is worse than normalizing
+// none. Once `i32.shl` answers -2147483648 while `i32.rotl` answers 2147483648
+// for the same bit pattern, `i32.eq` compares two host representations of one
+// i32 and says they differ -- a wrong answer that neither operand alone reveals.
+// These pin every remaining producer that could hold a value above 2^31: the
+// unsigned shift and divide, the rotates, `i32.wrap_i64`, and `i32.load`.
+
+test "spec i32 wrap: rotl into the sign bit agrees with shl" {
+  inspect(call0(wrap_module(), "rotl_wrap"), "-2147483648")
+}
+
+test "spec i32 wrap: two producers of the same bit pattern compare equal" {
+  inspect(call0(wrap_module(), "eq_shl_rotl"), "1")
+}
+
+test "spec i32 wrap: shr_u by zero keeps all ones as -1" {
+  inspect(call0(wrap_module(), "shru_all_ones"), "-1")
+}
+
+test "spec i32 wrap: an unsigned-shifted value compares equal to the constant" {
+  inspect(call0(wrap_module(), "eq_shru_const"), "1")
+}
+
+test "spec i32 wrap: div_u whose quotient sets the top bit" {
+  inspect(call0(wrap_module(), "divu_high"), "-1")
+}
+
+test "spec i32 wrap: wrap_i64 of 0x80000000 is INT_MIN" {
+  inspect(call0(wrap_module(), "wrap_i64_high"), "-2147483648")
+}
+
+test "spec i32 wrap: a value round-tripped through memory compares equal" {
+  inspect(call0(wrap_module(), "eq_load_const"), "1")
+}

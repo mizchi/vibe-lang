@@ -355,7 +355,7 @@ trampoline を将来 `wasi:http/service` の
    **`for` からの消費も landed (#1366、spec §3.18.2)**: ただし戻り型を
    `Stream[Int]` から **`HostStream` へ分離した上で**。同一静的型のままだと
    `for` が eager array パスを選び cell の 2 語を足して**期待 42 に対し 4**
-   を返していた (診断も trap も無い)。型を分けたことで `Stream::map` 等を
+   を返していた (診断も trap も無い)。型を分けたことで eager combinator を
    host stream に適用すると型エラーになる。
    残り (D3 の続き): eager `Stream[T]` combinator の退役と AsyncIter への
    一本化 (#1538)、`ByteStream` の p3 接続 (#1539)、`Stream::next` protocol の

@@ -23,6 +23,13 @@ fn is_perform_err(e: EffectError) -> Bool {
   }
 }
 
+fn is_empty_handle_err(e: EffectError) -> Bool {
+  match e {
+    EEEmptyHandle => true,
+    _ => false
+  }
+}
+
 /// `perform EffName::Op(arg)` reaches the checker as
 /// ECall(EIdent("perform"), [ECall(EIdent("EffName::Op"), [arg])]).
 fn perform_op(op: String, arg: Expr) -> Expr {
@@ -70,6 +77,14 @@ test "perform inside a handle is allowed regardless of declaration" {
   ])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
+}
+
+test "an empty handler is rejected even when the AST bypasses the parser (#1678)" {
+  let handle_expr = EHandle(perform_op("Fs::ReadFile", EString("p")), array_empty())
+  let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
+  assert(Array::length(errors) > 0)
+  assert(is_empty_handle_err(Array::get(errors, 0)))
+  assert(String::contains(effect_error_to_string(Array::get(errors, 0)), "must contain at least one arm"))
 }
 
 test "perform via EFn with declared effect is OK" {

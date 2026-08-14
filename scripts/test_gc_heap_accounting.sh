@@ -124,6 +124,12 @@ LIST_TWIN_OUT="$WORK/direct_array_export_list_twin.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_monomorph_test.vibe "$MONOMORPH_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_twin_test.vibe "$TWIN_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_list_twin_test.vibe "$LIST_TWIN_OUT"
+# #1750: a self-recursive exported function gets no twin -- the tagged copy's
+# self-call would otherwise resolve to the reference twin and fail the whole
+# component closed. The one allocation here belongs to its NEIGHBOUR, which is
+# the point: one unmonomorphizable declaration must not switch off the island.
+RECURSIVE_EXPORT_OUT="$WORK/direct_array_export_recursive.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_export_recursive_test.vibe "$RECURSIVE_EXPORT_OUT"
 # #1541 isolated direct-argument characterization. The native fixture crosses
 # exactly one private concrete Array[Int] parameter boundary; the generic pair
 # must retain the component-wide tagged-i64 fallback.
@@ -361,6 +367,11 @@ fi
 monomorph_native="$(count_native_array_allocs "$MONOMORPH_OUT")"
 twin_native="$(count_native_array_allocs "$TWIN_OUT")"
 list_twin_native="$(count_native_array_allocs "$LIST_TWIN_OUT")"
+recursive_export_native="$(count_native_array_allocs "$RECURSIVE_EXPORT_OUT")"
+if [ "$recursive_export_native" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected a self-recursive export to leave one neighbouring native literal on the lane, found $recursive_export_native" >&2
+  exit 1
+fi
 if [ "$monomorph_native" -ne 1 ] || [ "$twin_native" -ne 1 ] || [ "$list_twin_native" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1722 native literal per monomorphized export, found $monomorph_native/$twin_native/$list_twin_native" >&2
   exit 1
@@ -374,6 +385,37 @@ wasm-tools print "$TWIN_OUT" > "$TWIN_WAT"
 twin_ref_signatures="$(grep -cE '^  \(type \(;[0-9]+;\) \(func \(param [^)]*\(ref null' "$TWIN_WAT" || true)"
 if [ "$twin_ref_signatures" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected exactly one reference-carrying signature (the twin), found $twin_ref_signatures" >&2
+  exit 1
+fi
+
+# #1542 Phase C: an aggregate FIELD holds a reference-lane value. #1702 moved
+# the record into a wasm-gc struct but left every field a tagged i64; a field
+# declared `Array[Int]` now has the wasm type `(mut (ref null $array))`, so
+# struct types are registered per DECLARED STRUCT rather than per field count.
+#
+# The positive fixture allocates one native array for the initializer and one
+# for a subsequent mutable-field replacement, then mutates through the field --
+# a field that copied on either store would still report the right length and
+# the wrong value. Its fallback pair reads the field out of receiver position
+# and keeps the linear layout for the whole record.
+REF_FIELD_OUT="$WORK/native_struct_ref_field.wasm"
+REF_FIELD_FALLBACK_OUT="$WORK/native_struct_ref_field_fallback.wasm"
+compile_direct_abi_fallback fixtures/gc_native_struct_ref_field_test.vibe "$REF_FIELD_OUT"
+compile_direct_abi_fallback fixtures/gc_native_struct_ref_field_fallback_test.vibe "$REF_FIELD_FALLBACK_OUT"
+ref_field_native="$(count_native_array_allocs "$REF_FIELD_OUT")"
+ref_field_fallback_native="$(count_native_array_allocs "$REF_FIELD_FALLBACK_OUT")"
+if [ "$ref_field_native" -ne 2 ] || [ "$ref_field_fallback_native" -ne 0 ]; then
+  echo "[gc-heap-accounting] FAIL: expected two #1542 reference-lane field arrays and none in its fallback, found $ref_field_native/$ref_field_fallback_native" >&2
+  exit 1
+fi
+# The representation claim: the struct type itself declares a typed reference
+# field. Counting allocations alone would pass if the array were native but the
+# field still stored it as a tagged i64.
+REF_FIELD_WAT="$WORK/native_struct_ref_field.wat"
+wasm-tools print "$REF_FIELD_OUT" > "$REF_FIELD_WAT"
+ref_field_types="$(grep -cE '^  \(type \(;[0-9]+;\) \(struct .*\(mut \(ref null' "$REF_FIELD_WAT" || true)"
+if [ "$ref_field_types" -lt 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected a struct type with a typed reference field, found $ref_field_types" >&2
   exit 1
 fi
 
@@ -526,7 +568,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, boundary monomorphization (#1722), mutating transforms, control-flow joins, String/Bool elements, non-escaping local records incl. field writes (#1702), and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, boundary monomorphization (#1722), mutating transforms, control-flow joins, String/Bool elements, non-escaping local records incl. field writes (#1702), reference-lane aggregate fields (#1542), and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2

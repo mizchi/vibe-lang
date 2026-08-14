@@ -37,6 +37,7 @@ import @vibe/compiler/perceus {
   PerceusAction,
   build_perceus_plan,
   build_perceus_plan_with_params,
+  build_perceus_plan_with_params_split,
   compute_borrow_returning_names,
   compute_heap_returning,
   compute_scalar_returning_names,
@@ -57,6 +58,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_set_body,
   gen_arr_slice_body,
   gen_arr_truncate_body,
+  gen_array_value_copy_body,
   gen_bytes_append_body,
   gen_bytes_concat_body,
   gen_bytes_from_array_body,
@@ -3774,7 +3776,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let lc_agg_ret_names = lc_fresh_string_array()
   let lc_agg_ret_infos = lc_fresh_int_array()
   compute_agg_returning(stmts, CtorTable::{
-    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: array_empty(), names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
   }, lc_agg_ret_names, lc_agg_ret_infos)
   // #791: program-wide (fn name) set for declared-heap-returning top-level
   // functions (see compute_heap_returning in perceus/index.vibe). Consulted
@@ -4780,7 +4782,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let str_substring_idx = str_from_char_code_idx + 1
   let identity_idx = str_substring_idx + 1
   let arr_slice_idx = identity_idx + 1
-  let arr_concat_idx = arr_slice_idx + 1
+  let frozen_array_copy_idx = arr_slice_idx + 1
+  let arr_concat_idx = frozen_array_copy_idx + 1
   let arr_truncate_idx = arr_concat_idx + 1
   let string_join_idx = arr_truncate_idx + 1
   let fs_read_file_stub_idx = string_join_idx + 1
@@ -5347,11 +5350,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "ArrayBuilder::new" => arr_new_idx,
         "ArrayBuilder::push" => arr_push_idx,
         "ArrayBuilder::freeze" => identity_idx,
-        // #906: FrozenArray[T] -- from_array/to_array are pure identity
-        // casts (same runtime layout as Array[T]); get/length alias
-        // Array::get/Array::length's own bodies.
-        "FrozenArray::from_array" => identity_idx,
-        "FrozenArray::to_array" => identity_idx,
+        // #1733: map the builtin itself so function-value aliases retain the
+        // same copy boundary as direct calls.
+        "FrozenArray::from_array" => frozen_array_copy_idx,
+        "FrozenArray::to_array" => frozen_array_copy_idx,
         "FrozenArray::get" => arr_get_idx,
         "FrozenArray::length" => arr_len_idx,
         "Array::slice" => arr_slice_idx,
@@ -5540,6 +5542,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     // #982: the clamp prologue's i64 len scratch (RC reuses local 10 = elem).
     push_builtin(gen_arr_slice_body(false, rc_alloc_idx, rc_shadow), 6, 1, 8)
   }
+  push_builtin(gen_array_value_copy_body(arr_len_idx, arr_slice_idx), 0, 0, 3)
   push_builtin(gen_arr_concat_body(), 9, 0, 4)
   push_builtin(if enable_rc {
     gen_arr_truncate_body(true)
@@ -5978,7 +5981,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           __bi_expr
         }
         if enable_rc {
-          let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_param_user_srt, lc_borrow_param_mask, lc_borrow_view_ret)
+          let bfn_drop_start_cell = lc_fresh_int_array()
+          let plan = build_perceus_plan_with_params_split(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_param_user_srt, lc_borrow_param_mask, lc_borrow_view_ret, bfn_drop_start_cell)
+          let bfn_drop_start = if Array::length(bfn_drop_start_cell) > 0 {
+            Array::get(bfn_drop_start_cell, 0)
+          } else {
+            0
+          }
           let mut lhpi = 0
           while lhpi < Array::length(lc_norm_params) {
             let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -6015,16 +6024,30 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           while di < Array::length(plan) {
             let pa = Array::get(plan, di)
             if pa_is_drop(pa) {
-              // Skip ONLY the drops for the borrowed params -- the plan is
-              // name-keyed, so a shadowing local sharing a borrowed param's
-              // name can carry dup/alias-dup actions of its own, and filtering
-              // those out under-counts references (use-after-free that only
-              // surfaces under allocation churn -- codegen_heap_e2e_test
-              // caught it after ~90 compiles). A same-named shadow's own
-              // scope-end drop is also skipped here (a bounded leak, safe
-              // direction); eligibility makes that rare since a bare read of
-              // the shadow disqualifies the position.
-              if array_contains_str(bfn_borrowed, pa.name) {
+              // Skip ONLY the drops for the borrowed params. The plan is
+              // name-keyed, so matching by name across the WHOLE plan also
+              // swallowed the scope-end drop of any body-local binding that
+              // shadows a borrowed parameter's name -- a leak this filter used
+              // to accept ("bounded, safe direction") on the grounds that the
+              // narrow eligibility rule made same-named shadows rare.
+              //
+              // That is a bad thing to lean on: the shadow exclusion is not a
+              // check of its own, it is a side effect of md_consume_count
+              // counting ANY bare mention as a consume (see
+              // compute_borrow_param_user_fns). Anything that makes the
+              // consume count more precise -- e.g. the transitive borrow
+              // inference of #1740 -- widens eligibility and turns the "rare"
+              // leak into a real one. Positional filtering removes the
+              // dependency: the params' own scope-end drops are a SUFFIX of
+              // the plan (build_perceus_plan_with_params_split records where
+              // it starts), so a body-local drop can no longer be confused
+              // with a parameter's.
+              //
+              // Only DROPS are filtered, never dup/alias-dup: a shadow's dups
+              // are its own and removing them under-counts references
+              // (use-after-free that only surfaces under allocation churn --
+              // codegen_heap_e2e_test caught it after ~90 compiles).
+              if di >= bfn_drop_start && array_contains_str(bfn_borrowed, pa.name) {
                 ()
               } else {
                 Array::push(rc_drops, pa.name)
@@ -6076,7 +6099,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           num_user_funcs: num_user_funcs, func_offset: func_offset,
           ref_cell_names: lc_fresh_string_array(),
           ctor_table: CtorTable::{
-            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
+            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: array_empty(), names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
           },
           ctor_float_fields: ctor_float_fields_list,
           // Sorted copy for compile_expr.vibe's per-identifier membership check
@@ -8122,6 +8145,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")
   Array::set(gen_sec_names, identity_idx - num_imported_funcs, "__rt_identity")
   Array::set(gen_sec_names, arr_slice_idx - num_imported_funcs, "__rt_arr_slice")
+  Array::set(gen_sec_names, frozen_array_copy_idx - num_imported_funcs, "__rt_frozen_array_copy")
   Array::set(gen_sec_names, arr_concat_idx - num_imported_funcs, "__rt_arr_concat")
   Array::set(gen_sec_names, arr_truncate_idx - num_imported_funcs, "__rt_arr_truncate")
   Array::set(gen_sec_names, string_join_idx - num_imported_funcs, "__rt_string_join")

@@ -669,6 +669,28 @@ fn skip_ws_with_newline(s: String, len: Int, i: Int) -> (Int, Bool) {
   (out, saw_newline)
 }
 
+/// Newlines are normally trivia, but two expression boundaries need a
+/// synthetic statement separator:
+/// - before `(`/`[` after an expression, so they do not become postfix syntax;
+/// - after `break`, whose optional payload is deliberately same-line only.
+///
+/// Keeping this decision in one helper prevents `lex`, offset lexing, and the
+/// recovering lexer from drifting apart.
+fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token) -> Bool {
+  if !nl_before {
+    false
+  } else {
+    match prev_tok {
+      // A closing delimiter/comma already terminates a bare break. Inserting
+      // `;` there breaks match-arm parsing (`_ => break\n}` makes the
+      // separator look like the next pattern). Only separate a real token
+      // that could otherwise become the optional payload.
+      TBreak => c != '}' && c != ')' && c != ']' && c != ',' && c != ';',
+      _ => (c == '[' || c == '(') && is_expr_ending_tok(prev_tok)
+    }
+  }
+}
+
 fn concat_string_parts(parts: Array[String], tail: String) -> String {
   // O(N) join via StringBuilder; the previous `out = String::concat(out, ...)`
   // per part was O(N²) over the joined length (issue #366).
@@ -1085,7 +1107,7 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
     while pos < len {
       let c = String::char_code_at(source, pos)
       let (tok, next) = lex_one_token(source, len, pos)
-      if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok) {
         ArrayBuilder::push(b, TSemicolon)
         ArrayBuilder::push(starts, pos)
         ArrayBuilder::push(ends, pos)
@@ -1140,7 +1162,7 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
     }
     match res {
       Some((tok, next)) => {
-        if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
+        if needs_synthetic_semicolon(c, nl_before, prev_tok) {
           ArrayBuilder::push(b, TSemicolon)
           ArrayBuilder::push(starts, pos)
           ArrayBuilder::push(ends, pos)
@@ -1256,7 +1278,7 @@ export fn lex(source: String) -> Array[Token] with Exception {
       // newline-preceded and follows an expression-ending token; the statement
       // parser already treats `;` as a separator. A same-line `(`/`[` (no
       // newline) still attaches as a call/subscript suffix.
-      if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok) {
         ArrayBuilder::push(b, TSemicolon)
       } else {
         ()

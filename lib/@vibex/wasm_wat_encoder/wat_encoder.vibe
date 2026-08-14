@@ -1,3 +1,9 @@
+//# Imports
+
+import @vibe/core {
+  type BigInt, BigInt::cmp, BigInt::divmod, BigInt::from_int, BigInt::is_zero, BigInt::mul, BigInt::parse, BigInt::pow, BigInt::to_int
+}
+
 //# Values
 
 //# Functions
@@ -117,7 +123,7 @@ fn is_id_char(c: Int) -> Bool {
   ((c >= 97) && (c <= 122)) ||
   ((c >= 65) && (c <= 90)) ||
   ((c >= 48) && (c <= 57)) ||
-  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45)
+  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45) || (c == 61)
 }
 
 let tok_lparen: Int = 1
@@ -440,25 +446,78 @@ fn emit_section(out: Bytes, section_id: Int, payload: Bytes) -> Unit {
   }
 }
 
-/// #776: there is no `Double::parse` (or any string->Double parser) builtin
-/// anywhere in the selfhost compiler/stdlib — `Double::parse` isn't even a
-/// checker-known name (unlike e.g. `Llm::complete`, which at least type-checks
-/// but lacks codegen). WASM has no "parse decimal string" instruction either,
-/// so this hand-rolls plain-decimal (`[+-]?digits[.digits][eE[+-]?digits]`)
-/// parsing via Int/Double arithmetic instead. Good enough for WAT `f64.const` /
-/// `f32.const` literals (hex-float `0x1.8p3` forms are not handled — none of
-/// the wasm fixtures use them).
-fn pow10(n: Int) -> Double {
-  let mut result = 1.0
-  let mut i = 0
-  while i < n {
-    result = result * 10.0
-    i = i + 1
+/// Compare `num / den` with powers of two and return
+/// `floor(log2(num / den))`. Both inputs must be positive.
+fn decimal_binary_exponent(num: BigInt, den: BigInt) -> Int {
+  let two = BigInt::from_int(2)
+  if BigInt::cmp(num, den) >= 0 {
+    let mut scaled = den
+    let mut exponent = 0
+    let mut next = BigInt::mul(scaled, two)
+    while BigInt::cmp(num, next) >= 0 {
+      scaled = next
+      exponent = exponent + 1
+      next = BigInt::mul(scaled, two)
+    }
+    exponent
+  } else {
+    let mut scaled = num
+    let mut exponent = 0
+    while BigInt::cmp(scaled, den) < 0 {
+      scaled = BigInt::mul(scaled, two)
+      exponent = exponent - 1
+    }
+    exponent
   }
-  result
 }
 
-fn parse_decimal_double(s: String) -> Option[Double] {
+/// Divide positive integers and round the result to nearest, ties to even.
+/// The caller scales the ratio so the quotient fits in vibe's tagged Int.
+fn rounded_big_ratio(num: BigInt, den: BigInt) -> Option[Int] {
+  match BigInt::divmod(num, den) {
+    None => None,
+    Some((q_big, remainder)) => {
+      match BigInt::to_int(q_big) {
+        None => None,
+        Some(q) => {
+          let twice_remainder = BigInt::mul(remainder, BigInt::from_int(2))
+          let half_cmp = BigInt::cmp(twice_remainder, den)
+          if half_cmp > 0 || (half_cmp == 0 && q % 2 == 1) {
+            Some(q + 1)
+          } else {
+            Some(q)
+          }
+        },
+      }
+    },
+  }
+}
+
+fn signed_f64_zero(neg: Bool) -> (Int, Int) {
+  if neg {
+    (0x80000000, 0)
+  } else {
+    (0, 0)
+  }
+}
+
+fn signed_f64_inf(neg: Bool) -> (Int, Int) {
+  if neg {
+    (0xFFF00000, 0)
+  } else {
+    (0x7FF00000, 0)
+  }
+}
+
+/// Parse a plain decimal WAT float into IEEE-754 binary64 bits.
+///
+/// The decimal significand and power of ten stay as exact BigInts. Only the
+/// final 53-bit quotient is rounded, once, with the IEEE nearest-even rule.
+/// This avoids all three silent-wrong modes of the old Double-arithmetic
+/// parser: tagged-Int overflow, accumulated pow10 error, and pow10 saturation.
+/// Inputs with more than 768 significant decimal digits fail closed: the WAT
+/// encoder is intentionally bounded and must never emit guessed bits.
+fn parse_decimal_f64_bits(s: String) -> Option[(Int, Int)] {
   let len = String::length(s)
   if len == 0 {
     None
@@ -484,18 +543,35 @@ fn parse_decimal_double(s: String) -> Option[Double] {
     } else {
       len
     }
-    let mut mantissa = 0
+    let digits_builder = StringBuilder::new()
     let mut frac_digits = 0
     let mut seen_dot = false
     let mut seen_digit = false
+    let mut significant_digits = 0
+    let mut seen_nonzero = false
+    let mut leading_zeros = 0
+    let mut trailing_zeros = 0
+    let mut digit_count = 0
     let mut ok = true
     let mut j = i
     while j < mantissa_end {
       let c = String::char_code_at(s, j)
       if is_digit(c) {
-        mantissa = mantissa * 10 + (c - 48)
+        StringBuilder::push(digits_builder, String::from_char_code(c))
+        digit_count = digit_count + 1
         if seen_dot {
           frac_digits = frac_digits + 1
+        }
+        if not(seen_nonzero) && c == 48 {
+          leading_zeros = leading_zeros + 1
+        } else {
+          seen_nonzero = true
+          significant_digits = significant_digits + 1
+          if c == 48 {
+            trailing_zeros = trailing_zeros + 1
+          } else {
+            trailing_zeros = 0
+          }
         }
         seen_digit = true
       } else if c == 46 && not(seen_dot) {
@@ -522,11 +598,25 @@ fn parse_decimal_double(s: String) -> Option[Double] {
           k = 1
         }
         let mut exp_val = 0
+        // Any exponent larger than the whole source plus this IEEE-sized
+        // margin cannot be cancelled by decimal point placement or trailing
+        // zeros. Saturating relative to the source length preserves exact
+        // cancellation while still bounding enormous exponent strings.
+        let exp_limit = len + 1100
         let mut exp_seen_digit = false
         while k < exp_len {
           let c = String::char_code_at(exp_str, k)
           if is_digit(c) {
-            exp_val = exp_val * 10 + (c - 48)
+            if exp_val <= exp_limit {
+              if exp_val > exp_limit / 10 {
+                exp_val = exp_limit + 1
+              } else {
+                exp_val = exp_val * 10 + (c - 48)
+                if exp_val > exp_limit {
+                  exp_val = exp_limit + 1
+                }
+              }
+            }
             exp_seen_digit = true
           } else {
             ok = false
@@ -543,22 +633,92 @@ fn parse_decimal_double(s: String) -> Option[Double] {
         }
       }
     }
-    if not(ok) || not(seen_digit) {
+    if not(ok) || not(seen_digit) || i >= mantissa_end {
+      None
+    } else if not(seen_nonzero) {
+      Some(signed_f64_zero(neg))
+    } else if significant_digits - trailing_zeros > 768 {
       None
     } else {
-      let total_exp = exp - frac_digits
-      let mag = Int::to_double(mantissa)
-      let scaled = if total_exp >= 0 {
-        mag * pow10(total_exp)
+      let canonical_digits = significant_digits - trailing_zeros
+      let total_exp = exp - frac_digits + trailing_zeros
+      let decimal_order = canonical_digits - 1 + total_exp
+      if decimal_order > 309 {
+        Some(signed_f64_inf(neg))
+      } else if decimal_order < -325 {
+        Some(signed_f64_zero(neg))
       } else {
-        mag / pow10(0 - total_exp)
+        let all_digits = StringBuilder::freeze(digits_builder)
+        let digits = String::substring(all_digits, leading_zeros, digit_count - trailing_zeros)
+        match BigInt::parse(digits) {
+          None => None,
+          Some(mantissa) => {
+            let ten = BigInt::from_int(10)
+            let num = if total_exp >= 0 {
+              BigInt::mul(mantissa, BigInt::pow(ten, total_exp))
+            } else {
+              mantissa
+            }
+            let den = if total_exp < 0 {
+              BigInt::pow(ten, 0 - total_exp)
+            } else {
+              BigInt::from_int(1)
+            }
+            if BigInt::is_zero(num) {
+              Some(signed_f64_zero(neg))
+            } else {
+              let mut exponent = decimal_binary_exponent(num, den)
+              let shift = if exponent < -1022 {
+                1074
+              } else {
+                52 - exponent
+              }
+              let scaled_num = if shift >= 0 {
+                BigInt::mul(num, BigInt::pow(BigInt::from_int(2), shift))
+              } else {
+                num
+              }
+              let scaled_den = if shift < 0 {
+                BigInt::mul(den, BigInt::pow(BigInt::from_int(2), 0 - shift))
+              } else {
+                den
+              }
+              match rounded_big_ratio(scaled_num, scaled_den) {
+                None => None,
+                Some(rounded) => {
+                  let sign_hi = if neg {
+                    0x80000000
+                  } else {
+                    0
+                  }
+                  if exponent < -1022 {
+                    if rounded == 0 {
+                      Some((sign_hi, 0))
+                    } else if rounded >= (1<<52) {
+                      Some((sign_hi|(1<<20), 0))
+                    } else {
+                      Some((sign_hi|((rounded>>32)&0xFFFFF), rounded&0xFFFFFFFF))
+                    }
+                  } else {
+                    let mut significand = rounded
+                    if significand >= (1<<53) {
+                      significand = significand / 2
+                      exponent = exponent + 1
+                    }
+                    if exponent > 1023 {
+                      Some(signed_f64_inf(neg))
+                    } else {
+                      let fraction = significand - (1<<52)
+                      let hi = sign_hi|((exponent + 1023)<<20)|((fraction>>32)&0xFFFFF)
+                      Some((hi, fraction&0xFFFFFFFF))
+                    }
+                  }
+                },
+              }
+            }
+          },
+        }
       }
-      let signed = if neg {
-        0.0 - scaled
-      } else {
-        scaled
-      }
-      Some(signed)
     }
   }
 }
@@ -599,15 +759,14 @@ fn parse_f64_bits(s: String) -> (Int, Int) {
       }
       i = i + 1
     }
-    let parsed = parse_decimal_double(clean)
+    let parsed = parse_decimal_f64_bits(clean)
     match parsed {
-      Some(v) => (Double::to_i64_bits_hi(v), Double::to_i64_bits_lo(v)),
+      Some(bits) => bits,
       None => {
-        // Malformed f64 literal: the tokenizer only emits float tokens for
-        // forms that `parse_decimal_double` should accept (nan/inf/signed-nan/
-        // signed-inf are handled by the branches above). Hitting `None` here
-        // means the input is not a valid numeric literal; trap loudly rather
-        // than silently emit zero bytes.
+        // Malformed or deliberately out-of-budget f64 literal. The exact
+        // converter is bounded at 768 significant decimal digits; exceeding
+        // that contract traps just like malformed input. Never guess or emit
+        // zero bytes for a valid-looking value that was not converted.
         assert(false)
         (0, 0)
       },
@@ -959,6 +1118,11 @@ fn emit_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], pos
       else if kw == "if" {
         Bytes::push(buf, 0x04)
         let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
+          let lbl = tok_text(src, tokens, next)
+          map_set(label_names, label_indices, lbl, label_depth)
+          next = next + 1
+        }
         if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
           let rpos = next + 2
           if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
@@ -1821,6 +1985,141 @@ fn emit_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], pos
   }
 }
 
+/// Return the `)` paired with `open_pos`, or `end_pos` for malformed input.
+/// Keeping this structural (rather than searching source text) also makes
+/// comments and quoted parentheses harmless here.
+fn folded_close(tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int) -> Int {
+  let mut depth = 0
+  let mut pos = open_pos
+  let mut close = end_pos
+  while pos < end_pos && close == end_pos {
+    let ty = tok_type(tokens, pos)
+    if ty == tok_lparen {
+      depth = depth + 1
+    } else if ty == tok_rparen {
+      depth = depth - 1
+      if depth == 0 {
+        close = pos
+      }
+    }
+    pos = pos + 1
+  }
+  close
+}
+
+fn folded_group_kind(src: String, tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int) -> String {
+  if open_pos + 1 < end_pos && tok_type(tokens, open_pos) == tok_lparen {
+    tok_text(src, tokens, open_pos + 1)
+  } else {
+    ""
+  }
+}
+
+/// Emit a sequence of flat and folded instructions. Folded operands recurse
+/// through `emit_folded_instruction`; flat instructions keep using the one
+/// opcode/immediate encoder above, so the two syntaxes cannot drift apart.
+fn emit_instruction_range(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], start_pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Unit {
+  let mut pos = start_pos
+  while pos < end_pos {
+    if tok_type(tokens, pos) == tok_lparen {
+      pos = emit_folded_instruction(buf, src, tokens, pos, end_pos, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    } else if tok_type(tokens, pos) == tok_rparen {
+      pos = end_pos
+    } else {
+      pos = emit_instruction(buf, src, tokens, pos, end_pos, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    }
+  }
+}
+
+/// Lower one WAT folded instruction `(op operand...)` to stack-machine order:
+/// each nested operand is emitted first, then `op`. Immediate arguments such
+/// as the index in `local.set 1` remain attached to `op`.
+///
+/// Structured control is the exception to the final-op rule: `block`/`loop`
+/// open before their bodies, while folded `if` evaluates its condition before
+/// opening the if and then emits its `then`/`else` groups.
+fn emit_folded_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Int {
+  let close = folded_close(tokens, open_pos, end_pos)
+  let head = open_pos + 1
+  if head >= close || tok_type(tokens, head) != tok_keyword {
+    if close < end_pos {
+      close + 1
+    } else {
+      end_pos
+    }
+  } else {
+    let kw = tok_text(src, tokens, head)
+    let mut prefix_end = head + 1
+    if kw == "br_table" {
+      while prefix_end < close && (tok_type(tokens, prefix_end) == tok_int || tok_type(tokens, prefix_end) == tok_ident) {
+        prefix_end = prefix_end + 1
+      }
+    } else if prefix_end < close && tok_type(tokens, prefix_end) == tok_ident {
+      prefix_end = prefix_end + 1
+    } else if (kw == "br" || kw == "br_if" || kw == "call" || kw == "local.get" || kw == "local.set" || kw == "local.tee" || kw == "global.get" || kw == "global.set") && prefix_end < close && tok_type(tokens, prefix_end) != tok_lparen {
+      prefix_end = prefix_end + 1
+    } else if (kw == "i32.const" || kw == "i64.const" || kw == "f32.const" || kw == "f64.const") && prefix_end < close {
+      prefix_end = prefix_end + 1
+    } else if String::starts_with(kw, "i32.load") || String::starts_with(kw, "i64.load") || String::starts_with(kw, "f32.load") || String::starts_with(kw, "f64.load") || String::starts_with(kw, "i32.store") || String::starts_with(kw, "i64.store") || String::starts_with(kw, "f32.store") || String::starts_with(kw, "f64.store") {
+      while prefix_end < close && tok_type(tokens, prefix_end) == tok_keyword && (String::starts_with(tok_text(src, tokens, prefix_end), "offset=") || String::starts_with(tok_text(src, tokens, prefix_end), "align=")) {
+        prefix_end = prefix_end + 1
+      }
+    }
+    // `(result ...)` and call_indirect's `(type ...)` are annotations, not
+    // operand expressions. Leave them in the prefix consumed by the flat
+    // immediate encoder.
+    let annotation = if prefix_end < close {
+      folded_group_kind(src, tokens, prefix_end, close)
+    } else {
+      ""
+    }
+    if annotation == "result" || (kw == "call_indirect" && annotation == "type") {
+      let annotation_close = folded_close(tokens, prefix_end, close)
+      prefix_end = if annotation_close < close {
+        annotation_close + 1
+      } else {
+        close
+      }
+    }
+    if kw == "block" || kw == "loop" {
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      emit_instruction_range(buf, src, tokens, prefix_end, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+      Bytes::push(buf, 0x0B)
+    } else if kw == "if" {
+      let mut then_pos = prefix_end
+      while then_pos < close && folded_group_kind(src, tokens, then_pos, close) != "then" {
+        if tok_type(tokens, then_pos) == tok_lparen {
+          let child_close = folded_close(tokens, then_pos, close)
+          emit_instruction_range(buf, src, tokens, then_pos, child_close + 1, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+          then_pos = child_close + 1
+        } else {
+          then_pos = emit_instruction(buf, src, tokens, then_pos, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+        }
+      }
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      if then_pos < close {
+        let then_close = folded_close(tokens, then_pos, close)
+        emit_instruction_range(buf, src, tokens, then_pos + 2, then_close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+        let else_pos = then_close + 1
+        if else_pos < close && folded_group_kind(src, tokens, else_pos, close) == "else" {
+          Bytes::push(buf, 0x05)
+          let else_close = folded_close(tokens, else_pos, close)
+          emit_instruction_range(buf, src, tokens, else_pos + 2, else_close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+        }
+      }
+      Bytes::push(buf, 0x0B)
+    } else {
+      emit_instruction_range(buf, src, tokens, prefix_end, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    }
+    if close < end_pos {
+      close + 1
+    } else {
+      end_pos
+    }
+  }
+}
+
 fn compile_func_body(src: String, tokens: Array[(Int, Int, Int)], body_start: Int, body_end: Int, func_names: Array[String], func_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], param_names: Array[String], param_count: Int, local_types: Array[Int], local_decl_names: Array[String]) -> Bytes {
   let code = Bytes::new()
   let ln = map_names_new()
@@ -1871,44 +2170,7 @@ fn compile_func_body(src: String, tokens: Array[(Int, Int, Int)], body_start: In
       k = k + 1
     }
   }
-  let paren_is_block = Array::slice([
-    0
-  ], 0, 0)
-  let mut ip = body_start
-  while ip < body_end {
-    let cur_ty = tok_type(tokens, ip)
-    if cur_ty == tok_lparen {
-      let nxt = ip + 1
-      if (nxt < body_end) && (tok_type(tokens, nxt) == tok_keyword) {
-        let nkw = tok_text(src, tokens, nxt)
-        if (nkw == "block") || (nkw == "loop") || (nkw == "if") {
-          Array::push(paren_is_block, 1)
-          ip = ip + 1
-        } else if (nkw == "result") || (nkw == "then") || (nkw == "else") {
-          Array::push(paren_is_block, 0)
-          ip = ip + 1
-        } else {
-          Array::push(paren_is_block, 0)
-          ip = ip + 1
-        }
-      } else {
-        Array::push(paren_is_block, 0)
-        ip = ip + 1
-      }
-    } else if cur_ty == tok_rparen {
-      let plen = Array::length(paren_is_block)
-      if plen > 0 {
-        let is_block = Array::get(paren_is_block, plen - 1)
-        Array::truncate(paren_is_block, plen - 1)
-        if is_block == 1 {
-          Bytes::push(code, 0x0B)
-        }
-      }
-      ip = ip + 1
-    } else {
-      ip = emit_instruction(code, src, tokens, ip, body_end, func_names, func_indices, ln, li, global_names, global_indices, lbl_names, lbl_indices, 0)
-    }
-  }
+  emit_instruction_range(code, src, tokens, body_start, body_end, func_names, func_indices, ln, li, global_names, global_indices, lbl_names, lbl_indices, 0)
   Bytes::push(code, 0x0B)
   code
 }

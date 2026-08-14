@@ -83,7 +83,7 @@ vibe には `fn` の色付けが無く、副作用は effect row で表す。し
 
 | state | 意味 | payload | producer |
 |---|---|---|---|
-| 0 | ready | 値 | `Future::ready(x)` / `Stream::next` / `Stream::fold` |
+| 0 | ready | 値 | `Future::ready(x)` / `Stream::next` |
 | 1 | guest 内 pending | 未定 (resolve が書く) | `Future::pending()` |
 | 2 | host future (waitable) | host future handle | `host_future_get()` / `host_future_named("x")` |
 | 3 | host stream セル | readable end の handle | `host_stream_named("x")` |
@@ -252,7 +252,7 @@ ADR-0089 Decision 3) への一本化だが、**今日の実装には 3 つの表
 
 | 型 | 実行時表現 | 用途 | 位置づけ |
 |---|---|---|---|
-| `Stream[T]` | `Array[T]` (eager) | `empty`/`once`/`map`/`filter`/`fold`/`next`、`String::to_bytes`/`Stream::to_string` | **legacy**。ADR-0089 D3 で退役予定 |
+| `Stream[T]` | `Array[T]` (eager) | `next`、`String::to_bytes`/`Stream::to_string` | **legacy**。eager combinator (`empty`/`once`/`map`/`filter`/`fold`) は #1538 で**退役済み**。残るのは `next` (綴りは未決定) と ByteStream 対 |
 | `HostStream` | 2 語セル `[3, handle]` | `host_stream_named`/`host_stream_next`/`host_stream_close` | **generic named-host-stream 専用**の p3 境界実体。stream の readable handle 1本しか保持できず、completion future を伴う provider の所有/lifecycle は表せない (§3.18.3) |
 | AsyncIter | trait (`lib/@vibe/prelude/async_iter.vibe`) | `for x in it` の pull protocol | 目標形、host stream とは未接続 |
 
@@ -260,7 +260,8 @@ ADR-0089 Decision 3) への一本化だが、**今日の実装には 3 つの表
 よる: 同じ静的型だと `for` が array パスを選び、cell の 2 語 (state 3 +
 handle) を足して**それらしい小さい数**を返していた (期待 42 に対し 4)。
 診断も trap も無い最悪の失敗形だったので、**型で分けた**。今は
-`Stream::map` を host stream に適用すると型エラーになる。
+`Stream::next` を host stream に適用すると型エラーになる (host 側の読みは
+`host_stream_next`)。
 
 `for x in s { ... }` は iterand の型で eager ループか await ループかが決まる。
 **`for await` という別綴りは #1350 で廃止** — iteration が suspend しうる
@@ -591,12 +592,11 @@ wasmtime 45 で **42** を実測。
 `future_ready_expr` / `future_state_ready`）に変えた（#1230）。ready しか無い今も
 挙動は同じ（`await` は slot 1 を読むだけ）だが、**pending future を後から足すのに
 表現を作り直さなくて済む** — M1b-3c は `await` に slot 0 の分岐を生やすだけになる。
-future を作る側は `Future::ready` / `Stream::next` / `Stream::fold` の3つで、
+future を作る側は `Future::ready` / `Stream::next` の2つで、
 `Future[T]` を返す user-level コード（`lib/@vibe/prelude/async_iter.vibe` の
 `AsyncIterator::next`）は元から `Future::ready(..)` 経由なので影響しない。
-`Stream::fold` はこの変更まで `Array::fold` への名前 alias だったが、戻り値が
-`Future[A]` なので専用ブランチに分離した（`Stream::map`/`filter` は `Stream` を
-返すので alias のまま）。
+（#1538 以前は `Stream::fold` も future を作っていた。eager combinator ごと
+退役したので、この位置に残るのは上の2つだけ。）
 
 さらに `await` の lowering 位置を `compile_call.vibe` から **AST パス
 `await_poll_pass`** へ移した（#1230）。`compile_call` は wasm を直接吐く位置で、
@@ -1394,8 +1394,9 @@ cell の2語（state 3 + handle 1）を足していた。**診断も trap も出
 - `host_stream_next(HostStream) -> Int with Async`
 - `host_stream_close(HostStream) -> Unit`
 
-これで eager 用の `Stream::map` / `Stream::fold` / `Stream::to_string` を
-host stream に適用するのは**型エラー**になり、静かなゴミではなくなる。
+これで eager 用の `Stream::to_string` を host stream に適用するのは
+**型エラー**になり、静かなゴミではなくなる（記述当時は `Stream::map` /
+`Stream::fold` も同じ barrier の対象だったが、#1538 で退役した）。
 
 その上で desugar（`build_host_stream_for`, desugar_trait_dict.vibe）が
 `for` を read へ落とす:
@@ -1451,8 +1452,9 @@ lane（bytes を読むこと + `{ Async }` 無しの row が reject されるこ
 **#1538 の boundary slice（done）**: `HostStream` は routing key であると同時に、
 **legacy `Stream[T]` consumer への入力では barrier** である。checker は
 `HostStream` を期待する `Stream[T]` に渡すと型エラーにするので、
-`Stream::map` / `Stream::fold` / `Stream::to_string` と、同じ型を受け取る
-ユーザー定義関数は state-3 cell を eager array として読めない。この判定は
+`Stream::to_string` と、同じ型を受け取る
+ユーザー定義関数は state-3 cell を eager array として読めない
+（#1538 前は `Stream::map` / `Stream::fold` も同じ列にいた）。この判定は
 この二つの compiler-owned nominal name にだけ閉じており、`CtNamed` 全体の
 concreteness や通常の user-defined/generic nominal assignability は広げない。
 
@@ -1856,7 +1858,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | 縦串 | 実体 | gate |
 |---|---|---|
 | async component の生成と実行 | `.vibe` の `() -> Int with Async` entry → async lift + trampoline → wasmtime 47 の production runtime (`runtime/viberun`) が `instantiate_async` / `run_concurrent` で駆動 | `test_async_component_gate.sh` |
-| ready future の await | `Future::ready` / `Stream::next` / `Stream::fold` → `[0, payload]`、`__aw_poll` が slot 1 を読む | 同上 (7 lane) |
+| ready future の await | `Future::ready` / `Stream::next` → `[0, payload]`、`__aw_poll` が slot 1 を読む | 同上 (7 lane) |
 | guest 内 pending future | `Future::pending()` → `[1, _]`、`Future::resolve` が完了、await は poll-wait で park。resolve → direct wake の waiter list 付き (§3.15) | `fixtures/async_future_pending.vibe` |
 | host future の await | `host_future_get()` / `host_future_named("x")` → `[2, handle]` → `Suspend(handle+2)` → boundary settle → adapter の `future.read` + `waitable-set.wait` | `test_hostfuture_source_component_gate.sh` / `test_named_hostfutures_component_gate.sh` |
 | 並行 await | 複数 host 操作を同時に in-flight (2×1000ms が 1015ms) | `test_concurrent_awaits_component_gate.sh` |

@@ -50,14 +50,20 @@ let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
-                               // #1392: 補間の値の型がコンパイラに解決でき、
-                               // その型に `T::to_string` (derive(Show)/
-                               // derive(Hash) 生成物、または手書き) があれば
-                               // それを呼ぶ。`Option`/`Result` と、その場に
-                               // 書かれたタプル/配列リテラルは構造的に展開
-                               // される (`"\{Some(p)}"` -> `Some(P { .. })`)。
-                               // 型が解決できない値、および変数越しの
-                               // タプル/配列はまだ生ポインタの10進数 (#1392)
+                               // #1392: 補間の値に `T::to_string`
+                               // (derive(Show)/derive(Hash) 生成物、または
+                               // 手書き) があればそれを呼ぶ。`Option`/`Result`/
+                               // タプル/配列は変数・generic 経由でも構造的に
+                               // 展開される (`"\{Some(p)}"` -> `Some(P { .. })`,
+                               // `"\{xs}"` -> `[1, 2]`)。描画できない型
+                               // (to_string の無い集約型) は check 時に
+                               // `cannot interpolate a value of type ...` で
+                               // 落ちる (#1445)。ただし effect handler の
+                               // pattern binder (`Throw(err) => "\{err}"`) は
+                               // binder の型を補間 rewrite が回収できず、まだ
+                               // 生ポインタの10進値になる。variant を match して
+                               // payload を補間する (`Throw(err) => match err {`
+                               // `  Kind::Case(v) => "\{v}" })` と回避する
                                // prelude の `to_string(v)` も同じ描画になる
                                // (補間と同じ書き換えを call site で受ける)
 let c: Char = 'A'              // byte value 65; Char is a transparent Int alias
@@ -325,6 +331,21 @@ Array::fold(xs, 0, _ + _)
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
 
+Slice is a postfix `[]` form with four spellings:
+
+```vibe
+let s = "hello"
+let whole: String = s[:]       // start = 0, end = length
+let prefix: String = s[:2]     // start = 0
+let suffix: String = s[2:]     // end = length
+let middle: String = s[1:4]
+```
+
+The receiver must be `String`, `Bytes`, or `Array[T]`, and the result has the
+same type as the receiver. Explicit `start` and `end` values are `Int`.
+`String` slicing uses byte offsets; it does not imply Unicode code-point or
+grapheme boundaries.
+
 ### `Array` / `Bytes` の `==` (#1526)
 
 ランタイムの `eq` は型を見ないので、配列の `==` は**コンパイル時に要素型を
@@ -370,22 +391,15 @@ test "Bytes equality is content equality" {
 }
 ```
 
-要素型が取れない配列は**参照等価に落ちる** — 消去された型変数 (`[T: Eq]` の
-`T`)、関数の戻り値として受けた配列 (tuple ごと戻した場合も含む)、空リテラル
-束縛 (`let xs = []`)。戻り値経由の配列を比較したいときは、いま確実なのは
-要素を回すか `derive(Eq)` の struct field に入れる方法。
-名前経由の**裸**配列が構造比較になるのは**要素がスカラー** (`Int` / `String` /
-`Bool` / `Double` / `Char` / `Bytes` / `Unit`) のときだけ。それ以外は**参照等価に
-落ちる** — 関数の戻り値として受けた配列 (tuple ごと戻した場合も含む)、空リテラル
-束縛 (`let xs = []`)、消去された型変数 (`fn f[T](x: Array[T])` の `T`)、
-配列の配列 (`[[1, 2]]` を名前経由で)、要素が struct/enum の裸配列。リテラルとして
-書かれていれば入れ子も struct 要素も従来どおり構造比較される
-(`[[1, 2]] == [[1, 2]]`)。名前経由でも効かせたいときは `derive(Eq)` の
-struct field に入れるのが確実。
+ADR-0097 の契約は綴りや値の経路によらない。`Array[T]` の注釈付き引数、関数の
+戻り値、tuple の戻り値、`Option[Array[T]]` の payload、名前経由の入れ子配列、
+`Array[Float]` も同じ構造比較になる。`[T: Eq]` の消去された型変数は渡された
+`Eq` witness を使う。
 
-> **これは途中の状態**。ADR-0097 (#1526) は「`==` は**全文脈で構造的等価**」を
-> 決定済みで、上の残りはそこへ向けた未実装分。文脈で答えが変わること自体が
-> 潰す対象なので、この節の境界を覚えるのではなく、当たったら issue に足すこと。
+要素型を一度も決めない `let xs = []` 同士も、空のままなら等しい。配列は `let`
+束縛でも内容を変更できるため、この未注釈の値を後から非空にして比較した場合は、
+参照等価へ黙って落とさず実行時に失敗する。変更する空配列には
+`let xs: Array[Int] = []` のように要素型を明示すること。
 
 ## Pipe Operator
 
@@ -489,7 +503,7 @@ while cond { body }
 // for-in (collects into array)
 for x in arr { x * 2 }         // -> Array
 for i, x in arr { i + x }      // with index
-for b in pull { b }            // async iterator (struct: next() -> Future[Option[(T,Self)]], await-driven) or a () -> Option[T] pull closure (-> None).
+for b in pull { use(b) }       // statement only: async iterator (struct: next() -> Future[Option[(T,Self)]], await-driven) or a () -> Option[T] pull closure (-> None).
                                // 同期/非同期の選択は iterand の型だけで決まる — `for await` は #1350 で廃止 (suspend は effect row が語る)
 
 // loop (parameterized tail-recursion)
@@ -501,6 +515,9 @@ let result = loop (i = 0, sum = 0) {
 // things. `continue` must pass every parameter (a bare `continue` repeats with
 // them unchanged); a mismatch is a parse error naming both counts. `break` has
 // no arity to match, so `break (a, b)` is one tuple, not two values.
+// A break payload must begin on the same line as `break`. `while`, bare
+// `loop { ... }`, and `for-in` accept only bare `break`; only parameterized
+// `loop (...)` accepts a break value.
 
 // return (early exit from the enclosing function)
 let find_first_neg: (Array[Int]) -> Int = (arr) -> {
@@ -512,6 +529,12 @@ let find_first_neg: (Array[Int]) -> Int = (arr) -> {
   -1
 }
 ```
+
+`for` が body の値を `Array` に集めるのは Array/String など builtin の
+collection iterand だけ。pull closure・trait iterator・HostStream などの
+非Array iterator は statement-shaped loop なので、値位置 (`let xs = for ...`)
+では located error になる (#1679)。配列が必要なら iterator 固有の `collect`
+関数を使うか、文位置の loop から `ArrayBuilder` へ明示的に蓄積する。
 
 ## Pattern Matching
 
@@ -1186,9 +1209,11 @@ row へ継承されるため、#761)。同じ effect を「resume 値参照の h
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
 (`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
 専用だった機能で、現行 build path では未サポート** — checker が
-`non-tail continuation binder (k-convention) is not supported by the build
-path` と reject する (#814)。非 tail 継続は evidence-passing handler 移行
-(#817) で対応予定。継続呼び出しは `resume(v)` を使う。
+`handler arm ... expects 0 payload binding(s), got 1` で reject する
+(#814)。evidence-passing 移行 (#817) は完了したが非 tail 継続は入って
+おらず、`resume(v)` も **arm の tail 位置限定** (`resume(10) + 1` は
+`resume(...) must be the last expression of the handler arm` で reject、
+#942/ADR-0050)。継続呼び出しは tail の `resume(v)` を使う。
 規約の詳細は [archive/mut-effect-plan.md](archive/mut-effect-plan.md) の
 「継続呼び出し規約」(#627) を参照。
 
@@ -1532,23 +1557,20 @@ cannot interpolate a value of type `F`: it has no Show renderer
 値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
 のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
 
-### capability builtin の呼び出しは arity も引数型も検査されない (#1513)
+### capability builtin の呼び出しも arity と引数型が検査される (#1513 で解決)
 
-**通ったことを正しさの証拠にしないこと。** これは compile も実行も成功して
-garbage を出す:
+かつて `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file` は未検査で、
+`Stdout::write_stream(42)` が compile も実行も成功して garbage を出した。
+今は両方とも check 時にスパン付きで落ちる:
 
 ```vibe skip
-// doctest-skip: this is the silent miscompile the section documents
-Stdout::write_stream(42)      // Int を String の位置に — 診断なし、実行も成功
-Stdout::write_stream()        // 0 引数 — 診断なし、不正な wasm を吐く
+// doctest-skip: intentionally rejected — the diagnostics are the point
+Stdout::write_stream(42)      // argument type mismatch for Stdout::write_stream
+Stdout::write_stream()        // function arity mismatch: expected 1 args, got 0
 ```
 
-未検査: `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file`。
-検査あり: `Array::*` / `String::*` / `Bytes::*` / `Profiler::now_us` および
-ユーザー定義関数 (`function arity mismatch ...` がスパン付きで出る)。
-
-capability かどうかでは分かれない — checker の fast path に載っているかどうか。
-host import が絡む呼び出しで挙動が変なときは、まず引数の数と型を目で確認する。
+`Array::*` / `String::*` / `Bytes::*` / ユーザー定義関数と同じ扱いに
+揃っている。
 
 ### 区切り文字は文脈で違う
 
@@ -1623,8 +1645,12 @@ f(1, 2)             // ok  — 全部 positional
 f(1, y = 2)         // NG: mixes positional and labeled arguments
 ```
 
-`x?` (optional) は**パーサが受理するだけで semantics は未実装** (#1500)。
-省略すると `arity mismatch`、body 内では `Option[T]` ではなく `T` に束縛される。
+`x?` (optional) は **top-level function への直接呼び出しでは semantics まで
+着地済み** (#1500): body 内では `Option[T]` に束縛され、省略した呼び出し
+(`f()`) は `None`、渡すと (`f(7)` / `f(x = 7)`) `Some(7)` になる。call-site の
+補完は top-level 宣言を直接 identifier で呼ぶ形だけを追跡する。local optional
+lambda (`let f = (x?: Int) -> ...`) や alias 経由の呼び出しには適用されず、通常の
+arity/type check に進む。
 
 ### `Error` は effect の綴りとしては退役、operation 修飾子としては生存
 

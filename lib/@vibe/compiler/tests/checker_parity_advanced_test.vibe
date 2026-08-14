@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_parity_test_support.vibe {
-  check_source_err, check_source_ok
+  check_source_err, check_source_err_contains, check_source_located_err_contains, check_source_ok
 }
 
 //# Misc
@@ -226,6 +226,28 @@ test "parity: loop break value" {
 
 test "parity: while break value" {
   assert(check_source_ok("let _adr69 = () -> { let mut i = 0\nwhile true { if i >= 5 { break }\ni = i + 1 }\ni }"))
+}
+
+test "#1680: while rejects a break payload instead of silently discarding it" {
+  let source = "let side_effect = () -> Unit { () }\nlet run = () -> Unit {\n  while true { break side_effect() }\n}"
+  assert(check_source_err_contains(source, "this loop form does not accept a `break` value"))
+}
+
+test "#1680: break payload rejection is located" {
+  let source = "let side_effect = () -> Unit { () }\nlet run = () -> Unit {\n  while true { break side_effect() }\n}"
+  assert(check_source_located_err_contains(source, "line 3:"))
+}
+
+test "#1680: bare loop rejects a break payload" {
+  assert(check_source_err_contains("let run = () -> Unit { loop { break 42 } }", "this loop form does not accept a `break` value"))
+}
+
+test "#1680: for-in rejects a break payload" {
+  assert(check_source_err_contains("let run = () -> Array[Int] { for x in [1, 2] { break x } }", "this loop form does not accept a `break` value"))
+}
+
+test "#1680: parameterized loop still accepts a same-line break payload" {
+  assert(check_source_ok("let run = () -> Int { loop (i = 0) { if i > 0 { break i } else { continue(i + 1) } } }"))
 }
 
 /// ADR-0069: the old "map int keys" assertion only ever passed because

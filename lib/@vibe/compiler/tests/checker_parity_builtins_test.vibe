@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_parity_test_support.vibe {
-  check_source_err, check_source_ok
+  check_source_err, check_source_error_message, check_source_ok
 }
 
 //# Misc
@@ -36,6 +36,47 @@ test "parity builtin: String::split" {
 
 test "parity builtin: string slice to end syntax" {
   assert(check_source_ok("let s = \"hello\"\nlet _adr69 = () -> { s[2:] }"))
+}
+
+test "1682: slice syntax preserves String Bytes and Array receiver types" {
+  assert(check_source_ok("fn main() -> Unit {\n  let s0: String = \"hello\"[:]\n  let s1: String = \"hello\"[:2]\n  let s2: String = \"hello\"[1:]\n  let s3: String = \"hello\"[1:3]\n  let b = Bytes::from_array([65, 66, 67])\n  let b0: Bytes = b[:]\n  let b1: Bytes = b[:2]\n  let b2: Bytes = b[1:]\n  let b3: Bytes = b[1:3]\n  let a = [1, 2, 3]\n  let a0: Array[Int] = a[:]\n  let a1: Array[Int] = a[:2]\n  let a2: Array[Int] = a[1:]\n  let a3: Array[Int] = a[1:3]\n}"))
+}
+
+test "1682: slice result cannot be annotated as Int" {
+  assert(check_source_err("fn main() -> Unit { let n: Int = \"hello\"[0:2] }"))
+  assert(check_source_err("fn main() -> Unit { let n: Int = Bytes::from_array([1, 2])[0:1] }"))
+  assert(check_source_err("fn main() -> Unit { let n: Int = [1, 2][0:1] }"))
+}
+
+test "1682: slice and open-end length reject non-sliceable receivers" {
+  assert(check_source_err("fn main() -> Unit { let x = 42[0:1] }"))
+  assert(check_source_err("fn main() -> Unit { let x = true[:] }"))
+}
+
+test "1682: internal slice intrinsics cannot be aliased around receiver checks" {
+  assert(check_source_err("fn main() -> Unit { let slicer = __slice\nlet n: Int = slicer(\"hello\", 0, 2) }"))
+  assert(check_source_err("fn main() -> Unit { let length = __len\nlet n: Int = length(42) }"))
+}
+
+test "1682: generic and non-sliceable function results are rejected actionably" {
+  let generic_closed = check_source_error_message("fn bad[T](x: T) -> T { x[0:1] }")
+  let generic_open = check_source_error_message("fn bad[T](x: T) -> T { x[:] }")
+  let int_result = check_source_error_message("fn answer() -> Int { 42 }\nfn main() -> Unit { let x = answer()[:] }")
+  assert(String::contains(generic_closed, "slice receiver must be String, Bytes, or Array"))
+  assert(String::contains(generic_open, "slice receiver must be String, Bytes, or Array"))
+  assert(String::contains(int_result, "slice receiver must be String, Bytes, or Array"))
+}
+
+test "1682: a generic function result resolved to String remains sliceable" {
+  assert(check_source_ok("fn identity[T](x: T) -> T { x }\nfn main() -> Unit { let s: String = identity(\"hello\")[:] }"))
+}
+
+test "1682 review: unknown receiver is rejected unless its expression already failed" {
+  let unknown_receiver = check_source_error_message("fn main() -> Unit { let x = iter_get([1], 0)[:] }")
+  let already_failed = check_source_error_message("fn main() -> Unit { let x = missing()[:] }")
+  assert(String::contains(unknown_receiver, "slice receiver must be String, Bytes, or Array"))
+  assert(String::contains(already_failed, "unknown name: missing"))
+  assert(!String::contains(already_failed, "slice receiver must be String, Bytes, or Array"))
 }
 
 test "parity builtin: Array::get" {

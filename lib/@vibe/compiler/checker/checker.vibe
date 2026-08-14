@@ -729,6 +729,33 @@ fn head_kind(t: Type) -> Int {
   }
 }
 
+/// The surface slice forms lower to `__slice(receiver, start, end)`. Runtime
+/// dispatch supports exactly these three receiver representations and returns
+/// the same representation (including an Array's element slot).
+fn slice_result_type(receiver: Type) -> Type {
+  match receiver {
+    CtString => CtString,
+    CtBytes => CtBytes,
+    CtArray(elem) => CtArray(elem),
+    _ => CtUnknown
+  }
+}
+
+/// Unknown is retained only when checking THIS receiver expression already
+/// emitted a diagnostic. `CtUnknown` is also a legitimate result of tolerant
+/// builtins such as `iter_get`, so accepting every unknown receiver would leave
+/// `iter_get(xs, 0)[:]` to unsafe runtime representation dispatch (#1682).
+/// A fresh/generic/named type has no Sliceable bound in the language either.
+fn slice_receiver_is_invalid(receiver: Type, receiver_had_error: Bool) -> Bool {
+  match receiver {
+    CtString => false,
+    CtBytes => false,
+    CtArray(_) => false,
+    CtUnknown => !receiver_had_error,
+    _ => true
+  }
+}
+
 /// #827: `Stream[T]` is `CtNamed` (head_kind 0 = tolerated), so the Array
 /// builtins' receiver head check let `Array::length(stream)` / `Array::get(s,
 /// 0)` through — observably leaking the eager Array-backed representation
@@ -3104,7 +3131,7 @@ fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, ca
 /// forward reference). Semantics are identical to the recursive arms: each `let`
 /// binds its (generalized, or raw for `mut`) value type into the env seen by the
 /// rest of the spine, and the final non-spine expression's result is returned.
-fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
+fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), ce_discarded_root: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
   let mut cur = expr
   let mut cenv = env
   let mut s1 = s
@@ -3115,7 +3142,14 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   while !done {
     match cur {
       ESeq(left, right) => {
-        let (_, ns, nc) = ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        // Only a DIRECT EForIn at the head of a sequence is statement-shaped.
+        // Do not put this context in TypeEnv: an ambient sentinel leaks through
+        // if/lambda/block children (and can collide with a user binding), which
+        // would let a nested consumed iterator result revive #1679.
+        let (_, ns, nc) = match left {
+          EForIn(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          _ => ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        }
         s1 = ns
         c1 = nc
         // The right child is processed by this iterative loop, not by a
@@ -3188,7 +3222,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       _ => {
         // `cur` already owns the active virtual right-child frame. Calling
         // the wrapper here would add a fictional child before checking it.
-        result = check_expr_capture_impl(cur, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        result = check_expr_capture_impl(cur, cenv, defs, s1, c1, errors, tytab, capture, lane, false)
         done = true
       }
     }
@@ -4129,7 +4163,7 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
   }
 }
 
-fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
+fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
@@ -4207,10 +4241,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
     },
-    ESeq(_, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture),
-    ELet(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture),
-    ELetRec(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture),
-    ELetMut(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture),
+    ESeq(_, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    ELet(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    ELetRec(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    ELetMut(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
     EIf(cond, then_e, else_e) => {
       let (ct, s1, c1) = check_expr_capture(cond, env, defs, s, c, errors, tytab, capture, lane)
       let resolved_ct = subst_apply(s1, ct)
@@ -4503,6 +4537,40 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+        } else if name == "__slice" && Array::length(args) == 3 {
+          // #1682: the old fallback signature was
+          // `(CtUnknown, Int, Int) -> CtUnknown`, so both the receiver and
+          // result unified with anything. In particular
+          // `let n: Int = "hello"[0:2]` checked clean and then performed
+          // pointer arithmetic at runtime. Mirror the runtime's three-way
+          // dispatch explicitly and preserve an Array receiver's element type.
+          let receiver_errors_before = Array::length(errors)
+          let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let receiver_had_error = Array::length(errors) > receiver_errors_before
+          let (start_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, start_ty), s2, errors, "slice start must be Int", call_off)
+          let (end_ty, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2b, c2, errors, tytab, capture, lane)
+          let s3b = check_assignable(CtInt, subst_apply(s3, end_ty), s3, errors, "slice end must be Int", call_off)
+          let receiver = subst_apply(s3b, obj_ty)
+          if slice_receiver_is_invalid(receiver, receiver_had_error) {
+            Array::push(errors, String::concat("slice receiver must be String, Bytes, or Array, got ", String::concat(type_to_string(receiver), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          (tab_call_ty(tytab, call_off, slice_result_type(receiver), capture, lane), s3b, c3)
+        } else if name == "__len" && Array::length(args) == 1 {
+          // Open-ended slices synthesize `__len(receiver)`. Keep its accepted
+          // receiver set identical to `__slice` and the runtime dispatch.
+          let receiver_errors_before = Array::length(errors)
+          let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let receiver_had_error = Array::length(errors) > receiver_errors_before
+          let receiver = subst_apply(s1, obj_ty)
+          if slice_receiver_is_invalid(receiver, receiver_had_error) {
+            Array::push(errors, String::concat("slice receiver must be String, Bytes, or Array, got ", String::concat(type_to_string(receiver), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
         } else if name == "ArrayBuilder::new" && Array::length(args) == 0 {
           // #938: the builder ops were typed all-CtUnknown, so
           // `ArrayBuilder::push(b, 1); ArrayBuilder::push(b, "two")` compiled
@@ -6512,6 +6580,69 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       //     element instead of `CtUnknown` silently accepting any element use and
       //     dropping element-type safety.
       let it_resolved = subst_apply(s1, it)
+      // #1679: only the residual builtin EForIn lowering collects body values.
+      // Trait iterators, pull closures, HostStream and indexed user Iterables
+      // are rewritten after checking to a Unit-valued EWhile.  Claiming
+      // CtArray here for those shapes let a Unit zero be reinterpreted as an
+      // Array pointer.  Keep statement-position loops working, but reject a
+      // non-collecting loop when its value is consumed.  An unresolved head is
+      // not evidence that collection happens: fail closed rather than revive
+      // the silent-wrong path.
+      //
+      //  1 = residual collection (Array/String/builtin eager containers)
+      //  0 = positively non-collecting iterator lowering
+      // -1 = classification unavailable
+      let collection_class = match it_resolved {
+        CtArray(_) => 1,
+        CtString => 1,
+        CtNamed(nm, _) => if nm == "Map" || nm == "Stream" {
+          1
+        } else if type_name_has_iterator_impl(env, nm) {
+          0
+        } else match find_typedef(defs, nm) {
+          Some(_) => 0,
+          None => -1
+        },
+        CtStruct(_) => 0,
+        CtEnum(_) => 0,
+        CtFn(_, _, _) => 0,
+        CtUnknown => -1,
+        CtVar(_) => -1,
+        CtForAll(_, _, _) => -1,
+        _ => 0
+      }
+      // Two non-collecting lowerings deliberately preserve
+      // `for index, value in ...`: indexed-Iterable binds its generated loop
+      // counter, and build_pull_for_in creates/increments an index cell.  The
+      // next-based and HostStream lowerings do not, which is the silent index
+      // drop diagnosed below (#1763 review).
+      let index_preserved = match it_resolved {
+        CtFn(_, _, _) => true,
+        CtNamed(nm, _) => match (env_lookup(env, String::concat(nm, "::iter_length")), env_lookup(env, String::concat(nm, "::iter_get"))) {
+          (Some(_), Some(_)) => true,
+          _ => false
+        },
+        CtStruct(nm) => match (env_lookup(env, String::concat(nm, "::iter_length")), env_lookup(env, String::concat(nm, "::iter_get"))) {
+          (Some(_), Some(_)) => true,
+          _ => false
+        },
+        _ => false
+      }
+      if collection_class == 0 && !discarded_root {
+        Array::push(errors, String::concat("non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function", off_marker(railway_expr_off(iterable))))
+      } else if collection_class < 0 && !discarded_root {
+        Array::push(errors, String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
+      } else {
+        ()
+      }
+      match index_name {
+        Some(_) => if collection_class != 1 && !index_preserved {
+          Array::push(errors, String::concat("a `for` index binding is only supported when the iterator lowering preserves a counter; this iterator lowering would drop the index", off_marker(railway_expr_off(iterable))))
+        } else {
+          ()
+        },
+        None => ()
+      }
       let (et, c1b) = match it_resolved {
         CtArray(elem) => (elem, c1),
         CtNamed(nm, args) => if Array::length(args) > 0 {
@@ -6842,13 +6973,26 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // loop (`() -> { break }`). Threaded through env, so if/match/let/seq
       // inside a loop still see it; a nested function does not introduce one, so
       // a `break` there is (conservatively) left unchecked rather than flagged.
-      match env_lookup(env, "__in_loop__") {
-        Some(_) => (),
-        None => Array::push(errors, "`break` outside a loop")
+      let in_loop = match env_lookup(env, "__in_loop__") {
+        Some(_) => true,
+        None => {
+          Array::push(errors, "`break` outside a loop")
+          false
+        }
       }
       match opt {
         Some(e) => {
           let (_, s1, c1) = check_expr_capture(e, env, defs, s, c, errors, tytab, capture, lane)
+          // Parameterized `loop (...)` rewrites `break value` to an assignment
+          // plus a bare break before checking. Any payload that survives here
+          // therefore belongs to a non-value `break` target: `while`, bare
+          // `loop {}`, or `for-in`. Both backends used to omit that expression
+          // entirely, including effects.
+          if in_loop {
+            Array::push(errors, String::concat("this loop form does not accept a `break` value; remove the payload, or use parameterized `loop (...)` to return one", off_marker(railway_expr_off(e))))
+          } else {
+            ()
+          }
           (CtUnit, s1, c1)
         },
         None => (CtUnit, s, c)
@@ -7216,10 +7360,26 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
   // Production calls carry None. Avoid enter/exit Option dispatches for every
   // recursive expression while preserving them exactly for opt-in capture.
   match capture {
-    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane),
+    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, false),
     Some(_) => {
       typed_occurrence_capture_enter_expression(capture, expr)
-      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane)
+      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane, false)
+      typed_occurrence_capture_record_direct_return(capture, result.0, lane)
+      typed_occurrence_capture_exit_expression(capture)
+      result
+    }
+  }
+}
+
+/// Check exactly this expression root as a discarded statement. Recursive
+/// children go back through `check_expr_capture`, so the flag cannot leak into
+/// a nested value position (#1679 review follow-up).
+fn check_expr_capture_discarded_root(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
+  match capture {
+    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, true),
+    Some(_) => {
+      typed_occurrence_capture_enter_expression(capture, expr)
+      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane, true)
       typed_occurrence_capture_record_direct_return(capture, result.0, lane)
       typed_occurrence_capture_exit_expression(capture)
       result
@@ -7228,7 +7388,7 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
 }
 
 export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
-  check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary")
+  check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
 }
 
 fn map_literal_ground(t: Type) -> Bool {

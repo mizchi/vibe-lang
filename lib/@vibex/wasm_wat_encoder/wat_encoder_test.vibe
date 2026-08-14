@@ -51,6 +51,37 @@ fn f32_const_bits(lit: String) -> String {
   out
 }
 
+/// Encode `(f64.const <lit>)` and return the 8 literal bytes as big-endian
+/// hex. Keeping the assertion at the binary boundary catches a valid module
+/// that silently contains a different number from the source literal.
+fn f64_const_bits(lit: String) -> String {
+  let src = String::concat(String::concat("(module (func (export \"f\") (result f64) f64.const ", lit), "))",)
+  let bytes = f64_operand(compile(src))
+  if Array::length(bytes) != 8 {
+    "NOT-FOUND"
+  } else {
+    let out = StringBuilder::new()
+    let mut i = 7
+    while i >= 0 {
+      StringBuilder::push(out, hex2(Array::get(bytes, i)))
+      i = i - 1
+    }
+    StringBuilder::freeze(out)
+  }
+}
+
+fn decimal_with_zeros(prefix: String, zero_count: Int, suffix: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, prefix)
+  let mut i = 0
+  while i < zero_count {
+    StringBuilder::push(out, "0")
+    i = i + 1
+  }
+  StringBuilder::push(out, suffix)
+  StringBuilder::freeze(out)
+}
+
 fn find_export(bytes: Bytes, name: String) -> Bool {
   let len = Bytes::length(bytes)
   let mut i = 8
@@ -173,6 +204,30 @@ fn check_sections_ordered(bytes: Bytes) -> Bool {
   }
 }
 
+fn bytes_equal(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut equal = true
+    while i < Bytes::length(a) && equal {
+      equal = Bytes::get(a, i) == Bytes::get(b, i)
+      i = i + 1
+    }
+    equal
+  }
+}
+
+fn bytes_contain3(bytes: Bytes, a: Int, b: Int, c: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i + 2 < Bytes::length(bytes) && not(found) {
+    found = Bytes::get(bytes, i) == a && Bytes::get(bytes, i + 1) == b && Bytes::get(bytes, i + 2) == c
+    i = i + 1
+  }
+  found
+}
+
 //# Misc
 
 test "minimal module" {
@@ -200,6 +255,90 @@ test "params" {
   assert(check_magic(bytes))
   assert(check_sections_ordered(bytes))
   assert(find_export(bytes, "add"))
+}
+
+test "folded instruction operands are emitted before the operator" {
+  let flat = compile("(module (func (export \"f\") (param i32) (result i32) local.get 0 i32.const 1 i32.add))")
+  let folded = compile("(module (func (export \"f\") (param i32) (result i32) (i32.add (local.get 0) (i32.const 1))))")
+  assert(bytes_equal(folded, flat))
+}
+
+test "nested folded instruction operands preserve evaluation order" {
+  let flat = compile("(module (func (export \"f\") (param i32) (result i32) local.get 0 i32.const 1 i32.add i32.const 2 i32.add))")
+  let folded = compile("(module (func (export \"f\") (param i32) (result i32) (i32.add (i32.add (local.get 0) (i32.const 1)) (i32.const 2))))")
+  assert(bytes_equal(folded, flat))
+}
+
+test "folded unary instruction emits its operand first" {
+  let flat = compile("(module (func (export \"f\") (param i32) (result i32) local.get 0 i32.eqz))")
+  let folded = compile("(module (func (export \"f\") (param i32) (result i32) (i32.eqz (local.get 0))))")
+  assert(bytes_equal(folded, flat))
+}
+
+test "folded instruction keeps immediates before nested operands" {
+  let flat = compile("(module (func (export \"f\") (param i32) (local i32) local.get 0 i32.const 1 i32.add local.set 1 local.get 1))")
+  let folded = compile("(module (func (export \"f\") (param i32) (local i32) (local.set 1 (i32.add (local.get 0) (i32.const 1))) (local.get 1)))")
+  assert(bytes_equal(folded, flat))
+}
+
+test "folded memory load keeps split offset and align immediates" {
+  let flat = compile("(module (func (param i32) (result i32) local.get 0 i32.load offset=8 align=1))")
+  let folded = compile("(module (func (param i32) (result i32) (i32.load offset=8 align=1 (local.get 0))))")
+  assert(bytes_equal(folded, flat))
+  // i32.load, align=1 encoded as log2(1), offset=8.
+  assert(bytes_contain3(folded, 0x28, 0x00, 0x08))
+}
+
+test "folded memory store keeps offset and align immediates" {
+  let flat = compile("(module (memory 1) (func (param i32 i32) local.get 0 local.get 1 i32.store offset=8 align=2))")
+  let folded = compile("(module (memory 1) (func (param i32 i32) (i32.store offset=8 align=2 (local.get 0) (local.get 1))))")
+  assert(bytes_equal(folded, flat))
+  // i32.store, align=2 encoded as log2(2), offset=8.
+  assert(bytes_contain3(folded, 0x36, 0x01, 0x08))
+}
+
+test "folded if emits the condition before structured control" {
+  let flat = compile("(module (func (export \"f\") (param i32) (result i32) local.get 0 if (result i32) i32.const 1 else i32.const 2 end))")
+  let folded = compile("(module (func (export \"f\") (param i32) (result i32) (if (result i32) (local.get 0) (then (i32.const 1)) (else (i32.const 2)))))")
+  assert(bytes_equal(folded, flat))
+}
+
+test "labeled folded if preserves its result blocktype" {
+  let expected = compile("(module (func (param i32) (result i32) local.get 0 if (result i32) i32.const 1 else i32.const 2 end))")
+  let flat = compile("(module (func (param i32) (result i32) local.get 0 if $done (result i32) i32.const 1 else i32.const 2 end))")
+  let folded = compile("(module (func (param i32) (result i32) (if $done (result i32) (local.get 0) (then (i32.const 1)) (else (i32.const 2)))))")
+  assert(bytes_equal(flat, expected))
+  assert(bytes_equal(folded, expected))
+}
+
+test "nested folded branch resolves a labeled if" {
+  let named = compile("(module (func (param i32) (result i32) (if $done (result i32) (local.get 0) (then (br $done (i32.const 7))) (else (i32.const 2)))))")
+  let numeric = compile("(module (func (param i32) (result i32) (if (result i32) (local.get 0) (then (br 0 (i32.const 7))) (else (i32.const 2)))))")
+  assert(bytes_equal(named, numeric))
+}
+
+test "folded loop opens before its body and resolves its label" {
+  let flat = compile("(module (func (param i32) (local i32) loop $again local.get 0 i32.const 1 i32.add local.set 1 br 0 end))")
+  let folded = compile("(module (func (param i32) (local i32) (loop $again (local.set 1 (i32.add (local.get 0) (i32.const 1))) (br $again))))")
+  assert(bytes_equal(folded, flat))
+}
+
+test "folded br_table emits its selector before label immediates" {
+  let flat = compile("(module (func (param i32) local.get 0 br_table 0 1 2))")
+  let folded = compile("(module (func (param i32) (br_table 0 1 2 (local.get 0))))")
+  assert(bytes_equal(folded, flat))
+}
+
+test "folded br_table preserves every named label immediate" {
+  let named = compile("(module (func (param i32) (block $outer (block $inner (br_table $inner $outer $outer (local.get 0))))))")
+  let numeric = compile("(module (func (param i32) (block $outer (block $inner (br_table 0 1 1 (local.get 0))))))")
+  assert(bytes_equal(named, numeric))
+}
+
+test "folded call_indirect keeps its type annotation" {
+  let flat = compile("(module (func (param i32) local.get 0 call_indirect 1))")
+  let folded = compile("(module (func (param i32) (call_indirect (type 1) (local.get 0))))")
+  assert(bytes_equal(folded, flat))
 }
 
 test "memory" {
@@ -328,6 +467,51 @@ test "f64.const emits the IEEE-754 little-endian bit pattern" {
     240,
     127
   ])
+}
+
+test "f64 decimal literals are rounded once without Int overflow" {
+  // Ordinary values and the previously-correct 1e23 remain unchanged.
+  inspect(f64_const_bits("0.1"), "3FB999999999999A")
+  inspect(f64_const_bits("1e23"), "44B52D02C7E14AF6")
+  inspect(f64_const_bits("-0.0"), "8000000000000000")
+  // A 20-digit significand used to overflow the tagged 62-bit Int while it
+  // was being accumulated and changed a positive literal into a negative.
+  inspect(f64_const_bits("12345678901234567890"), "43E56A95319D63E1")
+  inspect(f64_const_bits("1.2345678901234567890123"), "3FF3C0CA428C59FB")
+  // Decimal extremes exercise normal/subnormal boundaries. The old pow10
+  // loop saturated to infinity, turning the finite endpoints into inf/zero.
+  inspect(f64_const_bits("1.7976931348623157e308"), "7FEFFFFFFFFFFFFF")
+  inspect(f64_const_bits("2.2250738585072014e-308"), "0010000000000000")
+  inspect(f64_const_bits("5e-324"), "0000000000000001")
+  // Repeated multiplication/division by ten was one ULP off at both ends.
+  inspect(f64_const_bits("1e300"), "7E37E43C8800759C")
+  inspect(f64_const_bits("1e-300"), "01A56E1FC2F8F359")
+}
+
+test "f64 decimal exponent preserves cancellation with insignificant zeros" {
+  // The exponent must remain relative to frac_digits. Saturating it at a
+  // fixed 10000 changed these exact +/-1 values into +/-0.1.
+  let positive = decimal_with_zeros("0.", 10000, "1e10001")
+  let negative = decimal_with_zeros("-0.", 10000, "1e10001")
+  inspect(f64_const_bits(positive), "3FF0000000000000")
+  inspect(f64_const_bits(negative), "BFF0000000000000")
+  // The inverse cancellation is equally exact: trailing integer zeros move
+  // into the decimal exponent before the bounded significand is converted.
+  let negative_exp = decimal_with_zeros("1", 10000, "e-10000")
+  let signed_negative_exp = decimal_with_zeros("-1", 10000, "e-10000")
+  inspect(f64_const_bits(negative_exp), "3FF0000000000000")
+  inspect(f64_const_bits(signed_negative_exp), "BFF0000000000000")
+  // Leading integer zeros are insignificant too and do not consume the
+  // exact-conversion digit budget.
+  let leading_integer_zeros = decimal_with_zeros("", 10000, "1e0")
+  inspect(f64_const_bits(leading_integer_zeros), "3FF0000000000000")
+}
+
+test "f64 special literals keep their canonical payloads" {
+  inspect(f64_const_bits("inf"), "7FF0000000000000")
+  inspect(f64_const_bits("-inf"), "FFF0000000000000")
+  inspect(f64_const_bits("nan"), "7FF8000000000000")
+  inspect(f64_const_bits("-nan"), "FFF8000000000000")
 }
 
 test "f32 const" {

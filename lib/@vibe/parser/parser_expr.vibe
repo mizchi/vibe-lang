@@ -609,8 +609,30 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
 /// clause (#731, ADR-0064 §7) parses each condition as an ordinary Bool
 /// expression; `ensures` conditions may reference the function result as
 /// `result`. Multiple requires/ensures entries are allowed.
+fn parse_fn_name(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+  match peek(tokens, pos) {
+    TIdent(_) => parse_binding_name(tokens, pos),
+    TFn => throw("`fn` is a reserved word and cannot be used as a function name; this keyword cannot be escaped, so choose a different name at #\{pos}"),
+    token => {
+      let actual = tk_name(token)
+      let first = if String::length(actual) > 0 {
+        String::char_code_at(actual, 0)
+      } else {
+        0
+      }
+      let word_token = (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')
+      let literal_or_eof = actual == "int" || actual == "float" || actual == "string" || actual == "eof"
+      if word_token && !literal_or_eof {
+        throw("`\{actual}` is a reserved word and cannot be used as a function name; write `r#\{actual}` to use it as a name at #\{pos}")
+      } else {
+        throw("expected function name after 'fn', got '\{actual}' at #\{pos}")
+      }
+    }
+  }
+}
+
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
-  let (name, name_next) = parse_binding_name(tokens, pos)
+  let (name, name_next) = parse_fn_name(tokens, pos)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next)
   let lp = expect_tk(tokens, after_gen, "(")
   let (params, after_params) = parse_param_list(tokens, lp)

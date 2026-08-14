@@ -50,6 +50,8 @@ import @vibe/compiler/codegen/common_base {
   find_func_stmt,
   find_local_slot,
   func_table_index_of,
+  gc_ctor_field_is_ref,
+  gc_ctor_field_slot,
   gc_slot_log_reset_above,
   gc_slot_map_get,
   gc_slot_map_reset_above,
@@ -337,11 +339,34 @@ fn gc_expr_is_native_array_ref(expr: Expr, local_names: Array[String], ctx: Comp
       slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot)
     },
     EArray(_) => true,
+    // #1542: reading a reference-lane FIELD yields a reference, so it inhabits
+    // the lane exactly as a native local does.
+    EDot(EIdent(ns_obj, _), ns_field, _, _) => gc_ctor_field_is_ref(ctx.gc_ctor_table, gc_slot_map_get(ctx.gc_native_struct_scope, find_local_slot(local_names, ns_obj)), ns_field),
     ECall(EIdent(name, _), _, _) => {
       let idx = gc_direct_abi_call_index(ctx, name)
       idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
     EIf(_, then_e, else_e) => gc_join_is_native_ref(then_e, else_e, local_names, ctx),
+    _ => false
+  }
+}
+
+/// Whether `gc_compile_native_array_ref` can produce `expr` on the reference
+/// lane at this program point. This is deliberately stricter than "has type
+/// Array": calls that retain the tagged-i64 ABI cannot be converted implicitly.
+export fn gc_expr_can_compile_native_array_ref(expr: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match expr {
+    EIdent(name, _) => {
+      let slot = find_local_slot(local_names, name)
+      slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot)
+    },
+    EArray(_) => true,
+    EDot(EIdent(ns_obj, _), ns_field, _, _) => gc_ctor_field_is_ref(ctx.gc_ctor_table, gc_slot_map_get(ctx.gc_native_struct_scope, find_local_slot(local_names, ns_obj)), ns_field),
+    ECall(EIdent(name, _), _, _) => {
+      let idx = gc_direct_abi_call_index(ctx, name)
+      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
+    },
+    EIf(_, then_e, else_e) => gc_expr_can_compile_native_array_ref(then_e, local_names, ctx) && gc_expr_can_compile_native_array_ref(else_e, local_names, ctx),
     _ => false
   }
 }
@@ -379,7 +404,7 @@ fn gc_join_is_native_ref(then_e: Expr, else_e: Expr, local_names: Array[String],
 /// Emit one value already proven to inhabit the direct reference lane.
 /// Unsupported shapes are an internal proof failure and abort compilation;
 /// they are never reinterpreted as i64.
-fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+export fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   match expr {
     EIdent(name, _) => {
       let slot = find_local_slot(local_names, name)
@@ -388,6 +413,20 @@ fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array[String
         next_local
       } else {
         throw("gc direct ABI proof mismatch: expected native array local")
+      }
+    },
+    // #1542: the reference lives in a struct field, so producing it is a
+    // struct.get rather than a local.get.
+    EDot(EIdent(ns_obj, _), ns_field, _, _) => {
+      let ns_slot = find_local_slot(local_names, ns_obj)
+      let ns_struct_idx = gc_slot_map_get(ctx.gc_native_struct_scope, ns_slot)
+      let ns_fidx = gc_ctor_field_slot(ctx.gc_ctor_table, ns_struct_idx, ns_field)
+      if ns_struct_idx >= 0 && ns_fidx >= 0 && gc_ctor_field_is_ref(ctx.gc_ctor_table, ns_struct_idx, ns_field) {
+        emit_local_get(buf, ns_slot)
+        emit_struct_get(buf, ctx.gc_native_struct_type_base + ns_struct_idx, ns_fidx)
+        next_local
+      } else {
+        throw("gc direct ABI proof mismatch: expected a reference-lane struct field")
       }
     },
     EArray(elems) => {
@@ -767,6 +806,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           let ns_struct_idx = gc_slot_map_get(ctx.gc_native_struct_scope, ns_slot)
           if ns_struct_idx >= 0 {
             let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
+            let ns_field_refs = Array::get(ctx.gc_ctor_table.struct_field_is_ref, ns_struct_idx)
             let mut ns_fidx = 0 - 1
             let mut ns_i = 0
             while ns_i < Array::length(ns_declared) {
@@ -783,8 +823,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
               ()
             }
             emit_local_get(buf, ns_slot)
-            let ns_nl = ce(buf, Array::get(args, 2), local_names, next_local, ld)
-            emit_struct_set(buf, ctx.gc_native_struct_type_base + Array::length(ns_declared) - 1, ns_fidx)
+            let ns_nl = if Array::get(ns_field_refs, ns_fidx) {
+              gc_compile_native_array_ref(buf, Array::get(args, 2), local_names, next_local, ctx, ld, ce)
+            } else {
+              ce(buf, Array::get(args, 2), local_names, next_local, ld)
+            }
+            emit_struct_set(buf, ctx.gc_native_struct_type_base + ns_struct_idx, ns_fidx)
             emit_i64_const(buf, 1)
             return ns_nl
           } else {

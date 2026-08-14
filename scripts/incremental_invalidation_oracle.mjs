@@ -459,7 +459,7 @@ export function classifyPrivateDependencyEditExternallyUnchanged(before, after, 
       implementation_token_stream_v1: "changed",
       interface_v2: "unchanged",
     },
-    dependency_type_env_transport_v3: beforeDependency.persistent_type_env_transport_fingerprint === afterDependency.persistent_type_env_transport_fingerprint
+    dependency_type_env_transport_v5: beforeDependency.persistent_type_env_transport_fingerprint === afterDependency.persistent_type_env_transport_fingerprint
       ? "unchanged"
       : "changed",
     consumer_own_identities: Object.fromEntries(consumerIdentityFields.map((field) => [field, "unchanged"])),

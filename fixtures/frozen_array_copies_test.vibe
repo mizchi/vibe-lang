@@ -1,80 +1,78 @@
-// `FrozenArray` conversions copy, in both directions (#1733).
+// #1733: `FrozenArray[T]` is not merely "an immutable array" -- it is a member
+// of the Send allowlist (ADR-0082 / ADR-0068 / #906), and the reason it is
+// Send-eligible is that it cannot change. Both of its conversions used to be
+// pure identity casts (docs/compiler-parallelism.md), so that claim held in
+// neither direction: the caller kept a live handle to the same storage.
 //
-// `FrozenArray[T]` is not merely "an immutable array": it is a member of the
-// Send allowlist (ADR-0082 / ADR-0068 / #906), and the reason it qualifies is
-// that it is immutable. Both conversions used to be pure identity casts, so a
-// `FrozenArray` could change under its holder and that reason quietly stopped
-// holding. Nothing unsafe was needed to break it.
-//
-// Same resolution `MutList::freeze` / `MutList::to_array` got in #1262; see
-// `mutlist_exit_copy` in codegen/expr/compile_call.vibe, whose reason (1)
-// already named this surface as the convention MutList could not borrow.
+// Both directions matter, and fixing one alone leaves the contract broken
+// through the other -- hence a test per direction. `get` / `length` are still
+// aliases of the Array bodies: they read, and reading cannot break
+// immutability.
 
-test "FrozenArray::from_array copies: the source builder cannot grow it" {
-  // `ArrayBuilder::freeze` does not consume the builder, so `b` is still a
-  // live handle on the same storage. Before the fix this read 3.
+test "from_array copies: mutating the source does not change the frozen value" {
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 1)
   ArrayBuilder::push(b, 2)
   let raw = ArrayBuilder::freeze(b)
   let fz = FrozenArray::from_array(raw)
   ArrayBuilder::push(b, 3)
-  assert(FrozenArray::length(fz) == 2)
-  assert(FrozenArray::get(fz, 0) == 1)
-  assert(FrozenArray::get(fz, 1) == 2)
+  inspect(FrozenArray::length(fz), "2")
 }
 
-test "FrozenArray::to_array copies: writing the result cannot reach the frozen value" {
-  // The result is an ordinary `Array[T]`, and `Array::set` takes one. This
-  // direction needs no builder handle at all, so it is the easier of the two
-  // to hit by accident. Before the fix this read 999.
+test "to_array copies: mutating the result does not change the frozen value" {
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 1)
+  ArrayBuilder::push(b, 2)
+  let fz = FrozenArray::from_array(ArrayBuilder::freeze(b))
+  let out = FrozenArray::to_array(fz)
+  Array::push(out, 3)
+  inspect(FrozenArray::length(fz), "2")
+}
+
+// The copy must carry the ELEMENTS, not just the length -- a copy that
+// allocated the right size but left it zeroed would pass the two tests above.
+test "the copy carries the elements, in order" {
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 10)
   ArrayBuilder::push(b, 20)
+  ArrayBuilder::push(b, 30)
   let fz = FrozenArray::from_array(ArrayBuilder::freeze(b))
-  let escaped = FrozenArray::to_array(fz)
-  Array::set(escaped, 0, 999)
-  assert(FrozenArray::get(fz, 0) == 10)
-  assert(Array::get(escaped, 0) == 999)
+  let out = FrozenArray::to_array(fz)
+  inspect(FrozenArray::get(fz, 0) + FrozenArray::get(fz, 1) * 2 + FrozenArray::get(fz, 2) * 3, "140")
+  inspect(Array::get(out, 0) + Array::get(out, 1) * 2 + Array::get(out, 2) * 3, "140")
 }
 
-test "FrozenArray::to_array copies: growing the result cannot grow the frozen value" {
+// An effectful argument must be evaluated ONCE. `array_value_copy` binds the
+// value to a temp before slicing precisely so the conversion does not run its
+// argument twice; without the temp this pushes 4 elements, not 3.
+test "the argument is evaluated once" {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 7)
-  let fz = FrozenArray::from_array(ArrayBuilder::freeze(b))
-  let escaped = FrozenArray::to_array(fz)
-  Array::push(escaped, 8)
-  assert(FrozenArray::length(fz) == 1)
-  assert(Array::length(escaped) == 2)
-}
-
-test "FrozenArray round trip keeps the elements" {
-  // The copy must not be the only thing the conversion does.
-  let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 3)
-  ArrayBuilder::push(b, 1)
-  ArrayBuilder::push(b, 4)
-  let fz = FrozenArray::from_array(ArrayBuilder::freeze(b))
-  let back = FrozenArray::to_array(fz)
-  assert(Array::length(back) == 3)
-  assert(Array::get(back, 0) == 3)
-  assert(Array::get(back, 1) == 1)
-  assert(Array::get(back, 2) == 4)
-  assert(FrozenArray::length(fz) == 3)
-}
-
-test "FrozenArray::from_array evaluates its argument once" {
-  // The rewrite binds the argument to a temp before copying. Without that, an
-  // effectful argument would run twice.
-  let calls = ArrayBuilder::new()
-  let make = () -> Array[Int] {
-    ArrayBuilder::push(calls, 1)
-    let b = ArrayBuilder::new()
-    ArrayBuilder::push(b, 42)
+  let mut calls = 0
+  let grow = () -> Array[Int] {
+    calls = calls + 1
+    ArrayBuilder::push(b, calls)
     ArrayBuilder::freeze(b)
   }
-  let fz = FrozenArray::from_array(make())
-  assert(FrozenArray::length(fz) == 1)
-  assert(FrozenArray::get(fz, 0) == 42)
-  assert(Array::length(ArrayBuilder::freeze(calls)) == 1)
+  let fz = FrozenArray::from_array(grow())
+  inspect(calls, "1")
+  inspect(FrozenArray::length(fz), "1")
+}
+
+// A source-level call rewrite is not enough: builtin functions are values, so
+// aliases go through the runtime function table instead of the direct-call
+// branch in compile_call. Both conversions must keep the same copy contract
+// on that path too.
+test "conversion aliases cannot bypass the copy boundary" {
+  let freeze: (Array[Int]) -> FrozenArray[Int] = FrozenArray::from_array
+  let thaw: (FrozenArray[Int]) -> Array[Int] = FrozenArray::to_array
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 10)
+  ArrayBuilder::push(b, 20)
+  let raw = ArrayBuilder::freeze(b)
+  let fz = freeze(raw)
+  ArrayBuilder::push(b, 30)
+  let out = thaw(fz)
+  Array::push(out, 40)
+  inspect(FrozenArray::length(fz), "2")
+  inspect(FrozenArray::get(fz, 0) + FrozenArray::get(fz, 1), "30")
 }

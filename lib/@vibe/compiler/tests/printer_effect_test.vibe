@@ -1,5 +1,17 @@
 //# Imports
 
+import @vibe/compiler/core {
+  Expr, Pat
+}
+
+import @vibe/compiler/syntax {
+  print_expr
+}
+
+import @vibe/core {
+  array_empty
+}
+
 import ./printer_test_support.vibe {
   roundtrip
 }
@@ -31,6 +43,38 @@ test "roundtrip handle expression" {
     Throw(_) => false
   }
   assert(ok)
+}
+
+test "empty EHandle prints as its parseable equivalent body" {
+  let no_arms: Array[(Pat, Expr)] = [
+  ]
+  let printed = print_expr(EHandle(EInt(42), no_arms))
+  inspect(printed, "42")
+  let ok = handle {
+    roundtrip(printed)
+  } with Exception {
+    Throw(_) => false
+  }
+  inspect(ok, "1")
+}
+
+test "nested empty EHandle lambda callee keeps call precedence" {
+  let no_arms: Array[(Pat, Expr)] = [
+  ]
+  let lambda = EFn(array_empty(), array_empty(), [
+    ("x", None)
+  ], None, None, EIdent("x", -1))
+  let wrapped = EHandle(EHandle(lambda, no_arms), no_arms)
+  let printed = print_expr(ECall(wrapped, [
+    EInt(42)
+  ], -1))
+  inspect(printed, "((x) -> { x })(42)")
+  let ok = handle {
+    roundtrip(printed)
+  } with Exception {
+    Throw(_) => false
+  }
+  inspect(ok, "1")
 }
 
 test "roundtrip escaped string variants" {

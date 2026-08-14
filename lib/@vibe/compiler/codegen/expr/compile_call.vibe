@@ -365,6 +365,47 @@ fn cc_ft_has(ft: FuncTable, name: String) -> Bool {
 /// Perceus emits no action for bare projections, so this guarded dup is the only
 /// owner-increment. Scalars are no-ops; this is NOT applied to borrow-arg0
 /// builtins (Array::get/length etc.), which do not drop their argument.
+/// #1746: does the RC raw-ABI shim (the #705/#930/#1460 group below) actually
+/// apply to this call?
+///
+/// The shim rewrites the call for the HOST IMPORT's ABI -- it untags the Int
+/// argument and, for the void half, pushes the `Unit` the import does not
+/// return. Dispatching on the NAME alone assumed the name still denotes that
+/// import. A program defining its own top-level `fn sleep(ms: Int) -> Unit`
+/// resolves it to that function instead, and the shim then emitted
+/// `call <guest fn>` followed by the extra `i64.const 0` -- a module that
+/// FAILED VALIDATION with no diagnostic at all (measured under VIBE_RC=1;
+/// VIBE_RC=0 was fine, which is why no gate saw it).
+///
+/// The discriminator is the resolved function INDEX. User functions are laid
+/// out at `fi + func_offset` (linked_compile.vibe, where
+/// `func_offset = num_imported_funcs + num_generated`), so an index below
+/// `func_offset` is an import or a generated builtin body and anything at or
+/// above it is the program's own code. This is the same test the wasm-gc
+/// backend already uses to recover a user function's table slot
+/// (`fidx - ctx.func_offset`, gc/backend_expr.vibe).
+///
+/// The return COUNT does not work here, and measuring is what showed it: the
+/// count comes from the registry row's `CtUnit`, so the import reports 1 just
+/// as a guest `-> Unit` function does. Gating on it left the shim off the real
+/// import, and `sleep(400)` then took ~795ms instead of ~400ms -- the exact
+/// doubling #930 recorded when the shim was missing.
+///
+/// Only `sleep` is reachable today: for the five `::`-qualified names the
+/// checker demands their capability row at the call site and a plain guest
+/// function does not discharge it (`effect row mismatch for 'main': missing
+/// { Stdin::... }`, measured for all five). `sleep` gets through because for an
+/// UNQUALIFIED name the checker does honour the user's shadowing definition.
+/// The index test covers all seven anyway rather than relying on that.
+fn cc_raw_abi_shim_applies(ft: FuncTable, func_offset: Int, fname: String) -> Bool with Exception {
+  if fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" || fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream" {
+    let (idx, _, _) = resolve_func(ft, fname)
+    idx < func_offset
+  } else {
+    false
+  }
+}
+
 fn cc_is_projection(e: Expr) -> Bool {
   match e {
     EDot(_, _, _, _) => true,
@@ -1009,7 +1050,7 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
 /// `Future[T]` — the two-element array `[state, payload]`.
 ///
 /// Slot 0 is the state, slot 1 the value. Only `ready` (0) exists today: every
-/// in-tree future source (`Future::ready`, `Stream::next`, `Stream::fold`, and
+/// in-tree future source (`Future::ready`, `Stream::next`, and
 /// user code that returns `Future[T]` by calling `Future::ready`) resolves
 /// eagerly, so `await` reads slot 1 unconditionally. Carrying the state slot
 /// now is what lets a PENDING source be added without a second representation
@@ -1143,11 +1184,16 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
 /// The value is bound to a temp first so an effectful argument
 /// (`MutList::freeze(make_list(r))`) is evaluated once, not twice.
 fn mutlist_exit_copy(arg: Expr) -> Expr {
-  let tmp = "__mutlist_exit"
-  let frozen = ECall(EIdent("ArrayBuilder::freeze", -1), [
+  array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [
     arg
-  ], -1)
-  ELet(tmp, frozen, ECall(EIdent("Array::slice", -1), [
+  ], -1), "__mutlist_exit")
+}
+
+/// `Array::slice(v, 0, Array::length(v))` -- a fresh array with the same
+/// elements. The value is bound to `tmp` first so an effectful argument is
+/// evaluated once, not twice.
+fn array_value_copy(value: Expr, tmp: String) -> Expr {
+  ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
     ECall(EIdent("Array::length", -1), [
@@ -1156,41 +1202,33 @@ fn mutlist_exit_copy(arg: Expr) -> Expr {
   ], -1), -1)
 }
 
-/// #1733: both `FrozenArray` conversions copy instead of aliasing.
+/// #1733: `FrozenArray[T]` is not merely "an immutable array" -- it is a
+/// member of the Send allowlist (ADR-0082 / ADR-0068 / #906), and the reason
+/// it is Send-eligible is that it cannot change. Both of its conversions were
+/// pure identity casts (docs/compiler-parallelism.md), so that claim did not
+/// hold in either direction:
 ///
-/// They used to be pure identity casts, on the convention that the caller is
-/// trusted not to keep mutating the source. Nothing enforced that trust, and
-/// breaking it needed no unsafe of any kind -- both directions were observably
-/// wrong:
+///   from_array: `let f = FrozenArray::from_array(a)` then `Array::push(a, x)`
+///               changes `f`.
+///   to_array:   `let o = FrozenArray::to_array(f)` then `Array::push(o, x)`
+///               changes `f`.
 ///
-/// - `from_array`: `ArrayBuilder::freeze` does not consume the builder, so the
-///   handle stays in scope. `let fz = FrozenArray::from_array(raw)` followed by
-///   `ArrayBuilder::push(b, 3)` grows `fz`.
-/// - `to_array`: the result is an ordinary `Array[T]`, and `Array::set` /
-///   `Array::push` / `Array::truncate` all take one. `Array::set(esc, 0, 999)`
-///   writes straight through into the frozen value. This side needs no builder
-///   handle at all, so it is the easier of the two to hit by accident.
+/// Fixing only one of the two leaves the contract broken through the other,
+/// so both copy. `get` / `length` stay aliases of the Array bodies: they read,
+/// and reading cannot break immutability.
 ///
-/// `FrozenArray[T]` is not merely "an immutable array": it is a member of the
-/// Send allowlist (ADR-0082 / ADR-0068 / #906), and the reason it qualifies is
-/// that it is immutable. A `FrozenArray` that changes under the receiver takes
-/// that reason away, silently.
-///
-/// This is the same resolution `MutList::freeze` / `MutList::to_array` got in
-/// #1262, for reason (1) of `mutlist_exit_copy` below -- which already named
-/// this surface as the convention MutList could not borrow.
-///
-/// The value is bound to a temp first so an effectful argument is evaluated
-/// once, not twice.
-fn frozen_conv_copy(arg: Expr) -> Expr {
-  let tmp = "__frozen_conv"
-  ELet(tmp, arg, ECall(EIdent("Array::slice", -1), [
-    EIdent(tmp, -1),
-    EInt(0),
-    ECall(EIdent("Array::length", -1), [
-      EIdent(tmp, -1)
-    ], -1)
-  ], -1), -1)
+/// The cost is real -- freezing is now O(n) -- but it is paid only at the
+/// Frozen boundary. `ArrayBuilder::freeze` is untouched, so the
+/// build-then-freeze hot path (1,953 call sites in the compiler) is
+/// unaffected.
+fn frozen_array_conversion_copy(name: String) -> String {
+  if name == "FrozenArray::from_array" {
+    "__frozen_in"
+  } else if name == "FrozenArray::to_array" {
+    "__frozen_out"
+  } else {
+    ""
+  }
 }
 
 /// Push the arena's saved-bump-pointer stack (ADR-0090, #1262). Emitted
@@ -1308,8 +1346,8 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     }
   } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
     ce(buf, mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
-  } else if is_eident(callee) && (get_eident_name(callee) == "FrozenArray::from_array" || get_eident_name(callee) == "FrozenArray::to_array") && Array::length(args) == 1 {
-    ce(buf, frozen_conv_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && frozen_array_conversion_copy(get_eident_name(callee)) != "" && Array::length(args) == 1 && func_table_index_of(ctx.func_table, get_eident_name(callee)) >= 0 && !array_contains_str(local_names, get_eident_name(callee)) {
+    ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }
@@ -1354,13 +1392,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     } else {
       fname00
     }
-    // Stream[T] (docs/spec/wasi-p3-async.md §2.4) is backed by the eager Array
-    // machinery on the linear backend: map/fold reuse the existing inline
-    // Array::map / Array::fold lowering verbatim (same arg order, same value
-    // representation). empty/once/filter are handled explicitly below.
-    // Stream::fold is NOT aliased here: it returns `Future[A]`, so it needs its
-    // own branch below to wrap the fold's result (a bare alias would hand back
-    // the accumulator where a future is expected).
+    // #1538: the eager `Stream::empty` / `once` / `map` / `filter` / `fold`
+    // aliases used to live here, backed by the Array machinery. They are
+    // retired -- ADR-0089 Decision 3 makes AsyncIter the one iteration story.
+    // `Stream::next` and the `ByteStream` pair keep their own branches below.
     //
     // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over the
     // same growable-array runtime layout ArrayBuilder uses, so push aliases
@@ -1369,9 +1404,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     // in particular the two exits COPY (mutlist_exit_copy) instead of
     // aliasing, so these freeze rows are only a fallback for a call that got
     // past the checker with the wrong arity.
-    let fname = if fname0 == "Stream::map" {
-      "Array::map"
-    } else if fname0 == "MutList::push" {
+    let fname = if fname0 == "MutList::push" {
       "ArrayBuilder::push"
     } else if fname0 == "MutList::freeze" {
       "ArrayBuilder::freeze"
@@ -1843,94 +1876,6 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       ce(buf, resolved, local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "Stream::empty" {
-      // Empty stream = empty backing array.
-      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-      emit_call(buf, arr_new_fi)
-      next_local
-    }
-    else if !prefer_bound_call && fname == "Stream::once" {
-      // Singleton stream = one-element backing array.
-      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      let val_l = nl
-      let arr_l = nl + 1
-      Array::push(local_names, "__once_val")
-      Array::push(local_names, "__once_arr")
-      emit_local_set(buf, val_l)
-      emit_call(buf, arr_new_fi)
-      emit_local_set(buf, arr_l)
-      emit_local_get(buf, arr_l)
-      emit_local_get(buf, val_l)
-      emit_call(buf, arr_push_fi)
-      emit_local_get(buf, arr_l)
-      nl + 2
-    }
-    else if !prefer_bound_call && fname == "Stream::filter" {
-      // Eager filter: walk the backing array, keep elements whose predicate is
-      // truthy. Mirrors the Array::map loop but pushes conditionally.
-      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
-      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
-      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      let arr_l = nl
-      let fn_l = nl + 1
-      let res_l = nl + 2
-      let len_l = nl + 3
-      let i_l = nl + 4
-      let slot_l = nl + 5
-      let env_l = nl + 6
-      let elem_l = nl + 7
-      Array::push(local_names, "__filter_arr")
-      Array::push(local_names, "__filter_fn")
-      Array::push(local_names, "__filter_res")
-      Array::push(local_names, "__filter_len")
-      Array::push(local_names, "__filter_i")
-      Array::push(local_names, "__filter_slot")
-      Array::push(local_names, "__filter_env")
-      Array::push(local_names, "__filter_elem")
-      emit_local_set(buf, fn_l)
-      emit_local_set(buf, arr_l)
-      emit_call(buf, arr_new_fi)
-      emit_local_set(buf, res_l)
-      emit_local_get(buf, arr_l)
-      emit_call(buf, arr_len_fi)
-      emit_local_set(buf, len_l)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, i_l)
-      emit_closure_resolve(buf, fn_l, slot_l, env_l)
-      emit_block_void(buf)
-      emit_loop_void(buf)
-      emit_local_get(buf, i_l)
-      emit_local_get(buf, len_l)
-      emit_i64_ge_s(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, arr_l)
-      emit_local_get(buf, i_l)
-      emit_call(buf, arr_get_fi)
-      emit_local_set(buf, elem_l)
-      emit_local_get(buf, elem_l)
-      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
-      emit_i64_const(buf, 0)
-      emit_i64_ne(buf)
-      emit_if_void(buf)
-      emit_local_get(buf, res_l)
-      emit_local_get(buf, elem_l)
-      emit_call(buf, arr_push_fi)
-      emit_end(buf)
-      emit_local_get(buf, i_l)
-      emit_index_one(buf, ctx)
-      emit_i64_add(buf)
-      emit_local_set(buf, i_l)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
-      emit_local_get(buf, res_l)
-      nl + 8
-    }
     else if !prefer_bound_call && fname == "Stream::next" {
       // Stream::next(s) : Future[Option[T]] (docs/spec §2.4). On the eager
       // Array-backed model `next` peeks the head: Some(s[0]) if non-empty else
@@ -1949,14 +1894,6 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         ], -1)
       ], -1), ECall(EIdent("None", -1), array_empty(), -1)), -1)
       ce(buf, future_ready_expr(synth), local_names, next_local, ctx, ld)
-    }
-    else if !prefer_bound_call && fname == "Stream::fold" {
-      // Stream::fold(s, init, f) : Future[A] (docs/spec §2.4). The fold itself
-      // is the existing inline Array::fold lowering verbatim -- same arg order,
-      // same value representation -- so synthesize that call and wrap its
-      // result in a ready future. (Stream::map/filter return Streams, not
-      // futures, so they stay plain name aliases of the Array combinators.)
-      ce(buf, future_ready_expr(ECall(EIdent("Array::fold", -1), args, -1)), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "String::to_bytes" {
       // String::to_bytes(s) : Stream[Int]  (ByteStream, docs/spec §2.4/§4.1).
@@ -4983,13 +4920,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       nl
     }
-    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" ||
     // #1460: the `Console` spellings share the imports, so they inherit the
     // gap too -- they are registered into the func table the same way, with
     // no shim. Caught by running the probe rather than by a type error: the
     // tagged byte is invisible output (write_char(65) sends 130, a control
     // character), so the calls looked like silent no-ops.
-    fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream") {
+    // #1746: the name list moved into cc_raw_abi_shim_applies, which also
+    // checks the name still DENOTES the host import -- see its doc comment.
+    else if ctx.enable_rc && cc_raw_abi_shim_applies(ctx.func_table, ctx.func_offset, fname) {
       // #930: same raw-ABI shim shape as the #705 Fs::exists family and the
       // #865 vibe_process_exit_raw case above -- these three were registered
       // straight into the func table (linked_compile's name->import map) with

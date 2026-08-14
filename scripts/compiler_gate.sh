@@ -1640,6 +1640,34 @@ fi
 rm -rf "$undir"
 echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map keys) ok"
 
+# #1681 / ADR-0097: an unannotated empty-array binding has no element type to
+# select a structural comparator. Empty values compare exactly by length, but
+# after mutation to non-empty the compiler must fail closed at runtime rather
+# than silently falling back to reference/length equality. Pin both spellings:
+# `!=` is lowered through the same guarded equality and then negated.
+echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681)"
+eqtrapdir="_build/_gate_eq_untyped_empty"
+rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
+for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe; do
+  eqtrap_name="$(basename "${eqtrap_src%.vibe}")"
+  eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$eqtrap_src" "$eqtrap_wasm" _start >/dev/null 2>&1
+  if [ ! -s "$eqtrap_wasm" ]; then
+    echo "[compiler-gate] FAIL: $eqtrap_src did not compile" >&2
+    cat "$eqtrap_wasm.diag" 2>/dev/null >&2
+    exit 1
+  fi
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$eqtrap_wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: $eqtrap_src returned normally; expected fail-closed trap" >&2
+    exit 1
+  fi
+done
+rm -rf "$eqtrapdir"
+echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
+
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
 #      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The
@@ -2707,7 +2735,7 @@ let consume: (Stream[Int]) -> Int = (s) -> {
   }
   sum
 }
-export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+export let _start: () -> Int = () -> { consume(String::to_bytes("*")) }
 EOF
 cat > "$fadir/ok_unannot.vibe" <<'EOF'
 let consume = (s) -> Int {
@@ -2717,7 +2745,7 @@ let consume = (s) -> Int {
   }
   sum
 }
-export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+export let _start: () -> Int = () -> { consume(String::to_bytes("*")) }
 EOF
 # #1350 (Codex P1): the pull-closure loop must fire only when the source
 # POSITIVELY returns a function. A call to a function whose return annotation
@@ -3113,13 +3141,13 @@ EOF
 # #827: Stream[T] is CtNamed (head 0 = tolerated), so the eager Array-backed
 # representation leaked through the Array builtins — these compiled AND ran.
 cat > "$tdir/bad_streamlen.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::length(Stream::once(41)) }
+export let _start: () -> Int = () -> { Array::length(String::to_bytes("*")) }
 EOF
 cat > "$tdir/bad_streamget.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::get(Stream::once(41), 0) }
+export let _start: () -> Int = () -> { Array::get(String::to_bytes("*"), 0) }
 EOF
 cat > "$tdir/bad_streamset.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::set(Stream::once(41), 0, 1); 0 }
+export let _start: () -> Int = () -> { Array::set(String::to_bytes("*"), 0, 1); 0 }
 EOF
 # #805 (0.3.0 redundant-syntax removal): the `\(expr)` string-interpolation
 # spelling was removed — only `\{expr}` remains. A source using the old form
@@ -4056,6 +4084,39 @@ echo "[compiler-gate] region capture ok"
 #      being dropped (#706 — leaked ~84 B per call before its fix) makes it
 #      scale with N (or trap). #700 slipped precisely because no gate asserted
 #      a bounded heap.
+# #1746 (RC lane): the raw-ABI shim dispatched on the callee NAME alone, so a
+# program defining its own top-level `fn sleep` had the shim applied to ITS
+# call -- emitting a module that failed validation, with no diagnostic. Only
+# VIBE_RC=1 was affected, so the VIBE_RC=0 baseline every other lane uses could
+# not see it. `wasm-tools validate` is the assertion that matters here: a
+# `.wasm` existing is NOT the same as a `.wasm` loading, which is exactly how
+# this stayed invisible.
+echo "[compiler-gate] 40c2/40 RC user-shadowed builtin name (#1746)"
+shdir="_build/_gate_rc_shadow_sleep"
+rm -rf "$shdir"; mkdir -p "$shdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_user_shadowed_sleep_test.vibe" "$shdir/sh.wasm" main >/dev/null 2>&1
+if [ ! -s "$shdir/sh.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_user_shadowed_sleep fixture did not compile under VIBE_RC" >&2
+  cat "$shdir/sh.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if command -v wasm-tools >/dev/null 2>&1; then
+  if ! wasm-tools validate --features all "$shdir/sh.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: rc_user_shadowed_sleep emitted an INVALID module under VIBE_RC (#1746)" >&2
+    wasm-tools validate --features all "$shdir/sh.wasm" >&2 || true
+    exit 1
+  fi
+else
+  echo "[compiler-gate] note: wasm-tools absent, skipping the validate half of #1746"
+fi
+sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$shdir/sh.wasm" 2>&1 | tail -1)"
+if [ "$sh_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: rc_user_shadowed_sleep got '$sh_out' (want 42 -- the USER's sleep must be called)" >&2
+  exit 1
+fi
+echo "[compiler-gate] RC user-shadowed builtin name ok (#1746)"
 echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
@@ -4130,12 +4191,12 @@ if [ ! -s "$shdir/shadow.wasm" ]; then
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "25232489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25232489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+if [ "$sh_out" != "25297489" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25297489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[compiler-gate] RC shadow-liveness regression guard ok (25232489)"
+echo "[compiler-gate] RC shadow-liveness regression guard ok (25297489)"
 
 # 40g. #cfg conditional-compilation guard: the flag-off build must strip the
 #      guarded statements entirely (compiles, dev symbols absent -> different

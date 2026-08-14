@@ -35,6 +35,12 @@ fn args1(a: Int) -> Array[Int] {
   xs
 }
 
+fn args0() -> Array[Int] {
+  Array::slice([
+    0
+  ], 0, 0)
+}
+
 fn args2(a: Int, b: Int) -> Array[Int] {
   let xs = Array::slice([
     0
@@ -80,6 +86,10 @@ fn store_i32_module() -> Bytes {
 
 fn div_s_module() -> Bytes {
   compile("(module (func (export \"f\") (param i32 i32) (result i32) local.get 0 local.get 1 i32.div_s))")
+}
+
+fn folded_int_min_div_s_module() -> Bytes {
+  compile("(module (func (export \"f\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const -1 i32.div_s))")
 }
 
 //# Tests
@@ -141,6 +151,12 @@ test "spec trap: i32.div_s traps on overflow, not just on zero" {
   assert(value(div_s_module(), args2(-2147483647, -1)) == 2147483647)
   assert(value(div_s_module(), args2(2147483647, -1)) == -2147483647)
   assert(value(div_s_module(), args2(-7, -1)) == 7)
+}
+
+test "spec trap: i32.div_s normalizes computed operands before overflow check" {
+  // i32.add leaves 0x80000000 in the host stack as positive 2147483648.
+  // div_s must interpret that low-32-bit value as signed INT_MIN.
+  assert(traps(folded_int_min_div_s_module(), args0()))
 }
 
 test "spec trap: i32.rem_s does NOT trap on overflow" {
