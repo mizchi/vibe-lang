@@ -1,0 +1,66 @@
+//# Imports
+
+import ./wasm_runtime.vibe {
+  exec_module_with_args
+}
+
+import @vibex/wasm_wat_encoder {
+  compile
+}
+
+//# Functions
+
+fn call0(wasm: Bytes, name: String) -> Int {
+  let (ec, result) = exec_module_with_args(wasm, name, Array::slice([
+    0
+  ], 0, 0))
+  if ec != 0 {
+    -99999
+  } else {
+    result
+  }
+}
+
+/// Every export here PRODUCES its operand with `i32.add` instead of taking it as
+/// an argument. That is the whole point: an argument arrives already in signed
+/// host form, so the existing spec_i32 battery cannot reach the case where a
+/// 32-bit overflow leaves a host value whose low bits are right and whose sign
+/// is not. `2147483647 + 1` is `INT_MIN`, and every signed opcode below has to
+/// agree with the engine about that.
+fn wrap_module() -> Bytes {
+  compile("(module\n    (func (export \"produced\") (result i32) i32.const 2147483647 i32.const 1 i32.add)\n    (func (export \"lt_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const -1 i32.lt_s)\n    (func (export \"ge_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const 0 i32.ge_s)\n    (func (export \"shr_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const 1 i32.shr_s)\n    (func (export \"rem_s\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const 3 i32.rem_s)\n    (func (export \"eq_min\") (result i32) i32.const 2147483647 i32.const 1 i32.add i32.const -2147483648 i32.eq)\n    (func (export \"mul_wrap\") (result i32) i32.const 65536 i32.const 65536 i32.mul)\n    (func (export \"shl_wrap\") (result i32) i32.const 1 i32.const 31 i32.shl)\n  )")
+}
+
+//# Misc
+
+test "spec i32 wrap: an overflowing add produces INT_MIN, not 2147483648" {
+  inspect(call0(wrap_module(), "produced"), "-2147483648")
+}
+
+test "spec i32 wrap: lt_s reads the produced value as signed" {
+  inspect(call0(wrap_module(), "lt_s"), "1")
+}
+
+test "spec i32 wrap: ge_s reads the produced value as signed" {
+  inspect(call0(wrap_module(), "ge_s"), "0")
+}
+
+test "spec i32 wrap: shr_s shifts the sign bit in, not a zero" {
+  inspect(call0(wrap_module(), "shr_s"), "-1073741824")
+}
+
+test "spec i32 wrap: rem_s keeps the sign of the dividend" {
+  inspect(call0(wrap_module(), "rem_s"), "-2")
+}
+
+test "spec i32 wrap: a produced INT_MIN equals the INT_MIN constant" {
+  inspect(call0(wrap_module(), "eq_min"), "1")
+}
+
+test "spec i32 wrap: mul that overflows 32 bits wraps to 0" {
+  inspect(call0(wrap_module(), "mul_wrap"), "0")
+}
+
+test "spec i32 wrap: shl into the sign bit produces INT_MIN" {
+  inspect(call0(wrap_module(), "shl_wrap"), "-2147483648")
+}

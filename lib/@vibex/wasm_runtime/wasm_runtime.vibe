@@ -19,8 +19,22 @@ fn br_to(block_stack: Array[(Int, Int)], depth: Int) -> Int {
 }
 
 /// Interpret the low 32 bits of a host `Int` as a signed wasm i32.
-/// Arithmetic opcodes can leave values such as 0x80000000 in their unsigned
-/// host representation, while wasm's signed opcodes must see INT_MIN.
+///
+/// wasm i32 values are 32 bits; the operand stack carries them in a 62-bit host
+/// `Int`. Arithmetic that overflows 32 bits leaves a host value whose LOW 32
+/// BITS are right and whose sign is not -- `i32.const 2147483647` plus one is
+/// host `2147483648`, not `INT_MIN`.
+///
+/// Every opcode that reads its operand as SIGNED then answers wrong:
+/// `i32.lt_s` says `(MAX+1) < -1` is false, `i32.shr_s` shifts a zero into the
+/// sign position, `i32.rem_s` returns `+2` where the engine returns `-2`.
+/// Applying this at each signed consumer would mean restating the rule at every
+/// signed opcode and re-deriving it for each one added later, so it is applied
+/// at the four PRODUCERS that can leave the range as well (add/sub/mul/shl).
+/// Everything downstream then reads an honest signed i32.
+///
+/// i64 opcodes are deliberately untouched: a 64-bit value does not fit the
+/// 62-bit host `Int` at all, which is a different and larger problem.
 fn signed_i32(n: Int) -> Int {
   let v = n&0xFFFFFFFF
   if v >= 0x80000000 {
@@ -837,13 +851,13 @@ export fn exec_body(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[Int],
       })
     }
     else if op == 0x6A {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack) + b)
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack) + b))
     }
     else if op == 0x6B {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack) - b)
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack) - b))
     }
     else if op == 0x6C {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b)
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack) * b))
     }
     else if op == 0x6D {
       let b = signed_i32(stack_pop(stack))
@@ -874,7 +888,7 @@ export fn exec_body(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[Int],
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack)^b)
     }
     else if op == 0x74 {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack)<<(b&31))
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack)<<(b&31)))
     }
     else if op == 0x75 {
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack)>>(b&31))
@@ -1490,13 +1504,13 @@ export fn exec_body_gc(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[In
       let (fi, np) = read_uleb128(code, pc); pc = np; stack_push(stack, fi)
     }
     else if op == 0x6A {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack) + b)
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack) + b))
     }
     else if op == 0x6B {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack) - b)
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack) - b))
     }
     else if op == 0x6C {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b)
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack) * b))
     }
     else if op == 0x6D {
       let b = signed_i32(stack_pop(stack))
@@ -1527,7 +1541,7 @@ export fn exec_body_gc(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[In
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack)^b)
     }
     else if op == 0x74 {
-      let b = stack_pop(stack); stack_push(stack, stack_pop(stack)<<(b&31))
+      let b = stack_pop(stack); stack_push(stack, signed_i32(stack_pop(stack)<<(b&31)))
     }
     else if op == 0x75 {
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack)>>(b&31))
