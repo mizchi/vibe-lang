@@ -26,7 +26,7 @@ diff="$({
 } || true)"
 
 staged_paths="$(git -C "$PROJECT_ROOT" diff --cached --name-only --diff-filter=ACMR \
-  | awk '/^lib\/@vibe\/compiler\/(normalize|codegen|loader)\/.*\.vibe$/')"
+  | awk '/^lib\/@vibe\/compiler\/.*\.vibe$/')"
 
 grep_available=0
 if [ -n "${VIBE_REVIEW_LINT_GREP_BIN:-}" ]; then
@@ -87,10 +87,8 @@ else
 fi
 
 if [ -n "$violations" ]; then
-  echo "review-regressions lint: fixed synthetic binder(s) added" >&2
+  echo "review-regressions lint: structural regression(s) added" >&2
   printf '%s\n' "$violations" >&2
-  echo "Mint a fresh name from the source-expression binding census and pass the resulting variable to ELet/PBind/SLet." >&2
-  echo "For a genuinely reserved ABI name, add 'review-lint: allow-fixed-synthetic-name' with a reason on the same line." >&2
   exit 1
 fi
 

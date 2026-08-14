@@ -26,7 +26,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$TMP_ROOT/fail.ou
   echo "review-regressions lint self-test: expected fixed synthetic binder violation" >&2
   exit 1
 fi
-if ! rg -q 'fixed synthetic binder' "$TMP_ROOT/fail.out"; then
+if ! rg -q '__fixed_tmp' "$TMP_ROOT/fail.out"; then
   echo "review-regressions lint self-test: missing violation diagnostic" >&2
   cat "$TMP_ROOT/fail.out" >&2
   exit 1
@@ -62,7 +62,7 @@ git -C "$TMP_ROOT" add .
 
 cat > "$TMP_ROOT/fake-vibe" <<EOF
 #!/usr/bin/env bash
-if [[ "\$*" == *'SLet('* ]]; then
+if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* ]]; then
   echo '[]'
 else
   jq -n --arg path "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" \
@@ -80,6 +80,74 @@ fi
 if ! rg -q '__multiline_tmp' "$TMP_ROOT/ast-fail.out"; then
   echo "review-regressions lint self-test: AST backend lost the capture" >&2
   cat "$TMP_ROOT/ast-fail.out" >&2
+  exit 1
+fi
+
+# #1657: EAssignOp is (target, operator, value, continuation). Binding the
+# second field as a target-like name made multiple passes silently inspect the
+# operator string instead of the assignment target.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler/runtime"
+cat > "$TMP_ROOT/lib/@vibe/compiler/runtime/grep.vibe" <<'EOF'
+fn bad_order(e: Expr) -> Bool {
+  match e { EAssignOp(_, name, _, _) => name == "x", _ => false }
+}
+EOF
+git -C "$TMP_ROOT" add .
+
+cat > "$TMP_ROOT/fake-vibe-assign-op" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *'EAssignOp('* ]]; then
+  jq -n --arg path "$TMP_ROOT/lib/@vibe/compiler/runtime/grep.vibe" \
+    '[{path:\$path,line:2,col:13,start:1,end:2,text:"EAssignOp(_, name, _, _)",captures:{target:{text:"_",start:1},operator:{text:"name",start:2},rest:{text:"_, _",start:3}}}]'
+else
+  echo '[]'
+fi
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-assign-op"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-assign-op" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/assign-op-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: expected EAssignOp field-order violation" >&2
+  exit 1
+fi
+if ! rg -q 'EAssignOp.*operator' "$TMP_ROOT/assign-op-fail.out"; then
+  echo "review-regressions lint self-test: missing EAssignOp field-order diagnostic" >&2
+  cat "$TMP_ROOT/assign-op-fail.out" >&2
+  exit 1
+fi
+
+# #1289: raw substring checks let NotAsync/AsyncLike grant Async permission.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only"
+cat > "$TMP_ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess.vibe" <<'EOF'
+fn bad_async_row(row: String) -> Bool { String::contains(row, "Async") }
+EOF
+git -C "$TMP_ROOT" add .
+
+cat > "$TMP_ROOT/fake-vibe-async-row" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *'String::contains('* ]]; then
+  jq -n --arg path "$TMP_ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess.vibe" \
+    '[{path:\$path,line:1,col:42,start:1,end:2,text:"String::contains(row, \\"Async\\")",captures:{row:{text:"row",start:1}}}]'
+else
+  echo '[]'
+fi
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-async-row"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-async-row" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/async-row-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: expected Async substring violation" >&2
+  exit 1
+fi
+if ! rg -q 'Async effect membership must be exact' "$TMP_ROOT/async-row-fail.out"; then
+  echo "review-regressions lint self-test: missing Async substring diagnostic" >&2
+  cat "$TMP_ROOT/async-row-fail.out" >&2
   exit 1
 fi
 
