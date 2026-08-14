@@ -1,0 +1,110 @@
+// ADR-0091 (#1262): `builtin_allocates` is the first piece of `@zero_alloc` --
+// "does calling this builtin put something new on the heap?".
+//
+// The tests below pin the POLARITY as much as the classification. The two
+// mistakes are not symmetric: over-reporting rejects a valid `@zero_alloc`
+// function with a diagnostic the author can argue with, while under-reporting
+// lets an allocating function pass the check and makes the annotation certify
+// something untrue. So the default must be "allocates", and an unclassified
+// name must land there.
+
+import ../core {
+  builtin_allocates
+}
+
+//# Tests
+
+test "reads and predicates over an existing value do not allocate" {
+  assert(!builtin_allocates("String::length"))
+  assert(!builtin_allocates("String::char_code_at"))
+  assert(!builtin_allocates("String::starts_with"))
+  assert(!builtin_allocates("Array::length"))
+  assert(!builtin_allocates("Array::get"))
+  assert(!builtin_allocates("FrozenArray::get"))
+  assert(!builtin_allocates("Bytes::get"))
+  assert(!builtin_allocates("MapBuilder::has_key"))
+  assert(!builtin_allocates("eq"))
+}
+
+test "writing into storage that already exists does not allocate" {
+  assert(!builtin_allocates("Array::set"))
+  assert(!builtin_allocates("Array::truncate"))
+  assert(!builtin_allocates("FixedArray::set"))
+  assert(!builtin_allocates("FixedArray::unsafe_set"))
+  assert(!builtin_allocates("FixedArray::blit"))
+  assert(!builtin_allocates("Bytes::set"))
+  assert(!builtin_allocates("Bytes::blit"))
+  assert(!builtin_allocates("Bytes::fill"))
+}
+
+test "anything that produces a fresh value allocates" {
+  assert(builtin_allocates("array_new"))
+  assert(builtin_allocates("Array::slice"))
+  assert(builtin_allocates("Array::concat"))
+  assert(builtin_allocates("String::concat"))
+  assert(builtin_allocates("String::substring"))
+  assert(builtin_allocates("String::split"))
+  assert(builtin_allocates("Bytes::new"))
+  assert(builtin_allocates("Bytes::concat"))
+  assert(builtin_allocates("StringBuilder::new"))
+  assert(builtin_allocates("MapBuilder::new"))
+  assert(builtin_allocates("FixedArray::make"))
+  assert(builtin_allocates("Map::keys"))
+  assert(builtin_allocates("vibe_rc_alloc"))
+}
+
+test "a growable push allocates -- it may regrow" {
+  // The point of tracking these: `Array::push` is free on most calls and
+  // reallocates on the one that crosses capacity. A check that only counted
+  // the obvious constructors would call an append loop zero-alloc.
+  assert(builtin_allocates("Array::push"))
+  assert(builtin_allocates("Array::push_all"))
+  assert(builtin_allocates("ArrayBuilder::push"))
+  assert(builtin_allocates("StringBuilder::push"))
+  assert(builtin_allocates("Bytes::push"))
+  assert(builtin_allocates("Bytes::append"))
+}
+
+test "FrozenArray's conversions allocate: they copy now (#1733)" {
+  // These were identity casts until #1760 / #1773 made them copy, which is
+  // what restores FrozenArray's Send eligibility. Classifying them as free
+  // would have been correct before that and is wrong now -- the pairing is
+  // worth pinning so the two do not drift apart again.
+  assert(builtin_allocates("FrozenArray::from_array"))
+  assert(builtin_allocates("FrozenArray::to_array"))
+}
+
+test "host calls that hand back a value allocate" {
+  assert(builtin_allocates("Fs::read_file"))
+  assert(builtin_allocates("Fs::read_bytes"))
+  assert(builtin_allocates("Env::get"))
+  assert(builtin_allocates("sh"))
+}
+
+test "floats are treated as allocating -- the backend heap-boxes them" {
+  // #510: making this implicit boxing visible is one of the stated reasons
+  // ADR-0091 wants the check at all, so the Float family must NOT be on the
+  // free list.
+  assert(builtin_allocates("Int::to_float"))
+  assert(builtin_allocates("Int::to_double"))
+  assert(builtin_allocates("Double::to_float"))
+  assert(builtin_allocates("Float::to_double"))
+  assert(builtin_allocates("Double::from_i64_bits"))
+}
+
+test "output and runtime bookkeeping do not allocate" {
+  assert(!builtin_allocates("println"))
+  assert(!builtin_allocates("print_int"))
+  assert(!builtin_allocates("assert_eq"))
+  assert(!builtin_allocates("vibe_rc_drop"))
+  assert(!builtin_allocates("vibe_rc_dup"))
+  assert(!builtin_allocates("Profiler::now_us"))
+}
+
+test "an unclassified name answers ALLOCATES, not free" {
+  // The safe direction, and the one that matters for a builtin added later
+  // and never classified here.
+  assert(builtin_allocates("Totally::MadeUp"))
+  assert(builtin_allocates(""))
+  assert(builtin_allocates("Array::lenght"))
+}

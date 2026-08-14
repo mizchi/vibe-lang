@@ -646,3 +646,53 @@ export fn verify_lane_builtins(lane: String, names: Array[String], param_counts:
     ri2 = ri2 + 1
   }
 }
+
+//# ADR-0091 (#1262): does this builtin allocate?
+
+/// True when calling `name` may put something new on the heap.
+///
+/// **The polarity is deliberate: unknown names answer `true`.** This feeds
+/// `@zero_alloc`, and there the two mistakes are not symmetric --
+///
+///   - answering `true` for a builtin that does not allocate REJECTS a valid
+///     `@zero_alloc` function. Wrong, but the author sees a diagnostic naming
+///     the site and can argue with it.
+///   - answering `false` for one that DOES allocate lets an allocating
+///     function pass the check. The annotation then certifies something
+///     untrue, silently -- the P0 failure mode.
+///
+/// So the list below enumerates what provably does NOT allocate, and
+/// everything else (including a builtin added tomorrow and not classified
+/// here) falls through to `true`. A new builtin is over-reported until
+/// someone classifies it, never under-reported.
+///
+/// Floats are treated as allocating (`Int::to_float` and friends): the linear
+/// backend heap-boxes them, which is exactly the implicit allocation ADR-0091
+/// expects this check to make visible (#510).
+export fn builtin_allocates(name: String) -> Bool {
+  !builtin_is_non_allocating(name)
+}
+
+/// The enumerated non-allocating set. Grouped by why they are free.
+fn builtin_is_non_allocating(name: String) -> Bool {
+  // Pure scalar reads and predicates over an existing value.
+  name == "String::length" || name == "String::equals" || name == "String::char_code_at" || name == "String::ends_with" || name == "String::starts_with" || name == "String::contains" || name == "String::index_of" || name == "String::last_index_of" ||
+  // Indexed container access. `set`/`blit`/`fill` write into storage that is
+  // already there; `truncate` only lowers a length.
+  name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::truncate" || name == "FrozenArray::get" || name == "FrozenArray::length" || name == "FixedArray::length" || name == "FixedArray::get" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "FixedArray::blit" || name == "Int64Array::length" || name == "Int64Array::get" || name == "Int64Array::set" || name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::blit" || name == "Bytes::fill" ||
+  // Membership questions that return a Bool, not a value.
+  name == "MapBuilder::has_key" || name == "map_has" ||
+  // Int-domain conversions (Char/Int stay unboxed; the Float family does NOT
+  // appear here on purpose -- see the doc above).
+  name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" ||
+  // Comparison / logic primitives.
+  name == "eq" || name == "not" || name == "str_lex_diff" || name == "__generic_rel_diff" ||
+  // SIMD scanners that return an index.
+  name == "simd_skip_ws" || name == "simd_scan_alnum" ||
+  // Output and assertions: they consume, they do not produce.
+  name == "print" || name == "println" || name == "print_int" || name == "print_str" || name == "assert" || name == "assert_true" || name == "assert_eq" ||
+  // Runtime bookkeeping. `vibe_rc_alloc` is NOT here.
+  name == "vibe_rc_drop" || name == "vibe_rc_dup" || name == "vibe_heap_grow_check" ||
+  // Profiler probes return an Int.
+  name == "Profiler::now_us" || name == "Profiler::heap_bytes"
+}
