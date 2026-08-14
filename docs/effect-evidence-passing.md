@@ -3487,34 +3487,32 @@ a * 10
 
 **綴りを変えるだけで refuse が silent-wrong になる。**
 
-#### なぜ `inert_locals` / `cps_locals` では捕まらなかったか
+#### なぜ独立した `inert_locals` / `cps_locals` / `locals` では不十分だったか
 
-`let pick = maker()` は **literal ではない**ので #1710 の `inert_locals` に入らず、
-prepass が step-split する対象でもないので `cps_locals` にも入らない。判定は
-「見えている局所」でも「予約名」でもない残りへ落ち、そこが top-level を引く。
+最初の修正は「見えている名前」を追加したが、3 集合は**加算しかされなかった**。そのため
+`let pick = inert_literal` の後に `let pick = maker()` が来ても古い inert 証明が残り、
+後者より先に受理された。実測は正解 120 に対して **3075**。同じ問題は CPS 証明、parameter、
+match / for / loop binder にもあり、source が `__scps_*` を綴る場合は予約 prefix まで
+opaque な現在束縛を飛び越えられた。
 
-#### 直し方 — スコープ盲ではなくスコープ正確に
+#### 直し方 — 1 本の lexical classification stack
 
-#1714 の guard はスコープ盲な `scps_binds_name` プローブだった (そちらの walk は
-`root` しか持たない)。**この walk は既に `ELet` / `ELetMut` / `ELetRec` / closure params /
-match binder / `for` binder / `loop` params を降りている**ので、`locals: Array[String]` を
-1 つ増やすだけで**正確な集合**が作れる。過剰 refuse も無い。
+#1714 の guard はスコープ盲な `scps_binds_name` プローブのまま fail-closed に保つ。一方、
+適格性と診断の walk は `(name, opaque|inert|CPS)` の immutable stack を共有し、逆引きで
+**最後の binder だけ**を authority にする。`ELet` / `ELetMut` / `ELetRec` / closure params /
+match binder / `for` binder / parser-lowered loop binder の各 lexical 範囲で分類を積む。
+handle の外側で見えている binding と CPS clone / literal の全 parameter も入口で seed する。
 
-判定の**順序**も直した。以前は
-
-```
-perform → builtin/ctor/needing → inert_locals → cps_locals → fn_row_of
-```
-
-で、**`needing` が局所シャドウより先**に効いていた (needing fn と同名の局所があると、
-clone を呼ぶつもりで局所を呼ぶ)。今は
+判定順は次だけ:
 
 ```
-perform → inert_locals → cps_locals/予約名 → 局所なら false → builtin/ctor/needing → fn_row_of
+perform → 現在の lexical 分類 (inert/CPS は受理、opaque は拒否)
+        → 未束縛の generated prefix → builtin/ctor/needing → fn_row_of
 ```
 
-**「この pass が見通せる局所」を先に全部拾い、残った局所は opaque として refuse する。**
-この順序なら、名前解決を伴うすべての受理が局所シャドウの後ろに来る。
+生成された inert parameter は rename 時の明示リストだけで受理し、prefix から推測しない。
+適格性と culprit 診断は同じ named-call predicate と同じ scope 遷移を使う。これで、名前解決を
+伴う受理も予約 prefix も、現在の局所束縛を飛び越えない。
 
 **教訓 (追記63 と同じものの再確認)**: 名前から宣言を引く判定は、**引く前に**その名前が
 局所で隠されていないかを問う。#1714 を直したときにこの 2 件目を探しに行ったから見つかった —
