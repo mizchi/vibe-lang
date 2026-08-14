@@ -243,6 +243,31 @@ fit の問題ではなく認識の問題** — `strip_generic_type_params` の�
 必要があるが、i64 セルに参照を入れる手段は仕様上無い (§1.1 の根本制約そのもの)。
 
 fixture: `fixtures/gc_direct_array_element_types_test.vibe`。
+
+#### export 境界との共存 (2026-08-13)
+
+CLI entry と公開宣言は tagged i64 の host 境界を越えるので参照を運べない。
+これは変わらないが、従来は**そういう宣言が 1 つあると component 全体で島が
+消えていた** — `export` はライブラリモジュールの通常の形なので、ジェネリックの
+件と同じく実コードでは常に消えていたことになる。
+
+今は単に**島の候補にならないだけ**で、署名は従来どおり全 i64 のまま。残りの
+component は参照レーンを使える。**変換点は要らない** — 参照を export へ渡す
+のは未対応の crossing として `gc_direct_abi_expr_kind` が従来どおり component
+全体を拒否し、export から**戻ってくる**値は kind 0 なので native local に
+ならない。
+
+対の fixture: `fixtures/gc_direct_array_export_coexist_test.vibe` (島が生きる)
+と `fixtures/gc_direct_array_abi_export_fallback_test.vibe` (private な参照を
+export 経由で通すので落ちる)。gate は「コンパイルが通った」ではなく
+**公開宣言が tagged-i64 ABI のままであること** (参照を運ぶ関数署名は private な
+mutator ちょうど 1 つ) を assert する。
+
+なお spelling-routed な衝突 (`Array::get` などの綴りを持つユーザ宣言) は
+**署名に参照が無くても component 全体を落とす**ままにしてある。これは過剰では
+なく、backend_call が native receiver に届くためにその綴りを横取りしているので、
+ユーザ宣言があると横取り自体が誤りになる — この島を必要としない #1329 の
+ローカルレーンに対しても誤る。
 | **C** | **集約フィールド** | ユーザ構造体を実 wasm-gc struct へ (ADR-0052 の `struct.set` 経路の一般化) | **#1542**。ヒープモデルの変更を含み、最も重い |
 | **D** | **クロージャ捕捉** | funcref テーブルの型が現状 arity 別 `(i64...)->i64` のみ。型別に増やすか、捕捉は i64 固定にするか | **#1543**。表が型ごとに増える点が最大の論点 |
 

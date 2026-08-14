@@ -134,6 +134,14 @@ compile_direct_abi_fallback fixtures/gc_direct_array_recursion_test.vibe "$RECUR
 ELEMENT_TYPES_OUT="$WORK/direct_array_element_types.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_element_types_test.vibe "$ELEMENT_TYPES_OUT"
 
+# #1541 export coexistence. A public declaration crosses a host boundary whose
+# ABI is tagged i64 and so cannot carry a reference -- but it no longer takes
+# the component down with it. Its fallback pair is EXPORT_FALLBACK_OUT above,
+# where a private reference is piped THROUGH the exported declaration: that is a
+# real unsupported crossing and still clears everything.
+EXPORT_COEXIST_OUT="$WORK/direct_array_export_coexist.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_export_coexist_test.vibe "$EXPORT_COEXIST_OUT"
+
 # #1541 control-flow join pair. An `if` whose arms are BOTH already
 # reference-lane values produces a typed reference itself, in the tail of a
 # reference-result function and in a proven reference argument alike; two
@@ -270,6 +278,24 @@ if [ "$recursion" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 native literal across recursive crossings, found $recursion" >&2
   exit 1
 fi
+export_coexist="$(count_native_array_allocs "$EXPORT_COEXIST_OUT")"
+if [ "$export_coexist" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one #1541 native literal beside an exported declaration, found $export_coexist" >&2
+  exit 1
+fi
+# The safety claim is not "it compiled" but "the PUBLIC declaration kept the
+# tagged-i64 ABI". Count function signatures that carry a typed reference: the
+# private mutator is the only one allowed to. The reserved blocktype
+# `(func (result (ref null ...)))` takes no parameter and is excluded by the
+# `param` requirement -- it is a base type present in every gc module.
+EXPORT_COEXIST_WAT="$WORK/direct_array_export_coexist.wat"
+wasm-tools print "$EXPORT_COEXIST_OUT" > "$EXPORT_COEXIST_WAT"
+export_ref_signatures="$(grep -cE '^  \(type \(;[0-9]+;\) \(func \(param [^)]*\(ref null' "$EXPORT_COEXIST_WAT" || true)"
+if [ "$export_ref_signatures" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected exactly one reference-carrying signature (the private mutator) beside an export, found $export_ref_signatures" >&2
+  exit 1
+fi
+
 element_types="$(count_native_array_allocs "$ELEMENT_TYPES_OUT")"
 if [ "$element_types" -ne 2 ]; then
   echo "[gc-heap-accounting] FAIL: expected two #1541 native literals for String/Bool elements, found $element_types" >&2
@@ -378,6 +404,7 @@ report_boundary_size "generic-coexist" "$COEXIST_OUT" fixtures/gc_direct_array_g
 report_boundary_size "recursion" "$RECURSION_OUT" fixtures/gc_direct_array_recursion_test.vibe
 report_boundary_size "control-flow-join" "$JOIN_OUT" fixtures/gc_direct_array_join_test.vibe
 report_boundary_size "element-types" "$ELEMENT_TYPES_OUT" fixtures/gc_direct_array_element_types_test.vibe
+report_boundary_size "export-coexist" "$EXPORT_COEXIST_OUT" fixtures/gc_direct_array_export_coexist_test.vibe
 
 argument_fallback="$(count_native_array_allocs "$ARGUMENT_FALLBACK_OUT")"
 if [ "$argument_fallback" -ne 0 ]; then
@@ -400,7 +427,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, control-flow joins, String/Bool elements, and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, control-flow joins, String/Bool elements, and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2

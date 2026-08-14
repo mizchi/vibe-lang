@@ -949,17 +949,33 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           } else {
             ()
           }
-          // The CLI entry, every public declaration, and every spelling-routed
-          // builtin collision stays outside the private typed island. Any such
-          // declaration fails closed for the whole component so no body, call,
-          // or type section can consume partial evidence.
+          // A spelling-routed collision fails the WHOLE component closed even
+          // with no reference in its signature, and that is not overcaution:
+          // backend_call intercepts `Array::get`/`Array::set`/`Array::length`
+          // by spelling to reach native receivers, so a user declaration with
+          // one of those names makes the interception itself wrong -- for the
+          // #1329 local lane too, which does not need this island at all.
           if gc_direct_abi_name_has_spelling_lowering(dai_name) {
             gc_direct_abi_ok = false
           } else {
             ()
           }
+          // The CLI entry and every public declaration cross a host boundary
+          // whose ABI is tagged i64, so they cannot carry a reference. They
+          // simply stay OFF the island and keep the signature they always had;
+          // the rest of the component is unaffected. This used to fail the
+          // whole component closed, which meant a single `export` -- the normal
+          // shape of a library module -- disabled the lane for everything.
+          //
+          // Nothing is smuggled past this. An export is not in the evidence
+          // table, so handing a reference to one is an unsupported crossing
+          // that `gc_direct_abi_expr_kind` still rejects component-wide, and a
+          // value coming BACK from one is kind 0 and never becomes a native
+          // local. The export fallback fixture pins exactly that: it pipes a
+          // private reference through the exported declaration and still emits
+          // no native literal.
           if (dai_name == entry_name || gc_direct_abi_name_is_exported(stmts, dai_name)) && has_ref {
-            gc_direct_abi_ok = false
+            ()
           } else if has_ref {
             Array::push(gc_direct_abi_names_l, dai_name)
             Array::push(gc_direct_abi_param_refs_l, param_refs)
