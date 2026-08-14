@@ -204,21 +204,33 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
     `fixtures/region_arena_bounded.vibe` を bump レーンで **測って** pin する
     —— 解放をやめた region も値は正しいままなので、値の assertion では
     見えない。
-- **Perceus 免除**は未実装 (RC レーンで arena を有効にする前提)。設計の当たりは
-  ついている: **プランナ側で「この束縛は region メモリだから dup/drop を出さない」
-  と判定するのではなく、`vibe_rc_drop` の先頭でポインタが arena セグメント内かを
-  見て no-op にする**。理由は arr_push のレーン選択と同じで、**region メモリか
-  どうかはアドレスの性質であって呼び出し位置の性質ではない**から。プランナを
-  触らないので、region 値が helper 経由や container 経由でどこへ流れても
-  免除が効く (プランナ側判定はそこで必ず取りこぼす)。RC レーンで必要な残りは
-  3 点:
-  1. `MutList::empty` の RC 版 body (RC ブロックレイアウト = ヘッダ + 奇数タグ
-     を保ったまま arena から確保する)
-  2. `arr_push` の RC regrow が arena から確保し、**古いバッファが arena 内なら
-     free list に返さない** —— 返すと一括解放後に別の確保として配られる
-  3. `vibe_rc_drop` の range 判定 (上記)
-  この 3 点が揃うまで RC レーンでは `need_region_arena` を false のままにして
-  ある。
+- **Perceus 免除**は未実装 (RC レーンで arena を有効にする前提)。設計は
+  詰めてある。**プランナ側で「この束縛は region メモリだから dup/drop を
+  出さない」と判定するのは筋が悪い** —— region 値が helper 経由や container
+  経由で流れた先で必ず取りこぼす。**region メモリかどうかはアドレスの性質で
+  あって呼び出し位置の性質ではない** (arr_push のレーン選択と同じ理屈) ので、
+  ランタイム側で見る。
+
+  ただし**「`vibe_rc_drop` の入口で arena 内なら return」は間違い**。それだと
+  子を辿らなくなるので、要素が main heap に載っている場合 (`MutList[T]` の
+  `T` が heap 値) にその子がリークする。arena が回収するのは MutList の
+  storage だけで、要素そのものではない。
+
+  正しい介入点は **`emit_rc_free_push`** (bodies_core_a1a2.vibe) ——
+  ブロックを free list に載せる唯一の choke point で、ブロック本体の解放も
+  grown buffer の解放も両方ここを通る。ここで arena range なら push を
+  飛ばせば、**子は今までどおり再帰的に drop され、arena 上のブロックだけが
+  free list に載らない**。載せてしまうと一括解放後に別の確保として配られる。
+
+  RC レーンで必要な残りは 3 点:
+  1. `emit_rc_free_push` の arena range 判定 (上記)
+  2. `MutList::empty` の RC 版 body (RC ブロックレイアウト = ヘッダ + 奇数
+     タグを保ったまま arena から確保する)
+  3. `arr_push` の RC regrow が arena 内の配列に対して arena から確保する
+     (bump レーンで入れた range 判定の RC 版)
+
+  この 3 点が揃うまで RC レーンでは `need_region_arena` を false のままに
+  してある。
 - **gate**: `compiler_gate.sh` §74 が positive
   (`fixtures/region_arena_ok.vibe`、42)と negative
   (`fixtures/err_region_escape_return_value.vibe`、needle
