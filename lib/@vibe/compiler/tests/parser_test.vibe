@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, print_program
+  lex, lex_with_offsets, parse_program_located, print_program
 }
 
 import @vibe/ast {
@@ -739,6 +739,42 @@ test "#1283: `guard` is a reserved word, escapable as r#guard" {
     "ok"
   } with Exception {
     Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(escaped == "ok")
+  let unescapable_source = "fn fn() -> Int { 0 }"
+  let unescapable = handle {
+    let (tokens, starts, _) = lex_with_offsets(unescapable_source)
+    let _ = parse_program_located(tokens, starts, unescapable_source)
+    "ok"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::starts_with(unescapable, "line 1:4: "))
+  assert(String::contains(unescapable, "`fn` is a reserved word"))
+  assert(String::contains(unescapable, "cannot be escaped"))
+  assert(!(String::contains(unescapable, "r#fn")))
+}
+
+test "#1692: reserved fn name reports its own location and raw-name escape" {
+  let source = "fn ok() -> Int { 0 }\nfn guard(x: Int) -> Int { x }"
+  let message = handle {
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let _ = parse_program_located(tokens, starts, source)
+    "ok"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::starts_with(message, "line 2:4: "))
+  assert(String::contains(message, "`guard` is a reserved word"))
+  assert(String::contains(message, "r#guard"))
+  assert(!(String::contains(message, "after 'let'")))
+  let escaped_source = "fn r#guard(x: Int) -> Int { x }"
+  let escaped = handle {
+    let (tokens, starts, _) = lex_with_offsets(escaped_source)
+    let _ = parse_program_located(tokens, starts, escaped_source)
+    "ok"
+  } with Exception {
+    Throw(e) => e
   }
   assert(escaped == "ok")
 }
