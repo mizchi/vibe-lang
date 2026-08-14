@@ -4345,13 +4345,13 @@ echo "[compiler-gate] wasm-gc backend dead needing function filtering ok (105)"
 #       drops a needing function from consideration when its body is
 #       EXACTLY a bare same-effect `EHandle` (edp_drop_self_discharging_needing)
 #       -- its handle site is already discovered and migrated independently.
-#       fixtures/effect_effectset_expansion.vibe's `main` is exactly this
+#       fixtures/effect_effectset_expansion.vibe's `run_effectset` is exactly this
 #       shape; confirmed via direct testing that it failed under
 #       VIBE_BACKEND=gc with "only `with Error`..." before this change.
 echo "[compiler-gate] 40h4/40 wasm-gc backend: self-discharging needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
 # #1571: fixture is an inspect() test-block suite now, compiled AS-IS (no
 # `sed` strip; its import resolves from fixtures/). Its test block wraps the
-# call to the self-discharging `main` in another `handle ... with Ask`,
+# call to the self-discharging `run_effectset` in another `handle ... with Ask`,
 # which additionally locks #1595 on the gc lane: the CALL to a
 # self-discharging fn must be inert (edp_append_self_discharging_row_fns),
 # not just the fn itself dropped from `needing`.
@@ -4721,7 +4721,7 @@ echo "[compiler-gate] 40m/40 effect row operation-item grammar (ADR-0071 step 1/
 # #1571: the fixture carries its expectation as an inspect() test block now
 # (compiled AS-IS, no `sed` strip -- its `import ../lib/@vibe/core` resolves
 # from fixtures/); the test-block wrapper also locks #1595's shape (calling
-# the self-discharging `main` from under another `handle` for the same
+# the self-discharging `run_operation_row` from under another `handle` for the same
 # effect).
 a71dir="_build/_gate_effectset_row_item"
 rm -rf "$a71dir"; mkdir -p "$a71dir"

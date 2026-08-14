@@ -851,8 +851,18 @@ its declarations and `handle` expressions.
 | runtime scheduling policy | runtime itself | `Async` |
 
 The ordered default and cache-safe owners preserve their existing output.
-Checker row filtering and WIT import filtering use only the predicate-based
-entry/runtime policy; WIT mapping and handler behavior are unchanged.
+At a program entry (`main` or `_start`), the checker admits only the union of
+host-provider labels and entry/runtime-managed labels. A user effect such as
+`Ask` / `Ask::Get` must be discharged by `handle ... with Ask` before that
+boundary; adding it to `main`'s `with` row is rejected with a located diagnostic
+(#1683). Ordinary helper functions still fix a missing effect by adding it to
+their row so callers can decide where to handle it. WIT mapping and handler
+behavior are unchanged. Provider spelling alone grants no authority:
+`Fs::Custom` from `effect Fs { Custom() -> Int }` is still a user operation and
+must be handled, while the registry-owned `Fs::read_file` remains a host
+operation even if another linked module has an unrelated `effect Fs`.
+Entry rows must also be concrete; an unresolved `with e` is rejected with a
+hint to close the row rather than the invalid suggestion `handle ... with e`.
 
 ### Atomic stdin provider stream (#1539)
 

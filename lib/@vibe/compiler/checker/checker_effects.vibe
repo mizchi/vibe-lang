@@ -16,6 +16,7 @@ import @vibe/compiler/core {
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_children,
+  is_entry_admitted_effect,
   is_entry_runtime_managed_effect,
   is_exception_effect_name,
   is_exception_label,
@@ -65,6 +66,13 @@ export enum EffectError {
   // Before this the row mismatch had no position at all -- measured as the worst
   // tier in eval/lang-review/repair (05).
   EEEffectRowMismatch(String, String, String, String, Int);
+  // #1683: a source effect with no host/runtime owner reached a program entry.
+  // Fields: entry name, sorted offending row, sorted bare handler names, offset.
+  EEUndischargedEntryEffect(String, String, String, Int);
+  // An entry row variable has no caller that can instantiate it. Keep this
+  // separate from concrete effects so the fix-it never suggests handling a
+  // type-level row variable as though it were an effect declaration.
+  EEUnresolvedEntryEffectRow(String, String, Int);
   EEAssignImmutable(String);
   // #1539: provider-owned stdin lifecycle operations cannot be transported as
   // values until generic higher-order effect flow is sound (#1536).
@@ -147,6 +155,22 @@ export fn effect_error_to_string(err: EffectError) -> String {
       let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
       // #1514: marker LAST so the hint line stays the visible tail; the decoder
       // strips it before the user ever sees the string.
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
+    EEUndischargedEntryEffect(entry_name, effects, handlers, off) => {
+      let body = String::concat("entry point '", String::concat(entry_name, String::concat("' cannot discharge { ", String::concat(effects, String::concat(" }: no host provider or runtime handler owns this effect\nhint: wrap the operation in `handle ... with ", String::concat(row_as_source(handlers), " { ... }` before it reaches the entry boundary"))))))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
+    EEUnresolvedEntryEffectRow(entry_name, variables, off) => {
+      let body = String::concat("entry point '", String::concat(entry_name, String::concat("' has unresolved effect row { ", String::concat(variables, " }: entry rows must be concrete\nhint: close the entry row, or discharge each concrete effect with `handle` before it reaches the entry boundary"))))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
@@ -1340,6 +1364,177 @@ fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[St
   EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required), off)
 }
 
+fn is_program_entry_name(name: String) -> Bool {
+  name == "main" || name == "_start"
+}
+
+// User declarations can legally reuse a provider spelling such as `Fs`.
+// Retain operation identity rather than only the effect name: the selfhost
+// linked program contains private `effect Env { Get ... }` declarations as
+// well as the real host `Env::get` builtin used by its entry point.
+let entry_user_effect_operations: Array[String] = array_empty()
+
+fn collect_entry_user_effect_operations(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, ops) => {
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (op_name, _, _) = Array::get(ops, oi)
+          let label = String::concat(name, String::concat("::", op_name))
+          if effect_row_has_label(Some(out), label) {
+            ()
+          } else {
+            Array::push(out, label)
+          }
+          oi = oi + 1
+        }
+      },
+      SModule(_, _, body) => collect_entry_user_effect_operations(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn set_entry_user_effect_operations(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(entry_user_effect_operations, 0)
+  collect_entry_user_effect_operations(stmts, entry_user_effect_operations)
+}
+
+fn entry_label_is_user_declared_operation(label: String) -> Bool {
+  String::index_of(label, "::") > 0 && effect_row_has_label(Some(entry_user_effect_operations), label)
+}
+
+fn standard_provider_owns_operation(label: String) -> Bool {
+  match builtin_call_effect(label) {
+    Some(owner) => is_entry_admitted_effect(owner),
+    None => false
+  }
+}
+
+fn entry_user_operation_requires_handler(label: String) -> Bool {
+  entry_label_is_user_declared_operation(label) && !standard_provider_owns_operation(label)
+}
+
+fn entry_unresolved_labels(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    if label_is_effect_var(label) {
+      Array::push(out, label)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  sort_labels(labels_union(no_str_labels(), out))
+}
+
+fn entry_unadmitted_labels(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    // Row variables are separated above so they receive the closed-row hint;
+    // this list contains only concrete effects that lack an entry owner.
+    if !label_is_effect_var(label) && (entry_user_operation_requires_handler(label) || !is_entry_admitted_effect(label)) {
+      Array::push(out, label)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  sort_labels(labels_union(no_str_labels(), out))
+}
+
+fn entry_handler_labels(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let base = effect_name_of_op(Array::get(labels, i))
+    if effect_row_has_label(Some(out), base) {
+      ()
+    } else {
+      Array::push(out, base)
+    }
+    i = i + 1
+  }
+  sort_labels(out)
+}
+
+fn make_contextual_row_error(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
+  let unresolved = entry_unresolved_labels(missing)
+  let bad = entry_unadmitted_labels(missing)
+  if is_program_entry_name(fn_name) && Array::length(unresolved) > 0 {
+    EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off)
+  } else if is_program_entry_name(fn_name) && Array::length(bad) > 0 {
+    EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off)
+  } else {
+    make_row_mismatch(fn_name, declared, missing, off)
+  }
+}
+
+fn first_expr_offset(root: Expr) -> Int {
+  let stack = Array::slice([
+    root
+  ], 0, 1)
+  let mut first = 0 - 1
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    let off = match expr {
+      EIdent(_, x) => x,
+      ELet(_, _, _, x) => x,
+      ELetMut(_, _, _, x) => x,
+      ECall(_, _, x) => x,
+      EDot(_, _, x, _) => x,
+      _ => 0 - 1
+    }
+    if off >= 0 && (first < 0 || off < first) {
+      first = off
+    } else {
+      ()
+    }
+    let children = expr_children(expr)
+    let mut i = 0
+    while i < Array::length(children) {
+      Array::push(stack, Array::get(children, i))
+      i = i + 1
+    }
+  }
+  first
+}
+
+fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], body: Expr) -> Array[EffectError] {
+  let errors = array_empty()
+  if is_program_entry_name(fn_name) {
+    let labels = fn_binding_effects(ty, body)
+    let unresolved = entry_unresolved_labels(labels)
+    let bad = entry_unadmitted_labels(labels)
+    if Array::length(unresolved) > 0 || Array::length(bad) > 0 {
+      let inspect_body = match body {
+        EFn(_, _, _, _, _, fbody) => fbody,
+        _ => body
+      }
+      let off = first_expr_offset(inspect_body)
+      if Array::length(unresolved) > 0 {
+        Array::push(errors, EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off))
+      } else {
+        Array::push(errors, EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  errors
+}
+
 /// #626 criterion 2: a `handle ... with E` DISCHARGES E for its body — after
 /// handling E the body need not declare it. The parser qualifies each handler
 /// arm pattern as `E::Op`, so the discharged effect names are recoverable as the
@@ -1835,6 +2030,7 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
   // per-parameter table, which switches call-site row unification off and
   // restores the pre-#1485 exemption. Callers of this entry are unit-test and
   // non-stmts paths that have no call-graph parameter types to offer anyway.
+  set_entry_user_effect_operations(array_empty())
   check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, no_param_effs(), root_ov_names, root_ov_effs, no_kind_binds())
 }
 
@@ -1882,8 +2078,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // sibling operation of the same effect is already
                     // authorized at operation granularity, e.g. `with {
                     // Ask::Other }` + a bare `perform Ask::Get`).
-                    if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
-                      Array::push(errors, make_row_mismatch(fn_name, declared, [
+                    if is_program_entry_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                      Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
+                    } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
+                      Array::push(errors, make_contextual_row_error(fn_name, declared, [
                         throw_report_label(op_name, required_op, declared)
                       ], call_off))
                     } else {
@@ -1898,8 +2096,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 // above, just without an args list to look past.
                 EIdent(op_name, _) => {
                   let eff = effect_name_of_op(op_name)
-                  if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
-                    Array::push(errors, make_row_mismatch(fn_name, declared, [
+                  if is_program_entry_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                    Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
+                  } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
+                    Array::push(errors, make_contextual_row_error(fn_name, declared, [
                       op_name
                     ], call_off))
                   } else {
@@ -1924,7 +2124,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // the fix-it should grant the one operation actually needed,
                     // not widen the row to the whole effect (same rule the
                     // perform path follows since Codex review on PR #1161).
-                    Array::push(errors, make_row_mismatch(fn_name, declared, [
+                    Array::push(errors, make_contextual_row_error(fn_name, declared, [
                       op_label
                     ], call_off))
                   } else {
@@ -2003,7 +2203,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   ti = ti + 1
                 }
                 if Array::length(missing) > 0 {
-                  Array::push(errors, make_row_mismatch(fn_name, declared, missing, call_off))
+                  Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))
                 } else {
                   ()
                 }
@@ -2037,7 +2237,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   pi = pi + 1
                 }
                 if Array::length(missing) > 0 {
-                  Array::push(errors, make_row_mismatch(fn_name, declared, missing, call_off))
+                  Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))
                 } else {
                   ()
                 }
@@ -2670,6 +2870,9 @@ export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
   // No env to resolve payload kinds from: clear the table rather than let a
   // previous module's bindings decide this one's throw kinds (#1344).
   set_throw_kind_table(EnvEmpty)
+  set_entry_user_effect_operations(Array::slice([
+    stmt
+  ], 0, 1))
   check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs(), no_param_effs())
 }
 
@@ -2800,10 +3003,17 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
   // same checked env, so a typed `Exception[K]` row can be compared against
   // what each throw site actually throws.
   set_throw_kind_table(env)
+  set_entry_user_effect_operations(stmts)
   let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    append_eff_errs(errors, check_perform_effects_stmt_tx(Array::get(stmts, i), fn_names, fn_effs, fn_param_effs))
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, name, ty, body) => append_eff_errs(errors, check_entry_declared_effects(name, ty, body)),
+      SLetMut(name, ty, body) => append_eff_errs(errors, check_entry_declared_effects(name, ty, body)),
+      _ => ()
+    }
+    append_eff_errs(errors, check_perform_effects_stmt_tx(stmt, fn_names, fn_effs, fn_param_effs))
     i = i + 1
   }
   // #1347: only once the rows themselves check out — on a program with real

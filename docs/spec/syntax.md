@@ -527,6 +527,35 @@ handle { greet("world") } with Logger {
 }
 ```
 
+An ordinary function may expose a user-defined effect in its `with` row so a
+caller can handle it. A program entry (`main` or `_start`) cannot: only standard
+host-provider effects (`Fs`, `Env`, `Stdout`, and the other provider labels),
+entry-boundary `Exception`, and runtime-managed `Async` may remain there. Handle
+a user effect before it reaches the entry boundary:
+
+Admission follows operation ownership, not just the base effect spelling. A
+user operation `Fs::Custom` does not acquire the standard `Fs` host provider;
+the registry-owned `Fs::read_file` remains host-owned when an unrelated linked
+module declares another effect named `Fs`.
+Entry rows are closed contracts, so a row variable such as `with e` must be
+made concrete before the entry boundary.
+
+```vibe
+effect Ask {
+  Get() -> Int
+}
+
+fn ask() -> Int with Ask::Get {
+  perform Ask::Get()
+}
+
+fn main() -> Int {
+  handle { ask() } with Ask {
+    Get() => resume(42)
+  }
+}
+```
+
 ## Operators
 
 Precedence is high to low.
