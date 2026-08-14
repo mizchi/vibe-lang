@@ -4056,6 +4056,39 @@ echo "[compiler-gate] region capture ok"
 #      being dropped (#706 — leaked ~84 B per call before its fix) makes it
 #      scale with N (or trap). #700 slipped precisely because no gate asserted
 #      a bounded heap.
+# #1746 (RC lane): the raw-ABI shim dispatched on the callee NAME alone, so a
+# program defining its own top-level `fn sleep` had the shim applied to ITS
+# call -- emitting a module that failed validation, with no diagnostic. Only
+# VIBE_RC=1 was affected, so the VIBE_RC=0 baseline every other lane uses could
+# not see it. `wasm-tools validate` is the assertion that matters here: a
+# `.wasm` existing is NOT the same as a `.wasm` loading, which is exactly how
+# this stayed invisible.
+echo "[compiler-gate] 40c2/40 RC user-shadowed builtin name (#1746)"
+shdir="_build/_gate_rc_shadow_sleep"
+rm -rf "$shdir"; mkdir -p "$shdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_user_shadowed_sleep_test.vibe" "$shdir/sh.wasm" main >/dev/null 2>&1
+if [ ! -s "$shdir/sh.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_user_shadowed_sleep fixture did not compile under VIBE_RC" >&2
+  cat "$shdir/sh.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if command -v wasm-tools >/dev/null 2>&1; then
+  if ! wasm-tools validate --features all "$shdir/sh.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: rc_user_shadowed_sleep emitted an INVALID module under VIBE_RC (#1746)" >&2
+    wasm-tools validate --features all "$shdir/sh.wasm" >&2 || true
+    exit 1
+  fi
+else
+  echo "[compiler-gate] note: wasm-tools absent, skipping the validate half of #1746"
+fi
+sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$shdir/sh.wasm" 2>&1 | tail -1)"
+if [ "$sh_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: rc_user_shadowed_sleep got '$sh_out' (want 42 -- the USER's sleep must be called)" >&2
+  exit 1
+fi
+echo "[compiler-gate] RC user-shadowed builtin name ok (#1746)"
 echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
