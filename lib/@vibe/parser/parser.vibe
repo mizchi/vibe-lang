@@ -1008,7 +1008,7 @@ fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
   }
 }
 
-fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> Array[Stmt] with Exception {
+fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -1081,7 +1081,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
       }
     }
   }
-  attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b)))
+  (attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b))), pos)
 }
 
 /// True when `t` is a resynchronization point for `parse_program_recovering`:
@@ -1122,16 +1122,24 @@ fn is_recovery_point(t: Token) -> Bool {
 /// string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
 
 export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
-  parse_program_located_with_context_impl(tokens, starts, source, None)
+  parse_program_located_with_context_impl(tokens, starts, source, None).0
 }
 
-/// Opt-in parser-context infrastructure. This phase publishes no authority
-/// rows; it only proves that one invocation-local context reaches the recursive
-/// expression callback spine without changing the parsed program.
+/// Explicit test/tooling seam for parser-context transport. The supplied
+/// context is forgeable and untrusted: this function never reads it and it
+/// cannot authorize binder rows, semantic artifacts, reuse, or codegen. The
+/// returned token position proves successful parsing consumed through TEof.
+export fn parse_program_located_with_untrusted_binder_context(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  parse_program_located_with_context_impl(tokens, starts, source, context)
+}
+
+/// Opt-in high-level parser-context infrastructure. It deliberately mints its
+/// own invocation-local plumbing context instead of trusting caller input. This
+/// phase publishes no authority rows and does not change the parsed program.
 export fn parse_program_located_with_binder_context(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
   parse_program_located_with_context_impl(tokens, starts, source, Some(ParserBinderContext::{
     nonce: 0
-  }))
+  })).0
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
