@@ -650,6 +650,19 @@ fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
     // the lane exists for; when it is another binding, `name` does not occur
     // here at all. Either way nothing materializes the struct as a value.
     EDot(EIdent(_, _), _, _, _) => true,
+    // #1702 writes: `p.x = v` lowers to `__set_field(p, "x", v)`. The receiver
+    // is consumed by a struct.set here exactly as a read's receiver is consumed
+    // by struct.get, so it never materializes as a value either -- but the
+    // STORED value is an ordinary expression and still has to be checked, or
+    // `p.x = p` would smuggle the struct out through its own field.
+    ECall(EIdent(sf_callee, _), sf_args, _) => if sf_callee == "__set_field" && Array::length(sf_args) == 3 {
+      match Array::get(sf_args, 0) {
+        EIdent(_, _) => gc_native_struct_scope_is_safe(Array::get(sf_args, 2), name),
+        _ => gc_native_struct_children_are_safe(expr, name)
+      }
+    } else {
+      gc_native_struct_children_are_safe(expr, name)
+    },
     EFn(_, _, _, _, _, _) => false,
     EMatch(_, _) => false,
     EHandle(_, _) => false,
@@ -720,6 +733,15 @@ fn gc_native_array_join_arg_is_safe(arg: Expr, name: String, abi_names: Array[St
 
 /// Index of `name` in the direct-ABI evidence table, or -1.
 fn gc_direct_abi_name_slot(abi_names: Array[String], name: String) -> Int {
+  let exact = gc_direct_abi_name_slot_exact(abi_names, name)
+  if exact >= 0 {
+    exact
+  } else {
+    gc_direct_abi_name_slot_exact(abi_names, String::concat(name, "$ref"))
+  }
+}
+
+fn gc_direct_abi_name_slot_exact(abi_names: Array[String], name: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < Array::length(abi_names) {
@@ -735,18 +757,14 @@ fn gc_direct_abi_name_slot(abi_names: Array[String], name: String) -> Int {
 
 fn gc_direct_abi_result_is_native(expr: Expr, ctx: CompileCtxGc) -> Bool {
   match expr {
+    // Delegates rather than scanning `gc_direct_abi_names` itself: this asks
+    // "is this CALLEE on the lane", so it has to answer exactly as the escape
+    // gate and acceptance do -- #1722's ref-twin fallback included. A private
+    // copy of the scan silently omitted that fallback, so a `let` bound to a
+    // twin call was given an i64 local while the call returned a reference.
     ECall(EIdent(name, _), _, _) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(ctx.gc_direct_abi_names) {
-        if Array::get(ctx.gc_direct_abi_names, i) == name && Array::get(ctx.gc_direct_abi_return_refs, i) {
-          found = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found
+      let idx = gc_direct_abi_name_slot(ctx.gc_direct_abi_names, name)
+      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
     _ => false
   }
