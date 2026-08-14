@@ -548,6 +548,25 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
   }
 }
 
+/// #1541: does this expression's VALUE come straight from an array literal?
+///
+/// A bare literal is kind 1 but has not chosen its own representation -- the
+/// consumer does. As a call argument that is fine: the callee's proven ref
+/// parameter decides. As a ref RESULT nothing decides, and the lowering builds
+/// an ordinary linear array, so accepting it produced a function whose type says
+/// `(result (ref null $array))` while its body returns i64 -- wasm that fails
+/// validation rather than a clean fallback.
+fn gc_direct_abi_tail_is_bare_array(expr: Expr) -> Bool {
+  match expr {
+    EArray(_) => true,
+    ESeq(_, second) => gc_direct_abi_tail_is_bare_array(second),
+    ELet(_, _, body, _) => gc_direct_abi_tail_is_bare_array(body),
+    ELetMut(_, _, body, _) => gc_direct_abi_tail_is_bare_array(body),
+    EIf(_, then_e, else_e) => gc_direct_abi_tail_is_bare_array(then_e) || gc_direct_abi_tail_is_bare_array(else_e),
+    _ => false
+  }
+}
+
 fn gc_direct_abi_expr_mentions_name(expr: Expr, names: Array[String]) -> Bool {
   match expr {
     EIdent(name, _) => gc_direct_abi_name_in(names, name),
@@ -1036,6 +1055,16 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             0
           }
           if body_kind != expected_kind {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
+          // A ref result whose value is a bare literal has no proof behind it:
+          // the lowering emits an ordinary linear array, and the emitted
+          // function would claim `(result (ref null $array))` while returning
+          // i64. Fail the component closed instead of shipping wasm that fails
+          // validation.
+          if si_return_ref && gc_direct_abi_tail_is_bare_array(si_body) {
             gc_direct_abi_ok = false
           } else {
             ()
