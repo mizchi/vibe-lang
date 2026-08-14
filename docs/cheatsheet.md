@@ -507,6 +507,9 @@ let result = loop (i = 0, sum = 0) {
 // things. `continue` must pass every parameter (a bare `continue` repeats with
 // them unchanged); a mismatch is a parse error naming both counts. `break` has
 // no arity to match, so `break (a, b)` is one tuple, not two values.
+// A break payload must begin on the same line as `break`. `while`, bare
+// `loop { ... }`, and `for-in` accept only bare `break`; only parameterized
+// `loop (...)` accepts a break value.
 
 // return (early exit from the enclosing function)
 let find_first_neg: (Array[Int]) -> Int = (arr) -> {
