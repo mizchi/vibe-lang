@@ -165,6 +165,13 @@ contract — this is a naming *rule*, not a per-type coincidence:
 > 置くより、破れる場所を1つに絞って明示するほうを採った ——
 > 注釈は `Mut-` 名に書き換えること (穴そのものは #1700)。
 
+旧綴りの**関数**を使うと `vibe check` が移行先を名指しする `warning:` 行を
+出す (非致命、exit 0)。**これは #1262 follow-up で初めて実際に効くようになった**
+—— それまで `check_deprecated_warnings` は loader とは別の素朴なパス解決を
+使っていて、`@scope/pkg` が解決できず**パッケージが公開した `#deprecated`
+マーカーが 1 つも届いていなかった** (同じ経路が原因で `vibe check` 自体、
+`@scope/pkg` を import するファイルで crash していた)。
+
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
 current allowlist (see `docs/concurrency.md` "Send と capture safety") —

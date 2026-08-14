@@ -39,7 +39,7 @@ import @vibe/compiler/loader {
 // its own name, so the two call sites that used `empty_stmt_array()` now
 // call `array_empty()` directly instead.
 import @vibe/compiler/entry/source_compile/wasi_only {
-  collect_linked_compile_inputs, collect_linked_dep_inputs_for_stmts, compile_file_wasi_library, expand_interp_stmts
+  collect_linked_compile_inputs, compile_file_wasi_library, expand_interp_stmts
 }
 
 import ./type_db.vibe {
@@ -316,6 +316,40 @@ export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (B
   (bytes, linked_dep_specs)
 }
 
+/// Every source the LOADER says this entry compiles, minus the entry itself.
+///
+/// #1262 follow-up: the two callers below used to re-resolve imports with
+/// `collect_linked_dep_inputs_for_stmts`, whose `resolve_import_path` is a
+/// plain path join -- it turns `import @vibe/core { ... }` into the filename
+/// `@vibe/core.vibe` and the read throws. That made `vibe check` ABORT on any
+/// file importing a `@scope/pkg` package (verified on the committed seed, so
+/// it is not new), even though the very same file compiles: the typecheck
+/// above already goes through `collect_source_groups_fs`, which does the real
+/// store/lib/contract resolution. Two resolution paths, one of them wrong.
+///
+/// This is the same rule `vibe deps` states: report the loader's own
+/// collection rather than a separately-derived graph, because a derived graph
+/// drifts from real resolution and then under-reports silently.
+fn resolved_dep_sources(input_path: String, groups: Array[(String, Array[(String, String)])]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_group_name, members) = Array::get(groups, gi)
+    let mut mi = 0
+    while mi < Array::length(members) {
+      let (path, source) = Array::get(members, mi)
+      if path == input_path {
+        ()
+      } else {
+        Array::push(out, source)
+      }
+      mi = mi + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
 /// Gate v2 (#492): parse + typecheck only, with imports linked. The checker
 /// knows builtin signatures, so this surfaces REAL language/checker
 /// expressiveness gaps (parse errors, type errors, genuine unknown names)
@@ -328,6 +362,19 @@ export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (B
 /// would reject fails here instead of first failing at build/test/doctest.
 /// Still no wasm and no builtin-body linking.
 export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
+  let _groups = check_linked_file_source_groups(input_path)
+  0
+}
+
+/// Same check, but hands back the source groups it collected so a caller that
+/// needs them next (`check_deprecated_warnings_from_source_groups`) does not
+/// pay for -- or re-enter -- a second `collect_source_groups_fs`. Re-entering
+/// it is not merely wasteful: the second call reads back the persistent
+/// source-group cache the first call just wrote, and that round-trip is TAB-
+/// hostile (rows are TAB-separated with a fixed field count, so an entry path
+/// containing a TAB parses as too many fields -- #1712). Collecting once keeps
+/// this lane off that latent bug entirely.
+export fn check_linked_file_source_groups(input_path: String) -> Array[(String, Array[(String, String)])] with Exception + Fs {
   // #946(3): parse the entry file OURSELVES first (located + recovering —
   // see the import comment above) so a parse error is reported with an exact
   // `line:col` before any other check runs.
@@ -365,14 +412,28 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
   // `f("x")` against `fn f(x: Int)`) typechecked cleanly no matter what was
   // passed — confirmed via a live two-file repro before this fix.
   //
-  // collect_linked_dep_inputs_for_stmts is still used below, ONLY to build
-  // the merged stmts check_inline_wasm_fns scans (inline-wasm fns can live in
-  // an imported file too) — that scan is independent of type information.
+  // The merged stmts check_inline_wasm_fns scans (inline-wasm fns can live in
+  // an imported file too) are now built from `source_groups` as well — see
+  // `resolved_dep_sources`. That scan is independent of type information.
   handle {
     let _ = check_file_fs_mode_from_source_groups(input_path, source_groups)
-    let (resolved_type_stmts, _linked_imports, _linked_dep_specs) = collect_linked_dep_inputs_for_stmts(input_path, entry_stmts)
+    // #1262 follow-up: parse the dependency sources the LOADER resolved
+    // (`source_groups`, captured above) instead of re-resolving them. The old
+    // second resolution could not express `@scope/pkg` and threw, taking the
+    // whole check down with it; and the set scanned here should be the set the
+    // build compiles, which is what `source_groups` is by construction.
     let stmts = array_empty()
-    append_stmt_array(stmts, resolved_type_stmts)
+    let dep_sources = resolved_dep_sources(input_path, source_groups)
+    let mut dsi = 0
+    while dsi < Array::length(dep_sources) {
+      let dep_source = Array::get(dep_sources, dsi)
+      let (dep_tokens, dep_starts, _dep_ends) = lex_with_offsets(dep_source)
+      // A dependency that does not parse cannot reach here: the typecheck
+      // immediately above compiles this same set and would have thrown first.
+      let (dep_stmts, _dep_diags) = parse_program_recovering(dep_tokens, dep_starts, dep_source)
+      append_stmt_array(stmts, dep_stmts)
+      dsi = dsi + 1
+    }
     append_stmt_array(stmts, entry_stmts)
     expand_interp_stmts(stmts)
     // #946(3): locate errors against the ENTRY file's own source text. `stmts`
@@ -399,7 +460,7 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
       }
     }
   }
-  0
+  source_groups
 }
 
 /// `#deprecated` warnings for a file that already passed check_linked_file
@@ -409,6 +470,12 @@ export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
 /// `warning:` lines. A file that fails to parse gets no warnings — the
 /// check itself already failed loudly.
 export fn check_deprecated_warnings(input_path: String) -> Array[String] with Exception + Fs {
+  check_deprecated_warnings_from_source_groups(input_path, collect_source_groups_fs(input_path))
+}
+
+/// The same warnings, from source groups the caller already has. `vibe check`
+/// uses this form so the whole lane collects exactly once.
+export fn check_deprecated_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
   let entry_source = Fs::read_file(input_path)
   let (tokens, starts, _ends) = lex_with_offsets(entry_source)
   let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)
@@ -417,14 +484,12 @@ export fn check_deprecated_warnings(input_path: String) -> Array[String] with Ex
   } else {
     ()
   }
-  let dep_sources: Array[String] = array_empty()
-  let (_resolved_type_stmts, _linked_imports, linked_dep_specs) = collect_linked_dep_inputs_for_stmts(input_path, entry_stmts)
-  let mut i = 0
-  while i < Array::length(linked_dep_specs) {
-    let (_module_name, dep_path) = Array::get(linked_dep_specs, i)
-    Array::push(dep_sources, Fs::read_file(dep_path))
-    i = i + 1
-  }
+  // #1262 follow-up: markers come from the LOADER's resolved set, not from a
+  // second path-joining resolver. The old collection could not resolve
+  // `@scope/pkg`, so a deprecated alias published by a PACKAGE -- which is
+  // every alias the ADR-0100 (3) collection rename shipped -- was invisible
+  // here and the migration warning this function promises never appeared.
+  let dep_sources = resolved_dep_sources(input_path, source_groups)
   deprecated_warning_lines(entry_source, dep_sources)
 }
 
