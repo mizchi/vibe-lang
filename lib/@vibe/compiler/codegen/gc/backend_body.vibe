@@ -512,6 +512,21 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
       }
     },
     EReturn(value) => gc_direct_abi_expr_kind(value, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref),
+    // #1541: a sequence's VALUE is its tail. Falling through to the catch-all
+    // below was wrong here -- that clause requires EVERY child to be kind 0,
+    // which is right for an operand list but rejects `Array::set(xs, 0, 9); xs`
+    // because the tail legitimately yields the reference. That shape is exactly
+    // a mutating transform, i.e. the case where passing a reference instead of a
+    // copy is what makes the call mean anything, so the lane was declining the
+    // work it exists to do and taking the whole component down with it.
+    //
+    // The leading statement still has to be reference-free: a discarded
+    // reference would be a crossing nobody proved.
+    ESeq(first, second) => if gc_direct_abi_expr_kind(first, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref) != 0 {
+      -1
+    } else {
+      gc_direct_abi_expr_kind(second, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+    },
     _ => {
       let children = expr_children(expr)
       let mut ok = true

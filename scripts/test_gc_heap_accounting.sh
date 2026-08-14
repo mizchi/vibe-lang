@@ -134,6 +134,13 @@ compile_direct_abi_fallback fixtures/gc_direct_array_recursion_test.vibe "$RECUR
 ELEMENT_TYPES_OUT="$WORK/direct_array_element_types.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_element_types_test.vibe "$ELEMENT_TYPES_OUT"
 
+# #1541 mutating transform. A callee that mutates its array parameter AND
+# returns the same reference is the shape where passing a reference rather than
+# a copy is what makes the call mean anything -- and it used to clear the island
+# component-wide, because acceptance had no ESeq arm and the tail yielding the
+# reference read as a violation. One literal, crossing two such boundaries.
+MUTATING_TRANSFORM_OUT="$WORK/direct_array_mutating_transform.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_mutating_transform_test.vibe "$MUTATING_TRANSFORM_OUT"
 # #1702 (Phase C, no conversion point): a record literal bound to a local that
 # never leaves field-read position lives in a real `(struct (mut i64) x N)`.
 # Cells stay tagged i64, so this moves where the record LIVES, not how its
@@ -318,6 +325,11 @@ if [ "$recursion" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 native literal across recursive crossings, found $recursion" >&2
   exit 1
 fi
+mutating_transform="$(count_native_array_allocs "$MUTATING_TRANSFORM_OUT")"
+if [ "$mutating_transform" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one native literal across a mutating transform, found $mutating_transform" >&2
+  exit 1
+fi
 export_coexist="$(count_native_array_allocs "$EXPORT_COEXIST_OUT")"
 if [ "$export_coexist" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 native literal beside an exported declaration, found $export_coexist" >&2
@@ -467,7 +479,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, control-flow joins, String/Bool elements, non-escaping local records (#1702), and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, mutating transforms, control-flow joins, String/Bool elements, non-escaping local records (#1702), and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2
