@@ -87,10 +87,15 @@ test "await inside EFn without effect annotation reports error" {
 
 // --- Stream[T] (async iterator) ---
 
-/// `Stream::next(Stream::empty())`
+/// `Stream::next(String::to_bytes(""))`
+///
+/// #1538 retired the eager producers (`Stream::empty` / `once`), so the one
+/// remaining way to spell a `Stream[Int]` is the ByteStream half.
 fn stream_next_call() -> Expr {
   ECall(EIdent("Stream::next", -1), [
-    ECall(EIdent("Stream::empty", -1), array_empty(), -1)
+    ECall(EIdent("String::to_bytes", -1), [
+      EString("")
+    ], -1)
   ], -1)
 }
 
@@ -104,15 +109,43 @@ test "Stream::next is a registered effectful builtin (Async)" {
   }
 }
 
-test "Stream::empty and Stream::map are registered pure builtins" {
+/// #1538: the eager combinators are RETIRED. They must not resolve at all --
+/// a lingering registration would keep the eager Array-backed model reachable
+/// and let `Stream[T]` grow a second meaning next to AsyncIter.
+test "the eager Stream combinators no longer resolve (#1538)" {
   match lookup_builtin("Stream::empty") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match lookup_builtin("Stream::once") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match lookup_builtin("Stream::map") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match lookup_builtin("Stream::filter") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match lookup_builtin("Stream::fold") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+/// The ByteStream pair survives and stays pure -- it is the only producer of a
+/// `Stream[Int]` left, so `Stream::next` above depends on it.
+test "the ByteStream pair is still registered (#1538)" {
+  match lookup_builtin("String::to_bytes") {
     Some(ty) => match ty {
       CtFn(_, _, None) => assert(true),
       _ => assert(false)
     },
     None => assert(false)
   }
-  match lookup_builtin("Stream::map") {
+  match lookup_builtin("Stream::to_string") {
     Some(ty) => match ty {
       CtFn(_, _, None) => assert(true),
       _ => assert(false)
