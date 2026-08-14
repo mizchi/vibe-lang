@@ -1498,8 +1498,9 @@ emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))
 | 0.001 | 2281127254458684670 | 4562254508917369340 |
 
 すべてちょうど半分。2305843009213693952 = 2^61 = **`Int::max_value` + 1** で、
-Int としてそもそも不正。`lib/@vibex/wasm_wat_encoder` の `parse_f64_bits(String)
--> Int` が今もこれを経由している (未修正、別 issue)。
+Int としてそもそも不正。`lib/@vibex/wasm_wat_encoder` も以前は同じ罠を踏んで
+いたが、#1737 で decimal を exact BigInt ratio のまま nearest-even に丸め、
+`(hi, lo)` を直接返す実装へ移した。
 
 ### 回帰ロックが静的である理由
 
