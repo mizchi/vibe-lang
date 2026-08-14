@@ -680,25 +680,17 @@ renames + 旧名の deprecated alias。`vibe` は selfhost なので、
 コンパイラ自身の利用箇所が最大の呼び出し元になる。ADR-0082 の子タスクとして
 段階実施(#1140 系列)。**§4 の段階3 より前に着手できる**(独立)。
 
-> **2026-08-13 着地、ただし「旧名の deprecated alias」は半分しか置けなかった。**
-> 4 型を改名し、リポジトリ内の全使用箇所を移行した。旧綴りは **関数だけ**
+> **2026-08-13 着地、2026-08-15 に型 alias も復旧 (#1700)。**
+> 4 型を改名し、リポジトリ内の全使用箇所を移行した。旧綴りの関数は
 > `#deprecated` エイリアスとして残っている(`Mut-` 型を返すので
 > `let m = HashMap::new_string()` はそのまま動き、`vibe check` が移行先を
 > 名指しする警告を1行出す)。
 >
-> **旧綴りの型注釈は残せなかった。** `type HashMap[K, V] = MutMap[K, V]` は
-> **モジュール境界を越えると展開されない** —— 2 通りの置き方を実測した:
-> (a) contract (`index.vpkg`) に transparent な alias 行として置く、
-> (b) 実装ファイルから `export type` する。**どちらも同じ結果**で、別名は
-> merge 後のソースには確かに現れる(`VIBE_EMIT_MERGED_SOURCE=1` で確認)のに、
-> checker は `HashMap[Int]` と `MutMap[Int]` を別の nominal 型として扱う。
-> 同一ファイル内の generic type alias は正しく透過するので、これは
-> **cross-module type alias の透過性**という別の穴 (#1700)。
->
-> 守れない約束を contract に置く(旧名が単独ファイルでは型検査を通り、
-> 2 つの綴りが出会う場所で初めて落ちる = いちばん悪い壊れ方)より、
-> **破れる場所を1点に絞って明示する**方を採った。この穴が埋まれば型注釈も
-> 無停止で移行できる。
+> その時点では generic type alias の formals/target が importer の TypeEnv
+> projection から落ち、旧綴りの型注釈を残せなかった。その後 declaration
+> authority transport がこの穴を塞いだため、#1700 で実 `index.vpkg` 回帰を固定し、
+> contract に `HashMap[K,V] = MutMap[K,V]` など4本を復旧した。transparent alias
+> は contract が定義そのものを所有し、implementation 側には重複定義を置かない。
 
 ---
 
@@ -719,8 +711,7 @@ ADR-0100 (3) が最後に開けていた一点は「**`ImmutMap` は builtin `Ma
 **決定: 統合しない。併存が要る**ので ADR の fallback どおり
 **`ImmutMap` → `MapHamt`** に改名した。bare `Map` がインタフェース、
 `-Hamt` が実装接尾辞で、§5.2 の2軸命名にそのまま乗る。旧綴りは
-**関数だけ** `#deprecated` エイリアスとして残る(型注釈が残せないのは
-コレクション改名と同じ #1700 の制約)。
+`#deprecated` 関数と transparent type alias として残る (#1700)。
 
 > **向きが ADR の想定と逆だった。** 「`ImmutMap` は builtin `Map` に統合を
 > 試みる」という書き方は、暗に *`Map` で足りるのでは* を疑っている。実測は
