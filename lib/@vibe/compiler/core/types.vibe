@@ -110,8 +110,9 @@ export enum TypeEnv {
   // (checker/checker_escape.vibe): true = some closure captures this binding,
   // i.e. codegen lowers it to a shared heap ref cell and its writes are
   // observable outside the declaring scope; false = it stays a wasm local.
-  // Function-local by construction, so it never reaches `env_cache` /
-  // persistent_env_codec (module export envs carry no `let mut`).
+  // Function-local in normal module checking, and module export envs carry no
+  // `let mut`. Exported TypeEnv composition and codec fixtures can still cache
+  // this marker, so `env_mut_escape` treats cached indexes as transparent.
   EnvMutCell(String, Bool, TypeEnv);
   EnvFlat(Array[(String, EnvValueBinding)]);
   // Sorted names/types pair (see core/sorted_index.vibe), instead of a
@@ -171,10 +172,12 @@ export fn env_bind_mut(env: TypeEnv, name: String, ty: Type, escapes: Bool) -> T
 /// The mutability fact for `name` at this point in the chain, or `None` when
 /// the binding in scope is not a `let mut` cell.
 ///
-/// Shadowing falls out of the chain order rather than needing its own rule:
-/// the FIRST node that mentions `name` decides, so an inner immutable `let
-/// name = ...` (an `EnvBind`, or a cached index containing the name) answers
-/// `None` even while an outer `EnvMutCell(name, ...)` is still further down.
+/// Shadowing falls out of the authoritative chain order rather than needing
+/// its own rule: the FIRST binding node that mentions `name` decides, so an
+/// inner immutable `let name = ...` (`EnvBind`) answers `None` even while an
+/// outer `EnvMutCell(name, ...)` is still further down. `EnvCached` is only an
+/// acceleration index and is transparent to this query; its `rest` retains
+/// the binding and marker order that decides the fact.
 /// That is what makes this the STRICT side of ADR-0100 (1) -- the enforcement
 /// lane, which must stay silent when unsure -- as opposed to codegen's
 /// deliberately conservative `is_mut_captured_in`, which does not subtract
@@ -214,9 +217,10 @@ export fn env_mut_escape(env: TypeEnv, name: String) -> Option[Bool] {
       EnvFlat(_) => {
         done = true
       },
-      EnvCached(names_sorted, _, rest) => if bsearch_leftmost(names_sorted, name) >= 0 {
-        done = true
-      } else {
+      EnvCached(_, _, rest) => {
+        // Cached arrays accelerate value lookup but carry no mutability fact.
+        // The authoritative chain in `rest` retains both binding shadow order
+        // and any paired EnvMutCell marker.
         cur = rest
       }
     }
