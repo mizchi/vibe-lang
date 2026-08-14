@@ -200,7 +200,11 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "TBench => parse_bench_stmt(tokens, starts, pos + 1, context)",
     "TFn => parse_fn_stmt_with_binder_context",
     "TEnum => parse_enum_stmt_with_binder_context",
+    "TSuberror => parse_suberror_stmt_with_binder_context",
     "TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false, context)",
+    "TType => parse_type_alias_stmt_with_binder_context",
+    "TTrait => parse_trait_stmt_with_binder_context",
+    '"effect" => parse_effect_stmt_with_binder_context',
     '"effectset" => parse_effectset_stmt(tokens, pos + 1, false, context)',
     '"resource" => parse_resource_stmt(tokens, pos + 1, context)',
     '"extern" => parse_extern_let_stmt(tokens, pos + 1, context)',
@@ -210,6 +214,10 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_import_stmt(tokens, pos + 1)",
     "parse_test_stmt(tokens, starts, pos + 1)",
     "parse_fn_stmt(tokens,",
+    "parse_suberror_stmt(tokens,",
+    "parse_type_alias_stmt(tokens,",
+    "parse_trait_stmt(tokens,",
+    "parse_effect_stmt(tokens,",
     "parse_impl(tokens,",
   ]);
   assertNoneWrapper(parserSource, "parse_stmt_preserving", "parse_stmt_preserving_with_binder_context(tokens, starts, pos, None)");
@@ -222,8 +230,15 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_expr(tokens,",
     "parse_impl(tokens,",
   ]);
-  assert.ok(parserSource.includes("parse_impl_methods(tokens, hp_d, simpl_d, None)"), "cfg-disabled ordinary impl path must pass None");
-  assert.ok(parserSource.includes("parse_impl_methods(tokens, hp, simpl, None)"), "ordinary impl path must pass None");
+  for (const ordinaryProgram of ["parse_program_preserving", "parse_program_recovering"]) {
+    assertBody(parserSource, ordinaryProgram, [
+      "parse_impl_methods(tokens, hp_d, simpl_d, None)",
+      "parse_impl_methods(tokens, hp, simpl, None)",
+    ], [
+      "parse_impl_methods(tokens, hp_d, simpl_d, context)",
+      "parse_impl_methods(tokens, hp, simpl, context)",
+    ]);
+  }
 
   assertContextual(parserSource, "parse_program_located_with_context_impl", [
     "parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)",
