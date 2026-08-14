@@ -1,0 +1,72 @@
+// #1723: effect-row inference must resolve a call against the lexical binding
+// before consulting the module-level function table.
+
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn take(f: () -> Int with Ask) -> Int with Ask {
+  f()
+}
+
+fn pure_shadow() -> Int {
+  let take = (f: () -> Int) -> Int {
+    f() + 1
+  }
+  take(() -> Int {
+    7
+  })
+}
+
+fn nested_shadow() -> Int {
+  let take = (f: () -> Int) -> Int {
+    let take = (g: () -> Int) -> Int {
+      g() + 1
+    }
+    take(f)
+  }
+  take(() -> Int {
+    6
+  })
+}
+
+fn parameter_shadow(take: (() -> Int) -> Int) -> Int {
+  take(() -> Int {
+    7
+  })
+}
+
+fn apply_row(f: () -> Int with e) -> Int with e {
+  f()
+}
+
+fn asker() -> Int with Ask {
+  perform Ask::Get(1)
+}
+
+// The shadowed name is an ARGUMENT to a row-polymorphic callee. Resolving its
+// row must use the same local-first order as resolving the callee name.
+fn rowvar_argument_shadow() -> Int {
+  let asker = () -> Int {
+    8
+  }
+  apply_row(asker)
+}
+
+test "local function shadows top-level effect row" {
+  assert_eq(pure_shadow(), 8)
+}
+
+test "nested lexical shadows remain local" {
+  assert_eq(nested_shadow(), 7)
+}
+
+test "a callback parameter shadows a top-level function row" {
+  assert_eq(parameter_shadow((f: () -> Int) -> Int {
+    f() + 1
+  }), 8)
+}
+
+test "a row-variable argument resolves its local shadow first" {
+  assert_eq(rowvar_argument_shadow(), 8)
+}
