@@ -5,7 +5,7 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, hex_decode, hex_encode
 }
 
 import @vibe/compiler/core {
@@ -694,6 +694,8 @@ fn parse_persistent_source_list_cache(raw: String) -> (Int, Option[(String, Stri
             version = 2
           } else if version_text == "3" {
             version = 3
+          } else if version_text == "4" {
+            version = 4
           } else {
             throw("invalid persistent source list cache version")
           }
@@ -712,7 +714,12 @@ fn parse_persistent_source_list_cache(raw: String) -> (Int, Option[(String, Stri
             if Array::length(fields) != 4 {
               throw("invalid persistent source list cache manifest row")
             }
-            manifest = Some((Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3)))
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            manifest = Some((path, Array::get(fields, 2), Array::get(fields, 3)))
           }
         } else if tag == "source" {
           if version == 1 {
@@ -724,7 +731,12 @@ fn parse_persistent_source_list_cache(raw: String) -> (Int, Option[(String, Stri
             if Array::length(fields) != 4 {
               throw("invalid persistent source list cache source row")
             }
-            Array::push(sources, (Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3)))
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            Array::push(sources, (path, Array::get(fields, 2), Array::get(fields, 3)))
           }
         } else {
           throw(String::concat("invalid persistent source list cache row: ", line))
@@ -767,6 +779,8 @@ fn parse_persistent_source_group_cache(raw: String) -> (Int, Option[(String, Str
             version = 2
           } else if version_text == "3" {
             version = 3
+          } else if version_text == "4" {
+            version = 4
           } else {
             throw("invalid persistent source group cache version")
           }
@@ -785,7 +799,12 @@ fn parse_persistent_source_group_cache(raw: String) -> (Int, Option[(String, Str
             if Array::length(fields) != 4 {
               throw("invalid persistent source group cache manifest row")
             }
-            manifest = Some((Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3)))
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            manifest = Some((path, Array::get(fields, 2), Array::get(fields, 3)))
           }
         } else if tag == "group" {
           if version == 1 {
@@ -797,7 +816,17 @@ fn parse_persistent_source_group_cache(raw: String) -> (Int, Option[(String, Str
             if Array::length(fields) != 5 {
               throw("invalid persistent source group cache group row")
             }
-            Array::push(rows, (Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3), Array::get(fields, 4)))
+            let group_name = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 2))
+            } else {
+              Array::get(fields, 2)
+            }
+            Array::push(rows, (group_name, path, Array::get(fields, 3), Array::get(fields, 4)))
           }
         } else {
           throw(String::concat("invalid persistent source group cache row: ", line))
@@ -1243,14 +1272,14 @@ export fn load_persistent_source_group_fingerprint_if_valid(entry_path: String) 
 /// fix and issue class as stable_cache_path's #366 note (lib/@vibe/cache).
 fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> String with Exception + Fs {
   let sb = StringBuilder::new()
-  StringBuilder::push(sb, "version\t3\n")
+  StringBuilder::push(sb, "version\t4\n")
   StringBuilder::push(sb, "resctx\t")
   StringBuilder::push(sb, persistent_resolution_context_fingerprint_fs(entry_path, source_paths(sources)))
   StringBuilder::push(sb, "\n")
   match manifest_path {
     Some(path) => {
       StringBuilder::push(sb, "manifest\t")
-      StringBuilder::push(sb, path)
+      StringBuilder::push(sb, hex_encode(path))
       StringBuilder::push(sb, "\t")
       StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
       StringBuilder::push(sb, "\t")
@@ -1272,7 +1301,7 @@ fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option
       ()
     } else {
       StringBuilder::push(sb, "source\t")
-      StringBuilder::push(sb, path)
+      StringBuilder::push(sb, hex_encode(path))
       StringBuilder::push(sb, "\t")
       StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
       StringBuilder::push(sb, "\t")
@@ -1288,14 +1317,14 @@ fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option
 /// build_persistent_sources_cache_text above.
 fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> String with Exception + Fs {
   let sb = StringBuilder::new()
-  StringBuilder::push(sb, "version\t3\n")
+  StringBuilder::push(sb, "version\t4\n")
   StringBuilder::push(sb, "resctx\t")
   StringBuilder::push(sb, persistent_resolution_context_fingerprint_fs(entry_path, grouped_source_paths(groups)))
   StringBuilder::push(sb, "\n")
   match manifest_path {
     Some(path) => {
       StringBuilder::push(sb, "manifest\t")
-      StringBuilder::push(sb, path)
+      StringBuilder::push(sb, hex_encode(path))
       StringBuilder::push(sb, "\t")
       StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
       StringBuilder::push(sb, "\t")
@@ -1315,9 +1344,9 @@ fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: 
         ()
       } else {
         StringBuilder::push(sb, "group\t")
-        StringBuilder::push(sb, group_name)
+        StringBuilder::push(sb, hex_encode(group_name))
         StringBuilder::push(sb, "\t")
-        StringBuilder::push(sb, path)
+        StringBuilder::push(sb, hex_encode(path))
         StringBuilder::push(sb, "\t")
         StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
         StringBuilder::push(sb, "\t")
