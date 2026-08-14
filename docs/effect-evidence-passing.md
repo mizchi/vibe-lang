@@ -3574,3 +3574,46 @@ suspend_cps_pass(stmts)      ← 局所名はまだ元の綴り
 2 件目で `needing` の順序を直したときに「**判定は直ったが書き換えは？**」と
 問い直したから 3 件目が出た。**パターンを見つけたら、そのパターンが現れる
 すべての層を数えるまで終わらない。**
+
+### 追記65b (2026-08-14): 4 件目は checker、そしてそれが 5 件目を隠している (#1723)
+
+追記65 で「パターンが現れるすべての層を数えるまで終わらない」と書いたので、数え続けた。
+4 件目は codegen ではなく **checker の effect row 推論**にあり、壊れ方が違う。
+
+```vibe
+fn take(f: () -> Int with Ask) -> Int with Ask { f() }
+fn probe() -> Int {
+  let take = (f: () -> Int) -> Int { f() + 1 }   // ← 隠す
+  take(() -> Int { 7 })
+}
+```
+
+`probe` は 8 を返す正しいプログラムだが、`effect row mismatch for 'probe':
+missing { Ask }` で**拒否される**。局所束縛が無視され top-level の row が計上される。
+値の解決では局所が正しく勝つ (`let pick = ..; pick()` は 7) ので、**実行時の解決と
+row の計上が食い違っている**。silent-wrong ではないので P1。
+
+#### この偽拒否が 5 件目を塞き止めている
+
+`scps_prepass_expr` は `ECall(EIdent(fname), ..)` で `scps_fn_def_params(ctx, fname)` を
+引き、その row に応じて引数 literal を **Done-wrap する / step 規約違反として拒否する**
+(#1707)。この walk は**局所束縛を追っていない**。
+
+今それが踏めないのは、**#1723 の偽拒否が先に落としているから**だけ。top-level と局所で
+param row が違う形は checker を通らないので、prepass の引き当てまで届かない。
+
+**#1723 を直すと prepass の穴が開く。** issue にその連動を明記した。
+
+#### 数え方のまとめ
+
+| | 引き当て | 層 | 壊れ方 |
+|---|---|---|---|
+| #1714 | `scps_fn_ret_ty` | iterand の種別証明 | silent-wrong (0 / 215) |
+| #1718 | `scps_fn_row_of` / needing / ctor | 適格性判定 | silent-wrong (2285 / 110) |
+| #1721 | needing (retarget) | 書き換え | silent-wrong (1511 / 1507) |
+| #1723 | checker の row 推論 | 型検査 | 偽拒否 |
+| (連動) | `scps_fn_def_params` | prepass の引数規約 | #1723 が直ると silent-wrong |
+
+**教訓**: 同じパターンでも層が変わると**壊れ方が変わる** (silent-wrong / 偽拒否)。
+そして偽拒否は、その先にある silent-wrong を**偶然塞いでいることがある** — 偽拒否を
+直すときは「これは何を守っていたか」を必ず問う。

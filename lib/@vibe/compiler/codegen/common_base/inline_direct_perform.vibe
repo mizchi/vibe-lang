@@ -14074,7 +14074,17 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
       let rargs = for a in args {
         scps_prepass_expr(a, ecfgs, ctx, st, split_effs)
       }
-      // arg-position convention fixups against the callee's declared params
+      // arg-position convention fixups against the callee's declared params.
+      //
+      // #1723: this lookup is BY NAME against the module's top level and this
+      // walk tracks no local bindings, so a local shadowing `fname` would have
+      // the top-level function's parameter rows applied to a call that never
+      // reaches it -- Done-wrapping a pure literal the local closure then calls
+      // under the plain convention (the #1707 shape, inverted). It is currently
+      // unreachable ONLY because the checker refuses those programs first, and
+      // it refuses them for the same shadowing reason (#1723 is that bug). Fix
+      // the checker and this opens: thread a locals set through
+      // scps_prepass_expr in the same change.
       match rcallee {
         EIdent(fname, _) => match scps_fn_def_params(ctx, fname) {
           Some(fparams) => {
