@@ -3204,6 +3204,41 @@ hoist の終端を `flag == ""` で分岐させただけで、走査そのもの
 **教訓 2**: 誤った値を見て止めたのは正しかったが、原因の見立ては外れていた。計測環境が
 ゲートと同じ設定かどうかを先に確かめること。
 
+### 追記58 (2026-08-14): Array と示せる `for-in` を while 形へ落とす (#1536)
+
+`for x in xs { .. perform .. }` — async で最も自然な反復 — が長く不適格だった。理由は
+**codegen が `EForIn` を最後まで保持し、実行時に iterand が String かを判別して byte を
+materialize する** (#807) ため。source level で while へ書き換えると **String は 0 回反復に
+なって黙って誤る**。
+
+必要なのは「Array である」証明だが、**checker のチャンネルは要らなかった**。次の**構文的**
+証明で足りる:
+
+- **`Array[..]` と注釈された引数** (`fn total(xs: Array[Int])`)
+- **spine 上で配列リテラルに束縛された `let`** (`let xs = [1, 2]`)
+
+証明できた名前に対してだけ、split の前に while 形へ落とす:
+
+```
+for x in xs { body }  ==>  let mut i = 0
+                           while i < Array::length(xs) {
+                             let x = Array::get(xs, i)
+                             i = i + 1
+                             body
+                           }
+```
+
+`Array::length` は毎回読み直す (`for` の意味論どおり — body が配列を伸ばせばその分回る)。
+**index は body の前に進める**ので、body の `continue` が空回りしない。
+
+**証明できないものは一切書き換えない**ので、この pass が変えられるのは**今日 reject されている
+プログラムだけ** — 現在通っているコードの挙動は変わらない。String は
+`err_effect_string_for_suspend` が「引き続き reject」を pin する (書き換えていたら 0 回反復で
+黙って誤っていた)。
+
+`effect_array_for_suspend_test.vibe` (3855487) が**受理だけでなく意味論**を pin する:
+引数由来 36 / リテラル由来 23 / `break` 23 / `continue` 24 (index が進む) / 伸長 87。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
