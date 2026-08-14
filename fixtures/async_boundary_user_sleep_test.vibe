@@ -1,0 +1,38 @@
+// #1342: the Async-entry / spawn_suspend mixing guard must key on the boundary
+// that is actually INJECTED, not on "the program mentions `sleep` somewhere".
+//
+// This program supplies its OWN top-level `sleep`, so `!user_defines_sleep`
+// makes the boundary machinery stand down -- there is no synthesized
+// tail-resumptive handler for `spawn_suspend`'s suspend-class one to mix with,
+// and the program is perfectly compilable. The guard used to omit that half of
+// the condition, and rejecting here would have been a diagnostic about a
+// boundary that was never going to be built.
+//
+// Swap the local `sleep` out (call the builtin instead) and the same program is
+// correctly rejected -- that is `err_async_boundary_mixed_convention.vibe`.
+//
+// 21 + 21 = 42, and the value is the pin: it can only come from the spawned
+// body actually running to completion through the in-guest scheduler.
+import @vibex/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn sleep(ms: Int) -> Unit {
+  let mut i = 0
+  while i < ms {
+    i = i + 1
+  }
+}
+
+fn main() -> Int with Async + Exception {
+  sleep(1)
+  TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _ = perform Async::Suspend(0)
+      21
+    })
+    TaskGroup::pump_all(g)
+    let v = TaskHandle::join(h)
+    v + 21
+  })
+}

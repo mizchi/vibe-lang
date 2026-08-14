@@ -8817,6 +8817,42 @@ if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null
   cat "$asb89dir/neg.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1342: the same guard must be POSITION-INDEPENDENT and must key on the
+# boundary that is actually injected.
+#   - err_async_boundary_mixed_operand.vibe puts the `spawn_suspend` call in an
+#     OPERAND. Its walker was missing EBinOp (and most other arms), so this
+#     exact program COMPILED while the let-bound spelling above was rejected.
+#   - async_boundary_user_sleep_test.vibe supplies its OWN `sleep`, so no
+#     boundary is built and there is nothing to mix -- it must COMPILE and
+#     return 42. The guard used to omit that half of the injection's condition.
+cp fixtures/err_async_boundary_mixed_operand.vibe "$asb89dir/negop.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/negop.vibe" "$asb89dir/negop.wasm" main >/dev/null 2>&1 || true
+if [ -s "$asb89dir/negop.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe compiled -- the mixing guard is position-dependent again (#1342)" >&2
+  exit 1
+fi
+if ! grep -qF 'mixing the step convention' "$asb89dir/negop.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe did not produce the mixing diagnostic" >&2
+  cat "$asb89dir/negop.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cp fixtures/async_boundary_user_sleep_test.vibe "$asb89dir/usersleep.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/usersleep.vibe" "$asb89dir/usersleep.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/usersleep.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_boundary_user_sleep_test.vibe was rejected -- the guard fired without an injected boundary (#1342)" >&2
+  cat "$asb89dir/usersleep.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_us_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/usersleep.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_us_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_boundary_user_sleep_test.vibe got '$asb89_us_out' (want 42)" >&2
+  exit 1
+fi
+echo "[compiler-gate] async boundary mixing guard: position-independent + injection-keyed ok (#1342)"
 # Increment 2 (#1218): a `handle ... with Async` discharges the builtin
 # row (the enclosing fn needs no `with Async`) and the handler REALLY
 # receives the operations -- sleep(20)+sleep(15) reach the arm as

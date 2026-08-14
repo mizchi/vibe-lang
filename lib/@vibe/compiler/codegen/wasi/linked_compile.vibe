@@ -2744,8 +2744,66 @@ fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
     ESeq(a, b) => lc_expr_has_spawn_suspend(a) || lc_expr_has_spawn_suspend(b),
     EIf(c, t, el) => lc_expr_has_spawn_suspend(c) || lc_expr_has_spawn_suspend(t) || lc_expr_has_spawn_suspend(el),
     EFn(_, _, _, _, _, body) => lc_expr_has_spawn_suspend(body),
+    // #1342: the arms below were missing, which made the guard depend on WHERE
+    // the call sits rather than whether it is there. Measured: `let h =
+    // TaskGroup::spawn_suspend(..)` was found and rejected, while
+    // `TaskGroup::spawn_suspend(..) + n` -- the same program, the call moved
+    // into an operand -- compiled. A partial walk is the worst shape for a
+    // guard: it reads as "this is checked" while answering a narrower question.
+    EBinOp(_, l, r) => lc_expr_has_spawn_suspend(l) || lc_expr_has_spawn_suspend(r),
+    EUnaryOp(_, a) => lc_expr_has_spawn_suspend(a),
+    EAssign(_, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
+    EAssignOp(_, _, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
+    EWhile(c, b) => lc_expr_has_spawn_suspend(c) || lc_expr_has_spawn_suspend(b),
+    EForIn(_, _, it, b) => lc_expr_has_spawn_suspend(it) || lc_expr_has_spawn_suspend(b),
+    ELoop(pairs, b) => lc_pairs_have_spawn_suspend(pairs) || lc_expr_has_spawn_suspend(b),
+    EMatch(sc, arms) => lc_expr_has_spawn_suspend(sc) || lc_arms_have_spawn_suspend(arms),
+    EHandle(b, arms) => lc_expr_has_spawn_suspend(b) || lc_arms_have_spawn_suspend(arms),
+    EReturn(a) => lc_expr_has_spawn_suspend(a),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_has_spawn_suspend(a),
+      None => false
+    },
+    EContinue(args) => lc_exprs_have_spawn_suspend(args),
+    ETuple(items) => lc_exprs_have_spawn_suspend(items),
+    EArray(items) => lc_exprs_have_spawn_suspend(items),
+    ERecord(_, fields, _) => lc_pairs_have_spawn_suspend(fields),
+    EMap(fields) => lc_pairs_have_spawn_suspend(fields),
+    ESpread(a) => lc_expr_has_spawn_suspend(a),
+    EDot(o, _, _, _) => lc_expr_has_spawn_suspend(o),
+    ELabeledArg(_, _, v) => lc_expr_has_spawn_suspend(v),
     _ => false
   }
+}
+
+fn lc_pairs_have_spawn_suspend(pairs: Array[(String, Expr)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if lc_expr_has_spawn_suspend(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn lc_arms_have_spawn_suspend(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    if lc_expr_has_spawn_suspend(b) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn lc_exprs_have_spawn_suspend(es: Array[Expr]) -> Bool {
@@ -2999,7 +3057,16 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     }
     i = i + 1
   }
-  if entry_has_async && (calls_sleep || calls_host_future || calls_host_stream) && has_spawn_suspend {
+  // #1342: key the guard on the machinery that is actually INJECTED, not on
+  // "the program mentions one of these names somewhere". The three predicates
+  // below are the same ones the injection uses further down, hoisted so the
+  // guard cannot disagree with it -- previously the guard omitted the
+  // `!user_defines_*` half, so a program supplying its own `sleep` was told it
+  // was mixing conventions with a boundary that was never going to be built.
+  let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
+  let hf_machinery = calls_host_future && !user_defines_host_future && entry_has_async
+  let hs_machinery = calls_host_stream && !user_defines_host_stream && entry_has_async
+  if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && has_spawn_suspend {
     "Async entry boundary and TaskGroup::spawn_suspend are mixing the step convention; handle Async inside the entry instead"
   } else {
     // Keying (#1218, tightened after gate 19 regressed on the first cut):
@@ -3022,7 +3089,10 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     // checker lets such a handle discharge the builtin row, so its body's
     // sleeps MUST become performs the handler can receive); the boundary
     // wrap itself stays entry-row-keyed.
-    let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
+    // sleep_machinery / hf_machinery / hs_machinery are computed ABOVE now, so
+    // the guard and the injection cannot drift apart (#1342). Their original
+    // rationale:
+    //
     // ADR-0089 step 4 (#1218): the host-future machinery -- a program that
     // calls `host_future_get` under an Async-row entry gets the boundary
     // handler (with the waitable settle arm below) even with zero sleeps.
@@ -3030,13 +3100,12 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     // Suspend(handle + 2) payload reaches that handler instead, where the
     // in-guest scheduler parks it as a poller (deadlock trap -- no
     // completion source exists in-guest, spec §3.13).
-    let hf_machinery = calls_host_future && !user_defines_host_future && entry_has_async
+    //
     // ADR-0089 Decision 3 (#1218): the host-stream machinery -- same keying
     // discipline as hf_machinery (entry-row-keyed only; under a user
     // `handle ... with Async` the stream payload would reach a handler with
     // no read source, where the in-guest scheduler's poller arm turns it
     // into a deterministic deadlock trap, spec §3.13).
-    let hs_machinery = calls_host_stream && !user_defines_host_stream && entry_has_async
     let decl_needed = !has_async_decl && (sleep_machinery || hf_machinery || hs_machinery || (has_aw_poll && has_async_handle))
     if decl_needed {
       let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
