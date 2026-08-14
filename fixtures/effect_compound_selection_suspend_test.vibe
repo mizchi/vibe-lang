@@ -1,0 +1,44 @@
+// #1536: an `if` / `match` nested INSIDE a compound. The linearization still
+// refuses to walk into a branch -- naming a suspension there would run the
+// operation on the path that does not select that branch -- but the selection
+// as a whole is an ordinary subexpression, and the walk only reaches strictly
+// evaluated positions, so it is named exactly where it stands. That puts
+// `let h = if c { .. } else { .. }` on the spine, where the binding
+// distribution lowers it.
+//
+// `order` pins that nothing moved across the suspension: the digits are
+// appended 1 (before the compound), 2 (inside the selected branch, before the
+// operation), 4 (after the resume). Reordering or re-running any of them shows
+// up as a different number.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut acc = 0
+    let mut order = 0
+    order = order * 10 + 1
+    acc = 100 + (if acc == 0 {
+      order = order * 10 + 2
+      perform Ask::Get(3)
+    } else {
+      0
+    })
+    order = order * 10 + 4
+    acc = acc + match acc {
+      115 => perform Ask::Get(1),
+      _ => 0
+    }
+    acc * 1000 + order
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n * 5)
+    }
+  }
+}
+
+test "effect compound selection suspend" {
+  inspect(_start(), "120124")
+}

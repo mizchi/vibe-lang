@@ -1,0 +1,41 @@
+// #1536: a non-tail `&&` -- here nested in an `if` condition. The walk still
+// never floats the conditionally evaluated right operand out; it names the
+// WHOLE short-circuit, which the immutable-let lowering then turns back into
+// the equivalent conditional. So the RHS is still evaluated only when the left
+// operand selects it.
+//
+// `b` is the bypass pin: its left operand is false, so the operation must not
+// run at all. If it did, the resumed value would select 7 instead of 8.
+// `order` pins that nothing moved across the suspension.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut order = 0
+    order = order * 10 + 1
+    let a = if order == 1 && perform Ask::Get(1) > 0 {
+      5
+    } else {
+      6
+    }
+    order = order * 10 + 2
+    let b = if order == 999 && perform Ask::Get(1) > 0 {
+      7
+    } else {
+      8
+    }
+    order = order * 10 + 3
+    a * 100 + b * 10 + order
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n)
+    }
+  }
+}
+
+test "effect compound shortcircuit suspend" {
+  inspect(_start(), "703")
+}
