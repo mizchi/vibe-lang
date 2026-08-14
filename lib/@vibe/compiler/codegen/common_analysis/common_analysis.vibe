@@ -1354,8 +1354,31 @@ export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
         }
       }
     },
-    EBreak(_) => false,
-    EContinue(_) => false,
+    // #1262 (Codex review, PR #1685, P2): these carried sub-expressions and
+    // returned `false` anyway, so a closure in a `break` PAYLOAD
+    // (`break(() -> Int { x })`) or a `continue` argument captured a `let mut`
+    // that was never boxed -- the closure then snapshots the value instead of
+    // sharing the cell, which is a silently wrong read, not a crash. Same
+    // class and same fix as the #629 step 2 arms below. Recursing is always
+    // sound here (over-detection only boxes more), and it also restores the
+    // contract `vibe escapes --strict` advertises: the strict lane's output is
+    // a SUBSET of this one's. Found because the strict predicate reported a
+    // break-payload capture this one did not.
+    EBreak(opt) => match opt {
+      Some(inner) => is_mut_captured_in(inner, name),
+      None => false
+    },
+    EContinue(args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if is_mut_captured_in(Array::get(args, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
     EReturn(msg) => is_mut_captured_in(msg, name),
     // #629 step 2: forms that carry sub-expressions which may hold a capturing
     // closure. Previously these fell through to `_ => false`, so a mut captured

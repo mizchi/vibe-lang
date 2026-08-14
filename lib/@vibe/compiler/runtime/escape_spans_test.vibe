@@ -158,3 +158,34 @@ test "escape_spans_strict: a mut used only as a call callee still escapes" {
   let src = "let f = () -> Int {\n  let mut h = () -> Int { 1 }\n  let g = () -> Int { h() }\n  g()\n}"
   assert_eq(esc_strict_count(src), 1)
 }
+
+test "escape_spans_strict: a LABELED closure param shadowing the name is not a capture" {
+  // Codex review (PR #1685, P2): labeled (`x~`) and optional (`x?`) parameters
+  // keep their marker in `Expr`, but the checker binds the BASE name -- so a
+  // raw-name comparison misses the shadow and reports the OUTER binding. The
+  // lowering lane still reports it (raw comparison there only over-boxes).
+  let src = "let f = () -> Int {\n  let mut x = 0\n  let g = (x~: Int) -> Int {\n    let h = () -> Int { x }\n    h()\n  }\n  g(x~ = 1)\n}"
+  assert_eq(esc_strict_count(src), 0)
+}
+
+test "escape_spans_strict: an OPTIONAL closure param shadowing the name is not a capture" {
+  let src = "let f = () -> Int {\n  let mut x = 0\n  let g = (x?: Int) -> Int {\n    let h = () -> Int { x }\n    h()\n  }\n  g()\n}"
+  assert_eq(esc_strict_count(src), 0)
+}
+
+test "escape_spans: a mut captured by a closure in a `break` PAYLOAD escapes" {
+  // Codex review (PR #1685, P2): `is_mut_captured_in` returned false for every
+  // `EBreak`/`EContinue` despite their carrying sub-expressions, so this
+  // closure captured an UNBOXED cell -- it snapshots the value instead of
+  // sharing it, which reads wrong rather than crashing. Both lanes must see
+  // it; that is also what makes the strict lane's output a subset of this one.
+  let src = "let f = () -> Int {\n  let mut x = 1\n  let g = loop {\n    break(() -> Int { x })\n  }\n  x = 42\n  g()\n}"
+  assert_eq(esc_count(src), 1)
+  assert_eq(esc_strict_count(src), 1)
+}
+
+test "escape_spans: a mut captured by a closure in a `continue` argument escapes" {
+  let src = "let f = () -> Int {\n  let mut x = 1\n  let r = loop (acc = 0) {\n    if acc > 2 {\n      break(acc)\n    } else {\n      continue(acc + (() -> Int { x })())\n    }\n  }\n  r\n}"
+  assert_eq(esc_count(src), 1)
+  assert_eq(esc_strict_count(src), 1)
+}

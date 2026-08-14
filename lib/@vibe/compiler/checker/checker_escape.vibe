@@ -72,13 +72,34 @@ fn esc_pat_list_binds(pats: Array[Pat], name: String) -> Bool {
   found
 }
 
-/// True when any of a closure's formal parameters is `name`.
+/// A labeled (`x~`) or optional (`x?`) parameter is spelled with its marker in
+/// `Expr`, but the checker binds the BASE name, so the raw spelling is not what
+/// shadows an outer binding. Same stripping `check_expr`'s own `EFn` arm does
+/// (`param_base_name`, checker.vibe) -- comparing raw names here would make
+/// `let mut x = 0; let f = (x~: Int) -> Int { let g = () -> Int { x }; g() }`
+/// report the OUTER `x` as escaping, which is exactly the false positive the
+/// strict lane exists to avoid.
+fn esc_param_base_name(raw: String) -> String {
+  let len = String::length(raw)
+  if len > 0 {
+    let last = String::char_code_at(raw, len - 1)
+    if last == '~' || last == '?' {
+      raw[0: len - 1]
+    } else {
+      raw
+    }
+  } else {
+    raw
+  }
+}
+
+/// True when any of a closure's formal parameters binds `name`.
 fn esc_params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(params) {
     let (pname, _) = Array::get(params, i)
-    if pname == name {
+    if esc_param_base_name(pname) == name {
       found = true
     } else {
       ()
