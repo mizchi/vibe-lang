@@ -52,13 +52,22 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
                                // #1392: 補間の値に `T::to_string`
                                // (derive(Show)/derive(Hash) 生成物、または
-                               // 手書き) があればそれを呼ぶ。`Option`/`Result`/
-                               // タプル/配列は変数・generic 経由でも構造的に
-                               // 展開される (`"\{Some(p)}"` -> `Some(P { .. })`,
-                               // `"\{xs}"` -> `[1, 2]`)。描画できない型
-                               // (to_string の無い集約型) は check 時に
+                               // 手書き) があればそれを呼ぶ。struct/enum/
+                               // `Option`/`Result` は関数戻り値経由でも構造
+                               // 描画される。タプル/配列はリテラル直接・
+                               // リテラル束縛の変数経由なら構造的に展開される
+                               // (`"\{Some(p)}"` -> `Some(P { .. })`,
+                               // `"\{xs}"` -> `[1, 2]`) が、**関数戻り値
+                               // 経由は黙って生ポインタの10進値になる**
+                               // (#1766: `"\{f()}"`・`let b = f()` の束縛・
+                               // `Some(f())` の内側・generic 引数、いずれも。
+                               // 戻り値型注釈があっても変わらない)。
+                               // 描画できない型 (to_string の無い集約型) は
+                               // check 時に
                                // `cannot interpolate a value of type ...` で
-                               // 落ちる (#1445)。ただし effect handler の
+                               // 落ちる (#1445) が、上の経路は Array/tuple に
+                               // renderer 自体はあるためすり抜ける。
+                               // ただし effect handler の
                                // pattern binder (`Throw(err) => "\{err}"`) は
                                // binder の型を補間 rewrite が回収できず、まだ
                                // 生ポインタの10進値になる。variant を match して
