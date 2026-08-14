@@ -166,13 +166,11 @@ contract — this is a naming *rule*, not a per-type coincidence:
 `let m = HashMap::new_string()` は `MutMap` に推論され、`vibe check` が
 移行先を名指しする警告を1行出す (非致命、exit 0)。
 
-> **旧綴りの型注釈は動かない。** `let m: HashMap[String, Int] = ...` は
-> エラーになる。`type HashMap[K, V] = MutMap[K, V]` という別名を置いても
-> **モジュール境界を越えると展開されない** (contract 側に書いても実装側から
-> export しても同じで、別名は merge 後のソースには現れるのに checker は
-> `HashMap[Int]` と `MutMap[Int]` を別の型として扱う)。守れない約束を
-> 置くより、破れる場所を1つに絞って明示するほうを採った ——
-> 注釈は `Mut-` 名に書き換えること (穴そのものは #1700)。
+旧綴りの**型注釈**も transparent alias として残る (#1700)。たとえば
+`let m: HashMap[String, Int] = HashMap::new_string()` は `@vibe/core` の
+`index.vpkg` 境界を越えて `MutMap[String, Int]` と同じ型になる。移行先は
+引き続き `Mut-` 名で、旧関数を使えば `vibe check` が警告する。型名だけを
+旧綴りにした場合は警告されないので、新規コードでは `Mut-` を直接書く。
 
 旧綴りの**関数**を使うと `vibe check` が移行先を名指しする `warning:` 行を
 出す (非致命、exit 0)。**これは #1262 follow-up で初めて実際に効くようになった**

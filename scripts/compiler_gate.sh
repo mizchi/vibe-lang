@@ -11086,7 +11086,7 @@ echo "[compiler-gate] escape predicate two-lane split ok (#1262)"
 #      reach the SAME registry row and the SAME codegen dispatch as the legacy
 #      one in BOTH backends: a source-level alias that only the checker knows
 #      about would typecheck and then miscompile.
-echo "[compiler-gate] 102/103 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
+echo "[compiler-gate] 102/104 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
 sbdir="_build/_gate_sb_build"
 rm -rf "$sbdir"; mkdir -p "$sbdir"
 cat > "$sbdir/build.vibe" <<'SBB'
@@ -11138,7 +11138,7 @@ echo "[compiler-gate] StringBuilder::build terminal-verb alias ok (#1262)"
 #      used that same resolver, so a `#deprecated` alias published by a PACKAGE
 #      (every alias the ADR-0100 (3) collection rename shipped) was invisible
 #      and the migration warning the rename PROMISED never appeared.
-echo "[compiler-gate] 103/103 vibe check resolves @scope/pkg imports, and package deprecations warn (#1262)"
+echo "[compiler-gate] 103/104 vibe check resolves @scope/pkg imports, and package deprecations warn (#1262)"
 chkpkgdir="_build/_gate_check_scoped_pkg"
 rm -rf "$chkpkgdir"; mkdir -p "$chkpkgdir"
 cat > "$chkpkgdir/entry.vibe" <<'CHKPKG'
@@ -11196,5 +11196,34 @@ if grep -q '^warning: ' "$chkpkgdir/clean.out" 2>/dev/null; then
 fi
 rm -rf "$chkpkgdir"
 echo "[compiler-gate] scoped-package check + package deprecation warnings ok (#1262)"
+
+# 104. #1700: a generic transparent alias published by index.vpkg must keep
+#      its formal parameters and target through the importer TypeEnv
+#      projection. The committed seed predates that transport and diagnoses
+#      `Box[Int]` vs `Cell[Int]`; the fresh stage2 must accept it. The opaque
+#      control proves this is alias transparency, not a weakening that makes
+#      every applied package type interchangeable.
+echo "[compiler-gate] 104/104 generic aliases cross index.vpkg transparently (#1700)"
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/generic_alias_vpkg_test.vibe \
+  fixtures/immutmap_alias_test.vibe \
+  lib/@vibe/core/collection_alias_test.vibe >/dev/null; then
+  echo "[compiler-gate] FAIL: a generic transparent alias did not cross an index.vpkg boundary (#1700)" >&2
+  exit 1
+fi
+aliasdir="_build/_gate_generic_alias_vpkg"
+rm -rf "$aliasdir"; mkdir -p "$aliasdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/generic_opaque_vpkg_mismatch.vibe "$aliasdir/opaque.wasm" __no_entry__ \
+  >/dev/null 2>&1 || true
+if [ -s "$aliasdir/opaque.wasm" ] \
+  || ! grep -qF "expected Token[Int], got Seal[Int]" "$aliasdir/opaque.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: distinct opaque generic contract types stopped being nominal (#1700 control)" >&2
+  cat "$aliasdir/opaque.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$aliasdir"
+echo "[compiler-gate] generic transparent alias + opaque control ok (#1700)"
 
 echo "[compiler-gate] ok"
