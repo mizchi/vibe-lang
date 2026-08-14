@@ -204,6 +204,22 @@ import ./backend_match.vibe {
 
 //# Functions
 
+fn is_frozen_array_conversion_name(name: String) -> Bool {
+  name == "FrozenArray::from_array" || name == "FrozenArray::to_array"
+}
+
+/// See the linear twin: generated builtins precede `func_offset`, so expose a
+/// first-class conversion as a tiny ordinary lambda with a valid table slot.
+fn frozen_array_conversion_closure(name: String) -> Expr {
+  let param = "__frozen_array_value"
+  let params: Array[(String, Option[TypeExpr])] = [
+    (param, None)
+  ]
+  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), [
+    EIdent(param, -1)
+  ], -1))
+}
+
 /// #538 P4.5: shape-based "definitely scalar" test for `==`/`!=` operands,
 /// mirroring the linear lane's expr_is_intish literal/operator cases (the gc
 /// lane has no checker types or local-type tracking, so only shapes count).
@@ -1042,6 +1058,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           emit_local_get(buf, local_idx)
         }
         next_local
+      } else if is_frozen_array_conversion_name(name) {
+        ce(buf, frozen_array_conversion_closure(name), local_names, next_local, ld)
       } else {
         let ctor_idx = ctor_table_index_of(ctx.gc_ctor_table, name)
         if ctor_idx >= 0 {

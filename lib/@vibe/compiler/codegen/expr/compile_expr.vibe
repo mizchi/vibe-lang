@@ -238,6 +238,24 @@ import ./compile_match.vibe {
 
 //# Functions
 
+fn is_frozen_array_conversion_name(name: String) -> Bool {
+  name == "FrozenArray::from_array" || name == "FrozenArray::to_array"
+}
+
+/// Builtin indices live before `func_offset`, while ordinary closure table
+/// slots are relative to it. Materialize these two first-class builtins as a
+/// one-argument lambda so their value form uses the same direct runtime body
+/// as a source call instead of encoding a negative table slot (#1733).
+fn frozen_array_conversion_closure(name: String) -> Expr {
+  let param = "__frozen_array_value"
+  let params: Array[(String, Option[TypeExpr])] = [
+    (param, None)
+  ]
+  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), [
+    EIdent(param, -1)
+  ], -1))
+}
+
 /// #672: emit structural equality for two tuples (non-rc layout: element i at
 /// ptr+i*8, value = raw pointer). The arity comes from whichever operand is a
 /// tuple literal (the checker guarantees same-arity tuples on both sides).
@@ -821,6 +839,8 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_local_get(buf, local_idx)
       }
       next_local
+    } else if is_frozen_array_conversion_name(name) {
+      compile_expr(buf, frozen_array_conversion_closure(name), local_names, next_local, ctx, ld)
     } else {
       let mut __ci_idx = -1
       let __ci_len = Array::length(ctx.const_int_names)

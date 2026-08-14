@@ -87,9 +87,12 @@ compiler dogfood into a serialization benchmark. Mutable `Array`, `Bytes`,
 handler evidence, and continuation values remain non-`Send`.
 
 **Status (#906):** `FrozenArray[T]` is implemented as a checker-only
-phantom-type distinction over `Array[T]`'s exact same runtime layout — the
-same technique `ArrayBuilder[T]` already uses (`ArrayBuilder::freeze` is a
-pure identity cast; so are `FrozenArray::from_array`/`FrozenArray::to_array`).
+phantom-type distinction over `Array[T]`'s exact same runtime layout.
+`FrozenArray::from_array` and `FrozenArray::to_array` both copy at the
+conversion boundary: otherwise a retained mutable `Array` handle on either
+side could change the supposedly frozen value after it became `Send`
+(#1733). `ArrayBuilder::freeze` remains a pure identity cast, so ordinary
+build-then-freeze paths do not pay this O(n) cost.
 Surface: `FrozenArray::from_array`, `FrozenArray::get`, `FrozenArray::length`,
 `FrozenArray::to_array` — no mutation methods, deliberately. `Send`'s
 structural judgment (`send_ok_rec`, checker/checker_trait.vibe) treats

@@ -1,0 +1,174 @@
+//# ADR-0097: aggregate equality must not depend on spelling or value path.
+
+struct Point {
+  x: Int
+} derive (Eq)
+
+enum Boxed {
+  BoxedPoint(Point)
+} derive (Eq)
+
+fn make_array() -> Array[Int] {
+  [
+    1,
+    2
+  ]
+}
+
+fn make_other_array() -> Array[Int] {
+  [
+    1,
+    3
+  ]
+}
+
+fn make_tuple_array() -> (Array[Int], Int) {
+  ([
+    1,
+    2
+  ], 3)
+}
+
+fn same_nested(left: Array[Array[Int]], right: Array[Array[Int]],) -> Bool {
+  left == right
+}
+
+fn same_float(left: Array[Float], right: Array[Float]) -> Bool {
+  left == right
+}
+
+fn generic_same[T: Eq](left: T, right: T) -> Bool {
+  left == right
+}
+
+test "function-returned arrays compare structurally" {
+  assert(make_array() == make_array())
+  assert(make_array() != make_other_array())
+}
+
+test "tuple-returned arrays compare structurally" {
+  assert(make_tuple_array() == make_tuple_array())
+}
+
+test "empty array bindings compare structurally" {
+  let left = [
+  ]
+  let right = [
+  ]
+  assert(left == right)
+  assert(left != [
+    1
+  ])
+}
+
+test "Option variables with array payload compare structurally" {
+  let left = Some([
+    1,
+    2
+  ])
+  let right = Some([
+    1,
+    2
+  ])
+  assert(left == right)
+  assert(left != Some([
+    1,
+    3
+  ]))
+  let from_call_left = Some(make_array())
+  let from_call_right = Some(make_array())
+  assert(from_call_left == from_call_right)
+}
+
+test "annotated nested-array parameters compare structurally" {
+  assert(same_nested([
+    [
+      1,
+      2
+    ]
+  ], [
+    [
+      1,
+      2
+    ]
+  ]))
+  assert(not(same_nested([
+    [
+      1,
+      2
+    ]
+  ], [
+    [
+      1,
+      3
+    ]
+  ])))
+}
+
+test "Array Float parameters compare structurally" {
+  assert(same_float([
+    1.5,
+    2.5
+  ], [
+    1.5,
+    2.5
+  ]))
+  assert(not(same_float([
+    1.5,
+    2.5
+  ], [
+    1.5,
+    3.5
+  ])))
+}
+
+test "existing structural controls stay structural" {
+  assert(Point::{
+    x: 1
+  } == Point::{
+    x: 1
+  })
+  assert(BoxedPoint(Point::{
+    x: 1
+  }) == BoxedPoint(Point::{
+    x: 1
+  }))
+  assert(generic_same(1, 1))
+  assert([
+    [
+      1,
+      2
+    ]
+  ] == [
+    [
+      1,
+      2
+    ]
+  ])
+}
+
+test "inner scalar shadow masks an outer aggregate equality shape" {
+  let value = [
+    [
+      1
+    ]
+  ]
+  assert(value == [
+    [
+      1
+    ]
+  ])
+  let value = 1
+  assert(value == 1)
+  assert(value != 2)
+}
+
+test "local closure return annotation directs array equality" {
+  let make = () -> Array[Int] {
+    [
+      1,
+      2
+    ]
+  }
+  assert(make() == make())
+}

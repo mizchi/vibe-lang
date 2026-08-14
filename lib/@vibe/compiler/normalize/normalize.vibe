@@ -696,9 +696,10 @@ fn uq_seen_contains(seen: Array[String], name: String) -> Bool {
 /// name is detected against this occurrence.
 fn uq_bind_name(name: String, env: Map[String, String], counter: Array[Int], seen: Array[String]) -> (String, Map[String, String]) {
   // A labeled/optional param (`a~`/`a?`) is declared with its suffix but its
-  // body references use the STRIPPED name, so this env (keyed by the declared
-  // name) never rewrites those references anyway -- renaming the declaration
-  // alone would orphan them. Leave such params untouched (status quo).
+  // body references use the STRIPPED name. Keep the declaration spelling, but
+  // register that base name as occupied. Otherwise an inner heap-valued
+  // `let a` is not alpha-renamed, and name-keyed RC epilogue bookkeeping can
+  // mistake the local's retained drop for the borrowed parameter's drop.
   let nlen = String::length(name)
   let lastc = if nlen > 0 {
     String::char_code_at(name, nlen - 1)
@@ -706,7 +707,13 @@ fn uq_bind_name(name: String, env: Map[String, String], counter: Array[Int], see
     0
   }
   if lastc == '~' || lastc == '?' {
-    (name, env)
+    let base = name[0: nlen - 1]
+    if !uq_seen_contains(seen, base) {
+      Array::push(seen, base)
+    } else {
+      ()
+    }
+    (name, Map::set(env, base, base))
   } else if Map::has_key(env, name) || uq_seen_contains(seen, name) {
     let fresh = fresh_shadow_name(counter, name)
     (fresh, Map::set(env, name, fresh))
