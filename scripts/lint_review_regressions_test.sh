@@ -62,10 +62,11 @@ git -C "$TMP_ROOT" add .
 
 cat > "$TMP_ROOT/fake-vibe" <<EOF
 #!/usr/bin/env bash
+root="\${@: -1}"
 if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* ]]; then
   echo '[]'
 else
-  jq -n --arg path "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" \
+  jq -n --arg path "\$root/lib/@vibe/compiler/normalize/pass.vibe" \
     '[{path:\$path,line:3,col:1,start:1,end:2,text:"ELet(\\"__multiline_tmp\\", e, e, -1)",captures:{ctor:{text:"ELet",start:1},name:{text:"\\"__multiline_tmp\\"",start:2},rest:{text:"e, e, -1",start:3}}}]'
 fi
 EOF
@@ -98,8 +99,9 @@ git -C "$TMP_ROOT" add .
 
 cat > "$TMP_ROOT/fake-vibe-assign-op" <<EOF
 #!/usr/bin/env bash
+root="\${@: -1}"
 if [[ "\$*" == *'EAssignOp('* ]]; then
-  jq -n --arg path "$TMP_ROOT/lib/@vibe/compiler/runtime/grep.vibe" \
+  jq -n --arg path "\$root/lib/@vibe/compiler/runtime/grep.vibe" \
     '[{path:\$path,line:2,col:13,start:1,end:2,text:"EAssignOp(_, name, _, _)",captures:{target:{text:"_",start:1},operator:{text:"name",start:2},rest:{text:"_, _",start:3}}}]'
 else
   echo '[]'
@@ -130,8 +132,9 @@ git -C "$TMP_ROOT" add .
 
 cat > "$TMP_ROOT/fake-vibe-async-row" <<EOF
 #!/usr/bin/env bash
+root="\${@: -1}"
 if [[ "\$*" == *'String::contains('* ]]; then
-  jq -n --arg path "$TMP_ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess.vibe" \
+  jq -n --arg path "\$root/lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess.vibe" \
     '[{path:\$path,line:1,col:42,start:1,end:2,text:"String::contains(row, \\"Async\\")",captures:{row:{text:"row",start:1}}}]'
 else
   echo '[]'
@@ -150,5 +153,35 @@ if ! rg -q 'Async effect membership must be exact' "$TMP_ROOT/async-row-fail.out
   cat "$TMP_ROOT/async-row-fail.out" >&2
   exit 1
 fi
+
+# Editing a file that contains a historical violation must not reject the
+# commit unless the violating expression itself is newly added.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+cat > "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EOF'
+fn historical(e: Expr) -> Expr { ELet("__legacy_tmp", e, e, -1) }
+EOF
+git -C "$TMP_ROOT" add .
+git -C "$TMP_ROOT" commit -qm historical-violation
+cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EOF'
+fn unrelated(e: Expr) -> Expr { e }
+EOF
+git -C "$TMP_ROOT" add .
+
+cat > "$TMP_ROOT/fake-vibe-historical" <<EOF
+#!/usr/bin/env bash
+root="\${@: -1}"
+if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* ]]; then
+  echo '[]'
+else
+  jq -n --arg path "\$root/lib/@vibe/compiler/normalize/pass.vibe" \
+    '[{path:\$path,line:1,col:34,start:1,end:2,text:"ELet(\"__legacy_tmp\", e, e, -1)",captures:{ctor:{text:"ELet",start:1},name:{text:"\"__legacy_tmp\"",start:2},rest:{text:"e, e, -1",start:3}}}]'
+fi
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-historical"
+
+VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-historical" \
+  "$CHECK_SCRIPT" >/dev/null
 
 echo "review-regressions lint self-test: ok"

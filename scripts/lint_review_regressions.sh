@@ -39,6 +39,27 @@ violations=""
 if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/vibe_review_grep.XXXXXX")"
   trap 'rm -rf "$tmp_root"' EXIT
+  added_lines="$tmp_root/.added-lines.tsv"
+  printf '%s\n' "$diff" | awk '
+    BEGIN { print "#\t0" }
+    /^\+\+\+ / {
+      path = $2
+      sub(/^[^\/]*\//, "", path)
+      next
+    }
+    /^@@ / {
+      if (match($0, /\+[0-9]+/)) {
+        line = substr($0, RSTART + 1, RLENGTH - 1) + 0
+      }
+      next
+    }
+    /^\+/ && !/^\+\+\+/ {
+      printf "%s\t%d\n", path, line
+      line++
+      next
+    }
+    /^ / { line++ }
+  ' > "$added_lines"
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     mkdir -p "$tmp_root/$(dirname "$path")"
@@ -52,7 +73,25 @@ if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
   set -e
   if [ "$ast_status" -eq 0 ]; then
     violations=""
+  elif [ "$ast_status" -eq 1 ]; then
+    # `vibe grep` sees the complete staged file so it can match multiline AST
+    # shapes, but only a finding whose start line was added by this commit is a
+    # regression. Historical findings elsewhere in an edited file are ignored.
+    violations="$(awk -v prefix="$tmp_root/" -F '\t' '
+      NR == FNR { added[$1 SUBSEP $2] = 1; next }
+      index($0, prefix) == 1 {
+        diagnostic = substr($0, length(prefix) + 1)
+        path = diagnostic
+        sub(/:.*/, "", path)
+        rest = substr(diagnostic, length(path) + 2)
+        line = rest
+        sub(/:.*/, "", line)
+        if (added[path SUBSEP line]) print diagnostic
+      }
+    ' "$added_lines" - <<< "$ast_output")"
   else
+    # Preserve backend/bootstrap errors instead of accidentally treating them
+    # as filtered historical findings.
     violations="$ast_output"
   fi
 else
