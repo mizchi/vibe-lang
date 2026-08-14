@@ -4,12 +4,14 @@ import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
+  Type,
   TypeExpr,
   dce_keep_flags,
   expr_children,
   is_exception_effect_name,
   is_exception_throw_handler_name,
-  is_exception_throw_operation
+  is_exception_throw_operation,
+  lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -294,6 +296,15 @@ fn idp_pure_builtin_names() -> Array[String] {
     "Array::length",
     "Map::size",
     "Bytes::length",
+    // #1536: the same audit criterion, found the same way. `Array::concat`
+    // allocates a fresh array from two existing ones -- it can neither perform
+    // a user effect nor invoke a function-typed argument (registry row
+    // `(Array[_], Array[_]) -> Array[_]`, effect None). Its sibling
+    // `Array::slice` was already admitted via scps_is_safe_mut_builtin and
+    // `String::concat` via this list, so the gap was this one name: a
+    // `for x in Array::concat(a, b)` in a suspend-class handle body was refused
+    // naming the concat, not the loop.
+    "Array::concat",
     // ADR-0076 追記34 V2: string interpolation desugars every `\{...}`
     // segment to a `__to_string(...)` call (preprocess_interp_string_
     // collect.vibe) BEFORE the checker runs, so any needing function
@@ -10875,6 +10886,55 @@ fn scps_call_ret_ty(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Ar
   }
 }
 
+/// #1536: the same question for a BUILTIN callee. `for x in Array::concat(a, b)`
+/// proves nothing through `scps_fn_ret_ty` -- a builtin has no top-level `fn` to
+/// read a return type off -- but the registry has carried its signature all
+/// along, so consult it rather than refuse.
+///
+/// Answers "array" / "string" / "" (unproved). Only the two kinds this walk can
+/// lower are mapped; everything else stays unproved, as does a builtin the
+/// registry does not expose to user code.
+fn scps_builtin_ret_kind(name: String) -> String {
+  match lookup_registry_builtin(name) {
+    Some(t) => match t {
+      CtFn(_, ret, _) => match ret {
+        CtArray(_) => "array",
+        CtString => "string",
+        _ => ""
+      },
+      _ => ""
+    },
+    None => ""
+  }
+}
+
+/// The iterand kind a CALL proves: "array", "string", or "" (unproved).
+///
+/// A top-level `fn`'s declared return type first, then the builtin registry.
+/// Both go through the same scope-blind shadowing guard (#1714) -- a `::`
+/// qualified builtin can never be shadowed by a local binder, but an
+/// unqualified one can, so the guard covers the lookup rather than the caller.
+fn scps_call_kind(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> String {
+  let declared = scps_call_ret_ty(v, ctx, root)
+  if scps_ty_is_array(declared) {
+    "array"
+  } else if scps_ty_is_string(declared) {
+    "string"
+  } else {
+    match v {
+      ECall(callee, _, _) => match callee {
+        EIdent(cn, _) => if scps_binds_name(root, cn) {
+          ""
+        } else {
+          scps_builtin_ret_kind(cn)
+        },
+        _ => ""
+      },
+      _ => ""
+    }
+  }
+}
+
 fn scps_string_names_seed(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   let out = array_empty_str()
   let mut i = 0
@@ -10904,7 +10964,7 @@ fn scps_string_names_with(known: Array[String], nm: String, v: Expr, ty: Option[
   }
   let proved = match v {
     EString(_) => true,
-    _ => scps_ty_is_string(ty) || scps_ty_is_string(scps_call_ret_ty(v, ctx, root))
+    _ => scps_ty_is_string(ty) || scps_call_kind(v, ctx, root) == "string"
   }
   if proved {
     Array::push(out, nm)
@@ -10964,7 +11024,7 @@ fn scps_array_names_with(known: Array[String], nm: String, v: Expr, ty: Option[T
   }
   let proved = match v {
     EArray(_) => true,
-    _ => scps_ty_is_array(ty) || scps_ty_is_array(scps_call_ret_ty(v, ctx, root))
+    _ => scps_ty_is_array(ty) || scps_call_kind(v, ctx, root) == "array"
   }
   if proved {
     Array::push(out, nm)
@@ -11046,7 +11106,7 @@ fn scps_elim_for_walk(e: Expr, known: Array[String], kstr: Array[String], site: 
         // #1536: a CALL iterand is proved by the callee's declared return type.
         // The value is bound once before the loop, exactly as `for` evaluates
         // its iterand once -- the name-based cases already have a name to reuse.
-        let callret = scps_call_ret_ty(it, ctx, root)
+        let callkind = scps_call_kind(it, ctx, root)
         // #1536: a LITERAL iterand proves itself. `for x in [1, 2, 3]` and
         // `for c in "abc"` carry their kind in the syntax, so they need no
         // annotation and no callee lookup.
@@ -11058,8 +11118,8 @@ fn scps_elim_for_walk(e: Expr, known: Array[String], kstr: Array[String], site: 
           EString(_) => true,
           _ => false
         }
-        let call_is_arr = scps_ty_is_array(callret) || lit_is_arr
-        let call_is_str = scps_ty_is_string(callret) || lit_is_str
+        let call_is_arr = callkind == "array" || lit_is_arr
+        let call_is_str = callkind == "string" || lit_is_str
         if indexed {
           ESeq(a, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root))
         } else if arr == "" && sname == "" && !call_is_arr && !call_is_str {

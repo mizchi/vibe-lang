@@ -6995,6 +6995,12 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # so it fails if either lowering picks the other kind's indexing.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_for_proved_iterand_suspend_test.vibe
+# #1536: and a BUILTIN callee proves it via the registry row, which is where a
+# builtin's signature has lived all along. `Array::concat` also joins the
+# hand-audited pure-builtin list -- without it the body was refused naming the
+# concat, not the loop.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_for_builtin_iterand_suspend_test.vibe
 # #1714 P0: the callee-return proof reads the module's TOP-LEVEL statements, so
 # a local binding spelling the same name made it answer about the wrong
 # function -- lowering a String iterand to the indexed ARRAY form, which
@@ -10398,7 +10404,7 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
-echo "[compiler-gate] 98/102 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+echo "[compiler-gate] 98/103 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through
@@ -10487,7 +10493,7 @@ echo "[compiler-gate] vibe grep typed filters ok"
 #     found by review rather than by a gate (the second twice: expression
 #     binders in #1622, PATTERN binders after that), which is what this step is
 #     for. Each case below fails DIFFERENTLY if the guard regresses.
-echo "[compiler-gate] 99/102 the inspect rewrite neither captures nor hijacks (#1571)"
+echo "[compiler-gate] 99/103 the inspect rewrite neither captures nor hijacks (#1571)"
 inspdir="_build/_gate_inspect_guard"
 rm -rf "$inspdir"; mkdir -p "$inspdir"
 
@@ -10605,7 +10611,7 @@ echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
 #      rest made `check` a strictly worse answer to the same question -- three
 #      broken statements cost three edit-and-rerun cycles. This pins the two
 #      surfaces together so they cannot drift apart again.
-echo "[compiler-gate] 100/102 check and diagnostics report the SAME parse errors (#1567)"
+echo "[compiler-gate] 100/103 check and diagnostics report the SAME parse errors (#1567)"
 chkdir="_build/_gate_check_diag_parity"
 rm -rf "$chkdir"; mkdir -p "$chkdir"
 # Three top-level statements, two independently broken, one good between them.
@@ -10736,7 +10742,7 @@ echo "[compiler-gate] vibe deps import-closure ok (#988)"
 #      predicates that disagree by accident, so this pins WHERE they differ:
 #      only on binder shadowing, and only in the one direction (strict's
 #      output is a subset of the default's).
-echo "[compiler-gate] 101/102 the two escape predicates differ only on shadowing (#1262)"
+echo "[compiler-gate] 101/103 the two escape predicates differ only on shadowing (#1262)"
 escdir="_build/_gate_escapes"
 rm -rf "$escdir"; mkdir -p "$escdir"
 
@@ -10818,7 +10824,7 @@ echo "[compiler-gate] escape predicate two-lane split ok (#1262)"
 #      reach the SAME registry row and the SAME codegen dispatch as the legacy
 #      one in BOTH backends: a source-level alias that only the checker knows
 #      about would typecheck and then miscompile.
-echo "[compiler-gate] 102/102 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
+echo "[compiler-gate] 102/103 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
 sbdir="_build/_gate_sb_build"
 rm -rf "$sbdir"; mkdir -p "$sbdir"
 cat > "$sbdir/build.vibe" <<'SBB'
@@ -10858,5 +10864,75 @@ if ! cmp -s "$sbdir/build.wasm" "$sbdir/freeze.wasm"; then
 fi
 rm -rf "$sbdir"
 echo "[compiler-gate] StringBuilder::build terminal-verb alias ok (#1262)"
+
+# 103. #1262 follow-up: `vibe check` must answer for a file that imports a
+#      `@scope/pkg` package. It could not -- `check_linked_file` ran a SECOND
+#      import resolution (`resolve_import_path`, a plain path join) alongside
+#      the loader's real one, so `import @vibe/core { ... }` was read as the
+#      filename `@vibe/core.vibe` and the check ABORTED. The same file
+#      compiles, which is the exact shape CLAUDE.md calls a diagnostic hole:
+#      the verb that is supposed to answer "does this compile?" could not.
+#      The second consequence was quieter and worse -- `check_deprecated_warnings`
+#      used that same resolver, so a `#deprecated` alias published by a PACKAGE
+#      (every alias the ADR-0100 (3) collection rename shipped) was invisible
+#      and the migration warning the rename PROMISED never appeared.
+echo "[compiler-gate] 103/103 vibe check resolves @scope/pkg imports, and package deprecations warn (#1262)"
+chkpkgdir="_build/_gate_check_scoped_pkg"
+rm -rf "$chkpkgdir"; mkdir -p "$chkpkgdir"
+cat > "$chkpkgdir/entry.vibe" <<'CHKPKG'
+import @vibe/core {
+  MutMap, MutMap::size, HashMap::new_string
+}
+
+fn main() -> Int {
+  let m: MutMap[String, Int] = HashMap::new_string()
+  MutMap::size(m)
+}
+CHKPKG
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$chkpkgdir/entry.vibe" "$chkpkgdir/check.out" main >/dev/null 2>&1
+chk_rc=$?
+# (a) it must SUCCEED. A crash here used to produce exit 1 with an empty
+# output AND an empty .diag -- indistinguishable from a diagnostic-free
+# failure, which is the one thing this surface must never be.
+if [ "$chk_rc" != "0" ]; then
+  echo "[compiler-gate] FAIL: vibe check exited $chk_rc on a file importing @vibe/core -- the second import resolver is back (#1262)" >&2
+  cat "$chkpkgdir/check.out" "$chkpkgdir/check.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -q '^ok$' "$chkpkgdir/check.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe check on a @scope/pkg importer did not report clean (#1262)" >&2
+  cat "$chkpkgdir/check.out" "$chkpkgdir/check.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# (b) the deprecated alias must NAME its replacement. This is the half that
+# was silently false: the scanner worked, but the package's marker never
+# reached it, so the rename's documented migration path did not exist.
+if ! grep -qF "'HashMap::new_string' is deprecated: use MutMap::new_string" "$chkpkgdir/check.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a #deprecated alias published by a PACKAGE did not warn -- ADR-0100 (3)'s staged migration depends on this (#1262)" >&2
+  cat "$chkpkgdir/check.out" >&2
+  exit 1
+fi
+# (c) warnings are NON-FATAL. The migration must not break builds, so the
+# exit code above (0) and this line together are the contract.
+if ! grep -q '^warning: ' "$chkpkgdir/check.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the deprecation line is not spelled as a warning (#1262)" >&2
+  exit 1
+fi
+# (d) the control: the NEW spelling is silent. Without this, a check that
+# warned unconditionally would pass every assertion above.
+sed 's/, HashMap::new_string//; s/HashMap::new_string()/MutMap::new_string()/' \
+  "$chkpkgdir/entry.vibe" > "$chkpkgdir/clean.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$chkpkgdir/clean.vibe" "$chkpkgdir/clean.out" main >/dev/null 2>&1 || true
+if grep -q '^warning: ' "$chkpkgdir/clean.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the Mut- spelling warned -- the deprecation scan is not name-selective (#1262)" >&2
+  cat "$chkpkgdir/clean.out" >&2
+  exit 1
+fi
+rm -rf "$chkpkgdir"
+echo "[compiler-gate] scoped-package check + package deprecation warnings ok (#1262)"
 
 echo "[compiler-gate] ok"
