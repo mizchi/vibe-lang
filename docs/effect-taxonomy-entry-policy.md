@@ -8,11 +8,12 @@ Related: #1218, ADR-0071(effectset), ADR-0075(`.vibex` runtime contract),
 ADR-0073(checked `Error`), ADR-0068(concurrency)。背景と選択肢は
 [effect-taxonomy-review.md](effect-taxonomy-review.md) を参照。
 
-> **Prospective model boundary (#1496):** This proposed ADR and the formal
-> `formal/VibeFormal/Effect/Taxonomy*.lean` model describe a future semantic
-> admission model. They are not the current compiler registry. Today,
-> `core/standard_effect_policy.vibe` stores only standard host-provider and
-> entry-execution policy metadata; it does not classify ordinary source effects.
+> **Implementation boundary (#1496, #1683):** The full resource-qualified
+> taxonomy in the formal model remains prospective. The current compiler uses
+> the narrower `core/standard_effect_policy.vibe` registry as an executable
+> entry-admission boundary: a row label is admitted when a standard host
+> provider or the entry/runtime policy owns it; every other source effect must
+> be handled before `main` / `_start`.
 
 ## Context
 
@@ -79,9 +80,12 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
   どおり利用できる。entry 直前に discharge すればよい。
 - `Error` の既存の entry-boundary 処理は維持する。改名を先に行わないため、
   既存ソースの一括変更や bootstrap bump は不要である。
-- `Fs` / `Env` / `Process` / `Stdout` / `HttpServer` の resource-kind
-  retrofit が完了するまでは、この entry row 検査を有効化しない。現在の
-  string-label checker だけでは分類を表現できないためである。
+- 現在の entry row 検査は standard policy registry に載る既存 provider と
+  entry/runtime owner を許可し、その他を fail-closed にする (#1683)。明示
+  resource kind と metadata-driven classification は後続 phase のままである。
+  同名 effect の user operation は provider authority を得ない。一方、linked
+  module に同名 effect があっても registry-owned operation の authority は失わない。
+  row variable を含む open row も entry contract として reject する。
 
 ## Non-goals
 
@@ -100,8 +104,10 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
    通ることを確認する。
 2. 明示 resource kind を持つ capability と、resource kind を持たない
    algebraic effect を checker が区別できるようにする。
-3. `.vibex` の `main` に残る row を分類し、algebraic effect を残した最小
-   fixture を reject、capability/core ambient の fixture を accept する。
+3. `.vibex` の `main` / `_start` に残る row を current standard policy で分類し、
+   user effect を reject、host provider / Exception / Async を accept する。
+   **#1683 で current-policy slice は実装済み**。resource-qualified taxonomy
+   への置換は Phase 1/2 の metadata 導入後に行う。
 4. その残余 row のみを WIT / `Entry.requires` / host preflight に渡す。
 
 ## Formal contract
@@ -184,14 +190,15 @@ Implementation sequence 1–4 と compiler fixture は引き続き必要であ�
 | 項目 | 根拠 / 観測 | 結論 |
 | --- | --- | --- |
 | 期待する契約 | ADR-0075 は `main` の closed/exact row と host preflight を要求する | entry row は host が解決可能でなければならない |
-| 実装観測 | `loader/loader.vibe` は `.vibex` の形と explicit row を検証するが、exact operation-row equality は後続 phase と明記している | 本 ADR は直ちに checker を変更しない |
+| 実装観測 | `checker_effects.vibe` は `main` / `_start` の row を `is_entry_admitted_effect` で検査する (#1683) | host/runtime owner のない user effect は WIT/codegen 前に reject する |
 | 実装観測 | `checker_effects.vibe` は effect を文字列ラベルで追跡し、`Error` / `Async` を特別扱いしている | effect class/resource kind metadata が先行条件である |
-| 回帰ガード候補 | `main with Logger` は reject、`main with Fs` と `main with Exception` は accept | Phase 3 の fixture と compiler gate に固定する |
+| 回帰ガード | `main with Ask` / `_start with Ask` は reject、`main with Fs + Exception + Async` は accept | checker test に固定済み (#1683) |
 | 形式モデル | taxonomy-level requirement、entry/host/spawn 判定、handler discharge を Lean で定義した | ADR の意味論は machine-checked。checker 対応は未証明 |
 | metadata classifier | exactly-one metadata lookup と argument shape から complete row を分類し、unknown/duplicate/malformed を fail-closed にした | 実装 metadata はこの contract に対応させる |
 | Oracle corpus | 正負15ケースを Lean から TSV に生成し、stale snapshot を `formal-check` で拒否する | contract の回帰ガードは自動化済み。selfhost differential は metadata API 待ち |
 | contract refinement | exact capability を operation/claim/binding に投影し、taxonomy admission から ADR-0075 preflight への含意を Lean で証明した | taxonomy check は WIT/host projection より前に必須 |
 | path-scope policy | restricted glob の overlap と共通 path の存在が同値で、diagnostic witness の健全性と authority 一意性を証明した | logical/physical の二段階で異権限の重複を exact に reject し、共通 path を報告する |
 
-Phase 3 では上記3 fixture を導入し、checker の許可述語と Lean contract の
-対応を回帰ガードにする。
+Phase 3 の current-policy slice は #1683 の checker test で固定した。完全な
+resource-qualified classifier と Lean contract の correspondence は引き続き
+metadata API 導入後の作業である。

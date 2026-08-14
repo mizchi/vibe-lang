@@ -1,0 +1,98 @@
+//# Entry-boundary effect admission (#1683)
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, parse_program, parse_program_located
+}
+
+import @vibe/compiler/runtime {
+  locate_type_error
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+fn first_located_check_error(source: String) -> String {
+  handle {
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let _ = check_program(parse_program_located(tokens, starts, source))
+    ""
+  } with Exception {
+    Throw(msg) => locate_type_error(source, msg)
+  }
+}
+
+test "#1683: a declared user effect cannot escape main" {
+  let source = "effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit with Ask::Get {\n  let x = perform Ask::Get()\n  println(\"\\{x}\")\n}\n"
+  let msg = first_located_check_error(source)
+  assert(String::contains(msg, "line 6:"))
+  assert(String::contains(msg, "entry point 'main' cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, "handle ... with Ask"))
+  assert(!String::contains(msg, "declare 'fn main"))
+}
+
+test "#1683: a missing user effect at main suggests handling, not widening" {
+  let source = "effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Int {\n  perform Ask::Get()\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "entry point 'main' cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, "handle ... with Ask"))
+  assert(!String::contains(msg, "with Ask::Get'"))
+}
+
+test "#1683: _start is also an entry boundary" {
+  let source = "effect Ask { Get() -> Int }\nfn _start() -> Int with Ask { perform Ask::Get() }\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "entry point '_start' cannot discharge { Ask }"))
+}
+
+test "#1683: an unresolved entry row is rejected fail-closed" {
+  let msg = first_check_error("fn main() -> Int with e { 0 }\n")
+  assert(String::contains(msg, "entry point 'main' has unresolved effect row { e }"))
+  assert(String::contains(msg, "entry rows must be concrete"))
+  assert(String::contains(msg, "close the entry row"))
+  assert(!String::contains(msg, "handle ... with e"))
+}
+
+test "#1683: a user effect named Fs is not admitted as the host provider at main" {
+  let source = "effect Fs {\n  Custom() -> Int\n}\n\nfn main() -> Int with Fs::Custom {\n  perform Fs::Custom()\n}\n"
+  let msg = first_located_check_error(source)
+  assert(String::contains(msg, "line 6:"))
+  assert(String::contains(msg, "entry point 'main' cannot discharge { Fs::Custom }"))
+  assert(String::contains(msg, "handle ... with Fs"))
+  let missing_row_msg = first_check_error("effect Fs { Custom() -> Int }\nfn main() -> Int { perform Fs::Custom() }\n")
+  assert(String::contains(missing_row_msg, "entry point 'main' cannot discharge { Fs::Custom }"))
+  assert(!String::contains(missing_row_msg, "declare 'fn main"))
+}
+
+test "#1683: a user effect named Fs is not admitted as the host provider at _start" {
+  let source = "effect Fs { Custom() -> Int }\nfn _start() -> Int with Fs { perform Fs::Custom() }\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "entry point '_start' cannot discharge { Fs::Custom }"))
+}
+
+test "#1683: an ordinary helper still receives the row-addition hint" {
+  let source = "effect Ask { Get() -> Int }\nfn helper() -> Int { perform Ask::Get() }\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "effect row mismatch for 'helper'"))
+  assert(String::contains(msg, "declare 'fn helper(...) -> T with Ask::Get'"))
+  assert(!String::contains(msg, "entry point"))
+}
+
+test "#1683: host providers and runtime-owned effects remain valid at main" {
+  assert(first_check_error("fn main() -> Unit with Fs + Env + Stdout + Async + Exception { () }\n") == "")
+  assert(first_check_error("fn main() -> Unit with Fs { let _ = Fs::read_file(\"missing\"); () }\n") == "")
+}
+
+test "#1683: unrelated user Env operations do not shadow the host Env provider" {
+  let source = "effect Env { Get(String) -> String }\nfn main() -> String with Env { Env::get(\"VIBE_HOME\") }\n"
+  assert(first_check_error(source) == "")
+}
