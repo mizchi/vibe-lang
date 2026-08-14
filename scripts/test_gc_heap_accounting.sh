@@ -98,11 +98,32 @@ compile_direct_abi_fallback() {
 
 FALLBACK_OUT="$WORK/direct_array_abi_fallback.wasm"
 SHADOW_FALLBACK_OUT="$WORK/direct_array_abi_shadow_fallback.wasm"
-EXPORT_FALLBACK_OUT="$WORK/direct_array_abi_export_fallback.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_abi_fallback_test.vibe "$FALLBACK_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_abi_shadow_fallback_test.vibe "$SHADOW_FALLBACK_OUT"
-compile_direct_abi_fallback fixtures/gc_direct_array_abi_export_fallback_test.vibe "$EXPORT_FALLBACK_OUT"
 
+# #1722 boundary monomorphization. Both of these used to be impossible: an
+# exported declaration could not carry a reference, so an internal caller
+# holding one cleared the whole component. The compiler now emits a private twin
+# of the exported body -- the export keeps the tagged-i64 signature a host ABI
+# needs, and the internal call resolves to the twin.
+#
+# MONOMORPH_OUT is the old export-fallback fixture, renamed: it pins the same
+# program with the opposite expectation, which is the honest way to record a
+# decision that reversed a restriction.
+#
+# TWIN_OUT is the identity half, and it is the assertion that matters. A
+# materializing conversion point (the alternative #1701 rejected) would COPY,
+# and the caller would stop seeing mutations made through the boundary. Nothing
+# is copied here, so one literal serves both names.
+MONOMORPH_OUT="$WORK/direct_array_export_monomorph.wasm"
+TWIN_OUT="$WORK/direct_array_export_twin.wasm"
+# Both export spellings: `export let f = ...` sets a flag on the declaration,
+# `let f = ...; export { f }` records it separately. Checking the flag alone
+# skipped the second one silently (review finding on PR #1735).
+LIST_TWIN_OUT="$WORK/direct_array_export_list_twin.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_export_monomorph_test.vibe "$MONOMORPH_OUT"
+compile_direct_abi_fallback fixtures/gc_direct_array_export_twin_test.vibe "$TWIN_OUT"
+compile_direct_abi_fallback fixtures/gc_direct_array_export_list_twin_test.vibe "$LIST_TWIN_OUT"
 # #1541 isolated direct-argument characterization. The native fixture crosses
 # exactly one private concrete Array[Int] parameter boundary; the generic pair
 # must retain the component-wide tagged-i64 fallback.
@@ -160,8 +181,13 @@ wasm-tools print "$NATIVE_STRUCT_FALLBACK_OUT" > "$NATIVE_STRUCT_FALLBACK_WAT"
 # with N >= 4 is a #1702 record and never the RC cell or the alloc probe.
 native_struct_new="$(grep -cE '^[[:space:]]+struct\.new 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
 native_struct_get="$(grep -cE '^[[:space:]]+struct\.get 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
-if [ "$native_struct_new" -ne 3 ] || [ "$native_struct_get" -ne 7 ]; then
-  echo "[gc-heap-accounting] FAIL: expected three #1702 struct.new and seven struct.get, found $native_struct_new/$native_struct_get" >&2
+# struct.set is the #1702 WRITE half: `c.hits = v` lowers through `__set_field`,
+# whose receiver is consumed by a struct.set exactly as a read's receiver is
+# consumed by struct.get. A store landing anywhere else would leave this at 0
+# while the fixture still passed, since the tally reads its own field back.
+native_struct_set="$(grep -cE '^[[:space:]]+struct\.set 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
+if [ "$native_struct_new" -ne 4 ] || [ "$native_struct_get" -ne 10 ] || [ "$native_struct_set" -ne 2 ]; then
+  echo "[gc-heap-accounting] FAIL: expected #1702 counts 4 struct.new / 10 struct.get / 2 struct.set, found $native_struct_new/$native_struct_get/$native_struct_set" >&2
   exit 1
 fi
 # The representation claim: those locals are declared as typed references, not
@@ -172,9 +198,10 @@ if [ "$native_struct_locals" -lt 3 ]; then
   echo "[gc-heap-accounting] FAIL: expected three typed struct locals, found $native_struct_locals" >&2
   exit 1
 fi
-# The fallback pair covers returning, passing, storing through a `mut` field,
-# and closure capture -- every one of which would need the ctor tag a native
-# struct does not carry.
+# The fallback pair covers returning, passing, and closure capture -- each of
+# which would need the ctor tag a native struct does not carry. Storing through
+# a `mut` field used to be listed here and is admitted since the #1702 write
+# half; it moved to the positive fixture above.
 fallback_struct_new="$(grep -cE '^[[:space:]]+struct\.new 1[4-9]' "$NATIVE_STRUCT_FALLBACK_WAT" || true)"
 if [ "$fallback_struct_new" -ne 0 ]; then
   echo "[gc-heap-accounting] FAIL: expected no #1702 struct.new in the fallback fixture, found $fallback_struct_new" >&2
@@ -183,9 +210,10 @@ fi
 
 # #1541 export coexistence. A public declaration crosses a host boundary whose
 # ABI is tagged i64 and so cannot carry a reference -- but it no longer takes
-# the component down with it. Its fallback pair is EXPORT_FALLBACK_OUT above,
-# where a private reference is piped THROUGH the exported declaration: that is a
-# real unsupported crossing and still clears everything.
+# the component down with it. Since #1722 an internal caller holding a reference
+# is served by a private twin instead (MONOMORPH_OUT / TWIN_OUT above); this
+# fixture stays the case where the export is never called internally, so no twin
+# is emitted and the export simply sits beside a live island.
 EXPORT_COEXIST_OUT="$WORK/direct_array_export_coexist.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_coexist_test.vibe "$EXPORT_COEXIST_OUT"
 
@@ -306,7 +334,7 @@ PY
 positive="$(count_native_array_allocs "$DIRECT_OUT")"
 alias="$(count_native_array_allocs "$ALIAS_OUT")"
 declare -a fallback_labels=("generic" "spelling shadow" "export" "control-flow join")
-declare -a fallback_outputs=("$FALLBACK_OUT" "$SHADOW_FALLBACK_OUT" "$EXPORT_FALLBACK_OUT" "$JOIN_FALLBACK_OUT")
+declare -a fallback_outputs=("$FALLBACK_OUT" "$SHADOW_FALLBACK_OUT" "$JOIN_FALLBACK_OUT")
 if [ "$positive" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 direct-ABI native literal, found $positive" >&2
   exit 1
@@ -330,6 +358,25 @@ if [ "$mutating_transform" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one native literal across a mutating transform, found $mutating_transform" >&2
   exit 1
 fi
+monomorph_native="$(count_native_array_allocs "$MONOMORPH_OUT")"
+twin_native="$(count_native_array_allocs "$TWIN_OUT")"
+list_twin_native="$(count_native_array_allocs "$LIST_TWIN_OUT")"
+if [ "$monomorph_native" -ne 1 ] || [ "$twin_native" -ne 1 ] || [ "$list_twin_native" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected one #1722 native literal per monomorphized export, found $monomorph_native/$twin_native/$list_twin_native" >&2
+  exit 1
+fi
+# The export itself must KEEP its tagged-i64 signature -- monomorphization means
+# the twin carries the reference, not that the boundary changed. If the export
+# ever picked up a `(ref null ...)` parameter, a host calling it would be handed
+# a representation the ABI does not describe.
+TWIN_WAT="$WORK/direct_array_export_twin.wat"
+wasm-tools print "$TWIN_OUT" > "$TWIN_WAT"
+twin_ref_signatures="$(grep -cE '^  \(type \(;[0-9]+;\) \(func \(param [^)]*\(ref null' "$TWIN_WAT" || true)"
+if [ "$twin_ref_signatures" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected exactly one reference-carrying signature (the twin), found $twin_ref_signatures" >&2
+  exit 1
+fi
+
 export_coexist="$(count_native_array_allocs "$EXPORT_COEXIST_OUT")"
 if [ "$export_coexist" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1541 native literal beside an exported declaration, found $export_coexist" >&2
@@ -479,7 +526,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, mutating transforms, control-flow joins, String/Bool elements, non-escaping local records (#1702), and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, boundary monomorphization (#1722), mutating transforms, control-flow joins, String/Bool elements, non-escaping local records incl. field writes (#1702), and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2
