@@ -8288,6 +8288,77 @@ fn scps_fn_row_of(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExp
   (found, row)
 }
 
+/// Does this annotation mention a FUNCTION type anywhere -- directly, or
+/// nested inside a type argument or a tuple?
+fn scps_ty_has_fn(t: TypeExpr) -> Bool {
+  match t {
+    TyFn(_, _, _) => true,
+    TyApp(_, args) => scps_ty_list_has_fn(args),
+    TyTuple(items) => scps_ty_list_has_fn(items),
+    _ => false
+  }
+}
+
+fn scps_ty_list_has_fn(ts: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(ts) {
+    if scps_ty_has_fn(Array::get(ts, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// #1536: is this callee FIRST ORDER -- every declared parameter annotated,
+/// and no annotation mentioning a function type anywhere?
+///
+/// That is what makes a row VARIABLE harmless. `fn twice(x: Int) -> Int with e`
+/// declares "performs whatever my arguments perform", and with no argument able
+/// to carry a row, `e` can only be instantiated to the empty row: the call
+/// cannot perform the migrated effect, whatever the call site looks like. A
+/// single function-typed parameter (at any depth -- `Array[(Int) -> Int with e]`
+/// counts) breaks that argument, so those keep the existing rejection, as does
+/// a callee with an unannotated parameter or no definition in scope.
+fn scps_callee_first_order(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String) -> Bool {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut found = false
+  let mut ok = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, params, _, _, _)) => if snm == name {
+        found = true
+        let mut all = true
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => if scps_ty_has_fn(t) {
+              all = false
+            } else {
+              ()
+            },
+            None => {
+              all = false
+            }
+          }
+          pi = pi + 1
+        }
+        ok = all
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found && ok
+}
+
 /// A row item starting with a lowercase letter is a row VARIABLE (`with
 /// { e }` / `with X + e`): the variable can be instantiated to the
 /// migrated effect via a closure argument this pass cannot see, so such a
@@ -8902,7 +8973,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
         scps_exprs_calls_ok(args, sctx, ctx)
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
-        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+        if is_fn && !scps_row_contains(ctx, row, eff) && (!scps_row_has_var(row) || scps_callee_first_order(ctx, nm)) {
           scps_exprs_calls_ok(args, sctx, ctx)
         } else {
           false
@@ -9028,7 +9099,7 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
         scps_first_bad_call_info_exprs(args, sctx, ctx)
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
-        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+        if is_fn && !scps_row_contains(ctx, row, eff) && (!scps_row_has_var(row) || scps_callee_first_order(ctx, nm)) {
           scps_first_bad_call_info_exprs(args, sctx, ctx)
         } else {
           (true, nm, scps_pick_off(ioff, off))
@@ -12456,7 +12527,7 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
         scps_inert_taint_exprs(args, eff, needing, locals, ctx)
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
-        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+        if is_fn && !scps_row_contains(ctx, row, eff) && (!scps_row_has_var(row) || scps_callee_first_order(ctx, nm)) {
           scps_inert_taint_exprs(args, eff, needing, locals, ctx)
         } else {
           true

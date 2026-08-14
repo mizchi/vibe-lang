@@ -6980,6 +6980,13 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # never rewritten -- that is what keeps a runtime String out of the array form.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_string_for_suspend_test.vibe
+# #1536: a `with e` callee is admitted when its declared parameters mention no
+# function type anywhere -- there is then no argument able to instantiate the
+# row variable, so the call cannot perform the handled effect. A callee that
+# does take a function stays refused; that is what keeps this sound.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_rowvar_first_order_call_test.vibe
+scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvarhof"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other
