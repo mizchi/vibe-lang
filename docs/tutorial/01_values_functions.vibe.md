@@ -74,25 +74,22 @@ y = 2
 
 ## 関数
 
-**目標の言語**では `fn` は予約語であり、関数宣言の綴りは `fn` のまま保つ。
-[#1280](https://github.com/mizchi/vibe-lang/issues/1280) が着地すれば、binding・引数・型・
-member の名前に `fn` は使えない。既存の名前は `fn_` などへ rename し、`r#fn` のような
-raw identifier は escape hatch にしない。これは目標の probe であり、現在のコンパイラでは実行しない。
+`fn` は予約語 ([#1280](https://github.com/mizchi/vibe-lang/issues/1280) で着地済み)。
+関数宣言の綴りは `fn` で、binding・引数の名前には使えない。`r#fn` のような
+raw identifier も escape hatch にはならない (実測: `let fn = 1` は
+`expected identifier after 'let'`、`fn f(fn: Int)` は `expected parameter name`、
+`let r#fn = 1` も同様に拒否)。既存の名前が衝突したら `fn_` などへ rename する。
 
 ```vibe skip
-// target (#1280): `fn` は予約語。宣言以外の識別子には使えない。
-fn add(x: Int, y: Int) -> Int {
-  x + y
-}
+// skip: 予約語 `fn` の拒否例 (どれも parse error になることを示す断片)
 let fn = 1
-// error: reserved keyword
+// error: expected identifier after 'let'
 let r#fn = 1
-// error: raw identifier は使えない
+// error: raw identifier は escape hatch にしない
 ```
 
-現在のコンパイラは `fn` の予約をまだ実装していないが、以下の宣言形式はすでに
-runnable である。トップレベル関数は完全注釈必須、再帰に `rec` は不要。let 形式・
-ジェネリクス・ラベル付き引数も同じ意味論。
+宣言形式は以下がすべて runnable。トップレベル関数は完全注釈必須、再帰に
+`rec` は不要。let 形式・ジェネリクス・ラベル付き引数も同じ意味論。
 
 ```vibe run
 import @vibe/prelude {

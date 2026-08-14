@@ -9,8 +9,12 @@
 //   vibe run scripts/review_lint.vibex -- --root <staged-snapshot> --vibe runtime/vibe
 //   vibe run scripts/review_lint.vibex -- --self-test
 
-import @vibe/json { Json }
-import @vibe/process { sh_capture }
+import @vibe/json {
+  Json
+}
+import @vibe/process {
+  sh_capture
+}
 
 fn shell_quote(s: String) -> String {
   // Repository and mktemp paths cannot contain a single quote in the
@@ -69,8 +73,27 @@ fn is_allowed(path: String, line: Int) -> Bool with Fs {
   String::contains(source_line(path, line), "review-lint: allow-fixed-synthetic-name")
 }
 
+fn is_transform_path(path: String) -> Bool {
+  String::contains(path, "/compiler/normalize/") ||
+  String::contains(path, "/compiler/codegen/") ||
+  String::contains(path, "/compiler/loader/")
+}
+
+fn is_production_compiler_path(path: String) -> Bool {
+  !String::ends_with(path, "_test.vibe") && !String::contains(path, "/tests/")
+}
+
 fn binder_ctor(name: String) -> Bool {
   name == "ELet" || name == "ELetMut" || name == "ELetRec" || name == "PBind"
+}
+
+fn report_finding(path: String, line: Int, text: String, message: String) -> Unit with Stderr {
+  let end_line = line + Array::length(String::split(text, "\n")) - 1
+  // The pre-commit driver consumes this record before rendering a diagnostic.
+  // A dedicated prefix and explicit source span distinguish lint findings from
+  // bootstrap/compiler failures emitted by the runner itself.
+  let record = "review-lint:finding\t" + path + "\t" + Int::to_string(line) + "\t" + Int::to_string(end_line) + "\t" + message + "\n"
+  Stderr::write_stream(record)
 }
 
 fn report_hits(raw: String, filter_ctor: Bool, emit: Bool) -> Int with Fs + Stderr {
@@ -88,10 +111,80 @@ fn report_hits(raw: String, filter_ctor: Bool, emit: Bool) -> Int with Fs + Stde
     }
     let path = Json::string(Json::field(hit, "path"))
     let line = Double::to_int(Json::number(Json::field(hit, "line")))
-    if ctor_ok && starts_with_synthetic_literal(name) && !is_allowed(path, line) {
+    if ctor_ok && is_transform_path(path) && starts_with_synthetic_literal(name) && !is_allowed(path, line) {
       let text = Json::string(Json::field(hit, "text"))
       if emit {
-        Stderr::write_stream(path + ":" + Int::to_string(line) + ": fixed synthetic binder: " + text + "\n")
+        report_finding(path, line, text, "fixed synthetic binder: " + text)
+      } else {
+        ()
+      }
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn is_operator_binding(name: String) -> Bool {
+  name == "_" || name == "op" || name == "pop" || name == "top" ||
+  name == "operator" || String::ends_with(name, "_op")
+}
+
+// #1657: Expr::EAssignOp is positional (target, operator, value, cont).
+// Constrain the second-field binder vocabulary so `(op, name, ...)` and
+// `(_, name, ...)` cannot silently interpret the operator as the target.
+fn report_assign_op_hits(raw: String, emit: Bool) -> Int with Stderr {
+  let hits = Json::parse(raw)
+  let mut i = 0
+  let mut count = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let captures = Json::field(hit, "captures")
+    let operator = Json::string(Json::field(Json::field(captures, "operator"), "text"))
+    if !is_operator_binding(operator) {
+      let path = Json::string(Json::field(hit, "path"))
+      let line = Double::to_int(Json::number(Json::field(hit, "line")))
+      let text = Json::string(Json::field(hit, "text"))
+      if emit {
+        report_finding(
+          path,
+          line,
+          text,
+          "EAssignOp second field is the operator, but is bound as '" + operator + "': " + text
+        )
+      } else {
+        ()
+      }
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+// #1289: substring membership grants Async to NotAsync / AsyncLike. This also
+// guards non-checker compiler paths, one of which had reintroduced the bug.
+fn report_async_substring_hits(raw: String, emit: Bool) -> Int with Stderr {
+  let hits = Json::parse(raw)
+  let mut i = 0
+  let mut count = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let path = Json::string(Json::field(hit, "path"))
+    if is_production_compiler_path(path) {
+      let line = Double::to_int(Json::number(Json::field(hit, "line")))
+      let text = Json::string(Json::field(hit, "text"))
+      if emit {
+        report_finding(
+          path,
+          line,
+          text,
+          "Async effect membership must be exact; use effect_row_contains_label instead of String::contains: " + text
+        )
       } else {
         ()
       }
@@ -117,7 +210,9 @@ fn run_grep(vibe: String, root: String, pattern: String) -> (Int, String) with P
 fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
   let patterns = [
     "$(ctor:id)($(name:const), $(rest:args))",
-    "SLet($(a:arg), $(b:arg), $(name:const), $(rest:args))"
+    "SLet($(a:arg), $(b:arg), $(name:const), $(rest:args))",
+    "EAssignOp($(target:arg), $(operator:id), $(rest:args))",
+    "String::contains($(row:exp), \"Async\")"
   ]
   let mut i = 0
   let mut violations = 0
@@ -128,14 +223,20 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
       Stderr::write_stream("review-lint: vibe grep failed: " + output + "\n")
       failed = true
     } else {
-      violations = violations + report_hits(output, i == 0, true)
+      if i < 2 {
+        violations = violations + report_hits(output, i == 0, true)
+      } else if i == 2 {
+        violations = violations + report_assign_op_hits(output, true)
+      } else {
+        violations = violations + report_async_substring_hits(output, true)
+      }
     }
     i = i + 1
   }
   if failed {
     2
   } else if violations > 0 {
-    Stderr::write_stream("review-lint: found " + Int::to_string(violations) + " fixed synthetic binder(s); mint a fresh name from the source binding census\n")
+    Stderr::write_stream("review-lint: found " + Int::to_string(violations) + " structural regression(s)\n")
     1
   } else {
     0
@@ -143,7 +244,10 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
 }
 
 fn self_test() -> Int with Fs + Stderr {
-  let raw = "[{\"path\":\"/missing\",\"line\":1,\"text\":\"ELet(\\\"__tmp\\\", e, e, -1)\",\"captures\":{\"name\":{\"text\":\"\\\"__tmp\\\"\"}}}]"
+  let raw = "[{\"path\":\"/repo/lib/@vibe/compiler/normalize/pass.vibe\",\"line\":1,\"text\":\"ELet(\\\"__tmp\\\", e, e, -1)\",\"captures\":{\"name\":{\"text\":\"\\\"__tmp\\\"\"}}}]"
+  let bad_assign = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/grep.vibe\",\"line\":2,\"text\":\"EAssignOp(_, name, v, b)\",\"captures\":{\"operator\":{\"text\":\"name\"}}}]"
+  let good_assign = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/grep.vibe\",\"line\":2,\"text\":\"EAssignOp(name, op, v, b)\",\"captures\":{\"operator\":{\"text\":\"op\"}}}]"
+  let bad_async = "[{\"path\":\"/repo/lib/@vibe/compiler/entry/preprocess.vibe\",\"line\":3,\"text\":\"String::contains(row, Async)\",\"captures\":{}}]"
   if !starts_with_synthetic_literal("\"__tmp\"") {
     Stderr::write_stream("review-lint self-test: synthetic literal was not recognized\n")
     1
@@ -152,6 +256,12 @@ fn self_test() -> Int with Fs + Stderr {
     1
   } else if report_hits(raw, false, false) != 1 {
     Stderr::write_stream("review-lint self-test: JSON finding was not reported\n")
+    1
+  } else if report_assign_op_hits(bad_assign, false) != 1 || report_assign_op_hits(good_assign, false) != 0 {
+    Stderr::write_stream("review-lint self-test: EAssignOp field-order rule failed\n")
+    1
+  } else if report_async_substring_hits(bad_async, false) != 1 {
+    Stderr::write_stream("review-lint self-test: Async substring rule failed\n")
     1
   } else {
     0
