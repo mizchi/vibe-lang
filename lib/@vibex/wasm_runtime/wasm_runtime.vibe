@@ -18,6 +18,18 @@ fn br_to(block_stack: Array[(Int, Int)], depth: Int) -> Int {
   }
 }
 
+/// Interpret the low 32 bits of a host `Int` as a signed wasm i32.
+/// Arithmetic opcodes can leave values such as 0x80000000 in their unsigned
+/// host representation, while wasm's signed opcodes must see INT_MIN.
+fn signed_i32(n: Int) -> Int {
+  let v = n&0xFFFFFFFF
+  if v >= 0x80000000 {
+    v - 0x100000000
+  } else {
+    v
+  }
+}
+
 fn clz32(n: Int) -> Int {
   let v = n&0xFFFFFFFF
   if v == 0 {
@@ -834,8 +846,8 @@ export fn exec_body(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[Int],
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b)
     }
     else if op == 0x6D {
-      let b = stack_pop(stack)
-      let a = stack_pop(stack)
+      let b = signed_i32(stack_pop(stack))
+      let a = signed_i32(stack_pop(stack))
       // The spec traps i32.div_s on division by zero OR on overflow. Only the
       // zero case was here, so INT_MIN / -1 returned the two's-complement
       // wrap (INT_MIN again) where the engine traps (#1745).
@@ -1487,8 +1499,8 @@ export fn exec_body_gc(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[In
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b)
     }
     else if op == 0x6D {
-      let b = stack_pop(stack)
-      let a = stack_pop(stack)
+      let b = signed_i32(stack_pop(stack))
+      let a = signed_i32(stack_pop(stack))
       // The spec traps i32.div_s on division by zero OR on overflow. Only the
       // zero case was here, so INT_MIN / -1 returned the two's-complement
       // wrap (INT_MIN again) where the engine traps (#1745).
