@@ -6899,6 +6899,11 @@ scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
 # `__sn_next` must not capture the retarget and shadowed Future::ready must
 # not change empty-stream layout (None fallback = 7).
 scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygiene"
+# #1723: a local pure closure shadows a top-level function whose callback
+# parameter carries the suspend effect. The prepass must leave the literal on
+# the plain convention; Done-wrapping it returns a step pointer instead of 8.
+scps_run_expect "effect_scps_param_shadow_test.vibe" "8" "localparamshadow"
+scps_run_expect "effect_scps_top_level_alias_test.vibe" "7" "toplevelalias"
 # #1536 (a) v3 (let-floating): an async-iterator `for` in statement position
 # desugars to a let-chain in SEQUENCE HEAD position; scps_split_tail floats
 # it onto the continuation spine. Two sequential loops pin repeated floats

@@ -1730,7 +1730,10 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
             // nothing either table knows (an import this pass cannot see) is a
             // bail-out, not an empty row -- treating "unknown" as "pure" would
             // silently authorize the very leak this is closing.
-            match lookup_fn_effs(fn_names, fn_effs, argname) {
+            // #1723: argument names obey the same lexical precedence as the
+            // callee itself. An explicit empty overlay entry is a pure local
+            // shadow, not permission to consult a same-named top-level fn.
+            match lookup_fn_effs(ov_names, ov_effs, argname) {
               Some(argeffs) => {
                 let mut k = 0
                 while k < Array::length(argeffs) {
@@ -1743,7 +1746,7 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
                   k = k + 1
                 }
               },
-              None => match lookup_fn_effs(ov_names, ov_effs, argname) {
+              None => match lookup_fn_effs(fn_names, fn_effs, argname) {
                 Some(argeffs2) => {
                   let mut k2 = 0
                   while k2 < Array::length(argeffs2) {
@@ -1843,6 +1846,61 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
   (out_names, out_effs)
 }
 
+/// Add lexical bindings that carry no effect row. These empty entries are
+/// semantically meaningful: they stop lookup from falling through to a
+/// same-named top-level function (#1723).
+fn effect_name_exists(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    found = Array::get(names, i) == name
+    i = i + 1
+  }
+  found
+}
+
+fn overlay_bind_empty(names: Array[String], effs: Array[Array[String]], name: String, fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+  let (sn, se) = shadow_overlay(names, effs, name)
+  // Most locals cannot fall through to a top-level function, so retaining an
+  // empty marker for every binding only lengthens every descendant snapshot.
+  // The marker is needed exactly when the fallback table contains this name.
+  if !effect_name_exists(fn_names, name) {
+    return (sn, se)
+  }
+  let out_names = [
+    name
+  ]
+  let out_effs = [
+    no_str_labels()
+  ]
+  let mut i = 0
+  while i < Array::length(sn) {
+    Array::push(out_names, Array::get(sn, i))
+    Array::push(out_effs, Array::get(se, i))
+    i = i + 1
+  }
+  (out_names, out_effs)
+}
+
+fn overlay_bind_empty_names(names: Array[String], effs: Array[Array[String]], bound: Array[String], fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+  let mut cur_names = names
+  let mut cur_effs = effs
+  let mut i = 0
+  while i < Array::length(bound) {
+    let next = overlay_bind_empty(cur_names, cur_effs, Array::get(bound, i), fn_names)
+    cur_names = next.0
+    cur_effs = next.1
+    i = i + 1
+  }
+  (cur_names, cur_effs)
+}
+
+fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat: Pat, fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+  let bound = array_empty()
+  collect_pat_binds_into(pat, bound)
+  overlay_bind_empty_names(names, effs, bound, fn_names)
+}
+
 /// #885 (split off from #838, originally scoped out at #626): a function-typed
 /// PARAMETER (a callback, e.g. `f: (T) -> T with e`) is a call-graph leaf
 /// exactly like a named top-level function, but `fn_names`/`fn_effs` above is
@@ -1934,43 +1992,46 @@ fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: St
   // rebinds to the OUTER `f`, so the lookup must see the entry the shadow is
   // about to remove.
   let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs)
-  if Array::length(labels) == 0 {
-    shadowed
-  } else {
-    let out_names = [
-      name
-    ]
-    let out_effs = [
-      labels
-    ]
-    let (sn, se) = shadowed
-    let mut i = 0
-    while i < Array::length(sn) {
-      Array::push(out_names, Array::get(sn, i))
-      Array::push(out_effs, Array::get(se, i))
-      i = i + 1
-    }
-    (out_names, out_effs)
+  // #1723: an empty row is still a lexical binding. Keeping an explicit
+  // empty entry is what distinguishes "a pure local shadows this name" from
+  // "no local binding; consult the top-level function table".
+  if Array::length(labels) == 0 && !effect_name_exists(fn_names, name) {
+    return shadowed
   }
+  let out_names = [
+    name
+  ]
+  let out_effs = [
+    labels
+  ]
+  let (sn, se) = shadowed
+  let mut i = 0
+  while i < Array::length(sn) {
+    Array::push(out_names, Array::get(sn, i))
+    Array::push(out_effs, Array::get(se, i))
+    i = i + 1
+  }
+  (out_names, out_effs)
 }
 
-fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
+fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
   let names = array_empty()
   let effs = array_empty()
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ptype) = Array::get(params, i)
-    match ptype {
-      Some(TyFn(_, _, eff)) => {
-        let labels = effect_row_labels(effect_row_parse(eff))
-        if Array::length(labels) > 0 {
-          Array::push(names, pname)
-          Array::push(effs, labels)
-        } else {
-          ()
-        }
-      },
-      _ => ()
+    let labels = match ptype {
+      Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
+      _ => no_str_labels()
+    }
+    // #1723: all parameters are lexical bindings. A pure callback (or even a
+    // non-function parameter later rejected by typing) must mask a same-named
+    // top-level function during this independent effect walk.
+    if Array::length(labels) > 0 || effect_name_exists(fn_names, pname) {
+      Array::push(names, pname)
+      Array::push(effs, labels)
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -2051,6 +2112,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
       ECall(callee, args, call_off) => {
         match callee {
           EIdent(name, _) => {
+            // #1723: the overlay is also the lexical-binding environment.
+            // Some([]) means a pure local binding; only None may fall through
+            // to the module-level function table.
+            let lexical_callee = lookup_fn_effs(ov_names, ov_effs, name)
             if name == "perform" && Array::length(args) == 1 {
               match Array::get(args, 0) {
                 ECall(op_callee, opargs, _) => match op_callee {
@@ -2146,7 +2211,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // unification (#885 tracks that separately); naively requiring the
             // row-variable TOKEN itself in the caller's declared row produces
             // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
-            match lookup_fn_effs(fn_names, fn_effs, name) {
+            let top_level_callee = match lexical_callee {
+              Some(_) => None,
+              None => lookup_fn_effs(fn_names, fn_effs, name)
+            }
+            match top_level_callee {
               Some(callee_effs) => {
                 // #639: aggregate every effect this call site leaks into ONE
                 // set-difference diagnostic ("missing { Env, Fs }") instead of
@@ -2219,7 +2288,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // signature, so the token `e` denotes the identical variable in
             // both places (no cross-call-site instantiation to resolve), and
             // literal-name membership is a sound check.
-            match lookup_fn_effs(ov_names, ov_effs, name) {
+            match lexical_callee {
               Some(param_effs) => {
                 // #639: aggregated exactly like the named-callee case above.
                 let missing = no_str_labels()
@@ -2288,7 +2357,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // effect row.
         let shadowed = shadow_overlay_names(ov_names, ov_effs, params)
         let (shadowed_ov_names, shadowed_ov_effs) = shadowed
-        let (local_names, local_effs) = build_param_overlay(params)
+        let (local_names, local_effs) = build_param_overlay(params, fn_names)
         let body_ov_names = if Array::length(local_names) == 0 {
           shadowed_ov_names
         } else {
@@ -2334,7 +2403,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut ai = 0
         while ai < Array::length(arms) {
           let (arm_pat, arm_body) = Array::get(arms, ai)
-          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
+          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names)
+          Array::push(stack, (arm_body, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
       },
@@ -2387,7 +2457,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut ai = 0
         while ai < Array::length(arms) {
           let (arm_pat, arm_body) = Array::get(arms, ai)
-          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
+          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names)
+          Array::push(stack, (arm_body, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
       },
@@ -2399,14 +2470,17 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // A loop parameter is re-bound by every `continue`, so its initializer's
         // kind does not describe it for the whole body: it binds unresolvable.
         let mut body_kinds = kinds
+        let loop_names = array_empty()
         let mut i = 0
         while i < Array::length(params) {
           let (pname, init) = Array::get(params, i)
           Array::push(stack, (init, declared, in_handle, ov_names, ov_effs, kinds))
           body_kinds = throw_kind_bind(body_kinds, pname, "")
+          Array::push(loop_names, pname)
           i = i + 1
         }
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs, body_kinds))
+        let (body_ov_names, body_ov_effs) = overlay_bind_empty_names(ov_names, ov_effs, loop_names, fn_names)
+        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       EForIn(value_name, index_name, iter, body) => {
         // The element (and optional index) binder has no syntactic kind here --
@@ -2418,7 +2492,12 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           None => throw_kind_bind(kinds, value_name, "")
         }
         Array::push(stack, (iter, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs, for_kinds))
+        let (value_ov_names, value_ov_effs) = overlay_bind_empty(ov_names, ov_effs, value_name, fn_names)
+        let for_overlay = match index_name {
+          Some(iname) => overlay_bind_empty(value_ov_names, value_ov_effs, iname, fn_names),
+          None => (value_ov_names, value_ov_effs)
+        }
+        Array::push(stack, (body, declared, in_handle, for_overlay.0, for_overlay.1, for_kinds))
       },
       EBinOp(_, left, right) => {
         Array::push(stack, (left, declared, in_handle, ov_names, ov_effs, kinds))
@@ -2704,7 +2783,7 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
       // frame -- the walk never re-descends through this EFn to pick the
       // parameters up on its own.
       let merged_params = merge_param_types_with_sig(ty, params)
-      let (ov_names, ov_effs) = build_param_overlay(merged_params)
+      let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names)
       check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, effect_row_labels(effect_row_parse(eff))), false, fn_names, fn_effs, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
     },
     _ => {
@@ -3349,7 +3428,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       }
     },
     EFn(_, _, params, _, _, body) => {
-      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params)
+      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names)
       dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
     },
     ELet(name, val, body, _) => {
@@ -3397,9 +3476,9 @@ fn dh_param_base_name(n: String) -> String {
   }
 }
 
-fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
+fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])], fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
   let (sn, se) = shadow_overlay_names(ov_names, ov_effs, params)
-  let (raw_ln, le) = build_param_overlay(params)
+  let (raw_ln, le) = build_param_overlay(params, fn_names)
   let ln = for n in raw_ln {
     dh_param_base_name(n)
   }
@@ -3425,7 +3504,7 @@ fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], p
     // `fbody` would otherwise lose them (the top-level annotation, not the
     // EFn node, is where a separately-typed signature keeps its rows).
     EFn(_, _, params, _, _, fbody) => {
-      let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params))
+      let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params), fn_names)
       dh_check_expr(fbody, declared, performed, fn_names, fn_effs, n, e, errors)
     },
     _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, no_str_labels(), no_ov_effs(), errors)
