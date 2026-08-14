@@ -5,7 +5,7 @@
 //# Imports
 
 import ./deprecated_scan.vibe {
-  deprecated_warning_lines
+  deprecated_warning_lines, deprecated_warning_lines_visible
 }
 
 //# Helpers
@@ -144,4 +144,52 @@ test "the deprecated TYPE alias warns from an annotation" {
   // still fires -- so if #1700 is fixed, the warning is already in place.
   let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
   assert(contains(first_warning(entry, collection_alias_dep()), "'HashMap' is deprecated: use MutMap"))
+}
+
+//# Visibility filter (Codex review, PR #1713, P2)
+//#
+//# `vibe check` hands the scanner the whole compile closure, because that is
+//# the only way a PACKAGE's markers are reachable at all -- the marker for
+//# `HashMap::new_string` lives in a sibling file the entry never names. Wide
+//# collection plus a token-level scanner is too wide the other way, so a
+//# dependency's marker only counts for a name the entry actually imported.
+
+fn visible(names: Array[String]) -> Option[Array[String]] {
+  Some(names)
+}
+
+test "a dep marker for a name the entry did NOT import is ignored" {
+  // The entry declares and calls its OWN HashMap::new_string. Telling it to
+  // use MutMap::new_string would be prescribing a WRONG edit.
+  let entry = "fn HashMap::new_string() -> Int {\n  1\n}\nfn use_it() -> Int {\n  HashMap::new_string()\n}"
+  let deps = [
+    "#deprecated(\"use MutMap::new_string\")\nexport fn HashMap::new_string() -> Int {\n  2\n}"
+  ]
+  assert_eq(Array::length(deprecated_warning_lines_visible(entry, deps, visible([
+    "MutMap"
+  ]))), 0)
+  // ... and the unfiltered form is exactly what would have warned wrongly,
+  // which is why the filter has to exist rather than be assumed unnecessary.
+  assert(Array::length(deprecated_warning_lines(entry, deps)) > 0)
+}
+
+test "a dep marker for a name the entry DID import still warns" {
+  let entry = "import @vibe/core {\n  HashMap::new_string\n}\nfn use_it() -> Int {\n  HashMap::new_string()\n}"
+  let deps = [
+    "#deprecated(\"use MutMap::new_string\")\nexport fn HashMap::new_string() -> Int {\n  2\n}"
+  ]
+  let lines = deprecated_warning_lines_visible(entry, deps, visible([
+    "HashMap::new_string"
+  ]))
+  assert(Array::length(lines) > 0)
+  assert(contains(Array::get(lines, 0), "use MutMap::new_string"))
+}
+
+test "a marker the ENTRY declares needs no import to count" {
+  let entry = "#deprecated(\"use fresh\")\nfn stale() -> Int {\n  1\n}\nfn caller() -> Int {\n  stale()\n}"
+  let lines = deprecated_warning_lines_visible(entry, no_deps(), visible(Array::slice([
+    ""
+  ], 0, 0)))
+  assert_eq(Array::length(lines), 1)
+  assert(contains(Array::get(lines, 0), "'stale' is deprecated: use fresh"))
 }

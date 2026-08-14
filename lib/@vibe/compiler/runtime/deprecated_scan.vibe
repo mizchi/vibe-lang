@@ -261,14 +261,68 @@ fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: 
 /// Warnings for every use, in `entry_source`, of a name whose declaration is
 /// marked `#deprecated` in `entry_source` itself or in any of `dep_sources`.
 export fn deprecated_warning_lines(entry_source: String, dep_sources: Array[String]) -> Array[String] with Exception {
+  deprecated_warning_lines_visible(entry_source, dep_sources, dep_all_names())
+}
+
+/// Sentinel for "do not filter": `deprecated_warning_lines` keeps the old
+/// every-marker-in-every-dep behaviour, which is right when `dep_sources` is
+/// already exactly the set of files the entry imported.
+fn dep_all_names() -> Option[Array[String]] {
+  None
+}
+
+/// Warnings for `entry_source`, honouring a dependency's `#deprecated` marker
+/// only when `visible_names` says the entry actually IMPORTED that name.
+///
+/// Codex review (PR #1713, P2): the caller now passes the whole compile
+/// closure (that is what made a PACKAGE's markers reachable at all -- the
+/// marker for `HashMap::new_string` lives in a package SIBLING the entry never
+/// names). Handing every one of those markers to a token-level scanner is too
+/// wide in the other direction: a file that imports something unrelated from
+/// `@vibe/core`, then declares and calls its OWN `HashMap::new_string`, would
+/// be told to use `MutMap::new_string`. That is a wrong edit, and prescribing
+/// wrong edits is worse than staying quiet.
+///
+/// Markers declared in the ENTRY ITSELF are always honoured -- a file
+/// deprecating its own helper needs no import to mean it.
+export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Array[String], visible_names: Option[Array[String]]) -> Array[String] with Exception {
   let deprecated = dep_empty_pairs()
   let (tokens, starts, _ends) = lex_with_offsets(entry_source)
   collect_deprecated_decls_tokens(tokens, deprecated)
   let mut d = 0
   while d < Array::length(dep_sources) {
+    let dep_marks = dep_empty_pairs()
     let (dtokens, _dstarts, _dends) = lex_with_offsets(Array::get(dep_sources, d))
-    collect_deprecated_decls_tokens(dtokens, deprecated)
+    collect_deprecated_decls_tokens(dtokens, dep_marks)
+    let mut m = 0
+    while m < Array::length(dep_marks) {
+      let (mname, mmsg) = Array::get(dep_marks, m)
+      let keep = match visible_names {
+        None => true,
+        Some(names) => dep_names_contain(names, mname)
+      }
+      if keep {
+        Array::push(deprecated, (mname, mmsg))
+      } else {
+        ()
+      }
+      m = m + 1
+    }
     d = d + 1
   }
   deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated)
+}
+
+fn dep_names_contain(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }

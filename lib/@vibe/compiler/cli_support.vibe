@@ -59,7 +59,7 @@ import ./type_db.vibe {
 // would regress every located-diagnostic case check has (scripts/
 // test_located_diagnostics.sh).
 import @vibe/compiler/runtime {
-  check_inline_wasm_fns, deprecated_warning_lines, locate_type_error
+  check_inline_wasm_fns, deprecated_warning_lines_visible, locate_type_error
 }
 
 // #946(3): re-parse the entry file WITH real char offsets for check_linked_file
@@ -490,7 +490,47 @@ export fn check_deprecated_warnings_from_source_groups(input_path: String, sourc
   // every alias the ADR-0100 (3) collection rename shipped -- was invisible
   // here and the migration warning this function promises never appeared.
   let dep_sources = resolved_dep_sources(input_path, source_groups)
-  deprecated_warning_lines(entry_source, dep_sources)
+  // Codex review (PR #1713, P2): the closure above is deliberately WIDE -- it
+  // has to be, because a package publishes its markers from a sibling file the
+  // entry never names. Wide marker COLLECTION plus a token-level scanner would
+  // be too wide the other way, though: a file importing something unrelated
+  // from `@vibe/core` and declaring its own `HashMap::new_string` would be told
+  // to use `MutMap::new_string`. So a dependency's marker only counts for a
+  // name the entry actually IMPORTED. Markers the entry declares itself still
+  // count unconditionally (a file deprecating its own helper needs no import).
+  deprecated_warning_lines_visible(entry_source, dep_sources, Some(entry_imported_names(entry_stmts)))
+}
+
+/// Every name the entry selects from an import / re-export, in source order.
+/// The alias half of `import p { old as new }` is intentionally not included:
+/// the entry's later uses spell `new`, and the `old` at the import site is
+/// itself a use worth warning about.
+fn entry_imported_names(entry_stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  let mut i = 0
+  while i < Array::length(entry_stmts) {
+    match Array::get(entry_stmts, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (iname, _) = Array::get(items, j)
+          Array::push(out, iname)
+          j = j + 1
+        }
+      },
+      SReExport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (iname, _) = Array::get(items, j)
+          Array::push(out, iname)
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 //# Release wasm stripping (#1100 size)
