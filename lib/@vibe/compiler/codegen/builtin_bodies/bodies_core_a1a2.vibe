@@ -353,6 +353,72 @@ export fn gen_arr_new_body(enable_rc: Bool, rc_alloc_idx: Int) -> Bytes {
   b
 }
 
+/// ADR-0090 (#1262): `MutList::empty(r)` on the bump lane. Same block layout
+/// as the non-RC `gen_arr_new_body` -- `[capacity@0][length@4][data_ptr@8]`
+/// plus an inline 2-slot buffer at +12, 28 bytes total -- but bumped out of
+/// the region arena segment instead of the main heap, so `__region_run` can
+/// release the whole segment by resetting one word.
+///
+/// Arena exhaustion is NOT an error. It falls back to the main bump heap,
+/// which is byte-for-byte what this call did before the arena existed: the
+/// region simply gets no reclamation for the blocks that did not fit. A trap
+/// here would turn "your region got big" into a crash, and a silent wrap
+/// would corrupt the heap above the segment -- the fallback is the only
+/// option that keeps the arena a pure optimization.
+///
+/// Locals: 0 = block pointer, 1 = arena bump pointer.
+export fn gen_region_arr_new_body(region_ptr_addr: Int, region_data_base: Int, region_limit: Int) -> Bytes {
+  let b = bytebuf_new()
+  // local1 = load(region_ptr_addr); zero means "never entered" (linear memory
+  // is zero-page initialized and the data segments end below heap_start), so
+  // seed it with the segment base rather than paying for a start-function.
+  emit_i32_const(b, region_ptr_addr)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 1)
+  emit_local_get(b, 1)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_i32_const(b, region_data_base)
+  emit_local_set(b, 1)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 28)
+  emit_i32_add(b)
+  emit_i32_const(b, region_limit)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  // Arena full: main-heap bump, exactly the pre-arena path.
+  emit_global_get(b, 0)
+  emit_local_tee(b, 0)
+  emit_i32_const(b, 28)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  emit_heap_memory_grow_check(b)
+  emit_else(b)
+  emit_local_get(b, 1)
+  emit_local_set(b, 0)
+  emit_i32_const(b, region_ptr_addr)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 28)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 0)
+  emit_end(b)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 2)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 4)
+  emit_local_get(b, 0)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 12)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 8)
+  emit_local_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  b
+}
+
 export fn gen_arr_set_body(enable_rc: Bool) -> Bytes {
   let b = bytebuf_new()
   // #811: same unsigned bounds check as gen_arr_get_body — an OOB set

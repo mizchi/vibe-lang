@@ -1,0 +1,92 @@
+// ADR-0090 #1262: the arena segment + watermark bulk release. These are the
+// shapes that break if the release reclaims something still live, and they
+// break QUIETLY (reused memory reads as plausible data), so each one is
+// written to produce a wrong NUMBER rather than a trap.
+//
+// 1. sequential regions: region 2 reuses region 1's arena bytes, so region
+//    1's result must already be a copy on the main heap.
+// 2. nested regions: the inner release must restore the OUTER watermark, not
+//    the segment base -- restoring the base would hand the outer list's
+//    storage out again while it is still being pushed to.
+// 3. an ordinary heap value built inside a region body escapes normally. It
+//    lives on the main heap, which the arena release must not touch. This is
+//    the reason the arena is a separate segment instead of a watermark over
+//    the shared bump pointer.
+// 4. growth past the initial inline capacity: the regrow buffers must follow
+//    the array into the arena, or the release frees the block while the live
+//    buffer it points at stays behind.
+
+fn build(n: Int, base: Int) -> FrozenArray[Int] {
+  region r {
+    let l = MutList::empty(r)
+    let mut i = 0
+    while i < n {
+      MutList::push(l, base + i)
+      i = i + 1
+    }
+    MutList::freeze(l)
+  }
+}
+
+fn sum(a: FrozenArray[Int]) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < FrozenArray::length(a) {
+    acc = acc + FrozenArray::get(a, i)
+    i = i + 1
+  }
+  acc
+}
+
+// (1) + (4): two regions in a row, both grown well past the inline capacity.
+// 0..99 = 4950, and 1000..1099 = 104950.
+fn sequential() -> Int {
+  let first = build(100, 0)
+  let second = build(100, 1000)
+  sum(first) + sum(second)
+}
+
+// (2): the inner region runs while the outer list is mid-build, and the outer
+// list keeps being pushed to afterwards. 0+1+2 = 3 inner, 10..14 = 60 outer.
+fn nested() -> Int {
+  let outer = region r {
+    let l = MutList::empty(r)
+    MutList::push(l, 10)
+    MutList::push(l, 11)
+    let inner = region s {
+      let m = MutList::empty(s)
+      MutList::push(m, 0)
+      MutList::push(m, 1)
+      MutList::push(m, 2)
+      MutList::freeze(m)
+    }
+    MutList::push(l, 12 + sum(inner) - 3)
+    MutList::push(l, 13)
+    MutList::push(l, 14)
+    MutList::freeze(l)
+  }
+  sum(outer)
+}
+
+// (3): an ordinary heap value (a tuple of strings) built inside the region
+// body and returned. Nothing region-typed escapes, so the checker allows it,
+// and the arena release must leave it alone.
+fn ordinary_escape() -> Int {
+  let pair = region r {
+    let l = MutList::empty(r)
+    MutList::push(l, 1)
+    let total = FrozenArray::length(MutList::freeze(l))
+    (String::concat("ab", "cd"), total)
+  }
+  let (s, t) = pair
+  String::length(s) + t
+}
+
+export let main = () -> Int {
+  sequential() + nested() + ordinary_escape()
+}
+
+test "region arena release" {
+  // 109900 (sequential) + 60 (nested) + 5 (ordinary escape) = 109965.
+  inspect(main(), "109965")
+}

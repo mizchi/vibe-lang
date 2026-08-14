@@ -204,7 +204,14 @@ import @vibe/compiler/codegen/wasm_emit {
 
 //# Functions
 
-export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool) -> Bytes {
+/// `arena_ptr_addr >= 0` selects the ADR-0090 region arena for the regrow
+/// buffer (bump lane only -- see the layout comment in linked_compile.vibe).
+/// The arena variant needs one extra i32 local (8) for the arena pointer, so
+/// it is pushed with meta_i32 = 7; the plain variant is byte-identical to
+/// what it emitted before the arena existed. Exhaustion falls back to the
+/// main bump heap rather than trapping, so an oversized region loses
+/// reclamation instead of correctness.
+export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool, arena_ptr_addr: Int, arena_data_base: Int, arena_limit: Int) -> Bytes {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   // ADR-0055 Stage 2b: array value is an odd pointer; untag once at the top
@@ -323,15 +330,76 @@ export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool)
     emit_local_set(b, 5)
   } else {
     // non-RC: raw-bump a headerless buffer (never freed — the default path does
-    // not reclaim).
-    emit_global_get(b, 0)
-    emit_local_tee(b, 6)
-    emit_local_get(b, 7)
-    emit_i32_const(b, 8)
-    emit_i32_mul(b)
-    emit_i32_add(b)
-    emit_global_set(b, 0)
-    emit_heap_memory_grow_check(b)
+    // not reclaim). ADR-0090: inside a region the buffer comes from the arena
+    // segment instead, so the whole growth history is released with the
+    // region rather than leaked for the rest of the program.
+    let emit_main_heap_bump: () -> Unit = () -> {
+      emit_global_get(b, 0)
+      emit_local_tee(b, 6)
+      emit_local_get(b, 7)
+      emit_i32_const(b, 8)
+      emit_i32_mul(b)
+      emit_i32_add(b)
+      emit_global_set(b, 0)
+      emit_heap_memory_grow_check(b)
+    }
+    if arena_ptr_addr >= 0 {
+      // Which lane the regrow comes from is a property of THE ARRAY, not of
+      // the call site: an array whose block sits inside the arena segment is
+      // region storage and must keep growing there, or the bulk release would
+      // leave the live buffer behind while reclaiming the block that points at
+      // it. Everything else (ordinary Arrays, including ones built inside a
+      // region body) keeps using the main heap, which the release never
+      // touches. Two nested range tests instead of an `and` so the common
+      // "not a region array" case exits on the first compare.
+      emit_local_get(b, 2)
+      emit_i32_const(b, arena_data_base)
+      emit_i32_ge_u(b)
+      emit_if_void(b)
+      emit_i32_const(b, arena_limit)
+      emit_local_get(b, 2)
+      emit_i32_gt_u(b)
+      emit_if_void(b)
+      // Region array: bump the arena, falling back to the main heap when the
+      // segment is exhausted (less reclamation, never a wrong answer).
+      emit_i32_const(b, arena_ptr_addr)
+      emit_i32_load(b, 2, 0)
+      emit_local_set(b, 8)
+      emit_local_get(b, 8)
+      emit_i32_eqz(b)
+      emit_if_void(b)
+      emit_i32_const(b, arena_data_base)
+      emit_local_set(b, 8)
+      emit_end(b)
+      emit_local_get(b, 8)
+      emit_local_get(b, 7)
+      emit_i32_const(b, 8)
+      emit_i32_mul(b)
+      emit_i32_add(b)
+      emit_i32_const(b, arena_limit)
+      emit_i32_gt_u(b)
+      emit_if_void(b)
+      emit_main_heap_bump()
+      emit_else(b)
+      emit_local_get(b, 8)
+      emit_local_set(b, 6)
+      emit_i32_const(b, arena_ptr_addr)
+      emit_local_get(b, 8)
+      emit_local_get(b, 7)
+      emit_i32_const(b, 8)
+      emit_i32_mul(b)
+      emit_i32_add(b)
+      emit_i32_store(b, 2, 0)
+      emit_end(b)
+      emit_else(b)
+      emit_main_heap_bump()
+      emit_end(b)
+      emit_else(b)
+      emit_main_heap_bump()
+      emit_end(b)
+    } else {
+      emit_main_heap_bump()
+    }
     emit_local_get(b, 6)
     emit_local_get(b, 5)
     emit_local_get(b, 4)

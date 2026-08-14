@@ -448,6 +448,15 @@ export struct CompileCtx {
   // -1 outside the linked RC path, which makes emit_rc_dup_guarded fall back
   // to the inline form.
   rc_dup_func_idx: Int;
+  // ADR-0090 (#1262): the region arena. `region_ptr_addr` is the linear-memory
+  // address of the arena bump pointer, or -1 when this module has no region
+  // (or is on the RC lane, where the arena is not yet safe -- see the layout
+  // comment in wasi/linked_compile.vibe). The two func indices are the arena
+  // variants of `ArrayBuilder::new` / `ArrayBuilder::push`, -1 alongside.
+  // Everything else about the segment is derived from region_ptr_addr by the
+  // region_* helpers below, so the emitter and the layout cannot disagree.
+  region_ptr_addr: Int;
+  region_arr_new_func_idx: Int;
   // Linear-memory backend: wasm function index of `vibe_heap_grow_check`, or -1
   // when the surrounding module does not define the helper. Bump allocations
   // call it after updating global 0 so low initial memory can grow on demand.
@@ -2021,6 +2030,24 @@ export fn emit_index_one(buf: Bytes, ctx: CompileCtx) -> Unit {
 /// #715 recurrence guard: base address of the shadow-liveness byte table
 /// (1 byte per heap address at base+vptr) and the reservation pad that keeps
 /// it inside linear memory. Only referenced when compiling with rc_shadow.
+/// ADR-0090 (#1262) region arena control words, all derived from the bump
+/// pointer address so the layout lives in exactly one place:
+/// `[bump ptr @+0][depth @+4][saved bump ptrs @+8, region_max_depth levels]`.
+export fn region_depth_addr_of(region_ptr_addr: Int) -> Int {
+  region_ptr_addr + 4
+}
+
+export fn region_saves_base_of(region_ptr_addr: Int) -> Int {
+  region_ptr_addr + 8
+}
+
+/// Nesting levels the save table holds. A region entered deeper than this
+/// skips both the save and the release: it keeps allocating from the arena
+/// (correct, just unreclaimed) instead of scribbling past the table.
+export fn region_max_depth() -> Int {
+  64
+}
+
 export fn rc_shadow_base() -> Int {
   268435456
 }

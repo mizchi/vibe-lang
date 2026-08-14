@@ -152,14 +152,105 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
   dispatch から隠すため。
 - **codegen**(linear のみ): `compile_call` が `__region_run(lam)` を
   「dummy token 0 での即時 closure call」に、`MutList::empty(r)` を
-  `ArrayBuilder::new()`(token 非評価)に書き換え。push/freeze/to_array は
-  ArrayBuilder lowering への alias。arena セグメント + Perceus 免除は
-  未実装(次スライス — 現状 runtime は通常の RC heap)。wasm-gc backend は
-  未対応。
+  `ArrayBuilder::new()`(token 非評価)に書き換え。push は ArrayBuilder
+  lowering への alias。**`freeze` / `to_array` は copy-out** (#1262,
+  2026-08-14) —— FrozenArray の他の面 (`from_array`/`to_array`) は
+  identity cast だが、この2つだけは実体をコピーする。理由は2つあり、
+  (a) exit の時点で list ハンドルがまだスコープに居るので、alias だと
+  `let out = MutList::freeze(l); MutList::push(l, 3)` が「凍った」配列を
+  後から書き換える (黙って誤る)、(b) arena はセグメント全体の watermark
+  リセットで解放するので、identity cast は**解放予定のメモリへのポインタ**を
+  呼び出し側に渡すことになる。§4 の「脱出は freeze / copy-out のみ」の
+  copy-out がこれ。gate 75 の `fixtures/region_ok_freeze_copies_out.vibe`
+  が両 exit を pin。wasm-gc backend は未対応。
+- **arena セグメント + watermark 一括解放 (#1262, 2026-08-14、bump レーンのみ)**:
+  `__region_run` が **独立した bump セグメント**の watermark を保存/復元し、
+  region 終端でまとめて捨てる。レイアウトは linear memory 上の
+  `[bump ptr @+0][depth @+4][saved bump ptrs @+8, 64 段][data, 256 KiB]` で、
+  制御語を wasm global ではなくメモリに置いたのは、呼び出し側で local を
+  1本も要らなくするため (codegen の書き換えからは囲む関数の local ベクタに
+  手が届かない)。`MutList::empty` は専用 body
+  (`gen_region_arr_new_body`) がセグメントから確保し、**`MutList::push` は
+  書き換え不要** —— どちらのレーンから regrow するかは**配列の性質**
+  (そのブロックがセグメント内か) なので、共有の `arr_push` body の中の
+  range 判定にした。
+  - **なぜ独立セグメントで、共有 bump の watermark ではないのか**: region
+    body は普通の heap 値 (tuple・String) も確保し、それは脱出してよい。
+    共有 bump を巻き戻すとそれを回収してしまう。§5 の「main `__heap_ptr` と
+    混ぜない」はこの理由。
+  - **degradation は常に「回収しない」側**: セグメント枯渇時は main heap に
+    fallback、ネストが 64 段を超えたら save も restore もしない。どちらも
+    「回収が減る」だけで、誤った答えにはならない。
+  - **既知ギャップ: region body を例外が貫くと release を飛ばす**。
+    `__region_run` の exit 列は body の直後に置かれた素の命令列なので、
+    `throw` が region を越えて外へ抜けると実行されない。結果、その region
+    の arena は解放されず、depth カウンタも戻らない。**壊れ方は「回収が
+    減る」側**で誤答にはならないが、region を貫く例外が 64 回起きると
+    depth が save 表を超えてそれ以降どの region も解放しなくなる。
+    正しくは exit 列を `try_table` の unwind 経路にも置く必要があり、
+    Phase 1 では入れていない。
+  - **bump レーン限定**: RC では region ブロックが RC ヘッダを持ち free list に
+    載りうるので、一括解放が free list を壊す。Perceus 免除が入るまで RC
+    レーンは従来どおり (MutList == ArrayBuilder on main heap)。bump レーンは
+    そもそも解放しないので、一括解放の効き目もここが一番大きい。
+  - **実測** (200 region × 500 要素、`VIBE_RC=0`、
+    `scripts/region_arena_heap_delta.mjs`): main heap 増加が
+    **1,644,008 B → 6,408 B (257×)**。残る ~32 B/region は region body の
+    closure 環境 (`__region_run(lam)` の lam は毎回 main heap に確保される)
+    で、region storage ではない。即時適用される region lambda を確保無しに
+    するのは別の最適化。
+  - gate 75 が `fixtures/region_arena_release_ok.vibe` (逐次 region の再利用・
+    ネスト・普通の heap 値の脱出・inline 容量超えの regrow) を RC 両モードで、
+    `fixtures/region_arena_bounded.vibe` を bump レーンで **測って** pin する
+    —— 解放をやめた region も値は正しいままなので、値の assertion では
+    見えない。
+- **Perceus 免除**は未実装 (RC レーンで arena を有効にする前提)。設計は
+  詰めてある。**プランナ側で「この束縛は region メモリだから dup/drop を
+  出さない」と判定するのは筋が悪い** —— region 値が helper 経由や container
+  経由で流れた先で必ず取りこぼす。**region メモリかどうかはアドレスの性質で
+  あって呼び出し位置の性質ではない** (arr_push のレーン選択と同じ理屈) ので、
+  ランタイム側で見る。
+
+  ただし**「`vibe_rc_drop` の入口で arena 内なら return」は間違い**。それだと
+  子を辿らなくなるので、要素が main heap に載っている場合 (`MutList[T]` の
+  `T` が heap 値) にその子がリークする。arena が回収するのは MutList の
+  storage だけで、要素そのものではない。
+
+  正しい介入点は **`emit_rc_free_push`** (bodies_core_a1a2.vibe) ——
+  ブロックを free list に載せる唯一の choke point で、ブロック本体の解放も
+  grown buffer の解放も両方ここを通る。ここで arena range なら push を
+  飛ばせば、**子は今までどおり再帰的に drop され、arena 上のブロックだけが
+  free list に載らない**。載せてしまうと一括解放後に別の確保として配られる。
+
+  RC レーンで必要な残りは 3 点:
+  1. `emit_rc_free_push` の arena range 判定 (上記)
+  2. `MutList::empty` の RC 版 body (RC ブロックレイアウト = ヘッダ + 奇数
+     タグを保ったまま arena から確保する)
+  3. `arr_push` の RC regrow が arena 内の配列に対して arena から確保する
+     (bump レーンで入れた range 判定の RC 版)
+
+  この 3 点が揃うまで RC レーンでは `need_region_arena` を false のままに
+  してある。
 - **gate**: `compiler_gate.sh` §74 が positive
   (`fixtures/region_arena_ok.vibe`、42)と negative
   (`fixtures/err_region_escape_return_value.vibe`、needle
   "region escapes its scope")を固定。
+- **closure capture (#1725、2026-08-14)**: §4 の「捕獲した closure が region
+  型に感染する」は **row 統合前提なので Phase 1 では働かない** —— 型は捕獲を
+  記録しないので、`region r { let l = MutList::empty(r); () -> Array[Int] {
+  MutList::to_array(l) } }` の結果型は `() -> Array[Int]` で skolem 走査から
+  見えず、region 値が closure の環境に隠れて脱出できた。arena が入れば
+  use-after-free なので stopgap を入れてある:
+  `checker/checker_escape.vibe :: region_token_escapes_in_closure` が
+  「region body の**結果そのもの**が closure literal で、region token から
+  直に束縛された名前(とその別名)を捕獲している」形だけを reject する。
+  **capture 自体は正当**(region 内で完結する closure は普通に書く)なので
+  過剰approx にしないことが要件で、汚染は「token に言及する初期化式」と
+  「汚染名の裸の別名」に限り、shadowing は最後の束縛が勝つ。取りこぼし:
+  outer binding / container 経由、helper 関数経由。gate 75 が両方向
+  (`fixtures/err_region_escape_closure_capture.vibe` /
+  `fixtures/region_ok_closure_local.vibe`)を pin。**正しい規則は §4 の
+  row 感染**で、arena スライスの前提はそちら。
 - **既知ギャップ(Phase 1 で許容、ADR 本文の設計は不変)**: effect row 統合
   (§3)は未着手 — 別 pass の effect 検査は lambda wrapper を見るため、
   region body 内の effect は enclosing fn に帰属しない。outer-binding scan は

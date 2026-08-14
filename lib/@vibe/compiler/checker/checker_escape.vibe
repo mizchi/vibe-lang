@@ -30,6 +30,10 @@ import @vibe/compiler/core {
   Expr, Pat, TypeExpr
 }
 
+import @vibe/core {
+  array_empty
+}
+
 //# Functions
 
 /// True when `pat` binds `name` (and therefore shadows an outer `let mut` of
@@ -371,4 +375,157 @@ fn esc_scan(expr: Expr, name: String) -> Bool {
 /// inside it that shadows it, is correctly not this binding.
 export fn mut_binding_escapes(body: Expr, name: String) -> Bool {
   esc_scan(body, name)
+}
+
+//# Region-token capture (#1725 / ADR-0090)
+//#
+//# ADR-0090's escape check scans the region body's RESULT TYPE for the region
+//# skolem. That misses a closure: `region r { let l = MutList::empty(r); () ->
+//# Array[Int] { MutList::to_array(l) } }` has result type `() -> Array[Int]`,
+//# which mentions no skolem -- the taint sits in the closure's captured
+//# environment, and types do not record captures. The region value then leaves
+//# both the region and the enclosing function. Harmless while `MutList` is a
+//# checker-only phantom (nothing is freed at region end); a use-after-free the
+//# moment the arena + watermark release lands.
+//#
+//# This is a deliberately NARROW first cut, and it UNDER-approximates on
+//# purpose. An escape check is enforcement, and ADR-0100 (1) fixes the
+//# enforcement direction as "stay silent when unsure" -- a false positive here
+//# rejects a valid program. So it fires only when the region body's RESULT is
+//# a closure literal, and that closure holds either
+//#
+//#   - the region TOKEN itself (it can then call `MutList::empty(r)` after the
+//#     region ended, allocating from a segment whose watermark was handed
+//#     back), or
+//#   - a name the body bound to region memory (`MutList::empty(<token>)` or a
+//#     bare alias of one).
+//#
+//# What it does NOT catch (all still open on #1725): a tainted closure stored
+//# into an outer binding or a container rather than returned; region memory
+//# arriving through a helper (`let l = mk(r)` -- the initialiser is not
+//# syntactically `MutList::empty`); and any form needing the real rule, which
+//# is "a closure capturing a region value must not itself escape the region".
+//# That rule wants the region argument kind ADR-0071 reserved in the effect
+//# row, so a function that touches region memory carries `r` and the EXISTING
+//# type-based check sees it. This check is a stopgap that closes the
+//# demonstrated holes; it is not that design.
+
+/// A binding is region-tainted only when its initialiser EVALUATES TO region
+/// memory: a `MutList::empty(<token>)` call, or a bare alias of an
+/// already-tainted name (`let l2 = l`).
+///
+/// Both narrowings matter, in opposite directions.
+///
+/// "Mentions a tainted name" would be the obvious rule for the alias case and
+/// is wrong: `let n = MutList::length(l)` mentions `l` but is an `Int` that
+/// copies out cleanly, and a closure over `n` is safe. `MutList` exposes no
+/// such accessor today, which is exactly why the loose rule would be a
+/// false-positive trap waiting for the next builtin rather than a bug you can
+/// see.
+///
+/// "Mentions the token anywhere" is wrong the same way, and that one IS
+/// writable today (Codex review on #1730): `let n = if c { let l =
+/// MutList::empty(r); 42 } else { 0 }` mentions `r` during evaluation but
+/// yields an `Int`. What matters is the initialiser's RESULT, not what its
+/// evaluation touched. Deciding that in general wants types; recognising the
+/// one syntactic form that certainly produces region memory does not, and
+/// enforcement is the "silent when unsure" side (ADR-0100 (1)). The cost is
+/// that region memory arriving through a helper (`let l = mk(r)`) is not
+/// tainted -- a miss, in the documented direction.
+fn esc_is_region_tainted_init(val: Expr, token: String, names: Array[String], flags: Array[Bool]) -> Bool {
+  match val {
+    EIdent(n, _) => esc_taint_of(names, flags, n),
+    ECall(callee, args, _) => match callee {
+      EIdent(name, _) => name == "MutList::empty" && esc_free_in_args(args, token),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn esc_free_in_args(args: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(args) {
+    if esc_free_in(Array::get(args, i), name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Latest-binding-wins lookup over the spine's binding record: every `let` in
+/// the spine appends (name, taint) in source order, so scanning from the END
+/// answers "is this name region memory HERE" and shadowing falls out of the
+/// order instead of needing its own rule. Without this, `let l =
+/// MutList::empty(r)` followed by `let l = 0` would leave `l` tainted and a
+/// closure over the Int would be rejected.
+fn esc_taint_of(names: Array[String], flags: Array[Bool], name: String) -> Bool {
+  let mut i = Array::length(names) - 1
+  let mut found = false
+  let mut done = false
+  while i >= 0 {
+    if !done && Array::get(names, i) == name {
+      found = Array::get(flags, i)
+      done = true
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  found
+}
+
+/// Walk the region body's `let` spine, recording every binding it makes with
+/// whether that binding is region memory, and return the spine's RESULT
+/// expression.
+fn esc_region_spine(body: Expr, token: String, names: Array[String], flags: Array[Bool]) -> Expr {
+  match body {
+    ELet(n, val, rest, _) => {
+      Array::push(flags, esc_is_region_tainted_init(val, token, names, flags))
+      Array::push(names, n)
+      esc_region_spine(rest, token, names, flags)
+    },
+    ELetMut(n, val, rest, _) => {
+      Array::push(flags, esc_is_region_tainted_init(val, token, names, flags))
+      Array::push(names, n)
+      esc_region_spine(rest, token, names, flags)
+    },
+    ESeq(_, rest) => esc_region_spine(rest, token, names, flags),
+    _ => body
+  }
+}
+
+/// True when the region body's RESULT is a closure that captures a value the
+/// body bound from the region token `token` -- i.e. a region value escaping
+/// inside a closure's environment, which the result-TYPE check cannot see.
+export fn region_token_escapes_in_closure(body: Expr, token: String) -> Bool {
+  let names: Array[String] = array_empty()
+  let flags: Array[Bool] = array_empty()
+  let result = esc_region_spine(body, token, names, flags)
+  match result {
+    EFn(_, _, params, _, _, fn_body) => {
+      // The token ITSELF escaping is the sharpest case and needs no taint
+      // analysis at all: a closure holding `r` can call `MutList::empty(r)`
+      // after the region ended, allocating from a segment whose watermark has
+      // already been handed back (Codex review on #1730). No outer binding is
+      // involved, so the spine walk below cannot see it.
+      let mut found = !esc_params_bind(params, token) && esc_free_in(fn_body, token)
+      let mut i = 0
+      while i < Array::length(names) {
+        let name = Array::get(names, i)
+        if esc_taint_of(names, flags, name) && !esc_params_bind(params, name) && esc_free_in(fn_body, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
 }

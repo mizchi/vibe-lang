@@ -8475,7 +8475,9 @@ echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 coll
 # region-tainted MutList itself out of the region body is a STATIC error
 # (err_region_escape_return_value.vibe). Same known generalize-gap caveat
 # as the ADR-0068 section above: the return-position escape is the hard
-# guarantee in this slice.
+# guarantee in this slice. #1725 added the closure-capture direction, which
+# the result-TYPE scan structurally cannot see (types do not record
+# captures) -- both a negative and a false-positive guard, at the end.
 echo "[compiler-gate] 75/75 ADR-0090 region + MutList vertical slice (#1262)"
 r90dir="_build/_gate_region90"
 rm -rf "$r90dir"; mkdir -p "$r90dir"
@@ -8524,6 +8526,123 @@ if ! grep -qF 'region token' "$r90dir/forged.wasm.diag" 2>/dev/null; then
   cat "$r90dir/forged.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1725: the return-position check above scans the region body's RESULT TYPE
+# for the skolem, so a region value hidden in a CLOSURE's captured
+# environment slips past it -- the result type `() -> Array[Int]` mentions no
+# region. These two fixtures pin BOTH directions, which is the whole
+# difficulty: capture is legitimate, only escape is not.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_region_escape_closure_capture.vibe "$r90dir/cap.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/cap.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_escape_closure_capture.vibe compiled successfully -- a region value must not escape inside a closure (#1725)" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its scope' "$r90dir/cap.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_escape_closure_capture.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/cap.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The sharper negative: the escaping closure holds the region TOKEN, with no
+# outer binding for a spine walk to find.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_region_escape_token_capture.vibe "$r90dir/tok.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/tok.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_escape_token_capture.vibe compiled successfully -- a closure holding the region token must not escape (#1725)" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its scope' "$r90dir/tok.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_escape_token_capture.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/tok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The false-positive guard: a closure that captures a region value but stays
+# inside the region is valid, and the body still exits via freeze. It also
+# covers shadowing and an initialiser that merely touches the token while
+# evaluating to a scalar -- both shapes an over-eager taint rule rejects.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_closure_local.vibe "$r90dir/caplocal.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/caplocal.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_closure_local.vibe did not compile -- the #1725 capture check is over-approximating" >&2
+  cat "$r90dir/caplocal.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! r90_cap_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/caplocal.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_closure_local.vibe got '$r90_cap_out' (want 55)" >&2
+  exit 1
+fi
+# ADR-0090's sanctioned exits COPY. The rest of the FrozenArray surface is
+# identity casts, so this is the one place the distinction is load-bearing:
+# an aliasing exit both changes under the caller (the list handle is still in
+# scope) and hands out a pointer into the segment the arena slice will
+# release by watermark reset. Pushing after the exit must not reach the
+# result -- inspect prints actual/expected itself on a regression.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_freeze_copies_out.vibe "$r90dir/copyout.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/copyout.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_freeze_copies_out.vibe did not compile" >&2
+  cat "$r90dir/copyout.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! r90_copy_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/copyout.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: MutList::freeze/to_array aliased the list instead of copying out (want 250, aliasing gives 330)" >&2
+  echo "$r90_copy_out" >&2
+  exit 1
+fi
+# The arena segment + watermark bulk release. Two fixtures, because the
+# release fails in two different ways: reclaiming something still live gives a
+# WRONG VALUE (quietly -- reused bump memory reads as plausible data), and
+# not releasing at all gives the RIGHT value while leaking. Only the second
+# fixture can see the second failure, and only by measuring.
+for r90_rc in 1 0; do
+  VIBE_RC="$r90_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/region_arena_release_ok.vibe "$r90dir/release.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$r90dir/release.wasm" ]; then
+    echo "[compiler-gate] FAIL: region_arena_release_ok.vibe did not compile (VIBE_RC=$r90_rc)" >&2
+    cat "$r90dir/release.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! r90_rel_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/release.wasm" 2>&1)"; then
+    echo "[compiler-gate] FAIL: region arena release reclaimed live memory (VIBE_RC=$r90_rc, want 109965)" >&2
+    echo "$r90_rel_out" >&2
+    exit 1
+  fi
+  rm -f "$r90dir/release.wasm" "$r90dir/release.wasm.diag"
+done
+# Boundedness. Bump lane only: that is where the arena is wired (under RC a
+# region block would carry an RC header and reach the free list, which the
+# bulk release invalidates -- see linked_compile.vibe) and also where it is
+# worth anything, since the bump allocator never frees. 200 regions x 500
+# elements leaked 1,644,008 B before the arena and cost 6,408 B after; the
+# bound below is deliberately loose (it only has to separate "releases" from
+# "does not"), because the residual is per-call closure environments and
+# grows if that lambda's shape changes.
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_arena_bounded.vibe "$r90dir/bounded.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/bounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_arena_bounded.vibe did not compile" >&2
+  cat "$r90dir/bounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! r90_bounded_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bounded.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_arena_bounded.vibe got the wrong value" >&2
+  echo "$r90_bounded_out" >&2
+  exit 1
+fi
+r90_heap_delta="$(node scripts/region_arena_heap_delta.mjs "$r90dir/bounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from region_arena_bounded.wasm" >&2
+  exit 1
+}
+if [ "$r90_heap_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 regions grew the main bump heap by $r90_heap_delta B (want < 100000; ~6408 with the arena, 1644008 without) -- the arena stopped releasing" >&2
+  exit 1
+fi
+echo "[compiler-gate] region arena bulk release ok (200 regions, main heap +${r90_heap_delta} B)"
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 
