@@ -58,6 +58,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_set_body,
   gen_arr_slice_body,
   gen_arr_truncate_body,
+  gen_array_value_copy_body,
   gen_bytes_append_body,
   gen_bytes_concat_body,
   gen_bytes_from_array_body,
@@ -4781,7 +4782,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let str_substring_idx = str_from_char_code_idx + 1
   let identity_idx = str_substring_idx + 1
   let arr_slice_idx = identity_idx + 1
-  let arr_concat_idx = arr_slice_idx + 1
+  let frozen_array_copy_idx = arr_slice_idx + 1
+  let arr_concat_idx = frozen_array_copy_idx + 1
   let arr_truncate_idx = arr_concat_idx + 1
   let string_join_idx = arr_truncate_idx + 1
   let fs_read_file_stub_idx = string_join_idx + 1
@@ -5348,11 +5350,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "ArrayBuilder::new" => arr_new_idx,
         "ArrayBuilder::push" => arr_push_idx,
         "ArrayBuilder::freeze" => identity_idx,
-        // #906: FrozenArray[T] -- from_array/to_array are pure identity
-        // casts (same runtime layout as Array[T]); get/length alias
-        // Array::get/Array::length's own bodies.
-        "FrozenArray::from_array" => identity_idx,
-        "FrozenArray::to_array" => identity_idx,
+        // #1733: map the builtin itself so function-value aliases retain the
+        // same copy boundary as direct calls.
+        "FrozenArray::from_array" => frozen_array_copy_idx,
+        "FrozenArray::to_array" => frozen_array_copy_idx,
         "FrozenArray::get" => arr_get_idx,
         "FrozenArray::length" => arr_len_idx,
         "Array::slice" => arr_slice_idx,
@@ -5541,6 +5542,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     // #982: the clamp prologue's i64 len scratch (RC reuses local 10 = elem).
     push_builtin(gen_arr_slice_body(false, rc_alloc_idx, rc_shadow), 6, 1, 8)
   }
+  push_builtin(gen_array_value_copy_body(arr_len_idx, arr_slice_idx), 0, 0, 3)
   push_builtin(gen_arr_concat_body(), 9, 0, 4)
   push_builtin(if enable_rc {
     gen_arr_truncate_body(true)
@@ -8143,6 +8145,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")
   Array::set(gen_sec_names, identity_idx - num_imported_funcs, "__rt_identity")
   Array::set(gen_sec_names, arr_slice_idx - num_imported_funcs, "__rt_arr_slice")
+  Array::set(gen_sec_names, frozen_array_copy_idx - num_imported_funcs, "__rt_frozen_array_copy")
   Array::set(gen_sec_names, arr_concat_idx - num_imported_funcs, "__rt_arr_concat")
   Array::set(gen_sec_names, arr_truncate_idx - num_imported_funcs, "__rt_arr_truncate")
   Array::set(gen_sec_names, string_join_idx - num_imported_funcs, "__rt_string_join")
