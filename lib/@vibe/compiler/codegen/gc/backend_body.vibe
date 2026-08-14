@@ -2182,13 +2182,39 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // fs_read_file results) heap-bumps through the exported __heap_ptr global;
   // without it the runner falls back to an end-of-memory arena that the
   // guest's own bump allocator grows into and clobbers mid-compile.
+  // #1701: per-block `__test_<name>` / `__bench_<name>` exports, mirroring the
+  // linear backend (codegen/wasi/linked_compile.vibe). Without them `vibe bench`
+  // has nothing to call on this lane: the synthesized `_start` runs every block
+  // in one go, so the runner found no entry point, timed nothing, and printed a
+  // single nameless line of invented numbers.
+  //
+  // Only `__no_entry__` test/bench builds produce these names, so ordinary
+  // builds -- including the compiler's own self-compile -- keep the exact export
+  // set they had. The wasm index of user function `j` is `j + func_offset`, the
+  // same mapping the linear twin uses.
+  //
+  // This does NOT make `export let` work on the gc lane; that surface is still
+  // unimplemented here, and widening it interacts with the #1541 export rule.
+  let block_export_names = array_empty()
+  let block_export_indices = array_empty()
+  let mut bxi = 0
+  while bxi < num_user_funcs {
+    let bname = Array::get(fn_names_list, bxi)
+    if String::starts_with(bname, "__bench_") || String::starts_with(bname, "__test_") {
+      Array::push(block_export_names, bname)
+      Array::push(block_export_indices, bxi + func_offset)
+    } else {
+      ()
+    }
+    bxi = bxi + 1
+  }
   let export_content = bytebuf_new()
   let export_entry_too = entry_name != "_start"
-  bytebuf_push_vec_header(export_content, if export_entry_too {
+  bytebuf_push_vec_header(export_content, Array::length(block_export_names) + (if export_entry_too {
     4
   } else {
     3
-  })
+  }))
   emit_name(export_content, "_start")
   bytebuf_push(export_content, 0)
   leb128_encode_u32(export_content, start_func_idx)
@@ -2205,6 +2231,13 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   emit_name(export_content, "__heap_ptr")
   bytebuf_push(export_content, 3)
   leb128_encode_u32(export_content, 0)
+  let mut bxe = 0
+  while bxe < Array::length(block_export_names) {
+    emit_name(export_content, Array::get(block_export_names, bxe))
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, Array::get(block_export_indices, bxe))
+    bxe = bxe + 1
+  }
   bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
     // #1109 gc parity (linear twin: linked_compile.vibe's element-section
