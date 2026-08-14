@@ -51,6 +51,7 @@ import @vibe/compiler/codegen/common_base {
   expr_tag,
   find_func_stmt,
   find_local_slot,
+  gc_ctor_field_is_ref,
   gc_slot_log_reset_above,
   gc_slot_map_get,
   gc_slot_map_reset_above,
@@ -190,7 +191,7 @@ import ./backend_builtins_string_extra.vibe {
 }
 
 import ./backend_call.vibe {
-  compile_call_gc, gc_join_is_native_ref
+  compile_call_gc, gc_compile_native_array_ref, gc_join_is_native_ref
 }
 
 import ./backend_lambda_body.vibe {
@@ -643,6 +644,48 @@ fn gc_native_array_children_are_safe(expr: Expr, name: String, abi_names: Array[
 /// call, a return, an aggregate, a closure capture, or a field STORE (that
 /// lowers through `__set_field`, whose receiver is an ordinary value).
 /// Anything not recognized here is rejected, so unfamiliar syntax fails closed.
+/// #1542: reading a reference-lane FIELD yields a reference, not a tagged i64,
+/// so unlike a scalar field it cannot be handed to arbitrary code. Only the
+/// receiver position of a native array op consumes it correctly.
+fn gc_native_struct_ref_field_reads_are_ops(expr: Expr, name: String, ctx: CompileCtxGc, ns_struct_idx: Int) -> Bool {
+  match expr {
+    EDot(EIdent(obj, _), field, _, _) => obj != name || !gc_ctor_field_is_ref(ctx.gc_ctor_table, ns_struct_idx, field),
+    ECall(EIdent(fname, _), args, _) => {
+      let is_op = (fname == "Array::length" && Array::length(args) == 1) || (fname == "Array::get" && Array::length(args) == 2) || (fname == "Array::set" && Array::length(args) == 3)
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(args) {
+        let arg = Array::get(args, i)
+        let receiver_ok = i == 0 && is_op && (match arg {
+          EDot(EIdent(obj2, _), _, _, _) => obj2 == name,
+          _ => false
+        })
+        if !receiver_ok && !gc_native_struct_ref_field_reads_are_ops(arg, name, ctx, ns_struct_idx) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut ok = true
+      while i < Array::length(children) {
+        if !gc_native_struct_ref_field_reads_are_ops(Array::get(children, i), name, ctx, ns_struct_idx) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
+}
+
 fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
   match expr {
     EIdent(n, _) => n != name,
@@ -1208,9 +1251,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       match value {
         // #1702: a record literal bound to a local that never leaves field-read
         // position lives in a real wasm-gc struct instead of linear memory.
-        ERecord(_, ns_fields, _) => if ctx.gc_native_struct_type_base >= 0 && ctx.gc_native_array_frame_ok && gc_native_struct_binding_index(ctx, ns_fields) >= 0 && gc_native_struct_scope_is_safe(body, name) {
+        ERecord(_, ns_fields, _) => if ctx.gc_native_struct_type_base >= 0 && ctx.gc_native_array_frame_ok && gc_native_struct_binding_index(ctx, ns_fields) >= 0 && gc_native_struct_scope_is_safe(body, name) && gc_native_struct_ref_field_reads_are_ops(body, name, ctx, gc_native_struct_binding_index(ctx, ns_fields)) {
           let ns_struct_idx = gc_native_struct_binding_index(ctx, ns_fields)
           let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
+          let ns_field_refs = Array::get(ctx.gc_ctor_table.struct_field_is_ref, ns_struct_idx)
           gc_slot_map_set(ctx.gc_native_struct_scope, local_idx, ns_struct_idx)
           gc_slot_map_set(ctx.gc_native_struct_decl, local_idx, ns_struct_idx)
           // struct.new takes its fields as operands, so they go on the stack in
@@ -1224,7 +1268,14 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             while ns_fi < Array::length(ns_fields) {
               let (ns_fname, ns_fval) = Array::get(ns_fields, ns_fi)
               if !ns_emitted && ns_fname == ns_target {
-                ns_nl = ce(buf, ns_fval, local_names, ns_nl, ld)
+                // #1542: a field declared `Array[Int]` holds `(ref null $array)`,
+                // so its operand has to be produced on the reference lane rather
+                // than as a tagged i64.
+                ns_nl = if Array::get(ns_field_refs, ns_di) {
+                  gc_compile_native_array_ref(buf, ns_fval, local_names, ns_nl, ctx, ld, ce)
+                } else {
+                  ce(buf, ns_fval, local_names, ns_nl, ld)
+                }
                 ns_emitted = true
               } else {
                 ()
@@ -1238,7 +1289,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             }
             ns_di = ns_di + 1
           }
-          emit_struct_new(buf, ctx.gc_native_struct_type_base + Array::length(ns_declared) - 1)
+          emit_struct_new(buf, ctx.gc_native_struct_type_base + ns_struct_idx)
           emit_local_set(buf, local_idx)
           ce(buf, body, local_names, ns_nl, ld)
         } else {
@@ -1763,7 +1814,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           ()
         }
         emit_local_get(buf, ns_slot)
-        emit_struct_get(buf, ctx.gc_native_struct_type_base + Array::length(ns_declared) - 1, ns_fidx)
+        emit_struct_get(buf, ctx.gc_native_struct_type_base + ns_struct_idx, ns_fidx)
         return next_local
       } else {
         ()

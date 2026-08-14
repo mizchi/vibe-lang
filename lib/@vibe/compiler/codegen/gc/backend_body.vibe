@@ -150,6 +150,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_struct_new,
   emit_struct_set,
   emit_struct_type_raw,
+  emit_struct_type_raw_refs,
   emit_table_section_funcref,
   emit_type_section,
   emit_type_section_multi,
@@ -1339,6 +1340,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   }
   let struct_names = array_empty()
   let struct_field_names = array_empty()
+  let struct_field_is_ref = array_empty()
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
@@ -1352,6 +1354,18 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           sfi = sfi + 1
         }
         Array::push(struct_field_names, fnames)
+        // #1542: which of this struct's fields are declared as a reference-lane
+        // array. The field's wasm type follows from its DECLARED type, so this
+        // has to be collected here beside the names rather than inferred from a
+        // literal at the binding site.
+        let frefs = array_empty()
+        let mut sfr = 0
+        while sfr < Array::length(sfields) {
+          let (_, fty) = Array::get(sfields, sfr)
+          Array::push(frefs, gc_direct_abi_is_native_array_type(fty))
+          sfr = sfr + 1
+        }
+        Array::push(struct_field_is_ref, frefs)
         ()
       },
       _ => ()
@@ -1605,7 +1619,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   let gc_agg_ret_names_l = array_empty()
   let gc_agg_ret_infos_l = array_empty()
   compute_agg_returning(stmts, CtorTable::{
-    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: struct_field_is_ref, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
   }, gc_agg_ret_names_l, gc_agg_ret_infos_l)
   let ft_params = array_empty()
   let ft_returns = array_empty()
@@ -1641,19 +1655,13 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // generated before the type section is laid out, so any index a body names
   // must be a constant here. The struct count is known now (it comes from the
   // declared structs); `num_closure_types` is only known after the walk.
-  let mut gc_native_struct_max_fields = 0
-  let mut nsi = 0
-  while nsi < Array::length(struct_field_names) {
-    let nsf = Array::length(Array::get(struct_field_names, nsi))
-    if nsf > gc_native_struct_max_fields {
-      gc_native_struct_max_fields = nsf
-    } else {
-      ()
-    }
-    nsi = nsi + 1
-  }
+  // #1542: one wasm struct type per DECLARED STRUCT, not per field count. A
+  // field declared `Array[Int]` gets `(mut (ref null $array))` rather than
+  // `(mut i64)`, so two structs with the same arity no longer share a type --
+  // the shape depends on which fields carry references.
+  let gc_native_struct_count = Array::length(struct_field_names)
   let gc_native_struct_type_base = 14
-  let closure_type_base = 14 + gc_native_struct_max_fields
+  let closure_type_base = 14 + gc_native_struct_count
   let fresh_bytes_array: () -> Array[Bytes] = () -> {
     ArrayBuilder::freeze(ArrayBuilder::new())
   }
@@ -1828,7 +1836,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             match pann {
               Some(pte) => {
                 let pinfo = agg_info_of_type_expr(CtorTable::{
-                  names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
+                  names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: struct_field_is_ref, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
                 }, pte)
                 if pinfo > 0 {
                   Array::push(gc_agg_slots_f, psi * 256 + pinfo)
@@ -1886,7 +1894,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             strs: str_strs, offsets: str_offsets, lengths: str_lengths
           }
           let ct = CtorTable::{
-            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
+            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: struct_field_is_ref, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
           }
           let func_ctx = CompileCtxGc::{
             func_table: ft, str_table: st, lambda_table: lt_w,
@@ -1967,7 +1975,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       refcell_type_idx: refcell_type_idx, closure_type_base: closure_type_base,
       gc_ctor_table: CtorTable::{
         names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list,
-        type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names,
+        type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: struct_field_is_ref,
         names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
       },
       gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
@@ -2121,7 +2129,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   } else {
     0
   }
-  let num_base_types = 14 + gc_native_struct_max_fields
+  let num_base_types = 14 + gc_native_struct_count
   let gc_direct_type_indices = array_empty()
   let mut gc_direct_type_count = 0
   let mut dti = 0
@@ -2198,18 +2206,26 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   emit_array_type_raw(type_content, 126, 1)
   emit_func_type_ref_result(type_content, gc_native_array_type_idx)
   // #1702: `(struct (mut i64) x N)` for N = 1..max, so an N-field record uses
-  // gc_native_struct_type_base + (N - 1).
+  // gc_native_struct_type_base + <ctor-table struct index>.
   let mut nst = 0
-  while nst < gc_native_struct_max_fields {
+  while nst < gc_native_struct_count {
+    let nst_decl = Array::get(struct_field_names, nst)
+    let nst_refs = Array::get(struct_field_is_ref, nst)
     let nst_fields = array_empty()
     let nst_muts = array_empty()
     let mut nstf = 0
-    while nstf <= nst {
-      Array::push(nst_fields, 126)
+    while nstf < Array::length(nst_decl) {
+      if Array::get(nst_refs, nstf) {
+        // -1 marks a typed reference field; emit_struct_type_raw_refs spells it
+        // as `(ref null $native_i64_array)` instead of a value type byte.
+        Array::push(nst_fields, 0 - 1)
+      } else {
+        Array::push(nst_fields, 126)
+      }
       Array::push(nst_muts, 1)
       nstf = nstf + 1
     }
-    emit_struct_type_raw(type_content, nst_fields, nst_muts)
+    emit_struct_type_raw_refs(type_content, nst_fields, nst_muts, gc_native_array_type_idx)
     nst = nst + 1
   }
   let mut cti = 0
@@ -2547,7 +2563,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           leb128_encode_u32(func_buf, gc_native_array_type_idx)
         } else if ns_decl_struct_idx >= 0 {
           bytebuf_push(func_buf, 99)
-          leb128_encode_u32(func_buf, gc_native_struct_type_base + Array::length(Array::get(struct_field_names, ns_decl_struct_idx)) - 1)
+          leb128_encode_u32(func_buf, gc_native_struct_type_base + ns_decl_struct_idx)
         } else {
           bytebuf_push(func_buf, 126)
         }

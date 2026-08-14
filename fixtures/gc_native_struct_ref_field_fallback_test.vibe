@@ -1,0 +1,42 @@
+// #1542 fallback pair for fixtures/gc_native_struct_ref_field_test.vibe.
+//
+// A reference-lane field is only readable in the receiver position of a native
+// array op: the read produces a `(ref null $array)`, and handing that to
+// anything else would put a reference where the tagged-i64 ABI is expected.
+// Both shapes below keep the ordinary linear layout for the whole record.
+
+struct Bag {
+  label: String;
+  items: Array[Int]
+}
+
+// The field is read into a plain binding, so the reference would have to become
+// a value.
+fn aliased_field() -> Int {
+  let b = Bag::{
+    label: "b",
+    items: [
+      1,
+      2
+    ]
+  }
+  let taken = b.items
+  Array::get(taken, 1)
+}
+
+// The record itself escapes, which is the #1702 restriction unchanged.
+fn escaping_bag() -> Bag {
+  let b = Bag::{
+    label: "b",
+    items: [
+      7,
+      8
+    ]
+  }
+  b
+}
+
+test "reference-lane fields that leave receiver position keep the linear layout" {
+  inspect(aliased_field(), "2")
+  inspect(Array::get(escaping_bag().items, 0), "7")
+}

@@ -1,0 +1,33 @@
+// #1542 Phase C: an aggregate FIELD holds a reference-lane value.
+//
+// #1702 moved the record itself into a wasm-gc struct, but every field stayed a
+// tagged i64. A field declared `Array[Int]` now has the wasm type
+// `(mut (ref null $native_i64_array))`, so the struct holds the array by
+// reference instead of by tagged pointer -- which also means struct types are
+// registered per DECLARED STRUCT rather than per field count, since two structs
+// of the same arity no longer share a shape.
+//
+// The mutation is the point. `Array::set` through the field and the reads after
+// it have to see one array; a field that had copied on the way in would pass the
+// length check and fail the value check.
+
+struct Bag {
+  label: String;
+  items: Array[Int]
+}
+
+fn bag_total() -> Int {
+  let b = Bag::{
+    label: "b",
+    items: [
+      4,
+      5
+    ]
+  }
+  Array::set(b.items, 0, 40)
+  Array::get(b.items, 0) + Array::get(b.items, 1) + Array::length(b.items)
+}
+
+test "a struct field carries a wasm-gc array reference" {
+  inspect(bag_total(), "47")
+}
