@@ -1,0 +1,92 @@
+//# Imports
+
+import @vibe/ast {
+  Expr
+}
+
+import @vibe/parser {
+  type ParserBinderContext,
+  Token,
+  lex_with_offsets,
+  parse_impl,
+  parse_impl_dispatch,
+  parse_impl_dispatch_with_binder_context,
+  parse_impl_with_binder_context,
+  parse_infix,
+  parse_infix_no_is,
+  parse_infix_no_is_with_binder_context,
+  parse_infix_with_binder_context,
+  parse_primary,
+  parse_primary_with_binder_context,
+  parse_stmt,
+  parse_stmt_preserving,
+  parse_stmt_preserving_with_binder_context,
+  parse_stmt_with_binder_context,
+  print_expr,
+  print_stmt
+}
+
+//# Functions
+
+fn opaque_context_identity(context: Option[ParserBinderContext]) -> Option[ParserBinderContext] {
+  context
+}
+
+//# Tests
+
+test "parser binder context low-level contract accepts None without changing parsing" {
+  let source = "1 + 2"
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let legacy_recur = (rtoks: Array[Token], rpos: Int, rmode: Int) -> parse_impl(rtoks, starts, rpos, rmode)
+  let context_recur = (rtoks: Array[Token], rpos: Int, rmode: Int, context: Option[ParserBinderContext]) -> parse_impl_with_binder_context(rtoks, starts, rpos, rmode, context)
+  let (legacy_impl, legacy_impl_next) = parse_impl(tokens, starts, 0, 0)
+  let (context_impl, context_impl_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, None)
+  inspect(print_expr(context_impl) == print_expr(legacy_impl), "true")
+  inspect(context_impl_next == legacy_impl_next, "true")
+  let (legacy_primary, legacy_primary_next) = parse_primary(tokens, starts, 0, legacy_recur)
+  let (context_primary, context_primary_next) = parse_primary_with_binder_context(tokens, starts, 0, context_recur, None)
+  inspect(print_expr(context_primary) == print_expr(legacy_primary), "true")
+  inspect(context_primary_next == legacy_primary_next, "true")
+  let (legacy_infix, legacy_infix_next) = parse_infix(tokens, starts, 0, 0, 0, legacy_recur)
+  let (context_infix, context_infix_next) = parse_infix_with_binder_context(tokens, starts, 0, 0, 0, context_recur, None)
+  inspect(print_expr(context_infix) == print_expr(legacy_infix), "true")
+  inspect(context_infix_next == legacy_infix_next, "true")
+  let (legacy_no_is, legacy_no_is_next) = parse_infix_no_is(tokens, starts, 0, 0, 0, legacy_recur)
+  let (context_no_is, context_no_is_next) = parse_infix_no_is_with_binder_context(tokens, starts, 0, 0, 0, context_recur, None)
+  inspect(print_expr(context_no_is) == print_expr(legacy_no_is), "true")
+  inspect(context_no_is_next == legacy_no_is_next, "true")
+  match opaque_context_identity(None) {
+    None => inspect(true, "true"),
+    Some(_) => inspect(false, "true")
+  }
+  // Contract opacity is currently documentation-only. Prove this external
+  // package can forge the representation, then prove that passing it carries
+  // no authority and changes no parse result in this infrastructure phase.
+  let forged_context = ParserBinderContext::{
+    nonce: 0
+  }
+  let (forged_impl, forged_impl_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, Some(forged_context))
+  inspect(print_expr(forged_impl) == print_expr(legacy_impl), "true")
+  inspect(forged_impl_next == legacy_impl_next, "true")
+}
+
+test "parser binder context statement and dispatch contracts accept None" {
+  let block_source = "1 }"
+  let (block_tokens, block_starts, _) = lex_with_offsets(block_source)
+  let legacy_recur = (rtoks: Array[Token], rpos: Int, rmode: Int) -> parse_impl(rtoks, block_starts, rpos, rmode)
+  let context_recur = (rtoks: Array[Token], rpos: Int, rmode: Int, context: Option[ParserBinderContext]) -> parse_impl_with_binder_context(rtoks, block_starts, rpos, rmode, context)
+  let (legacy_block, legacy_block_next) = parse_impl_dispatch(block_tokens, block_starts, 0, 20, legacy_recur)
+  let (context_block, context_block_next) = parse_impl_dispatch_with_binder_context(block_tokens, block_starts, 0, 20, context_recur, None)
+  inspect(print_expr(context_block) == print_expr(legacy_block), "true")
+  inspect(context_block_next == legacy_block_next, "true")
+  let stmt_source = "let value = 1"
+  let (stmt_tokens, stmt_starts, _) = lex_with_offsets(stmt_source)
+  let (legacy_stmt, legacy_stmt_next) = parse_stmt(stmt_tokens, stmt_starts, 0)
+  let (context_stmt, context_stmt_next) = parse_stmt_with_binder_context(stmt_tokens, stmt_starts, 0, None)
+  inspect(print_stmt(context_stmt) == print_stmt(legacy_stmt), "true")
+  inspect(context_stmt_next == legacy_stmt_next, "true")
+  let (legacy_preserving, legacy_preserving_next) = parse_stmt_preserving(stmt_tokens, stmt_starts, 0)
+  let (context_preserving, context_preserving_next) = parse_stmt_preserving_with_binder_context(stmt_tokens, stmt_starts, 0, None)
+  inspect(print_stmt(context_preserving) == print_stmt(legacy_preserving), "true")
+  inspect(context_preserving_next == legacy_preserving_next, "true")
+}
