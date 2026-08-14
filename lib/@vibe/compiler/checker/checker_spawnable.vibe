@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Subst, Type, TypeDef, TypeEnv, env_lookup, subst_apply, type_to_string
+  Expr, Pat, Subst, Type, TypeDef, TypeEnv, env_lookup, env_mut_escape, subst_apply, type_to_string
 }
 
 import @vibe/core {
@@ -421,6 +421,21 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
       let mut fi = 0
       while fi < Array::length(free) {
         let vname = Array::get(free, fi)
+        match env_mut_escape(env, vname) {
+          // #1262: `type_send_ok` judges the captured value's TYPE alone, so a
+          // `let mut counter = 0` captured by a spawn closure used to pass as
+          // a plain Send `Int` -- docs/concurrency.md lists "captured `let
+          // mut`" as never Send, independent of type, because sharing a
+          // mutable cell across the spawn boundary is exactly what
+          // `Spawnable[r]` exists to forbid. This used to need a whole second
+          // AST walk (`check_spawnable_mut_captures_stmts`) because `TypeEnv`
+          // carried no mutability; ADR-0100 (1) put the fact in the env, so
+          // the judgment is now one lookup at the very scope the capture
+          // happens in -- shadowing is exact by construction rather than by a
+          // hand-threaded visible-name list.
+          Some(_) => Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary"))),
+          None => ()
+        }
         match env_lookup(env, vname) {
           Some(vty) => {
             let resolved = subst_apply(s, vty)
@@ -444,316 +459,39 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
   }
 }
 
-// Codex review (PR #1150, P1): `type_send_ok` judges structural TYPE alone
-// -- `let mut counter = 0; TaskGroup::spawn(n, () -> { counter += 1; 0 })`
-// captures a `CtInt` (Send) with no record that its BINDING is mutable, so
-// `check_spawnable_captures` above accepts it even though
-// docs/concurrency.md explicitly lists "captured `let mut`" as never Send,
-// independent of the captured value's type -- sharing a mutable cell
-// across the spawn boundary is exactly what `Spawnable[r]` exists to
-// forbid. `TypeEnv` (core/types.vibe) carries no mutability flag at all
-// (`EnvBind(String, Type, TypeEnv)`). A third mutable-capture judgment used
-// to live in the root package's checker_capture.vibe, but it was dead
-// (unreachable from here, never wired into any check, unit-tested only) AND
-// defective -- `collect_mut_bindings` handled only 5 Expr shapes and fell
-// through `_` for the rest, so it never descended into `EFn` and therefore
-// could not observe a closure capture at all; `analyze_captures_with_muts`
-// did not subtract shadowing on `ELet`/params/patterns, the same false
-// positive PR #1152 fixed here. It was removed in #1262 rather than left as
-// a trap for the next person who needs this judgment; the two live ones are
-// this walker and codegen's `is_mut_captured_in` (surfaced as `vibe
-// escapes`, runtime/escape_spans.vibe), which differ on purpose -- see
-// docs/side-effect-consolidation.md 4.5. Mutability is a purely SYNTACTIC property of the
-// SOURCE, though, so no env/Subst lookup is needed at all: walk the raw
-// AST, threading the set of `let mut` names actually VISIBLE at each
-// point (below), and at every nested `TaskGroup::spawn`/`spawn_suspend`
-// call flag any free variable of that call's closure argument that is
-// still a live `let mut` name at that exact point -- independent of, and
-// in addition to, `check_spawnable_captures`'s Send/same-region judgment
-// above.
+// #1262 / ADR-0100 (1) -- HISTORY, and why the walk that used to live here is
+// gone.
 //
-// Codex review (PR #1151, P1): the first version of this check anchored
-// on the `TaskGroup::run` call's OWN closure argument, so a `let mut
-// counter = 0` declared in the ENCLOSING function BEFORE calling
-// `TaskGroup::run` (rather than inside the run body itself) was invisible.
-// Fixed by anchoring on the WHOLE enclosing top-level declaration's body
-// instead (`check_spawnable_mut_captures_stmts` below calls
-// `check_spawnable_mut_captures_scope` once per top-level `fn`/`let`/
-// `test`/`bench`, not once per `TaskGroup::run` call).
+// `type_send_ok` judges structural TYPE alone, so `let mut counter = 0;
+// TaskGroup::spawn(n, () -> { counter += 1; 0 })` captures a `CtInt` (Send)
+// with no record that its BINDING is mutable. `TypeEnv` carried no mutability
+// flag at all (`EnvBind(String, Type, TypeEnv)`), so the fix at the time was a
+// SECOND, purely syntactic pass (`check_spawnable_mut_captures_stmts`) that
+// re-walked every top-level declaration threading a hand-maintained list of
+// the `let mut` names visible at each point. Three Codex review rounds went
+// into getting that list right: PR #1151 (anchor on the whole enclosing
+// declaration, not the `TaskGroup::run` argument, or a `let mut` declared
+// before the call is invisible) and PR #1152 (thread a SCOPED list rather than
+// a flat whole-declaration set, or an unrelated `let mut x` in a sibling
+// closure makes every other `x` look mutable). A third copy of the judgment,
+// the root package's checker_capture.vibe, was dead AND defective and was
+// deleted in #1262.
 //
-// Codex review (PR #1152, P1): that second version collected EVERY `let
-// mut` name reachable ANYWHERE in the declaration into one flat,
-// scope-blind list (deliberately no scope-exit removal), then
-// cross-matched a spawn closure's free variables against that flat list
-// by NAME ALONE. This produced false positives: an unrelated `let mut x`
-// in a sibling closure (e.g. a separate `let helper = () -> { let mut x =
-// 0; ... }` defined later in the same top-level declaration) made every
-// OTHER, lexically-unrelated and genuinely-immutable `x` in that same
-// declaration look mutable too. Fixed below by replacing the two-pass
-// flat-collect-then-cross-match with a SINGLE recursive walker
-// (`sp_walk_spawnable_mut`) that threads a properly SCOPED `mut_names`
-// list: `ELetMut` EXTENDS it for its body; `ELet`/`ELetRec`, `EFn`
-// params, `ELoop`/`EForIn` bound names, and `EMatch`/`EHandle` arm
-// pattern bindings all REMOVE the shadowed name(s) for their own
-// body/arm (an immutable binding that merely reuses a mutable outer name
-// is not itself mutable). Each spawn call is checked against the
-// `mut_names` actually visible at that exact call site, not a flattened
-// whole-declaration set.
+// ADR-0100 (1) put the escape fact in `TypeEnv` itself (`env_bind_mut` /
+// `env_mut_escape`, recorded by the checker at each `ELetMut` from
+// checker_escape.vibe's strict predicate), so the judgment above is now a
+// single lookup in the env that is live AT the capture. Scope precision --
+// the thing all three review rounds were about -- is then a property of the
+// env chain rather than of a walker that has to re-derive it, and the walk
+// was removed along with its ~230 lines. Two live judgments remain, and they
+// still differ ON PURPOSE: this strict one (enforcement: stay silent when
+// unsure) and codegen's conservative `is_mut_captured_in` (lowering: box when
+// unsure), surfaced as `vibe escapes` / `vibe escapes --strict`. See
+// docs/side-effect-consolidation.md 4.5.
 //
-// Codex review (PR #1152, P2): the whole-program-pass version of this
-// check also lost the `[@off=...]` source-offset marker the ORIGINAL
-// per-call check (still visible in checker.vibe's `TaskGroup::spawn`
-// branch, for the Send/region violations) attached via
-// `off_marker_len(callee_off, ...)` -- degrading `vibe diagnostics`/LSP to
-// an unlocated error for this diagnostic class. Fixed by capturing each
-// spawn `ECall`'s own callee offset while walking (see
-// `sp_check_spawn_mut_capture` below) and appending the same marker shape
-// via a local `sp_off_marker_len` (duplicated from checker.vibe's private
-// `off_marker`/`off_marker_len` -- not exported there, and importing it
-// back across these two mutually-importing sibling files would be a
-// needless coupling for two small pure string-formatting helpers; same
-// per-file duplication convention already used above for free-variable
-// collection).
-//
-// Still-accepted gap (not attempted): a mutable binding captured by a
-// HELPER FUNCTION that itself calls `TaskGroup::spawn` -- e.g. passing
-// `counter` into a separate top-level `fn helper(c) { TaskGroup::spawn(n,
-// () -> { c += 1 }) }` -- is interprocedural (would need call-graph /
-// alias tracking across separate top-level declarations) and out of
-// scope for this purely per-declaration AST sweep.
-
-fn sp_remove_name(names: Array[String], name: String) -> Array[String] {
-  let out = sp_empty_strings()
-  let mut i = 0
-  while i < Array::length(names) {
-    let n = Array::get(names, i)
-    if n == name {
-      ()
-    } else {
-      Array::push(out, n)
-    }
-    i = i + 1
-  }
-  out
-}
-
-fn sp_remove_names(names: Array[String], to_remove: Array[String]) -> Array[String] {
-  let mut cur = names
-  let mut i = 0
-  while i < Array::length(to_remove) {
-    cur = sp_remove_name(cur, Array::get(to_remove, i))
-    i = i + 1
-  }
-  cur
-}
-
-fn sp_off_marker_len(off: Int, len: Int) -> String {
-  if off >= 0 && len > 0 {
-    String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
-  } else if off >= 0 {
-    String::concat(" [@off=", String::concat(__to_string(off), "]"))
-  } else {
-    ""
-  }
-}
-
-/// Check one `TaskGroup::spawn`/`spawn_suspend` call's closure argument
-/// against the `let mut` names actually visible (properly scoped) at this
-/// exact call site, appending a located violation message per offender.
-fn sp_check_spawn_mut_capture(closure_expr: Expr, mut_names: Array[String], call_off: Int, name_len: Int, out: Array[String]) -> Unit {
-  match closure_expr {
-    EFn(_, _, params, _, _, body) => {
-      let pnames = sp_empty_strings()
-      let mut i = 0
-      while i < Array::length(params) {
-        let (pname, _) = Array::get(params, i)
-        Array::push(pnames, pname)
-        i = i + 1
-      }
-      let free = sp_collect_free_vars(body, pnames)
-      let mut fi = 0
-      while fi < Array::length(free) {
-        let vname = Array::get(free, fi)
-        if sp_array_contains_str(mut_names, vname) {
-          Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, String::concat("` shares a mutable cell across the spawn boundary", sp_off_marker_len(call_off, name_len)))))
-        } else {
-          ()
-        }
-        fi = fi + 1
-      }
-    },
-    _ => ()
-  }
-}
-
-fn sp_walk_spawnable_mut_binary(a: Expr, b: Expr, mut_names: Array[String], out: Array[String]) -> Unit {
-  sp_walk_spawnable_mut(a, mut_names, out)
-  sp_walk_spawnable_mut(b, mut_names, out)
-}
-
-fn sp_walk_spawnable_mut_list(items: Array[Expr], mut_names: Array[String], out: Array[String]) -> Unit {
-  let mut i = 0
-  while i < Array::length(items) {
-    sp_walk_spawnable_mut(Array::get(items, i), mut_names, out)
-    i = i + 1
-  }
-}
-
-fn sp_walk_spawnable_mut_fields(fields: Array[(String, Expr)], mut_names: Array[String], out: Array[String]) -> Unit {
-  let mut i = 0
-  while i < Array::length(fields) {
-    let (_, fval) = Array::get(fields, i)
-    sp_walk_spawnable_mut(fval, mut_names, out)
-    i = i + 1
-  }
-}
-
-/// The combined, scope-aware walk: `mut_names` always reflects exactly the
-/// `let mut` bindings actually visible (not shadowed) at the current
-/// position -- threaded the same way `sp_collect_free_vars` threads
-/// `bound`, except `ELet`/`ELetRec`/`EFn` params/pattern bindings REMOVE a
-/// name (shadowing hides mutability) while `ELetMut` EXTENDS it.
-fn sp_walk_spawnable_mut(expr: Expr, mut_names: Array[String], out: Array[String]) -> Unit {
-  match expr {
-    ELetMut(name, val, body, _) => {
-      sp_walk_spawnable_mut(val, mut_names, out)
-      sp_walk_spawnable_mut(body, sp_bound_with_one(mut_names, name), out)
-    },
-    ELet(name, val, body, _) => {
-      sp_walk_spawnable_mut(val, mut_names, out)
-      sp_walk_spawnable_mut(body, sp_remove_name(mut_names, name), out)
-    },
-    ELetRec(name, val, body) => {
-      let nm = sp_remove_name(mut_names, name)
-      sp_walk_spawnable_mut(val, nm, out)
-      sp_walk_spawnable_mut(body, nm, out)
-    },
-    EAssign(_, val, cont) => sp_walk_spawnable_mut_binary(val, cont, mut_names, out),
-    EAssignOp(_, _, val, cont) => sp_walk_spawnable_mut_binary(val, cont, mut_names, out),
-    EFn(_, _, params, _, _, body) => {
-      let mut cur = mut_names
-      let mut i = 0
-      while i < Array::length(params) {
-        let (pname, _) = Array::get(params, i)
-        cur = sp_remove_name(cur, pname)
-        i = i + 1
-      }
-      sp_walk_spawnable_mut(body, cur, out)
-    },
-    ECall(callee, args, _) => {
-      let spawn_info = match callee {
-        EIdent(name, coff) => if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
-          Some((coff, String::length(name)))
-        } else {
-          None
-        },
-        _ => None
-      }
-      match spawn_info {
-        Some((coff, nlen)) => sp_check_spawn_mut_capture(Array::get(args, 1), mut_names, coff, nlen, out),
-        None => ()
-      }
-      match callee {
-        EIdent(_, _) => (),
-        _ => sp_walk_spawnable_mut(callee, mut_names, out)
-      }
-      sp_walk_spawnable_mut_list(args, mut_names, out)
-    },
-    EIf(c, t, e) => {
-      sp_walk_spawnable_mut(c, mut_names, out)
-      sp_walk_spawnable_mut_binary(t, e, mut_names, out)
-    },
-    ESeq(a, b) => sp_walk_spawnable_mut_binary(a, b, mut_names, out),
-    EBinOp(_, l, r) => sp_walk_spawnable_mut_binary(l, r, mut_names, out),
-    EUnaryOp(_, e) => sp_walk_spawnable_mut(e, mut_names, out),
-    EWhile(c, b) => sp_walk_spawnable_mut_binary(c, b, mut_names, out),
-    ELoop(params, body) => {
-      let mut cur = mut_names
-      let mut i = 0
-      while i < Array::length(params) {
-        let (name, init) = Array::get(params, i)
-        sp_walk_spawnable_mut(init, cur, out)
-        cur = sp_remove_name(cur, name)
-        i = i + 1
-      }
-      sp_walk_spawnable_mut(body, cur, out)
-    },
-    EForIn(name, index_name, iter, body) => {
-      sp_walk_spawnable_mut(iter, mut_names, out)
-      let m2 = sp_remove_name(mut_names, name)
-      let m3 = match index_name {
-        Some(ixn) => sp_remove_name(m2, ixn),
-        None => m2
-      }
-      sp_walk_spawnable_mut(body, m3, out)
-    },
-    EMatch(scrut, arms) => {
-      sp_walk_spawnable_mut(scrut, mut_names, out)
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (pat, arm_body) = Array::get(arms, ai)
-        let pat_binds = sp_empty_strings()
-        sp_collect_pat_bindings(pat, pat_binds)
-        sp_walk_spawnable_mut(arm_body, sp_remove_names(mut_names, pat_binds), out)
-        ai = ai + 1
-      }
-    },
-    EHandle(body, arms) => {
-      sp_walk_spawnable_mut(body, mut_names, out)
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (pat, arm_body) = Array::get(arms, ai)
-        let pat_binds = sp_empty_strings()
-        sp_collect_pat_bindings(pat, pat_binds)
-        sp_walk_spawnable_mut(arm_body, sp_remove_names(mut_names, pat_binds), out)
-        ai = ai + 1
-      }
-    },
-    ETuple(elems) => sp_walk_spawnable_mut_list(elems, mut_names, out),
-    EArray(elems) => sp_walk_spawnable_mut_list(elems, mut_names, out),
-    ERecord(_, fields, _) => sp_walk_spawnable_mut_fields(fields, mut_names, out),
-    EDot(obj, _, _, _) => sp_walk_spawnable_mut(obj, mut_names, out),
-    EReturn(e) => sp_walk_spawnable_mut(e, mut_names, out),
-    ELabeledArg(_, _, e) => sp_walk_spawnable_mut(e, mut_names, out),
-    EBreak(opt) => match opt {
-      Some(e) => sp_walk_spawnable_mut(e, mut_names, out),
-      None => ()
-    },
-    EContinue(exprs) => sp_walk_spawnable_mut_list(exprs, mut_names, out),
-    EMap(fields) => sp_walk_spawnable_mut_fields(fields, mut_names, out),
-    ESpread(e) => sp_walk_spawnable_mut(e, mut_names, out),
-    _ => ()
-  }
-}
-
-/// Entry point (per lexical scope): walk `scope_body` once from an empty
-/// `mut_names` set, threading scope-aware `let mut` visibility per the
-/// walker above.
-fn check_spawnable_mut_captures_scope(scope_body: Expr) -> Array[String] {
-  let out = sp_empty_strings()
-  sp_walk_spawnable_mut(scope_body, sp_empty_strings(), out)
-  out
-}
-
-/// Entry point: run `check_spawnable_mut_captures_scope` once per
-/// top-level declaration with a body (function/`let`/`test`/`bench`/bare
-/// top-level expression), recursing into `SModule` blocks. Called once
-/// per program (checker_stmt.vibe's `check_program`/
-/// `check_program_with_env`), not per `TaskGroup::run`/spawn call site.
-export fn check_spawnable_mut_captures_stmts(stmts: Array[Stmt]) -> Array[String] {
-  let out = sp_empty_strings()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
-      SLetMut(_, _, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
-      STest(_, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
-      SBench(_, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
-      SExpr(body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
-      SModule(_, _, inner) => sp_append_all(out, check_spawnable_mut_captures_stmts(inner)),
-      _ => ()
-    }
-    i = i + 1
-  }
-  out
-}
+// Two limits carried over unchanged. A mutable binding captured by a HELPER
+// FUNCTION that itself calls `TaskGroup::spawn` is interprocedural and still
+// not detected. And the check now rides the same branch as the Send/region
+// judgment in checker.vibe, so it needs `n` to have resolved to a
+// `TaskGroup[r, _]` -- a program whose nursery argument does not typecheck
+// reports that error instead.

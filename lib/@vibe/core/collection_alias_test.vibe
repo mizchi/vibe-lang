@@ -1,0 +1,90 @@
+//# ADR-0100 (3) / #1262: the legacy `Hash-` / `Sorted-` spellings survive the
+//# rename as deprecated FUNCTION aliases.
+//#
+//# What this pins is the property the staged migration rests on: a legacy
+//# constructor returns the `Mut-` type, so code that never spells the type out
+//# keeps working unchanged and the two spellings interoperate freely. That is
+//# the common shape by far — `let m = HashMap::new_string()` names no type.
+//#
+//# What it deliberately does NOT pin is a legacy TYPE alias, because there
+//# isn't one: `type HashMap[K, V] = MutMap[K, V]` is not expanded across a
+//# module boundary by this compiler, so an explicit `HashMap[K, V]` annotation
+//# is the one thing this rename breaks. See lib/@vibe/core/index.vpkg's
+//# deprecated-spellings section for the two arrangements that were measured,
+//# and #1700 for the underlying cross-module alias hole.
+
+//# Imports
+
+import @vibe/core {
+  HashMap::new_string,
+  HashMap::set,
+  HashMap::size,
+  HashSet::add,
+  HashSet::new_int,
+  HashSet::size,
+  MutMap,
+  MutMap::get,
+  MutMap::set,
+  MutMap::size,
+  MutSet,
+  MutSet::add,
+  MutSet::has,
+  MutSet::size,
+  MutSortedMap,
+  MutSortedMap::set,
+  MutSortedMap::size,
+  MutSortedSet,
+  MutSortedSet::add,
+  MutSortedSet::size,
+  SortedMap::min,
+  SortedMap::new_int,
+  SortedMap::set,
+  SortedSet::add,
+  SortedSet::min,
+  SortedSet::new_int
+}
+
+//# Tests
+
+test "a legacy MutMap constructor returns the new type and interoperates" {
+  // built through the LEGACY spelling, annotated with the NEW type
+  let m: MutMap[String, Int] = HashMap::new_string()
+  // ... written through the LEGACY accessor, read through the NEW one
+  HashMap::set(m, "a", 1)
+  assert(match MutMap::get(m, "a") {
+    Some(v) => v == 1,
+    None => false
+  })
+  MutMap::set(m, "b", 2)
+  assert(HashMap::size(m) == 2)
+}
+
+test "a legacy MutSet constructor returns the new type and interoperates" {
+  let s: MutSet[Int] = HashSet::new_int()
+  HashSet::add(s, 3)
+  assert(MutSet::has(s, 3))
+  MutSet::add(s, 4)
+  assert(HashSet::size(s) == 2)
+}
+
+test "a legacy MutSortedMap constructor returns the new type and interoperates" {
+  let m: MutSortedMap[Int, Int] = SortedMap::new_int()
+  SortedMap::set(m, 2, 20)
+  MutSortedMap::set(m, 1, 10)
+  assert(MutSortedMap::size(m) == 2)
+  assert(match SortedMap::min(m) {
+    Some((k, _)) => k == 1,
+    None => false
+  })
+}
+
+test "a legacy MutSortedSet constructor returns the new type and interoperates" {
+  let s: MutSortedSet[Int] = SortedSet::new_int()
+  SortedSet::add(s, 5)
+  MutSortedSet::add(s, 1)
+  assert(MutSortedSet::size(s) == 2)
+  assert(match SortedSet::min(s) {
+    Some(v) => v == 1,
+    None => false
+  })
+}

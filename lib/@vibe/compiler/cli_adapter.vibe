@@ -26,6 +26,7 @@ import @vibe/compiler/runtime {
   collect_all_diagnostics,
   doc_at_source,
   escape_spans,
+  escape_spans_strict,
   grep_scan_fs,
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
@@ -1290,10 +1291,21 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // A report, not a failure: this changes no typing and is never an error.
   // Same `.diag` sidecar convention as VIBE_SYMBOLS for a lex/parse failure,
   // so "the query broke" stays distinguishable from "nothing escapes".
+  //
+  // `VIBE_ESCAPES_STRICT=1` (`vibe escapes --strict`) answers the ENFORCEMENT
+  // side of the same question instead: the checker's strict predicate, which
+  // subtracts binder shadowing (checker/checker_escape.vibe), i.e. the fact
+  // `TypeEnv` carries since ADR-0100 (1). The default lane stays the LOWERING
+  // answer -- "does codegen box this?" -- and over-reports on purpose. Ask the
+  // default one about cost, the strict one about authority.
   if Env::get("VIBE_ESCAPES") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      let esc = escape_spans(src)
+      let esc = if Env::get("VIBE_ESCAPES_STRICT") == "1" {
+        escape_spans_strict(src)
+      } else {
+        escape_spans(src)
+      }
       Fs::write_bytes(output_path, adapter_string_to_bytes(join_escape_spans(esc)))
       0
     } with Exception {

@@ -126,7 +126,7 @@ hold.
 Anti-patterns:
 - `Ref[T]` — historically abandoned (ADR-0017), use the table above
 
-### Collection naming convention (#1140, ADR-0082)
+### Collection naming convention (#1140, ADR-0082 → ADR-0100 (3))
 
 The bare name / prefix a collection type carries tells you its mutability
 contract — this is a naming *rule*, not a per-type coincidence:
@@ -134,9 +134,36 @@ contract — this is a naming *rule*, not a per-type coincidence:
 | Spelling | Contract | Examples |
 |---|---|---|
 | bare name | persistent/functional — every "mutating" op returns a NEW value, the receiver is untouched | `Map[K, V]`, `StringSet` (conceptually `Set[String]`) |
-| `Hash-` / `Sorted-` prefix | a deliberate MUTABLE variant with the same conceptual API — ops return `Unit` and mutate in place | `HashMap`, `HashSet`, `SortedMap`, `SortedSet` |
-| `XBuilder` suffix | a mutable, growable builder; not meant to be held onto — call `::freeze` to get the persistent value | `ArrayBuilder`, `MapBuilder`, `StringBuilder` |
+| `Mut-` prefix | a deliberate MUTABLE variant with the same conceptual API — ops return `Unit` and mutate in place | `MutMap`, `MutSet`, `MutSortedMap`, `MutSortedSet` |
+| `XBuilder` suffix | a mutable, growable builder; not meant to be held onto — call **`::build`** to get the persistent value | `ArrayBuilder`, `MapBuilder`, `StringBuilder` |
 | `Frozen-` prefix | immutable AND `Send`-eligible (structurally, when its element type is `Send`) — a narrower, stronger claim than plain persistence, tied to the structured-concurrency model (ADR-0068, #906) | `FrozenArray[T]` |
+
+**2軸を分離する** (ADR-0100 (3), #1262)。ADR-0082 は `Hash-` / `Sorted-` の
+**接頭辞**を「これは可変」と読ませていたが、それは ADR-0090 の `Mut-` と
+正面衝突し、1つの語に独立な2軸を担わせていた。今は **可変性が接頭辞**
+(∅ = persistent / `Mut` = 可変ハンドル / `Frozen` / `-Builder`)、
+**実装・性能の話は接尾辞か置き場所**。`Sorted` は可変性ではなく
+**順序付きインタフェース**を指す語に戻った:
+
+| 旧 | 新 |
+|---|---|
+| `HashMap` | `MutMap` |
+| `HashSet` | `MutSet` |
+| `SortedMap` | `MutSortedMap` |
+| `SortedSet` | `MutSortedSet` |
+
+旧綴りの**関数** (`HashMap::new_string` 等) は `#deprecated` エイリアスとして
+残り、`Mut-` 型を返す。したがって**型名を書かないコードはそのまま動く** ——
+`let m = HashMap::new_string()` は `MutMap` に推論され、`vibe check` が
+移行先を名指しする警告を1行出す (非致命、exit 0)。
+
+> **旧綴りの型注釈は動かない。** `let m: HashMap[String, Int] = ...` は
+> エラーになる。`type HashMap[K, V] = MutMap[K, V]` という別名を置いても
+> **モジュール境界を越えると展開されない** (contract 側に書いても実装側から
+> export しても同じで、別名は merge 後のソースには現れるのに checker は
+> `HashMap[Int]` と `MutMap[Int]` を別の型として扱う)。守れない約束を
+> 置くより、破れる場所を1つに絞って明示するほうを採った ——
+> 注釈は `Mut-` 名に書き換えること (穴そのものは #1700)。
 
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
@@ -145,6 +172,28 @@ only scalars, `mut`-field-free structs/enums, `Option`/`Result` of those,
 same-nursery `Sender`, and `FrozenArray[T]` are. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
+
+**Builder の終端動詞は `build`** (ADR-0101 (3), #1262)。`StringBuilder::build()
+-> String` のように**型名と動詞が lexical に対応する**ようにしたもの。
+`freeze` は「Frozen-(persistent + `Send`)を産む動詞」に予約されていて、
+Builder の終端はそれではない —— 旧綴りの最悪例が
+`ArrayBuilder::freeze -> Array` で、**freeze の結果が可変**だった。
+
+```vibe
+fn greeting() -> String {
+  let b = StringBuilder::new()
+  StringBuilder::push(b, "hello ")
+  StringBuilder::push(b, "world")
+  StringBuilder::build(b)           // 終端 = build
+}
+```
+
+`StringBuilder::freeze` も同じ registry row・同じ codegen に落ちる
+(`canonical_builtin_name` のエイリアス、生成 wasm はバイト一致 —
+`compiler_gate.sh` 102/102 が pin) ので既存コードは動くが、新規コードは
+`build` を使うこと。**コンパイラ自身のソースの移行と `freeze` の
+`#deprecated` 化は bootstrap bump 待ち** —— seed が `build` を知るまで
+compiler source は `freeze` のままでなければならない (docs/bootstrap.md)。
 
 `Array`/`Bytes` themselves are NOT renamed under this convention — they
 predate it and a rename would be too disruptive. They remain low-level

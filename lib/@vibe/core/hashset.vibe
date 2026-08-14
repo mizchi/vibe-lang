@@ -1,6 +1,6 @@
-// @vibex/collections — HashSet[T]: mutable hash set.
+// @vibex/collections — MutSet[T]: mutable hash set.
 //
-// Thin wrapper over HashMap[T, Int] (values are a constant 0); see
+// Thin wrapper over MutMap[T, Int] (values are a constant 0); see
 // hashmap.vibe for the open-addressing details. The struct keeps its own
 // copies of hash_fn / eq_fn so union / intersect / difference can build
 // result sets without reading through the nested generic struct's fields
@@ -9,7 +9,7 @@
 //# Imports
 
 import ./hashmap.vibe {
-  type HashMap, HashMap::delete, HashMap::has, HashMap::keys, HashMap::new, HashMap::set, HashMap::size, HashMap::with_capacity
+  type MutMap, MutMap::delete, MutMap::has, MutMap::keys, MutMap::new, MutMap::set, MutMap::size, MutMap::with_capacity
 }
 import ./key.vibe {
   eq_int, eq_string, hash_int, hash_string
@@ -17,103 +17,179 @@ import ./key.vibe {
 
 //# Types
 
-export struct HashSet[T] {
-  inner: HashMap[T, Int];
+export struct MutSet[T] {
+  inner: MutMap[T, Int];
   hash_fn: (T) -> Int;
   eq_fn: (T, T) -> Bool
 }
 
 //# Constructors
 
-export fn HashSet::with_capacity[T](hash_fn: (T) -> Int, eq_fn: (T, T) -> Bool, capacity: Int) -> HashSet[T] {
-  let inner: HashMap[T, Int] = HashMap::with_capacity(hash_fn, eq_fn, capacity)
-  HashSet::{
+export fn MutSet::with_capacity[T](hash_fn: (T) -> Int, eq_fn: (T, T) -> Bool, capacity: Int) -> MutSet[T] {
+  let inner: MutMap[T, Int] = MutMap::with_capacity(hash_fn, eq_fn, capacity)
+  MutSet::{
     inner: inner,
     hash_fn: hash_fn,
     eq_fn: eq_fn
   }
 }
 
-export fn HashSet::new[T](hash_fn: (T) -> Int, eq_fn: (T, T) -> Bool) -> HashSet[T] {
-  HashSet::with_capacity(hash_fn, eq_fn, 16)
+export fn MutSet::new[T](hash_fn: (T) -> Int, eq_fn: (T, T) -> Bool) -> MutSet[T] {
+  MutSet::with_capacity(hash_fn, eq_fn, 16)
 }
 
 /// Specialized constructors (same annotation workaround as hashmap.vibe).
-export fn HashSet::new_int() -> HashSet[Int] {
-  let s: HashSet[Int] = HashSet::new(hash_int, eq_int)
+export fn MutSet::new_int() -> MutSet[Int] {
+  let s: MutSet[Int] = MutSet::new(hash_int, eq_int)
   s
 }
 
-export fn HashSet::new_string() -> HashSet[String] {
-  let s: HashSet[String] = HashSet::new(hash_string, eq_string)
+export fn MutSet::new_string() -> MutSet[String] {
+  let s: MutSet[String] = MutSet::new(hash_string, eq_string)
   s
 }
 
 //# Operations
 
-export fn HashSet::add[T](s: HashSet[T], x: T) -> Unit {
-  HashMap::set(s.inner, x, 0)
+export fn MutSet::add[T](s: MutSet[T], x: T) -> Unit {
+  MutMap::set(s.inner, x, 0)
 }
 
-export fn HashSet::has[T](s: HashSet[T], x: T) -> Bool {
-  HashMap::has(s.inner, x)
+export fn MutSet::has[T](s: MutSet[T], x: T) -> Bool {
+  MutMap::has(s.inner, x)
 }
 
-export fn HashSet::delete[T](s: HashSet[T], x: T) -> Bool {
-  HashMap::delete(s.inner, x)
+export fn MutSet::delete[T](s: MutSet[T], x: T) -> Bool {
+  MutMap::delete(s.inner, x)
 }
 
-export fn HashSet::size[T](s: HashSet[T]) -> Int {
-  HashMap::size(s.inner)
+export fn MutSet::size[T](s: MutSet[T]) -> Int {
+  MutMap::size(s.inner)
 }
 
-export fn HashSet::to_array[T](s: HashSet[T]) -> Array[T] {
-  HashMap::keys(s.inner)
+export fn MutSet::to_array[T](s: MutSet[T]) -> Array[T] {
+  MutMap::keys(s.inner)
 }
 
 //# Set algebra (result sets use the left operand's key functions)
 
-export fn HashSet::union[T](a: HashSet[T], b: HashSet[T]) -> HashSet[T] {
-  let out = HashSet::new(a.hash_fn, a.eq_fn)
-  let xs = HashSet::to_array(a)
+export fn MutSet::union[T](a: MutSet[T], b: MutSet[T]) -> MutSet[T] {
+  let out = MutSet::new(a.hash_fn, a.eq_fn)
+  let xs = MutSet::to_array(a)
   let mut i = 0
   while i < Array::length(xs) {
-    HashSet::add(out, Array::get(xs, i))
+    MutSet::add(out, Array::get(xs, i))
     i = i + 1
   }
-  let ys = HashSet::to_array(b)
+  let ys = MutSet::to_array(b)
   let mut j = 0
   while j < Array::length(ys) {
-    HashSet::add(out, Array::get(ys, j))
+    MutSet::add(out, Array::get(ys, j))
     j = j + 1
   }
   out
 }
 
-export fn HashSet::intersect[T](a: HashSet[T], b: HashSet[T]) -> HashSet[T] {
-  let out = HashSet::new(a.hash_fn, a.eq_fn)
-  let xs = HashSet::to_array(a)
+export fn MutSet::intersect[T](a: MutSet[T], b: MutSet[T]) -> MutSet[T] {
+  let out = MutSet::new(a.hash_fn, a.eq_fn)
+  let xs = MutSet::to_array(a)
   let mut i = 0
   while i < Array::length(xs) {
     let x = Array::get(xs, i)
-    if HashSet::has(b, x) {
-      HashSet::add(out, x)
+    if MutSet::has(b, x) {
+      MutSet::add(out, x)
     }
     i = i + 1
   }
   out
 }
 
-export fn HashSet::difference[T](a: HashSet[T], b: HashSet[T]) -> HashSet[T] {
-  let out = HashSet::new(a.hash_fn, a.eq_fn)
-  let xs = HashSet::to_array(a)
+export fn MutSet::difference[T](a: MutSet[T], b: MutSet[T]) -> MutSet[T] {
+  let out = MutSet::new(a.hash_fn, a.eq_fn)
+  let xs = MutSet::to_array(a)
   let mut i = 0
   while i < Array::length(xs) {
     let x = Array::get(xs, i)
-    if not(HashSet::has(b, x)) {
-      HashSet::add(out, x)
+    if not(MutSet::has(b, x)) {
+      MutSet::add(out, x)
     }
     i = i + 1
   }
   out
+}
+
+//# Deprecated legacy spellings (ADR-0100 (3) / #1262)
+//#
+//# ADR-0082 read the `Hash-` / `Sorted-` PREFIX as "this one is mutable",
+//# which collided head-on with ADR-0090's `Mut-` prefix and made one word
+//# carry two independent axes. ADR-0100 (3) splits them: **mutability is the
+//# prefix** (bare = persistent / `Mut` = mutable handle / `Frozen` /
+//# `-Builder`) and the implementation/performance story is a suffix or the
+//# module it lives in. `HashSet` therefore became `MutSet`, and `Sorted` went
+//# back to naming an ORDERED INTERFACE rather than mutability.
+//#
+//# Everything below is a transparent alias kept for source compatibility and
+//# marked `#deprecated`, so `vibe check` names the replacement at every use
+//# without breaking anyone. The type alias being TRANSPARENT is what makes the
+//# migration safe to do file by file: an old annotation and a new one are the
+//# SAME type, so the two spellings can meet at any boundary.
+
+#deprecated("use MutSet::with_capacity")
+export fn HashSet::with_capacity[T](hash_fn: (T) -> Int, eq_fn: (T, T) -> Bool, capacity: Int) -> MutSet[T] {
+  MutSet::with_capacity(hash_fn, eq_fn, capacity)
+}
+
+#deprecated("use MutSet::new")
+export fn HashSet::new[T](hash_fn: (T) -> Int, eq_fn: (T, T) -> Bool) -> MutSet[T] {
+  MutSet::new(hash_fn, eq_fn)
+}
+
+#deprecated("use MutSet::new_int")
+export fn HashSet::new_int() -> MutSet[Int] {
+  MutSet::new_int()
+}
+
+#deprecated("use MutSet::new_string")
+export fn HashSet::new_string() -> MutSet[String] {
+  MutSet::new_string()
+}
+
+#deprecated("use MutSet::add")
+export fn HashSet::add[T](s: MutSet[T], x: T) -> Unit {
+  MutSet::add(s, x)
+}
+
+#deprecated("use MutSet::has")
+export fn HashSet::has[T](s: MutSet[T], x: T) -> Bool {
+  MutSet::has(s, x)
+}
+
+#deprecated("use MutSet::delete")
+export fn HashSet::delete[T](s: MutSet[T], x: T) -> Bool {
+  MutSet::delete(s, x)
+}
+
+#deprecated("use MutSet::size")
+export fn HashSet::size[T](s: MutSet[T]) -> Int {
+  MutSet::size(s)
+}
+
+#deprecated("use MutSet::to_array")
+export fn HashSet::to_array[T](s: MutSet[T]) -> Array[T] {
+  MutSet::to_array(s)
+}
+
+#deprecated("use MutSet::union")
+export fn HashSet::union[T](a: MutSet[T], b: MutSet[T]) -> MutSet[T] {
+  MutSet::union(a, b)
+}
+
+#deprecated("use MutSet::intersect")
+export fn HashSet::intersect[T](a: MutSet[T], b: MutSet[T]) -> MutSet[T] {
+  MutSet::intersect(a, b)
+}
+
+#deprecated("use MutSet::difference")
+export fn HashSet::difference[T](a: MutSet[T], b: MutSet[T]) -> MutSet[T] {
+  MutSet::difference(a, b)
 }

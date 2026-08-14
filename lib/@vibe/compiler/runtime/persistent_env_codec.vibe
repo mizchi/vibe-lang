@@ -713,6 +713,21 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
       StringBuilder::push(buf, serialize_type(binding.ty))
       serialize_type_env_into(buf, rest)
     },
+    // #1262: a `let mut` escape marker is function-local, so a published
+    // module env never carries one. Round-trip it anyway rather than dropping
+    // it to `rest` -- a lossy arm here would decode to an env that quietly
+    // claims a mutable binding is immutable, and the whole point of putting
+    // the fact in TypeEnv is that consumers may trust its absence.
+    EnvMutCell(name, escapes, rest) => {
+      StringBuilder::push(buf, "M")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, if escapes {
+        "1"
+      } else {
+        "0"
+      })
+      serialize_type_env_into(buf, rest)
+    },
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
       StringBuilder::push(buf, "D")
       StringBuilder::push(buf, serialize_segment(name))
@@ -791,6 +806,23 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
         let (ty, after_ty) = parse_cached_type(text, after_name)
         let (rest, next) = parse_persistent_type_env_payload(text, after_ty)
         (EnvBind(name, env_value_binding(ty), rest), next)
+      },
+      'M' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        if after_name >= String::length(text) {
+          throw("invalid persistent type env mut escape flag")
+        } else {
+          let esc_tag = String::char_code_at(text, after_name)
+          let escapes = if esc_tag == '0' {
+            false
+          } else if esc_tag == '1' {
+            true
+          } else {
+            throw("invalid persistent type env mut escape flag")
+          }
+          let (rest, next) = parse_persistent_type_env_payload(text, after_name + 1)
+          (EnvMutCell(name, escapes, rest), next)
+        }
       },
       'D' => {
         let (name, after_name) = parse_segment(text, pos + 1)
