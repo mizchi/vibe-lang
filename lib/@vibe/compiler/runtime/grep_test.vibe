@@ -44,13 +44,21 @@ fn scan_only(source: String, pattern: String, only: String) -> String with Excep
 /// The error message a bad pattern / bad filter produces, or "" when the scan
 /// unexpectedly succeeded. The whole point of these cases is that the message
 /// tells the caller what to type instead.
-fn scan_err(source: String, pattern: String, wheres: Array[String]) -> String {
+fn scan_filtered_err(source: String, pattern: String, wheres: Array[String], where_rows: Array[String], json: Bool) -> String {
   handle {
-    let _ = grep_scan_source("a.vibe", source, pattern, wheres, no_strings(), "", false)
+    let _ = grep_scan_source("a.vibe", source, pattern, wheres, where_rows, "", json)
     ""
   } with Exception {
     Throw(msg) => msg
   }
+}
+
+fn scan_err(source: String, pattern: String, wheres: Array[String]) -> String {
+  scan_filtered_err(source, pattern, wheres, no_strings(), false)
+}
+
+fn scan_row_err(source: String, pattern: String, where_rows: Array[String]) -> String {
+  scan_filtered_err(source, pattern, no_strings(), where_rows, false)
 }
 
 /// The same scan the FS tier performs when the import graph fails to check:
@@ -64,6 +72,15 @@ fn grep_error_scan_where(source: String, pattern: String, wheres: Array[String],
   let out = grep_empty_strings()
   grep_emit_hits(source, hits, grep_typed_context_error(source, "dep.vibe: line 1:1: boom"), true, wheres, no_strings(), only, false, out)
   grep_join_lines(out, false)
+}
+
+fn grep_error_scan_where_err(source: String, pattern: String, wheres: Array[String]) -> String {
+  handle {
+    let _ = grep_error_scan_where(source, pattern, wheres, "")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
 }
 
 fn count_lines(text: String) -> Int {
@@ -200,7 +217,7 @@ test "grep --only-well-typed / --only-ill-typed split a file by its type error" 
 test "grep: a file whose typing failed outright is never reported well-typed" {
   // The FS tier lands here whenever the import graph itself fails to check
   // (grep_fs.vibe). An empty context would call the file clean; this one must
-  // not, and its `--where` filters must drop rather than guess.
+  // not. Typed filters fail closed rather than dropping matches silently.
   let src = "let f = (x: Int) -> Int { x }\nlet a = f(1)\n"
   inspect(grep_scan_source("a.vibe", src, "f($(x:exp))", no_strings(), no_strings(), "well", false), "a.vibe:2:9: f(1)\t$x=1\n")
   inspect(grep_error_scan(src, "f($(x:exp))", "well"), "")
@@ -211,13 +228,15 @@ test "grep: a file whose typing failed outright is never reported well-typed" {
   inspect(scan_where(src, "f($(x:const))", "$x : Int"), "")
 }
 
-test "grep --where `=`: a failed typing drops the match instead of answering from the alias table" {
+test "grep --where `=`: a failed typing refuses to answer from the alias table" {
   // The alias table is SYNTACTIC and survives a failed typing, so `$f = helper`
   // could otherwise report a name as RESOLVED that the checker never validated
   // -- a missing module, or a name the dependency does not export (#1533).
   let src = "import ./dep.vibe {\n  helper as h\n}\nlet a = h(1)\n"
   inspect(scan_where(src, "$(f:id)($(_:exp))", "$f = helper"), "a.vibe:4:9: h(1)\t$f=h\n")
-  inspect(grep_error_scan_where(src, "$(f:id)($(_:exp))", one_string("$f = helper"), ""), "")
+  let message = grep_error_scan_where_err(src, "$(f:id)($(_:exp))", one_string("$f = helper"))
+  inspect(String::starts_with(message, "grep: cannot apply --where/--where-row to `a.vibe` because it could not be typed"), "1")
+  inspect(String::contains(message, "dep.vibe: line 1:1: boom"), "1")
 }
 
 test "grep: a filter with nothing after its operator is an error" {
@@ -246,30 +265,27 @@ test "grep --where: a clause naming an uncaptured metavariable is an error" {
   inspect(scan_err("let a = 1\n", "f($(x:exp))", one_string("$y : Int")), "--where: the pattern never captures `$y`")
 }
 
-test "grep --where: an ill-typed file drops ALL of its matches, silently (#1715)" {
-  // A type error ANYWHERE in the file makes `check_program_with_env_result`
-  // throw, and the handler in `grep_typed_context` replaces the whole typed
-  // context with an EMPTY tytab. Every expression in the file therefore has no
-  // type, so a `--where` clause can never hold -- including for expressions
-  // that were typed fine before the error, and including the loosest possible
-  // clause `$x : Array[_]`.
-  //
-  // `arr` here is plainly `Array[Int]`, and the type error is in an UNRELATED
-  // binding. The parse tier finds the call; the typed tier reports nothing,
-  // with no diagnostic and exit 0 -- "no such call exists" and "this file
-  // could not be typed" come back as the same empty output.
-  //
-  // Pinned as CURRENT behaviour, NOT as desired behaviour. #1715 is about
-  // making the omission visible (and ideally about typing what can be typed).
-  // When that lands these snapshots change, which is the point of having them.
+test "grep typed filters fail closed when a structurally matching file is ill-typed (#1715)" {
+  // A type error ANYWHERE in the file leaves no trustworthy typed table. The
+  // parse tier still finds the call, but `--where` and `--where-row` now refuse
+  // the file instead of returning the plausible-but-wrong empty result.
   let src = "let bad: String = 42\nlet arr = [\n  1\n]\nlet n = Array::length(arr)\n"
-  // The parse tier sees it.
   inspect(scan(src, "Array::length($(x:exp))"), "a.vibe:5:9: Array::length(arr)\t$x=arr\n")
-  // The typed tier does not -- not even with a wildcard element type.
-  inspect(scan_where(src, "Array::length($(x:exp))", "$x : Array[Int]"), "")
-  inspect(scan_where(src, "Array::length($(x:exp))", "$x : Array[_]"), "")
-  // Remove the unrelated type error and the same clause matches, which is what
-  // makes this a file-scope wipe rather than "arr's type is genuinely unknown".
+  let exact = scan_err(src, "Array::length($(x:exp))", one_string("$x : Array[Int]"))
+  let wildcard = scan_err(src, "Array::length($(x:exp))", one_string("$x : Array[_]"))
+  let row = scan_row_err(src, "Array::length($(x:exp))", one_string("$x without Fs"))
+  inspect(String::starts_with(exact, "grep: cannot apply --where/--where-row to `a.vibe` because it could not be typed"), "1")
+  inspect(String::contains(exact, "expected String, got Int"), "1")
+  inspect(String::starts_with(wildcard, "grep: cannot apply --where/--where-row to `a.vibe` because it could not be typed"), "1")
+  inspect(String::starts_with(row, "grep: cannot apply --where/--where-row to `a.vibe` because it could not be typed"), "1")
+  // JSON mode also throws before any result array can be rendered.
+  let json_error = scan_filtered_err(src, "Array::length($(x:exp))", one_string("$x : Array[Int]"), no_strings(), true)
+  inspect(String::starts_with(json_error, "grep: cannot apply --where/--where-row to `a.vibe` because it could not be typed"), "1")
+  // A structurally hit-free file is not rejected merely because it is broken.
+  inspect(scan_err(src, "String::length($(x:exp))", one_string("$x : String")), "")
+  // `--only` without typed filters keeps its existing ill/well classification.
+  inspect(scan_only(src, "Array::length($(x:exp))", "ill"), "a.vibe:5:9: Array::length(arr)\t$x=arr\n")
+  // Remove the unrelated type error and the same typed clause still matches.
   let ok = "let good: Int = 42\nlet arr = [\n  1\n]\nlet n = Array::length(arr)\n"
-  inspect(scan_where(ok, "Array::length($(x:exp))", "$x : Array[Int]"), "a.vibe:5:9: Array::length(arr)\t$x=arr\n",)
+  inspect(scan_where(ok, "Array::length($(x:exp))", "$x : Array[Int]"), "a.vibe:5:9: Array::length(arr)\t$x=arr\n")
 }
