@@ -6,9 +6,12 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  env_bind_mut,
   env_bind_with_origin,
+  env_cache,
   env_lookup,
   env_lookup_binding,
+  env_mut_escape,
   env_selectable_type_defs,
   env_type_defs,
   env_value_binding,
@@ -22,7 +25,7 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, inspect
 }
 
 //# Helpers
@@ -50,6 +53,11 @@ fn cached_flat_rest() -> TypeEnv {
     ]))),
     ("cached", env_value_binding(cached_polymorphic_type()))
   ])
+}
+
+fn cached_mut_codec_fixture(origin: BindingOrigin) -> TypeEnv {
+  let base = env_bind_with_origin(EnvEmpty, "imported", CtChar, origin)
+  env_cache(env_bind_mut(env_bind_mut(base, "true_cell", CtInt, true), "false_cell", CtBool, false))
 }
 
 fn codec_fixture() -> TypeEnv {
@@ -192,6 +200,50 @@ test "persistent TypeEnv v5 bytes ignore binding provenance and decode it unavai
     Some(decoded) => match env_lookup_binding(decoded, "x") {
       Some(binding) => match binding.origin {
         BindingOriginUnavailable => assert(true),
+        _ => assert(false)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "fixpoint bytes retain cached mut TypeEnv v5" {
+  let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginModuleExport("/dep.vibe", "source_imported")))
+  match parse_persistent_type_env(encoded) {
+    Some(decoded) => inspect(persistent_type_env_cache_text(decoded) == encoded, "1"),
+    None => assert(false)
+  }
+}
+
+test "truefact survives cached mut TypeEnv v5 decode" {
+  let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginUnavailable))
+  match parse_persistent_type_env(encoded) {
+    Some(decoded) => match env_mut_escape(decoded, "true_cell") {
+      Some(value) => inspect(value, "1"),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "falsefact survives cached mut TypeEnv v5 decode" {
+  let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginUnavailable))
+  match parse_persistent_type_env(encoded) {
+    Some(decoded) => match env_mut_escape(decoded, "false_cell") {
+      Some(value) => inspect(value, "0"),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "decodedorigin is unavailable after cached mut TypeEnv v5 decode" {
+  let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginModuleExport("/dep.vibe", "source_imported")))
+  match parse_persistent_type_env(encoded) {
+    Some(decoded) => match env_lookup_binding(decoded, "imported") {
+      Some(binding) => match binding.origin {
+        BindingOriginUnavailable => inspect(types_equal(binding.ty, CtChar), "1"),
         _ => assert(false)
       },
       None => assert(false)
