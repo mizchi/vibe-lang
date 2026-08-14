@@ -42,6 +42,7 @@ import ./parser_expr.vibe {
   parse_expr,
   parse_fn_stmt,
   parse_impl,
+  parse_impl_with_binder_context,
   parse_let_stmt,
   parse_ok
 }
@@ -52,6 +53,10 @@ import ./token.vibe {
 
 import ./lexer.vibe {
   offset_to_line_col
+}
+
+import ./parser_binder_context.vibe {
+  ParserBinderContext
 }
 
 //# Functions
@@ -482,7 +487,7 @@ fn parse_extern_let_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exc
 /// round-tripping (ADR-0064 #727). Everything that feeds the checker or
 /// codegen should use `parse_stmt` / `parse_program*` below, which lower
 /// SFnDecl to the legacy SLet shape.
-export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+export fn parse_stmt_preserving_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   let raw_head = peek(tokens, pos)
   // #1343: rewrite `resource` to a name no identifier can have UNLESS it
   // starts a declaration, so the dispatch below routes `resource = f()` /
@@ -523,11 +528,11 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
       "extern" => parse_extern_let_stmt(tokens, pos + 1),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
-        let (e, next) = parse_impl(tokens, starts, pos, 0)
+        let (e, next) = parse_impl_with_binder_context(tokens, starts, pos, 0, context)
         match peek(tokens, next) {
           TEq => match e {
             EIdent(name, _) => {
-              let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
               (SExpr(EAssign(name, val, EUnit)), vn)
             },
             ECall(idx_callee, idx_args, _) => {
@@ -538,7 +543,7 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
                 _ => false
               }
               if is_index && Array::length(idx_args) == 2 {
-                let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
+                let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
                 let set_args = Array::slice([
                   EUnit
                 ], 0, 0)
@@ -554,28 +559,28 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
           },
           TPlusEq => match e {
             EIdent(name, _) => {
-              let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
               (SExpr(EAssignOp(name, "+", val, EUnit)), vn)
             },
             _ => (SExpr(e), next)
           },
           TMinusEq => match e {
             EIdent(name, _) => {
-              let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
               (SExpr(EAssignOp(name, "-", val, EUnit)), vn)
             },
             _ => (SExpr(e), next)
           },
           TStarEq => match e {
             EIdent(name, _) => {
-              let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
               (SExpr(EAssignOp(name, "*", val, EUnit)), vn)
             },
             _ => (SExpr(e), next)
           },
           TSlashEq => match e {
             EIdent(name, _) => {
-              let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
               (SExpr(EAssignOp(name, "/", val, EUnit)), vn)
             },
             _ => (SExpr(e), next)
@@ -585,10 +590,14 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
       }
     },
     _ => {
-      let (e, next) = parse_impl(tokens, starts, pos, 0);
+      let (e, next) = parse_impl_with_binder_context(tokens, starts, pos, 0, context);
       (SExpr(e), next)
     }
   }
+}
+
+export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+  parse_stmt_preserving_with_binder_context(tokens, starts, pos, None)
 }
 
 /// Default statement entry: identical to parse_stmt_preserving except that a
@@ -599,6 +608,11 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
 /// contract engine, ...) keep seeing the pre-#727 AST.
 export fn parse_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
   let (stmt, next) = parse_stmt_preserving(tokens, starts, pos)
+  (lower_fn_decl_stmt(stmt), next)
+}
+
+export fn parse_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let (stmt, next) = parse_stmt_preserving_with_binder_context(tokens, starts, pos, context)
   (lower_fn_decl_stmt(stmt), next)
 }
 
@@ -913,7 +927,7 @@ fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
   }
 }
 
-export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
+fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> Array[Stmt] with Exception {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -938,7 +952,7 @@ export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source
               pos = dn
             },
             _ => {
-              let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
+              let (_dropped, dn) = parse_stmt_with_binder_context(tokens, starts, dnext, context)
               pos = dn
             }
           }
@@ -953,7 +967,7 @@ export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source
               parse_impl_methods(tokens, hp, simpl)
             },
             _ => {
-              let (stmt, n) = parse_stmt(tokens, starts, pos)
+              let (stmt, n) = parse_stmt_with_binder_context(tokens, starts, pos, context)
               ([
                 stmt
               ], n)
@@ -1025,6 +1039,18 @@ fn is_recovery_point(t: Token) -> Bool {
 /// progress. Returns the partial AST plus all collected diagnostics. Build all
 /// strings with String::concat (not `+`/interpolation) to avoid selfhost
 /// string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
+
+export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
+  parse_program_located_with_context_impl(tokens, starts, source, None)
+}
+
+/// Opt-in parser-context infrastructure. This phase publishes no authority
+/// rows; it only proves that one invocation-local context reaches the recursive
+/// expression callback spine without changing the parsed program.
+export fn parse_program_located_with_binder_context(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
+  parse_program_located_with_context_impl(tokens, starts, source, Some(ParserBinderContext))
+}
+
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
   let cfg_active = handle {
     cfg_scan_enabled(tokens)

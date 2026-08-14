@@ -20,11 +20,15 @@ import ./parser_base.vibe {
 }
 
 import ./parser_expr_core.vibe {
-  parse_infix_no_is
+  parse_infix_no_is_with_binder_context
 }
 
 import ./token.vibe {
   Token
+}
+
+import ./parser_binder_context.vibe {
+  ParserBinderContext
 }
 
 //# Functions
@@ -271,27 +275,27 @@ fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr) -> Array
 /// #666: parse all match arms into `b` as (pattern, guard|EBool(true), body),
 /// setting hg[0] when any arm carries a guard. Arms are comma-separated, ending
 /// at `}` (optionally with a trailing comma).
-fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(Pat, Expr, Expr)], hg: Array[Bool], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> Int with Exception {
+fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(Pat, Expr, Expr)], hg: Array[Bool], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> Int with Exception {
   let (pat, pa) = parse_pattern(tokens, pos)
   let (arm_guard, after_g) = match peek(tokens, pa) {
     TIf => {
       Array::set(hg, 0, true)
-      parse_recur(tokens, pa + 1, 0)
+      parse_recur(tokens, pa + 1, 0, context)
     },
     _ => (EBool(true), pa)
   }
   let arrow = expect_tk(tokens, after_g, "=>")
-  let (body, bn) = parse_recur(tokens, arrow, 0)
+  let (body, bn) = parse_recur(tokens, arrow, 0, context)
   ArrayBuilder::push(b, (pat, arm_guard, body))
   match peek(tokens, bn) {
     TComma => match peek(tokens, bn + 1) {
       TRBrace => bn + 2,
-      _ => collect_match_arms(tokens, starts, bn + 1, b, hg, parse_recur)
+      _ => collect_match_arms(tokens, starts, bn + 1, b, hg, parse_recur, context)
     },
     TRBrace => bn + 1,
     // Comma-less arm separation: mirror the old parse_match_rest fall-through,
     // which parsed the next arm's pattern without consuming a separator.
-    _ => collect_match_arms(tokens, starts, bn, b, hg, parse_recur)
+    _ => collect_match_arms(tokens, starts, bn, b, hg, parse_recur, context)
   }
 }
 
@@ -307,22 +311,22 @@ fn qualify_handle_arm_pattern(effect_name: String, pat: Pat) -> Pat {
   }
 }
 
-fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> ((Pat, Expr), Int) with Exception {
+fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
   let (pat, pat_next) = parse_pattern(tokens, pos)
   let qualified_pat = qualify_handle_arm_pattern(effect_name, pat)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
-  let (expr, next) = parse_recur(tokens, arrow_pos, 0)
+  let (expr, next) = parse_recur(tokens, arrow_pos, 0, context)
   ((qualified_pat, expr), next)
 }
 
-fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, effect_name: String, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, effect_name: String, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
       _ => {
-        let (arm, next) = parse_handle_arm(tokens, starts, pos + 1, effect_name, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, starts, pos + 1, effect_name, parse_recur, context)
         ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur)
+        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur, context)
       }
     },
     TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
@@ -330,28 +334,28 @@ fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: E
   }
 }
 
-fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (e, pos + 1),
     TSemicolon => {
-      let (rest, end) = parse_recur(tokens, pos + 1, 20)
+      let (rest, end) = parse_recur(tokens, pos + 1, 20, context)
       (ESeq(e, rest), end)
     },
     TEq => match e {
       EIdent(name, _) => {
-        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, 20)
+        let (rest, end) = parse_recur(tokens, a, 20, context)
         (EAssign(name, val, rest), end)
       },
       EDot(obj, field, _, _) => {
-        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, 20)
+        let (rest, end) = parse_recur(tokens, a, 20, context)
         let set_args = empty_exprs()
         Array::push(set_args, obj)
         Array::push(set_args, EString(field))
@@ -369,11 +373,11 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
           _ => false
         }
         if is_index && Array::length(idx_args) == 2 {
-          let val_pair = parse_recur(tokens, pos + 1, 0)
+          let val_pair = parse_recur(tokens, pos + 1, 0, context)
           let val = val_pair.0
           let val_next = val_pair.1
           let a = skip_semi(tokens, val_next)
-          let (rest, end) = parse_recur(tokens, a, 20)
+          let (rest, end) = parse_recur(tokens, a, 20, context)
           let set_args = empty_exprs()
           Array::push(set_args, Array::get(idx_args, 0))
           Array::push(set_args, Array::get(idx_args, 1))
@@ -387,61 +391,61 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
     },
     TPlusEq => match e {
       EIdent(name, _) => {
-        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, 20)
+        let (rest, end) = parse_recur(tokens, a, 20, context)
         (EAssignOp(name, "+", val, rest), end)
       },
       _ => throw("invalid assignment target")
     },
     TMinusEq => match e {
       EIdent(name, _) => {
-        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, 20)
+        let (rest, end) = parse_recur(tokens, a, 20, context)
         (EAssignOp(name, "-", val, rest), end)
       },
       _ => throw("invalid assignment target")
     },
     TStarEq => match e {
       EIdent(name, _) => {
-        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, 20)
+        let (rest, end) = parse_recur(tokens, a, 20, context)
         (EAssignOp(name, "*", val, rest), end)
       },
       _ => throw("invalid assignment target")
     },
     TSlashEq => match e {
       EIdent(name, _) => {
-        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, 20)
+        let (rest, end) = parse_recur(tokens, a, 20, context)
         (EAssignOp(name, "/", val, rest), end)
       },
       _ => throw("invalid assignment target")
     },
     TPercentEq => match e {
       EIdent(name, _) => {
-        let val_pair = parse_recur(tokens, pos + 1, 0)
+        let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, 20)
+        let (rest, end) = parse_recur(tokens, a, 20, context)
         (EAssignOp(name, "%", val, rest), end)
       },
       _ => throw("invalid assignment target")
     },
     _ => {
-      let (rest, end) = parse_recur(tokens, pos, 20)
+      let (rest, end) = parse_recur(tokens, pos, 20, context)
       if end <= pos {
         throw("internal parser error: block continuation did not advance")
       } else {
@@ -451,17 +455,17 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
   }
 }
 
-fn parse_block_value_body(tokens: Array[Token], eq: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Expr, Int, Int) with Exception {
-  let val_pair = parse_recur(tokens, eq, 0)
+fn parse_block_value_body(tokens: Array[Token], eq: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Expr, Int, Int) with Exception {
+  let val_pair = parse_recur(tokens, eq, 0, context)
   let val = val_pair.0
   let val_next = val_pair.1
   let a = skip_semi(tokens, val_next)
-  let (body, end) = parse_recur(tokens, a, 20)
+  let (body, end) = parse_recur(tokens, a, 20, context)
   (val, body, end, a)
 }
 
-fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
-  let val_pair = parse_recur(tokens, value_pos, 0)
+fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  let val_pair = parse_recur(tokens, value_pos, 0, context)
   (val_pair.0, skip_semi(tokens, val_pair.1))
 }
 
@@ -644,11 +648,11 @@ fn expr_always_exits_guard(e: Expr) -> Bool {
 /// pattern's bindings scope over the REST of the block, and the else arm
 /// becomes the fallthrough. Scrutinee is evaluated exactly once (it is bound
 /// into the match's discriminant position, not re-parsed per arm).
-fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Pat, Expr, Expr, Int) with Exception {
+fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Pat, Expr, Expr, Int) with Exception {
   // Parse the scrutinee with the no-is variant, exactly as `if` does (mode
   // 21): otherwise a trailing `is pattern` collapses into a Bool match instead
   // of landing in the guard's pattern slot.
-  let (scrut, sn) = parse_infix_no_is(tokens, starts, pos, 0, pos, parse_recur)
+  let (scrut, sn) = parse_infix_no_is_with_binder_context(tokens, starts, pos, 0, pos, parse_recur, context)
   let after_is = match peek(tokens, sn) {
     TIs => sn + 1,
     TIdent(kw) => if kw == "is" {
@@ -664,7 +668,7 @@ fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
     _ => throw("guard: expected `else { .. }` after the pattern (#1283)")
   }
   let br = expect_tk(tokens, else_pos, "{")
-  let (alt, end) = parse_recur(tokens, br, 20)
+  let (alt, end) = parse_recur(tokens, br, 20, context)
   if expr_always_exits_guard(alt) {
     (pat, scrut, alt, end)
   } else {
@@ -693,7 +697,7 @@ fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], p
   after
 }
 
-fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   let steps = ArrayBuilder::new()
   let mut p = pos
   let mut end_pos = pos
@@ -760,7 +764,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 }
               }
               let eq = expect_tk(tokens, eq_pos_r, "=")
-              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
               if next_pos <= eq {
                 throw("internal parser error: block let-rec parser did not advance")
               } else {
@@ -796,7 +800,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 _ => (None, next + 2)
               }
               let eq = expect_tk(tokens, eq_pos_m, "=")
-              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
               if next_pos <= eq {
                 throw("internal parser error: block let-mut parser did not advance")
               } else {
@@ -816,7 +820,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
           TStar => match peek(tokens, next + 1) {
             TIdent(name) => {
               let eq = expect_tk(tokens, next + 2, "=")
-              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
               if next_pos <= eq {
                 throw("internal parser error: block let* parser did not advance")
               } else {
@@ -849,13 +853,13 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             if next_is_struct_destr {
               let (pat, pn) = parse_pattern(tokens, next)
               let eq = expect_tk(tokens, pn, "=")
-              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
               ArrayBuilder::push(steps, StepStructDestr(pat, val))
               p = next_pos
             } else if next_is_record_destr {
               let (pat, pn) = parse_pattern(tokens, next)
               let eq = expect_tk(tokens, pn, "=")
-              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
               ArrayBuilder::push(steps, StepRecordDestr(pat, val))
               p = next_pos
             } else {
@@ -863,7 +867,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 TLParen => {
                   let (pat, pn) = parse_pattern(tokens, next)
                   let eq = expect_tk(tokens, pn, "=")
-                  let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+                  let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
                   if next_pos <= eq {
                     throw("internal parser error: block let-ctor-pat parser did not advance")
                   } else {
@@ -891,7 +895,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                     }
                   }
                   let eq = expect_tk(tokens, eq_pos, "=")
-                  let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+                  let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
                   if next_pos <= eq {
                     throw("internal parser error: block let parser did not advance")
                   } else {
@@ -921,7 +925,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
           TLParen => {
             let (pat, pn) = parse_pattern(tokens, next)
             let eq = expect_tk(tokens, pn, "=")
-            let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+            let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
             if next_pos <= eq {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
@@ -937,7 +941,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
       // same shape the retired let-else used, now with a divergence
       // requirement on the else arm that makes the binding unconditional.
       TGuard => {
-        let (gpat, gscrut, galt, gnext) = parse_guard_stmt(tokens, starts, p + 1, parse_recur)
+        let (gpat, gscrut, galt, gnext) = parse_guard_stmt(tokens, starts, p + 1, parse_recur, context)
         ArrayBuilder::push(steps, StepPatternElse(gpat, gscrut, galt))
         // A guard is a statement, so consume the separator the lexer's ASI
         // inserts after the else block's `}` — without this, the next
@@ -945,7 +949,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
         p = skip_semi(tokens, gnext)
       },
       _ => {
-        let (e, next) = parse_recur(tokens, p, 0)
+        let (e, next) = parse_recur(tokens, p, 0, context)
         if next <= p {
           throw("internal parser error: block expr parser did not advance")
         } else {
@@ -961,12 +965,12 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             },
             TEq => match e {
               EIdent(name, _) => {
-                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 ArrayBuilder::push(steps, StepAssign(name, val))
                 p = next_pos
               },
               EDot(obj, field, _, _) => {
-                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 let set_args = empty_exprs()
                 Array::push(set_args, obj)
                 Array::push(set_args, EString(field))
@@ -982,7 +986,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   _ => false
                 }
                 if s_is_index && Array::length(sidx_args) == 2 {
-                  let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                  let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                   let set_args = empty_exprs()
                   Array::push(set_args, Array::get(sidx_args, 0))
                   Array::push(set_args, Array::get(sidx_args, 1))
@@ -997,7 +1001,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             },
             TPlusEq => match e {
               EIdent(name, _) => {
-                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 ArrayBuilder::push(steps, StepAssignOp(name, "+", val))
                 p = next_pos
               },
@@ -1005,7 +1009,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             },
             TMinusEq => match e {
               EIdent(name, _) => {
-                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 ArrayBuilder::push(steps, StepAssignOp(name, "-", val))
                 p = next_pos
               },
@@ -1013,7 +1017,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             },
             TStarEq => match e {
               EIdent(name, _) => {
-                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 ArrayBuilder::push(steps, StepAssignOp(name, "*", val))
                 p = next_pos
               },
@@ -1021,7 +1025,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             },
             TSlashEq => match e {
               EIdent(name, _) => {
-                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 ArrayBuilder::push(steps, StepAssignOp(name, "/", val))
                 p = next_pos
               },
@@ -1029,7 +1033,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             },
             TPercentEq => match e {
               EIdent(name, _) => {
-                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 ArrayBuilder::push(steps, StepAssignOp(name, "%", val))
                 p = next_pos
               },
@@ -1059,13 +1063,13 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
 // (see classify_sync_for_loop in desugar_trait_dict.vibe), and `await` in
 // that position is an ordinary binding name again.
 
-export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   if mode == 20 {
-    parse_impl_block(tokens, starts, pos, parse_recur)
+    parse_impl_block(tokens, starts, pos, parse_recur, context)
   } else if mode == 21 {
     // Parse cond with the no-is variant so a trailing `is pattern` belongs
     // to the if-cond pattern slot rather than collapsing into a Bool match.
-    let (cond, cn) = parse_infix_no_is(tokens, starts, pos, 0, pos, parse_recur)
+    let (cond, cn) = parse_infix_no_is_with_binder_context(tokens, starts, pos, 0, pos, parse_recur, context)
     let mut is_mode = false
     let mut is_pat_val = PWild
     let mut brace_pos = cn
@@ -1085,12 +1089,12 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
       _ => ()
     }
     let br = expect_tk(tokens, brace_pos, "{")
-    let (then_e, tn) = parse_recur(tokens, br, 20)
+    let (then_e, tn) = parse_recur(tokens, br, 20, context)
     let (else_e, end_pos) = match peek(tokens, tn) {
       TElse => match peek(tokens, tn + 1) {
-        TIf => parse_recur(tokens, tn + 2, 21),
-        TLBrace => parse_recur(tokens, tn + 2, 20),
-        _ => parse_recur(tokens, tn + 1, 0)
+        TIf => parse_recur(tokens, tn + 2, 21, context),
+        TLBrace => parse_recur(tokens, tn + 2, 20, context),
+        _ => parse_recur(tokens, tn + 1, 0, context)
       },
       _ => (EUnit, tn)
     }
@@ -1103,7 +1107,7 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
       (EIf(cond, then_e, else_e), end_pos)
     }
   } else if mode == 22 {
-    let (scrutinee, sn) = parse_recur(tokens, pos, 0)
+    let (scrutinee, sn) = parse_recur(tokens, pos, 0, context)
     let br = expect_tk(tokens, sn, "{")
     match peek(tokens, br) {
       TRBrace => (EMatch(scrutinee, empty_arms()), br + 1),
@@ -1117,7 +1121,7 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
         let hg = [
           false
         ]
-        let endpos = collect_match_arms(tokens, starts, br, ab, hg, parse_recur)
+        let endpos = collect_match_arms(tokens, starts, br, ab, hg, parse_recur, context)
         let arms3 = ArrayBuilder::freeze(ab)
         if Array::get(hg, 0) {
           let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1))
@@ -1135,13 +1139,13 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
       }
     }
   } else if mode == 23 {
-    let (cond, cn) = parse_recur(tokens, pos, 0)
+    let (cond, cn) = parse_recur(tokens, pos, 0, context)
     let br = expect_tk(tokens, cn, "{")
-    let (body, end) = parse_recur(tokens, br, 20)
+    let (body, end) = parse_recur(tokens, br, 20, context)
     (EWhile(cond, body), end)
   } else if mode == 24 {
     let br = expect_tk(tokens, pos, "{")
-    let (body, bn) = parse_recur(tokens, br, 20)
+    let (body, bn) = parse_recur(tokens, br, 20, context)
     let wp = expect_tk(tokens, bn, "with")
     // ADR-0085 (#1344): the handled effect may be a generic INSTANTIATION
     // (`handle { .. } with Exception[IoError] { Throw(e) => .. }`), so the
@@ -1174,9 +1178,9 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
       TRBrace => throw(String::concat("handler for `", String::concat(effect_name, "` must contain at least one arm"))),
       _ => {
         let b = ArrayBuilder::new()
-        let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, parse_recur, context)
         ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur)
+        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur, context)
       }
     }
   } else if mode == 25 {
@@ -1190,10 +1194,10 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
         TComma => match peek(tokens, start + 2) {
           TIdent(second_name) => {
             let ip = expect_tk(tokens, start + 3, "in")
-            match parse_recur(tokens, ip, 0) {
+            match parse_recur(tokens, ip, 0, context) {
               (iterable, after_iter) => {
                 let bb = expect_tk(tokens, after_iter, "{")
-                let (body, end) = parse_recur(tokens, bb, 20)
+                let (body, end) = parse_recur(tokens, bb, 20, context)
                 (EForIn(second_name, Some(first_name), iterable, body), end)
               },
               _ => throw("unreachable: parse_recur for for-in")
@@ -1203,10 +1207,10 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
         },
         _ => {
           let ip = expect_tk(tokens, start + 1, "in")
-          match parse_recur(tokens, ip, 0) {
+          match parse_recur(tokens, ip, 0, context) {
             (iterable, after_iter) => {
               let bb = expect_tk(tokens, after_iter, "{")
-              let (body, end) = parse_recur(tokens, bb, 20)
+              let (body, end) = parse_recur(tokens, bb, 20, context)
               (EForIn(first_name, None, iterable, body), end)
             },
             _ => throw("unreachable: parse_recur for for-in")
@@ -1230,7 +1234,7 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
       _ => throw("expected a binder name after 'taskgroup {'")
     }
     let arrow = expect_tk(tokens, gn, "=>")
-    let (body, bn) = parse_recur(tokens, arrow, 0)
+    let (body, bn) = parse_recur(tokens, arrow, 0, context)
     let close = expect_tk(tokens, bn, "}")
     let tparams = Array::slice([
       ""
@@ -1260,7 +1264,7 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
     // Mode 20 parses a full statement block (let/expr sequence) and
     // consumes the closing brace -- region bodies are blocks, not single
     // expressions.
-    let (body, close) = parse_recur(tokens, br, 20)
+    let (body, close) = parse_recur(tokens, br, 20, context)
     let tparams = Array::slice([
       ""
     ], 0, 0)
@@ -1277,4 +1281,9 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
     let actual = tk_name(peek(tokens, pos))
     throw("internal parser error: unknown parse mode \{mode} at #\{pos} token=\{actual}")
   }
+}
+
+export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+  let adapted = (rtoks, rpos, rmode, _context) -> parse_recur(rtoks, rpos, rmode)
+  parse_impl_dispatch_with_binder_context(tokens, starts, pos, mode, adapted, None)
 }
