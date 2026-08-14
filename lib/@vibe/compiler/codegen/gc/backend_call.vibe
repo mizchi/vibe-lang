@@ -51,6 +51,7 @@ import @vibe/compiler/codegen/common_base {
   find_local_slot,
   func_table_index_of,
   gc_slot_log_reset_above,
+  gc_slot_map_get,
   gc_slot_map_reset_above,
   is_eident,
   resolve_func,
@@ -738,6 +739,40 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           emit_i64_const(buf, 1)
           nl
         } else {
+          // #1702 writes: a native wasm-gc struct local. Its exact struct was
+          // fixed at the binding site, so the field index is static -- and the
+          // tag dispatch below is impossible here anyway, because a native
+          // struct carries no ctor tag.
+          let ns_slot = match Array::get(args, 0) {
+            EIdent(ns_obj, _) => find_local_slot(local_names, ns_obj),
+            _ => 0 - 1
+          }
+          let ns_struct_idx = gc_slot_map_get(ctx.gc_native_struct_scope, ns_slot)
+          if ns_struct_idx >= 0 {
+            let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
+            let mut ns_fidx = 0 - 1
+            let mut ns_i = 0
+            while ns_i < Array::length(ns_declared) {
+              if ns_fidx < 0 && Array::get(ns_declared, ns_i) == field {
+                ns_fidx = ns_i
+              } else {
+                ()
+              }
+              ns_i = ns_i + 1
+            }
+            if ns_fidx < 0 {
+              throw("gc native struct: stored field is not declared on the bound struct")
+            } else {
+              ()
+            }
+            emit_local_get(buf, ns_slot)
+            let ns_nl = ce(buf, Array::get(args, 2), local_names, next_local, ld)
+            emit_struct_set(buf, ctx.gc_native_struct_type_base + Array::length(ns_declared) - 1, ns_fidx)
+            emit_i64_const(buf, 1)
+            return ns_nl
+          } else {
+            ()
+          }
           // #722: same struct-tag dispatch as the linear __set_field — a
           // same-named `mut` field can live at a different slot in another
           // struct, and the static first-match store would corrupt it.

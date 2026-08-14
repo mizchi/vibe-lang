@@ -176,8 +176,13 @@ wasm-tools print "$NATIVE_STRUCT_FALLBACK_OUT" > "$NATIVE_STRUCT_FALLBACK_WAT"
 # with N >= 4 is a #1702 record and never the RC cell or the alloc probe.
 native_struct_new="$(grep -cE '^[[:space:]]+struct\.new 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
 native_struct_get="$(grep -cE '^[[:space:]]+struct\.get 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
-if [ "$native_struct_new" -ne 3 ] || [ "$native_struct_get" -ne 7 ]; then
-  echo "[gc-heap-accounting] FAIL: expected three #1702 struct.new and seven struct.get, found $native_struct_new/$native_struct_get" >&2
+# struct.set is the #1702 WRITE half: `c.hits = v` lowers through `__set_field`,
+# whose receiver is consumed by a struct.set exactly as a read's receiver is
+# consumed by struct.get. A store landing anywhere else would leave this at 0
+# while the fixture still passed, since the tally reads its own field back.
+native_struct_set="$(grep -cE '^[[:space:]]+struct\.set 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
+if [ "$native_struct_new" -ne 4 ] || [ "$native_struct_get" -ne 10 ] || [ "$native_struct_set" -ne 2 ]; then
+  echo "[gc-heap-accounting] FAIL: expected #1702 counts 4 struct.new / 10 struct.get / 2 struct.set, found $native_struct_new/$native_struct_get/$native_struct_set" >&2
   exit 1
 fi
 # The representation claim: those locals are declared as typed references, not
@@ -188,9 +193,10 @@ if [ "$native_struct_locals" -lt 3 ]; then
   echo "[gc-heap-accounting] FAIL: expected three typed struct locals, found $native_struct_locals" >&2
   exit 1
 fi
-# The fallback pair covers returning, passing, storing through a `mut` field,
-# and closure capture -- every one of which would need the ctor tag a native
-# struct does not carry.
+# The fallback pair covers returning, passing, and closure capture -- each of
+# which would need the ctor tag a native struct does not carry. Storing through
+# a `mut` field used to be listed here and is admitted since the #1702 write
+# half; it moved to the positive fixture above.
 fallback_struct_new="$(grep -cE '^[[:space:]]+struct\.new 1[4-9]' "$NATIVE_STRUCT_FALLBACK_WAT" || true)"
 if [ "$fallback_struct_new" -ne 0 ]; then
   echo "[gc-heap-accounting] FAIL: expected no #1702 struct.new in the fallback fixture, found $fallback_struct_new" >&2
@@ -514,7 +520,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, boundary monomorphization (#1722), mutating transforms, control-flow joins, String/Bool elements, non-escaping local records (#1702), and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, boundary monomorphization (#1722), mutating transforms, control-flow joins, String/Bool elements, non-escaping local records incl. field writes (#1702), and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2

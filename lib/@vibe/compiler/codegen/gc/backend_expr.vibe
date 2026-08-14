@@ -650,6 +650,19 @@ fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
     // the lane exists for; when it is another binding, `name` does not occur
     // here at all. Either way nothing materializes the struct as a value.
     EDot(EIdent(_, _), _, _, _) => true,
+    // #1702 writes: `p.x = v` lowers to `__set_field(p, "x", v)`. The receiver
+    // is consumed by a struct.set here exactly as a read's receiver is consumed
+    // by struct.get, so it never materializes as a value either -- but the
+    // STORED value is an ordinary expression and still has to be checked, or
+    // `p.x = p` would smuggle the struct out through its own field.
+    ECall(EIdent(sf_callee, _), sf_args, _) => if sf_callee == "__set_field" && Array::length(sf_args) == 3 {
+      match Array::get(sf_args, 0) {
+        EIdent(_, _) => gc_native_struct_scope_is_safe(Array::get(sf_args, 2), name),
+        _ => gc_native_struct_children_are_safe(expr, name)
+      }
+    } else {
+      gc_native_struct_children_are_safe(expr, name)
+    },
     EFn(_, _, _, _, _, _) => false,
     EMatch(_, _) => false,
     EHandle(_, _) => false,
