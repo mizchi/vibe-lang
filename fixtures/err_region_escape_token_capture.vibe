@@ -1,0 +1,26 @@
+// #1725 / ADR-0090: the escaping closure captures the region TOKEN itself.
+//   error_contains: "region escapes its scope"
+// (gate-only fixture: not *_test.vibe -- wired into compiler_gate.sh's
+// ADR-0090 section, section 75.)
+//
+// The sharper sibling of err_region_escape_closure_capture.vibe. There the
+// closure held a value BUILT from the token, so the check found it by walking
+// the body's let spine. Here there is no outer binding at all: the closure
+// holds `r` and does its own allocating. A spine-only rule reports nothing
+// (Codex review on #1730), and the escaping closure can then call
+// `MutList::empty(r)` after the region ended -- allocating out of an arena
+// segment whose watermark has already been handed back to the enclosing
+// region, so the two overlap.
+enum Unused {
+  U0
+}
+
+fn build() -> () -> Array[Int] {
+  region r {
+    () -> Array[Int] {
+      let l = MutList::empty(r)
+      MutList::push(l, 7)
+      MutList::to_array(l)
+    }
+  }
+}

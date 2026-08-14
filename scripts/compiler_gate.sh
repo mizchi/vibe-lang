@@ -8524,8 +8524,24 @@ if ! grep -qF 'region escapes its scope' "$r90dir/cap.wasm.diag" 2>/dev/null; th
   cat "$r90dir/cap.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# The sharper negative: the escaping closure holds the region TOKEN, with no
+# outer binding for a spine walk to find.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_region_escape_token_capture.vibe "$r90dir/tok.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/tok.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_escape_token_capture.vibe compiled successfully -- a closure holding the region token must not escape (#1725)" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its scope' "$r90dir/tok.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_escape_token_capture.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/tok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 # The false-positive guard: a closure that captures a region value but stays
-# inside the region is valid, and the body still exits via freeze.
+# inside the region is valid, and the body still exits via freeze. It also
+# covers shadowing and an initialiser that merely touches the token while
+# evaluating to a scalar -- both shapes an over-eager taint rule rejects.
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/region_ok_closure_local.vibe "$r90dir/caplocal.wasm" __no_entry__ >/dev/null 2>&1 || true
@@ -8535,7 +8551,7 @@ if [ ! -s "$r90dir/caplocal.wasm" ]; then
   exit 1
 fi
 if ! r90_cap_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/caplocal.wasm" 2>&1)"; then
-  echo "[compiler-gate] FAIL: region_ok_closure_local.vibe got '$r90_cap_out' (want 48)" >&2
+  echo "[compiler-gate] FAIL: region_ok_closure_local.vibe got '$r90_cap_out' (want 55)" >&2
   exit 1
 fi
 # ADR-0090's sanctioned exits COPY. The rest of the FrozenArray surface is
