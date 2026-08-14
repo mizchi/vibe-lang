@@ -2273,7 +2273,7 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
   let out = array_empty()
   push_all_var_types(out, shaped)
   let call_result_shape = match val {
-    EFn(tparams, _, _, ret, _, _) => match ret {
+    EFn(tparams, _, _, ret, _, fbody) => match ret {
       Some(rt) => if ty_mentions_name_in(rt, tparams) {
         ""
       } else {
@@ -2284,7 +2284,20 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
           ""
         }
       },
-      None => ""
+      // #1766 follow-up: same body fallback as `collect_fn_return_shapes`, and
+      // here the surrounding scope is already known -- `var_types` carries the
+      // enclosing bindings, so a tail that names one resolves too, not just a
+      // literal.
+      None => if Array::length(tparams) > 0 {
+        ""
+      } else {
+        let sh = infer_shape(fn_body_tail_expr(fbody), struct_sets, c, fn_returns)
+        if shape_is_composite(sh) {
+          sh
+        } else {
+          ""
+        }
+      }
     },
     _ => ""
   }
@@ -2695,7 +2708,7 @@ fn collect_struct_field_types(stmts: Array[Stmt], out: Array[(String, String)]) 
 /// its answer from the other's deliberately different grammar. Equality keeps
 /// Option/Result sentinels; interpolation only records shapes its structural
 /// renderer understands. Generic results stay unknown in both lanes.
-fn collect_fn_return_shapes(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr]) -> Unit {
+fn collect_fn_return_shapes(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr], fbody: Expr) -> Unit {
   match ret {
     Some(rt) => if ty_mentions_name_in(rt, tparams) {
       ()
@@ -2713,7 +2726,29 @@ fn collect_fn_return_shapes(out: Array[(String, String)], fname: String, tparams
         ()
       }
     },
-    None => ()
+    // #1766 follow-up: an unannotated lambda still HAS a return shape -- its
+    // body's tail expression is the returned value. `fn_return_head_of` already
+    // falls back to the body when `ret` is `None`; without the same fallback
+    // here, `let f = () -> { [4, 5] }` recorded no shape and `"\{f()}"` printed
+    // the array's address. Named functions cannot reach this arm (`fn f() { .. }`
+    // does not parse), so this is the lambda spelling only.
+    //
+    // Interpolation only. The eq lane keeps its own grammar (Option/Result
+    // sentinels) and deriving it from an expression is a separate question.
+    //
+    // No `struct_sets` or `var_types` exist at collection time, so this resolves
+    // literal bodies -- exactly the shapes that were printing pointers. A body
+    // whose tail needs that context yields "" and behaves as before.
+    None => if Array::length(tparams) > 0 {
+      ()
+    } else {
+      let body_sh = infer_shape(fn_body_tail_expr(fbody), array_empty(), array_empty(), out)
+      if shape_is_composite(body_sh) {
+        Array::push(out, (fn_return_shape_key(fname), body_sh))
+      } else {
+        ()
+      }
+    }
   }
 }
 
@@ -2725,7 +2760,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SLet(_, _, fname, _, body) => match body {
         EFn(tparams, _, _, ret, _, fbody) => {
           Array::push(out, (fname, fn_return_head_of(ret, fbody)))
-          collect_fn_return_shapes(out, fname, tparams, ret)
+          collect_fn_return_shapes(out, fname, tparams, ret, fbody)
         },
         _ => ()
       },
@@ -2737,7 +2772,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SFnDecl(_, fname, body, _, _) => match body {
         EFn(tparams, _, _, ret, _, fbody) => {
           Array::push(out, (fname, fn_return_head_of(ret, fbody)))
-          collect_fn_return_shapes(out, fname, tparams, ret)
+          collect_fn_return_shapes(out, fname, tparams, ret, fbody)
         },
         _ => ()
       },

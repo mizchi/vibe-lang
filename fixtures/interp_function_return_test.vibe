@@ -72,3 +72,46 @@ test "local function return shape shadows the top-level function" {
   }
   inspect("\{scalar()}", "[4, 5]")
 }
+
+// #1766 follow-up (review finding on PR #1774): the fix above keyed on the
+// return ANNOTATION, so an unannotated lambda still printed its address --
+// the same symptom the issue was filed for, one spelling over. `fn f() { .. }`
+// does not parse, so this is lambdas only, and lambdas are where the shorthand
+// gets used (`let peek = () -> Array::get(xs, 0)`).
+//
+// `fn_return_head_of` already falls back to the body when there is no
+// annotation; the shape tables now do the same.
+
+let arr_no_annot = () -> {
+  [
+    4,
+    5
+  ]
+}
+
+let tup_no_annot = () -> {
+  (1, "a")
+}
+
+let scalar_no_annot = () -> {
+  42
+}
+
+test "interpolation reads the body when a lambda has no return annotation" {
+  inspect("\{arr_no_annot()}", "[4, 5]")
+  inspect("\{tup_no_annot()}", "(1, a)")
+  inspect("\{Some(arr_no_annot())}", "Some([4, 5])")
+  // A scalar body must stay scalar: the fallback records a shape only when the
+  // body's tail is composite, so this still takes the ordinary path.
+  inspect("\{scalar_no_annot()}", "42")
+}
+
+test "the body fallback also applies to a local unannotated lambda" {
+  let local_arr = () -> {
+    [
+      7,
+      8
+    ]
+  }
+  inspect("\{local_arr()}", "[7, 8]")
+}
