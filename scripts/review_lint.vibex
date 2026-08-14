@@ -1,0 +1,174 @@
+// Review-derived structural lint runner.
+//
+// Semantic rules belong in `vibe check`. This executable owns only repository
+// architecture patterns expressible through `vibe grep`; keep the pattern,
+// capture interpretation, diagnostic, and exit policy together here.
+//
+// Usage:
+//   vibe run scripts/review_lint.vibex -- --root lib/@vibe/compiler
+//   vibe run scripts/review_lint.vibex -- --root <staged-snapshot> --vibe runtime/vibe
+//   vibe run scripts/review_lint.vibex -- --self-test
+
+import @vibe/json { Json }
+import @vibe/process { sh_capture }
+
+fn shell_quote(s: String) -> String {
+  // Repository and mktemp paths cannot contain a single quote in the
+  // pre-commit driver. Keeping quoting here makes spaces harmless.
+  "'" + s + "'"
+}
+
+fn arg_value(name: String, fallback: String) -> String with Env {
+  let argc = Env::args_len()
+  let mut i = 0
+  let mut out = fallback
+  while i + 1 < argc {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+      i = argc
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn has_arg(name: String) -> Bool with Env {
+  let argc = Env::args_len()
+  let mut i = 0
+  let mut found = false
+  while i < argc {
+    if Env::args_get(i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn starts_with_synthetic_literal(text: String) -> Bool {
+  String::starts_with(text, "\"__")
+}
+
+fn source_line(path: String, line: Int) -> String with Fs {
+  if !Fs::exists(path) || line <= 0 {
+    ""
+  } else {
+    let lines = String::split(Fs::read_file(path), "\n")
+    if line > Array::length(lines) {
+      ""
+    } else {
+      Array::get(lines, line - 1)
+    }
+  }
+}
+
+fn is_allowed(path: String, line: Int) -> Bool with Fs {
+  String::contains(source_line(path, line), "review-lint: allow-fixed-synthetic-name")
+}
+
+fn binder_ctor(name: String) -> Bool {
+  name == "ELet" || name == "ELetMut" || name == "ELetRec" || name == "PBind"
+}
+
+fn report_hits(raw: String, filter_ctor: Bool, emit: Bool) -> Int with Fs + Stderr {
+  let hits = Json::parse(raw)
+  let mut i = 0
+  let mut count = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let captures = Json::field(hit, "captures")
+    let name = Json::string(Json::field(Json::field(captures, "name"), "text"))
+    let ctor_ok = if filter_ctor {
+      binder_ctor(Json::string(Json::field(Json::field(captures, "ctor"), "text")))
+    } else {
+      true
+    }
+    let path = Json::string(Json::field(hit, "path"))
+    let line = Double::to_int(Json::number(Json::field(hit, "line")))
+    if ctor_ok && starts_with_synthetic_literal(name) && !is_allowed(path, line) {
+      let text = Json::string(Json::field(hit, "text"))
+      if emit {
+        Stderr::write_stream(path + ":" + Int::to_string(line) + ": fixed synthetic binder: " + text + "\n")
+      } else {
+        ()
+      }
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn run_grep(vibe: String, root: String, pattern: String) -> (Int, String) with Process {
+  let cmd = shell_quote(vibe) + " grep --json --pattern " + shell_quote(pattern) + " " + shell_quote(root)
+  let result = sh_capture(cmd)
+  if result.exit_code != 0 {
+    (result.exit_code, result.stderr)
+  } else {
+    (0, result.stdout)
+  }
+}
+
+fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
+  let patterns = [
+    "$(ctor:id)($(name:const), $(rest:args))",
+    "SLet($(a:arg), $(b:arg), $(name:const), $(rest:args))"
+  ]
+  let mut i = 0
+  let mut violations = 0
+  let mut failed = false
+  while i < Array::length(patterns) {
+    let (code, output) = run_grep(vibe, root, Array::get(patterns, i))
+    if code != 0 {
+      Stderr::write_stream("review-lint: vibe grep failed: " + output + "\n")
+      failed = true
+    } else {
+      violations = violations + report_hits(output, i == 0, true)
+    }
+    i = i + 1
+  }
+  if failed {
+    2
+  } else if violations > 0 {
+    Stderr::write_stream("review-lint: found " + Int::to_string(violations) + " fixed synthetic binder(s); mint a fresh name from the source binding census\n")
+    1
+  } else {
+    0
+  }
+}
+
+fn self_test() -> Int with Fs + Stderr {
+  let raw = "[{\"path\":\"/missing\",\"line\":1,\"text\":\"ELet(\\\"__tmp\\\", e, e, -1)\",\"captures\":{\"name\":{\"text\":\"\\\"__tmp\\\"\"}}}]"
+  if !starts_with_synthetic_literal("\"__tmp\"") {
+    Stderr::write_stream("review-lint self-test: synthetic literal was not recognized\n")
+    1
+  } else if starts_with_synthetic_literal("\"user\"") {
+    Stderr::write_stream("review-lint self-test: ordinary literal was rejected\n")
+    1
+  } else if report_hits(raw, false, false) != 1 {
+    Stderr::write_stream("review-lint self-test: JSON finding was not reported\n")
+    1
+  } else {
+    0
+  }
+}
+
+fn main with Env + Fs + Process + Stdout + Stderr {
+  let code = if has_arg("--self-test") {
+    self_test()
+  } else {
+    let root = arg_value("--root", "lib/@vibe/compiler")
+    let vibe = arg_value("--vibe", "runtime/vibe")
+    lint(root, vibe)
+  }
+  if code == 0 {
+    Stdout::write_stream("review-lint: ok\n")
+  } else {
+    vibe_process_exit_raw(code)
+  }
+}
