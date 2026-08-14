@@ -10,11 +10,21 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Type, TypeEnv, env_lookup, env_value_binding, trait_defined
+  BindingOrigin, Expr, Stmt, Type, TypeEnv, TypeExpr, env_cache, env_lookup, env_lookup_binding, env_value_binding, trait_defined
+}
+
+import @vibe/compiler/checker {
+  check_program_with_env_result, check_program_with_projected_import_env_result
 }
 
 import @vibe/compiler/runtime {
-  projected_import_env_for_test, set_collect_module_diagnostics, set_dep_order_seed
+  checked_module_public_env,
+  parse_persistent_type_env,
+  parse_program_with_path,
+  persistent_type_env_cache_text,
+  projected_import_env_for_test,
+  set_collect_module_diagnostics,
+  set_dep_order_seed
 }
 
 import @vibe/compiler/loader {
@@ -124,6 +134,34 @@ fn typecheck_db_pair_error(dep_src: String, main_src: String) -> String with Exc
     ""
   } with Exception {
     Throw(msg) => msg
+  }
+}
+
+fn projected_checked_env(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
+  let import_env = projected_import_env_for_test(source, path, deps, full_cache)
+  check_program_with_projected_import_env_result(parse_program_with_path(path, source), import_env).final_env
+}
+
+fn assert_module_origin(env: TypeEnv, bound_name: String, expected_path: String, expected_source_name: String) -> Unit {
+  match env_lookup_binding(env, bound_name) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(path, source_name) => {
+        assert(path == expected_path)
+        assert(source_name == expected_source_name)
+      },
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+fn assert_unavailable_origin(env: TypeEnv, name: String) -> Unit {
+  match env_lookup_binding(env, name) {
+    Some(binding) => match binding.origin {
+      BindingOriginUnavailable => (),
+      _ => assert(false)
+    },
+    None => assert(false)
   }
 }
 
@@ -253,6 +291,142 @@ test "db_typecheck_fs: extensionless directory re-export imports enum constructo
     None => false
   }
   assert(has_ctor)
+}
+
+test "projected checker root preserves direct alias re-export and companion origins" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = checked_test_env("export let direct = 1\nexport let renamed = \"ok\"\nexport enum Choice { Pick(Int) }")
+  let source = "import ./dep.vibe { direct, renamed as alias, Choice, Pick as ExplicitPick }\nexport ./dep.vibe { direct, renamed as forwarded }\nlet use_alias: String = alias\nlet use_direct: Int = direct"
+  let checked = projected_checked_env(source, "workspace/main.vibe", [
+    dep_path
+  ], [
+    (dep_path, dep_env)
+  ])
+  assert_module_origin(checked, "direct", dep_path, "direct")
+  assert_module_origin(checked, "alias", dep_path, "renamed")
+  assert_module_origin(checked, "forwarded", dep_path, "renamed")
+  assert_module_origin(checked, "Choice", dep_path, "Choice")
+  assert_module_origin(checked, "ExplicitPick", dep_path, "Pick")
+  // Importing the enum attaches its automatic companion using the
+  // dependency's actual candidate name.
+  assert_module_origin(checked, "Pick", dep_path, "Pick")
+  match (env_lookup(checked, "use_alias"), env_lookup(checked, "use_direct")) {
+    (Some(CtString), Some(CtInt)) => (),
+    _ => assert(false)
+  }
+}
+
+test "projected checker root keeps path and source-order winners with cached payloads" {
+  let first_path = "workspace/first.vibe"
+  let second_path = "workspace/second.vibe"
+  let shared_source = "export let value = 1\nexport let other = 2"
+  let first_env = env_cache(checked_test_env(shared_source))
+  let second_env = env_cache(checked_test_env(shared_source))
+  let source = "import ./first.vibe { value as firstCopy, value as chosen, other as clash }\nimport ./second.vibe { value as secondCopy, value as chosen }\nimport ./first.vibe { value as clash }"
+  let checked = projected_checked_env(source, "workspace/main.vibe", [
+    first_path,
+    second_path,
+    first_path
+  ], [
+    (first_path, first_env),
+    (second_path, second_env)
+  ])
+  match (env_lookup(checked, "chosen"), env_lookup(checked, "clash")) {
+    (Some(CtInt), Some(CtInt)) => (),
+    _ => assert(false)
+  }
+  assert_module_origin(checked, "firstCopy", first_path, "value")
+  assert_module_origin(checked, "secondCopy", second_path, "value")
+  assert_module_origin(checked, "chosen", second_path, "value")
+  assert_module_origin(checked, "clash", first_path, "value")
+}
+
+test "projected checker root local hoist shadows imports while generic replay stays legacy" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = checked_test_env("export let value = 1\nexport let source = \"text\"")
+  let source = "import ./dep.vibe { value, source as alias }\nlet value: String = \"local\""
+  let stmts = parse_program_with_path("workspace/main.vibe", source)
+  let import_env = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [
+    (dep_path, dep_env)
+  ])
+  let projected = check_program_with_projected_import_env_result(stmts, import_env).final_env
+  match env_lookup(projected, "value") {
+    Some(CtString) => (),
+    _ => assert(false)
+  }
+  assert_unavailable_origin(projected, "value")
+  // The generic checker API intentionally retains its historical replay.
+  let legacy = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", source), import_env).final_env
+  match env_lookup(legacy, "alias") {
+    Some(CtUnknown) => (),
+    _ => assert(false)
+  }
+  assert_unavailable_origin(legacy, "alias")
+}
+
+test "projected checker nested modules retain legacy import replay" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = checked_test_env("export let source = \"text\"")
+  let source = "import ./dep.vibe { source as alias }"
+  let import_env = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [
+    (dep_path, dep_env)
+  ])
+  let checked = check_program_with_projected_import_env_result([
+    SModule(false, "Nested", [
+      SImport("./dep.vibe", [
+        ("source", Some("alias"))
+      ]),
+      // Legacy nested replay shadows the projected String with CtUnknown, so
+      // this remains accepted exactly as before. Inheriting root projected
+      // mode would retain String and reject the annotation.
+      SLet(false, false, "nested", Some(TyName("Int")), EIdent("alias", -1))
+    ])
+  ], import_env).final_env
+  assert_module_origin(checked, "alias", dep_path, "source")
+}
+
+test "projected import origins are stripped by public and persistent surfaces" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = checked_test_env("export let value = 1")
+  let source = "export ./dep.vibe { value }"
+  let stmts = parse_program_with_path("workspace/main.vibe", source)
+  let checked = projected_checked_env(source, "workspace/main.vibe", [
+    dep_path
+  ], [
+    (dep_path, dep_env)
+  ])
+  assert_module_origin(checked, "value", dep_path, "value")
+  let published = checked_module_public_env(stmts, checked)
+  assert_unavailable_origin(published, "value")
+  let encoded = persistent_type_env_cache_text(published)
+  match parse_persistent_type_env(encoded) {
+    Some(decoded) => {
+      assert_unavailable_origin(decoded, "value")
+      assert(persistent_type_env_cache_text(decoded) == encoded)
+    },
+    None => assert(false)
+  }
+}
+
+test "projected checker alias retains source type for diagnostics" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = checked_test_env("export let source = \"text\"")
+  let source = "import ./dep.vibe { source as alias }\nlet wrong: Int = alias"
+  let message = handle {
+    let _ = projected_checked_env(source, "workspace/main.vibe", [
+      dep_path
+    ], [
+      (dep_path, dep_env)
+    ])
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(message, "expected Int, got String"))
 }
 
 test "exact dep projection resolves the selected package and directory candidates" {
