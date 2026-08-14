@@ -1134,6 +1134,13 @@ fn main with Stdout {
 ```
 
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
+
+Effect row の呼び出し解決も通常の値解決と同じ lexical scope に従う。局所
+closure・関数 parameter・pattern/loop binder が top-level `fn` と同名なら、
+局所 binding が優先される。したがって、純粋な局所 `take` が同名の
+`fn take(..) with Ask` を隠している間、その呼び出しに `Ask` は計上されない。
+局所 scope を抜けると top-level の row が再び有効になる。
+
 > **evidence-passing 実装 (#817, ADR-0076 追記34 V2 で replay 全廃)**:
 > handler は evidence dict への直接呼び出し (tail-resumptive) か
 > suspend CPS (first-class resume) にコンパイルされ、handle body は

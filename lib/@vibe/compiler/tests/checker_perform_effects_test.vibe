@@ -332,6 +332,75 @@ test "a later pure binding shadows an effectful local closure" {
   assert(eq(Array::length(errors), 0))
 }
 
+test "a pure local binding shadows a same-named effectful top-level fn (#1723)" {
+  let top = SLet(false, false, "take", None, fn_with(Some("Ask"), EInt(0)))
+  let pure = fn_with(None, EInt(8))
+  let probe = SLet(false, false, "probe", None, fn_with(None, ELet("take", pure, ECall(EIdent("take", -1), array_empty(), -1), -1)))
+  let errors = check_perform_effects_stmts([
+    top,
+    probe
+  ])
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a pure callback parameter shadows a same-named effectful top-level fn (#1723)" {
+  let top = SLet(false, false, "take", None, fn_with(Some("Ask"), EInt(0)))
+  let pure_callback = TyFn(array_empty(), TyName("Int"), None)
+  let probe_body = EFn(array_empty(), array_empty(), [
+    ("take", Some(pure_callback))
+  ], Some(TyName("Int")), None, ECall(EIdent("take", -1), array_empty(), -1))
+  let errors = check_perform_effects_stmts([
+    top,
+    SLet(false, false, "probe", None, probe_body)
+  ])
+  assert(eq(Array::length(errors), 0))
+}
+
+test "an effectful local binding shadows a same-named pure top-level fn (#1723)" {
+  let top = SLet(false, false, "take", None, fn_with(None, EInt(0)))
+  let effectful = fn_with(Some("Ask"), EInt(8))
+  let probe = SLet(false, false, "probe", None, fn_with(None, ELet("take", effectful, ECall(EIdent("take", -1), array_empty(), -1), -1)))
+  let errors = check_perform_effects_stmts([
+    top,
+    probe
+  ])
+  assert(eq(Array::length(errors), 1))
+  assert(String::contains(effect_error_to_string(Array::get(errors, 0)), "missing { Ask }"))
+}
+
+test "top-level effect lookup resumes after a local shadow scope ends (#1723)" {
+  let top = SLet(false, false, "take", None, fn_with(Some("Ask"), EInt(0)))
+  let pure = fn_with(None, EInt(8))
+  let scoped_local = ELet("take", pure, ECall(EIdent("take", -1), array_empty(), -1), -1)
+  let after_scope = ECall(EIdent("take", -1), array_empty(), -1)
+  let probe = SLet(false, false, "probe", None, fn_with(None, ESeq(scoped_local, after_scope)))
+  let errors = check_perform_effects_stmts([
+    top,
+    probe
+  ])
+  assert(eq(Array::length(errors), 1))
+  assert(String::contains(effect_error_to_string(Array::get(errors, 0)), "missing { Ask }"))
+}
+
+test "pattern and loop binders mask same-named top-level rows (#1723)" {
+  let top = SLet(false, false, "take", None, fn_with(Some("Ask"), EInt(0)))
+  let call_take = ECall(EIdent("take", -1), array_empty(), -1)
+  let match_probe = SLet(false, false, "match_probe", None, fn_with(None, EMatch(EInt(0), [
+    (PBind("take"), call_take)
+  ])))
+  let for_probe = SLet(false, false, "for_probe", None, fn_with(None, EForIn("take", None, EArray(array_empty()), call_take)))
+  let loop_probe = SLet(false, false, "loop_probe", None, fn_with(None, ELoop([
+    ("take", EInt(0))
+  ], call_take)))
+  let errors = check_perform_effects_stmts([
+    top,
+    match_probe,
+    for_probe,
+    loop_probe
+  ])
+  assert(eq(Array::length(errors), 0))
+}
+
 test "a handle around the call discharges the local closure's row" {
   let closure = fn_with(Some("Env"), EInt(1))
   let call = ECall(EIdent("f", -1), array_empty(), -1)
