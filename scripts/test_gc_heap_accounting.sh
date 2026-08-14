@@ -382,18 +382,19 @@ fi
 # declared `Array[Int]` now has the wasm type `(mut (ref null $array))`, so
 # struct types are registered per DECLARED STRUCT rather than per field count.
 #
-# The positive fixture allocates ONE native array and puts it in the field, then
-# mutates through the field -- a field that copied on the way in would still
-# report the right length and the wrong value. Its fallback pair reads the field
-# out of receiver position and keeps the linear layout for the whole record.
+# The positive fixture allocates one native array for the initializer and one
+# for a subsequent mutable-field replacement, then mutates through the field --
+# a field that copied on either store would still report the right length and
+# the wrong value. Its fallback pair reads the field out of receiver position
+# and keeps the linear layout for the whole record.
 REF_FIELD_OUT="$WORK/native_struct_ref_field.wasm"
 REF_FIELD_FALLBACK_OUT="$WORK/native_struct_ref_field_fallback.wasm"
 compile_direct_abi_fallback fixtures/gc_native_struct_ref_field_test.vibe "$REF_FIELD_OUT"
 compile_direct_abi_fallback fixtures/gc_native_struct_ref_field_fallback_test.vibe "$REF_FIELD_FALLBACK_OUT"
 ref_field_native="$(count_native_array_allocs "$REF_FIELD_OUT")"
 ref_field_fallback_native="$(count_native_array_allocs "$REF_FIELD_FALLBACK_OUT")"
-if [ "$ref_field_native" -ne 1 ] || [ "$ref_field_fallback_native" -ne 0 ]; then
-  echo "[gc-heap-accounting] FAIL: expected one #1542 reference-lane field array and none in its fallback, found $ref_field_native/$ref_field_fallback_native" >&2
+if [ "$ref_field_native" -ne 2 ] || [ "$ref_field_fallback_native" -ne 0 ]; then
+  echo "[gc-heap-accounting] FAIL: expected two #1542 reference-lane field arrays and none in its fallback, found $ref_field_native/$ref_field_fallback_native" >&2
   exit 1
 fi
 # The representation claim: the struct type itself declares a typed reference
