@@ -13,18 +13,28 @@ import ./parser_base.vibe {
   has_qualified_pattern_refs,
   has_test_effect_rows,
   parse_binding_name,
+  parse_binding_name_with_binder_context,
   parse_derive_names,
   parse_effect_row,
   parse_effect_stmt,
+  parse_effect_stmt_with_binder_context,
   parse_enum_stmt,
+  parse_enum_stmt_with_binder_context,
   parse_impl_stmt_dispatch,
+  parse_impl_stmt_dispatch_with_binder_context,
   parse_import_item,
+  parse_import_item_with_binder_context,
   parse_struct_field,
+  parse_struct_field_with_binder_context,
   parse_suberror_stmt,
+  parse_suberror_stmt_with_binder_context,
   parse_tparam_names,
+  parse_tparam_names_with_binder_context,
   parse_trait_stmt,
+  parse_trait_stmt_with_binder_context,
   parse_type,
   parse_type_alias_stmt,
+  parse_type_alias_stmt_with_binder_context,
   peek,
   record_test_effect_row,
   skip_braced_body,
@@ -40,10 +50,10 @@ import ./parser_expr.vibe {
   lower_fn_decl_stmts,
   parse,
   parse_expr,
-  parse_fn_stmt,
+  parse_fn_stmt_with_binder_context,
   parse_impl,
   parse_impl_with_binder_context,
-  parse_let_stmt,
+  parse_let_stmt_with_binder_context,
   parse_ok
 }
 
@@ -84,12 +94,12 @@ fn parse_test_row_suffix(tokens: Array[Token], name: String, pos: Int) -> Int wi
   }
 }
 
-fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
       let after_row = parse_test_row_suffix(tokens, name, pos + 1)
       let br = expect_tk(tokens, after_row, "{")
-      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
+      let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
       (STest(name, body), end)
     },
     // #1514: blame the token that must become a string literal.
@@ -102,23 +112,23 @@ fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt,
 /// compiled and run by the same machinery (an example that does not compile is
 /// the failure mode this form exists to remove). The separate node survives
 /// only through parse_*_preserving, for LSP hover and doc extraction.
-fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
+      let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
       (SExample(name, body), end)
     },
     _ => throw("expected example name string")
   }
 }
 
-fn parse_bench_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_bench_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
       let after_row = parse_test_row_suffix(tokens, name, pos + 1)
       let br = expect_tk(tokens, after_row, "{")
-      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
+      let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
       (SBench(name, body), end)
     },
     _ => throw("expected bench name string")
@@ -157,14 +167,14 @@ fn parse_export_names_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[Strin
   }
 }
 
-fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[String])]) -> (Array[(String, Option[String])], Int) with Exception {
+fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[String])], context: Option[ParserBinderContext]) -> (Array[(String, Option[String])], Int) with Exception {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), pos + 2),
       _ => {
-        let (item, next) = parse_import_item(tokens, pos + 1)
+        let (item, next) = parse_import_item_with_binder_context(tokens, pos + 1, context)
         ArrayBuilder::push(b, item)
-        parse_import_items_rest(tokens, next, b)
+        parse_import_items_rest(tokens, next, b, context)
       }
     },
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
@@ -172,14 +182,14 @@ fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(Stri
   }
 }
 
-fn parse_import_items(tokens: Array[Token], pos: Int) -> (Array[(String, Option[String])], Int) with Exception {
+fn parse_import_items(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[String])], Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (empty_import_items(), pos + 1),
     _ => {
-      let (first, next) = parse_import_item(tokens, pos)
+      let (first, next) = parse_import_item_with_binder_context(tokens, pos, context)
       let b = ArrayBuilder::new()
       ArrayBuilder::push(b, first)
-      parse_import_items_rest(tokens, next, b)
+      parse_import_items_rest(tokens, next, b, context)
     }
   }
 }
@@ -208,11 +218,11 @@ fn qualify_import_items(mod_name: String, items: Array[(String, Option[String])]
   ArrayBuilder::freeze(b)
 }
 
-fn parse_qualified_import_tail(tokens: Array[Token], pos: Int, path: String, mod_name: String) -> (Stmt, Int) with Exception {
+fn parse_qualified_import_tail(tokens: Array[Token], pos: Int, path: String, mod_name: String, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(only_kw) => if only_kw == "only" {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (items, end) = parse_import_items(tokens, br);
+      let (items, end) = parse_import_items(tokens, br, context);
       (SImport(path, qualify_import_items(mod_name, items)), end)
     } else {
       throw("expected 'only' after 'as <name>' in qualified import")
@@ -237,10 +247,10 @@ fn reject_executable_import_path(path: String) -> Unit with Exception {
 /// through the catch-all `_` arm below, which always demanded a `{` next and
 /// never looked for an alias — surfacing as "expected { but got ident" once
 /// collect_import_path correctly stopped just before the alias token.
-fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String) -> (Stmt, Int) with Exception {
+fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, bp) {
     TAs => match peek(tokens, bp + 1) {
-      TIdent(mod_name) => parse_qualified_import_tail(tokens, bp + 2, path, mod_name),
+      TIdent(mod_name) => parse_qualified_import_tail(tokens, bp + 2, path, mod_name, context),
       _ => throw("expected namespace name after 'as' in import")
     },
     TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
@@ -248,30 +258,30 @@ fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String) -> (Stmt,
       (SAliasDecl(alias_str, path), bp + 1)
     } else {
       let br = expect_tk(tokens, bp, "{")
-      let (items, end) = parse_import_items(tokens, br);
+      let (items, end) = parse_import_items(tokens, br, context);
       (SImport(path, items), end)
     },
     _ => {
       let br = expect_tk(tokens, bp, "{")
-      let (items, end) = parse_import_items(tokens, br);
+      let (items, end) = parse_import_items(tokens, br, context);
       (SImport(path, items), end)
     }
   }
 }
 
-fn parse_import_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_import_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
-      parse_import_path_tail(tokens, pos + 1, name)
+      parse_import_path_tail(tokens, pos + 1, name, context)
     } else {
       let (path, bp) = collect_import_path(tokens, pos, "")
       reject_executable_import_path(path)
-      parse_import_path_tail(tokens, bp, path)
+      parse_import_path_tail(tokens, bp, path, context)
     },
     _ => {
       let (path, bp) = collect_import_path(tokens, pos, "")
       reject_executable_import_path(path)
-      parse_import_path_tail(tokens, bp, path)
+      parse_import_path_tail(tokens, bp, path, context)
     }
   }
 }
@@ -285,15 +295,15 @@ fn tl_push_mut_name(mb: ArrayBuilder[String], field: (String, TypeExpr), is_mut:
   }
 }
 
-fn parse_toplevel_struct_fields_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)], mb: ArrayBuilder[String]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
+fn parse_toplevel_struct_fields_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)], mb: ArrayBuilder[String], context: Option[ParserBinderContext]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 2),
       _ => {
-        let (field, is_mut, next) = parse_struct_field(tokens, pos + 1)
+        let (field, is_mut, next) = parse_struct_field_with_binder_context(tokens, pos + 1, context)
         ArrayBuilder::push(b, field)
         tl_push_mut_name(mb, field, is_mut)
-        parse_toplevel_struct_fields_rest(tokens, next, b, mb)
+        parse_toplevel_struct_fields_rest(tokens, next, b, mb, context)
       }
     },
     // 0.3.0 redundant-syntax removal: ',' is no longer a declaration-body
@@ -304,32 +314,32 @@ fn parse_toplevel_struct_fields_rest(tokens: Array[Token], pos: Int, b: ArrayBui
   }
 }
 
-fn parse_toplevel_struct_fields(tokens: Array[Token], pos: Int) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
+fn parse_toplevel_struct_fields(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (empty_fields(), Array::slice([
       ""
     ], 0, 0), pos + 1),
     _ => {
-      let (first, is_mut, next) = parse_struct_field(tokens, pos)
+      let (first, is_mut, next) = parse_struct_field_with_binder_context(tokens, pos, context)
       let b = ArrayBuilder::new()
       let mb = ArrayBuilder::new()
       ArrayBuilder::push(b, first)
       tl_push_mut_name(mb, first, is_mut)
-      parse_toplevel_struct_fields_rest(tokens, next, b, mb)
+      parse_toplevel_struct_fields_rest(tokens, next, b, mb, context)
     }
   }
 }
 
-fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => {
       // Optional type-parameter header `struct Foo[T] { ... }`. #829: the
       // param NAMES are kept on the SStruct (they used to be discarded) so
       // the checker can instantiate generic struct literals; representation
       // stays uniform/tagged like enum type params.
-      let (tparams, after_name) = parse_tparam_names(tokens, pos + 1)
+      let (tparams, after_name) = parse_tparam_names_with_binder_context(tokens, pos + 1, context)
       let br = expect_tk(tokens, after_name, "{")
-      let (fields, mut_names, end) = parse_toplevel_struct_fields(tokens, br);
+      let (fields, mut_names, end) = parse_toplevel_struct_fields(tokens, br, context);
       let (derives, final_pos) = parse_derive_names(tokens, end)
       (SStruct(exported, name, fields, derives, mut_names, tparams), final_pos)
     },
@@ -345,8 +355,8 @@ fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) ->
 /// recovered by splitting that back into an Array[String]; no separate
 /// item-collector needed. No type params yet (generic effectsets like
 /// `State::Read[T]` are deferred to a later revision).
-fn parse_effectset_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
-  let (name, after_name) = parse_binding_name(tokens, pos)
+fn parse_effectset_stmt(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let (name, after_name) = parse_binding_name_with_binder_context(tokens, pos, context)
   let ep = expect_tk(tokens, after_name, "=")
   let bp = expect_tk(tokens, ep, "{")
   let (joined, next) = collect_effect_names(tokens, bp, "")
@@ -387,7 +397,7 @@ fn is_resource_decl_head(tokens: Array[Token], pos: Int) -> Bool {
 /// is explicit that a resource kind is not a type and a resource name is not a
 /// `String` to be authority-checked. The qualified form makes every kind read
 /// as belonging to some provider (`S3::Bucket`, `Process::Root`).
-fn parse_resource_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_resource_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   let name = match peek(tokens, pos) {
     TIdent(n) => n,
     _ => throw("expected a resource name after 'resource'")
@@ -406,27 +416,27 @@ fn parse_resource_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Excep
   (SResource(name, kind), end)
 }
 
-fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
-    TLet => parse_let_stmt(tokens, starts, pos + 1, true),
-    TEnum => parse_enum_stmt(tokens, pos + 1, true),
-    TSuberror => parse_suberror_stmt(tokens, pos + 1, true),
-    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true),
+    TLet => parse_let_stmt_with_binder_context(tokens, starts, pos + 1, true, context),
+    TEnum => parse_enum_stmt_with_binder_context(tokens, pos + 1, true, context),
+    TSuberror => parse_suberror_stmt_with_binder_context(tokens, pos + 1, true, context),
+    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true, context),
     // #1280: `fn` lexes as TFn (reserved word), no longer TIdent("fn").
-    TFn => parse_fn_stmt(tokens, starts, pos + 1, true),
+    TFn => parse_fn_stmt_with_binder_context(tokens, starts, pos + 1, true, context),
     TIdent(ident_name) => if ident_name == "effect" {
-      parse_effect_stmt(tokens, pos + 1, true)
+      parse_effect_stmt_with_binder_context(tokens, pos + 1, true, context)
     } else if ident_name == "effectset" {
-      parse_effectset_stmt(tokens, pos + 1, true)
+      parse_effectset_stmt(tokens, pos + 1, true, context)
     } else if ident_name == "resource" && is_resource_decl_head(tokens, pos + 1) {
       throw("a `resource` declaration cannot be exported: ADR-0075 puts it at the `.vibex` root only, and a reusable module abstracts over a resource KIND parameter instead of naming a resource")
     } else {
       throw(String::concat("unexpected token in export: ", ident_name))
     },
-    TType => parse_type_alias_stmt(tokens, pos + 1, true),
-    TTrait => parse_trait_stmt(tokens, pos + 1, true),
+    TType => parse_type_alias_stmt_with_binder_context(tokens, pos + 1, true, context),
+    TTrait => parse_trait_stmt_with_binder_context(tokens, pos + 1, true, context),
     TOpen => match peek(tokens, pos + 1) {
-      TTrait => parse_trait_stmt(tokens, pos + 2, true),
+      TTrait => parse_trait_stmt_with_binder_context(tokens, pos + 2, true, context),
       _ => throw("expected 'trait' after 'open'")
     },
     TLBrace => match peek(tokens, pos + 1) {
@@ -444,7 +454,7 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stm
       let (path, bp) = collect_import_path(tokens, pos, "")
       reject_executable_import_path(path)
       let br = expect_tk(tokens, bp, "{")
-      let (items, end) = parse_import_items(tokens, br);
+      let (items, end) = parse_import_items(tokens, br, context);
       (SReExport(path, items), end)
     },
     // #769: `export ../foo/index.vibe { .. }` (a re-export that climbs OUT of
@@ -456,7 +466,7 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stm
       let (path, bp) = collect_import_path(tokens, pos, "")
       reject_executable_import_path(path)
       let br = expect_tk(tokens, bp, "{")
-      let (items, end) = parse_import_items(tokens, br);
+      let (items, end) = parse_import_items(tokens, br, context);
       (SReExport(path, items), end)
     },
     _ => {
@@ -466,7 +476,7 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stm
   }
 }
 
-fn parse_percent_symbol_name(tokens: Array[Token], pos: Int, label: String) -> (String, Int) with Exception {
+fn parse_percent_symbol_name(tokens: Array[Token], pos: Int, label: String, context: Option[ParserBinderContext]) -> (String, Int) with Exception {
   let pp = expect_tk(tokens, pos, "%")
   match peek(tokens, pp) {
     TIdent(name) => ("%\{name}", pp + 1),
@@ -474,9 +484,9 @@ fn parse_percent_symbol_name(tokens: Array[Token], pos: Int, label: String) -> (
   }
 }
 
-fn parse_extern_let_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_extern_let_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   let lp = expect_tk(tokens, pos, "let")
-  let (name, np) = parse_percent_symbol_name(tokens, lp, "extern symbol name")
+  let (name, np) = parse_percent_symbol_name(tokens, lp, "extern symbol name", context)
   let cp = expect_tk(tokens, np, ":")
   let (ty, end) = parse_type(tokens, cp);
   (SExternLet(name, ty), end)
@@ -503,29 +513,29 @@ export fn parse_stmt_preserving_with_binder_context(tokens: Array[Token], starts
     _ => raw_head
   }
   match head {
-    TLet => parse_let_stmt(tokens, starts, pos + 1, false),
+    TLet => parse_let_stmt_with_binder_context(tokens, starts, pos + 1, false, context),
     TExport => match peek(tokens, pos + 1) {
       // ADR-0063 Phase B (#728): module blocks are removed.
       TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
-      _ => parse_export_stmt(tokens, starts, pos + 1)
+      _ => parse_export_stmt(tokens, starts, pos + 1, context)
     },
     TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
-    TEnum => parse_enum_stmt(tokens, pos + 1, false),
-    TSuberror => parse_suberror_stmt(tokens, pos + 1, false),
-    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false),
-    TType => parse_type_alias_stmt(tokens, pos + 1, false),
-    TTrait => parse_trait_stmt(tokens, pos + 1, false),
-    TTest => parse_test_stmt(tokens, starts, pos + 1),
-    TExample => parse_example_stmt(tokens, starts, pos + 1),
-    TBench => parse_bench_stmt(tokens, starts, pos + 1),
-    TImport => parse_import_stmt(tokens, pos + 1),
+    TEnum => parse_enum_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TSuberror => parse_suberror_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false, context),
+    TType => parse_type_alias_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TTrait => parse_trait_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TTest => parse_test_stmt(tokens, starts, pos + 1, context),
+    TExample => parse_example_stmt(tokens, starts, pos + 1, context),
+    TBench => parse_bench_stmt(tokens, starts, pos + 1, context),
+    TImport => parse_import_stmt(tokens, pos + 1, context),
     // #1280: `fn` lexes as TFn (reserved word), no longer TIdent("fn").
-    TFn => parse_fn_stmt(tokens, starts, pos + 1, false),
+    TFn => parse_fn_stmt_with_binder_context(tokens, starts, pos + 1, false, context),
     TIdent(name) => match name {
-      "effect" => parse_effect_stmt(tokens, pos + 1, false),
-      "effectset" => parse_effectset_stmt(tokens, pos + 1, false),
-      "resource" => parse_resource_stmt(tokens, pos + 1),
-      "extern" => parse_extern_let_stmt(tokens, pos + 1),
+      "effect" => parse_effect_stmt_with_binder_context(tokens, pos + 1, false, context),
+      "effectset" => parse_effectset_stmt(tokens, pos + 1, false, context),
+      "resource" => parse_resource_stmt(tokens, pos + 1, context),
+      "extern" => parse_extern_let_stmt(tokens, pos + 1, context),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
         let (e, next) = parse_impl_with_binder_context(tokens, starts, pos, 0, context)
@@ -622,7 +632,7 @@ export fn parse_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int
 /// methods become ordinary qualified free functions resolved by name. `pos` is
 /// at the body `{` (or the next token for a body-less impl). Needs `parse_expr`,
 /// which is why this lives here rather than in parser_base.
-fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt) -> (Array[Stmt], Int) with Exception {
+fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
   let out = ArrayBuilder::new()
   ArrayBuilder::push(out, simpl)
   match peek(tokens, pos) {
@@ -659,7 +669,8 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt) -> (Array[Stm
             done = true
           },
           TIdent(mname) => {
-            let (efn, p2) = parse_expr(tokens, p + 1)
+            let (efn, p2) = parse_impl_with_binder_context(tokens, [
+            ], p + 1, 0, context)
             let efn2 = if Array::length(impl_tparams) > 0 {
               match efn {
                 EFn(mtp, mtb, mparams, mret, meff, mbody) => EFn(Array::concat(impl_tparams, mtp), Array::concat(impl_tbounds, mtb), mparams, mret, meff, mbody),
@@ -801,7 +812,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
           match peek(tokens, dnext) {
             TImpl => {
               let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
               pos = dn
             },
             _ => {
@@ -814,7 +825,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
       },
       TImpl => {
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl)
+        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
         let mut ii = 0
         while ii < Array::length(impl_stmts) {
           ArrayBuilder::push(b, Array::get(impl_stmts, ii))
@@ -927,7 +938,7 @@ fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
   }
 }
 
-fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> Array[Stmt] with Exception {
+fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -947,8 +958,8 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
         } else {
           match peek(tokens, dnext) {
             TImpl => {
-              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, context)
               pos = dn
             },
             _ => {
@@ -963,8 +974,8 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
         let (stmts, next) = handle {
           match peek(tokens, pos) {
             TImpl => {
-              let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-              parse_impl_methods(tokens, hp, simpl)
+              let (simpl, hp) = parse_impl_stmt_dispatch_with_binder_context(tokens, pos + 1, context)
+              parse_impl_methods(tokens, hp, simpl, context)
             },
             _ => {
               let (stmt, n) = parse_stmt_with_binder_context(tokens, starts, pos, context)
@@ -1000,7 +1011,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
       }
     }
   }
-  attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b)))
+  (attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b))), pos)
 }
 
 /// True when `t` is a resynchronization point for `parse_program_recovering`:
@@ -1041,16 +1052,24 @@ fn is_recovery_point(t: Token) -> Bool {
 /// string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
 
 export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
-  parse_program_located_with_context_impl(tokens, starts, source, None)
+  parse_program_located_with_context_impl(tokens, starts, source, None).0
 }
 
-/// Opt-in parser-context infrastructure. This phase publishes no authority
-/// rows; it only proves that one invocation-local context reaches the recursive
-/// expression callback spine without changing the parsed program.
+/// Explicit test/tooling seam for parser-context transport. The supplied
+/// context is forgeable and untrusted: this function never reads it and it
+/// cannot authorize binder rows, semantic artifacts, reuse, or codegen. The
+/// returned token position proves successful parsing consumed through TEof.
+export fn parse_program_located_with_untrusted_binder_context(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  parse_program_located_with_context_impl(tokens, starts, source, context)
+}
+
+/// Opt-in high-level parser-context infrastructure. It deliberately mints its
+/// own invocation-local plumbing context instead of trusting caller input. This
+/// phase publishes no authority rows and does not change the parsed program.
 export fn parse_program_located_with_binder_context(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
   parse_program_located_with_context_impl(tokens, starts, source, Some(ParserBinderContext::{
     nonce: 0
-  }))
+  })).0
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
@@ -1085,7 +1104,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-                let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+                let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
                 dn
               },
               _ => {
@@ -1114,7 +1133,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           let (stmts, next) = match peek(tokens, pos) {
             TImpl => {
               let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-              parse_impl_methods(tokens, hp, simpl)
+              parse_impl_methods(tokens, hp, simpl, None)
             },
             _ => {
               let (stmt, n) = parse_stmt(tokens, starts, pos)

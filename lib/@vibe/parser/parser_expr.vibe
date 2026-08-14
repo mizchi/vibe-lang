@@ -17,13 +17,16 @@ import ./parser_base.vibe {
   is_tk,
   mode_block,
   parse_binding_name,
+  parse_binding_name_with_binder_context,
   parse_effect_row,
   parse_effect_stmt,
   parse_enum_stmt,
   parse_impl_stmt_dispatch,
   parse_import_item,
   parse_param_list,
+  parse_param_list_with_binder_context,
   parse_pattern,
+  parse_pattern_with_binder_context,
   parse_struct_field,
   parse_suberror_stmt,
   parse_trait_stmt,
@@ -118,7 +121,7 @@ fn parse_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Array[String
   (ArrayBuilder::freeze(b), p)
 }
 
-fn parse_let_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn parse_let_type_params(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let names = ArrayBuilder::new()
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -156,10 +159,10 @@ fn parse_let_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Arra
   (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
 }
 
-fn parse_let_annotation(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with Exception {
+fn parse_let_annotation(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with Exception {
   match peek(tokens, pos) {
     TLBracket => {
-      let (type_params, type_bounds, after_params) = parse_let_type_params(tokens, pos + 1)
+      let (type_params, type_bounds, after_params) = parse_let_type_params(tokens, pos + 1, context)
       let (ty, next) = parse_type_impl(tokens, after_params, 0)
       (type_params, type_bounds, ty, next)
     },
@@ -294,14 +297,14 @@ fn skip_generic_value_start(tokens: Array[Token], pos: Int) -> Int {
 /// when one is present, returning its type params/bounds plus the position of
 /// the value that follows. When there is no generic header (e.g. an array
 /// literal `[1, 2]`), returns empty params and `pos` unchanged.
-fn parse_value_bracket_header(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn parse_value_bracket_header(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let skipped = skip_generic_value_start(tokens, pos)
   if skipped == pos {
     (_no_tp(), _no_tb(), pos)
   } else {
     match peek(tokens, pos) {
       TLBracket => {
-        let (tps, tbs, _after) = parse_let_type_params(tokens, pos + 1)
+        let (tps, tbs, _after) = parse_let_type_params(tokens, pos + 1, context)
         (tps, tbs, skipped)
       },
       _ => (_no_tp(), _no_tb(), skipped)
@@ -474,20 +477,20 @@ fn emit_top_level_pat_projection(out: ArrayBuilder[Stmt], sub: Pat, read: Expr, 
   }
 }
 
-fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TRec => {
-      let (name, name_next) = parse_binding_name(tokens, pos + 1)
+      let (name, name_next) = parse_binding_name_with_binder_context(tokens, pos + 1, context)
       let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens, name_next) {
         TColon => {
-          let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens, name_next + 1)
+          let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens, name_next + 1, context)
           (tparams, tbounds, Some(ty), tp)
         },
         _ => (_no_tp(), _no_tb(), None, name_next)
       }
       let ep = expect_tk(tokens, eq_pos, "=")
-      let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep)
-      let val_pair = parse_impl(tokens, starts, val_start_r, 0)
+      let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep, context)
+      let val_pair = parse_impl_with_binder_context(tokens, starts, val_start_r, 0, context)
       let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
       let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
       let val_next = val_pair.1
@@ -503,7 +506,7 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
           _ => (None, pos + 2)
         }
         let ep = expect_tk(tokens, eq_pos, "=")
-        let val_pair = parse_impl(tokens, starts, ep, 0)
+        let val_pair = parse_impl_with_binder_context(tokens, starts, ep, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         (SLetMut(name, ty_opt, val), val_next)
@@ -520,10 +523,10 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
     // literals, `|`) are rejected here — they can fail, and a top-level
     // binding has nowhere to fail to.
     TLParen => {
-      let (pat, after_pat) = parse_pattern(tokens, pos)
+      let (pat, after_pat) = parse_pattern_with_binder_context(tokens, pos, context)
       require_irrefutable_top_level_pat(pat)
       let ep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_pat), "=")
-      let val_pair = parse_impl(tokens, starts, ep, 0)
+      let val_pair = parse_impl_with_binder_context(tokens, starts, ep, 0, context)
       (top_level_pattern_let(exported, pat, val_pair.0), val_pair.1)
     },
     TIdent(_name0) => {
@@ -551,10 +554,10 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
       // `parse_pattern` returns `PStruct(name, [(field, PBind field), ..])`,
       // which the expansion turns into one `<tmp>.field` projection each.
       if is_top_level_record_destr || is_struct_destructure {
-        let (ppat, after_ppat) = parse_pattern(tokens, pos)
+        let (ppat, after_ppat) = parse_pattern_with_binder_context(tokens, pos, context)
         require_irrefutable_top_level_pat(ppat)
         let pep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_ppat), "=")
-        let pval_pair = parse_impl(tokens, starts, pep, 0)
+        let pval_pair = parse_impl_with_binder_context(tokens, starts, pep, 0, context)
         let marked = if is_top_level_record_destr {
           record_destr_marker(ppat)
         } else {
@@ -577,17 +580,17 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
         } else {
           ()
         }
-        let (name, name_next) = parse_binding_name(tokens, pos)
+        let (name, name_next) = parse_binding_name_with_binder_context(tokens, pos, context)
         let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens, name_next) {
           TColon => {
-            let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens, name_next + 1)
+            let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens, name_next + 1, context)
             (tparams, tbounds, Some(ty), tp)
           },
           _ => (_no_tp(), _no_tb(), None, name_next)
         }
         let ep = expect_tk(tokens, eq_pos, "=")
-        let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep)
-        let val_pair = parse_impl(tokens, starts, val_start, 0)
+        let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep, context)
+        let val_pair = parse_impl_with_binder_context(tokens, starts, val_start, 0, context)
         let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
         let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
         let val_next = val_pair.1
@@ -617,9 +620,9 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
 /// clause (#731, ADR-0064 §7) parses each condition as an ordinary Bool
 /// expression; `ensures` conditions may reference the function result as
 /// `result`. Multiple requires/ensures entries are allowed.
-fn parse_fn_name(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (String, Int) with Exception {
   match peek(tokens, pos) {
-    TIdent(_) => parse_binding_name(tokens, pos),
+    TIdent(_) => parse_binding_name_with_binder_context(tokens, pos, context),
     TFn => throw("`fn` is a reserved word and cannot be used as a function name; this keyword cannot be escaped, so choose a different name at #\{pos}"),
     token => {
       let actual = tk_name(token)
@@ -639,11 +642,11 @@ fn parse_fn_name(tokens: Array[Token], pos: Int) -> (String, Int) with Exception
   }
 }
 
-export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
-  let (name, name_next) = parse_fn_name(tokens, pos)
-  let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next)
+fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+  let (name, name_next) = parse_fn_name(tokens, pos, context)
+  let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
-  let (params, after_params) = parse_param_list(tokens, lp)
+  let (params, after_params) = parse_param_list_with_binder_context(tokens, lp, context)
   let mut pi = 0
   while pi < Array::length(params) {
     let param = Array::get(params, pi)
@@ -681,8 +684,8 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
           },
           TIdent(kind) => {
             let cp = expect_tk(tokens, wp + 1, ":")
-            let (cond, cnext) = parse_impl(tokens, [
-            ], cp, 0)
+            let (cond, cnext) = parse_impl_with_binder_context(tokens, [
+            ], cp, 0, context)
             if kind == "requires" {
               Array::push(reqs, cond)
             } else if kind == "ensures" {
@@ -705,6 +708,10 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
   ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
 }
 
+export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+  parse_fn_signature_with_binder_context(tokens, pos, None)
+}
+
 /// ADR-0069 Phase 1: `fn main { ... }` / `fn main with Fs { ... }` — the ONE
 /// fn form allowed to omit the parens and all annotations. It is a pure sugar
 /// for `fn main() -> Unit [with <row>] { ... }`: the branch below builds the
@@ -712,7 +719,7 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
 /// (EFn([], [], [], Some(TyName("Unit")), eff_opt, body)), so lower_fn_decl_stmt,
 /// checker, codegen, and the printer round-trip (which prints the annotated
 /// `fn main() -> Unit` spelling — same meaning) are all untouched.
-fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   // pos points at the `main` identifier; the caller verified the next token
   // is `{` (body) or `with` (capability row then body).
   let (eff_opt, body_start) = match peek(tokens, pos + 1) {
@@ -723,11 +730,11 @@ fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, export
     _ => (None, pos + 1)
   }
   let br = expect_tk(tokens, body_start, "{")
-  let (body, end) = parse_impl(tokens, starts, br, mode_block)
+  let (body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
   (SFnDecl(exported, "main", EFn(_no_tp(), _no_tb(), empty_params(), Some(TyName("Unit")), eff_opt, body), empty_exprs(), empty_exprs()), end)
 }
 
-fn parse_fn_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+export fn parse_fn_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   // ADR-0069 Phase 1: dispatch the `fn main {` / `fn main with <row> {` special form
   // before the general signature parse (which requires `(`). `fn main(` still
   // takes the general path, so an explicit signature keeps working.
@@ -744,9 +751,9 @@ fn parse_fn_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: B
     _ => false
   }
   if is_main_special {
-    parse_fn_main_stmt(tokens, starts, pos, exported)
+    parse_fn_main_stmt(tokens, starts, pos, exported, context)
   } else {
-    parse_fn_stmt_general(tokens, starts, pos, exported)
+    parse_fn_stmt_general(tokens, starts, pos, exported, context)
   }
 }
 
@@ -828,8 +835,8 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
   }
 }
 
-fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
-  let (head, sig, contracts, where_next) = parse_fn_signature(tokens, pos)
+fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let (head, sig, contracts, where_next) = parse_fn_signature_with_binder_context(tokens, pos, context)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts
@@ -845,7 +852,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     parse_fn_wasm_body(tokens, where_next + 2, exported, name, tps, tbs, params, ret_ty, eff_opt, reqs, enss)
   } else {
     let br = expect_tk(tokens, where_next, "{")
-    let (body, end) = parse_impl(tokens, starts, br, mode_block)
+    let (body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
     // ADR-0064 (#727/#731): keep the declaration form — including the where
     // contract's requires/ensures conditions — in the AST so the printer and
     // normalize can round-trip `fn`. The runtime contract desugar (identical
@@ -926,11 +933,11 @@ export {
   parse_effect_stmt,
   parse_enum_stmt,
   parse_expr,
-  parse_fn_stmt,
+  parse_fn_stmt_with_binder_context,
   parse_impl,
   parse_impl_stmt_dispatch,
   parse_import_item,
-  parse_let_stmt,
+  parse_let_stmt_with_binder_context,
   parse_ok,
   parse_struct_field,
   parse_suberror_stmt,
@@ -954,11 +961,11 @@ export {
   parse_effect_stmt,
   parse_enum_stmt,
   parse_expr,
-  parse_fn_stmt,
+  parse_fn_stmt_with_binder_context,
   parse_impl,
   parse_impl_stmt_dispatch,
   parse_import_item,
-  parse_let_stmt,
+  parse_let_stmt_with_binder_context,
   parse_ok,
   parse_struct_field,
   parse_suberror_stmt,
