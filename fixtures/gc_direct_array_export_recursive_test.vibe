@@ -1,0 +1,41 @@
+// #1750: a SELF-RECURSIVE exported array function no longer switches the lane
+// off for everything beside it.
+//
+// #1722 gives an exported declaration a private reference twin. The original and
+// the twin share one body AST, so the tagged copy's self-call resolved to the
+// reference twin and handed it a tagged parameter -- the component then failed
+// closed, which is one declaration silently disabling the island for its
+// neighbours: the exact shape #1541's coexistence work exists to remove.
+//
+// Such a declaration now simply gets no twin. It keeps the tagged lane it was
+// already on, and `double_first` below still crosses on the reference lane --
+// that is what the single native allocation proves.
+
+export let walk: (Array[Int]) -> Array[Int] = (values) -> {
+  if Array::get(values, 0) > 0 {
+    Array::set(values, 0, Array::get(values, 0) - 1)
+    walk(values)
+  } else {
+    values
+  }
+}
+
+fn double_first(values: Array[Int]) -> Unit {
+  Array::set(values, 0, Array::get(values, 0) * 2)
+}
+
+test "a self-recursive export leaves its neighbours on the reference lane" {
+  let xs = [
+    3,
+    9
+  ]
+  let out = walk(xs)
+  inspect(Array::get(out, 0), "0")
+  inspect(Array::get(xs, 1), "9")
+  let ys = [
+    5,
+    1
+  ]
+  double_first(ys)
+  inspect(Array::get(ys, 0), "10")
+}

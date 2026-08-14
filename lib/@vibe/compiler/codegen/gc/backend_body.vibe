@@ -663,7 +663,19 @@ fn gc_add_ref_twins(stmts: Array[Stmt]) -> Unit {
       // the component just fell back to tagged i64 with nothing to show why.
       SLet(_, is_rec, name, ann, value) => if gc_direct_abi_name_is_exported(stmts, name) {
         match ann {
-          Some(t) => if gc_type_mentions_array(t) && gc_name_is_called_in_stmts(stmts, name) {
+          // #1750: a SELF-RECURSIVE exported function gets no twin. The
+          // original and the twin share one body AST, so the tagged copy's
+          // self-call would resolve to the reference twin, hand it a tagged
+          // parameter, and fail the whole component closed -- one declaration
+          // silently switching the lane off for everything beside it, which is
+          // the exact shape #1541 spent its coexistence work removing.
+          //
+          // Skipping the twin costs this declaration its monomorphization and
+          // nothing else: it stays on the tagged lane it was already on, and
+          // its neighbours keep the island. Threading the current function's
+          // identity into the shared lookups would let even this one cross, and
+          // that is what #1750 tracks.
+          Some(t) => if gc_type_mentions_array(t) && gc_name_is_called_in_stmts(stmts, name) && !gc_name_is_called(value, name) {
             match value {
               EFn(_, _, _, _, _, _) => Array::push(twins, SLet(false, is_rec, String::concat(name, "$ref"), Some(t), value)),
               _ => ()
