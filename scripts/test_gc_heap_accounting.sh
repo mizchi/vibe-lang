@@ -124,6 +124,12 @@ LIST_TWIN_OUT="$WORK/direct_array_export_list_twin.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_monomorph_test.vibe "$MONOMORPH_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_twin_test.vibe "$TWIN_OUT"
 compile_direct_abi_fallback fixtures/gc_direct_array_export_list_twin_test.vibe "$LIST_TWIN_OUT"
+# #1750: a self-recursive exported function gets no twin -- the tagged copy's
+# self-call would otherwise resolve to the reference twin and fail the whole
+# component closed. The one allocation here belongs to its NEIGHBOUR, which is
+# the point: one unmonomorphizable declaration must not switch off the island.
+RECURSIVE_EXPORT_OUT="$WORK/direct_array_export_recursive.wasm"
+compile_direct_abi_fallback fixtures/gc_direct_array_export_recursive_test.vibe "$RECURSIVE_EXPORT_OUT"
 # #1541 isolated direct-argument characterization. The native fixture crosses
 # exactly one private concrete Array[Int] parameter boundary; the generic pair
 # must retain the component-wide tagged-i64 fallback.
@@ -361,6 +367,11 @@ fi
 monomorph_native="$(count_native_array_allocs "$MONOMORPH_OUT")"
 twin_native="$(count_native_array_allocs "$TWIN_OUT")"
 list_twin_native="$(count_native_array_allocs "$LIST_TWIN_OUT")"
+recursive_export_native="$(count_native_array_allocs "$RECURSIVE_EXPORT_OUT")"
+if [ "$recursive_export_native" -ne 1 ]; then
+  echo "[gc-heap-accounting] FAIL: expected a self-recursive export to leave one neighbouring native literal on the lane, found $recursive_export_native" >&2
+  exit 1
+fi
 if [ "$monomorph_native" -ne 1 ] || [ "$twin_native" -ne 1 ] || [ "$list_twin_native" -ne 1 ]; then
   echo "[gc-heap-accounting] FAIL: expected one #1722 native literal per monomorphized export, found $monomorph_native/$twin_native/$list_twin_native" >&2
   exit 1

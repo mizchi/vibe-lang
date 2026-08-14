@@ -1,0 +1,30 @@
+// #1746 (RC lane): a program that defines its OWN top-level `fn sleep` must
+// compile to a VALID module that calls that function -- not the host import.
+//
+// The RC raw-ABI shim (compile_call.vibe, the #705/#930/#1460 group) rewrites
+// a call for the HOST IMPORT's ABI: it untags the Int argument and pushes the
+// `Unit` the void import does not return. It dispatched on the NAME alone, so
+// a user's `sleep` took the shim too -- `call <guest fn>` followed by that
+// extra `i64.const 0`, i.e. a module that FAILED VALIDATION with no diagnostic
+// at all. Only VIBE_RC=1 was affected, which is why no gate saw it.
+//
+// The fix keys on the resolved function INDEX instead: user functions live at
+// `fi + func_offset`, so an index below `func_offset` is an import or a
+// generated builtin body. The return count does NOT work -- it comes from the
+// registry row's `CtUnit`, so the import reports 1 exactly as a guest
+// `-> Unit` function does.
+//
+// The value is the pin, not just compilation: 6 * 7 = 42 can only come from
+// this function's own body, so a call routed to the host `sleep` (which
+// returns nothing) fails it.
+fn sleep(ms: Int) -> Int {
+  let mut i = 0
+  while i < ms {
+    i = i + 1
+  }
+  i * 7
+}
+
+fn main() -> Int {
+  sleep(6)
+}
