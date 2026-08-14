@@ -3236,8 +3236,14 @@ for x in xs { body }  ==>  let mut i = 0
 `err_effect_string_for_suspend` が「引き続き reject」を pin する (書き換えていたら 0 回反復で
 黙って誤っていた)。
 
-`effect_array_for_suspend_test.vibe` (3855487) が**受理だけでなく意味論**を pin する:
-引数由来 36 / リテラル由来 23 / `break` 23 / `continue` 24 (index が進む) / 伸長 87。
+`effect_array_for_suspend_test.vibe` (385548729) が**受理だけでなく意味論**を pin する:
+引数由来 36 / リテラル由来 23 / `break` 23 / `continue` 24 (index が進む) / 伸長 87 /
+handle body に直接書いた形 29。
+
+書き換えは **3 つの split site すべて**に置く — needing fn の clone、handle body 自身、
+closure literal。最初は clone だけに入れており、`handle { for x in xs { .. perform .. } }` と
+直接書いた形が取り残されていた (handle body も他と同じ spine で、そこでは引数が無いので
+証明は spine 上の配列リテラル束縛から来る)。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
