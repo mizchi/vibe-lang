@@ -526,3 +526,19 @@ Taskfile から参照されなくなったため削除済み。
 CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
 詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。
+## レビュー起点の再発防止
+
+PR レビューで、同種の指摘が今後も起こり得る構造的パターンを見つけたら、
+その場限りの修正で終わらせず、決定的に検出する仕組みを追加する。
+
+- 型、effect row、名前解決、capture/escape、公開 contract など、言語の静的意味として
+  判定できるものは `vibe check` に実装する。repository 固有の lint で代用しない。
+- AST の形だけで判定できる repository/compiler 実装規則は
+  `scripts/review_lint.vibex` に `vibe grep` パターンとして追加する。
+- `.vibex` 側にパターン、capture の解釈、診断、終了コードをまとめる。shell wrapper は
+  staged snapshot の準備や bootstrap compatibility に限定し、新しい判定ロジックを
+  `scripts/*.sh` の正規表現として増やさない。
+- 追加時は Red → Green で、違反例、非違反例、必要なら理由付き抑制例を
+  `scripts/lint_review_regressions_test.sh` または `.vibex` の self-test に固定する。
+- pre-commit で実行できる速度を保ち、`pkf run test-review-lint-vibex` と
+  `pkf run pre-commit` の両方で検証する。
