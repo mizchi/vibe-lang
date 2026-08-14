@@ -1143,17 +1143,51 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
 /// The value is bound to a temp first so an effectful argument
 /// (`MutList::freeze(make_list(r))`) is evaluated once, not twice.
 fn mutlist_exit_copy(arg: Expr) -> Expr {
-  let tmp = "__mutlist_exit"
-  let frozen = ECall(EIdent("ArrayBuilder::freeze", -1), [
+  array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [
     arg
-  ], -1)
-  ELet(tmp, frozen, ECall(EIdent("Array::slice", -1), [
+  ], -1), "__mutlist_exit")
+}
+
+/// `Array::slice(v, 0, Array::length(v))` -- a fresh array with the same
+/// elements. The value is bound to `tmp` first so an effectful argument is
+/// evaluated once, not twice.
+fn array_value_copy(value: Expr, tmp: String) -> Expr {
+  ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
     ECall(EIdent("Array::length", -1), [
       EIdent(tmp, -1)
     ], -1)
   ], -1), -1)
+}
+
+/// #1733: `FrozenArray[T]` is not merely "an immutable array" -- it is a
+/// member of the Send allowlist (ADR-0082 / ADR-0068 / #906), and the reason
+/// it is Send-eligible is that it cannot change. Both of its conversions were
+/// pure identity casts (docs/compiler-parallelism.md), so that claim did not
+/// hold in either direction:
+///
+///   from_array: `let f = FrozenArray::from_array(a)` then `Array::push(a, x)`
+///               changes `f`.
+///   to_array:   `let o = FrozenArray::to_array(f)` then `Array::push(o, x)`
+///               changes `f`.
+///
+/// Fixing only one of the two leaves the contract broken through the other,
+/// so both copy. `get` / `length` stay aliases of the Array bodies: they read,
+/// and reading cannot break immutability.
+///
+/// The cost is real -- freezing is now O(n) -- but it is paid only at the
+/// Frozen boundary. `ArrayBuilder::freeze` is untouched, so the
+/// build-then-freeze hot path (1,953 call sites in the compiler) is
+/// unaffected.
+fn frozen_array_conversion_copy(name: String) -> String {
+  if name == "FrozenArray::from_array" {
+    "__frozen_in"
+  } else if name == "FrozenArray::to_array" {
+    "__frozen_out"
+  } else {
+    ""
+  }
 }
 
 /// Push the arena's saved-bump-pointer stack (ADR-0090, #1262). Emitted
@@ -1271,6 +1305,8 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     }
   } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
     ce(buf, mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && frozen_array_conversion_copy(get_eident_name(callee)) != "" && Array::length(args) == 1 && func_table_index_of(ctx.func_table, get_eident_name(callee)) >= 0 && !array_contains_str(local_names, get_eident_name(callee)) {
+    ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }
