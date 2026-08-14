@@ -508,6 +508,18 @@ fn gc_reset_join_arm_slots(local_names: Array[String], ctx: CompileCtxGc, names_
   }
 }
 
+/// `Array::slice(v, 0, Array::length(v))` with `v` bound once, so an
+/// effectful argument is evaluated a single time (#1733).
+fn gc_frozen_conversion_copy(value: Expr, tmp: String) -> Expr {
+  ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Array::length", -1), [
+      EIdent(tmp, -1)
+    ], -1)
+  ], -1), -1)
+}
+
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   match callee {
     EIdent(source_name, _) => {
@@ -518,6 +530,23 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         source_name
       } else {
         canonical_builtin_name(source_name)
+      }
+      // #1733: FrozenArray's two conversions must COPY, on this backend too.
+      // Body 16 (the ArrayBuilder::freeze identity cast) is what they used to
+      // map to in backend_body.vibe, which made `FrozenArray` mutable through
+      // either end and took away the reason it is on the Send allowlist. The
+      // rewrite mirrors the linear lane's (codegen/expr/compile_call.vibe):
+      // bind the value once, then slice it. Guarded on the name not resolving
+      // to anything real, same as every other builtin spelling here.
+      if !source_is_bound && Array::length(args) == 1 && (fname == "FrozenArray::from_array" || fname == "FrozenArray::to_array") {
+        let ftmp = if fname == "FrozenArray::from_array" {
+          "__frozen_in"
+        } else {
+          "__frozen_out"
+        }
+        return ce(buf, gc_frozen_conversion_copy(Array::get(args, 0), ftmp), local_names, next_local, ld)
+      } else {
+        ()
       }
       let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
       let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx))
