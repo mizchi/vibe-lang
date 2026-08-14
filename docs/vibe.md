@@ -882,8 +882,12 @@ yield value
 Rules:
 - `while` condition must be `Bool`.
 - `while` body is type-checked, and the expression result type is always `Unit`.
-- `break` and `continue` are valid only inside `while` loop bodies.
-- Using `break`/`continue` outside `while` is a type error.
+- `break` and `continue` are valid only inside loop bodies.
+- `while`, bare `loop { ... }`, and `for-in` accept only bare `break`. `while`
+  and bare `loop` return `Unit`; `for-in` returns its collected prefix.
+- Only parameterized `loop (...)` accepts `break value`; the payload must begin
+  on the same line as `break`.
+- Using `break`/`continue` outside a loop is a type error.
 - Runtime loop control uses `break` to exit the nearest loop and `continue` to
   start the next iteration.
 - `yield expr` requires `{Async}` and returns `Unit`.

@@ -432,7 +432,11 @@ Rules:
 - `if` and `match` are expressions.
 - `while` is statement-like and returns `Unit`.
 - `for-in` collects body results into an array.
-- `break Expr` returns a value from `loop` / `while`. `break(acc)` is parsed as
+- `while`, bare `loop { ... }`, and `for-in` accept only bare `break`. A payload
+  is rejected rather than evaluated and discarded. `while` and bare `loop`
+  return `Unit`; `for-in` returns the results collected before the break.
+- `break Expr` returns a value only from parameterized `loop (...)`, and the
+  payload must start on the same line as `break`. `break(acc)` is parsed as
   `break` followed by a parenthesized expression -- NOT the same shape as
   `continue(a, b)`'s call-like next-state argument list. `break(a, b)` builds
   the tuple `(a, b)`, it does not break with two separate loop-result values

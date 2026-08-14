@@ -6912,13 +6912,26 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // loop (`() -> { break }`). Threaded through env, so if/match/let/seq
       // inside a loop still see it; a nested function does not introduce one, so
       // a `break` there is (conservatively) left unchecked rather than flagged.
-      match env_lookup(env, "__in_loop__") {
-        Some(_) => (),
-        None => Array::push(errors, "`break` outside a loop")
+      let in_loop = match env_lookup(env, "__in_loop__") {
+        Some(_) => true,
+        None => {
+          Array::push(errors, "`break` outside a loop")
+          false
+        }
       }
       match opt {
         Some(e) => {
           let (_, s1, c1) = check_expr_capture(e, env, defs, s, c, errors, tytab, capture, lane)
+          // Parameterized `loop (...)` rewrites `break value` to an assignment
+          // plus a bare break before checking. Any payload that survives here
+          // therefore belongs to a non-value `break` target: `while`, bare
+          // `loop {}`, or `for-in`. Both backends used to omit that expression
+          // entirely, including effects.
+          if in_loop {
+            Array::push(errors, String::concat("this loop form does not accept a `break` value; remove the payload, or use parameterized `loop (...)` to return one", off_marker(railway_expr_off(e))))
+          } else {
+            ()
+          }
           (CtUnit, s1, c1)
         },
         None => (CtUnit, s, c)
