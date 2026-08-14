@@ -2916,6 +2916,294 @@ codegen は String を実行時判別する #807)、loop body 内の `return`、
 literal param flow、`if` / `match` branch および non-tail `&&` / `||` RHS の
 条件付き suspension。
 
+### 追記49 (2026-08-13): selection が束縛値そのものなら束縛ごと枝へ分配する (#1536)
+
+追記43 は `if` / `match` が **sequence HEAD** (= 文位置) に立つときだけ継続を枝へ
+分配していた。値として使われる同じ selection —
+
+```
+let v = if ready { perform Op(1) } else { 0 }
+v + 1
+```
+
+— は追記48 の generic ANF に落ちて reject される。ANF は「必ず評価される位置」しか
+歩かないので、枝の中の suspension に名前を付けることはできない (選ばれない枝の
+operation を走らせてしまう)。つまりここでも**受理される綴りが「何をしたか」ではなく
+「どこに置いたか」で決まっていた** — 文位置の `if` は通り、同じ `if` を `let` に
+束縛した瞬間に通らない。
+
+名前を付けられないだけで、**束縛を selection の外に置いておく理由は無い**:
+
+```
+let x = if c { t } else { e }  REST
+  ==>  if c { let x = t  REST } else { let x = e  REST }
+```
+
+condition / scrutinee は元の位置に残るので**ちょうど一回・枝より先に**評価され、
+各枝は自分の値を `x` に束縛して継続を一回だけ走らせる。追記43 が sequence HEAD で
+やっている継続分配と同じ機構で、違いは枝の値が捨てられるか binder に食われるかだけ。
+`let mut` 初期化子も同じ (分配後は枝ごとに継続を box する — cell はそのためにある)。
+
+`match` の腕は追記43 と同様、継続を腕の下へ移す前に**パターン binder を alpha-rename**
+する: 継続は元々 match の外にあったので、そこで自由な名前が腕の束縛に捕まっては
+ならない (`fixtures/effect_let_selection_match_capture_test.vibe` が pin。捕獲すると
+17 ではなく 16 を返す)。追記43 と共有の `scps_float_match_arm_rename` に切り出した。
+
+**`break` / `continue` / `return` を含む selection は fail-closed のまま** — transfer は
+このパスが組む loop 形に対して書き換えられるので、その下へ継続を複製するのは
+このスライスの範囲外。selection が compound の中にネストしている形
+(`1 + (if c { perform .. } else { 0 })`) もこの時点では reject
+(後述の追記52 が、そこでは selection を丸ごと名前に束ねてこの分配へ渡すことで解消した)。
+
+**残る不適格**: 追記48 の一覧から「`let` / `let mut` の値そのものである selection」を
+引いたもの。
+
+### 追記50 (2026-08-13): block が束縛値そのものなら束縛を内側へ移す (#1536)
+
+追記49 と同じ「どこに置いたか」問題がもう一段ある。分配した枝の中に**文がある**と、
+枝の値は `{ log(); perform Op() }` という block になり、`ELet(x, ESeq(a, v), b)` の形で
+また generic ANF に落ちて reject される。文位置の同じ block は追記42 の
+sequence-HEAD float が既に受けているので、値位置だけが取り残されていた。
+
+block の文前置は値より先に走るので、**束縛はそれを追い越して内側へ入れる**だけでよい:
+
+```
+let x = { a; v }         REST  ==>  a;           let x = v  REST
+let x = { let y = e; v } REST  ==>  let y' = e;  let x = v[y:=y']  REST
+```
+
+float した `let` binder は継続の上へスコープが広がるので、追記42 と同じ
+`scps_seq_float_fresh` の probe で alpha-rename する (`REST` は元々 block の外に
+あったので、そこで自由な名前は外側の束縛を指す)。`fixtures/effect_let_block_value_suspend_test.vibe`
+が pin — 捕獲すると 762 ではなく 812 を返す。
+
+どちらの書き換えも値を**厳密に小さく**するので、結果を再 split すれば収束する。
+追記49 の分配と合わせて、「文を含む枝」が初めて通る。
+
+block の文前置は `ESeq` とは限らない — 中の代入文は**残りの block を自分の継続として
+持つ** (`EAssign(y, v1, <残り>)`) ので、`ESeq` / `EAssign` / `EAssignOp` の 3 綴りを
+同じ「何も束縛しない前置」として扱う。
+
+### 追記51 (2026-08-13): 代入の RHS にも同じ 2 つの書き換えを与える (#1536)
+
+追記49/50 は束縛 (`let` / `let mut`) だけだった。同じ形を代入で書くと
+(`acc = if c { perform .. } else { 0 }`, `acc = { log(); perform .. }`) まだ reject される。
+値が新しい binder に入るか既存の target に入るかは、suspension の位置とは無関係な違い。
+
+書き換えは同じ (binder を作らない分だけ簡単):
+
+```
+x = if c { t } else { e }  REST  ==>  if c { x = t  REST } else { x = e  REST }
+x = { a; v }               REST  ==>  a;  x = v  REST
+```
+
+**適用箇所が 2 つある**のがこのスライスの本質:
+
+- **cellify より前** (`scps_float_direct_assign`) — この spine が box した target 向け。
+  `x = v` が `Array::set(x, 0, v)` になった後では `v` は builtin の引数であり、そこから
+  float すると**他の引数の評価を複製する**ことになる。だから box 化の前に形を直す
+- **継続 spine 上** (`scps_split_tail` の `EAssign` arm) — spine の外で束縛された target 向け。
+  こちらは代入のまま split に届く
+
+両者が食い違うと綴りによって受理が変わるので、fixture を 2 本置いて同じ書き換えを pin した
+(`effect_assign_selection_suspend_test.vibe` / `effect_assign_outer_selection_suspend_test.vibe`)。
+`match` の腕の alpha-rename と `break` / `continue` / `return` の fail-closed は追記49 と同じ。
+
+### 追記52 (2026-08-13): compound の中の selection は「丸ごと名前を付ける」(#1536)
+
+追記48 の ANF が `if` / `match` の枝へ降りないのは正しい — 選ばれない枝の operation を
+走らせてしまう。だがそこから導かれるのは「枝の中の suspension に名前を付けられない」までで、
+**selection 自体に名前を付けられない**ではなかった。ANF が到達する位置は定義上すべて
+**必ず評価される**ので、selection は元の位置のまま 1 つの部分式として名前を付けられる:
+
+```
+value = 1 + (if c { perform Op(1) } else { 0 })
+  ==>  let h = if c { perform Op(1) } else { 0 };  value = 1 + h
+```
+
+そして `let h = <selection>` は追記49 が分配する形そのもの。つまり**新しい機構は要らず、
+ANF が「降りる」か「拒否する」の二択だったところに「丸ごと名前を付ける」を足すだけ**で、
+conditional 位置から何かを float することなく受理できる。
+
+これで #1536 が挙げていた「compound にネストした `if` / `match` の枝」は無くなる
+(旧 `err_effect_compound_branch_suspend` / `err_effect_compound_match_branch_suspend` は
+`effect_compound_selection_suspend_test.vibe` に置き換えた — `order` の桁が suspension を
+またぐ移動が無いことを pin する)。
+
+transfer (`break` / `continue` / `return`) を含む selection はここでは blocked にしてある —
+分配側が拒否するため、名前を付けると ANF がまた名前を付けて**収束しない**ループになる。
+(現在の型検査では `1 + (if c { break } else { .. })` は書けないので surface からは
+到達しないが、コンパイラが hang しないための fail-closed。)
+
+### 追記53 (2026-08-13): non-tail の `&&` / `||` も丸ごと名前を付ける (#1536)
+
+追記52 の理屈は `&&` / `||` にもそのまま当てはまる — 右辺へ降りないのは正しいが、
+**短絡式自体**は必ず評価される位置にあるので名前を付けられる。違うのは受け側で、
+`let h = l && r` は追記49 の分配ではなく #1667 の let-shortcircuit 経路に落ち、
+**そちらは None を返しうる**。None が返ると値がそのまま ANF に戻ってまた名前が付き、
+収束しない。
+
+そこで **判定手続き自身に訊く**: `scps_let_shortcircuit_bind` を probe として呼び、
+`Some` のときだけ丸ごと名前を付ける。この関数の Some/None は RHS と sctx だけで決まり、
+束縛名や継続には依存しないので、ダミーの名前と `EUnit` を渡した probe の答えが本番と
+一致する。判定を写した述語を別に書くと lockstep が崩れるが、本物を呼べば崩れようがない。
+
+同時に let-shortcircuit の**終端が compound でもよい**ようにした。生成される束縛は
+**選ばれた枝の中**に置かれるので、そこでは何もかもが必ず評価される — spine の線形化が
+要求する前提そのもの。これで次の 3 形が通る (どれも旧 reject fixture):
+
+```
+value = if value == 0 && perform Ask::Get(1) > 0 { 5 } else { 6 }  // non-tail、compound 終端
+let a = true && (true && perform Ask::Get(1) > 0)                  // 入れ子の短絡
+let b = true && twice(perform Ask::Get(2)) > 3                     // 呼び出し引数
+```
+
+bypass は保たれる (`effect_compound_shortcircuit_suspend_test.vibe` の `b` と
+`effect_shortcircuit_compound_rhs_test.vibe` の `c` が pin)。
+
+**残る不適格**: 選ばれた RHS が `return` / `break` / `continue` する形
+(`err_effect_let_shortcircuit_return_suspend` — transfer を合成 resume 継続へ移すと、
+元のスコープではなくその closure を指してしまう)、および RHS の spine 要素が
+direct でない suspension を持つ形。条件付き位置そのものはこれで塞がった。
+
+### 追記54 (2026-08-13): split される body の `return` を fail-closed にする (#1536)
+
+上の条件付き位置を潰す作業中に実測で見つけた**先行するバグ**。suspend lowering は body を
+「step を返す部品」へ書き換えるので、その body に書かれた `return` は**もう関数を抜けない** —
+自分の値を step のつもりで driver に手渡す。結果、**型検査を通り、clean にコンパイルされ、
+`return` を通った実行だけが runtime で trap する** (`unreachable`)。
+
+```
+fn helper() -> Int with Ask {
+  let a = perform Ask::Get(1)
+  if a > 0 { return a * 100 } else { () }   // ← compile 成功 / 実行で trap
+  a
+}
+```
+
+チェックされていたのは**ループ body の `return` だけ** (`scps_body_has_return` は
+loop→再帰変換の適格性判定にしか使われていなかった)。ループの外も、そして
+**suspension より前の guard-clause 形も**同じ理由で壊れている — `return` が抜ける先の
+部品は「変換後の関数」であって元の関数ではない。
+
+split する 3 箇所 (handle body / needing fn clone / closure literal) すべてで、split の前に
+`scps_body_has_return` で refuse する。診断は**効く編集を述べる**: 「早期脱出の値を返すのでは
+なく作れ (束縛して後で選べ)、または `return` を handle の外へ出せ」。
+
+**nested closure の `return` はそのまま受理される** — それはその closure を指すので正しく、
+`scps_body_has_return` は `EFn` で走査を止める (`effect_resume_store_loop_nested_return` が
+positive 側、`err_effect_return_in_split_body` /
+`err_effect_return_guard_in_split_body` が negative 側)。
+
+本来の解 (escape 継続を lowering に持たせて `return` を通す) は残件のまま。今回のスライスは
+「黙って壊れる」を「その場で断る」に変えただけで、書けるコードは増えていない。
+
+### 追記55 (2026-08-13): `return` を tail へ寄せる — escape 継続は要らなかった (#1536)
+
+追記54 の時点では「escape 継続を step machine に通す」のが本来の解だと考えていた。実際には
+**needing fn の clone と closure literal に限れば、その機構は要らない**。そこでの
+`return v` は「**この computation の値が v**」という意味であり、それは**body の tail が
+既に意味していること**そのものだから。だから運ぶのではなく、**元から指している tail へ寄せる**:
+
+```
+return v;  REST                        ==>  v            (REST は到達不能)
+if c { .. return .. } else { .. }; REST ==>  if c { ..; REST } else { ..; REST }
+```
+
+2 つ目は suspension スライス群と同じ継続分配で、`match` の腕の capture 規則も同じ
+(`scps_seq_float_match_arms` を再利用)。**枝が実際に return するときだけ**発火するので、
+return しないコードの形は変わらない。
+
+**部分実装が安全な理由**: 寄せきれなかった `return` (ループの中、let 初期化子の中、被演算子の中)
+は**そのまま残し**、呼び出し側が「まだ `return` が残っていれば追記54 の refuse」を行う。
+つまりこの変換が不完全であることのコストは**拒否**であって、決して miscompile ではない。
+だから届く範囲から先に着地させられる。
+
+handle body は対象外 — そこの `return` は**囲む関数**から抜ける意味で、handle の値ではないので
+`done(v)` 化は誤り。追記54 の refuse のまま。ループの中も同じく refuse のまま
+(`bubble(lp(), k)` が done 値を**ループの値**として k に渡すため、escape しない)。
+
+実測 (`effect_return_in_split_body_test.vibe` = 5007560,
+`effect_return_match_arm_split_test.vibe` = 311): suspension の後の return、
+前の early exit (取る/取らない)、tail return、そして腕の binder が外側 `n` を shadow する
+match — 捕獲すると 311 ではなく 306 になる。
+
+### 追記56 (2026-08-13): loop 内の `return` と、その下で見つかった P0 (#1536)
+
+ループ body の `return` は追記55 の hoist では扱えない — **loop body の tail は「次の反復」で
+あって関数の値ではない**から。だが新しい機構は要らなかった: `break` は既にこの loop を
+出られる (追記47) し、loop の**後ろ**の spine 上の `return` は追記55 が扱える。だから
+「値を控えて、loop を出て、外で返す」に書き換えるだけでよい:
+
+```
+while c { .. return v .. }   ==>  let mut returned = false
+REST                              let mut slot = 0
+                                  while c { .. slot = v; returned = true; break .. }
+                                  if returned { return slot } else { REST }
+```
+
+**入れ子の loop の中の `return`** も同じ書き換えで通る: `break` は 1 段しか出ないので、
+**各段が record-and-break し、その直後に `if returned { break }` の guard を置いて
+exit を 1 段ずつ外へ運ぶ**。3 段でも同じ (`effect_return_nested_loop_test.vibe` が
+2 段 / 3 段 / return を取らない場合を pin)。
+
+#### この書き換えが最初に誤答した — 原因は先行する P0 だった
+
+実装後の最初の実測が **700 ではなく 800** を返した。切り分けると、原因は `return` ではなく
+**`break` そのもの**だった:
+
+```vibe
+while i < 5 {
+  let v = perform Ask::Get(i)
+  if v > 6 { acc = v * 100; break } else { () }   // ← 前に文が 1 つある
+  i = i + 1
+}
+```
+
+`scps_is_ctl_terminator` が**裸の** `break` / `continue` しか transfer と認めていなかったため、
+「文が 1 つ前に付いた transfer」= 普通の綴りが transfer と見なされず、normalizer は継続を
+落とさず、rewrite も切らなかった。rewrite 後の transfer は**ただの呼び出し** (`k(v)`) なので、
+実行は**それを素通りして loop を続けた**。同じ loop を effect 抜きで書けば 700、
+suspension を入れると 800 — **黙って別の答えを返していた** (P0)。
+
+`scps_is_ctl_terminator` を「この式は必ず transfer するか」に広げた (spine の tail を辿り、
+selection は**全枝が transfer するときだけ**真。nested loop / closure / handle には入らない)。
+`effect_transfer_after_resume_test.vibe` が pin (70011302)。
+
+**教訓**: 追記55 の hoist は設計上正しかったが、土台が壊れていた。既存 fixture は transfer を
+**suspension より前**にしか置いておらず、resume の後ろの transfer を誰も見ていなかった。
+
+### 追記57 (2026-08-13): handle body の `return` は cell で外へ出す (#1536)
+
+needing fn の clone と違い、handle body の `return v` は「**handle の値**」ではなく
+「**囲む関数から抜ける**」意味なので、追記55 の hoist (tail へ寄せる) は使えない。
+代わりに **cell を handle の外に置く**:
+
+```
+let r = handle { .. return v .. } with E { .. }   REST
+  ==>  let mut returned = false
+       let mut slot = 0
+       let r = handle { .. slot = v; returned = true; 0 .. } with E { .. }
+       if returned { return slot } else { REST }
+```
+
+handle の外に出た `return` は**普通の spine 上の return** なので、この handle 式自体が
+split される body の中にあれば追記55 がそれを拾う。loop pass が spine 上へ持ち上げた
+`return` も、この capture が cell 書き込みへ変換するので合成できる (`loop_early` が pin)。
+
+hoist の終端を `flag == ""` で分岐させただけで、走査そのものは追記55 と同じものを共有する。
+
+#### 撤回して戻した経緯 — 原因は async ではなかった
+
+最初の実測で **`return 777` が 1554**、`return a * 100` (a=5) が 1000 と、**きっちり 2 倍**の
+値が返った。`return` を取らない経路は正しかった。黙って誤るので一度撤回したが、原因は
+**probe スクリプトが `VIBE_RC` を pin しておらず RC レーンで走っていた**ことで、
+**RC backend では entry 関数の `return` が untag されない** (#1696、P0) という別のバグだった。
+`VIBE_RC=0` (ゲートと同じ) で測り直すと 500 / 6 / 777 と正しい。
+
+**教訓 2**: 誤った値を見て止めたのは正しかったが、原因の見立ては外れていた。計測環境が
+ゲートと同じ設定かどうかを先に確かめること。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

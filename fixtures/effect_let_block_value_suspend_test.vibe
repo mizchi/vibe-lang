@@ -1,0 +1,47 @@
+// #1536: a BLOCK as the whole bound value. The block's statement prefix runs
+// before its value either way, so the binding moves inward past it and the
+// ordinary spine picks the prefix up. A `let` inside the block widens its
+// scope over the continuation when it floats, so it is alpha-renamed first.
+//
+// `log` counts statement-prefix runs (1 for the block, 1 for the branch), and
+// the second block shadows the outer `n`: the continuation `acc + c + n` was
+// outside that block and must still read 6. Capturing the floated binder
+// instead would read 11 and print 812.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mut acc = 0
+    let mut log = 0
+    let a = {
+      log = log + 1
+      perform Ask::Get(2)
+    }
+    acc = acc + a
+    let n = 6
+    let c = {
+      let n = acc + 1
+      perform Ask::Get(n)
+    }
+    acc = acc + c + n
+    let d = if acc == 71 {
+      log = log + 1
+      perform Ask::Get(1)
+    } else {
+      0
+    }
+    acc = acc + d
+    acc * 10 + log
+  } with Ask {
+    Get(m) => {
+      let k = resume
+      k(m * 5)
+    }
+  }
+}
+
+test "effect let block value suspend" {
+  inspect(_start(), "762")
+}

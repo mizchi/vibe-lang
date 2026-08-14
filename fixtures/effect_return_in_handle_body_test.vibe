@@ -1,0 +1,63 @@
+// #1536: `return` inside a HANDLE body. Unlike a needing fn's clone, here
+// `return v` does NOT mean "the handle's value" -- it means "leave the
+// enclosing function" -- so it cannot be hoisted to the body's tail. The value
+// is recorded in a cell declared OUTSIDE the handle, the body finishes with a
+// placeholder, and the real return happens after the handle, where it is an
+// ordinary spine return.
+//
+// `early(0)` takes the return (500), `early(99)` does not and the handle's own
+// value comes back normally (5 + 1 = 6), and `loop_early` returns from inside a
+// suspending loop nested in the handle body (70): the loop pass lifts that onto
+// the spine as an ordinary return, which the cell capture then picks up.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn early(limit: Int) -> Int {
+  let r = handle {
+    let a = perform Ask::Get(1)
+    if a > limit {
+      return a * 100
+    } else {
+      ()
+    }
+    a
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+  r + 1
+}
+
+fn loop_early() -> Int {
+  let r = handle {
+    let mut i = 0
+    let mut acc = 0
+    while i < 5 {
+      let v = perform Ask::Get(i)
+      if v > 6 {
+        return v * 10
+      } else {
+        acc = acc + v
+      }
+      i = i + 1
+    }
+    acc
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+  r + 1000
+}
+
+let _start = () -> Int {
+  early(0) * 100000 + early(99) * 1000 + loop_early()
+}
+
+test "effect return in handle body" {
+  inspect(_start(), "50006070")
+}

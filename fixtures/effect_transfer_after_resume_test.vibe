@@ -1,0 +1,65 @@
+// #1536 P0 regression: a `break` / `continue` with a STATEMENT in front of it,
+// in a loop that suspends. The transfer test used to recognize only a BARE
+// transfer, so the ordinary spelling `if done { acc = v; break }` was not seen
+// as a transfer at all: the continuation was neither dropped by the normalizer
+// nor cut by the rewrite, and since a rewritten transfer is a plain call
+// (`k(v)`), execution FELL THROUGH it and kept looping.
+//
+// That compiled clean and silently answered differently than the same loop
+// without a suspension. `scan` is the control: written without effects it is
+// 700, and it must stay 700 here (it used to be 800 -- one iteration too many).
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn scan() -> Int with Ask {
+  let mut i = 0
+  let mut acc = 0
+  while i < 5 {
+    let v = perform Ask::Get(i)
+    if v > 6 {
+      acc = v * 100
+      break
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+fn skip() -> Int with Ask {
+  let mut i = 0
+  let mut trips = 0
+  let mut acc = 0
+  while i < 5 {
+    i = i + 1
+    let v = perform Ask::Get(i)
+    if v > 6 {
+      trips = trips + 100
+      continue
+    } else {
+      ()
+    }
+    acc = acc + v
+    trips = trips + 1
+  }
+  acc * 1000 + trips
+}
+
+let _start = () -> Int {
+  handle {
+    let a = scan()
+    let b = skip()
+    a * 100000 + b
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+
+test "effect transfer after resume" {
+  inspect(_start(), "70011302")
+}

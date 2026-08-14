@@ -1,0 +1,39 @@
+// #1536 capture pin for the selection-valued binding distribution: the
+// continuation is moved UNDER a match arm, so an arm's pattern binder must not
+// capture a name that continuation reads from an outer binding.
+//
+// The selected arm binds `n`, shadowing the outer `n = 6` inside the arm only.
+// The continuation `acc + n + g` was outside the match originally and must
+// still read 6. Capturing it would read the scrutinee value (5) instead and
+// print 16 rather than 17.
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let n = 6
+    let mut acc = 0
+    let a = if acc == 0 {
+      perform Ask::Get(1)
+    } else {
+      0
+    }
+    acc = acc + a
+    let g = match acc {
+      99 => perform Ask::Get(2),
+      n => n + 1
+    }
+    acc = acc + n + g
+    acc
+  } with Ask {
+    Get(m) => {
+      let k = resume
+      k(m * 5)
+    }
+  }
+}
+
+test "effect let selection match capture" {
+  inspect(_start(), "17")
+}
