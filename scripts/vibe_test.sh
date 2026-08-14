@@ -270,6 +270,7 @@ vt_worker() {
       echo "FAIL (compile) $src_rel"
     fi
     printf 'fail 0 0 0 0 0\n' > "$vt_results/$flat.res"
+    printf 'seed\n' > "$vt_results/$flat.compilefail"
     return 0
   fi
 
@@ -395,6 +396,11 @@ for res in "$vt_results"/*.res; do
     fail=$((fail + 1))
   fi
 done
+compile_fails=0
+for marker in "$vt_results"/*.compilefail; do
+  [ -f "$marker" ] || continue
+  compile_fails=$((compile_fails + 1))
+done
 rm -rf "$vt_results"
 
 # #948: report the test-block total alongside the per-file counts (reporting
@@ -407,6 +413,18 @@ else
   if [ "$notest_files" -gt 0 ]; then
     echo "[vibe-test] note: $notest_files file(s) with no tests found"
   fi
+fi
+# `FAIL (compile)` from the SEED is ambiguous: the file may be perfectly good
+# and merely use something the seed predates. `inspect` is the standing example
+# -- #1571 made it import-free by desugaring it in the checker, so every
+# `inspect` call in a current, CI-green test file compiles under stage2 and
+# reports `unknown name: inspect` under the seed. Reading that line at face
+# value costs a debugging session on a file that is not broken.
+if [ "$compile_fails" -gt 0 ] && [ -z "${VIBE_TEST_CLI_WASM:-}" ]; then
+  echo "[vibe-test] note: compiled with the committed seed ($seed)."
+  echo "[vibe-test]       A file that uses anything newer than the seed fails here even when it is correct."
+  echo "[vibe-test]       Re-check against this checkout's compiler with:"
+  echo "[vibe-test]         VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_\$(git rev-parse --short HEAD)/stage2.wasm"
 fi
 if [ "$coverage" = "1" ] && [ "$cov_files" -gt 0 ]; then
   fn_pct=$(python3 -c "print(f'{($cov_fn_hit/$cov_fn_total*100):.2f}%' if $cov_fn_total else 'n/a')")
