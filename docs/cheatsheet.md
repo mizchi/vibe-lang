@@ -163,7 +163,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 > export しても同じで、別名は merge 後のソースには現れるのに checker は
 > `HashMap[Int]` と `MutMap[Int]` を別の型として扱う)。守れない約束を
 > 置くより、破れる場所を1つに絞って明示するほうを採った ——
-> 注釈は `Mut-` 名に書き換えること。
+> 注釈は `Mut-` 名に書き換えること (穴そのものは #1700)。
 
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the

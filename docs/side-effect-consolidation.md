@@ -644,7 +644,7 @@ renames + 旧名の deprecated alias。`vibe` は selfhost なので、
 > merge 後のソースには確かに現れる(`VIBE_EMIT_MERGED_SOURCE=1` で確認)のに、
 > checker は `HashMap[Int]` と `MutMap[Int]` を別の nominal 型として扱う。
 > 同一ファイル内の generic type alias は正しく透過するので、これは
-> **cross-module type alias の透過性**という別の穴。
+> **cross-module type alias の透過性**という別の穴 (#1700)。
 >
 > 守れない約束を contract に置く(旧名が単独ファイルでは型検査を通り、
 > 2 つの綴りが出会う場所で初めて落ちる = いちばん悪い壊れ方)より、
