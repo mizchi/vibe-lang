@@ -1,0 +1,64 @@
+// #1536: `for c in s { .. perform .. }` over a PROVED String, the companion to
+// effect_array_for_suspend_test.
+//
+// Codegen materializes a String iterand's char codes into a fresh array and
+// iterates that (#807). Indexing the String directly walks the same sequence --
+// Strings are immutable, so nothing can change under the loop -- using
+// `String::length` / `String::char_code_at`, the builtins codegen itself uses
+// to do that materializing. The proof is the same syntactic one the Array case
+// uses: a `String`-annotated parameter, or a string literal bound on the spine.
+//
+//   from_param   294  "abc" -> 97 + 98 + 99
+//   from_literal 195  "ab"  -> 97 + 98
+//   with_break   195  stops before 'c', so the same 97 + 98
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn from_param(s: String) -> Int with Ask {
+  let mut acc = 0
+  for c in s {
+    acc = acc + perform Ask::Get(c)
+  }
+  acc
+}
+
+fn from_literal() -> Int with Ask {
+  let s = "ab"
+  let mut acc = 0
+  for c in s {
+    acc = acc + perform Ask::Get(c)
+  }
+  acc
+}
+
+fn with_break(s: String) -> Int with Ask {
+  let mut acc = 0
+  for c in s {
+    if c > 98 {
+      break
+    } else {
+      ()
+    }
+    acc = acc + perform Ask::Get(c)
+  }
+  acc
+}
+
+let _start = () -> Int {
+  handle {
+    let a = from_param("abc")
+    let b = from_literal()
+    let c = with_break("abc")
+    a * 1000000 + b * 1000 + c
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n)
+    }
+  }
+}
+
+test "effect string for suspend" {
+  inspect(_start(), "294195195")
+}

@@ -3240,6 +3240,18 @@ for x in xs { body }  ==>  let mut i = 0
 引数由来 36 / リテラル由来 23 / `break` 23 / `continue` 24 (index が進む) / 伸長 87 /
 handle body に直接書いた形 29。
 
+**String iterand も同じ形で通る** (追記58b): codegen は String の char code を配列へ
+materialize して回す (#807) が、**String は immutable なので直接 index で回しても同じ列**に
+なり、`String::length` / `String::char_code_at` は codegen 自身が materialize に使っている
+builtin。証明も同じ構文的なもの (`String` 注釈の引数 / 文字列リテラル束縛)。
+**証明できない iterand は依然として一切書き換えない** — 実行時に String になりうる値を
+array 形へ落とさないのはこの一点で守られている。
+
+> 実装時に 5 回続けて誤診した。原因は述語でも builtin でも site でもなく、**関数本体を丸ごと
+> 差し替えたときの splice ミス**だった。証明済みの名前を診断に吐く instrumentation を 1 回
+> 入れたら (`strseed=1 S=s/found`) 部品が全部正しいことが分かり、そこから surgical に
+> 書き直して通った。**読んで当てるのをやめて計測に切り替える**のが最短だった。
+
 書き換えは **3 つの split site すべて**に置く — needing fn の clone、handle body 自身、
 closure literal。最初は clone だけに入れており、`handle { for x in xs { .. perform .. } }` と
 直接書いた形が取り残されていた (handle body も他と同じ spine で、そこでは引数が無いので
