@@ -1,0 +1,79 @@
+// #1542 fallback pair for fixtures/gc_native_struct_ref_field_test.vibe.
+//
+// A reference-lane field is only readable in the receiver position of a native
+// array op: the read produces a `(ref null $array)`, and handing that to
+// anything else would put a reference where the tagged-i64 ABI is expected.
+// Both shapes below keep the ordinary linear layout for the whole record.
+
+struct Bag {
+  label: String;
+  items: Array[Int]
+}
+
+// An exported function keeps the tagged-i64 ABI. A native struct cannot put
+// that result directly into its reference field, so this binding must fall
+// back as a whole instead of failing a reference-lane proof during codegen.
+export fn tagged_items() -> Array[Int] {
+  [
+    3,
+    4
+  ]
+}
+
+fn call_initialized_field() -> Int {
+  let b = Bag::{
+    label: "call", items: tagged_items()
+  }
+  Array::get(b.items, 0) + Array::get(b.items, 1)
+}
+
+// The names are deliberately identical while the representations disagree.
+// Nominal construction of ScalarShape must not select RefShape merely because
+// RefShape appeared first in the ctor table.
+struct RefShape {
+  value: Array[Int]
+}
+
+struct ScalarShape {
+  value: Int
+}
+
+fn nominal_scalar_shape() -> Int {
+  let s = ScalarShape::{
+    value: 9
+  }
+  s.value
+}
+
+// The field is read into a plain binding, so the reference would have to become
+// a value.
+fn aliased_field() -> Int {
+  let b = Bag::{
+    label: "b",
+    items: [
+      1,
+      2
+    ]
+  }
+  let taken = b.items
+  Array::get(taken, 1)
+}
+
+// The record itself escapes, which is the #1702 restriction unchanged.
+fn escaping_bag() -> Bag {
+  let b = Bag::{
+    label: "b",
+    items: [
+      7,
+      8
+    ]
+  }
+  b
+}
+
+test "reference-lane fields that leave receiver position keep the linear layout" {
+  inspect(aliased_field(), "2")
+  inspect(Array::get(escaping_bag().items, 0), "7")
+  inspect(call_initialized_field(), "7")
+  inspect(nominal_scalar_shape(), "9")
+}

@@ -311,6 +311,9 @@ export struct CtorTable {
   type_names: Array[String];
   struct_names: Array[String];
   struct_field_names: Array[Array[String]];
+  // #1542: parallel to struct_field_names -- whether each declared field is a
+  // reference-lane array, which decides that field's wasm type.
+  struct_field_is_ref: Array[Array[Bool]];
   // Sorted view of `names` + original-position payload (ctor_sorted_index).
   // ctor_table_index_of binary-searches these instead of linearly scanning
   // `names` per constructor reference -- lookup_ctor was a top-10 self-time
@@ -448,6 +451,15 @@ export struct CompileCtx {
   // -1 outside the linked RC path, which makes emit_rc_dup_guarded fall back
   // to the inline form.
   rc_dup_func_idx: Int;
+  // ADR-0090 (#1262): the region arena. `region_ptr_addr` is the linear-memory
+  // address of the arena bump pointer, or -1 when this module has no region
+  // (or is on the RC lane, where the arena is not yet safe -- see the layout
+  // comment in wasi/linked_compile.vibe). The two func indices are the arena
+  // variants of `ArrayBuilder::new` / `ArrayBuilder::push`, -1 alongside.
+  // Everything else about the segment is derived from region_ptr_addr by the
+  // region_* helpers below, so the emitter and the layout cannot disagree.
+  region_ptr_addr: Int;
+  region_arr_new_func_idx: Int;
   // Linear-memory backend: wasm function index of `vibe_heap_grow_check`, or -1
   // when the surrounding module does not define the helper. Bump allocations
   // call it after updating global 0 so low initial memory can grow on demand.
@@ -1049,6 +1061,50 @@ export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
 /// pairs a slot with the wrong struct. Indexing by slot removes the pairing --
 /// reset is positional and there is nothing to keep in step. Absent slots
 /// read as -1.
+/// #1542: does struct `struct_idx` declare `field` as a reference-lane array?
+/// Lives here rather than beside either use because the binding site, the read
+/// lowering and the receiver test all have to agree; a private copy per file is
+/// how the #1722 lookups drifted.
+export fn gc_ctor_field_is_ref(ct: CtorTable, struct_idx: Int, field: String) -> Bool {
+  if struct_idx < 0 || struct_idx >= Array::length(ct.struct_field_is_ref) {
+    false
+  } else {
+    let declared = Array::get(ct.struct_field_names, struct_idx)
+    let refs = Array::get(ct.struct_field_is_ref, struct_idx)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(declared) {
+      if Array::get(declared, i) == field && Array::get(refs, i) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Slot of `field` within struct `struct_idx`, or -1.
+export fn gc_ctor_field_slot(ct: CtorTable, struct_idx: Int, field: String) -> Int {
+  if struct_idx < 0 || struct_idx >= Array::length(ct.struct_field_names) {
+    0 - 1
+  } else {
+    let declared = Array::get(ct.struct_field_names, struct_idx)
+    let mut i = 0
+    let mut found = 0 - 1
+    while i < Array::length(declared) {
+      if found < 0 && Array::get(declared, i) == field {
+        found = i
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
 export fn gc_slot_map_set(map: Array[Int], slot: Int, value: Int) -> Unit {
   while Array::length(map) <= slot {
     Array::push(map, 0 - 1)
@@ -2021,6 +2077,24 @@ export fn emit_index_one(buf: Bytes, ctx: CompileCtx) -> Unit {
 /// #715 recurrence guard: base address of the shadow-liveness byte table
 /// (1 byte per heap address at base+vptr) and the reservation pad that keeps
 /// it inside linear memory. Only referenced when compiling with rc_shadow.
+/// ADR-0090 (#1262) region arena control words, all derived from the bump
+/// pointer address so the layout lives in exactly one place:
+/// `[bump ptr @+0][depth @+4][saved bump ptrs @+8, region_max_depth levels]`.
+export fn region_depth_addr_of(region_ptr_addr: Int) -> Int {
+  region_ptr_addr + 4
+}
+
+export fn region_saves_base_of(region_ptr_addr: Int) -> Int {
+  region_ptr_addr + 8
+}
+
+/// Nesting levels the save table holds. A region entered deeper than this
+/// skips both the save and the release: it keeps allocating from the arena
+/// (correct, just unreclaimed) instead of scribbling past the table.
+export fn region_max_depth() -> Int {
+  64
+}
+
 export fn rc_shadow_base() -> Int {
   268435456
 }

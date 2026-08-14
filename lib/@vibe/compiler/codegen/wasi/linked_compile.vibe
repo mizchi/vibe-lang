@@ -78,6 +78,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_rc_alloc_body,
   gen_rc_drop_body,
   gen_rc_dup_body,
+  gen_region_arr_new_body,
   gen_simd_scan_alnum_body,
   gen_simd_skip_ws_body,
   gen_sources_proper_body,
@@ -195,6 +196,8 @@ import @vibe/compiler/codegen/common_base {
   is_slet,
   lookup_ctor,
   rc_shadow_reserve,
+  region_max_depth,
+  region_saves_base_of,
   resolve_func,
   resolve_local,
   rewrite_self_tail_calls,
@@ -3771,7 +3774,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let lc_agg_ret_names = lc_fresh_string_array()
   let lc_agg_ret_infos = lc_fresh_int_array()
   compute_agg_returning(stmts, CtorTable::{
-    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: array_empty(), names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
   }, lc_agg_ret_names, lc_agg_ret_infos)
   // #791: program-wide (fn name) set for declared-heap-returning top-level
   // functions (see compute_heap_returning in perceus/index.vibe). Consulted
@@ -4020,6 +4023,50 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
   // ident inside.
   let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
+  // ADR-0090 (#1262): the region arena segment. `region r { body }` parses to
+  // `__region_run(lam)`, so its presence in the canonical free-name set is
+  // exactly "this module has a region".
+  //
+  // The arena is an INDEPENDENT bump segment, not a watermark over the main
+  // heap, and that separation is the whole point: the region body allocates
+  // ordinary heap values too (a tuple, a string) which are allowed to escape,
+  // and a watermark reset over the shared bump pointer would reclaim those.
+  // Only `MutList` storage goes here, and the sanctioned exits copy OUT of it
+  // (compile_call.vibe :: mutlist_exit_copy) before the segment is released.
+  //
+  // Layout: [bump ptr @+0][depth @+4][saved bump ptrs @+8, 64 levels][data].
+  // The control words live in linear memory rather than wasm globals so the
+  // save/restore needs no locals at the call site and no change to the global
+  // index formula (g_op_index / thunk globals are positional). Memory is
+  // zero-page initialized and the data segments end below heap_start, so a
+  // zero bump ptr means "never entered" and the bodies lazily seed it.
+  //
+  // Bump-lane only. Under RC a region block would carry an RC header and
+  // eventually reach the free list, which the bulk release invalidates; the
+  // RC lane keeps today's behavior (MutList == ArrayBuilder on the main heap)
+  // until the Perceus exemption lands. The bump lane is also where the arena
+  // is worth anything: it never frees, so bulk release is pure win.
+  let need_region_arena = Map::has_key(used_builtin_names, "__region_run") && !enable_rc
+  let region_ctl_base = heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve
+  let region_ptr_addr = if need_region_arena {
+    region_ctl_base
+  } else {
+    -1
+  }
+  // Derived through the common_base helpers so the emitter (compile_call.vibe,
+  // which only receives region_ptr_addr) and this layout cannot drift apart.
+  let region_saves_base = region_saves_base_of(region_ctl_base)
+  let region_data_base = ((region_saves_base + region_max_depth() * 4 + 7) / 8) * 8
+  // 256 KiB. Overflow is not an error: the arena bodies fall back to the main
+  // bump heap, which is exactly today's behavior, so a region that outgrows
+  // the segment gets no reclamation instead of getting corrupted.
+  let region_arena_bytes = 262144
+  let region_limit = region_data_base + region_arena_bytes
+  let region_reserve = if need_region_arena {
+    (region_data_base - region_ctl_base) + region_arena_bytes
+  } else {
+    0
+  }
   let uses_stdin_provider_surface = lc_program_defines_top_level(stmts, "__stdin_provider_acquire_surface")
   // #1539: these imports are component-internal, not a standalone core ABI.
   // compile_source_wasi_only wraps only `run : () -> Int with Async`; reject
@@ -4789,6 +4836,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let map_index_insert_idx = map_cap_idx + 1
   let map_build_index_idx = map_index_insert_idx + 1
   let map_probe_index_idx = map_build_index_idx + 1
+  // ADR-0090 (#1262) region arena bodies. Registered LAST and only when the
+  // module has a region, so a module without one is byte-identical to what it
+  // was before the arena existed (and max_builtin_func_idx below follows).
+  let region_arr_new_idx = if need_region_arena {
+    map_probe_index_idx + 1
+  } else {
+    -1
+  }
   let env_get_idx = if env_get_import_idx >= 0 {
     env_get_import_idx
   } else {
@@ -5125,7 +5180,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // from THIS constant, not from Array::length(bodies), so adding builtins
   // without updating this stale-by-construction line silently shifts every
   // user-function call target in the module by the number of builtins added).
-  let max_builtin_func_idx = map_probe_index_idx
+  let max_builtin_func_idx = if need_region_arena {
+    region_arr_new_idx
+  } else {
+    map_probe_index_idx
+  }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
   let fn_indices_list = lc_fresh_int_array()
@@ -5445,13 +5504,23 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
     push_builtin(gen_arr_len_body(true), 0, 0, 3)
     push_builtin(gen_arr_get_body(true), 1, 0, 4)
-    push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow), 6, 0, 6)
+    push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow, -1, 0, 0), 6, 0, 6)
     push_builtin(gen_arr_set_body(true), 1, 0, 7)
   } else {
     push_builtin(gen_arr_new_body(false, rc_alloc_idx), 1, 0, 5)
     push_builtin(static_arr_len_body(), 0, 0, 3)
     push_builtin(static_arr_get_body(), 1, 0, 4)
-    push_builtin(gen_arr_push_body(false, rc_alloc_idx, rc_shadow), 6, 0, 6)
+    // ADR-0090 (#1262): ONE arr_push. Which lane a regrow allocates from is a
+    // property of the ARRAY (is its block inside the arena segment?), not of
+    // the call site, so it is a runtime range check inside the shared body
+    // rather than a second builtin -- a MutList and an ordinary Array can both
+    // be pushed through the same code. The arena form needs one extra i32
+    // local for the arena bump pointer.
+    push_builtin(gen_arr_push_body(false, rc_alloc_idx, rc_shadow, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+      7
+    } else {
+      6
+    }, 0, 6)
     push_builtin(static_arr_set_body(), 1, 0, 7)
   }
   push_builtin(static_double_to_int_body(), 0, 0, 3)
@@ -5533,6 +5602,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_map_index_insert_body(), 1, 4, 7)
   push_builtin(gen_map_build_index_body(map_hash_idx, map_cap_idx, map_index_insert_idx, heap_grow_check_idx), 0, 7, 4)
   push_builtin(gen_map_probe_index_body(map_hash_idx, eq_idx), 1, 8, 8)
+  // ADR-0090 (#1262): must stay LAST -- max_builtin_func_idx above names
+  // region_arr_push_idx as the final builtin, and num_generated/func_offset
+  // are derived from it.
+  if need_region_arena {
+    push_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+  } else {
+    ()
+  }
   // #708: one counter cell shared across every function's lift pass, so each
   // lift site gets a distinct `__m_scrut_N` name (see lift_match_scrutinees).
   let m_scrut_counter = [
@@ -5999,7 +6076,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           num_user_funcs: num_user_funcs, func_offset: func_offset,
           ref_cell_names: lc_fresh_string_array(),
           ctor_table: CtorTable::{
-            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
+            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, struct_field_is_ref: array_empty(), names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
           },
           ctor_float_fields: ctor_float_fields_list,
           // Sorted copy for compile_expr.vibe's per-identifier membership check
@@ -6026,6 +6103,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           } else {
             -1
           },
+          region_ptr_addr: region_ptr_addr,
+          region_arr_new_func_idx: region_arr_new_idx,
           rc_alloc_func_idx: if enable_rc {
             rc_alloc_idx
           } else {
@@ -7578,7 +7657,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + (if rc_shadow {
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + region_reserve + (if rc_shadow {
     rc_shadow_reserve()
   } else {
     0
@@ -7615,7 +7694,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + region_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)

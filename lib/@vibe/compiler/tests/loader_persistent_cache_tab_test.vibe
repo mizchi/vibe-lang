@@ -1,0 +1,62 @@
+import @vibe/compiler/cache {
+  persistent_source_group_cache_path, persistent_source_list_cache_path
+}
+
+import @vibe/compiler/loader {
+  collect_all_sources_fs, collect_source_groups_fs
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn has_source_path(sources: Array[(String, String)], target: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    if path == target {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn groups_have_source_path(groups: Array[(String, Array[(String, String)])], target: String) -> Bool {
+  let mut found = false
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    if has_source_path(sources, target) {
+      found = true
+    }
+    gi = gi + 1
+  }
+  found
+}
+
+test "persistent source caches round-trip TAB in source paths (#1712)" {
+  let base_dir = "/tmp/vibe_compiler_persistent_tab_path"
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/tab\tapp.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_file(helper_path, "export let add: () -> Int = () -> { 1 }")
+  Fs::write_file(main_path, "import ./helper.vibe { add }\nlet run: () -> Int = () -> { add() }")
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  let first_groups = collect_source_groups_fs(main_path)
+  assert(groups_have_source_path(first_groups, main_path))
+  let warm_groups = collect_source_groups_fs(main_path)
+  assert(groups_have_source_path(warm_groups, main_path))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  remove_file_if_exists(persistent_source_list_cache_path(main_path))
+  let first_sources = collect_all_sources_fs(main_path)
+  assert(has_source_path(first_sources, main_path))
+  let warm_sources = collect_all_sources_fs(main_path)
+  assert(has_source_path(warm_sources, main_path))
+}

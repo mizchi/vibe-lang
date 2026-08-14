@@ -130,10 +130,11 @@ first_half(4, 3) unwrap_or -1 = -1
 
 `else` は**必ず脱出**する。`match e { PAT => <残り>, _ => else }` に脱糖されるので
 `else` 腕は残りのブロックそのものの代わりに評価される位置にあり、脱出しないと
-束縛されていない `v` を使う経路ができてしまうため。現行で受理する脱出の形は
-`return` **だけ**で、`throw` はまだ受理しない
-([#1283](https://github.com/mizchi/vibe-lang/issues/1283) — ADR-0073 が
-`Error::Throw` を非再開と定めてはいるが、checker 側の abortive 判定は別作業)。
+束縛されていない `v` を使う経路ができてしまうため。受理する脱出の形は
+`return` と直接の `throw(...)` (実測: `guard o is Some(v) else { throw("no value") }`
+は関数の row に `Exception` があればそのまま通り、呼び出し側の `handle` で
+捕まえられる — [05 エフェクト](05_effects.vibe.md) 参照)。他の `perform` は
+resume しうるので脱出とは数えない。
 
 フォールバックが「脱出」ではなく「値」なら `if e is PAT { .. } else { .. }` を使う。
 

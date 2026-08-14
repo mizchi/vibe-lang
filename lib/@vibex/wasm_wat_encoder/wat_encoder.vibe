@@ -806,6 +806,28 @@ fn decode_string_bytes(s: String) -> Bytes {
 ///   frac64 の bit  0..31 = lo
 /// f32 の 23 bit 仮数は frac64 >> 29 なので、hi 側 20 bit が bit 3..22 へ、
 /// lo の最上位 3 bit が bit 0..2 へ落ちる。
+/// Shift `v` right by `shift`, rounding the discarded bits to nearest with
+/// ties to even. That is the rounding IEEE-754 mandates when a wider value is
+/// narrowed, and what the wasm spec requires of an `f32.const` literal.
+fn shr_round_nearest_even(v: Int, shift: Int) -> Int {
+  if shift <= 0 {
+    v
+  } else if shift >= 54 {
+    // Callers pass `v` below 2^53, so every discarded bit here is worth less
+    // than half a unit in the last place and the result rounds to zero.
+    0
+  } else {
+    let q = v>>shift
+    let rem = v&((1<<shift) - 1)
+    let half = 1<<(shift - 1)
+    if rem > half || ((rem == half) && ((q&1) == 1)) {
+      q + 1
+    } else {
+      q
+    }
+  }
+}
+
 fn f64_bits_to_f32_bits(hi: Int, lo: Int) -> Int {
   let sign = (hi>>31)&1
   let exp64 = (hi>>20)&0x7FF
@@ -817,16 +839,28 @@ fn f64_bits_to_f32_bits(hi: Int, lo: Int) -> Int {
       (sign<<31)|0x7FC00000
     }
   } else if exp64 == 0 {
+    // Every f64 subnormal is below 2^-1022, far under the smallest f32
+    // subnormal (2^-149), so they all narrow to a signed zero.
     sign<<31
   } else {
-    let exp32 = exp64 - 1023 + 127
-    let frac32 = ((frac_hi<<3)|((lo>>29)&7))&0x7FFFFF
+    let m = (frac_hi<<32)|lo
+    let exp32 = exp64 - 896
     if exp32 >= 255 {
       (sign<<31)|0x7F800000
     } else if exp32 <= 0 {
-      sign<<31
+      // f32 subnormal: the value is `f * 2^-149`, where `f` still carries the
+      // f64's implicit leading 1. `f` landing on 2^23 means rounding pushed it
+      // up to the smallest normal, and `(sign<<31)|f` already spells that.
+      (sign<<31)|shr_round_nearest_even((1<<52)|m, 30 - exp32)
     } else {
-      (sign<<31)|(exp32<<23)|frac32
+      // `+`, not `|`: a mantissa that rounds up to 2^23 has to carry into the
+      // exponent field, which is exactly what the addition does.
+      let bits = (exp32<<23) + shr_round_nearest_even(m, 29)
+      if bits >= (255<<23) {
+        (sign<<31)|0x7F800000
+      } else {
+        (sign<<31)|bits
+      }
     }
   }
 }

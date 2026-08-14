@@ -518,6 +518,27 @@ export fn emit_struct_type_raw(buf: Bytes, field_types: Array[Int], field_muts: 
   }
 }
 
+/// #1542: struct type whose fields may be typed references. A field entry is
+/// either a value type byte or, when `field_types[i] < 0`, the nullable
+/// reference `(ref null ref_type_idx)` -- spelled `0x63 <typeidx>` rather than a
+/// single value-type byte, which is why this cannot go through the plain
+/// `emit_struct_type_raw`.
+export fn emit_struct_type_raw_refs(buf: Bytes, field_types: Array[Int], field_muts: Array[Int], ref_type_idx: Int) -> Unit {
+  bytebuf_push_opcode_u32(buf, 95, Array::length(field_types))
+  let mut i = 0
+  while i < Array::length(field_types) {
+    let ft = Array::get(field_types, i)
+    if ft < 0 {
+      bytebuf_push(buf, 99)
+      leb128_encode_u32(buf, ref_type_idx)
+      bytebuf_push(buf, Array::get(field_muts, i))
+    } else {
+      bytebuf_push2(buf, ft, Array::get(field_muts, i))
+    }
+    i = i + 1
+  }
+}
+
 export fn emit_array_type_raw(buf: Bytes, elem_type: Int, is_mut: Int) -> Unit {
   bytebuf_push3(buf, 94, elem_type, is_mut)
 }

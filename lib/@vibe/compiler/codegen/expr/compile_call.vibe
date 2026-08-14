@@ -85,6 +85,9 @@ import @vibe/compiler/codegen/common_base {
   is_ptuple,
   is_pwild,
   is_slet,
+  region_depth_addr_of,
+  region_max_depth,
+  region_saves_base_of,
   resolve_func,
   resolve_local,
   struct_field_candidates,
@@ -1158,24 +1161,157 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
   }
 }
 
+/// ADR-0090's sanctioned region exits, lowered as a real COPY out of the
+/// list's storage rather than the identity cast the rest of the FrozenArray
+/// surface uses.
+///
+/// `FrozenArray::from_array` / `to_array` are pure identity casts
+/// (docs/compiler-parallelism.md) -- the Frozen claim is type-level, and the
+/// caller is trusted not to keep mutating the source. `MutList` cannot borrow
+/// that convention, for two reasons:
+///
+/// 1. **It is already observably wrong.** `let out = MutList::freeze(l);
+///    MutList::push(l, 3); out` sees the 3 -- a `FrozenArray` that changes
+///    under you, which is the silent-wrong direction. The list handle is
+///    still in scope at the exit, unlike the consuming builder idiom
+///    `ArrayBuilder::freeze` was written for.
+/// 2. **The arena needs it.** ADR-0090's release is a watermark reset over
+///    the whole region segment. An identity cast hands the caller a pointer
+///    INTO that segment, so the escaping value would dangle the moment the
+///    arena slice lands. "Escape only via freeze / copy-out" is exactly this
+///    copy; without it there is no sound release point.
+///
+/// The value is bound to a temp first so an effectful argument
+/// (`MutList::freeze(make_list(r))`) is evaluated once, not twice.
+fn mutlist_exit_copy(arg: Expr) -> Expr {
+  let tmp = "__mutlist_exit"
+  let frozen = ECall(EIdent("ArrayBuilder::freeze", -1), [
+    arg
+  ], -1)
+  ELet(tmp, frozen, ECall(EIdent("Array::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Array::length", -1), [
+      EIdent(tmp, -1)
+    ], -1)
+  ], -1), -1)
+}
+
+/// Push the arena's saved-bump-pointer stack (ADR-0090, #1262). Emitted
+/// around the region body call, using only linear-memory control words so it
+/// needs no wasm local at the call site -- a synthesized local here would have
+/// to be declared in the enclosing function's local vector, which this
+/// rewrite has no way to reach.
+///
+/// Deeper than `region_max_depth()` the save is skipped, and the matching
+/// restore is skipped by the same test, so an over-deep region keeps
+/// allocating from the arena without reclaiming it. That is the same
+/// degradation as arena exhaustion: less reclamation, never a wrong answer.
+fn emit_region_enter(buf: Bytes, region_ptr_addr: Int) -> Unit {
+  let depth_addr = region_depth_addr_of(region_ptr_addr)
+  let saves_base = region_saves_base_of(region_ptr_addr)
+  emit_i32_const(buf, region_max_depth())
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_gt_u(buf)
+  emit_if_void(buf)
+  emit_i32_const(buf, saves_base)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_const(buf, region_ptr_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+/// The bulk release: reset the arena bump pointer to the watermark this
+/// region entered at. Emitted with the body's RESULT already on the stack --
+/// every instruction below consumes only its own operands, so the result
+/// rides through untouched. Sound because the sanctioned exits copied out of
+/// the segment before we get here (see `mutlist_exit_copy`), and because
+/// ordinary heap values built in the body live on the MAIN bump heap, which
+/// this does not touch.
+fn emit_region_exit(buf: Bytes, region_ptr_addr: Int) -> Unit {
+  let depth_addr = region_depth_addr_of(region_ptr_addr)
+  let saves_base = region_saves_base_of(region_ptr_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_sub(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_i32_const(buf, region_max_depth())
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_gt_u(buf)
+  emit_if_void(buf)
+  emit_i32_const(buf, region_ptr_addr)
+  emit_i32_const(buf, saves_base)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+}
+
 /// ADR-0090 Phase 1 arity rewrites, applied before the main dispatch:
 /// - `__region_run(lam)` (the reserved lowering of `region r { body }`)
 ///   runs the body closure immediately with a dummy region token (0). The
 ///   token only exists for the checker's skolem escape scan; it has no
-///   runtime representation yet (arena lowering is a later slice).
+///   runtime representation. When the module has an arena
+///   (`ctx.region_ptr_addr >= 0`), the call is bracketed by the arena
+///   watermark save/restore.
 /// - `MutList::empty(r)` allocates a fresh growable array, ignoring the
 ///   region token argument. The token is not evaluated: by construction it
-///   is the pure region binder ident the parser emitted.
+///   is the pure region binder ident the parser emitted. With an arena it
+///   comes from the segment; without one it is `ArrayBuilder::new` as before.
+/// - `MutList::push(l, v)` needs no rewrite: it still aliases
+///   `ArrayBuilder::push`, whose body decides the regrow lane by asking
+///   whether the ARRAY's block is inside the arena segment. Which lane is a
+///   property of the array, not of the call site.
+/// - `MutList::freeze(l)` / `MutList::to_array(l)` copy out -- see
+///   `mutlist_exit_copy` for why these two do not share the identity cast,
+///   and why the arena has no sound release point without them.
 export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
-    ce(buf, ECall(Array::get(args, 0), [
+    if ctx.region_ptr_addr >= 0 {
+      emit_region_enter(buf, ctx.region_ptr_addr)
+    } else {
+      ()
+    }
+    let r = ce(buf, ECall(Array::get(args, 0), [
       EInt(0)
     ], -1), local_names, next_local, ctx, ld)
+    if ctx.region_ptr_addr >= 0 {
+      emit_region_exit(buf, ctx.region_ptr_addr)
+    } else {
+      ()
+    }
+    r
   } else if is_eident(callee) && get_eident_name(callee) == "MutList::empty" && Array::length(args) == 1 {
-    let no_args = Array::slice([
-      EInt(0)
-    ], 0, 0)
-    ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+    if ctx.region_arr_new_func_idx >= 0 {
+      emit_call(buf, ctx.region_arr_new_func_idx)
+      next_local
+    } else {
+      let no_args = Array::slice([
+        EInt(0)
+      ], 0, 0)
+      ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+    }
+  } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
+    ce(buf, mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }
@@ -1230,9 +1366,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     //
     // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over the
     // same growable-array runtime layout ArrayBuilder uses, so push aliases
-    // ArrayBuilder::push and freeze/to_array alias the identity cast
-    // (ArrayBuilder::freeze). MutList::empty and __region_run need arity
-    // rewrites and are handled in compile_call before dispatching here.
+    // ArrayBuilder::push. `MutList::empty` / `freeze` / `to_array` and
+    // `__region_run` are rewritten in compile_call before dispatching here --
+    // in particular the two exits COPY (mutlist_exit_copy) instead of
+    // aliasing, so these freeze rows are only a fallback for a call that got
+    // past the checker with the wrong arity.
     let fname = if fname0 == "Stream::map" {
       "Array::map"
     } else if fname0 == "MutList::push" {
