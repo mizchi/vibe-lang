@@ -162,8 +162,41 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
   リセットで解放するので、identity cast は**解放予定のメモリへのポインタ**を
   呼び出し側に渡すことになる。§4 の「脱出は freeze / copy-out のみ」の
   copy-out がこれ。gate 75 の `fixtures/region_ok_freeze_copies_out.vibe`
-  が両 exit を pin。arena セグメント + Perceus 免除は未実装
-  (次スライス — 現状 runtime は通常の RC heap)。wasm-gc backend は未対応。
+  が両 exit を pin。wasm-gc backend は未対応。
+- **arena セグメント + watermark 一括解放 (#1262, 2026-08-14、bump レーンのみ)**:
+  `__region_run` が **独立した bump セグメント**の watermark を保存/復元し、
+  region 終端でまとめて捨てる。レイアウトは linear memory 上の
+  `[bump ptr @+0][depth @+4][saved bump ptrs @+8, 64 段][data, 256 KiB]` で、
+  制御語を wasm global ではなくメモリに置いたのは、呼び出し側で local を
+  1本も要らなくするため (codegen の書き換えからは囲む関数の local ベクタに
+  手が届かない)。`MutList::empty` は専用 body
+  (`gen_region_arr_new_body`) がセグメントから確保し、**`MutList::push` は
+  書き換え不要** —— どちらのレーンから regrow するかは**配列の性質**
+  (そのブロックがセグメント内か) なので、共有の `arr_push` body の中の
+  range 判定にした。
+  - **なぜ独立セグメントで、共有 bump の watermark ではないのか**: region
+    body は普通の heap 値 (tuple・String) も確保し、それは脱出してよい。
+    共有 bump を巻き戻すとそれを回収してしまう。§5 の「main `__heap_ptr` と
+    混ぜない」はこの理由。
+  - **degradation は常に「回収しない」側**: セグメント枯渇時は main heap に
+    fallback、ネストが 64 段を超えたら save も restore もしない。どちらも
+    「回収が減る」だけで、誤った答えにはならない。
+  - **bump レーン限定**: RC では region ブロックが RC ヘッダを持ち free list に
+    載りうるので、一括解放が free list を壊す。Perceus 免除が入るまで RC
+    レーンは従来どおり (MutList == ArrayBuilder on main heap)。bump レーンは
+    そもそも解放しないので、一括解放の効き目もここが一番大きい。
+  - **実測** (200 region × 500 要素、`VIBE_RC=0`、
+    `scripts/region_arena_heap_delta.mjs`): main heap 増加が
+    **1,644,008 B → 6,408 B (257×)**。残る ~32 B/region は region body の
+    closure 環境 (`__region_run(lam)` の lam は毎回 main heap に確保される)
+    で、region storage ではない。即時適用される region lambda を確保無しに
+    するのは別の最適化。
+  - gate 75 が `fixtures/region_arena_release_ok.vibe` (逐次 region の再利用・
+    ネスト・普通の heap 値の脱出・inline 容量超えの regrow) を RC 両モードで、
+    `fixtures/region_arena_bounded.vibe` を bump レーンで **測って** pin する
+    —— 解放をやめた region も値は正しいままなので、値の assertion では
+    見えない。
+- **Perceus 免除**は未実装 (RC レーンで arena を有効にする前提)。
 - **gate**: `compiler_gate.sh` §74 が positive
   (`fixtures/region_arena_ok.vibe`、42)と negative
   (`fixtures/err_region_escape_return_value.vibe`、needle

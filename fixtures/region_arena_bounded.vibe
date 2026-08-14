@@ -1,0 +1,54 @@
+// ADR-0090 #1262 boundedness: N regions, and the region STORAGE costs the
+// main heap nothing.
+//
+// Each iteration builds a 500-element MutList and lets it die with the
+// region -- nothing is frozen, so nothing is copied out. On the bump lane
+// (VIBE_RC=0) the allocator never frees, so without the arena every block and
+// every regrow buffer leaks.
+//
+// Measured (200 iterations, VIBE_RC=0, `scripts/region_arena_heap_delta.mjs`):
+//
+//     pre-arena   1,644,008 B   (~8,220 B per region: the list plus its
+//                                doubling regrow buffers, all leaked)
+//     with arena      6,408 B   (~32 B per region)
+//
+// 257x, and the per-region cost drops from "the whole list" to a fixed 32 B.
+// The residual is NOT region storage: it is the closure environment for the
+// region body lambda (`region r { .. }` parses to `__region_run(lam)`, and
+// the lambda is heap-allocated on the main heap per call). It stays linear in
+// the iteration count, which is why the gate asserts a generous bound rather
+// than a constant -- making the immediately-applied region lambda not
+// allocate is a separate optimization.
+//
+// `compiler_gate.sh` (ADR-0090 section) compiles this with VIBE_RC=0 and
+// reads the exported `__heap_ptr` before and after `_start`. The measurement
+// is the point -- a region that quietly stopped releasing still returns
+// 24,950,000 here, so the value assertion alone cannot see it.
+fn one(n: Int) -> Int {
+  region r {
+    let l = MutList::empty(r)
+    let mut i = 0
+    let mut acc = 0
+    while i < n {
+      MutList::push(l, i)
+      acc = acc + i
+      i = i + 1
+    }
+    acc
+  }
+}
+
+export let main = () -> Int {
+  let mut k = 0
+  let mut acc = 0
+  while k < 200 {
+    acc = acc + one(500)
+    k = k + 1
+  }
+  acc
+}
+
+test "region arena bounded" {
+  // 200 * (0 + 1 + ... + 499) = 200 * 124750 = 24,950,000.
+  inspect(main(), "24950000")
+}
