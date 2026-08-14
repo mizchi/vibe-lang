@@ -15,6 +15,13 @@
 //   with_continue 24  `continue` still advances the index (no spin)
 //   grows         87  `Array::length` is re-read, so a body that grows the
 //                     array iterates further
+//   call_acc      25  a CALL as the iterand -- proved by the callee's declared
+//                     return type and bound once before the loop, as `for`
+//                     evaluates its iterand once
+//   inline_acc    29  the same loop written DIRECTLY in the handle body, not
+//                     inside a needing fn -- the handle body is a spine like
+//                     any other, and its proof comes from the array literal
+//                     bound on it
 effect Ask {
   Get(Int) -> Int
 }
@@ -78,8 +85,27 @@ fn grows(xs: Array[Int]) -> Int with Ask {
   n
 }
 
+fn items() -> Array[Int] {
+  [
+    2,
+    3
+  ]
+}
+
 let _start = () -> Int {
   handle {
+    let mut call_acc = 0
+    for z in items() {
+      call_acc = call_acc + perform Ask::Get(z)
+    }
+    let ys = [
+      4,
+      5
+    ]
+    let mut inline_acc = 0
+    for y in ys {
+      inline_acc = inline_acc + perform Ask::Get(y)
+    }
     let a = from_param([
       1,
       2,
@@ -100,7 +126,7 @@ let _start = () -> Int {
     let e = grows([
       1
     ])
-    a * 100000 + b * 10000 + c * 1000 + d * 100 + e
+    ((a * 100000 + b * 10000 + c * 1000 + d * 100 + e) * 100 + inline_acc) * 100 + call_acc
   } with Ask {
     Get(n) => {
       let k = resume
@@ -110,5 +136,5 @@ let _start = () -> Int {
 }
 
 test "effect array for suspend" {
-  inspect(_start(), "3855487")
+  inspect(_start(), "38554872925")
 }
