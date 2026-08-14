@@ -24,6 +24,17 @@
 # NOT source coverage -- their denominator is summed per entry, so the same
 # imported module is counted once per test file that pulls it in.
 #
+# WHAT THIS MEASURES: the compiled TEST PROGRAM's own execution. Compiler
+# passes that ran while COMPILING a test are inside the (uninstrumented)
+# stage2, so they contribute nothing -- a compiler pass appears here only when
+# some test calls it IN-PROCESS. Measured both directions: grep_test.vibe
+# calls grep_scan_source directly and lights 264/587 of grep.vibe, while
+# import_private_ctor_collision_test.vibe (which exercises private-ctor
+# namespacing at COMPILE time) yields a program with 8 branches total and no
+# import_alias_rewrite function in it at all. So a 0% module here means "no
+# test calls it in-process", NOT "untested" -- see docs/coverage.md before
+# treating top_branch_union_gaps as a to-do list.
+#
 # Thresholds (percent, env-overridable; this file is the ONE place they are
 # defined — raise them as coverage improves, lowering needs a rationale in
 # the PR):
@@ -117,6 +128,12 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # Measured at 6df97b0 too (55.08%), so the metric is stable across bases.
 # Floors are set just under the actuals, same convention as the ratchets above.
 #
+# Raised 2026-08-13 (#1556, derived-`==` tests): 582 entries, branch union
+# 26,442/45,986 (57.50%), function union 12,950/14,995 (86.36%). The seven
+# `*_eq_test.vibe` files call the DERIVED `T::equals` that `desugar_derives`
+# emits for every enum -- 1,710 branches across 96 types that no test had ever
+# called. Floors moved 24,500 -> 26,000 and 54% -> 57%.
+#
 # Both figures went UP slightly when union_key started source-qualifying the
 # entry-local synthesized names (Codex review on #1668): the un-merged
 # `__test_<name>` collisions and the 575 separate `_start` wrappers are now
@@ -127,8 +144,8 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # Unlike the entry-weighted RATE floors, this rate is safe to ratchet: adding a
 # test entry cannot dilute it (a branch is counted once no matter how many
 # entries link it), so a new entry can only hold it level or push it up.
-MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-24500}"
-MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-54}"
+MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-26000}"
+MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-57}"
 
 ALLOWLIST="$(mktemp -t vibe-coverage-entries-XXXXXX)"
 trap 'rm -f "$ALLOWLIST"' EXIT
