@@ -7,7 +7,7 @@
 //# Imports
 
 import ./escape_spans.vibe {
-  escape_spans
+  escape_spans, escape_spans_strict
 }
 
 //# Functions
@@ -83,4 +83,109 @@ test "escape_spans: a closure that shadows the name as a param does not capture"
   // `acc` inside the closure is the PARAMETER, not the outer `let mut`.
   let src = "let f = () -> Int {\n  let mut acc = 0\n  let g = (acc: Int) -> Int { acc + 1 }\n  g(2)\n}"
   assert_eq(esc_count(src), 0)
+}
+
+//# Tests — the STRICT lane (`vibe escapes --strict`, #1262 / ADR-0100 (1))
+//#
+//# Same walk, the checker's predicate instead of codegen's. The two agree on
+//# every genuine capture and differ ONLY where a binder shadows the name: the
+//# default lane answers "does codegen box this?" (yes — it does not subtract
+//# `match`-arm / `for-in` shadowing) and the strict lane answers "does the
+//# closure really reach THIS binding?" (no). Neither is a bug; see
+//# docs/side-effect-consolidation.md 4.5.
+
+fn esc_strict_names(source: String) -> Array[String] with Exception {
+  let items = escape_spans_strict(source)
+  let out: Array[String] = [
+  ]
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, _, _) = Array::get(items, i)
+    Array::push(out, name)
+    i = i + 1
+  }
+  out
+}
+
+fn esc_strict_count(source: String) -> Int with Exception {
+  Array::length(escape_spans_strict(source))
+}
+
+test "escape_spans_strict: a genuine capture is reported by both lanes" {
+  let src = "let f = () -> Int {\n  let mut acc = 0\n  let bump = (v: Int) -> Unit { acc = acc + v }\n  bump(1)\n  acc\n}"
+  let names = esc_strict_names(src)
+  assert_eq(Array::length(names), 1)
+  assert(String::equals(Array::get(names, 0), "acc"))
+  assert_eq(esc_count(src), 1)
+}
+
+test "escape_spans_strict: a plain loop counter escapes in neither lane" {
+  let src = "let f = () -> Int {\n  let mut acc = 0\n  let mut i = 0\n  while i < 10 {\n    acc = acc + i\n    i = i + 1\n  }\n  acc\n}"
+  assert_eq(esc_strict_count(src), 0)
+  assert_eq(esc_count(src), 0)
+}
+
+test "escape_spans_strict: a match-arm binder shadowing the name is not a capture" {
+  // The closure captures the ARM's `v`, not the outer `let mut v`. The
+  // lowering lane still reports it (it boxes on a name match, which only
+  // costs speed); the enforcement lane must not, because a diagnostic built
+  // on a name collision would be a wrong diagnostic.
+  let src = "let f = () -> Int {\n  let mut v = 0\n  let r = match Some(5) {\n    Some(v) => {\n      let c = () -> Int { v }\n      c()\n    },\n    None => 0\n  }\n  v = v + r\n  v\n}"
+  assert_eq(esc_strict_count(src), 0)
+  assert_eq(esc_count(src), 1)
+}
+
+test "escape_spans_strict: a for-in binder shadowing the name is not a capture" {
+  let src = "let f = (xs: Array[Int]) -> Int {\n  let mut n = 0\n  for n in xs {\n    let c = () -> Int { n }\n    let _ = c()\n  }\n  n\n}"
+  assert_eq(esc_strict_count(src), 0)
+  assert_eq(esc_count(src), 1)
+}
+
+test "escape_spans_strict: a closure param shadowing the name is not a capture" {
+  let src = "let f = () -> Int {\n  let mut acc = 0\n  let g = (acc: Int) -> Int { acc + 1 }\n  g(2)\n}"
+  assert_eq(esc_strict_count(src), 0)
+}
+
+test "escape_spans_strict: capture through a nested closure is still a capture" {
+  let src = "let f = () -> Int {\n  let mut acc = 0\n  let outer = () -> Unit {\n    let inner = () -> Unit { acc = acc + 1 }\n    inner()\n  }\n  outer()\n  acc\n}"
+  assert_eq(esc_strict_count(src), 1)
+}
+
+test "escape_spans_strict: a mut used only as a call callee still escapes" {
+  // `esc_free_in` counts a bare-identifier CALLEE, unlike the Spawnable
+  // free-variable collection: a `let mut` really can hold the closure being
+  // called, and reading the cell through a call is a read.
+  let src = "let f = () -> Int {\n  let mut h = () -> Int { 1 }\n  let g = () -> Int { h() }\n  g()\n}"
+  assert_eq(esc_strict_count(src), 1)
+}
+
+test "escape_spans_strict: a LABELED closure param shadowing the name is not a capture" {
+  // Codex review (PR #1685, P2): labeled (`x~`) and optional (`x?`) parameters
+  // keep their marker in `Expr`, but the checker binds the BASE name -- so a
+  // raw-name comparison misses the shadow and reports the OUTER binding. The
+  // lowering lane still reports it (raw comparison there only over-boxes).
+  let src = "let f = () -> Int {\n  let mut x = 0\n  let g = (x~: Int) -> Int {\n    let h = () -> Int { x }\n    h()\n  }\n  g(x~ = 1)\n}"
+  assert_eq(esc_strict_count(src), 0)
+}
+
+test "escape_spans_strict: an OPTIONAL closure param shadowing the name is not a capture" {
+  let src = "let f = () -> Int {\n  let mut x = 0\n  let g = (x?: Int) -> Int {\n    let h = () -> Int { x }\n    h()\n  }\n  g()\n}"
+  assert_eq(esc_strict_count(src), 0)
+}
+
+test "escape_spans: a mut captured by a closure in a `break` PAYLOAD escapes" {
+  // Codex review (PR #1685, P2): `is_mut_captured_in` returned false for every
+  // `EBreak`/`EContinue` despite their carrying sub-expressions, so this
+  // closure captured an UNBOXED cell -- it snapshots the value instead of
+  // sharing it, which reads wrong rather than crashing. Both lanes must see
+  // it; that is also what makes the strict lane's output a subset of this one.
+  let src = "let f = () -> Int {\n  let mut x = 1\n  let g = loop {\n    break(() -> Int { x })\n  }\n  x = 42\n  g()\n}"
+  assert_eq(esc_count(src), 1)
+  assert_eq(esc_strict_count(src), 1)
+}
+
+test "escape_spans: a mut captured by a closure in a `continue` argument escapes" {
+  let src = "let f = () -> Int {\n  let mut x = 1\n  let r = loop (acc = 0) {\n    if acc > 2 {\n      break(acc)\n    } else {\n      continue(acc + (() -> Int { x })())\n    }\n  }\n  r\n}"
+  assert_eq(esc_count(src), 1)
+  assert_eq(esc_strict_count(src), 1)
 }

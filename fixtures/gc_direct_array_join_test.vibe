@@ -1,0 +1,54 @@
+// #1541 reference-lane control-flow join: an `if` whose arms are BOTH already
+// reference-lane values produces a `(ref null $native_i64_array)` itself. The
+// blocktype names a reserved func type, since a typed reference has no
+// single-byte value type spelling.
+//
+// Both join positions are exercised: the tail of a reference-result function
+// (`pick`) and a proven reference argument (`mutate_first(if ...)`). Identity
+// is the observable: the mutation must land on whichever array the condition
+// selected, and be visible through the caller's own binding.
+//
+// The arms here are parameters and calls -- values already in the lane. A bare
+// array literal in an arm has no representation of its own yet (its consumer
+// picks one), so joining literals still clears the component; that is what
+// fixtures/gc_direct_array_join_fallback_test.vibe pins.
+
+fn mutate_first(values: Array[Int]) -> Unit {
+  Array::set(values, 0, 7)
+}
+
+fn pick(first: Array[Int], second: Array[Int], take_first: Bool) -> Array[Int] {
+  if take_first {
+    first
+  } else {
+    second
+  }
+}
+
+fn mutate_picked(first: Array[Int], second: Array[Int], take_first: Bool) -> Unit {
+  mutate_first(if take_first {
+    first
+  } else {
+    second
+  })
+}
+
+test "gc direct array reference joins through if in tail and argument position" {
+  let a = [
+    1,
+    1
+  ]
+  let b = [
+    2,
+    2
+  ]
+  mutate_picked(a, b, false)
+  inspect(Array::get(a, 0), "1")
+  inspect(Array::get(b, 0), "7")
+  mutate_picked(a, b, true)
+  inspect(Array::get(a, 0), "7")
+  let chosen = pick(a, b, false)
+  Array::set(chosen, 1, 9)
+  inspect(Array::get(b, 1), "9")
+  inspect(Array::get(a, 1), "1")
+}

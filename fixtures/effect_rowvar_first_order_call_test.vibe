@@ -1,0 +1,40 @@
+// #1536: a callee whose declared row is a row VARIABLE (`with e`). Such a
+// callee was never "provably effect-free", because the variable can be
+// instantiated to the handled effect -- but only THROUGH AN ARGUMENT that
+// carries a row. A callee whose declared parameters mention no function type
+// anywhere has no such argument, so `e` can only be instantiated to the empty
+// row: the call cannot perform the handled effect, whatever the call site
+// looks like.
+//
+// `twice` is that shape (`(Int) -> Int with e`), so calling it from a
+// suspend-class handle body is fine: 1 -> resumed 5 -> 10 -> 11. The
+// higher-order companion stays refused -- see err_effect_rowvar_hof_call.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn twice(x: Int) -> Int with e {
+  x * 2
+}
+
+fn bump(x: Int, by: Int) -> Int with e {
+  x + by
+}
+
+let _start = () -> Int {
+  handle {
+    let a = perform Ask::Get(1)
+    let b = twice(a)
+    let c = bump(b, perform Ask::Get(2))
+    c
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+
+test "effect rowvar first order call" {
+  inspect(_start(), "16")
+}

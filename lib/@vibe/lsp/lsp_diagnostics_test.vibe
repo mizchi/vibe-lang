@@ -1,0 +1,63 @@
+// LSP diagnostic wire-shape coverage (#1556, #1672).
+//
+// `lsp_diagnostics_json_string` is what an editor actually receives, and it is
+// also what `vibe check --single-file --json` emits -- one structured
+// diagnostic representation shared by the editor protocol and the CLI (#820
+// sub-item 1). The package's only test fed it ONE clean source, so every branch
+// that turns a `line L:C: message` string into a Diagnostic sat unreached:
+// severity, the fallback for a message with no position, and the byte-column ->
+// UTF-16 conversion.
+//
+// Writing this found #1672: the conversion was not being applied at all. The
+// compiler's diagnostics carry BYTE columns; LSP positions are UTF-16 code
+// units. Passing the byte column through put the caret too far right on any
+// line with non-ASCII before the error, and did it silently -- the diagnostic
+// still rendered, just in the wrong place.
+//
+// These are snapshots of the real wire output, not hand-written JSON.
+
+//# Imports
+
+import .{
+  lsp_diagnostics_json_string
+}
+
+//# Tests
+
+test "lsp diagnostics: a clean source produces an empty array" {
+  inspect(lsp_diagnostics_json_string("fn f(x: Int) -> Int { x }"), "[]")
+}
+
+test "lsp diagnostics: an empty source produces an empty array" {
+  inspect(lsp_diagnostics_json_string(""), "[]")
+}
+
+test "lsp diagnostics: a parse error carries its position and error severity" {
+  // severity 1 = Error. The range comes from the `line L:C:` prefix, so this
+  // also pins that the prefix is consumed rather than left in the message.
+  inspect(lsp_diagnostics_json_string("fn f( -> Int { 1 }"), "[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name token=->\",\"data\":null}]",)
+}
+
+test "lsp diagnostics: a message with no position falls back to the file start" {
+  // Type errors still carry no `line L:C:` prefix (#1567's remaining half), so
+  // they take the fallback path and land on 0:0. Pinned as CURRENT behaviour,
+  // not as desired behaviour -- when #1567 gives type errors a position this
+  // snapshot changes, which is the point of having it.
+  inspect(lsp_diagnostics_json_string("fn f() -> Int { \"s\" }"), "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
+}
+
+test "lsp diagnostics: columns are UTF-16 code units, not bytes (#1672)" {
+  // `  let 日本 = 1` -- the lexer rejects both characters and reports BYTE
+  // columns 7 and 10 (1-based). As UTF-16 code units those are 6 and 7
+  // (0-based), because `日` occupies three bytes but one unit. Before #1672
+  // the second one was reported as 9: two columns right of the character it
+  // points at, silently. Any line with non-ASCII ahead of the error drifts,
+  // and the drift compounds per character.
+  inspect(lsp_diagnostics_json_string("fn f() -> Int {\n  let 日本 = 1\n  x x\n}"), "[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"unexpected character: 日\",\"data\":null},{\"range\":{\"start\":{\"line\":1,\"character\":7},\"end\":{\"line\":1,\"character\":8}},\"severity\":1,\"source\":\"vibe\",\"message\":\"unexpected character: 本\",\"data\":null}]",)
+}
+
+test "lsp diagnostics: an ASCII line is unaffected by the UTF-16 conversion" {
+  // The conversion must be identity when there is nothing multibyte to convert
+  // -- a fix that shifted ASCII columns would be worse than the bug.
+  inspect(lsp_diagnostics_json_string("let a = 1\nfn f( -> Int { 1 }"), "[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name token=->\",\"data\":null}]",)
+}

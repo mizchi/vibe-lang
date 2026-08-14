@@ -32,6 +32,7 @@ import @vibe/compiler/codegen/common_base {
   FuncTable,
   LambdaTable,
   StrTable,
+  agg_log_reset_above,
   ctor_table_index_of,
   double_to_string_expr,
   emit_binop_op,
@@ -49,6 +50,8 @@ import @vibe/compiler/codegen/common_base {
   find_func_stmt,
   find_local_slot,
   func_table_index_of,
+  gc_slot_log_reset_above,
+  gc_slot_map_reset_above,
   is_eident,
   resolve_func,
   resolve_local,
@@ -140,6 +143,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_trunc_f64_s,
   emit_i64_xor,
   emit_if_i64,
+  emit_if_type_index,
   emit_if_void,
   emit_import_section_func,
   emit_local_get,
@@ -314,8 +318,39 @@ fn gc_expr_is_native_array_ref(expr: Expr, local_names: Array[String], ctx: Comp
       let idx = gc_direct_abi_call_index(ctx, name)
       idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
+    EIf(_, then_e, else_e) => gc_join_is_native_ref(then_e, else_e, local_names, ctx),
     _ => false
   }
+}
+
+/// Values that ALREADY inhabit the reference lane here, as opposed to values
+/// whose representation their consumer still picks. A bare `[1, 2]` is the
+/// second kind: `gc_compile_native_array_ref` will happily give it a native
+/// slot when a proven consumer asks for one, but on its own it is equally a
+/// linear-memory literal. An `if` has no consumer proof to lean on, so only the
+/// first kind may be joined.
+fn gc_expr_is_lane_proven_ref(expr: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match expr {
+    EIdent(name, _) => {
+      let slot = find_local_slot(local_names, name)
+      slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot)
+    },
+    ECall(EIdent(name, _), _, _) => {
+      let idx = gc_direct_abi_call_index(ctx, name)
+      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
+    },
+    EIf(_, then_e, else_e) => gc_expr_is_lane_proven_ref(then_e, local_names, ctx) && gc_expr_is_lane_proven_ref(else_e, local_names, ctx),
+    _ => false
+  }
+}
+
+/// Does this `if` produce a `(ref null $native_i64_array)`? Both arms must
+/// already be in the reference lane; one arm alone would mean the same program
+/// point holds two representations, which is the invariant ADR-0095 is built
+/// on. Shared with backend_expr.vibe so the tail/value position and the
+/// direct-call argument position agree on the blocktype.
+fn gc_join_is_native_ref(then_e: Expr, else_e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  ctx.gc_native_array_block_type_idx >= 0 && gc_expr_is_lane_proven_ref(then_e, local_names, ctx) && gc_expr_is_lane_proven_ref(else_e, local_names, ctx)
 }
 
 /// Emit one value already proven to inhabit the direct reference lane.
@@ -363,7 +398,51 @@ fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array[String
       },
       _ => throw("gc direct ABI proof mismatch: indirect native array call")
     },
+    // Reference-lane join. The blocktype has to name a TYPE INDEX because the
+    // result is `(ref null $native_i64_array)`, which has no single-byte value
+    // type spelling; `gc_native_array_block_type_idx` is the base type reserved
+    // for exactly this (backend_body.vibe).
+    //
+    // The local bookkeeping mirrors the i64 `if` in backend_expr.vibe and for
+    // the same reason: a native slot is a typed local, so the else arm must
+    // never reuse a slot the then arm allocated -- the sibling can legally bind
+    // an ordinary i64 at the same lexical depth. Start the else arm above the
+    // then arm's high-water mark so the declaration list stays monotonic.
+    EIf(cond, then_e, else_e) => {
+      if ctx.gc_native_array_block_type_idx < 0 {
+        throw("gc direct ABI proof mismatch: no blocktype for a reference-lane join")
+      } else {
+        ()
+      }
+      let nl_cond = ce(buf, cond, local_names, next_local, ld)
+      emit_i32_wrap_i64(buf)
+      emit_if_type_index(buf, ctx.gc_native_array_block_type_idx)
+      let names_len_before = Array::length(local_names)
+      let nl_then = gc_compile_native_array_ref(buf, then_e, local_names, nl_cond, ctx, ld, ce)
+      emit_else(buf)
+      gc_reset_join_arm_slots(local_names, ctx, names_len_before, nl_then)
+      let nl_else = gc_compile_native_array_ref(buf, else_e, local_names, nl_then, ctx, ld, ce)
+      emit_end(buf)
+      gc_reset_join_arm_slots(local_names, ctx, names_len_before, nl_else)
+      nl_else
+    },
     _ => throw("gc direct ABI proof mismatch: unsupported native array expression")
+  }
+}
+
+/// Drop the bindings an `if` arm introduced, then pad the name list back up to
+/// that arm's high-water mark so the next arm allocates strictly above it.
+/// Only the NAME bindings are dropped: `gc_native_array_local_types` is the
+/// declaration list and must keep every typed slot the arm allocated.
+fn gc_reset_join_arm_slots(local_names: Array[String], ctx: CompileCtxGc, names_len_before: Int, high_water: Int) -> Unit {
+  Array::truncate(local_names, names_len_before)
+  agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
+  gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
+  gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
+  gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
+  gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
+  while Array::length(local_names) < high_water {
+    Array::push(local_names, "")
   }
 }
 
@@ -2078,5 +2157,5 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
 //# Misc
 
 export {
-  compile_call_gc
+  compile_call_gc, gc_join_is_native_ref
 }

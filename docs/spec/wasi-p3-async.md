@@ -178,9 +178,30 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   **ループ内の `break` / `continue`** (脱出継続を closure に切り出し、transfer を
   CPS spine 上の呼び出しにする、追記47)、**複合式に埋まった suspension**
   (被演算子・呼び出し引数・コンストラクタ引数・compound な `while` 条件・
-  `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)
-- **不適格**: ループ内 `return`、配列 `for` 形、**必ず評価されるとは限らない位置に
-  埋まった suspension** (`if` / `match` の枝、`&&` / `||` の右辺)、実引数証明が
+  `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)、
+  **`let` / `let mut` の値そのものである `if` / `match`** (束縛と継続を枝へ分配する。
+  condition / scrutinee は元の位置で一回だけ評価され、`match` の腕は継続を移す前に
+  alpha-rename される、追記49)、**`let` / `let mut` の値そのものである block**
+  (`{ 文..; 値 }` — 束縛を文前置の内側へ移す。float した binder は alpha-rename される、
+  追記50。これにより「文を含む枝」が通る)、**代入 (`=`) の RHS が同じ selection / block
+  そのもの** (box した target は cellify の前に、spine 外の target は継続 spine 上で、
+  同じ 2 つの書き換えを受ける、追記51)、**compound の中にネストした `if` / `match`**
+  (枝へは降りず selection を丸ごと名前に束ねてから追記49 の分配へ渡す、追記52)、
+  **non-tail の `&&` / `||`** (同じく右辺へは降りず短絡式を丸ごと名前に束ねる。
+  受け側の let-shortcircuit が受理すると判定手続き自身に訊いてからのみ、追記53。
+  bypass は保たれる)、**`return`** (追記55-57)。`return` の扱いは置かれた場所で決まる:
+  needing fn の clone / closure literal では `return v` = 「この computation の値が v」なので
+  **split の前に tail へ寄せる**; loop 内では値を控えて `break` で出て loop の外で返す
+  (入れ子 loop は各段に guard を置いて exit を 1 段ずつ外へ運ぶ); handle body 内では
+  「囲む関数から抜ける」意味なので **cell を handle の外に置いて handle の後で返す**。
+  **寄せきれない `return` が残ればその body は refuse される** (追記54) ので、この書き換えが
+  不完全であることのコストは拒否であって miscompile ではない
+  、**Array と構文的に示せる `for-in`** (`Array[..]` 注釈の引数 / 配列リテラル束縛。
+  split の前に indexed while 形へ落とす。示せない iterand — 特に String — は
+  書き換えない: codegen は実行時に String を判別して byte を materialize するので
+  (#807)、書き換えれば 0 回反復で黙って誤る、追記58)
+- **不適格**: **Array と示せない `for` 形**、**選ばれた `&&` / `||` 右辺が
+  `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested
   different-effect handles は既存の handler-ownership lowering を維持するため、

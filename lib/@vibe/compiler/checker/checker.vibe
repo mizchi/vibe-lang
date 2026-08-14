@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   TypeExpr,
   canonical_builtin_name,
   env_bind,
+  env_bind_mut,
   env_lookup,
   exception_effect_kind,
   exception_effect_labels_equal,
@@ -58,6 +59,10 @@ import ./checker_resolve.vibe {
 
 import ./checker_spawnable.vibe {
   check_spawnable_captures
+}
+
+import ./checker_escape.vibe {
+  mut_binding_escapes
 }
 
 //# Functions
@@ -633,25 +638,27 @@ fn type_mentions_named(ty: Type, name: String) -> Bool {
 fn collect_env_bindings(env: TypeEnv, acc: Array[(String, Type)]) -> Unit {
   match env {
     EnvEmpty => (),
-    EnvBind(n, ty, rest) => {
-      Array::push(acc, (n, ty))
+    EnvBind(n, binding, rest) => {
+      Array::push(acc, (n, binding.ty))
       collect_env_bindings(rest, acc)
     },
     EnvTraitDef(_, _, _, _, rest, _, _) => collect_env_bindings(rest, acc),
     EnvTraitImpl(_, _, rest) => collect_env_bindings(rest, acc),
+    EnvMutCell(_, _, rest) => collect_env_bindings(rest, acc),
     EnvTraitImplGen(_, _, _, _, rest) => collect_env_bindings(rest, acc),
     EnvTypeDefs(_, _, rest) => collect_env_bindings(rest, acc),
     EnvFlat(bindings) => {
       let mut i = 0
       while i < Array::length(bindings) {
-        Array::push(acc, Array::get(bindings, i))
+        let (name, binding) = Array::get(bindings, i)
+        Array::push(acc, (name, binding.ty))
         i = i + 1
       }
     },
     EnvCached(names, types, rest) => {
       let mut i = 0
       while i < Array::length(names) {
-        Array::push(acc, (Array::get(names, i), Array::get(types, i)))
+        Array::push(acc, (Array::get(names, i), Array::get(types, i).ty))
         i = i + 1
       }
       collect_env_bindings(rest, acc)
@@ -1298,12 +1305,12 @@ fn type_fully_concrete(t: Type) -> Bool {
     // (not just the `[CtUnknown]` singlet sentinel above): a rigid/uninstantiated
     // generic function's own type parameter can leak through, unsubstituted,
     // as a bare `CtNamed(pname, [])` when it only appears NESTED inside another
-    // type's argument list (e.g. `HashMap::new_int[V]() -> HashMap[Int, V]`
-    // called as `HashMap::new_int()` -- `instantiate` does not always rewrite
+    // type's argument list (e.g. `MutMap::new_int[V]() -> MutMap[Int, V]`
+    // called as `MutMap::new_int()` -- `instantiate` does not always rewrite
     // an occurrence of `V` buried inside a struct's own field/return-type
     // representation to a fresh `CtVar`, so it can surface literally as
     // `CtNamed("V", [])` instead -- lib/@vibe/core/hashmap_test.vibe
-    // hit exactly this via `let m: HashMap[Int, String] = HashMap::new_int()`
+    // hit exactly this via `let m: MutMap[Int, String] = MutMap::new_int()`
     // during development of this check). Both shapes are the SAME underlying
     // ambiguity (a name with no way to tell "resolved zero-arg nominal type"
     // from "unresolved rigid reference" apart) that the shared `type_is_ground`
@@ -3145,12 +3152,19 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // tuple/String errored "assignment type mismatch for __loop_result".
         // Bind the marker to a fresh var instead; the first assignment (break)
         // instantiates it via check_assignable's unify.
+        // #1262 / ADR-0100 (1): record the STRICT escape fact alongside the
+        // type. `body` is exactly the region where this binding is in scope,
+        // so `mut_binding_escapes` answers about THIS binding and not a
+        // same-named one outside it. Consumers read it back with
+        // `env_mut_escape` (checker_spawnable) instead of re-deriving
+        // mutability from the raw AST.
+        let escapes = mut_binding_escapes(body, name)
         if name == "__loop_result" {
           let (lr_tv, nc2) = fresh_var(nc)
-          cenv = env_bind(cenv, name, lr_tv)
+          cenv = env_bind_mut(cenv, name, lr_tv, escapes)
           c1 = nc2
         } else {
-          cenv = env_bind(cenv, name, vt)
+          cenv = env_bind_mut(cenv, name, vt, escapes)
           c1 = nc
         }
         s1 = ns
@@ -5083,16 +5097,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                               } else {
                                 ()
                               }
-                              // #1081 step 3 Phase B: the `let mut` capture
-                              // check (Codex review, PR #1150/#1151) runs as
-                              // a SEPARATE whole-program pass
-                              // (check_spawnable_mut_captures_stmts, wired
-                              // into check_program/check_program_with_env in
-                              // checker_stmt.vibe), not per `TaskGroup::run`
-                              // call -- it needs to see `let mut` bindings
-                              // declared in the ENCLOSING scope, outside this
-                              // call's own body, which this call site alone
-                              // cannot observe.
+                              // #1262: the `let mut` capture check now rides
+                              // the per-spawn branch below, reading the
+                              // escape fact `env_bind_mut` recorded in the
+                              // env at the binding site (ADR-0100 (1)). It
+                              // used to be a separate whole-program AST pass
+                              // precisely because `TypeEnv` could not answer
+                              // "is this binding mutable?".
                               (tab_call_ty(tytab, call_off, subst_apply(s_unified, run_ret), capture, lane), s_unified, c_body)
                             },
                             None => {

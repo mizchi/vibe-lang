@@ -1,0 +1,59 @@
+// #1536: a `return` inside a suspending `while` body. The hoist cannot move it
+// to the body's tail -- a loop body's tail is the NEXT ITERATION, not the
+// function's value -- and the loop closure the split builds cannot return from
+// the function around it. Nothing new is needed to express it, though: `break`
+// already leaves such a loop, and a `return` on the spine after the loop is
+// already handled. So the value is recorded, the loop is left, and the return
+// happens outside it.
+//
+// `first_big` returns from inside the loop (700); `sums` never takes its
+// return and falls out of the loop normally (15).
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn first_big() -> Int with Ask {
+  let mut i = 0
+  while i < 5 {
+    let v = perform Ask::Get(i)
+    if v > 6 {
+      return v * 100
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  0
+}
+
+fn sums() -> Int with Ask {
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let v = perform Ask::Get(i)
+    if v > 100 {
+      return 1
+    } else {
+      acc = acc + v
+    }
+    i = i + 1
+  }
+  acc
+}
+
+let _start = () -> Int {
+  handle {
+    let a = first_big()
+    let b = sums()
+    a * 100 + b
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+
+test "effect return in loop" {
+  inspect(_start(), "70015")
+}

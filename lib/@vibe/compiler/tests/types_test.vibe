@@ -1,10 +1,11 @@
 //# Imports
 
 import @vibe/core {
-  array_empty
+  array_empty, inspect
 }
 
 import @vibe/compiler/core {
+  BindingOrigin,
   Type,
   TypeDef,
   TypeEnv,
@@ -12,10 +13,15 @@ import @vibe/compiler/core {
   collect_tvars,
   env_bind,
   env_bind_all,
+  env_bind_mut,
+  env_bind_with_origin,
   env_cache,
   env_flat_bindings,
   env_lookup,
+  env_lookup_binding,
   env_lookup_flat,
+  env_mut_escape,
+  env_value_binding,
   type_to_string,
   types_compatible,
   types_equal
@@ -27,6 +33,14 @@ let _types_test_no_methods: Array[(String, Array[TypeExpr], TypeExpr)] = ArrayBu
 
 fn empty_defs() -> Array[TypeDef] {
   array_empty()
+}
+
+fn mut_escape_text(env: TypeEnv, name: String) -> String {
+  match env_mut_escape(env, name) {
+    Some(true) => "true",
+    Some(false) => "false",
+    None => "none"
+  }
 }
 
 //# Misc
@@ -60,8 +74,8 @@ test "env_lookup shadows outer" {
 
 test "env_lookup handles flat env" {
   let env = EnvFlat([
-    ("x", CtString),
-    ("x", CtInt)
+    ("x", env_value_binding(CtString)),
+    ("x", env_value_binding(CtInt))
   ])
   match env_lookup(env, "x") {
     Some(t) => assert(types_equal(t, CtString)),
@@ -71,7 +85,7 @@ test "env_lookup handles flat env" {
 
 test "env_bind shadows flat env" {
   let flat = EnvFlat([
-    ("x", CtInt)
+    ("x", env_value_binding(CtInt))
   ])
   let env = env_bind(flat, "x", CtString)
   match env_lookup(env, "x") {
@@ -160,6 +174,80 @@ test "env_bind over cached env remains visible to flat lookup" {
     Some(t) => assert(types_equal(t, CtString)),
     None => assert(false)
   }
+}
+
+test "env_cache preserves visible true and false mutable escape facts" {
+  let true_env = env_cache(env_bind_mut(EnvEmpty, "x", CtInt, true))
+  let false_env = env_cache(env_bind_mut(EnvEmpty, "x", CtInt, false))
+  inspect(mut_escape_text(true_env, "x"), "true")
+  inspect(mut_escape_text(false_env, "x"), "false")
+  inspect(mut_escape_text(true_env, "missing"), "none")
+}
+
+test "env_cache preserves mutable and immutable shadow order" {
+  let outer_mut = env_bind_mut(EnvEmpty, "x", CtInt, true)
+  let immutable_over_mutable = env_cache(env_bind(outer_mut, "x", CtString))
+  inspect(mut_escape_text(immutable_over_mutable, "x"), "none")
+  let outer_immutable = env_bind(EnvEmpty, "x", CtInt)
+  let mutable_over_immutable = env_cache(env_bind_mut(outer_immutable, "x", CtString, false))
+  inspect(mut_escape_text(mutable_over_immutable, "x"), "false")
+  let duplicate_mutable = env_cache(env_bind_mut(env_bind_mut(EnvEmpty, "x", CtInt, false), "x", CtString, true))
+  inspect(mut_escape_text(duplicate_mutable, "x"), "true")
+}
+
+test "env_bind before and after cache preserves mutable shadowing" {
+  let cached_mutable = env_cache(env_bind_mut(EnvEmpty, "x", CtInt, true))
+  let immutable_after_cache = env_bind(cached_mutable, "x", CtString)
+  inspect(mut_escape_text(immutable_after_cache, "x"), "none")
+  let cached_immutable = env_cache(env_bind(EnvEmpty, "x", CtInt))
+  let mutable_after_cache = env_bind_mut(cached_immutable, "x", CtString, false)
+  inspect(mut_escape_text(mutable_after_cache, "x"), "false")
+  inspect(mut_escape_text(env_cache(mutable_after_cache), "x"), "false")
+}
+
+test "recache retains mutable facts" {
+  let originated = env_bind_with_origin(EnvEmpty, "imported", CtChar, BindingOriginModuleExport("/dep.vibe", "source_imported"))
+  let twice_cached = env_cache(env_cache(env_bind_mut(originated, "cell", CtInt, true)))
+  inspect(mut_escape_text(twice_cached, "cell"), "true")
+}
+
+test "origin type survives repeated env_cache" {
+  let originated = env_bind_with_origin(EnvEmpty, "imported", CtChar, BindingOriginModuleExport("/dep.vibe", "source_imported"))
+  let twice_cached = env_cache(env_cache(env_bind_mut(originated, "cell", CtInt, true)))
+  match env_lookup_binding(twice_cached, "imported") {
+    Some(binding) => inspect(type_to_string(binding.ty), "Char"),
+    None => assert(false)
+  }
+}
+
+test "provenance survives repeated env_cache" {
+  let originated = env_bind_with_origin(EnvEmpty, "imported", CtChar, BindingOriginModuleExport("/dep.vibe", "source_imported"))
+  let twice_cached = env_cache(env_cache(env_bind_mut(originated, "cell", CtInt, true)))
+  match env_lookup_binding(twice_cached, "imported") {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(path, source) => {
+        inspect(path, "/dep.vibe")
+        inspect(source, "source_imported")
+      },
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "cache-only indexes remain fail-closed for mutable facts" {
+  let cache_only = EnvCached([
+    "x"
+  ], [
+    env_value_binding(CtInt)
+  ], EnvEmpty)
+  inspect(mut_escape_text(cache_only, "x"), "none")
+  let stale_index = EnvCached([
+    "x"
+  ], [
+    env_value_binding(CtInt)
+  ], env_bind(EnvEmpty, "other", CtBool))
+  inspect(mut_escape_text(stale_index, "x"), "none")
 }
 
 test "types_compatible with CtUnknown" {
@@ -252,6 +340,43 @@ test "type_to_string composite" {
   assert(type_to_string(CtForAll([
     0
   ], array_empty(), CtVar(0))) == "forall ?t0. ?t0")
+}
+
+test "value binding provenance follows first-match lookup through bind flat and cache" {
+  let imported = env_bind_with_origin(EnvEmpty, "x", CtInt, BindingOriginModuleExport("/dep.vibe", "source_x"))
+  let shadowed = env_bind(imported, "x", CtString)
+  match env_lookup_binding(shadowed, "x") {
+    Some(binding) => {
+      assert(types_equal(binding.ty, CtString))
+      match binding.origin {
+        BindingOriginUnavailable => assert(true),
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+  let flat = EnvFlat([
+    ("x", env_value_binding(CtBool)),
+    ("x", env_value_binding(CtDouble))
+  ])
+  match env_lookup_binding(flat, "x") {
+    Some(binding) => assert(types_equal(binding.ty, CtBool)),
+    None => assert(false)
+  }
+  let cached = env_cache(env_bind_with_origin(env_bind(EnvEmpty, "x", CtInt), "x", CtChar, BindingOriginModuleExport("/dep.vibe", "x")))
+  match env_lookup_binding(cached, "x") {
+    Some(binding) => {
+      assert(types_equal(binding.ty, CtChar))
+      match binding.origin {
+        BindingOriginModuleExport(path, source) => {
+          assert(path == "/dep.vibe")
+          assert(source == "x")
+        },
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
 }
 
 test "collect_tvars deduplicates in first-seen order" {

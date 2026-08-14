@@ -1,0 +1,32 @@
+// #1536: the same assignment reshaping for a target bound OUTSIDE the handle
+// body. That target is not boxed by this spine, so the assignment is still an
+// assignment when the split reaches it -- this is the continuation-spine arm
+// rather than the pre-cellification one, and both have to agree.
+//
+// The write must be visible after the handle returns: `r` is the handle's
+// value (6) and `outer` is what the resumed branch assigned (5).
+effect Ask {
+  Get(Int) -> Int
+}
+
+let _start = () -> Int {
+  let mut outer = 0
+  let r = handle {
+    outer = if outer == 0 {
+      perform Ask::Get(1)
+    } else {
+      0
+    }
+    outer + 1
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n * 5)
+    }
+  }
+  r * 10 + outer
+}
+
+test "effect assign outer selection suspend" {
+  inspect(_start(), "65")
+}

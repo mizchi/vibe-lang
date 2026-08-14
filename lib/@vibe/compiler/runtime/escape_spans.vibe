@@ -24,11 +24,15 @@
 //# binder shadowing, so a closure capturing an inner binding that merely
 //# REUSES an outer `let mut`'s name is reported (and boxed) as if it captured
 //# the outer one. Over-reporting here is honest — codegen really does box it,
-//# and that is what a cost/authority query should say. Contrast
-//# `check_spawnable_mut_captures_stmts` (checker/checker_spawnable.vibe),
-//# which is scope-precise BECAUSE it raises a user-facing error where a false
-//# positive would be a wrong diagnostic. The two differ on purpose; see
-//# docs/side-effect-consolidation.md 4.5.
+//# and that is what a COST query should say.
+//#
+//# `--strict` (`escape_spans_strict`) answers the AUTHORITY question instead,
+//# through the checker's own predicate (checker/checker_escape.vibe's
+//# `mut_binding_escapes` — the judgment `TypeEnv` carries since ADR-0100 (1)).
+//# That one IS scope-precise, because its answers reach the user as
+//# diagnostics and other checks trust them, so a false positive would be a
+//# wrong diagnostic. The two differ on purpose, and only on shadowing; see
+//# docs/side-effect-consolidation.md 4.5/4.6.
 //#
 //# Output: one `NAME START END` per escaping binding, START/END being char
 //# offsets of the binding's own name (ELetMut carries that offset directly, so
@@ -51,6 +55,10 @@ import @vibe/compiler/syntax {
 
 import @vibe/compiler/codegen/common_analysis {
   is_mut_captured_in
+}
+
+import @vibe/compiler/checker {
+  mut_binding_escapes
 }
 
 //# Functions
@@ -96,40 +104,45 @@ fn esc_name_off(source: String, name: String, from: Int) -> Int {
   }
 }
 
-fn esc_walk_list(out: Array[(String, Int, Int)], source: String, items: Array[Expr]) -> Unit {
+fn esc_walk_list(out: Array[(String, Int, Int)], source: String, strict: Bool, items: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
-    esc_walk_expr(out, source, Array::get(items, i))
+    esc_walk_expr(out, source, strict, Array::get(items, i))
     i = i + 1
   }
 }
 
-fn esc_walk_fields(out: Array[(String, Int, Int)], source: String, fields: Array[(String, Expr)]) -> Unit {
+fn esc_walk_fields(out: Array[(String, Int, Int)], source: String, strict: Bool, fields: Array[(String, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(fields) {
     let (_, e) = Array::get(fields, i)
-    esc_walk_expr(out, source, e)
+    esc_walk_expr(out, source, strict, e)
     i = i + 1
   }
 }
 
-fn esc_walk_arms(out: Array[(String, Int, Int)], source: String, arms: Array[(Pat, Expr)]) -> Unit {
+fn esc_walk_arms(out: Array[(String, Int, Int)], source: String, strict: Bool, arms: Array[(Pat, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
     let (_, body) = Array::get(arms, i)
-    esc_walk_expr(out, source, body)
+    esc_walk_expr(out, source, strict, body)
     i = i + 1
   }
 }
 
 /// Visit every sub-expression, recording each `ELetMut` whose BODY captures it
 /// in a closure. Pure structural recursion: no scope threading is needed here
-/// because the capture judgment itself (`is_mut_captured_in`) handles binder
-/// shadowing internally -- this walk only has to REACH every `ELetMut`.
-fn esc_walk_expr(out: Array[(String, Int, Int)], source: String, expr: Expr) -> Unit {
+/// because whichever capture judgment `strict` selects handles binder
+/// shadowing itself -- this walk only has to REACH every `ELetMut`.
+fn esc_walk_expr(out: Array[(String, Int, Int)], source: String, strict: Bool, expr: Expr) -> Unit {
   match expr {
     ELetMut(name, val, body, off) => {
-      if is_mut_captured_in(body, name) {
+      let captured = if strict {
+        mut_binding_escapes(body, name)
+      } else {
+        is_mut_captured_in(body, name)
+      }
+      if captured {
         let noff = esc_name_off(source, name, off)
         if noff >= 0 {
           Array::push(out, (name, noff, noff + String::length(name)))
@@ -139,82 +152,82 @@ fn esc_walk_expr(out: Array[(String, Int, Int)], source: String, expr: Expr) -> 
       } else {
         ()
       }
-      esc_walk_expr(out, source, val)
-      esc_walk_expr(out, source, body)
+      esc_walk_expr(out, source, strict, val)
+      esc_walk_expr(out, source, strict, body)
     },
     ELet(_, val, body, _) => {
-      esc_walk_expr(out, source, val)
-      esc_walk_expr(out, source, body)
+      esc_walk_expr(out, source, strict, val)
+      esc_walk_expr(out, source, strict, body)
     },
     ELetRec(_, val, body) => {
-      esc_walk_expr(out, source, val)
-      esc_walk_expr(out, source, body)
+      esc_walk_expr(out, source, strict, val)
+      esc_walk_expr(out, source, strict, body)
     },
     EAssign(_, val, cont) => {
-      esc_walk_expr(out, source, val)
-      esc_walk_expr(out, source, cont)
+      esc_walk_expr(out, source, strict, val)
+      esc_walk_expr(out, source, strict, cont)
     },
     EAssignOp(_, _, val, cont) => {
-      esc_walk_expr(out, source, val)
-      esc_walk_expr(out, source, cont)
+      esc_walk_expr(out, source, strict, val)
+      esc_walk_expr(out, source, strict, cont)
     },
     ESeq(a, b) => {
-      esc_walk_expr(out, source, a)
-      esc_walk_expr(out, source, b)
+      esc_walk_expr(out, source, strict, a)
+      esc_walk_expr(out, source, strict, b)
     },
     EIf(c, t, e) => {
-      esc_walk_expr(out, source, c)
-      esc_walk_expr(out, source, t)
-      esc_walk_expr(out, source, e)
+      esc_walk_expr(out, source, strict, c)
+      esc_walk_expr(out, source, strict, t)
+      esc_walk_expr(out, source, strict, e)
     },
     EBinOp(_, l, r) => {
-      esc_walk_expr(out, source, l)
-      esc_walk_expr(out, source, r)
+      esc_walk_expr(out, source, strict, l)
+      esc_walk_expr(out, source, strict, r)
     },
-    EUnaryOp(_, e) => esc_walk_expr(out, source, e),
+    EUnaryOp(_, e) => esc_walk_expr(out, source, strict, e),
     EWhile(c, b) => {
-      esc_walk_expr(out, source, c)
-      esc_walk_expr(out, source, b)
+      esc_walk_expr(out, source, strict, c)
+      esc_walk_expr(out, source, strict, b)
     },
     EForIn(_, _, iter, body) => {
-      esc_walk_expr(out, source, iter)
-      esc_walk_expr(out, source, body)
+      esc_walk_expr(out, source, strict, iter)
+      esc_walk_expr(out, source, strict, body)
     },
     ELoop(params, body) => {
       let mut i = 0
       while i < Array::length(params) {
         let (_, init) = Array::get(params, i)
-        esc_walk_expr(out, source, init)
+        esc_walk_expr(out, source, strict, init)
         i = i + 1
       }
-      esc_walk_expr(out, source, body)
+      esc_walk_expr(out, source, strict, body)
     },
     EMatch(scrut, arms) => {
-      esc_walk_expr(out, source, scrut)
-      esc_walk_arms(out, source, arms)
+      esc_walk_expr(out, source, strict, scrut)
+      esc_walk_arms(out, source, strict, arms)
     },
     EHandle(body, arms) => {
-      esc_walk_expr(out, source, body)
-      esc_walk_arms(out, source, arms)
+      esc_walk_expr(out, source, strict, body)
+      esc_walk_arms(out, source, strict, arms)
     },
     ECall(callee, args, _) => {
-      esc_walk_expr(out, source, callee)
-      esc_walk_list(out, source, args)
+      esc_walk_expr(out, source, strict, callee)
+      esc_walk_list(out, source, strict, args)
     },
-    EFn(_, _, _, _, _, body) => esc_walk_expr(out, source, body),
-    ETuple(elems) => esc_walk_list(out, source, elems),
-    EArray(elems) => esc_walk_list(out, source, elems),
-    ERecord(_, fields, _) => esc_walk_fields(out, source, fields),
-    EMap(entries) => esc_walk_fields(out, source, entries),
-    EDot(recv, _, _, _) => esc_walk_expr(out, source, recv),
-    ELabeledArg(_, _, e) => esc_walk_expr(out, source, e),
-    EReturn(e) => esc_walk_expr(out, source, e),
-    ESpread(e) => esc_walk_expr(out, source, e),
+    EFn(_, _, _, _, _, body) => esc_walk_expr(out, source, strict, body),
+    ETuple(elems) => esc_walk_list(out, source, strict, elems),
+    EArray(elems) => esc_walk_list(out, source, strict, elems),
+    ERecord(_, fields, _) => esc_walk_fields(out, source, strict, fields),
+    EMap(entries) => esc_walk_fields(out, source, strict, entries),
+    EDot(recv, _, _, _) => esc_walk_expr(out, source, strict, recv),
+    ELabeledArg(_, _, e) => esc_walk_expr(out, source, strict, e),
+    EReturn(e) => esc_walk_expr(out, source, strict, e),
+    ESpread(e) => esc_walk_expr(out, source, strict, e),
     EBreak(opt) => match opt {
-      Some(e) => esc_walk_expr(out, source, e),
+      Some(e) => esc_walk_expr(out, source, strict, e),
       None => ()
     },
-    EContinue(args) => esc_walk_list(out, source, args),
+    EContinue(args) => esc_walk_list(out, source, strict, args),
     EInt(_) => (),
     EFloat(_) => (),
     EString(_) => (),
@@ -225,19 +238,19 @@ fn esc_walk_expr(out: Array[(String, Int, Int)], source: String, expr: Expr) -> 
   }
 }
 
-fn esc_walk_stmt(out: Array[(String, Int, Int)], source: String, stmt: Stmt) -> Unit {
+fn esc_walk_stmt(out: Array[(String, Int, Int)], source: String, strict: Bool, stmt: Stmt) -> Unit {
   match stmt {
-    SLet(_, _, _, _, body) => esc_walk_expr(out, source, body),
-    SLetMut(_, _, body) => esc_walk_expr(out, source, body),
-    SExpr(e) => esc_walk_expr(out, source, e),
-    STest(_, body) => esc_walk_expr(out, source, body),
-    SBench(_, body) => esc_walk_expr(out, source, body),
-    SExample(_, body) => esc_walk_expr(out, source, body),
-    SLetPat(_, body) => esc_walk_expr(out, source, body),
+    SLet(_, _, _, _, body) => esc_walk_expr(out, source, strict, body),
+    SLetMut(_, _, body) => esc_walk_expr(out, source, strict, body),
+    SExpr(e) => esc_walk_expr(out, source, strict, e),
+    STest(_, body) => esc_walk_expr(out, source, strict, body),
+    SBench(_, body) => esc_walk_expr(out, source, strict, body),
+    SExample(_, body) => esc_walk_expr(out, source, strict, body),
+    SLetPat(_, body) => esc_walk_expr(out, source, strict, body),
     SModule(_, _, inner) => {
       let mut i = 0
       while i < Array::length(inner) {
-        esc_walk_stmt(out, source, Array::get(inner, i))
+        esc_walk_stmt(out, source, strict, Array::get(inner, i))
         i = i + 1
       }
     },
@@ -251,12 +264,33 @@ fn esc_walk_stmt(out: Array[(String, Int, Int)], source: String, stmt: Stmt) -> 
 /// the caller routes it to the `.diag` sidecar, so "the query failed" stays
 /// distinguishable from "nothing escapes" (same convention as symbol_spans, #946).
 export fn escape_spans(source: String) -> Array[(String, Int, Int)] with Exception {
+  escape_spans_mode(source, false)
+}
+
+/// The STRICT (enforcement) answer to the same question: only the bindings a
+/// closure really captures, with binder shadowing subtracted
+/// (checker/checker_escape.vibe's `mut_binding_escapes`, the predicate whose
+/// judgment `TypeEnv` now carries — #1262 / ADR-0100 (1)).
+///
+/// `vibe escapes` and `vibe escapes --strict` differ EXACTLY where the two
+/// predicates are meant to differ: an inner binding that reuses an outer `let
+/// mut`'s name is reported by the default (lowering) lane, because codegen
+/// really does box the outer cell for it, and NOT by this one, because no
+/// enforcement should be built on a name collision. Neither answer is the
+/// "right" one on its own — ask the default lane about cost, this lane about
+/// authority. A binding this lane reports is always also reported by the
+/// default lane.
+export fn escape_spans_strict(source: String) -> Array[(String, Int, Int)] with Exception {
+  escape_spans_mode(source, true)
+}
+
+fn escape_spans_mode(source: String, strict: Bool) -> Array[(String, Int, Int)] with Exception {
   let (tokens, starts, ends) = lex_with_offsets(source)
   let (stmts, _span_start, _span_end) = parse_program_spans(tokens, starts, ends)
   let out = esc_empty_items()
   let mut i = 0
   while i < Array::length(stmts) {
-    esc_walk_stmt(out, source, Array::get(stmts, i))
+    esc_walk_stmt(out, source, strict, Array::get(stmts, i))
     i = i + 1
   }
   out

@@ -112,6 +112,15 @@ echo "[compiler-gate] FS heap mark lanes ok (rc + bump)"
 echo "[compiler-gate] 3a/3 artifact-input trace oracle"
 VIBE_RC=0 node scripts/artifact_input_trace_oracle.mjs "$stage2_wasm"
 
+# 3b (#1696). This gate pins VIBE_RC=0 at the top -- a deliberate cutover pin --
+# which meant NOTHING here ever exercised the RC lane, and a silently-wrong entry
+# result (`return 777` handing the host 1554) survived in it. The pin stays; this
+# step reaches into the RC lane explicitly and asserts only that the entry's
+# observable result is the SAME in both lanes, which is cheap and cannot drift
+# into a table of constants.
+echo "[compiler-gate] 3b/3 RC entry-result parity (#1696)"
+bash scripts/test_rc_entry_result_parity.sh "$stage2_wasm"
+
 # 3aa. Schema-4 incremental observations: this isolated clean-vs-warm bridge
 # checks source/token-stream/interface/checked-env parity without incorporating
 # the new observation into a production cache key, cache format, or reuse
@@ -6885,6 +6894,39 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_tail_shortcircuit_suspend.vibe \
   fixtures/effect_let_shortcircuit_suspend.vibe
+# #1536 selection-valued bindings: an `if` / `match` that IS the whole bound
+# value distributes the binding and the continuation into its branches. The
+# snapshots pin exact-once continuation runs, that the non-suspending branch is
+# still selected normally, that a `let mut` cell survives the distribution, and
+# that an arm binder cannot capture a name the moved continuation reads.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_let_selection_suspend_test.vibe \
+  fixtures/effect_let_selection_match_capture_test.vibe \
+  fixtures/effect_letmut_selection_suspend_test.vibe
+# #1536 block-valued bindings: `let x = { stmt..; value }` moves the binding
+# inward past the statement prefix, so the ordinary spine picks the prefix up.
+# The snapshot pins the prefix running once per binding and that a `let` inside
+# the block cannot capture the continuation's outer name when it floats.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_let_block_value_suspend_test.vibe
+# #1536 assignment mirror: `x = <if/match>` / `x = { stmt..; value }`. A boxed
+# target is reshaped before cellification, a target bound outside the spine on
+# the continuation spine; the two snapshots pin both arms agreeing.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_assign_selection_suspend_test.vibe \
+  fixtures/effect_assign_outer_selection_suspend_test.vibe
+# #1536 selection nested in a compound: the linearization names the selection
+# WHOLE instead of walking into a branch, so the binding distribution lowers it.
+# The snapshot's `order` digits pin that nothing moved across the suspension.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_compound_selection_suspend_test.vibe
+# #1536 non-tail short-circuit: named whole too, but only after asking the
+# immutable-let lowering whether it will take it (naming a form that lowering
+# declines would not converge). The snapshots pin bypass, compound RHS
+# terminals (comparison / nested short-circuit / call argument), and order.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_compound_shortcircuit_suspend_test.vibe \
+  fixtures/effect_shortcircuit_compound_rhs_test.vibe
 # #1536: loop bodies carrying `break` / `continue`. The transfers become calls
 # on the CPS spine (exit continuation / loop self-call), dead statements behind
 # a transfer drop, and a nested loop keeps its own transfers. `return` in the
@@ -6899,18 +6941,77 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_loop_nested_break_suspend_test.vibe \
   fixtures/effect_resume_store_loop_break_test.vibe \
   fixtures/effect_loop_ctl_name_collision_test.vibe
-# #1536 boundary: generic linearization walks only positions that every
-# execution reaching a compound also reaches. Tail && / || is supported via
-# EIf, but if/match branches and a non-tail short-circuit RHS remain rejected.
-scps_check_reject "err_effect_compound_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundbranch"
-scps_check_reject "err_effect_compound_match_branch_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundmatchbranch"
-scps_check_reject "err_effect_compound_shortcircuit_suspend.vibe" "let/seq/tail/branch-tail spine" "compoundshortcircuit"
-# Immutable-let short-circuit support does not recursively admit another
-# short-circuit, hand a suspending call argument to generic compound ANF, or
-# move a source return into the synthetic resume continuation.
-scps_check_reject "err_effect_let_shortcircuit_nested_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitnested"
-scps_check_reject "err_effect_let_shortcircuit_call_arg_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitcallarg"
-scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "let/seq/tail/branch-tail spine" "letshortcircuitreturn"
+# #1536 boundary: generic linearization still walks only positions that every
+# execution reaching a compound also reaches, so it never names a suspension
+# INSIDE a branch or inside a short-circuit RHS. Both are instead named WHOLE
+# (the snapshots above pin that, bypass included). A selected RHS that returns
+# stays closed -- now via the general rule below, since a `return` anywhere on
+# a split body's spine is refused before the split runs.
+scps_check_reject "err_effect_let_shortcircuit_return_suspend.vibe" "cannot contain a \`return\`" "letshortcircuitreturn"
+# #1536: a `return` on a split body's own spine is hoisted to the tail it
+# already denotes (in a needing fn's clone / a closure literal, `return v` IS
+# that computation's value). It used to be left in place, compile clean, and
+# trap at runtime on the path that took it. The snapshots pin all four shapes
+# and the capture-safe match-arm distribution; a `return` this hoist cannot
+# reach -- inside a loop -- is still refused (err_effect_loop_return_suspend).
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_in_split_body_test.vibe \
+  fixtures/effect_return_match_arm_split_test.vibe \
+  fixtures/effect_return_in_loop_test.vibe
+# #1536 P0: a transfer with a STATEMENT in front of it, after a resume. The
+# transfer test used to see only a BARE break/continue, so `if d { acc = v;
+# break }` was not a transfer, the continuation was not dropped, and execution
+# fell through the rewritten call and kept looping -- silently answering
+# differently than the same loop without a suspension. `scan` is 700 with and
+# without effects; it used to be 800 here.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_transfer_after_resume_test.vibe
+# `break` leaves only the INNERMOST loop, so each level records-and-breaks and
+# is followed by a guard that carries the exit outward one level at a time.
+# The snapshot covers two and three levels deep, and a return never taken.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_nested_loop_test.vibe
+# #1536: `return` in a HANDLE body means "leave the enclosing function", not
+# "the handle's value", so it is captured in a cell declared outside the handle
+# and returned after it. The snapshot pins taken / not-taken / from inside a
+# suspending loop nested in the handle body.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_return_in_handle_body_test.vibe
+# #1536: `for x in xs` over a PROVED array becomes the indexed while form, which
+# the split already handles. The proof is syntactic (a parameter annotated
+# Array[..], or a let bound to an array literal) -- codegen decides String-ness
+# at run time (#807), so an unproved iterand must not be rewritten. The snapshot
+# pins break / continue / index advance / length re-read, not just acceptance.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_array_for_suspend_test.vibe
+# The same loop over a PROVED String indexes the string directly, using the
+# builtins codegen itself uses to materialize one. An UNPROVED iterand is still
+# never rewritten -- that is what keeps a runtime String out of the array form.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_string_for_suspend_test.vibe
+# #1536: a `with e` callee is admitted when its declared parameters mention no
+# function type anywhere -- there is then no argument able to instantiate the
+# row variable, so the call cannot perform the handled effect. A callee that
+# does take a function stays refused; that is what keeps this sound.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_rowvar_first_order_call_test.vibe
+scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvarhof"
+# #1536 boundary, measured 2026-08-14. Both of these are narrower than the
+# residual list implied, so they are pinned rather than described: a closure may
+# capture a scalar param, an outer scalar let, or a function param (all compile)
+# -- only capturing another LOCAL CLOSURE is refused. And a `for` iterand is
+# lowered only when proved; an unannotated callee proves nothing.
+# #1536: capturing a PROVABLY INERT local closure literal is admitted (we can
+# see what the name holds); capturing a PERFORMING one stays refused, which is
+# what keeps that sound -- it is the #1707 shape.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_capture_inert_local_closure_test.vibe
+scps_check_reject "err_effect_capture_performing_closure.vibe" "hand the step object back as the value" "captureperforming"
+# #1707 P0: a step-split literal may only land in a parameter whose row carries
+# the effect. Passed to a plain-convention parameter it used to compile and
+# silently return the step object as the value (5 -> 177, 15 -> 301).
+scps_check_reject "err_effect_step_literal_plain_param.vibe" "hand the step object back as the value" "stepliteralplainparam"
+scps_check_reject "err_effect_for_unproved_iterand.vibe" "let/seq/tail/branch-tail spine" "forunproved"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other
@@ -8484,7 +8585,12 @@ if [ -s "$asb89dir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe compiled successfully -- convention mixing must be rejected" >&2
   exit 1
 fi
-if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
+# Either guard may catch this: the ADR-0076 mixing guard, or #1707's more
+# specific one (a step-split literal landing in a plain-convention parameter,
+# which is the same root -- a step value meeting a plain call). What this pins
+# is that it is REJECTED with an actionable diagnostic, not miscompiled.
+if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null \
+   && ! grep -qF 'hand the step object back as the value' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe did not produce the expected diagnostic" >&2
   cat "$asb89dir/neg.wasm.diag" 2>/dev/null >&2 || true
   exit 1
@@ -10269,7 +10375,7 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
-echo "[compiler-gate] 98/100 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+echo "[compiler-gate] 98/102 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through
@@ -10358,7 +10464,7 @@ echo "[compiler-gate] vibe grep typed filters ok"
 #     found by review rather than by a gate (the second twice: expression
 #     binders in #1622, PATTERN binders after that), which is what this step is
 #     for. Each case below fails DIFFERENTLY if the guard regresses.
-echo "[compiler-gate] 99/100 the inspect rewrite neither captures nor hijacks (#1571)"
+echo "[compiler-gate] 99/102 the inspect rewrite neither captures nor hijacks (#1571)"
 inspdir="_build/_gate_inspect_guard"
 rm -rf "$inspdir"; mkdir -p "$inspdir"
 
@@ -10476,7 +10582,7 @@ echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
 #      rest made `check` a strictly worse answer to the same question -- three
 #      broken statements cost three edit-and-rerun cycles. This pins the two
 #      surfaces together so they cannot drift apart again.
-echo "[compiler-gate] 100/100 check and diagnostics report the SAME parse errors (#1567)"
+echo "[compiler-gate] 100/102 check and diagnostics report the SAME parse errors (#1567)"
 chkdir="_build/_gate_check_diag_parity"
 rm -rf "$chkdir"; mkdir -p "$chkdir"
 # Three top-level statements, two independently broken, one good between them.
@@ -10596,5 +10702,138 @@ if [ -s "$depdir/broken.txt" ] || [ ! -s "$depdir/broken.txt.diag" ]; then
 fi
 rm -rf "$depdir"
 echo "[compiler-gate] vibe deps import-closure ok (#988)"
+
+# 101. #1262 / ADR-0100 (1): vibe answers "does this `let mut` escape?" with
+#      TWO predicates on purpose -- lowering (`vibe escapes`, codegen's
+#      `is_mut_captured_in`: box when unsure, since over-boxing only costs
+#      speed) and enforcement (`vibe escapes --strict`, the checker's, whose
+#      answer `TypeEnv` now carries via `env_bind_mut`: stay silent when
+#      unsure, since a false positive is a wrong diagnostic). Two predicates
+#      that are SUPPOSED to disagree are exactly the shape that rots into two
+#      predicates that disagree by accident, so this pins WHERE they differ:
+#      only on binder shadowing, and only in the one direction (strict's
+#      output is a subset of the default's).
+echo "[compiler-gate] 101/102 the two escape predicates differ only on shadowing (#1262)"
+escdir="_build/_gate_escapes"
+rm -rf "$escdir"; mkdir -p "$escdir"
+
+esc_run() { # esc_run <out> <src> <strict>
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ESCAPES=1 VIBE_ESCAPES_STRICT="$3" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$2" "$escdir/$1" >/dev/null 2>&1 || true
+}
+
+# (a) A genuine capture: BOTH lanes must report it. If only one does, one of
+# the two is broken -- they are meant to agree everywhere except shadowing.
+cat > "$escdir/real.vibe" <<'ESCA'
+fn main() -> Int {
+  let mut acc = 0
+  let bump = () -> Unit { acc = acc + 1 }
+  bump()
+  acc
+}
+ESCA
+esc_run real_loose.txt "$escdir/real.vibe" 0
+esc_run real_strict.txt "$escdir/real.vibe" 1
+for lane in loose strict; do
+  if ! grep -q '^acc ' "$escdir/real_$lane.txt" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe escapes ($lane lane) missed a genuine closure capture (#1262)" >&2
+    cat "$escdir/real_$lane.txt" "$escdir/real_$lane.txt.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+
+# (b) A `for-in` binder that merely REUSES the outer `let mut`'s name. The
+# closure captures the LOOP variable, so no authority crosses the binding --
+# but codegen still boxes the outer cell on the name match. Loose must report
+# it (that box is real, and a cost query must say so); strict must not.
+cat > "$escdir/shadow.vibe" <<'ESCB'
+fn main(xs: Array[Int]) -> Int {
+  let mut n = 0
+  for n in xs {
+    let c = () -> Int { n }
+    let _ = c()
+  }
+  n
+}
+ESCB
+esc_run shadow_loose.txt "$escdir/shadow.vibe" 0
+esc_run shadow_strict.txt "$escdir/shadow.vibe" 1
+if ! grep -q '^n ' "$escdir/shadow_loose.txt" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the LOWERING escape lane stopped reporting a shadowed name -- it must stay conservative, because codegen really does box that cell (#1262)" >&2
+  cat "$escdir/shadow_loose.txt" "$escdir/shadow_loose.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if [ -s "$escdir/shadow_strict.txt" ]; then
+  echo "[compiler-gate] FAIL: \`vibe escapes --strict\` reported a binding a binder SHADOWS -- the enforcement predicate must subtract shadowing, or every check built on it (Spawnable today, region/Mut[c] next) inherits a false positive (#1262 / ADR-0100 (1))" >&2
+  cat "$escdir/shadow_strict.txt" >&2
+  exit 1
+fi
+
+# (c) A lex/parse failure goes to the .diag sidecar with EMPTY output, in both
+# lanes -- "the query broke" must stay distinguishable from "nothing escapes",
+# since empty output is this surface's clean signal.
+printf 'fn main() -> Int {\n  let mut = =\n}\n' > "$escdir/broken.vibe"
+esc_run broken_loose.txt "$escdir/broken.vibe" 0
+esc_run broken_strict.txt "$escdir/broken.vibe" 1
+for lane in loose strict; do
+  if [ -s "$escdir/broken_$lane.txt" ] || [ ! -s "$escdir/broken_$lane.txt.diag" ]; then
+    echo "[compiler-gate] FAIL: a broken source did not land on the .diag sidecar with empty output in the $lane escape lane (#1262)" >&2
+    cat "$escdir/broken_$lane.txt" "$escdir/broken_$lane.txt.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+rm -rf "$escdir"
+echo "[compiler-gate] escape predicate two-lane split ok (#1262)"
+
+# 102. ADR-0101 (3) / #1262: the Builder family's terminal verb is `build`, so
+#      the type name and the verb correspond lexically. `freeze` is reserved
+#      for the verb producing a Frozen- (persistent + Send) value, which a
+#      Builder terminal is not -- the worst case of the old spelling was
+#      `ArrayBuilder::freeze -> Array`, where the result of "freeze" is
+#      mutable. The new spelling rides `canonical_builtin_name`, so it must
+#      reach the SAME registry row and the SAME codegen dispatch as the legacy
+#      one in BOTH backends: a source-level alias that only the checker knows
+#      about would typecheck and then miscompile.
+echo "[compiler-gate] 102/102 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
+sbdir="_build/_gate_sb_build"
+rm -rf "$sbdir"; mkdir -p "$sbdir"
+cat > "$sbdir/build.vibe" <<'SBB'
+fn joined() -> String {
+  let b = StringBuilder::new()
+  StringBuilder::push(b, "hello ")
+  StringBuilder::push(b, "world")
+  StringBuilder::build(b)
+}
+
+fn main() -> Int {
+  String::length(joined())
+}
+SBB
+sed 's/StringBuilder::build(b)/StringBuilder::freeze(b)/' "$sbdir/build.vibe" > "$sbdir/freeze.vibe"
+for spelling in build freeze; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$sbdir/$spelling.vibe" "$sbdir/$spelling.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$sbdir/$spelling.wasm" ]; then
+    echo "[compiler-gate] FAIL: StringBuilder::$spelling did not compile (ADR-0101 (3) / #1262)" >&2
+    cat "$sbdir/$spelling.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  sb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sbdir/$spelling.wasm" 2>&1 | tail -1)"
+  if [ "$sb_out" != "11" ]; then
+    echo "[compiler-gate] FAIL: StringBuilder::$spelling produced '$sb_out' (want 11 = len(\"hello world\")) -- the two spellings must lower identically (#1262)" >&2
+    exit 1
+  fi
+done
+# Byte-identical output is the strong form of "same lowering": the alias is
+# resolved before anything downstream can branch on the spelling, so the two
+# programs are the same program.
+if ! cmp -s "$sbdir/build.wasm" "$sbdir/freeze.wasm"; then
+  echo "[compiler-gate] FAIL: StringBuilder::build and ::freeze produced DIFFERENT wasm -- the alias is being resolved somewhere downstream of a branch on the name (ADR-0101 (3) / #1262)" >&2
+  exit 1
+fi
+rm -rf "$sbdir"
+echo "[compiler-gate] StringBuilder::build terminal-verb alias ok (#1262)"
 
 echo "[compiler-gate] ok"

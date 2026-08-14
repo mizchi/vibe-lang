@@ -123,7 +123,6 @@ GitHub の sub-issue でツリーを作る。**親は索引、子が作業単位
 | **B. codegen (linear)** | `codegen/expr/compile_call.vibe`, `builtin_bodies/` | #1527、#1529、#1526 (ADR-0097 決定済み)、#1538-1 | compile_call は共有点なので lane 内直列 |
 | **C. wasm-gc** | `codegen/gc/` | #1541 → #1542 | linear と無衝突は ADR-0095 が構造的に担保 |
 | **D. incremental/cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1548 → #1549 → #1550 | |
-| **E. formal** | `formal/` | #1544、#1545、#1546 | 完全無衝突。3 本とも同時並走可 |
 | **F. runtime/host** | `scripts/wasm_vibe_host_runner.js`, `runtime/viberun` | #1553 の計測、#1540 | |
 
 lane 内の順序は blocker → P 順。gate スクリプトへのエントリ追加は必ず**末尾 append**

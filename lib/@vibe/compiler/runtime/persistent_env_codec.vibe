@@ -14,7 +14,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Type, TypeDef, TypeEnv, TypeExpr, env_cache
+  EnvValueBinding, Type, TypeDef, TypeEnv, TypeExpr, env_cache, env_value_binding
 }
 
 //# Functions
@@ -659,6 +659,17 @@ fn parse_type_defs(text: String, pos: Int) -> (Array[TypeDef], Int) with Excepti
   }
 }
 
+fn serialize_value_bindings(items: Array[(String, EnvValueBinding)]) -> String {
+  let plain = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, binding) = Array::get(items, i)
+    Array::push(plain, (name, binding.ty))
+    i = i + 1
+  }
+  serialize_bindings(plain)
+}
+
 fn serialize_bindings(items: Array[(String, Type)]) -> String {
   let buf = StringBuilder::new()
   StringBuilder::push(buf, __to_string(Array::length(items)))
@@ -696,10 +707,25 @@ fn parse_bindings(text: String, pos: Int) -> (Array[(String, Type)], Int) with E
 fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
   match env {
     EnvEmpty => StringBuilder::push(buf, "0"),
-    EnvBind(name, ty, rest) => {
+    EnvBind(name, binding, rest) => {
       StringBuilder::push(buf, "B")
       StringBuilder::push(buf, serialize_segment(name))
-      StringBuilder::push(buf, serialize_type(ty))
+      StringBuilder::push(buf, serialize_type(binding.ty))
+      serialize_type_env_into(buf, rest)
+    },
+    // #1262: a `let mut` escape marker is function-local, so a published
+    // module env never carries one. Round-trip it anyway rather than dropping
+    // it to `rest` -- a lossy arm here would decode to an env that quietly
+    // claims a mutable binding is immutable, and the whole point of putting
+    // the fact in TypeEnv is that consumers may trust its absence.
+    EnvMutCell(name, escapes, rest) => {
+      StringBuilder::push(buf, "M")
+      StringBuilder::push(buf, serialize_segment(name))
+      StringBuilder::push(buf, if escapes {
+        "1"
+      } else {
+        "0"
+      })
       serialize_type_env_into(buf, rest)
     },
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
@@ -738,7 +764,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
     },
     EnvFlat(bindings) => {
       StringBuilder::push(buf, "L")
-      StringBuilder::push(buf, serialize_bindings(bindings))
+      StringBuilder::push(buf, serialize_value_bindings(bindings))
     },
     EnvCached(_, _, rest) => {
       // Cached arrays are acceleration state, not trusted semantics. Emit the
@@ -748,7 +774,13 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
         EnvCached(names, types, _) => {
           StringBuilder::push(buf, "C")
           StringBuilder::push(buf, serialize_string_array(names))
-          StringBuilder::push(buf, serialize_type_array(types))
+          let plain_types = array_empty()
+          let mut i = 0
+          while i < Array::length(types) {
+            Array::push(plain_types, Array::get(types, i).ty)
+            i = i + 1
+          }
+          StringBuilder::push(buf, serialize_type_array(plain_types))
           serialize_type_env_into(buf, rest)
         },
         _ => serialize_type_env_into(buf, rest)
@@ -773,7 +805,24 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
         let (name, after_name) = parse_segment(text, pos + 1)
         let (ty, after_ty) = parse_cached_type(text, after_name)
         let (rest, next) = parse_persistent_type_env_payload(text, after_ty)
-        (EnvBind(name, ty, rest), next)
+        (EnvBind(name, env_value_binding(ty), rest), next)
+      },
+      'M' => {
+        let (name, after_name) = parse_segment(text, pos + 1)
+        if after_name >= String::length(text) {
+          throw("invalid persistent type env mut escape flag")
+        } else {
+          let esc_tag = String::char_code_at(text, after_name)
+          let escapes = if esc_tag == '0' {
+            false
+          } else if esc_tag == '1' {
+            true
+          } else {
+            throw("invalid persistent type env mut escape flag")
+          }
+          let (rest, next) = parse_persistent_type_env_payload(text, after_name + 1)
+          (EnvMutCell(name, escapes, rest), next)
+        }
       },
       'D' => {
         let (name, after_name) = parse_segment(text, pos + 1)
@@ -818,7 +867,14 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
       },
       'L' => {
         let (bindings, next) = parse_bindings(text, pos + 1)
-        (EnvFlat(bindings), next)
+        let value_bindings = array_empty()
+        let mut i = 0
+        while i < Array::length(bindings) {
+          let (name, ty) = Array::get(bindings, i)
+          Array::push(value_bindings, (name, env_value_binding(ty)))
+          i = i + 1
+        }
+        (EnvFlat(value_bindings), next)
       },
       'C' => {
         let (names, after_names) = parse_string_array(text, pos + 1)

@@ -408,6 +408,13 @@ export struct CompileCtx {
   // not usable: a getter capturing it is `missing closure env` in the native
   // CLI codegen, and a cross-module `let` reference is `unknown name`).
   enable_rc: Bool;
+  // #1696: under RC the exported entry's RESULT is untagged, and that untag is
+  // appended after the body -- which a `return` jumps straight past, handing the
+  // host a tagged (doubled) value. True only while compiling the entry
+  // function's own body, so `return` untags there too. Deliberately not
+  // propagated into `lam_ctx` (compile_lambda.vibe): a lambda is a separate
+  // wasm function whose result is an ordinary tagged value.
+  rc_entry_untag_return: Bool;
   // #715 recurrence guard (VIBE_RC=shadow): emit shadow-liveness traps -- a
   // byte per heap address marks freed blocks; the FIRST dup-of-freed or
   // drop-of-freed executes `unreachable` instead of silently corrupting the
@@ -853,6 +860,16 @@ export struct CompileCtxGc {
   /// A property of the module, never of the frame -- see
   /// gc_native_array_frame_ok for the per-frame half.
   gc_native_array_type_idx: Int;
+  gc_native_array_block_type_idx: Int;
+  // #1702: slot -> ctor-table struct index for locals holding a
+  // `(struct (mut i64) x N)` reference. `_scope` is pruned at branch/arm
+  // boundaries like the other slot logs; `_decl` is never pruned, because the
+  // code section still has to declare every typed slot the body allocated.
+  gc_native_struct_scope: Array[Int];
+  gc_native_struct_decl: Array[Int];
+  // Index of `(struct (mut i64))`; an N-field record uses base + (N - 1).
+  // Negative disables the lane (lambda frames, module initializers).
+  gc_native_struct_type_base: Int;
   /// Whether THIS frame's own locals may hold a native array reference.
   ///
   /// These two facts used to share the `gc_native_array_type_idx >= 0`
@@ -1022,6 +1039,46 @@ export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
 /// boundary, so a stale entry for a slot about to be reused by a sibling
 /// scope does not leak into that sibling's classification of an unrelated
 /// binding landing on the same freed slot.
+/// #1702: slot -> payload map, indexed BY SLOT rather than a list of slots.
+///
+/// The native ARRAY lane can use a plain slot list because every entry has the
+/// same wasm type. A struct local also has to carry WHICH struct it holds (the
+/// wasm type follows from the field count, and field access needs the declared
+/// order). Keeping that as a second array parallel to a slot list does not
+/// survive `gc_slot_log_reset_above`: pruning one and not the other silently
+/// pairs a slot with the wrong struct. Indexing by slot removes the pairing --
+/// reset is positional and there is nothing to keep in step. Absent slots
+/// read as -1.
+export fn gc_slot_map_set(map: Array[Int], slot: Int, value: Int) -> Unit {
+  while Array::length(map) <= slot {
+    Array::push(map, 0 - 1)
+  }
+  Array::set(map, slot, value)
+}
+
+export fn gc_slot_map_get(map: Array[Int], slot: Int) -> Int {
+  if slot < 0 || slot >= Array::length(map) {
+    0 - 1
+  } else {
+    Array::get(map, slot)
+  }
+}
+
+/// Positional twin of `gc_slot_log_reset_above`: clear every slot at or above
+/// `floor` so a sibling scope reusing those numbers for ordinary i64 bindings
+/// does not inherit this scope's classification.
+export fn gc_slot_map_reset_above(map: Array[Int], floor: Int) -> Unit {
+  let mut i = if floor < 0 {
+    0
+  } else {
+    floor
+  }
+  while i < Array::length(map) {
+    Array::set(map, i, 0 - 1)
+    i = i + 1
+  }
+}
+
 export fn gc_slot_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
   let n = Array::length(arr)
   let mut w = 0

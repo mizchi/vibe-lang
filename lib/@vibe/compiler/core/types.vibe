@@ -57,9 +57,35 @@ export enum TypeDef {
   TDEffectSet(String, Array[String])
 }
 
+/// Checker-internal authority for where a value binding was resolved.
+/// Persistent/public TypeEnv transport intentionally drops this payload.
+export enum BindingOrigin {
+  BindingOriginUnavailable;
+  BindingOriginModuleExport(String, String)
+}
+
+export struct EnvValueBinding {
+  ty: Type;
+  origin: BindingOrigin
+}
+
+export fn env_value_binding(ty: Type) -> EnvValueBinding {
+  EnvValueBinding::{
+    ty: ty,
+    origin: BindingOriginUnavailable
+  }
+}
+
+export fn env_value_binding_with_origin(ty: Type, origin: BindingOrigin) -> EnvValueBinding {
+  EnvValueBinding::{
+    ty: ty,
+    origin: origin
+  }
+}
+
 export enum TypeEnv {
   EnvEmpty;
-  EnvBind(String, Type, TypeEnv);
+  EnvBind(String, EnvValueBinding, TypeEnv);
   // Header params are sixth and method generic provenance is appended seventh,
   // so every older positional slot, including rest, retains its meaning.
   // Both are retained checker provenance.
@@ -73,14 +99,29 @@ export enum TypeEnv {
   // separate prevents a private dependency of an exported signature from
   // becoming importable by name.
   EnvTypeDefs(Array[TypeDef], Array[String], TypeEnv);
-  EnvFlat(Array[(String, Type)]);
+  // #1262 / ADR-0100 (1): the STRICT escape fact for a `let mut` binding.
+  // `EnvBind` alone says "name : Type" and nothing about how the binding may
+  // be written, so every check that needs "is this a mutable cell?" had to
+  // re-derive it from the raw AST (the duplicate walks catalogued in
+  // docs/side-effect-consolidation.md 4.5). This node is a MARKER laid over
+  // the ordinary value binding -- `env_bind_mut` pushes it in FRONT of the
+  // `EnvBind` it describes, so type lookup is unchanged and only the new
+  // `env_mut_escape` query sees it. The Bool is the strict escape judgment
+  // (checker/checker_escape.vibe): true = some closure captures this binding,
+  // i.e. codegen lowers it to a shared heap ref cell and its writes are
+  // observable outside the declaring scope; false = it stays a wasm local.
+  // Function-local in normal module checking, and module export envs carry no
+  // `let mut`. Exported TypeEnv composition and codec fixtures can still cache
+  // this marker, so `env_mut_escape` treats cached indexes as transparent.
+  EnvMutCell(String, Bool, TypeEnv);
+  EnvFlat(Array[(String, EnvValueBinding)]);
   // Sorted names/types pair (see core/sorted_index.vibe), instead of a
   // Map[String, Type]: this compiler's `Map` is a flat assoc list, so
   // `Map::has_key` + `Map::get` were TWO O(entries) linear scans per lookup
   // -- exactly the "Map membership index is still linear" trap from #799.
   // Names are unique (built by env_cache below), so a stable sort + leftmost
   // bsearch gives the same result in O(log N) with no dedup step needed.
-  EnvCached(Array[String], Array[Type], TypeEnv)
+  EnvCached(Array[String], Array[EnvValueBinding], TypeEnv)
 }
 
 export enum Subst {
@@ -99,6 +140,11 @@ export enum Subst {
 //# Functions
 
 export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
+  env_bind_with_origin(env, name, ty, BindingOriginUnavailable)
+}
+
+export fn env_bind_with_origin(env: TypeEnv, name: String, ty: Type, origin: BindingOrigin) -> TypeEnv {
+  let binding = env_value_binding_with_origin(ty, origin)
   match env {
     // Keeping the cache at the head is only sound while the new binding's
     // name is NOT in the cached index: env_lookup consults the index first,
@@ -107,12 +153,79 @@ export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
     // function body is checked, and a parameter named like an import then
     // resolved to the import). Bind shadowing names IN FRONT of the cache.
     EnvCached(names_sorted, types_sorted, rest) => if bsearch_leftmost(names_sorted, name) >= 0 {
-      EnvBind(name, ty, env)
+      EnvBind(name, binding, env)
     } else {
-      EnvCached(names_sorted, types_sorted, EnvBind(name, ty, rest))
+      EnvCached(names_sorted, types_sorted, EnvBind(name, binding, rest))
     },
-    _ => EnvBind(name, ty, env)
+    _ => EnvBind(name, binding, env)
   }
+}
+
+/// Bind `name : ty` AND record that it is a `let mut` cell whose strict
+/// escape judgment is `escapes` (#1262). The marker goes in FRONT of the
+/// ordinary binding, so `env_lookup` behaves exactly as it would for
+/// `env_bind` and only `env_mut_escape` below can observe the difference.
+export fn env_bind_mut(env: TypeEnv, name: String, ty: Type, escapes: Bool) -> TypeEnv {
+  EnvMutCell(name, escapes, env_bind(env, name, ty))
+}
+
+/// The mutability fact for `name` at this point in the chain, or `None` when
+/// the binding in scope is not a `let mut` cell.
+///
+/// Shadowing falls out of the authoritative chain order rather than needing
+/// its own rule: the FIRST binding node that mentions `name` decides, so an
+/// inner immutable `let name = ...` (`EnvBind`) answers `None` even while an
+/// outer `EnvMutCell(name, ...)` is still further down. `EnvCached` is only an
+/// acceleration index and is transparent to this query; its `rest` retains
+/// the binding and marker order that decides the fact.
+/// That is what makes this the STRICT side of ADR-0100 (1) -- the enforcement
+/// lane, which must stay silent when unsure -- as opposed to codegen's
+/// deliberately conservative `is_mut_captured_in`, which does not subtract
+/// shadowing because over-boxing is only slow, never wrong.
+export fn env_mut_escape(env: TypeEnv, name: String) -> Option[Bool] {
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvMutCell(n, escapes, rest) => if n == name {
+        result = Some(escapes)
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvBind(n, _, rest) => if n == name {
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        // Cached arrays accelerate value lookup but carry no mutability fact.
+        // The authoritative chain in `rest` retains both binding shadow order
+        // and any paired EnvMutCell marker.
+        cur = rest
+      }
+    }
+  }
+  result
 }
 
 /// Collect declaration authority in the chain's lookup order. Declaration
@@ -134,6 +247,9 @@ export fn env_type_defs(env: TypeEnv) -> Array[TypeDef] {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
         cur = rest
       },
       EnvTraitImplGen(_, _, _, _, rest) => {
@@ -178,6 +294,9 @@ export fn env_selectable_type_defs(env: TypeEnv) -> Array[String] {
       EnvTraitImpl(_, _, rest) => {
         cur = rest
       },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
       EnvTraitImplGen(_, _, _, _, rest) => {
         cur = rest
       },
@@ -217,15 +336,18 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvEmpty => {
           done = true
         },
-        EnvBind(n, ty, rest) => {
+        EnvBind(n, binding, rest) => {
           ArrayBuilder::push(names, n)
-          ArrayBuilder::push(types, ty)
+          ArrayBuilder::push(types, binding)
           cur = rest
         },
         EnvTraitDef(_, _, _, _, rest, _, _) => {
           cur = rest
         },
         EnvTraitImpl(_, _, rest) => {
+          cur = rest
+        },
+        EnvMutCell(_, _, rest) => {
           cur = rest
         },
         EnvTraitImplGen(_, _, _, _, rest) => {
@@ -237,9 +359,9 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvFlat(bindings) => {
           let mut j = 0
           while j < Array::length(bindings) {
-            let (n, ty) = Array::get(bindings, j)
+            let (n, binding) = Array::get(bindings, j)
             ArrayBuilder::push(names, n)
-            ArrayBuilder::push(types, ty)
+            ArrayBuilder::push(types, binding)
             j = j + 1
           }
           done = true
@@ -310,6 +432,13 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
 }
 
 export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
+  match env_lookup_binding(env, name) {
+    Some(binding) => Some(binding.ty),
+    None => None
+  }
+}
+
+export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
   let mut cur = env
   let mut result = None
   let mut done = false
@@ -318,8 +447,8 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
       EnvEmpty => {
         done = true
       },
-      EnvBind(n, ty, rest) => if n == name {
-        result = Some(ty)
+      EnvBind(n, binding, rest) => if n == name {
+        result = Some(binding)
         done = true
       } else {
         cur = rest
@@ -328,6 +457,9 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
         cur = rest
       },
       EnvTraitImplGen(_, _, _, _, rest) => {
@@ -339,9 +471,9 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
       EnvFlat(bindings) => {
         let mut j = 0
         while j < Array::length(bindings) && !done {
-          let (n, ty) = Array::get(bindings, j)
+          let (n, binding) = Array::get(bindings, j)
           if n == name {
-            result = Some(ty)
+            result = Some(binding)
             done = true
           } else {
             j = j + 1
@@ -505,6 +637,7 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
       supers
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
+    EnvMutCell(_, _, rest) => trait_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name),
     EnvTypeDefs(_, _, rest) => trait_supers(rest, name),
     EnvFlat(_) => empty,
@@ -576,6 +709,7 @@ export fn trait_method_sig_binders(env: TypeEnv, trait_name: String, method_name
       }
     } else trait_method_sig_binders(rest, trait_name, method_name),
     EnvTraitImpl(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
+    EnvMutCell(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvTypeDefs(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvFlat(_) => None,
@@ -613,6 +747,7 @@ fn type_name_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: String)
   match scan {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvMutCell(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
     EnvTraitDef(_, _, _, _, rest, _, _) => type_name_iterator_impl_scan(rest, full, type_name),
     EnvTraitImpl(tname, target, rest) => {
       let hit = trait_target_head_name(target) == type_name && (match trait_method_sig(full, tname, "next") {
@@ -663,6 +798,7 @@ fn type_name_async_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: S
   match scan {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
+    EnvMutCell(_, _, rest) => type_name_async_iterator_impl_scan(rest, full, type_name),
     EnvTraitDef(_, _, _, _, rest, _, _) => type_name_async_iterator_impl_scan(rest, full, type_name),
     EnvTraitImpl(tname, target, rest) => {
       let hit = trait_target_head_name(target) == type_name && trait_next_returns_future(full, tname)
@@ -978,6 +1114,7 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
       true
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
+    EnvMutCell(_, _, rest) => trait_defined(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name),
     EnvTypeDefs(_, _, rest) => trait_defined(rest, name),
     EnvFlat(_) => false,
@@ -1441,7 +1578,7 @@ fn collect_tvars_walk(t: Type, out: Array[Int]) -> Int {
       0
     },
     // #829: type variables inside an APPLIED named type's arguments (e.g. the
-    // `V` in `SortedMap[K, V]` when only `K` is mentioned by a parameter) must
+    // `V` in `MutSortedMap[K, V]` when only `K` is mentioned by a parameter) must
     // be quantified too. They used to be skipped, leaving the scheme with a
     // FREE variable whose id is from the exporting module's counter domain —
     // an id-collision landmine (#743's hazard, but for free vars, which
@@ -1470,10 +1607,18 @@ fn empty_env_bindings() -> Array[(String, Type)] {
 }
 
 export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
+  let out = empty_env_bindings()
   match env {
-    EnvFlat(bindings) => bindings,
+    EnvFlat(bindings) => {
+      let mut i = 0
+      while i < Array::length(bindings) {
+        let (name, binding) = Array::get(bindings, i)
+        Array::push(out, (name, binding.ty))
+        i = i + 1
+      }
+      out
+    },
     _ => {
-      let out = empty_env_bindings()
       let mut cur = env
       let mut done = false
       while !done {
@@ -1481,14 +1626,17 @@ export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
           EnvEmpty => {
             done = true
           },
-          EnvBind(name, ty, rest) => {
-            Array::push(out, (name, ty))
+          EnvBind(name, binding, rest) => {
+            Array::push(out, (name, binding.ty))
             cur = rest
           },
           EnvTraitDef(_, _, _, _, rest, _, _) => {
             cur = rest
           },
           EnvTraitImpl(_, _, rest) => {
+            cur = rest
+          },
+          EnvMutCell(_, _, rest) => {
             cur = rest
           },
           EnvTraitImplGen(_, _, _, _, rest) => {
@@ -1500,7 +1648,8 @@ export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
           EnvFlat(bindings) => {
             let mut j = 0
             while j < Array::length(bindings) {
-              Array::push(out, Array::get(bindings, j))
+              let (name, binding) = Array::get(bindings, j)
+              Array::push(out, (name, binding.ty))
               j = j + 1
             }
             done = true
@@ -2222,6 +2371,7 @@ export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) 
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
+    EnvMutCell(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
     EnvTraitDef(_, _, _, _, rest, _, _) => impls_overlap_for(rest, trait_name, new_target),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
       if types_equal(target, new_target) {
@@ -2282,6 +2432,7 @@ fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, reso
   match e {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_env(rest, full, trait_name, resolved),
+    EnvMutCell(_, _, rest) => type_implements_check_env(rest, full, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_env(rest, full, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
       // The constructor fallback carries the SAME soundness gate as the generic
@@ -2314,6 +2465,7 @@ export fn trait_impl_declared_for_ctor(e: TypeEnv, trait_name: String, resolved:
     match e {
       EnvEmpty => false,
       EnvBind(_, _, rest) => trait_impl_declared_for_ctor(rest, trait_name, resolved),
+      EnvMutCell(_, _, rest) => trait_impl_declared_for_ctor(rest, trait_name, resolved),
       EnvTraitDef(_, _, _, _, rest, _, _) => trait_impl_declared_for_ctor(rest, trait_name, resolved),
       EnvTraitImpl(tname, target, rest) => if tname == trait_name && type_constructor_name(target) == head {
         true
@@ -2405,6 +2557,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
   match e2 {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
+    EnvMutCell(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (concrete_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full_env, trait_name)) {
       if trait_is_subtrait(full_env, tname, trait_name) {
@@ -2458,6 +2611,7 @@ fn trait_is_method_bearing(env: TypeEnv, trait_name: String) -> Bool {
       Array::length(methods) > 0
     } else trait_is_method_bearing(rest, trait_name),
     EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvMutCell(_, _, rest) => trait_is_method_bearing(rest, trait_name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_is_method_bearing(rest, trait_name),
     EnvTypeDefs(_, _, rest) => trait_is_method_bearing(rest, trait_name),
     EnvFlat(_) => false,
@@ -2501,6 +2655,7 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
     EnvBind(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest, _, _) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
+    EnvMutCell(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvTraitImplGen(itrait, _tparams, bounds, target, rest) => {
       let head = type_constructor_name(resolved)
       let shape_ok = itrait == trait_name && head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name)

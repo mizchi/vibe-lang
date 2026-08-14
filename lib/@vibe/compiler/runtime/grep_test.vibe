@@ -245,3 +245,31 @@ test "grep --where: a clause naming an uncaptured metavariable is an error" {
   // as the empty output that means "clean".
   inspect(scan_err("let a = 1\n", "f($(x:exp))", one_string("$y : Int")), "--where: the pattern never captures `$y`")
 }
+
+test "grep --where: an ill-typed file drops ALL of its matches, silently (#1715)" {
+  // A type error ANYWHERE in the file makes `check_program_with_env_result`
+  // throw, and the handler in `grep_typed_context` replaces the whole typed
+  // context with an EMPTY tytab. Every expression in the file therefore has no
+  // type, so a `--where` clause can never hold -- including for expressions
+  // that were typed fine before the error, and including the loosest possible
+  // clause `$x : Array[_]`.
+  //
+  // `arr` here is plainly `Array[Int]`, and the type error is in an UNRELATED
+  // binding. The parse tier finds the call; the typed tier reports nothing,
+  // with no diagnostic and exit 0 -- "no such call exists" and "this file
+  // could not be typed" come back as the same empty output.
+  //
+  // Pinned as CURRENT behaviour, NOT as desired behaviour. #1715 is about
+  // making the omission visible (and ideally about typing what can be typed).
+  // When that lands these snapshots change, which is the point of having them.
+  let src = "let bad: String = 42\nlet arr = [\n  1\n]\nlet n = Array::length(arr)\n"
+  // The parse tier sees it.
+  inspect(scan(src, "Array::length($(x:exp))"), "a.vibe:5:9: Array::length(arr)\t$x=arr\n")
+  // The typed tier does not -- not even with a wildcard element type.
+  inspect(scan_where(src, "Array::length($(x:exp))", "$x : Array[Int]"), "")
+  inspect(scan_where(src, "Array::length($(x:exp))", "$x : Array[_]"), "")
+  // Remove the unrelated type error and the same clause matches, which is what
+  // makes this a file-scope wipe rather than "arr's type is genuinely unknown".
+  let ok = "let good: Int = 42\nlet arr = [\n  1\n]\nlet n = Array::length(arr)\n"
+  inspect(scan_where(ok, "Array::length($(x:exp))", "$x : Array[Int]"), "a.vibe:5:9: Array::length(arr)\t$x=arr\n",)
+}

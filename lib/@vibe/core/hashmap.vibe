@@ -1,4 +1,4 @@
-// @vibex/collections — HashMap[K, V]: mutable open-addressing hash table.
+// @vibex/collections — MutMap[K, V]: mutable open-addressing hash table.
 //
 // Layout: parallel slot arrays (keys / vals / state) + `mut` struct fields
 // (ADR-0052) so `set`/`delete`/rehash mutate the same handle in place.
@@ -12,8 +12,8 @@
 //   up as a pattern-match failure, never as silent garbage reinterpreted
 //   as a K or V.
 // - Key hashing/equality is explicit-dict style: `hash_fn` / `eq_fn` are
-//   closed into the struct at construction. `HashMap::new_int` /
-//   `HashMap::new_string` are the specialized constructors for the common
+//   closed into the struct at construction. `MutMap::new_int` /
+//   `MutMap::new_string` are the specialized constructors for the common
 //   key types (see key.vibe).
 // Iteration order of keys/values/to_array is slot order (unspecified).
 
@@ -25,7 +25,7 @@ import ./key.vibe {
 
 //# Types
 
-export struct HashMap[K, V] {
+export struct MutMap[K, V] {
   mut keys: Array[Option[K]];
   mut vals: Array[Option[V]];
   mut state: Array[Int];
@@ -58,7 +58,7 @@ fn alloc_slots[T](cap: Int) -> Array[Option[T]] {
   ArrayBuilder::freeze(b)
 }
 
-fn home_index[K, V](m: HashMap[K, V], k: K, cap: Int) -> Int {
+fn home_index[K, V](m: MutMap[K, V], k: K, cap: Int) -> Int {
   let h = (m.hash_fn)(k)
   let mut idx = h % cap
   if idx < 0 {
@@ -69,7 +69,7 @@ fn home_index[K, V](m: HashMap[K, V], k: K, cap: Int) -> Int {
 
 /// Index of the occupied slot holding `k`, or -1. Probing stops at the first
 /// empty slot; tombstones are skipped (deleted slots must not break chains).
-fn find_index[K, V](m: HashMap[K, V], k: K) -> Int {
+fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
   let cap = Array::length(m.state)
   let mut idx = home_index(m, k, cap)
   let mut result = -1
@@ -110,7 +110,7 @@ fn find_index[K, V](m: HashMap[K, V], k: K) -> Int {
 
 /// Insert without growth check. Reuses the first tombstone seen on the probe
 /// path when the key is not already present.
-fn insert_raw[K, V](m: HashMap[K, V], k: K, v: V) -> Unit {
+fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
   let cap = Array::length(m.state)
   let mut idx = home_index(m, k, cap)
   let mut tomb_idx = -1
@@ -162,7 +162,7 @@ fn insert_raw[K, V](m: HashMap[K, V], k: K, v: V) -> Unit {
   }
 }
 
-fn rehash[K, V](m: HashMap[K, V], new_cap: Int) -> Unit {
+fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
   let cap = if new_cap < 8 {
     8
   } else {
@@ -195,13 +195,13 @@ fn rehash[K, V](m: HashMap[K, V], new_cap: Int) -> Unit {
 
 //# Constructors
 
-export fn HashMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool, capacity: Int) -> HashMap[K, V] {
+export fn MutMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool, capacity: Int) -> MutMap[K, V] {
   let cap = if capacity < 8 {
     8
   } else {
     capacity
   }
-  HashMap::{
+  MutMap::{
     keys: alloc_slots(cap),
     vals: alloc_slots(cap),
     state: alloc_states(cap),
@@ -212,39 +212,39 @@ export fn HashMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Boo
   }
 }
 
-export fn HashMap::new[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool) -> HashMap[K, V] {
-  HashMap::with_capacity(hash_fn, eq_fn, 16)
+export fn MutMap::new[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool) -> MutMap[K, V] {
+  MutMap::with_capacity(hash_fn, eq_fn, 16)
 }
 
 /// Specialized constructors for the common key types.
-/// NOTE: the intermediate `let m: HashMap[Int, V] = ...` annotations are a
+/// NOTE: the intermediate `let m: MutMap[Int, V] = ...` annotations are a
 /// workaround for generic-call inference (#829 adjacent): returning the
 /// generic call directly fails to instantiate K from the function-typed
-/// arguments ("return type mismatch: expected HashMap[Int, ?], got
-/// HashMap[K, ?]").
-export fn HashMap::new_int[V]() -> HashMap[Int, V] {
-  let m: HashMap[Int, V] = HashMap::new(hash_int, eq_int)
+/// arguments ("return type mismatch: expected MutMap[Int, ?], got
+/// MutMap[K, ?]").
+export fn MutMap::new_int[V]() -> MutMap[Int, V] {
+  let m: MutMap[Int, V] = MutMap::new(hash_int, eq_int)
   m
 }
 
-export fn HashMap::new_string[V]() -> HashMap[String, V] {
-  let m: HashMap[String, V] = HashMap::new(hash_string, eq_string)
+export fn MutMap::new_string[V]() -> MutMap[String, V] {
+  let m: MutMap[String, V] = MutMap::new(hash_string, eq_string)
   m
 }
 
-export fn HashMap::with_capacity_int[V](capacity: Int) -> HashMap[Int, V] {
-  let m: HashMap[Int, V] = HashMap::with_capacity(hash_int, eq_int, capacity)
+export fn MutMap::with_capacity_int[V](capacity: Int) -> MutMap[Int, V] {
+  let m: MutMap[Int, V] = MutMap::with_capacity(hash_int, eq_int, capacity)
   m
 }
 
-export fn HashMap::with_capacity_string[V](capacity: Int) -> HashMap[String, V] {
-  let m: HashMap[String, V] = HashMap::with_capacity(hash_string, eq_string, capacity)
+export fn MutMap::with_capacity_string[V](capacity: Int) -> MutMap[String, V] {
+  let m: MutMap[String, V] = MutMap::with_capacity(hash_string, eq_string, capacity)
   m
 }
 
 //# Operations
 
-export fn HashMap::set[K, V](m: HashMap[K, V], k: K, v: V) -> Unit {
+export fn MutMap::set[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
   let cap = Array::length(m.state)
   if (m.size + m.tombs + 1) * 10 > cap * 7 {
     rehash(m, cap * 2)
@@ -252,7 +252,7 @@ export fn HashMap::set[K, V](m: HashMap[K, V], k: K, v: V) -> Unit {
   insert_raw(m, k, v)
 }
 
-export fn HashMap::get[K, V](m: HashMap[K, V], k: K) -> Option[V] {
+export fn MutMap::get[K, V](m: MutMap[K, V], k: K) -> Option[V] {
   let idx = find_index(m, k)
   if idx < 0 {
     None
@@ -261,13 +261,13 @@ export fn HashMap::get[K, V](m: HashMap[K, V], k: K) -> Option[V] {
   }
 }
 
-export fn HashMap::has[K, V](m: HashMap[K, V], k: K) -> Bool {
+export fn MutMap::has[K, V](m: MutMap[K, V], k: K) -> Bool {
   find_index(m, k) >= 0
 }
 
 /// Removes `k`; returns whether it was present. The slot becomes a tombstone
 /// and both Option slots are cleared so the K/V values are released.
-export fn HashMap::delete[K, V](m: HashMap[K, V], k: K) -> Bool {
+export fn MutMap::delete[K, V](m: MutMap[K, V], k: K) -> Bool {
   let idx = find_index(m, k)
   if idx < 0 {
     false
@@ -283,11 +283,11 @@ export fn HashMap::delete[K, V](m: HashMap[K, V], k: K) -> Bool {
   }
 }
 
-export fn HashMap::size[K, V](m: HashMap[K, V]) -> Int {
+export fn MutMap::size[K, V](m: MutMap[K, V]) -> Int {
   m.size
 }
 
-export fn HashMap::keys[K, V](m: HashMap[K, V]) -> Array[K] {
+export fn MutMap::keys[K, V](m: MutMap[K, V]) -> Array[K] {
   let b = ArrayBuilder::new()
   let cap = Array::length(m.state)
   let mut i = 0
@@ -303,7 +303,7 @@ export fn HashMap::keys[K, V](m: HashMap[K, V]) -> Array[K] {
   ArrayBuilder::freeze(b)
 }
 
-export fn HashMap::values[K, V](m: HashMap[K, V]) -> Array[V] {
+export fn MutMap::values[K, V](m: MutMap[K, V]) -> Array[V] {
   let b = ArrayBuilder::new()
   let cap = Array::length(m.state)
   let mut i = 0
@@ -319,7 +319,7 @@ export fn HashMap::values[K, V](m: HashMap[K, V]) -> Array[V] {
   ArrayBuilder::freeze(b)
 }
 
-export fn HashMap::to_array[K, V](m: HashMap[K, V]) -> Array[(K, V)] {
+export fn MutMap::to_array[K, V](m: MutMap[K, V]) -> Array[(K, V)] {
   let b = ArrayBuilder::new()
   let cap = Array::length(m.state)
   let mut i = 0
@@ -337,4 +337,90 @@ export fn HashMap::to_array[K, V](m: HashMap[K, V]) -> Array[(K, V)] {
     i = i + 1
   }
   ArrayBuilder::freeze(b)
+}
+
+//# Deprecated legacy spellings (ADR-0100 (3) / #1262)
+//#
+//# ADR-0082 read the `Hash-` / `Sorted-` PREFIX as "this one is mutable",
+//# which collided head-on with ADR-0090's `Mut-` prefix and made one word
+//# carry two independent axes. ADR-0100 (3) splits them: **mutability is the
+//# prefix** (bare = persistent / `Mut` = mutable handle / `Frozen` /
+//# `-Builder`) and the implementation/performance story is a suffix or the
+//# module it lives in. `HashMap` therefore became `MutMap`, and `Sorted` went
+//# back to naming an ORDERED INTERFACE rather than mutability.
+//#
+//# Everything below is a transparent alias kept for source compatibility and
+//# marked `#deprecated`, so `vibe check` names the replacement at every use
+//# without breaking anyone. The type alias being TRANSPARENT is what makes the
+//# migration safe to do file by file: an old annotation and a new one are the
+//# SAME type, so the two spellings can meet at any boundary.
+
+#deprecated("use MutMap::with_capacity")
+export fn HashMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool, capacity: Int) -> MutMap[K, V] {
+  MutMap::with_capacity(hash_fn, eq_fn, capacity)
+}
+
+#deprecated("use MutMap::new")
+export fn HashMap::new[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool) -> MutMap[K, V] {
+  MutMap::new(hash_fn, eq_fn)
+}
+
+#deprecated("use MutMap::new_int")
+export fn HashMap::new_int[V]() -> MutMap[Int, V] {
+  MutMap::new_int()
+}
+
+#deprecated("use MutMap::new_string")
+export fn HashMap::new_string[V]() -> MutMap[String, V] {
+  MutMap::new_string()
+}
+
+#deprecated("use MutMap::with_capacity_int")
+export fn HashMap::with_capacity_int[V](capacity: Int) -> MutMap[Int, V] {
+  MutMap::with_capacity_int(capacity)
+}
+
+#deprecated("use MutMap::with_capacity_string")
+export fn HashMap::with_capacity_string[V](capacity: Int) -> MutMap[String, V] {
+  MutMap::with_capacity_string(capacity)
+}
+
+#deprecated("use MutMap::set")
+export fn HashMap::set[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
+  MutMap::set(m, k, v)
+}
+
+#deprecated("use MutMap::get")
+export fn HashMap::get[K, V](m: MutMap[K, V], k: K) -> Option[V] {
+  MutMap::get(m, k)
+}
+
+#deprecated("use MutMap::has")
+export fn HashMap::has[K, V](m: MutMap[K, V], k: K) -> Bool {
+  MutMap::has(m, k)
+}
+
+#deprecated("use MutMap::delete")
+export fn HashMap::delete[K, V](m: MutMap[K, V], k: K) -> Bool {
+  MutMap::delete(m, k)
+}
+
+#deprecated("use MutMap::size")
+export fn HashMap::size[K, V](m: MutMap[K, V]) -> Int {
+  MutMap::size(m)
+}
+
+#deprecated("use MutMap::keys")
+export fn HashMap::keys[K, V](m: MutMap[K, V]) -> Array[K] {
+  MutMap::keys(m)
+}
+
+#deprecated("use MutMap::values")
+export fn HashMap::values[K, V](m: MutMap[K, V]) -> Array[V] {
+  MutMap::values(m)
+}
+
+#deprecated("use MutMap::to_array")
+export fn HashMap::to_array[K, V](m: MutMap[K, V]) -> Array[(K, V)] {
+  MutMap::to_array(m)
 }

@@ -151,7 +151,123 @@ checker の静的型から、各スロット (パラメータ / 返り値 / ロ�
 | Phase | 越えられるようになる境界 | 主な作業 | issue / 備考 |
 |---|---|---|---|
 | **A** | **返り値・引数** (非ジェネリックな直接呼び出し) | 関数型を静的型から導出。呼び出し側と定義側で型が一致することの検証 | **#1541**。acceptance の1つ目。ここだけで実用価値が出る |
-| **B** | **別名・局所束縛** | 既存の `gc_native_array_locals` の追跡を関数間へ拡張 | **#1541** (A と同一スライス)。private concrete `Array[Int]` の直接経路と 1 段の immutable local alias は着地済み。alias 経由で mutate し original 経由で読む identity fixture と native allocation site = 1 の gate で固定。それ以外の join / import / indirect call / aggregate / global は未対応のまま fail-closed |
+| **B** | **別名・局所束縛** | 既存の `gc_native_array_locals` の追跡を関数間へ拡張 | **#1541** (A と同一スライス)。private concrete `Array[Int]` の直接経路、1 段の immutable local alias、自己/相互再帰、ローカル配列の返却、両腕が参照レーンの `if` join は着地済み。identity fixture と native allocation site 数の gate で固定。import / indirect call / closure capture / aggregate / global、および裸リテラルを腕に持つ join は未対応のまま fail-closed |
+
+#### ジェネリックの共存 (2026-08-13)
+
+Phase A/B の島は当初、**モジュール内にジェネリック宣言が 1 つでもあれば
+component 全体で無効**だった。`strip_generic_type_params` が binder を消すので、
+消去後の署名を単相なものと区別する手段が無かったためである。これは fail-closed
+としては正しいが、実コードにジェネリックが無いことはまずないので、島は
+fixture の中でしか点かないという状態だった。
+
+現在は消去前に**ジェネリック宣言の名前**を集めて codegen へ渡す
+(`gc_direct_abi_pre_erasure_generic_names`)。拒否の強さは変えていない:
+
+- ジェネリック宣言が参照レーンの型 (`Array[Int]`) を署名に持つ →
+  **従来どおり component 全体を i64 レーンへ落とす** (変換点がまだ無い)
+- ジェネリック宣言が参照レーンの値を触らない → 島の候補にならないだけで、
+  **島は生きたまま**。参照をそこへ渡そうとすれば `gc_direct_abi_expr_kind` が
+  従来どおり component 全体を拒否する
+
+binder は 2 か所を見る必要がある。`strip_generic_type_params` の**後**に
+`inject_method_generics` が impl メソッドへ binder を貼り直すので、消去前の
+名前リストだけでは足りず、post-strip の `type_params` も併せて見る
+(`backend_body.vibe` の `dai_is_generic`)。
+
+対の fixture: `fixtures/gc_direct_array_generic_coexist_test.vibe` (島が生きる)
+と `fixtures/gc_direct_array_argument_fallback_test.vibe` (ジェネリック自身が
+`Array[Int]` を運ぶので落ちる)。
+
+#### 受理判定と escape gate の一致 (2026-08-13)
+
+**これは最適化ではなくバグ修正だった。** component 受理を決める
+`gc_direct_abi_expr_kind` と、ローカルが実際に native になるかを決める
+`gc_native_array_escape_gate` (旧 `gc_native_array_body_is_safe_tail`) は、
+別々に判断していた。前者が「この `let` は参照レーン」と受理したのに後者が
+native 化を拒否すると、呼び出し側が存在しない参照を要求し、codegen が
+`gc direct ABI proof mismatch` で**コンパイル自体に失敗する**。正しい vibe
+プログラムが落ちる:
+
+```vibe skip
+fn mutate_first(values: Array[Int]) -> Unit { Array::set(values, 0, 7) }
+
+test "..." {
+  let xs = [1, 2]
+  let peek = () -> Array::get(xs, 0)   // 捕獲 → escape gate は native を拒否
+  mutate_first(xs)                      // 受理側は参照だと思っている
+  inspect(peek(), "7")
+}
+```
+
+受理側が `let` を参照レーンへ入れる前に**同じ gate に問い合わせる**ようにした。
+gate が拒否したら束縛は普通の i64 ローカルのままで、参照を要求する呼び出しが
+あれば component ごと fallback する (fail-closed)。gate は ctx ではなく
+evidence table を直接読む形に分けてあり、両者が同じ述語を見る。
+
+副次的に、`Array::push` を使うローカルが**隣の束縛を巻き添えにしなくなった**
+— 従来は component 全体が落ちていたので、`gc_heap_churn_test` の
+`let xs = [8]; xs` (ローカル配列を返す) が linear fallback だった。今は
+参照レーンに乗り、同 fixture の guest bump 確保は 320 B → 244 B。
+
+#### 制御フロー join (2026-08-13)
+
+両腕が**すでに参照レーン**の値である `if` は、それ自体が
+`(ref null $native_i64_array)` を返す。位置は 2 つ: 参照結果を返す関数の tail と、
+証明済みの参照引数。
+
+typed reference には 1 バイトの value type 綴りが無いので、blocktype は
+**型インデックス**を指す (`(func (result (ref null 12)))` を base type 13 に予約、
+`emit_if_type_index`)。base type にしてあるのは、body が type section より先に
+生成されるため、インデックスが定数である必要があるから。
+
+**裸の配列リテラルを腕に持つ join は依然 fallback。** リテラルはまだ自分の表現を
+持っておらず (消費側が決める)、`if` には寄りかかれる消費側の証明が無い。
+対の fixture: `fixtures/gc_direct_array_join_test.vibe` /
+`fixtures/gc_direct_array_join_fallback_test.vibe`。
+
+#### 要素型 (2026-08-13)
+
+§7 の未解決 2 のうち「`(array (mut f64))` にするか」は**やらない**で確定済み
+(#1542 の 2026-08-07 コメント)。一方、**認識できる要素型**の話はそれとは別で、
+`Array[Int]` だけに絞られていたのは保守的な制限だった — native 配列のセルは
+`(mut i64)` に**ただの tagged 値**を置いており、それは linear memory が同じ要素に
+対して置くバイトと同一なので、要素型は表現を変えない。
+
+`Array[String]` / `Array[Bool]` を許可した。**allowlist のままにしてあるのは
+fit の問題ではなく認識の問題** — `strip_generic_type_params` の後、
+`fn f[T](xs: Array[T])` の要素は `TyName("T")` と綴られ、同名の具体型と区別が
+つかない。よって型変数になり得ない綴り (builtin scalar) だけを入れる。
+
+**ネストした配列は別の理由で対象外**: `Array[Array[Int]]` のセルは参照を持つ
+必要があるが、i64 セルに参照を入れる手段は仕様上無い (§1.1 の根本制約そのもの)。
+
+fixture: `fixtures/gc_direct_array_element_types_test.vibe`。
+
+#### export 境界との共存 (2026-08-13)
+
+CLI entry と公開宣言は tagged i64 の host 境界を越えるので参照を運べない。
+これは変わらないが、従来は**そういう宣言が 1 つあると component 全体で島が
+消えていた** — `export` はライブラリモジュールの通常の形なので、ジェネリックの
+件と同じく実コードでは常に消えていたことになる。
+
+今は単に**島の候補にならないだけ**で、署名は従来どおり全 i64 のまま。残りの
+component は参照レーンを使える。**変換点は要らない** — 参照を export へ渡す
+のは未対応の crossing として `gc_direct_abi_expr_kind` が従来どおり component
+全体を拒否し、export から**戻ってくる**値は kind 0 なので native local に
+ならない。
+
+対の fixture: `fixtures/gc_direct_array_export_coexist_test.vibe` (島が生きる)
+と `fixtures/gc_direct_array_abi_export_fallback_test.vibe` (private な参照を
+export 経由で通すので落ちる)。gate は「コンパイルが通った」ではなく
+**公開宣言が tagged-i64 ABI のままであること** (参照を運ぶ関数署名は private な
+mutator ちょうど 1 つ) を assert する。
+
+なお spelling-routed な衝突 (`Array::get` などの綴りを持つユーザ宣言) は
+**署名に参照が無くても component 全体を落とす**ままにしてある。これは過剰では
+なく、backend_call が native receiver に届くためにその綴りを横取りしているので、
+ユーザ宣言があると横取り自体が誤りになる — この島を必要としない #1329 の
+ローカルレーンに対しても誤る。
 | **C** | **集約フィールド** | ユーザ構造体を実 wasm-gc struct へ (ADR-0052 の `struct.set` 経路の一般化) | **#1542**。ヒープモデルの変更を含み、最も重い |
 | **D** | **クロージャ捕捉** | funcref テーブルの型が現状 arity 別 `(i64...)->i64` のみ。型別に増やすか、捕捉は i64 固定にするか | **#1543**。表が型ごとに増える点が最大の論点 |
 
@@ -255,6 +371,37 @@ wasm 出力バッファは `Bytes` で、`bytebuf_push_buf` は `Bytes::append`
 2. **要素型の範囲。** 現状の `$array` は `(array (mut i64))` で要素が tagged
    i64。`Array[Double]` を `(array (mut f64))` にするかは別問題として切り離す
    (今回の対象外)。
-3. **変換点のコスト。** ジェネリック関数へ配列を渡すたびに linear memory へ
-   materialize すると、ジェネリック多用のコードで逆に遅くなりうる。Phase A
-   完了時点で実測し、必要なら「ジェネリックの単相化」を別 issue に切る。
+3. ~~**変換点のコスト。**~~ **決着 (2026-08-14, #1701)。実測して単相化を採る。**
+   下の §7.1 を参照。
+
+### 7.1 変換点の意味論 — 境界の単相化を採る (2026-08-14, #1701)
+
+§4.1 の不変条件は「表現が変わる箇所には明示的な変換点がある」と言うだけで、その
+変換点が**何をするか**は決めていなかった。§4.3 の Phase A の記述は「linear memory
+へ materialize する」= **コピー**を示唆していたが、`Array[T]` は可変なので
+コピーは identity を壊す — 呼び出し先の変更が呼び出し元から見えなくなる、
+triage 最上位の「黙って誤る」形になる。
+
+3 候補を**実測して**決めた。Phase A (#1541) が着地して初めて越境が測れるように
+なったので、ADR 制定時にできなかった比較ができた。
+
+`bench/regression/gc_boundary_bench.vibe` / `gc_boundary_copy_bench.vibe`
+(400 iters, p50、参照レーンが乗っていることを `VIBE_BENCH_EMIT_WASM` で実物確認):
+
+| | 実行時 | サイズ | identity |
+|---|---|---|---|
+| **境界の単相化 (採用)** | **±0** | +1〜6% (下限見積) | **保たれる** |
+| materializing copy | **+76%** (レーン無しより遅い) | ±0 | **壊れる (P0)** |
+| 島の外に固定 (現状維持) | ±0 | ±0 | 保たれる |
+
+参照レーン自体の価値は **-22% / guest bump 確保ゼロ** (linear 91ns → gc 71ns)。
+コピーは 160ns で、**レーンの利得を食い潰すどころかレーンが無い状態より遅い**ため、
+identity の問題を抜きにしてもコストだけで落ちる。
+
+**採用: 境界の単相化。** 越境する呼び出しを参照版と i64 版に複製し、呼び出し側の
+表現で選ぶ。コピーが無いので identity は自明に保たれ、越境の実行時コストはゼロ。
+
+サイズの見積もりは**下限**である点に注意 — 複製 1 関数あたり ~43B を、`lib/` の
+「`Array[..]` を受けて返す関数」485 件 / 「署名に `Array[..]` を持つ関数」3,166 件に
+掛けたもので、**推移的な複製 (複製関数の callee も両版が要る場合) を勘定していない**。
+爆発が起きるとしたらそこなので、実装は推移的複製の係数を測りながら進める。

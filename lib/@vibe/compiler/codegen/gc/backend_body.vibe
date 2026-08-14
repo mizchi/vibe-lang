@@ -55,6 +55,7 @@ import @vibe/compiler/codegen/common_base {
   emit_str_ref,
   evidence_dict_pass,
   fn_type_param_types,
+  gc_slot_map_get,
   inline_direct_performs,
   lookup_ctor,
   resolve_func,
@@ -101,6 +102,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_f64_reinterpret_i64,
   emit_f64_sub,
   emit_func_type_raw,
+  emit_func_type_ref_result,
   emit_function_section,
   emit_global_get,
   emit_global_section_i32_mut,
@@ -219,7 +221,7 @@ import ./backend_builtins_string_extra.vibe {
 }
 
 import ./backend_expr.vibe {
-  compile_expr_gc
+  compile_expr_gc, gc_native_array_escape_gate
 }
 
 import @vibe/compiler/codegen/wasi {
@@ -238,18 +240,34 @@ fn gc_type_expr_is_unit(t: TypeExpr) -> Bool {
   }
 }
 
-/// #1541 deliberately starts with the single element representation already
-/// implemented by `$native_i64_array`. Nested arrays and erased/generic
-/// element names stay on the tagged-i64 ABI until an explicit conversion
-/// exists; guessing here would create an untraceable reference in an i64 cell.
+/// #1541 uses the single element representation already implemented by
+/// `$native_i64_array`, whose cells are `(mut i64)` holding ordinary tagged
+/// values -- exactly the bytes linear memory would hold for the same element.
+/// The element TYPE therefore does not change the representation, and the
+/// allowlist below is about what can be RECOGNIZED, not about what fits.
+///
+/// It stays an allowlist because `strip_generic_type_params` erases binders:
+/// after it runs, the type variable in `fn f[T](xs: Array[T])` is spelled
+/// `TyName("T")`, indistinguishable from a concrete type of that name. Erased
+/// element names must not enter the lane, so only spellings that cannot be a
+/// type variable are admitted -- the builtin scalars, which shadowing would
+/// have to break first.
+///
+/// Nested arrays stay out for a different reason: an `Array[Array[Int]]` cell
+/// would have to hold a reference, and there is no way to put one in an i64
+/// cell without losing it. That is the root constraint, not a conservatism.
 fn gc_direct_abi_is_native_array_type(t: TypeExpr) -> Bool {
   match t {
     TyApp(name, args) => name == "Array" && Array::length(args) == 1 && (match Array::get(args, 0) {
-      TyName(elem) => elem == "Int",
+      TyName(elem) => gc_direct_abi_is_tagged_scalar_element(elem),
       _ => false
     }),
     _ => false
   }
+}
+
+fn gc_direct_abi_is_tagged_scalar_element(elem: String) -> Bool {
+  elem == "Int" || elem == "String" || elem == "Bool"
 }
 
 fn gc_direct_abi_type_mentions_array(t: TypeExpr) -> Bool {
@@ -302,13 +320,30 @@ fn gc_direct_abi_name_in(names: Array[String], name: String) -> Bool {
   gc_direct_abi_name_index(names, name) >= 0
 }
 
+/// Static mirror of backend_call.vibe's `gc_expr_is_lane_proven_ref`: a value
+/// that ALREADY inhabits the reference lane, rather than one whose
+/// representation its consumer still gets to pick. Keep the two shapes in sync
+/// -- this one decides whether the component is accepted, that one decides what
+/// gets emitted, and a disagreement is a validation failure at best.
+fn gc_direct_abi_join_arm_is_lane_proven(expr: Expr, native_names: Array[String], abi_names: Array[String], abi_return_refs: Array[Bool]) -> Bool {
+  match expr {
+    EIdent(name, _) => gc_direct_abi_name_in(native_names, name),
+    ECall(EIdent(fname, _), _, _) => {
+      let idx = gc_direct_abi_name_index(abi_names, fname)
+      idx >= 0 && Array::get(abi_return_refs, idx)
+    },
+    EIf(_, then_e, else_e) => gc_direct_abi_join_arm_is_lane_proven(then_e, native_names, abi_names, abi_return_refs) && gc_direct_abi_join_arm_is_lane_proven(else_e, native_names, abi_names, abi_return_refs),
+    _ => false
+  }
+}
+
 /// Static representation proof used before emitting any typed function type.
 /// Result: -1 = unsupported crossing, 0 = tagged i64, 1 = native array ref.
 /// Once a module has a candidate reference signature, an array literal bound
 /// by `let` is analyzed in that same lane. Any unsupported use rejects the
 /// complete module evidence table; codegen then retries the whole component
 /// through its pre-existing tagged-i64 ABI. There is no mixed partial island.
-fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: Array[String], abi_param_refs: Array[Array[Bool]], abi_return_refs: Array[Bool]) -> Int {
+fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: Array[String], abi_param_refs: Array[Array[Bool]], abi_return_refs: Array[Bool], return_ref: Bool) -> Int {
   match expr {
     EIdent(name, _) => if gc_direct_abi_name_in(native_names, name) {
       1
@@ -323,7 +358,7 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
       let mut ok = true
       let mut i = 0
       while i < Array::length(elems) {
-        if gc_direct_abi_expr_kind(Array::get(elems, i), native_names, abi_names, abi_param_refs, abi_return_refs) != 0 {
+        if gc_direct_abi_expr_kind(Array::get(elems, i), native_names, abi_names, abi_param_refs, abi_return_refs, return_ref) != 0 {
           ok = false
         } else {
           ()
@@ -336,26 +371,43 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
         -1
       }
     },
-    ELet(name, value, body, _) => match value {
-      EArray(_) => {
-        let floor = Array::length(native_names)
-        Array::push(native_names, name)
-        let native_body = gc_direct_abi_expr_kind(body, native_names, abi_names, abi_param_refs, abi_return_refs)
-        Array::truncate(native_names, floor)
-        native_body
-      },
-      _ => {
-        let value_kind = gc_direct_abi_expr_kind(value, native_names, abi_names, abi_param_refs, abi_return_refs)
-        if value_kind < 0 {
-          -1
-        } else if value_kind == 1 {
+    // A `let` enters the reference lane only if lowering will actually put it
+    // there, which is `gc_native_array_escape_gate`'s decision -- the same
+    // predicate compile_expr_gc consults at the binding site. Accepting a
+    // reference here that lowering then declines to create is not a missed
+    // optimization: the call site would demand a reference the local does not
+    // have, and codegen aborts on its own proof mismatch. Disagreeing was a
+    // real defect -- `let xs = [1, 2]` captured by any lambda and also passed
+    // to a direct Array[Int] callee failed to compile at all.
+    ELet(name, value, body, _) => {
+      let binding_is_native = gc_native_array_escape_gate(body, name, return_ref, abi_names, abi_param_refs)
+      match value {
+        EArray(_) => if binding_is_native {
           let floor = Array::length(native_names)
           Array::push(native_names, name)
-          let body_kind = gc_direct_abi_expr_kind(body, native_names, abi_names, abi_param_refs, abi_return_refs)
+          let native_body = gc_direct_abi_expr_kind(body, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
           Array::truncate(native_names, floor)
-          body_kind
+          native_body
         } else {
-          gc_direct_abi_expr_kind(body, native_names, abi_names, abi_param_refs, abi_return_refs)
+          gc_direct_abi_expr_kind(body, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+        },
+        _ => {
+          let value_kind = gc_direct_abi_expr_kind(value, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+          if value_kind < 0 {
+            -1
+          } else if value_kind == 1 && binding_is_native {
+            let floor = Array::length(native_names)
+            Array::push(native_names, name)
+            let body_kind = gc_direct_abi_expr_kind(body, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+            Array::truncate(native_names, floor)
+            body_kind
+          } else if value_kind == 1 {
+            // The value IS a reference but the binding cannot hold one, so
+            // there is nowhere for it to go. Fail the component closed.
+            -1
+          } else {
+            gc_direct_abi_expr_kind(body, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+          }
         }
       }
     },
@@ -370,7 +422,7 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
             let mut ok = true
             let mut i = 0
             while i < Array::length(args) {
-              let kind = gc_direct_abi_expr_kind(Array::get(args, i), native_names, abi_names, abi_param_refs, abi_return_refs)
+              let kind = gc_direct_abi_expr_kind(Array::get(args, i), native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
               if kind < 0 || (Array::get(refs, i) && kind != 1) || (!Array::get(refs, i) && kind != 0) {
                 ok = false
               } else {
@@ -394,7 +446,7 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
           let mut ok = true
           let mut i = 0
           while i < Array::length(args) {
-            let kind = gc_direct_abi_expr_kind(Array::get(args, i), native_names, abi_names, abi_param_refs, abi_return_refs)
+            let kind = gc_direct_abi_expr_kind(Array::get(args, i), native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
             if kind < 0 {
               ok = false
             } else if kind == 1 {
@@ -418,11 +470,11 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
         }
       },
       _ => {
-        let callee_kind = gc_direct_abi_expr_kind(callee, native_names, abi_names, abi_param_refs, abi_return_refs)
+        let callee_kind = gc_direct_abi_expr_kind(callee, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
         let mut ok = callee_kind == 0
         let mut i = 0
         while i < Array::length(args) {
-          if gc_direct_abi_expr_kind(Array::get(args, i), native_names, abi_names, abi_param_refs, abi_return_refs) != 0 {
+          if gc_direct_abi_expr_kind(Array::get(args, i), native_names, abi_names, abi_param_refs, abi_return_refs, return_ref) != 0 {
             ok = false
           } else {
             ()
@@ -436,13 +488,51 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
         }
       }
     },
-    EReturn(value) => gc_direct_abi_expr_kind(value, native_names, abi_names, abi_param_refs, abi_return_refs),
+    // Control-flow join. The condition itself must stay on the tagged-i64
+    // lane, and both arms must agree: a join of a reference with an i64 would
+    // give one program point two representations. Agreeing arms carry their
+    // common kind outward, so a plain i64 `if` is unaffected.
+    //
+    // A reference join additionally requires both arms to be ALREADY in the
+    // reference lane (`gc_direct_abi_join_arm_is_lane_proven`). A bare array
+    // literal has kind 1 but no representation of its own yet -- the consumer
+    // picks one, and an `if` in an arbitrary position has no consumer proof to
+    // lean on. Joining literals therefore still clears the component, which is
+    // what fixtures/gc_direct_array_join_fallback_test.vibe pins.
+    EIf(cond, then_e, else_e) => {
+      let cond_kind = gc_direct_abi_expr_kind(cond, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+      let then_kind = gc_direct_abi_expr_kind(then_e, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+      let else_kind = gc_direct_abi_expr_kind(else_e, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+      if cond_kind != 0 || then_kind < 0 || else_kind < 0 || then_kind != else_kind {
+        -1
+      } else if then_kind == 1 && !(gc_direct_abi_join_arm_is_lane_proven(then_e, native_names, abi_names, abi_return_refs) && gc_direct_abi_join_arm_is_lane_proven(else_e, native_names, abi_names, abi_return_refs)) {
+        -1
+      } else {
+        then_kind
+      }
+    },
+    EReturn(value) => gc_direct_abi_expr_kind(value, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref),
+    // #1541: a sequence's VALUE is its tail. Falling through to the catch-all
+    // below was wrong here -- that clause requires EVERY child to be kind 0,
+    // which is right for an operand list but rejects `Array::set(xs, 0, 9); xs`
+    // because the tail legitimately yields the reference. That shape is exactly
+    // a mutating transform, i.e. the case where passing a reference instead of a
+    // copy is what makes the call mean anything, so the lane was declining the
+    // work it exists to do and taking the whole component down with it.
+    //
+    // The leading statement still has to be reference-free: a discarded
+    // reference would be a crossing nobody proved.
+    ESeq(first, second) => if gc_direct_abi_expr_kind(first, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref) != 0 {
+      -1
+    } else {
+      gc_direct_abi_expr_kind(second, native_names, abi_names, abi_param_refs, abi_return_refs, return_ref)
+    },
     _ => {
       let children = expr_children(expr)
       let mut ok = true
       let mut i = 0
       while i < Array::length(children) {
-        if gc_direct_abi_expr_kind(Array::get(children, i), native_names, abi_names, abi_param_refs, abi_return_refs) != 0 {
+        if gc_direct_abi_expr_kind(Array::get(children, i), native_names, abi_names, abi_param_refs, abi_return_refs, return_ref) != 0 {
           ok = false
         } else {
           ()
@@ -455,6 +545,25 @@ fn gc_direct_abi_expr_kind(expr: Expr, native_names: Array[String], abi_names: A
         -1
       }
     }
+  }
+}
+
+/// #1541: does this expression's VALUE come straight from an array literal?
+///
+/// A bare literal is kind 1 but has not chosen its own representation -- the
+/// consumer does. As a call argument that is fine: the callee's proven ref
+/// parameter decides. As a ref RESULT nothing decides, and the lowering builds
+/// an ordinary linear array, so accepting it produced a function whose type says
+/// `(result (ref null $array))` while its body returns i64 -- wasm that fails
+/// validation rather than a clean fallback.
+fn gc_direct_abi_tail_is_bare_array(expr: Expr) -> Bool {
+  match expr {
+    EArray(_) => true,
+    ESeq(_, second) => gc_direct_abi_tail_is_bare_array(second),
+    ELet(_, _, body, _) => gc_direct_abi_tail_is_bare_array(body),
+    ELetMut(_, _, body, _) => gc_direct_abi_tail_is_bare_array(body),
+    EIf(_, then_e, else_e) => gc_direct_abi_tail_is_bare_array(then_e) || gc_direct_abi_tail_is_bare_array(else_e),
+    _ => false
   }
 }
 
@@ -646,16 +755,26 @@ fn gc_body_is_to_string_forward(body: Expr, pname: String) -> Bool {
 
 /// Preserve the one pre-erasure fact the direct Array ABI must consume.
 /// `strip_generic_type_params` deliberately removes every EFn binder, so the
-/// gc-only source pipeline computes this before stripping and passes it into
-/// codegen. One generic declaration disables the component-wide island: there
-/// is no trustworthy post-strip way to distinguish its erased signature.
-export fn gc_direct_abi_pre_erasure_safe(stmts: Array[Stmt]) -> Bool {
+/// gc-only source pipeline collects the generic declaration NAMES before
+/// stripping and passes them into codegen. Post-strip an erased signature is
+/// indistinguishable from a monomorphic one, so without this list a generic
+/// `fn f[T](values: Array[Int], marker: T)` would be handed a typed
+/// `(ref null $array)` parameter it cannot honor.
+///
+/// This used to be a single Bool ("no generic declaration anywhere"), which
+/// disabled the island for every component containing any generic at all --
+/// in practice, all real code. Carrying the names instead keeps exactly the
+/// same rejection for generic declarations while letting a generic that never
+/// touches a reference-lane value coexist with the island: it simply is not a
+/// candidate, and any attempt to pass a reference into it is still rejected
+/// component-wide by `gc_direct_abi_expr_kind`.
+export fn gc_direct_abi_pre_erasure_generic_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
   let mut i = 0
-  let mut safe = true
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, EFn(type_params, _, _, _, _, _)) => if Array::length(type_params) > 0 {
-        safe = false
+      SLet(_, _, name, _, EFn(type_params, _, _, _, _, _)) => if Array::length(type_params) > 0 {
+        Array::push(names, name)
       } else {
         ()
       },
@@ -663,7 +782,7 @@ export fn gc_direct_abi_pre_erasure_safe(stmts: Array[Stmt]) -> Bool {
     }
     i = i + 1
   }
-  safe
+  names
 }
 
 /// Names intercepted by spelling before ordinary func-table dispatch in
@@ -717,7 +836,7 @@ fn gc_direct_abi_name_is_exported(stmts: Array[Stmt], name: String) -> Bool {
   found
 }
 
-export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_pre_erasure_safe: Bool) -> Bytes with Exception {
+export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   // #1015: `gc_to_string_is_wrapper` is a PARAMETER, not computed here --
@@ -783,7 +902,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   let gc_direct_abi_names_l = array_empty()
   let gc_direct_abi_param_refs_l = array_empty()
   let gc_direct_abi_return_refs_l = array_empty()
-  let mut gc_direct_abi_ok = direct_abi_pre_erasure_safe
+  let mut gc_direct_abi_ok = true
   let mut dai = 0
   while dai < Array::length(user_func_stmts) {
     match Array::get(user_func_stmts, dai) {
@@ -849,26 +968,49 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           } else {
             ()
           }
-          // A generic signature cannot enter the reference lane. The common
-          // preprocessor may erase the parameter list, so concrete Array[Int]
-          // is additionally required above; a surviving type parameter in the
-          // element position has already made gc_direct_abi_ok false.
-          if Array::length(dai_tparams) > 0 && has_ref {
+          // A generic signature cannot enter the reference lane. Two binders
+          // must be consulted, and neither subsumes the other:
+          //   * `dai_tparams` is the POST-strip binder. It is non-empty only
+          //     for the impl methods `inject_method_generics` re-generifies
+          //     AFTER `strip_generic_type_params` ran.
+          //   * `direct_abi_generic_names` is the PRE-erasure name list, the
+          //     only surviving evidence for source-level generics.
+          // Concrete Array[Int] is additionally required above; a surviving
+          // type parameter in the element position has already made
+          // gc_direct_abi_ok false.
+          let dai_is_generic = Array::length(dai_tparams) > 0 || gc_direct_abi_name_in(direct_abi_generic_names, dai_name)
+          if dai_is_generic && has_ref {
             gc_direct_abi_ok = false
           } else {
             ()
           }
-          // The CLI entry, every public declaration, and every spelling-routed
-          // builtin collision stays outside the private typed island. Any such
-          // declaration fails closed for the whole component so no body, call,
-          // or type section can consume partial evidence.
+          // A spelling-routed collision fails the WHOLE component closed even
+          // with no reference in its signature, and that is not overcaution:
+          // backend_call intercepts `Array::get`/`Array::set`/`Array::length`
+          // by spelling to reach native receivers, so a user declaration with
+          // one of those names makes the interception itself wrong -- for the
+          // #1329 local lane too, which does not need this island at all.
           if gc_direct_abi_name_has_spelling_lowering(dai_name) {
             gc_direct_abi_ok = false
           } else {
             ()
           }
+          // The CLI entry and every public declaration cross a host boundary
+          // whose ABI is tagged i64, so they cannot carry a reference. They
+          // simply stay OFF the island and keep the signature they always had;
+          // the rest of the component is unaffected. This used to fail the
+          // whole component closed, which meant a single `export` -- the normal
+          // shape of a library module -- disabled the lane for everything.
+          //
+          // Nothing is smuggled past this. An export is not in the evidence
+          // table, so handing a reference to one is an unsupported crossing
+          // that `gc_direct_abi_expr_kind` still rejects component-wide, and a
+          // value coming BACK from one is kind 0 and never becomes a native
+          // local. The export fallback fixture pins exactly that: it pipes a
+          // private reference through the exported declaration and still emits
+          // no native literal.
           if (dai_name == entry_name || gc_direct_abi_name_is_exported(stmts, dai_name)) && has_ref {
-            gc_direct_abi_ok = false
+            ()
           } else if has_ref {
             Array::push(gc_direct_abi_names_l, dai_name)
             Array::push(gc_direct_abi_param_refs_l, param_refs)
@@ -905,13 +1047,24 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           } else {
             ()
           }
-          let body_kind = gc_direct_abi_expr_kind(si_body, native_params, gc_direct_abi_names_l, gc_direct_abi_param_refs_l, gc_direct_abi_return_refs_l)
-          let expected_kind = if sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, sig_idx) {
+          let si_return_ref = sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, sig_idx)
+          let body_kind = gc_direct_abi_expr_kind(si_body, native_params, gc_direct_abi_names_l, gc_direct_abi_param_refs_l, gc_direct_abi_return_refs_l, si_return_ref)
+          let expected_kind = if si_return_ref {
             1
           } else {
             0
           }
           if body_kind != expected_kind {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
+          // A ref result whose value is a bare literal has no proof behind it:
+          // the lowering emits an ordinary linear array, and the emitted
+          // function would claim `(result (ref null $array))` while returning
+          // i64. Fail the component closed instead of shipping wasm that fails
+          // validation.
+          if si_return_ref && gc_direct_abi_tail_is_bare_array(si_body) {
             gc_direct_abi_ok = false
           } else {
             ()
@@ -1353,7 +1506,34 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   let gc_native_alloc_probe_array_type_idx = 11
   // Mutable i64 array used solely by non-escaping user local literals.
   let gc_native_array_type_idx = 12
-  let closure_type_base = 13
+  // `(func (result (ref null $native_i64_array)))`. Not a callable signature:
+  // it exists so a structured instruction can name a typed-reference result in
+  // its blocktype, which the binary format spells only as a type index. Kept a
+  // base type (rather than appended per module) so its index is a constant the
+  // body emitters can use -- bodies are generated before the type section is
+  // laid out. `emit_if_type_index` requires it to stay below 64.
+  let gc_native_array_block_type_idx = 13
+  // #1702: one wasm-gc struct type per FIELD COUNT, `(struct (mut i64) x N)`.
+  // Cells stay tagged i64 exactly like the native array's -- this changes where
+  // a non-escaping local record LIVES, not how its fields are represented.
+  //
+  // These sit BEFORE the closure types, and that ordering is forced: bodies are
+  // generated before the type section is laid out, so any index a body names
+  // must be a constant here. The struct count is known now (it comes from the
+  // declared structs); `num_closure_types` is only known after the walk.
+  let mut gc_native_struct_max_fields = 0
+  let mut nsi = 0
+  while nsi < Array::length(struct_field_names) {
+    let nsf = Array::length(Array::get(struct_field_names, nsi))
+    if nsf > gc_native_struct_max_fields {
+      gc_native_struct_max_fields = nsf
+    } else {
+      ()
+    }
+    nsi = nsi + 1
+  }
+  let gc_native_struct_type_base = 14
+  let closure_type_base = 14 + gc_native_struct_max_fields
   let fresh_bytes_array: () -> Array[Bytes] = () -> {
     ArrayBuilder::freeze(ArrayBuilder::new())
   }
@@ -1388,6 +1568,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // Absolute local slots of typed native-array locals, one entry per user
   // body; ref-cell metadata remains separate because it is still i64.
   let user_native_array_local_indices_all = array_empty()
+  // #1702: parallel to the above; each entry is a slot -> struct-index map so
+  // the code section can give a struct local its own `(ref null $S_N)`.
+  let user_native_struct_decl_all = array_empty()
   // #415 B-1: one call = one gc builtin body — body bytes, extra local
   // counts, the (always empty here) user-ref locals row, and the
   // function-section type index together. The function section splices
@@ -1400,6 +1583,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     Array::push(meta_i64, m64)
     Array::push(user_ref_local_indices_all, array_empty())
     Array::push(user_native_array_local_indices_all, array_empty())
+    Array::push(user_native_struct_decl_all, array_empty())
     Array::push(body_param_counts, -1)
     Array::push(gc_builtin_type_idxs, type_idx)
   }
@@ -1598,6 +1782,10 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             gc_native_array_locals: direct_param_slots_f,
             gc_native_array_local_types: array_empty(),
             gc_native_array_type_idx: gc_native_array_type_idx,
+            gc_native_array_block_type_idx: gc_native_array_block_type_idx,
+            gc_native_struct_scope: array_empty(),
+            gc_native_struct_decl: array_empty(),
+            gc_native_struct_type_base: gc_native_struct_type_base,
             gc_native_array_frame_ok: true,
             gc_lambda_native_array_locals: gc_lambda_native_array_locals_l,
             gc_direct_abi_names: gc_direct_abi_names_l,
@@ -1621,6 +1809,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           Array::push(meta_i64, extra)
           Array::push(user_ref_local_indices_all, ref_local_indices_f)
           Array::push(user_native_array_local_indices_all, func_ctx.gc_native_array_local_types)
+          Array::push(user_native_struct_decl_all, func_ctx.gc_native_struct_decl)
           Array::push(body_param_counts, param_count)
         },
         _ => throw("expected function")
@@ -1691,6 +1880,12 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       // inherit this (they set frame_ok back to true in
       // backend_lambda_ctx.vibe). Still one predicate, read in one place.
       gc_native_array_type_idx: gc_native_array_type_idx,
+      gc_native_array_block_type_idx: gc_native_array_block_type_idx,
+      // Module initializers share _start's frame, whose typed-local row is
+      // never emitted (same reason the array lane stays off here).
+      gc_native_struct_scope: array_empty(),
+      gc_native_struct_decl: array_empty(),
+      gc_native_struct_type_base: 0 - 1,
       gc_native_array_frame_ok: false,
       gc_lambda_native_array_locals: gc_lambda_native_array_locals_l,
       // `_start` stays entirely outside the private direct-call ABI island.
@@ -1766,6 +1961,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   Array::push(meta_i64, start_extra_locals)
   Array::push(user_ref_local_indices_all, array_empty())
   Array::push(user_native_array_local_indices_all, array_empty())
+  Array::push(user_native_struct_decl_all, array_empty())
   // `_start` takes no parameters (enforced above), so its extra locals begin
   // at slot 0.
   Array::push(body_param_counts, 0)
@@ -1778,6 +1974,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     // #1332: the lambda's own typed-local row, recorded parallel to
     // lt_w.bodies by record_lambda_meta_gc.
     Array::push(user_native_array_local_indices_all, Array::get(gc_lambda_native_array_locals_l, li))
+    Array::push(user_native_struct_decl_all, array_empty())
     // lt_w.param_counts already counts the trailing `__env` parameter.
     Array::push(body_param_counts, Array::get(lt_w.param_counts, li))
     li = li + 1
@@ -1804,7 +2001,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   } else {
     0
   }
-  let num_base_types = 13
+  let num_base_types = 14 + gc_native_struct_max_fields
   let gc_direct_type_indices = array_empty()
   let mut gc_direct_type_count = 0
   let mut dti = 0
@@ -1875,6 +2072,22 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   ])
   emit_array_type_raw(type_content, 126, 0)
   emit_array_type_raw(type_content, 126, 1)
+  emit_func_type_ref_result(type_content, gc_native_array_type_idx)
+  // #1702: `(struct (mut i64) x N)` for N = 1..max, so an N-field record uses
+  // gc_native_struct_type_base + (N - 1).
+  let mut nst = 0
+  while nst < gc_native_struct_max_fields {
+    let nst_fields = array_empty()
+    let nst_muts = array_empty()
+    let mut nstf = 0
+    while nstf <= nst {
+      Array::push(nst_fields, 126)
+      Array::push(nst_muts, 1)
+      nstf = nstf + 1
+    }
+    emit_struct_type_raw(type_content, nst_fields, nst_muts)
+    nst = nst + 1
+  }
   let mut cti = 0
   while cti < num_closure_types {
     let num_params = cti + 1
@@ -2013,13 +2226,39 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // fs_read_file results) heap-bumps through the exported __heap_ptr global;
   // without it the runner falls back to an end-of-memory arena that the
   // guest's own bump allocator grows into and clobbers mid-compile.
+  // #1701: per-block `__test_<name>` / `__bench_<name>` exports, mirroring the
+  // linear backend (codegen/wasi/linked_compile.vibe). Without them `vibe bench`
+  // has nothing to call on this lane: the synthesized `_start` runs every block
+  // in one go, so the runner found no entry point, timed nothing, and printed a
+  // single nameless line of invented numbers.
+  //
+  // Only `__no_entry__` test/bench builds produce these names, so ordinary
+  // builds -- including the compiler's own self-compile -- keep the exact export
+  // set they had. The wasm index of user function `j` is `j + func_offset`, the
+  // same mapping the linear twin uses.
+  //
+  // This does NOT make `export let` work on the gc lane; that surface is still
+  // unimplemented here, and widening it interacts with the #1541 export rule.
+  let block_export_names = array_empty()
+  let block_export_indices = array_empty()
+  let mut bxi = 0
+  while bxi < num_user_funcs {
+    let bname = Array::get(fn_names_list, bxi)
+    if String::starts_with(bname, "__bench_") || String::starts_with(bname, "__test_") {
+      Array::push(block_export_names, bname)
+      Array::push(block_export_indices, bxi + func_offset)
+    } else {
+      ()
+    }
+    bxi = bxi + 1
+  }
   let export_content = bytebuf_new()
   let export_entry_too = entry_name != "_start"
-  bytebuf_push_vec_header(export_content, if export_entry_too {
+  bytebuf_push_vec_header(export_content, Array::length(block_export_names) + (if export_entry_too {
     4
   } else {
     3
-  })
+  }))
   emit_name(export_content, "_start")
   bytebuf_push(export_content, 0)
   leb128_encode_u32(export_content, start_func_idx)
@@ -2036,6 +2275,13 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   emit_name(export_content, "__heap_ptr")
   bytebuf_push(export_content, 3)
   leb128_encode_u32(export_content, 0)
+  let mut bxe = 0
+  while bxe < Array::length(block_export_names) {
+    emit_name(export_content, Array::get(block_export_names, bxe))
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, Array::get(block_export_indices, bxe))
+    bxe = bxe + 1
+  }
   bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
     // #1109 gc parity (linear twin: linked_compile.vibe's element-section
@@ -2092,8 +2338,24 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     let ni64 = Array::get(meta_i64, ci)
     let ref_indices = Array::get(user_ref_local_indices_all, ci)
     let native_indices = Array::get(user_native_array_local_indices_all, ci)
+    let native_struct_decl = Array::get(user_native_struct_decl_all, ci)
+    let mut num_native_struct_locals = 0
+    let mut nsdi = 0
+    while nsdi < Array::length(native_struct_decl) {
+      if Array::get(native_struct_decl, nsdi) >= 0 {
+        num_native_struct_locals = num_native_struct_locals + 1
+      } else {
+        ()
+      }
+      nsdi = nsdi + 1
+    }
     let num_ref_locals = Array::length(ref_indices)
-    let num_native_locals = Array::length(native_indices)
+    let num_native_array_locals = Array::length(native_indices)
+    // Only the fast-path test below may use the COMBINED count. The array-lane
+    // scan further down indexes `native_indices` and must stay bounded by that
+    // list's own length -- the two were interchangeable until struct locals
+    // started contributing to the total (#1702).
+    let num_native_locals = num_native_array_locals + num_native_struct_locals
     if num_ref_locals == 0 && num_native_locals == 0 {
       if ni32 == 0 {
         if ni64 == 0 {
@@ -2142,12 +2404,15 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
         }
         let mut is_native_array = false
         let mut nai = 0
-        while nai < num_native_locals {
+        while nai < num_native_array_locals {
           if Array::get(native_indices, nai) == actual_local_idx {
             is_native_array = true
           }
           nai = nai + 1
         }
+        // #1702: a struct local's wasm type depends on its FIELD COUNT, so the
+        // slot is looked up in the map rather than tested for membership.
+        let ns_decl_struct_idx = gc_slot_map_get(native_struct_decl, actual_local_idx)
         leb128_encode_u32(func_buf, 1)
         // #538 ref cells remain linear-memory i64 cells. Only proven local
         // literals use a nullable typed GC reference.
@@ -2155,6 +2420,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
         if is_native_array {
           bytebuf_push(func_buf, 99)
           leb128_encode_u32(func_buf, gc_native_array_type_idx)
+        } else if ns_decl_struct_idx >= 0 {
+          bytebuf_push(func_buf, 99)
+          leb128_encode_u32(func_buf, gc_native_struct_type_base + Array::length(Array::get(struct_field_names, ns_decl_struct_idx)) - 1)
         } else {
           bytebuf_push(func_buf, 126)
         }

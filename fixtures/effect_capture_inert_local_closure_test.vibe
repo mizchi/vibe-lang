@@ -1,0 +1,42 @@
+// #1536: a closure literal passed to an accepted callee may capture a local
+// name bound to a PROVABLY INERT closure literal -- one whose row is free of
+// the effect (and of a row variable), which is not step-split, and whose own
+// body passes the taint scan. We can see exactly what the name holds, so it
+// cannot smuggle a suspending closure through the plain-call convention.
+//
+// a = resumed 5, inner(5) = 10, + 1 = 11.
+//
+// The capture of a PERFORMING literal stays refused -- see
+// err_effect_capture_performing_closure, which is what keeps this sound.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn run(f: (Int) -> Int, n: Int) -> Int {
+  f(n)
+}
+
+fn helper() -> Int with Ask {
+  let inner = (y: Int) -> Int {
+    y * 2
+  }
+  let a = perform Ask::Get(1)
+  run((y: Int) -> Int {
+    inner(y) + 1
+  }, a)
+}
+
+let _start = () -> Int {
+  handle {
+    helper()
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+
+test "effect capture inert local closure" {
+  inspect(_start(), "11")
+}

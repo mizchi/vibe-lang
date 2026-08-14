@@ -2916,6 +2916,347 @@ codegen は String を実行時判別する #807)、loop body 内の `return`、
 literal param flow、`if` / `match` branch および non-tail `&&` / `||` RHS の
 条件付き suspension。
 
+### 追記49 (2026-08-13): selection が束縛値そのものなら束縛ごと枝へ分配する (#1536)
+
+追記43 は `if` / `match` が **sequence HEAD** (= 文位置) に立つときだけ継続を枝へ
+分配していた。値として使われる同じ selection —
+
+```
+let v = if ready { perform Op(1) } else { 0 }
+v + 1
+```
+
+— は追記48 の generic ANF に落ちて reject される。ANF は「必ず評価される位置」しか
+歩かないので、枝の中の suspension に名前を付けることはできない (選ばれない枝の
+operation を走らせてしまう)。つまりここでも**受理される綴りが「何をしたか」ではなく
+「どこに置いたか」で決まっていた** — 文位置の `if` は通り、同じ `if` を `let` に
+束縛した瞬間に通らない。
+
+名前を付けられないだけで、**束縛を selection の外に置いておく理由は無い**:
+
+```
+let x = if c { t } else { e }  REST
+  ==>  if c { let x = t  REST } else { let x = e  REST }
+```
+
+condition / scrutinee は元の位置に残るので**ちょうど一回・枝より先に**評価され、
+各枝は自分の値を `x` に束縛して継続を一回だけ走らせる。追記43 が sequence HEAD で
+やっている継続分配と同じ機構で、違いは枝の値が捨てられるか binder に食われるかだけ。
+`let mut` 初期化子も同じ (分配後は枝ごとに継続を box する — cell はそのためにある)。
+
+`match` の腕は追記43 と同様、継続を腕の下へ移す前に**パターン binder を alpha-rename**
+する: 継続は元々 match の外にあったので、そこで自由な名前が腕の束縛に捕まっては
+ならない (`fixtures/effect_let_selection_match_capture_test.vibe` が pin。捕獲すると
+17 ではなく 16 を返す)。追記43 と共有の `scps_float_match_arm_rename` に切り出した。
+
+**`break` / `continue` / `return` を含む selection は fail-closed のまま** — transfer は
+このパスが組む loop 形に対して書き換えられるので、その下へ継続を複製するのは
+このスライスの範囲外。selection が compound の中にネストしている形
+(`1 + (if c { perform .. } else { 0 })`) もこの時点では reject
+(後述の追記52 が、そこでは selection を丸ごと名前に束ねてこの分配へ渡すことで解消した)。
+
+**残る不適格**: 追記48 の一覧から「`let` / `let mut` の値そのものである selection」を
+引いたもの。
+
+### 追記50 (2026-08-13): block が束縛値そのものなら束縛を内側へ移す (#1536)
+
+追記49 と同じ「どこに置いたか」問題がもう一段ある。分配した枝の中に**文がある**と、
+枝の値は `{ log(); perform Op() }` という block になり、`ELet(x, ESeq(a, v), b)` の形で
+また generic ANF に落ちて reject される。文位置の同じ block は追記42 の
+sequence-HEAD float が既に受けているので、値位置だけが取り残されていた。
+
+block の文前置は値より先に走るので、**束縛はそれを追い越して内側へ入れる**だけでよい:
+
+```
+let x = { a; v }         REST  ==>  a;           let x = v  REST
+let x = { let y = e; v } REST  ==>  let y' = e;  let x = v[y:=y']  REST
+```
+
+float した `let` binder は継続の上へスコープが広がるので、追記42 と同じ
+`scps_seq_float_fresh` の probe で alpha-rename する (`REST` は元々 block の外に
+あったので、そこで自由な名前は外側の束縛を指す)。`fixtures/effect_let_block_value_suspend_test.vibe`
+が pin — 捕獲すると 762 ではなく 812 を返す。
+
+どちらの書き換えも値を**厳密に小さく**するので、結果を再 split すれば収束する。
+追記49 の分配と合わせて、「文を含む枝」が初めて通る。
+
+block の文前置は `ESeq` とは限らない — 中の代入文は**残りの block を自分の継続として
+持つ** (`EAssign(y, v1, <残り>)`) ので、`ESeq` / `EAssign` / `EAssignOp` の 3 綴りを
+同じ「何も束縛しない前置」として扱う。
+
+### 追記51 (2026-08-13): 代入の RHS にも同じ 2 つの書き換えを与える (#1536)
+
+追記49/50 は束縛 (`let` / `let mut`) だけだった。同じ形を代入で書くと
+(`acc = if c { perform .. } else { 0 }`, `acc = { log(); perform .. }`) まだ reject される。
+値が新しい binder に入るか既存の target に入るかは、suspension の位置とは無関係な違い。
+
+書き換えは同じ (binder を作らない分だけ簡単):
+
+```
+x = if c { t } else { e }  REST  ==>  if c { x = t  REST } else { x = e  REST }
+x = { a; v }               REST  ==>  a;  x = v  REST
+```
+
+**適用箇所が 2 つある**のがこのスライスの本質:
+
+- **cellify より前** (`scps_float_direct_assign`) — この spine が box した target 向け。
+  `x = v` が `Array::set(x, 0, v)` になった後では `v` は builtin の引数であり、そこから
+  float すると**他の引数の評価を複製する**ことになる。だから box 化の前に形を直す
+- **継続 spine 上** (`scps_split_tail` の `EAssign` arm) — spine の外で束縛された target 向け。
+  こちらは代入のまま split に届く
+
+両者が食い違うと綴りによって受理が変わるので、fixture を 2 本置いて同じ書き換えを pin した
+(`effect_assign_selection_suspend_test.vibe` / `effect_assign_outer_selection_suspend_test.vibe`)。
+`match` の腕の alpha-rename と `break` / `continue` / `return` の fail-closed は追記49 と同じ。
+
+### 追記52 (2026-08-13): compound の中の selection は「丸ごと名前を付ける」(#1536)
+
+追記48 の ANF が `if` / `match` の枝へ降りないのは正しい — 選ばれない枝の operation を
+走らせてしまう。だがそこから導かれるのは「枝の中の suspension に名前を付けられない」までで、
+**selection 自体に名前を付けられない**ではなかった。ANF が到達する位置は定義上すべて
+**必ず評価される**ので、selection は元の位置のまま 1 つの部分式として名前を付けられる:
+
+```
+value = 1 + (if c { perform Op(1) } else { 0 })
+  ==>  let h = if c { perform Op(1) } else { 0 };  value = 1 + h
+```
+
+そして `let h = <selection>` は追記49 が分配する形そのもの。つまり**新しい機構は要らず、
+ANF が「降りる」か「拒否する」の二択だったところに「丸ごと名前を付ける」を足すだけ**で、
+conditional 位置から何かを float することなく受理できる。
+
+これで #1536 が挙げていた「compound にネストした `if` / `match` の枝」は無くなる
+(旧 `err_effect_compound_branch_suspend` / `err_effect_compound_match_branch_suspend` は
+`effect_compound_selection_suspend_test.vibe` に置き換えた — `order` の桁が suspension を
+またぐ移動が無いことを pin する)。
+
+transfer (`break` / `continue` / `return`) を含む selection はここでは blocked にしてある —
+分配側が拒否するため、名前を付けると ANF がまた名前を付けて**収束しない**ループになる。
+(現在の型検査では `1 + (if c { break } else { .. })` は書けないので surface からは
+到達しないが、コンパイラが hang しないための fail-closed。)
+
+### 追記53 (2026-08-13): non-tail の `&&` / `||` も丸ごと名前を付ける (#1536)
+
+追記52 の理屈は `&&` / `||` にもそのまま当てはまる — 右辺へ降りないのは正しいが、
+**短絡式自体**は必ず評価される位置にあるので名前を付けられる。違うのは受け側で、
+`let h = l && r` は追記49 の分配ではなく #1667 の let-shortcircuit 経路に落ち、
+**そちらは None を返しうる**。None が返ると値がそのまま ANF に戻ってまた名前が付き、
+収束しない。
+
+そこで **判定手続き自身に訊く**: `scps_let_shortcircuit_bind` を probe として呼び、
+`Some` のときだけ丸ごと名前を付ける。この関数の Some/None は RHS と sctx だけで決まり、
+束縛名や継続には依存しないので、ダミーの名前と `EUnit` を渡した probe の答えが本番と
+一致する。判定を写した述語を別に書くと lockstep が崩れるが、本物を呼べば崩れようがない。
+
+同時に let-shortcircuit の**終端が compound でもよい**ようにした。生成される束縛は
+**選ばれた枝の中**に置かれるので、そこでは何もかもが必ず評価される — spine の線形化が
+要求する前提そのもの。これで次の 3 形が通る (どれも旧 reject fixture):
+
+```
+value = if value == 0 && perform Ask::Get(1) > 0 { 5 } else { 6 }  // non-tail、compound 終端
+let a = true && (true && perform Ask::Get(1) > 0)                  // 入れ子の短絡
+let b = true && twice(perform Ask::Get(2)) > 3                     // 呼び出し引数
+```
+
+bypass は保たれる (`effect_compound_shortcircuit_suspend_test.vibe` の `b` と
+`effect_shortcircuit_compound_rhs_test.vibe` の `c` が pin)。
+
+**残る不適格**: 選ばれた RHS が `return` / `break` / `continue` する形
+(`err_effect_let_shortcircuit_return_suspend` — transfer を合成 resume 継続へ移すと、
+元のスコープではなくその closure を指してしまう)、および RHS の spine 要素が
+direct でない suspension を持つ形。条件付き位置そのものはこれで塞がった。
+
+### 追記54 (2026-08-13): split される body の `return` を fail-closed にする (#1536)
+
+上の条件付き位置を潰す作業中に実測で見つけた**先行するバグ**。suspend lowering は body を
+「step を返す部品」へ書き換えるので、その body に書かれた `return` は**もう関数を抜けない** —
+自分の値を step のつもりで driver に手渡す。結果、**型検査を通り、clean にコンパイルされ、
+`return` を通った実行だけが runtime で trap する** (`unreachable`)。
+
+```
+fn helper() -> Int with Ask {
+  let a = perform Ask::Get(1)
+  if a > 0 { return a * 100 } else { () }   // ← compile 成功 / 実行で trap
+  a
+}
+```
+
+チェックされていたのは**ループ body の `return` だけ** (`scps_body_has_return` は
+loop→再帰変換の適格性判定にしか使われていなかった)。ループの外も、そして
+**suspension より前の guard-clause 形も**同じ理由で壊れている — `return` が抜ける先の
+部品は「変換後の関数」であって元の関数ではない。
+
+split する 3 箇所 (handle body / needing fn clone / closure literal) すべてで、split の前に
+`scps_body_has_return` で refuse する。診断は**効く編集を述べる**: 「早期脱出の値を返すのでは
+なく作れ (束縛して後で選べ)、または `return` を handle の外へ出せ」。
+
+**nested closure の `return` はそのまま受理される** — それはその closure を指すので正しく、
+`scps_body_has_return` は `EFn` で走査を止める (`effect_resume_store_loop_nested_return` が
+positive 側、`err_effect_return_in_split_body` /
+`err_effect_return_guard_in_split_body` が negative 側)。
+
+本来の解 (escape 継続を lowering に持たせて `return` を通す) は残件のまま。今回のスライスは
+「黙って壊れる」を「その場で断る」に変えただけで、書けるコードは増えていない。
+
+### 追記55 (2026-08-13): `return` を tail へ寄せる — escape 継続は要らなかった (#1536)
+
+追記54 の時点では「escape 継続を step machine に通す」のが本来の解だと考えていた。実際には
+**needing fn の clone と closure literal に限れば、その機構は要らない**。そこでの
+`return v` は「**この computation の値が v**」という意味であり、それは**body の tail が
+既に意味していること**そのものだから。だから運ぶのではなく、**元から指している tail へ寄せる**:
+
+```
+return v;  REST                        ==>  v            (REST は到達不能)
+if c { .. return .. } else { .. }; REST ==>  if c { ..; REST } else { ..; REST }
+```
+
+2 つ目は suspension スライス群と同じ継続分配で、`match` の腕の capture 規則も同じ
+(`scps_seq_float_match_arms` を再利用)。**枝が実際に return するときだけ**発火するので、
+return しないコードの形は変わらない。
+
+**部分実装が安全な理由**: 寄せきれなかった `return` (ループの中、let 初期化子の中、被演算子の中)
+は**そのまま残し**、呼び出し側が「まだ `return` が残っていれば追記54 の refuse」を行う。
+つまりこの変換が不完全であることのコストは**拒否**であって、決して miscompile ではない。
+だから届く範囲から先に着地させられる。
+
+handle body は対象外 — そこの `return` は**囲む関数**から抜ける意味で、handle の値ではないので
+`done(v)` 化は誤り。追記54 の refuse のまま。ループの中も同じく refuse のまま
+(`bubble(lp(), k)` が done 値を**ループの値**として k に渡すため、escape しない)。
+
+実測 (`effect_return_in_split_body_test.vibe` = 5007560,
+`effect_return_match_arm_split_test.vibe` = 311): suspension の後の return、
+前の early exit (取る/取らない)、tail return、そして腕の binder が外側 `n` を shadow する
+match — 捕獲すると 311 ではなく 306 になる。
+
+### 追記56 (2026-08-13): loop 内の `return` と、その下で見つかった P0 (#1536)
+
+ループ body の `return` は追記55 の hoist では扱えない — **loop body の tail は「次の反復」で
+あって関数の値ではない**から。だが新しい機構は要らなかった: `break` は既にこの loop を
+出られる (追記47) し、loop の**後ろ**の spine 上の `return` は追記55 が扱える。だから
+「値を控えて、loop を出て、外で返す」に書き換えるだけでよい:
+
+```
+while c { .. return v .. }   ==>  let mut returned = false
+REST                              let mut slot = 0
+                                  while c { .. slot = v; returned = true; break .. }
+                                  if returned { return slot } else { REST }
+```
+
+**入れ子の loop の中の `return`** も同じ書き換えで通る: `break` は 1 段しか出ないので、
+**各段が record-and-break し、その直後に `if returned { break }` の guard を置いて
+exit を 1 段ずつ外へ運ぶ**。3 段でも同じ (`effect_return_nested_loop_test.vibe` が
+2 段 / 3 段 / return を取らない場合を pin)。
+
+#### この書き換えが最初に誤答した — 原因は先行する P0 だった
+
+実装後の最初の実測が **700 ではなく 800** を返した。切り分けると、原因は `return` ではなく
+**`break` そのもの**だった:
+
+```vibe
+while i < 5 {
+  let v = perform Ask::Get(i)
+  if v > 6 { acc = v * 100; break } else { () }   // ← 前に文が 1 つある
+  i = i + 1
+}
+```
+
+`scps_is_ctl_terminator` が**裸の** `break` / `continue` しか transfer と認めていなかったため、
+「文が 1 つ前に付いた transfer」= 普通の綴りが transfer と見なされず、normalizer は継続を
+落とさず、rewrite も切らなかった。rewrite 後の transfer は**ただの呼び出し** (`k(v)`) なので、
+実行は**それを素通りして loop を続けた**。同じ loop を effect 抜きで書けば 700、
+suspension を入れると 800 — **黙って別の答えを返していた** (P0)。
+
+`scps_is_ctl_terminator` を「この式は必ず transfer するか」に広げた (spine の tail を辿り、
+selection は**全枝が transfer するときだけ**真。nested loop / closure / handle には入らない)。
+`effect_transfer_after_resume_test.vibe` が pin (70011302)。
+
+**教訓**: 追記55 の hoist は設計上正しかったが、土台が壊れていた。既存 fixture は transfer を
+**suspension より前**にしか置いておらず、resume の後ろの transfer を誰も見ていなかった。
+
+### 追記57 (2026-08-13): handle body の `return` は cell で外へ出す (#1536)
+
+needing fn の clone と違い、handle body の `return v` は「**handle の値**」ではなく
+「**囲む関数から抜ける**」意味なので、追記55 の hoist (tail へ寄せる) は使えない。
+代わりに **cell を handle の外に置く**:
+
+```
+let r = handle { .. return v .. } with E { .. }   REST
+  ==>  let mut returned = false
+       let mut slot = 0
+       let r = handle { .. slot = v; returned = true; 0 .. } with E { .. }
+       if returned { return slot } else { REST }
+```
+
+handle の外に出た `return` は**普通の spine 上の return** なので、この handle 式自体が
+split される body の中にあれば追記55 がそれを拾う。loop pass が spine 上へ持ち上げた
+`return` も、この capture が cell 書き込みへ変換するので合成できる (`loop_early` が pin)。
+
+hoist の終端を `flag == ""` で分岐させただけで、走査そのものは追記55 と同じものを共有する。
+
+#### 撤回して戻した経緯 — 原因は async ではなかった
+
+最初の実測で **`return 777` が 1554**、`return a * 100` (a=5) が 1000 と、**きっちり 2 倍**の
+値が返った。`return` を取らない経路は正しかった。黙って誤るので一度撤回したが、原因は
+**probe スクリプトが `VIBE_RC` を pin しておらず RC レーンで走っていた**ことで、
+**RC backend では entry 関数の `return` が untag されない** (#1696、P0) という別のバグだった。
+`VIBE_RC=0` (ゲートと同じ) で測り直すと 500 / 6 / 777 と正しい。
+
+**教訓 2**: 誤った値を見て止めたのは正しかったが、原因の見立ては外れていた。計測環境が
+ゲートと同じ設定かどうかを先に確かめること。
+
+### 追記58 (2026-08-14): Array と示せる `for-in` を while 形へ落とす (#1536)
+
+`for x in xs { .. perform .. }` — async で最も自然な反復 — が長く不適格だった。理由は
+**codegen が `EForIn` を最後まで保持し、実行時に iterand が String かを判別して byte を
+materialize する** (#807) ため。source level で while へ書き換えると **String は 0 回反復に
+なって黙って誤る**。
+
+必要なのは「Array である」証明だが、**checker のチャンネルは要らなかった**。次の**構文的**
+証明で足りる:
+
+- **`Array[..]` と注釈された引数** (`fn total(xs: Array[Int])`)
+- **spine 上で配列リテラルに束縛された `let`** (`let xs = [1, 2]`)
+
+証明できた名前に対してだけ、split の前に while 形へ落とす:
+
+```
+for x in xs { body }  ==>  let mut i = 0
+                           while i < Array::length(xs) {
+                             let x = Array::get(xs, i)
+                             i = i + 1
+                             body
+                           }
+```
+
+`Array::length` は毎回読み直す (`for` の意味論どおり — body が配列を伸ばせばその分回る)。
+**index は body の前に進める**ので、body の `continue` が空回りしない。
+
+**証明できないものは一切書き換えない**ので、この pass が変えられるのは**今日 reject されている
+プログラムだけ** — 現在通っているコードの挙動は変わらない。String は
+`err_effect_string_for_suspend` が「引き続き reject」を pin する (書き換えていたら 0 回反復で
+黙って誤っていた)。
+
+`effect_array_for_suspend_test.vibe` (385548729) が**受理だけでなく意味論**を pin する:
+引数由来 36 / リテラル由来 23 / `break` 23 / `continue` 24 (index が進む) / 伸長 87 /
+handle body に直接書いた形 29。
+
+**String iterand も同じ形で通る** (追記58b): codegen は String の char code を配列へ
+materialize して回す (#807) が、**String は immutable なので直接 index で回しても同じ列**に
+なり、`String::length` / `String::char_code_at` は codegen 自身が materialize に使っている
+builtin。証明も同じ構文的なもの (`String` 注釈の引数 / 文字列リテラル束縛)。
+**証明できない iterand は依然として一切書き換えない** — 実行時に String になりうる値を
+array 形へ落とさないのはこの一点で守られている。
+
+> 実装時に 5 回続けて誤診した。原因は述語でも builtin でも site でもなく、**関数本体を丸ごと
+> 差し替えたときの splice ミス**だった。証明済みの名前を診断に吐く instrumentation を 1 回
+> 入れたら (`strseed=1 S=s/found`) 部品が全部正しいことが分かり、そこから surgical に
+> 書き直して通った。**読んで当てるのをやめて計測に切り替える**のが最短だった。
+
+書き換えは **3 つの split site すべて**に置く — needing fn の clone、handle body 自身、
+closure literal。最初は clone だけに入れており、`handle { for x in xs { .. perform .. } }` と
+直接書いた形が取り残されていた (handle body も他と同じ spine で、そこでは引数が無いので
+証明は spine 上の配列リテラル束縛から来る)。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
@@ -2943,3 +3284,126 @@ literal param flow、`if` / `match` branch および non-tail `&&` / `||` RHS �
   はその制約下で設計している (「並行モデル (ADR-0068) との整合」節参照)。
 - `docs/pl-survey-2026-07.md` — 本 ADR の元になったサーベイ項目。
 - `eval/lang-review/findings/2026-07-12-r2.md` M2 — replay の実測バグ。
+
+### 追記59 (2026-08-14): row 変数 callee は「一階なら安全」(#1536)
+
+`with e` を宣言した callee は「provably effect-free」ではないとして一律 reject していた。
+理由は「row 変数は closure 引数経由で migrated effect に具体化されうる」。正しいが、
+**その具体化は引数を通してしか起きない**。
+
+したがって: **宣言された引数の型がどこにも関数型を含まない callee は、call site が
+どうであれ `e` を空 row にしか具体化できない** — 呼び出しは handled effect を perform しえない。
+
+```vibe
+fn twice(x: Int) -> Int with e { x * 2 }        // ← 一階。suspend body から呼べる
+fn apply(f: (Int) -> Int with e, x: Int) -> Int with e { f(x) }   // ← 拒否のまま
+```
+
+判定は宣言だけで閉じる (call site の型推論は要らない)。`Array[(Int) -> Int with e]` のように
+**型引数の中の関数型も数える**ので、`TyFn` を再帰的に探す。注釈の無い引数・定義が見つからない
+callee は従来どおり拒否。
+
+#### 見つけ方 — 5 連続の誤診の原因は「stale な生成ソース」だった
+
+実装後の実測が `REJECTED` のままだったので、また誤診を重ねかけた。今度は最初から
+instrumentation を入れたところ、**そのデバッグ出力自体が現れなかった**。調べると
+`lib/@vibe/compiler/_cli_adapter_module_source.vibe` (生成物) が編集より**古いまま**で、
+`VIBE_PREBUILT_MODULE_SOURCE` でそれを食わせていたため、**ここ数回のビルドは変更を
+一切含んでいなかった**。生成物を消して再生成させたら `generate_bundle: seed could not
+flatten the live tree / unexpected in pattern: =1` — instrumentation の中に書いた
+`None => all = false` (波括弧なしの代入) が seed の parse error だった。
+
+つまり **`ensure_generated.sh` が "ok" を返しても生成物が最新とは限らない**。この直前の
+String iterand の 5 連続誤診も、同じ stale ビルドを見ていた可能性が高い。
+
+**教訓 (今夜 3 つ目)**: 否定的な実測が続いたら、まず**測っている対象が自分の変更を含んで
+いるか**を確かめる。`grep <新しい識別子> <生成ソース>` の一行で済む。
+
+### 追記60 (2026-08-14): `for` の iterand が CALL でも証明できる (#1536)
+
+追記58 の証明は**名前**に限っていたので、`for x in items()` のように iterand が呼び出しだと
+落ちていた。**callee の宣言された戻り型**で同じ証明ができる:
+
+```vibe skip
+fn items() -> Array[Int] { [1, 2, 3] }
+for x in items() { .. perform .. }        // ← 通るようになった
+```
+
+値は loop の前に一度だけ束縛する (`for` が iterand を一度だけ評価するのと同じ)。名前の場合は
+既に名前があるので束縛は増やさない。
+
+戻り型の取得先に注意: **`fn_defs` の `Option[TypeExpr]` スロットは binding の注釈**
+(`let f: T = ..`) であって関数の戻り型ではない (通常 `None`)。戻り型は `EFn` 側にあるので、
+stmts を走査して `SLet(_, _, name, _, EFn(_, _, _, ret, _, _))` から読む。最初これを
+取り違えて「証明が効かない」状態になった — **構築側 (`edp_collect_fn_defs`) を読めば
+ビルド 0 回で分かった**。
+
+### 追記61 (2026-08-14): step-split literal を plain な param へ渡す形は reject する (#1707)
+
+**P0 (黙って誤る)。** effect を perform する closure literal は **step を返す**ようにコンパイル
+されるので、**その effect を row に持つパラメータにしか渡せない**。plain なパラメータへ渡すと
+callee は普通の規約で呼び、**step オブジェクトがそのまま値**になる (実測: 5 が 177、15 が 301 —
+ヒープポインタが Int として読まれている)。
+
+prepass には**逆向きの fixup が既にあった** — pure な literal が row 付きパラメータへ来たら
+Done-wrap する。それが `if prow != ""` の内側にあり、**step-split 済み literal が row を持たない
+パラメータへ来る場合**を素通りしていた。
+
+**row 変数のパラメータは免除**する。`TaskGroup::run[T, rg, e](body: (..) -> T with e)` は
+呼び出し側で `e` にその effect を具体化できるので、step 返しの literal を受け取れる。
+**具体的な row が effect を含まない場合だけ**が plain 規約のパラメータ。
+
+#### 3 回失敗してから通った — 手順の記録
+
+| 試行 | 仮説 | 結果 |
+|---|---|---|
+| 1 | `scps_calls_ok` の `EFn` arm が cps_locals を保持している | **効果ゼロ** → literal は既に step-split 済みで、問題は body でなく**渡され方**だと判明 |
+| 2 | arg-position fixup の「鏡」が無い | **P0 は直ったが** `lib/@vibex/concurrent/suspend_test.vibe` (supported な形) を壊した |
+| 3 | needing callee を免除 | `TaskGroup::run` は cneeding に無く、**変わらず** |
+| 4 | **row 変数のパラメータを免除** | **通った** — P0 は reject、suspend_test は 27 tests pass、601/601、gate green |
+
+**教訓 A**: `scripts/compiler_gate.sh` はこの regression を捕まえない。
+**`VIBE_STAGE2_WASM=<stage2> bash scripts/unit_test_runner.sh` (601 files) が捕まえる。**
+この領域を触るときは両方回す。
+
+**教訓 B (追記59 の修正)**: 生成ソースの鮮度を識別子で grep してはいけない — **bundler が
+識別子を潰す**ので、変更が入っていても 0 件になる。**新しい文字列リテラル**
+(診断メッセージなど) で grep すること。
+
+### 追記62 (2026-08-14): inert と証明できる local closure literal の capture / call を許す (#1536)
+
+`scps_inert_taint` は「capture された名前は step-compiled closure を alias しうる」として
+一律 taint し、`scps_calls_ok` はローカル束縛経由の呼び出しを一律 reject していた。だが
+**束縛が spine 上に見えていれば、何を持っているかは分かる**:
+
+```
+scps_is_inert_literal(v, eff, ..) =
+     literal の row が eff を含まず、row 変数でもない
+  && !scps_literal_is_step_for(v, eff)   // step-split されていない
+  && !scps_inert_taint(<body>, ..)       // body 自身が inert
+```
+
+これを満たす literal に束縛された名前は、**呼んでも捕獲しても安全**。呼び出しは perform せず、
+step ではなく普通の値を返す。
+
+**step-split 済みの literal は対象外**のままで、そこが健全性の線。捕獲すれば捕獲した側も
+perform することになり、それを plain な param へ渡す形は追記61 (#1707) が捕まえる。
+
+ゲートは **2 つある**: 適格性 (`scps_calls_ok`) と引数の inert 判定 (`scps_arg_is_inert`)。
+**両方**に同じ述語を通す必要がある。
+
+#### 4 回目で通った。1〜3 回目が何を否定したか
+
+| 試行 | 広げた場所 | 結果 |
+|---|---|---|
+| 1 | `scps_arg_is_inert` だけ | 発火せず |
+| 2 | `scps_calls_ok` だけ | 発火せず |
+| 3 | 両方同時 | **まだ**発火せず |
+| 4 | 両方 + **`scps_exprs_calls_ok` / `scps_fields_calls_ok` にも集合を通す** | **通った** |
+
+3 回目が落ちた理由は診断が名指ししていた (`here: the call to 'inner'`): 引数リストを歩く
+`scps_exprs_calls_ok` が **3 引数の旧エントリを呼んで `inert_locals` を空にリセット**していた。
+リスト/フィールドのヘルパにも通して初めて、literal 引数の body まで集合が届く。
+
+**教訓**: 「広げたのに効かない」ときは、**その集合が目的の位置まで実際に届いているか**を疑う。
+診断の `here:` 節がどの呼び出しで落ちたかを名指ししてくれるので、そこから逆に辿るのが速い。

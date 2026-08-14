@@ -10,7 +10,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, Subst, Type, TypeDef, TypeEnv, TypeExpr, sort_perm_by_names, str_lt
+  Expr, Stmt, Subst, Type, TypeDef, TypeEnv, TypeExpr, env_value_binding, sort_perm_by_names, str_lt
 }
 
 import @vibe/core {
@@ -66,14 +66,14 @@ fn trait_method_gens_snapshot(env: TypeEnv) -> String {
 }
 
 test "canonical checked state preserves EnvBind EnvFlat and EnvCached first-match shadows" {
-  let bind_flat = EnvBind("__fn_ret__:bind", CtUnit, EnvBind("value", CtInt, EnvFlat([
-    ("value", CtBool),
-    ("outer", CtString),
-    ("__fn_ret__:flat", CtDouble)
+  let bind_flat = EnvBind("__fn_ret__:bind", env_value_binding(CtUnit), EnvBind("value", env_value_binding(CtInt), EnvFlat([
+    ("value", env_value_binding(CtBool)),
+    ("outer", env_value_binding(CtString)),
+    ("__fn_ret__:flat", env_value_binding(CtDouble))
   ])))
   let expected = EnvFlat([
-    ("outer", CtString),
-    ("value", CtInt)
+    ("outer", env_value_binding(CtString)),
+    ("value", env_value_binding(CtInt))
   ])
   assert(snapshot(bind_flat, SubstEmpty) == snapshot(expected, SubstEmpty))
   let cached = EnvCached([
@@ -82,27 +82,27 @@ test "canonical checked state preserves EnvBind EnvFlat and EnvCached first-matc
     "__fn_ret__:cached",
     "z"
   ], [
-    CtBool,
-    CtInt,
-    CtDouble,
-    CtString
-  ], EnvBind("z", CtUnit, EnvEmpty))
-  let cached_expected = EnvBind("alpha", CtBool, EnvBind("z", CtString, EnvEmpty))
+    env_value_binding(CtBool),
+    env_value_binding(CtInt),
+    env_value_binding(CtDouble),
+    env_value_binding(CtString)
+  ], EnvBind("z", env_value_binding(CtUnit), EnvEmpty))
+  let cached_expected = EnvBind("alpha", env_value_binding(CtBool), EnvBind("z", env_value_binding(CtString), EnvEmpty))
   assert(snapshot(cached, SubstEmpty) == snapshot(cached_expected, SubstEmpty))
 }
 
 test "canonical checked state shares free alpha variables across sorted values" {
   let left = EnvFlat([
-    ("z", CtVar(91)),
-    ("a", CtVar(91))
+    ("z", env_value_binding(CtVar(91))),
+    ("a", env_value_binding(CtVar(91)))
   ])
   let alpha_equivalent = EnvFlat([
-    ("a", CtVar(4)),
-    ("z", CtVar(4))
+    ("a", env_value_binding(CtVar(4))),
+    ("z", env_value_binding(CtVar(4)))
   ])
   let changed_relation = EnvFlat([
-    ("a", CtVar(4)),
-    ("z", CtVar(5))
+    ("a", env_value_binding(CtVar(4))),
+    ("z", env_value_binding(CtVar(5)))
   ])
   assert(snapshot(left, SubstEmpty) == snapshot(alpha_equivalent, SubstEmpty))
   assert(snapshot(left, SubstEmpty) != snapshot(changed_relation, SubstEmpty))
@@ -156,14 +156,14 @@ test "canonical checked state alpha-normalizes forall bounds without moving them
     CtVar(9)
   ]))
   assert(snapshot(EnvFlat([
-    ("f", left)
+    ("f", env_value_binding(left))
   ]), SubstEmpty) == snapshot(EnvFlat([
-    ("f", reordered)
+    ("f", env_value_binding(reordered))
   ]), SubstEmpty))
   assert(snapshot(EnvFlat([
-    ("f", left)
+    ("f", env_value_binding(left))
   ]), SubstEmpty) != snapshot(EnvFlat([
-    ("f", moved)
+    ("f", env_value_binding(moved))
   ]), SubstEmpty))
 }
 
@@ -190,9 +190,9 @@ test "canonical checked state keeps quantified ids out of substitution" {
     CtInt
   ]))
   assert(snapshot(EnvFlat([
-    ("f", source)
+    ("f", env_value_binding(source))
   ]), subst) == snapshot(EnvFlat([
-    ("f", expected)
+    ("f", env_value_binding(expected))
   ]), SubstEmpty))
 }
 
@@ -208,23 +208,23 @@ test "canonical checked state sorts effect rows and resolves effect substitution
   ], CtUnit, Some("e"))
   let effect_subst = SubstEffBind("e", "State[String], Fs, State[Int], Fs", SubstEmpty)
   assert(snapshot(EnvFlat([
-    ("f", permuted)
+    ("f", env_value_binding(permuted))
   ]), SubstEmpty) == snapshot(EnvFlat([
-    ("f", normalized)
+    ("f", env_value_binding(normalized))
   ]), SubstEmpty))
   assert(snapshot(EnvFlat([
-    ("f", via_var)
+    ("f", env_value_binding(via_var))
   ]), effect_subst) == snapshot(EnvFlat([
-    ("f", CtFn([
+    ("f", env_value_binding(CtFn([
       CtInt
-    ], CtUnit, Some("Fs, State[Int], State[String]")))
+    ], CtUnit, Some("Fs, State[Int], State[String]"))))
   ]), SubstEmpty))
   assert(snapshot(EnvFlat([
-    ("f", CtFn([
-    ], CtUnit, Some("State[Int]")))
+    ("f", env_value_binding(CtFn([
+    ], CtUnit, Some("State[Int]"))))
   ]), SubstEmpty) != snapshot(EnvFlat([
-    ("f", CtFn([
-    ], CtUnit, Some("State[String]")))
+    ("f", env_value_binding(CtFn([
+    ], CtUnit, Some("State[String]"))))
   ]), SubstEmpty))
 }
 
@@ -388,12 +388,12 @@ test "canonical retained typedefs preserve definition and member order" {
 test "canonical checked wrappers isolate value and typedef observations" {
   // String ordering must be lexical, not the runtime's length-first ordering.
   let ordered = snapshot(EnvFlat([
-    ("aa", CtInt),
-    ("a", CtBool)
+    ("aa", env_value_binding(CtInt)),
+    ("a", env_value_binding(CtBool))
   ]), SubstEmpty)
   let expected = snapshot(EnvFlat([
-    ("a", CtBool),
-    ("aa", CtInt)
+    ("a", env_value_binding(CtBool)),
+    ("aa", env_value_binding(CtInt))
   ]), SubstEmpty)
   assert(ordered == expected)
   let type_defs = [
@@ -407,7 +407,7 @@ test "canonical checked wrappers isolate value and typedef observations" {
   let first = CheckedProgram::{
     checked_stmts: array_empty(),
     final_env: EnvFlat([
-      ("value", CtInt)
+      ("value", env_value_binding(CtInt))
     ]),
     type_defs: type_defs,
     final_subst: SubstEmpty,
@@ -417,7 +417,7 @@ test "canonical checked wrappers isolate value and typedef observations" {
     checked_stmts: [
       SLet(false, false, "ignored", None, EInt(1))
     ],
-    final_env: EnvBind("other", CtString, EnvTraitImpl("Eq", CtInt, EnvEmpty)),
+    final_env: EnvBind("other", env_value_binding(CtString), EnvTraitImpl("Eq", CtInt, EnvEmpty)),
     type_defs: type_defs,
     final_subst: SubstEmpty,
     typed_occurrences: [
@@ -427,7 +427,7 @@ test "canonical checked wrappers isolate value and typedef observations" {
   let value_only = CheckedProgram::{
     checked_stmts: array_empty(),
     final_env: EnvFlat([
-      ("value", CtInt)
+      ("value", env_value_binding(CtInt))
     ]),
     type_defs: array_empty(),
     final_subst: SubstEmpty,
@@ -449,10 +449,10 @@ test "canonical checked wrappers isolate value and typedef observations" {
 }
 
 test "canonical trait impl snapshot retains entries in final-env traversal order" {
-  let retained = EnvBind("value", CtInt, EnvTraitImpl("Later", CtString, EnvTraitDef("Ignored", array_empty(), false, array_empty(), EnvCached([
+  let retained = EnvBind("value", env_value_binding(CtInt), EnvTraitImpl("Later", CtString, EnvTraitDef("Ignored", array_empty(), false, array_empty(), EnvCached([
     "cached"
   ], [
-    CtBool
+    env_value_binding(CtBool)
   ], EnvTraitImpl("Earlier", CtInt, EnvEmpty)), [
     "T",
     "U"
@@ -460,7 +460,7 @@ test "canonical trait impl snapshot retains entries in final-env traversal order
   let expected = EnvTraitImpl("Later", CtString, EnvTraitImpl("Earlier", CtInt, EnvEmpty))
   assert(trait_impl_snapshot(retained, SubstEmpty) == trait_impl_snapshot(expected, SubstEmpty))
   assert(trait_impl_snapshot(EnvFlat([
-    ("not_traversed", CtInt)
+    ("not_traversed", env_value_binding(CtInt))
   ]), SubstEmpty) == trait_impl_snapshot(EnvEmpty, SubstEmpty))
 }
 
