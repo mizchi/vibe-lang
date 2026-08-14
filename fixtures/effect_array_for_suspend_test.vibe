@@ -1,0 +1,140 @@
+// #1536: `for x in xs { .. perform .. }` where `xs` is PROVED to hold an Array.
+//
+// The proof is required because codegen keeps `EForIn` to the end and decides
+// at RUN TIME whether the iterand is a String, materializing its bytes first
+// (#807). Rewriting the loop at source level would make a String iterate zero
+// times, so it is only sound where the value cannot be one. The proof here is
+// syntactic -- a parameter annotated `Array[..]`, or a `let` bound to an array
+// literal -- so no checker channel is needed, and anything unproved keeps the
+// treatment it has today (refusal). See err_effect_string_for_suspend.
+//
+// The numbers pin the loop's semantics, not just acceptance:
+//   from_param    36  parameter-annotated array
+//   from_literal  23  array literal bound on the spine
+//   with_break    23  `break` leaves the loop
+//   with_continue 24  `continue` still advances the index (no spin)
+//   grows         87  `Array::length` is re-read, so a body that grows the
+//                     array iterates further
+//   call_acc      25  a CALL as the iterand -- proved by the callee's declared
+//                     return type and bound once before the loop, as `for`
+//                     evaluates its iterand once
+//   inline_acc    29  the same loop written DIRECTLY in the handle body, not
+//                     inside a needing fn -- the handle body is a spine like
+//                     any other, and its proof comes from the array literal
+//                     bound on it
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn from_param(xs: Array[Int]) -> Int with Ask {
+  let mut acc = 0
+  for x in xs {
+    acc = acc + perform Ask::Get(x)
+  }
+  acc
+}
+
+fn from_literal() -> Int with Ask {
+  let xs = [
+    1,
+    2
+  ]
+  let mut acc = 0
+  for x in xs {
+    acc = acc + perform Ask::Get(x)
+  }
+  acc
+}
+
+fn with_break(xs: Array[Int]) -> Int with Ask {
+  let mut acc = 0
+  for x in xs {
+    if x > 2 {
+      break
+    } else {
+      ()
+    }
+    acc = acc + perform Ask::Get(x)
+  }
+  acc
+}
+
+fn with_continue(xs: Array[Int]) -> Int with Ask {
+  let mut acc = 0
+  for x in xs {
+    if x == 2 {
+      continue
+    } else {
+      ()
+    }
+    acc = acc + perform Ask::Get(x)
+  }
+  acc
+}
+
+fn grows(xs: Array[Int]) -> Int with Ask {
+  let mut n = 0
+  for x in xs {
+    n = n + perform Ask::Get(x)
+    if Array::length(xs) < 5 {
+      Array::push(xs, 9)
+    } else {
+      ()
+    }
+  }
+  n
+}
+
+fn items() -> Array[Int] {
+  [
+    2,
+    3
+  ]
+}
+
+let _start = () -> Int {
+  handle {
+    let mut call_acc = 0
+    for z in items() {
+      call_acc = call_acc + perform Ask::Get(z)
+    }
+    let ys = [
+      4,
+      5
+    ]
+    let mut inline_acc = 0
+    for y in ys {
+      inline_acc = inline_acc + perform Ask::Get(y)
+    }
+    let a = from_param([
+      1,
+      2,
+      3
+    ])
+    let b = from_literal()
+    let c = with_break([
+      1,
+      2,
+      3,
+      4
+    ])
+    let d = with_continue([
+      1,
+      2,
+      3
+    ])
+    let e = grows([
+      1
+    ])
+    ((a * 100000 + b * 10000 + c * 1000 + d * 100 + e) * 100 + inline_acc) * 100 + call_acc
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+test "effect array for suspend" {
+  inspect(_start(), "38554872925")
+}

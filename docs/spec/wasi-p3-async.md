@@ -196,7 +196,11 @@ see-through 走査が `lt` を pure callee として知らないため、`while 
   「囲む関数から抜ける」意味なので **cell を handle の外に置いて handle の後で返す**。
   **寄せきれない `return` が残ればその body は refuse される** (追記54) ので、この書き換えが
   不完全であることのコストは拒否であって miscompile ではない
-- **不適格**: 配列 `for` 形、**選ばれた `&&` / `||` 右辺が
+  、**Array と構文的に示せる `for-in`** (`Array[..]` 注釈の引数 / 配列リテラル束縛。
+  split の前に indexed while 形へ落とす。示せない iterand — 特に String — は
+  書き換えない: codegen は実行時に String を判別して byte を materialize するので
+  (#807)、書き換えれば 0 回反復で黙って誤る、追記58)
+- **不適格**: **Array と示せない `for` 形**、**選ばれた `&&` / `||` 右辺が
   `return` / `break` / `continue` する形**、実引数証明が
   成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
   literal は prepass が literal 自身の spine で step-split し、supported nested

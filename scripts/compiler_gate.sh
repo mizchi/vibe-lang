@@ -6968,6 +6968,32 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # suspending loop nested in the handle body.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_return_in_handle_body_test.vibe
+# #1536: `for x in xs` over a PROVED array becomes the indexed while form, which
+# the split already handles. The proof is syntactic (a parameter annotated
+# Array[..], or a let bound to an array literal) -- codegen decides String-ness
+# at run time (#807), so an unproved iterand must not be rewritten. The snapshot
+# pins break / continue / index advance / length re-read, not just acceptance.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_array_for_suspend_test.vibe
+# The same loop over a PROVED String indexes the string directly, using the
+# builtins codegen itself uses to materialize one. An UNPROVED iterand is still
+# never rewritten -- that is what keeps a runtime String out of the array form.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_string_for_suspend_test.vibe
+# #1536: a `with e` callee is admitted when its declared parameters mention no
+# function type anywhere -- there is then no argument able to instantiate the
+# row variable, so the call cannot perform the handled effect. A callee that
+# does take a function stays refused; that is what keeps this sound.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_rowvar_first_order_call_test.vibe
+scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvarhof"
+# #1536 boundary, measured 2026-08-14. Both of these are narrower than the
+# residual list implied, so they are pinned rather than described: a closure may
+# capture a scalar param, an outer scalar let, or a function param (all compile)
+# -- only capturing another LOCAL CLOSURE is refused. And a `for` iterand is
+# lowered only when proved; an unannotated callee proves nothing.
+scps_check_reject "err_effect_capture_local_closure.vibe" "cannot see through" "capturelocalclosure"
+scps_check_reject "err_effect_for_unproved_iterand.vibe" "let/seq/tail/branch-tail spine" "forunproved"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
 # THAT diagnostic, so the fixture cannot silently start passing for the other

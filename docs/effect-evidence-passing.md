@@ -3204,6 +3204,59 @@ hoist の終端を `flag == ""` で分岐させただけで、走査そのもの
 **教訓 2**: 誤った値を見て止めたのは正しかったが、原因の見立ては外れていた。計測環境が
 ゲートと同じ設定かどうかを先に確かめること。
 
+### 追記58 (2026-08-14): Array と示せる `for-in` を while 形へ落とす (#1536)
+
+`for x in xs { .. perform .. }` — async で最も自然な反復 — が長く不適格だった。理由は
+**codegen が `EForIn` を最後まで保持し、実行時に iterand が String かを判別して byte を
+materialize する** (#807) ため。source level で while へ書き換えると **String は 0 回反復に
+なって黙って誤る**。
+
+必要なのは「Array である」証明だが、**checker のチャンネルは要らなかった**。次の**構文的**
+証明で足りる:
+
+- **`Array[..]` と注釈された引数** (`fn total(xs: Array[Int])`)
+- **spine 上で配列リテラルに束縛された `let`** (`let xs = [1, 2]`)
+
+証明できた名前に対してだけ、split の前に while 形へ落とす:
+
+```
+for x in xs { body }  ==>  let mut i = 0
+                           while i < Array::length(xs) {
+                             let x = Array::get(xs, i)
+                             i = i + 1
+                             body
+                           }
+```
+
+`Array::length` は毎回読み直す (`for` の意味論どおり — body が配列を伸ばせばその分回る)。
+**index は body の前に進める**ので、body の `continue` が空回りしない。
+
+**証明できないものは一切書き換えない**ので、この pass が変えられるのは**今日 reject されている
+プログラムだけ** — 現在通っているコードの挙動は変わらない。String は
+`err_effect_string_for_suspend` が「引き続き reject」を pin する (書き換えていたら 0 回反復で
+黙って誤っていた)。
+
+`effect_array_for_suspend_test.vibe` (385548729) が**受理だけでなく意味論**を pin する:
+引数由来 36 / リテラル由来 23 / `break` 23 / `continue` 24 (index が進む) / 伸長 87 /
+handle body に直接書いた形 29。
+
+**String iterand も同じ形で通る** (追記58b): codegen は String の char code を配列へ
+materialize して回す (#807) が、**String は immutable なので直接 index で回しても同じ列**に
+なり、`String::length` / `String::char_code_at` は codegen 自身が materialize に使っている
+builtin。証明も同じ構文的なもの (`String` 注釈の引数 / 文字列リテラル束縛)。
+**証明できない iterand は依然として一切書き換えない** — 実行時に String になりうる値を
+array 形へ落とさないのはこの一点で守られている。
+
+> 実装時に 5 回続けて誤診した。原因は述語でも builtin でも site でもなく、**関数本体を丸ごと
+> 差し替えたときの splice ミス**だった。証明済みの名前を診断に吐く instrumentation を 1 回
+> 入れたら (`strseed=1 S=s/found`) 部品が全部正しいことが分かり、そこから surgical に
+> 書き直して通った。**読んで当てるのをやめて計測に切り替える**のが最短だった。
+
+書き換えは **3 つの split site すべて**に置く — needing fn の clone、handle body 自身、
+closure literal。最初は clone だけに入れており、`handle { for x in xs { .. perform .. } }` と
+直接書いた形が取り残されていた (handle body も他と同じ spine で、そこでは引数が無いので
+証明は spine 上の配列リテラル束縛から来る)。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
@@ -3231,3 +3284,56 @@ hoist の終端を `flag == ""` で分岐させただけで、走査そのもの
   はその制約下で設計している (「並行モデル (ADR-0068) との整合」節参照)。
 - `docs/pl-survey-2026-07.md` — 本 ADR の元になったサーベイ項目。
 - `eval/lang-review/findings/2026-07-12-r2.md` M2 — replay の実測バグ。
+
+### 追記59 (2026-08-14): row 変数 callee は「一階なら安全」(#1536)
+
+`with e` を宣言した callee は「provably effect-free」ではないとして一律 reject していた。
+理由は「row 変数は closure 引数経由で migrated effect に具体化されうる」。正しいが、
+**その具体化は引数を通してしか起きない**。
+
+したがって: **宣言された引数の型がどこにも関数型を含まない callee は、call site が
+どうであれ `e` を空 row にしか具体化できない** — 呼び出しは handled effect を perform しえない。
+
+```vibe
+fn twice(x: Int) -> Int with e { x * 2 }        // ← 一階。suspend body から呼べる
+fn apply(f: (Int) -> Int with e, x: Int) -> Int with e { f(x) }   // ← 拒否のまま
+```
+
+判定は宣言だけで閉じる (call site の型推論は要らない)。`Array[(Int) -> Int with e]` のように
+**型引数の中の関数型も数える**ので、`TyFn` を再帰的に探す。注釈の無い引数・定義が見つからない
+callee は従来どおり拒否。
+
+#### 見つけ方 — 5 連続の誤診の原因は「stale な生成ソース」だった
+
+実装後の実測が `REJECTED` のままだったので、また誤診を重ねかけた。今度は最初から
+instrumentation を入れたところ、**そのデバッグ出力自体が現れなかった**。調べると
+`lib/@vibe/compiler/_cli_adapter_module_source.vibe` (生成物) が編集より**古いまま**で、
+`VIBE_PREBUILT_MODULE_SOURCE` でそれを食わせていたため、**ここ数回のビルドは変更を
+一切含んでいなかった**。生成物を消して再生成させたら `generate_bundle: seed could not
+flatten the live tree / unexpected in pattern: =1` — instrumentation の中に書いた
+`None => all = false` (波括弧なしの代入) が seed の parse error だった。
+
+つまり **`ensure_generated.sh` が "ok" を返しても生成物が最新とは限らない**。この直前の
+String iterand の 5 連続誤診も、同じ stale ビルドを見ていた可能性が高い。
+
+**教訓 (今夜 3 つ目)**: 否定的な実測が続いたら、まず**測っている対象が自分の変更を含んで
+いるか**を確かめる。`grep <新しい識別子> <生成ソース>` の一行で済む。
+
+### 追記60 (2026-08-14): `for` の iterand が CALL でも証明できる (#1536)
+
+追記58 の証明は**名前**に限っていたので、`for x in items()` のように iterand が呼び出しだと
+落ちていた。**callee の宣言された戻り型**で同じ証明ができる:
+
+```vibe skip
+fn items() -> Array[Int] { [1, 2, 3] }
+for x in items() { .. perform .. }        // ← 通るようになった
+```
+
+値は loop の前に一度だけ束縛する (`for` が iterand を一度だけ評価するのと同じ)。名前の場合は
+既に名前があるので束縛は増やさない。
+
+戻り型の取得先に注意: **`fn_defs` の `Option[TypeExpr]` スロットは binding の注釈**
+(`let f: T = ..`) であって関数の戻り型ではない (通常 `None`)。戻り型は `EFn` 側にあるので、
+stmts を走査して `SLet(_, _, name, _, EFn(_, _, _, ret, _, _))` から読む。最初これを
+取り違えて「証明が効かない」状態になった — **構築側 (`edp_collect_fn_defs`) を読めば
+ビルド 0 回で分かった**。
