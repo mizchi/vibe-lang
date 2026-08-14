@@ -52,6 +52,9 @@ import @vibe/compiler/codegen/common_base {
   find_func_stmt,
   find_local_slot,
   gc_slot_log_reset_above,
+  gc_slot_map_get,
+  gc_slot_map_reset_above,
+  gc_slot_map_set,
   resolve_func,
   resolve_local,
   struct_field_candidates,
@@ -631,6 +634,72 @@ fn gc_native_array_children_are_safe(expr: Expr, name: String, abi_names: Array[
   ok
 }
 
+/// #1702: may `name`, bound to a record literal, live in a wasm-gc struct local?
+///
+/// Only if every occurrence is the RECEIVER of a field read. A native struct
+/// carries no ctor tag -- the binding site fixes its exact struct, so the tag
+/// dispatch `EDot` normally does is unnecessary there -- which is exactly why
+/// it must never reach anything that would look for one: equality, `Show`, a
+/// call, a return, an aggregate, a closure capture, or a field STORE (that
+/// lowers through `__set_field`, whose receiver is an ordinary value).
+/// Anything not recognized here is rejected, so unfamiliar syntax fails closed.
+fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(n, _) => n != name,
+    // The one allowed shape. When the receiver IS `name` this is the field read
+    // the lane exists for; when it is another binding, `name` does not occur
+    // here at all. Either way nothing materializes the struct as a value.
+    EDot(EIdent(_, _), _, _, _) => true,
+    EFn(_, _, _, _, _, _) => false,
+    EMatch(_, _) => false,
+    EHandle(_, _) => false,
+    EForIn(_, _, _, _) => false,
+    ELoop(_, _) => false,
+    EBreak(_) => false,
+    EContinue(_) => false,
+    ELet(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
+    ELetMut(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
+    ELetRec(n, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
+    EAssign(n, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
+    EAssignOp(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
+    _ => gc_native_struct_children_are_safe(expr, name)
+  }
+}
+
+fn gc_native_struct_children_are_safe(expr: Expr, name: String) -> Bool {
+  let children = expr_children(expr)
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(children) {
+    if !gc_native_struct_scope_is_safe(Array::get(children, i), name) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// Ctor-table index of the struct a record literal resolves to, or -1 when it
+/// names no declared struct (an anonymous record has no declared field order to
+/// fix a struct type to) or has no fields (a zero-field struct type is not
+/// reserved and buys nothing).
+fn gc_native_struct_binding_index(ctx: CompileCtxGc, fields: Array[(String, Expr)]) -> Int {
+  if Array::length(fields) == 0 {
+    0 - 1
+  } else {
+    let lit_names = array_empty()
+    let mut i = 0
+    while i < Array::length(fields) {
+      let (fname, _) = Array::get(fields, i)
+      Array::push(lit_names, fname)
+      i = i + 1
+    }
+    struct_index_by_field_set(ctx.gc_ctor_table, lit_names)
+  }
+}
+
 fn gc_arg_is_reference_join(arg: Expr) -> Bool {
   match arg {
     EIf(_, _, _) => true,
@@ -1090,6 +1159,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
+      gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
       // A native local is a typed `(ref null $native_i64_array)`, unlike the
       // normal i64 local lane. Never reuse a branch's slots for its sibling:
       // the sibling can legally bind an ordinary i64 at the same lexical
@@ -1105,6 +1175,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
+      gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
       // `nl_else` starts at `nl_then`, so it is already the high-water mark.
       let max_nl = nl_else
       while Array::length(local_names) < max_nl {
@@ -1117,6 +1188,44 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let local_idx = next_local
       Array::push(local_names, name)
       match value {
+        // #1702: a record literal bound to a local that never leaves field-read
+        // position lives in a real wasm-gc struct instead of linear memory.
+        ERecord(_, ns_fields, _) => if ctx.gc_native_struct_type_base >= 0 && ctx.gc_native_array_frame_ok && gc_native_struct_binding_index(ctx, ns_fields) >= 0 && gc_native_struct_scope_is_safe(body, name) {
+          let ns_struct_idx = gc_native_struct_binding_index(ctx, ns_fields)
+          let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
+          gc_slot_map_set(ctx.gc_native_struct_scope, local_idx, ns_struct_idx)
+          gc_slot_map_set(ctx.gc_native_struct_decl, local_idx, ns_struct_idx)
+          // struct.new takes its fields as operands, so they go on the stack in
+          // DECLARED order however the literal spelled them.
+          let mut ns_nl = next_local + 1
+          let mut ns_di = 0
+          while ns_di < Array::length(ns_declared) {
+            let ns_target = Array::get(ns_declared, ns_di)
+            let mut ns_fi = 0
+            let mut ns_emitted = false
+            while ns_fi < Array::length(ns_fields) {
+              let (ns_fname, ns_fval) = Array::get(ns_fields, ns_fi)
+              if !ns_emitted && ns_fname == ns_target {
+                ns_nl = ce(buf, ns_fval, local_names, ns_nl, ld)
+                ns_emitted = true
+              } else {
+                ()
+              }
+              ns_fi = ns_fi + 1
+            }
+            if !ns_emitted {
+              throw("gc native struct: literal is missing declared field")
+            } else {
+              ()
+            }
+            ns_di = ns_di + 1
+          }
+          emit_struct_new(buf, ctx.gc_native_struct_type_base + Array::length(ns_declared) - 1)
+          emit_local_set(buf, local_idx)
+          ce(buf, body, local_names, ns_nl, ld)
+        } else {
+          gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+        },
         EArray(native_elems) => if ctx.gc_native_array_frame_ok && ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
           // This local is a `(ref null $native_i64_array)`, never an i64.
           Array::push(ctx.gc_native_array_locals, local_idx)
@@ -1606,6 +1715,40 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         emit_i32_wrap_i64(buf)
         emit_i64_load(buf, 3, tidx * 8)
         return nl_t
+      }
+      // #1702: a native wasm-gc struct local. Its exact struct was fixed at the
+      // binding site, so the field index is static -- and the tag dispatch below
+      // is not merely unnecessary but impossible: the value carries no tag.
+      let ns_slot = match obj {
+        EIdent(ns_obj, _) => find_local_slot(local_names, ns_obj),
+        _ => 0 - 1
+      }
+      let ns_struct_idx = gc_slot_map_get(ctx.gc_native_struct_scope, ns_slot)
+      if ns_struct_idx >= 0 {
+        let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
+        let mut ns_fidx = 0 - 1
+        let mut ns_i = 0
+        while ns_i < Array::length(ns_declared) {
+          if ns_fidx < 0 && Array::get(ns_declared, ns_i) == field {
+            ns_fidx = ns_i
+          } else {
+            ()
+          }
+          ns_i = ns_i + 1
+        }
+        if ns_fidx < 0 {
+          // The gate admits only field reads on this binding, so a name that is
+          // not one of the struct's own fields means gate and lowering disagree
+          // -- fail loudly rather than read some other slot.
+          throw("gc native struct: field is not declared on the bound struct")
+        } else {
+          ()
+        }
+        emit_local_get(buf, ns_slot)
+        emit_struct_get(buf, ctx.gc_native_struct_type_base + Array::length(ns_declared) - 1, ns_fidx)
+        return next_local
+      } else {
+        ()
       }
       // #722: same struct-tag dispatch as the linear EDot path
       // (compile_expr_tail4.vibe) — static load when every declaring struct

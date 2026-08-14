@@ -1,0 +1,60 @@
+// #1702 (Phase C, the slice that needs no conversion point): a record literal
+// bound to a local that never leaves field-read position lives in a real
+// wasm-gc struct -- `(struct (mut i64) x N)` -- instead of linear memory.
+//
+// Cells stay tagged i64, exactly like the native array's, so this changes where
+// the record LIVES, not how its fields are represented. No boundary is crossed:
+// the struct never becomes a value, so nothing has to convert between the
+// reference lane and tagged i64.
+//
+// The fallback pair is fixtures/gc_native_struct_fallback_test.vibe.
+
+struct Point {
+  x: Int;
+  y: Int
+}
+
+struct Triple {
+  a: Int;
+  b: String;
+  c: Bool
+}
+
+fn point_sum() -> Int {
+  let p = Point::{
+    x: 40,
+    y: 2
+  }
+  p.x + p.y
+}
+
+// The literal spells its fields out of declared order; struct.new operands are
+// positional, so the lowering has to reorder rather than trust the literal.
+fn point_reordered() -> Int {
+  let p = Point::{
+    y: 5,
+    x: 7
+  }
+  p.x - p.y
+}
+
+// Cells are tagged i64, so a String or Bool field crosses the same lane as Int
+// with no representation change.
+fn triple_reads() -> String {
+  let t = Triple::{
+    a: 1,
+    b: "kept",
+    c: true
+  }
+  if t.c && t.a == 1 {
+    t.b
+  } else {
+    "lost"
+  }
+}
+
+test "non-escaping local records read their fields off a wasm-gc struct" {
+  inspect(point_sum(), "42")
+  inspect(point_reordered(), "2")
+  inspect(triple_reads(), "kept")
+}
