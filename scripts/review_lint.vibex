@@ -87,6 +87,15 @@ fn binder_ctor(name: String) -> Bool {
   name == "ELet" || name == "ELetMut" || name == "ELetRec" || name == "PBind"
 }
 
+fn report_finding(path: String, line: Int, text: String, message: String) -> Unit with Stderr {
+  let end_line = line + Array::length(String::split(text, "\n")) - 1
+  // The pre-commit driver consumes this record before rendering a diagnostic.
+  // A dedicated prefix and explicit source span distinguish lint findings from
+  // bootstrap/compiler failures emitted by the runner itself.
+  let record = "review-lint:finding\t" + path + "\t" + Int::to_string(line) + "\t" + Int::to_string(end_line) + "\t" + message + "\n"
+  Stderr::write_stream(record)
+}
+
 fn report_hits(raw: String, filter_ctor: Bool, emit: Bool) -> Int with Fs + Stderr {
   let hits = Json::parse(raw)
   let mut i = 0
@@ -105,7 +114,7 @@ fn report_hits(raw: String, filter_ctor: Bool, emit: Bool) -> Int with Fs + Stde
     if ctor_ok && is_transform_path(path) && starts_with_synthetic_literal(name) && !is_allowed(path, line) {
       let text = Json::string(Json::field(hit, "text"))
       if emit {
-        Stderr::write_stream(path + ":" + Int::to_string(line) + ": fixed synthetic binder: " + text + "\n")
+        report_finding(path, line, text, "fixed synthetic binder: " + text)
       } else {
         ()
       }
@@ -139,7 +148,12 @@ fn report_assign_op_hits(raw: String, emit: Bool) -> Int with Stderr {
       let line = Double::to_int(Json::number(Json::field(hit, "line")))
       let text = Json::string(Json::field(hit, "text"))
       if emit {
-        Stderr::write_stream(path + ":" + Int::to_string(line) + ": EAssignOp second field is the operator, but is bound as '" + operator + "': " + text + "\n")
+        report_finding(
+          path,
+          line,
+          text,
+          "EAssignOp second field is the operator, but is bound as '" + operator + "': " + text
+        )
       } else {
         ()
       }
@@ -165,7 +179,12 @@ fn report_async_substring_hits(raw: String, emit: Bool) -> Int with Stderr {
       let line = Double::to_int(Json::number(Json::field(hit, "line")))
       let text = Json::string(Json::field(hit, "text"))
       if emit {
-        Stderr::write_stream(path + ":" + Int::to_string(line) + ": Async effect membership must be exact; use effect_row_contains_label instead of String::contains: " + text + "\n")
+        report_finding(
+          path,
+          line,
+          text,
+          "Async effect membership must be exact; use effect_row_contains_label instead of String::contains: " + text
+        )
       } else {
         ()
       }

@@ -184,4 +184,69 @@ VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-historical" \
   "$CHECK_SCRIPT" >/dev/null
 
+# A changed child line intersects the AST finding even when the constructor's
+# opening line is unchanged.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+cat > "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EOF'
+fn assign(e: Expr) -> Expr {
+  EAssignOp(
+    e,
+    op,
+    e,
+    e,
+  )
+}
+EOF
+git -C "$TMP_ROOT" add .
+git -C "$TMP_ROOT" commit -qm multiline-base
+sed -i.bak 's/^    op,$/    name,/' "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe"
+rm "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe.bak"
+git -C "$TMP_ROOT" add .
+
+cat > "$TMP_ROOT/fake-vibe-multiline" <<EOF
+#!/usr/bin/env bash
+root="\${@: -1}"
+if [[ "\$*" == *'EAssignOp('* ]]; then
+  jq -n --arg path "\$root/lib/@vibe/compiler/normalize/pass.vibe" \
+    '[{path:\$path,line:2,col:3,start:1,end:2,text:"EAssignOp(\\n  e,\\n  name,\\n  e,\\n  e,\\n)",captures:{target:{text:"e",start:1},operator:{text:"name",start:2},rest:{text:"e, e",start:3}}}]'
+else
+  echo '[]'
+fi
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-multiline"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-multiline" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/multiline-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: changed multiline child escaped AST lint" >&2
+  exit 1
+fi
+if ! rg -q 'EAssignOp.*operator' "$TMP_ROOT/multiline-fail.out"; then
+  echo "review-regressions lint self-test: missing multiline span diagnostic" >&2
+  cat "$TMP_ROOT/multiline-fail.out" >&2
+  exit 1
+fi
+
+# An exit-1 from the runner is not a lint result and must fail closed.
+cat > "$TMP_ROOT/fake-vibe-runner-failure" <<'EOF'
+#!/usr/bin/env bash
+echo 'bootstrap failed before lint execution' >&2
+exit 1
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-runner-failure"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-runner-failure" \
+  VIBE_REVIEW_LINT_RUNNER="$TMP_ROOT/fake-vibe-runner-failure" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/runner-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: runner exit 1 was ignored" >&2
+  exit 1
+fi
+if ! rg -q 'bootstrap failed before lint execution' "$TMP_ROOT/runner-fail.out"; then
+  echo "review-regressions lint self-test: runner failure diagnostic was lost" >&2
+  cat "$TMP_ROOT/runner-fail.out" >&2
+  exit 1
+fi
+
 echo "review-regressions lint self-test: ok"
