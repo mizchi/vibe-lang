@@ -134,6 +134,46 @@ compile_direct_abi_fallback fixtures/gc_direct_array_recursion_test.vibe "$RECUR
 ELEMENT_TYPES_OUT="$WORK/direct_array_element_types.wasm"
 compile_direct_abi_fallback fixtures/gc_direct_array_element_types_test.vibe "$ELEMENT_TYPES_OUT"
 
+# #1702 (Phase C, no conversion point): a record literal bound to a local that
+# never leaves field-read position lives in a real `(struct (mut i64) x N)`.
+# Cells stay tagged i64, so this moves where the record LIVES, not how its
+# fields are represented -- and no boundary is crossed, so nothing has to
+# convert between the reference lane and tagged i64.
+NATIVE_STRUCT_OUT="$WORK/native_struct_local.wasm"
+NATIVE_STRUCT_FALLBACK_OUT="$WORK/native_struct_fallback.wasm"
+compile_direct_abi_fallback fixtures/gc_native_struct_local_test.vibe "$NATIVE_STRUCT_OUT"
+compile_direct_abi_fallback fixtures/gc_native_struct_fallback_test.vibe "$NATIVE_STRUCT_FALLBACK_OUT"
+
+NATIVE_STRUCT_WAT="$WORK/native_struct_local.wat"
+NATIVE_STRUCT_FALLBACK_WAT="$WORK/native_struct_fallback.wat"
+wasm-tools print "$NATIVE_STRUCT_OUT" > "$NATIVE_STRUCT_WAT"
+wasm-tools print "$NATIVE_STRUCT_FALLBACK_OUT" > "$NATIVE_STRUCT_FALLBACK_WAT"
+
+# User struct types start above the fixed base types (0-13), so `struct.new 1N`
+# with N >= 4 is a #1702 record and never the RC cell or the alloc probe.
+native_struct_new="$(grep -cE '^[[:space:]]+struct\.new 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
+native_struct_get="$(grep -cE '^[[:space:]]+struct\.get 1[4-9]' "$NATIVE_STRUCT_WAT" || true)"
+if [ "$native_struct_new" -ne 3 ] || [ "$native_struct_get" -ne 7 ]; then
+  echo "[gc-heap-accounting] FAIL: expected three #1702 struct.new and seven struct.get, found $native_struct_new/$native_struct_get" >&2
+  exit 1
+fi
+# The representation claim: those locals are declared as typed references, not
+# i64. Without this a passing run could just mean the fixture got constant
+# folded away.
+native_struct_locals="$(grep -cE '^[[:space:]]+\(local \(ref null 1[4-9]\)\)' "$NATIVE_STRUCT_WAT" || true)"
+if [ "$native_struct_locals" -lt 3 ]; then
+  echo "[gc-heap-accounting] FAIL: expected three typed struct locals, found $native_struct_locals" >&2
+  exit 1
+fi
+# The fallback pair covers returning, passing, storing through a `mut` field,
+# and closure capture -- every one of which would need the ctor tag a native
+# struct does not carry.
+fallback_struct_new="$(grep -cE '^[[:space:]]+struct\.new 1[4-9]' "$NATIVE_STRUCT_FALLBACK_WAT" || true)"
+if [ "$fallback_struct_new" -ne 0 ]; then
+  echo "[gc-heap-accounting] FAIL: expected no #1702 struct.new in the fallback fixture, found $fallback_struct_new" >&2
+  exit 1
+fi
+
 # #1541 export coexistence. A public declaration crosses a host boundary whose
 # ABI is tagged i64 and so cannot carry a reference -- but it no longer takes
 # the component down with it. Its fallback pair is EXPORT_FALLBACK_OUT above,
@@ -427,7 +467,7 @@ if [ "$ARGUMENT_ALLOCATED" -gt 4096 ]; then
   echo "[gc-heap-accounting] FAIL: direct-argument allocated=$ARGUMENT_ALLOCATED, expected <=4096" >&2
   exit 1
 fi
-echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, control-flow joins, String/Bool elements, and fail-closed component fallbacks"
+echo "[gc-heap-accounting] ok: direct Array[Int] ABI, isolated argument identity, local alias identity, generic coexistence, export coexistence, control-flow joins, String/Bool elements, non-escaping local records (#1702), and fail-closed component fallbacks"
 
 REPORT="$(VIBE_MEM=1 "$RUNNER" "$OUT" 2>&1 >/dev/null)" || {
   printf '%s\n' "$REPORT" >&2
