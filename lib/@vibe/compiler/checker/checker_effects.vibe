@@ -72,7 +72,11 @@ export enum EffectError {
   // #1347: a `handle ... with E` whose arms are provably dead because the
   // body cannot reach a perform of E and only invokes an opaque value —
   // the handler-switch footgun. Field: the effect name.
-  EEHandleNeverFires(String)
+  EEHandleNeverFires(String);
+  // ADR-0102 / #1678: defense in depth for AST producers that bypass the
+  // source parser. EHandle does not retain its source effect name, so this
+  // diagnostic deliberately names the structural problem instead.
+  EEEmptyHandle
 }
 
 //# Functions
@@ -154,7 +158,8 @@ export fn effect_error_to_string(err: EffectError) -> String {
     EEHandleNeverFires(eff) => {
       let tail = String::concat(eff, "::..` and calls an opaque function value. A continuation captured by another handler carries THAT handler with it, so wrapping its invocation in a new `handle` does not switch handlers (non-scoped resumption is unsupported -- ADR-0089 Part A, #1347). Drive the continuation without the wrapping handle, or handle the effect where it is performed")
       String::concat("handle of effect '", String::concat(eff, String::concat("' can never fire: this body reaches no `perform ", tail)))
-    }
+    },
+    EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect"
   }
 }
 
@@ -2111,9 +2116,16 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         Array::push(stack, (body, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
       },
       EHandle(body, arms) => {
+        if Array::length(arms) == 0 {
+          Array::push(errors, EEEmptyHandle)
+        } else {
+          ()
+        }
         let discharged = collect_handle_effects(arms)
         let body_declared = labels_union(declared, discharged)
-        let body_in_handle = if Array::length(discharged) == 0 {
+        // Unknown wildcard arms stay conservative for the legacy surface,
+        // but a structurally empty handler must not gain that permission.
+        let body_in_handle = if Array::length(arms) > 0 && Array::length(discharged) == 0 {
           true
         } else {
           in_handle
