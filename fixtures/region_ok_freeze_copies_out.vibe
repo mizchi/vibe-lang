@@ -1,0 +1,65 @@
+// ADR-0090 #1262: the sanctioned region exits COPY. `MutList::freeze` /
+// `MutList::to_array` used to be the same identity cast the rest of the
+// FrozenArray surface uses (docs/compiler-parallelism.md), which made the
+// escaping value alias the list's own storage.
+//
+// That is wrong twice over. Observably: the list handle is still in scope at
+// the exit, so pushing after freezing changed the "frozen" array underneath
+// the caller -- silent-wrong, not a crash. Structurally: ADR-0090 releases
+// the region by resetting an arena watermark over the whole segment, so an
+// identity cast would hand out a pointer INTO the memory about to be
+// released. "Escape only via freeze / copy-out" is exactly this copy.
+//
+// Both exits are pinned here: `freeze -> FrozenArray[T]` and
+// `to_array -> Array[T]` share one lowering, so a regression in either shows
+// up as the post-exit push leaking into the result.
+fn frozen_len_after_push() -> Int {
+  let frozen = region r {
+    let l = MutList::empty(r)
+    MutList::push(l, 1)
+    MutList::push(l, 2)
+    let out = MutList::freeze(l)
+    MutList::push(l, 3)
+    out
+  }
+  FrozenArray::length(frozen)
+}
+
+fn array_len_after_push() -> Int {
+  let arr = region r {
+    let l = MutList::empty(r)
+    MutList::push(l, 1)
+    MutList::push(l, 2)
+    let out = MutList::to_array(l)
+    MutList::push(l, 3)
+    out
+  }
+  Array::length(arr)
+}
+
+// The copy must carry the ELEMENTS, not just the length.
+fn frozen_sum() -> Int {
+  let frozen = region r {
+    let l = MutList::empty(r)
+    MutList::push(l, 10)
+    MutList::push(l, 20)
+    MutList::freeze(l)
+  }
+  let mut i = 0
+  let mut acc = 0
+  while i < FrozenArray::length(frozen) {
+    acc = acc + FrozenArray::get(frozen, i)
+    i = i + 1
+  }
+  acc
+}
+
+export let main = () -> Int {
+  frozen_len_after_push() * 100 + array_len_after_push() * 10 + frozen_sum()
+}
+
+test "region exits copy out" {
+  // 2 (frozen ignores the later push) / 2 (same for to_array) / 30 (elements
+  // survive the copy). An aliasing exit gives 330 instead.
+  inspect(main(), "250")
+}
