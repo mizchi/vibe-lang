@@ -1640,6 +1640,34 @@ fi
 rm -rf "$undir"
 echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map keys) ok"
 
+# #1681 / ADR-0097: an unannotated empty-array binding has no element type to
+# select a structural comparator. Empty values compare exactly by length, but
+# after mutation to non-empty the compiler must fail closed at runtime rather
+# than silently falling back to reference/length equality. Pin both spellings:
+# `!=` is lowered through the same guarded equality and then negated.
+echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681)"
+eqtrapdir="_build/_gate_eq_untyped_empty"
+rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
+for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe; do
+  eqtrap_name="$(basename "${eqtrap_src%.vibe}")"
+  eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$eqtrap_src" "$eqtrap_wasm" _start >/dev/null 2>&1
+  if [ ! -s "$eqtrap_wasm" ]; then
+    echo "[compiler-gate] FAIL: $eqtrap_src did not compile" >&2
+    cat "$eqtrap_wasm.diag" 2>/dev/null >&2
+    exit 1
+  fi
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$eqtrap_wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: $eqtrap_src returned normally; expected fail-closed trap" >&2
+    exit 1
+  fi
+done
+rm -rf "$eqtrapdir"
+echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
+
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
 #      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The

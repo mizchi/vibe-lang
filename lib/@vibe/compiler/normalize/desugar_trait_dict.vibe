@@ -2116,7 +2116,7 @@ fn shape_key(pname: String) -> String {
 }
 
 fn shape_is_composite(sh: String) -> Bool {
-  String::starts_with(sh, "(") || String::starts_with(sh, "[")
+  String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:")
 }
 
 /// Split a tuple shape's INNER text (`s1,s2,...`, no outer parens) on
@@ -2129,9 +2129,9 @@ fn shape_split(inner: String) -> Array[String] {
   let mut i = 0
   while i < n {
     let c = String::char_code_at(inner, i)
-    if c == 40 || c == 91 {
+    if c == 40 || c == 91 || c == 123 {
       depth = depth + 1
-    } else if c == 41 || c == 93 {
+    } else if c == 41 || c == 93 || c == 125 {
       depth = depth - 1
     } else if c == 44 && depth == 0 {
       Array::push(out, String::substring(inner, start, i))
@@ -2244,6 +2244,48 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
   // LAST: infer_shape reads the sentinels the three above just wrote, so a
   // binding whose elements are themselves named bindings resolves in one pass.
   shape_bind(c, name, val, struct_sets, fn_returns)
+}
+
+/// Equality keeps a deeper type shape than the general rendering/type-head
+/// environment. In particular constructor payloads and function result type
+/// arguments must survive binding. Empty literals are recorded as a dedicated
+/// shape for both `let` and `let mut`; their contents may still mutate, so
+/// comparison has a runtime fail-closed guard below. Empty entries are answers
+/// too: they mask an outer binding's equality/call-result shape on shadowing.
+fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let sh = match val {
+    EArray(items) => if Array::length(items) == 0 {
+      "[__EqEmpty]"
+    } else {
+      infer_eq_shape(val, struct_sets, var_types, fn_returns)
+    },
+    _ => infer_eq_shape(val, struct_sets, var_types, fn_returns)
+  }
+  let out = array_empty()
+  push_all_var_types(out, var_types)
+  Array::push(out, (eq_shape_key(name), if shape_is_composite(sh) {
+    sh
+  } else {
+    ""
+  }))
+  let call_result_shape = match val {
+    EFn(tparams, _, _, ret, _, _) => match ret {
+      Some(rt) => if ty_mentions_name_in(rt, tparams) {
+        ""
+      } else {
+        let rsh = ty_to_eq_shape(rt)
+        if shape_is_composite(rsh) {
+          rsh
+        } else {
+          ""
+        }
+      },
+      None => ""
+    },
+    _ => ""
+  }
+  Array::push(out, (fn_eq_shape_key(name), call_result_shape))
+  out
 }
 
 /// #1445 cause 3: the var-type environment for ONE match arm's body.
@@ -2396,6 +2438,19 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
       // infer_arg_type_name.
       Some(TyApp(tn, targs)) => {
         Array::push(out, (pname, tn))
+        // Equality needs the complete annotation, not only its head. Keep the
+        // recursive shape for every monomorphic aggregate parameter so nested
+        // Array/Option/Result paths do not fall back to word identity.
+        if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
+          let esh = ty_to_eq_shape(TyApp(tn, targs))
+          if shape_is_composite(esh) {
+            Array::push(out, (eq_shape_key(pname), esh))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
         if tn == "Array" && Array::length(targs) == 1 {
           match Array::get(targs, 0) {
             TyName(elem) => Array::push(out, (array_elem_key(pname), elem)),
@@ -2594,8 +2649,21 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, _, _, ret, _, fbody) => {
+        EFn(tparams, _, _, ret, _, fbody) => {
           Array::push(out, (fname, fn_return_head_of(ret, fbody)))
+          match ret {
+            Some(rt) => if !ty_mentions_name_in(rt, tparams) {
+              let sh = ty_to_eq_shape(rt)
+              if shape_is_composite(sh) {
+                Array::push(out, (fn_eq_shape_key(fname), sh))
+              } else {
+                ()
+              }
+            } else {
+              ()
+            },
+            None => ()
+          }
         },
         _ => ()
       },
@@ -2605,8 +2673,21 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       // missing from the `for`/async-vs-sync desugar and other fn_returns
       // consumers below.
       SFnDecl(_, fname, body, _, _) => match body {
-        EFn(_, _, _, ret, _, fbody) => {
+        EFn(tparams, _, _, ret, _, fbody) => {
           Array::push(out, (fname, fn_return_head_of(ret, fbody)))
+          match ret {
+            Some(rt) => if !ty_mentions_name_in(rt, tparams) {
+              let sh = ty_to_eq_shape(rt)
+              if shape_is_composite(sh) {
+                Array::push(out, (fn_eq_shape_key(fname), sh))
+              } else {
+                ()
+              }
+            } else {
+              ()
+            },
+            None => ()
+          }
         },
         _ => ()
       },
@@ -4592,14 +4673,16 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      let body_vars = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      let body_vars = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
+      let body_vars = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -4667,8 +4750,10 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // check on the other operand (an array equals `[]` iff its length is 0),
         // which is exact and needs no element type. This also covers `[] == []`,
         // whose element type is otherwise undeterminable.
-        let empty_l = is_empty_array_lit(l)
-        let empty_r = is_empty_array_lit(r)
+        let empty_bound_l = is_untyped_empty_array_name(l, var_types)
+        let empty_bound_r = is_untyped_empty_array_name(r, var_types)
+        let empty_l = is_empty_array_lit(l) || empty_bound_l
+        let empty_r = is_empty_array_lit(r) || empty_bound_r
         // #695: a bare array `==` (operand is an array literal whose element type
         // is statically determinable) dispatches to the monomorphic
         // `__arr_equals__<key>` helper (emitted by desugar_derives), since the
@@ -4696,11 +4781,30 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
           let lencmp = EBinOp("==", ECall(EIdent("Array::length", -1), [
             other
           ], -1), EInt(0))
-          if op == "==" {
+          // An unannotated `let xs = []` has no element type to direct a
+          // comparator. It is exact while still empty. Arrays are mutable even
+          // through `let`, though, so if that binding became non-empty we must
+          // trap instead of silently using either length-only or identity
+          // equality. An annotation supplies the missing static shape.
+          let empty_bound_value = if empty_bound_l {
+            rl
+          } else {
+            rr
+          }
+          let guarded = if empty_bound_l || empty_bound_r {
+            EIf(EBinOp("==", ECall(EIdent("Array::length", -1), [
+              empty_bound_value
+            ], -1), EInt(0)), lencmp, ESeq(ECall(EIdent("assert_true", -1), [
+              EBool(false)
+            ], -1), EBool(false)))
+          } else {
             lencmp
+          }
+          if op == "==" {
+            guarded
           } else {
             ECall(EIdent("not", -1), [
-              lencmp
+              guarded
             ], -1)
           }
         } else {
@@ -5278,7 +5382,7 @@ fn gen_show_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Ar
 /// `equals` needed). Everything else named is a user struct/enum and recurses
 /// through its generated `T::equals`.
 fn is_scalar_type_name(n: String) -> Bool {
-  n == "Int" || n == "Double" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
+  n == "Int" || n == "Double" || n == "Float" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
 }
 
 /// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic array
@@ -6169,6 +6273,16 @@ fn is_empty_array_lit(e: Expr) -> Bool {
   }
 }
 
+fn is_untyped_empty_array_name(e: Expr, var_types: Array[(String, String)]) -> Bool {
+  match e {
+    EIdent(name, _) => match lookup_var_type(var_types, eq_shape_key(name)) {
+      Some(sh) => sh == "[__EqEmpty]",
+      None => false
+    },
+    _ => false
+  }
+}
+
 /// #1526: the element type of an array operand reached through a NAME.
 ///
 /// `infer_earray_elem_type` below only reads an array LITERAL, so the moment an
@@ -6227,6 +6341,12 @@ fn eq_operand_elem_name(e: Expr, var_types: Array[(String, String)]) -> Option[S
 
 fn eq_shape_key(pname: String) -> String {
   String::concat("__eqshape$", pname)
+}
+
+/// Full equality shape of a function result. The space makes this key
+/// impossible to collide with a source-level function name.
+fn fn_eq_shape_key(fname: String) -> String {
+  String::concat("eq return ", fname)
 }
 
 /// Does the type mention any of `names` as a bare TyName (a fn's own type
@@ -6288,6 +6408,10 @@ fn ty_to_eq_shape(t: TypeExpr) -> String {
     },
     TyApp(n, args) => if n == "Array" && Array::length(args) == 1 {
       String::concat("[", String::concat(ty_to_eq_shape(Array::get(args, 0)), "]"))
+    } else if n == "Option" && Array::length(args) == 1 {
+      String::concat("{o:", String::concat(ty_to_eq_shape(Array::get(args, 0)), "}"))
+    } else if n == "Result" && Array::length(args) == 2 {
+      String::concat("{r:", String::concat(ty_to_eq_shape(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape(Array::get(args, 1)), "}"))))
     } else {
       n
     },
@@ -6317,6 +6441,20 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
     TyApp("Array", Array::slice([
       shape_to_eq_ty(shape_inner(sh))
     ], 0, 1))
+  } else if String::starts_with(sh, "{o:") {
+    TyApp("Option", Array::slice([
+      shape_to_eq_ty(String::substring(sh, 3, String::length(sh) - 1))
+    ], 0, 1))
+  } else if String::starts_with(sh, "{r:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    if Array::length(parts) == 2 {
+      TyApp("Result", Array::slice([
+        shape_to_eq_ty(Array::get(parts, 0)),
+        shape_to_eq_ty(Array::get(parts, 1))
+      ], 0, 2))
+    } else {
+      TyName("__EqUnknown")
+    }
   } else if sh == "Option" {
     TyApp("Option", Array::slice([
       TyName("__EqUnknown")
@@ -6379,28 +6517,64 @@ fn ty_mentions_arr_or_bytes(t: TypeExpr) -> Bool {
 /// shadowing rule from #1465); a parameter's `__eqshape$` (seed_var_types)
 /// answers next; the older per-element sentinels resolve via `infer_shape`
 /// last.
-fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match e {
     EIdent(n, _) => {
-      let sh = match lookup_var_type(var_types, shape_key(n)) {
+      match lookup_var_type(var_types, eq_shape_key(n)) {
         Some(s) => s,
-        None => match lookup_var_type(var_types, eq_shape_key(n)) {
-          Some(s) => s,
-          None => infer_shape(e, struct_sets, var_types, fn_returns)
-        }
-      }
-      if shape_is_composite(sh) {
-        let t = shape_to_eq_ty(sh)
-        if ty_mentions_arr_or_bytes(t) {
-          Some(t)
-        } else {
-          None
-        }
-      } else {
-        None
+        None => infer_shape(e, struct_sets, var_types, fn_returns)
       }
     },
-    _ => None
+    ECall(EIdent(fname, _), args, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(args) == 1 {
+      String::concat("{o:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
+    } else if (fname == "Ok" || fname == "Result::Ok") && Array::length(args) == 1 {
+      String::concat("{r:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), ",__EqUnknown}"))
+    } else if (fname == "Err" || fname == "Result::Err") && Array::length(args) == 1 {
+      String::concat("{r:__EqUnknown,", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
+    } else {
+      match lookup_var_type(var_types, fn_eq_shape_key(fname)) {
+        Some(s) => s,
+        None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
+          Some(s) => s,
+          None => {
+            let ordinary = infer_shape(e, struct_sets, var_types, fn_returns)
+            if shape_is_composite(ordinary) {
+              ordinary
+            } else {
+              match infer_static_eq_type(e) {
+                Some(t) => ty_to_eq_shape(t),
+                None => ordinary
+              }
+            }
+          }
+        }
+      }
+    },
+    _ => {
+      let ordinary = infer_shape(e, struct_sets, var_types, fn_returns)
+      if shape_is_composite(ordinary) {
+        ordinary
+      } else {
+        match infer_static_eq_type(e) {
+          Some(t) => ty_to_eq_shape(t),
+          None => ordinary
+        }
+      }
+    }
+  }
+}
+
+fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  let sh = infer_eq_shape(e, struct_sets, var_types, fn_returns)
+  if shape_is_composite(sh) {
+    let t = shape_to_eq_ty(sh)
+    if ty_mentions_arr_or_bytes(t) {
+      Some(t)
+    } else {
+      None
+    }
+  } else {
+    None
   }
 }
 
