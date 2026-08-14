@@ -7,6 +7,20 @@ SCAN_ROOT="${VIBE_ARCH_LINT_ROOT:-$PROJECT_ROOT}"
 RULES_FILE="${VIBE_ARCH_LINT_RULES:-$PROJECT_ROOT/scripts/architecture_debt_rules.tsv}"
 ALLOWLIST_FILE="${VIBE_ARCH_LINT_ALLOWLIST:-$PROJECT_ROOT/scripts/architecture_debt_allowlist.txt}"
 
+BASELINE_MARKER='# --- generated baseline: bash scripts/lint_architecture_debt.sh --update ---'
+
+update_mode=0
+for arg in "$@"; do
+  case "$arg" in
+    --update) update_mode=1 ;;
+    *)
+      echo "architecture-debt lint: unknown argument: $arg" >&2
+      echo "usage: lint_architecture_debt.sh [--update]" >&2
+      exit 2
+      ;;
+  esac
+done
+
 if [ ! -d "$SCAN_ROOT" ]; then
   echo "architecture-debt lint: scan root not found: $SCAN_ROOT" >&2
   exit 1
@@ -18,23 +32,21 @@ fi
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/vibe_arch_lint.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
-findings="$tmp_dir/findings.tsv"
-: > "$findings"
 
-is_allowed() {
-  local rule_id="$1"
-  local rel_path="$2"
-  local line_no="$3"
-  [ -f "$ALLOWLIST_FILE" ] || return 1
-  awk -F '\t' \
-    -v id="$rule_id" \
-    -v path="$rel_path" \
-    -v line="$line_no" '
-      $0 == "" || $1 ~ /^#/ { next }
-      $1 == id && $2 == path && ($3 == line || $3 == "*") { found = 1 }
-      END { exit(found ? 0 : 1) }
-    ' "$ALLOWLIST_FILE"
-}
+matches_file="$tmp_dir/matches.tsv"
+findings="$tmp_dir/findings.tsv"
+stale="$tmp_dir/stale.tsv"
+baseline="$tmp_dir/baseline.tsv"
+allowlist_in="$tmp_dir/allowlist.tsv"
+: > "$matches_file"
+# The seed line keeps this file non-empty. The join below distinguishes the two
+# inputs with `FNR == NR`, which silently reads the SECOND file as the first
+# when the first has no records at all -- an empty allowlist would make every
+# finding parse as a malformed allowlist row.
+printf '# copy of %s\n' "$ALLOWLIST_FILE" > "$allowlist_in"
+if [ -f "$ALLOWLIST_FILE" ]; then
+  cat "$ALLOWLIST_FILE" >> "$allowlist_in"
+fi
 
 while IFS=$'\t' read -r rule_id severity scope pattern message issue rest; do
   case "$rule_id" in
@@ -65,20 +77,124 @@ while IFS=$'\t' read -r rule_id severity scope pattern message issue rest; do
     exit "$rg_status"
   fi
 
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    rel_path="${row%%:*}"
-    rest_row="${row#*:}"
-    line_no="${rest_row%%:*}"
-    text="${rest_row#*:}"
-    rel_path="${rel_path#./}"
-    if is_allowed "$rule_id" "$rel_path" "$line_no"; then
-      continue
-    fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$severity" "$rule_id" "$rel_path" "$line_no" "$message" "$issue" "$text" >> "$findings"
-  done <<< "$matches"
+  # The match TEXT, trimmed, is the allowlist key -- not the line number. See
+  # the allowlist header for why. Splitting is positional (path:line:text) so
+  # that a colon inside the matched source text stays in the text.
+  printf '%s\n' "$matches" | awk \
+    -v sev="$severity" -v rid="$rule_id" -v msg="$message" -v iss="$issue" '
+      {
+        if ($0 == "") next
+        p = index($0, ":")
+        if (p == 0) next
+        path = substr($0, 1, p - 1)
+        rest = substr($0, p + 1)
+        q = index(rest, ":")
+        if (q == 0) next
+        line = substr(rest, 1, q - 1)
+        text = substr(rest, q + 1)
+        sub(/^\.\//, "", path)
+        gsub(/\t/, " ", text)
+        gsub(/^ +| +$/, "", text)
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sev, rid, path, line, msg, iss, text
+      }
+    ' >> "$matches_file"
 done < "$RULES_FILE"
+
+# Join matches against the allowlist. A `(rule_id, path, text)` group is allowed
+# up to its recorded count; occurrences beyond it are violations, and a group
+# with no entry is a violation outright.
+: > "$findings"
+: > "$stale"
+: > "$baseline"
+set +e
+awk -F '\t' \
+  -v viol_out="$findings" \
+  -v stale_out="$stale" \
+  -v baseline_out="$baseline" '
+    function gkey(rid, path, text) { return rid SUBSEP path SUBSEP text }
+
+    FNR == NR {
+      if ($0 ~ /^[ \t]*$/ || $1 ~ /^#/) next
+      if (NF == 3 && $3 == "*") { wide[$1 SUBSEP $2] = 1; next }
+      if (NF == 4 && $3 ~ /^[0-9]+$/) {
+        allow[gkey($1, $2, $4)] = $3 + 0
+        next
+      }
+      printf("architecture-debt lint: bad allowlist row at line %d: %s\n", FNR - 1, $0) > "/dev/stderr"
+      printf("  rows are `rule_id<TAB>path<TAB>*` or `rule_id<TAB>path<TAB>count<TAB>text`.\n") > "/dev/stderr"
+      printf("  line-number keys were removed in #1729 -- they went stale on every edit above them.\n") > "/dev/stderr"
+      bad = 1
+      next
+    }
+
+    {
+      sev = $1; rid = $2; path = $3; line = $4; msg = $5; iss = $6; text = $7
+      if ((rid SUBSEP path) in wide) next
+      k = gkey(rid, path, text)
+      seen[k] += 1
+      g_sev[k] = sev
+      if (seen[k] <= allow[k]) next
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sev, rid, path, line, msg, iss, text > viol_out
+    }
+
+    END {
+      if (bad) exit 3
+      for (k in allow) {
+        if (allow[k] > seen[k]) {
+          split(k, parts, SUBSEP)
+          printf "%s\t%s\t%d\t%d\t%s\n", parts[1], parts[2], allow[k], seen[k], parts[3] > stale_out
+        }
+      }
+      # Only `error` groups are baselined. Writing `warn` groups here would
+      # silence the very rules whose job is to stay visible and countable.
+      for (k in seen) {
+        if (g_sev[k] != "error") continue
+        split(k, parts, SUBSEP)
+        printf "%s\t%s\t%d\t%s\n", parts[1], parts[2], seen[k], parts[3] > baseline_out
+      }
+    }
+  ' "$allowlist_in" "$matches_file"
+join_status=$?
+set -e
+if [ "$join_status" -ne 0 ]; then
+  echo "architecture-debt lint: allowlist is unusable, refusing to report" >&2
+  exit 1
+fi
+
+if [ "$update_mode" -eq 1 ]; then
+  # Regenerate only below the marker; hand-written notes and file-wide `*`
+  # exceptions above it are preserved verbatim.
+  new_allowlist="$tmp_dir/allowlist.new"
+  existing="$tmp_dir/allowlist.existing"
+  : > "$existing"
+  [ -f "$ALLOWLIST_FILE" ] && cat "$ALLOWLIST_FILE" > "$existing"
+  if grep -Fqx "$BASELINE_MARKER" "$existing"; then
+    awk -v marker="$BASELINE_MARKER" '$0 == marker { exit } { print }' "$existing" > "$new_allowlist"
+  else
+    cat "$existing" > "$new_allowlist"
+    printf '\n' >> "$new_allowlist"
+  fi
+  printf '%s\n' "$BASELINE_MARKER" >> "$new_allowlist"
+  LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -k4,4 "$baseline" >> "$new_allowlist"
+  if [ -f "$ALLOWLIST_FILE" ] && cmp -s "$new_allowlist" "$ALLOWLIST_FILE"; then
+    echo "architecture-debt lint: baseline already current"
+    exit 0
+  fi
+  cat "$new_allowlist" > "$ALLOWLIST_FILE"
+  echo "architecture-debt lint: baseline updated ($(wc -l < "$baseline" | tr -d ' ') entries)"
+  exit 0
+fi
+
+if [ -s "$stale" ]; then
+  # Not a failure: a change that REMOVES debt should not be forced to also
+  # update the baseline. But the entry is now covering nothing, so say so --
+  # a ratchet that only ever loosens is not a ratchet.
+  while IFS=$'\t' read -r rule_id rel_path allowed actual text; do
+    printf 'architecture-debt lint: stale allowlist entry (%s %s: allows %s, found %s): %s\n' \
+      "$rule_id" "$rel_path" "$allowed" "$actual" "$text" >&2
+  done < "$stale"
+  echo "architecture-debt lint: run \`bash scripts/lint_architecture_debt.sh --update\` to tighten the baseline" >&2
+fi
 
 if [ ! -s "$findings" ]; then
   echo "architecture-debt lint: ok"

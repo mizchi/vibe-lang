@@ -249,4 +249,59 @@ if ! rg -q 'bootstrap failed before lint execution' "$TMP_ROOT/runner-fail.out";
   exit 1
 fi
 
+# A runner that cannot run at all is not a finding. Before this, the probe
+# accepted `runtime/vibe` on the strength of it being an executable script that
+# mentions a `grep` verb -- true in a checkout where `bin/viberun` was never
+# built -- so every `vibe grep` failed and the run reported `structural
+# regression(s) added` against a diff that had nothing to do with it. Skipping
+# is what the probe already does when it works; it just has to say so.
+# Written at the default GREP_BIN location so the probe itself is exercised;
+# setting VIBE_REVIEW_LINT_GREP_BIN would short-circuit it to "available".
+mkdir -p "$TMP_ROOT/runtime"
+cat > "$TMP_ROOT/runtime/vibe" <<'EOF'
+#!/usr/bin/env bash
+# Mimics runtime/vibe's dispatcher shape (it has a `  grep)` case) while
+# failing the way a checkout with no built runner does.
+case "${1:-}" in
+  grep) ;;
+esac
+echo 'vibe: runner not found or not executable: bin/viberun' >&2
+exit 1
+EOF
+chmod +x "$TMP_ROOT/runtime/vibe"
+
+if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/unavailable.out" 2>&1; then
+  echo "review-regressions lint self-test: an unrunnable grep binary must skip, not accuse" >&2
+  cat "$TMP_ROOT/unavailable.out" >&2
+  exit 1
+fi
+if rg -q 'structural regression\(s\) added' "$TMP_ROOT/unavailable.out"; then
+  echo "review-regressions lint self-test: an unrunnable grep binary was reported as a regression" >&2
+  cat "$TMP_ROOT/unavailable.out" >&2
+  exit 1
+fi
+
+# A runner that IS available but fails mid-scan still fails closed -- and the
+# headline says the scan did not run, not that the diff added something.
+cat > "$TMP_ROOT/fake-vibe-scan-error" <<'EOF'
+#!/usr/bin/env bash
+echo 'review-lint: vibe grep failed: backend exploded' >&2
+exit 2
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-scan-error"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-scan-error" \
+  VIBE_REVIEW_LINT_RUNNER="$TMP_ROOT/fake-vibe-scan-error" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/scan-error.out" 2>&1; then
+  echo "review-regressions lint self-test: a failed scan must fail closed" >&2
+  exit 1
+fi
+if ! rg -q 'the AST scan did not run' "$TMP_ROOT/scan-error.out"; then
+  echo "review-regressions lint self-test: a failed scan was reported as a finding" >&2
+  cat "$TMP_ROOT/scan-error.out" >&2
+  exit 1
+fi
+
 echo "review-regressions lint self-test: ok"

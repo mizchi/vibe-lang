@@ -29,14 +29,25 @@ diff="$({
 staged_paths="$(git -C "$PROJECT_ROOT" diff --cached --name-only --diff-filter=ACMR \
   | awk '/^lib\/@vibe\/compiler\/.*\.vibe$/')"
 
+# `runtime/vibe` is a dispatcher script, so "executable and mentions a grep
+# verb" is satisfied by a checkout that cannot run anything: the script is
+# there, `bin/viberun` is not. The probe passed, every `vibe grep` failed at
+# run time, and the failure came back out as `structural regression(s) added`
+# against whatever was being committed. Actually invoke it -- one cheap call
+# answers "can this run" instead of "does this file look like it could".
 grep_available=0
 if [ -n "${VIBE_REVIEW_LINT_GREP_BIN:-}" ]; then
   grep_available=1
-elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN"; then
+elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN" \
+  && "$GREP_BIN" --version >/dev/null 2>&1; then
   grep_available=1
+elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN"; then
+  echo "review-regressions lint: AST tier skipped -- $GREP_BIN cannot run here" >&2
+  echo "  (build the runner, or point VIBE_REVIEW_LINT_GREP_BIN at a working one)" >&2
 fi
 
 violations=""
+ast_tool_error=0
 if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/vibe_review_grep.XXXXXX")"
   trap 'rm -rf "$tmp_root"' EXIT
@@ -104,7 +115,11 @@ if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
     fi
   else
     # Preserve backend/bootstrap errors instead of accidentally treating them
-    # as filtered historical findings.
+    # as filtered historical findings. review_lint.vibex reserves exit 2 for
+    # "the scan did not run", which is a different claim from "the scan found
+    # something" -- report it as one, or the author reads that their own diff
+    # added a regression it had nothing to do with.
+    ast_tool_error=1
     violations="$ast_output"
   fi
 else
@@ -139,7 +154,11 @@ else
 fi
 
 if [ -n "$violations" ]; then
-  echo "review-regressions lint: structural regression(s) added" >&2
+  if [ "$ast_tool_error" -eq 1 ]; then
+    echo "review-regressions lint: the AST scan did not run (no finding was made)" >&2
+  else
+    echo "review-regressions lint: structural regression(s) added" >&2
+  fi
   printf '%s\n' "$violations" >&2
   exit 1
 fi
