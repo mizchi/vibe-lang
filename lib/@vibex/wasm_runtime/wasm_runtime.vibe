@@ -408,8 +408,31 @@ export fn opcode_name(op: Int) -> String {
   }
 }
 
+/// wasm memory addresses are UNSIGNED i32. The operand stack carries them as
+/// host `Int`s, so `0xFFFFFFFF` arrives here as `-1` -- a huge address, not a
+/// backwards one. Mask before use: without this the bounds checks below are
+/// bypassed entirely and `m[-1]` takes the whole host process down with an
+/// uncatchable trap, on an address the guest chooses (#1745).
+fn mem_addr(raw: Int, off: Int) -> Int {
+  (raw&0xFFFFFFFF) + off
+}
+
+/// An access must lie entirely inside the memory, so `width` (the access size
+/// in bytes) is part of the question. An access that STARTS in bounds and runs
+/// off the end still traps -- address 65533 of a one-page memory is in bounds
+/// for a byte and out of bounds for an i32.
+fn mem_in_bounds(m: Bytes, a: Int, width: Int) -> Bool {
+  (a >= 0) && ((a + width) <= Bytes::length(m))
+}
+
+// The mem_load_*/mem_store_* helpers return a value (or Unit), so they have no
+// way to say "this trapped" -- which is why out-of-bounds used to read as 0 and
+// write as a silent no-op, making "the guest read past the end" and "that byte
+// really was 0" the same answer. The bounds decision now lives at the opcode
+// dispatch, where `exit_code = 1` is reachable; these keep their old clamping
+// only as a second line of defence for a caller that skips the check.
 fn mem_load_i32(m: Bytes, a: Int) -> Int {
-  if (a + 4) > Bytes::length(m) {
+  if (a < 0) || ((a + 4) > Bytes::length(m)) {
     0
   } else {
     m[a]|(m[a + 1]<<8)|(m[a + 2]<<16)|(m[a + 3]<<24)
@@ -570,7 +593,7 @@ export fn disassemble(code: Bytes, start: Int, end_pos: Int) -> Array[String] {
 }
 
 fn mem_load_i8_s(m: Bytes, a: Int) -> Int {
-  if a >= Bytes::length(m) {
+  if (a < 0) || (a >= Bytes::length(m)) {
     0
   }
   else {
@@ -584,13 +607,13 @@ fn mem_load_i8_s(m: Bytes, a: Int) -> Int {
 }
 
 fn mem_store_i16(m: Bytes, a: Int, v: Int) -> Unit {
-  if (a + 2) <= Bytes::length(m) {
+  if (a >= 0) && ((a + 2) <= Bytes::length(m)) {
     Bytes::set(m, a, v&0xFF); Bytes::set(m, a + 1, (v>>8)&0xFF)
   }
 }
 
 fn mem_store_i32(m: Bytes, a: Int, v: Int) -> Unit {
-  if (a + 4) <= Bytes::length(m) {
+  if (a >= 0) && ((a + 4) <= Bytes::length(m)) {
     Bytes::set(m, a, v&0xFF); Bytes::set(m, a + 1, (v>>8)&0xFF); Bytes::set(m, a + 2, (v>>16)&0xFF); Bytes::set(m, a + 3, (v>>24)&0xFF)
   }
 }
@@ -600,7 +623,7 @@ fn mem_store_i64(m: Bytes, a: Int, v: Int) -> Unit {
 }
 
 fn mem_load_i16_s(m: Bytes, a: Int) -> Int {
-  if (a + 2) > Bytes::length(m) {
+  if (a < 0) || ((a + 2) > Bytes::length(m)) {
     0
   }
   else {
@@ -614,7 +637,7 @@ fn mem_load_i16_s(m: Bytes, a: Int) -> Int {
 }
 
 fn mem_load_i16_u(m: Bytes, a: Int) -> Int {
-  if (a + 2) > Bytes::length(m) {
+  if (a < 0) || ((a + 2) > Bytes::length(m)) {
     0
   } else {
     m[a]|(m[a + 1]<<8)
@@ -811,7 +834,12 @@ export fn exec_body(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[Int],
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b)
     }
     else if op == 0x6D {
-      let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 {
+      let b = stack_pop(stack)
+      let a = stack_pop(stack)
+      // The spec traps i32.div_s on division by zero OR on overflow. Only the
+      // zero case was here, so INT_MIN / -1 returned the two's-complement
+      // wrap (INT_MIN again) where the engine traps (#1745).
+      if (b == 0) || ((a == -2147483648) && (b == -1)) {
         exit_code = 1
       } else {
         stack_push(stack, a / b)
@@ -1117,68 +1145,118 @@ export fn exec_body(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[Int],
       stack_push(stack, stack_pop(stack)&0xFFFFFFFF)
     }
     else if op == 0x28 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i32(memory, stack_pop(stack) + off))
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 4) {
+        stack_push(stack, mem_load_i32(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x29 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i64(memory, stack_pop(stack) + off))
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 8) {
+        stack_push(stack, mem_load_i64(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x36 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i32(memory, stack_pop(stack) + off, v)
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 4) {
+        mem_store_i32(memory, addr, v)
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x37 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i64(memory, stack_pop(stack) + off, v)
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 8) {
+        mem_store_i64(memory, addr, v)
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x2D {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, if addr < Bytes::length(memory) {
-        memory[addr]
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 1) {
+        stack_push(stack, memory[addr])
       } else {
-        0
-      })
+        exit_code = 1
+      }
     }
     else if op == 0x3A {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
       let v = stack_pop(stack)
-      let addr = stack_pop(stack) + off
-      if addr < Bytes::length(memory) {
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 1) {
         Bytes::set(memory, addr, v&0xFF)
       } else {
-        ()
+        exit_code = 1
       }
     }
     else if op == 0x2C {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, mem_load_i8_s(memory, addr))
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 1) {
+        stack_push(stack, mem_load_i8_s(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x2E {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, mem_load_i16_s(memory, addr))
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 2) {
+        stack_push(stack, mem_load_i16_s(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x2F {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, mem_load_i16_u(memory, addr))
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 2) {
+        stack_push(stack, mem_load_i16_u(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x3B {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
       let v = stack_pop(stack)
-      let addr = stack_pop(stack) + off
-      mem_store_i16(memory, addr, v)
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 2) {
+        mem_store_i16(memory, addr, v)
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x11 {
       let (_, np) = read_uleb128(code, pc)
@@ -1409,7 +1487,12 @@ export fn exec_body_gc(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[In
       let b = stack_pop(stack); stack_push(stack, stack_pop(stack) * b)
     }
     else if op == 0x6D {
-      let b = stack_pop(stack); let a = stack_pop(stack); if b == 0 {
+      let b = stack_pop(stack)
+      let a = stack_pop(stack)
+      // The spec traps i32.div_s on division by zero OR on overflow. Only the
+      // zero case was here, so INT_MIN / -1 returned the two's-complement
+      // wrap (INT_MIN again) where the engine traps (#1745).
+      if (b == 0) || ((a == -2147483648) && (b == -1)) {
         exit_code = 1
       } else {
         stack_push(stack, a / b)
@@ -1715,68 +1798,118 @@ export fn exec_body_gc(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[In
       stack_push(stack, stack_pop(stack)&0xFFFFFFFF)
     }
     else if op == 0x28 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i32(memory, stack_pop(stack) + off))
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 4) {
+        stack_push(stack, mem_load_i32(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x29 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; stack_push(stack, mem_load_i64(memory, stack_pop(stack) + off))
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 8) {
+        stack_push(stack, mem_load_i64(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x36 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i32(memory, stack_pop(stack) + off, v)
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 4) {
+        mem_store_i32(memory, addr, v)
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x37 {
-      let (_, np) = read_uleb128(code, pc); let (off, np2) = read_uleb128(code, np); pc = np2; let v = stack_pop(stack); mem_store_i64(memory, stack_pop(stack) + off, v)
+      let (_, np) = read_uleb128(code, pc)
+      let (off, np2) = read_uleb128(code, np)
+      pc = np2
+      let v = stack_pop(stack)
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 8) {
+        mem_store_i64(memory, addr, v)
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x2D {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, if addr < Bytes::length(memory) {
-        memory[addr]
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 1) {
+        stack_push(stack, memory[addr])
       } else {
-        0
-      })
+        exit_code = 1
+      }
     }
     else if op == 0x3A {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
       let v = stack_pop(stack)
-      let addr = stack_pop(stack) + off
-      if addr < Bytes::length(memory) {
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 1) {
         Bytes::set(memory, addr, v&0xFF)
       } else {
-        ()
+        exit_code = 1
       }
     }
     else if op == 0x2C {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, mem_load_i8_s(memory, addr))
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 1) {
+        stack_push(stack, mem_load_i8_s(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x2E {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, mem_load_i16_s(memory, addr))
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 2) {
+        stack_push(stack, mem_load_i16_s(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x2F {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
-      let addr = stack_pop(stack) + off
-      stack_push(stack, mem_load_i16_u(memory, addr))
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 2) {
+        stack_push(stack, mem_load_i16_u(memory, addr))
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x3B {
       let (_, np) = read_uleb128(code, pc)
       let (off, np2) = read_uleb128(code, np)
       pc = np2
       let v = stack_pop(stack)
-      let addr = stack_pop(stack) + off
-      mem_store_i16(memory, addr, v)
+      let addr = mem_addr(stack_pop(stack), off)
+      if mem_in_bounds(memory, addr, 2) {
+        mem_store_i16(memory, addr, v)
+      } else {
+        exit_code = 1
+      }
     }
     else if op == 0x11 {
       let (_, np) = read_uleb128(code, pc)
