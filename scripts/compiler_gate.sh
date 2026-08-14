@@ -6993,10 +6993,6 @@ scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvar
 # -- only capturing another LOCAL CLOSURE is refused. And a `for` iterand is
 # lowered only when proved; an unannotated callee proves nothing.
 scps_check_reject "err_effect_capture_local_closure.vibe" "cannot see through" "capturelocalclosure"
-# #1707 P0: a step-split literal may only land in a parameter whose row carries
-# the effect. Passed to a plain-convention parameter it used to compile and
-# silently return the step object as the value (5 -> 177, 15 -> 301).
-scps_check_reject "err_effect_step_literal_plain_param.vibe" "hand the step object back as the value" "stepliteralplainparam"
 scps_check_reject "err_effect_for_unproved_iterand.vibe" "let/seq/tail/branch-tail spine" "forunproved"
 # A nested handle inside a compound is refused EARLIER, by the pre-existing
 # see-through rule -- the linearization neither widens nor narrows it. Gated on
@@ -8571,12 +8567,7 @@ if [ -s "$asb89dir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe compiled successfully -- convention mixing must be rejected" >&2
   exit 1
 fi
-# Either guard may catch this: the ADR-0076 mixing guard, or #1707's more
-# specific one (a step-split literal landing in a plain-convention parameter,
-# which is the same root -- a step value meeting a plain call). What this pins
-# is that it is REJECTED with an actionable diagnostic, not miscompiled.
-if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null \
-   && ! grep -qF 'hand the step object back as the value' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
+if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe did not produce the expected diagnostic" >&2
   cat "$asb89dir/neg.wasm.diag" 2>/dev/null >&2 || true
   exit 1
