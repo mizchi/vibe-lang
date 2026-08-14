@@ -173,6 +173,36 @@ export fn emit_if_i64(buf: Bytes) -> Unit {
   bytebuf_push2(buf, op_if, bt_i64)
 }
 
+/// `if` whose result is a value type that has no single-byte blocktype --
+/// today a `(ref null $t)`. The binary format spells that as a TYPE INDEX in
+/// the blocktype position, encoded as signed LEB128 (s33), referring to a func
+/// type with no parameters and that one result.
+///
+/// The single-byte encoding below is only valid while the index fits in six
+/// bits: s33 reserves bit 6 for the sign, and the negative range is where the
+/// single-byte value types (0x7E i64, 0x40 empty, ...) live. Callers pass a
+/// fixed base type index, so this is a static property rather than a bound to
+/// check at every call -- but it is checked, because getting it wrong emits a
+/// module that decodes as some unrelated value type instead of failing.
+export fn emit_if_type_index(buf: Bytes, type_idx: Int) -> Unit with Exception {
+  if type_idx < 0 || type_idx >= 64 {
+    throw("blocktype type index \{type_idx} needs a multi-byte s33 encoding (only 0..63 supported)")
+  } else {
+    ()
+  }
+  bytebuf_push2(buf, op_if, type_idx)
+}
+
+/// `(func (result (ref null <ref_type_idx>)))` -- the func type an `if` (or any
+/// other structured instruction) points at to declare a typed-reference result.
+export fn emit_func_type_ref_result(buf: Bytes, ref_type_idx: Int) -> Unit {
+  bytebuf_push(buf, 96)
+  leb128_encode_u32(buf, 0)
+  leb128_encode_u32(buf, 1)
+  bytebuf_push(buf, 99)
+  leb128_encode_u32(buf, ref_type_idx)
+}
+
 export fn emit_return(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_return)
 }
