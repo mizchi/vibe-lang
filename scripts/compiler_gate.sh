@@ -7001,7 +7001,12 @@ scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvar
 # capture a scalar param, an outer scalar let, or a function param (all compile)
 # -- only capturing another LOCAL CLOSURE is refused. And a `for` iterand is
 # lowered only when proved; an unannotated callee proves nothing.
-scps_check_reject "err_effect_capture_local_closure.vibe" "cannot see through" "capturelocalclosure"
+# #1536: capturing a PROVABLY INERT local closure literal is admitted (we can
+# see what the name holds); capturing a PERFORMING one stays refused, which is
+# what keeps that sound -- it is the #1707 shape.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_capture_inert_local_closure_test.vibe
+scps_check_reject "err_effect_capture_performing_closure.vibe" "hand the step object back as the value" "captureperforming"
 # #1707 P0: a step-split literal may only land in a parameter whose row carries
 # the effect. Passed to a plain-convention parameter it used to compile and
 # silently return the step object as the value (5 -> 177, 15 -> 301).
