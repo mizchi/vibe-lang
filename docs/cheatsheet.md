@@ -495,7 +495,7 @@ while cond { body }
 // for-in (collects into array)
 for x in arr { x * 2 }         // -> Array
 for i, x in arr { i + x }      // with index
-for b in pull { b }            // async iterator (struct: next() -> Future[Option[(T,Self)]], await-driven) or a () -> Option[T] pull closure (-> None).
+for b in pull { use(b) }       // statement only: async iterator (struct: next() -> Future[Option[(T,Self)]], await-driven) or a () -> Option[T] pull closure (-> None).
                                // 同期/非同期の選択は iterand の型だけで決まる — `for await` は #1350 で廃止 (suspend は effect row が語る)
 
 // loop (parameterized tail-recursion)
@@ -518,6 +518,12 @@ let find_first_neg: (Array[Int]) -> Int = (arr) -> {
   -1
 }
 ```
+
+`for` が body の値を `Array` に集めるのは Array/String など builtin の
+collection iterand だけ。pull closure・trait iterator・HostStream などの
+非Array iterator は statement-shaped loop なので、値位置 (`let xs = for ...`)
+では located error になる (#1679)。配列が必要なら iterator 固有の `collect`
+関数を使うか、文位置の loop から `ArrayBuilder` へ明示的に蓄積する。
 
 ## Pattern Matching
 
