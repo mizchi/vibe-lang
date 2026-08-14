@@ -12,6 +12,10 @@ import @vibe/compiler/checker {
   EffectError, check_perform_effects_expr, check_perform_effects_stmt, check_perform_effects_stmts, effect_error_to_string
 }
 
+import @vibe/parser {
+  lex, parse_program
+}
+
 //# Functions
 
 /// #639: the perform-discipline pass now reports row mismatches as
@@ -70,6 +74,26 @@ test "perform inside a handle is allowed regardless of declaration" {
   ])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
+}
+
+test "#1678: parser rejects a zero-arm handler with an actionable error" {
+  let result = handle {
+    let _ = parse_program(lex("fn f() -> Int { handle { 1 } with Exception { } }"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "handler for effect 'Exception' has no operation arms"))
+  assert(String::contains(result, "add exhaustive operation arms"))
+}
+
+test "#1678: empty EHandle does not suppress undeclared body effects" {
+  let no_arms: Array[(Pat, Expr)] = [
+  ]
+  let inner = perform_op("Stdout::WriteStream", EString("hi"))
+  let errors = check_perform_effects_expr(EHandle(inner, no_arms), no_labels(), false)
+  assert(Array::length(errors) > 0)
+  assert(is_perform_err(Array::get(errors, 0)))
 }
 
 test "perform via EFn with declared effect is OK" {
