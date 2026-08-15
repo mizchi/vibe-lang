@@ -106,6 +106,56 @@ function balancedEnd(tokens, open, left, right) {
   assert.fail(`unterminated balanced ${left}${right} at token ${open}`);
 }
 
+function tokenText(source) {
+  return vibeTokens(source).map((token) => token.text).join(" ");
+}
+
+// Parse only the OUTER match of one validator. Comments/strings are removed by
+// vibeTokens, and commas/arrows count as arm separators only at balanced depth
+// zero inside that match. Nested matches and constructor arguments stay local
+// to their containing arm body/head.
+function outerMatchArms(source, name) {
+  const tokens = vibeTokens(functionBody(source, name));
+  const matchAt = tokens.findIndex((token) => token.text === "match");
+  assert.notEqual(matchAt, -1, `${name}: missing outer match`);
+  const open = tokens.findIndex((token, i) => i > matchAt && token.text === "{");
+  assert.notEqual(open, -1, `${name}: missing outer match body`);
+  const close = balancedEnd(tokens, open, "{", "}");
+  const arms = new Map();
+  let i = open + 1;
+  while (i < close) {
+    while (i < close && tokens[i].text === ",") i += 1;
+    if (i >= close) break;
+    const headStart = i;
+    let depth = 0;
+    let arrow = -1;
+    for (; i < close; i += 1) {
+      const text = tokens[i].text;
+      if (["(", "[", "{"].includes(text)) depth += 1;
+      else if ([")", "]", "}"].includes(text)) depth -= 1;
+      else if (text === "=>" && depth === 0) { arrow = i; break; }
+    }
+    assert.notEqual(arrow, -1, `${name}: unterminated arm head`);
+    const head = tokens.slice(headStart, arrow).map((token) => token.text);
+    const ctor = head[0];
+    const bodyStart = arrow + 1;
+    i = bodyStart;
+    depth = 0;
+    for (; i < close; i += 1) {
+      const text = tokens[i].text;
+      if (["(", "[", "{"].includes(text)) depth += 1;
+      else if ([")", "]", "}"].includes(text)) depth -= 1;
+      else if (text === "," && depth === 0) break;
+    }
+    assert.ok(!arms.has(ctor), `${name}: duplicate outer arm ${ctor}`);
+    arms.set(ctor, {
+      head,
+      body: tokens.slice(bodyStart, i).map((token) => token.text),
+    });
+  }
+  return arms;
+}
+
 function efnInventory(file, source) {
   const tokens = vibeTokens(source);
   const functions = [];
@@ -403,12 +453,15 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
 });
 
 test("atomic binder authority is source-owned, validated, fail-closed, and bundled", () => {
-  assertBody(parserSource, "parse_source_located_with_binder_authority", [
+  assertBody(binderAuthoritySource, "parse_source_located_with_binder_authority", [
     "lex_with_offsets(source)",
     "binder_capture_context(starts, ends)",
-    "parse_program_located_with_context_impl(tokens, starts, source, Some(context))",
+    "parse_program_located_with_untrusted_binder_context(tokens, starts, source, Some(context))",
     "binder_capture_is_eligible(context)",
-    "validate_program_binder_rows(program, rows, source)",
+    "build_program_binder_authority(program, rows, source)",
+    "LocatedProgramBinderAuthority::{",
+    "binders: rows",
+    "nodes",
   ], ["tokens: Array[Token]", "context: Option[ParserBinderContext]"]);
   assertBody(binderContextSource, "binder_capture_source", [
     "Array::get(starts, first_token)",
@@ -425,17 +478,163 @@ test("atomic binder authority is source-owned, validated, fail-closed, and bundl
     "Array::truncate(c.rows, length - removed)",
     "None => ()",
   ], ["Array::slice", "SourceToken", "Synthetic"]);
-  assertBody(parserSource, "parse_source_located_with_binder_authority", [
+  assertBody(binderAuthoritySource, "parse_source_located_with_binder_authority", [
     "binder_capture_context(starts, ends)",
   ]);
   assertBody(binderAuthoritySource, "validate_program_binder_rows", [
+    "build_program_binder_authority(program, rows, source)",
+    "Some(_) => true",
+    "None => false",
+  ]);
+  assertBody(binderAuthoritySource, "build_program_binder_authority", [
     "next == Array::length(rows)",
-    "_ => (false, next)",
+    "ArrayBuilder::push(nodes, result.0)",
   ]);
   assert.match(parserContract, /opaque type LocatedProgramBinderAuthority/);
   assert.match(parserContract, /fn parse_source_located_with_binder_authority\(source: String\)/);
   assert.match(compilerManifest, /parser_binder_authority\.vibe/);
-  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only source-owning authority entry lexes source with exact offsets");
+  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 0, "ordinary parser module must not own exact-source authority lexing");
+  assert.equal((binderAuthoritySource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only source-owning authority entry lexes source with exact offsets");
+  const storedBlock = binderAuthoritySource.slice(
+    binderAuthoritySource.indexOf("enum StoredBinderAuthority"),
+    binderAuthoritySource.indexOf("/// Atomically produced exact-source parse result"),
+  );
+  const aggregateBlock = binderAuthoritySource.slice(
+    binderAuthoritySource.indexOf("export struct LocatedProgramBinderAuthority"),
+    binderAuthoritySource.indexOf("//# Data accessors"),
+  );
+  assert.ok(aggregateBlock.includes("nodes: StoredBinderAuthority"), "aggregate must retain the private persistent topology");
+  assert.ok(!vibeTokens(storedBlock).some((token) => token.text === "Array"), "no mutable Array may be reachable from stored node topology");
+  assertBody(binderAuthoritySource, "located_program_binder_authority_nodes", [
+    "append_materialized_nodes(authority.nodes, out)",
+    "ArrayBuilder::freeze(out)",
+  ], ["Array::slice"]);
+  for (const leafAccessor of ["binder_authority_node_kind", "binder_authority_node_slots", "binder_authority_node_children"]) {
+    assert.ok(!functionBody(binderAuthoritySource, leafAccessor).includes("materialize_authority_node"), `${leafAccessor}: forged cycles must not trigger recursive copying`);
+  }
+});
+
+function authoritySpec(kind, build, roles = [], order = []) {
+  return { kind, build: Array.isArray(build) ? build : [build], roles, order };
+}
+
+const authorityArmSpecs = {
+  validate_pattern: {
+    PBind: authoritySpec("AuthorityPatBind", "authority_node(AuthorityPatBind, [result.0], no_nodes())", ["PatternBinder"]),
+    PCtor: authoritySpec("AuthorityPatCtor", "authority_node(AuthorityPatCtor, no_slots(), result.0)", [], ["validate_patterns(args, rows, source, at)"]),
+    PTuple: authoritySpec("AuthorityPatTuple", "authority_node(AuthorityPatTuple, no_slots(), result.0)", [], ["validate_patterns(args, rows, source, at)"]),
+    PStruct: authoritySpec("AuthorityPatStruct", "authority_node(AuthorityPatStruct, no_slots(), ArrayBuilder::freeze(children))", [], ["for field in fields", "validate_pattern(field.1, rows, source, next)", "ArrayBuilder::push(children, result.0)"]),
+    PWild: authoritySpec("AuthorityPatWild", "leaf(AuthorityPatWild)"),
+    PInt: authoritySpec("AuthorityPatInt", "leaf(AuthorityPatInt)"),
+    PFloat: authoritySpec("AuthorityPatFloat", "leaf(AuthorityPatFloat)"),
+    PString: authoritySpec("AuthorityPatString", "leaf(AuthorityPatString)"),
+    PBool: authoritySpec("AuthorityPatBool", "leaf(AuthorityPatBool)"),
+  },
+  validate_expr: {
+    ELet: authoritySpec("AuthorityExprLet", "authority_node(AuthorityExprLet, [slot.0], two_nodes(v.0, b.0))", ["ExpressionLetBinder"]),
+    ELetRec: authoritySpec("AuthorityExprLetRec", "authority_node(AuthorityExprLetRec, [slot.0], two_nodes(v.0, b.0))", ["ExpressionLetRecBinder"]),
+    ELetMut: authoritySpec("AuthorityExprLetMut", "authority_node(AuthorityExprLetMut, [slot.0], two_nodes(v.0, b.0))", ["ExpressionLetMutBinder"]),
+    EMatch: authoritySpec("AuthorityExprMatch", "authority_node(AuthorityExprMatch, no_slots(), ArrayBuilder::freeze(children))", [], ["validate_expr(scrutinee, rows, source, at)", "validate_arms(arms, rows, source, s.1)", "ArrayBuilder::push(children, s.0)", "for child in a.0", "ArrayBuilder::push(children, child)"]),
+    EHandle: authoritySpec("AuthorityExprHandle", "authority_node(AuthorityExprHandle, no_slots(), ArrayBuilder::freeze(children))", [], ["validate_expr(body, rows, source, at)", "validate_arms(arms, rows, source, b.1)", "ArrayBuilder::push(children, b.0)", "for child in a.0", "ArrayBuilder::push(children, child)"]),
+    EFn: authoritySpec("AuthorityExprFn", "authority_node(AuthorityExprFn, ArrayBuilder::freeze(slots), one_node(result.0))", ["ExpressionFunctionTypeParameterBinder", "ExpressionFunctionParameterBinder"], ["for name in type_params", "for param in params", "validate_expr(body, rows, source, next)"]),
+    EForIn: authoritySpec("AuthorityExprForIn", "authority_node(AuthorityExprForIn, ArrayBuilder::freeze(slots), two_nodes(i.0, b.0))", ["ExpressionForValueBinder", "ExpressionForIndexBinder"], ["validate_expr(iter, rows, source, next)", "validate_expr(body, rows, source, i.1)"]),
+    ETuple: authoritySpec("AuthorityExprTuple", "authority_node(AuthorityExprTuple, no_slots(), result.0)", [], ["validate_exprs(items, rows, source, at)"]),
+    EArray: authoritySpec("AuthorityExprArray", "authority_node(AuthorityExprArray, no_slots(), result.0)", [], ["validate_exprs(items, rows, source, at)"]),
+    ERecord: authoritySpec("AuthorityExprRecord", "authority_node(AuthorityExprRecord, no_slots(), result.0)", [], ["validate_named_exprs(fields, rows, source, at)"]),
+    EIf: authoritySpec("AuthorityExprIf", "authority_node(AuthorityExprIf, no_slots(), [c.0, y.0, n.0])", [], ["validate_expr(cond, rows, source, at)", "validate_expr(yes, rows, source, c.1)", "validate_expr(no, rows, source, y.1)"]),
+    EAssign: authoritySpec("AuthorityExprAssign", "authority_node(AuthorityExprAssign, no_slots(), two_nodes(v.0, b.0))"),
+    EAssignOp: authoritySpec("AuthorityExprAssignOp", "authority_node(AuthorityExprAssignOp, no_slots(), two_nodes(v.0, b.0))"),
+    ESeq: authoritySpec("AuthorityExprSeq", "authority_node(AuthorityExprSeq, no_slots(), two_nodes(f.0, s.0))"),
+    EWhile: authoritySpec("AuthorityExprWhile", "authority_node(AuthorityExprWhile, no_slots(), two_nodes(c.0, b.0))"),
+    ECall: authoritySpec("AuthorityExprCall", "authority_node(AuthorityExprCall, no_slots(), ArrayBuilder::freeze(children))", [], ["validate_expr(callee, rows, source, at)", "ArrayBuilder::push(children, c.0)", "for child in a.0", "ArrayBuilder::push(children, child)"]),
+    EBinOp: authoritySpec("AuthorityExprBinOp", "authority_node(AuthorityExprBinOp, no_slots(), two_nodes(l.0, r.0))"),
+    EUnaryOp: authoritySpec("AuthorityExprUnaryOp", "authority_node(AuthorityExprUnaryOp, no_slots(), one_node(result.0))"),
+    EDot: authoritySpec("AuthorityExprDot", "authority_node(AuthorityExprDot, no_slots(), one_node(result.0))"),
+    ELabeledArg: authoritySpec("AuthorityExprLabeledArg", "authority_node(AuthorityExprLabeledArg, no_slots(), one_node(result.0))"),
+    EReturn: authoritySpec("AuthorityExprReturn", "authority_node(AuthorityExprReturn, no_slots(), one_node(result.0))"),
+    EBreak: authoritySpec("AuthorityExprBreak", ["authority_node(AuthorityExprBreak, no_slots(), one_node(result.0))", "leaf(AuthorityExprBreak)"]),
+    EContinue: authoritySpec("AuthorityExprContinue", "authority_node(AuthorityExprContinue, no_slots(), result.0)", [], ["validate_exprs(values, rows, source, at)"]),
+    EMap: authoritySpec("AuthorityExprMap", "authority_node(AuthorityExprMap, no_slots(), result.0)", [], ["validate_named_exprs(items, rows, source, at)"]),
+    ESpread: authoritySpec("AuthorityExprSpread", "authority_node(AuthorityExprSpread, no_slots(), one_node(result.0))"),
+    EInt: authoritySpec("AuthorityExprInt", "leaf(AuthorityExprInt)"),
+    EFloat: authoritySpec("AuthorityExprFloat", "leaf(AuthorityExprFloat)"),
+    EString: authoritySpec("AuthorityExprString", "leaf(AuthorityExprString)"),
+    EBool: authoritySpec("AuthorityExprBool", "leaf(AuthorityExprBool)"),
+    EIdent: authoritySpec("AuthorityExprIdent", "leaf(AuthorityExprIdent)"),
+    EStringInterp: authoritySpec("AuthorityExprStringInterp", "leaf(AuthorityExprStringInterp)"),
+    EUnit: authoritySpec("AuthorityExprUnit", "leaf(AuthorityExprUnit)"),
+  },
+  validate_stmt: {
+    SLet: authoritySpec("AuthorityStmtLet", "authority_node(AuthorityStmtLet, [slot.0], one_node(expr.0))", ["StatementLetBinder"]),
+    SLetMut: authoritySpec("AuthorityStmtLetMut", "authority_node(AuthorityStmtLetMut, [slot.0], one_node(expr.0))", ["StatementLetMutBinder"]),
+    SExternLet: authoritySpec("AuthorityStmtExternLet", "authority_node(AuthorityStmtExternLet, [slot.0], no_nodes())", ["StatementExternBinder"]),
+    SImport: authoritySpec("AuthorityStmtImport", "authority_node(AuthorityStmtImport, ArrayBuilder::freeze(slots), no_nodes())", ["StatementImportBinder"], ["for item in items", "ArrayBuilder::push(slots, slot.0)"]),
+    SAliasDecl: authoritySpec("AuthorityStmtAliasDecl", "authority_node(AuthorityStmtAliasDecl, [slot.0], no_nodes())", ["StatementAliasBinder"]),
+    STypeAlias: authoritySpec("AuthorityStmtTypeAlias", "authority_node(AuthorityStmtTypeAlias, ArrayBuilder::freeze(slots), no_nodes())", ["StatementTypeBinder", "StatementTypeParameterBinder"], ["ArrayBuilder::push(slots, first.0)", "for param in params", "ArrayBuilder::push(slots, slot.0)"]),
+    SEffectSet: authoritySpec("AuthorityStmtEffectSet", "authority_node(AuthorityStmtEffectSet, [slot.0], no_nodes())", ["StatementEffectSetBinder"]),
+    SResource: authoritySpec("AuthorityStmtResource", "authority_node(AuthorityStmtResource, [slot.0], no_nodes())", ["StatementResourceBinder"]),
+    STest: authoritySpec("AuthorityStmtTest", "authority_node(AuthorityStmtTest, no_slots(), one_node(expr.0))"),
+    SBench: authoritySpec("AuthorityStmtBench", "authority_node(AuthorityStmtBench, no_slots(), one_node(expr.0))"),
+    SExample: authoritySpec("AuthorityStmtExample", "authority_node(AuthorityStmtExample, no_slots(), one_node(expr.0))"),
+    SExpr: authoritySpec("AuthorityStmtExpr", "authority_node(AuthorityStmtExpr, no_slots(), one_node(expr.0))"),
+    SExport: authoritySpec("AuthorityStmtExport", "leaf(AuthorityStmtExport)"),
+    SReExport: authoritySpec("AuthorityStmtReExport", "leaf(AuthorityStmtReExport)"),
+    SQualifiedPatternRefs: authoritySpec("AuthorityStmtQualifiedPatternRefs", "leaf(AuthorityStmtQualifiedPatternRefs)"),
+    STestEffectRows: authoritySpec("AuthorityStmtTestEffectRows", "leaf(AuthorityStmtTestEffectRows)"),
+  },
+};
+
+const semanticRoles = tokenText(binderAuthoritySource.slice(
+  binderAuthoritySource.indexOf("export enum BinderSemanticRole"),
+  binderAuthoritySource.indexOf("export struct BinderAuthoritySlot"),
+)).split(" ").filter((token) => token.endsWith("Binder"));
+
+function assertAuthorityArmStructure(source) {
+  const declaredKinds = vibeTokens(source.slice(
+    source.indexOf("export enum BinderAuthorityNodeKind"),
+    source.indexOf("export enum BinderSemanticRole"),
+  )).map((token) => token.text).filter((text) => text.startsWith("Authority"));
+  const expectedKinds = Object.values(authorityArmSpecs).flatMap((specs) => Object.values(specs).map((spec) => spec.kind));
+  assert.deepEqual([...declaredKinds].sort(), [...expectedKinds].sort(), "closed kind enum must exactly match supported arms");
+
+  for (const [fn, specs] of Object.entries(authorityArmSpecs)) {
+    const arms = outerMatchArms(source, fn);
+    const unsupported = fn === "validate_pattern" ? { POr: "None" } : fn === "validate_expr" ? { ELoop: "None" } : { _: "None" };
+    assert.deepEqual([...arms.keys()].sort(), [...Object.keys(specs), ...Object.keys(unsupported)].sort(), `${fn}: outer arm inventory drift`);
+    for (const [ctor, spec] of Object.entries(specs)) {
+      const body = arms.get(ctor).body;
+      const canonical = body.join(" ");
+      const kinds = body.filter((token) => token.startsWith("Authority"));
+      assert.deepEqual(kinds, Array(spec.build.length).fill(spec.kind), `${fn}:${ctor}: arm-local kind association`);
+      const roles = body.filter((token) => semanticRoles.includes(token));
+      assert.deepEqual(roles, spec.roles, `${fn}:${ctor}: arm-local semantic roles`);
+      const constructionCalls = body.filter((token) => token === "authority_node" || token === "leaf").length;
+      assert.equal(constructionCalls, spec.build.length, `${fn}:${ctor}: exact construction count`);
+      for (const build of spec.build) assert.ok(canonical.includes(tokenText(build)), `${fn}:${ctor}: missing exact child/slot construction ${build}`);
+      let previous = -1;
+      for (const ordered of spec.order) {
+        const at = canonical.indexOf(tokenText(ordered), previous + 1);
+        assert.ok(at > previous, `${fn}:${ctor}: missing/out-of-order ${ordered}`);
+        previous = at;
+      }
+    }
+    for (const [ctor, exact] of Object.entries(unsupported)) assert.equal(arms.get(ctor).body.join(" "), exact, `${fn}:${ctor}: unsupported arm must be locally None`);
+  }
+}
+
+test("balanced arm-local authority oracle proves exact kind, roles, and ordered children", () => {
+  assertAuthorityArmStructure(binderAuthoritySource);
+});
+
+test("arm-local authority oracle rejects wrong kinds, missing children, and swapped roles", () => {
+  const swappedKinds = binderAuthoritySource
+    .replace("EInt(_) => Some((leaf(AuthorityExprInt)", "EInt(_) => Some((leaf(AuthorityExprFloat)")
+    .replace("EFloat(_) => Some((leaf(AuthorityExprFloat)", "EFloat(_) => Some((leaf(AuthorityExprInt)");
+  assert.throws(() => assertAuthorityArmStructure(swappedKinds), /validate_expr:E(Int|Float): arm-local kind association/);
+  const omittedLetBody = binderAuthoritySource.replace("two_nodes(v.0, b.0)", "one_node(v.0)");
+  assert.throws(() => assertAuthorityArmStructure(omittedLetBody), /validate_expr:ELet: missing exact child\/slot construction/);
+  const swappedRole = binderAuthoritySource.replace("validate_slot(name, ExpressionLetBinder, rows", "validate_slot(name, ExpressionLetRecBinder, rows");
+  assert.throws(() => assertAuthorityArmStructure(swappedRole), /validate_expr:ELet: arm-local semantic roles/);
 });
 
 test("malformed binder context failures use guarded poison and fixed append bounds", () => {

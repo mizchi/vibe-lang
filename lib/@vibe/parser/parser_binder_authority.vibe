@@ -4,15 +4,256 @@ import @vibe/ast {
   Expr, Pat, Stmt
 }
 
-import ./parser_binder_context.vibe {
-  SourceBinder
+import ./lexer.vibe {
+  lex_with_offsets
 }
 
-//# Validation
+import ./parser.vibe {
+  parse_program_located_with_untrusted_binder_context
+}
 
-fn validate_slot(name: String, rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+import ./parser_base.vibe {
+  peek
+}
+
+import ./parser_binder_context.vibe {
+  SourceBinder, binder_capture_context, binder_capture_is_eligible, binder_capture_rows
+}
+
+//# Types
+
+/// Closed final-AST constructor inventory for the recursive binder sidecar.
+/// Arity is the exact length of a node's ordered children array.
+export enum BinderAuthorityNodeKind {
+  AuthorityPatWild;
+  AuthorityPatBind;
+  AuthorityPatInt;
+  AuthorityPatFloat;
+  AuthorityPatString;
+  AuthorityPatBool;
+  AuthorityPatCtor;
+  AuthorityPatTuple;
+  AuthorityPatStruct;
+  AuthorityExprInt;
+  AuthorityExprFloat;
+  AuthorityExprString;
+  AuthorityExprBool;
+  AuthorityExprIdent;
+  AuthorityExprTuple;
+  AuthorityExprArray;
+  AuthorityExprRecord;
+  AuthorityExprIf;
+  AuthorityExprLet;
+  AuthorityExprLetRec;
+  AuthorityExprLetMut;
+  AuthorityExprAssign;
+  AuthorityExprAssignOp;
+  AuthorityExprSeq;
+  AuthorityExprMatch;
+  AuthorityExprHandle;
+  AuthorityExprFn;
+  AuthorityExprForIn;
+  AuthorityExprWhile;
+  AuthorityExprCall;
+  AuthorityExprBinOp;
+  AuthorityExprUnaryOp;
+  AuthorityExprDot;
+  AuthorityExprLabeledArg;
+  AuthorityExprReturn;
+  AuthorityExprBreak;
+  AuthorityExprContinue;
+  AuthorityExprMap;
+  AuthorityExprSpread;
+  AuthorityExprStringInterp;
+  AuthorityExprUnit;
+  AuthorityStmtLet;
+  AuthorityStmtLetMut;
+  AuthorityStmtExternLet;
+  AuthorityStmtImport;
+  AuthorityStmtAliasDecl;
+  AuthorityStmtTypeAlias;
+  AuthorityStmtEffectSet;
+  AuthorityStmtResource;
+  AuthorityStmtTest;
+  AuthorityStmtBench;
+  AuthorityStmtExample;
+  AuthorityStmtExpr;
+  AuthorityStmtExport;
+  AuthorityStmtReExport;
+  AuthorityStmtQualifiedPatternRefs;
+  AuthorityStmtTestEffectRows
+}
+
+/// Closed semantic role of one binder slot on its exact final-AST node.
+export enum BinderSemanticRole {
+  StatementLetBinder;
+  StatementLetMutBinder;
+  StatementExternBinder;
+  StatementImportBinder;
+  StatementAliasBinder;
+  StatementTypeBinder;
+  StatementTypeParameterBinder;
+  StatementEffectSetBinder;
+  StatementResourceBinder;
+  ExpressionLetBinder;
+  ExpressionLetRecBinder;
+  ExpressionLetMutBinder;
+  ExpressionFunctionTypeParameterBinder;
+  ExpressionFunctionParameterBinder;
+  ExpressionForValueBinder;
+  ExpressionForIndexBinder;
+  PatternBinder
+}
+
+/// Forgeable data pairing one semantic slot role with its existing flat row.
+export struct BinderAuthoritySlot {
+  role: BinderSemanticRole;
+  binder: SourceBinder
+}
+
+/// Forgeable recursive data sidecar. Possession never grants authority.
+export struct BinderAuthorityNode {
+  kind: BinderAuthorityNodeKind;
+  slots: Array[BinderAuthoritySlot];
+  children: Array[BinderAuthorityNode]
+}
+
+/// Private persistent representation retained by the validated aggregate.
+/// No mutable Array is reachable from this topology. Public forgeable nodes
+/// are materialized only as detached data copies at the accessor boundary.
+enum StoredBinderAuthority {
+  StoredAuthorityNil;
+  StoredAuthoritySlot(BinderAuthoritySlot, StoredBinderAuthority);
+  StoredAuthorityNode(BinderAuthorityNodeKind, StoredBinderAuthority, StoredBinderAuthority);
+  StoredAuthorityChild(StoredBinderAuthority, StoredBinderAuthority)
+}
+
+/// Atomically produced exact-source parse result, compatibility rows, and the
+/// sidecar built in the same exhaustive walk against that exact final AST.
+export struct LocatedProgramBinderAuthority {
+  program: Array[Stmt];
+  binders: Array[SourceBinder];
+  nodes: StoredBinderAuthority
+}
+
+//# Data accessors
+
+export fn binder_authority_node_kind(node: BinderAuthorityNode) -> BinderAuthorityNodeKind {
+  node.kind
+}
+
+export fn binder_authority_node_slots(node: BinderAuthorityNode) -> Array[BinderAuthoritySlot] {
+  Array::slice(node.slots, 0, Array::length(node.slots))
+}
+
+export fn binder_authority_node_children(node: BinderAuthorityNode) -> Array[BinderAuthorityNode] {
+  Array::slice(node.children, 0, Array::length(node.children))
+}
+
+export fn binder_authority_slot_role(slot: BinderAuthoritySlot) -> BinderSemanticRole {
+  slot.role
+}
+
+export fn binder_authority_slot_binder(slot: BinderAuthoritySlot) -> SourceBinder {
+  slot.binder
+}
+
+export fn located_program_binder_authority_program(authority: LocatedProgramBinderAuthority) -> Array[Stmt] {
+  Array::slice(authority.program, 0, Array::length(authority.program))
+}
+
+export fn located_program_binder_authority_rows(authority: LocatedProgramBinderAuthority) -> Array[SourceBinder] {
+  Array::slice(authority.binders, 0, Array::length(authority.binders))
+}
+
+fn append_materialized_slots(stored: StoredBinderAuthority, out: ArrayBuilder[BinderAuthoritySlot]) -> Unit {
+  match stored {
+    StoredAuthoritySlot(slot, rest) => {
+      ArrayBuilder::push(out, slot)
+      append_materialized_slots(rest, out)
+    },
+    _ => ()
+  }
+}
+
+fn materialize_authority_node(stored: StoredBinderAuthority) -> BinderAuthorityNode {
+  match stored {
+    StoredAuthorityNode(kind, slots, children) => {
+      let slot_out = ArrayBuilder::new()
+      append_materialized_slots(slots, slot_out)
+      let child_out = ArrayBuilder::new()
+      append_materialized_nodes(children, child_out)
+      BinderAuthorityNode::{
+        kind,
+        slots: ArrayBuilder::freeze(slot_out),
+        children: ArrayBuilder::freeze(child_out)
+      }
+    },
+    // Private stored values are created only by stored_authority_node. Keep a
+    // total fallback so malformed public data is never involved in recursion.
+    _ => BinderAuthorityNode::{
+      kind: AuthorityExprUnit,
+      slots: ArrayBuilder::freeze(ArrayBuilder::new()),
+      children: ArrayBuilder::freeze(ArrayBuilder::new())
+    }
+  }
+}
+
+fn append_materialized_nodes(stored: StoredBinderAuthority, out: ArrayBuilder[BinderAuthorityNode]) -> Unit {
+  match stored {
+    StoredAuthorityChild(node, rest) => {
+      ArrayBuilder::push(out, materialize_authority_node(node))
+      append_materialized_nodes(rest, out)
+    },
+    _ => ()
+  }
+}
+
+/// Materialize a fresh recursive public data tree on every call. Every slots
+/// and children array at every depth is detached from the aggregate and from
+/// arrays returned by previous calls.
+export fn located_program_binder_authority_nodes(authority: LocatedProgramBinderAuthority) -> Array[BinderAuthorityNode] {
+  let out = ArrayBuilder::new()
+  append_materialized_nodes(authority.nodes, out)
+  ArrayBuilder::freeze(out)
+}
+
+//# Exhaustive final-AST validation and sidecar construction
+
+fn no_slots() -> Array[BinderAuthoritySlot] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn no_nodes() -> Array[BinderAuthorityNode] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn one_node(node: BinderAuthorityNode) -> Array[BinderAuthorityNode] {
+  [
+    node
+  ]
+}
+
+fn two_nodes(first: BinderAuthorityNode, second: BinderAuthorityNode) -> Array[BinderAuthorityNode] {
+  [
+    first,
+    second
+  ]
+}
+
+fn authority_node(kind: BinderAuthorityNodeKind, slots: Array[BinderAuthoritySlot], children: Array[BinderAuthorityNode]) -> BinderAuthorityNode {
+  BinderAuthorityNode::{
+    kind, slots, children
+  }
+}
+
+fn leaf(kind: BinderAuthorityNodeKind) -> BinderAuthorityNode {
+  authority_node(kind, no_slots(), no_nodes())
+}
+
+fn validate_slot(name: String, role: BinderSemanticRole, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthoritySlot, Int)] {
   if at < 0 || at >= Array::length(rows) {
-    (false, at)
+    None
   } else match Array::get(rows, at) {
     SourceToken(row_name, start, end) => {
       let n = String::length(source)
@@ -21,258 +262,542 @@ fn validate_slot(name: String, rows: Array[SourceBinder], source: String, at: In
         let spelling = String::substring(source, start, end)
         spelling == name || spelling == String::concat("@", name) || spelling == String::concat("r#", name)
       } else false
-      (row_name == name && exact, at + 1)
+      if row_name == name && exact {
+        Some((BinderAuthoritySlot::{
+          role, binder: Array::get(rows, at)
+        }, at + 1))
+      } else None
     },
-    Synthetic(row_name, _) => (row_name == name, at + 1)
+    // Approved parser lowerings already represented in the exact final AST
+    // retain their compatibility row at this exact semantic slot. Synthetic
+    // topology with no supported final-AST branch (for example ELoop) still
+    // fails closed in the exhaustive node walk.
+    Synthetic(row_name, _) => if row_name == name {
+      Some((BinderAuthoritySlot::{
+        role, binder: Array::get(rows, at)
+      }, at + 1))
+    } else None
   }
 }
 
-fn validate_pattern(pat: Pat, rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+fn validate_pattern(pat: Pat, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthorityNode, Int)] {
   match pat {
-    PBind(name) => validate_slot(name, rows, source, at),
-    PCtor(_, args) => validate_patterns(args, rows, source, at),
-    PTuple(args) => validate_patterns(args, rows, source, at),
+    PBind(name) => match validate_slot(name, PatternBinder, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityPatBind, [
+        result.0
+      ], no_nodes()), result.1)),
+      None => None
+    },
+    PCtor(_, args) => match validate_patterns(args, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityPatCtor, no_slots(), result.0), result.1)),
+      None => None
+    },
+    PTuple(args) => match validate_patterns(args, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityPatTuple, no_slots(), result.0), result.1)),
+      None => None
+    },
     PStruct(_, fields) => {
-      let mut ok = true
+      let children = ArrayBuilder::new()
       let mut next = at
       for field in fields {
-        let result = validate_pattern(field.1, rows, source, next)
-        ok = ok && result.0
-        next = result.1
+        match validate_pattern(field.1, rows, source, next) {
+          Some(result) => {
+            ArrayBuilder::push(children, result.0)
+            next = result.1
+          },
+          None => return None
+        }
       }
-      (ok, next)
+      Some((authority_node(AuthorityPatStruct, no_slots(), ArrayBuilder::freeze(children)), next))
     },
-    // POr has two source declarations for one semantic binding. It remains
-    // ineligible until that mapping has an explicit checker contract.
-    POr(_, _) => (false, at),
-    _ => (true, at)
+    // POr has two source declarations for one semantic binding and remains
+    // deliberately unsupported until that semantic contract exists.
+    POr(_, _) => None,
+    PWild => Some((leaf(AuthorityPatWild), at)),
+    PInt(_) => Some((leaf(AuthorityPatInt), at)),
+    PFloat(_) => Some((leaf(AuthorityPatFloat), at)),
+    PString(_) => Some((leaf(AuthorityPatString), at)),
+    PBool(_) => Some((leaf(AuthorityPatBool), at))
   }
 }
 
-fn validate_patterns(pats: Array[Pat], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
-  let mut ok = true
+fn validate_patterns(pats: Array[Pat], rows: Array[SourceBinder], source: String, at: Int) -> Option[(Array[BinderAuthorityNode], Int)] {
+  let children = ArrayBuilder::new()
   let mut next = at
   for pat in pats {
-    let result = validate_pattern(pat, rows, source, next)
-    ok = ok && result.0
-    next = result.1
+    match validate_pattern(pat, rows, source, next) {
+      Some(result) => {
+        ArrayBuilder::push(children, result.0)
+        next = result.1
+      },
+      None => return None
+    }
   }
-  (ok, next)
+  Some((ArrayBuilder::freeze(children), next))
 }
 
-fn validate_exprs(exprs: Array[Expr], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
-  let mut ok = true
+fn validate_exprs(exprs: Array[Expr], rows: Array[SourceBinder], source: String, at: Int) -> Option[(Array[BinderAuthorityNode], Int)] {
+  let children = ArrayBuilder::new()
   let mut next = at
   for expr in exprs {
-    let result = validate_expr(expr, rows, source, next)
-    ok = ok && result.0
-    next = result.1
+    match validate_expr(expr, rows, source, next) {
+      Some(result) => {
+        ArrayBuilder::push(children, result.0)
+        next = result.1
+      },
+      None => return None
+    }
   }
-  (ok, next)
+  Some((ArrayBuilder::freeze(children), next))
 }
 
-fn validate_arms(arms: Array[(Pat, Expr)], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
-  let mut ok = true
+fn validate_arms(arms: Array[(Pat, Expr)], rows: Array[SourceBinder], source: String, at: Int) -> Option[(Array[BinderAuthorityNode], Int)] {
+  let children = ArrayBuilder::new()
   let mut next = at
   for arm in arms {
-    let p = validate_pattern(arm.0, rows, source, next)
-    let e = validate_expr(arm.1, rows, source, p.1)
-    ok = ok && p.0 && e.0
-    next = e.1
+    match validate_pattern(arm.0, rows, source, next) {
+      Some(pattern) => {
+        ArrayBuilder::push(children, pattern.0)
+        match validate_expr(arm.1, rows, source, pattern.1) {
+          Some(body) => {
+            ArrayBuilder::push(children, body.0)
+            next = body.1
+          },
+          None => return None
+        }
+      },
+      None => return None
+    }
   }
-  (ok, next)
+  Some((ArrayBuilder::freeze(children), next))
 }
 
-fn validate_named_exprs(items: Array[(String, Expr)], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
-  let mut ok = true
+fn validate_named_exprs(items: Array[(String, Expr)], rows: Array[SourceBinder], source: String, at: Int) -> Option[(Array[BinderAuthorityNode], Int)] {
+  let children = ArrayBuilder::new()
   let mut next = at
   for item in items {
-    let result = validate_expr(item.1, rows, source, next)
-    ok = ok && result.0
-    next = result.1
+    match validate_expr(item.1, rows, source, next) {
+      Some(result) => {
+        ArrayBuilder::push(children, result.0)
+        next = result.1
+      },
+      None => return None
+    }
   }
-  (ok, next)
+  Some((ArrayBuilder::freeze(children), next))
 }
 
-fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthorityNode, Int)] {
   match expr {
-    ELet(name, value, body, _) => {
-      let slot = validate_slot(name, rows, source, at)
-      let v = validate_expr(value, rows, source, slot.1)
-      let b = validate_expr(body, rows, source, v.1)
-      (slot.0 && v.0 && b.0, b.1)
+    ELet(name, value, body, _) => match validate_slot(name, ExpressionLetBinder, rows, source, at) {
+      Some(slot) => match validate_expr(value, rows, source, slot.1) {
+        Some(v) => match validate_expr(body, rows, source, v.1) {
+          Some(b) => Some((authority_node(AuthorityExprLet, [
+            slot.0
+          ], two_nodes(v.0, b.0)), b.1)),
+          None => None
+        },
+        None => None
+      },
+      None => None
     },
-    ELetRec(name, value, body) => {
-      let slot = validate_slot(name, rows, source, at)
-      let v = validate_expr(value, rows, source, slot.1)
-      let b = validate_expr(body, rows, source, v.1)
-      (slot.0 && v.0 && b.0, b.1)
+    ELetRec(name, value, body) => match validate_slot(name, ExpressionLetRecBinder, rows, source, at) {
+      Some(slot) => match validate_expr(value, rows, source, slot.1) {
+        Some(v) => match validate_expr(body, rows, source, v.1) {
+          Some(b) => Some((authority_node(AuthorityExprLetRec, [
+            slot.0
+          ], two_nodes(v.0, b.0)), b.1)),
+          None => None
+        },
+        None => None
+      },
+      None => None
     },
-    ELetMut(name, value, body, _) => {
-      let slot = validate_slot(name, rows, source, at)
-      let v = validate_expr(value, rows, source, slot.1)
-      let b = validate_expr(body, rows, source, v.1)
-      (slot.0 && v.0 && b.0, b.1)
+    ELetMut(name, value, body, _) => match validate_slot(name, ExpressionLetMutBinder, rows, source, at) {
+      Some(slot) => match validate_expr(value, rows, source, slot.1) {
+        Some(v) => match validate_expr(body, rows, source, v.1) {
+          Some(b) => Some((authority_node(AuthorityExprLetMut, [
+            slot.0
+          ], two_nodes(v.0, b.0)), b.1)),
+          None => None
+        },
+        None => None
+      },
+      None => None
     },
-    EMatch(scrutinee, arms) => {
-      let s = validate_expr(scrutinee, rows, source, at)
-      let a = validate_arms(arms, rows, source, s.1)
-      (s.0 && a.0, a.1)
+    EMatch(scrutinee, arms) => match validate_expr(scrutinee, rows, source, at) {
+      Some(s) => match validate_arms(arms, rows, source, s.1) {
+        Some(a) => {
+          let children = ArrayBuilder::new()
+          ArrayBuilder::push(children, s.0)
+          for child in a.0 {
+            ArrayBuilder::push(children, child)
+          }
+          Some((authority_node(AuthorityExprMatch, no_slots(), ArrayBuilder::freeze(children)), a.1))
+        },
+        None => None
+      },
+      None => None
     },
-    EHandle(body, arms) => {
-      let b = validate_expr(body, rows, source, at)
-      let a = validate_arms(arms, rows, source, b.1)
-      (b.0 && a.0, a.1)
+    EHandle(body, arms) => match validate_expr(body, rows, source, at) {
+      Some(b) => match validate_arms(arms, rows, source, b.1) {
+        Some(a) => {
+          let children = ArrayBuilder::new()
+          ArrayBuilder::push(children, b.0)
+          for child in a.0 {
+            ArrayBuilder::push(children, child)
+          }
+          Some((authority_node(AuthorityExprHandle, no_slots(), ArrayBuilder::freeze(children)), a.1))
+        },
+        None => None
+      },
+      None => None
     },
     EFn(type_params, _, params, _, _, body) => {
-      let mut ok = true
+      let slots = ArrayBuilder::new()
       let mut next = at
       for name in type_params {
-        let result = validate_slot(name, rows, source, next)
-        ok = ok && result.0
-        next = result.1
+        match validate_slot(name, ExpressionFunctionTypeParameterBinder, rows, source, next) {
+          Some(result) => {
+            ArrayBuilder::push(slots, result.0)
+            next = result.1
+          },
+          None => return None
+        }
       }
       for param in params {
-        let result = validate_slot(param.0, rows, source, next)
-        ok = ok && result.0
-        next = result.1
+        match validate_slot(param.0, ExpressionFunctionParameterBinder, rows, source, next) {
+          Some(result) => {
+            ArrayBuilder::push(slots, result.0)
+            next = result.1
+          },
+          None => return None
+        }
       }
-      let b = validate_expr(body, rows, source, next)
-      (ok && b.0, b.1)
-    },
-    EForIn(name, index_name, iter, body) => {
-      let first = validate_slot(name, rows, source, at)
-      let second = match index_name {
-        Some(index) => validate_slot(index, rows, source, first.1),
-        None => (true, first.1)
+      match validate_expr(body, rows, source, next) {
+        Some(result) => Some((authority_node(AuthorityExprFn, ArrayBuilder::freeze(slots), one_node(result.0)), result.1)),
+        None => None
       }
-      let i = validate_expr(iter, rows, source, second.1)
-      let b = validate_expr(body, rows, source, i.1)
-      (first.0 && second.0 && i.0 && b.0, b.1)
     },
-    // Loop lowering synthesizes binders and remains fail-closed until its row
-    // segment remap is implemented.
-    ELoop(_, _) => (false, at),
-    ETuple(items) => validate_exprs(items, rows, source, at),
-    EArray(items) => validate_exprs(items, rows, source, at),
-    ERecord(_, fields, _) => validate_named_exprs(fields, rows, source, at),
-    EIf(cond, yes, no) => {
-      let c = validate_expr(cond, rows, source, at)
-      let y = validate_expr(yes, rows, source, c.1)
-      let n = validate_expr(no, rows, source, y.1)
-      (c.0 && y.0 && n.0, n.1)
+    EForIn(name, index_name, iter, body) => match validate_slot(name, ExpressionForValueBinder, rows, source, at) {
+      Some(first) => {
+        let slots = ArrayBuilder::new()
+        ArrayBuilder::push(slots, first.0)
+        let mut next = first.1
+        match index_name {
+          Some(index) => match validate_slot(index, ExpressionForIndexBinder, rows, source, next) {
+            Some(second) => {
+              ArrayBuilder::push(slots, second.0)
+              next = second.1
+            },
+            None => return None
+          },
+          None => ()
+        }
+        match validate_expr(iter, rows, source, next) {
+          Some(i) => match validate_expr(body, rows, source, i.1) {
+            Some(b) => Some((authority_node(AuthorityExprForIn, ArrayBuilder::freeze(slots), two_nodes(i.0, b.0)), b.1)),
+            None => None
+          },
+          None => None
+        }
+      },
+      None => None
     },
-    EAssign(_, value, body) => {
-      let v = validate_expr(value, rows, source, at)
-      let b = validate_expr(body, rows, source, v.1)
-      (v.0 && b.0, b.1)
+    // Loop lowering synthesizes binders and remains fail-closed.
+    ELoop(_, _) => None,
+    ETuple(items) => match validate_exprs(items, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprTuple, no_slots(), result.0), result.1)),
+      None => None
     },
-    EAssignOp(_, _, value, body) => {
-      let v = validate_expr(value, rows, source, at)
-      let b = validate_expr(body, rows, source, v.1)
-      (v.0 && b.0, b.1)
+    EArray(items) => match validate_exprs(items, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprArray, no_slots(), result.0), result.1)),
+      None => None
     },
-    ESeq(first, second) => {
-      let f = validate_expr(first, rows, source, at)
-      let s = validate_expr(second, rows, source, f.1)
-      (f.0 && s.0, s.1)
+    ERecord(_, fields, _) => match validate_named_exprs(fields, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprRecord, no_slots(), result.0), result.1)),
+      None => None
     },
-    EWhile(cond, body) => {
-      let c = validate_expr(cond, rows, source, at)
-      let b = validate_expr(body, rows, source, c.1)
-      (c.0 && b.0, b.1)
+    EIf(cond, yes, no) => match validate_expr(cond, rows, source, at) {
+      Some(c) => match validate_expr(yes, rows, source, c.1) {
+        Some(y) => match validate_expr(no, rows, source, y.1) {
+          Some(n) => Some((authority_node(AuthorityExprIf, no_slots(), [
+            c.0,
+            y.0,
+            n.0
+          ]), n.1)),
+          None => None
+        },
+        None => None
+      },
+      None => None
     },
-    ECall(callee, args, _) => {
-      let c = validate_expr(callee, rows, source, at)
-      let a = validate_exprs(args, rows, source, c.1)
-      (c.0 && a.0, a.1)
+    EAssign(_, value, body) => match validate_expr(value, rows, source, at) {
+      Some(v) => match validate_expr(body, rows, source, v.1) {
+        Some(b) => Some((authority_node(AuthorityExprAssign, no_slots(), two_nodes(v.0, b.0)), b.1)),
+        None => None
+      },
+      None => None
     },
-    EBinOp(_, left, right) => {
-      let l = validate_expr(left, rows, source, at)
-      let r = validate_expr(right, rows, source, l.1)
-      (l.0 && r.0, r.1)
+    EAssignOp(_, _, value, body) => match validate_expr(value, rows, source, at) {
+      Some(v) => match validate_expr(body, rows, source, v.1) {
+        Some(b) => Some((authority_node(AuthorityExprAssignOp, no_slots(), two_nodes(v.0, b.0)), b.1)),
+        None => None
+      },
+      None => None
     },
-    EUnaryOp(_, value) => validate_expr(value, rows, source, at),
-    EDot(value, _, _, _) => validate_expr(value, rows, source, at),
-    ELabeledArg(_, _, value) => validate_expr(value, rows, source, at),
-    EReturn(value) => validate_expr(value, rows, source, at),
+    ESeq(first, second) => match validate_expr(first, rows, source, at) {
+      Some(f) => match validate_expr(second, rows, source, f.1) {
+        Some(s) => Some((authority_node(AuthorityExprSeq, no_slots(), two_nodes(f.0, s.0)), s.1)),
+        None => None
+      },
+      None => None
+    },
+    EWhile(cond, body) => match validate_expr(cond, rows, source, at) {
+      Some(c) => match validate_expr(body, rows, source, c.1) {
+        Some(b) => Some((authority_node(AuthorityExprWhile, no_slots(), two_nodes(c.0, b.0)), b.1)),
+        None => None
+      },
+      None => None
+    },
+    ECall(callee, args, _) => match validate_expr(callee, rows, source, at) {
+      Some(c) => match validate_exprs(args, rows, source, c.1) {
+        Some(a) => {
+          let children = ArrayBuilder::new()
+          ArrayBuilder::push(children, c.0)
+          for child in a.0 {
+            ArrayBuilder::push(children, child)
+          }
+          Some((authority_node(AuthorityExprCall, no_slots(), ArrayBuilder::freeze(children)), a.1))
+        },
+        None => None
+      },
+      None => None
+    },
+    EBinOp(_, left, right) => match validate_expr(left, rows, source, at) {
+      Some(l) => match validate_expr(right, rows, source, l.1) {
+        Some(r) => Some((authority_node(AuthorityExprBinOp, no_slots(), two_nodes(l.0, r.0)), r.1)),
+        None => None
+      },
+      None => None
+    },
+    EUnaryOp(_, value) => match validate_expr(value, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprUnaryOp, no_slots(), one_node(result.0)), result.1)),
+      None => None
+    },
+    EDot(value, _, _, _) => match validate_expr(value, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprDot, no_slots(), one_node(result.0)), result.1)),
+      None => None
+    },
+    ELabeledArg(_, _, value) => match validate_expr(value, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprLabeledArg, no_slots(), one_node(result.0)), result.1)),
+      None => None
+    },
+    EReturn(value) => match validate_expr(value, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprReturn, no_slots(), one_node(result.0)), result.1)),
+      None => None
+    },
     EBreak(value) => match value {
-      Some(v) => validate_expr(v, rows, source, at),
-      None => (true, at)
+      Some(v) => match validate_expr(v, rows, source, at) {
+        Some(result) => Some((authority_node(AuthorityExprBreak, no_slots(), one_node(result.0)), result.1)),
+        None => None
+      },
+      None => Some((leaf(AuthorityExprBreak), at))
     },
-    EContinue(values) => validate_exprs(values, rows, source, at),
-    EMap(items) => validate_named_exprs(items, rows, source, at),
-    ESpread(value) => validate_expr(value, rows, source, at),
-    EInt(_) => (true, at),
-    EFloat(_) => (true, at),
-    EString(_) => (true, at),
-    EBool(_) => (true, at),
-    EIdent(_, _) => (true, at),
-    EStringInterp(_) => (true, at),
-    EUnit => (true, at)
+    EContinue(values) => match validate_exprs(values, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprContinue, no_slots(), result.0), result.1)),
+      None => None
+    },
+    EMap(items) => match validate_named_exprs(items, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprMap, no_slots(), result.0), result.1)),
+      None => None
+    },
+    ESpread(value) => match validate_expr(value, rows, source, at) {
+      Some(result) => Some((authority_node(AuthorityExprSpread, no_slots(), one_node(result.0)), result.1)),
+      None => None
+    },
+    EInt(_) => Some((leaf(AuthorityExprInt), at)),
+    EFloat(_) => Some((leaf(AuthorityExprFloat), at)),
+    EString(_) => Some((leaf(AuthorityExprString), at)),
+    EBool(_) => Some((leaf(AuthorityExprBool), at)),
+    EIdent(_, _) => Some((leaf(AuthorityExprIdent), at)),
+    EStringInterp(_) => Some((leaf(AuthorityExprStringInterp), at)),
+    EUnit => Some((leaf(AuthorityExprUnit), at))
   }
 }
 
-/// Exhaustive final-AST validation. Success requires one exact source row for
-/// every supported binder slot and no extra rows.
+fn validate_stmt(stmt: Stmt, rows: Array[SourceBinder], source: String, at: Int) -> Option[(BinderAuthorityNode, Int)] {
+  match stmt {
+    SLet(_, _, name, _, value) => match validate_slot(name, StatementLetBinder, rows, source, at) {
+      Some(slot) => match validate_expr(value, rows, source, slot.1) {
+        Some(expr) => Some((authority_node(AuthorityStmtLet, [
+          slot.0
+        ], one_node(expr.0)), expr.1)),
+        None => None
+      },
+      None => None
+    },
+    SLetMut(name, _, value) => match validate_slot(name, StatementLetMutBinder, rows, source, at) {
+      Some(slot) => match validate_expr(value, rows, source, slot.1) {
+        Some(expr) => Some((authority_node(AuthorityStmtLetMut, [
+          slot.0
+        ], one_node(expr.0)), expr.1)),
+        None => None
+      },
+      None => None
+    },
+    SExternLet(name, _) => match validate_slot(name, StatementExternBinder, rows, source, at) {
+      Some(slot) => Some((authority_node(AuthorityStmtExternLet, [
+        slot.0
+      ], no_nodes()), slot.1)),
+      None => None
+    },
+    SImport(_, items) => {
+      let slots = ArrayBuilder::new()
+      let mut next = at
+      for item in items {
+        let local = match item.1 {
+          Some(alias) => alias,
+          None => item.0
+        }
+        match validate_slot(local, StatementImportBinder, rows, source, next) {
+          Some(slot) => {
+            ArrayBuilder::push(slots, slot.0)
+            next = slot.1
+          },
+          None => return None
+        }
+      }
+      Some((authority_node(AuthorityStmtImport, ArrayBuilder::freeze(slots), no_nodes()), next))
+    },
+    SAliasDecl(name, _) => match validate_slot(name, StatementAliasBinder, rows, source, at) {
+      Some(slot) => Some((authority_node(AuthorityStmtAliasDecl, [
+        slot.0
+      ], no_nodes()), slot.1)),
+      None => None
+    },
+    STypeAlias(_, name, params, _) => match validate_slot(name, StatementTypeBinder, rows, source, at) {
+      Some(first) => {
+        let slots = ArrayBuilder::new()
+        ArrayBuilder::push(slots, first.0)
+        let mut next = first.1
+        for param in params {
+          match validate_slot(param, StatementTypeParameterBinder, rows, source, next) {
+            Some(slot) => {
+              ArrayBuilder::push(slots, slot.0)
+              next = slot.1
+            },
+            None => return None
+          }
+        }
+        Some((authority_node(AuthorityStmtTypeAlias, ArrayBuilder::freeze(slots), no_nodes()), next))
+      },
+      None => None
+    },
+    SEffectSet(_, name, _) => match validate_slot(name, StatementEffectSetBinder, rows, source, at) {
+      Some(slot) => Some((authority_node(AuthorityStmtEffectSet, [
+        slot.0
+      ], no_nodes()), slot.1)),
+      None => None
+    },
+    SResource(name, _) => match validate_slot(name, StatementResourceBinder, rows, source, at) {
+      Some(slot) => Some((authority_node(AuthorityStmtResource, [
+        slot.0
+      ], no_nodes()), slot.1)),
+      None => None
+    },
+    STest(_, body) => match validate_expr(body, rows, source, at) {
+      Some(expr) => Some((authority_node(AuthorityStmtTest, no_slots(), one_node(expr.0)), expr.1)),
+      None => None
+    },
+    SBench(_, body) => match validate_expr(body, rows, source, at) {
+      Some(expr) => Some((authority_node(AuthorityStmtBench, no_slots(), one_node(expr.0)), expr.1)),
+      None => None
+    },
+    SExample(_, body) => match validate_expr(body, rows, source, at) {
+      Some(expr) => Some((authority_node(AuthorityStmtExample, no_slots(), one_node(expr.0)), expr.1)),
+      None => None
+    },
+    SExpr(body) => match validate_expr(body, rows, source, at) {
+      Some(expr) => Some((authority_node(AuthorityStmtExpr, no_slots(), one_node(expr.0)), expr.1)),
+      None => None
+    },
+    SExport(_) => Some((leaf(AuthorityStmtExport), at)),
+    SReExport(_, _) => Some((leaf(AuthorityStmtReExport), at)),
+    SQualifiedPatternRefs(_) => Some((leaf(AuthorityStmtQualifiedPatternRefs), at)),
+    STestEffectRows(_) => Some((leaf(AuthorityStmtTestEffectRows), at)),
+    // Remaining declaration/lowering lanes are deliberately ineligible.
+    _ => None
+  }
+}
+
+/// Compatibility validator. It delegates to the same exhaustive constructor
+/// walk used by the source-owning aggregate and discards only the data tree.
 export fn validate_program_binder_rows(program: Array[Stmt], rows: Array[SourceBinder], source: String) -> Bool {
-  let mut ok = true
+  match build_program_binder_authority(program, rows, source) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn stored_authority_slots(slots: Array[BinderAuthoritySlot], at: Int) -> StoredBinderAuthority {
+  if at >= Array::length(slots) {
+    StoredAuthorityNil
+  } else {
+    StoredAuthoritySlot(Array::get(slots, at), stored_authority_slots(slots, at + 1))
+  }
+}
+
+fn stored_authority_node(node: BinderAuthorityNode) -> StoredBinderAuthority {
+  StoredAuthorityNode(node.kind, stored_authority_slots(node.slots, 0), stored_authority_nodes(node.children, 0),)
+}
+
+fn stored_authority_nodes(nodes: Array[BinderAuthorityNode], at: Int) -> StoredBinderAuthority {
+  if at >= Array::length(nodes) {
+    StoredAuthorityNil
+  } else {
+    StoredAuthorityChild(stored_authority_node(Array::get(nodes, at)), stored_authority_nodes(nodes, at + 1))
+  }
+}
+
+fn build_program_binder_authority(program: Array[Stmt], rows: Array[SourceBinder], source: String) -> Option[Array[BinderAuthorityNode]] {
+  let nodes = ArrayBuilder::new()
   let mut next = 0
   for stmt in program {
-    let result = match stmt {
-      SLet(_, _, name, _, value) => {
-        let slot = validate_slot(name, rows, source, next)
-        let expr = validate_expr(value, rows, source, slot.1)
-        (slot.0 && expr.0, expr.1)
+    match validate_stmt(stmt, rows, source, next) {
+      Some(result) => {
+        ArrayBuilder::push(nodes, result.0)
+        next = result.1
       },
-      SLetMut(name, _, value) => {
-        let slot = validate_slot(name, rows, source, next)
-        let expr = validate_expr(value, rows, source, slot.1)
-        (slot.0 && expr.0, expr.1)
-      },
-      SExternLet(name, _) => validate_slot(name, rows, source, next),
-      SImport(_, items) => {
-        let mut import_ok = true
-        let mut import_next = next
-        for item in items {
-          let local = match item.1 {
-            Some(alias) => alias,
-            None => item.0
-          }
-          let slot = validate_slot(local, rows, source, import_next)
-          import_ok = import_ok && slot.0
-          import_next = slot.1
-        }
-        (import_ok, import_next)
-      },
-      SAliasDecl(name, _) => validate_slot(name, rows, source, next),
-      STypeAlias(_, name, params, _) => {
-        let first = validate_slot(name, rows, source, next)
-        let mut alias_ok = first.0
-        let mut alias_next = first.1
-        for param in params {
-          let slot = validate_slot(param, rows, source, alias_next)
-          alias_ok = alias_ok && slot.0
-          alias_next = slot.1
-        }
-        (alias_ok, alias_next)
-      },
-      SEffectSet(_, name, _) => validate_slot(name, rows, source, next),
-      SResource(name, _) => validate_slot(name, rows, source, next),
-      STest(_, body) => validate_expr(body, rows, source, next),
-      SBench(_, body) => validate_expr(body, rows, source, next),
-      SExample(_, body) => validate_expr(body, rows, source, next),
-      SExpr(body) => validate_expr(body, rows, source, next),
-      SExport(_) => (true, next),
-      SReExport(_, _) => (true, next),
-      SQualifiedPatternRefs(_) => (true, next),
-      STestEffectRows(_) => (true, next),
-      // Remaining declaration/lowering lanes are deliberately ineligible in
-      // this checkpoint; returning false is sticky at aggregate validation.
-      _ => (false, next)
+      None => return None
     }
-    ok = ok && result.0
-    next = result.1
   }
-  ok && next == Array::length(rows)
+  if next == Array::length(rows) {
+    Some(ArrayBuilder::freeze(nodes))
+  } else None
+}
+
+//# Source-owning authority entry
+
+/// Only this entry owns lexing, context creation, parse-to-EOF, and the direct
+/// validation control flow that can publish the aggregate. All exposed values
+/// and accessors remain forgeable data.
+export fn parse_source_located_with_binder_authority(source: String) -> Option[LocatedProgramBinderAuthority] with Exception {
+  let (tokens, starts, ends) = lex_with_offsets(source)
+  let context = binder_capture_context(starts, ends)
+  let (program, next) = parse_program_located_with_untrusted_binder_context(tokens, starts, source, Some(context))
+  let rows = binder_capture_rows(context)
+  if match peek(tokens, next) {
+    TEof => true,
+    _ => false
+  } && binder_capture_is_eligible(context) {
+    match build_program_binder_authority(program, rows, source) {
+      Some(nodes) => Some(LocatedProgramBinderAuthority::{
+        program,
+        binders: rows,
+        nodes: stored_authority_nodes(nodes, 0)
+      }),
+      None => None
+    }
+  } else None
 }
