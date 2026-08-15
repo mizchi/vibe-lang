@@ -1368,12 +1368,38 @@ fn empty_dict_binds() -> Array[(String, String, String, Array[String])] {
 
 /// A function already carries a threaded dict parameter (idempotency guard
 /// against desugaring the same stmts twice while bounds are still present).
-fn already_threaded(params: Array[(String, Option[TypeExpr])]) -> Bool {
+/// Whether this EFn was already transformed by a prior run of this pass.
+/// Codex P1 on #1869: a bare `starts_with(pname, "__dict_")` prefix test let a
+/// USER-WRITTEN parameter that merely borrows the prefix (`__dict_dummy: Int`
+/// is a legal identifier) exempt the whole function from threading AND from
+/// the #1858 witness-carrier validation — `vibe check` stayed clean while the
+/// body's `T::m` reached codegen unresolved. The generated shape is exact and
+/// checkable instead: `thread_dict_params` prepends `__dict_<Trait>_<Tparam>`
+/// where `(Tparam, Trait)` is one of THIS function's own bound pairs (the
+/// transform preserves `bounds`, see rewrite_stmt's SLet arm), so only that
+/// exact first-parameter name counts as "already threaded".
+fn already_threaded(bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])]) -> Bool {
   if Array::length(params) == 0 {
     false
   } else {
     let (pname, _) = Array::get(params, 0)
-    String::starts_with(pname, "__dict_")
+    let mut found = false
+    let mut bi = 0
+    while bi < Array::length(bounds) {
+      let (tp, trait_list) = Array::get(bounds, bi)
+      let mut ti = 0
+      while ti < Array::length(trait_list) {
+        let tr = Array::get(trait_list, ti)
+        if tr != "" && pname == dict_param_name(tr, tp) {
+          found = true
+        } else {
+          ()
+        }
+        ti = ti + 1
+      }
+      bi = bi + 1
+    }
+    found
   }
 }
 
@@ -1516,7 +1542,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, bounds, params, _, _, _) => if already_threaded(params) {
+        EFn(_, bounds, params, _, _, _) => if already_threaded(bounds, params) {
           ()
         } else {
           let threaded = empty_threaded()
@@ -1609,7 +1635,7 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, bounds, params, _, _, fbody) => if already_threaded(params) {
+        EFn(_, bounds, params, _, _, fbody) => if already_threaded(bounds, params) {
           ()
         } else {
           let mut bi = 0

@@ -72,3 +72,19 @@ test "marker trait bound without carrier stays accepted (no methods to call)" {
   let src = "trait Marker\nimpl Marker for Int\nfn note[T: Marker]() -> Int { 1 }\nfn main() -> Int { note() }\n"
   assert(first_check_error(src) == "")
 }
+
+// Codex P1 on #1869: a USER-WRITTEN parameter that merely borrows the
+// "__dict_" prefix must not exempt the function — already_threaded now
+// verifies the exact generated name (`__dict_<Trait>_<T>` for one of the
+// fn's own bound pairs), so this carrier-less fn is rejected, not ICE'd.
+test "a user param merely prefixed __dict_ does not fake threading" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn sneaky[T: Default](__dict_dummy: Int) -> T { T::default() }\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "T::default"))
+  assert(String::contains(msg, "cannot be dispatched"))
+}
+
+test "a __dict_-prefixed user param plus a real carrier stays accepted" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn odd_name[T: Default](__dict_dummy: Int, witness: T) -> T { T::default() }\nfn main() -> Int { odd_name(1, 5) }\n"
+  assert(first_check_error(src) == "")
+}
