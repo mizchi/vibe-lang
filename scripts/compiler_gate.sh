@@ -6103,6 +6103,32 @@ if ! edpe_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_ru
 fi
 rm -rf "$edpedir"
 echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
+# #1070 final sub-case (pure closure STORED through a by-value param,
+# outliving the callee frame): historically the 3rd stored closure corrupted
+# the RC heap (`unreachable` on a later read), and only an inline-store
+# workaround avoided it (@vibex/concurrent Nursery::spawn was the canary).
+# Now fixed; pin BOTH RC lanes -- the corruption was RC bookkeeping, so the
+# bump lane alone cannot see a regression.
+cbvsdir="_build/_gate_closure_by_value_store"
+rm -rf "$cbvsdir"; mkdir -p "$cbvsdir"
+for cbvs_rc in 1 0; do
+  VIBE_RC="$cbvs_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/closure_by_value_store_test.vibe "$cbvsdir/out.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$cbvsdir/out.wasm" ]; then
+    echo "[compiler-gate] FAIL: closure_by_value_store_test.vibe did not compile under VIBE_RC=$cbvs_rc" >&2
+    cat "$cbvsdir/out.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! cbvs_out="$(VIBE_RC="$cbvs_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cbvsdir/out.wasm" 2>&1)"; then
+    echo "[compiler-gate] FAIL: closure_by_value_store_test.vibe under VIBE_RC=$cbvs_rc got '$cbvs_out' -- #1070 stored-closure ABI regressed" >&2
+    echo "$cbvs_out" >&2
+    exit 1
+  fi
+  rm -f "$cbvsdir/out.wasm" "$cbvsdir/out.wasm.diag"
+done
+rm -rf "$cbvsdir"
+echo "[compiler-gate] stored-by-value closure ABI ok (#1070 final sub-case, RC both modes)"
 
 # 40ar. #1070 (general case, second slice -- docs/effect-evidence-passing.md
 #       追記25): a SELF-DISCHARGING owner -- a function with NO `with Ask`
