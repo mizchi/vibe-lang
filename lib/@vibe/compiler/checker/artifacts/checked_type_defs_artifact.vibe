@@ -150,6 +150,18 @@ fn artifact_type(ty: Type) -> String {
       }
       String::concat("T", artifact_array(encoded))
     },
+    // #1839: anonymous record — each array item is a name piece followed by
+    // the field's type encoding, literal field order preserved.
+    CtRecord(rfields) => {
+      let kencoded = array_empty()
+      let mut ki = 0
+      while ki < Array::length(rfields) {
+        let (kname, kty) = Array::get(rfields, ki)
+        Array::push(kencoded, String::concat(artifact_piece(kname), artifact_type(kty)))
+        ki = ki + 1
+      }
+      String::concat("K", artifact_array(kencoded))
+    },
     CtArray(item) => String::concat("A", artifact_type(item)),
     CtOption(item) => String::concat("O", artifact_type(item)),
     CtFn(params, ret, effect) => {
@@ -526,6 +538,41 @@ fn artifact_type_parse(text: String, pos: Int) -> Option[(Type, Int)] {
           }
           if valid {
             Some((CtTuple(out), next))
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    } else if tag == 75 {
+      // #1839: 'K' anonymous record — each item is a name piece followed by
+      // the field's type encoding.
+      match artifact_array_parse(text, pos + 1) {
+        Some((raws, next)) => {
+          let rfields = array_empty()
+          let mut ki = 0
+          let mut kvalid = true
+          while ki < Array::length(raws) {
+            let raw = Array::get(raws, ki)
+            match artifact_piece_parse(raw, 0) {
+              Some((kname, after_name)) => match artifact_type_parse(raw, after_name) {
+                Some((kty, kend)) => if kend == String::length(raw) {
+                  Array::push(rfields, (kname, kty))
+                } else {
+                  kvalid = false
+                },
+                None => {
+                  kvalid = false
+                }
+              },
+              None => {
+                kvalid = false
+              }
+            }
+            ki = ki + 1
+          }
+          if kvalid {
+            Some((CtRecord(rfields), next))
           } else {
             None
           }
