@@ -2,16 +2,19 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -205,6 +208,14 @@ function treeFileExists(repo, treeish, path) {
   }
 }
 
+function rejectReservedTreeEntries(repo, trees) {
+  for (const tree of trees) {
+    if (treeFileExists(repo, tree, "_build")) {
+      fail("reserved-path-present", { tree, path: "_build" });
+    }
+  }
+}
+
 function archiveTree(repo, tree, destination) {
   mkdirSync(destination, { recursive: true });
   const archivePath = `${destination}.tar`;
@@ -227,6 +238,7 @@ function parseArgs(argv) {
   const options = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--canonical-root") fail("invalid-arguments", { removed: "--canonical-root" });
     if (arg === "--synthesize-merge") options.synthesizeMerge = true;
     else if (arg.startsWith("--")) {
       const key = arg.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -246,47 +258,80 @@ function lstatIfPresent(path) {
   }
 }
 
-function canonicalRootSafe(repo, root) {
-  if (!isAbsolute(root)) fail("unsafe-canonical-root");
-  const resolvedRepo = resolve(repo);
-  const resolvedRoot = resolve(root);
-  if (resolvedRoot === "/" || resolvedRoot === resolvedRepo || !resolvedRoot.includes("vibe-selfcompile-policy")) {
-    fail("unsafe-canonical-root", { canonical_root: resolvedRoot });
-  }
-  const rel = relative(resolvedRepo, resolvedRoot);
-  if (rel === "" || (!rel.startsWith(".." + sep) && rel !== "..")) fail("unsafe-canonical-root");
-
+function verifyPhysicalDirectory(path, { requireOwner, reason }) {
+  if (!isAbsolute(path)) fail(reason, { path });
+  const resolved = resolve(path);
   const ancestry = [];
-  let cursor = resolvedRoot;
+  let cursor = resolved;
   while (true) {
     ancestry.push(cursor);
     const parent = dirname(cursor);
     if (parent === cursor) break;
     cursor = parent;
   }
-  ancestry.reverse();
-  let nearestExisting = null;
-  for (const path of ancestry) {
-    const info = lstatIfPresent(path);
-    if (!info) break;
-    if (info.isSymbolicLink()) fail("unsafe-canonical-root", { symlink: path });
-    if (!info.isDirectory()) fail("unsafe-canonical-root", { non_directory: path });
-    nearestExisting = path;
+  for (const ancestor of ancestry.reverse()) {
+    const info = lstatIfPresent(ancestor);
+    if (!info) fail(reason, { missing: ancestor });
+    if (info.isSymbolicLink() || !info.isDirectory()) fail(reason, { unsafe_ancestor: ancestor });
   }
-  if (!nearestExisting) fail("unsafe-canonical-root");
-  const nearestReal = realpathSync(nearestExisting);
-  const projectedRoot = resolve(nearestReal, relative(nearestExisting, resolvedRoot));
-  const projectedRelative = relative(nearestReal, projectedRoot);
-  if (
-    projectedRoot !== resolvedRoot ||
-    projectedRelative === ".." || projectedRelative.startsWith(".." + sep) || isAbsolute(projectedRelative)
-  ) fail("unsafe-canonical-root", { canonical_root: resolvedRoot, nearest_existing_realpath: nearestReal });
-  return resolvedRoot;
+  const info = lstatSync(resolved);
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (requireOwner && uid !== null && info.uid !== uid) fail(reason, { path: resolved, expected_uid: uid, actual_uid: info.uid });
+  if (realpathSync(resolved) !== resolved) fail(reason, { path: resolved, realpath: realpathSync(resolved) });
+  return resolved;
 }
 
-function removeCanonicalRoot(repo, root) {
-  const safeRoot = canonicalRootSafe(repo, root);
-  rmSync(safeRoot, { recursive: true, force: true });
+const activeWorkspaceLeases = new Set();
+
+function verifyWorkspaceLease(lease) {
+  if (!activeWorkspaceLeases.has(lease)) fail("unsafe-workspace-lease", { lease });
+  const info = lstatSync(lease);
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (
+    info.isSymbolicLink() || !info.isDirectory() ||
+    (uid !== null && info.uid !== uid) ||
+    (info.mode & 0o777) !== 0o700 ||
+    realpathSync(lease) !== lease
+  ) fail("unsafe-workspace-lease", { lease });
+}
+
+function createWorkspaceLease() {
+  const ci = process.env.GITHUB_ACTIONS === "true";
+  let tempBase;
+  if (ci) {
+    if (!process.env.RUNNER_TEMP) fail("unsafe-runner-temp");
+    tempBase = verifyPhysicalDirectory(process.env.RUNNER_TEMP, { requireOwner: true, reason: "unsafe-runner-temp" });
+  } else {
+    tempBase = verifyPhysicalDirectory(realpathSync(os.tmpdir()), { requireOwner: false, reason: "unsafe-local-temp" });
+  }
+  const lease = mkdtempSync(join(tempBase, "vibe-selfcompile-policy-"));
+  chmodSync(lease, 0o700);
+  activeWorkspaceLeases.add(lease);
+  try {
+    verifyWorkspaceLease(lease);
+  } catch (error) {
+    activeWorkspaceLeases.delete(lease);
+    rmSync(lease, { recursive: true, force: true });
+    throw error;
+  }
+  return lease;
+}
+
+function resetWorkspaceRoot(lease) {
+  verifyWorkspaceLease(lease);
+  const root = join(lease, "root");
+  const info = lstatIfPresent(root);
+  if (info?.isSymbolicLink()) fail("unsafe-workspace-lease", { symlink: root });
+  if (info && !info.isDirectory()) fail("unsafe-workspace-lease", { non_directory: root });
+  rmSync(root, { recursive: true, force: true });
+  mkdirSync(root, { mode: 0o700 });
+  return root;
+}
+
+function removeWorkspaceLease(lease) {
+  verifyWorkspaceLease(lease);
+  rmSync(lease, { recursive: true, force: true });
+  activeWorkspaceLeases.delete(lease);
 }
 
 function pinnedInputPathSafe(root, input) {
@@ -378,8 +423,8 @@ function parseMeasurement(output) {
   return value;
 }
 
-async function measureTreeOnce({ repo, tree, label, root, inputBlob, policy, testDriver }) {
-  removeCanonicalRoot(repo, root);
+async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, testDriver }) {
+  const root = resetWorkspaceRoot(lease);
   await archiveTree(repo, tree, root);
   // The merge tree is untrusted. Validate before writing the pinned base input
   // or executing any extracted script; tracked symlinks must not escape root.
@@ -456,11 +501,7 @@ async function measureTreeOnce({ repo, tree, label, root, inputBlob, policy, tes
 }
 
 async function measureTree(args) {
-  try {
-    return await measureTreeOnce(args);
-  } finally {
-    removeCanonicalRoot(args.repo, args.root);
-  }
+  return await measureTreeOnce(args);
 }
 
 function budgetChanges(repo, base, currentTree) {
@@ -483,9 +524,9 @@ function budgetChanges(repo, base, currentTree) {
   return { added, invalid };
 }
 
-export async function runController(options) {
+async function runControllerWithLease(options, lease) {
   const repo = resolve(options.repo ?? ".");
-  const root = canonicalRootSafe(repo, options.canonicalRoot ?? "");
+  const root = join(lease, "root");
   if (!options.base || !options.head || !options.prNumber) fail("invalid-arguments");
   const prNumber = Number(options.prNumber);
   if (!safeInteger(prNumber, { positive: true })) fail("invalid-arguments");
@@ -507,6 +548,8 @@ export async function runController(options) {
   } else if (!options.synthesizeMerge) {
     fail("invalid-arguments", { missing: "--current or --synthesize-merge" });
   }
+  const baseTree = treeOf(repo, base);
+  rejectReservedTreeEntries(repo, [baseTree, currentTree]);
 
   const policyText = readTreeFile(repo, base, POLICY_PATH, "malformed-policy").toString("utf8");
   const policy = parsePolicy(policyText);
@@ -526,9 +569,9 @@ export async function runController(options) {
   const baseCommitTime = Number(git(repo, ["show", "-s", "--format=%ct", base]).trim()) * 1000;
   const asOfMs = options.asOf ? Date.parse(options.asOf) : Date.now();
   if (!Number.isFinite(asOfMs)) fail("invalid-arguments", { argument: "--as-of" });
-  const baseResult = await measureTree({ repo, tree: treeOf(repo, base), label: "base", root, inputBlob, policy, testDriver: options.testDriver });
-  const currentResult = await measureTree({ repo, tree: currentTree, label: "current", root, inputBlob, policy, testDriver: options.testDriver });
-  if (treeOf(repo, base) === currentTree) {
+  const baseResult = await measureTree({ repo, tree: baseTree, label: "base", lease, inputBlob, policy, testDriver: options.testDriver });
+  const currentResult = await measureTree({ repo, tree: currentTree, label: "current", lease, inputBlob, policy, testDriver: options.testDriver });
+  if (baseTree === currentTree) {
     if (baseResult.stage2_sha256 !== currentResult.stage2_sha256) {
       fail("nondeterministic-build", {
         base_stage2_sha256: baseResult.stage2_sha256,
@@ -554,7 +597,6 @@ export async function runController(options) {
     baseCommitTimeMs: baseCommitTime,
     asOfMs,
   });
-  removeCanonicalRoot(repo, root);
   return {
     schema: 1,
     decision: evaluation.decision,
@@ -576,6 +618,16 @@ export async function runController(options) {
     normalized_paths: baseResult.normalized_paths,
     benchmark_input_source_commit: base,
   };
+}
+
+export async function runController(options) {
+  if (options.canonicalRoot !== undefined) fail("invalid-arguments", { removed: "--canonical-root" });
+  const lease = createWorkspaceLease();
+  try {
+    return await runControllerWithLease(options, lease);
+  } finally {
+    removeWorkspaceLease(lease);
+  }
 }
 
 async function main() {

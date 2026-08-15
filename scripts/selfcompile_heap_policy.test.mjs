@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -151,16 +153,20 @@ function makeRepository() {
 function makeDriver(outer) {
   const path = join(outer, "driver.mjs");
   writeFileSync(path, `
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 const [phase, trial] = process.argv.slice(2);
 const root = process.env.POLICY_CANONICAL_ROOT;
-const log = join(dirname(root), "driver-log.jsonl");
+const lease = dirname(root);
+const log = join(dirname(fileURLToPath(import.meta.url)), "driver-log.jsonl");
 appendFileSync(log, JSON.stringify({
   phase, trial, revision: process.env.POLICY_REVISION, root,
   stage2: process.env.POLICY_STAGE2, input: process.env.POLICY_INPUT,
   work: process.env.POLICY_WORK_DIR, home: process.env.HOME,
   tmp: process.env.TMPDIR, vibeHome: process.env.VIBE_HOME,
+  leaseMode: statSync(lease).mode & 0o777, leaseUid: statSync(lease).uid,
+  leaseRealpath: realpathSync(lease),
   inputText: readFileSync(process.env.POLICY_INPUT, "utf8"),
 }) + "\\n");
 if (phase === "build") {
@@ -189,21 +195,44 @@ async function controller(options) {
   }
 }
 
-test("canonical root rejects a symlinked existing parent before recursive deletion", async () => {
+test("CI lease is created under a physical runner-owned RUNNER_TEMP", async () => {
   const fixture = makeRepository();
   const driver = makeDriver(fixture.outer);
-  const victim = join(fixture.outer, "victim");
-  const victimRoot = join(victim, "root");
-  mkdirSync(victimRoot, { recursive: true });
-  const marker = join(victimRoot, "must-survive.txt");
+  const oldActions = process.env.GITHUB_ACTIONS;
+  const oldRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.GITHUB_ACTIONS = "true";
+  process.env.RUNNER_TEMP = fixture.outer;
+  try {
+    const result = await controller({
+      repo: fixture.repo, base: fixture.initial, head: fixture.initial,
+      synthesizeMerge: true, prNumber: "1801", testDriver: driver,
+    });
+    assert.ok(result.normalized_paths.canonical_root.startsWith(`${fixture.outer}/vibe-selfcompile-policy-`));
+    const redirected = join(fixture.outer, "runner-temp-link");
+    symlinkSync(fixture.outer, redirected, "dir");
+    process.env.RUNNER_TEMP = redirected;
+    await assert.rejects(() => controller({
+      repo: fixture.repo, base: fixture.initial, head: fixture.initial,
+      synthesizeMerge: true, prNumber: "1801", testDriver: driver,
+    }), error => error.reason === "unsafe-runner-temp");
+  } finally {
+    if (oldActions === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = oldActions;
+    if (oldRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = oldRunnerTemp;
+  }
+});
+
+test("caller-selected canonical roots are rejected and never deleted", async () => {
+  const fixture = makeRepository();
+  const victim = join(fixture.outer, "caller-selected-victim");
+  mkdirSync(victim);
+  const marker = join(victim, "must-survive.txt");
   writeFileSync(marker, "untouched\n");
-  const symlinkParent = join(fixture.outer, "vibe-selfcompile-policy-attack");
-  symlinkSync(victim, symlinkParent, "dir");
   await assert.rejects(() => controller({
     repo: fixture.repo, base: fixture.initial, head: fixture.initial,
-    synthesizeMerge: true, prNumber: "1801",
-    canonicalRoot: join(symlinkParent, "root"), testDriver: driver,
-  }), error => error.reason === "unsafe-canonical-root");
+    synthesizeMerge: true, prNumber: "1801", canonicalRoot: victim,
+  }), error => error.reason === "invalid-arguments");
   assert.equal(readFileSync(marker, "utf8"), "untouched\n");
 });
 
@@ -225,13 +254,30 @@ test("tracked escaping input symlinks fail before the pinned input write", async
       symlinkSync(external, inputParent, "dir");
     }
     const head = commitAll(fixture.repo, `escaping ${symlinkAt} symlink`, "2026-08-01T01:00:00Z");
-    const root = join(fixture.outer, "vibe-selfcompile-policy", "root");
     await assert.rejects(() => controller({
       repo: fixture.repo, base: fixture.initial, head, synthesizeMerge: true,
-      prNumber: "1801", canonicalRoot: root, testDriver: driver,
+      prNumber: "1801", testDriver: driver,
     }), error => error.reason === "unsafe-pinned-input");
     assert.equal(readFileSync(target, "utf8"), "must remain unchanged\n");
   }
+});
+
+test("tracked _build symlink is rejected before reserved namespace creation", async () => {
+  const fixture = makeRepository();
+  const driver = makeDriver(fixture.outer);
+  const external = join(fixture.outer, "external-build-target");
+  mkdirSync(external);
+  const marker = join(external, "must-survive.txt");
+  writeFileSync(marker, "untouched\n");
+  symlinkSync(external, join(fixture.repo, "_build"), "dir");
+  command(fixture.repo, ["add", "-f", "_build"]);
+  const head = commitAll(fixture.repo, "tracked build redirect", "2026-08-01T01:00:00Z");
+  await assert.rejects(() => controller({
+    repo: fixture.repo, base: fixture.initial, head, synthesizeMerge: true,
+    prNumber: "1801", testDriver: driver,
+  }), error => error.reason === "reserved-path-present");
+  assert.equal(readFileSync(marker, "utf8"), "untouched\n");
+  assert.deepEqual(readdirSync(external), ["must-survive.txt"]);
 });
 
 test("controller synthesizes latest-base merge, pins input, reuses exact paths, and isolates revisions", async () => {
@@ -244,17 +290,21 @@ test("controller synthesizes latest-base merge, pins input, reuses exact paths, 
   command(fixture.repo, ["checkout", "-q", "main"]);
   writeFileSync(join(fixture.repo, "main.txt"), "latest base\n");
   const base = commitAll(fixture.repo, "main advance", "2026-08-01T02:00:00Z");
-  const root = join(fixture.outer, "vibe-selfcompile-policy", "root");
   const result = await controller({
     repo: fixture.repo, base, head, synthesizeMerge: true, prNumber: "1801",
-    asOf: "2026-08-02T00:00:00.000Z", canonicalRoot: root, testDriver: driver,
+    asOf: "2026-08-02T00:00:00.000Z", testDriver: driver,
   });
   assert.equal(result.decision, "pass");
   assert.equal(result.base_heap_bytes, 1000);
   assert.deepEqual(result.trials, { base: [1000, 1000], current: [1000, 1000] });
-  const log = readFileSync(join(dirname(root), "driver-log.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  const root = result.normalized_paths.canonical_root;
+  const log = readFileSync(join(fixture.outer, "driver-log.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(log.length, 6);
   assert.ok(log.every(row => row.root === root));
+  assert.ok(log.every(row => row.leaseMode === 0o700));
+  assert.ok(log.every(row => row.leaseRealpath === dirname(root)));
+  if (typeof process.getuid === "function") assert.ok(log.every(row => row.leaseUid === process.getuid()));
+  assert.equal(existsSync(dirname(root)), false, "controller-created lease must be removed");
   assert.ok(log.every(row => row.inputText === "base benchmark input\n"));
   for (const key of ["stage2", "input", "work", "home", "tmp", "vibeHome"]) {
     assert.equal(new Set(log.map(row => row[key])).size, 1, `${key} must be identical`);
@@ -281,11 +331,10 @@ test("controller consumes one new base-bound budget and ignores a permissive hea
   const headPolicy = { ...policy, tolerance_bytes: 999_999_999 };
   writeFileSync(join(fixture.repo, "bench/perf/selfcompile_heap_policy.json"), JSON.stringify(headPolicy, null, 2));
   const head = commitAll(fixture.repo, "budgeted growth", "2026-08-01T01:00:00Z");
-  const root = join(fixture.outer, "vibe-selfcompile-policy", "root");
   const result = await controller({
     repo: fixture.repo, base: fixture.initial, head, synthesizeMerge: true,
     prNumber: "1801", asOf: "2026-08-02T00:00:00.000Z",
-    canonicalRoot: root, testDriver: driver,
+    testDriver: driver,
   });
   assert.equal(result.delta_bytes, 1);
   assert.equal(result.budget_id, record.id);
@@ -303,10 +352,9 @@ test("controller rejects merge conflicts", async () => {
   command(fixture.repo, ["checkout", "-q", "main"]);
   writeFileSync(join(fixture.repo, "heap.txt"), "999\n");
   const base = commitAll(fixture.repo, "base heap", "2026-08-01T02:00:00Z");
-  const root = join(fixture.outer, "vibe-selfcompile-policy", "root");
   await assert.rejects(() => controller({
     repo: fixture.repo, base, head, synthesizeMerge: true,
-    prNumber: "1801", canonicalRoot: root, testDriver: driver,
+    prNumber: "1801", testDriver: driver,
   }), error => error.reason === "merge-conflict");
 });
 
@@ -316,10 +364,9 @@ test("identical trees reject stable cross-reconstruction drift", async () => {
     const driver = makeDriver(fixture.outer);
     writeFileSync(join(fixture.repo, marker), "yes\n");
     const same = commitAll(fixture.repo, marker, "2026-08-01T01:00:00Z");
-    const root = join(fixture.outer, "vibe-selfcompile-policy", "root");
     await assert.rejects(() => controller({
       repo: fixture.repo, base: same, head: same, synthesizeMerge: true,
-      prNumber: "1801", canonicalRoot: root, testDriver: driver,
+      prNumber: "1801", testDriver: driver,
     }), error => error.reason === expected);
   }
 });
@@ -329,17 +376,16 @@ test("controller rejects nondeterminism, missing revisions, and wrong merge resu
   const driver = makeDriver(fixture.outer);
   writeFileSync(join(fixture.repo, "nondeterministic.txt"), "yes\n");
   const head = commitAll(fixture.repo, "nondeterministic", "2026-08-01T01:00:00Z");
-  const root = join(fixture.outer, "vibe-selfcompile-policy", "root");
   await assert.rejects(() => controller({
     repo: fixture.repo, base: fixture.initial, head, synthesizeMerge: true,
-    prNumber: "1801", canonicalRoot: root, testDriver: driver,
+    prNumber: "1801", testDriver: driver,
   }), error => error.reason === "nondeterministic-heap");
   await assert.rejects(() => controller({
     repo: fixture.repo, base: "missing", head, synthesizeMerge: true,
-    prNumber: "1801", canonicalRoot: root, testDriver: driver,
+    prNumber: "1801", testDriver: driver,
   }), error => error.reason === "missing-revision");
   await assert.rejects(() => controller({
     repo: fixture.repo, base: fixture.initial, head, current: fixture.initial,
-    prNumber: "1801", canonicalRoot: root, testDriver: driver,
+    prNumber: "1801", testDriver: driver,
   }), error => error.reason === "stale-or-wrong-merge-result");
 });

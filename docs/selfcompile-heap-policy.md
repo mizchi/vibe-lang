@@ -29,21 +29,24 @@ after Phase B. They are never enforcement inputs to the comparative policy.
 1. resolves full base/head/current identities and synthesizes `merge-tree`;
 2. rejects a supplied current merge result whose tree is not that merge tree;
 3. reads policy and benchmark input from the base revision;
-4. rejects symlinks in every existing canonical-root ancestor before any
-   recursive deletion, then archives base and current sequentially there;
-5. before writing or executing extracted content, rejects a pinned input or
+4. atomically creates a private mode-`0700` workspace lease under a physical
+   OS temporary directory (or current-UID-owned `RUNNER_TEMP` on CI), verifies
+   its type, owner, mode, and realpath, and reuses its fixed `lease/root` path;
+5. rejects a tracked `_build` entry in either tree before creating that
+   reserved mutation namespace;
+6. before writing or executing extracted content, rejects a pinned input or
    input ancestor symlink and proves its real parent remains under the root;
-6. deletes that root, generated files, caches, HOME, TMPDIR, and VIBE_HOME
-   between revisions;
-7. force-generates and verifies the generated fingerprint, then builds stage2
+7. deletes only the controller-created lease, including generated files,
+   caches, HOME, TMPDIR, and VIBE_HOME, never a caller-selected target;
+8. force-generates and verifies the generated fingerprint, then builds stage2
    at one fixed relative path;
-8. records the stage2 SHA-256 and runs two exact cold-cache heap trials
+9. records the stage2 SHA-256 and runs two exact cold-cache heap trials
    through `scripts/selfcompile_kpi.sh`, using `VIBE_KPI_WORK_DIR` for fixed
    output and cache paths;
-9. rejects any build or heap difference when base and current are the same
+10. rejects any build or heap difference when base and current are the same
    tree, catching stable cross-reconstruction drift as well as within-build
    trial drift;
-10. applies the base policy and emits one machine-readable JSON summary.
+11. applies the base policy and emits one machine-readable JSON summary.
 
 The controller scrubs inherited `VIBE_*`, credentials, `NODE_OPTIONS`, and
 other ambient state by constructing a small environment from scratch. The
@@ -54,21 +57,19 @@ malformed output, and nondeterminism fail closed.
 Local shape (expensive: two clean generation builds and four compiles):
 
 ```bash
-CANONICAL_TMP="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 node scripts/selfcompile_heap_policy.mjs \
   --repo . \
   --base origin/main \
   --head HEAD \
   --synthesize-merge \
-  --pr-number 1801 \
-  --canonical-root "$CANONICAL_TMP/vibe-selfcompile-policy/root"
+  --pr-number 1801
 ```
 
-CI supplies an event timestamp and the GitHub merge result with `--current`.
-The benchmark root source is always copied from base, so a PR cannot make its
-own workload easier. Every already-existing component of the canonical path
-must be a real directory, not a symlink; resolve a temporary root physically
-as above rather than passing macOS's symlinked `/tmp` spelling.
+There is deliberately no `--canonical-root`: callers cannot select anything
+the controller recursively deletes. CI will supply an event timestamp and the
+GitHub merge result with `--current`; the controller itself leases beneath a
+verified `RUNNER_TEMP`. The benchmark root source is always copied from base,
+so a PR cannot make its own workload easier.
 
 ## Known Phase B blocker: metadata-sensitive 16-byte drift
 
@@ -89,9 +90,12 @@ look like an improvement or unbudgeted growth.
 **Phase B remains blocked.** Do not wire this controller into required CI or
 use its deltas for budget decisions until a trusted policy-only runner
 normalizes stat tokens and repeated same-tree reconstructions make all four
-readings identical. Phase B must also execute the KPI measurement harness from
-base authority (or prove its executable closure unchanged); trusting only the
-base controller is insufficient.
+readings identical. Phase B must execute the complete controller, generation,
+host-runner, and KPI harness closure from immutable base authority. It must run
+base/current in disposable containers with no network, dropped capabilities
+and no-new-privileges, a read-only trusted harness/root filesystem, only
+container-local temporary writable areas, and no writable host mounts. The
+pinned seed and measurement output must also cross trusted boundaries.
 
 ## One-shot growth budgets
 
@@ -126,9 +130,18 @@ work.
 ## Two-phase rollout and repository authority
 
 Phase A lands policy, controller, tests, documentation, and fixed-workdir
-support while retaining the old gate. Phase B must execute the controller
-from the trusted base checkout, add a parallel `selfcompile-heap-policy` job to
-`ci-required`, then retire the old baseline as gate authority. Building base
+support while retaining the old gate. Its threat boundary covers static
+archive redirects for the pinned input/reserved `_build` namespace and
+pre-existing redirects or other-UID attacks on temporary workspace selection.
+A hostile concurrent same-UID process is explicitly excluded. Local execution
+of an untrusted revision is **not sandboxed**: extracted generation scripts and
+the raw compiler filesystem ABI can access the host as the current user.
+
+Phase B/PR CI is forbidden until the immutable-harness and disposable-container
+requirements above, stat-token normalization, policy-path review ownership,
+and strict latest-base governance all land. Only then may a parallel
+`selfcompile-heap-policy` job join `ci-required` and retire the old baseline as
+gate authority. Building base
 and current sequentially is expected to add roughly two clean stage2 builds
 plus four KPI compiles, so the job should run in parallel rather than doubling
 `compiler-gate`'s critical path.
