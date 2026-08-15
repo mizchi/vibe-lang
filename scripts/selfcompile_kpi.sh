@@ -19,6 +19,10 @@
 #   VIBE_KPI_MAX_WALL_MS=<n>     exit 1 if wall_ms exceeds this (advisory —
 #                                wall time IS machine/load dependent; prefer
 #                                the heap gate for CI)
+#   VIBE_KPI_WORK_DIR=<path>      use one fixed empty directory under
+#                                VIBE_KPI_ALLOWED_WORK_ROOT (default: _build)
+#                                instead of mktemp; the directory is removed
+#                                on exit. This is used by comparative policy.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -35,8 +39,82 @@ if [ ! -f "$INPUT" ]; then
   exit 2
 fi
 
-OUT_DIR="$(mktemp -d)"
-trap 'rm -rf "$OUT_DIR"' EXIT
+cleanup_out_dir() {
+  if [ -n "${OUT_DIR:-}" ]; then
+    rm -rf -- "$OUT_DIR"
+  fi
+}
+
+if [ -n "${VIBE_KPI_WORK_DIR:-}" ]; then
+  case "$VIBE_KPI_WORK_DIR" in
+    /*) ;;
+    *)
+      echo "[selfcompile-kpi] VIBE_KPI_WORK_DIR must be absolute" >&2
+      exit 2
+      ;;
+  esac
+  if [ -L "$VIBE_KPI_WORK_DIR" ]; then
+    echo "[selfcompile-kpi] VIBE_KPI_WORK_DIR must not be a symlink" >&2
+    exit 2
+  fi
+  if [ -e "$VIBE_KPI_WORK_DIR" ] && [ ! -d "$VIBE_KPI_WORK_DIR" ]; then
+    echo "[selfcompile-kpi] VIBE_KPI_WORK_DIR must be a directory" >&2
+    exit 2
+  fi
+  if [ -d "$VIBE_KPI_WORK_DIR" ] && [ -n "$(find "$VIBE_KPI_WORK_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    echo "[selfcompile-kpi] VIBE_KPI_WORK_DIR must be empty" >&2
+    exit 2
+  fi
+
+  ALLOWED_WORK_ROOT="${VIBE_KPI_ALLOWED_WORK_ROOT:-$ROOT_DIR/_build}"
+  case "$ALLOWED_WORK_ROOT" in
+    /*) ;;
+    *)
+      echo "[selfcompile-kpi] VIBE_KPI_ALLOWED_WORK_ROOT must be absolute" >&2
+      exit 2
+      ;;
+  esac
+  mkdir -p -- "$ALLOWED_WORK_ROOT"
+  ALLOWED_WORK_ROOT_REAL="$(cd "$ALLOWED_WORK_ROOT" && pwd -P)"
+  WORK_PARENT="$(dirname "$VIBE_KPI_WORK_DIR")"
+  case "$WORK_PARENT/" in
+    "$ALLOWED_WORK_ROOT"/|"$ALLOWED_WORK_ROOT"/*/) ;;
+    *)
+      echo "[selfcompile-kpi] VIBE_KPI_WORK_DIR must be under $ALLOWED_WORK_ROOT_REAL" >&2
+      exit 2
+      ;;
+  esac
+  mkdir -p -- "$WORK_PARENT"
+  WORK_PARENT_REAL="$(cd "$WORK_PARENT" && pwd -P)"
+  WORK_PARENT_SUFFIX="${WORK_PARENT#"$ALLOWED_WORK_ROOT"}"
+  WORK_PARENT_SUFFIX="${WORK_PARENT_SUFFIX#/}"
+  EXPECTED_WORK_PARENT_REAL="$ALLOWED_WORK_ROOT_REAL"
+  if [ -n "$WORK_PARENT_SUFFIX" ]; then
+    EXPECTED_WORK_PARENT_REAL="$EXPECTED_WORK_PARENT_REAL/$WORK_PARENT_SUFFIX"
+  fi
+  if [ "$WORK_PARENT_REAL" != "$EXPECTED_WORK_PARENT_REAL" ]; then
+    echo "[selfcompile-kpi] VIBE_KPI_WORK_DIR must not contain symlinked directories" >&2
+    exit 2
+  fi
+  case "$WORK_PARENT_REAL/" in
+    "$ALLOWED_WORK_ROOT_REAL"/|"$ALLOWED_WORK_ROOT_REAL"/*/) ;;
+    *)
+      echo "[selfcompile-kpi] VIBE_KPI_WORK_DIR must be under $ALLOWED_WORK_ROOT_REAL" >&2
+      exit 2
+      ;;
+  esac
+  case "$VIBE_KPI_WORK_DIR" in
+    /|"$ROOT_DIR"|"$ALLOWED_WORK_ROOT_REAL")
+      echo "[selfcompile-kpi] unsafe VIBE_KPI_WORK_DIR: $VIBE_KPI_WORK_DIR" >&2
+      exit 2
+      ;;
+  esac
+  OUT_DIR="$VIBE_KPI_WORK_DIR"
+  [ -d "$OUT_DIR" ] || mkdir -- "$OUT_DIR"
+else
+  OUT_DIR="$(mktemp -d)"
+fi
+trap cleanup_out_dir EXIT
 OUT_WASM="$OUT_DIR/out.wasm"
 STATS_FILE="$OUT_DIR/stats.txt"
 
@@ -49,7 +127,7 @@ mkdir -p "$CACHE_DIR"
 start_ns=$(date +%s%N)
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_WASM_MEMORY_STATS=1 VIBE_BUILD_CACHE_DIR="$CACHE_DIR" \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
+  bash "${VIBE_KPI_RUNNER_SCRIPT:-scripts/run_wasm_vibe_host_runner.sh}" --invoke cli_main "$STAGE2" \
   "$INPUT" "$OUT_WASM" __no_entry__ 2>"$STATS_FILE"
 end_ns=$(date +%s%N)
 wall_ms=$(( (end_ns - start_ns) / 1000000 ))
