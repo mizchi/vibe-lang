@@ -206,6 +206,63 @@ test "forgeable sidecar nodes remain data and do not mint parser authority" {
   // There is intentionally no resolver, AST scan, or authority-accepting API.
 }
 
+test "aggregate node materialization is recursively detached across repeated access" {
+  let source = "let f = (x) -> { let inner = x; inner }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let forged = BinderAuthorityNode::{
+        kind: AuthorityExprUnit,
+        slots: [
+        ],
+        children: [
+        ]
+      }
+      let first_roots = located_program_binder_authority_nodes(authority)
+      let first_root = Array::get(first_roots, 0)
+      Array::set(first_root.children, 0, forged)
+      let second_roots = located_program_binder_authority_nodes(authority)
+      let second_root = Array::get(second_roots, 0)
+      let second_fn = Array::get(second_root.children, 0)
+      inspect(kind_tag(second_fn.kind), "3")
+      let forged_slot = BinderAuthoritySlot::{
+        role: PatternBinder,
+        binder: SourceToken("forged", 0, 6)
+      }
+      Array::set(second_fn.slots, 0, forged_slot)
+      let third_roots = located_program_binder_authority_nodes(authority)
+      let third_fn = Array::get(Array::get(third_roots, 0).children, 0)
+      expect_source_slot(Array::get(third_fn.slots, 0), 14, "x", 9, 10, source)
+      Array::set(second_roots, 0, forged)
+      let fourth_roots = located_program_binder_authority_nodes(authority)
+      inspect(kind_tag(Array::get(fourth_roots, 0).kind), "1")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "leaf accessors terminate on a forged self-aliased public node" {
+  let seed = BinderAuthorityNode::{
+    kind: AuthorityExprUnit,
+    slots: [
+    ],
+    children: [
+    ]
+  }
+  let child_cells = [
+    seed
+  ]
+  let cycle = BinderAuthorityNode::{
+    kind: AuthorityExprIdent,
+    slots: [
+    ],
+    children: child_cells
+  }
+  Array::set(child_cells, 0, cycle)
+  inspect(kind_tag(binder_authority_node_kind(cycle)), "11")
+  inspect(Array::length(binder_authority_node_slots(cycle)), "0")
+  inspect(Array::length(binder_authority_node_children(cycle)), "1")
+}
+
 test "approved represented synthetic slots remain compatible while unsupported synthetic topology fails closed" {
   let source = "let f = () -> { let x: Int = 1; x }"
   match parse_source_located_with_binder_authority(source) {

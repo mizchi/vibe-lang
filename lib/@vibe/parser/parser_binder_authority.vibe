@@ -118,12 +118,22 @@ export struct BinderAuthorityNode {
   children: Array[BinderAuthorityNode]
 }
 
+/// Private persistent representation retained by the validated aggregate.
+/// No mutable Array is reachable from this topology. Public forgeable nodes
+/// are materialized only as detached data copies at the accessor boundary.
+enum StoredBinderAuthority {
+  StoredAuthorityNil;
+  StoredAuthoritySlot(BinderAuthoritySlot, StoredBinderAuthority);
+  StoredAuthorityNode(BinderAuthorityNodeKind, StoredBinderAuthority, StoredBinderAuthority);
+  StoredAuthorityChild(StoredBinderAuthority, StoredBinderAuthority)
+}
+
 /// Atomically produced exact-source parse result, compatibility rows, and the
 /// sidecar built in the same exhaustive walk against that exact final AST.
 export struct LocatedProgramBinderAuthority {
   program: Array[Stmt];
   binders: Array[SourceBinder];
-  nodes: Array[BinderAuthorityNode]
+  nodes: StoredBinderAuthority
 }
 
 //# Data accessors
@@ -156,8 +166,56 @@ export fn located_program_binder_authority_rows(authority: LocatedProgramBinderA
   Array::slice(authority.binders, 0, Array::length(authority.binders))
 }
 
+fn append_materialized_slots(stored: StoredBinderAuthority, out: ArrayBuilder[BinderAuthoritySlot]) -> Unit {
+  match stored {
+    StoredAuthoritySlot(slot, rest) => {
+      ArrayBuilder::push(out, slot)
+      append_materialized_slots(rest, out)
+    },
+    _ => ()
+  }
+}
+
+fn materialize_authority_node(stored: StoredBinderAuthority) -> BinderAuthorityNode {
+  match stored {
+    StoredAuthorityNode(kind, slots, children) => {
+      let slot_out = ArrayBuilder::new()
+      append_materialized_slots(slots, slot_out)
+      let child_out = ArrayBuilder::new()
+      append_materialized_nodes(children, child_out)
+      BinderAuthorityNode::{
+        kind,
+        slots: ArrayBuilder::freeze(slot_out),
+        children: ArrayBuilder::freeze(child_out)
+      }
+    },
+    // Private stored values are created only by stored_authority_node. Keep a
+    // total fallback so malformed public data is never involved in recursion.
+    _ => BinderAuthorityNode::{
+      kind: AuthorityExprUnit,
+      slots: ArrayBuilder::freeze(ArrayBuilder::new()),
+      children: ArrayBuilder::freeze(ArrayBuilder::new())
+    }
+  }
+}
+
+fn append_materialized_nodes(stored: StoredBinderAuthority, out: ArrayBuilder[BinderAuthorityNode]) -> Unit {
+  match stored {
+    StoredAuthorityChild(node, rest) => {
+      ArrayBuilder::push(out, materialize_authority_node(node))
+      append_materialized_nodes(rest, out)
+    },
+    _ => ()
+  }
+}
+
+/// Materialize a fresh recursive public data tree on every call. Every slots
+/// and children array at every depth is detached from the aggregate and from
+/// arrays returned by previous calls.
 export fn located_program_binder_authority_nodes(authority: LocatedProgramBinderAuthority) -> Array[BinderAuthorityNode] {
-  Array::slice(authority.nodes, 0, Array::length(authority.nodes))
+  let out = ArrayBuilder::new()
+  append_materialized_nodes(authority.nodes, out)
+  ArrayBuilder::freeze(out)
 }
 
 //# Exhaustive final-AST validation and sidecar construction
@@ -682,6 +740,26 @@ export fn validate_program_binder_rows(program: Array[Stmt], rows: Array[SourceB
   }
 }
 
+fn stored_authority_slots(slots: Array[BinderAuthoritySlot], at: Int) -> StoredBinderAuthority {
+  if at >= Array::length(slots) {
+    StoredAuthorityNil
+  } else {
+    StoredAuthoritySlot(Array::get(slots, at), stored_authority_slots(slots, at + 1))
+  }
+}
+
+fn stored_authority_node(node: BinderAuthorityNode) -> StoredBinderAuthority {
+  StoredAuthorityNode(node.kind, stored_authority_slots(node.slots, 0), stored_authority_nodes(node.children, 0),)
+}
+
+fn stored_authority_nodes(nodes: Array[BinderAuthorityNode], at: Int) -> StoredBinderAuthority {
+  if at >= Array::length(nodes) {
+    StoredAuthorityNil
+  } else {
+    StoredAuthorityChild(stored_authority_node(Array::get(nodes, at)), stored_authority_nodes(nodes, at + 1))
+  }
+}
+
 fn build_program_binder_authority(program: Array[Stmt], rows: Array[SourceBinder], source: String) -> Option[Array[BinderAuthorityNode]] {
   let nodes = ArrayBuilder::new()
   let mut next = 0
@@ -715,7 +793,9 @@ export fn parse_source_located_with_binder_authority(source: String) -> Option[L
   } && binder_capture_is_eligible(context) {
     match build_program_binder_authority(program, rows, source) {
       Some(nodes) => Some(LocatedProgramBinderAuthority::{
-        program, binders: rows, nodes
+        program,
+        binders: rows,
+        nodes: stored_authority_nodes(nodes, 0)
       }),
       None => None
     }
