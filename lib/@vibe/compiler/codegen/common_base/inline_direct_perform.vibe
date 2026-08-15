@@ -1104,6 +1104,16 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
     vhn = vhn + 1
   }
   edp_collect_handle_effect_names(stmts, vhe_names)
+  // #1875: the effect names that actually HAVE a handle site somewhere.
+  // vhe_names is declared-effects ∪ handle-labeled names, so a declared
+  // effect nobody handles is in the loop below -- and
+  // edp_erase_effect_handles is a RECONSTRUCTING walk (it rebuilds every
+  // expression node in the merged program), so running it for a name with
+  // zero handle sites allocated ~10MB of identical AST per unused effect
+  // declaration. Erasing nothing is a no-op: skip the walk outright when
+  // the name never appears on a handle.
+  let vhe_handle_names = empty_str_array()
+  edp_collect_handle_effect_names(stmts, vhe_handle_names)
   let vhe_fn_defs = edp_collect_fn_defs(stmts)
   let vhe_fn_names = edp_all_fn_names(vhe_fn_defs)
   let vhe_inert = edp_pure_fn_names(vhe_fn_defs)
@@ -1111,7 +1121,12 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   let mut vhi = 0
   while vhi < Array::length(vhe_names) {
     let vh_name = Array::get(vhe_names, vhi)
-    if edp_program_user_performs(stmts, vh_name) {
+    if !edp_str_array_contains(vhe_handle_names, vh_name) {
+      // No handle site for this effect anywhere in the program: there is
+      // nothing to erase, and both branches below reduce to the identity
+      // walk. Skip them (#1875).
+      ()
+    } else if edp_program_user_performs(stmts, vh_name) {
       // Per-HANDLE vacuity: some sites of this effect may still be
       // provably dead even though the program performs it elsewhere (see
       // edp_body_may_perform). Erasing those is what keeps a client-only
@@ -3392,132 +3407,147 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
   let plans = array_empty()
+  // #1875: effect names that still have a handle site after vacuous-handle
+  // erasure. An effect with NO row-carrying fn and NO handle site has
+  // nothing to migrate, and the per-effect scans below (shadow drop,
+  // self-discharge drop, the three inert-set builders, eligibility) walk
+  // the whole merged program per effect. One cheap name collection up
+  // front lets those effects skip the loop body entirely.
+  let plan_handle_names = empty_str_array()
+  edp_collect_handle_effect_names(stmts, plan_handle_names)
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
     let needing_all = edp_needing_names(fn_defs, ename, es_names, es_members_list)
-    // Shadowed-name exclusion is ALSO unconditional (#1074 review: a
-    // needing function's name shadowed by a local binding elsewhere in
-    // the program is never safe to leave in `needing` regardless of
-    // dead-code/self-discharge status -- see edp_drop_shadowed_needing's
-    // own doc comment), so it applies before the self-discharging filter.
-    let needing_unshadowed = edp_drop_shadowed_needing(needing_all, stmts)
-    // Self-discharging exclusion is unconditional (a self-discharging
-    // function never needs the dict for itself, dead or not -- see
-    // edp_drop_self_discharging_needing's doc comment), so it applies to
-    // the FULL set before either eligibility attempt below.
-    let needing_sd = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename)
-    // ADR-0076 追記34 V2: perform-free exclusion -- a row-E fn that cannot
-    // perform E needs no dict and must NOT get one (its call sites may sit
-    // outside any handle; see edp_fn_is_perform_free's doc comment). The
-    // same predicate feeds the pure_fns appends inside eligibility/apply,
-    // so both views classify these names identically.
-    let pf_inert = edp_pure_fn_names(fn_defs)
-    edp_append_free_host_inert_names(stmts, pf_inert)
-    edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert)
-    edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert)
-    let needing_full = array_empty()
-    let mut pfi = 0
-    while pfi < Array::length(needing_sd) {
-      let pf_nm = Array::get(needing_sd, pfi)
-      if edp_str_array_contains(pf_inert, pf_nm) {
-        ()
-      } else {
-        Array::push(needing_full, pf_nm)
-      }
-      pfi = pfi + 1
-    }
-    // #1261: a needing function's VALUE reaching a slot the migration cannot
-    // follow would prepend the dict parameter at the definition while the
-    // call through that slot stays at the old arity (a wasm signature-
-    // mismatch trap, not a diagnosable failure). Eta-expand those values
-    // first (edp_etawrap_stmts): the wrapper closes over the evidence and
-    // presents the arity the receiving slot expects, which is exactly what
-    // writing the rows out by hand achieves. Whatever the wrapping cannot
-    // reach is then still an escape, and stays a hard error per ADR-0076
-    // 追記34 V2. Both are only relevant while handle sites for E remain:
-    // with none, nothing gets migrated in the first place.
-    let live_sites = Array::length(needing_full) > 0 && Array::length(edp_collect_handle_sites(stmts, ename)) > 0
-    if live_sites {
-      edp_etawrap_stmts(stmts, needing_full, ename, fn_defs, es_names, es_members_list)
-    } else {
+    if Array::length(needing_all) == 0 && !edp_str_array_contains(plan_handle_names, ename) {
+      // Unused effect (#1875): no fn carries its row and nothing handles
+      // it -- there is nothing to plan, and every scan below reduces to
+      // work over empty sets. Skip to the next effect.
       ()
-    }
-    let escaped = if live_sites {
-      edp_needing_escape_stmts(stmts, needing_full, ename, fn_defs, es_names, es_members_list)
     } else {
-      ""
-    }
-    if escaped != "" {
-      Array::push(errs, String::concat(String::concat(String::concat("function `", escaped), String::concat("` carries effect ", ename)), String::concat(String::concat(" and is passed as a VALUE into a slot whose type does not carry that row, so evidence-passing (ADR-0076) cannot reach the call through it (#1261) -- annotate the receiving parameter (and any binding it flows through) with `with ", ename), "`, or call the function directly instead of passing it")))
-    } else {
-      ()
-    }
-    match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
-      Some(plan) => if escaped == "" {
-        Array::push(plans, plan)
-      } else {
-        ()
-      },
-      None => {
-        // Fall back to dropping provably-DEAD needing functions and retry
-        // ONLY if the full set was ineligible -- trying the full set FIRST
-        // (rather than always dropping dead functions up front) matters:
-        // an independently-safe dead function (e.g. a hoisted closure
-        // whose own body is a bare `perform`, dlh_hoist_expr's row-
-        // backfill fix, 2026-07-23) should stay in `needing` and get
-        // properly migrated like any other safe function -- gc backend
-        // codegen still has to compile it even though it never runs, and
-        // a dead-but-still-present un-rewritten `perform` is exactly as
-        // fatal there as a live one. Dropping dead functions is only a
-        // NET WIN when the full set fails for some OTHER (unsafe, not
-        // dead) member -- see edp_drop_unreachable_needing's doc comment
-        // for why dropping in that case is always safe.
-        let needing_live = edp_drop_unreachable_needing(needing_full, fn_defs, keep)
-        let mut planned2 = false
-        if Array::length(needing_live) == Array::length(needing_full) {
+      // Shadowed-name exclusion is ALSO unconditional (#1074 review: a
+      // needing function's name shadowed by a local binding elsewhere in
+      // the program is never safe to leave in `needing` regardless of
+      // dead-code/self-discharge status -- see edp_drop_shadowed_needing's
+      // own doc comment), so it applies before the self-discharging filter.
+      let needing_unshadowed = edp_drop_shadowed_needing(needing_all, stmts)
+      // Self-discharging exclusion is unconditional (a self-discharging
+      // function never needs the dict for itself, dead or not -- see
+      // edp_drop_self_discharging_needing's doc comment), so it applies to
+      // the FULL set before either eligibility attempt below.
+      let needing_sd = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename)
+      // ADR-0076 追記34 V2: perform-free exclusion -- a row-E fn that cannot
+      // perform E needs no dict and must NOT get one (its call sites may sit
+      // outside any handle; see edp_fn_is_perform_free's doc comment). The
+      // same predicate feeds the pure_fns appends inside eligibility/apply,
+      // so both views classify these names identically.
+      let pf_inert = edp_pure_fn_names(fn_defs)
+      edp_append_free_host_inert_names(stmts, pf_inert)
+      edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert)
+      edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert)
+      let needing_full = array_empty()
+      let mut pfi = 0
+      while pfi < Array::length(needing_sd) {
+        let pf_nm = Array::get(needing_sd, pfi)
+        if edp_str_array_contains(pf_inert, pf_nm) {
           ()
         } else {
-          match edp_try_plan_for_effect(stmts, ename, ops, needing_live, fn_defs) {
-            Some(plan2) => {
-              Array::push(plans, plan2)
-              planned2 = true
-            },
-            None => ()
-          }
+          Array::push(needing_full, pf_nm)
         }
-        // ADR-0076 追記34 V1 guard: a program that holds row-E closure
-        // VALUES compiles them under the __ev-taking convention, so a
-        // failed migration cannot silently fall back to replay (an
-        // unmigrated caller would call a migrated closure at the wrong
-        // arity). Hard error; the message names the effect.
-        if !planned2 {
-          let gb = empty_str_array()
-          let gl = array_empty()
-          edp_row_lit_scan(stmts, ename, needing_full, es_names, es_members_list, gb, gl)
-          // Guard scope: only when HANDLE SITES for E remain in the tree.
-          // Zero sites means nothing can fall to replay — the suspend
-          // lane (ADR-0076 Phase 3a/3b) transforms its handles BEFORE
-          // this pass, so a CPS-mode effect's row-E closure values (e.g.
-          // spawn_suspend's `f: () -> T with Async + Exception` param)
-          // follow the STEP convention and are none of edp's business.
-          if Array::length(edp_collect_handle_sites(stmts, ename)) > 0 && (Array::length(gb) > 0 || Array::length(gl) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)) {
-            // #1347: name the higher-order operation when that is the cause.
-            // The generic wording below points at "a handle body, a needing
-            // function, or a row-carrying closure literal", none of which the
-            // reader can fix for this shape -- the gap is the OPERATION's
-            // signature, one level away.
-            let ho = edp_higher_order_block_owner(effect_defs, ename)
-            if String::length(ho) > 0 {
-              Array::push(errs, edp_higher_order_error_msg(ename, ho))
+        pfi = pfi + 1
+      }
+      // #1261: a needing function's VALUE reaching a slot the migration cannot
+      // follow would prepend the dict parameter at the definition while the
+      // call through that slot stays at the old arity (a wasm signature-
+      // mismatch trap, not a diagnosable failure). Eta-expand those values
+      // first (edp_etawrap_stmts): the wrapper closes over the evidence and
+      // presents the arity the receiving slot expects, which is exactly what
+      // writing the rows out by hand achieves. Whatever the wrapping cannot
+      // reach is then still an escape, and stays a hard error per ADR-0076
+      // 追記34 V2. Both are only relevant while handle sites for E remain:
+      // with none, nothing gets migrated in the first place.
+      let live_sites = Array::length(needing_full) > 0 && Array::length(edp_collect_handle_sites(stmts, ename)) > 0
+      if live_sites {
+        edp_etawrap_stmts(stmts, needing_full, ename, fn_defs, es_names, es_members_list)
+      } else {
+        ()
+      }
+      let escaped = if live_sites {
+        edp_needing_escape_stmts(stmts, needing_full, ename, fn_defs, es_names, es_members_list)
+      } else {
+        ""
+      }
+      if escaped != "" {
+        Array::push(errs, String::concat(String::concat(String::concat("function `", escaped), String::concat("` carries effect ", ename)), String::concat(String::concat(" and is passed as a VALUE into a slot whose type does not carry that row, so evidence-passing (ADR-0076) cannot reach the call through it (#1261) -- annotate the receiving parameter (and any binding it flows through) with `with ", ename), "`, or call the function directly instead of passing it")))
+      } else {
+        ()
+      }
+      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
+        Some(plan) => if escaped == "" {
+          Array::push(plans, plan)
+        } else {
+          ()
+        },
+        None => {
+          // Fall back to dropping provably-DEAD needing functions and retry
+          // ONLY if the full set was ineligible -- trying the full set FIRST
+          // (rather than always dropping dead functions up front) matters:
+          // an independently-safe dead function (e.g. a hoisted closure
+          // whose own body is a bare `perform`, dlh_hoist_expr's row-
+          // backfill fix, 2026-07-23) should stay in `needing` and get
+          // properly migrated like any other safe function -- gc backend
+          // codegen still has to compile it even though it never runs, and
+          // a dead-but-still-present un-rewritten `perform` is exactly as
+          // fatal there as a live one. Dropping dead functions is only a
+          // NET WIN when the full set fails for some OTHER (unsafe, not
+          // dead) member -- see edp_drop_unreachable_needing's doc comment
+          // for why dropping in that case is always safe.
+          let needing_live = edp_drop_unreachable_needing(needing_full, fn_defs, keep)
+          let mut planned2 = false
+          if Array::length(needing_live) == Array::length(needing_full) {
+            ()
+          } else {
+            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, fn_defs) {
+              Some(plan2) => {
+                Array::push(plans, plan2)
+                planned2 = true
+              },
+              None => ()
+            }
+          }
+          // ADR-0076 追記34 V1 guard: a program that holds row-E closure
+          // VALUES compiles them under the __ev-taking convention, so a
+          // failed migration cannot silently fall back to replay (an
+          // unmigrated caller would call a migrated closure at the wrong
+          // arity). Hard error; the message names the effect.
+          if !planned2 {
+            let gb = empty_str_array()
+            let gl = array_empty()
+            edp_row_lit_scan(stmts, ename, needing_full, es_names, es_members_list, gb, gl)
+            // Guard scope: only when HANDLE SITES for E remain in the tree.
+            // Zero sites means nothing can fall to replay — the suspend
+            // lane (ADR-0076 Phase 3a/3b) transforms its handles BEFORE
+            // this pass, so a CPS-mode effect's row-E closure values (e.g.
+            // spawn_suspend's `f: () -> T with Async + Exception` param)
+            // follow the STEP convention and are none of edp's business.
+            if Array::length(edp_collect_handle_sites(stmts, ename)) > 0 && (Array::length(gb) > 0 || Array::length(gl) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)) {
+              // #1347: name the higher-order operation when that is the cause.
+              // The generic wording below points at "a handle body, a needing
+              // function, or a row-carrying closure literal", none of which the
+              // reader can fix for this shape -- the gap is the OPERATION's
+              // signature, one level away.
+              let ho = edp_higher_order_block_owner(effect_defs, ename)
+              if String::length(ho) > 0 {
+                Array::push(errs, edp_higher_order_error_msg(ename, ho))
+              } else {
+                Array::push(errs, String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through; replay fallback is not available for closure-value programs"))
+              }
             } else {
-              Array::push(errs, String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through; replay fallback is not available for closure-value programs"))
+              ()
             }
           } else {
             ()
           }
-        } else {
-          ()
         }
       }
     }

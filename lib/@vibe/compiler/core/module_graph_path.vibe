@@ -482,3 +482,65 @@ export fn resolve_import_path_candidates(base_dir: String, raw_path: String) -> 
     ]
   }
 }
+
+/// #1872 (#1770 Phase 2): the compiler's read-side source-access effect.
+/// The FS lane discharges it with the real capability builtins
+/// (`Fs::exists` / `Fs::read_file`) at the call boundary; an in-memory lane
+/// (tests, LSP overlay) discharges the SAME code with a lookup handler, so
+/// the two lanes can no longer drift (#729/#730/#740/#749 were all
+/// lane-drift bugs). Read-only by design — cache writes stay on `Fs`
+/// (see #1872 for the split rationale). Spelled `Source::*`, deliberately
+/// NOT `Fs::*`: a fn occupying a capability-builtin name hijacks the
+/// perform lowering (recorded in lib/@vibe/fs/index.vpkg).
+export effect Source {
+  Read(String) -> String
+  Exists(String) -> Bool
+}
+
+/// #1872 pilot: THE import-path existence probe, unified from the three
+/// byte-similar FS copies (loader/loader.vibe resolve_path_fs -- no
+/// self-skip, pass self_path = ""; loader/header_cache.vibe resolve_path_fs
+/// and wasi_only/merge_sources.vibe resolve_existing_import_path -- both
+/// with the self-skip) which had already drifted once (the self_path skip
+/// existed in two copies but not the third).
+///
+/// A directory-style import from a same-named facade file resolves its
+/// plain-file candidate to the IMPORTING file itself (`export ./codegen`
+/// inside codegen.vibe -> codegen.vibe): a self-dep is never meant, it only
+/// manufactures "type_db: import cycle detected", so a candidate equal to
+/// `self_path` is skipped. Falls back to the first non-self candidate so a
+/// genuinely missing import still reports its plain-file path (and to
+/// candidates[0] when every candidate was self).
+export fn resolve_import_path_probe(base_dir: String, raw_path: String, self_path: String) -> String with Source {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut i = 0
+  let mut found = ""
+  let mut fallback = ""
+  while i < Array::length(candidates) {
+    let candidate = Array::get(candidates, i)
+    if candidate == self_path {
+      ()
+    } else {
+      if fallback == "" {
+        fallback = candidate
+      } else {
+        ()
+      }
+      if found == "" && perform Source::Exists(candidate) {
+        found = candidate
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  if found == "" {
+    if fallback == "" {
+      Array::get(candidates, 0)
+    } else {
+      fallback
+    }
+  } else {
+    found
+  }
+}

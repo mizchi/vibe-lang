@@ -1,0 +1,76 @@
+// #1872 (#1770 Phase 2) pilot: the `effect Source` pattern the compiler's
+// read-side lane unification depends on. Pins the three properties the
+// design needs beyond plain perform/handle (which effect_handler_test.vibe
+// already covers):
+//   1. handler SWITCHING -- the same effectful body discharged by an
+//      in-memory handler and a disk-stub handler gives lane-appropriate
+//      answers;
+//   2. handler arms answering from CAPTURED outer state (the LSP overlay /
+//      in-memory sources shape) -- a MutMap read inside the arm;
+//   3. a multi-op effect where ops feed each other's control flow
+//      (Exists gates Read).
+// The real-FS discharge of the same pattern is exercised by the compiler
+// itself: loader/header_cache/merge_sources resolve every import through
+// `resolve_import_path_probe` (`with Source`), so the bootstrap gate breaks
+// if perform regresses in those units (#768/#778 was that regression).
+
+import @vibe/core {
+  type MutMap, MutMap::get, MutMap::new_string, MutMap::set
+}
+
+effect Source {
+  Read(String) -> String
+  Exists(String) -> Bool
+}
+
+fn load(path: String) -> Int with Source {
+  if perform Source::Exists(path) {
+    String::length(perform Source::Read(path))
+  } else {
+    0 - 1
+  }
+}
+
+fn with_memory(docs: MutMap[String, String], path: String) -> Int {
+  handle {
+    load(path)
+  } with Source {
+    Read(p) => {
+      let ans = match MutMap::get(docs, p) {
+        Some(s) => s,
+        None => "disk-content"
+      }
+      resume(ans)
+    };
+    Exists(p) => {
+      let ans = match MutMap::get(docs, p) {
+        Some(_) => true,
+        None => p == "on-disk.vibe"
+      }
+      resume(ans)
+    }
+  }
+}
+
+fn with_disk_stub(path: String) -> Int {
+  handle {
+    load(path)
+  } with Source {
+    Read(_) => resume("disk-content");
+    Exists(p) => resume(p == "on-disk.vibe")
+  }
+}
+
+test "overlay handler answers from captured state, falls back to disk" {
+  let docs = MutMap::new_string()
+  MutMap::set(docs, "open-buffer.vibe", "overlay!")
+  // overlay hit: the captured map's entry (8 chars)
+  inspect(with_memory(docs, "open-buffer.vibe"), "8")
+  // overlay miss, exists on "disk": the fallback content (12 chars)
+  inspect(with_memory(docs, "on-disk.vibe"), "12")
+}
+
+test "the same body under the disk-stub handler" {
+  inspect(with_disk_stub("on-disk.vibe"), "12")
+  inspect(with_disk_stub("missing.vibe"), "-1")
+}

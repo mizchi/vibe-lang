@@ -10,6 +10,7 @@ import @vibe/core {
 
 import @vibe/compiler/core {
   Expr,
+  Source,
   Stmt,
   Subst,
   Type,
@@ -32,6 +33,7 @@ import @vibe/compiler/core {
   path_set_new,
   resolve_import_path,
   resolve_import_path_candidates,
+  resolve_import_path_probe,
   vibe_env_flag,
   vpkg_path_in_dir
 }
@@ -233,27 +235,18 @@ fn resolve_path_in_sources(base_dir: String, raw_path: String, sources: Array[(S
 }
 
 fn resolve_path_fs(base_dir: String, raw_path: String) -> String with Fs {
-  let candidates = resolve_import_path_candidates(base_dir, raw_path)
-  let mut i = 0
-  let mut found = ""
-  while i < Array::length(candidates) {
-    if found == "" {
-      let candidate = Array::get(candidates, i)
-      // #768/#778: direct-call form, not `perform Fs::Exists` -- matches
-      // loader/header_cache.vibe's sibling resolve_path_fs (already
-      // direct-call) and avoids the perform/effect-op crash risk in a
-      // narrow-effect-surface compiled unit.
-      let candidate_exists = Fs::exists(candidate)
-      if candidate_exists {
-        found = candidate
-      }
-    }
-    i = i + 1
-  }
-  if found == "" {
-    Array::get(candidates, 0)
-  } else {
-    found
+  // #1872 pilot: the probe loop lives once in core (resolve_import_path_probe,
+  // `with Source`); this wrapper only discharges Source with the real
+  // capability builtins. self_path = "" -- this call site never needed the
+  // self-import skip (no candidate equals ""). The old #768/#778 direct-call
+  // retreat is deliberately revisited here: `perform Source::Exists` inside
+  // the probe is the pilot's live test of perform in this compiled unit,
+  // pinned by fixtures/effect_source_pilot_test.vibe and the bootstrap gate.
+  handle {
+    resolve_import_path_probe(base_dir, raw_path, "")
+  } with Source {
+    Read(p) => resume(Fs::read_file(p));
+    Exists(p) => resume(Fs::exists(p))
   }
 }
 

@@ -21,13 +21,15 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/compiler/core {
+  Source,
   Stmt,
   dir_of_path,
   ensure_regular_source_fs,
   is_contract_ext,
   nearest_vpkg_path_fs,
   path_has_relative_prefix,
-  resolve_import_path_candidates
+  resolve_import_path_candidates,
+  resolve_import_path_probe
 }
 
 import @vibe/compiler/runtime/eval_loader {
@@ -44,41 +46,14 @@ import @vibe/compiler/contract {
 //# Functions
 
 fn resolve_path_fs(base_dir: String, raw_path: String, self_path: String) -> String with Fs {
-  let candidates = resolve_import_path_candidates(base_dir, raw_path)
-  let mut i = 0
-  let mut found = ""
-  let mut fallback = ""
-  while i < Array::length(candidates) {
-    let candidate = Array::get(candidates, i)
-    // A directory-style import from a same-named facade file resolves its
-    // plain-file candidate to the IMPORTING file itself (`export ./codegen`
-    // inside codegen.vibe -> codegen.vibe): a self-dep is never meant, it
-    // only manufactures "type_db: import cycle detected". Skip it so the
-    // probe falls through to <dir>/index.vibe(i).
-    if candidate == self_path {
-      ()
-    } else {
-      if fallback == "" {
-        fallback = candidate
-      } else {
-        ()
-      }
-      if found == "" && Fs::exists(candidate) {
-        found = candidate
-      } else {
-        ()
-      }
-    }
-    i = i + 1
-  }
-  if found == "" {
-    if fallback == "" {
-      Array::get(candidates, 0)
-    } else {
-      fallback
-    }
-  } else {
-    found
+  // #1872 pilot: probe loop unified in core (resolve_import_path_probe,
+  // `with Source` -- carries this copy's self-import skip and first-non-self
+  // fallback); this wrapper only discharges Source with the real builtins.
+  handle {
+    resolve_import_path_probe(base_dir, raw_path, self_path)
+  } with Source {
+    Read(p) => resume(Fs::read_file(p));
+    Exists(p) => resume(Fs::exists(p))
   }
 }
 
