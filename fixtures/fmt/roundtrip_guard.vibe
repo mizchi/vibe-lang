@@ -1,0 +1,36 @@
+// #1821: the formatter must not emit a DIFFERENT program.
+//
+// `if !Flag {` is rendered as `if !Flag::{` by the token-only formatter -- a spelling that
+// appears nowhere in the input and that no compiler accepts. The formatter's
+// own parse was self-consistent (it read `None {` as the start of a record
+// literal); the token stream it produced was not the one it was given.
+//
+// Three things made it worse than an ordinary bug:
+//
+//   - `pkf run fmt` rewrites `lib/**/*.vibe` in BULK, so the damaged file need
+//     not be one anyone touched
+//   - `vibe_fmt.sh --check` reported the corrupted output as "already
+//     formatted", so `vibe-fmt-check` (required) stayed green
+//   - the failure surfaced later, in an unrelated job, as a parse error on a
+//     brace nobody wrote
+//
+// This file is the input. The gate asserts the formatter leaves it BYTE FOR
+// BYTE alone and that `format_script_roundtrip_ok` says so out loud -- both,
+// because declining to format is itself silent: the output equals the input,
+// so a `--check` on either a correct format or a refusal looks identical.
+//
+// It stays compilable on purpose. "The formatter rewrote working code into
+// something that does not compile" is the whole claim, and a fixture that did
+// not compile to begin with could not make it.
+
+let Flag: Bool = false
+
+fn guarded() -> Int {
+  if !Flag {
+    1
+  } else {
+    0
+  }
+}
+
+export let main = () -> Int { guarded() }

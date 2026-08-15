@@ -2533,8 +2533,83 @@ fn normalize_retired_effect_labels(toks: Array[LTok]) -> Array[LTok] {
   out
 }
 
+/// Tokens that carry program meaning. Whitespace, newlines and comments are
+/// exactly what the formatter is allowed to move, so they are not part of the
+/// "same program" question below.
+fn fmt_significant_tokens(toks: Array[LTok]) -> Array[LTok] {
+  let out = [
+  ]
+  let mut i = 0
+  while i < Array::length(toks) {
+    let t = Array::get(toks, i)
+    if t.kind != k_ws && t.kind != k_newline && t.kind != k_comment {
+      Array::push(out, t)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn fmt_token_streams_agree(a: Array[LTok], b: Array[LTok]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(a) {
+      let x = Array::get(a, i)
+      let y = Array::get(b, i)
+      if x.kind != y.kind || x.text != y.text {
+        same = false
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+/// Whether re-lexing this source's formatted rendering yields the same
+/// significant tokens it was rendered FROM. False means the formatter would
+/// change the program, and `format_script` declines to touch the file.
+///
+/// The comparison is against the NORMALIZED token stream, not the raw input:
+/// `reorder_import_lists` / `normalize_effect_rows` /
+/// `normalize_retired_effect_labels` rewrite tokens on purpose, so comparing
+/// with the raw input would report every file that has an import list or an
+/// effect row. The invariant that actually holds is narrower and is the one
+/// worth checking -- `format_tokens` is a pure re-rendering of the stream it
+/// is given.
+export fn format_script_roundtrip_ok(src: String) -> Bool {
+  let normalized = normalize_retired_effect_labels(normalize_effect_rows(reorder_import_lists(lex_lossless(src))))
+  // Snapshot BEFORE rendering: format_tokens is free to consume its input.
+  let before = fmt_significant_tokens(normalized)
+  let rendered = format_tokens(normalized, 2)
+  fmt_token_streams_agree(before, fmt_significant_tokens(lex_lossless(rendered)))
+}
+
+/// #1821: a formatter that emits a DIFFERENT program is worse than one that
+/// gives up. `pkf run fmt` rewrites `lib/**/*.vibe` in bulk, and `--check`
+/// reported the corrupted output as "already formatted", so the damage was
+/// invisible until an unrelated job failed on a brace nobody wrote.
+///
+/// Measured case: `if x != None {` renders as `if x != None::{`, a spelling
+/// that appears nowhere in the input and that no compiler accepts. The
+/// formatter's own parse is self-consistent; the token stream it produces is
+/// not the one it was given.
+///
+/// So: render, re-lex, and if the significant tokens moved, return the source
+/// untouched. Same posture `format_vpkg` already takes when a header is
+/// malformed (#1435) -- declining to format is a bad outcome, silently
+/// rewriting the program is a worse one.
 export fn format_script(src: String) -> String {
-  format_tokens(normalize_retired_effect_labels(normalize_effect_rows(reorder_import_lists(lex_lossless(src)))), 2)
+  let normalized = normalize_retired_effect_labels(normalize_effect_rows(reorder_import_lists(lex_lossless(src))))
+  let before = fmt_significant_tokens(normalized)
+  let rendered = format_tokens(normalized, 2)
+  if fmt_token_streams_agree(before, fmt_significant_tokens(lex_lossless(rendered))) {
+    rendered
+  } else {
+    src
+  }
 }
 
 //# ======================================================================
@@ -3075,5 +3150,17 @@ export fn format_source(path: String, src: String) -> String {
     format_vpkg(src)
   } else {
     format_script(src)
+  }
+}
+
+/// Whether formatting `path` can preserve its significant token stream.
+/// Package contracts use a separate fail-closed header splitter; ordinary
+/// vibe source uses the formatter round-trip invariant above.
+export fn format_source_roundtrip_ok(path: String, src: String) -> Bool {
+  let n = String::length(path)
+  if n >= 5 && String::substring(path, n - 5, n) == ".vpkg" {
+    true
+  } else {
+    format_script_roundtrip_ok(src)
   }
 }

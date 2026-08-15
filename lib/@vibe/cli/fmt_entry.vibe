@@ -18,7 +18,7 @@
 //# lib/@vibe/compiler/fmt has no dependencies by design, and the parser is one.
 
 import ../compiler/fmt {
-  format_source
+  format_source, format_source_roundtrip_ok
 }
 
 import ../parser {
@@ -48,23 +48,36 @@ export fn main() -> Int with Fs + Env + Stderr {
   let input = Env::args_get(0)
   let output = Env::args_get(1)
   let src = Fs::read_file(input)
-  // format_source dispatches on the extension: `.vpkg` package contracts
-  // get header handling, everything else is plain vibe source (#1435).
-  let formatted = format_source(input, src)
-  // A `.vpkg` header is not vibe syntax, so a whole-file parse never succeeds
-  // for one and the comparison below would say nothing. format_vpkg already
-  // refuses to touch a header it cannot read, which is the same policy reached
-  // by a different route (#1435).
-  //
-  // Only a rewrite that BREAKS something is rejected. A file that did not parse
-  // to begin with is still formatted: the promise is "no worse", not "only
-  // valid input".
-  if !has_suffix(input, ".vpkg") && program_parses(src) && !program_parses(formatted) {
-    Fs::write_file(output, src)
-    Stderr::write_stream("vibe fmt: refusing to rewrite " + input + "\n" + "  The formatted output does not parse, and the input did. This is a bug in\n" + "  the formatter, not a problem with the file. The file is unchanged; please\n" + "  report it with the source (see #1821).\n")
-    1
+  // #1821: declining to format is SILENT -- the output equals the input, so
+  // `--check` reports "already formatted" either way. This mode asks the
+  // question directly, so a scan can tell "correctly formatted" apart from
+  // "the guard refused to touch it". Exit 3 (not 1) keeps it distinct from an
+  // ordinary formatting failure.
+  if Env::get("VIBE_FMT_ROUNDTRIP_CHECK") == "1" {
+    if format_source_roundtrip_ok(input, src) {
+      0
+    } else {
+      3
+    }
   } else {
-    Fs::write_file(output, formatted)
-    0
+    // format_source dispatches on the extension: `.vpkg` package contracts
+    // get header handling, everything else is plain vibe source (#1435).
+    let formatted = format_source(input, src)
+    // A `.vpkg` header is not vibe syntax, so a whole-file parse never succeeds
+    // for one and the comparison below would say nothing. format_vpkg already
+    // refuses to touch a header it cannot read, which is the same policy reached
+    // by a different route (#1435).
+    //
+    // Only a rewrite that BREAKS something is rejected. A file that did not parse
+    // to begin with is still formatted: the promise is "no worse", not "only
+    // valid input".
+    if !has_suffix(input, ".vpkg") && program_parses(src) && !program_parses(formatted) {
+      Fs::write_file(output, src)
+      Stderr::write_stream("vibe fmt: refusing to rewrite " + input + "\n" + "  The formatted output does not parse, and the input did. This is a bug in\n" + "  the formatter, not a problem with the file. The file is unchanged; please\n" + "  report it with the source (see #1821).\n")
+      1
+    } else {
+      Fs::write_file(output, formatted)
+      0
+    }
   }
 }

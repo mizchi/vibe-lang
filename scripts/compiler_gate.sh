@@ -4550,6 +4550,71 @@ fi
 rm -rf "$gchbdir" _build/gc_host_builtins_probe
 echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010; readdir still loud)"
 
+# 40i. #1821: the formatter must not emit a different program.
+#
+#      `if x != None {` rendered as `if x != None::{` -- a spelling absent from
+#      the input that no compiler accepts. `pkf run fmt` rewrites lib/**/*.vibe
+#      in bulk and `--check` called the corrupted output "already formatted",
+#      so vibe-fmt-check (required) stayed green and the damage surfaced later
+#      in an unrelated job.
+#
+#      Two assertions, because either alone is satisfiable the wrong way:
+#      the formatter must leave the fixture BYTE FOR BYTE alone, AND the
+#      round-trip query must say out loud that it declined. Refusing to format
+#      is silent by construction (output == input), so without the second
+#      assertion a formatter that simply stopped working would pass.
+echo "[compiler-gate] 40i/40 formatter round-trip guard (#1821)"
+fmtguard="fixtures/fmt/roundtrip_guard.vibe"
+fmtdir="_build/_gate_fmt_roundtrip"
+rm -rf "$fmtdir"; mkdir -p "$fmtdir"
+# The fixture has to COMPILE: "the formatter turned working code into
+# something that does not compile" is the claim, and a fixture that never
+# compiled could not carry it.
+env -u VIBE_FS_COMPILE -u VIBE_BACKEND VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fmtguard" "$fmtdir/guard.wasm" main >/dev/null 2>&1
+if [ ! -s "$fmtdir/guard.wasm" ]; then
+  echo "[compiler-gate] FAIL: $fmtguard no longer compiles -- the round-trip fixture only means something while it does (#1821)" >&2
+  cat "$fmtdir/guard.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+bash scripts/vibe_fmt.sh --stdout "$fmtguard" >"$fmtdir/formatted.vibe" 2>/dev/null
+if ! cmp -s "$fmtguard" "$fmtdir/formatted.vibe"; then
+  echo "[compiler-gate] FAIL: the formatter rewrote $fmtguard instead of declining (#1821):" >&2
+  diff "$fmtguard" "$fmtdir/formatted.vibe" | head -10 >&2 || true
+  exit 1
+fi
+fmt_entry_wasm="$(bash scripts/ensure_vibe_fmt_entry.sh 2>/dev/null)"
+fmt_verdict="$(VIBE_FMT_ROUNDTRIP_CHECK=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fmt_entry_wasm" \
+  "$fmtguard" "$fmtdir/ignored.vibe" 2>&1 | tail -1)"
+if [ "$fmt_verdict" != "3" ]; then
+  echo "[compiler-gate] FAIL: round-trip query returned '$fmt_verdict' for $fmtguard (want 3 = would corrupt) -- an unchanged file is not evidence the guard ran (#1821)" >&2
+  exit 1
+fi
+# The production batch formatter must surface the same refusal as ERROR;
+# unchanged bytes alone are indistinguishable from a valid fixpoint.
+fmt_batch_line="$(printf '%s\n' "$fmtguard" | bash scripts/run_vibe_fmt_batch.sh check 1 | tail -1)"
+case "$fmt_batch_line" in
+  $'ERROR\t'"$fmtguard"$'\t'*) : ;;
+  *)
+    echo "[compiler-gate] FAIL: batch formatter hid round-trip refusal as '$fmt_batch_line' (#1821)" >&2
+    exit 1
+    ;;
+esac
+# The guard must not fire on ordinary source, or the formatter stops working
+# while every --check stays green. One real file is a cheap smoke; the full
+# lib scan lives in the PR record.
+fmt_ok_verdict="$(VIBE_FMT_ROUNDTRIP_CHECK=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fmt_entry_wasm" \
+  "lib/@vibe/cli/fmt_entry.vibe" "$fmtdir/ignored.vibe" 2>&1 | tail -1)"
+if [ "$fmt_ok_verdict" != "0" ]; then
+  echo "[compiler-gate] FAIL: round-trip guard fired on ordinary source (verdict '$fmt_ok_verdict') -- it would stop formatting real files (#1821)" >&2
+  exit 1
+fi
+rm -rf "$fmtdir"
+echo "[compiler-gate] formatter round-trip guard ok (declines the corrupting case, silent on ordinary source)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
