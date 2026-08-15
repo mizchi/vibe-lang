@@ -2483,6 +2483,21 @@ export fn exec_body_gc(code: Bytes, pc_start: Int, pc_end: Int, locals: Array[In
   (exit_code, ret_val)
 }
 
+/// Whether validate_structure found anything, as a Bool.
+///
+/// Spelled with `match` rather than `validate_structure(b) != None` at the call
+/// site. In an `else if` condition the parser reads `None {` as the start of a
+/// record literal, and `pkf run fmt` then REWRITES it to `None::{` -- output
+/// that does not parse at all. The first form compiled on one stage2 and not on
+/// the one CI builds; the second compiles nowhere. Neither failure names the
+/// real problem, so the comparison form is worth avoiding here entirely.
+fn module_is_structurally_invalid(wasm_bytes: Bytes) -> Bool {
+  match validate_structure(wasm_bytes) {
+    None => false,
+    Some(_) => true
+  }
+}
+
 export fn exec_module_with_args(wasm_bytes: Bytes, export_name: String, args: Array[Int]) -> (Int, Int) {
   let len = Bytes::length(wasm_bytes)
   if len < 8 {
@@ -2491,7 +2506,7 @@ export fn exec_module_with_args(wasm_bytes: Bytes, export_name: String, args: Ar
   else if (wasm_bytes[0] != 0x00) || (wasm_bytes[1] != 0x61) || (wasm_bytes[2] != 0x73) || (wasm_bytes[3] != 0x6D) {
     (-1, 0)
   }
-  else if validate_structure(wasm_bytes) != None::{
+  else if module_is_structurally_invalid(wasm_bytes) {
     // #1745 (5). Length and magic were the only things checked here, so a
     // module whose sections do not survive their own size field reached the
     // executor: one corrupted length byte in a corpus of 54 killed the host
