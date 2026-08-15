@@ -203,3 +203,112 @@ test "closures capture their environment" {
     None => assert_true(false)
   }
 }
+
+fn hof_parity_add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+// The cases below are the ones that actually caught a bug while this landed.
+//
+// A gc arm is only half of serving a builtin by spelling. The lambda capture
+// scan needs the same name in `gc_direct_abi_names()`, or it collects the
+// builtin as a FREE VARIABLE of the enclosing lambda and codegen dies with
+// "reached code generation unresolved" (#1809 documents this exact drift, and
+// the list had drifted once before). Everything above passes with the list
+// unpatched, because none of it calls a HOF from inside a lambda body.
+//
+// Note the second case is not about nested lambdas -- `Array::fold(.., add)`
+// with a NAMED callback failed identically. What matters is where the CALL
+// sits, not what is passed to it.
+
+test "HOF called from inside a lambda body" {
+  let f = (x) -> {
+    Array::fold([
+      x,
+      x
+    ], 0, (a, b) -> {
+      a + b
+    })
+  }
+  assert_true(f(3) == 6)
+  let g = (n) -> {
+    Array::get(Array::map([
+      n
+    ], (y) -> {
+      y * 3
+    }), 0)
+  }
+  assert_true(g(2) == 6)
+  let h = (n) -> {
+    Array::length(Array::reverse(Array::filter([
+      1,
+      n
+    ], (x) -> {
+      x > 0
+    })))
+  }
+  assert_true(h(5) == 2)
+  let p = (n) -> {
+    if Array::any([
+      n
+    ], (x) -> {
+      x > 1
+    }) && Array::all([
+      n
+    ], (x) -> {
+      x > 0
+    }) {
+      1
+    } else {
+      0
+    }
+  }
+  assert_true(p(5) == 1)
+  let q = (n) -> {
+    match Array::find([
+      n
+    ], (x) -> {
+      x > 1
+    }) {
+      Some(v) => v,
+      None => 0
+    }
+  }
+  assert_true(q(5) == 5)
+}
+
+test "HOF with a named callback inside a lambda body" {
+  let f = (x) -> {
+    Array::fold([
+      x,
+      x
+    ], 0, hof_parity_add)
+  }
+  assert_true(f(3) == 6)
+}
+
+test "HOF nested in a HOF argument" {
+  let ys = Array::map(Array::filter([
+    1,
+    2,
+    3,
+    4,
+    5
+  ], (x) -> {
+    x > 2
+  }), (x) -> {
+    x * 10
+  })
+  assert_true(Array::length(ys) == 3)
+  assert_true(Array::get(ys, 0) == 30)
+  assert_true(Array::get(ys, 2) == 50)
+  assert_true(Array::fold(Array::map([
+    1,
+    2,
+    3
+  ], (x) -> {
+    x * 2
+  }), 0, (a, b) -> {
+    a + b
+  }) == 12)
+}
