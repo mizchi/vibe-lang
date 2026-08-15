@@ -1175,15 +1175,6 @@ fn container_forces_list_newlines(c: Int) -> Bool {
   c == c_brace_enum || c == c_bracket_array
 }
 
-fn is_ctor_name_text(text: String) -> Bool {
-  if String::length(text) == 0 {
-    false
-  } else {
-    let f = String::char_code_at(text, 0)
-    f >= 'A' && f <= 'Z'
-  }
-}
-
 //# Token stream queries (operate on parallel kinds/texts arrays)
 
 fn next_non_trivia_kind(toks: Array[LTok], start: Int) -> Int {
@@ -1610,132 +1601,6 @@ fn is_prefix_op(kind: Int, prev_kind: Int) -> Bool {
 ///
 /// This is a strict generalization: with an unqualified name exactly one token
 /// is skipped, so the result is the old two-token lookback.
-fn skip_fmt_trivia_back(toks: Array[LTok], from: Int) -> Int {
-  let mut j = from
-  let mut going = true
-  while going && j >= 0 {
-    let k = Array::get(toks, j).kind
-    if k == k_ws || k == k_newline || k == k_comment {
-      j = j - 1
-    } else {
-      going = false
-    }
-  }
-  j
-}
-
-fn path_governor(toks: Array[LTok], end: Int) -> LTok {
-  let none_tok = LTok::{
-    kind: k_none, text: ""
-  }
-  let head = skip_fmt_trivia_back(toks, end - 1)
-  if head < 0 {
-    none_tok
-  } else if Array::get(toks, head).kind != k_name {
-    Array::get(toks, head)
-  } else {
-    // One name consumed; keep consuming `:: name` pairs behind it.
-    let mut j = skip_fmt_trivia_back(toks, head - 1)
-    let mut going = true
-    while going {
-      if j < 0 {
-        going = false
-      } else if Array::get(toks, j).kind == k_double_colon {
-        let qual = skip_fmt_trivia_back(toks, j - 1)
-        if qual >= 0 && Array::get(toks, qual).kind == k_name {
-          j = skip_fmt_trivia_back(toks, qual - 1)
-        } else {
-          going = false
-        }
-      } else {
-        going = false
-      }
-    }
-    if j < 0 {
-      none_tok
-    } else {
-      Array::get(toks, j)
-    }
-  }
-}
-
-fn should_insert_struct_double_colon(prev_prev_kind: Int, prev_prev_text: String, prev_kind: Int, prev_text: String, curr_kind: Int, in_type_context: Bool) -> Bool {
-  if curr_kind != k_lbrace || in_type_context {
-    false
-  } else if prev_prev_kind == k_struct || prev_prev_kind == k_enum || prev_prev_kind == k_type {
-    false
-  } else if prev_prev_kind == k_trait || prev_prev_kind == k_impl || prev_prev_kind == k_for {
-    // #945: `trait Greet {` / `impl Greet {` / `impl Greet for Int {` are
-    // declaration headers, not struct literals — inserting `::` here
-    // produced unparseable `trait Greet::{`.
-    false
-  } else if prev_prev_text == "effect" || prev_prev_text == "suberror" || prev_prev_text == "with" { false } else if prev_prev_kind == k_plus {
-    // #1429: the tail of a braceless multi-label effect row sits directly
-    // before the BODY brace -- `fn f() -> T with Exception + Fs {` has prev_prev
-    // `+`, prev `Fs`, curr `{`. The `with` guard above only covers the
-    // single-label shape (`with Stdout {`), so without this the row's last
-    // label was rewritten to `Fs::{` and the body parsed as struct-literal
-    // fields: the same corruption family the k_is and k_match/k_while/k_if
-    // guards below were added for. Measured on the tree-wide conversion --
-    // 52 unit-test files regressed and the bundle flatten failed with
-    // "expected qualified operation name after '::' in effect row".
-    //
-    // Cost: `a + Point { x: 1 }` no longer gets the `::` inserted for it.
-    // That spelling is not valid vibe anyway (struct literals are written
-    // `Point::{ .. }`), whereas `with A + B {` is now the shape of EVERY
-    // multi-label row, so the trade is one-sided.
-    false
-  } else if prev_prev_kind == k_thin_arrow {
-    false
-  } else if prev_prev_kind == k_is {
-    // `x is CtUnknown {` (a bare-variant pattern check) followed by an
-    // unrelated `{` that opens the enclosing `if`'s body -- NOT a struct
-    // literal. Confirmed real corruption: checker.vibe's `if hres_now is
-    // CtUnknown {` got rewritten to `if hres_now is CtUnknown::{`, which
-    // parses the block body as bogus struct-literal fields and cascades
-    // into an unrelated "unexpected token" error much later in the file.
-    false
-  } else if prev_prev_kind == k_match || prev_prev_kind == k_while || prev_prev_kind == k_if ||
-  prev_prev_kind == k_loop || prev_prev_kind == k_in {
-    // Same false-positive family as k_is above, pre-empted rather than
-    // waiting for a real corruption to surface one keyword at a time:
-    // `match SomeBareVariant {` / `while SomeFlag {` / `if SomeCond {` /
-    // `loop SomeState {` all put a bare capitalized name directly before a
-    // `{` that opens a match/loop/if BODY, not a struct literal.
-    //
-    // `k_in` joined them for `for x in Items {`, found in review of the #1821
-    // fix -- which is the point the enumeration stopped being the answer. The
-    // entry now PARSES the output and discards a rewrite that breaks it, so a
-    // spelling missing from this list costs a refusal, not a corrupted file.
-    false
-  }
-  else if prev_prev_kind == k_eqeq || prev_prev_kind == k_neq || prev_prev_kind == k_lt ||
-  prev_prev_kind == k_lte || prev_prev_kind == k_gt || prev_prev_kind == k_gte ||
-  prev_prev_kind == k_and_and || prev_prev_kind == k_or_or {
-    // #1821: a COMPARISON before the name, which is how a condition ends before
-    // its body brace: `if x != None {` has prev_prev `!=`, prev `None`, curr
-    // `{`. Every guard above keys off a keyword, and the keyword here is `if`
-    // -- four tokens back, out of reach. The result was `if x != None::{`,
-    // source no parser accepts, written by `pkf run fmt` over source that
-    // compiled, with `--check` then calling the wreck correctly formatted.
-    //
-    // Same one-sided trade as the k_plus case: `a == Point { x: 1 }` no longer
-    // gets a `::` inserted for it, and that spelling is not valid vibe anyway
-    // (struct literals are written `Point::{ .. }`), whereas a comparison
-    // before a body brace is ordinary code.
-    //
-    // This list grows one operator at a time because the guard asks "what came
-    // before the name" and the answer is unbounded. The check that would not
-    // need to enumerate anything -- refuse to write output that does not PARSE
-    // -- is tracked in #1821 and belongs at the entry, which can reach the
-    // parser; this package deliberately has no dependencies.
-    false
-  } else if prev_kind != k_name {
-    false
-  } else {
-    is_ctor_name_text(prev_text)
-  }
-}
 
 fn needs_space(prev_prev_kind: Int, prev_kind: Int, curr_kind: Int, prev_prefix: Bool, prev_pipe: Bool, path_active: Bool) -> Bool {
   if prev_kind == k_none {
@@ -2017,25 +1882,11 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         i = i + 1
       } else {
         let curr_prefix = is_prefix_op(kind, prev_kind)
-        // #1505: the guards want the token governing the whole qualified path,
-        // not the fixed two-token lookback (which is `::` for any qualified
-        // subject). `path_governor` collapses to `prev_prev` for a bare name.
-        let governor = if kind == k_lbrace {
-          path_governor(toks, i)
-        } else {
-          LTok::{
-            kind: prev_prev_kind, text: prev_prev_text
-          }
-        }
-        let insert_double_colon = should_insert_struct_double_colon(governor.kind, governor.text, prev_kind, prev_text, kind, in_type_context)
         let effects_rbrace = kind == k_rbrace && Array::length(container_stack) > 0 &&
         Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects
-        if line_has_content && !insert_double_colon &&
+        if line_has_content &&
         (effects_rbrace || needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe, path_active)) {
           Array::push(out, " ")
-        }
-        if insert_double_colon {
-          Array::push(out, "::")
         }
         Array::push(out, rendered_text)
         line_has_content = true
