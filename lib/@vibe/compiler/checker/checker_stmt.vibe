@@ -77,7 +77,11 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/normalize {
-  desugar_inspect_calls, desugar_labeled_args, desugar_railway_binds, inject_trait_method_generics
+  collect_undispatchable_trait_method_errors,
+  desugar_inspect_calls,
+  desugar_labeled_args,
+  desugar_railway_binds,
+  inject_trait_method_generics
 }
 
 //# Types
@@ -2097,6 +2101,14 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
 /// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
 /// Import projection supplies the selected trait authority and implementations,
 /// so this is enforced identically for standalone and FS/import checking.
+fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(msgs) {
+    Array::push(errors, Array::get(msgs, i))
+    i = i + 1
+  }
+}
+
 fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   let pairs = collect_subst_bounds_pairs(s)
   let n = Array::length(pairs)
@@ -2942,6 +2954,12 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   }
   let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
+  // #1858: a bounded generic whose body calls `T::m` but whose signature has
+  // no witness-carrying parameter would sail through checking and ICE in
+  // codegen (`T::m reached code generation unresolved`) — reject it here with
+  // an actionable message instead. The capability predicate lives next to
+  // build_gens in desugar_trait_dict.vibe.
+  push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
@@ -3233,6 +3251,11 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.
       check_program_bounds(env, final_s, empty_defs, frozen_errors)
+      // #1858: same witness-carrier validation as the standalone path — the
+      // projected env supplies imported traits' method tables, so a module
+      // using an imported method-bearing trait (e.g. @vibe/core's Default)
+      // is covered too.
+      push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
       collect_async_effect_errors(expanded_stmts, env, frozen_errors)
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.

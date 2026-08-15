@@ -675,10 +675,10 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 // どこでも満たせる。generic code から `T::default()` を呼ぶには
 // method-bearing 宣言 (`trait Default { default() -> Self }`) が要るので
 // `import @vibe/core { Default }` する — witness は Hash と同じ dict 経由。
-// derive(Default) した struct/enum も bound を満たす。呼び出し側で T の
-// 具象型が構文的に決まらない形 (例: `[T: Default]() -> T` を注釈だけで
-// 呼ぶ) は witness が組めず解決されない — T 型の引数 (または Array[T]
-// 引数) を witness carrier にすること。
+// derive(Default) した struct/enum も bound を満たす。witness を運べない
+// 定義 (例: `[T: Default]() -> T` — T 型の引数も Array[T] 引数も無い) は
+// `vibe check` が「cannot be dispatched here」で拒否する (#1858) —
+// T 型の引数 (または Array[T] 引数) を witness carrier にすること。
 ```
 
 ### marker trait の impl は container には効かない (#1503)
