@@ -1703,6 +1703,28 @@ fn should_insert_struct_double_colon(prev_prev_kind: Int, prev_prev_text: String
     // `loop SomeState {` all put a bare capitalized name directly before a
     // `{` that opens a match/loop/if BODY, not a struct literal.
     false
+  }
+  else if prev_prev_kind == k_eqeq || prev_prev_kind == k_neq || prev_prev_kind == k_lt ||
+  prev_prev_kind == k_lte || prev_prev_kind == k_gt || prev_prev_kind == k_gte ||
+  prev_prev_kind == k_and_and || prev_prev_kind == k_or_or {
+    // #1821: a COMPARISON before the name, which is how a condition ends before
+    // its body brace: `if x != None {` has prev_prev `!=`, prev `None`, curr
+    // `{`. Every guard above keys off a keyword, and the keyword here is `if`
+    // -- four tokens back, out of reach. The result was `if x != None::{`,
+    // source no parser accepts, written by `pkf run fmt` over source that
+    // compiled, with `--check` then calling the wreck correctly formatted.
+    //
+    // Same one-sided trade as the k_plus case: `a == Point { x: 1 }` no longer
+    // gets a `::` inserted for it, and that spelling is not valid vibe anyway
+    // (struct literals are written `Point::{ .. }`), whereas a comparison
+    // before a body brace is ordinary code.
+    //
+    // This list grows one operator at a time because the guard asks "what came
+    // before the name" and the answer is unbounded. The check that would not
+    // need to enumerate anything -- refuse to write output that does not PARSE
+    // -- is tracked in #1821 and belongs at the entry, which can reach the
+    // parser; this package deliberately has no dependencies.
+    false
   } else if prev_kind != k_name {
     false
   } else {
@@ -3050,3 +3072,4 @@ export fn format_source(path: String, src: String) -> String {
     format_script(src)
   }
 }
+
