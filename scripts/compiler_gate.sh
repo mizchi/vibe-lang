@@ -11199,7 +11199,7 @@ VEOF
 gv_run() {
   # $1 = output basename, $2.. = extra env assignments (name=value)
   local gv_out="$gvdir/$1"; shift
-  rm -f "$gv_out" "$gv_out.diag"
+  rm -f "$gv_out" "$gv_out.diag" "$gv_out.warn"
   env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_GREP=1 "$@" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$gvdir" "$gv_out" >/dev/null 2>&1 || true
@@ -11240,6 +11240,46 @@ gv_run bad.txt VIBE_GREP_PATTERN='f($(x:expr))'
 if [ -s "$gvdir/bad.txt" ] || ! grep -q 'unknown metavariable kind' "$gvdir/bad.txt.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: a bad grep pattern did not land on the .diag sidecar" >&2
   cat "$gvdir/bad.txt" "$gvdir/bad.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# A typing failure belongs to ONE file, not to the whole repository sweep.
+# Keep the trustworthy hits on either side, drop the broken file, and report
+# that skip once on the warning sidecar. This preserves fail-closed filtering
+# without turning a work-in-progress file into a repo-wide abort (#1834).
+cat > "$gvdir/a_sweep_good.vibe" <<'VEOF'
+fn good_before() -> Int {
+  let xs = [1]
+  Array::length(xs)
+}
+VEOF
+cat > "$gvdir/b_sweep_bad.vibe" <<'VEOF'
+fn broken_between() -> Int {
+  let wrong: String = 1
+  let xs = [2]
+  Array::length(xs)
+}
+VEOF
+cat > "$gvdir/c_sweep_good.vibe" <<'VEOF'
+fn good_after() -> Int {
+  let xs = [3]
+  Array::length(xs)
+}
+VEOF
+gv_run sweep.txt VIBE_GREP_PATTERN='Array::length($(x:exp))' VIBE_GREP_WHERE='$x : Array[Int]'
+if ! grep -qF 'a_sweep_good.vibe' "$gvdir/sweep.txt" || ! grep -qF 'c_sweep_good.vibe' "$gvdir/sweep.txt"; then
+  echo "[compiler-gate] FAIL: a broken file aborted the typed grep repo sweep" >&2
+  cat "$gvdir/sweep.txt" "$gvdir/sweep.txt.diag" "$gvdir/sweep.txt.warn" 2>/dev/null >&2 || true
+  exit 1
+fi
+if grep -qF 'b_sweep_bad.vibe' "$gvdir/sweep.txt" || [ -s "$gvdir/sweep.txt.diag" ]; then
+  echo "[compiler-gate] FAIL: typed grep did not fail closed per broken file" >&2
+  cat "$gvdir/sweep.txt" "$gvdir/sweep.txt.diag" "$gvdir/sweep.txt.warn" 2>/dev/null >&2 || true
+  exit 1
+fi
+if [ "$(grep -cF 'b_sweep_bad.vibe' "$gvdir/sweep.txt.warn" 2>/dev/null || true)" -ne 1 ]; then
+  echo "[compiler-gate] FAIL: typed grep did not report the skipped file exactly once" >&2
+  cat "$gvdir/sweep.txt.warn" 2>/dev/null >&2 || true
   exit 1
 fi
 rm -rf "$gvdir"
