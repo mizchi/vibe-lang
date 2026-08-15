@@ -54,6 +54,8 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_region_enter,
+  emit_region_exit,
   emit_str_ref,
   expr_tag,
   find_func_stmt,
@@ -574,17 +576,43 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // The token exists only for the checker's skolem escape scan; it has no
       // runtime representation, which is why passing 0 is not a placeholder
       // but the actual lowering.
+      //
+      // With tier 2 present (`gc_region_ptr_addr >= 0`) the body call is
+      // bracketed by the arena watermark save/restore -- the SAME two
+      // emitters the linear lane uses, now shared from common_base so the
+      // save/restore protocol cannot change on one lane only.
       if !source_is_bound && fname == "__region_run" && Array::length(args) == 1 {
-        return ce(buf, ECall(Array::get(args, 0), [
+        if ctx.gc_region_ptr_addr >= 0 {
+          emit_region_enter(buf, ctx.gc_region_ptr_addr)
+        } else {
+          ()
+        }
+        let region_r = ce(buf, ECall(Array::get(args, 0), [
           EInt(0)
         ], -1), local_names, next_local, ld)
+        // Emitted with the body's result already on the stack: every
+        // instruction in the exit consumes only its own operands, so the
+        // result rides through untouched.
+        if ctx.gc_region_ptr_addr >= 0 {
+          emit_region_exit(buf, ctx.gc_region_ptr_addr)
+        } else {
+          ()
+        }
+        return region_r
       } else {
         ()
       }
-      // Without an arena `MutList` storage IS an ArrayBuilder -- the region
-      // token is not evaluated (by construction it is the pure binder ident
-      // the parser emitted).
+      // With an arena the storage comes from the segment; without one
+      // `MutList` storage IS an ArrayBuilder, as before. Either way the region
+      // token is not evaluated -- by construction it is the pure binder ident
+      // the parser emitted.
       if !source_is_bound && fname == "MutList::empty" && Array::length(args) == 1 {
+        if ctx.gc_region_arr_new_func_idx >= 0 {
+          emit_call(buf, ctx.gc_region_arr_new_func_idx)
+          return next_local
+        } else {
+          ()
+        }
         let no_args = Array::slice([
           EInt(0)
         ], 0, 0)
@@ -616,6 +644,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // without an arena, so the operations are the Bytes ones under another
       // spelling, and the exit copies for the same reason as MutList's.
       if !source_is_bound && fname == "MutBytes::empty" && Array::length(args) == 1 {
+        if ctx.gc_region_bytes_new_func_idx >= 0 {
+          emit_call(buf, ctx.gc_region_bytes_new_func_idx)
+          return next_local
+        } else {
+          ()
+        }
         let no_bytes_args = Array::slice([
           EInt(0)
         ], 0, 0)
