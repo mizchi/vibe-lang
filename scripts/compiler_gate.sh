@@ -6103,6 +6103,32 @@ if ! edpe_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_ru
 fi
 rm -rf "$edpedir"
 echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
+# #1070 final sub-case (pure closure STORED through a by-value param,
+# outliving the callee frame): historically the 3rd stored closure corrupted
+# the RC heap (`unreachable` on a later read), and only an inline-store
+# workaround avoided it (@vibex/concurrent Nursery::spawn was the canary).
+# Now fixed; pin BOTH RC lanes -- the corruption was RC bookkeeping, so the
+# bump lane alone cannot see a regression.
+cbvsdir="_build/_gate_closure_by_value_store"
+rm -rf "$cbvsdir"; mkdir -p "$cbvsdir"
+for cbvs_rc in 1 0; do
+  VIBE_RC="$cbvs_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/closure_by_value_store_test.vibe "$cbvsdir/out.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$cbvsdir/out.wasm" ]; then
+    echo "[compiler-gate] FAIL: closure_by_value_store_test.vibe did not compile under VIBE_RC=$cbvs_rc" >&2
+    cat "$cbvsdir/out.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! cbvs_out="$(VIBE_RC="$cbvs_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cbvsdir/out.wasm" 2>&1)"; then
+    echo "[compiler-gate] FAIL: closure_by_value_store_test.vibe under VIBE_RC=$cbvs_rc got '$cbvs_out' -- #1070 stored-closure ABI regressed" >&2
+    echo "$cbvs_out" >&2
+    exit 1
+  fi
+  rm -f "$cbvsdir/out.wasm" "$cbvsdir/out.wasm.diag"
+done
+rm -rf "$cbvsdir"
+echo "[compiler-gate] stored-by-value closure ABI ok (#1070 final sub-case, RC both modes)"
 
 # 40ar. #1070 (general case, second slice -- docs/effect-evidence-passing.md
 #       追記25): a SELF-DISCHARGING owner -- a function with NO `with Ask`
@@ -7236,6 +7262,13 @@ scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygien
 # the plain convention; Done-wrapping it returns a step pointer instead of 8.
 scps_run_expect "effect_scps_param_shadow_test.vibe" "8" "localparamshadow"
 scps_run_expect "effect_scps_top_level_alias_test.vibe" "7" "toplevelalias"
+# #1723 / #1803 P2 follow-up: effect_row_local_shadow_test.vibe's "unshadowed
+# effectful call" control sits inside `handle`, where the missing-effect
+# diagnostic is suppressed (in_handle), so it cannot pin "still charged when
+# NOT shadowed" by itself. This is the un-suppressed half: with no local
+# shadow and no handler, the row lands on the caller and a row-free caller is
+# refused. The accepted twin is test 1 of effect_row_local_shadow_test.vibe.
+scps_check_reject "err_effect_unshadowed_row_charged.vibe" "effect row mismatch for 'caller': missing { Ask }" "unshadowedrow"
 # #1536 (a) v3 (let-floating): an async-iterator `for` in statement position
 # desugars to a let-chain in SEQUENCE HEAD position; scps_split_tail floats
 # it onto the continuation spine. Two sequential loops pin repeated floats
