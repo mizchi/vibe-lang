@@ -1,4 +1,4 @@
-# ADR-0091: `@zero_alloc` — 関数単位の確保検証(OxCaml 型)
+# ADR-0091: `#zero_alloc` — 関数単位の確保検証(OxCaml 型)
 
 Status: proposed
 
@@ -27,18 +27,22 @@ OxCaml はこれを関数注釈 + backend 検査で反転させた(違反サイ�
 ### 1. 表面と意味論
 
 ```vibe skip
-@zero_alloc
+#zero_alloc
 fn sum_column(buf: Bytes, col: Int) -> Int { ... }
 // 本体 + 推移的 callee のどこかに確保があれば compile error。
 // 診断は OxCaml 同様、確保サイトを span + 種別(ctor/closure env/
 // mut-cell boxing/float boxing/builtin 名)付きで全列挙する。
 
-@zero_alloc(strict)
+#zero_alloc(strict)
 fn hot(...) -> Int { ... }        // region/stack 確保も含めて全面禁止
 
-@zero_alloc(assume)
+#zero_alloc(assume)
 fn host_shim(...) -> Int { ... }  // 検査境界 (FFI/host import 相当)。呼ぶ側は信頼
 ```
+
+現行 Phase 1 が受理する canonical syntax は引数なしの `#zero_alloc` のみ。
+`strict` / `assume` は上記の予約設計であり、実装されるまでは parse error にする。
+旧 `@zero_alloc` は移行互換として当面受理するが、新規コードでは使わない。
 
 - **既定は「一般 heap のみ禁止」**: region arena(ADR-0090)への確保と、
   将来の stack 化された確保は数えない(OxCaml の `stack_`/`local_` と同じ
@@ -56,22 +60,22 @@ fn host_shim(...) -> Int { ... }  // 検査境界 (FFI/host import 相当)。呼
 
 - codegen(linear backend)で関数ごとに「確保命令(bump / `__rc_alloc` /
   arena alloc)を emit したか」のサマリを記録し、call graph で推移閉包を
-  取る。`@zero_alloc` 関数の閉包に確保があれば、各サイトを列挙して error。
+  取る。`#zero_alloc` 関数の閉包に確保があれば、各サイトを列挙して error。
 - **builtin registry に確保フラグを追加**する(registry は per-builtin
   メタデータの既存の置き場)。host import 自体は確保しない扱いだが、
   確保する builtin(`String::concat` 等)はフラグで拒否される。
 - **HOF / row 変数 callee は保守的に reject**(不透明な間接呼び出しを
-  含む関数は `@zero_alloc` を満たせない)。関数型への `@zero_alloc` 属性
+  含む関数は `#zero_alloc` を満たせない)。関数型への `#zero_alloc` 属性
   (「確保しない関数だけ受け取る」)は将来拡張として予約し、v1 では
   導入しない。
 - 対象は linear backend のみ(wasm-gc は engine GC 任せで意味を持たない)。
 
 ### 3. 予見される診断(= 言語側への圧力、意図的に記録する)
 
-`@zero_alloc` は次の3つの暗黙確保を可視化する。これはバグではなく機能で
+`#zero_alloc` は次の3つの暗黙確保を可視化する。これはバグではなく機能で
 あり、それぞれ既知の改善項目への実利的な動機付けになる:
 
-1. **float の heap-box**(ADR-0055 で NaN-boxing 延期中): `@zero_alloc`
+1. **float の heap-box**(ADR-0055 で NaN-boxing 延期中): `#zero_alloc`
    関数内で float を使うとエラーになる。#510 の優先度を実needsで上げる。
 2. **closure env の確保**: 非捕獲化(トップレベル関数化)を促す診断を
    出す。
@@ -79,21 +83,21 @@ fn host_shim(...) -> Int { ... }  // 検査境界 (FFI/host import 相当)。呼
    への移行を促す。
 
 RC の dup/drop 自体は確保ではない(refcount 操作 + free list)ので、
-RC default のまま `@zero_alloc` は成立する。
+RC default のまま `#zero_alloc` は成立する。
 
 ### 4. 計測基盤との接続
 
 - 確保サイトのサマリ記録は、profiling.md が「正確な per-allocation 属性に
   必要」としている**確保サイト計装と同じ工事の別出口**として実装する
   (`--alloc-site` の関数粒度 leaf 帰属の既知の弱点も同時に解消する)。
-- `bench/regression` に `@zero_alloc` 付き bench を追加し、
+- `bench/regression` に `#zero_alloc` 付き bench を追加し、
   `bytes_per_op == 0` を tracked series と検査の両方で二重に固定する
   (検査が「0 であるべき」を、計測が「実際に 0」を保証する)。
 
 ## Non-goals
 
 - effect row への `Alloc` atom(Decision 1 で不採用を明記)。
-- fip/fbip の独立注釈(ADR-0092 Decision 4 — `@zero_alloc` に一本化)。
+- fip/fbip の独立注釈(ADR-0092 Decision 4 — `#zero_alloc` に一本化)。
 - wasm-gc backend、mid-function の部分注釈(ブロック単位)、確保上限の
   数値指定(`@alloc_budget(n)` のような形)— 需要が出てから。
 
@@ -101,7 +105,7 @@ RC default のまま `@zero_alloc` は成立する。
 
 1. builtin registry の確保フラグ + codegen の per-fn 確保サマリ
    (確保サイト計装と同時)。
-2. `@zero_alloc` / `(strict)` / `(assume)` の属性構文(新構文 — bootstrap
+2. `#zero_alloc` / `(strict)` / `(assume)` の属性構文(新構文 — bootstrap
    運用は ADR-0088/0090 と同じく「compiler source が使うまで bump 遅延」)。
 3. 推移閉包 + 全サイト列挙診断。err fixture(ctor / closure env /
    mut-cell / float / builtin / HOF reject)+ 正常系 fixture。
@@ -113,11 +117,12 @@ RC default のまま `@zero_alloc` は成立する。
 
 最初の縦串が landed した。設計との差分・既知ギャップ:
 
-- **構文**: `@zero_alloc` は lexer の `@` package-ref 経路で単一の
-  `TIdent("@zero_alloc")` に lex され、top-level の `SExpr` 文として parse
-  される — parser 変更ゼロ。checker(`checker_stmt.vibe` の SExpr branch)が
+- **構文**: `#zero_alloc` は既存の `#cfg` / `#deprecated` と同じ directive
+  経路で parse され、内部では互換 marker `SExpr(EIdent("@zero_alloc"))` に
+  正規化される。checker(`checker_stmt.vibe` の SExpr branch)が
   この marker だけ ADR-0069 reject と名前解決を skip し、linear backend は
-  top-level SExpr を従来どおり drop する。marker は直後の `fn` 宣言
+  top-level SExpr を従来どおり drop する。parser は直後が `fn` / `export fn`
+  であることをファイル単位で検査し、marker はその宣言
   (lowered: `SLet(_, _, name, _, EFn(..))`)に付く。`(strict)` / `(assume)`
   修飾は未実装。
 - **検査**(`common_analysis.vibe::zero_alloc_check`、

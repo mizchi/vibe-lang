@@ -1429,6 +1429,24 @@ let run_mode = () -> Int { run() }
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
 - Not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
 
+## Allocation contract (`#zero_alloc`)
+
+Use `#zero_alloc` immediately before a top-level function to make any heap
+allocation in that function or a transitively called function a compile error.
+
+```vibe
+#zero_alloc
+fn add_one(x: Int) -> Int {
+  x + 1
+}
+```
+
+- The current form is bare `#zero_alloc`; argument forms such as `(strict)`
+  and `(assume)` are reserved but not implemented.
+- It applies to `fn` and `export fn`, and no other declaration.
+- Legacy `@zero_alloc` remains accepted for migration, but new code should use
+  the `#` directive spelling shared with other declaration metadata.
+
 ## Deprecation marker (`#deprecated`)
 
 Mark a top-level declaration deprecated; `vibe check` then reports every use

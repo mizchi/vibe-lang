@@ -81,6 +81,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_rc_drop_body,
   gen_rc_dup_body,
   gen_region_arr_new_body,
+  gen_region_bytes_new_body,
   gen_simd_scan_alnum_body,
   gen_simd_skip_ws_body,
   gen_sources_proper_body,
@@ -413,7 +414,7 @@ fn bytebuf_push_i32le(buf: Bytes, v: Int) -> Unit {
 /// cc_is_borrow_arg0_call in codegen/expr/compile_call.vibe and
 /// is_borrow_arg0_call in perceus/perceus.vibe).
 fn lc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "MutList::push" || f == "MutBytes::push" || f == "MutBytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
 }
 
 /// #1085: does `name` have a consuming occurrence OUTSIDE any loop body?
@@ -3431,7 +3432,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
 /// path emits them later; check discards them).
 export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String]) -> Array[String] with Exception {
   let errs = lc_fresh_string_array()
-  // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
+  // ADR-0091 Phase 1: enforce `#zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.
   let za_msg = zero_alloc_check(stmts)
   if za_msg != "" {
@@ -4916,6 +4917,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     -1
   }
+  let region_bytes_new_idx = if need_region_arena {
+    region_arr_new_idx + 1
+  } else {
+    -1
+  }
   let env_get_idx = if env_get_import_idx >= 0 {
     env_get_import_idx
   } else {
@@ -5253,7 +5259,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // without updating this stale-by-construction line silently shifts every
   // user-function call target in the module by the number of builtins added).
   let max_builtin_func_idx = if need_region_arena {
-    region_arr_new_idx
+    region_bytes_new_idx
   } else {
     map_probe_index_idx
   }
@@ -5649,8 +5655,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_bytes_len_body(enable_rc), 0, 0, 3)
   push_builtin(gen_bytes_get_body(enable_rc), 1, 0, 4)
   push_builtin(gen_bytes_set_body(enable_rc), 1, 0, 7)
-  push_builtin(gen_bytes_push_body(enable_rc), 6, 0, 6)
-  push_builtin(gen_bytes_append_body(), 8, 0, 6)
+  // ADR-0090 MutBytes: same ONE-body routing as gen_arr_push_body above --
+  // whether a regrow allocates from the arena is a runtime range check on
+  // the buffer's own block, so MutBytes and ordinary Bytes share this body.
+  // region_ptr_addr is -1 when the module has no region (or under RC), which
+  // compiles the arena branch out. The arena form needs one extra i32 local.
+  push_builtin(gen_bytes_push_body(enable_rc, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
+  push_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    9
+  } else {
+    8
+  }, 0, 6)
   push_builtin(gen_bytes_concat_body(bytes_new_idx, bytes_append_idx), 0, 1, 4)
   push_builtin(gen_bytes_slice_body(enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx), 2, 1, 8)
   push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
@@ -5674,11 +5693,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_map_index_insert_body(), 1, 4, 7)
   push_builtin(gen_map_build_index_body(map_hash_idx, map_cap_idx, map_index_insert_idx, heap_grow_check_idx), 0, 7, 4)
   push_builtin(gen_map_probe_index_body(map_hash_idx, eq_idx), 1, 8, 8)
-  // ADR-0090 (#1262): must stay LAST -- max_builtin_func_idx above names
-  // region_arr_push_idx as the final builtin, and num_generated/func_offset
-  // are derived from it.
+  // ADR-0090 (#1262): must stay LAST, in this order -- max_builtin_func_idx
+  // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
+  // builtin, and num_generated/func_offset are derived from it.
   if need_region_arena {
     push_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+    push_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
   } else {
     ()
   }
@@ -6197,6 +6217,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           },
           region_ptr_addr: region_ptr_addr,
           region_arr_new_func_idx: region_arr_new_idx,
+          region_bytes_new_func_idx: region_bytes_new_idx,
           rc_alloc_func_idx: if enable_rc {
             rc_alloc_idx
           } else {

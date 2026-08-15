@@ -1091,7 +1091,7 @@ export fn gen_bytes_fill_body(enable_rc: Bool, bytes_push_idx: Int) -> Bytes {
   b
 }
 
-export fn gen_bytes_push_body(enable_rc: Bool) -> Bytes {
+export fn gen_bytes_push_body(enable_rc: Bool, arena_ptr_addr: Int, arena_data_base: Int, arena_limit: Int) -> Bytes {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -1117,12 +1117,107 @@ export fn gen_bytes_push_body(enable_rc: Bool) -> Bytes {
   emit_i32_const(b, 2)
   emit_i32_mul(b)
   emit_local_set(b, 7)
-  emit_global_get(b, 0)
-  emit_local_tee(b, 6)
-  emit_local_get(b, 7)
-  emit_i32_add(b)
-  emit_global_set(b, 0)
-  emit_heap_memory_grow_check(b)
+  // ADR-0090 MutBytes: like gen_arr_push_body, which lane the regrow comes
+  // from is a property of THE BUFFER, not the call site. A Bytes whose block
+  // sits inside the arena segment is region storage and keeps growing there
+  // (falling back to the main heap only when the segment is exhausted);
+  // everything else takes the pre-existing main-heap bump. The grow size
+  // (cap*2, seeded at 64, appends round to 8) stays a multiple of 8, so the
+  // arena bump preserves the alignment the other allocators rely on.
+  let emit_main_heap_bump: () -> Unit = () -> {
+    emit_global_get(b, 0)
+    emit_local_tee(b, 6)
+    emit_local_get(b, 7)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_heap_memory_grow_check(b)
+  }
+  if arena_ptr_addr >= 0 {
+    let emit_arena_bump: () -> Unit = () -> {
+      emit_i32_const(b, arena_ptr_addr)
+      emit_i32_load(b, 2, 0)
+      emit_local_set(b, 8)
+      emit_local_get(b, 8)
+      emit_i32_eqz(b)
+      emit_if_void(b)
+      emit_i32_const(b, arena_data_base)
+      emit_local_set(b, 8)
+      emit_end(b)
+      emit_local_get(b, 8)
+      emit_local_get(b, 7)
+      emit_i32_add(b)
+      emit_i32_const(b, arena_limit)
+      emit_i32_gt_u(b)
+      emit_if_void(b)
+      emit_main_heap_bump()
+      emit_else(b)
+      emit_local_get(b, 8)
+      emit_local_set(b, 6)
+      emit_i32_const(b, arena_ptr_addr)
+      emit_local_get(b, 8)
+      emit_local_get(b, 7)
+      emit_i32_add(b)
+      emit_i32_store(b, 2, 0)
+      emit_end(b)
+    }
+    emit_local_get(b, 2)
+    emit_i32_const(b, arena_data_base)
+    emit_i32_ge_u(b)
+    emit_if_void(b)
+    emit_i32_const(b, arena_limit)
+    emit_local_get(b, 2)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    // Codex #1801 P1: an ARENA buffer regrown while a NESTED region is active
+    // must not place its replacement above the inner region's saved
+    // watermark -- the inner exit would rewind over live data, and the next
+    // arena allocation would silently overwrite it. A buffer born in the
+    // CURRENT innermost region sits at or above that region's entry
+    // watermark (saves[depth-1]); anything below belongs to an outer region,
+    // and its regrow falls back to the main heap (no reclamation, never a
+    // wrong answer). Depth beyond the 64-slot save stack has no watermark to
+    // compare against -- same conservative fallback. Layout: depth lives at
+    // arena_ptr_addr+4 and saves at +8 (region_depth_addr_of /
+    // region_saves_base_of in common_base; the nested fixtures pin this).
+    emit_i32_const(b, arena_ptr_addr + 4)
+    emit_i32_load(b, 2, 0)
+    emit_local_tee(b, 8)
+    emit_i32_const(b, 64)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    emit_main_heap_bump()
+    emit_else(b)
+    emit_local_get(b, 8)
+    emit_i32_eqz(b)
+    emit_if_void(b)
+    emit_arena_bump()
+    emit_else(b)
+    emit_i32_const(b, arena_ptr_addr + 8)
+    emit_local_get(b, 8)
+    emit_i32_const(b, 1)
+    emit_i32_sub(b)
+    emit_i32_const(b, 4)
+    emit_i32_mul(b)
+    emit_i32_add(b)
+    emit_i32_load(b, 2, 0)
+    emit_local_get(b, 2)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    emit_main_heap_bump()
+    emit_else(b)
+    emit_arena_bump()
+    emit_end(b)
+    emit_end(b)
+    emit_end(b)
+    emit_else(b)
+    emit_main_heap_bump()
+    emit_end(b)
+    emit_else(b)
+    emit_main_heap_bump()
+    emit_end(b)
+  } else {
+    emit_main_heap_bump()
+  }
   emit_local_get(b, 6)
   emit_local_get(b, 5)
   emit_local_get(b, 4)
@@ -1507,7 +1602,7 @@ export fn gen_arr_push_all_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: B
 /// `dst` aliasing `src` is safe in both paths: `memory.copy` is memmove-like,
 /// so the no-grow overlapping case is defined, and the grow path copies out
 /// of the OLD buffer, which the bump allocator never reclaims.
-export fn gen_bytes_append_body() -> Bytes {
+export fn gen_bytes_append_body(arena_ptr_addr: Int, arena_data_base: Int, arena_limit: Int) -> Bytes {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -1556,12 +1651,98 @@ export fn gen_bytes_append_body() -> Bytes {
   emit_i32_const(b, 0 - 8)
   emit_i32_and(b)
   emit_local_set(b, 8)
-  emit_global_get(b, 0)
-  emit_local_tee(b, 9)
-  emit_local_get(b, 8)
-  emit_i32_add(b)
-  emit_global_set(b, 0)
-  emit_heap_memory_grow_check(b)
+  // ADR-0090 MutBytes: same buffer-identity routing as gen_bytes_push_body
+  // above -- a dst block inside the arena segment regrows from the arena
+  // (main-heap fallback on exhaustion), everything else keeps the main-heap
+  // bump. The reservation (local 8) is already rounded to 8, so the arena
+  // bump preserves alignment.
+  let emit_main_heap_bump: () -> Unit = () -> {
+    emit_global_get(b, 0)
+    emit_local_tee(b, 9)
+    emit_local_get(b, 8)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_heap_memory_grow_check(b)
+  }
+  if arena_ptr_addr >= 0 {
+    let emit_arena_bump: () -> Unit = () -> {
+      emit_i32_const(b, arena_ptr_addr)
+      emit_i32_load(b, 2, 0)
+      emit_local_set(b, 10)
+      emit_local_get(b, 10)
+      emit_i32_eqz(b)
+      emit_if_void(b)
+      emit_i32_const(b, arena_data_base)
+      emit_local_set(b, 10)
+      emit_end(b)
+      emit_local_get(b, 10)
+      emit_local_get(b, 8)
+      emit_i32_add(b)
+      emit_i32_const(b, arena_limit)
+      emit_i32_gt_u(b)
+      emit_if_void(b)
+      emit_main_heap_bump()
+      emit_else(b)
+      emit_local_get(b, 10)
+      emit_local_set(b, 9)
+      emit_i32_const(b, arena_ptr_addr)
+      emit_local_get(b, 10)
+      emit_local_get(b, 8)
+      emit_i32_add(b)
+      emit_i32_store(b, 2, 0)
+      emit_end(b)
+    }
+    emit_local_get(b, 2)
+    emit_i32_const(b, arena_data_base)
+    emit_i32_ge_u(b)
+    emit_if_void(b)
+    emit_i32_const(b, arena_limit)
+    emit_local_get(b, 2)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    // Codex #1801 P1: same nested-region regrow guard as gen_bytes_push_body
+    // above -- a dst block below the innermost region's saved watermark
+    // belongs to an outer region, so its replacement must not be placed in
+    // the inner region's span (the inner exit would rewind over it).
+    emit_i32_const(b, arena_ptr_addr + 4)
+    emit_i32_load(b, 2, 0)
+    emit_local_tee(b, 10)
+    emit_i32_const(b, 64)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    emit_main_heap_bump()
+    emit_else(b)
+    emit_local_get(b, 10)
+    emit_i32_eqz(b)
+    emit_if_void(b)
+    emit_arena_bump()
+    emit_else(b)
+    emit_i32_const(b, arena_ptr_addr + 8)
+    emit_local_get(b, 10)
+    emit_i32_const(b, 1)
+    emit_i32_sub(b)
+    emit_i32_const(b, 4)
+    emit_i32_mul(b)
+    emit_i32_add(b)
+    emit_i32_load(b, 2, 0)
+    emit_local_get(b, 2)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    emit_main_heap_bump()
+    emit_else(b)
+    emit_arena_bump()
+    emit_end(b)
+    emit_end(b)
+    emit_end(b)
+    emit_else(b)
+    emit_main_heap_bump()
+    emit_end(b)
+    emit_else(b)
+    emit_main_heap_bump()
+    emit_end(b)
+  } else {
+    emit_main_heap_bump()
+  }
   emit_local_get(b, 9)
   emit_local_get(b, 5)
   emit_local_get(b, 4)

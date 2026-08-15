@@ -214,16 +214,16 @@ selfcompile heap ratchet)。欠けているのは関数単位の**検証**で、
   「確保サイト計装」と同じ工事の別出口。
 - 診断も OxCaml の形(違反サイト全列挙 + span)を踏襲できる — vibe の
   diagnostics 基盤はそのまま使える。
-- `assume` escape hatch(host import / FFI 相当は `@zero_alloc assume`)と、
+- `assume` escape hatch(host import / FFI 相当は `#zero_alloc assume`)と、
   builtin registry へのフラグ追加(どの builtin が確保するか — registry は
   既に per-builtin メタデータの置き場)。
 
 ```vibe skip
 // 表面案
-@zero_alloc
+#zero_alloc
 fn sum_column(buf: Bytes, col: Int) -> Int { ... }   // 確保があれば compile error
 
-@zero_alloc(assume)
+#zero_alloc(assume)
 fn input_unsafe(...) -> Int { ... }                  // 検査境界 (FFI/host)
 ```
 
@@ -231,19 +231,19 @@ fn input_unsafe(...) -> Int { ... }                  // 検査境界 (FFI/host)
 
 1. **RC 操作は確保ではない**: dup/drop は refcount の increment/decrement +
    free list 操作で、bump を進めない。よって RC default のまま
-   `@zero_alloc` は成立する。ただし:
+   `#zero_alloc` は成立する。ただし:
 2. **暗黙の確保源が3つある** — (a) closure env(owned-captures ABI は
    creation 時に env block を確保)、(b) 捕獲された `let mut` の RC セル化
    (16B)、(c) **float の heap-box**(ADR-0055 で NaN-boxing 延期中)。
-   `@zero_alloc` 関数内でこれらは全部エラーになる。特に (c) は
+   `#zero_alloc` 関数内でこれらは全部エラーになる。特に (c) は
    「float を使うだけで zero_alloc が書けない」ことを意味し、#510
    (NaN-boxing)の優先度を実利で引き上げる。(a)(b) は OxCaml の
    `local_`/`stack_` に相当する回避(非捕獲化・stack 化)を促す診断が
    そのまま設計になる。
 3. **region との合流**: region arena への確保を「heap 確保」と数えるかは
    選択の余地がある。OxCaml は `stack_` を確保に数えない — 同型で
-   `@zero_alloc` は**region/stack 確保を許し、一般 heap のみ禁止**が
-   実用的(strict 変種 `@zero_alloc(strict)` で全確保禁止)。これにより
+   `#zero_alloc` は**region/stack 確保を許し、一般 heap のみ禁止**が
+   実用的(strict 変種 `#zero_alloc(strict)` で全確保禁止)。これにより
    「region + zero_alloc」で『このホットパスは一般 heap に触れない』を
    機械検証でき、Flix 側の弱点(region は確保を減らさない、逃がすだけ)を
    OxCaml 側が補う。
@@ -254,7 +254,7 @@ fn input_unsafe(...) -> Int { ... }                  // 検査境界 (FFI/host)
    backend で検査している)。つまり実装順は「確保サイト計装 → zero_alloc
    検査 → FBIP で通る範囲を拡大」。
 5. **HOF / row 変数**: callee が不透明な高階呼び出しは保守的に reject し、
-   関数型への `@zero_alloc` 注釈(型の属性)は将来拡張とする。effect row に
+   関数型への `#zero_alloc` 注釈(型の属性)は将来拡張とする。effect row に
    `Alloc` を足す案は不採用 — ほぼ全関数が確保する言語で row に載せると
    注釈が爆発する。OxCaml 同様「属性 + backend 検証」が正しい置き場
    (ADR-0084 の taxonomy にも「Alloc は effect atom にしない」を明記する)。
@@ -280,7 +280,7 @@ ADR 化済み — 実装順は **ADR-0092 → ADR-0090 → ADR-0091**):
    [ADR-0090](region-mutable-state.md)(ADR-0060 を supersede)。TaskGroup
    region 検査の穴は「構文化」(literal-name 穴の非発生)と「region 型の
    generalize 禁止」で塞ぐ。
-3. **`@zero_alloc`** — [ADR-0091](zero-alloc-check.md)。検査は Perceus
+3. **`#zero_alloc`** — [ADR-0091](zero-alloc-check.md)。検査は Perceus
    プラン(reuse 決定)後の codegen 段。既定は region/stack 許容 +
    `(strict)` 変種、`(assume)`、builtin registry の確保フラグ。
 4. Capture Checking は**不採用を記録**し、borrow 推論(Perceus dup/drop
@@ -291,5 +291,5 @@ ADR 化済み — 実装順は **ADR-0092 → ADR-0090 → ADR-0091**):
 **cross-scope の可変性は region 効果(`with r`)として row に現れ、
 region 終端で必ず discharge される**(Flix 型)。`let mut` はローカルな
 実装詳細として row に現れないまま(ADR-0060 撤回の維持)、確保の有無という
-直交軸は row ではなく `@zero_alloc` 属性が担う(OxCaml 型)。エイリアスの
+直交軸は row ではなく `#zero_alloc` 属性が担う(OxCaml 型)。エイリアスの
 個体追跡(Scala 型)は、その2つで残る需要が実測されるまで導入しない。

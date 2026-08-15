@@ -1,0 +1,27 @@
+// ADR-0090 MutBytes (positive smoke): build a byte buffer inside the region,
+// copy out via `to_bytes`, and read the copy after the region ended. Mirrors
+// region_arena_ok.vibe's MutList shape. `MutBytes::append` pulls a main-heap
+// Bytes INTO the region buffer, `MutBytes::length` reads it in place.
+fn total() -> Int {
+  let out = region r {
+    let b = MutBytes::empty(r)
+    MutBytes::push(b, 1)
+    MutBytes::push(b, 2)
+    MutBytes::append(b, Bytes::from_array([
+      3
+    ]))
+    let n = MutBytes::length(b)
+    MutBytes::push(b, n)
+    MutBytes::to_bytes(b)
+  }
+  Bytes::get(out, 0) + Bytes::get(out, 1) + Bytes::get(out, 2) + Bytes::get(out, 3)
+}
+
+export let main = () -> Int {
+  total() * 2
+}
+
+test "region bytes ok" {
+  // 1 + 2 + 3 + 3(= length before the last push) = 9; doubled = 18.
+  inspect(main(), "18")
+}

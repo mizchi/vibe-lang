@@ -8550,7 +8550,7 @@ echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 coll
 # guarantee in this slice. #1725 added the closure-capture direction, which
 # the result-TYPE scan structurally cannot see (types do not record
 # captures) -- both a negative and a false-positive guard, at the end.
-echo "[compiler-gate] 75/75 ADR-0090 region + MutList vertical slice (#1262)"
+echo "[compiler-gate] 75/75 ADR-0090 region + MutList/MutBytes vertical slice (#1262 / #1770)"
 r90dir="_build/_gate_region90"
 rm -rf "$r90dir"; mkdir -p "$r90dir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
@@ -8749,10 +8749,91 @@ if [ "$r90_cyc_per" -gt 64 ]; then
 fi
 echo "[compiler-gate] region arena reclaims reference cycles ok ($r90_cyc_per B/region)"
 echo "[compiler-gate] region arena bulk release ok (200 regions, main heap +${r90_heap_delta} B)"
-rm -rf "$r90dir"
-echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 
-# 76/76. ADR-0091 Phase 1 (#1262): `@zero_alloc` attribute. The attribute
+# ADR-0090 MutBytes (#1770 Phase 1): the region-bound byte buffer, same
+# vertical slice as MutList above -- positive build/copy-out, unforgeable
+# token, closure-capture escape (pins the MutBytes::empty row in
+# checker_escape.vibe's taint predicate), copy-out semantics, and the
+# boundedness of gen_bytes_push_body's arena regrow (which the MutList
+# fixtures never exercise: Array growth and Bytes growth are separate
+# builtin bodies).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_bytes_ok.vibe "$r90dir/bpos.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/bpos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_bytes_ok.vibe did not compile -- ADR-0090 MutBytes slice regressed" >&2
+  cat "$r90dir/bpos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bpos.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_bytes_ok.vibe test blocks failed" >&2
+  exit 1
+fi
+for r90b_neg in err_region_bytes_token_forged:'region token' err_region_bytes_escape_return:'region escapes its scope' err_region_bytes_escape_closure_capture:'region escapes its scope'; do
+  r90b_fixture="${r90b_neg%%:*}"
+  r90b_needle="${r90b_neg#*:}"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/$r90b_fixture.vibe" "$r90dir/bneg.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ -s "$r90dir/bneg.wasm" ]; then
+    echo "[compiler-gate] FAIL: $r90b_fixture.vibe compiled successfully -- must be rejected" >&2
+    exit 1
+  fi
+  if ! grep -qF "$r90b_needle" "$r90dir/bneg.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $r90b_fixture.vibe did not produce the expected diagnostic ('$r90b_needle')" >&2
+    cat "$r90dir/bneg.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  rm -f "$r90dir/bneg.wasm" "$r90dir/bneg.wasm.diag"
+done
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_bytes_ok_copy_out.vibe "$r90dir/bcopy.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/bcopy.wasm" ] \
+  || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bcopy.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_bytes_ok_copy_out.vibe failed -- MutBytes::to_bytes must COPY (an alias sees the post-snapshot push)" >&2
+  cat "$r90dir/bcopy.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_bytes_arena_bounded.vibe "$r90dir/bbounded.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/bbounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe did not compile" >&2
+  cat "$r90dir/bbounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bbounded.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe got the wrong value" >&2
+  exit 1
+fi
+r90b_heap_delta="$(node scripts/region_arena_heap_delta.mjs "$r90dir/bbounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from region_bytes_arena_bounded.wasm" >&2
+  exit 1
+}
+if [ "$r90b_heap_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 MutBytes regions grew the main bump heap by $r90b_heap_delta B (want < 100000; ~8024 with the arena, 194424 without) -- the bytes arena regrow stopped releasing" >&2
+  exit 1
+fi
+echo "[compiler-gate] MutBytes arena bulk release ok (200 regions, main heap +${r90b_heap_delta} B)"
+# Codex #1801 P1: an outer region's buffer regrown inside a NESTED region
+# must survive the inner exit (the replacement must not land in the inner
+# region's span). Pins the saves[depth-1] guard in gen_arr_push_body /
+# gen_bytes_push_body / gen_bytes_append_body for BOTH MutList and MutBytes.
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_arena_nested_regrow_ok.vibe "$r90dir/nested.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/nested.wasm" ] \
+  || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/nested.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_arena_nested_regrow_ok.vibe failed -- an outer buffer regrown inside a nested region was rewound/overwritten" >&2
+  cat "$r90dir/nested.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+echo "[compiler-gate] nested-region regrow guard ok (MutList + MutBytes)"
+rm -rf "$r90dir"
+echo "[compiler-gate] ADR-0090 region + MutList/MutBytes vertical slice ok"
+
+# 76/76. ADR-0091 Phase 1 (#1262): `#zero_alloc` attribute. The attribute
 # lexes as a single ident token, parses as a top-level SExpr the checker
 # skips (checker_stmt.vibe) and the linear backend drops; enforcement is
 # common_analysis.vibe's zero_alloc_check, run at the top of
@@ -8760,10 +8841,10 @@ echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 # container/closure/string-building literals, float literals, effect
 # handlers, and any call not on the safe-builtin list or resolvable to a
 # proven-clean top-level fn are rejected; transitive through top-level fn
-# calls). Positive: a pure-arithmetic @zero_alloc fn compiles and returns
-# 42 (zero_alloc_ok.vibe). Negative: a @zero_alloc fn constructing an enum
+# calls). Positive: a pure-arithmetic #zero_alloc fn compiles and returns
+# 42 (zero_alloc_ok.vibe). Negative: a #zero_alloc fn constructing an enum
 # value is a STATIC error naming the site (err_zero_alloc_ctor.vibe).
-echo "[compiler-gate] 76/76 ADR-0091 @zero_alloc allocation check (#1262)"
+echo "[compiler-gate] 76/76 ADR-0091 #zero_alloc allocation check (#1262)"
 za91dir="_build/_gate_zero_alloc91"
 rm -rf "$za91dir"; mkdir -p "$za91dir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
@@ -8774,7 +8855,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/zero_alloc_ok.vibe "$za91dir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$za91dir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: zero_alloc_ok.vibe did not compile -- ADR-0091 @zero_alloc slice regressed" >&2
+  echo "[compiler-gate] FAIL: zero_alloc_ok.vibe did not compile -- ADR-0091 #zero_alloc slice regressed" >&2
   cat "$za91dir/pos.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -8833,7 +8914,7 @@ for za_n in 200 800; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$za91mdir/measured_$za_n.vibe" "$za91mdir/measured_$za_n.wasm" __no_entry__ >/dev/null 2>&1 || true
   if [ ! -s "$za91mdir/measured_$za_n.wasm" ]; then
-    echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) did not compile -- the @zero_alloc check rejected a fn the measurement says is clean" >&2
+    echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) did not compile -- the #zero_alloc check rejected a fn the measurement says is clean" >&2
     cat "$za91mdir/measured_$za_n.wasm.diag" 2>/dev/null >&2 || true
     exit 1
   fi
@@ -8845,12 +8926,12 @@ done
 za_lo="$(node scripts/region_arena_heap_delta.mjs "$za91mdir/measured_200.wasm")" || exit 1
 za_hi="$(node scripts/region_arena_heap_delta.mjs "$za91mdir/measured_800.wasm")" || exit 1
 if [ "$za_lo" -ne "$za_hi" ]; then
-  echo "[compiler-gate] FAIL: @zero_alloc fns allocated $(( (za_hi - za_lo) / 600 )) B per iteration (200 trips: $za_lo B, 800 trips: $za_hi B) -- the check says clean but the heap moved" >&2
+  echo "[compiler-gate] FAIL: #zero_alloc fns allocated $(( (za_hi - za_lo) / 600 )) B per iteration (200 trips: $za_lo B, 800 trips: $za_hi B) -- the check says clean but the heap moved" >&2
   exit 1
 fi
 rm -rf "$za91mdir"
-echo "[compiler-gate] @zero_alloc check and measurement agree ok (0 B/op, $za_lo B fixed setup)"
-echo "[compiler-gate] ADR-0091 @zero_alloc allocation check ok"
+echo "[compiler-gate] #zero_alloc check and measurement agree ok (0 B/op, $za_lo B fixed setup)"
+echo "[compiler-gate] ADR-0091 #zero_alloc allocation check ok"
 
 # 77/77. ADR-0089 Decision 1, increment 1 (#1218): entry-row-Async sleep
 # boundary. An entry whose declared row carries `Async` gets (a) a
@@ -11090,7 +11171,7 @@ echo "[compiler-gate] vibe deps import-closure ok (#988)"
 # 104/104. ADR-0091 (#1262): `vibe allocs` -- every heap-allocating site, as
 #      `FN KIND OFFSET`. The direction is what matters and what this pins:
 #      over-report, never under-report. A site this query misses lets
-#      `@zero_alloc` certify something untrue, silently; a site it reports in
+#      `#zero_alloc` certify something untrue, silently; a site it reports in
 #      error costs the reader one line and argues back through a diagnostic.
 #      So both halves are checked -- a function that allocates nothing really
 #      produces EMPTY output (otherwise "clean" is worthless), and the sites

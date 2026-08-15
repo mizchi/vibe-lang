@@ -419,6 +419,61 @@ export fn gen_region_arr_new_body(region_ptr_addr: Int, region_data_base: Int, r
   b
 }
 
+/// ADR-0090 MutBytes: `MutBytes::empty(r)` allocated from the region arena.
+/// Mirrors gen_region_arr_new_body above, with the Bytes block shape from
+/// gen_bytes_new_body: 76 bytes = [-capacity(64)@0][length(0)@4][data@8 ->
+/// block+12 inline buffer]. Same "never entered" seed and same main-heap
+/// fallback when the segment is exhausted (less reclamation, never a wrong
+/// answer). 76 keeps the arena bump 4-aligned, matching the 28-byte arr
+/// blocks; regrows bump by multiples of 8 (see gen_bytes_push_body).
+export fn gen_region_bytes_new_body(region_ptr_addr: Int, region_data_base: Int, region_limit: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_i32_const(b, region_ptr_addr)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 1)
+  emit_local_get(b, 1)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_i32_const(b, region_data_base)
+  emit_local_set(b, 1)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 76)
+  emit_i32_add(b)
+  emit_i32_const(b, region_limit)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  emit_global_get(b, 0)
+  emit_local_tee(b, 0)
+  emit_i32_const(b, 76)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  emit_heap_memory_grow_check(b)
+  emit_else(b)
+  emit_local_get(b, 1)
+  emit_local_set(b, 0)
+  emit_i32_const(b, region_ptr_addr)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 76)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 0)
+  emit_end(b)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 0 - 64)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 4)
+  emit_local_get(b, 0)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 12)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 8)
+  emit_local_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  b
+}
+
 export fn gen_arr_set_body(enable_rc: Bool) -> Bytes {
   let b = bytebuf_new()
   // #811: same unsigned bounds check as gen_arr_get_body — an OOB set
