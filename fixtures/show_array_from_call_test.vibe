@@ -138,3 +138,101 @@ test "an annotated struct binding still reaches its own to_string" {
   let s: String = "hi"
   inspect(s, "hi")
 }
+
+// `for x in xs { .. }` is an EXPRESSION evaluating to the mapped array, and it
+// was the most common way to reach #1880 -- the form fixtures/for_in_*.vibe are
+// written in, and the one place an annotation cannot be attached, because the
+// value is rendered inline: `"\{for x in xs { .. }}"`.
+//
+// The element type is the BODY's, with the loop variable bound to the source's
+// element type. Both halves come from the same inference, so a source or body
+// this pass cannot type claims nothing and keeps the old rendering.
+
+test "for-in renders inline, with no annotation" {
+  inspect(for x in [
+    1,
+    2,
+    3
+  ] {
+    x * 2
+  }, "[2, 4, 6]")
+  inspect("\{for x in [
+    1,
+    2,
+    3
+  ] {
+    x * 2
+  }}", "[2, 4, 6]")
+}
+
+test "for-in body shapes that needed walking into" {
+  // A body with statements before its value (fixtures/for_in_break.vibe).
+  inspect(for x in [
+    1,
+    2,
+    3,
+    4,
+    5
+  ] {
+    if x == 4 {
+      break
+    } else {
+      ()
+    }
+    x * 10
+  }, "[10, 20, 30]")
+  // A body ending in a builtin call (fixtures/for_in_string.vibe).
+  inspect(for s in [
+    "hello",
+    "world"
+  ] {
+    String::length(s)
+  }, "[5, 5]")
+  // A body whose tail refers to its own `let` -- the binding has to be
+  // recorded, not just stepped over.
+  inspect(for x in [
+    1,
+    2
+  ] {
+    let y = x + 1
+    y * 2
+  }, "[4, 6]")
+}
+
+test "for-in over a binding, with an index, and nested" {
+  let xs = [
+    1,
+    2,
+    3
+  ]
+  inspect(for x in xs {
+    x + 1
+  }, "[2, 3, 4]")
+  inspect(for x, i in [
+    5,
+    6
+  ] {
+    x + i
+  }, "[5, 7]")
+  inspect(for x in [
+    1,
+    2
+  ] {
+    for y in [
+      3
+    ] {
+      x + y
+    }
+  }, "[[4], [5]]")
+}
+
+test "a body this pass cannot type claims nothing" {
+  // Not a regression to fix -- the point is that it does not claim a WRONG
+  // shape. A constructor body resolves through the ordinary syntax path.
+  inspect(for x in [
+    1,
+    2
+  ] {
+    Some(x)
+  }, "[Some(1), Some(2)]")
+}

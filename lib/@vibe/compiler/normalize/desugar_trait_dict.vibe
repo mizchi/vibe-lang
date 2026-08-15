@@ -2488,6 +2488,89 @@ fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Arr
   }
 }
 
+/// #1880: the scalar type of an arithmetic/literal expression, for a `for-in`
+/// BODY only.
+///
+/// `infer_arg_type_name` deliberately answers only for `+` on strings, and that
+/// restraint is correct there: it also drives witness-dictionary synthesis
+/// (#1199), where a confident wrong answer emits a wrong dict and produces
+/// invalid wasm rather than a diagnostic. This one feeds the RENDERER, where
+/// the cost of a wrong answer is a wrong string, and the cost of no answer is
+/// the heap pointer #1880 is about. Kept separate rather than widening that
+/// function, so the two risk profiles do not get merged by accident.
+///
+/// Scope is deliberately small: literals, a bound name, and arithmetic over
+/// them. Anything else is "" -- no claim.
+fn dtd_scalar_shape(e: Expr, var_types: Array[(String, String)]) -> String {
+  match e {
+    EInt(_) => "Int",
+    EFloat(_) => "Double",
+    EString(_) => "String",
+    EBool(_) => "Bool",
+    EIdent(n, _) => match lookup_var_type(var_types, n) {
+      Some(t) => t,
+      None => ""
+    },
+    EBinOp(bop, bl, br) => if bop == "+" || bop == "-" || bop == "*" || bop == "/" || bop == "%" {
+      let l = dtd_scalar_shape(bl, var_types)
+      let r = dtd_scalar_shape(br, var_types)
+      // Both sides must agree. A mixed or unknown pair says nothing rather
+      // than picking a side.
+      if String::length(l) > 0 && l == r {
+        l
+      } else {
+        ""
+      }
+    } else if bop == "==" || bop == "!=" || bop == "<" || bop == ">" || bop == "<=" || bop == ">=" || bop == "&&" || bop == "||" {
+      "Bool"
+    } else {
+      ""
+    },
+    // A body with statements before its value (`{ if .. { break } else { }
+    // x * 10 }`, fixtures/for_in_break.vibe) -- the loop's element is the LAST
+    // expression, same rule `fn_body_tail_expr` already uses for function
+    // bodies.
+    ESeq(_, rest) => dtd_scalar_shape(rest, var_types),
+    // The binding has to be RECORDED, not just stepped over: the tail usually
+    // refers to it (`{ let y = x + 1  y * 2 }`), and an unrecorded `y` makes
+    // the tail unknown, which is the same as not walking in at all.
+    ELet(lname, lval, rest, _) => {
+      let lty = dtd_scalar_shape(lval, var_types)
+      let inner = if String::length(lty) > 0 {
+        extend_var_types(var_types, lname, Some(lty))
+      } else {
+        var_types
+      }
+      dtd_scalar_shape(rest, inner)
+    },
+    ECall(callee, _, _) => match callee {
+      EIdent(fname, _) => dtd_scalar_builtin_return(fname),
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// The scalar return type of a builtin, for the same renderer-only purpose as
+/// `dtd_scalar_shape`. Deliberately a short list of the length/measure builtins
+/// a `for-in` body actually ends in (`for s in names { String::length(s) }`,
+/// fixtures/for_in_string.vibe) rather than a mirror of the checker's tables --
+/// a name missing from here costs the old rendering, a WRONG entry costs a
+/// wrong render, so it only carries entries whose return type is unambiguous.
+fn dtd_scalar_builtin_return(fname: String) -> String {
+  if fname == "String::length" || fname == "Array::length" || fname == "Bytes::length" || fname == "Map::size" || fname == "String::iter_length" || fname == "Map::iter_length" || fname == "Char::to_int" || fname == "Double::to_int" || fname == "String::char_code_at" || fname == "String::index_of" {
+    "Int"
+  } else if fname == "Int::to_double" {
+    "Double"
+  } else if fname == "String::concat" || fname == "String::substring" || fname == "String::trim" || fname == "String::to_lower" || fname == "String::to_upper" || fname == "Int::to_string" || fname == "__to_string" {
+    "String"
+  } else if fname == "String::contains" || fname == "String::starts_with" || fname == "String::ends_with" || fname == "not" {
+    "Bool"
+  } else {
+    ""
+  }
+}
+
 fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match e {
     ETuple(items) => if Array::length(items) == 0 {
@@ -2512,6 +2595,42 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
       ""
     } else {
       String::concat("[", String::concat(infer_shape(Array::get(items, 0), struct_sets, var_types, fn_returns), "]"))
+    },
+    // #1880: `for x in xs { .. }` is an EXPRESSION that evaluates to the mapped
+    // array, and it was the single most common way to reach the bug -- the
+    // form `fixtures/for_in_*.vibe` are written in, and the one place an
+    // annotation cannot be attached because the value is rendered inline
+    // (`"\{for x in xs { .. }}"`).
+    //
+    // The element type is the BODY's, with the loop variable bound to the
+    // source's element type. Both halves come from this same function, so a
+    // source whose shape is unknown, or a body this pass cannot type, yields
+    // "" and nothing is claimed.
+    EForIn(vname, kname, iter, body) => {
+      let src = infer_shape(iter, struct_sets, var_types, fn_returns)
+      if String::starts_with(src, "[") {
+        let elem = shape_inner(src)
+        let with_v = extend_var_types(var_types, vname, Some(elem))
+        // `for x, i in xs` binds the index too, and a body that uses it is
+        // exactly the `fixtures/for_in_index.vibe` shape.
+        let inner_vars = match kname {
+          Some(k) => extend_var_types(with_v, k, Some("Int")),
+          None => with_v
+        }
+        let bsh = infer_shape(body, struct_sets, inner_vars, fn_returns)
+        let resolved = if String::length(bsh) > 0 {
+          bsh
+        } else {
+          dtd_scalar_shape(body, inner_vars)
+        }
+        if String::length(resolved) > 0 {
+          String::concat("[", String::concat(resolved, "]"))
+        } else {
+          ""
+        }
+      } else {
+        ""
+      }
     },
     EIdent(n, _) => match lookup_var_type(var_types, shape_key(n)) {
       // Same rule as interp_expand's: a recorded empty is an answer ("not
