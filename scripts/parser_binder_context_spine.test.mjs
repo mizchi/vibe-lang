@@ -9,6 +9,10 @@ const coreSource = readFileSync(fileURLToPath(new URL("../lib/@vibe/parser/parse
 const dispatchSource = readFileSync(fileURLToPath(new URL("../lib/@vibe/parser/parser_expr_dispatch.vibe", import.meta.url)), "utf8");
 const primarySource = readFileSync(fileURLToPath(new URL("../lib/@vibe/parser/parser_expr_primary.vibe", import.meta.url)), "utf8");
 const parserSource = readFileSync(fileURLToPath(new URL("../lib/@vibe/parser/parser.vibe", import.meta.url)), "utf8");
+const binderContextSource = readFileSync(fileURLToPath(new URL("../lib/@vibe/parser/parser_binder_context.vibe", import.meta.url)), "utf8");
+const binderAuthoritySource = readFileSync(fileURLToPath(new URL("../lib/@vibe/parser/parser_binder_authority.vibe", import.meta.url)), "utf8");
+const parserContract = readFileSync(fileURLToPath(new URL("../lib/@vibe/parser/index.vpkg", import.meta.url)), "utf8");
+const compilerManifest = readFileSync(fileURLToPath(new URL("../lib/@vibe/compiler/compiler_sources_manifest.tsv", import.meta.url)), "utf8");
 
 function regexEscape(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -110,7 +114,10 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_param_list(tokens,",
     "parse_impl(tokens,",
   ]);
-  assertNoneWrapper(exprSource, "parse_fn_signature", "parse_fn_signature_with_binder_context(tokens, pos, None)");
+  assertBody(exprSource, "parse_fn_signature", [
+    "parse_fn_signature_with_binder_context(tokens, pos, None)",
+    "(head, sig, contracts, next)",
+  ], ["Some(ParserBinderContext"]);
   assertContextual(exprSource, "parse_fn_main_stmt", [
     "parse_impl_with_binder_context(tokens, starts, br, mode_block, context)",
   ], ["parse_impl(tokens,"]);
@@ -260,8 +267,39 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
 
   assertNoneWrapper(parserSource, "parse_program_located", "parse_program_located_with_context_impl(tokens, starts, source, None).0");
   assertContextual(parserSource, "parse_program_located_with_untrusted_binder_context", ["parse_program_located_with_context_impl(tokens, starts, source, context)"], ["ParserBinderContext::{"]);
-  // High-level entry has no caller context parameter and mints fresh plumbing.
-  assertBody(parserSource, "parse_program_located_with_binder_context", ["parse_program_located_with_context_impl(tokens, starts, source, Some(ParserBinderContext::{"], ["context: Option[ParserBinderContext]"]);
+  // Compatibility entry remains authority-free; only the source-owning entry
+  // may mint a context with exact start/end tables.
+  assertBody(parserSource, "parse_program_located_with_binder_context", ["parse_program_located_with_context_impl(tokens, starts, source, None).0"], ["Some(ParserBinderContext::{", "binder_capture_context"]);
+});
+
+test("atomic binder authority is source-owned, validated, fail-closed, and bundled", () => {
+  assertBody(parserSource, "parse_source_located_with_binder_authority", [
+    "lex_with_offsets(source)",
+    "binder_capture_context(starts, ends)",
+    "parse_program_located_with_context_impl(tokens, starts, source, Some(context))",
+    "binder_capture_is_eligible(context)",
+    "validate_program_binder_rows(program, rows, source)",
+  ], ["tokens: Array[Token]", "context: Option[ParserBinderContext]"]);
+  assertBody(binderContextSource, "binder_capture_source", [
+    "Array::get(starts, first_token)",
+    "Array::get(ends, last_token)",
+  ]);
+  assertBody(binderContextSource, "binder_capture_swap_segments", [
+    "binder_capture_take_from(context, start)",
+    "Array::slice(all, cut, Array::length(all))",
+    "Array::slice(all, 0, cut)",
+  ]);
+  assertBody(parserSource, "parse_source_located_with_binder_authority", [
+    "binder_capture_context(starts, ends)",
+  ]);
+  assertBody(binderAuthoritySource, "validate_program_binder_rows", [
+    "next == Array::length(rows)",
+    "_ => (false, next)",
+  ]);
+  assert.match(parserContract, /opaque type LocatedProgramBinderAuthority/);
+  assert.match(parserContract, /fn parse_source_located_with_binder_authority\(source: String\)/);
+  assert.match(compilerManifest, /parser_binder_authority\.vibe/);
+  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only source-owning authority entry lexes source with exact offsets");
 });
 
 test("parser binder context crosses every immediate binder-bearing lowering and remap seam", () => {
@@ -339,7 +377,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
   assertContextual(dispatchSource, "parse_handle_arm", ["qualify_handle_arm_pattern(effect_name, pat, context)"], ["qualify_handle_arm_pattern(effect_name, pat)"]);
   assertContextual(dispatchSource, "parse_impl_block", [
     "fold_block_steps(ArrayBuilder::freeze(steps), context)",
-    "ascribe_wrap(val, the_type, context)",
+    "ascribe_wrap(val, the_type, value_mark, context)",
     "push_pattern_let_step(tokens, steps, pat, val, next_pos, context)",
   ], [
     "fold_block_steps(ArrayBuilder::freeze(steps))",

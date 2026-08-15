@@ -1,0 +1,371 @@
+//# Imports
+
+import ../lib/@vibe/parser {
+  SourceBinder,
+  binder_capture_context,
+  binder_capture_source,
+  located_program_binder_authority_program,
+  located_program_binder_authority_rows,
+  parse_source_located_with_binder_authority,
+  validate_program_binder_rows
+}
+
+//# Tests
+
+test "source-owning binder authority publishes exact supported rows" {
+  let source = "let f = (x) -> { x }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "2")
+      match Array::get(rows, 0) {
+        SourceToken(name, start, end) => {
+          inspect(name, "f")
+          inspect(String::substring(source, start, end), "f")
+        },
+        _ => inspect(false, "true")
+      }
+      match Array::get(rows, 1) {
+        SourceToken(name, start, end) => {
+          inspect(name, "x")
+          inspect(String::substring(source, start, end), "x")
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "binder spans are UTF-8 byte offsets and shadowing rows stay distinct" {
+  let source = "let x = \"é\"\nlet x = 2"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "2")
+      match (Array::get(rows, 0), Array::get(rows, 1)) {
+        (SourceToken(left, ls, le), SourceToken(right, rs, re)) => {
+          inspect(left, "x")
+          inspect(right, "x")
+          inspect(ls != rs, "true")
+          inspect(String::substring(source, ls, le), "x")
+          inspect(String::substring(source, rs, re), "x")
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "supported declaration and import rows publish in final AST order" {
+  let source = "import ./dep.vibe { Thing as Local }\ntype Box[T] = T\neffectset Audit = { Log }\nresource Posts : S3::Bucket\nextern let %read_file: (String) -> String"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "6")
+      let expected = [
+        "Local",
+        "Box",
+        "T",
+        "Audit",
+        "Posts",
+        "%read_file"
+      ]
+      let mut i = 0
+      while i < Array::length(rows) {
+        match Array::get(rows, i) {
+          SourceToken(name, _, _) => inspect(name == Array::get(expected, i), "true"),
+          _ => inspect(false, "true")
+        }
+        i = i + 1
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "interpolation binder spans remain absolute source bytes" {
+  let source = "let f = (x) -> { \"é=\\{((y) -> { y })(x)}\" }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      match Array::get(rows, 2) {
+        SourceToken(name, start, end) => {
+          inspect(name, "y")
+          inspect(String::substring(source, start, end), "y")
+          inspect(start > 20, "true")
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "unsupported and forged lanes fail closed" {
+  let unsupported = [
+    "struct Cell { value: Int }"
+  ]
+  for source in unsupported {
+    inspect(match parse_source_located_with_binder_authority(source) {
+      Some(_) => true,
+      None => false
+    }, "false")
+  }
+  let source = "let x = 1"
+  let forged = binder_capture_context([
+    0
+  ], [
+    99
+  ])
+  binder_capture_source(Some(forged), "x", 0, 0)
+  // The forged context cannot be passed to the source-owning entry.
+  inspect(match parse_source_located_with_binder_authority(source) {
+    Some(_) => true,
+    None => false
+  }, "true")
+}
+
+test "contract rows follow lowered requires result body ensures order" {
+  let source = "fn f(x: Int) -> Int where { requires: ((r) -> { r })(true), ensures: ((e) -> { e })(true) } { ((b) -> { b })(x) }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "6")
+      let expected = [
+        "f",
+        "x",
+        "r",
+        "result",
+        "b",
+        "e"
+      ]
+      let mut i = 0
+      for row in rows {
+        match row {
+          SourceToken(name, start, end) => {
+            inspect(name == Array::get(expected, i), "true")
+            inspect(String::substring(source, start, end), name)
+          },
+          Synthetic(name, _) => {
+            inspect(i, "3")
+            inspect(name, "result")
+          }
+        }
+        i = i + 1
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "block-local nested record destructuring rows mirror every lowered slot" {
+  let source = "let f = () -> { let record { x: a, y: (b, c) } = record { x: 1, y: (2, 3) }; a + b + c }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "6")
+      let expected = [
+        "f",
+        "__rec_destr",
+        "a",
+        "__rec_sub_1",
+        "b",
+        "c"
+      ]
+      let mut i = 0
+      for row in rows {
+        match row {
+          SourceToken(name, start, end) => {
+            inspect(name == Array::get(expected, i), "true")
+            inspect(String::substring(source, start, end), name)
+          },
+          Synthetic(name, _) => inspect(name == Array::get(expected, i), "true")
+        }
+        i = i + 1
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "inactive cfg rollback discards rows and restores eligibility" {
+  let source = "#cfg(dev)\nstruct Hidden { value: Int }\n#cfg(dev)\nlet hidden = (leaked) -> { leaked }\nlet live = (kept) -> { kept }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "2")
+      match (Array::get(rows, 0), Array::get(rows, 1)) {
+        (SourceToken(first, fs, fe), SourceToken(second, ss, se)) => {
+          inspect(first, "live")
+          inspect(second, "kept")
+          inspect(String::substring(source, fs, fe), "live")
+          inspect(String::substring(source, ss, se), "kept")
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "nested top-level destructuring rows name every synthetic slot" {
+  let source = "let ((a, b), c) = ((1, 2), 3)"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "5")
+      let expected = [
+        "__dst0",
+        "__dst0_0",
+        "a",
+        "b",
+        "c"
+      ]
+      let mut i = 0
+      for row in rows {
+        match row {
+          SourceToken(name, start, end) => {
+            inspect(name == Array::get(expected, i), "true")
+            inspect(String::substring(source, start, end), name)
+          },
+          Synthetic(name, _) => inspect(name == Array::get(expected, i), "true")
+        }
+        i = i + 1
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "recursive loop rows include result and continue temporaries" {
+  let source = "let f = () -> { loop (i = 0) { continue(((c) -> { c })(i + 1)) } }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "5")
+      let expected = [
+        "f",
+        "i",
+        "__loop_result",
+        "__lt0",
+        "c"
+      ]
+      let mut i = 0
+      for row in rows {
+        match row {
+          SourceToken(name, start, end) => {
+            inspect(name == Array::get(expected, i), "true")
+            inspect(String::substring(source, start, end), name)
+          },
+          Synthetic(name, _) => inspect(name == Array::get(expected, i), "true")
+        }
+        i = i + 1
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "guarded match rows duplicate the lowered rest exactly" {
+  let source = "fn f(x: Int) -> Int { match x { y if ((g) -> { g })(true) => ((b) -> { b })(y), z => ((r) -> { r })(z) } }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "10")
+      let expected = [
+        "f",
+        "x",
+        "__mg",
+        "y",
+        "g",
+        "b",
+        "z",
+        "r",
+        "z",
+        "r"
+      ]
+      let mut i = 0
+      for row in rows {
+        match row {
+          SourceToken(name, start, end) => {
+            inspect(name == Array::get(expected, i), "true")
+            inspect(String::substring(source, start, end), name)
+          },
+          Synthetic(name, _) => {
+            inspect(i, "2")
+            inspect(name, "__mg")
+          }
+        }
+        i = i + 1
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "placeholder argument segments insert synthetic params before argument binders" {
+  let source = "let f = () -> { Array::map([1], ((q) -> { q })(1) + _) }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      inspect(Array::length(rows), "3")
+      match (Array::get(rows, 1), Array::get(rows, 2)) {
+        (Synthetic(param, _), SourceToken(name, start, end)) => {
+          inspect(param, "__ph0")
+          inspect(name, "q")
+          inspect(String::substring(source, start, end), "q")
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "approved synthetic lowerings publish explicit rows" {
+  let source = "let f = () -> { let x: Int = 1; x }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      let mut synthetic = 0
+      for row in rows {
+        match row {
+          Synthetic(name, _) => {
+            inspect(name, "__asc")
+            synthetic = synthetic + 1
+          },
+          SourceToken(_, start, end) => inspect(start < end, "true")
+        }
+      }
+      inspect(synthetic, "1")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "validator rejects missing extra reordered and invalid spans" {
+  let source = "let x = 1"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let program = located_program_binder_authority_program(authority)
+      inspect(validate_program_binder_rows(program, [
+      ], source), "false")
+      inspect(validate_program_binder_rows(program, [
+        SourceToken("x", 4, 5),
+        SourceToken("extra", 0, 3)
+      ], source), "false")
+      inspect(validate_program_binder_rows(program, [
+        SourceToken("x", 0, 3)
+      ], source), "false")
+      inspect(validate_program_binder_rows(program, [
+        SourceToken("x", 4, 4)
+      ], source), "false")
+      inspect(validate_program_binder_rows(program, [
+        SourceToken("x", 4, 99)
+      ], source), "false")
+    },
+    None => inspect(false, "true")
+  }
+}

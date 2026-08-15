@@ -1,13 +1,221 @@
 //# Types
 
-/// Invocation-local parser context reserved for binder-authority capture.
-///
-/// This first infrastructure slice deliberately carries no rows. The package
-/// contract spells this `opaque type`, but contract opacity is currently
-/// documentation-only: external code can still forge the representation.
-/// Therefore this context and every low-level helper are untrusted plumbing.
-/// Future authority must come only from the high-level atomic parse aggregate
-/// after exhaustive completeness validation, never from caller context.
+/// Closed classification for binders synthesized by parse-time lowering.
+export enum SyntheticBinderKind {
+  ParserSynthetic
+}
+
+/// Parser-authored origin for one binder slot in the final located AST.
+export enum SourceBinder {
+  SourceToken(String, Int, Int);
+  Synthetic(String, SyntheticBinderKind)
+}
+
+/// Invocation-local capture state. This type and every helper are forgeable
+/// untrusted plumbing; only the source-owning parser entry may validate rows.
 export struct ParserBinderContext {
-  nonce: Int
+  rows: Array[SourceBinder];
+  starts_stack: Array[Array[Int]];
+  ends_stack: Array[Array[Int]];
+  bases: Array[Int];
+  eligible: Array[Bool]
+}
+
+fn empty_binders() -> Array[SourceBinder] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+/// Untrusted plumbing constructor. Possession is never authority.
+export fn binder_capture_context(starts: Array[Int], ends: Array[Int]) -> ParserBinderContext {
+  ParserBinderContext::{
+    rows: empty_binders(),
+    starts_stack: [
+      starts
+    ],
+    ends_stack: [
+      ends
+    ],
+    bases: [
+      0
+    ],
+    eligible: [
+      true
+    ]
+  }
+}
+
+fn with_context(context: Option[ParserBinderContext], f: (ParserBinderContext) -> Unit) -> Unit {
+  match context {
+    Some(c) => f(c),
+    None => ()
+  }
+}
+
+export fn binder_capture_mark(context: Option[ParserBinderContext]) -> Int {
+  match context {
+    Some(c) => Array::length(c.rows),
+    None => 0
+  }
+}
+
+export fn binder_capture_eligibility_mark(context: Option[ParserBinderContext]) -> Bool {
+  match context {
+    Some(c) => Array::length(c.eligible) == 1 && Array::get(c.eligible, 0),
+    None => true
+  }
+}
+
+/// Roll back eligibility only for a parser-controlled discarded transaction
+/// such as an inactive cfg statement. This helper is untrusted plumbing and
+/// cannot publish authority by itself.
+export fn binder_capture_restore_eligibility(context: Option[ParserBinderContext], eligible: Bool) -> Unit {
+  with_context(context, (c) -> {
+    if Array::length(c.eligible) == 1 {
+      Array::set(c.eligible, 0, eligible)
+    } else {
+      ()
+    }
+  })
+}
+
+export fn binder_capture_source(context: Option[ParserBinderContext], name: String, first_token: Int, last_token: Int) -> Unit {
+  with_context(context, (c) -> {
+    let depth = Array::length(c.starts_stack)
+    if depth == 0 || first_token < 0 || last_token < first_token {
+      Array::set(c.eligible, 0, false)
+    } else {
+      let starts = Array::get(c.starts_stack, depth - 1)
+      let ends = Array::get(c.ends_stack, depth - 1)
+      let base = Array::get(c.bases, depth - 1)
+      if first_token >= Array::length(starts) || last_token >= Array::length(ends) {
+        Array::set(c.eligible, 0, false)
+      } else {
+        Array::push(c.rows, SourceToken(name, base + Array::get(starts, first_token), base + Array::get(ends, last_token)))
+      }
+    }
+  })
+}
+
+export fn binder_capture_synthetic(context: Option[ParserBinderContext], name: String) -> Unit {
+  with_context(context, (c) -> {
+    Array::push(c.rows, Synthetic(name, ParserSynthetic))
+  })
+}
+
+/// Insert a parser-authored synthetic row before every row captured since
+/// `mark`. The source-owning entry still validates the final AST exhaustively;
+/// synthetic rows are authority only when their exact final binder slot exists.
+export fn binder_capture_insert_synthetic_at(context: Option[ParserBinderContext], mark: Int, name: String) -> Unit {
+  let tail = binder_capture_take_from(context, mark)
+  binder_capture_synthetic(context, name)
+  binder_capture_append(context, tail)
+}
+
+/// Swap two adjacent capture segments `[start, middle)` and `[middle, end)`.
+/// Marks are invocation-local row indices, never source coordinates.
+export fn binder_capture_swap_segments(context: Option[ParserBinderContext], start: Int, middle: Int) -> Unit {
+  match context {
+    Some(c) => {
+      let end = Array::length(c.rows)
+      if start < 0 || middle < start || middle > end {
+        Array::set(c.eligible, 0, false)
+      } else {
+        let all = binder_capture_take_from(context, start)
+        let cut = middle - start
+        binder_capture_append(context, Array::slice(all, cut, Array::length(all)))
+        binder_capture_append(context, Array::slice(all, 0, cut))
+      }
+    },
+    None => ()
+  }
+}
+
+export fn binder_capture_discard_from(context: Option[ParserBinderContext], mark: Int) -> Unit {
+  with_context(context, (c) -> {
+    if mark < 0 || mark > Array::length(c.rows) {
+      Array::set(c.eligible, 0, false)
+    } else {
+      Array::truncate(c.rows, mark)
+    }
+  })
+}
+
+export fn binder_capture_take_from(context: Option[ParserBinderContext], mark: Int) -> Array[SourceBinder] {
+  match context {
+    Some(c) => if mark < 0 || mark > Array::length(c.rows) {
+      Array::set(c.eligible, 0, false)
+      empty_binders()
+    } else {
+      let out = Array::slice(c.rows, mark, Array::length(c.rows))
+      Array::truncate(c.rows, mark)
+      out
+    },
+    None => empty_binders()
+  }
+}
+
+export fn binder_capture_append(context: Option[ParserBinderContext], rows: Array[SourceBinder]) -> Unit {
+  with_context(context, (c) -> {
+    for row in rows {
+      Array::push(c.rows, row)
+    }
+    ()
+  })
+}
+
+export fn binder_capture_rename_first_synthetic(context: Option[ParserBinderContext], from: String, to: String) -> Unit {
+  with_context(context, (c) -> {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(c.rows) && !found {
+      match Array::get(c.rows, i) {
+        Synthetic(name, kind) => if name == from {
+          Array::set(c.rows, i, Synthetic(to, kind))
+          found = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if !found {
+      Array::set(c.eligible, 0, false)
+    } else {
+      ()
+    }
+  })
+}
+
+export fn binder_capture_push_fragment(context: Option[ParserBinderContext], starts: Array[Int], ends: Array[Int], base: Int) -> Unit {
+  with_context(context, (c) -> {
+    Array::push(c.starts_stack, starts)
+    Array::push(c.ends_stack, ends)
+    Array::push(c.bases, base)
+  })
+}
+
+export fn binder_capture_pop_fragment(context: Option[ParserBinderContext]) -> Unit {
+  with_context(context, (c) -> {
+    let n = Array::length(c.starts_stack)
+    if n <= 1 || Array::length(c.ends_stack) != n || Array::length(c.bases) != n {
+      Array::set(c.eligible, 0, false)
+    } else {
+      Array::truncate(c.starts_stack, n - 1)
+      Array::truncate(c.ends_stack, n - 1)
+      Array::truncate(c.bases, n - 1)
+    }
+  })
+}
+
+export fn binder_capture_mark_ineligible(context: Option[ParserBinderContext]) -> Unit {
+  with_context(context, (c) -> Array::set(c.eligible, 0, false))
+}
+
+export fn binder_capture_is_eligible(context: ParserBinderContext) -> Bool {
+  Array::length(context.eligible) == 1 && Array::get(context.eligible, 0) && Array::length(context.starts_stack) == 1 && Array::length(context.ends_stack) == 1 && Array::length(context.bases) == 1
+}
+
+export fn binder_capture_rows(context: ParserBinderContext) -> Array[SourceBinder] {
+  Array::slice(context.rows, 0, Array::length(context.rows))
 }

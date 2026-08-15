@@ -7,6 +7,7 @@ import @vibe/ast {
 import @vibe/parser {
   type ParserBinderContext,
   Token,
+  binder_capture_context,
   lex_with_offsets,
   parse_impl,
   parse_impl_dispatch,
@@ -35,13 +36,18 @@ fn opaque_context_identity(context: Option[ParserBinderContext]) -> Option[Parse
   context
 }
 
+fn forged_context() -> ParserBinderContext {
+  let empty = Array::slice([
+    0
+  ], 0, 0)
+  binder_capture_context(empty, empty)
+}
+
 fn assert_expression_context_parity(source: String) -> Unit with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
   let (legacy, legacy_next) = parse_impl(tokens, starts, 0, 0)
   let (none, none_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, None)
-  let forged_context = ParserBinderContext::{
-    nonce: 41
-  }
+  let forged_context = forged_context()
   let (forged, forged_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, Some(forged_context))
   inspect(print_expr(none) == print_expr(legacy), "true")
   inspect(none_next == legacy_next, "true")
@@ -53,9 +59,7 @@ fn assert_statement_context_parity(source: String) -> Unit with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
   let (legacy, legacy_next) = parse_stmt_preserving(tokens, starts, 0)
   let (none, none_next) = parse_stmt_preserving_with_binder_context(tokens, starts, 0, None)
-  let forged_context = ParserBinderContext::{
-    nonce: 73
-  }
+  let forged_context = forged_context()
   let (forged, forged_next) = parse_stmt_preserving_with_binder_context(tokens, starts, 0, Some(forged_context))
   inspect(print_stmt(none) == print_stmt(legacy), "true")
   inspect(none_next == legacy_next, "true")
@@ -113,9 +117,7 @@ test "parser binder context low-level contract accepts None without changing par
   // Contract opacity is currently documentation-only. Prove this external
   // package can forge the representation, then prove that passing it carries
   // no authority and changes no parse result in this infrastructure phase.
-  let forged_context = ParserBinderContext::{
-    nonce: 0
-  }
+  let forged_context = forged_context()
   let (forged_impl, forged_impl_next) = parse_impl_with_binder_context(tokens, starts, 0, 0, Some(forged_context))
   inspect(print_expr(forged_impl) == print_expr(legacy_impl), "true")
   inspect(forged_impl_next == legacy_impl_next, "true")
@@ -180,9 +182,7 @@ test "parser binder context B2 whole-program None and forged-Some parity" {
   let (tokens, starts, _) = lex_with_offsets(source)
   let ordinary = parse_program_located(tokens, starts, source)
   let (none, none_next) = parse_program_located_with_untrusted_binder_context(tokens, starts, source, None)
-  let forged = ParserBinderContext::{
-    nonce: 97
-  }
+  let forged = forged_context()
   let (some, some_next) = parse_program_located_with_untrusted_binder_context(tokens, starts, source, Some(forged))
   inspect(print_program(none) == print_program(ordinary), "true")
   inspect(print_program(some) == print_program(ordinary), "true")
@@ -196,9 +196,7 @@ test "parser binder context B2 whole-program None and forged-Some parity" {
   for bad_source in malformed {
     let ordinary_diag = ordinary_located_program_diag(bad_source)
     let none_diag = located_program_diag(bad_source, None)
-    let forged_diag = located_program_diag(bad_source, Some(ParserBinderContext::{
-      nonce: 101
-    }))
+    let forged_diag = located_program_diag(bad_source, Some(forged_context()))
     inspect(ordinary_diag != "ok", "true")
     inspect(none_diag == ordinary_diag, "true")
     inspect(forged_diag == ordinary_diag, "true")

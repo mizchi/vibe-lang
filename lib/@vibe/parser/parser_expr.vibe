@@ -51,7 +51,17 @@ import ./token.vibe {
 }
 
 import ./parser_binder_context.vibe {
-  ParserBinderContext
+  ParserBinderContext,
+  SourceBinder,
+  SyntheticBinderKind,
+  binder_capture_append,
+  binder_capture_insert_synthetic_at,
+  binder_capture_mark,
+  binder_capture_rename_first_synthetic,
+  binder_capture_source,
+  binder_capture_swap_segments,
+  binder_capture_synthetic,
+  binder_capture_take_from
 }
 
 //# Functions
@@ -132,6 +142,7 @@ fn parse_let_type_params(tokens: Array[Token], pos: Int, context: Option[ParserB
         break
       },
       TIdent(name) => {
+        binder_capture_source(context, name, p, p)
         ArrayBuilder::push(names, name)
         p = p + 1
         match peek(tokens, p) {
@@ -374,6 +385,55 @@ fn reject_pattern_let_annotation(tokens: Array[Token], pos: Int) -> Int with Exc
 /// are not recovered by `parse_pattern` — the record path is positional, the
 /// same convention the block-level `__rec_field` desugar uses — so the marker
 /// carries empty names and the expansion reads by index.
+fn remap_top_pattern_rows(pat: Pat, rows: Array[SourceBinder], at: Int, out: ArrayBuilder[SourceBinder], nested: Bool) -> Int {
+  match pat {
+    PBind(_) => {
+      if at < Array::length(rows) {
+        ArrayBuilder::push(out, Array::get(rows, at))
+        at + 1
+      } else {
+        at
+      }
+    },
+    PWild => at,
+    PTuple(items) => {
+      if nested {
+        ArrayBuilder::push(out, Synthetic("__dst_nested", ParserSynthetic))
+      } else {
+        ()
+      }
+      let mut next = at
+      for item in items {
+        next = remap_top_pattern_rows(item, rows, next, out, true)
+      }
+      next
+    },
+    PStruct(_, fields) => {
+      if nested {
+        ArrayBuilder::push(out, Synthetic("__dst_nested", ParserSynthetic))
+      } else {
+        ()
+      }
+      let mut next = at
+      for field in fields {
+        next = remap_top_pattern_rows(field.1, rows, next, out, true)
+      }
+      next
+    },
+    _ => at
+  }
+}
+
+fn remapped_top_pattern_rows(pat: Pat, rows: Array[SourceBinder]) -> Array[SourceBinder] {
+  let out = ArrayBuilder::new()
+  let consumed = remap_top_pattern_rows(pat, rows, 0, out, false)
+  if consumed == Array::length(rows) {
+    ArrayBuilder::freeze(out)
+  } else {
+    rows
+  }
+}
+
 fn record_destr_marker(p: Pat, context: Option[ParserBinderContext]) -> Pat {
   match p {
     PTuple(elems) => {
@@ -420,6 +480,7 @@ export fn expand_top_level_pattern_lets_with_binder_context(stmts: Array[Stmt], 
     match Array::get(stmts, i) {
       SLetPat(pat, val) => {
         let tmp = String::concat("__dst", __to_string(i))
+        binder_capture_rename_first_synthetic(context, "__dst", tmp)
         ArrayBuilder::push(out, SLet(false, false, tmp, None, val))
         emit_top_level_pat_bindings(out, pat, tmp, context)
       },
@@ -475,6 +536,7 @@ fn emit_top_level_pat_projection(out: ArrayBuilder[Stmt], sub: Pat, read: Expr, 
     PWild => (),
     _ => {
       let nested = String::concat(src, String::concat("_", __to_string(index)))
+      binder_capture_rename_first_synthetic(context, "__dst_nested", nested)
       ArrayBuilder::push(out, SLet(false, false, nested, None, read))
       emit_top_level_pat_bindings(out, sub, nested, context)
     }
@@ -502,6 +564,7 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
     },
     TMut => match peek(tokens, pos + 1) {
       TIdent(name) => {
+        binder_capture_source(context, name, pos + 1, pos + 1)
         let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
           TColon => {
             let (ty, tp) = parse_type_impl(tokens, pos + 3, 0)
@@ -527,10 +590,14 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
     // literals, `|`) are rejected here — they can fail, and a top-level
     // binding has nowhere to fail to.
     TLParen => {
+      let pattern_mark = binder_capture_mark(context)
       let (pat, after_pat) = parse_pattern_with_binder_context(tokens, pos, context)
       require_irrefutable_top_level_pat(pat)
+      let pattern_rows = binder_capture_take_from(context, pattern_mark)
       let ep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_pat), "=")
       let val_pair = parse_impl_with_binder_context(tokens, starts, ep, 0, context)
+      binder_capture_insert_synthetic_at(context, pattern_mark, "__dst")
+      binder_capture_append(context, remapped_top_pattern_rows(pat, pattern_rows))
       (top_level_pattern_let(exported, pat, val_pair.0, context), val_pair.1)
     },
     TIdent(_name0) => {
@@ -558,10 +625,14 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
       // `parse_pattern` returns `PStruct(name, [(field, PBind field), ..])`,
       // which the expansion turns into one `<tmp>.field` projection each.
       if is_top_level_record_destr || is_struct_destructure {
+        let pattern_mark = binder_capture_mark(context)
         let (ppat, after_ppat) = parse_pattern_with_binder_context(tokens, pos, context)
         require_irrefutable_top_level_pat(ppat)
+        let pattern_rows = binder_capture_take_from(context, pattern_mark)
         let pep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_ppat), "=")
         let pval_pair = parse_impl_with_binder_context(tokens, starts, pep, 0, context)
+        binder_capture_insert_synthetic_at(context, pattern_mark, "__dst")
+        binder_capture_append(context, remapped_top_pattern_rows(ppat, pattern_rows))
         let marked = if is_top_level_record_destr {
           record_destr_marker(ppat, context)
         } else {
@@ -646,7 +717,7 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
   }
 }
 
-fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int, (Array[SourceBinder], Array[SourceBinder])) with Exception {
   let (name, name_next) = parse_fn_name(tokens, pos, context)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
@@ -676,6 +747,12 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
   let enss = Array::slice([
     EIdent("", 0 - 1)
   ], 0, 0)
+  let req_rows = Array::slice([
+    SourceToken("", 0, 0)
+  ], 0, 0)
+  let ens_rows = Array::slice([
+    SourceToken("", 0, 0)
+  ], 0, 0)
   let where_next = match peek(tokens, eff_next) {
     TIdent(w) => if w == "where" {
       let mut wp = expect_tk(tokens, eff_next + 1, "{")
@@ -688,12 +765,20 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
           },
           TIdent(kind) => {
             let cp = expect_tk(tokens, wp + 1, ":")
+            let cond_mark = binder_capture_mark(context)
             let (cond, cnext) = parse_impl_with_binder_context(tokens, [
             ], cp, 0, context)
+            let cond_rows = binder_capture_take_from(context, cond_mark)
             if kind == "requires" {
               Array::push(reqs, cond)
+              for row in cond_rows {
+                Array::push(req_rows, row)
+              }
             } else if kind == "ensures" {
               Array::push(enss, cond)
+              for row in cond_rows {
+                Array::push(ens_rows, row)
+              }
             } else {
               throw("expected 'requires' or 'ensures' in where clause, got '\{kind}'")
             }
@@ -709,11 +794,12 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
     } else eff_next,
     _ => eff_next
   }
-  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
+  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next, (req_rows, ens_rows))
 }
 
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
-  parse_fn_signature_with_binder_context(tokens, pos, None)
+  let (head, sig, contracts, next, _) = parse_fn_signature_with_binder_context(tokens, pos, None)
+  (head, sig, contracts, next)
 }
 
 /// ADR-0069 Phase 1: `fn main { ... }` / `fn main with Fs { ... }` — the ONE
@@ -724,6 +810,7 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
 /// checker, codegen, and the printer round-trip (which prints the annotated
 /// `fn main() -> Unit` spelling — same meaning) are all untouched.
 fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  binder_capture_source(context, "main", pos, pos)
   // pos points at the `main` identifier; the caller verified the next token
   // is `{` (body) or `with` (capability row then body).
   let (eff_opt, body_start) = match peek(tokens, pos + 1) {
@@ -840,10 +927,11 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
 }
 
 fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
-  let (head, sig, contracts, where_next) = parse_fn_signature_with_binder_context(tokens, pos, context)
+  let (head, sig, contracts, where_next, contract_rows) = parse_fn_signature_with_binder_context(tokens, pos, context)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts
+  let (req_rows, ens_rows) = contract_rows
   // #805: `= wasm "..."` inline-wasm body form (see parse_fn_wasm_body).
   let is_wasm_body = match peek(tokens, where_next) {
     TEq => match peek(tokens, where_next + 1) {
@@ -856,7 +944,17 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     parse_fn_wasm_body(tokens, where_next + 2, exported, name, tps, tbs, params, ret_ty, eff_opt, reqs, enss, context)
   } else {
     let br = expect_tk(tokens, where_next, "{")
+    let body_mark = binder_capture_mark(context)
     let (body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
+    let body_rows = binder_capture_take_from(context, body_mark)
+    binder_capture_append(context, req_rows)
+    if Array::length(enss) > 0 {
+      binder_capture_synthetic(context, "result")
+    } else {
+      ()
+    }
+    binder_capture_append(context, body_rows)
+    binder_capture_append(context, ens_rows)
     // ADR-0064 (#727/#731): keep the declaration form — including the where
     // contract's requires/ensures conditions — in the AST so the printer and
     // normalize can round-trip `fn`. The runtime contract desugar (identical
