@@ -1068,6 +1068,63 @@ const POLICY_TOKEN_LOW_MASK = POLICY_TOKEN_HIGH_BIT - 1n;
 let policyStatTokenConfig = null;
 let policyRawFsConfig = null;
 
+function importSectionContains(wasmBytes, needle) {
+  let offset = 8;
+  while (offset < wasmBytes.length) {
+    const id = wasmBytes[offset++];
+    let size = 0;
+    let shift = 0;
+    let byte;
+    do {
+      if (offset >= wasmBytes.length || shift > 35) throw new Error("malformed wasm section length");
+      byte = wasmBytes[offset++];
+      size += (byte & 0x7f) * (2 ** shift);
+      shift += 7;
+    } while ((byte & 0x80) !== 0);
+    const end = offset + size;
+    if (!Number.isSafeInteger(end) || end > wasmBytes.length) throw new Error("malformed wasm section bounds");
+    if (id === 2) return wasmBytes.subarray(offset, end).includes(needle);
+    offset = end;
+  }
+  return false;
+}
+
+function rejectPolicyWasiModuleImports(wasmBytes, config = policyRawFsConfig) {
+  if (!config) return;
+  // A matching UTF-8 import name must contain these literal prefix bytes in
+  // the import section. Avoid compiling ordinary large compiler modules a
+  // second time; any possible denied module still goes through the engine's
+  // actual import table.
+  if (!importSectionContains(wasmBytes, Buffer.from("wasi:", "utf8"))) return;
+  // Node 24's V8 can corrupt later GC-module compilation when Module.imports()
+  // and instantiation run in the same process. Inspect in a short-lived Node
+  // process so policy still uses the engine's actual import table before this
+  // process instantiates the original bytes.
+  const inspection = cp.spawnSync(process.execPath, [...process.execArgv, "-e", `
+    "use strict";
+    const fs = require("node:fs");
+    const module = new WebAssembly.Module(fs.readFileSync(0));
+    process.stdout.write(JSON.stringify(WebAssembly.Module.imports(module)));
+  `], {
+    input: wasmBytes,
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (inspection.error || inspection.status !== 0 || inspection.signal) {
+    throw new Error(`policy wasm import inspection failed: ${String(inspection.stderr || inspection.error?.message || inspection.signal).slice(-1000)}`);
+  }
+  let imports;
+  try { imports = JSON.parse(inspection.stdout); } catch { throw new Error("policy wasm import inspection returned malformed output"); }
+  const deniedModules = [...new Set(
+    imports.map(item => item.module).filter(moduleName => moduleName.startsWith("wasi:")),
+  )].sort();
+  if (deniedModules.length > 0) {
+    throw new Error(`policy raw module import denied: ${deniedModules.join(",")}`);
+  }
+}
+
 function isContainedPath(root, candidate) {
   const rel = path.relative(root, candidate);
   return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
@@ -2073,6 +2130,7 @@ async function main() {
   }
   const wasmBytes = fs.readFileSync(wasmPath);
   covWasmBytesGlobal = wasmBytes;
+  rejectPolicyWasiModuleImports(wasmBytes);
   if (!REQUESTED_HOST_IMPORT_ABI) {
     const detectedAbi = detectHostImportAbi(wasmBytes);
     if (detectedAbi !== null) {
@@ -3564,6 +3622,7 @@ module.exports = {
   parseArgs,
   policyStatAttestation,
   projectContentStatDigest,
+  rejectPolicyWasiModuleImports,
 };
 
 if (require.main === module) {

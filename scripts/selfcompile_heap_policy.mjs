@@ -790,6 +790,10 @@ async function runControllerWithLease(options, lease) {
       base: baseResult.stat_token_attestations,
       current: currentResult.stat_token_attestations,
     },
+    docker_authority: {
+      base: baseResult.docker_authority,
+      current: currentResult.docker_authority,
+    },
     normalized_paths: baseResult.normalized_paths,
     benchmark_input_source_commit: base,
     stat_token_mode: STAT_TOKEN_MODE,

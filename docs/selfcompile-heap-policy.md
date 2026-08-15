@@ -117,8 +117,13 @@ runner sample measured metadata/content-v1 wall medians of 2.03/2.29 seconds
 **Phase B remains unwired.** The isolation substrate uses the controller
 checkout as immutable base authority, archives revision trees on the host
 without extracting them, and executes base/current in separate native
-`linux/amd64` containers at `/workspace/repo`. The tool image is digest-pinned;
-its final execution has a read-only root, no network, UID/GID 65532, all
+`linux/amd64` containers at `/workspace/repo`. The tool image is digest-pinned. Before Docker version, pull, or image
+inspection, the host rejects nonempty `DOCKER_HOST`/`DOCKER_CONTEXT` overrides,
+reads the selected context, and accepts its formatted Docker endpoint only when
+it is an empty-authority `unix:` URI with a nonempty absolute POSIX path (Linux
+and Colima socket paths are supported). The selected context and endpoint are
+recorded in the result. The final execution has a read-only root, no network,
+UID/GID 65532, all
 capabilities dropped, no-new-privileges, seccomp restrictions, fixed memory,
 CPU, PID and file-descriptor limits, and only container-local tmpfs writable
 areas. No bind mount, Docker socket, credential, or secret enters the guest.
@@ -136,20 +141,28 @@ unconditionally injects content-v1 plus policy raw-Fs selectors. Defaults
 outside this explicit policy environment are unchanged.
 
 Policy-only raw imports constrain reads to `/workspace/repo` and reject shell,
-TCP, and HTTP dispatch before argument decoding. The immutable wrapper requires
-an explicit phase write root: bundle/selfhost generation may write only beneath
+TCP, and HTTP dispatch before argument decoding. Before instantiation, the same
+full raw-filesystem policy mode enumerates `WebAssembly.Module.imports()` and
+deterministically rejects every module namespace beginning `wasi:`; the raw
+`wasi_snapshot_preview1` namespace remains allowed. This closes Preview2
+filesystem, socket, HTTP, CLI, and I/O fallback authority without changing any
+Preview2 host or default-mode behavior. The immutable wrapper requires an
+explicit phase write root: bundle/selfhost generation may write only beneath
 the reserved physical `/workspace/repo/_build` tmpfs, while final KPI
 measurement is narrowed to `/workspace/repo/_build/selfcompile-policy`.
 Tracked archives containing `_build` are rejected before the tmpfs tree is
 created. The native acceptance lane instantiates real hostile Wasm
 for shell interpretation, shell capture, TCP/HTTP, `/etc`, `/proc`,
 `/opt/policy`, out-of-root read/write, generation temporary writes, final-phase
-sibling `_build` writes, forged result-prefix output, and an infinite-loop
-timeout; its HMAC record includes bounded positive hostile and
-stat-token attestations. The host sends a random result key on attached stdin;
-the entrypoint consumes it before starting Wasm and returns exactly one
-domain-separated HMAC-authenticated canonical-JSON record. Guest stdout/stderr
-and guest-writable files are never parsed as the result channel.
+sibling `_build` writes, Preview2 `open-at` creation at repository top, at a
+measurement-sibling `_build` path, and through a symlink to `/tmp`, plus
+socket/HTTP/CLI/I/O namespaces, forged result-prefix output, and an infinite-loop
+timeout. A default-mode Preview2 `open-at` fixture remains a positive control.
+The host sends a random result key on attached stdin; the entrypoint consumes it
+before starting Wasm and returns exactly one domain-separated HMAC-authenticated
+record. Producer and verifier share one recursive lexicographic canonical JSON
+serializer, and hostile counts must be positive safe integers. Guest
+stdout/stderr and guest-writable files are never parsed as the result channel.
 
 `scripts/selfcompile_heap_policy_docker_test.sh` is the expensive native
 acceptance lane. It checks same-tree build/heap/token identity, poisoned head
@@ -158,9 +171,11 @@ script sentinels, wrong merge identity, reserved paths, and cleanup. Native
 [31873848757](https://github.com/mizchi/vibe-lang/actions/runs/31873848757)
 at candidate `72ea4102fb175d6911fa813f72ac316aadfd009e` passed focused tests
 39/39 and the full isolated Docker lane, including the generation-phase policy
-wrapper and real hostile-Wasm fixtures, in 7m31s. The temporary branch-only
-validation workflow was removed after that run. Required CI remains unchanged
-and the existing absolute gate remains authoritative.
+wrapper and real hostile-Wasm fixtures, in 7m31s. That attestation predates the Preview2 import gate, Docker endpoint inspection,
+and canonical-record corrections. The temporary exact-branch validation
+workflow is present for a mandatory native Linux/amd64 rerun on the new
+candidate; it remains separate from required CI. The existing absolute gate
+remains authoritative.
 
 The metric still observes the guest-exported `__heap_ptr`. HMAC authentication
 proves what the trusted runner observed, but cannot stop a deliberately

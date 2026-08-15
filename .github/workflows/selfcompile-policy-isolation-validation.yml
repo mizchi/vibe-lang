@@ -1,0 +1,76 @@
+name: TEMP selfcompile policy isolation validation
+
+# Temporary native-linux/amd64 validation scaffold for the exact candidate
+# branch. It is intentionally isolated from pull_request/main and ci-required.
+on:
+  push:
+    branches:
+      - perf/selfcompile-policy-isolation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfcompile-policy-isolation-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-amd64-validation:
+    name: native linux/amd64 isolation validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact dispatched commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Attest candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            push)
+              test "$GITHUB_REF" = refs/heads/perf/selfcompile-policy-isolation
+              ;;
+            workflow_dispatch) ;;
+            *) exit 1 ;;
+          esac
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --quiet
+          git diff --cached --quiet
+
+      - name: Native Docker preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${DOCKER_HOST:-}"
+          test -z "${DOCKER_CONTEXT:-}"
+          docker version
+          test "$(docker info --format '{{.OSType}}/{{.Architecture}}')" = linux/x86_64
+
+      - name: Focused policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            scripts/selfcompile_heap_policy_container.test.mjs \
+            scripts/wasm_vibe_host_runner_stat_token.test.cjs \
+            scripts/selfcompile_heap_policy.test.mjs
+          bash scripts/selfcompile_kpi_work_dir_test.sh
+
+      - name: Full isolated Docker acceptance
+        shell: bash
+        run: bash scripts/selfcompile_heap_policy_docker_test.sh
+
+      - name: Upload bounded failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfcompile-policy-isolation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/selfcompile-policy-validation/
+          if-no-files-found: warn
+          retention-days: 3

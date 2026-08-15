@@ -3,9 +3,10 @@ import { spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import {
   closeSync, constants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync,
-  openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
+  openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { canonicalJson } from "./selfcompile_heap_policy_canonical_json.mjs";
 import { writeHostileWasmFixtures } from "./selfcompile_heap_policy_hostile_wasm.mjs";
 
 const PREFIX = "VIBE_HEAP_POLICY_RESULT_V1 ";
@@ -156,14 +157,18 @@ function runHostileWasmFixtures() {
   let timedOut = 0;
   let fakePrefixCaptured = 0;
   let positiveStatCalls = 0;
+  const preview2Escape = `${ROOT}/policy-preview2-escape`;
+  rmSync(preview2Escape, { recursive: true, force: true });
+  symlinkSync("/tmp", preview2Escape);
   for (const fixture of fixtures) {
-    const result = spawnSync("bash", [POLICY_RUNNER, "--invoke", "probe", fixture.path], {
+    const runner = fixture.defaultMode ? POLICY_BASE_RUNNER : POLICY_RUNNER;
+    const result = spawnSync("bash", [runner, "--invoke", "probe", fixture.path], {
       cwd: ROOT,
       env: {
         PATH: "/usr/local/bin:/usr/bin:/bin", HOME: `${BUILD}/home`, TMPDIR: "/tmp",
         LANG: "C", LC_ALL: "C", TZ: "UTC", VIBE_IMPORT_ABI: "raw",
         VIBE_PREOPEN_DIR: ROOT, VIBE_WASM_MEMORY_STATS: "1",
-        ...policyEnvironment(fixture.authority === "measurement" ? BUILD : `${ROOT}/_build`),
+        ...(fixture.defaultMode ? {} : policyEnvironment(fixture.authority === "measurement" ? BUILD : `${ROOT}/_build`)),
       },
       encoding: "utf8", maxBuffer: 1024 * 1024,
       timeout: fixture.timeout ? 500 : 10_000,
@@ -177,7 +182,10 @@ function runHostileWasmFixtures() {
       }
       timedOut += 1;
     } else if (fixture.deny) {
-      if (result.status === 0 || !stderr.includes(fixture.deny)) {
+      const diagnosticMatched = fixture.exactDeny
+        ? stderr.split(/\r?\n/).includes(`Error: ${fixture.deny}`)
+        : stderr.includes(fixture.deny);
+      if (result.status === 0 || !diagnosticMatched) {
         die("hostile-import-not-denied", { fixture: fixture.name, status: result.status, stderr: stderr.slice(-1000) });
       }
       denied += 1;
@@ -187,7 +195,7 @@ function runHostileWasmFixtures() {
       }
       safe += 1;
       if (fixture.created) {
-        if (!existsSync(fixture.created) || readFileSync(fixture.created, "utf8") !== "owned") die("hostile-generation-write-missing", { fixture: fixture.name });
+        if (!existsSync(fixture.created) || readFileSync(fixture.created, "utf8") !== (fixture.createdContent ?? "owned")) die("hostile-generation-write-missing", { fixture: fixture.name });
         rmSync(fixture.created, { force: true });
       }
       if (fixture.fake) {
@@ -201,12 +209,16 @@ function runHostileWasmFixtures() {
       }
     }
   }
+  rmSync(preview2Escape, { recursive: true, force: true });
   for (const marker of [
     "/tmp/policy-hostile-marker",
+    "/tmp/policy-preview2-symlink-marker",
     "/opt/policy-hostile-marker",
     "/etc/policy-hostile-marker",
     `${ROOT}/outside-policy-write`,
+    `${ROOT}/preview2-repo-top-marker`,
     `${ROOT}/_build/final-policy-sibling-write`,
+    `${ROOT}/_build/preview2-measurement-sibling-marker`,
   ]) {
     if (existsSync(marker)) die("hostile-marker-created", { marker });
   }
@@ -278,7 +290,7 @@ function main() {
     stat_token_attestations: measurements.map(item => item.attestation),
     hostile_fixture_attestation: hostileFixtureAttestation,
   };
-  const payload = Buffer.from(JSON.stringify(record)).toString("base64url");
+  const payload = Buffer.from(canonicalJson(record)).toString("base64url");
   const mac = createHmac("sha256", key).update("vibe:selfcompile-heap-policy:result:v1\0").update(payload).digest("hex");
   process.stdout.write(`${PREFIX}${payload} ${mac}\n`);
 }

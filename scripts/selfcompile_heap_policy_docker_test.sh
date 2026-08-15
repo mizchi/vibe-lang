@@ -41,6 +41,10 @@ if (result.stage2_sha256.base !== result.stage2_sha256.current) throw new Error(
 if (JSON.stringify(result.trials.base) !== JSON.stringify(result.trials.current)) throw new Error("same-tree heap trials mismatch");
 if (JSON.stringify(result.stat_token_attestations.base) !== JSON.stringify(result.stat_token_attestations.current)) throw new Error("same-tree stat-token mismatch");
 if (result.normalized_paths.canonical_root !== "/workspace/repo") throw new Error("canonical container path mismatch");
+for (const label of ["base", "current"]) {
+  const authority = result.docker_authority?.[label];
+  if (!authority || typeof authority.context !== "string" || !authority.endpoint.startsWith("unix:///")) throw new Error("Docker authority attestation missing");
+}
 NODE
 
 scratch="$(mktemp -d "${RUNNER_TEMP:-/tmp}/vibe-policy-hostile.XXXXXX")"
