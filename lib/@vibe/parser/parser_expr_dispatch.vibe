@@ -37,7 +37,7 @@ import ./parser_binder_context.vibe {
 /// `ty` (enforced by the call-argument check) while evaluating to `val` itself.
 /// Used to type-check a local `let x: T = e`, whose annotation `ELet` cannot
 /// store. Uses only EFn/ECall, so every downstream pass handles it unchanged.
-fn ascribe_wrap(val: Expr, ty: TypeExpr) -> Expr {
+fn ascribe_wrap(val: Expr, ty: TypeExpr, context: Option[ParserBinderContext]) -> Expr {
   let tparams = Array::slice([
     ""
   ], 0, 0)
@@ -66,7 +66,7 @@ fn ascribe_wrap(val: Expr, ty: TypeExpr) -> Expr {
 /// Returns None when the annotation is not a TyFn, the value is not a lambda,
 /// or the arity does not match; callers fall back to ascribe_wrap (plain let)
 /// or the bare value (let rec, which previously discarded the annotation).
-fn distribute_local_fn_ann(ann_ty: TypeExpr, val: Expr) -> Option[Expr] {
+fn distribute_local_fn_ann(ann_ty: TypeExpr, val: Expr, context: Option[ParserBinderContext]) -> Option[Expr] {
   match ann_ty {
     TyFn(param_types, ret_ty, effect_name) => match val {
       EFn(tp, tb, params, ret_opt, effect_opt, body) => {
@@ -101,11 +101,8 @@ fn distribute_local_fn_ann(ann_ty: TypeExpr, val: Expr) -> Option[Expr] {
   }
 }
 
-/// #789: `[T: A + B]` per-param trait-bound names (first name at `pos`). Private
-/// copy of parser_base.parse_method_tp_bound_names (not re-exportable across the
-/// package contract boundary). Bound names are references, not binders; context
-/// is untrusted plumbing only.
-fn dispatch_tp_bound_names_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Int) with Exception {
+/// #789: `[T: A + B]` trait references (first name at `pos`).
+fn dispatch_tp_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
   let b = ArrayBuilder::new()
   let mut p = pos
   let mut done = false
@@ -129,10 +126,6 @@ fn dispatch_tp_bound_names_with_binder_context(tokens: Array[Token], pos: Int, c
   (ArrayBuilder::freeze(b), p)
 }
 
-fn dispatch_tp_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
-  dispatch_tp_bound_names_with_binder_context(tokens, pos, None)
-}
-
 /// #789: parse a `[T, U: Bound]` binder (`[` already consumed; first name token at
 /// `pos`). Private copy of parser_base.parse_method_type_params. Returns
 /// (type-param names, per-param bounds, next-after-`]`).
@@ -152,7 +145,7 @@ fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, cont
         p = p + 1
         match peek(tokens, p) {
           TColon => {
-            let (bound_names, next) = dispatch_tp_bound_names_with_binder_context(tokens, p + 1, context)
+            let (bound_names, next) = dispatch_tp_bound_names(tokens, p + 1)
             ArrayBuilder::push(bounds, (name, bound_names))
             p = next
           },
@@ -173,10 +166,6 @@ fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, cont
     }
   }
   (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
-}
-
-fn dispatch_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
-  dispatch_type_params_with_binder_context(tokens, pos, None)
 }
 
 /// #789: parse a local `let f: TYPE = ..` annotation, consuming an optional
@@ -207,14 +196,10 @@ fn parse_local_let_annotation_with_binder_context(tokens: Array[Token], pos: Int
   }
 }
 
-fn parse_local_let_annotation(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with Exception {
-  parse_local_let_annotation_with_binder_context(tokens, pos, None)
-}
-
 /// #789: attach a local generic-let's `[T]` binder to its (annotation-distributed)
 /// lambda, mirroring apply_generic_fn_annotation so the local function stays
 /// polymorphic. No-op when there are no type params or the value is not a lambda.
-fn apply_local_let_tp(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr) -> Expr {
+fn apply_local_let_tp(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr, context: Option[ParserBinderContext]) -> Expr {
   if Array::length(tps) > 0 {
     match val {
       EFn(_, _, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, body),
@@ -259,12 +244,12 @@ enum BlockStep {
 /// guard's Bool-check and codegen come for free via `EIf`. `scrut` must be a
 /// re-evaluable reference (the caller binds the scrutinee to a temp), so the
 /// nested match never re-runs a side-effecting scrutinee.
-fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr) -> Array[(Pat, Expr)] {
+fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context: Option[ParserBinderContext]) -> Array[(Pat, Expr)] {
   if i >= Array::length(arms) {
     empty_arms()
   } else {
     let (pat, arm_guard, body) = Array::get(arms, i)
-    let rest = desugar_guarded(arms, i + 1, scrut)
+    let rest = desugar_guarded(arms, i + 1, scrut, context)
     let no_guard = match arm_guard {
       EBool(bv) => bv,
       _ => false
@@ -312,21 +297,21 @@ fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: Arr
   }
 }
 
-fn qualify_handle_arm_pattern(effect_name: String, pat: Pat) -> Pat {
+fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, context: Option[ParserBinderContext]) -> Pat {
   match pat {
     PCtor(name, args) => if String::contains(name, "::") {
       PCtor(name, args)
     } else {
       PCtor(String::concat(effect_name, String::concat("::", name)), args)
     },
-    POr(left, right) => POr(qualify_handle_arm_pattern(effect_name, left), qualify_handle_arm_pattern(effect_name, right)),
+    POr(left, right) => POr(qualify_handle_arm_pattern(effect_name, left, context), qualify_handle_arm_pattern(effect_name, right, context)),
     _ => pat
   }
 }
 
 fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
-  let qualified_pat = qualify_handle_arm_pattern(effect_name, pat)
+  let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, context)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
   let (expr, next) = parse_recur(tokens, arrow_pos, 0, context)
   ((qualified_pat, expr), next)
@@ -482,7 +467,7 @@ fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Ar
   (val_pair.0, skip_semi(tokens, val_pair.1))
 }
 
-fn apply_struct_destr(pat: Pat, val: Expr, rest: Expr) -> Expr {
+fn apply_struct_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBinderContext]) -> Expr {
   let val_name = "__struct_destr"
   let mut desugar = rest
   match pat {
@@ -504,7 +489,7 @@ fn apply_struct_destr(pat: Pat, val: Expr, rest: Expr) -> Expr {
   ELet(val_name, val, desugar, -1)
 }
 
-fn apply_record_destr(pat: Pat, val: Expr, rest: Expr) -> Expr {
+fn apply_record_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBinderContext]) -> Expr {
   let val_name = "__rec_destr"
   let mut desugar = rest
   match pat {
@@ -546,7 +531,7 @@ fn apply_record_destr(pat: Pat, val: Expr, rest: Expr) -> Expr {
   ELet(val_name, val, desugar, -1)
 }
 
-fn apply_block_step(step: BlockStep, rest: Expr) -> Expr {
+fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderContext]) -> Expr {
   match step {
     StepSeq(expr) => ESeq(expr, rest),
     StepValue(expr) => expr,
@@ -566,8 +551,8 @@ fn apply_block_step(step: BlockStep, rest: Expr) -> Expr {
       (pat, rest),
       (PWild, alt)
     ]),
-    StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest),
-    StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest),
+    StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest, context),
+    StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest, context),
     // `let* x = e` (railway bind, #635): short-circuit on the failure case,
     // continue on the success case. The parser has no type info, so it emits a
     // type-directed sentinel `__try_bind(val, (x) -> rest)` that the pre-check
@@ -591,11 +576,11 @@ fn apply_block_step(step: BlockStep, rest: Expr) -> Expr {
   }
 }
 
-fn fold_block_steps(steps: Array[BlockStep]) -> Expr {
+fn fold_block_steps(steps: Array[BlockStep], context: Option[ParserBinderContext]) -> Expr {
   let mut result = EUnit
   let mut i = Array::length(steps) - 1
   while i >= 0 {
-    result = apply_block_step(Array::get(steps, i), result)
+    result = apply_block_step(Array::get(steps, i), result, context)
     i = i - 1
   }
   result
@@ -704,7 +689,7 @@ fn reject_let_else(tokens: Array[Token], pos: Int) -> Int with Exception {
 }
 
 /// Push a refutable pattern-let step. Returns the position past it.
-fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, next_pos: Int) -> Int with Exception {
+fn push_pattern_let_step(tokens: Array[Token], steps: ArrayBuilder[BlockStep], pat: Pat, val: Expr, next_pos: Int, context: Option[ParserBinderContext]) -> Int with Exception {
   let after = reject_let_else(tokens, next_pos)
   ArrayBuilder::push(steps, StepPattern(pat, val))
   after
@@ -787,8 +772,8 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 // wrapped value would break letrec's direct-lambda shape).
                 // #789: re-attach a `[T]` binder to the distributed lambda.
                 let val2 = match rec_ann {
-                  Some(the_type) => match distribute_local_fn_ann(the_type, val) {
-                    Some(distributed) => apply_local_let_tp(rtps, rtbs, distributed),
+                  Some(the_type) => match distribute_local_fn_ann(the_type, val, context) {
+                    Some(distributed) => apply_local_let_tp(rtps, rtbs, distributed, context),
                     None => val
                   },
                   None => val
@@ -818,9 +803,9 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 throw("internal parser error: block let-mut parser did not advance")
               } else {
                 let val2 = match m_ann {
-                  Some(the_type) => match distribute_local_fn_ann(the_type, val) {
+                  Some(the_type) => match distribute_local_fn_ann(the_type, val, context) {
                     Some(distributed) => distributed,
-                    None => ascribe_wrap(val, the_type)
+                    None => ascribe_wrap(val, the_type, context)
                   },
                   None => val
                 }
@@ -884,7 +869,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   if next_pos <= eq {
                     throw("internal parser error: block let-ctor-pat parser did not advance")
                   } else {
-                    p = push_pattern_let_step(tokens, steps, pat, val, next_pos)
+                    p = push_pattern_let_step(tokens, steps, pat, val, next_pos, context)
                   }
                 },
                 _ => {
@@ -922,9 +907,9 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                     // Perceus param heap-inference sees the param types. #789: a
                     // `[T]` binder is re-attached to the distributed lambda.
                     let val2 = match ann_type {
-                      Some(the_type) => match distribute_local_fn_ann(the_type, val) {
-                        Some(distributed) => apply_local_let_tp(ltps, ltbs, distributed),
-                        None => ascribe_wrap(val, the_type)
+                      Some(the_type) => match distribute_local_fn_ann(the_type, val, context) {
+                        Some(distributed) => apply_local_let_tp(ltps, ltbs, distributed, context),
+                        None => ascribe_wrap(val, the_type, context)
                       },
                       None => val
                     }
@@ -942,7 +927,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             if next_pos <= eq {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
-              p = push_pattern_let_step(tokens, steps, pat, val, next_pos)
+              p = push_pattern_let_step(tokens, steps, pat, val, next_pos, context)
             }
           },
           _ => throw("expected identifier after 'let'")
@@ -1061,7 +1046,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
       }
     }
   }
-  (fold_block_steps(ArrayBuilder::freeze(steps)), end_pos)
+  (fold_block_steps(ArrayBuilder::freeze(steps), context), end_pos)
 }
 
 // #1350: `for await x in s` was RETIRED. It parsed to
@@ -1137,7 +1122,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
         let endpos = collect_match_arms(tokens, starts, br, ab, hg, parse_recur, context)
         let arms3 = ArrayBuilder::freeze(ab)
         if Array::get(hg, 0) {
-          let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1))
+          let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1), context)
           (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), final_arms), -1), endpos)
         } else {
           let plain = ArrayBuilder::new()
