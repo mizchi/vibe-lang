@@ -3899,3 +3899,84 @@ test "rs: big export section 20 exports" {
   let (_, _, i19) = Array::get(exports, 19)
   assert(i19 == 19)
 }
+
+// A typed reference is not one byte (#1133 investigation).
+//
+// `0x63` (ref null ht) and `0x64` (ref ht) carry a heap type, which for a
+// concrete type is a signed LEB index. The struct and array type forms already
+// consumed it; function signatures and local declarations did not, so a module
+// whose SIGNATURES use typed references desynchronized -- every later type was
+// garbage, and on a real module the scan ran past the type section and started
+// reading the import section's name bytes as valtypes.
+//
+// This is reachable from vibe's own compiler: the gc backend's reference lane
+// (#1541 / #1722) gives private callees typed parameters and results, and
+// reserves a `(func (result (ref null $t)))` for blocktypes.
+
+test "parse_types reads a typed reference parameter as one valtype" {
+  // (type (func (param (ref null 0) i64) (result i64)))
+  let ts = parse_types(make_bytes([
+    1,
+    0x60,
+    2,
+    0x63,
+    0,
+    0x7E,
+    1,
+    0x7E
+  ]), 0, 8)
+  assert(Array::length(ts) == 1)
+  let (params, results) = Array::get(ts, 0)
+  // Two parameters, not three: the heap-type index is part of the first.
+  assert(Array::length(params) == 2)
+  assert(Array::get(params, 0) == 0x63)
+  assert(Array::get(params, 1) == 0x7E)
+  assert(Array::length(results) == 1)
+  assert(Array::get(results, 0) == 0x7E)
+}
+
+test "parse_types keeps its place across a typed reference result" {
+  // Two types: `(func (result (ref null 0)))` then `(func (param i64))`.
+  // The second only parses if the first consumed the heap-type index -- this
+  // is the shape the gc backend reserves for blocktypes.
+  let ts = parse_types(make_bytes([
+    2,
+    0x60,
+    0,
+    1,
+    0x63,
+    0,
+    0x60,
+    1,
+    0x7E,
+    0
+  ]), 0, 10)
+  assert(Array::length(ts) == 2)
+  let (p0, r0) = Array::get(ts, 0)
+  assert(Array::length(p0) == 0)
+  assert(Array::length(r0) == 1)
+  assert(Array::get(r0, 0) == 0x63)
+  let (p1, r1) = Array::get(ts, 1)
+  assert(Array::length(p1) == 1)
+  assert(Array::get(p1, 0) == 0x7E)
+  assert(Array::length(r1) == 0)
+}
+
+test "parse_code_entries reads a typed reference local as one declaration" {
+  // One body: locals = [(1, (ref null 0))], code = `end`.
+  let entries = parse_code_entries(make_bytes([
+    1,
+    5,
+    1,
+    1,
+    0x63,
+    0,
+    0x0B
+  ]), 0, 7)
+  assert(Array::length(entries) == 1)
+  let (_, _, locals) = Array::get(entries, 0)
+  assert(Array::length(locals) == 1)
+  let (lcount, ltype) = Array::get(locals, 0)
+  assert(lcount == 1)
+  assert(ltype == 0x63)
+}

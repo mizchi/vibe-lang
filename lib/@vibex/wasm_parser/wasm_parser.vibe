@@ -75,6 +75,30 @@ export fn parse_start(bytes: Bytes, offset: Int, size: Int) -> Int {
   }
 }
 
+/// Read one valtype and return it with the position AFTER it.
+///
+/// Most valtypes are a single byte, but a typed reference is not: `0x63`
+/// (ref null ht) and `0x64` (ref ht) are followed by a heap type, which for a
+/// concrete type is a signed LEB index. Advancing one byte past those leaves
+/// the index in the stream, where it is read as the next valtype -- and from
+/// there the whole section is off by however many bytes the indices took.
+///
+/// The struct and array branches below already did this; the function-type
+/// branch and the local declarations did not, which is why a module whose
+/// SIGNATURES carry typed references desynchronized. vibe's own gc backend
+/// emits exactly that shape (#1541 / #1722 give private callees typed
+/// parameters and results, and reserve a `(func (result (ref null $t)))` for
+/// blocktypes), so the misparse is reachable from the compiler's own output.
+fn read_valtype(bytes: Bytes, pos: Int) -> (Int, Int) {
+  let vt = bytes[pos]
+  if (vt == 0x63) || (vt == 0x64) {
+    let (_, np) = read_sleb128(bytes, pos + 1)
+    (vt, np)
+  } else {
+    (vt, pos + 1)
+  }
+}
+
 export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int], Array[Int])] {
   let end_pos = offset + size
   let result = Array::slice([
@@ -98,8 +122,9 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
       ], 0, 0)
       let mut p = 0
       while (p < param_count) && (pos < end_pos) {
-        Array::push(params, bytes[pos])
-        pos = pos + 1
+        let (vt, np) = read_valtype(bytes, pos)
+        Array::push(params, vt)
+        pos = np
         p = p + 1
       }
       let (result_count, rp) = read_uleb128(bytes, pos)
@@ -109,8 +134,9 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
       ], 0, 0)
       let mut r = 0
       while (r < result_count) && (pos < end_pos) {
-        Array::push(results, bytes[pos])
-        pos = pos + 1
+        let (vt, np) = read_valtype(bytes, pos)
+        Array::push(results, vt)
+        pos = np
         r = r + 1
       }
       Array::push(result, (params, results))
@@ -911,8 +937,11 @@ export fn parse_code_entries(bytes: Bytes, offset: Int, size: Int) -> Array[(Int
       let (lcount, p1) = read_uleb128(bytes, lp)
       lp = p1
       if lp < body_end {
-        let ltype = bytes[lp]
-        lp = lp + 1
+        // A `(local (ref null $t))` is two-plus bytes, same as a typed
+        // reference anywhere else. Reading one byte here left the type index
+        // to be taken as the next declaration's count.
+        let (ltype, lnext) = read_valtype(bytes, lp)
+        lp = lnext
         Array::push(locals, (lcount, ltype))
       } else {
         ()
