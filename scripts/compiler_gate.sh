@@ -4057,6 +4057,27 @@ fi
 rm -rf "$swdir"
 echo "[compiler-gate] fused SIMD whitespace skip ok"
 
+# 40b2. String-native fused SIMD scan (#1868 Phase 1). Keep the scalar oracle
+# in the fixture so quote/backslash/control detection, byte offsets, UTF-8,
+# chunk boundaries, and the scalar tail stay identical.
+echo "[compiler-gate] 40b2/40 fused SIMD string-special scan"
+sssdir="_build/_gate_simd_string_special"
+rm -rf "$sssdir"; mkdir -p "$sssdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/simd_scan_string_special_test.vibe" "$sssdir/sss.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$sssdir/sss.wasm" ]; then
+  echo "[compiler-gate] FAIL: SIMD string-special test did not compile" >&2
+  cat "$sssdir/sss.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$sssdir/sss.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: SIMD string-special test trapped" >&2; exit 1
+fi
+rm -rf "$sssdir"
+echo "[compiler-gate] fused SIMD string-special scan ok"
+
 # 40c. Region capture (#629 step 2): a `let mut` captured by a closure inside a
 #      struct/record literal, projection, handler, loop, labeled arg, map literal
 #      or spread must still be heap-boxed (by-reference capture), not snapshotted.

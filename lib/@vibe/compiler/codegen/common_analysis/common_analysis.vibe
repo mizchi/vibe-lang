@@ -1,7 +1,16 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, bytebuf_push, canonical_builtin_name, is_exception_throw_operation, sorted_names_of
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bsearch_leftmost,
+  builtin_allocates,
+  bytebuf_push,
+  canonical_builtin_name,
+  is_exception_throw_operation,
+  sorted_names_of
 }
 
 import @vibe/core {
@@ -1950,11 +1959,11 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> I
 
 //# ADR-0091 zero_alloc (Phase 1)
 
-/// Builtins allowed inside a `@zero_alloc` fn: reads and in-place writes
-/// that never touch the allocator. Everything else callable is treated as
-/// potentially allocating (conservative Phase 1 default).
+/// Builtins allowed inside a `#zero_alloc` fn. Allocation classification is
+/// owned by the builtin registry so fused primitives and zero-allocation
+/// checking cannot drift apart. Unknown builtins still fail closed.
 fn za_safe_builtin(f: String) -> Bool {
-  f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Bytes::get" || f == "Bytes::set" || f == "Bytes::length" || f == "String::length" || f == "String::char_code_at" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "assert" || f == "not"
+  !builtin_allocates(f)
 }
 
 fn za_first(a: String, b: String) -> String {
@@ -2104,7 +2113,7 @@ export fn typed_operator_alloc_kind(expr: Expr, names: Array[String], kinds: Arr
   }
 }
 
-/// Walk an expression under `@zero_alloc` and return "" when it is proven
+/// Walk an expression under `#zero_alloc` and return "" when it is proven
 /// allocation-free, else a description of the first allocation site found.
 /// Conservative Phase 1 (ADR-0091): constructors, container/closure/string
 /// literals, float literals (heap-boxed on the linear backend), effect

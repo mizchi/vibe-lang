@@ -585,20 +585,22 @@ printf '%s\n' "$REPORT"
 #
 # ここに置くのは #125 の教訓 — CI に無い検証は腐る。登録を落とすと gc での
 # コンパイルが失敗し、このステップで落ちる。
-SIMD_OUT="$ROOT_DIR/_build/_gc_gate_simd.wasm"
-SIMD_OUT_REL="${SIMD_OUT#"$ROOT_DIR"/}"
-VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
-  fixtures/simd_skip_ws_test.vibe "$SIMD_OUT_REL" __no_entry__ >/dev/null || {
-  echo "[gc-heap-accounting] FAIL: simd fixture did not compile on the gc lane" >&2
-  exit 1
-}
-wasm-tools validate --features all "$SIMD_OUT" >/dev/null
-"$RUNNER" "$SIMD_OUT" >/dev/null || {
-  echo "[gc-heap-accounting] FAIL: simd fixture trapped on the gc lane" >&2
-  exit 1
-}
-echo "[gc-heap-accounting] ok: simd_skip_ws fixture passes on the gc lane"
+for SIMD_FIXTURE in simd_skip_ws_test simd_scan_string_special_test; do
+  SIMD_OUT="$ROOT_DIR/_build/_gc_gate_${SIMD_FIXTURE}.wasm"
+  SIMD_OUT_REL="${SIMD_OUT#"$ROOT_DIR"/}"
+  VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+    "fixtures/${SIMD_FIXTURE}.vibe" "$SIMD_OUT_REL" __no_entry__ >/dev/null || {
+    echo "[gc-heap-accounting] FAIL: ${SIMD_FIXTURE} did not compile on the gc lane" >&2
+    exit 1
+  }
+  wasm-tools validate --features all "$SIMD_OUT" >/dev/null
+  "$RUNNER" "$SIMD_OUT" >/dev/null || {
+    echo "[gc-heap-accounting] FAIL: ${SIMD_FIXTURE} trapped on the gc lane" >&2
+    exit 1
+  }
+done
+echo "[gc-heap-accounting] ok: SIMD fixtures pass on the gc lane"
 
 ALLOCATED="$(printf '%s\n' "$REPORT" | sed -n 's/.*allocated=\([0-9][0-9]*\).*/\1/p' | head -1)"
 case "$ALLOCATED" in
