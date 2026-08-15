@@ -46,10 +46,11 @@ clean を意味し、メッセージは内部用語ではなく「何を書き�
 
 ```vibe
 let x: Int = 42                // 62-bit tagged, max 2^61-1
-                               // 算術 overflow は 62-bit two's-complement で
-                               // wrap し、全 backend で同じ値 (#1877):
-                               // max + 1 == min、2^60 * 4 == 0。範囲外の
-                               // リテラルは IntLiteralOverflow で拒否
+                               // arithmetic overflow wraps as 62-bit two's
+                               // complement, same values on every backend
+                               // (#1877): max + 1 == min, 2^60 * 4 == 0;
+                               // out-of-range literals are rejected with
+                               // IntLiteralOverflow
 let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
