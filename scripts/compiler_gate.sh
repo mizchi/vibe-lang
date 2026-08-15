@@ -8550,7 +8550,7 @@ echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 coll
 # guarantee in this slice. #1725 added the closure-capture direction, which
 # the result-TYPE scan structurally cannot see (types do not record
 # captures) -- both a negative and a false-positive guard, at the end.
-echo "[compiler-gate] 75/75 ADR-0090 region + MutList vertical slice (#1262)"
+echo "[compiler-gate] 75/75 ADR-0090 region + MutList/MutBytes vertical slice (#1262 / #1770)"
 r90dir="_build/_gate_region90"
 rm -rf "$r90dir"; mkdir -p "$r90dir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
@@ -8749,8 +8749,75 @@ if [ "$r90_cyc_per" -gt 64 ]; then
 fi
 echo "[compiler-gate] region arena reclaims reference cycles ok ($r90_cyc_per B/region)"
 echo "[compiler-gate] region arena bulk release ok (200 regions, main heap +${r90_heap_delta} B)"
+
+# ADR-0090 MutBytes (#1770 Phase 1): the region-bound byte buffer, same
+# vertical slice as MutList above -- positive build/copy-out, unforgeable
+# token, closure-capture escape (pins the MutBytes::empty row in
+# checker_escape.vibe's taint predicate), copy-out semantics, and the
+# boundedness of gen_bytes_push_body's arena regrow (which the MutList
+# fixtures never exercise: Array growth and Bytes growth are separate
+# builtin bodies).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_bytes_ok.vibe "$r90dir/bpos.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/bpos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_bytes_ok.vibe did not compile -- ADR-0090 MutBytes slice regressed" >&2
+  cat "$r90dir/bpos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bpos.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_bytes_ok.vibe test blocks failed" >&2
+  exit 1
+fi
+for r90b_neg in err_region_bytes_token_forged:'region token' err_region_bytes_escape_return:'region escapes its scope' err_region_bytes_escape_closure_capture:'region escapes its scope'; do
+  r90b_fixture="${r90b_neg%%:*}"
+  r90b_needle="${r90b_neg#*:}"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/$r90b_fixture.vibe" "$r90dir/bneg.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ -s "$r90dir/bneg.wasm" ]; then
+    echo "[compiler-gate] FAIL: $r90b_fixture.vibe compiled successfully -- must be rejected" >&2
+    exit 1
+  fi
+  if ! grep -qF "$r90b_needle" "$r90dir/bneg.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $r90b_fixture.vibe did not produce the expected diagnostic ('$r90b_needle')" >&2
+    cat "$r90dir/bneg.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  rm -f "$r90dir/bneg.wasm" "$r90dir/bneg.wasm.diag"
+done
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_bytes_ok_copy_out.vibe "$r90dir/bcopy.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/bcopy.wasm" ] \
+  || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bcopy.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_bytes_ok_copy_out.vibe failed -- MutBytes::to_bytes must COPY (an alias sees the post-snapshot push)" >&2
+  cat "$r90dir/bcopy.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_bytes_arena_bounded.vibe "$r90dir/bbounded.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/bbounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe did not compile" >&2
+  cat "$r90dir/bbounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bbounded.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe got the wrong value" >&2
+  exit 1
+fi
+r90b_heap_delta="$(node scripts/region_arena_heap_delta.mjs "$r90dir/bbounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from region_bytes_arena_bounded.wasm" >&2
+  exit 1
+}
+if [ "$r90b_heap_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 MutBytes regions grew the main bump heap by $r90b_heap_delta B (want < 100000; ~8024 with the arena, 194424 without) -- the bytes arena regrow stopped releasing" >&2
+  exit 1
+fi
+echo "[compiler-gate] MutBytes arena bulk release ok (200 regions, main heap +${r90b_heap_delta} B)"
 rm -rf "$r90dir"
-echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
+echo "[compiler-gate] ADR-0090 region + MutList/MutBytes vertical slice ok"
 
 # 76/76. ADR-0091 Phase 1 (#1262): `@zero_alloc` attribute. The attribute
 # lexes as a single ident token, parses as a top-level SExpr the checker

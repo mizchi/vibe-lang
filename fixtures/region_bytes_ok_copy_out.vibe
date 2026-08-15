@@ -1,0 +1,24 @@
+// ADR-0090 MutBytes: `to_bytes` COPIES (mutbytes_exit_copy). A push after
+// taking the snapshot must not leak into the escaped value -- the MutList
+// twin is region_ok_freeze_copies_out.vibe, and the aliasing failure mode is
+// identical (silent-wrong before the arena, dangling after it).
+fn snapshot_after_push() -> Int {
+  let snap = region r {
+    let b = MutBytes::empty(r)
+    MutBytes::push(b, 10)
+    MutBytes::push(b, 20)
+    let out = MutBytes::to_bytes(b)
+    MutBytes::push(b, 30)
+    out
+  }
+  Bytes::length(snap) * 100 + Bytes::get(snap, 0) + Bytes::get(snap, 1)
+}
+
+export let main = () -> Int {
+  snapshot_after_push()
+}
+
+test "region bytes copy out" {
+  // 2 elements * 100 + 10 + 20 = 230 (an alias would see 3 elements / 330).
+  inspect(main(), "230")
+}

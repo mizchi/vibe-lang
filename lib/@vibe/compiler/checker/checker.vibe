@@ -4742,6 +4742,48 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, CtArray(elem), capture, lane), s1, c1)
+        } else if name == "MutBytes::empty" && Array::length(args) == 1 {
+          // ADR-0090 MutBytes: region-bound byte buffer, same checker-only
+          // phantom technique as MutList::empty above. Bytes has no element
+          // type, so the region argument is the ONLY type argument -- the
+          // `__region_run` escape scan sees the skolem in the same position
+          // sweep (type_mentions_named walks every argument).
+          let (r_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let zoned_r = subst_apply(s1, r_ty)
+          let is_region_token = match zoned_r {
+            CtNamed(zr_name, _) => String::length(zr_name) >= 8 && String::substring(zr_name, 0, 8) == "#region_",
+            _ => false
+          }
+          if is_region_token {
+            ()
+          } else {
+            Array::push(errors, String::concat("MutBytes::empty requires the region token bound by `region r { ... }` (the token is second-class and cannot be forged or passed through function parameters)", off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtNamed("MutBytes", Array::slice([
+            zoned_r
+          ], 0, 1)), capture, lane), s1, c1)
+        } else if name == "MutBytes::push" && Array::length(args) == 2 {
+          // ADR-0090 MutBytes: borrows the buffer (arg0), consumes the byte.
+          let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (_, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
+        } else if name == "MutBytes::append" && Array::length(args) == 2 {
+          // ADR-0090 MutBytes: appends a plain Bytes' content INTO the
+          // region buffer (dst = arg0). Reading a main-heap Bytes from
+          // inside the region is always safe; nothing escapes.
+          let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (_, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
+        } else if name == "MutBytes::length" && Array::length(args) == 1 {
+          let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if name == "MutBytes::to_bytes" && Array::length(args) == 1 {
+          // ADR-0090 MutBytes: the sanctioned region exit -- drops the region
+          // type argument so the result passes the `__region_run` escape
+          // scan. Unlike MutList::freeze this is a REAL copy in codegen
+          // (mutbytes_exit_copy), never an alias.
+          let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          (tab_call_ty(tytab, call_off, CtBytes, capture, lane), s1, c1)
         } else if name == "FixedArray::make" && Array::length(args) == 2 {
           // #1140: FixedArray[T] is a checker-only phantom-type distinction
           // over Array[T]'s exact same runtime layout, same technique as
@@ -5249,7 +5291,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // releases at region end. See checker_escape.vibe for why this
               // companion check is deliberately narrow.
               if region_token_escapes_in_closure(fn_body, binder_name) {
-                Array::push(errors, String::concat("region escapes its scope: a closure returned from this region body captures a value built from the region's own token -- return `MutList::freeze(..)` / `MutList::to_array(..)` instead of a closure over it", off_marker_len(callee_off, String::length(name))))
+                Array::push(errors, String::concat("region escapes its scope: a closure returned from this region body captures a value built from the region's own token -- return `MutList::freeze(..)` / `MutList::to_array(..)` / `MutBytes::to_bytes(..)` instead of a closure over it", off_marker_len(callee_off, String::length(name))))
               } else {
                 ()
               }

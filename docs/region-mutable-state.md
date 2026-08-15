@@ -267,3 +267,37 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
 | 実装観測 | ADR-0071 正規化が region 引数 kind を予約済み | row 統合は予約枠の実装。effect 変数とは別 kind |
 | 実装観測 | linear heap は bump(`__heap_ptr`)+ exact-fit free list | arena はセグメント切り出しで実装、main heap と非干渉 |
 | 回帰ガード | escape err fixtures、boundedness gate、RC on/off byte 同一 | Phase 1 から固定 |
+
+## MutBytes[r] (2026-08-15, #1770 Phase 1)
+
+region 束縛の**可変バイトバッファ**。op は `MutBytes::empty(r)` / `push(b, byte)` /
+`append(b, src: Bytes)`(main-heap の Bytes の内容を region 側へ取り込む。逆方向
+= region から出る側ではないので escape は発生しない)/ `length(b) -> Int` /
+`to_bytes(b) -> Bytes`(公認の exit。`mutbytes_exit_copy` が
+`Bytes::slice(tmp, 0, length)` の**実コピー**に落とすので、脱出値が arena を
+指すことはない)。
+
+- **なぜ MutList の次がこれか**: #1794 (fmt lexer の region 化) の否決が適用
+  基準を訂正した — 蓄積結果が**そのまま escape する**形では copy-out の
+  コピーが成長ゴミの節約とちょうど相殺し、arena セグメントの carve が純増に
+  なる。region が勝つのは「region 内で書き、escape するのは縮約値だけ」の形
+  で、その代表がバイトバッファの scratch (`ast_binary_write_string` の UTF-8
+  encode、codegen の section content) — これには MutList では足りず MutBytes
+  が要る。
+- **実装の形**: MutList と同じ 2 段 (checker の literal-name 分岐 +
+  `compile_call` の rewrite、builtin registry 非経由)。`MutBytes` の phantom
+  型は `CtNamed("MutBytes", [r])` — region 引数が型に載るので、`__region_run`
+  側の escape 走査 (結果型 / outer binding / closure capture stopgap) は
+  **無改造**で効く。名前依存の追加は `checker_escape.vibe ::
+  esc_is_region_tainted_init` の 1 行だけ。
+- **本体の仕事**: `gen_bytes_push_body` / `gen_bytes_append_body` への arena
+  range 判定 regrow の追加 (`gen_arr_push_body` と同型 — 「どのレーンから
+  regrow するかはバッファの性質であって呼び出し位置の性質ではない」)。
+  `gen_region_bytes_new_body` は arr 版の 76-byte / 負値 capacity 写し。
+  実測 200 region × 500 push で main heap 増加 **194,424 B → 8,024 B (24×)**。
+- **制約は MutList と同一**: bare 参照不可・明示 type application 不可・
+  wasm-gc 非対応・RC レーンでは arena 無効 (plain Bytes への fallback、値は
+  同一)。ただし Bytes ブロックは RC ヘッダを持たないため、RC レーンでの
+  arena 有効化は Array より先に成立しうる (未検証、要 free-list 非干渉の確認)。
+- compiler source 自身での使用は次の bootstrap bump 後 (fixtures とユーザ
+  コードは即使える)。

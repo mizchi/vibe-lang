@@ -954,7 +954,7 @@ export fn cc_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
 /// arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
 /// drops it, so the dup would leak; #704). Other argument positions are owning.
 fn cc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
 /// The borrowed-parameter mask for a call to top-level fn `fname`: the
@@ -1189,6 +1189,23 @@ fn mutlist_exit_copy(arg: Expr) -> Expr {
   ], -1), "__mutlist_exit")
 }
 
+/// ADR-0090 MutBytes: `MutBytes::to_bytes(mb)` -- the copy-out exit, for the
+/// same two reasons as mutlist_exit_copy above (an alias would observe later
+/// pushes, and the arena release would dangle it). `Bytes::slice(tmp, 0,
+/// Bytes::length(tmp))` allocates the copy via `Bytes::new`, which is always
+/// a main-heap bump, so the escaping value never points into the arena. The
+/// value is bound to a temp so an effectful argument is evaluated once.
+fn mutbytes_exit_copy(arg: Expr) -> Expr {
+  let tmp = "__mutbytes_exit"
+  ELet(tmp, arg, ECall(EIdent("Bytes::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Bytes::length", -1), [
+      EIdent(tmp, -1)
+    ], -1)
+  ], -1), -1)
+}
+
 /// `Array::slice(v, 0, Array::length(v))` -- a fresh array with the same
 /// elements. The value is bound to `tmp` first so an effectful argument is
 /// evaluated once, not twice.
@@ -1346,6 +1363,18 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     }
   } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
     ce(buf, mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && get_eident_name(callee) == "MutBytes::empty" && Array::length(args) == 1 {
+    if ctx.region_bytes_new_func_idx >= 0 {
+      emit_call(buf, ctx.region_bytes_new_func_idx)
+      next_local
+    } else {
+      let no_args = Array::slice([
+        EInt(0)
+      ], 0, 0)
+      ce(buf, ECall(EIdent("Bytes::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+    }
+  } else if is_eident(callee) && get_eident_name(callee) == "MutBytes::to_bytes" && Array::length(args) == 1 {
+    ce(buf, mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
   } else if is_eident(callee) && frozen_array_conversion_copy(get_eident_name(callee)) != "" && Array::length(args) == 1 && func_table_index_of(ctx.func_table, get_eident_name(callee)) >= 0 && !array_contains_str(local_names, get_eident_name(callee)) {
     ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
   } else {
@@ -1410,6 +1439,12 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       "ArrayBuilder::freeze"
     } else if fname0 == "MutList::to_array" {
       "ArrayBuilder::freeze"
+    } else if fname0 == "MutBytes::push" {
+      "Bytes::push"
+    } else if fname0 == "MutBytes::append" {
+      "Bytes::append"
+    } else if fname0 == "MutBytes::length" {
+      "Bytes::length"
     } else {
       fname0
     }

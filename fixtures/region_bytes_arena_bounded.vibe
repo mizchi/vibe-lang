@@ -1,0 +1,39 @@
+// ADR-0090 MutBytes boundedness: N regions of byte-buffer growth cost the
+// main heap (almost) nothing on the bump lane. The MutList twin is
+// region_arena_bounded.vibe; the number this pins is the BYTES growth path
+// (gen_bytes_push_body's arena regrow), which MutList's fixture never
+// exercises.
+//
+// Measured (200 iterations x 500 pushes, VIBE_RC=0,
+// scripts/region_arena_heap_delta.mjs):
+//
+//     plain Bytes    194,424 B   (per-round buffer + doubling regrows, leaked)
+//     MutBytes         8,024 B   (~40 B per region: the region lambda's env)
+//
+// The gate asserts a loose bound; like the MutList fixture, the value
+// assertion alone cannot see a release that quietly stopped working.
+fn one(n: Int) -> Int {
+  region r {
+    let b = MutBytes::empty(r)
+    let mut i = 0
+    while i < n {
+      MutBytes::push(b, i&255)
+      i = i + 1
+    }
+    MutBytes::length(b)
+  }
+}
+
+export let main = () -> Int {
+  let mut k = 0
+  let mut acc = 0
+  while k < 200 {
+    acc = acc + one(500)
+    k = k + 1
+  }
+  acc
+}
+
+test "region bytes arena bounded" {
+  inspect(main(), "100000")
+}
