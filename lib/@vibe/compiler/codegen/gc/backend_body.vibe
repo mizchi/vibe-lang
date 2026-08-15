@@ -1869,8 +1869,27 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   push_gc_builtin(gen_bytes_new_body(), 1, 0, 5)
   push_gc_builtin(gen_bytes_get_body(false), 1, 0, 4)
   push_gc_builtin(gen_bytes_set_body(false), 1, 0, 7)
-  push_gc_builtin(gen_bytes_push_body(false, -1, 0, 0), 6, 0, 6)
-  push_gc_builtin(gen_bytes_append_body(-1, 0, 0), 8, 0, 6)
+  // ADR-0090 (#1262) tier 2: the Bytes half of the regrow lane. Same shape
+  // and same reason as arr_push above -- the replacement buffer must follow
+  // the BUFFER'S OWN block, so MutBytes and ordinary Bytes share one body
+  // and the decision is a runtime range check, not a call-site property.
+  //
+  // Passing -1 here (which compiles the arena branch out) is exactly the bug
+  // the Array side had: MutBytes headers came from the segment while every
+  // replacement buffer past the initial 64 bytes came from the main bump
+  // heap and survived the watermark restore. Measured on
+  // fixtures/region_bytes_arena_bounded.vibe: 182,408 B with -1 against
+  // linear's 8,008 B. The arena form needs one extra i32 local, as on linear.
+  push_gc_builtin(gen_bytes_push_body(false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
+  push_gc_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    9
+  } else {
+    8
+  }, 0, 6)
   push_gc_builtin(gen_bytes_concat_body(hbo + 18, hbo + 22), 0, 1, 4)
   push_gc_builtin(gen_bytes_slice_body(false, hbo + 18, hbo + 19, hbo + 21), 2, 1, 8)
   push_gc_builtin(gen_bytes_from_array_body(false, hbo + 7, hbo + 8, hbo + 18, hbo + 21), 2, 1, 3)

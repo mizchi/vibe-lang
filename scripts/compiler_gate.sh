@@ -4751,8 +4751,35 @@ if [ "$gcar_delta" -gt 100000 ]; then
   echo "[compiler-gate] FAIL: 200 gc regions grew the main bump heap by $gcar_delta B (want < 100000; ~3208 with the arena, 1635208 without) -- the gc arena stopped releasing (#1262)" >&2
   exit 1
 fi
+# The Bytes half, measured separately. Not redundant with the Array probe
+# above: the two have INDEPENDENT regrow generators (gen_arr_push_body vs
+# gen_bytes_push_body / gen_bytes_append_body), so wiring one to the arena and
+# leaving the other on -1 is a real state -- and was the actual state of this
+# branch until review caught it (182,408 B here while the Array probe already
+# read 3,208 B).
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_bytes_arena_bounded.vibe" "$gcardir/bbounded.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$gcardir/bbounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe did not compile on the gc backend (#1262)" >&2
+  cat "$gcardir/bbounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! gcarb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcardir/bbounded.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe got the wrong value on the gc backend (#1262)" >&2
+  echo "$gcarb_out" >&2
+  exit 1
+fi
+gcarb_delta="$(node scripts/region_arena_heap_delta.mjs "$gcardir/bbounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from the gc region_bytes_arena_bounded.wasm (#1262)" >&2
+  exit 1
+}
+if [ "$gcarb_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 gc Bytes regions grew the main bump heap by $gcarb_delta B (want < 100000; ~8000 with the arena, 182408 with the regrow lane off) -- the gc Bytes arena stopped releasing (#1262)" >&2
+  exit 1
+fi
 rm -rf "$gcardir"
-echo "[compiler-gate] wasm-gc region arena ok (reclamation measured: ${gcar_delta} B over 200 regions)"
+echo "[compiler-gate] wasm-gc region arena ok (reclamation measured: Array ${gcar_delta} B, Bytes ${gcarb_delta} B over 200 regions)"
 
 # 40h-8. #1262: `Map::delete` on the gc lane.
 #
