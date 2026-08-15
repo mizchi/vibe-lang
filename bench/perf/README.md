@@ -114,11 +114,14 @@ it, and note old -> new (and why) in the PR.
     block listed in [`tracked_benches.txt`](tracked_benches.txt), and the
     **exec corpus** (below),
   - **advisory** (wall time, noisy on shared runners): selfcompile `wall_ms`
-    (median of 3) and `ns_p50` per tracked bench.
+    (median of 3) and `ns_p50` per tracked bench — recorded in the snapshot
+    for history, **not rendered** in the report (below).
 - `scripts/bench_report.mjs current.json [baseline.json]` renders the
-  markdown comparison — deterministic rows flag at ±2%, advisory rows only
-  at ±15% and sit in a collapsed `<details>` block (deterministic sections
-  are what a reviewer reads first).
+  markdown comparison — **deterministic rows only**, flagged at ±2%. Advisory
+  wall times are deliberately absent: runner-speed variance swung every wall
+  row ±15-40% on unrelated PRs, which made the section noise for human and
+  LLM readers alike (the #1207/#1867 reports are the record). The readings
+  stay in the `bench-data` snapshots for offline analysis.
 - **Per-PR**: the workflow upserts a sticky "📊 Perf report" comment on the
   PR (marker `<!-- vibe-perf-report -->`), comparing against the latest
   main snapshot. Pushing new commits updates the same comment.
@@ -167,7 +170,14 @@ on stderr, one machine-readable line, fresh `.wasm` only — a `.cwasm` was
 serialized without fuel instrumentation). It composes with the existing
 `VIBE_MEM=1` report.
 
-### Runner normalization (calibration)
+### Runner normalization (calibration) — history-only since the exec corpus
+
+> **Status:** the calibration record is still collected into every snapshot
+> (it remains the honest way to diagnose "was that swing the runner or the
+> code?" when reading `bench-data` history offline), but `bench_report.mjs`
+> no longer renders advisory wall times at all, so it no longer applies the
+> runner factor to anything. The mechanism below is kept documented because
+> the snapshots still carry the fields and history spans both eras.
 
 Shared CI runners vary in raw speed from run to run — a PR's own diff has
 nothing to do with it. The #1207 investigation caught this directly: its

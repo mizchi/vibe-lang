@@ -12,22 +12,25 @@ const hashes = {
   bench_sha256: "bench",
 };
 
+// Snapshots deliberately carry advisory wall-time data (wall_ms_median,
+// ns_p50) and a calibration record — the report must keep IGNORING them:
+// they live in the bench-data history only (runner-speed noise, #1207/#1209).
 function renderReport({ factor, currentWall, baselineWall = 100 }) {
   const dir = mkdtempSync(join(tmpdir(), "vibe-bench-report-"));
   try {
     const baseline = {
       commit: "baseline",
       date: "2026-08-11",
-      selfcompile: { wall_ms_median: baselineWall },
+      selfcompile: { heap_ptr_bytes: 1000, wall_ms_median: baselineWall },
       sizes: {},
-      benches: {},
+      benches: { "b.vibe::case": { ns_p50: 5000, bytes_per_op: 64 } },
       calibration: { label: "build_100", ns_p50: 10000, ...hashes },
     };
     const current = {
       commit: "current",
-      selfcompile: { wall_ms_median: currentWall },
+      selfcompile: { heap_ptr_bytes: 1000, wall_ms_median: currentWall },
       sizes: {},
-      benches: {},
+      benches: { "b.vibe::case": { ns_p50: 9000, bytes_per_op: 64 } },
       calibration: { label: "build_100", ns_p50: Math.round(factor * 10000), ...hashes },
     };
     const currentPath = join(dir, "current.json");
@@ -44,41 +47,47 @@ function renderReport({ factor, currentWall, baselineWall = 100 }) {
   }
 }
 
-function advisoryWallRow(report) {
-  return report.split("\n").find((line) => line.startsWith("| selfcompile wall_ms"));
-}
-
-test("0.586 runner mismatch fails open to the raw advisory delta", () => {
-  const report = renderReport({ factor: 0.586, currentWall: 80 });
-  assert.match(report, /runner mismatch: calibration factor 0\.586× is outside the plausible 0\.85–1\.18× range/);
-  assert.equal(advisoryWallRow(report), "| selfcompile wall_ms (median) | 80 | 100 | -20.00% 🎉 |");
-  assert.doesNotMatch(advisoryWallRow(report), /\(norm\)/);
+test("advisory wall-time and calibration data are never rendered", () => {
+  // Wildly different wall readings and an implausible calibration factor must
+  // leave zero trace in the report — no wall rows, no ns/op rows, no
+  // calibration notes, no advisory section at all.
+  for (const args of [
+    { factor: 0.586, currentWall: 80 },
+    { factor: 1.132, currentWall: 500 },
+  ]) {
+    const report = renderReport(args);
+    // The footer legitimately mentions where the unrendered data lives —
+    // exclude it, then require zero advisory traces in the body.
+    const body = report.split("\n").filter((l) => !l.startsWith("<sub>")).join("\n");
+    assert.doesNotMatch(body, /wall_ms|ns\/op|Advisory|calibration|runner factor|runner mismatch|<details>/);
+    // The deterministic view of the same tracked bench still renders.
+    assert.match(report, /\| B\/op: b\.vibe::case \| 64 \| 64 \| ±0 \|/);
+    // The footer says where the unrendered advisory data lives.
+    assert.match(report, /wall times & runner calibration: recorded in the `bench-data` snapshots, not rendered/);
+  }
 });
 
-test("0.807 runner mismatch does not turn a flat raw reading into a normalized warning", () => {
-  const report = renderReport({ factor: 0.807, currentWall: 100 });
-  assert.match(report, /runner mismatch: calibration factor 0\.807×/);
-  assert.equal(advisoryWallRow(report), "| selfcompile wall_ms (median) | 100 | 100 | ±0 |");
-  assert.doesNotMatch(advisoryWallRow(report), /⚠️|\(norm\)/);
-});
-
-test("1.132 plausible factor preserves existing normalized behavior", () => {
-  const report = renderReport({ factor: 1.132, currentWall: 120 });
-  assert.match(report, /runner factor 1\.132× .* advisory deltas below are normalized/);
-  assert.equal(advisoryWallRow(report), "| selfcompile wall_ms (median) | 120 | 100 | +6.01% (norm) |");
-});
-
-test("plausible normalization may expose sign disagreement without a false warning", () => {
-  const report = renderReport({ factor: 1.132, currentWall: 105 });
-  assert.equal(advisoryWallRow(report), "| selfcompile wall_ms (median) | 105 | 100 | -7.24% (norm) |");
-  assert.doesNotMatch(advisoryWallRow(report), /⚠️|🎉/);
-});
-
-test("plausibility range is inclusive and reports adjacent rejections honestly", () => {
-  assert.match(renderReport({ factor: 0.85, currentWall: 100 }), /runner factor 0\.850×/);
-  assert.match(renderReport({ factor: 1.18, currentWall: 100 }), /runner factor 1\.180×/);
-  assert.match(renderReport({ factor: 0.8499, currentWall: 100 }), /runner mismatch: calibration factor 0\.8499×/);
-  assert.match(renderReport({ factor: 1.1801, currentWall: 100 }), /runner mismatch: calibration factor 1\.1801×/);
+test("deterministic rows keep the tight ±2% flag", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-bench-report-det-"));
+  try {
+    const mk = (heap) => ({
+      commit: "x",
+      selfcompile: { heap_ptr_bytes: heap },
+      sizes: {},
+      benches: {},
+    });
+    const currentPath = join(dir, "current.json");
+    const baselinePath = join(dir, "baseline.json");
+    writeFileSync(currentPath, JSON.stringify(mk(1030)));
+    writeFileSync(baselinePath, JSON.stringify(mk(1000)));
+    const result = spawnSync(process.execPath, [reportScript.pathname, currentPath, baselinePath], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /\| selfcompile heap_ptr_bytes \| 1,030 \| 1,000 \| \+3\.00% ⚠️ \|/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- exec corpus section (deterministic fuel / memory / parity) ---------------
@@ -147,12 +156,4 @@ test("a parity mismatch is rendered as a loud silent-wrong flag, a gc gap as a n
   assert.match(report, /❌ \*\*bad: parity-mismatch\*\* — generated code produced WRONG output/);
   assert.match(report, /⚠️ gap: gc compile-failed — GC codegen: unknown constructor or function: Array::map/);
   assert.doesNotMatch(report, /output checks: .* ✅/);
-});
-
-test("advisory wall-time section is collapsed behind a details block", () => {
-  const report = renderReport({ factor: 1.0, currentWall: 100 });
-  const detailsIdx = report.indexOf("<details>");
-  assert.notEqual(detailsIdx, -1);
-  assert.ok(report.indexOf("| selfcompile wall_ms") > detailsIdx,
-    "wall-time rows must sit inside the collapsed details block");
 });

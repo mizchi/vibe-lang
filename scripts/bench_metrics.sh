@@ -14,7 +14,9 @@
 #       heap/committed bytes and wasm size per scenario, on BOTH the linear
 #       and the wasm-gc backend, plus golden-output and linear-vs-gc parity
 #       checks (a mismatch = silent-wrong candidate, flagged loudly)
-#   ADVISORY (wall time; machine/load dependent -> loose flags, never gate):
+#   ADVISORY (wall time; machine/load dependent — recorded in the snapshot
+#   for bench-data history/offline analysis, deliberately NOT rendered in the
+#   per-PR report; see scripts/bench_report.mjs header):
 #     - selfcompile wall_ms (median of VIBE_BENCH_KPI_RUNS, default 3)
 #     - ns_p50 of every tracked bench block
 #
