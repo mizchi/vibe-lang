@@ -52,21 +52,30 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 # entry 名は gc レーンが受け付けるものにする。`__no_entry__` (doctest 等が使う
 # sentinel) は linear では通るが gc では "entry function not found" で落ちる。
 # `main` は compiler_gate.sh 40h と bench_binary_size.sh の両方が使っている形。
+#
+# レーンを決める変数は**呼び出し元の環境から継承させず、両レーンで明示的に**
+# 与える。継承すると測定が黙って壊れる: `VIBE_BACKEND=gc` が export されていれば
+# linear のつもりの呼び出しも gc になり、`VIBE_FS_COMPILE=1` が export されて
+# いれば gc 側が linear に落ちる。どちらも「両レーンが同一」という結果になり、
+# 傾き 0・交点なしという無意味な答えを green のまま返してしまう。
 compile_one() { # <lane> <src> <out>
-  local lane="$1" src="$2" out="$3"
-  if [ "$lane" = "gc" ]; then
-    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$src" "$out" main >/dev/null 2>&1 || true
-  else
-    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$src" "$out" main >/dev/null 2>&1 || true
-  fi
+  local lane="$1" src="$2" out="$3" backend=linear
+  [ "$lane" = "gc" ] && backend=gc
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$backend" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$src" "$out" main >/dev/null 2>&1 || true
+}
+
+# 実行も同様に、レーン変数を落としてから測る (生成済み wasm の実行には効かない
+# はずだが、"効かないはず" は測定コードが依拠してよい性質ではない)。
+run_lane() { # <wasm> <stdout-file>
+  env -u VIBE_FS_COMPILE -u VIBE_BACKEND VIBE_PREOPEN_DIR="$ROOT_DIR" \
+    bash scripts/run_wasm_vibe_host_runner.sh "$1" >"$2" 2>&1 || true
 }
 
 fail=0
 
 measure() { # <label> <src>
-  local label="$1" src="$2" l g lo go verdict
+  local label="$1" src="$2" l g verdict
   compile_one linear "$src" "$WORK/$label.lin.wasm"
   compile_one gc "$src" "$WORK/$label.gc.wasm"
   l=$(stat -c%s "$WORK/$label.lin.wasm" 2>/dev/null || echo 0)
@@ -79,11 +88,29 @@ measure() { # <label> <src>
     fail=1
     return
   fi
-  # サイズだけ比べても意味がないので、両レーンが同じ答えを返すことも見る。
-  # 片方が壊れた wasm を出していたら小さくて当たり前になる。
-  lo=$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$WORK/$label.lin.wasm" 2>&1 | tail -1)
-  go=$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$WORK/$label.gc.wasm" 2>&1 | tail -1)
-  if [ "$lo" = "$go" ]; then verdict="=$lo"; else verdict="DISAGREE lin=$lo gc=$go"; fail=1; fi
+  # 両レーンの出力がバイト単位で同一なら、それは「差が無い」ではなく
+  # **同じレーンを 2 回測った**である (compile_one の注記を参照)。gc の無条件
+  # プレリュードだけで 4 KB 違うので、正常に測れていれば一致はしない。
+  if cmp -s "$WORK/$label.lin.wasm" "$WORK/$label.gc.wasm"; then
+    printf '%-18s %10s %10s   IDENTICAL OUTPUT: both lanes produced the same bytes -- backend selection did not take effect\n' \
+      "$label" "$l" "$g"
+    fail=1
+    return
+  fi
+  # サイズだけ比べても意味がないので、両レーンが同じ挙動をすることも見る。
+  # 片方が壊れた wasm を出していたら小さくて当たり前になる。比較は
+  # **stdout 全体**で行う: `tail -1` はランナーが最後に付ける戻り値だけを残し、
+  # `hello_world` の "Hello, world!" や `fizzbuzz` の 100 行を捨ててしまうので、
+  # 出力が壊れているレーンを "一致" と報告してしまう。
+  run_lane "$WORK/$label.lin.wasm" "$WORK/$label.lin.out"
+  run_lane "$WORK/$label.gc.wasm" "$WORK/$label.gc.out"
+  if cmp -s "$WORK/$label.lin.out" "$WORK/$label.gc.out"; then
+    # 表に出すのは戻り値 (最終行) だけ。判定は全出力で済ませてある。
+    verdict="=$(tail -1 "$WORK/$label.lin.out")"
+  else
+    verdict="DISAGREE (see $WORK/$label.{lin,gc}.out)"
+    fail=1
+  fi
   printf '%-18s %10s %10s %8s%%  %s\n' "$label" "$l" "$g" \
     "$(awk -v a="$l" -v b="$g" 'BEGIN{printf "%+.1f", (b-a)*100/a}')" "$verdict"
   echo "$label $l $g" >> "$WORK/raw.txt"
@@ -145,6 +172,10 @@ done
 # 交点は最小と最大のスケール点を通る直線で出す。中間点はその直線に乗るかの
 # 確認用で、乗らなければ線形近似そのものが誤りなので残差を報告する。
 echo
+if [ ! -s "$WORK/raw.txt" ]; then
+  echo "slope: no usable measurements -- every case failed above"
+  exit 1
+fi
 awk '
   /^scaled/ {
     n = substr($1, 7) + 0; lin[n] = $2; gcv[n] = $3
