@@ -124,7 +124,7 @@ function toU32(value) {
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--policy-stat-token content-v1 --policy-stat-root <absolute-root>] [--daemon] [--invoke <name>]... [--invoke-batch-dir <dir>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
+    "usage: node scripts/wasm_vibe_host_runner.js [--policy-stat-token content-v1 --policy-stat-root <absolute-root> [--policy-raw-fs-root <absolute-root> --policy-raw-fs-write-root <absolute-root>]] [--daemon] [--invoke <name>]... [--invoke-batch-dir <dir>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
   );
 }
 
@@ -139,6 +139,8 @@ function parseArgs(argv) {
   let invokeBatchDir = null;
   let policyStatToken = null;
   let policyStatRoot = null;
+  let policyRawFsRoot = null;
+  let policyRawFsWriteRoot = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--daemon") {
@@ -158,6 +160,22 @@ function parseArgs(argv) {
         throw new Error("--policy-stat-root requires one pre-wasm value");
       }
       policyStatRoot = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--policy-raw-fs-root") {
+      if (wasmPath !== null || i + 1 >= argv.length || policyRawFsRoot !== null) {
+        throw new Error("--policy-raw-fs-root requires one pre-wasm value");
+      }
+      policyRawFsRoot = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--policy-raw-fs-write-root") {
+      if (wasmPath !== null || i + 1 >= argv.length || policyRawFsWriteRoot !== null) {
+        throw new Error("--policy-raw-fs-write-root requires one pre-wasm value");
+      }
+      policyRawFsWriteRoot = argv[i + 1];
       i += 1;
       continue;
     }
@@ -225,6 +243,12 @@ function parseArgs(argv) {
   if (policyStatToken !== null && policyStatToken !== "content-v1") {
     throw new Error(`unsupported --policy-stat-token: ${policyStatToken}`);
   }
+  if (policyRawFsRoot !== null && policyStatToken !== "content-v1") {
+    throw new Error("--policy-raw-fs-root requires content-v1 policy mode");
+  }
+  if ((policyRawFsRoot === null) !== (policyRawFsWriteRoot === null)) {
+    throw new Error("--policy-raw-fs-root and --policy-raw-fs-write-root must be supplied together");
+  }
   if (invokes.length === 0) {
     invokes.push("_start");
   }
@@ -239,6 +263,8 @@ function parseArgs(argv) {
     invokeBatchDir,
     policyStatToken,
     policyStatRoot,
+    policyRawFsRoot,
+    policyRawFsWriteRoot,
   };
 }
 
@@ -1040,6 +1066,64 @@ const POLICY_STAT_TOKEN_DOMAIN = Buffer.from("vibe:selfcompile-policy:stat-token
 const POLICY_TOKEN_HIGH_BIT = 1n << 60n;
 const POLICY_TOKEN_LOW_MASK = POLICY_TOKEN_HIGH_BIT - 1n;
 let policyStatTokenConfig = null;
+let policyRawFsConfig = null;
+
+function importSectionContains(wasmBytes, needle) {
+  let offset = 8;
+  while (offset < wasmBytes.length) {
+    const id = wasmBytes[offset++];
+    let size = 0;
+    let shift = 0;
+    let byte;
+    do {
+      if (offset >= wasmBytes.length || shift > 35) throw new Error("malformed wasm section length");
+      byte = wasmBytes[offset++];
+      size += (byte & 0x7f) * (2 ** shift);
+      shift += 7;
+    } while ((byte & 0x80) !== 0);
+    const end = offset + size;
+    if (!Number.isSafeInteger(end) || end > wasmBytes.length) throw new Error("malformed wasm section bounds");
+    if (id === 2) return wasmBytes.subarray(offset, end).includes(needle);
+    offset = end;
+  }
+  return false;
+}
+
+function rejectPolicyWasiModuleImports(wasmBytes, config = policyRawFsConfig) {
+  if (!config) return;
+  // A matching UTF-8 import name must contain these literal prefix bytes in
+  // the import section. Avoid compiling ordinary large compiler modules a
+  // second time; any possible denied module still goes through the engine's
+  // actual import table.
+  if (!importSectionContains(wasmBytes, Buffer.from("wasi:", "utf8"))) return;
+  // Node 24's V8 can corrupt later GC-module compilation when Module.imports()
+  // and instantiation run in the same process. Inspect in a short-lived Node
+  // process so policy still uses the engine's actual import table before this
+  // process instantiates the original bytes.
+  const inspection = cp.spawnSync(process.execPath, [...process.execArgv, "-e", `
+    "use strict";
+    const fs = require("node:fs");
+    const module = new WebAssembly.Module(fs.readFileSync(0));
+    process.stdout.write(JSON.stringify(WebAssembly.Module.imports(module)));
+  `], {
+    input: wasmBytes,
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (inspection.error || inspection.status !== 0 || inspection.signal) {
+    throw new Error(`policy wasm import inspection failed: ${String(inspection.stderr || inspection.error?.message || inspection.signal).slice(-1000)}`);
+  }
+  let imports;
+  try { imports = JSON.parse(inspection.stdout); } catch { throw new Error("policy wasm import inspection returned malformed output"); }
+  const deniedModules = [...new Set(
+    imports.map(item => item.module).filter(moduleName => moduleName.startsWith("wasi:")),
+  )].sort();
+  if (deniedModules.length > 0) {
+    throw new Error(`policy raw module import denied: ${deniedModules.join(",")}`);
+  }
+}
 
 function isContainedPath(root, candidate) {
   const rel = path.relative(root, candidate);
@@ -1067,6 +1151,57 @@ function configurePolicyStatToken(mode, root) {
     transcript: crypto.createHash("sha256").update("vibe:selfcompile-policy:stat-token-transcript:v1\0", "ascii"),
     calls: 0,
   };
+}
+
+function configurePolicyRawFs(root, writeRoot, statConfig) {
+  if (root === null && writeRoot === null) return null;
+  if (!statConfig || typeof root !== "string" || !path.isAbsolute(root) || typeof writeRoot !== "string" || !path.isAbsolute(writeRoot)) {
+    throw new Error("policy raw Fs requires content-v1 policy mode and absolute read/write roots");
+  }
+  const physical = fs.realpathSync.native(path.resolve(root));
+  if (physical !== statConfig.root) throw new Error("policy raw Fs root must equal policy stat root");
+  const lexicalWriteRoot = path.resolve(writeRoot);
+  if (!isContainedPath(physical, lexicalWriteRoot)) throw new Error("policy raw Fs write root escapes policy root");
+  const writeInfo = fs.lstatSync(lexicalWriteRoot);
+  if (!writeInfo.isDirectory() || writeInfo.isSymbolicLink() || fs.realpathSync.native(lexicalWriteRoot) !== lexicalWriteRoot) {
+    throw new Error("policy raw Fs write root must be a physical directory");
+  }
+  return { root: physical, writeRoot: lexicalWriteRoot };
+}
+
+function authorizePolicyRawPath(filePath, write = false, config = policyRawFsConfig) {
+  if (!config) return;
+  const lexical = path.resolve(config.root, filePath);
+  const requiredRoot = write ? config.writeRoot : config.root;
+  if (!isContainedPath(requiredRoot, lexical)) {
+    throw new Error(`policy raw Fs ${write ? "write" : "read"} escapes allowed root: ${filePath}`);
+  }
+  const rel = path.relative(config.root, lexical);
+  let cursor = config.root;
+  for (const part of rel === "" ? [] : rel.split(path.sep)) {
+    cursor = path.join(cursor, part);
+    let info;
+    try { info = fs.lstatSync(cursor); } catch (error) {
+      if (error.code === "ENOENT") break;
+      throw error;
+    }
+    if (info.isSymbolicLink()) throw new Error(`policy raw Fs path has symlink component: ${filePath}`);
+  }
+}
+
+function authorizePolicyRawImport(name, args, instanceRef, config = policyRawFsConfig) {
+  if (!config) return;
+  if (name === "sh" || name === "sh_lines" || name.startsWith("sh_capture") || name.startsWith("tcp_") || name.startsWith("http_")) {
+    throw new Error(`policy raw import denied: ${name}`);
+  }
+  const readOne = new Set(["fs_read_file", "fs_read_bytes", "fs_read_dir", "fs_readdir", "fs_exists", "fs_stat_token", "fs_is_dir", "fs_is_file", "fs_chdir"]);
+  const writeOne = new Set(["fs_write_file", "fs_publish_immutable_text", "fs_write_bytes", "fs_mkdir", "fs_mkdir_p", "fs_remove", "fs_append", "fs_open_write"]);
+  if (readOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), false, config);
+  if (writeOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), true, config);
+  if (name === "fs_rename" || name === "fs_copy") {
+    authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), name === "fs_rename", config);
+    authorizePolicyRawPath(decodeStringArg(instanceRef, args[1]), true, config);
+  }
 }
 
 function statIdentity(info) {
@@ -1975,8 +2110,11 @@ async function main() {
     invokeBatchDir,
     policyStatToken,
     policyStatRoot,
+    policyRawFsRoot,
+    policyRawFsWriteRoot,
   } = parseArgs(process.argv.slice(2));
   policyStatTokenConfig = configurePolicyStatToken(policyStatToken, policyStatRoot);
+  policyRawFsConfig = configurePolicyRawFs(policyRawFsRoot, policyRawFsWriteRoot, policyStatTokenConfig);
   let passthroughArgs = initialPassthroughArgs.slice();
   passthroughArgsGlobal = passthroughArgs;
   if (passthroughArgs.length > 0) {
@@ -1992,6 +2130,7 @@ async function main() {
   }
   const wasmBytes = fs.readFileSync(wasmPath);
   covWasmBytesGlobal = wasmBytes;
+  rejectPolicyWasiModuleImports(wasmBytes);
   if (!REQUESTED_HOST_IMPORT_ABI) {
     const detectedAbi = detectHostImportAbi(wasmBytes);
     if (detectedAbi !== null) {
@@ -2680,8 +2819,17 @@ async function main() {
     },
     {
       get(target, key) {
+        const name = String(key);
         if (key in target) {
-          return target[key];
+          const fn = target[key];
+          if (!policyRawFsConfig || typeof fn !== "function") return fn;
+          return (...args) => {
+            authorizePolicyRawImport(name, args, instanceRef);
+            return Reflect.apply(fn, target, args);
+          };
+        }
+        if (policyRawFsConfig && (name === "sh" || name.startsWith("sh_") || name.startsWith("tcp_") || name.startsWith("http_"))) {
+          return () => { throw new Error(`policy raw import denied: ${name}`); };
         }
         return () => 0n;
       },
@@ -3466,11 +3614,15 @@ async function main() {
 module.exports = {
   buildFsMetadataHashParts,
   configurePolicyStatToken,
+  configurePolicyRawFs,
+  authorizePolicyRawImport,
+  authorizePolicyRawPath,
   contentStatDigest,
   contentStatToken,
   parseArgs,
   policyStatAttestation,
   projectContentStatDigest,
+  rejectPolicyWasiModuleImports,
 };
 
 if (require.main === module) {

@@ -114,14 +114,73 @@ were `4a6e2c8b…beafb2e`, and all eight runner attestations reported 6,158 call
 runner sample measured metadata/content-v1 wall medians of 2.03/2.29 seconds
 (+12.81%); this cost is confined to the unwired policy path.
 
-**Phase B remains blocked.** Deterministic tokens remove the known 16-byte
-reconstruction drift, but do not make the current harness safe for PR CI.
-Phase B must execute the complete controller, generation, host-runner, and KPI
-harness closure from immutable base authority. It must run
-base/current in disposable containers with no network, dropped capabilities
-and no-new-privileges, a read-only trusted harness/root filesystem, only
-container-local temporary writable areas, and no writable host mounts. The
-pinned seed and measurement output must also cross trusted boundaries.
+**Phase B remains unwired.** The isolation substrate uses the controller
+checkout as immutable base authority, archives revision trees on the host
+without extracting them, and executes base/current in separate native
+`linux/amd64` containers at `/workspace/repo`. The tool image is digest-pinned. Before Docker version, pull, or image
+inspection, the host rejects nonempty `DOCKER_HOST`/`DOCKER_CONTEXT` overrides,
+reads the selected context, and accepts its formatted Docker endpoint only when
+it is an empty-authority `unix:` URI with a nonempty absolute POSIX path (Linux
+and Colima socket paths are supported). The selected context and endpoint are
+recorded in the result. The final execution has a read-only root, no network,
+UID/GID 65532, all
+capabilities dropped, no-new-privileges, seccomp restrictions, fixed memory,
+CPU, PID and file-descriptor limits, and only container-local tmpfs writable
+areas. No bind mount, Docker socket, credential, or secret enters the guest.
+A never-started staging container receives the trusted harness, verified
+base-pinned seed, benchmark blob, and source archive; its local input layer is
+then executed only through a fresh constrained container and deleted.
+
+The trusted entrypoint removes materialized project scripts before generation,
+installs only the base runner needed by hard-coded bootstrap call sites, and
+invokes base `generate_bundle.sh` / `generations.sh` from `/opt/policy`. Every
+seed, flatten, validation, stage, and final-measurement Wasm invocation crosses
+`/opt/policy/scripts/run_wasm_vibe_host_runner.sh`, an immutable wrapper that
+validates its `/opt/policy` runner/seed hooks, changes to `/workspace/repo`, and
+unconditionally injects content-v1 plus policy raw-Fs selectors. Defaults
+outside this explicit policy environment are unchanged.
+
+Policy-only raw imports constrain reads to `/workspace/repo` and reject shell,
+TCP, and HTTP dispatch before argument decoding. Before instantiation, the same
+full raw-filesystem policy mode enumerates `WebAssembly.Module.imports()` and
+deterministically rejects every module namespace beginning `wasi:`; the raw
+`wasi_snapshot_preview1` namespace remains allowed. This closes Preview2
+filesystem, socket, HTTP, CLI, and I/O fallback authority without changing any
+Preview2 host or default-mode behavior. The immutable wrapper requires an
+explicit phase write root: bundle/selfhost generation may write only beneath
+the reserved physical `/workspace/repo/_build` tmpfs, while final KPI
+measurement is narrowed to `/workspace/repo/_build/selfcompile-policy`.
+Tracked archives containing `_build` are rejected before the tmpfs tree is
+created. The native acceptance lane instantiates real hostile Wasm
+for shell interpretation, shell capture, TCP/HTTP, `/etc`, `/proc`,
+`/opt/policy`, out-of-root read/write, generation temporary writes, final-phase
+sibling `_build` writes, Preview2 `open-at` creation at repository top, at a
+measurement-sibling `_build` path, and through a symlink to `/tmp`, plus
+socket/HTTP/CLI/I/O namespaces, forged result-prefix output, and an infinite-loop
+timeout. A default-mode Preview2 `open-at` fixture remains a positive control.
+The host sends a random result key on attached stdin; the entrypoint consumes it
+before starting Wasm and returns exactly one domain-separated HMAC-authenticated
+record. Producer and verifier share one recursive lexicographic canonical JSON
+serializer, and hostile counts must be positive safe integers. Guest
+stdout/stderr and guest-writable files are never parsed as the result channel.
+
+`scripts/selfcompile_heap_policy_docker_test.sh` is the expensive native
+acceptance lane. It checks same-tree build/heap/token identity, poisoned head
+script sentinels, wrong merge identity, reserved paths, and cleanup. Native
+`linux/amd64` attestation run
+[31876125211](https://github.com/mizchi/vibe-lang/actions/runs/31876125211)
+at candidate `d74be6a43f01f14b022faf0c13394fd18c4f6f4b` passed focused tests
+42/42 and the full isolated Docker lane, including the generation-phase policy
+wrapper, real raw/Preview2 hostile-Wasm fixtures, local Docker endpoint
+inspection, and canonical authenticated records, in 10m59s. The temporary
+exact-branch validation workflow was removed after that run; required CI remains
+unchanged and the existing absolute gate remains authoritative.
+
+The metric still observes the guest-exported `__heap_ptr`. HMAC authentication
+proves what the trusted runner observed, but cannot stop a deliberately
+benchmark-aware compiler from lying through that ABI. Instrumentation or
+repository governance is required before treating the KPI as adversarially
+secure.
 
 ## One-shot growth budgets
 

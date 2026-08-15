@@ -7,10 +7,11 @@ compiler / checker.
 
 Driver: `scripts/selfcompile_kpi.sh <stage2.wasm> [input.vibe]`.
 
-> Phase A of the merge-base delta replacement is documented in
+> The merge-base delta replacement and its isolated Docker validation lane are
+> documented in
 > [`docs/selfcompile-heap-policy.md`](../../docs/selfcompile-heap-policy.md).
-> Its controller/policy substrate is not wired into required CI yet. Until the
-> trusted-base Phase B wiring lands, the absolute gate described below remains
+> The workflow-dispatch lane is temporary validation scaffolding, not required
+> CI. Until governance and final wiring land, the absolute gate below remains
 > authoritative; the new policy does not relax it.
 
 One real compile through a selfhost stage2, reporting `wall_ms` and
@@ -20,7 +21,8 @@ repeated trials in one materialized tree, so — unlike wall time — the curren
 absolute gate can use it without flakes. The policy controller additionally
 uses CLI-only `content-v1` stat tokens to make identical clean tree
 reconstructions deterministic; this does not change the standalone/default
-metadata token behavior described here. See the remaining Phase B blockers in
+metadata token behavior described here. See the remaining isolation-validation,
+governance, and metric-ABI boundaries in
 [`docs/selfcompile-heap-policy.md`](../../docs/selfcompile-heap-policy.md).
 
 CI wiring (`.github/workflows/ci.yml`, step "Selfcompile KPI heap gate"):

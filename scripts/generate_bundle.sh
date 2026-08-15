@@ -20,6 +20,43 @@ OUT="${VIBE_BUNDLE_OUT:-$COMPILER_DIR/compiler_sources_bundle.vibe}"
 OUT_ADAPTER="${VIBE_ADAPTER_BUNDLE_OUT:-$COMPILER_DIR/cli_adapter_bundle.vibe}"
 OUT_RUNTIME_ENTRY="${VIBE_RUNTIME_ENTRY_BUNDLE_OUT:-$COMPILER_DIR/selfbuild_runtime_entry_bundle.vibe}"
 ADAPTER_MODULE_SOURCE_OUT="${VIBE_ADAPTER_MODULE_SOURCE_OUT:-}"
+POLICY_RUNNER_SCRIPT="${VIBE_GENERATE_BUNDLE_RUNNER_SCRIPT:-}"
+POLICY_SEED_WASM="${VIBE_GENERATE_BUNDLE_SEED_WASM:-}"
+if [ -n "$POLICY_RUNNER_SCRIPT" ]; then
+  [ "$POLICY_RUNNER_SCRIPT" = "/opt/policy/scripts/run_wasm_vibe_host_runner.sh" ] || {
+    echo "generate_bundle: invalid immutable policy runner hook" >&2
+    exit 1
+  }
+  [ -f "$POLICY_RUNNER_SCRIPT" ] && [ ! -L "$POLICY_RUNNER_SCRIPT" ] || {
+    echo "generate_bundle: immutable policy runner hook missing or redirected" >&2
+    exit 1
+  }
+fi
+if [ -n "$POLICY_SEED_WASM" ]; then
+  [ "$POLICY_SEED_WASM" = "/opt/policy/bootstrap/seed/compiler.wasm" ] || {
+    echo "generate_bundle: invalid immutable policy seed hook" >&2
+    exit 1
+  }
+  [ -f "$POLICY_SEED_WASM" ] && [ ! -L "$POLICY_SEED_WASM" ] || {
+    echo "generate_bundle: immutable policy seed hook missing or redirected" >&2
+    exit 1
+  }
+fi
+
+run_bundle_runner() {
+  local fallback="$1"
+  shift
+  if [ -n "$POLICY_RUNNER_SCRIPT" ]; then
+    bash "$POLICY_RUNNER_SCRIPT" "$@"
+  else
+    bash "$fallback" "$@"
+  fi
+}
+
+bundle_seed_wasm() {
+  local fallback="$1"
+  if [ -n "$POLICY_SEED_WASM" ]; then printf '%s\n' "$POLICY_SEED_WASM"; else printf '%s\n' "$fallback"; fi
+}
 
 if [ ! -f "$MANIFEST" ]; then
   echo "error: manifest not found: $MANIFEST" >&2
@@ -703,7 +740,8 @@ run_host_vibe_cmd() {
     # `_build/native/**/vibe.exe` and `moon build/run src/cmd/vibe`, selected by
     # VIBE_EMIT_VIA_HOST=1 — were retired with the MoonBit host: nothing in this
     # repo can build that binary any more, so the seed is the only path.
-    local seed_wasm="$SCRIPT_PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+    local seed_wasm
+    seed_wasm="$(bundle_seed_wasm "$SCRIPT_PROJECT_ROOT/bootstrap/seed/compiler.wasm")"
     if [ -f "$seed_wasm" ]; then
       local emit_in="${1#"$SCRIPT_PROJECT_ROOT"/}"
       local emit_out="${2#"$SCRIPT_PROJECT_ROOT"/}"
@@ -713,7 +751,7 @@ run_host_vibe_cmd() {
           VIBE_PREOPEN_DIR="$SCRIPT_PROJECT_ROOT" \
             VIBE_EMIT_MODULE_SOURCE=1 \
             VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
-            bash "$SCRIPT_PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+            run_bundle_runner "$SCRIPT_PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
             --invoke cli_main "$seed_wasm" "$emit_in" "$emit_out" "$emit_entry"
       )
       return 0
@@ -949,7 +987,8 @@ merge_flatten_tool_fingerprint() {
 
 bootstrap_merge_flatten_tool() {
   local flatten_wasm="$1"
-  local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  local seed_wasm
+  seed_wasm="$(bundle_seed_wasm "$PROJECT_ROOT/bootstrap/seed/compiler.wasm")"
   local stamp="$flatten_wasm.fingerprint"
   local want
   want="$(merge_flatten_tool_fingerprint)"
@@ -965,11 +1004,11 @@ bootstrap_merge_flatten_tool() {
   seed_modsrc="$(mktemp "$PROJECT_ROOT/_build/seed_module_source.XXXXXX")"
   # Pass 1: the seed flattens the live tree.
   rm -f "$seed_merged" "$seed_merged.diag"
-  (cd "$PROJECT_ROOT" && env VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
-    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
-    lib/@vibe/compiler/cli_adapter.vibe "$seed_merged" cli_main >"$tool_log.seedflat" 2>&1) || true
+  (cd "$PROJECT_ROOT" && \
+    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+      VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
+    run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
+      lib/@vibe/compiler/cli_adapter.vibe "$seed_merged" cli_main >"$tool_log.seedflat" 2>&1) || true
   if [ ! -s "$seed_merged" ]; then
     echo "generate_bundle: seed could not flatten the live tree (bootstrap pass 1)" >&2
     cat "$seed_merged.diag" >&2 2>/dev/null || true
@@ -985,11 +1024,11 @@ bootstrap_merge_flatten_tool() {
   fi
   # Pass 3: compile it -- this is the current source's merge machinery.
   rm -f "$flatten_wasm" "$flatten_wasm.diag"
-  (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
-    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
-    "$seed_modsrc" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
+  (cd "$PROJECT_ROOT" && \
+    export VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+      VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
+    run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
+      "$seed_modsrc" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
   rm -f "$seed_merged" "$seed_merged.diag" "$seed_modsrc" "$seed_modsrc.diag"
   if [ -s "$flatten_wasm" ] && [ -n "$want" ]; then
     printf '%s\n' "$want" > "$stamp"
@@ -1012,11 +1051,11 @@ build_exact_adapter_merged_source() {
     exit 1
   fi
   rm -f "$merged_path.diag"
-  (cd "$PROJECT_ROOT" && env VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
-    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$flatten_wasm" \
-    lib/@vibe/compiler/cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
+  (cd "$PROJECT_ROOT" && \
+    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+      VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
+    run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$flatten_wasm" \
+      lib/@vibe/compiler/cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
   if [ ! -s "$merged_path" ]; then
     echo "generate_bundle: merge flatten failed" >&2
     cat "$merged_path.diag" >&2 2>/dev/null || true
@@ -1060,7 +1099,8 @@ build_exact_adapter_merged_source() {
 # dependency, only a safety gate where the seed is present.
 validate_module_source_compiles() {
   local candidate="$1"
-  local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
+  local seed_wasm
+  seed_wasm="$(bundle_seed_wasm "$PROJECT_ROOT/bootstrap/seed/compiler.wasm")"
   if [ ! -f "$seed_wasm" ]; then
     return 0
   fi
@@ -1077,11 +1117,11 @@ validate_module_source_compiles() {
   # a slow shell script until you see how much of it is this.
   trace_begin "validate module source (seed compile)"
   local vtok="$TRACE_TOKEN"
-  if (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
-    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
-    "$candidate" "$check_wasm" cli_main >"$check_log" 2>&1); then
+  if (cd "$PROJECT_ROOT" && \
+    export VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+      VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
+    run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
+      "$candidate" "$check_wasm" cli_main >"$check_log" 2>&1); then
     if [ -s "$check_wasm" ]; then
       ok=1
     fi
