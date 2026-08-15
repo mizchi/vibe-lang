@@ -7046,6 +7046,188 @@ fn emit_core_instance_from_exports_sorted(buf: Bytes, names: Array[String], sort
   emit_raw_content(buf, content)
 }
 
+/// #1540 scope 4: the ASYNC twin of `comp_generate_string_trampoline_packed`.
+///
+/// Same job -- turn the canonical ABI's (ptr, len) pairs into packed vibe
+/// string values, call the handler, hand the result back -- with the one
+/// difference an async lift forces: the core function returns NOTHING and the
+/// result leaves through `task.return`, so there is no return area to allocate
+/// and no retptr to hand back.
+///
+/// `cabi_realloc` stays, because the LIFT still needs it to lower the caller's
+/// string params into the main memory. Only the result path changes.
+///
+/// Imports (func 0 = target_func, func 1 = task-return), then local funcs
+/// 2 = canon_func and 3 = cabi_realloc -- the extra import shifts every call
+/// index by one against the sync trampoline, which is why this is a separate
+/// generator rather than a flag on that one.
+fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_name: String) -> Bytes {
+  let buf = bytebuf_new()
+  emit_header(buf)
+  // types: 0 = target_func (i64 x N+1) -> i64; 1 = canon_func (i32 x 2N) -> ();
+  // 2 = cabi_realloc (i32,i32,i32,i32) -> i32; 3 = task.return (i32, i32) -> ()
+  let type_sec = bytebuf_new()
+  bytebuf_push_vec_header(type_sec, 4)
+  emit_func_type_raw(type_sec, comp_repeat_valtype(126, string_param_count + 1), [
+    126
+  ])
+  emit_func_type_raw(type_sec, comp_repeat_valtype(127, string_param_count * 2), array_empty())
+  emit_func_type_raw(type_sec, comp_repeat_valtype(127, 4), [
+    127
+  ])
+  emit_func_type_raw(type_sec, comp_repeat_valtype(127, 2), array_empty())
+  bytebuf_push_section(buf, 1, type_sec)
+  let import_sec = bytebuf_new()
+  leb128_encode_u32(import_sec, 4)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "target_func")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "[export]$root")
+  emit_name(import_sec, String::concat("[task-return]", export_name))
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 3)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "__heap_ptr")
+  bytebuf_push(import_sec, 3)
+  bytebuf_push(import_sec, 127)
+  bytebuf_push(import_sec, 1)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "memory")
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  bytebuf_push_section(buf, 2, import_sec)
+  let func_sec = bytebuf_new()
+  leb128_encode_u32(func_sec, 2)
+  leb128_encode_u32(func_sec, 1)
+  leb128_encode_u32(func_sec, 2)
+  bytebuf_push_section(buf, 3, func_sec)
+  let export_sec = bytebuf_new()
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "canon_func")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "cabi_realloc")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 3)
+  bytebuf_push_section(buf, 7, export_sec)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  // canon_func: params 0..2N-1 (i32), local 2N = the packed result (i64).
+  let canon_body = bytebuf_new()
+  leb128_encode_u32(canon_body, 1)
+  leb128_encode_u32(canon_body, 1)
+  bytebuf_push(canon_body, 126)
+  let result_local = string_param_count * 2
+  let mut si = 0
+  while si < string_param_count {
+    // (extend_u(ptr) << 32) | extend_u(len)
+    emit_local_get(canon_body, si * 2)
+    bytebuf_push(canon_body, 173)
+    emit_i64_const(canon_body, 32)
+    bytebuf_push(canon_body, 134)
+    emit_local_get(canon_body, (si * 2) + 1)
+    bytebuf_push(canon_body, 173)
+    bytebuf_push(canon_body, 132)
+    si = si + 1
+  }
+  // Trailing closure-env argument (0 for a top-level function).
+  emit_i64_const(canon_body, 0)
+  emit_call(canon_body, 0)
+  emit_local_set(canon_body, result_local)
+  // task.return(ptr, len) -- the two halves of the packed string value, which
+  // already point into the main memory the canon lifts from. Nothing is
+  // copied and nothing is allocated: this is the whole reason the async shape
+  // needs no return area.
+  emit_local_get(canon_body, result_local)
+  emit_i64_const(canon_body, 32)
+  bytebuf_push(canon_body, 136)
+  bytebuf_push(canon_body, 167)
+  emit_local_get(canon_body, result_local)
+  bytebuf_push(canon_body, 167)
+  emit_call(canon_body, 1)
+  bytebuf_push(canon_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(canon_body))
+  bytebuf_push_buf(code_sec, canon_body)
+  bytebuf_push_buf(code_sec, comp_generate_bump_realloc_body())
+  bytebuf_push_section(buf, 10, code_sec)
+  bytebuf_to_bytes(buf)
+}
+
+/// #1540: `<count>` copies of one core valtype -- the shape both trampolines
+/// spell out param lists with.
+fn comp_repeat_valtype(valtype: Int, count: Int) -> Array[Int] {
+  let out = new_int_array()
+  let mut i = 0
+  while i < count {
+    Array::push(out, valtype)
+    i = i + 1
+  }
+  out
+}
+
+/// #1540: the `__heap_ptr`-bumping `cabi_realloc` body, LENGTH-PREFIXED for a
+/// code section -- shared by both string trampolines so the allocator the
+/// canonical ABI lowers through cannot drift between the sync and async lanes.
+///
+/// params: 0 = old_ptr, 1 = old_size, 2 = align, 3 = new_size; local 4 = the
+/// aligned pointer. Fresh allocations only: the canonical lowering of bare
+/// string params never reallocates, so old_ptr / old_size are ignored.
+fn comp_generate_bump_realloc_body() -> Bytes {
+  let realloc_body = bytebuf_new()
+  leb128_encode_u32(realloc_body, 1)
+  leb128_encode_u32(realloc_body, 1)
+  bytebuf_push(realloc_body, 127)
+  // p = (heap + align - 1) & (0 - align)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 1)
+  bytebuf_push(realloc_body, 107)
+  emit_i32_const(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 113)
+  emit_local_set(realloc_body, 4)
+  // __heap_ptr = p + new_size
+  emit_local_get(realloc_body, 4)
+  emit_local_get(realloc_body, 3)
+  emit_i32_add(realloc_body)
+  bytebuf_push(realloc_body, 36)
+  leb128_encode_u32(realloc_body, 0)
+  // if (__heap_ptr > memory.size << 16) memory.grow(pages needed)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 116)
+  bytebuf_push(realloc_body, 75)
+  bytebuf_push(realloc_body, 4)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_i32_const(realloc_body, 65535)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 118)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 26)
+  bytebuf_push(realloc_body, 11)
+  emit_local_get(realloc_body, 4)
+  bytebuf_push(realloc_body, 11)
+  let out = bytebuf_new()
+  leb128_encode_u32(out, Bytes::length(realloc_body))
+  bytebuf_push_buf(out, realloc_body)
+  bytebuf_to_bytes(out)
+}
+
 /// #537: string trampoline for the CURRENT wasi linear backend ABI.
 /// A vibe string value is the packed i64 `(byte_offset << 32) | byte_len`
 /// (mode-invariant: identical under bump and RC; see gen_str_len_body /
@@ -7189,57 +7371,9 @@ export fn comp_generate_string_trampoline_packed(string_param_count: Int) -> Byt
   bytebuf_push(canon_body, 11)
   leb128_encode_u32(code_sec, Bytes::length(canon_body))
   bytebuf_push_buf(code_sec, canon_body)
-  // cabi_realloc body. params: 0=old_ptr 1=old_size 2=align 3=new_size;
-  // local 4 = aligned ptr.
-  let realloc_body = bytebuf_new()
-  leb128_encode_u32(realloc_body, 1)
-  leb128_encode_u32(realloc_body, 1)
-  bytebuf_push(realloc_body, 127)
-  // p = (heap + align - 1) & (0 - align)
-  bytebuf_push(realloc_body, 35)
-  leb128_encode_u32(realloc_body, 0)
-  emit_local_get(realloc_body, 2)
-  emit_i32_add(realloc_body)
-  emit_i32_const(realloc_body, 1)
-  bytebuf_push(realloc_body, 107)
-  emit_i32_const(realloc_body, 0)
-  emit_local_get(realloc_body, 2)
-  bytebuf_push(realloc_body, 107)
-  bytebuf_push(realloc_body, 113)
-  emit_local_set(realloc_body, 4)
-  // __heap_ptr = p + new_size
-  emit_local_get(realloc_body, 4)
-  emit_local_get(realloc_body, 3)
-  emit_i32_add(realloc_body)
-  bytebuf_push(realloc_body, 36)
-  leb128_encode_u32(realloc_body, 0)
-  // if (__heap_ptr > memory.size << 16) memory.grow(pages needed)
-  bytebuf_push(realloc_body, 35)
-  leb128_encode_u32(realloc_body, 0)
-  bytebuf_push(realloc_body, 63)
-  bytebuf_push(realloc_body, 0)
-  emit_i32_const(realloc_body, 16)
-  bytebuf_push(realloc_body, 116)
-  bytebuf_push(realloc_body, 75)
-  bytebuf_push(realloc_body, 4)
-  bytebuf_push(realloc_body, 64)
-  bytebuf_push(realloc_body, 35)
-  leb128_encode_u32(realloc_body, 0)
-  emit_i32_const(realloc_body, 65535)
-  emit_i32_add(realloc_body)
-  emit_i32_const(realloc_body, 16)
-  bytebuf_push(realloc_body, 118)
-  bytebuf_push(realloc_body, 63)
-  bytebuf_push(realloc_body, 0)
-  bytebuf_push(realloc_body, 107)
-  bytebuf_push(realloc_body, 64)
-  bytebuf_push(realloc_body, 0)
-  bytebuf_push(realloc_body, 26)
-  bytebuf_push(realloc_body, 11)
-  emit_local_get(realloc_body, 4)
-  bytebuf_push(realloc_body, 11)
-  leb128_encode_u32(code_sec, Bytes::length(realloc_body))
-  bytebuf_push_buf(code_sec, realloc_body)
+  // The allocator the canonical ABI lowers through, shared with the async
+  // trampoline so the two lanes cannot drift apart.
+  bytebuf_push_buf(code_sec, comp_generate_bump_realloc_body())
   bytebuf_push_section(buf, 10, code_sec)
   bytebuf_to_bytes(buf)
 }
@@ -7375,8 +7509,122 @@ fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Ar
   bytebuf_to_bytes(out)
 }
 
-fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String], stub_vibe: Bool) -> Bytes with Exception {
+/// #1540 scope 4: the ASYNC serve component -- same handler surface as
+/// `comp_emit_component_wasm_string_handler`, lifted async so the handler may
+/// suspend.
+///
+/// A handler that awaits anything (a sleep today, a body read next) cannot go
+/// under the sync lift: it would have to return before it resumes. Async
+/// lifting is what makes suspension expressible, and it moves the result off
+/// the core function's return path onto `task.return`
+/// (tools/wasip3_component_probe/async_string_lift).
+///
+/// There is NO instantiation cycle here, unlike the standalone async shapes:
+/// `task.return` needs a memory, and the memory it needs belongs to the MAIN
+/// core module, which does not import `[task-return]` -- only the trampoline
+/// does, and the trampoline is instantiated after it. That is why this lane
+/// needs no memhost.
+///
+/// Index layout, in emission order:
+///   core module    0 = main, 1 = async trampoline, 2 = host stub
+///   core instance  0 = stub, 1 = main, 2 = env {target, __heap_ptr, memory},
+///                  3 = [export]$root (task-return), 4 = trampoline
+///   core func      0 = alias(main, target), 1 = task.return,
+///                  2 = alias(trampoline, canon_func),
+///                  3 = alias(trampoline, cabi_realloc)
+///   component type 0 = the async functype; component func 0 = the lift
+export fn comp_emit_component_wasm_string_handler_async(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
   let string_param_count = Array::length(param_names)
+  comp_check_string_handler_target(core_wasm, target_func_name, string_param_count)
+  let vibe_stub_names = array_empty()
+  let vibe_stub_sigs = array_empty()
+  comp_collect_handler_host_imports(core_wasm, true, vibe_stub_names, vibe_stub_sigs)
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, core_wasm)
+  emit_core_module_section(buf, comp_generate_string_trampoline_packed_async(string_param_count, export_name))
+  emit_core_module_section(buf, comp_generate_host_stub_module(vibe_stub_names, vibe_stub_sigs))
+  emit_core_instance_instantiate_section(buf, 2, array_empty())
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], [
+    0,
+    0
+  ])
+  emit_alias_section(buf, 1, [
+    target_func_name
+  ], [
+    core_sort_func
+  ])
+  emit_alias_section(buf, 1, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_alias_section(buf, 1, [
+    "__heap_ptr"
+  ], [
+    core_sort_global
+  ])
+  // task.return lifts the result OUT of the main memory, so it reads but never
+  // allocates -- `realloc` on this built-in is a hard wasmtime error.
+  emit_canon_task_return_opts(buf, comp_valtype_string, 0, true)
+  emit_core_instance_from_exports_sorted(buf, [
+    "target_func",
+    "__heap_ptr",
+    "memory"
+  ], [
+    core_sort_func,
+    core_sort_global,
+    core_sort_mem
+  ], [
+    0,
+    0,
+    0
+  ])
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    String::concat("[task-return]", export_name)
+  ], [
+    1
+  ])
+  emit_core_instance_instantiate_args(buf, 1, [
+    "env",
+    "[export]$root"
+  ], [
+    2,
+    3
+  ])
+  emit_alias_section(buf, 4, [
+    "canon_func",
+    "cabi_realloc"
+  ], [
+    core_sort_func,
+    core_sort_func
+  ])
+  let comp_param_valtypes = new_int_array()
+  let mut pt = 0
+  while pt < string_param_count {
+    Array::push(comp_param_valtypes, comp_valtype_string)
+    pt = pt + 1
+  }
+  // The functype must ALSO be async: wasmtime rejects the `async` canonopt
+  // against a sync one ("the `async` canonical option requires an async
+  // function type").
+  emit_comp_async_functype_params(buf, param_names, comp_param_valtypes, comp_valtype_string)
+  emit_canon_lift_async_opts(buf, 2, 0, 0, 3, true)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+/// #1540: the packed-string handler's target-export contract, shared by the
+/// sync and async serve lanes so they cannot disagree about what a handler is.
+///
+/// Core shape is `(i64 x N+1) -> i64`: one i64 per String param plus the
+/// trailing closure-env param every top-level vibe function carries.
+fn comp_check_string_handler_target(core_wasm: Bytes, target_func_name: String, string_param_count: Int) -> Unit with Exception {
   // Validate the target export exists with the packed-string core signature.
   let export_names = array_empty()
   let export_func_indices = new_int_array()
@@ -7420,6 +7668,14 @@ fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, exp
   if !target_sig_ok {
     throw("component: '\{target_func_name}' must take \{string_param_count} String params and return String")
   }
+}
+
+/// #1540: the handler's host-import contract, shared by both serve lanes.
+///
+/// `fd_write` is the one host import a handler may keep (stdout). With
+/// `stub_vibe`, `vibe.*` imports are collected for the local stub module
+/// instead of rejected.
+fn comp_collect_handler_host_imports(core_wasm: Bytes, stub_vibe: Bool, vibe_stub_names: Array[String], vibe_stub_sigs: Array[Array[Int]]) -> Unit with Exception {
   // Reject host imports the stub cannot satisfy (stub_vibe additionally
   // hosts `vibe.*` imports with local stubs — see the _stubbed wrapper).
   let imp_modules = array_empty()
@@ -7427,8 +7683,6 @@ fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, exp
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
   let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
-  let vibe_stub_names = array_empty()
-  let vibe_stub_sigs = array_empty()
   let mut ii = 0
   while ii < import_count {
     let im = Array::get(imp_modules, ii)
@@ -7443,6 +7697,14 @@ fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, exp
     }
     ii = ii + 1
   }
+}
+
+fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String], stub_vibe: Bool) -> Bytes with Exception {
+  let string_param_count = Array::length(param_names)
+  comp_check_string_handler_target(core_wasm, target_func_name, string_param_count)
+  let vibe_stub_names = array_empty()
+  let vibe_stub_sigs = array_empty()
+  comp_collect_handler_host_imports(core_wasm, stub_vibe, vibe_stub_names, vibe_stub_sigs)
   let buf = bytebuf_new()
   emit_component_header(buf)
   emit_core_module_section(buf, core_wasm)

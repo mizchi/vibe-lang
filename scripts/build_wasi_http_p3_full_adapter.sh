@@ -21,6 +21,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_PATH="${1:-$PROJECT_ROOT/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm}"
+# #1540: with VIBE_HTTP_ADAPTER_ASYNC_HANDLER=1 the handler import is declared
+# `async func` and awaited. This is not a style switch: a handler that suspends
+# must be async-LIFTED, and `canon lift ... async` validates only against an
+# async functype -- which is the one the ADAPTER declares. A sync import here
+# makes an async-lifted handler unpluggable
+# (tools/wasip3_component_probe/http_body_read/README.md).
+ASYNC_HANDLER="${VIBE_HTTP_ADAPTER_ASYNC_HANDLER:-0}"
+if [ "$ASYNC_HANDLER" = "1" ]; then
+  HANDLER_IMPORT_DECL="import handler: async func(method: string, url: string, headers: string, body: string) -> string;"
+  # An async import owns its string params (String, not &str) and returns a
+  # future.
+  HANDLER_CALL="handler(method, url, req_headers, req_body).await"
+else
+  HANDLER_IMPORT_DECL="import handler: func(method: string, url: string, headers: string, body: string) -> string;"
+  HANDLER_CALL="handler(&method, &url, &req_headers, &req_body)"
+fi
 TMP_DIR="$(mktemp -d /tmp/vibe_http_p3_full_adapter.XXXXXX)"
 
 cleanup() {
@@ -77,7 +93,7 @@ wit_bindgen::generate!({
         /// vibe handler: (method, url, request-headers, request-body) ->
         ///   "STATUS\n<Header: value lines>\n\n<body>".
         /// request-headers are passed as "name: value\n" lines.
-        import handler: func(method: string, url: string, headers: string, body: string) -> string;
+        $HANDLER_IMPORT_DECL
         include wasi:http/service@0.3.0;
       }
     "#,
@@ -121,7 +137,7 @@ impl Guest for Component {
         let req_body = String::from_utf8_lossy(&req_body_rx.collect().await).into_owned();
 
         // The vibe handler returns "STATUS\n<headers>\n\n<body>" (headers optional).
-        let raw = handler(&method, &url, &req_headers, &req_body);
+        let raw = $HANDLER_CALL;
         let (status_line, rest) = raw.split_once('\n').unwrap_or(("200", raw.as_str()));
         let status_code = status_line.trim().parse::<u16>().unwrap_or(200);
         let (headers_block, body) = rest.split_once("\n\n").unwrap_or(("", rest));

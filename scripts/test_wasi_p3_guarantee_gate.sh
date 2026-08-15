@@ -76,6 +76,7 @@ case ",$PHASES," in *",http,"*)
   bash "$SCRIPT_DIR/test_wasi_http_p3_full_gate.sh"
   bash "$SCRIPT_DIR/test_http_body_stream_probe_gate.sh"
   bash "$SCRIPT_DIR/test_http_body_read_probe_gate.sh"
+  bash "$SCRIPT_DIR/test_serve_async_lift_gate.sh"
   bash "$SCRIPT_DIR/test_async_string_lift_probe_gate.sh"
   ;;
 esac
