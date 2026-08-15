@@ -46,6 +46,29 @@ function makeRecord(caseName, overrides = {}) {
     stamp_text_units_read: 0,
     stamp_publications: 0,
   };
+  const pipeline = {
+    schema: "ingestion_pipeline",
+    version: 1,
+    nonce: `pipeline-${caseName}`,
+    source_list_cache_probes: 1,
+    source_list_cache_hits: 0,
+    source_list_cache_misses: 1,
+    source_group_cache_probes: 1,
+    source_group_cache_hits: 0,
+    source_group_cache_misses: 1,
+    source_list_group_reconstruction_attempts: 1,
+    source_list_group_reconstruction_hits: 0,
+    source_list_group_reconstruction_misses: 1,
+    cold_collect_all_sources_executions: 1,
+    module_header_cache_probes: 1,
+    module_header_cache_hits: 0,
+    module_header_cache_misses: 1,
+    module_header_parse_scan_executions: 1,
+    entry_precheck_parse_executions: 1,
+    final_semantic_source_parse_executions: 1,
+    linked_validation_source_parse_executions: 1,
+    warning_entry_parse_executions: 1,
+  };
   const hostFs = {
     schema: "host_fs_scope",
     version: 1,
@@ -76,6 +99,7 @@ function makeRecord(caseName, overrides = {}) {
     work_summary: buildEditCycleWorkSummary(incremental, ingestion, hostFs),
     incremental_typecheck: incremental,
     ingestion_fingerprint: ingestion,
+    ingestion_pipeline: pipeline,
     host_fs_scope: hostFs,
     wall_ms: 12.5,
     success: true,
@@ -103,13 +127,16 @@ test("phase summary emits scoped deterministic deltas", () => {
     record.incremental_typecheck.modules_reused -= 1;
     record.incremental_typecheck.modules_reused_dependency_transport_env -= 1;
     record.work_summary.checked_modules += 1;
+    record.ingestion_pipeline.module_header_cache_misses += 1;
+    record.ingestion_pipeline.module_header_cache_probes += 1;
   }
   const summary = compareEditCycleRecords(before, after);
   assert.equal(summary.schema, "incremental_phase_summary");
-  assert.equal(summary.version, 1);
+  assert.equal(summary.version, 2);
   assert.deepEqual(summary.modes, editCycleModes);
   assert.deepEqual(summary.work_scopes, editCycleWorkScopes);
   assert.equal(summary.cases.length, editCycleCases.length);
+  assert.equal(summary.cases[0].ingestion_pipeline.delta.module_header_cache_misses, 1);
   assert.deepEqual(summary.cases[0].delta, {
     read_bytes: 5,
     hash_calls: 0,
@@ -128,6 +155,9 @@ test("phase summary parser rejects malformed and unsafe records", () => {
   const inconsistent = makeRecord("cold");
   inconsistent.work_summary.hash_calls += 1;
   assert.throws(() => parseEditCycleRecord(inconsistent), /does not match scoped telemetry/);
+  const parseMismatch = makeRecord("cold");
+  parseMismatch.ingestion_pipeline.final_semantic_source_parse_executions += 1;
+  assert.throws(() => parseEditCycleRecord(parseMismatch), /disagree with schema 2/);
   const codegen = makeRecord("cold");
   codegen.work_summary.codegen_modules = 1;
   assert.throws(() => parseEditCycleRecord(codegen), /codegen_modules to be 0/);

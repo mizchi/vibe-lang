@@ -11414,6 +11414,10 @@ fi
 rm -rf "$chkdir"
 echo "[compiler-gate] check/diagnostics parse-error parity ok (#1567)"
 
+# #1551: compiler-owned ingestion-pipeline observations are published only by
+# successful checks and distinguish cold, warm, and list-to-group recovery.
+node scripts/ingestion_pipeline_telemetry_integration.mjs "$ROOT_DIR" "$stage2_wasm"
+
 # --- #988: `vibe deps` -- the resolved import closure ------------------------
 #
 # This verb exists to be MACHINE-consumed (scripts/affected_tests.mjs selects

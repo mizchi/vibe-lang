@@ -56,8 +56,10 @@ import @vibe/compiler/loader {
   find_deps_missing,
   find_missing_vpkg_dirs,
   ingest_source_text_fs,
+  ingestion_pipeline_telemetry_json,
   load_or_parse_module_header_fs,
   publish_check_fs,
+  set_ingestion_pipeline_telemetry_enabled,
   write_generated_hash_fs
 }
 
@@ -391,8 +393,15 @@ fn has_control_character(value: String) -> Bool {
   let mut found = false
   while i < String::length(value) {
     let c = String::char_code_at(value, i)
-    if (c >= 0 && c <= 31) || (c >= 127 && c <= 159) {
+    if (c >= 0 && c <= 31) || c == 127 {
       found = true
+    } else if c == 194 && i + 1 < String::length(value) {
+      let next = String::char_code_at(value, i + 1)
+      if next >= 128 && next <= 159 {
+        found = true
+      } else {
+        ()
+      }
     } else {
       ()
     }
@@ -712,16 +721,36 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // from runner-owned host_fs_scope, whose units remain aggregate raw bytes.
   let ingestion_telemetry_out = Env::get("VIBE_INGESTION_TELEMETRY_OUT")
   let ingestion_telemetry_nonce = Env::get("VIBE_INGESTION_TELEMETRY_NONCE")
+  let ingestion_pipeline_out = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT")
+  let ingestion_pipeline_nonce = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
+  // Clear every requested ingestion observation before validating either one:
+  // a malformed sibling request must not leave the other's stale sidecar.
+  if ingestion_telemetry_out != "" && Fs::exists(ingestion_telemetry_out) {
+    Fs::remove(ingestion_telemetry_out)
+  } else {
+    ()
+  }
+  if ingestion_pipeline_out != "" && Fs::exists(ingestion_pipeline_out) {
+    Fs::remove(ingestion_pipeline_out)
+  } else {
+    ()
+  }
   if ingestion_telemetry_out != "" {
-    if Fs::exists(ingestion_telemetry_out) {
-      Fs::remove(ingestion_telemetry_out)
-    } else {
-      ()
-    }
     if Env::get("VIBE_CHECK_ONLY") != "1" {
       throw("VIBE_INGESTION_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
     } else if ingestion_telemetry_nonce == "" || has_control_character(ingestion_telemetry_nonce) {
       throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  if ingestion_pipeline_out != "" {
+    if Env::get("VIBE_CHECK_ONLY") != "1" {
+      throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
+    } else if ingestion_pipeline_nonce == "" || has_control_character(ingestion_pipeline_nonce) {
+      throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
     } else {
       ()
     }
@@ -1026,6 +1055,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // Reset before the check even when not requested: a long-lived direct
       // caller cannot leak observations into a later requested check.
       set_ingestion_fingerprint_telemetry_enabled(ingestion_telemetry_out != "")
+      set_ingestion_pipeline_telemetry_enabled(ingestion_pipeline_out != "")
       // This has no cache behavior: it only makes the successful walk carry
       // a canonical public-interface observation into the requested sidecar.
       set_incremental_interface_trace_enabled(invalidation_trace_out != "")
@@ -1062,6 +1092,13 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       }
       StringBuilder::push(out_text, "ok\n")
       Fs::write_file(output_path, StringBuilder::freeze(out_text))
+      // Publish this successful-check observation strictly after the final
+      // output. If that authoritative write fails, no pipeline sidecar exists.
+      if ingestion_pipeline_out != "" {
+        Fs::write_file(ingestion_pipeline_out, ingestion_pipeline_telemetry_json(ingestion_pipeline_nonce))
+      } else {
+        ()
+      }
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)

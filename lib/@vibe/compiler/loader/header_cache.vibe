@@ -8,6 +8,10 @@ import @vibe/core {
   array_empty
 }
 
+import ./ingestion_pipeline_telemetry.vibe {
+  ingestion_pipeline_telemetry_add
+}
+
 import @vibe/compiler/cache {
   compact_string_fingerprint,
   fingerprint_file_fs,
@@ -497,6 +501,7 @@ export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[Stri
 }
 
 export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Exception + Fs {
+  ingestion_pipeline_telemetry_add(10, 1)
   let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
   // #801 follow-up: a warm header whose package-index deps no longer match
   // the current resolution winners was written under a different resolution
@@ -527,8 +532,10 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
     ()
   }
   if warm_ok {
+    ingestion_pipeline_telemetry_add(11, 1)
     (warm_deps, warm_exports, parse_count)
   } else {
+    ingestion_pipeline_telemetry_add(12, 1)
     // #708: dispatch on `is_special_bundle_path` (a plain Bool) rather than
     // matching `special_bundle_header(path)`'s Option result directly here,
     // and never nest the `Some((deps, exports))` tuple-in-option pattern in
@@ -635,6 +642,11 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
     let deps = header_result.0
     let exports = header_result.1
     let next_parse_count = header_result.2
+    if next_parse_count > parse_count {
+      ingestion_pipeline_telemetry_add(13, 1)
+    } else {
+      ()
+    }
     Fs::write_file(cache_path, persistent_module_header_text(deps, exports, contract_dep_fingerprints_now(deps)))
     (deps, exports, next_parse_count)
   }

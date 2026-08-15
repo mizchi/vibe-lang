@@ -1,0 +1,94 @@
+//# Compiler-owned loader ingestion telemetry (#1551).
+
+import @vibe/core {
+  array_empty
+}
+
+let ingestion_pipeline_enabled_cell: Array[Bool] = array_empty()
+let ingestion_pipeline_counters: Array[Int] = array_empty()
+
+fn ingestion_pipeline_enabled() -> Bool {
+  Array::length(ingestion_pipeline_enabled_cell) > 0 && Array::get(ingestion_pipeline_enabled_cell, 0)
+}
+
+export fn set_ingestion_pipeline_telemetry_enabled(enabled: Bool) -> Unit {
+  Array::truncate(ingestion_pipeline_enabled_cell, 0)
+  Array::push(ingestion_pipeline_enabled_cell, enabled)
+  Array::truncate(ingestion_pipeline_counters, 0)
+  let mut i = 0
+  while i < 18 {
+    Array::push(ingestion_pipeline_counters, 0)
+    i = i + 1
+  }
+}
+
+export fn ingestion_pipeline_telemetry_add(index: Int, amount: Int) -> Unit {
+  if ingestion_pipeline_enabled() {
+    Array::set(ingestion_pipeline_counters, index, Array::get(ingestion_pipeline_counters, index) + amount)
+  } else {
+    ()
+  }
+}
+
+fn ingestion_pipeline_counter(index: Int) -> Int {
+  if ingestion_pipeline_enabled() {
+    Array::get(ingestion_pipeline_counters, index)
+  } else {
+    0
+  }
+}
+
+fn ingestion_pipeline_json_string(text: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "\"")
+  let mut i = 0
+  while i < String::length(text) {
+    let c = String::char_code_at(text, i)
+    if c == '"' {
+      StringBuilder::push(out, "\\\"")
+    } else if c == '\\' {
+      StringBuilder::push(out, "\\\\")
+    } else {
+      StringBuilder::push(out, String::from_char_code(c))
+    }
+    i = i + 1
+  }
+  StringBuilder::push(out, "\"")
+  StringBuilder::freeze(out)
+}
+
+export fn ingestion_pipeline_telemetry_json(nonce: String) -> String {
+  let keys = [
+    "source_list_cache_probes",
+    "source_list_cache_hits",
+    "source_list_cache_misses",
+    "source_group_cache_probes",
+    "source_group_cache_hits",
+    "source_group_cache_misses",
+    "source_list_group_reconstruction_attempts",
+    "source_list_group_reconstruction_hits",
+    "source_list_group_reconstruction_misses",
+    "cold_collect_all_sources_executions",
+    "module_header_cache_probes",
+    "module_header_cache_hits",
+    "module_header_cache_misses",
+    "module_header_parse_scan_executions",
+    "entry_precheck_parse_executions",
+    "final_semantic_source_parse_executions",
+    "linked_validation_source_parse_executions",
+    "warning_entry_parse_executions"
+  ]
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "{\"schema\":\"ingestion_pipeline\",\"version\":1,\"nonce\":")
+  StringBuilder::push(out, ingestion_pipeline_json_string(nonce))
+  let mut i = 0
+  while i < Array::length(keys) {
+    StringBuilder::push(out, ",\"")
+    StringBuilder::push(out, Array::get(keys, i))
+    StringBuilder::push(out, "\":")
+    StringBuilder::push(out, __to_string(ingestion_pipeline_counter(i)))
+    i = i + 1
+  }
+  StringBuilder::push(out, "}")
+  StringBuilder::freeze(out)
+}
