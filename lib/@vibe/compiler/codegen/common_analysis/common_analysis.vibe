@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, bytebuf_push, is_exception_throw_operation, sorted_names_of
+  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, bytebuf_push, canonical_builtin_name, is_exception_throw_operation, sorted_names_of
 }
 
 import @vibe/core {
@@ -736,6 +736,65 @@ fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
 /// `encl` is the enclosing compile scope's local names, threaded from
 /// compile_lambda; the public wrapper passes an empty array, which reproduces
 /// the previous behavior exactly for every other caller.
+/// #1811: does `name` resolve globally -- under its own spelling, or because it
+/// is a builtin ALIAS whose canonical form codegen will lower?
+///
+/// Source may spell a builtin any of 25 ways that are not its canonical name:
+/// `String::byte_at` for `String::char_code_at`, `StringBuilder::build` for
+/// `StringBuilder::freeze`, `Fs::ReadFile` for `Fs::read_file`
+/// (core/builtin_name.vibe). This scan compared the raw spelling, missed, and
+/// recorded the alias as a free variable, so
+///
+///   let f = (s: String) -> Int { String::byte_at(s, 0) }
+///
+/// compiled successfully, wrote a .wasm, and produced a module that will not
+/// instantiate ("invalid signature index"). The canonical spelling of the same
+/// program was fine, and so was the alias outside a closure.
+///
+/// The capture is not merely useless -- it is what BREAKS the call.
+/// `compile_call_core` canonicalizes only when the source spelling is unbound
+/// (`source_is_bound`, expr/compile_call.vibe), and `local_names` includes the
+/// closure's captured slots. So capturing the alias made it look bound, which
+/// suppressed the canonicalization, which left the name unresolved, which
+/// emitted a call through a closure value that does not exist. Not capturing it
+/// restores the whole chain; that is why this one predicate fixes every alias
+/// rather than just the ones whose canonical sits in the func table.
+///
+/// Membership in `fn_names` is NOT required of the canonical form, and checking
+/// it was a wrong first version of this function: `StringBuilder::freeze` has no
+/// linear func-table entry (`in_linear_table = false` in core/builtin_registry.vibe)
+/// -- it is lowered by spelling in compile_call -- so the check passed
+/// `String::byte_at` and still left `StringBuilder::build` broken. `canonical !=
+/// name` is the honest test: it is true only for the 25 alias spellings, every
+/// one of them `Ns::name`-qualified, so it can never turn an ordinary local into
+/// a builtin the way the bare `path` spelling could (#1218, recorded in
+/// `is_inlined_async_builtin`'s doc comment). `bound` and `encl` are checked
+/// before this at every call site, so a real local binding still wins.
+///
+/// `skip_inlined` is load-bearing, and this is the #1348 trap. The SAME walk is
+/// the used-builtin scan (`collect_free_vars_used_builtins`, which passes
+/// false), and there the alias must still be REPORTED: `push_free_canonical`
+/// canonicalizes what this returns to decide which builtins are used, and an
+/// alias like `Fs::ReadFile` is the only evidence that `Fs::read_file`'s host
+/// import must be reserved. Suppressing it for both consumers would trade this
+/// miscompile for that one. The capture scan (true) wants the alias gone; the
+/// used-builtin scan (false) wants it kept -- the same split the inlined-builtin
+/// skip already makes, for the same reason.
+///
+/// The gc lane had the identical bug, fixed in #1809 by canonicalizing in its
+/// capture scan (`gc_capture_resolves_globally`). Enumerating the aliases
+/// instead would make a third list to drift out of sync with
+/// `canonical_builtin_name`.
+fn ca_resolves_globally(fn_names: Array[String], name: String, skip_inlined: Bool) -> Bool {
+  if bsearch_leftmost(fn_names, name) >= 0 {
+    true
+  } else if skip_inlined {
+    canonical_builtin_name(name) != name
+  } else {
+    false
+  }
+}
+
 export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
   collect_free_vars_expr_sc(expr, bound, fn_names, common_analysis_fresh_string_array(), true, out)
 }
@@ -764,7 +823,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
         0
       }
     }
-    else if bsearch_leftmost(fn_names, name) >= 0 {
+    else if ca_resolves_globally(fn_names, name, skip_inlined) {
       0
     }
     else if array_contains_str(out, name) {

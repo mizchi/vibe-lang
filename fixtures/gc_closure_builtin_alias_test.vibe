@@ -15,11 +15,21 @@
 // spelling. The capture test therefore canonicalizes and then re-checks both
 // sets.
 //
-// GC LANE ONLY. The linear backend emits an INVALID module for every one of
-// these (`invalid signature index`) while reporting a successful compile --
-// a pre-existing bug unrelated to the capture scan, tracked as #1811. Widen
-// this to both lanes once that lands; until then linear coverage would just
-// pin a known-broken artifact.
+// BOTH LANES as of #1811. This ran on the gc lane alone while the LINEAR
+// backend emitted an invalid module ("invalid signature index") for every one
+// of these while reporting a successful compile. Same root cause on both
+// lanes, fixed the same way: the capture scan compared the SOURCE spelling and
+// so recorded the alias as a free variable. On linear that capture is what
+// broke the call -- `compile_call_core` canonicalizes only when the spelling
+// is unbound, and a captured name is in `local_names`, so the bogus capture
+// suppressed the canonicalization and left the callee unresolved.
+//
+// The other side of the same predicate (#1348) -- an alias must still be
+// REPORTED to the used-builtin scan, which shares this walk, or its canonical's
+// host import is never reserved -- is pinned by
+// fixtures/closure_builtin_alias_host_import_test.vibe. It lives in a separate
+// file because it needs an `Fs` row, and this file is compiled whole by the
+// compiler gate's gc section, where that row does not resolve.
 
 fn alias_string_builder_in_closure() -> Int {
   let f = () -> String {
@@ -60,3 +70,4 @@ test "source aliases canonicalize before the capture decision" {
   inspect(alias_from_byte_in_closure(), "1")
   inspect(alias_and_local_together(), "68")
 }
+

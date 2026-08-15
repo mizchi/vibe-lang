@@ -4427,9 +4427,11 @@ echo "[compiler-gate] wasm-gc closure builtin capture ok (linear + gc)"
 #        sees the source spelling, so sharing the direct-ABI list was not
 #        enough: `StringBuilder::build` (alias of `StringBuilder::freeze`)
 #        matched neither the func table nor the list and was still captured.
-#        GC LANE ONLY -- the linear backend emits an INVALID module for these
-#        while reporting a successful compile (#1811), so linear coverage would
-#        pin a known-broken artifact rather than prove anything.
+#        This section is the GC-lane half. The linear lane used to emit an
+#        INVALID module for every one of these while reporting a successful
+#        compile (#1811); since that landed, the same fixture also runs under
+#        scripts/unit_test_runner.sh on the linear lane, so both lanes are
+#        covered and the exclusion that used to sit in that runner is gone.
 echo "[compiler-gate] 40h-3/40 wasm-gc closure builtin alias capture"
 gcaliasdir="_build/_gate_gc_closure_alias"
 rm -rf "$gcaliasdir"; mkdir -p "$gcaliasdir"
