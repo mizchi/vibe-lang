@@ -115,6 +115,82 @@ function splitTopLevelChunks(source) {
 //
 // The split is about WHERE a form is legal, so the test for it is the same
 // question: can this appear inside a block? Only bindings can.
+// A relative import is resolved against the directory of the file that WRITES
+// it (measured: the compiler reports `cannot resolve import './lib/x' (resolved
+// to <dir-of-importer>/lib/x)`). The generated file lives under
+// lib/@vibe/compiler/_generated_runtime_fixtures/, not next to the fixture, so
+// a path copied through verbatim points somewhere that does not exist.
+//
+// Rewriting needs to know what the path was relative TO, and the fixtures do
+// not agree: some mean "next to me" and some mean "from the repo root" (every
+// `./lib/...` and `./fixtures/...` in the corpus is the latter, and those do
+// not resolve from fixtures/ either -- they are broken where they sit). So
+// rather than pick one reading, try the fixture's own directory first, since
+// that is what the language says, and fall back to the repo root. Whichever
+// names a file that EXISTS is the one that was meant.
+//
+// If neither exists the line is left exactly as it was: the fixture is wrong in
+// a way this script cannot repair, and rewriting it would only move the error
+// somewhere less informative.
+// `__DATA__`'s `last` is what the program PRINTED, and the printer used a debug
+// rendering: a String value came out with surrounding quotes (`{"last":
+// "\"ok\""}` for the value `ok`), while an Int came out bare (`{"last": "42"}`).
+// `__to_string` is the display rendering, which does not quote -- measured:
+// `__to_string("ok") == "ok"` holds and `== "\"ok\""` fails.
+//
+// The original printer cannot be re-run to settle this by experiment: it
+// printed the value of a TOP-LEVEL expression, and ADR-0069 removed those, which
+// is the same reason these fixtures no longer compile as written. So the two
+// renderings are reconciled by reading the declaration instead. A `last` wrapped
+// in quotes states unambiguously that the value is that String, which is what
+// __to_string returns unquoted; anything else is already the display form.
+//
+// This is why the comparison is on __to_string and not on raw stdout: it is the
+// renderer that still exists.
+function displayForm(expectedLast) {
+  if (
+    expectedLast.length >= 2 &&
+    expectedLast.startsWith('"') &&
+    expectedLast.endsWith('"')
+  ) {
+    try {
+      return JSON.parse(expectedLast);
+    } catch {
+      return expectedLast;
+    }
+  }
+  return expectedLast;
+}
+
+/** Render a JS string as a vibe string literal. */
+function vibeStringLiteral(s) {
+  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+function rewriteRelativeImports(chunk, fixturePath) {
+  const fixtureDir = path.dirname(path.join(ROOT, fixturePath));
+  return chunk.replace(
+    /^(\s*import\s+)(\.\.?\/[^\s{]+)/gm,
+    (whole, head, spec) => {
+      const candidates = [
+        path.resolve(fixtureDir, spec),
+        path.resolve(ROOT, spec),
+      ];
+      const target = candidates.find(
+        (p) => fs.existsSync(p) || fs.existsSync(p + ".vibe"),
+      );
+      if (!target) {
+        return whole;
+      }
+      let rel = path.relative(GENERATED_DIR, target);
+      if (!rel.startsWith(".")) {
+        rel = "./" + rel;
+      }
+      return head + rel;
+    },
+  );
+}
+
 function isPreludeChunk(chunk) {
   const trimmed = chunk.trimStart();
   return [
@@ -237,20 +313,48 @@ function buildSingleFixtureTestContent(fixturePath) {
     } else if (isCommentOnlyChunk(chunk)) {
       preludeChunks.push(chunk);
     } else if (isDeclarationChunk(chunk)) {
-      bodyChunks.push(chunk);
+      bodyChunks.push({ kind: "decl", text: chunk });
     } else {
-      bodyChunks.push(`let _ = (\n${chunk}\n)`);
+      bodyChunks.push({ kind: "expr", text: chunk });
     }
   }
 
+  // The fixture's `__DATA__` declares what the program PRINTS -- the rendered
+  // value of its last expression (see the EXCLUDE_PATTERNS note in
+  // scripts/unit_test_runner.sh: the gate "diffs the real program's stdout
+  // against the JSON's last field"). Every expression chunk used to be wrapped
+  // in `let _ = (...)`, including the final one, so the declared value was read
+  // out of the JSON and then never compared to anything. A generated test
+  // passed when the fixture COMPILED AND RAN, whatever it computed -- a fixture
+  // declaring "ok" and returning "ng" was green.
+  //
+  // Only the last expression is the program's value; earlier ones are still
+  // evaluated for their effects and discarded.
+  let lastExprIdx = -1;
+  for (let i = bodyChunks.length - 1; i >= 0; i--) {
+    if (bodyChunks[i].kind === "expr") {
+      lastExprIdx = i;
+      break;
+    }
+  }
+  const renderedBody = bodyChunks.map((c, i) => {
+    if (c.kind === "decl") return c.text;
+    if (i === lastExprIdx && expectedLast !== null) {
+      return `assert_true(__to_string(\n${c.text}\n) == ${vibeStringLiteral(displayForm(expectedLast))})`;
+    }
+    return `let _ = (\n${c.text}\n)`;
+  });
+
   const parts = [];
   if (preludeChunks.length > 0) {
-    parts.push(preludeChunks.join("\n\n"));
+    parts.push(
+      preludeChunks.map((c) => rewriteRelativeImports(c, fixturePath)).join("\n\n"),
+    );
     parts.push("");
   }
 
   const testBody = [];
-  for (const chunk of bodyChunks) {
+  for (const chunk of renderedBody) {
     const indented = chunk
       .split("\n")
       .map((line) => (line.length > 0 ? `  ${line}` : ""))
