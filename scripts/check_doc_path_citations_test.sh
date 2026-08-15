@@ -98,8 +98,11 @@ expect 0 "an unscanned document's entry is left alone"
 # a `git checkout-index` export does not contain them.
 : > "$allow"
 cat > "$TMP/docs/gen.md" <<'EOF'
-The flat program is `lib/@vibe/compiler/_cli_adapter_module_source.vibe`.
+The flat program is `lib/@vibe/compiler/_cli_adapter_module_source.vibe`,
+and the fingerprint is `cache/codegen_fingerprint.vibe`.
 EOF
-expect 0 "generated artifacts are exempt by name"
+# Both spellings: the full path, and the doc-relative one that only resolves on
+# a machine where the artifact has been built. CI found the second the hard way.
+expect 0 "generated artifacts are exempt by name, prefix-relative spelling too"
 
 echo "doc-citation self-test: ok"

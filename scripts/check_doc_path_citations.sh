@@ -126,9 +126,15 @@ GONE = re.compile(
 )
 
 def resolves(target, doc_dir):
-    if target in GENERATED:
-        return True
-    return any(os.path.exists(os.path.join(repo_root, p + target)) for p in PREFIXES)
+    # Prefix-expand before checking both, so the doc-relative spelling of a
+    # generated artifact (`cache/codegen_fingerprint.vibe`) is exempt too. It
+    # resolves on a developer's machine, where the artifact has been built, and
+    # not on a fresh CI checkout -- which is how this was found.
+    for prefix in PREFIXES:
+        candidate = prefix + target
+        if candidate in GENERATED or os.path.exists(os.path.join(repo_root, candidate)):
+            return True
+    return False
 
 findings = []
 scanned = set()
