@@ -92,8 +92,12 @@ fails when a chapter has no translation, a translation has no chapter, or the
 two record different output.
 
 `docs/tutorial/` is migrated. [docs/language-tour/](docs/language-tour/) is
-still Japanese-only and is the next candidate; when it moves, extend the parity
-check to cover it.
+already English and needs no translation — what it needs is a correctness pass.
+Its ```vibe blocks are compile-checked by doctest, which is blind to prose, and
+the prose had drifted: it described `String` as UTF-16 (ADR-0098 made it a byte
+string) and `index.vibei` as the package boundary (`index.vpkg` has been, since
+ADR-0070). Both are fixed; the open question is whether a third surface next to
+the cheatsheet and the tutorial earns its upkeep at all.
 
 Internal documents (spec, ADR, design records, reports) get **one** language —
 English — and no translation. They change too often for a second copy to stay

@@ -1,10 +1,11 @@
 # Modules
 
-vibe uses file-based modules with explicit `export` / `import`. Module
-System v2 (ADR-0063 / ADR-0064,
-[docs/module-system-v2.md](../module-system-v2.md)) governs the current
-rules: directories with an `index.vibe`/`index.vibei` are boundaries, and
-content-addressed `require` pins replace lock files.
+vibe uses file-based modules with explicit `export` / `import`. This page
+covers the surface syntax. **The rules for package boundaries, visibility and
+pinning are stated once, in the "現行モデル" section of
+[docs/module-system-oracle.md](../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)**
+(#1269) -- read that as the source of truth, and treat anything here that
+disagrees with it as a bug in this page.
 
 ## export
 
@@ -54,12 +55,11 @@ import ./traits.vibe { trait Show }     // trait import
 
 ### Directory imports
 
-A directory with an `index.vibe`/`index.vibei` is a **boundary**: importing
-the directory resolves to its index, and files *inside* the directory can
-only be reached from outside through names the index exports.
+Importing a directory resolves to its index. The **boundary** -- what other
+packages may reach -- is `index.vpkg`; see the oracle section linked at the top.
 
 ```vibe skip
-import ./subdir { helper }   // resolves to subdir/index.vibe(i)
+import ./subdir { helper }   // resolves to subdir's index
 import . { helper }          // this directory's own index
 ```
 
@@ -75,19 +75,22 @@ export ./lib.vibe { helper1, helper2 }
 Wildcard re-export is intentionally not supported — every re-exported name
 is listed explicitly.
 
-## Contract files (`.vibei`)
+## Contract files (`index.vpkg`)
 
-A directory's public API can be declared as a separate, body-less contract
-file instead of inline in `index.vibe`:
+A package's public API is declared in `index.vpkg`: a `name` / `version` /
+`description` / `deps` / `generated_hash` header (ADR-0080) followed by
+body-less declarations, whose implementations live in sibling `.vibe` files and
+are checked against the contract.
 
 | File | Meaning |
 |---|---|
-| `index.vibe` | Declarations have bodies (implementation inline). Good for small packages/scripts. |
-| `index.vibei` | Declarations have **no bodies** — implementation lives in sibling `.vibe` files and is checked against the contract. |
+| `index.vpkg` | The contract, and **the only package boundary**. Body-less declarations; the header declares dependency versions. |
+| `index.vibe` | A package entry / facade. Convenient, but **not** a boundary. |
+| `index.vibei` | Legacy. Not a boundary, and no longer present in this repository. |
 
-A directory may have `index.vibe` *or* `index.vibei`, never both. See
-[docs/module-system-v2.md §3](../module-system-v2.md) for the full rules
-(opaque types, effect rows as contract surface, `where` clauses).
+Two index spellings in one directory is a hard error. For visibility, implicit
+build roots and the exact effect of each spelling, see the oracle section linked
+at the top.
 
 ## require (content-addressed dependencies)
 
@@ -98,9 +101,9 @@ require @vibe/core 1.2.3 = #ab12cd34      // bare triple = exact match
 require @vibe/http ^1.2.3 = #77aa02ef     // ^ = compatible range
 ```
 
-`vibe fmt` inserts/verifies the `= #hash` suffix from the local store. See
-[docs/module-system-v2.md §6](../module-system-v2.md) for the full
-resolution and override rules.
+`vibe fmt` inserts and verifies the `= #hash` suffix from the local store.
+Resolution order, `deps` versus `require`, and `VIBE_REQUIRE_PINS` are in the
+oracle section linked at the top.
 
 ## extern (FFI)
 
@@ -115,6 +118,6 @@ extern let %parse_json: (String) -> Json with Exception
 ## File conventions
 
 - `.vibe` -- standard source files
-- `.vibei` -- contract file (body-less declarations, checked against sibling `.vibe` implementations)
-- Each directory uses `index.vibe`/`index.vibei` as the public boundary
+- `.vpkg` -- contract file (body-less declarations, checked against sibling `.vibe` implementations)
+- `index.vpkg` is the public boundary of a package; `index.vibe` is an entry, not a boundary
 - `require NAME VERSION = #hash` lines are the manifest *and* the lock (no separate lock file)

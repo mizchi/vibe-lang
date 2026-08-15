@@ -1792,4 +1792,4 @@ enforce しない (fixtures/contract_* の最小契約テストを壊さない�
 
 ---
 
-*Full reference: [docs/spec/syntax.md](spec/syntax.md) / [syntax-reference.md](language-tour/syntax-reference.md) / [language-tour/](language-tour/)*
+*Full reference: [docs/spec/syntax.md](spec/syntax.md) / [syntax-reference.vibe.md](language-tour/syntax-reference.vibe.md) / [language-tour/](language-tour/)*

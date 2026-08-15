@@ -5,7 +5,7 @@
 | Type | Description | Example |
 |------|-------------|---------|
 | `Int` | 62-bit tagged integer | `42`, `0xFF` |
-| `String` | UTF-16 string | `"hello"` |
+| `String` | Byte string; `length`, indexes and slices are byte counts and offsets (ADR-0098) | `"hello"` |
 | `Bool` | Boolean | `true`, `false` |
 | `Float` | 32-bit float | `1.5f` |
 | `Double` | 64-bit float | `3.14` |
