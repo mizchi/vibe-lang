@@ -4310,6 +4310,53 @@ fi
 rm -rf "$gcaliasdir"
 echo "[compiler-gate] wasm-gc closure builtin alias capture ok (gc)"
 
+# 40h-4. #1814: the gc lane must DECLARE its host ABI in the `vibe.abi` custom
+#        section. The node runner picks the decoding convention from that
+#        section when VIBE_IMPORT_ABI is unset -- the normal way a built
+#        artifact runs -- and falls back to "tagged" without it, so every
+#        host-import result came back wrong while the module stayed valid and
+#        silent. `Fs::exists` on a MISSING path answered true.
+#
+#        Deliberately runs the produced modules with NO VIBE_IMPORT_ABI: the
+#        point is that the module says so itself. Forcing the env var here
+#        would make the gate pass with the section absent.
+echo "[compiler-gate] 40h-4/40 wasm-gc host ABI declaration (#1814)"
+gcabidir="_build/_gate_gc_host_abi"
+rm -rf "$gcabidir"; mkdir -p "$gcabidir"
+rm -rf _build/gc_host_abi_probe; mkdir -p _build/gc_host_abi_probe
+printf 'hello\n' > _build/gc_host_abi_probe/a.txt
+gcabi_out=""
+for gcabi_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcabi_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_host_abi_declaration.vibe" "$gcabidir/$gcabi_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$gcabidir/$gcabi_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_host_abi_declaration.vibe did not compile on the $gcabi_be backend (#1814)" >&2
+    cat "$gcabidir/$gcabi_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  gcabi_got="$(env -u VIBE_IMPORT_ABI VIBE_PREOPEN_DIR="$ROOT_DIR" \
+    bash scripts/run_wasm_vibe_host_runner.sh "$gcabidir/$gcabi_be.wasm" 2>&1 | tail -1)"
+  if [ "$gcabi_be" = "linear" ]; then
+    gcabi_out="$gcabi_got"
+  elif [ "$gcabi_got" != "$gcabi_out" ]; then
+    echo "[compiler-gate] FAIL: gc host-import results disagree with linear: gc='$gcabi_got' linear='$gcabi_out' (#1814)" >&2
+    exit 1
+  fi
+done
+# 160 = missing:0 present:1 read_len:6 env_len:0 -- pin the value too, so a
+# change that breaks BOTH lanes the same way cannot pass the agreement check.
+if [ "$gcabi_out" != "160" ]; then
+  echo "[compiler-gate] FAIL: host-import probe returned '$gcabi_out' (want 160) on both lanes (#1814)" >&2
+  exit 1
+fi
+if ! grep -qa "vibe.abi" "$gcabidir/gc.wasm"; then
+  echo "[compiler-gate] FAIL: the gc module carries no vibe.abi custom section (#1814)" >&2
+  exit 1
+fi
+rm -rf "$gcabidir" _build/gc_host_abi_probe
+echo "[compiler-gate] wasm-gc host ABI declaration ok (linear + gc, =160)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
