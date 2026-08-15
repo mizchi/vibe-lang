@@ -2425,26 +2425,57 @@ fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: 
   // "[Int]", same as the literal path), so the two answers are interchangeable
   // and everything downstream is unchanged.
   //
-  // This covers tuple / Option / Result annotations by the same route, since
-  // ty_to_eq_shape handles them: they had the identical hole.
+  // `interp_shape` is REQUIRED here, not decoration. `ty_to_eq_shape` speaks
+  // equality's grammar, which is a strict superset of the renderer's: it also
+  // emits `{o:..}` / `{r:..}` for Option / Result. `interp_expand_shape`
+  // distinguishes only tuples (leading `(`) and treats every other composite as
+  // an ARRAY, so letting a `{o:Int}` through would emit `Array::length` /
+  // `Array::get` against an Option -- a trap or a wrong render, i.e. a worse
+  // version of the bug being fixed. `interp_shape` admits only the tuple and
+  // array forms the renderer can expand. (Codex review on this PR.)
+  //
+  // A shape it rejects falls THROUGH to the syntax path rather than becoming
+  // "": an annotated `let p: Point = mk()` must still reach the head name that
+  // `interp_show_target` dispatches `Point::to_string` on. So this is strictly
+  // additive -- no annotated binding renders worse than it did.
+  //
+  // Option / Result annotations therefore keep today's rendering. Making those
+  // work means teaching interp_expand_shape their encodings, which is a
+  // separate change.
   match dtd_ascribed_type(e) {
-    Some(ann) => ty_to_eq_shape(ann),
+    Some(ann) => {
+      let sh = interp_shape(ty_to_eq_shape(ann))
+      if String::length(sh) > 0 {
+        sh
+      } else {
+        infer_shape_by_syntax(e, struct_sets, var_types, fn_returns)
+      }
+    },
     None => infer_shape_by_syntax(e, struct_sets, var_types, fn_returns)
   }
 }
 
-/// #1880: Array builtins whose result has the SAME element type as their first
-/// argument, so the shape propagates without any inference. `Array::map` is
-/// deliberately NOT here -- its element type is the CALLBACK's return type, so
-/// the answer is not the argument's shape and guessing it would be worse than
-/// saying nothing. An annotation covers that case.
+/// #1880: Array builtins that RETURN an array whose element type is their first
+/// argument's, so the shape propagates without any inference.
+///
+/// Two exclusions, both deliberate:
+///
+///   - `Array::map` -- its element type is the CALLBACK's return type, not the
+///     argument's, so reusing the argument's shape would render confidently and
+///     wrongly. Worse than saying nothing. An annotation covers it.
+///   - `Array::truncate` -- it MUTATES its first argument and returns Unit
+///     (`declare Array::truncate(Array[T], Int) -> Unit`, builtins/
+///     declarations.vibe:35). Giving it `[T]` would rewrite the render into
+///     array operations against a Unit. It was in this list until a Codex
+///     review on this PR caught it; "takes an array first" is not the
+///     predicate, "returns that array's element type" is.
 ///
 /// Returns "" for "no answer", which the caller treats as fall-through. The
 /// `[` guard keeps a non-array first argument (a user binding of the same
 /// spelling that reached here, a wrong-arity call) from being reported as an
 /// array shape.
 fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "Array::reverse" || fname == "Array::concat" || fname == "Array::truncate"
+  let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "Array::reverse" || fname == "Array::concat"
   if preserves && Array::length(cargs) >= 1 {
     let sh = infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
     if String::starts_with(sh, "[") {
