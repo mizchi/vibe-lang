@@ -709,8 +709,8 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
 // NOTE: `#cfg` must not be used in the compiler's own source until the seed
 // compiler understands it (docs/selfhost-bootstrap.md bump procedure).
 
-/// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`, or
-/// `deprecated` (#1262 ADR-0101 migration marker; optional `("message")`
+/// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`,
+/// `zero_alloc`, or `deprecated` (#1262 ADR-0101 migration marker; optional `("message")`
 /// argument). Returns (directive_kind, flag_name, next_pos) — for
 /// `deprecated` the middle slot carries the optional message (empty if none).
 fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) with Exception {
@@ -726,6 +726,11 @@ fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) 
             _ => throw("expected flag name in #cfg(...)")
           },
           _ => throw("expected '(' after #cfg")
+        }
+      } else if dname == "zero_alloc" {
+        match peek(tokens, pos + 1) {
+          TLParen => throw("#zero_alloc does not accept arguments yet"),
+          _ => (dname, "", pos + 1)
         }
       } else if dname == "deprecated" {
         match peek(tokens, pos + 1) {
@@ -787,6 +792,28 @@ fn cfg_flag_active(active: Array[String], flag: String) -> Bool {
   found
 }
 
+/// Canonical allocation contracts attach to exactly one declaration. Reject
+/// any other placement while the files are still separate, so a marker at
+/// one file's EOF can never bind to the first function of a linked file.
+fn zero_alloc_target_is_fn(tokens: Array[Token], pos: Int) -> Bool {
+  match peek(tokens, pos) {
+    TFn => true,
+    TExport => match peek(tokens, pos + 1) {
+      TFn => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn require_zero_alloc_target(tokens: Array[Token], pos: Int) -> Unit with Exception {
+  if zero_alloc_target_is_fn(tokens, pos) {
+    ()
+  } else {
+    throw("#zero_alloc must immediately precede a fn declaration")
+  }
+}
+
 /// Program parser that KEEPS `fn` declarations as SFnDecl (see
 /// parse_stmt_preserving) — used by the printer/normalize round-trip so
 /// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
@@ -806,7 +833,11 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
       },
       THash => {
         let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-        if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+        if dname == "zero_alloc" {
+          require_zero_alloc_target(tokens, dnext)
+          ArrayBuilder::push(b, SExpr(EIdent("@zero_alloc", 0)))
+          pos = dnext
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
           // enable directive consumed, or active #cfg: keep the next stmt.
           pos = dnext
         } else {
@@ -955,7 +986,12 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
       },
       THash => {
         let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-        if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+        if dname == "zero_alloc" {
+          require_zero_alloc_target(tokens, dnext)
+          let marker_offset = if pos < Array::length(starts) { Array::get(starts, pos) } else { 0 }
+          ArrayBuilder::push(b, SExpr(EIdent("@zero_alloc", marker_offset)))
+          pos = dnext
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
           pos = dnext
         } else {
           match peek(tokens, dnext) {
@@ -1100,7 +1136,12 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
         // recovery machinery below by treating it like a failed statement.
         let cfg_res = handle {
           let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-          if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          if dname == "zero_alloc" {
+            require_zero_alloc_target(tokens, dnext)
+            let marker_offset = if pos < Array::length(starts) { Array::get(starts, pos) } else { 0 }
+            ArrayBuilder::push(b, SExpr(EIdent("@zero_alloc", marker_offset)))
+            dnext
+          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
             dnext
           } else {
             match peek(tokens, dnext) {
@@ -1243,13 +1284,23 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         pos = pos + 1
       },
       THash => {
-        // Module-source (flat source) emission re-emits statement spans; a
-        // # directive (#cfg / #deprecated) sits OUTSIDE its statement's span,
-        // so passing it through would silently change semantics between the
-        // original and the re-emitted source. Refuse loudly instead (the
-        // compiler's own source must not use # directives until the seed
-        // understands them).
-        throw("# directives are not supported in module-source emission")
+        // `#zero_alloc` is part of the following declaration's source span.
+        // Module-source emission therefore preserves the directive without
+        // adding a synthetic statement that would desynchronise span arrays.
+        let (dname, _, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "zero_alloc" {
+          require_zero_alloc_target(tokens, dnext)
+          let st = Array::get(starts, pos)
+          let (stmt, next) = parse_stmt(tokens, starts, dnext)
+          ArrayBuilder::push(b, stmt)
+          ArrayBuilder::push(span_start, st)
+          ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+          pos = next
+        } else {
+          // Other directives can alter which statement exists; keep refusing
+          // until module-source emission models those semantics explicitly.
+          throw("# directives are not supported in module-source emission")
+        }
       },
       TImpl => {
         let st = Array::get(starts, pos)

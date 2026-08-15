@@ -96,8 +96,8 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
   O(1) の watermark 戻しになる。ADR-0092(reuse)と独立に積算する。
 - `let mut` は無変更(heap-boxed・escape 自由・row に現れない)。region は
   opt-in の追加機能であり、既存コードは1行も変わらない。
-- `@zero_alloc`(ADR-0091)の既定は region 確保を許容するので、
-  「region + `@zero_alloc`」で『一般 heap に触れないホットパス』を機械
+- `#zero_alloc`(ADR-0091)の既定は region 確保を許容するので、
+  「region + `#zero_alloc`」で『一般 heap に触れないホットパス』を機械
   検証できる。
 
 ## Non-goals

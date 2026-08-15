@@ -33,6 +33,46 @@ test "parse_program: single let binding" {
   assert(Array::length(stmts) == 1)
 }
 
+test "parse_program: #zero_alloc normalizes to the allocation-check marker" {
+  let stmts = parse_program(lex("#zero_alloc\nfn hot(x: Int) -> Int { x + 1 }"))
+  assert(Array::length(stmts) == 2)
+  let marker = match Array::get(stmts, 0) {
+    SExpr(EIdent(name, _)) => name,
+    _ => ""
+  }
+  assert_eq(marker, "@zero_alloc")
+}
+
+test "parse_program: #zero_alloc accepts an exported fn" {
+  let stmts = parse_program(lex("#zero_alloc\nexport fn hot(x: Int) -> Int { x + 1 }"))
+  assert(Array::length(stmts) == 2)
+}
+
+test "parse_program: #zero_alloc rejects a non-fn target before linking" {
+  let result = handle {
+    let _ = parse_program(lex("#zero_alloc\nlet hot = 1"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "#zero_alloc must immediately precede a fn declaration"))
+}
+
+test "parse_program: legacy @zero_alloc remains accepted during migration" {
+  let stmts = parse_program(lex("@zero_alloc\nfn hot(x: Int) -> Int { x + 1 }"))
+  assert(Array::length(stmts) == 2)
+}
+
+test "parse_program: unimplemented #zero_alloc arguments fail closed" {
+  let result = handle {
+    let _ = parse_program(lex("#zero_alloc(strict)\nfn hot(x: Int) -> Int { x + 1 }"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "#zero_alloc does not accept arguments yet"))
+}
+
 test "parse_program: multiple top-level statements" {
   let tokens = lex("let x = 1\nlet y = 2\nlet z = x + y")
   let stmts = parse_program(tokens)

@@ -5,7 +5,7 @@ Status: proposed
 Date: 2026-07-31
 
 Related: ADR-0055(RC cutover、`docs/spec/rc-port.md`), ADR-0062(shadow
-liveness), ADR-0090(region), ADR-0091(`@zero_alloc`),
+liveness), ADR-0090(region), ADR-0091(`#zero_alloc`),
 [mutability-control-review.md](mutability-control-review.md),
 [pl-survey-2026-07.md](pl-survey-2026-07.md) Medium #7(Koka FP²/TRMC)。
 
@@ -26,11 +26,11 @@ TRMC / COW はどれも未実装**である(`rc-port.md` Phase 3.5 が明記)。
   ビルドが最大の受益者(AST 再構築ホットパス)」と結論している。
 
 [mutability-control-review.md](mutability-control-review.md) は当初 FBIP を
-`@zero_alloc`(ADR-0091)の後続に置いたが、本 ADR で**実装優先度を region
+`#zero_alloc`(ADR-0091)の後続に置いたが、本 ADR で**実装優先度を region
 (ADR-0090)/ zero_alloc(ADR-0091)より前へ引き上げる**。理由: (a) 表面
 構文が無く bootstrap bump も seed 調整も不要で、純粋に Perceus プランナと
 codegen の作業として今日始められる。(b) RC が default である以上、利得が
-全ユーザーコードに即時に効く。(c) reuse が入ってから `@zero_alloc` を
+全ユーザーコードに即時に効く。(c) reuse が入ってから `#zero_alloc` を
 入れる方が検証通過域が最初から広い(逆順だと「後から通るようになる」
 annotation churn が起きる)。(d) region の利得(dup/drop 除去)とも独立に
 積算する。
@@ -70,12 +70,12 @@ cons 再帰のループ化(tail recursion modulo cons)は reuse の効果測定�
 Phase 3 とする。AST 再構築(コンパイラ最大のホットパス)は reuse だけで
 大半が in-place 化する見込みが立ってから着手する。
 
-### 4. `@zero_alloc` との合流規約
+### 4. `#zero_alloc` との合流規約
 
 **reuse による in-place 再利用は「確保」に数えない**(ADR-0091)。これは
 Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が広がる
-ほど `@zero_alloc` を満たす関数が増える。fip/fbip 相当の checked 注釈を
-独立に導入することはせず、`@zero_alloc` に一本化する。
+ほど `#zero_alloc` を満たす関数が増える。fip/fbip 相当の checked 注釈を
+独立に導入することはせず、`#zero_alloc` に一本化する。
 
 ## 成功指標(gate に固定する)
 
@@ -110,7 +110,7 @@ Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が
   別議論。rc-port.md Phase 3.5 の結論を維持)。
 - 循環回収(region = ADR-0090 が引き受ける)。
 - wasm-gc backend(RC 自体が linear 専用)。
-- fip/fbip の独立注釈(Decision 4 のとおり `@zero_alloc` に一本化)。
+- fip/fbip の独立注釈(Decision 4 のとおり `#zero_alloc` に一本化)。
 
 ## Implementation notes (2026-07-31, #1262)
 
