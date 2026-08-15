@@ -4090,6 +4090,51 @@ echo "[compiler-gate] region capture ok"
 #      being dropped (#706 — leaked ~84 B per call before its fix) makes it
 #      scale with N (or trap). #700 slipped precisely because no gate asserted
 #      a bounded heap.
+# #1540: the memhost-with-realloc module the async string shape needs must be a
+# VALID core module, not merely well-shaped bytes. The first cut emitted two
+# separate export sections (`emit_export_memory` and `emit_export_section` each
+# emit their own section 7, and a core module may carry only one), which every
+# byte-inspection test happily accepted and `wasm-tools validate` rejected with
+# "section out of order". Emitting and validating is the only assertion that
+# catches that class.
+if command -v wasm-tools >/dev/null 2>&1; then
+  echo "[compiler-gate] 40c3/40 memhost-with-realloc is a valid core module (#1540)"
+  mhdir="_build/_gate_memhost_realloc"
+  rm -rf "$mhdir"; mkdir -p "$mhdir"
+  cat > "$mhdir/emit.vibe" <<'MHEOF'
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_memhost_realloc_fixture
+}
+
+fn main() -> Int with Fs {
+  let m = comp_emit_memhost_realloc_fixture()
+  Fs::write_bytes("_build/_gate_memhost_realloc/memhost.wasm", m)
+  Bytes::length(m)
+}
+MHEOF
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$mhdir/emit.vibe" "$mhdir/emit.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$mhdir/emit.wasm" ]; then
+    echo "[compiler-gate] FAIL: the memhost-realloc emitter program did not compile" >&2
+    cat "$mhdir/emit.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke main "$mhdir/emit.wasm" >/dev/null 2>&1 || true
+  if [ ! -s "$mhdir/memhost.wasm" ]; then
+    echo "[compiler-gate] FAIL: the memhost-realloc emitter wrote no module" >&2
+    exit 1
+  fi
+  if ! wasm-tools validate "$mhdir/memhost.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: the emitted memhost-realloc module does not validate (#1540)" >&2
+    wasm-tools validate "$mhdir/memhost.wasm" >&2 || true
+    exit 1
+  fi
+  echo "[compiler-gate] memhost-with-realloc validates ok (#1540)"
+else
+  echo "[compiler-gate] note: wasm-tools absent, skipping the memhost-realloc validation (#1540)"
+fi
 # #1746 (RC lane): the raw-ABI shim dispatched on the callee NAME alone, so a
 # program defining its own top-level `fn sleep` had the shim applied to ITS
 # call -- emitting a module that failed validation, with no diagnostic. Only

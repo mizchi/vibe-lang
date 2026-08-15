@@ -27,6 +27,9 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_export_section_multi,
   emit_func_type_raw,
   emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
   emit_header,
   emit_i32_add,
   emit_i32_and,
@@ -1374,6 +1377,12 @@ fn emit_comp_async_functype_section(buf: Bytes, result_valtype: Int) -> Unit {
 /// against wasmtime. If wasmtime's accepted encoding moves, the probe gate
 /// fails; if this emitter drifts from it, the unit test fails. Neither can go
 /// stale quietly on its own.
+/// #1540: the memhost-with-realloc module on its own, so its shape is testable
+/// before the serve-emitter merge gives it a caller.
+export fn comp_emit_memhost_realloc_fixture() -> Bytes {
+  comp_generate_memhost_realloc_module()
+}
+
 export fn comp_emit_async_string_canon_fixture() -> Bytes {
   let buf = bytebuf_new()
   emit_comp_async_functype_params(buf, [
@@ -1931,6 +1940,73 @@ fn emit_canon_stream_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
 /// guest module itself is instantiated, breaking the "canon options need
 /// memory before the guest/memory exists" circularity documented in
 /// tools/wasip3_component_probe/stackful/README.md bug #2.
+/// #1540: the memhost, plus a `cabi_realloc` the canon options can point at.
+///
+/// The async_string_lift probe surfaced this as a structural requirement, not a
+/// convenience. `task.return` for a string result needs a memory, the async
+/// lift needs a memory AND a realloc, and BOTH canons are declared before the
+/// guest instance exists -- the guest imports `[task-return]`, so a
+/// guest-owned memory or realloc would be an instantiation cycle. They have to
+/// come from a module instantiated first.
+///
+/// A bump allocator is the whole implementation: nothing in this shape ever
+/// frees, and the lift only needs somewhere to put the caller's arguments for
+/// the duration of one call. It ignores the old-pointer / old-size arguments
+/// for the same reason.
+///
+/// Deliberately a SEPARATE generator rather than an extra export on
+/// `comp_generate_memhost_module`: every component built today embeds that
+/// module, and adding an export would change all of their bytes for the
+/// benefit of a shape none of them use.
+fn comp_generate_memhost_realloc_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 1)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, tc)
+  emit_function_section(out, [
+    0
+  ])
+  emit_memory_section(out, 1)
+  // The bump pointer starts above the low addresses the callers of this shape
+  // use for their own fixed slots (the probe's return area sits at 64).
+  emit_global_section_i32_mut(out, 1024)
+  // One export section with a MIXED kind list. `emit_export_memory` and
+  // `emit_export_section` each emit their own section 7, and a core module may
+  // carry only one -- the first cut did both and produced "section out of
+  // order", caught by `wasm-tools validate` on the emitted bytes rather than by
+  // any test that only inspected them.
+  let exports = bytebuf_new()
+  bytebuf_push_vec_header(exports, 2)
+  emit_name(exports, "memory")
+  bytebuf_push(exports, 2)
+  leb128_encode_u32(exports, 0)
+  emit_name(exports, "cabi_realloc")
+  bytebuf_push(exports, 0)
+  leb128_encode_u32(exports, 0)
+  bytebuf_push_section(out, 7, exports)
+  let body = bytebuf_new()
+  emit_global_get(body, 0)
+  emit_global_get(body, 0)
+  // align the bump by a fixed stride rather than by the requested size: the
+  // shape this serves hands back one region per call and never reuses it.
+  emit_i32_const(body, 64)
+  emit_i32_add(body)
+  emit_global_set(body, 0)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
 fn comp_generate_memhost_module() -> Bytes {
   let out = bytebuf_new()
   emit_header(out)

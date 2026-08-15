@@ -17,6 +17,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
   comp_emit_async_string_canon_fixture,
+  comp_emit_memhost_realloc_fixture,
   comp_emit_component_wasm_async_concurrent_awaits,
   comp_emit_component_wasm_async_hostfuture,
   comp_emit_component_wasm_async_spawned_future,
@@ -525,6 +526,31 @@ test "component async: the narrow spellings are unchanged by the widening (#1540
     1,
     6,
     0
+  ]) == 1)
+}
+
+/// #1540: the memhost has to grow a `cabi_realloc` for the string shape --
+/// both canons are declared before the guest instance exists, so neither can
+/// point at a guest-owned memory or realloc without an instantiation cycle.
+test "component async: memhost-with-realloc exports memory and cabi_realloc (#1540)" {
+  let m = comp_emit_memhost_realloc_fixture()
+  // core wasm header
+  assert(Bytes::get(m, 0) == 0)
+  assert(Bytes::get(m, 1) == 97)
+  assert(Bytes::get(m, 2) == 115)
+  assert(Bytes::get(m, 3) == 109)
+  assert(component_bytes_contains(m, "memory") == 1)
+  assert(component_bytes_contains(m, "cabi_realloc") == 1)
+  // the realloc's type is (i32,i32,i32,i32) -> i32: 60 04 7f 7f 7f 7f 01 7f
+  assert(bytes_contains_seq(m, [
+    96,
+    4,
+    127,
+    127,
+    127,
+    127,
+    1,
+    127
   ]) == 1)
 }
 
