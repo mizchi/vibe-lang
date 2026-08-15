@@ -11796,4 +11796,60 @@ fi
 rm -rf "$aliasdir"
 echo "[compiler-gate] generic transparent alias + opaque control ok (#1700)"
 
+# 105. #1666: code that `desugar_derives` synthesizes must face DCE like any
+#      other top-level definition. The pass order used to be
+#      parse/merge -> dce_stmts -> desugar_trait_dicts, so every `T::equals`
+#      / `to_string` / `compare` / `default` body was emitted after the only
+#      reachability pass had already run -- an enum no user code mentions
+#      still paid for its whole derive surface. Two programs, identical but
+#      for an unused enum declaration: the compiled bytes must be EQUAL.
+#      Assert equality rather than a byte budget so the check states the
+#      property ("an unused type is free") instead of a number that drifts.
+#      The control is the same fixture pair through the same lane, so this
+#      cannot pass by both outputs failing to build.
+echo "[compiler-gate] 105/105 an unused type costs no output bytes (#1666)"
+dcedir="_build/_gate_derive_dce"
+rm -rf "$dcedir"; mkdir -p "$dcedir"
+cat > "$dcedir/with_unused.vibe" <<'VIBE'
+enum GateUnused {
+  A;
+  B(Int);
+  C(String);
+  D(Bool);
+  E;
+}
+
+fn main() -> Unit {
+  println("hi")
+}
+VIBE
+cat > "$dcedir/without_unused.vibe" <<'VIBE'
+fn main() -> Unit {
+  println("hi")
+}
+VIBE
+for dce_sample in with_unused without_unused; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dcedir/$dce_sample.vibe" "$dcedir/$dce_sample.wasm" main \
+    >/dev/null 2>&1 || true
+  if [ ! -s "$dcedir/$dce_sample.wasm" ]; then
+    echo "[compiler-gate] FAIL: #1666 sample '$dce_sample' did not compile" >&2
+    cat "$dcedir/$dce_sample.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+dce_with="$(stat -c%s "$dcedir/with_unused.wasm")"
+dce_without="$(stat -c%s "$dcedir/without_unused.wasm")"
+if [ "$dce_with" != "$dce_without" ]; then
+  echo "[compiler-gate] FAIL: an unused enum cost $((dce_with - dce_without)) output bytes (#1666)" >&2
+  echo "[compiler-gate]       with_unused=$dce_with without_unused=$dce_without" >&2
+  echo "[compiler-gate]       derive-generated code is reaching codegen without facing DCE --" >&2
+  echo "[compiler-gate]       check that dce_stmts still runs AFTER effect_lowering_prelude" >&2
+  echo "[compiler-gate]       in lib/@vibe/compiler/codegen/wasi/linked_compile.vibe" >&2
+  exit 1
+fi
+rm -rf "$dcedir"
+echo "[compiler-gate] unused-type DCE ok ($dce_with B both ways, #1666)"
+
 echo "[compiler-gate] ok"

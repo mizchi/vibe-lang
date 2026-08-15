@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  dce_stmts,
   exception_effect_labels_equal,
   expr_children,
   is_exception_effect_name,
@@ -3557,6 +3558,31 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
   errs
 }
 
+/// #1666: does `name` name a top-level definition in this program?
+///
+/// Mirrors `stmt_name` in core/dce.vibe -- the same three statement shapes DCE
+/// itself treats as named definitions. Used to decide whether reachability can
+/// be rooted at an entry name at all.
+fn lc_defines_top_level(stmts: Array[Stmt], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    let named = match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => n == name,
+      SFnDecl(_, n, _, _, _) => n == name,
+      SLetMut(n, _, _) => n == name,
+      _ => false
+    }
+    if named {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
   // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
@@ -3566,6 +3592,51 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let prelude_errs = effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats)
   if Array::length(prelude_errs) > 0 {
     throw(Array::get(prelude_errs, 0))
+  } else {
+    ()
+  }
+  // #1666: prune what the PIPELINE generated, not just what the source wrote.
+  //
+  // `dce_stmts` already runs once, in `compile_file_fs_mode`'s "mvp" mode --
+  // but that is on the merged parse result, BEFORE `desugar_derives` exists.
+  // Every `T::equals` / `T::to_string` / `T::compare` / `__arr_*` helper the
+  // desugars emit is therefore created after the only reachability check and
+  // never faces one: an enum that is declared and never used still shipped its
+  // generated `equals` (measured: +247 bytes for a 5-variant enum, identical
+  // in "mvp" and "no-dce").
+  //
+  // This is the one place where that is answerable without ordering questions.
+  // `effect_lowering_prelude` above is the container for EVERY AST-mutating
+  // pass -- desugar_trait_dicts, the `lc_inject_*` injectors,
+  // evidence_dict_pass, suspend CPS -- and everything below only ANALYSES
+  // `stmts`. No reference can appear after this line, so reachability computed
+  // here is final. Placing it any earlier would have to answer "which later
+  // pass can reference a name that is unreachable right now".
+  //
+  // Pruning is skipped unless `entry_name` actually names a top-level
+  // definition. Rooting reachability at a name nothing defines makes the whole
+  // program unreachable, and the program then compiles to an empty module
+  // instead of reporting the real problem. Two ways in:
+  //
+  //   - `__no_entry__`: the component lanes' sentinel. A component's surface is
+  //     its export (`handler`), not an entry.
+  //   - a typo: `vibe build --entry mian` must still say "entry not found".
+  //     The gate pins exactly this (ADR-0069 entry hardening), and it is what
+  //     caught the first version of this guard, which special-cased only the
+  //     sentinel.
+  if lc_defines_top_level(stmts, entry_name) {
+    let dce_pruned = dce_stmts(stmts, [
+      entry_name
+    ])
+    // `stmts` is threaded onward by reference, so the pruned program has to
+    // replace its contents rather than rebind the name. `dce_stmts` builds a
+    // fresh array, so this never reads what it is overwriting.
+    Array::truncate(stmts, 0)
+    let mut dce_i = 0
+    while dce_i < Array::length(dce_pruned) {
+      Array::push(stmts, Array::get(dce_pruned, dce_i))
+      dce_i = dce_i + 1
+    }
   } else {
     ()
   }
