@@ -4576,6 +4576,44 @@ fi
 rm -rf "$gchbdir" _build/gc_host_builtins_probe
 echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010202; readdir incl. empty dir and closure)"
 
+# 40h-6. ADR-0090 (#1262): `region r { .. }` on the gc lane, arena-free tier.
+#        Correctness lives in the source-level rewrites; the arena is the
+#        reclamation optimization on top of them. This asserts the gc lane
+#        RUNS regions, and agrees with linear while doing it.
+#
+#        The fixture's two load-bearing shapes -- a copy-out that must not
+#        alias, and a region inside a lambda (plus a nested one, whose inner
+#        body is itself a lambda) -- are the ones that pass a top-level-only
+#        or identity-cast implementation. See the fixture header.
+echo "[compiler-gate] 40h-6/40 wasm-gc region (arena-free tier, #1262)"
+gcrgdir="_build/_gate_gc_region"
+rm -rf "$gcrgdir"; mkdir -p "$gcrgdir"
+gcrg_out=""
+for gcrg_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcrg_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_region_arena_free.vibe" "$gcrgdir/$gcrg_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$gcrgdir/$gcrg_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_region_arena_free.vibe did not compile on the $gcrg_be backend (#1262)" >&2
+    cat "$gcrgdir/$gcrg_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  gcrg_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcrgdir/$gcrg_be.wasm" 2>&1 | tail -1)"
+  if [ "$gcrg_be" = "linear" ]; then
+    gcrg_out="$gcrg_got"
+  elif [ "$gcrg_got" != "$gcrg_out" ]; then
+    echo "[compiler-gate] FAIL: gc region results disagree with linear: gc='$gcrg_got' linear='$gcrg_out' (#1262)" >&2
+    exit 1
+  fi
+done
+# Pin the value too: agreement alone passes when BOTH lanes break the same way.
+if [ "$gcrg_out" != "1292612642" ]; then
+  echo "[compiler-gate] FAIL: region probe returned '$gcrg_out' (want 1292612642) on both lanes (#1262)" >&2
+  exit 1
+fi
+rm -rf "$gcrgdir"
+echo "[compiler-gate] wasm-gc region ok (linear + gc, =1292612642; copy-out, nested, in-lambda)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
