@@ -138,10 +138,15 @@ result channel.
 
 `scripts/selfcompile_heap_policy_docker_test.sh` is the expensive native
 acceptance lane. It checks same-tree build/heap/token identity, poisoned head
-script sentinels, wrong merge identity, reserved paths, and cleanup. The
-workflow-dispatch validation scaffold is intentionally not a PR/push trigger
-and must be removed after native validation before final review. Required CI
-remains unchanged and the existing absolute gate remains authoritative.
+script sentinels, wrong merge identity, reserved paths, and cleanup. Native
+`linux/amd64` attestation run
+[31871671221](https://github.com/mizchi/vibe-lang/actions/runs/31871671221)
+at candidate `8662559614bc6ae110c577ccad385f4fad8753ef` passed focused tests
+35/35 and the full isolated Docker lane (`selfcompile policy Docker validation:
+ok`). The Docker step took 9m40s and the complete job 10m50s. Its temporary
+branch-only validation workflow was removed immediately after the pass.
+Required CI remains unchanged and the existing absolute gate remains
+authoritative.
 
 The metric still observes the guest-exported `__heap_ptr`. HMAC authentication
 proves what the trusted runner observed, but cannot stop a deliberately
