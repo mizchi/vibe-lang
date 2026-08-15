@@ -150,6 +150,35 @@ test "binding-at: CRLF end-of-line clamp does not spill into the next line" {
   assert(occ_len(binding_occurrences(src, 1, 17)) == 0)
 }
 
+/// Binder recovery must follow lexer identifier tokens, not same-spelled raw
+/// text. A comment before the declaration used to steal the binder offset, so
+/// querying the call returned the comment plus the call and omitted `fn apply`.
+test "binding-at: top-level fn excludes comment and string text and includes its declaration" {
+  let src = "// apply: documentation label\nfn apply(x: Int) -> Int { x }\nlet y = apply(1)\nlet text = \"apply\"\n"
+  let from_decl = binding_occurrences(src, 2, 4)
+  let from_use = binding_occurrences(src, 3, 9)
+  // declaration starts after the 30-byte comment line; call starts at 68.
+  assert(occ_len(from_decl) == 2)
+  assert(occ_contains(from_decl, 33, 38))
+  assert(occ_contains(from_decl, 68, 73))
+  assert(occ_len(from_use) == 2)
+  assert(occ_contains(from_use, 33, 38))
+  assert(occ_contains(from_use, 68, 73))
+  // Neither the comment at 3 nor the string contents at 89 is an occurrence.
+  assert(not(occ_contains(from_use, 3, 8)))
+  assert(not(occ_contains(from_use, 89, 94)))
+}
+
+test "binding-at: same-spelled local remains separate from the top-level fn" {
+  let src = "fn apply(x: Int) -> Int { x }\nfn local() -> Int {\n  let apply = (x: Int) -> Int { x + 1 }\n  apply(1)\n}\nlet y = apply(2)\n"
+  let local_occ = binding_occurrences(src, 4, 3)
+  let global_occ = binding_occurrences(src, 6, 9)
+  assert(occ_len(local_occ) == 2)
+  assert(occ_len(global_occ) == 2)
+  assert(not(occ_contains(local_occ, 0, 5)))
+  assert(occ_contains(global_occ, 3, 8))
+}
+
 /// --- doc-at (#854): `///` doc comment lookup via the declaration site
 /// binding_at.vibe already recovers. Hovering the declaration name itself
 /// resolves the doc; hovering a later USE of the same top-level name resolves

@@ -23,10 +23,9 @@
 //
 // BINDER OFFSET RECOVERY: the AST stores binder NAMES as plain Strings without
 // offsets (only `EIdent` carries an offset). We recover a binder's source span by
-// scanning the source for the next whole-word occurrence of the name from a
-// monotonically-advancing floor, walking constructs in source order. This is the
-// same whole-word-scan machinery the previous name-wide implementation used for
-// top-level binding names, generalized to nested binders.
+// scanning the lexer's IDENTIFIER tokens for the next matching name from a
+// monotonically-advancing floor, walking constructs in source order. Raw text
+// is deliberately never searched: comments and strings are not bindings.
 //
 // FALLBACK (honest): for `match`/`handle` arms whose patterns introduce nested
 // sub-binders (ctor / tuple / struct / or patterns) the names ARE introduced into
@@ -47,7 +46,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program_located
+  Token, lex_with_offsets, parse_program_located
 }
 
 //# Functions
@@ -111,42 +110,29 @@ fn bind_empty_hits() -> Array[BindHit] {
   array_empty()
 }
 
-/// True when `source[off]` is NOT an identifier char (or off out of range) — a
-/// word boundary. Used to match a binding name as a whole word.
-fn bind_is_boundary_at(source: String, off: Int) -> Bool {
-  if off < 0 || off >= String::length(source) {
-    true
-  } else {
-    let c = String::char_code_at(source, off)
-    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
-    !is_id
-  }
-}
-
-/// Find the start offset of the first whole-word occurrence of `name` in
-/// `source` at or after `from`. Returns -1 when not found. Recovers a source
-/// offset for a binder NAME, which the parser stores only as a String.
-fn bind_find_word(source: String, name: String, from: Int) -> Int {
-  let nlen = String::length(name)
-  if nlen == 0 {
-    -1
-  } else {
-    let limit = String::length(source)
-    let mut i = if from < 0 {
-      0
-    } else {
-      from
-    }
-    let mut found = -1
-    while found < 0 && i + nlen <= limit {
-      if String::substring(source, i, i + nlen) == name && bind_is_boundary_at(source, i - 1) && bind_is_boundary_at(source, i + nlen) {
-        found = i
-      } else {
-        i = i + 1
+/// Find the first identifier token named `name` at or after `from`. The lexer
+/// has already removed comments and kept string contents inside TString, so
+/// neither can steal a binder's source span.
+fn bind_find_ident_token(tokens: Array[Token], starts: Array[Int], name: String, from: Int) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while found < 0 && i < Array::length(tokens) {
+    let off = Array::get(starts, i)
+    if off >= from {
+      match Array::get(tokens, i) {
+        TIdent(token_name) => if token_name == name {
+          found = off
+        } else {
+          ()
+        },
+        _ => ()
       }
+    } else {
+      ()
     }
-    found
+    i = i + 1
   }
+  found
 }
 
 /// Mutable walk state threaded through the AST traversal:
@@ -154,7 +140,8 @@ fn bind_find_word(source: String, name: String, from: Int) -> Int {
 ///   scope_names — scope-stack of in-scope binder names (parallel to scope_ids)
 ///   scope_ids   — scope-stack of binder ids (parallel to scope_names)
 ///   floor       — boxed monotonically-advancing scan floor for binder recovery
-///   source      — the program text
+///   tokens      — lexer tokens (comments/string contents excluded as binders)
+///   starts      — token source offsets, parallel to tokens
 ///
 /// Binding ids are NOT a separate counter: each binder's canonical id is its
 /// recovered source offset + 1 (unique per binder, and >= 1 so it never collides
@@ -164,7 +151,8 @@ struct BindState {
   scope_names: Array[String];
   scope_ids: Array[Int];
   floor: Array[Int];
-  source: String
+  tokens: Array[Token];
+  starts: Array[Int]
 }
 
 /// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box).
@@ -176,13 +164,14 @@ fn bind_box_int(v: Int) -> Array[Int] {
   arr
 }
 
-fn bind_new_state(source: String) -> BindState {
+fn bind_new_state(tokens: Array[Token], starts: Array[Int]) -> BindState {
   BindState::{
     hits: bind_empty_hits(),
     scope_names: array_empty(),
     scope_ids: array_empty(),
     floor: bind_box_int(0),
-    source: source
+    tokens: tokens,
+    starts: starts
   }
 }
 
@@ -218,7 +207,7 @@ fn bind_pop_scope(st: BindState, mark: Int) -> Unit {
 /// before v, yet not have x in scope while walking v).
 fn bind_recover_binder(st: BindState, name: String) -> Int {
   let from = Array::get(st.floor, 0)
-  let off = bind_find_word(st.source, name, from)
+  let off = bind_find_ident_token(st.tokens, st.starts, name, from)
   let id = if off >= 0 {
     off + 1
   } else {
@@ -270,7 +259,7 @@ fn bind_record_ref(st: BindState, name: String, off: Int) -> Unit {
 fn bind_record_assign_target(st: BindState, name: String) -> Unit {
   let key = bind_resolve(st, name)
   let from = Array::get(st.floor, 0)
-  let off = bind_find_word(st.source, name, from)
+  let off = bind_find_ident_token(st.tokens, st.starts, name, from)
   if off >= 0 {
     Array::push(st.hits, BindHit(name, off, key))
     Array::set(st.floor, 0, off + String::length(name))
@@ -484,7 +473,7 @@ fn bind_walk_arms(st: BindState, arms: Array[(Pat, Expr)]) -> Unit {
 /// binder's offset from the floor.
 fn bind_record_module_binder(st: BindState, name: String) -> Unit {
   let from = Array::get(st.floor, 0)
-  let off = bind_find_word(st.source, name, from)
+  let off = bind_find_ident_token(st.tokens, st.starts, name, from)
   if off >= 0 {
     Array::push(st.hits, BindHit(name, off, 0))
     Array::set(st.floor, 0, off + String::length(name))
@@ -606,7 +595,7 @@ fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, 
     } else {
       let (tokens, starts, _ends) = lex_with_offsets(source)
       let stmts = parse_program_located(tokens, starts, source)
-      let st = bind_new_state(source)
+      let st = bind_new_state(tokens, starts)
       bind_walk_stmts(st, stmts)
       let hits = st.hits
       let (name, key) = bind_pick_at(hits, tgt)
