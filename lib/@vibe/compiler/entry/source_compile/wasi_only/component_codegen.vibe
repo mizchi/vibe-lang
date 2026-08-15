@@ -6,6 +6,7 @@ import @vibe/compiler/core {
   bytebuf_push_buf,
   bytebuf_push_section,
   bytebuf_push_vec_header,
+  bytebuf_length,
   bytebuf_to_bytes,
   leb128_encode_s64,
   leb128_encode_u32
@@ -22,6 +23,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_call,
   emit_code_section,
   emit_data_section,
+  emit_data_section_multi,
   emit_end,
   emit_export_memory,
   emit_export_section,
@@ -2079,6 +2081,409 @@ export fn comp_emit_async_string_component(export_name: String, param_name: Stri
     core_sort_func
   ])
   emit_canon_lift_async_opts(buf, 2, 0, 0, 0, true)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+/// #1540: where the body-read shape parks its fixed areas -- all below the
+/// memhost realloc's bump start, so the string params it lowers cannot land on
+/// them.
+///   64  "200\n\n" + up to 64 body bytes, plus one slot past them that only
+///       ever holds an OVERRUN byte
+///  300 / 320 / 340  diagnostics, each already carrying the status prefix
+///  512  waitable-set.wait payload[0] / [1]
+let comp_body_read_prefix_offset = 64
+
+let comp_body_read_capacity = 64
+
+let comp_body_read_diag_event = 300
+
+let comp_body_read_diag_status = 320
+
+let comp_body_read_diag_overrun = 340
+
+let comp_body_read_wait_payload = 512
+
+let comp_body_read_heap_start = 1024
+
+/// The status prefix the body is appended to. `vibe serve`'s handler contract
+/// is "STATUS\n<header lines>\n\n<body>", so a bare 200 with no headers is the
+/// prefix plus its blank line.
+fn comp_body_read_prefix_text() -> String {
+  "200\n\n"
+}
+
+/// Diagnostics are STRINGS, not numbers: this export's result is a string, so a
+/// gate that reads the HTTP response can name the broken assumption instead of
+/// only reporting a mismatch. Each carries the prefix so it is still a
+/// well-formed answer.
+fn comp_body_read_diag_event_text() -> String {
+  "200\n\nERR-EVENT"
+}
+
+fn comp_body_read_diag_status_text() -> String {
+  "200\n\nERR-STATUS"
+}
+
+fn comp_body_read_diag_overrun_text() -> String {
+  "200\n\nERR-OVERRUN"
+}
+
+/// #1540: guest core module for the body-read shape -- the emitter twin of
+/// `tools/wasip3_component_probe/http_body_read/guest.wat`'s `$m`.
+///
+/// `string_param_count` strings arrive flattened as (ptr, len) pairs, then ONE
+/// i32 stream handle, and the function returns NOTHING: an async lift delivers
+/// its result through task.return.
+///
+/// The loop is the probe's, and every constant in it is a measurement rather
+/// than a choice (tools/wasip3_component_probe/host_stream_value): BLOCKED is
+/// 0xffffffff, a completion packs `(amount << 4) | code`, the wake event for a
+/// read is 2, the wait payload's SECOND word is the status, and the end of the
+/// stream is reported INLINE by the read that finds the writer gone -- either
+/// as a zero-transfer code 1, or riding along with the final byte. Both
+/// terminal shapes are real and reading again after either one traps, so both
+/// end the loop.
+///
+/// Answering with the bytes it read is the point: a guest that returned a
+/// constant would prove the wiring type-checks, not that anything moved.
+fn comp_generate_body_read_guest_module(export_name: String, string_param_count: Int) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 = stream.read (handle, ptr, n) -> status; 1 = (handle) -> () for
+  // stream.drop-readable and waitable-set.drop; 2 = () -> handle for
+  // waitable-set.new; 3 = (a, b) -> () for waitable.join and task.return;
+  // 4 = (set, ptr) -> event for waitable-set.wait; 5 = the handler itself.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 6)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  let handler_params = array_empty()
+  let mut pi = 0
+  while pi < ((string_param_count * 2) + 1) {
+    Array::push(handler_params, 127)
+    pi = pi + 1
+  }
+  emit_func_type_raw(tc, handler_params, array_empty())
+  bytebuf_push_section(out, 1, tc)
+  // imports 0-6 are the canons, then the memory. Local func index = 7.
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 8)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][stream-read-0]body")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[stream-drop-readable-0]body")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "[export]$root")
+  emit_name(ic, String::concat("[task-return]", export_name))
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    5
+  ])
+  emit_export_section(out, export_name, 7)
+  // All i32: the stream handle is the last param, and st / ws / ev / total
+  // follow it as locals.
+  let body_local = string_param_count * 2
+  let st = body_local + 1
+  let ws = body_local + 2
+  let ev = body_local + 3
+  let total = body_local + 4
+  let b = bytebuf_new()
+  emit_block_void(b)
+  emit_loop_void(b)
+  // `> capacity`, not `>=`: a body of exactly the capacity still has its
+  // end-of-stream read to go when the producer reports the end separately.
+  // Erroring here would make the advertised capacity one byte smaller, and
+  // only under one of the two terminal shapes.
+  emit_local_get(b, total)
+  emit_i32_const(b, comp_body_read_capacity)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  emit_i32_const(b, comp_body_read_diag_overrun)
+  emit_i32_const(b, String::length(comp_body_read_diag_overrun_text()))
+  emit_call(b, 6)
+  emit_return(b)
+  emit_end(b)
+  // One byte at a time: the shape a byte-oriented reader needs, and the worst
+  // case for status handling.
+  emit_local_get(b, body_local)
+  emit_i32_const(b, comp_body_read_prefix_offset + String::length(comp_body_read_prefix_text()))
+  emit_local_get(b, total)
+  emit_i32_add(b)
+  emit_i32_const(b, 1)
+  emit_call(b, 0)
+  emit_local_set(b, st)
+  emit_local_get(b, st)
+  emit_i32_const(b, -1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  // BLOCKED: park until the producer delivers. UNJOIN before dropping the set
+  // -- dropping a set that still has members traps.
+  emit_call(b, 2)
+  emit_local_set(b, ws)
+  emit_local_get(b, body_local)
+  emit_local_get(b, ws)
+  emit_call(b, 3)
+  emit_local_get(b, ws)
+  emit_i32_const(b, comp_body_read_wait_payload)
+  emit_call(b, 4)
+  emit_local_set(b, ev)
+  emit_local_get(b, body_local)
+  emit_i32_const(b, 0)
+  emit_call(b, 3)
+  emit_local_get(b, ws)
+  emit_call(b, 5)
+  emit_local_get(b, ev)
+  emit_i32_const(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_i32_const(b, comp_body_read_diag_event)
+  emit_i32_const(b, String::length(comp_body_read_diag_event_text()))
+  emit_call(b, 6)
+  emit_return(b)
+  emit_end(b)
+  // payload[1] is the completion status; payload[0] is the waitable index.
+  emit_i32_const(b, comp_body_read_wait_payload + 4)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, st)
+  emit_end(b)
+  // Nothing transferred = the end of the stream. Any other zero-transfer code
+  // is an assumption that moved: say so loudly rather than answer a truncated
+  // body as if it were complete.
+  emit_local_get(b, st)
+  emit_i32_const(b, 4)
+  emit_i32_shr_u(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, st)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_i32_const(b, 1)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_i32_const(b, comp_body_read_diag_status)
+  emit_i32_const(b, String::length(comp_body_read_diag_status_text()))
+  emit_call(b, 6)
+  emit_return(b)
+  emit_end(b)
+  // past the if, the loop and the block
+  emit_br(b, 2)
+  emit_end(b)
+  emit_local_get(b, total)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, total)
+  // The end can also arrive INLINE with the final byte, and reading again
+  // after that notification traps.
+  emit_local_get(b, st)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_i32_const(b, 1)
+  emit_i32_eq(b)
+  emit_br_if(b, 1)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, body_local)
+  emit_call(b, 1)
+  // The prefix plus everything read: the answer IS the request body.
+  emit_i32_const(b, comp_body_read_prefix_offset)
+  emit_i32_const(b, String::length(comp_body_read_prefix_text()))
+  emit_local_get(b, total)
+  emit_i32_add(b)
+  emit_call(b, 6)
+  // Hand-built rather than emit_code_section_with_locals, which declares its
+  // locals as i64.
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 1)
+  let fb = bytebuf_new()
+  leb128_encode_u32(fb, 1)
+  leb128_encode_u32(fb, 4)
+  bytebuf_push(fb, 127)
+  bytebuf_push_buf(fb, b)
+  bytebuf_push(fb, 11)
+  leb128_encode_u32(code_sec, bytebuf_length(fb))
+  bytebuf_push_buf(code_sec, fb)
+  bytebuf_push_section(out, 10, code_sec)
+  emit_data_section_multi(out, [
+    comp_body_read_prefix_offset,
+    comp_body_read_diag_event,
+    comp_body_read_diag_status,
+    comp_body_read_diag_overrun
+  ], [
+    string_to_data(comp_body_read_prefix_text()),
+    string_to_data(comp_body_read_diag_event_text()),
+    string_to_data(comp_body_read_diag_status_text()),
+    string_to_data(comp_body_read_diag_overrun_text())
+  ])
+  bytebuf_to_bytes(out)
+}
+
+/// #1540: the whole body-read component, assembled from the emitters -- the
+/// emitter twin of the http_body_read probe, and the shape the serve emitter
+/// has to produce once a vibe handler can name a stream parameter.
+///
+/// What is new here over `comp_emit_async_string_component` is the STREAM
+/// PARAMETER: the component functype's last param is a type INDEX rather than
+/// a primitive valtype, and the guest reaches the handle behind it through the
+/// stream canons, which have to be declared and instantiated around it.
+///
+/// Instance / index layout, in emission order:
+///   core module    0 = memhost+realloc, 1 = guest
+///   core memory    0 = alias(memhost, "memory")
+///   core func      0 = alias(memhost, "cabi_realloc"), 1 = stream.read,
+///                  2 = stream.drop-readable, 3 = waitable-set.new,
+///                  4 = waitable.join, 5 = waitable-set.wait,
+///                  6 = waitable-set.drop, 7 = task.return,
+///                  8 = alias(guest, export_name)
+///   core instance  0 = memhost, 1 = $root (the six canons the guest calls),
+///                  2 = [export]$root (task-return), 3 = env (memory),
+///                  4 = guest
+///   component type 0 = stream u8, 1 = the async functype
+///   component func 0 = the lift
+///
+/// Aliases and canon built-ins share ONE core-func index space in emission
+/// order, so every canon below is numbered by where it appears, not by what it
+/// is -- the same thing that makes the async string component's lift point at
+/// core func 2.
+export fn comp_emit_body_read_component(export_name: String, string_param_names: Array[String], stream_param_name: String) -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, comp_generate_memhost_realloc_module(comp_body_read_heap_start))
+  emit_core_module_section(buf, comp_generate_body_read_guest_module(export_name, Array::length(string_param_names)))
+  emit_core_instance_instantiate_section(buf, 0, array_empty())
+  emit_alias_section(buf, 0, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_alias_section(buf, 0, [
+    "cabi_realloc"
+  ], [
+    core_sort_func
+  ])
+  emit_comp_stream_type_section(buf, comp_valtype_u8)
+  emit_canon_stream_read(buf, 0, 0)
+  emit_canon_stream_drop_readable(buf, 0)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, 0)
+  emit_canon_waitable_set_drop(buf)
+  emit_canon_task_return_opts(buf, comp_valtype_string, 0, true)
+  // The stream param's valtype is the stream TYPE INDEX (0), not a primitive
+  // code. The component model's valtype encoding is a single byte for the
+  // primitives (0x73..0x7f) and a LEB type index otherwise, so a small index
+  // and a primitive are told apart by value -- which is why this reads as a
+  // bare 0 next to `comp_valtype_string`.
+  let param_names = array_empty()
+  let param_valtypes = array_empty()
+  let mut i = 0
+  while i < Array::length(string_param_names) {
+    Array::push(param_names, Array::get(string_param_names, i))
+    Array::push(param_valtypes, comp_valtype_string)
+    i = i + 1
+  }
+  Array::push(param_names, stream_param_name)
+  Array::push(param_valtypes, 0)
+  emit_comp_async_functype_params(buf, param_names, param_valtypes, comp_valtype_string)
+  emit_core_instance_from_exports_sorted(buf, [
+    "[async-lower][stream-read-0]body",
+    "[stream-drop-readable-0]body",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func
+  ], [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ])
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    String::concat("[task-return]", export_name)
+  ], [
+    7
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    0
+  ])
+  emit_core_instance_instantiate_args(buf, 1, [
+    "$root",
+    "[export]$root",
+    "env"
+  ], [
+    1,
+    2,
+    3
+  ])
+  emit_alias_section(buf, 4, [
+    export_name
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_opts(buf, 8, 1, 0, 0, true)
   emit_comp_export_section(buf, export_name, 0)
   bytebuf_to_bytes(buf)
 }

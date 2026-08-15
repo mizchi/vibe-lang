@@ -89,10 +89,28 @@ drops NUL bytes and trailing newlines — a guest returning one byte too many
 (the unwritten slot just past what it read) compared equal as a string and was
 caught only by `cmp`.
 
+## The emitter twin
+
+`comp_emit_body_read_component` (`component_codegen.vibe`) assembles the same
+component from the emitters, and the gate holds it to **this probe's bar**: it
+is composed with the same adapter, served by the same `wasmtime serve`, and
+answers the same two POSTs. Both guests run through one code path in the gate,
+so "the emitter twin works" cannot quietly mean a weaker check.
+
+That is deliberate rather than belt-and-braces. A component whose lift points at
+the wrong core func, or whose stream canons are wired to the wrong instance,
+still contains every byte a structural check looks for — aliases and canon
+built-ins share one core-func index space in emission order, so the guest's own
+export lands at core func 8 only because the realloc alias and all seven canons
+precede it.
+
+This probe stays as the hand-written reference the emitter was measured against.
+
 ## Still open for #1540 scope 3/4
 
-The guest here is hand-written WAT. Emitting it from vibe source needs a way to
-**spell** a `HostStream`-typed handler parameter (#1341 made `host_stream_named`
-return the nominal `HostStream` rather than `Stream[Int]`), and
-`validate_serve_handler` currently requires exactly four `String` params and
+The emitted guest's READER is still fixed: `comp_generate_body_read_guest_module`
+emits the loop, rather than compiling it from vibe source. Closing that needs a
+way to **spell** a `HostStream`-typed handler parameter (#1341 made
+`host_stream_named` return the nominal `HostStream` rather than `Stream[Int]`),
+and `validate_serve_handler` currently requires exactly four `String` params and
 rejects every non-`Exception` effect.

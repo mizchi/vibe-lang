@@ -16,6 +16,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_core_imports_stdin_provider,
   comp_emit_async_string_canon_fixture,
   comp_emit_async_string_component,
+  comp_emit_body_read_component,
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
   comp_emit_component_wasm_async_concurrent_awaits,
@@ -643,6 +644,80 @@ test "component async: reply data stays below the caller allocation region (#154
     9,
     11
   ]) == 1)
+}
+
+/// #1540: the body-read component -- the emitter twin of the http_body_read
+/// probe, and the first emitted shape whose handler takes a STREAM.
+///
+/// The stream param is the part a reader is most likely to misread, so it is
+/// the part this pins: in the component model's valtype encoding a primitive
+/// is a single byte in 0x73..0x7f and anything smaller is a TYPE INDEX, so the
+/// `body` param's `0` is the stream type declared above it, not some empty or
+/// defaulted valtype. Get it wrong and the handler silently takes a different
+/// type.
+///
+/// `scripts/test_http_body_read_probe_gate.sh` runs the emitted component
+/// under `wasmtime serve` against the same POST assertions as the hand-written
+/// probe; this is the always-on half that needs no external tool.
+test "component async: the emitted body-read component takes a stream param (#1540)" {
+  let comp = comp_emit_body_read_component("handler", [
+    "method",
+    "url",
+    "headers"
+  ], "body")
+  // stream<u8> component type: 66 01 7d
+  assert(bytes_contains_seq(comp, [
+    102,
+    1,
+    125
+  ]) == 1)
+  // stream.read with Async + Memory(0): 0f 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    15,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // async functype, 4 params
+  assert(bytes_contains_seq(comp, [
+    67,
+    4
+  ]) == 1)
+  // ... whose last param is "body" typed as TYPE INDEX 0, result string:
+  // 04 'b' 'o' 'd' 'y' 00 | 00 73
+  assert(bytes_contains_seq(comp, [
+    4,
+    98,
+    111,
+    100,
+    121,
+    0,
+    0,
+    115
+  ]) == 1)
+  // the async lift, lifting CORE FUNC 8 -- the guest alias, which lands there
+  // only because the realloc alias and all seven canons precede it in the one
+  // shared core-func index space
+  assert(bytes_contains_seq(comp, [
+    0,
+    0,
+    8,
+    4,
+    6,
+    3,
+    0,
+    4,
+    0,
+    0,
+    1
+  ]) == 1)
+  // the guest reaches the stream through the canons under these names
+  assert(component_bytes_contains(comp, "[async-lower][stream-read-0]body") == 1)
+  assert(component_bytes_contains(comp, "[task-return]handler") == 1)
+  // and its diagnostics are strings, so a failure can name what broke
+  assert(component_bytes_contains(comp, "ERR-OVERRUN") == 1)
 }
 
 test "component async: sync lift carries no async canonopt" {
