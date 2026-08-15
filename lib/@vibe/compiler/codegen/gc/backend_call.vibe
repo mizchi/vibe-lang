@@ -40,6 +40,7 @@ import @vibe/compiler/codegen/common_base {
   StrTable,
   agg_log_reset_above,
   ctor_table_index_of,
+  double_parse_expr,
   double_to_string_expr,
   emit_binop_op,
   emit_i32_eq,
@@ -61,6 +62,7 @@ import @vibe/compiler/codegen/common_base {
   gc_slot_log_reset_above,
   gc_slot_map_get,
   gc_slot_map_reset_above,
+  int_parse_expr,
   is_eident,
   resolve_func,
   resolve_local,
@@ -102,15 +104,20 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_export_section,
   emit_export_section_multi,
   emit_exports_with_memory,
+  emit_f64_abs,
   emit_f64_add,
+  emit_f64_ceil,
   emit_f64_const_bits,
   emit_f64_convert_i64_s,
   emit_f64_div,
   emit_f64_eq,
+  emit_f64_floor,
   emit_f64_ge,
   emit_f64_gt,
   emit_f64_le,
   emit_f64_lt,
+  emit_f64_max,
+  emit_f64_min,
   emit_f64_mul,
   emit_f64_ne,
   emit_f64_neg,
@@ -995,6 +1002,76 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_call_resolved(buf, ctx, sl_idx)
         emit_end(buf)
         nl
+      }
+      // #1861 second batch: the `gc-unported` rows that needed no new
+      // machinery. Double::abs/floor/ceil/max/min are plain f64 instructions,
+      // and this lane is SIMPLER than its linear twin: there is no RC boxing
+      // to unwrap and re-apply, because gc holds a Double as raw bits.
+      else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_f64_reinterpret_i64(buf)
+        if fname == "Double::abs" {
+          emit_f64_abs(buf)
+        } else if fname == "Double::floor" {
+          emit_f64_floor(buf)
+        } else {
+          emit_f64_ceil(buf)
+        }
+        emit_i64_reinterpret_f64(buf)
+        nl
+      }
+      else if fname == "Double::max" || fname == "Double::min" {
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_f64_reinterpret_i64(buf)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_f64_reinterpret_i64(buf)
+        if fname == "Double::max" {
+          emit_f64_max(buf)
+        } else {
+          emit_f64_min(buf)
+        }
+        emit_i64_reinterpret_f64(buf)
+        nl
+      }
+      // The next three emit nothing themselves: they rewrite the call into an
+      // AST the ordinary compiler already handles. The rewrite comes from
+      // common_base, the same function the linear arm calls, so the two lanes
+      // cannot drift apart on what these mean. double_to_string_expr was
+      // already imported here for `__to_string`; only the documented qualified
+      // spellings were missing.
+      else if fname == "Double::parse" {
+        ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      else if fname == "Double::to_string" || fname == "Float::to_string" {
+        ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      else if fname == "Int::parse" {
+        ce(buf, int_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      // `Map::remove` is deliberately absent. Linear has an arm for it, but
+      // the checker has no signature for the name, so no program reaches it:
+      // `Map::remove(m)` is rejected with "unknown name: Map::remove" before
+      // codegen runs. Porting it would add unreachable code to this lane and
+      // make the parity ledger claim a divergence that no program can observe.
+      //
+      // The element count is the map header's first word. gc uses the same
+      // object shape as linear ([tag@0][len@4][fields@8+]), which is why
+      // Map::get / Map::set / Map::keys already work here. No RC re-tagging:
+      // this lane leaves Ints untagged.
+      else if fname == "Map::size" {
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        let map_local = nl
+        Array::push(local_names, "__size_map")
+        emit_local_set(buf, map_local)
+        emit_local_get(buf, map_local)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_local_set(buf, map_local)
+        emit_local_get(buf, map_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i64_extend_i32_u(buf)
+        nl + 1
       }
       // #1861: the Array HOFs below were the `gc-hof-gap` rows of
       // scripts/builtin_parity_classification.tsv -- served by the linear
