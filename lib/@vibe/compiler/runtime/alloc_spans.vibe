@@ -76,10 +76,15 @@ fn alloc_contains_name(names: Array[String], name: String) -> Bool {
 /// Only direct `EIdent` callees are classified: an indirect call through a
 /// value cannot be resolved here, and it is reported as a site anyway by the
 /// closure rule (something had to build the closure).
-fn alloc_call_kind(expr: Expr) -> String {
+fn alloc_call_kind(expr: Expr, ctors: Array[String]) -> String {
   match expr {
     ECall(callee, _, _) => match callee {
-      EIdent(name, _) => if builtin_allocates(name) {
+      // The callee EIdent is visited as a child and owns the constructor
+      // record. Do not also mislabel the same source site as an unknown
+      // builtin merely because constructors are absent from that registry.
+      EIdent(name, _) => if alloc_contains_name(ctors, name) {
+        ""
+      } else if builtin_allocates(name) {
         String::concat("builtin:", name)
       } else {
         ""
@@ -107,7 +112,7 @@ fn alloc_site_kind(expr: Expr, ctors: Array[String]) -> String {
     EMap(_) => "map",
     EStringInterp(_) => "interp",
     EHandle(_, _) => "handler",
-    _ => alloc_call_kind(expr)
+    _ => alloc_call_kind(expr, ctors)
   }
 }
 
@@ -244,18 +249,22 @@ export fn alloc_spans(source: String) -> Array[(String, String, Int)] with Excep
   }
   let mut i = 0
   while i < Array::length(stmts) {
+    let stmt_off = if i < Array::length(span_start) {
+      Array::get(span_start, i)
+    } else {
+      0
+    }
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) => match value {
-        EFn(_, _, _, _, _, fbody) => {
-          let stmt_off = if i < Array::length(span_start) {
-            Array::get(span_start, i)
-          } else {
-            0
-          }
-          alloc_walk_expr(out, name, fbody, stmt_off, ctors)
-        },
+        EFn(_, _, _, _, _, fbody) => alloc_walk_expr(out, name, fbody, stmt_off, ctors),
         _ => ()
       },
+      // Tests and benches lower to real executable functions. In particular,
+      // a bytes-per-op regression asks about the bench body itself, so
+      // skipping SBench would turn an allocating benchmark into false-clean
+      // output. Keep the owner names identical to linked_compile's lowering.
+      STest(test_name, test_body) => alloc_walk_expr(out, String::concat("__test_", test_name), test_body, stmt_off, ctors),
+      SBench(bench_name, bench_body) => alloc_walk_expr(out, String::concat("__bench_", bench_name), bench_body, stmt_off, ctors),
       _ => ()
     }
     i = i + 1
