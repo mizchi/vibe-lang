@@ -175,6 +175,71 @@ if [ "$walk_stopped" -ne 0 ]; then
   exit 1
 fi
 
+# 4b. Neither the validator nor the interpreter may DIE on malformed input.
+#     Distinct from the accept/reject measurement above, which only compares
+#     verdicts that were reached at all. A wrong verdict is a bug; a host
+#     process killed by guest bytes is a containment breach, and it is worse
+#     because callers stop bounds-checking once they believe something else
+#     does. Both were real: one corrupted section-size byte killed the host
+#     before the validator guarded execution (#1745 (5)), and then the
+#     validator itself died on `01 01 01` -- a body ending right after a
+#     nonzero local-declaration count -- because get_code_body_range read
+#     valtypes past the end while deciding whether the module was safe to run.
+exec_probe="$WORK/exec.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  scripts/wasm_validate/exec_probe.vibex "_build/validate_parity/exec.wasm" main >/dev/null 2>&1
+[ -s "$exec_probe" ] || { echo "[validate-parity] FAIL: exec probe did not compile" >&2; exit 1; }
+
+# Truncations and single-byte pokes spread across our own output. Deterministic
+# rather than random: a fuzz corpus that differs per run reports a different
+# subset of the same bugs each time and never ratchets.
+mkdir -p "$WORK/fuzz"
+python3 - "$WORK" <<'PY'
+import sys, glob, os
+work = sys.argv[1]
+for f in sorted(glob.glob(work + '/pos/*.wasm'))[:3]:
+    b = bytearray(open(f, 'rb').read())
+    base = os.path.basename(f)[:-5]
+    for i in range(1, 40):
+        open(f'{work}/fuzz/{base}.t{i}.wasm', 'wb').write(bytes(b[:len(b) * i // 40]))
+    for i in range(1, 30):
+        m = bytearray(b)
+        p = len(b) * i // 30
+        if p < len(m):
+            m[p] = (m[p] + 0x55) & 0xFF
+            open(f'{work}/fuzz/{base}.p{i}.wasm', 'wb').write(bytes(m))
+# The minimal case from PR #1818's review, kept by hand: a code section framed
+# correctly around a body that ends immediately after declaring one local group.
+open(f'{work}/fuzz/local_decl_at_eof.wasm', 'wb').write(
+    bytes([0, 0x61, 0x73, 0x6D, 1, 0, 0, 0, 10, 3, 1, 1, 1]))
+PY
+
+survivors=0
+deaths=0
+for w in "$WORK"/fuzz/*.wasm "$WORK"/neg/*.wasm; do
+  [ -e "$w" ] || continue
+  cp "$w" "$ROOT_DIR/_build/val_target.wasm"
+  v="$(verdict "$w")"
+  e="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+       --invoke main "_build/validate_parity/exec.wasm" 2>&1 | head -1)"
+  case "$v" in
+    ACCEPT*|REJECT*) ;;
+    *) deaths=$((deaths + 1)); echo "[validate-parity] validator died on: $w" >&2 ;;
+  esac
+  case "$e" in
+    ok\ *) ;;
+    *) deaths=$((deaths + 1)); echo "[validate-parity] interpreter died on: $w" >&2 ;;
+  esac
+  survivors=$((survivors + 1))
+done
+rm -f "$ROOT_DIR/_build/val_target.wasm"
+if [ "$deaths" -ne 0 ]; then
+  echo "[validate-parity] FAIL: $deaths host death(s) on malformed input. Guest bytes must" >&2
+  echo "[validate-parity]       produce a verdict or an error tuple, never end the process." >&2
+  exit 1
+fi
+
 # 5. #1133 proper: does used_by_codegen() still describe these binaries? Same
 #    corpus, different question -- the oracle above is wasm-tools, the oracle
 #    here is the declaration in docs. Sharing the corpus is deliberate: the
@@ -210,6 +275,7 @@ if [ "$caught" -lt "$floor_num" ]; then
 fi
 echo "[validate-parity] ok: $pos_total/$pos_total accepted (zero false rejections), $caught/$neg_total rejected"
 echo "[validate-parity]     instruction walk reached the end of $walk_bodies/$walk_bodies function bodies"
+echo "[validate-parity]     $survivors malformed modules produced a verdict; none killed the host"
 echo "[validate-parity] note: what remains uncaught needs operand-stack typing, which this layer does"
 echo "[validate-parity]       not do (#1745 (5)). A module that is well-formed but ill-TYPED still"
 echo "[validate-parity]       passes here."

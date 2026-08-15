@@ -801,12 +801,16 @@ test "exec_module with locals" {
     0x66,
     0x00,
     0x00,
-    // code section
+    // code section. The two sizes below were each one short of the bytes that
+    // follow -- 0x0E/0x0C for 15/13 -- and `wasm-tools validate` rejects the
+    // result. It went unnoticed because exec_module_with_args checked only
+    // length and magic; the validator added there for #1745 (5) caught it on
+    // the first run.
     0x0A,
-    0x0E,
+    0x0F,
     0x01,
-    0x0C,
-    // body size = 12
+    0x0D,
+    // body size = 13
     0x01,
     // 1 local declaration group
     0x01,
@@ -879,9 +883,12 @@ test "exec_module multi-function call" {
     0x6E,
     0x00,
     0x01,
-    // code section: 2 bodies
+    // code section: 2 bodies. The size was 0x11 for 16 bytes of content
+    // (1 count + 1+7 + 1+6), which `wasm-tools validate` rejects. Same class
+    // as the one in "exec_module with locals" above, and unnoticed for the
+    // same reason: nothing checked section sizes before #1745 (5).
     0x0A,
-    0x11,
+    0x10,
     0x02,
     // func 0: size=7, 0 locals, local.get 0, local.get 0, i32.add, end
     0x07,
@@ -2118,4 +2125,62 @@ test "local.tee" {
   let (exit, result) = exec_body(code, 0, 5, locals, empty_stack(), make_memory(1), empty_globals(), empty_funcs())
   assert(exit == 0)
   assert(result == 42)
+}
+
+test "exec_module refuses a module whose section runs past the end" {
+  // #1745 (5). Before validate_structure ran here, length and magic were the
+  // only checks, so a section size larger than the bytes behind it reached the
+  // executor. On the parity corpus one such module killed the host PROCESS --
+  // not a trap this function could report, a death its caller could not catch.
+  //
+  // A regression here fails loudly by construction: if the guard comes out,
+  // this test does not assert false, it takes the test binary down with it.
+  //
+  // header | type(1) claiming 127 bytes with 2 behind it
+  let wasm = make_bytes([
+    0x00,
+    0x61,
+    0x73,
+    0x6D,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x7F,
+    0x01,
+    0x60
+  ])
+  let (ec, result) = exec_module_with_args(wasm, "f", Array::slice([
+    0
+  ], 0, 0))
+  assert(ec == -1)
+  assert(result == 0)
+}
+
+test "exec_module refuses a truncated local declaration" {
+  // code payload: one body, size one, whose only byte says there is one local
+  // declaration group. The group count and valtype are both missing. A
+  // structural validator on this untrusted execution path must reject it
+  // before get_code_body_range can read the valtype at the body boundary.
+  let wasm = make_bytes([
+    0x00,
+    0x61,
+    0x73,
+    0x6D,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x0A,
+    0x03,
+    0x01,
+    0x01,
+    0x01
+  ])
+  let (ec, result) = exec_module_with_args(wasm, "f", Array::slice([
+    0
+  ], 0, 0))
+  assert(ec == -1)
+  assert(result == 0)
 }

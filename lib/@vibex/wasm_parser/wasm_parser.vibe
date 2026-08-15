@@ -1190,29 +1190,80 @@ export fn parse_imports_full(bytes: Bytes, offset: Int, size: Int) -> Array[(Str
 /// instruction was a local count. This is the same one-byte assumption #1795
 /// removed from the type section, in the function that decides where code IS.
 /// It reaches further than parsing: extract_code_body feeds the interpreter.
+/// A start of -1 means the declarations do not fit the body; there is no range
+/// to return and callers must not read from one.
+///
+/// The bound is not defensive tidying. Without it a body whose bytes end right
+/// after a nonzero local-declaration count -- `01 01 01` is enough -- walks
+/// read_valtype off the end of the module and traps, killing the host process.
+/// That reaches everything downstream: extract_code_body hands this range to
+/// the interpreter, and validate_structure calls it while deciding whether a
+/// module is safe to run at all. A validator that dies on the input it is
+/// judging is worse than no validator, because callers stop bounds-checking
+/// once they believe something else does it.
 export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) -> (Int, Int) {
   let body_end = body_offset + body_size
-  let (local_decl_count, pos0) = read_uleb128(bytes, body_offset)
-  let mut pos = pos0
-  let mut d = 0
-  while d < local_decl_count {
-    let (_, np) = read_uleb128(bytes, pos)
-    let (_, np2) = read_valtype(bytes, np)
-    pos = np2
-    d = d + 1
+  let limit = if body_end > Bytes::length(bytes) {
+    Bytes::length(bytes)
+  } else {
+    body_end
   }
-  (pos, body_end)
+  if (body_offset < 0) || (body_offset >= limit) {
+    (0 - 1, body_end)
+  } else {
+    let (local_decl_count, pos0) = read_uleb128(bytes, body_offset)
+    let mut pos = pos0
+    let mut d = 0
+    let mut overrun = pos > limit
+    while (d < local_decl_count) && !overrun {
+      // Each read is checked BEFORE it happens: read_uleb128 and read_valtype
+      // both index `bytes` directly and have no bound of their own.
+      if pos >= limit {
+        overrun = true
+      } else {
+        let (_, np) = read_uleb128(bytes, pos)
+        if np >= limit {
+          overrun = true
+        } else {
+          let (_, np2) = read_valtype(bytes, np)
+          if np2 > limit {
+            overrun = true
+          } else {
+            pos = np2
+          }
+        }
+      }
+      d = d + 1
+    }
+    if overrun {
+      (0 - 1, body_end)
+    } else {
+      (pos, body_end)
+    }
+  }
 }
 
+/// Empty when the body's declarations do not fit it -- see get_code_body_range.
+/// Starting the copy at -1 would index `bytes` backwards, which is the same
+/// class of host death the bound exists to stop, one call further out.
 export fn extract_code_body(bytes: Bytes, body_offset: Int, body_size: Int) -> Bytes {
   let (expr_start, expr_end) = get_code_body_range(bytes, body_offset, body_size)
   let result = Bytes::new()
-  let mut i = expr_start
-  while i < expr_end {
-    Bytes::push(result, bytes[i])
-    i = i + 1
+  if expr_start < 0 {
+    result
+  } else {
+    let limit = if expr_end > Bytes::length(bytes) {
+      Bytes::length(bytes)
+    } else {
+      expr_end
+    }
+    let mut i = expr_start
+    while i < limit {
+      Bytes::push(result, bytes[i])
+      i = i + 1
+    }
+    result
   }
-  result
 }
 
 export fn module_imports_full(bytes: Bytes) -> Array[(String, String, Int, Int, Int, Int)] {
@@ -2189,21 +2240,103 @@ fn instruction_is_reserved(op: Int) -> Bool {
 }
 
 /// Every function body in a code section, stopping at the first problem.
-fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
-  let entries = parse_code_entries(wasm_bytes, offset, size)
-  let mut i = 0
-  let mut err = None
-  while (i < Array::length(entries)) && (err == None) {
-    let (body_offset, body_size, _) = Array::get(entries, i)
-    let (code_start, code_end) = get_code_body_range(wasm_bytes, body_offset, body_size)
-    if (code_start < 0) || (code_end > Bytes::length(wasm_bytes)) || (code_start > code_end) {
-      err = Some("function body runs outside the module")
+fn leb_end_within(bytes: Bytes, offset: Int, end_pos: Int, max_bytes: Int) -> Int {
+  let mut pos = offset
+  let mut count = 0
+  let mut result = 0 - 1
+  while (result < 0) && (pos < end_pos) && (count < max_bytes) {
+    let byte = bytes[pos]
+    pos = pos + 1
+    count = count + 1
+    if (byte&0x80) == 0 {
+      result = pos
     } else {
-      err = validate_code_body(wasm_bytes, code_start, code_end)
+      ()
+    }
+  }
+  result
+}
+
+fn read_u32_leb_within(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Bool) {
+  let leb_end = leb_end_within(bytes, offset, end_pos, 5)
+  if leb_end < 0 {
+    (0, offset, false)
+  } else {
+    let (value, _) = read_uleb128(bytes, offset)
+    (value, leb_end, true)
+  }
+}
+
+fn skip_valtype_within(bytes: Bytes, offset: Int, end_pos: Int) -> Int {
+  if offset >= end_pos {
+    0 - 1
+  } else {
+    let valtype = bytes[offset]
+    if (valtype == 0x63) || (valtype == 0x64) {
+      // Concrete heap types use a signed 33-bit LEB, hence at most five
+      // bytes. We only need its boundary here; decoding belongs to the parser.
+      leb_end_within(bytes, offset + 1, end_pos, 5)
+    } else {
+      offset + 1
+    }
+  }
+}
+
+fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
+  let end_pos = offset + size
+  let (entry_count, pos0, count_ok) = read_u32_leb_within(wasm_bytes, offset, end_pos)
+  let mut pos = pos0
+  let mut i = 0
+  let mut err = if count_ok {
+    None
+  } else {
+    Some("code section has a truncated function count")
+  }
+  while (i < entry_count) && (err == None) {
+    let (body_size, body_start, size_ok) = read_u32_leb_within(wasm_bytes, pos, end_pos)
+    if !size_ok || (body_size > (end_pos - body_start)) {
+      err = Some("function body runs outside the code section")
+    } else {
+      let body_end = body_start + body_size
+      let (local_count, locals_start, locals_ok) = read_u32_leb_within(wasm_bytes, body_start, body_end)
+      if !locals_ok {
+        err = Some("function body has a truncated local declaration count")
+      } else {
+        let mut local_pos = locals_start
+        let mut local_index = 0
+        while (local_index < local_count) && (err == None) {
+          let (_, valtype_start, local_size_ok) = read_u32_leb_within(wasm_bytes, local_pos, body_end)
+          if !local_size_ok {
+            err = Some("function body has a truncated local declaration")
+          } else {
+            let next = skip_valtype_within(wasm_bytes, valtype_start, body_end)
+            if next < 0 {
+              err = Some("function body has a truncated local valtype")
+            } else {
+              local_pos = next
+            }
+          }
+          local_index = local_index + 1
+        }
+        if err == None {
+          err = validate_code_body(wasm_bytes, local_pos, body_end)
+        } else {
+          ()
+        }
+      }
+      pos = body_end
     }
     i = i + 1
   }
-  err
+  if err != None {
+    err
+  } else if i < entry_count {
+    Some("code section ends before all function bodies")
+  } else if pos != end_pos {
+    Some("code section has trailing bytes")
+  } else {
+    None
+  }
 }
 
 /// Every function's declared type index must name a type that exists.
