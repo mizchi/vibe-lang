@@ -1,0 +1,111 @@
+// #1262: `Map::delete` on the wasm-gc lane.
+//
+// This one is NOT a shared AST rewrite like the MutList / MutBytes / region
+// lowerings -- linear emits wasm directly, so the gc arm is a hand-port of
+// expr/compile_call.vibe's. A port is exactly the kind of change that can look
+// right and copy the wrong 8 bytes, so the checks below are chosen to fail on
+// the ways a compaction loop actually breaks, not just to prove "it returns a
+// map":
+//
+//   - `pairing_survives` deletes the MIDDLE entry and reads a key that comes
+//     AFTER it. The compaction loop writes to a DIFFERENT index (out) than it
+//     reads from (i), and the two diverge only once something has been
+//     skipped -- so a lowering that stored to entry `i` instead of `out`, or
+//     that took the key from one entry and the value from the next, passes
+//     every single-entry check and fails here.
+//   - `source_is_untouched` reads the ORIGINAL map after deleting from it.
+//     `Map::delete` is functional; an in-place compaction would satisfy every
+//     assertion about the RESULT and silently corrupt the input.
+//   - `missing_key_keeps_all` deletes a key that is not present. The fresh
+//     block is sized for the old count, so this is the case where the copy
+//     loop must fill it completely -- an off-by-one drops a live entry.
+//   - `delete_then_set` appends AFTER deleting. The new block was sized from
+//     the OLD count, so the freed slot has to be genuinely reusable; a stale
+//     count word would make the append write past the block.
+//   - `in_a_lambda` runs it one closure deep. Builtin spellings called from
+//     inside a lambda were their own bug class (#1809): the capture scan
+//     collected the builtin's own name as a free variable and died in codegen
+//     while the identical call at statement level compiled.
+
+fn base() -> Map[String, Int] {
+  Map::from_pairs([
+    ("a", 1),
+    ("b", 2),
+    ("c", 3)
+  ])
+}
+
+// Delete the MIDDLE key, then read the one AFTER it. 2 (size) * 100 + 3 ("c"
+// still maps to its OWN value) * 10 + 1 ("a" survived ahead of the hole).
+fn pairing_survives() -> Int {
+  let m = Map::delete(base(), "b")
+  Map::size(m) * 100 + m["c"] * 10 + m["a"]
+}
+
+// The source map must be unchanged. 3 (original size) * 10 + 2 (the deleted
+// key still reads its old value THROUGH THE ORIGINAL).
+fn source_is_untouched() -> Int {
+  let m = base()
+  let _ = Map::delete(m, "b")
+  Map::size(m) * 10 + m["b"]
+}
+
+// Deleting an absent key keeps every entry: 3 * 10 + 3.
+fn missing_key_keeps_all() -> Int {
+  let m = Map::delete(base(), "zz")
+  Map::size(m) * 10 + m["c"]
+}
+
+// Deleting the only entry leaves an empty map, and has_key must agree with
+// size. 0 * 10 + 0 (has_key false).
+fn last_entry_leaves_empty() -> Int {
+  let m = Map::delete(Map::from_pairs([
+    ("only", 7)
+  ]), "only")
+  Map::size(m) * 10 + if Map::has_key(m, "only") {
+    1
+  } else {
+    0
+  }
+}
+
+// Reuse the slot the delete freed. 3 (size back to 3) * 100 + 9 (the new
+// value) * 10 + 3 (an old entry after the hole is still intact).
+fn delete_then_set() -> Int {
+  let m = Map::set(Map::delete(base(), "b"), "d", 9)
+  Map::size(m) * 100 + m["d"] * 10 + m["c"]
+}
+
+// One closure deep, capturing a real local alongside the builtin call so that
+// excluding the builtin spelling from the capture set cannot be excluding too
+// much.
+fn in_a_lambda() -> Int {
+  let bonus = 4
+  let f = (k) -> Int {
+    Map::size(Map::delete(base(), k)) + bonus
+  }
+  f("a") * 10 + f("nope")
+}
+
+// `main` exists so the gc lane has an entry to compile; it is deliberately a
+// plain SUM rather than a digit-packing. A sum is the weaker check of the two
+// (two compensating errors cancel), and it does not need to be strong: every
+// component below is pinned exactly by its own snapshot. Packing them would
+// only add a second, harder-to-read copy of the same expectations.
+export let main = () -> Int {
+  pairing_survives() + source_is_untouched() + missing_key_keeps_all() + last_entry_leaves_empty() + delete_then_set() + in_a_lambda()
+}
+
+// The expectations live HERE, not in compiler_gate.sh -- `vibe test --update`
+// maintains them, and running this fixture on its own says whether they hold.
+// The gate's job is the part a snapshot cannot express: that the two backends
+// agree. So it runs this same block on both lanes rather than restating the
+// numbers.
+test "Map::delete agrees on both backends" {
+  inspect(pairing_survives(), "231")
+  inspect(source_is_untouched(), "32")
+  inspect(missing_key_keeps_all(), "33")
+  inspect(last_entry_leaves_empty(), "0")
+  inspect(delete_then_set(), "393")
+  inspect(in_a_lambda(), "67")
+}
