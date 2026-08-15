@@ -39,14 +39,16 @@ questions with **deterministic, rule-based measurements**:
 | `json_scan.vibe` | byte-level tokenizer over JSON-shaped text (user parsing code, not the selfhost parser) |
 | `sieve.vibe` | `Bytes` flag table, memory-heavy loops |
 | `records_pipeline.vibe` | struct construct/rebuild, `Option` lookup + match |
+| `int_wrap.vibe` | Int overflow wrap (#1877): 62-bit two's-complement, iterated LCG checksum |
 
 ## Rules for scenarios
 
 - **Pure and input-free**: no `Fs`/`Http`/`Env`/clock — determinism is the
-  entire point. Anything the program "randomizes" must come from a fixed-seed
-  PRNG whose arithmetic stays far inside the 62-bit `Int` range (overflow
-  wraps differently per backend and will show up as a parity mismatch — a
-  MINSTD Lehmer LCG `seed * 48271 % 2147483647` is the pattern used here).
+  entire point. Anything the program "randomizes" comes from a fixed-seed
+  PRNG (a MINSTD Lehmer LCG `seed * 48271 % 2147483647` is the pattern used
+  here). Since #1877, Int overflow wraps at 62 bits identically on every
+  backend, so even overflow-heavy arithmetic is parity-safe —
+  `int_wrap.vibe` pins exactly that contract.
 - **Single file, no imports**: the gc lane is a single-file compile
   (`VIBE_BACKEND=gc`, no `VIBE_FS_COMPILE`), so scenarios must not import.
 - **Entry is `let main = () -> Int`** (same shape as `bench/binary_size/`).

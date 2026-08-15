@@ -37,6 +37,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_unresolved_name_suffix,
   cov_emit_branch,
   ctor_table_index_of,
+  emit_arith_wrap62,
   emit_binop_op,
   emit_box_float,
   emit_heap_grow_after_heap_set,
@@ -1065,6 +1066,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_i64_const(buf, 1)
         emit_i64_shr_s(buf)
         emit_i64_shl(buf)
+        emit_arith_wrap62(buf, true, op)
         nl2
       } else if op == ">>" {
         let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
@@ -1093,12 +1095,14 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         } else {
           ()
         }
+        emit_arith_wrap62(buf, true, op)
         nl2
       }
     } else {
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
       let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
       emit_binop_op(buf, op)
+      emit_arith_wrap62(buf, false, op)
       nl2
     }
   } else if __tag == 6 {
@@ -1129,6 +1133,9 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_i64_const(buf, 0)
         let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
         emit_i64_sub(buf)
+        // #1877: -MIN (2^61) is the one in-range operand whose negation
+        // leaves the 62-bit range — renormalize like binop `-`.
+        emit_arith_wrap62(buf, ctx.enable_rc, "-")
         nl
       }
     } else if op == "!" {

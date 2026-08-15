@@ -418,6 +418,13 @@ completion / signature help を提供する。詳細は
 
 - **リテラル上限**: 2305843009213693951 (2^61-1)。それ以上は `IntLiteralOverflow`
 - **ランタイム**: 62-bit tagged (i64 の 2-bit タグ付き)。範囲: -2^61 〜 2^61-1
+- **算術 overflow は 62-bit two's-complement で wrap** (#1877): `+` `-` `*` `/`
+  `<<` 単項 `-` は範囲を出ると bit 61 から符号拡張した値に折り返す
+  (`max + 1 == min`、`2^60 * 4 == 0`)。**全 backend (bump / RC / wasm-gc) で
+  同一の値** — 以前は backend ごとに 63/64-bit の別の点で wrap し黙って
+  食い違っていた。テスト:
+  `lib/@vibe/compiler/tests/int_overflow_wrap_test.vibe`、parity ガード:
+  `bench/exec/int_wrap.vibe`
 - **hex リテラル**: `0xFF`, `0X1A2B` (prefix・digits ともに大文字小文字可)
 - **`>>` は算術シフト（符号拡張あり）**: 符号なし右シフトには `(x >> n) & ((1 << (32 - n)) - 1)` を使う
 - **`~` (bit_not) 非対応**: `x ^ mask` で代用

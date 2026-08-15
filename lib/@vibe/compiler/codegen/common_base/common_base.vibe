@@ -1817,6 +1817,51 @@ export fn resolve_func(ft: FuncTable, name: String) -> (Int, Int, Int) with Exce
   (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
 }
 
+/// #1877: Int arithmetic wraps at the language's 62-bit range (-2^61 ..
+/// 2^61-1, the same bound IntLiteralOverflow enforces) on EVERY backend.
+/// Before this, each lane wrapped wherever its representation happened to
+/// overflow i64 — untagged lanes (bump, gc) at 64 bits, the RC lane's
+/// tagged `n<<1` at 63 bits for `+`/`-` but 62 bits for `*` — so the same
+/// program printed different numbers per backend with no diagnostic
+/// (silent-wrong). These helpers sign-extend the result back from bit 61:
+/// two instructions (shl k; shr_s k) after each op that can leave the range.
+///
+/// Untagged value: bits 63..61 must replicate bit 61 -> shift by 2.
+export fn emit_wrap62_untagged(buf: Bytes) -> Unit {
+  emit_i64_const(buf, 2)
+  emit_i64_shl(buf)
+  emit_i64_const(buf, 2)
+  emit_i64_shr_s(buf)
+}
+
+/// Tagged `n<<1` value: the payload sign bit sits one higher -> shift by 1.
+export fn emit_wrap62_tagged(buf: Bytes) -> Unit {
+  emit_i64_const(buf, 1)
+  emit_i64_shl(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_shr_s(buf)
+}
+
+/// Post-op renormalization for one Int arithmetic op on the linear lanes.
+/// `+`/`-`/`/`/`<<` can leave the 62-bit range from in-range operands (add
+/// reaches ±2^62, `/` only via MIN/-1, `<<` arbitrarily). `*` needs it only
+/// untagged: the RC lane's tagged-mul untag (`>>1` after `i64.mul`) already
+/// lands exactly on the 62-bit wrap. `%`/`>>`/bitops are closed over
+/// sign-extended in-range values and need nothing.
+export fn emit_arith_wrap62(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
+  if op == "+" || op == "-" || op == "/" || op == "<<" {
+    if enable_rc {
+      emit_wrap62_tagged(buf)
+    } else {
+      emit_wrap62_untagged(buf)
+    }
+  } else if op == "*" && !enable_rc {
+    emit_wrap62_untagged(buf)
+  } else {
+    ()
+  }
+}
+
 export fn emit_binop_op(buf: Bytes, op: String) -> Unit with Exception {
   if op == "+" {
     emit_i64_add(buf)
