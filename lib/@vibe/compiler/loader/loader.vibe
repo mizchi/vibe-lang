@@ -59,6 +59,9 @@ import @vibe/compiler/contract {
   contract_facade_source,
   contract_hash,
   contract_surface_lines,
+  contract_type_family_defs,
+  contract_types_module_line,
+  contract_types_module_text,
   deps_missing_for_imports,
   extract_package_deps,
   extract_package_name,
@@ -966,6 +969,125 @@ fn validate_index_layout_fs(path: String) -> Unit with Exception + Fs {
 /// everything the value was derived from).
 /// Scoped to `.vpkg` only (#897 issue comments: `.vibei`'s legacy either/or
 /// import behavior is deliberately left unchanged by this feature).
+/// #1840: materialize a vpkg contract's type-family definitions (struct /
+/// enum / type alias) as a real source file under the build cache. The type
+/// family needs exactly ONE definition site (a second identity for the same
+/// enum traps at runtime, #1879) that BOTH the facade (re-export) and every
+/// sibling impl unit (shared-prefix import) can reach through ordinary
+/// import machinery — the facade itself cannot be that site for siblings,
+/// because facade → impl is already an edge and the reverse import would be
+/// a cycle. The path is content-keyed (package identity + text), so a
+/// contract edit that changes the type family moves the path and every
+/// dependent header invalidates naturally; the write is idempotent.
+/// #1840: process-local registry of materialized types modules —
+/// (contract path, types-module path, types-module text). Fixed-source-set
+/// merge consumers (the s5 selfbuild bundle, any lane that hands
+/// collect_merged_stmts a pre-collected list) have no FS walk to pick the
+/// materialized file up, so the merge would silently LOSE the contract's
+/// type family (the facade only re-exports it now). collect_merged_stmts
+/// re-injects from this registry, gated on "this compile's source set
+/// contains the originating contract" so a long-lived process (test daemon)
+/// never leaks another package's types into an unrelated merge.
+let vpkg_types_registry_contracts: Array[String] = [
+] let vpkg_types_registry_paths: Array[String] = [
+] let vpkg_types_registry_texts: Array[String] = [
+] fn vpkg_types_registry_note(contract_path: String, types_path: String, text: String) -> Unit {
+  let mut i = 0
+  let mut seen = false
+  while i < Array::length(vpkg_types_registry_paths) {
+    if Array::get(vpkg_types_registry_paths, i) == types_path {
+      seen = true
+      i = Array::length(vpkg_types_registry_paths)
+    } else {
+      i = i + 1
+    }
+  }
+  if seen {
+    ()
+  } else {
+    Array::push(vpkg_types_registry_contracts, contract_path)
+    Array::push(vpkg_types_registry_paths, types_path)
+    Array::push(vpkg_types_registry_texts, text)
+  }
+}
+
+/// Returns "" when the contract declares no type-family definitions, or when
+/// the package lives outside the repo-relative tree (an absolute VIBE_LIB
+/// external root — the relative import spelling below cannot reach _build
+/// from there, so those packages keep the verbatim-facade behavior).
+fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt]) -> String with Exception + Fs {
+  if String::starts_with(vpkg_path, "/") {
+    return ""
+  } else {
+    ()
+  }
+  let (_, type_defs) = classify_contract_stmts(extra)
+  let tds = contract_type_family_defs(type_defs)
+  if Array::length(tds) == 0 {
+    ""
+  } else {
+    let text = contract_types_module_text(tds)
+    let raw_key = compact_string_fingerprint(String::concat(vpkg_path, String::concat("|", text)))
+    // Identifier-safe basename: the import-path grammar (parser_base.vibe's
+    // collect_import_path) lexes path segments as identifier/keyword tokens,
+    // so a digit-leading segment lexes as TInt and the fingerprint's ':'
+    // separators are not path tokens at all — both fail with "unexpected
+    // token in import path". `types_` + [a-z0-9_] keeps the whole basename
+    // one TIdent.
+    let key_sb = StringBuilder::new()
+    let mut kci = 0
+    while kci < String::length(raw_key) {
+      let kc = String::char_code_at(raw_key, kci)
+      let is_ident_char = (kc >= '0' && kc <= '9') || (kc >= 'a' && kc <= 'z') || (kc >= 'A' && kc <= 'Z') || kc == '_'
+      if is_ident_char {
+        StringBuilder::push(key_sb, raw_key[kci: kci + 1])
+      } else {
+        StringBuilder::push(key_sb, "_")
+      }
+      kci = kci + 1
+    }
+    let types_path = String::concat("_build/vibe_vpkg_types/types_", String::concat(StringBuilder::freeze(key_sb), ".vibe"))
+    if Fs::exists(types_path) {
+      ()
+    } else {
+      Fs::write_file(types_path, text)
+    }
+    vpkg_types_registry_note(vpkg_path, types_path, text)
+    types_path
+  }
+}
+
+/// #1840: the RELATIVE spelling of `canonical` (a repo-root-relative path)
+/// as seen from `dir` (also repo-root-relative) — `../` per path segment of
+/// `dir`, then the canonical path. Both the facade re-export and the sibling
+/// prefix import need this: the import-path grammar accepts a leading `../`
+/// chain, while a bare root-relative `_build/...` fails the export
+/// statement's head-token check.
+fn relative_spelling_from_dir(dir: String, canonical: String) -> String {
+  let mut segments = if dir == "" {
+    0
+  } else {
+    1
+  }
+  let mut si = 0
+  while si < String::length(dir) {
+    if String::char_code_at(dir, si) == '/' {
+      segments = segments + 1
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  let sb = StringBuilder::new()
+  let mut ui = 0
+  while ui < segments {
+    StringBuilder::push(sb, "../")
+    ui = ui + 1
+  }
+  StringBuilder::push(sb, canonical)
+  StringBuilder::freeze(sb)
+}
+
 fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception + Fs {
   if is_contract_ext(path) {
     ""
@@ -1005,14 +1127,48 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       } else {
         ""
       }
-      if String::starts_with(cached_prefix, "v1\n") {
-        cached_prefix[3: String::length(cached_prefix)]
+      // #1840: v2 rows carry the materialized types-module path on their
+      // second line (empty when the contract has no type-family defs) so a
+      // hit can verify the file still exists — the prefix cache and the
+      // types module live under different roots when VIBE_BUILD_CACHE_DIR
+      // rebases the caches, so one can survive a clean of the other. A
+      // missing file falls through to full regeneration (idempotent write).
+      let cached_hit = if String::starts_with(cached_prefix, "v2\n") {
+        let rest = cached_prefix[3: String::length(cached_prefix)]
+        let nl = String::index_of(rest, "\n")
+        if nl < 0 {
+          ""
+        } else {
+          let cached_types_path = rest[0: nl]
+          if cached_types_path == "" || Fs::exists(cached_types_path) {
+            rest[nl + 1: String::length(rest)]
+          } else {
+            ""
+          }
+        }
+      } else {
+        ""
+      }
+      if cached_hit != "" || String::starts_with(cached_prefix, "v2\n\n") {
+        cached_hit
       } else {
         let vpkg_raw = Fs::read_file(vpkg_path)
         let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
         let (_, _, vpkg_extra) = parse_contract_program(lex(vpkg_pin_blanked))
-        let prefix_text = contract_directory_shared_import_prefix_text(vpkg_extra)
-        Fs::write_file(prefix_cache_path, String::concat("v1\n", prefix_text))
+        let shared_text = contract_directory_shared_import_prefix_text(vpkg_extra)
+        // #1840: siblings import the contract's type family from the
+        // materialized types module — this is what gives enum constructors
+        // real value bindings inside impl units (the facade cannot be
+        // imported from a sibling: facade → impl is already an edge).
+        let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra)
+        let prefix_text = if types_path == "" {
+          shared_text
+        } else {
+          let (_, vpkg_type_defs) = classify_contract_stmts(vpkg_extra)
+          let types_rel = relative_spelling_from_dir(dir_of_path(vpkg_path), types_path)
+          String::concat(contract_types_module_line("import", types_rel, contract_type_family_defs(vpkg_type_defs)), shared_text)
+        }
+        Fs::write_file(prefix_cache_path, String::concat("v2\n", String::concat(types_path, String::concat("\n", prefix_text))))
         prefix_text
       }
     }
@@ -1717,8 +1873,35 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   } else {
     ""
   }
-  if String::starts_with(cached_facade, "v1\n") {
-    return cached_facade[3: String::length(cached_facade)]
+  // #1840: v2 rows carry the materialized types-module path on their second
+  // line (empty when the contract has no type-family defs) so a hit can
+  // verify the file still exists (see the prefix cache's twin comment). A
+  // missing file falls through to full regeneration, which re-materializes
+  // it idempotently.
+  if String::starts_with(cached_facade, "v2\n") {
+    let fc_rest = cached_facade[3: String::length(cached_facade)]
+    let fc_nl = String::index_of(fc_rest, "\n")
+    if fc_nl >= 0 {
+      let fc_types_path = fc_rest[0: fc_nl]
+      if fc_types_path == "" || Fs::exists(fc_types_path) {
+        // #1840: the registry note must happen on the HIT path too —
+        // collect_merged_stmts' fixed-source-set re-injection reads the
+        // process-local registry, and a warm facade cache would otherwise
+        // skip ensure_vpkg_types_module_fs entirely (found the hard way:
+        // the s5 bundle merge lost the AST enums, `PInt ... reached code
+        // generation unresolved`).
+        if fc_types_path == "" {
+          ()
+        } else {
+          vpkg_types_registry_note(path, fc_types_path, Fs::read_file(fc_types_path))
+        }
+        return fc_rest[fc_nl + 1: String::length(fc_rest)]
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
   } else {
     ()
   }
@@ -1782,7 +1965,18 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   if Array::length(errors) > 0 {
     throw("\{path}: contract violation: \{String::join(errors, "; ")}")
   } else ()
-  let facade = contract_facade_source(decls, opaque_names, type_defs, impl_units)
+  // #1840: materialize the type family once and hand the facade its path —
+  // the facade re-exports it, siblings import it (shared prefix). The facade
+  // text needs the package-dir-RELATIVE spelling (the export grammar rejects
+  // a bare root-relative head token); the cache row below keeps the
+  // canonical root-relative path for its existence re-check.
+  let facade_types_path = ensure_vpkg_types_module_fs(path, extra)
+  let facade_types_rel = if facade_types_path == "" {
+    ""
+  } else {
+    relative_spelling_from_dir(dir_of_path(path), facade_types_path)
+  }
+  let facade = contract_facade_source(decls, opaque_names, type_defs, impl_units, facade_types_rel)
   let facade_final = if pkg_version == "" {
     facade
   } else {
@@ -1798,7 +1992,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // the fingerprint pass and the reads above — see the comment at
   // fresh_fp_sb's construction).
   let fresh_closure_fp = compact_string_fingerprint(StringBuilder::freeze(fresh_fp_sb))
-  Fs::write_file(persistent_contract_facade_cache_path(path, fresh_closure_fp), String::concat("v1\n", facade_final))
+  Fs::write_file(persistent_contract_facade_cache_path(path, fresh_closure_fp), String::concat("v2\n", String::concat(facade_types_path, String::concat("\n", facade_final))))
   facade_final
 }
 
@@ -2461,10 +2655,50 @@ export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(
 /// per-statement rewrite only suppresses the map inside the declaring
 /// statement), so those aliases are dropped from the map up front.
 export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] with Exception {
+  // #1840: a fixed source set that contains an ingested contract's FACADE
+  // but not its materialized types module would lose the contract's type
+  // family entirely (the facade re-exports it; this merge skips
+  // import-family statements). Re-inject each registered types module whose
+  // originating contract is in THIS set and whose own path is not already a
+  // source (the FS-walk lanes collect the file itself — no duplication).
+  let sources_all = array_empty()
+  let mut ci = 0
+  while ci < Array::length(sources) {
+    Array::push(sources_all, Array::get(sources, ci))
+    ci = ci + 1
+  }
+  let mut ri = 0
+  while ri < Array::length(vpkg_types_registry_paths) {
+    let r_contract = Array::get(vpkg_types_registry_contracts, ri)
+    let r_path = Array::get(vpkg_types_registry_paths, ri)
+    let mut has_contract = false
+    let mut has_types = false
+    let mut pi = 0
+    while pi < Array::length(sources) {
+      let (sp, _) = Array::get(sources, pi)
+      if sp == r_contract {
+        has_contract = true
+      } else {
+        ()
+      }
+      if sp == r_path {
+        has_types = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    if has_contract && !has_types {
+      Array::push(sources_all, (r_path, Array::get(vpkg_types_registry_texts, ri)))
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
   let merged = array_empty()
   let mut si = 0
-  while si < Array::length(sources) {
-    let (_, src) = Array::get(sources, si)
+  while si < Array::length(sources_all) {
+    let (_, src) = Array::get(sources_all, si)
     // Use lex+parse_program directly (skip resolve_interp_stmt to reduce heap pressure)
     let stmts = parse_program(lex(src))
     let top_level_value_names = array_empty()

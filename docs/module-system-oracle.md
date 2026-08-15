@@ -86,6 +86,16 @@ package 境界モデルとは別レイヤ — in-repo の `lib/@scope/pkg` は
    content-addressed hash closure の両方に入り、最寄り owner の `index.vpkg`
    shared import を継承する。
 7. module source、contract、import target に symlink は使えない。
+8. **契約の透明型は package 内で ambient である (#1840)。** `index.vpkg` に
+   透明に定義された struct / enum / type alias は、loader が
+   `_build/vibe_vpkg_types/` 配下へ content-keyed の実 source
+   (**materialized types module**、ownerless) として書き出し、facade は
+   それを re-export、各 sibling implementation は directory-shared import
+   prefix 経由でそれを import する。これにより enum constructor が sibling
+   から通常の import 機構で解決される (定義サイトは常に 1 つ — 同名 enum の
+   二重定義は別 identity になり実行時 trap する、#1879)。model 上は新しい
+   規則ではなく、ownerless source への合法 import (規則 2) の適用である。
+   effect / effectset / opaque 宣言は従来どおり facade に残る。
 
 ## Oracle と実装の対応
 

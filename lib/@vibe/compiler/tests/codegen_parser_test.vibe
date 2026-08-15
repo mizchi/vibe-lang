@@ -12,8 +12,8 @@ import ../parser.vibe {
   parse_program
 }
 
-import @vibe/compiler/loader {
-  ingest_source_text_fs
+import @vibe/compiler/contract {
+  classify_contract_stmts, contract_type_family_defs, extract_require_pins, parse_contract_program
 }
 
 //# Misc
@@ -27,7 +27,6 @@ import @vibe/compiler/loader {
 test "wasi: parser.vibe import - compile and run" {
   let token_source = Fs::read_file("lib/@vibe/parser/token.vibe")
   let ast_path = "lib/@vibe/ast/index.vpkg"
-  let ast_source = ingest_source_text_fs(ast_path, Fs::read_file(ast_path))
   let syntax_paths = [
     // #956: the lexer's float-literal construction moved to
     // float_format.vibe (parse_decimal_float), which in turn uses the
@@ -58,14 +57,18 @@ test "wasi: parser.vibe import - compile and run" {
     };
     ti = ti + 1
   }
-  // AST enums
-  let ast_tokens = lex(ast_source)
-  let ast_stmts = parse_program(ast_tokens)
+  // AST enums — taken from the CONTRACT text itself (#1840: the ingested
+  // facade no longer carries the type family verbatim; it re-exports the
+  // materialized types module, so scraping the facade finds no SEnum).
+  let (_, ast_blanked) = extract_require_pins(Fs::read_file(ast_path))
+  let (_, _, ast_extra) = parse_contract_program(lex(ast_blanked))
+  let (_, ast_type_defs) = classify_contract_stmts(ast_extra)
+  let ast_tds = contract_type_family_defs(ast_type_defs)
   let mut ai = 0
-  while ai < Array::length(ast_stmts) {
-    match Array::get(ast_stmts, ai) {
+  while ai < Array::length(ast_tds) {
+    match Array::get(ast_tds, ai) {
       SEnum(_, _, _, _, _) => {
-        ArrayBuilder::push(all_stmts, Array::get(ast_stmts, ai)); 0
+        ArrayBuilder::push(all_stmts, Array::get(ast_tds, ai)); 0
       },
       _ => 0
     };
