@@ -9062,16 +9062,22 @@ echo "[compiler-gate] MutBytes arena bulk release ok (200 regions, main heap +${
 # reduced value" writable (the shape #1794's rejection identified as the
 # only one where the arena is pure profit). Pins a growing worklist read
 # back during iteration.
-VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_ok_consume_in_region.vibe "$r90dir/consume.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/consume.wasm" ] \
-  || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/consume.wasm" >/dev/null 2>&1; then
-  echo "[compiler-gate] FAIL: region_ok_consume_in_region.vibe failed -- MutList::get/length in-region reads regressed" >&2
-  cat "$r90dir/consume.wasm.diag" 2>/dev/null >&2 || true
-  exit 1
-fi
-echo "[compiler-gate] MutList in-region reads ok (get/length)"
+# Both RC modes: RC=1 exercises the borrow-return handling of MutList::get
+# on heap-valued (String) elements -- a get treated as fresh-owned would
+# over-release there (Codex #1820).
+for r90_consume_rc in 1 0; do
+  VIBE_RC="$r90_consume_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/region_ok_consume_in_region.vibe "$r90dir/consume.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$r90dir/consume.wasm" ] \
+    || ! VIBE_RC="$r90_consume_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/consume.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: region_ok_consume_in_region.vibe failed under VIBE_RC=$r90_consume_rc -- MutList::get/length in-region reads regressed" >&2
+    cat "$r90dir/consume.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  rm -f "$r90dir/consume.wasm"
+done
+echo "[compiler-gate] MutList in-region reads ok (get/length, RC both modes)"
 # Codex #1801 P1: an outer region's buffer regrown inside a NESTED region
 # must survive the inner exit (the replacement must not land in the inner
 # region's span). Pins the saves[depth-1] guard in gen_arr_push_body /

@@ -25,11 +25,29 @@ fn worklist_sum(n: Int) -> Int {
   }
 }
 
+/// Codex #1820: the RC-lane hazard for an in-region read is ownership, not
+/// escape -- `MutList::get` returns a BORROWED reference into the list, so
+/// the borrow-return predicates (is_borrow_ret_fname / cc_is_borrow_ret_call
+/// / borrow_ret_builtin_name / the compile_expr_tail sites) must treat it
+/// like Array::get or a bound element gets dropped without a retain
+/// (over-release under VIBE_RC=1). Heap-valued (String) elements exercise
+/// exactly that; the gate runs this fixture under BOTH RC modes.
+fn heap_elems() -> Int {
+  region r {
+    let l = MutList::empty(r)
+    MutList::push(l, "alpha")
+    MutList::push(l, "beta")
+    let a = MutList::get(l, 0)
+    let b = MutList::get(l, 1)
+    String::length(a) + String::length(b) * 10
+  }
+}
+
 export let main = () -> Int {
-  worklist_sum(5)
+  worklist_sum(5) * 100 + heap_elems()
 }
 
 test "region consume in region" {
-  // worklist: 5,4,3,2,1 -> sum 15; nothing escapes but the Int.
-  inspect(main(), "15")
+  // worklist: 5,4,3,2,1 -> sum 15; heap elems: 5 + 4*10 = 45.
+  inspect(main(), "1545")
 }
