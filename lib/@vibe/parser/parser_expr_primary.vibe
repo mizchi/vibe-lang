@@ -25,7 +25,13 @@ import ./token.vibe {
 }
 
 import ./parser_binder_context.vibe {
-  ParserBinderContext
+  ParserBinderContext,
+  binder_capture_insert_synthetic_at,
+  binder_capture_mark,
+  binder_capture_mark_ineligible,
+  binder_capture_pop_fragment,
+  binder_capture_push_fragment,
+  binder_capture_source
 }
 
 import ./lexer.vibe {
@@ -194,12 +200,22 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
         ()
       }
     } else {
-      let (ftoks, fstarts, _fends) = lex_with_offsets(part)
-      let (pe0, _) = parse_recur(ftoks, 0, 0, context)
+      let (ftoks, fstarts, fends) = lex_with_offsets(part)
       let frag_off = if i < Array::length(offsets) {
         Array::get(offsets, i)
       } else {
         -1
+      }
+      if frag_off >= 0 {
+        binder_capture_push_fragment(context, fstarts, fends, frag_off)
+      } else {
+        binder_capture_mark_ineligible(context)
+      }
+      let (pe0, _) = parse_recur(ftoks, 0, 0, context)
+      if frag_off >= 0 {
+        binder_capture_pop_fragment(context)
+      } else {
+        ()
       }
       let pe = if frag_off >= 0 {
         map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off), context)
@@ -349,6 +365,7 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
             done = true
           },
           TIdent(name) => {
+            binder_capture_source(context, name, cur, cur)
             let eq_pos = expect_tk(tokens, cur + 1, "=")
             let (init, next_pos) = parse_recur(tokens, eq_pos, 0, context)
             ArrayBuilder::push(param_names_b, name)
@@ -368,7 +385,9 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
         }
       }
       let body_pos = expect_tk(tokens, cur, "{")
+      let body_mark = binder_capture_mark(context)
       let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
+      binder_capture_insert_synthetic_at(context, body_mark, "__loop_result")
       // Desugar ELoop into ELetMut + EWhile
       let pnames = ArrayBuilder::freeze(param_names_b)
       let pinits = ArrayBuilder::freeze(param_inits_b)
@@ -538,14 +557,41 @@ fn parse_continue_primary(tokens: Array[Token], starts: Array[Int], pos: Int, pa
   match peek(tokens, pos + 1) {
     TLParen => {
       let b = ArrayBuilder::new()
+      let marks = ArrayBuilder::new()
       match peek(tokens, pos + 2) {
         TRParen => (EContinue(empty_exprs()), pos + 3),
         _ => {
-          let (first, next_pos) = parse_recur(tokens, pos + 2, 0, context)
-          ArrayBuilder::push(b, first)
-          let (args, end_pos) = parse_comma_exprs_rest(tokens, starts, next_pos, b, parse_recur, context)
-          let close_pos = expect_tk(tokens, end_pos, ")")
-          (EContinue(args), close_pos)
+          let mut p = pos + 2
+          let mut done = false
+          while !done {
+            ArrayBuilder::push(marks, binder_capture_mark(context))
+            let (arg, next) = parse_recur(tokens, p, 0, context)
+            ArrayBuilder::push(b, arg)
+            match peek(tokens, next) {
+              TComma => match peek(tokens, next + 1) {
+                TRParen => {
+                  p = next + 2
+                  done = true
+                },
+                _ => {
+                  p = next + 1
+                }
+              },
+              TRParen => {
+                p = next + 1
+                done = true
+              },
+              _ => throw("expected ',' or ')' after continue argument")
+            }
+          }
+          let args = ArrayBuilder::freeze(b)
+          let row_marks = ArrayBuilder::freeze(marks)
+          let mut i = Array::length(args) - 1
+          while i >= 0 {
+            binder_capture_insert_synthetic_at(context, Array::get(row_marks, i), String::concat("__lt", __to_string(i)))
+            i = i - 1
+          }
+          (EContinue(args), p)
         }
       }
     },
@@ -653,6 +699,9 @@ fn parse_generic_fn_type_params_with_binder_context(tokens: Array[Token], pos: I
         break
       },
       TIdent(name) => {
+        // Only the depth-one identifier is a binder. Capture its exact token
+        // before advancing into trait-bound references, value params, or body.
+        binder_capture_source(context, name, p, p)
         ArrayBuilder::push(names, name)
         p = p + 1
         match peek(tokens, p) {

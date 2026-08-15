@@ -1,0 +1,278 @@
+//# Imports
+
+import @vibe/ast {
+  Expr, Pat, Stmt
+}
+
+import ./parser_binder_context.vibe {
+  SourceBinder
+}
+
+//# Validation
+
+fn validate_slot(name: String, rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+  if at < 0 || at >= Array::length(rows) {
+    (false, at)
+  } else match Array::get(rows, at) {
+    SourceToken(row_name, start, end) => {
+      let n = String::length(source)
+      let valid_span = start >= 0 && start < end && end <= n
+      let exact = if valid_span {
+        let spelling = String::substring(source, start, end)
+        spelling == name || spelling == String::concat("@", name) || spelling == String::concat("r#", name)
+      } else false
+      (row_name == name && exact, at + 1)
+    },
+    Synthetic(row_name, _) => (row_name == name, at + 1)
+  }
+}
+
+fn validate_pattern(pat: Pat, rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+  match pat {
+    PBind(name) => validate_slot(name, rows, source, at),
+    PCtor(_, args) => validate_patterns(args, rows, source, at),
+    PTuple(args) => validate_patterns(args, rows, source, at),
+    PStruct(_, fields) => {
+      let mut ok = true
+      let mut next = at
+      for field in fields {
+        let result = validate_pattern(field.1, rows, source, next)
+        ok = ok && result.0
+        next = result.1
+      }
+      (ok, next)
+    },
+    // POr has two source declarations for one semantic binding. It remains
+    // ineligible until that mapping has an explicit checker contract.
+    POr(_, _) => (false, at),
+    _ => (true, at)
+  }
+}
+
+fn validate_patterns(pats: Array[Pat], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+  let mut ok = true
+  let mut next = at
+  for pat in pats {
+    let result = validate_pattern(pat, rows, source, next)
+    ok = ok && result.0
+    next = result.1
+  }
+  (ok, next)
+}
+
+fn validate_exprs(exprs: Array[Expr], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+  let mut ok = true
+  let mut next = at
+  for expr in exprs {
+    let result = validate_expr(expr, rows, source, next)
+    ok = ok && result.0
+    next = result.1
+  }
+  (ok, next)
+}
+
+fn validate_arms(arms: Array[(Pat, Expr)], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+  let mut ok = true
+  let mut next = at
+  for arm in arms {
+    let p = validate_pattern(arm.0, rows, source, next)
+    let e = validate_expr(arm.1, rows, source, p.1)
+    ok = ok && p.0 && e.0
+    next = e.1
+  }
+  (ok, next)
+}
+
+fn validate_named_exprs(items: Array[(String, Expr)], rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+  let mut ok = true
+  let mut next = at
+  for item in items {
+    let result = validate_expr(item.1, rows, source, next)
+    ok = ok && result.0
+    next = result.1
+  }
+  (ok, next)
+}
+
+fn validate_expr(expr: Expr, rows: Array[SourceBinder], source: String, at: Int) -> (Bool, Int) {
+  match expr {
+    ELet(name, value, body, _) => {
+      let slot = validate_slot(name, rows, source, at)
+      let v = validate_expr(value, rows, source, slot.1)
+      let b = validate_expr(body, rows, source, v.1)
+      (slot.0 && v.0 && b.0, b.1)
+    },
+    ELetRec(name, value, body) => {
+      let slot = validate_slot(name, rows, source, at)
+      let v = validate_expr(value, rows, source, slot.1)
+      let b = validate_expr(body, rows, source, v.1)
+      (slot.0 && v.0 && b.0, b.1)
+    },
+    ELetMut(name, value, body, _) => {
+      let slot = validate_slot(name, rows, source, at)
+      let v = validate_expr(value, rows, source, slot.1)
+      let b = validate_expr(body, rows, source, v.1)
+      (slot.0 && v.0 && b.0, b.1)
+    },
+    EMatch(scrutinee, arms) => {
+      let s = validate_expr(scrutinee, rows, source, at)
+      let a = validate_arms(arms, rows, source, s.1)
+      (s.0 && a.0, a.1)
+    },
+    EHandle(body, arms) => {
+      let b = validate_expr(body, rows, source, at)
+      let a = validate_arms(arms, rows, source, b.1)
+      (b.0 && a.0, a.1)
+    },
+    EFn(type_params, _, params, _, _, body) => {
+      let mut ok = true
+      let mut next = at
+      for name in type_params {
+        let result = validate_slot(name, rows, source, next)
+        ok = ok && result.0
+        next = result.1
+      }
+      for param in params {
+        let result = validate_slot(param.0, rows, source, next)
+        ok = ok && result.0
+        next = result.1
+      }
+      let b = validate_expr(body, rows, source, next)
+      (ok && b.0, b.1)
+    },
+    EForIn(name, index_name, iter, body) => {
+      let first = validate_slot(name, rows, source, at)
+      let second = match index_name {
+        Some(index) => validate_slot(index, rows, source, first.1),
+        None => (true, first.1)
+      }
+      let i = validate_expr(iter, rows, source, second.1)
+      let b = validate_expr(body, rows, source, i.1)
+      (first.0 && second.0 && i.0 && b.0, b.1)
+    },
+    // Loop lowering synthesizes binders and remains fail-closed until its row
+    // segment remap is implemented.
+    ELoop(_, _) => (false, at),
+    ETuple(items) => validate_exprs(items, rows, source, at),
+    EArray(items) => validate_exprs(items, rows, source, at),
+    ERecord(_, fields, _) => validate_named_exprs(fields, rows, source, at),
+    EIf(cond, yes, no) => {
+      let c = validate_expr(cond, rows, source, at)
+      let y = validate_expr(yes, rows, source, c.1)
+      let n = validate_expr(no, rows, source, y.1)
+      (c.0 && y.0 && n.0, n.1)
+    },
+    EAssign(_, value, body) => {
+      let v = validate_expr(value, rows, source, at)
+      let b = validate_expr(body, rows, source, v.1)
+      (v.0 && b.0, b.1)
+    },
+    EAssignOp(_, _, value, body) => {
+      let v = validate_expr(value, rows, source, at)
+      let b = validate_expr(body, rows, source, v.1)
+      (v.0 && b.0, b.1)
+    },
+    ESeq(first, second) => {
+      let f = validate_expr(first, rows, source, at)
+      let s = validate_expr(second, rows, source, f.1)
+      (f.0 && s.0, s.1)
+    },
+    EWhile(cond, body) => {
+      let c = validate_expr(cond, rows, source, at)
+      let b = validate_expr(body, rows, source, c.1)
+      (c.0 && b.0, b.1)
+    },
+    ECall(callee, args, _) => {
+      let c = validate_expr(callee, rows, source, at)
+      let a = validate_exprs(args, rows, source, c.1)
+      (c.0 && a.0, a.1)
+    },
+    EBinOp(_, left, right) => {
+      let l = validate_expr(left, rows, source, at)
+      let r = validate_expr(right, rows, source, l.1)
+      (l.0 && r.0, r.1)
+    },
+    EUnaryOp(_, value) => validate_expr(value, rows, source, at),
+    EDot(value, _, _, _) => validate_expr(value, rows, source, at),
+    ELabeledArg(_, _, value) => validate_expr(value, rows, source, at),
+    EReturn(value) => validate_expr(value, rows, source, at),
+    EBreak(value) => match value {
+      Some(v) => validate_expr(v, rows, source, at),
+      None => (true, at)
+    },
+    EContinue(values) => validate_exprs(values, rows, source, at),
+    EMap(items) => validate_named_exprs(items, rows, source, at),
+    ESpread(value) => validate_expr(value, rows, source, at),
+    EInt(_) => (true, at),
+    EFloat(_) => (true, at),
+    EString(_) => (true, at),
+    EBool(_) => (true, at),
+    EIdent(_, _) => (true, at),
+    EStringInterp(_) => (true, at),
+    EUnit => (true, at)
+  }
+}
+
+/// Exhaustive final-AST validation. Success requires one exact source row for
+/// every supported binder slot and no extra rows.
+export fn validate_program_binder_rows(program: Array[Stmt], rows: Array[SourceBinder], source: String) -> Bool {
+  let mut ok = true
+  let mut next = 0
+  for stmt in program {
+    let result = match stmt {
+      SLet(_, _, name, _, value) => {
+        let slot = validate_slot(name, rows, source, next)
+        let expr = validate_expr(value, rows, source, slot.1)
+        (slot.0 && expr.0, expr.1)
+      },
+      SLetMut(name, _, value) => {
+        let slot = validate_slot(name, rows, source, next)
+        let expr = validate_expr(value, rows, source, slot.1)
+        (slot.0 && expr.0, expr.1)
+      },
+      SExternLet(name, _) => validate_slot(name, rows, source, next),
+      SImport(_, items) => {
+        let mut import_ok = true
+        let mut import_next = next
+        for item in items {
+          let local = match item.1 {
+            Some(alias) => alias,
+            None => item.0
+          }
+          let slot = validate_slot(local, rows, source, import_next)
+          import_ok = import_ok && slot.0
+          import_next = slot.1
+        }
+        (import_ok, import_next)
+      },
+      SAliasDecl(name, _) => validate_slot(name, rows, source, next),
+      STypeAlias(_, name, params, _) => {
+        let first = validate_slot(name, rows, source, next)
+        let mut alias_ok = first.0
+        let mut alias_next = first.1
+        for param in params {
+          let slot = validate_slot(param, rows, source, alias_next)
+          alias_ok = alias_ok && slot.0
+          alias_next = slot.1
+        }
+        (alias_ok, alias_next)
+      },
+      SEffectSet(_, name, _) => validate_slot(name, rows, source, next),
+      SResource(name, _) => validate_slot(name, rows, source, next),
+      STest(_, body) => validate_expr(body, rows, source, next),
+      SBench(_, body) => validate_expr(body, rows, source, next),
+      SExample(_, body) => validate_expr(body, rows, source, next),
+      SExpr(body) => validate_expr(body, rows, source, next),
+      SExport(_) => (true, next),
+      SReExport(_, _) => (true, next),
+      SQualifiedPatternRefs(_) => (true, next),
+      STestEffectRows(_) => (true, next),
+      // Remaining declaration/lowering lanes are deliberately ineligible in
+      // this checkpoint; returning false is sticky at aggregate validation.
+      _ => (false, next)
+    }
+    ok = ok && result.0
+    next = result.1
+  }
+  ok && next == Array::length(rows)
+}

@@ -17,7 +17,7 @@ import ./token.vibe {
 }
 
 import ./parser_binder_context.vibe {
-  ParserBinderContext
+  ParserBinderContext, binder_capture_insert_synthetic_at, binder_capture_mark, binder_capture_source
 }
 
 //# Functions
@@ -178,6 +178,7 @@ fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recu
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TThinArrow => {
+        binder_capture_source(context, name, pos, pos)
         let (body, end) = parse_recur(tokens, pos + 2, 0, context)
         (EFn(_no_tp(), _no_tb(), [
           (name, None)
@@ -240,7 +241,7 @@ fn has_placeholder_args(args: Array[Expr]) -> Bool {
   found
 }
 
-fn parse_call_args_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[Expr], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[Expr], Int) with Exception {
+fn parse_call_args_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[Expr], row_marks: Option[ArrayBuilder[Int]], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[Expr], Int) with Exception {
   let mut p = pos
   let mut done = false
   while !done {
@@ -251,6 +252,10 @@ fn parse_call_args_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: A
           done = true
         },
         _ => {
+          match row_marks {
+            Some(marks) => ArrayBuilder::push(marks, binder_capture_mark(context)),
+            None => ()
+          }
           let (e, next) = parse_call_arg(tokens, starts, p + 1, parse_recur, context)
           ArrayBuilder::push(b, e)
           p = next
@@ -273,7 +278,7 @@ fn slice_from_zero_expr(cur_expr: Expr, end_expr: Expr) -> Expr {
   ECall(EIdent("__slice", -1), args, -1)
 }
 
-fn wrap_placeholder_arg(arg: Expr, context: Option[ParserBinderContext]) -> Expr {
+fn wrap_placeholder_arg(arg: Expr, _context: Option[ParserBinderContext]) -> Expr {
   let mut pc = 0
   let params = Array::slice([
     ("", None)
@@ -351,6 +356,35 @@ fn has_non_pipe_infix_top(tokens: Array[Token], start: Int, end: Int) -> Bool {
     }
   }
   go(start, 0, false)
+}
+
+fn placeholder_count(arg: Expr) -> Int {
+  match arg {
+    EIdent(n, _) => if n == "_" {
+      1
+    } else {
+      0
+    },
+    EBinOp(_, l, r) => placeholder_count(l) + placeholder_count(r),
+    _ => 0
+  }
+}
+
+fn insert_placeholder_rows(args: Array[Expr], row_marks: Array[Int], context: Option[ParserBinderContext]) -> Unit {
+  let mut i = Array::length(args) - 1
+  while i >= 0 {
+    let arg = Array::get(args, i)
+    if !pipe_arg_is_hole(arg) {
+      let mut p = placeholder_count(arg) - 1
+      while p >= 0 {
+        binder_capture_insert_synthetic_at(context, Array::get(row_marks, i), String::concat("__ph", __to_string(p)))
+        p = p - 1
+      }
+    } else {
+      ()
+    }
+    i = i - 1
+  }
 }
 
 fn desugar_placeholder_args(args: Array[Expr], context: Option[ParserBinderContext]) -> Array[Expr] {
@@ -472,11 +506,23 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], pos: Int, expr: Expr,
         TRParen => parse_postfix(tokens, starts, pos + 2, build_call_expr(expr, empty_exprs(), pos), parse_recur, context),
         _ => {
           let b = ArrayBuilder::new()
+          let row_marks = match context {
+            Some(_) => Some(ArrayBuilder::new()),
+            None => None
+          }
+          match row_marks {
+            Some(marks) => ArrayBuilder::push(marks, binder_capture_mark(context)),
+            None => ()
+          }
           let (first_arg, next_pos) = parse_call_arg(tokens, starts, pos + 1, parse_recur, context)
           ArrayBuilder::push(b, first_arg)
-          let (args, end_pos) = parse_call_args_rest(tokens, starts, next_pos, b, parse_recur, context)
+          let (args, end_pos) = parse_call_args_rest(tokens, starts, next_pos, b, row_marks, parse_recur, context)
           let close_pos = expect_tk(tokens, end_pos, ")")
           let call_args = if has_placeholder_args(args) {
+            match row_marks {
+              Some(marks) => insert_placeholder_rows(args, ArrayBuilder::freeze(marks), context),
+              None => ()
+            }
             desugar_placeholder_args(args, context)
           } else {
             args
