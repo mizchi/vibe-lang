@@ -4491,6 +4491,60 @@ fi
 rm -rf "$gcabidir" _build/gc_host_abi_probe
 echo "[compiler-gate] wasm-gc host ABI declaration ok (linear + gc, =160)"
 
+# 40h-5. #1262: the gc lane's host-import surface, extended by five builtins
+#        that were "unknown constructor or function" there. Runs with NO
+#        VIBE_IMPORT_ABI for the same reason as 40h-4 -- the module declares
+#        its own ABI, and forcing the variable would hide a regression in that
+#        declaration.
+#
+#        Every check is an affirmative/negative PAIR. Under #1814's mis-decode
+#        these builtins agreed with linear on the affirmative case and
+#        disagreed on the negative one, so a one-sided fixture stayed green
+#        through the whole bug.
+echo "[compiler-gate] 40h-5/40 wasm-gc host builtins (#1262)"
+gchbdir="_build/_gate_gc_host_builtins"
+rm -rf "$gchbdir"; mkdir -p "$gchbdir"
+gchb_out=""
+for gchb_be in linear gc; do
+  rm -rf _build/gc_host_builtins_probe
+  mkdir -p _build/gc_host_builtins_probe/adir
+  printf 'hello\n' > _build/gc_host_builtins_probe/a.txt
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gchb_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_host_builtins.vibe" "$gchbdir/$gchb_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$gchbdir/$gchb_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_host_builtins.vibe did not compile on the $gchb_be backend (#1262)" >&2
+    cat "$gchbdir/$gchb_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  gchb_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gchbdir/$gchb_be.wasm" 2>&1 | tail -1)"
+  if [ "$gchb_be" = "linear" ]; then
+    gchb_out="$gchb_got"
+  elif [ "$gchb_got" != "$gchb_out" ]; then
+    echo "[compiler-gate] FAIL: gc host builtins disagree with linear: gc='$gchb_got' linear='$gchb_out' (#1262)" >&2
+    exit 1
+  fi
+done
+# Pin the value too: agreement alone passes when BOTH lanes break the same way.
+if [ "$gchb_out" != "gc-host-builtins:10101010" ]; then
+  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want gc-host-builtins:10101010) on both lanes (#1262)" >&2
+  exit 1
+fi
+# Fs::readdir must still fail LOUDLY on the gc lane. Wiring only its import
+# yields an empty array (it needs the call-site surface lowering the linear
+# lane has), and an empty array is the silently-wrong answer this gate exists
+# to keep out. Drop this check when that lowering lands.
+printf 'let main = () -> Int with Fs { Array::length(Fs::readdir("_build")) }\n' > "$gchbdir/readdir.vibe"
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gchbdir/readdir.vibe" "$gchbdir/readdir.wasm" main >/dev/null 2>&1 || true
+if [ -s "$gchbdir/readdir.wasm" ]; then
+  echo "[compiler-gate] FAIL: Fs::readdir now compiles on the gc lane -- if its surface lowering landed, verify it against linear and drop this check (#1262)" >&2
+  exit 1
+fi
+rm -rf "$gchbdir" _build/gc_host_builtins_probe
+echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010; readdir still loud)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
