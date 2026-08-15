@@ -29,6 +29,7 @@ LIN_CALLSITE = "lib/@vibe/compiler/codegen/expr/compile_call.vibe"
 GC_CALLSITE = "lib/@vibe/compiler/codegen/gc/backend_call.vibe"
 REGISTRY = "lib/@vibe/compiler/core/builtin_registry.vibe"
 LINKED = "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
+GC_BODY = "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
 CLASSIFICATION = "scripts/builtin_parity_classification.tsv"
 
 def callsite_names(path):
@@ -94,8 +95,33 @@ if neither:
           f"(dead rows?): {', '.join(neither)}", file=sys.stderr)
     sys.exit(1)
 
+# The gc lane serves host builtins through an import table in backend_body.vibe,
+# not through a `fname == ...` dispatch arm and not through a registry in_gc
+# row -- so neither source above sees them. That was not a gap introduced by
+# any one change: every gc host import (Env::get, Fs::read_file, Fs::exists,
+# ...) was already served and already recorded as `linear-only`, with a reason
+# line saying the gc lane "gates these out as a group". It does not.
+#
+# Same posture as the extractions above: pin the shape, and FAIL rather than
+# silently count zero if it moves. A parity guard that quietly stops seeing a
+# lane is worse than one that breaks loudly.
+gc_body_text = open(GC_BODY).read()
+host_defs_match = re.search(r'let host_defs = \[(.*?)\n    \]', gc_body_text, re.S)
+if not host_defs_match:
+    print("[builtin-parity] FAIL: could not find the gc host_defs table in "
+          f"{GC_BODY} -- did it move or change shape? Update "
+          "scripts/check_builtin_parity.sh alongside it.", file=sys.stderr)
+    sys.exit(1)
+gc_host = set(re.findall(r'\(\s*"([^"]+)"\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)',
+                         host_defs_match.group(1)))
+if len(gc_host) < 10:
+    print(f"[builtin-parity] FAIL: parsed only {len(gc_host)} gc host imports "
+          "(expected 10+) -- host_defs row shape changed? Update "
+          "scripts/check_builtin_parity.sh alongside it.", file=sys.stderr)
+    sys.exit(1)
+
 served_lin = lin_cs | reg_lin | wrapper_only_expected
-served_gc = gc_cs | reg_gc
+served_gc = gc_cs | reg_gc | gc_host
 actual = ({(n, "linear-only") for n in served_lin - served_gc}
           | {(n, "gc-only") for n in served_gc - served_lin})
 
