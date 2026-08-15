@@ -13,66 +13,23 @@
 // #897: directory form (not `../json/index.vibe`) — json is a .vpkg
 // contract package now; a literal-filename import resolves exactly one
 // candidate and breaks when the file is replaced.
+// #1841: `String::count` / `String::replace_all` used to be reimplemented
+// locally here (`pipeline_count` / `pipeline_replace_all`) to sidestep a
+// selfhost codegen bug that corrupted an unrelated function in this compile
+// unit when the prelude versions were imported. The trigger (the prelude
+// bodies' `let rec` + dynamic-slice recursion) was rewritten iteratively in
+// #1092 and the miscompile no longer reproduces, so the prelude imports are
+// restored. pipeline_test.vibe pins this shape (prelude import + dynamic
+// string slices in `dirname`) as a regression test.
+import @vibe/prelude {
+  String::count, String::replace_all
+}
+
 import @vibe/json {
   Json::field, Json::index, Json::keys, Json::length, Json::number, Json::parse, Json::string, Json::stringify, Json::type_of
 }
 
 //# Functions
-
-/// #777: `String::count`/`String::replace_all` (`../prelude/string.vibe`) are
-/// real prelude functions, not checker builtins — normally that just means
-/// "needs an explicit import" (same class of host-era rot as #742). But
-/// importing EITHER of them into this file, together with `dirname`'s dynamic
-/// string slice below, trips a real selfhost codegen bug: the imported
-/// function's `let rec` + dynamic-slice body corrupts a WASM function
-/// elsewhere in this compile unit ("not enough arguments on the stack for
-/// call" at runtime instantiation, in a function that never even calls the
-/// import). Reimplementing the two helpers locally (iteratively, no `let
-/// rec`) sidesteps the bug without touching codegen. Tracked for a real fix;
-/// do not reintroduce the prelude import here without re-testing.
-fn pipeline_count(s: String, sub: String) -> Int {
-  let s_len = String::length(s)
-  let sub_len = String::length(sub)
-  if sub_len == 0 || sub_len > s_len {
-    0
-  } else {
-    let mut i = 0
-    let mut acc = 0
-    while i <= s_len - sub_len {
-      if s[i: i + sub_len] == sub {
-        acc = acc + 1
-        i = i + sub_len
-      } else {
-        i = i + 1
-      }
-    }
-    acc
-  }
-}
-
-fn pipeline_replace_all(s: String, pattern: String, replacement: String) -> String {
-  let pat_len = String::length(pattern)
-  let s_len = String::length(s)
-  if pat_len == 0 || pat_len > s_len {
-    s
-  } else {
-    let sb = StringBuilder::new()
-    let mut i = 0
-    while i <= s_len - pat_len {
-      if s[i: i + pat_len] == pattern {
-        StringBuilder::push(sb, replacement)
-        i = i + pat_len
-      } else {
-        StringBuilder::push(sb, s[i: i + 1])
-        i = i + 1
-      }
-    }
-    if i < s_len {
-      StringBuilder::push(sb, s[i: s_len])
-    }
-    StringBuilder::freeze(sb)
-  }
-}
 
 export fn jq(text: String, expr: String) -> String {
   let root = Json::parse(text)
@@ -312,7 +269,7 @@ export fn wc_l(text: String) -> Int {
 }
 
 export fn count(text: String, sub: String) -> Int {
-  pipeline_count(text, sub)
+  String::count(text, sub)
 }
 
 export fn lines(text: String) -> Array[String] {
@@ -460,14 +417,14 @@ export fn grep_re(xs: Array[String], pattern: String) -> Array[String] with Proc
   if text == "" {
     xs
   } else {
-    let escaped_text = pipeline_replace_all(text, "'", "'\\''")
-    let escaped_pattern = pipeline_replace_all(pattern, "'", "'\\''")
+    let escaped_text = String::replace_all(text, "'", "'\\''")
+    let escaped_pattern = String::replace_all(pattern, "'", "'\\''")
     sh_lines("printf '%s' '\{escaped_text}' | grep -E '\{escaped_pattern}'")
   }
 }
 
 export fn replace(text: String, pattern: String, replacement: String) -> String {
-  pipeline_replace_all(text, pattern, replacement)
+  String::replace_all(text, pattern, replacement)
 }
 
 export fn rev_str(xs: Array[String]) -> Array[String] {
