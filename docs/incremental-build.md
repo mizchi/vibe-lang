@@ -173,7 +173,7 @@ one-shot `vibe check` path for cold, exact warm/no-op, comment-only, private-bod
 and public-interface edits. It requests a disabled-by-default compiler sidecar
 for deterministic `db_typecheck_fs` work counters: modules planned, rechecked,
 reused, and parse operations. The qualified outer record (`schema:
-"edit_cycle_kpi"`, `version: 1`) pins and records persistent ingestion stamps
+"edit_cycle_kpi"`, `version: 2`) pins and records persistent ingestion stamps
 off, production-default typing dependency environment reuse
 on, invalidation tracing off, and check-only compilation; inherited environment
 variables cannot silently change those modes. Each record also has a scoped
@@ -195,9 +195,18 @@ endpoint, process mode, complete case-by-run topology, mode authority, or metric
 scopes differ. Each case has fixed `edit_kind` and `cache_state` metadata.
 Malformed/unsafe counts, ingestion read/hash unit disagreement, stamp activity
 while stamps are pinned off, nondeterministic repetitions, and nonzero codegen
-are also rejected. The KPI intentionally does not yet measure LSP residency,
-runnable artifacts, complete loader reconstruction attribution, or module
-codegen reuse.
+are also rejected. Version 2 additionally records a separate compiler-owned
+`ingestion_pipeline` v1 sidecar. Its execution counters distinguish source-list
+and source-group cache probes/hits/misses, list-to-group reconstruction,
+cold collection, module-header probes and parse scans, entry/final/linked/warning
+parses. Probe partitions and the reconstruction partition are exact; final
+semantic parses must equal schema-2 current-source parse executions. These
+counters remain separate from `work_summary.parsed_files`, whose TypeDb scope is
+unchanged. Phase summaries expose ingestion-pipeline before/after/deltas beside,
+not inside, the five established work-summary metrics.
+
+The KPI intentionally does not yet measure LSP residency, runnable artifacts,
+or module codegen reuse.
 
 ### Initial local result (2026-08-02)
 

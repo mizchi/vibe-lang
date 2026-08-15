@@ -69,6 +69,10 @@ import @vibe/compiler/contract {
   vpkg_shared_import_marker
 }
 
+import ./ingestion_pipeline_telemetry.vibe {
+  ingestion_pipeline_telemetry_add
+}
+
 import ./manifest_sources.vibe {
   build_grouped_sources_from_manifest_rows,
   load_manifest_full_sources,
@@ -2253,29 +2257,38 @@ export fn collect_all_sources_fs(entry_path: String) -> Array[(String, String)] 
       let _ = manifest_path
       copy_source_specs(sources)
     },
-    None =>
-    match load_persistent_sources_cache_if_valid(entry_path) {
-      Some(sources) => sources,
-      None => {
-        match try_collect_manifest_sources_fs(entry_path) {
-          Some((manifest_path, sources)) => {
-            store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
-            sources
-          },
-          None => {
-            match try_load_manifest_rows(entry_path) {
-              Some((base_dir, rows)) => {
-                let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
-                let preloaded_sources = load_manifest_full_sources(base_dir, rows)
-                store_persistent_sources_cache(entry_path, Some(manifest_path), preloaded_sources)
-                preloaded_sources
-              },
-              None => {
-                let sources = array_empty()
-                let visited = path_set_new()
-                collect_sources_rec(entry_path, sources, visited)
-                store_persistent_sources_cache(entry_path, None, sources)
-                sources
+    None => {
+      ingestion_pipeline_telemetry_add(0, 1)
+      match load_persistent_sources_cache_if_valid(entry_path) {
+        Some(sources) => {
+          ingestion_pipeline_telemetry_add(1, 1)
+          sources
+        },
+        None => {
+          ingestion_pipeline_telemetry_add(2, 1)
+          // Every source-list miss enters exactly one cold collection attempt,
+          // whether a fresh manifest wins or recursion is ultimately required.
+          ingestion_pipeline_telemetry_add(9, 1)
+          match try_collect_manifest_sources_fs(entry_path) {
+            Some((manifest_path, sources)) => {
+              store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
+              sources
+            },
+            None => {
+              match try_load_manifest_rows(entry_path) {
+                Some((base_dir, rows)) => {
+                  let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
+                  let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+                  store_persistent_sources_cache(entry_path, Some(manifest_path), preloaded_sources)
+                  preloaded_sources
+                },
+                None => {
+                  let sources = array_empty()
+                  let visited = path_set_new()
+                  collect_sources_rec(entry_path, sources, visited)
+                  store_persistent_sources_cache(entry_path, None, sources)
+                  sources
+                }
               }
             }
           }
@@ -2367,58 +2380,72 @@ export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(
       let _ = manifest_path
       copy_grouped_sources(groups)
     },
-    None =>
-    match load_persistent_source_groups_cache_if_valid(entry_path) {
-      Some(groups) => groups,
-      None =>
-      match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path) {
-        Some((manifest_path, groups)) => {
-          store_persistent_source_groups_cache(entry_path, manifest_path, groups)
+    None => {
+      ingestion_pipeline_telemetry_add(3, 1)
+      match load_persistent_source_groups_cache_if_valid(entry_path) {
+        Some(groups) => {
+          ingestion_pipeline_telemetry_add(4, 1)
           groups
         },
-        None =>
-        match try_collect_manifest_source_groups_fs(entry_path) {
-          Some((manifest_path, groups)) => {
-            store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
-            groups
-          },
-          None =>
-          match try_load_manifest_rows(entry_path) {
-            Some((base_dir, rows)) => {
-              let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
-              let preloaded_sources = load_manifest_full_sources(base_dir, rows)
-              let groups = empty_grouped_sources()
-              let mut j = 0
-              while j < Array::length(rows) {
-                let (group_name, rel_path) = Array::get(rows, j)
-                let path = join_path(base_dir, rel_path)
-                let mut found = ""
-                let mut k = 0
-                while k < Array::length(preloaded_sources) {
-                  if found == "" {
-                    let (source_path, source_text) = Array::get(preloaded_sources, k)
-                    if source_path == path {
-                      found = source_text
-                    }
-                  }
-                  k = k + 1
-                }
-                if found == "" {
-                  ()
-                } else {
-                  push_grouped_source(groups, group_name, path, found)
-                }
-                j = j + 1
-              }
-              store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+        None => {
+          ingestion_pipeline_telemetry_add(5, 1)
+          ingestion_pipeline_telemetry_add(6, 1)
+          ingestion_pipeline_telemetry_add(0, 1)
+          match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path) {
+            Some((manifest_path, groups)) => {
+              ingestion_pipeline_telemetry_add(1, 1)
+              ingestion_pipeline_telemetry_add(7, 1)
+              store_persistent_source_groups_cache(entry_path, manifest_path, groups)
               groups
             },
             None => {
-              let groups = empty_grouped_sources()
-              let recursive_sources = collect_all_sources_fs(entry_path)
-              Array::push(groups, ("recursive", recursive_sources))
-              store_persistent_source_groups_cache(entry_path, None, groups)
-              groups
+              ingestion_pipeline_telemetry_add(2, 1)
+              ingestion_pipeline_telemetry_add(8, 1)
+              match try_collect_manifest_source_groups_fs(entry_path) {
+                Some((manifest_path, groups)) => {
+                  store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+                  groups
+                },
+                None =>
+                match try_load_manifest_rows(entry_path) {
+                  Some((base_dir, rows)) => {
+                    let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
+                    let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+                    let groups = empty_grouped_sources()
+                    let mut j = 0
+                    while j < Array::length(rows) {
+                      let (group_name, rel_path) = Array::get(rows, j)
+                      let path = join_path(base_dir, rel_path)
+                      let mut found = ""
+                      let mut k = 0
+                      while k < Array::length(preloaded_sources) {
+                        if found == "" {
+                          let (source_path, source_text) = Array::get(preloaded_sources, k)
+                          if source_path == path {
+                            found = source_text
+                          }
+                        }
+                        k = k + 1
+                      }
+                      if found == "" {
+                        ()
+                      } else {
+                        push_grouped_source(groups, group_name, path, found)
+                      }
+                      j = j + 1
+                    }
+                    store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+                    groups
+                  },
+                  None => {
+                    let groups = empty_grouped_sources()
+                    let recursive_sources = collect_all_sources_fs(entry_path)
+                    Array::push(groups, ("recursive", recursive_sources))
+                    store_persistent_source_groups_cache(entry_path, None, groups)
+                    groups
+                  }
+                }
+              }
             }
           }
         }
@@ -2429,7 +2456,6 @@ export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(
 }
 
 //# Module bundling — merge stmts from all modules in dependency order
-
 /// Given all sources (in dependency order), parse and merge their statements.
 /// Skips SImport, SReExport (already resolved). Keeps all definitions.
 /// #1584: an `import { x as y }` alias must be rewritten back to the
@@ -2463,7 +2489,6 @@ export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] 
   }
   merged
 }
-
 /// #847-style trap-free directory probe (see loader/header_cache.vibe's
 /// fs_is_directory for the full rationale): `Fs::readdir` TRAPS the whole
 /// wasm instance on a non-directory, so a real directory test is required
@@ -2472,7 +2497,6 @@ export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] 
 fn vpkg_scan_is_directory(path: String) -> Bool with Fs {
   Fs::exists(String::concat(path, "/."))
 }
-
 /// #897 (ADR-0070): directories this scan skips entirely -- not source, or
 /// not part of this repo's own migration surface (vendored/fetched content,
 /// build output, VCS metadata). Anything starting with "." already covers
@@ -2480,7 +2504,6 @@ fn vpkg_scan_is_directory(path: String) -> Bool with Fs {
 fn vpkg_scan_skip_dir(name: String) -> Bool {
   (String::length(name) > 0 && String::char_code_at(name, 0) == '.') || name == "_build" || name == "node_modules" || name == "target" || name == "deps"
 }
-
 /// #897 (ADR-0070): recurse into every non-skipped directory under `root`,
 /// recording any directory that has `index.vibei` or plain `index.vibe` but
 /// NOT YET `index.vpkg` -- exactly the 76-directory migration surface ADR-
@@ -2515,14 +2538,12 @@ fn vpkg_scan_rec(dir: String, out: Array[String]) -> Unit with Exception + Fs {
     i = i + 1
   }
 }
-
 /// find_missing_vpkg_dirs: (String) -> Array[String] with Exception + Fs
 export fn find_missing_vpkg_dirs(root: String) -> Array[String] with Exception + Fs {
   let out = array_empty()
   vpkg_scan_rec(root, out)
   out
 }
-
 /// check_missing_vpkg_dirs: (String) -> Int with Exception + Fs
 /// #897/ADR-0070: `vibe check --missing-vpkg <root>` diagnostic. Reports (via
 /// throw, matching every other `vibe check` diagnostic's error-surfacing
@@ -2537,7 +2558,6 @@ export fn check_missing_vpkg_dirs(root: String) -> Int with Exception + Fs {
     throw(String::concat("missing index.vpkg (#897) in: ", String::join(missing, ", ")))
   }
 }
-
 /// #1145 follow-up 2: for the `index.vpkg` at `dir` (if any), checks that
 /// every external (`@scope/pkg`) import in its own production impl files
 /// (the same discovery `contract_package_hashes_fs` uses: explicit
@@ -2580,7 +2600,6 @@ fn package_deps_missing(dir: String) -> Array[String] with Exception + Fs {
     }
   }
 }
-
 fn deps_missing_scan_rec(dir: String, out: Array[String]) -> Unit with Exception + Fs {
   let here = package_deps_missing(dir)
   let mut hi = 0
@@ -2605,7 +2624,6 @@ fn deps_missing_scan_rec(dir: String, out: Array[String]) -> Unit with Exception
     i = i + 1
   }
 }
-
 /// find_deps_missing: (String) -> Array[String] with Exception + Fs
 /// #1145 follow-up 2: recursively scans every `index.vpkg` under `root` for
 /// deps declarations missing an entry that its own imports require.
@@ -2614,7 +2632,6 @@ export fn find_deps_missing(root: String) -> Array[String] with Exception + Fs {
   deps_missing_scan_rec(root, out)
   out
 }
-
 /// check_deps_missing: (String) -> Int with Exception + Fs
 /// #1145 follow-up 2: `vibe check --deps-missing <root>` diagnostic.
 export fn check_deps_missing(root: String) -> Int with Exception + Fs {

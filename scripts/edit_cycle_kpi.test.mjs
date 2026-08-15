@@ -10,6 +10,7 @@ import {
   parseHostFsScopeTelemetry,
   parseIncrementalTelemetry,
   parseIngestionFingerprintTelemetry,
+  parseIngestionPipelineTelemetry,
 } from "./edit_cycle_kpi.mjs";
 
 const validSidecar = JSON.stringify({
@@ -39,6 +40,30 @@ const validIngestionFingerprint = {
   stamp_malformed: 1,
   stamp_text_units_read: 11,
   stamp_publications: 2,
+};
+
+export const validIngestionPipeline = {
+  schema: "ingestion_pipeline",
+  version: 1,
+  nonce: "run-123",
+  source_list_cache_probes: 2,
+  source_list_cache_hits: 1,
+  source_list_cache_misses: 1,
+  source_group_cache_probes: 1,
+  source_group_cache_hits: 0,
+  source_group_cache_misses: 1,
+  source_list_group_reconstruction_attempts: 1,
+  source_list_group_reconstruction_hits: 0,
+  source_list_group_reconstruction_misses: 1,
+  cold_collect_all_sources_executions: 1,
+  module_header_cache_probes: 3,
+  module_header_cache_hits: 1,
+  module_header_cache_misses: 2,
+  module_header_parse_scan_executions: 2,
+  entry_precheck_parse_executions: 1,
+  final_semantic_source_parse_executions: 1,
+  linked_validation_source_parse_executions: 1,
+  warning_entry_parse_executions: 1,
 };
 
 const validHostFsScope = {
@@ -109,6 +134,37 @@ test("edit-cycle KPI fails closed on invalid ingestion fingerprint sidecars", ()
     () => parseIngestionFingerprintTelemetry(JSON.stringify({ ...validIngestionFingerprint, extra: 1 }), "run-123"),
     /exactly the ingestion_fingerprint v1 fields/,
   );
+});
+
+test("edit-cycle KPI accepts strict ingestion_pipeline v1 telemetry", () => {
+  assert.deepEqual(
+    parseIngestionPipelineTelemetry(JSON.stringify(validIngestionPipeline), "run-123"),
+    validIngestionPipeline,
+  );
+});
+
+test("edit-cycle KPI rejects hostile ingestion_pipeline sidecars", () => {
+  for (const [patch, message] of [
+    [{ nonce: "other" }, /nonce mismatch/],
+    [{ nonce: "bad\u0000nonce" }, /control characters/],
+    [{ version: 2 }, /unsupported ingestion_pipeline/],
+    [{ source_list_cache_probes: 3 }, /source_list_cache_probes must equal/],
+    [{ source_list_group_reconstruction_attempts: 2 }, /reconstruction attempts must equal/],
+    [{ module_header_cache_hits: -1 }, /non-negative safe integer/],
+    [{ module_header_cache_hits: 1.5 }, /non-negative safe integer/],
+    [{ module_header_cache_hits: Number.MAX_SAFE_INTEGER + 1 }, /non-negative safe integer/],
+    [{ extra: 1 }, /exactly the ingestion_pipeline v1 fields/],
+  ]) {
+    const expectedNonce = patch.nonce?.includes("\u0000") ? patch.nonce : "run-123";
+    assert.throws(
+      () => parseIngestionPipelineTelemetry(JSON.stringify({ ...validIngestionPipeline, ...patch }), expectedNonce),
+      message,
+    );
+  }
+  const missing = { ...validIngestionPipeline };
+  delete missing.warning_entry_parse_executions;
+  assert.throws(() => parseIngestionPipelineTelemetry(JSON.stringify(missing), "run-123"), /exactly/);
+  assert.throws(() => parseIngestionPipelineTelemetry('{"schema":', "run-123"), /invalid JSON/);
 });
 
 test("edit-cycle KPI accepts a complete host_fs_scope sidecar", () => {

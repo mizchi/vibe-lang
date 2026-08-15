@@ -63,9 +63,30 @@ const ingestionFingerprintKeys = [
   "stamp_publications",
 ];
 const ingestionFingerprintCounterKeys = ingestionFingerprintKeys.slice(3);
+export const ingestionPipelineCounterKeys = Object.freeze([
+  "source_list_cache_probes",
+  "source_list_cache_hits",
+  "source_list_cache_misses",
+  "source_group_cache_probes",
+  "source_group_cache_hits",
+  "source_group_cache_misses",
+  "source_list_group_reconstruction_attempts",
+  "source_list_group_reconstruction_hits",
+  "source_list_group_reconstruction_misses",
+  "cold_collect_all_sources_executions",
+  "module_header_cache_probes",
+  "module_header_cache_hits",
+  "module_header_cache_misses",
+  "module_header_parse_scan_executions",
+  "entry_precheck_parse_executions",
+  "final_semantic_source_parse_executions",
+  "linked_validation_source_parse_executions",
+  "warning_entry_parse_executions",
+]);
+const ingestionPipelineKeys = ["schema", "version", "nonce", ...ingestionPipelineCounterKeys];
 
 export const editCycleRecordSchema = "edit_cycle_kpi";
-export const editCycleRecordVersion = 1;
+export const editCycleRecordVersion = 2;
 export const editCycleCaseDefinitions = Object.freeze({
   cold: Object.freeze({ edit_kind: "none", cache_state: "empty" }),
   exact_noop: Object.freeze({ edit_kind: "none", cache_state: "preserved" }),
@@ -231,6 +252,45 @@ export function parseIngestionFingerprintTelemetry(text, expectedNonce, source =
 /// Parse the runner-owned host filesystem import sidecar. This is intentionally
 /// separate from compiler-owned incremental typecheck telemetry: its schema is
 /// `host_fs_scope`, and its counters are import boundaries, not source hashes.
+export function parseIngestionPipelineTelemetry(text, expectedNonce, source = "ingestion pipeline telemetry") {
+  let telemetry;
+  try {
+    telemetry = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${source}: invalid JSON (${error.message})`);
+  }
+  if (telemetry === null || typeof telemetry !== "object" || Array.isArray(telemetry)) {
+    throw new Error(`${source}: expected a JSON object`);
+  }
+  const actualKeys = Object.keys(telemetry).sort();
+  const expectedKeys = [...ingestionPipelineKeys].sort();
+  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error(`${source}: expected exactly the ingestion_pipeline v1 fields`);
+  }
+  if (telemetry.schema !== "ingestion_pipeline" || telemetry.version !== 1) {
+    throw new Error(`${source}: unsupported ingestion_pipeline schema/version`);
+  }
+  if (typeof telemetry.nonce !== "string" || telemetry.nonce.length === 0 || /\p{Cc}/u.test(telemetry.nonce)) {
+    throw new Error(`${source}: nonce must be non-empty and contain no control characters`);
+  }
+  if (telemetry.nonce !== expectedNonce) throw new Error(`${source}: nonce mismatch`);
+  for (const key of ingestionPipelineCounterKeys) {
+    if (!Number.isSafeInteger(telemetry[key]) || telemetry[key] < 0) {
+      throw new Error(`${source}: ${key} must be a non-negative safe integer`);
+    }
+  }
+  for (const prefix of ["source_list_cache", "source_group_cache", "module_header_cache"]) {
+    if (telemetry[`${prefix}_probes`] !== telemetry[`${prefix}_hits`] + telemetry[`${prefix}_misses`]) {
+      throw new Error(`${source}: ${prefix}_probes must equal hits + misses`);
+    }
+  }
+  if (telemetry.source_list_group_reconstruction_attempts
+      !== telemetry.source_list_group_reconstruction_hits + telemetry.source_list_group_reconstruction_misses) {
+    throw new Error(`${source}: reconstruction attempts must equal hits + misses`);
+  }
+  return telemetry;
+}
+
 export function parseHostFsScopeTelemetry(text, expectedNonce, source = "host filesystem telemetry") {
   let telemetry;
   try {
@@ -311,8 +371,11 @@ function main() {
     const hostFsScopeNonce = randomUUID();
     const ingestionTelemetryPath = join(project, ".vibe-ingestion-telemetry.json");
     const ingestionTelemetryNonce = randomUUID();
+    const ingestionPipelinePath = join(project, ".vibe-ingestion-pipeline-telemetry.json");
+    const ingestionPipelineNonce = randomUUID();
     rmSync(telemetryPath, { force: true });
     rmSync(ingestionTelemetryPath, { force: true });
+    rmSync(ingestionPipelinePath, { force: true });
     // The runner also removes this before guest execution; do it here too so
     // a runner regression cannot turn a stale sidecar into a benchmark result.
     rmSync(hostFsScopePath, { force: true });
@@ -329,6 +392,8 @@ function main() {
         VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryPath,
         VIBE_INGESTION_TELEMETRY_OUT: ingestionTelemetryPath,
         VIBE_INGESTION_TELEMETRY_NONCE: ingestionTelemetryNonce,
+        VIBE_INGESTION_PIPELINE_TELEMETRY_OUT: ingestionPipelinePath,
+        VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE: ingestionPipelineNonce,
         VIBE_HOST_FS_SCOPE_OUT: hostFsScopePath,
         VIBE_HOST_FS_SCOPE_NONCE: hostFsScopeNonce,
         VIBE_PREOPEN_DIR: project,
@@ -364,6 +429,17 @@ function main() {
       ingestionFingerprint,
       `edit-cycle-kpi: ${caseName} ingestion fingerprint telemetry`,
     );
+    if (!existsSync(ingestionPipelinePath)) {
+      throw new Error(`edit-cycle-kpi: ${caseName} omitted ingestion pipeline telemetry sidecar`);
+    }
+    const ingestionPipeline = parseIngestionPipelineTelemetry(
+      readFileSync(ingestionPipelinePath, "utf8"),
+      ingestionPipelineNonce,
+      `edit-cycle-kpi: ${caseName} ingestion pipeline telemetry`,
+    );
+    if (ingestionPipeline.final_semantic_source_parse_executions !== telemetry.current_source_parse_executions) {
+      throw new Error(`edit-cycle-kpi: ${caseName} ingestion pipeline final semantic parses disagree with schema 2`);
+    }
     if (!existsSync(hostFsScopePath)) {
       throw new Error(`edit-cycle-kpi: ${caseName} omitted host filesystem telemetry sidecar`);
     }
@@ -391,6 +467,7 @@ function main() {
       work_summary: buildEditCycleWorkSummary(telemetry, ingestionFingerprint, hostFsScope),
       incremental_typecheck: telemetry,
       ingestion_fingerprint: ingestionFingerprint,
+      ingestion_pipeline: ingestionPipeline,
       host_fs_scope: hostFsScope,
       wall_ms: Number(wallMs.toFixed(3)),
       success: true,

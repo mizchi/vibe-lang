@@ -15,7 +15,9 @@ import {
   editCycleRecordSchema,
   editCycleRecordVersion,
   editCycleWorkScopes,
+  ingestionPipelineCounterKeys,
   parseHostFsScopeTelemetry,
+  parseIngestionPipelineTelemetry,
   parseIncrementalTelemetry,
   parseIngestionFingerprintTelemetry,
 } from "./edit_cycle_kpi.mjs";
@@ -47,6 +49,7 @@ const recordKeys = [
   "work_summary",
   "incremental_typecheck",
   "ingestion_fingerprint",
+  "ingestion_pipeline",
   "host_fs_scope",
   "wall_ms",
   "success",
@@ -136,6 +139,14 @@ export function parseEditCycleRecord(value, source = "edit-cycle record") {
     `${source}: ingestion_fingerprint`,
   );
   assertDisabledIngestionStamps(ingestion, `${source}: ingestion_fingerprint`);
+  const pipeline = parseIngestionPipelineTelemetry(
+    JSON.stringify(value.ingestion_pipeline),
+    value.ingestion_pipeline?.nonce,
+    `${source}: ingestion_pipeline`,
+  );
+  if (pipeline.final_semantic_source_parse_executions !== incremental.current_source_parse_executions) {
+    throw new Error(`${source}: ingestion pipeline final semantic parses disagree with schema 2`);
+  }
   const hostFs = parseHostFsScopeTelemetry(
     JSON.stringify(value.host_fs_scope),
     value.host_fs_scope?.nonce,
@@ -207,6 +218,20 @@ function identityOf(records, source) {
   return { ...fixed, compiler_sha256: compilerShas[0], runs };
 }
 
+function stableCaseCounters(records, caseName, field, keys, source) {
+  const rows = records.filter((record) => record.case === caseName);
+  if (rows.length === 0) throw new Error(`${source}: missing case ${caseName}`);
+  const first = rows[0][field];
+  for (const row of rows.slice(1)) {
+    for (const key of keys) {
+      if (row[field][key] !== first[key]) {
+        throw new Error(`${source}: nondeterministic ${caseName}.${field}.${key} across repetitions`);
+      }
+    }
+  }
+  return first;
+}
+
 function stableCaseWork(records, caseName, source) {
   const rows = records.filter((record) => record.case === caseName);
   if (rows.length === 0) throw new Error(`${source}: missing case ${caseName}`);
@@ -240,7 +265,7 @@ export function compareEditCycleRecords(beforeRecords, afterRecords) {
 
   return {
     schema: "incremental_phase_summary",
-    version: 1,
+    version: 2,
     benchmark: beforeIdentity.benchmark,
     fixture_sha256: beforeIdentity.fixture_sha256,
     runner_sha256: beforeIdentity.runner_sha256,
@@ -254,11 +279,18 @@ export function compareEditCycleRecords(beforeRecords, afterRecords) {
     cases: editCycleCases.map((caseName) => {
       const before = stableCaseWork(beforeRecords, caseName, "before");
       const after = stableCaseWork(afterRecords, caseName, "after");
+      const beforePipeline = stableCaseCounters(beforeRecords, caseName, "ingestion_pipeline", ingestionPipelineCounterKeys, "before");
+      const afterPipeline = stableCaseCounters(afterRecords, caseName, "ingestion_pipeline", ingestionPipelineCounterKeys, "after");
       return {
         case: caseName,
         before,
         after,
         delta: Object.fromEntries(workKeys.map((key) => [key, after[key] - before[key]])),
+        ingestion_pipeline: {
+          before: Object.fromEntries(ingestionPipelineCounterKeys.map((key) => [key, beforePipeline[key]])),
+          after: Object.fromEntries(ingestionPipelineCounterKeys.map((key) => [key, afterPipeline[key]])),
+          delta: Object.fromEntries(ingestionPipelineCounterKeys.map((key) => [key, afterPipeline[key] - beforePipeline[key]])),
+        },
       };
     }),
   };
