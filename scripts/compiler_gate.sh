@@ -7236,6 +7236,13 @@ scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygien
 # the plain convention; Done-wrapping it returns a step pointer instead of 8.
 scps_run_expect "effect_scps_param_shadow_test.vibe" "8" "localparamshadow"
 scps_run_expect "effect_scps_top_level_alias_test.vibe" "7" "toplevelalias"
+# #1723 / #1803 P2 follow-up: effect_row_local_shadow_test.vibe's "unshadowed
+# effectful call" control sits inside `handle`, where the missing-effect
+# diagnostic is suppressed (in_handle), so it cannot pin "still charged when
+# NOT shadowed" by itself. This is the un-suppressed half: with no local
+# shadow and no handler, the row lands on the caller and a row-free caller is
+# refused. The accepted twin is test 1 of effect_row_local_shadow_test.vibe.
+scps_check_reject "err_effect_unshadowed_row_charged.vibe" "effect row mismatch for 'caller': missing { Ask }" "unshadowedrow"
 # #1536 (a) v3 (let-floating): an async-iterator `for` in statement position
 # desugars to a let-chain in SEQUENCE HEAD position; scps_split_tail floats
 # it onto the continuation spine. Two sequential loops pin repeated floats

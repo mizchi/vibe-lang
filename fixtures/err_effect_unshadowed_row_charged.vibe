@@ -1,0 +1,32 @@
+// #1803 P2 follow-up (#1723): effect_row_local_shadow_test.vibe's "the
+// unshadowed effectful call runs when its row is handled" control sits inside
+// `handle`, where the missing-effect diagnostic is deliberately suppressed
+// (in_handle) -- so on its own it cannot pin "an unshadowed top-level callee
+// still charges its declared row". This is the un-suppressed half: the same
+// call shape with NO local shadow and NO handler must be refused, because
+// `caller` omits `with Ask`. `take` is the exact top-level fn the shadow test
+// shadows; here it stays visible, so the row must land on `caller`. The
+// accepted twin (a pure local `take` shadowing this fn, caller stays
+// row-free) is test 1 of effect_row_local_shadow_test.vibe -- together they
+// pin #1723's fix from both directions: shadowing drops the row, NOT
+// shadowing keeps it.
+
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn take(f: () -> Int with Ask) -> Int with Ask {
+  f()
+}
+
+fn caller() -> Int {
+  take(() -> Int with Ask {
+    perform Ask::Get(1)
+  })
+}
+
+let _start = () -> Int {
+  caller()
+}
+
+_start()
