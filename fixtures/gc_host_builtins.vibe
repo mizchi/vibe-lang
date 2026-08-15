@@ -12,11 +12,21 @@
 // green through the entire bug. `Fs::exists` answering true for a missing
 // path is the shape to keep in mind.
 //
-// `Fs::readdir` is NOT here: it returns Array[String] and the linear lane
-// lowers that surface at the call site on top of the raw import, so wiring
-// only the import yields an empty array on the gc lane. It stays a loud
-// "unknown constructor or function" until that lowering exists -- which is
-// the right failure while it is unimplemented.
+// `Fs::readdir` is here too now (#1262). It returns Array[String] while the
+// import returns the entries "\n"-joined as ONE packed string, so the surface
+// is a source-level rewrite -- shared with the linear lane through
+// `packed_lines_to_array_expr` rather than spelled out per lane.
+//
+// Its checks below are the two the rewrite can get wrong:
+//
+//   - an EMPTY directory must give `[]`. `String::split("", d)` is `[""]`, so
+//     the empty case needs its own branch and a fixture that only ever reads a
+//     populated directory would never notice it missing.
+//   - a call INSIDE A CLOSURE. The rewrite is guarded on the name not
+//     resolving to anything real, and the gc capture scan collected
+//     `Fs::readdir` as a free variable until it was listed as a direct-ABI
+//     spelling -- which made the guard false and skipped the rewrite entirely.
+//     Top-level-only coverage passes straight through that.
 
 fn probe_root() -> String {
   "_build/gc_host_builtins_probe"
@@ -75,6 +85,18 @@ fn remove_check() -> Int with Fs {
 
 // Both ends: the destination must appear AND the source must disappear. A
 // rename lowered as a copy would pass the destination check alone.
+fn readdir_checks() -> Int with Fs {
+  let entries = Fs::readdir(probe_root() + "/rd")
+  let empty = Array::length(Fs::readdir(probe_root() + "/rd_empty"))
+  // Through a closure, with a real capture alongside it: the capture must
+  // still ride the environment while the builtin name must not.
+  let bonus = 3
+  let via_closure = ((p: String) -> Int {
+    Array::length(Fs::readdir(p)) + bonus
+  })(probe_root() + "/rd")
+  Array::length(entries) * 100 + empty * 10 + (via_closure - bonus)
+}
+
 fn rename_check() -> Int with Fs {
   Fs::write_file(probe_root() + "/s1", "z")
   Fs::rename(probe_root() + "/s1", probe_root() + "/s2")
@@ -94,5 +116,5 @@ fn rename_check() -> Int with Fs {
 export let main = () -> Int with Fs + Stdout {
   Stdout::write_stream("gc-host-builtins:")
   // 10 10 10 10 -> 10101010 when every pair reads (affirmative=1, negative=0).
-  dir_checks() * 1000000 + file_checks() * 10000 + remove_check() * 100 + rename_check()
+  (dir_checks() * 1000000 + file_checks() * 10000 + remove_check() * 100 + rename_check()) * 1000 + readdir_checks()
 }
