@@ -76,14 +76,19 @@ Measured, all four steps:
 `guest.wat` **ignores** the stream and returns a constant. It answers the
 composition question only.
 
-Still open, and the next thing to measure: what a guest needs in order to READ
-the body stream. That requires `stream.read` plus an async lift. The current
-emitters only cover scalar results:
-`emit_canon_lift_async_section` (`component_codegen.vibe`) emits exactly one
-canonopt (`async`), and `emit_canon_task_return` emits none. This probe does
-**not** establish the exact `memory` / `realloc` / `string-encoding` option set
-for a string-bearing async handler; a separate byte-level probe must establish
-that encoding before those emitters are generalized.
+Both follow-ups it named have since been measured, and this probe stays as the
+composition ratchet underneath them:
+
+- `../async_string_lift` established the `memory` / `realloc` /
+  `string-encoding` option set for a string-bearing async handler, byte for
+  byte. `emit_canon_lift_async_section` / `emit_canon_task_return` were
+  generalized against it, and `comp_emit_async_string_component` now emits that
+  whole component.
+- `../http_body_read` answers the reading question: a guest that drains the body
+  with `stream.read` and returns what it read. It also found the constraint this
+  probe could not see — the adapter's import has to be spelled **`async func`**,
+  since a guest that suspends must be async-lifted and `canon lift ... async`
+  validates only against an async functype.
 
 ## Consequence for #1540's scope
 
