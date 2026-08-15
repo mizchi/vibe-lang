@@ -20,6 +20,7 @@ import @vibe/compiler/entry/source_compile/gc_only {
 }
 
 import @vibe/compiler/runtime {
+  alloc_spans,
   binding_occurrences,
   build_funcmap_from_source,
   build_module_source_from_source,
@@ -212,6 +213,31 @@ fn adapter_string_array_contains(items: Array[String], needle: String) -> Bool {
 /// with an empty name (unrecoverable offset placeholder) are skipped.
 /// String::concat + __to_string only (never `+`/interpolation -> NUL miscodegen).
 /// Empty -> "".
+/// Render `vibe allocs` records as one `FN KIND OFFSET` line per site.
+/// String::concat + __to_string only (never `+`/interpolation -> NUL
+/// miscodegen). Empty -> "" == this file allocates nothing.
+fn join_alloc_spans(items: Array[(String, String, Int)]) -> String {
+  let n = Array::length(items)
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (fname, kind, off) = Array::get(items, i)
+    if first {
+      first = false
+    } else {
+      StringBuilder::push(acc, "\n")
+    }
+    StringBuilder::push(acc, fname)
+    StringBuilder::push(acc, " ")
+    StringBuilder::push(acc, kind)
+    StringBuilder::push(acc, " ")
+    StringBuilder::push(acc, __to_string(off))
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
 fn join_escape_spans(items: Array[(String, Int, Int)]) -> String {
   let n = Array::length(items)
   let acc = StringBuilder::new()
@@ -1310,6 +1336,19 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         escape_spans(src)
       }
       Fs::write_bytes(output_path, adapter_string_to_bytes(join_escape_spans(esc)))
+      0
+    } with Exception {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  }
+  // `vibe allocs` (ADR-0091 / #1262): every heap-allocating site, one
+  // `FN KIND OFFSET` line each. Empty output means this file allocates
+  // nothing -- so a lex/parse failure must NOT come back as empty; it goes to
+  // the `.diag` sidecar like every other query here.
+  if Env::get("VIBE_ALLOCS") == "1" {
+    return handle {
+      let src = Fs::read_file(input_path)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(join_alloc_spans(alloc_spans(src))))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)

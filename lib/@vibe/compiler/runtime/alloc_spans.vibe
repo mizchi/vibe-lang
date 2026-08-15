@@ -1,0 +1,264 @@
+//# `vibe allocs` — every site in a function that puts something on the heap.
+//#
+//# ADR-0091 (#1262), and the allocation-site instrumentation
+//# docs/profiling.md already asked for. `@zero_alloc` needs to name the sites
+//# it rejects, and a `bytes_per_op == 0` bench needs to say WHERE the bytes
+//# came from when it is not 0; both want the same list, so it is built once
+//# here and observable on its own.
+//#
+//# The value of this query is mostly in what it makes visible that the source
+//# does not say out loud. An allocating builtin call is easy to see; a closure
+//# literal quietly allocating its environment, a `let mut` becoming a heap ref
+//# cell because something captured it, or a growable `push` reallocating on the
+//# one call that crosses capacity are the ones people miss. Those are exactly
+//# the "implicit allocation" ADR-0091 lists as the reason to build this.
+//#
+//# DIRECTION. Over-report, never under-report. This shares
+//# `builtin_allocates`' polarity (core/builtin_registry.vibe): an unclassified
+//# builtin counts as allocating. A site listed here that turns out to be free
+//# costs the reader one line; a site NOT listed lets `@zero_alloc` certify
+//# something untrue, silently.
+//#
+//# `push` is reported at every call, not just the ones that regrow. Whether a
+//# given `Array::push` reallocates is a runtime property of that array's
+//# capacity, so a static query cannot say; saying nothing would call an append
+//# loop zero-alloc, which is the wrong direction.
+//#
+//# Output: one `FN KIND OFFSET` line per site, in source order within each
+//# function, functions in declaration order. KIND is one of
+//# `builtin:<name>` / `constructor:<name>` / `closure` / `array` / `tuple` /
+//# `record` / `map` / `interp` / `float` / `handler` / `mut-cell`. Empty
+//# output = this file allocates nothing, i.e. every function in it is already
+//# zero-alloc.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Stmt, builtin_allocates, expr_children
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_spans
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  is_mut_captured_in
+}
+
+//# Functions
+
+fn alloc_empty_items() -> Array[(String, String, Int)] {
+  array_empty()
+}
+
+fn alloc_empty_strings() -> Array[String] {
+  array_empty()
+}
+
+fn alloc_contains_name(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The allocating-call name for `expr`, or "" when the call is not one.
+/// Only direct `EIdent` callees are classified: an indirect call through a
+/// value cannot be resolved here, and it is reported as a site anyway by the
+/// closure rule (something had to build the closure).
+fn alloc_call_kind(expr: Expr) -> String {
+  match expr {
+    ECall(callee, _, _) => match callee {
+      EIdent(name, _) => if builtin_allocates(name) {
+        String::concat("builtin:", name)
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// The site kind for `expr` itself (not its children), or "" when this node
+/// allocates nothing on its own.
+fn alloc_site_kind(expr: Expr, ctors: Array[String]) -> String {
+  match expr {
+    EFloat(_) => "float",
+    EIdent(name, _) => if alloc_contains_name(ctors, name) {
+      String::concat("constructor:", name)
+    } else {
+      ""
+    },
+    EFn(_, _, _, _, _, _) => "closure",
+    EArray(_) => "array",
+    ETuple(_) => "tuple",
+    ERecord(_, _, _) => "record",
+    EMap(_) => "map",
+    EStringInterp(_) => "interp",
+    EHandle(_, _) => "handler",
+    _ => alloc_call_kind(expr)
+  }
+}
+
+/// The offset to report a site at. Only some Expr forms carry one -- `EFn`
+/// notably does not -- so the rest fall back to the NEAREST ENCLOSING node
+/// that did, threaded down by the walk. Without that inheritance a closure
+/// site reports offset 0, which reads as "top of file" rather than "no span
+/// here"; a site is never dropped for want of a span, but it should not lie
+/// about where it is either.
+fn alloc_site_offset(expr: Expr, fallback: Int) -> Int {
+  let candidate = match expr {
+    ECall(_, _, off) => off,
+    EIdent(_, off) => off,
+    ELet(_, _, _, off) => off,
+    ELetMut(_, _, _, off) => off,
+    _ => fallback
+  }
+  if candidate >= 0 {
+    candidate
+  } else {
+    fallback
+  }
+}
+
+fn alloc_walk_expr(out: Array[(String, String, Int)], fname: String, expr: Expr, fn_off: Int, ctors: Array[String]) -> Unit {
+  let kind = alloc_site_kind(expr, ctors)
+  if String::length(kind) > 0 {
+    Array::push(out, (fname, kind, alloc_site_offset(expr, fn_off)))
+  } else {
+    ()
+  }
+  // A captured `let mut` is lowered to a heap ref cell, so the BINDING is an
+  // allocation site even though nothing in the source looks like one. Asked
+  // through codegen's own predicate, the same one `vibe escapes` reports, so
+  // the two queries cannot disagree about which bindings those are.
+  //
+  // The scope handed to the predicate is the binding's OWN rest, not the
+  // enclosing function body: given a body that still contains `let mut c`
+  // itself, `is_mut_captured_in` reads `c` as locally bound and answers false.
+  // `vibe escapes` asks it the same way, which is what keeps the two queries
+  // from disagreeing about which bindings get boxed.
+  match expr {
+    ELetMut(n, _, rest, off) => if is_mut_captured_in(rest, n) {
+      Array::push(out, (fname, "mut-cell", off))
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  let here = alloc_site_offset(expr, fn_off)
+  let kids = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(kids) {
+    alloc_walk_expr(out, fname, Array::get(kids, i), here, ctors)
+    i = i + 1
+  }
+}
+
+/// `parse_program_spans` intentionally refuses source directives because its
+/// original module-source caller cannot re-emit them without changing
+/// semantics. This query only needs the declarations and must keep offsets in
+/// the ORIGINAL source, so blank recognized directive lines byte-for-byte.
+///
+/// For `#cfg`, counting both active and inactive guarded declarations is the
+/// conservative answer: this is a source inventory and its contract is never
+/// to under-report a possible allocation site.
+fn alloc_blank_directives(source: String) -> String {
+  let out = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let recognized = trimmed == "#deprecated" || String::starts_with(trimmed, "#deprecated(") || String::starts_with(trimmed, "#cfg(") || String::starts_with(trimmed, "#cfg_enable(")
+    if recognized {
+      let mut i = 0
+      while i < String::length(line) {
+        StringBuilder::push(out, " ")
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(out, line)
+    }
+    if nl < len {
+      StringBuilder::push(out, "\n")
+    } else {
+      ()
+    }
+    pos = nl + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Every heap-allocating site in `source`, as `(fn_name, kind, offset)`.
+///
+/// Propagates a lex/parse Error rather than swallowing it into an empty list:
+/// the caller routes it to the `.diag` sidecar, so "the query failed" stays
+/// distinguishable from "this file allocates nothing" (the `symbol_spans`
+/// convention, #946 — and here the two would otherwise be the same output for
+/// opposite facts).
+export fn alloc_spans(source: String) -> Array[(String, String, Int)] with Exception {
+  let parse_source = alloc_blank_directives(source)
+  let (tokens, starts, ends) = lex_with_offsets(parse_source)
+  let (stmts, span_start, _span_end) = parse_program_spans(tokens, starts, ends)
+  let out = alloc_empty_items()
+  let ctors = alloc_empty_strings()
+  let mut ci = 0
+  while ci < Array::length(stmts) {
+    match Array::get(stmts, ci) {
+      SEnum(_, _, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(ctors, vname)
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, _, variants) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(ctors, vname)
+          vi = vi + 1
+        }
+      },
+      SStruct(_, name, _, _, _, _) => Array::push(ctors, name),
+      _ => ()
+    }
+    ci = ci + 1
+  }
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => match value {
+        EFn(_, _, _, _, _, fbody) => {
+          let stmt_off = if i < Array::length(span_start) {
+            Array::get(span_start, i)
+          } else {
+            0
+          }
+          alloc_walk_expr(out, name, fbody, stmt_off, ctors)
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}

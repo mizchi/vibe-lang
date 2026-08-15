@@ -1,0 +1,49 @@
+// ADR-0090 #1262: a REFERENCE CYCLE built inside a region costs the main heap
+// nothing. This is the property the ADR calls "the complement to RC's
+// permanent limitation" -- reference counting can never reclaim a cycle, and
+// the arena reclaims it without knowing it is one, because the watermark
+// reset does not look at the graph at all.
+//
+// `MutList::push(l, l)` makes the list an element of itself. Nothing is
+// frozen, so nothing is copied out and the whole structure dies with the
+// region.
+//
+// Measured (VIBE_RC=0, the bump lane where the allocator never frees, so a
+// leak is permanent and visible):
+//
+//     200 regions ->  4,808 B
+//     800 regions -> 19,208 B
+//
+// The MARGINAL cost is (19,208 - 4,808) / 600 = 24 B per region, and that
+// residual is the region body's closure environment (see
+// region_arena_bounded.vibe), not the cyclic structure. Under RC the same
+// cycle leaks forever.
+//
+// Why the shape matters: the assertion below is on a SCALAR, so a region that
+// quietly stopped releasing still returns 1400 and the value alone proves
+// nothing. The gate reads `__heap_ptr` at two iteration counts and compares
+// the marginal cost -- a total is not enough either, because the fixed setup
+// cost is not zero.
+fn one() -> Int {
+  region r {
+    let l = MutList::empty(r)
+    MutList::push(l, l)
+    MutList::push(l, l)
+    MutList::push(l, l)
+    7
+  }
+}
+
+export let main = () -> Int {
+  let mut k = 0
+  let mut acc = 0
+  while k < 200 {
+    acc = acc + one()
+    k = k + 1
+  }
+  acc
+}
+
+test "cycles die with the region" {
+  inspect(main(), "1400")
+}

@@ -1,0 +1,172 @@
+// ADR-0091 (#1262): `vibe allocs` — the heap-allocating sites in each function.
+//
+// The tests are written around the two things that make this query worth
+// having. First, the DIRECTION: over-report rather than under-report, because
+// a missed site lets `@zero_alloc` certify something untrue. Second, the sites
+// the source does not say out loud — a closure's environment, and a `let mut`
+// that becomes a heap ref cell because something captured it.
+
+import ../runtime {
+  alloc_spans
+}
+
+//# Helpers
+
+fn kinds_of(source: String) -> Array[String] with Exception {
+  let spans = alloc_spans(source)
+  let out = [
+  ]
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (_fn, kind, _off) = Array::get(spans, i)
+    Array::push(out, kind)
+    i = i + 1
+  }
+  out
+}
+
+fn has_kind(source: String, want: String) -> Bool with Exception {
+  let ks = kinds_of(source)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ks) {
+    if Array::get(ks, i) == want {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn fn_names_of(source: String) -> Array[String] with Exception {
+  let spans = alloc_spans(source)
+  let out = [
+  ]
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (f, _kind, _off) = Array::get(spans, i)
+    Array::push(out, f)
+    i = i + 1
+  }
+  out
+}
+
+fn offsets_of(source: String) -> Array[Int] with Exception {
+  let spans = alloc_spans(source)
+  let out = [
+  ]
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (_f, _kind, off) = Array::get(spans, i)
+    Array::push(out, off)
+    i = i + 1
+  }
+  out
+}
+
+//# Tests
+
+test "a function that only reads reports nothing" {
+  // Empty output has to mean "allocates nothing", which is only useful if the
+  // free builtins really stay out.
+  let src = "fn total(a: Array[Int], n: Int) -> Int {\n  let mut i = 0\n  let mut acc = 0\n  while i < n {\n    acc = acc + Array::get(a, i)\n    i = i + 1\n  }\n  acc\n}\n"
+  assert_eq(Array::length(alloc_spans(src)), 0)
+}
+
+test "an allocating builtin call is reported, named" {
+  let src = "fn j(a: String, b: String) -> String {\n  String::concat(a, b)\n}\n"
+  assert(has_kind(src, "builtin:String::concat"))
+}
+
+test "push is reported at every call -- it may regrow" {
+  // A query that only counted constructors would call this loop zero-alloc.
+  let src = "fn build(n: Int) -> Array[Int] {\n  let b = ArrayBuilder::new()\n  let mut i = 0\n  while i < n {\n    ArrayBuilder::push(b, i)\n    i = i + 1\n  }\n  ArrayBuilder::freeze(b)\n}\n"
+  assert(has_kind(src, "builtin:ArrayBuilder::push"))
+  assert(has_kind(src, "builtin:ArrayBuilder::new"))
+}
+
+test "a closure literal allocates its environment" {
+  // Nothing in the source spells this out; it is one of the implicit
+  // allocations ADR-0091 exists to surface.
+  let src = "fn mk(n: Int) -> () -> Int {\n  () -> Int {\n    n\n  }\n}\n"
+  assert(has_kind(src, "closure"))
+}
+
+test "a captured let mut is a heap ref cell, so the BINDING is a site" {
+  let src = "fn counter() -> () -> Int {\n  let mut c = 0\n  () -> Int {\n    c = c + 1\n    c\n  }\n}\n"
+  assert(has_kind(src, "mut-cell"))
+}
+
+test "an uncaptured let mut is a wasm local, so it is NOT a site" {
+  // The pairing with the test above is the point: this is the same predicate
+  // `vibe escapes` reports, so the two queries cannot disagree about which
+  // bindings get boxed.
+  let src = "fn add(n: Int) -> Int {\n  let mut acc = 0\n  acc = acc + n\n  acc\n}\n"
+  assert(!has_kind(src, "mut-cell"))
+}
+
+test "literals that build a value are sites" {
+  let src = "fn pair(a: Int, b: Int) -> (Int, Int) {\n  (a, b)\n}\n"
+  assert(has_kind(src, "tuple"))
+  let src2 = "fn three() -> Array[Int] {\n  [\n    1,\n    2,\n    3\n  ]\n}\n"
+  assert(has_kind(src2, "array"))
+}
+
+test "a float literal is a heap-box allocation site" {
+  let src = "fn pi() -> Double {\n  3.14\n}\n"
+  assert(has_kind(src, "float"))
+}
+
+test "map literals and handlers are allocation sites" {
+  let map_src = "fn one() -> Map[String, Int] {\n  Map::from_pairs([(\"one\", 1)])\n}\n"
+  assert(has_kind(map_src, "map"))
+  let handle_src = "effect Ask { Ask() -> Int }\nfn answer() -> Int {\n  handle { perform Ask::Ask() } with Ask {\n    Ask() => resume(42)\n  }\n}\n"
+  assert(has_kind(handle_src, "handler"))
+}
+
+test "a bare enum constructor is conservatively an allocation site" {
+  let src = "enum Maybe { None; Some(Int) }\nfn empty() -> Maybe {\n  None\n}\n"
+  assert(has_kind(src, "constructor:None"))
+}
+
+test "valid cfg and deprecated directives do not make the query fail" {
+  // Directive text must be blanked, not deleted, so source offsets remain
+  // coordinates in the original file. Counting inactive cfg sites is the
+  // deliberate over-reporting side of this static query.
+  let src = "#deprecated(\"use exact_pi\")\n#cfg(experimental)\nfn pi() -> Double {\n  3.14\n}\n"
+  assert(has_kind(src, "float"))
+}
+
+test "spanless literal sites inherit their statement offset, not byte zero" {
+  let src = "fn pure() -> Int { 1 }\n\nfn later() -> Array[Int] {\n  [1, 2]\n}\n"
+  let offsets = offsets_of(src)
+  assert_eq(Array::length(offsets), 1)
+  assert_eq(Array::get(offsets, 0), String::index_of(src, "fn later"))
+}
+
+test "synthetic nodes never replace a real source fallback with offset minus one" {
+  let src = "fn wrap[T](x: T) -> (T) {\n  (x)\n}\n"
+  let offsets = offsets_of(src)
+  let mut i = 0
+  while i < Array::length(offsets) {
+    assert(Array::get(offsets, i) >= 0)
+    i = i + 1
+  }
+}
+
+test "sites are attributed to the enclosing top-level function" {
+  let src = "fn a(s: String) -> String {\n  String::concat(s, s)\n}\n\nfn b(s: String) -> String {\n  String::concat(s, s)\n}\n"
+  let names = fn_names_of(src)
+  assert_eq(Array::length(names), 2)
+  assert_eq(Array::get(names, 0), "a")
+  assert_eq(Array::get(names, 1), "b")
+}
+
+test "an unclassified callee is reported, not skipped" {
+  // Same polarity as builtin_allocates: a name nobody classified counts as
+  // allocating. Under-reporting here would be the silent-wrong direction.
+  let src = "fn f(x: Int) -> Int {\n  Totally::MadeUp(x)\n}\n"
+  assert(has_kind(src, "builtin:Totally::MadeUp"))
+}

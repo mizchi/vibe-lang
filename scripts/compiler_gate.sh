@@ -8714,6 +8714,40 @@ if [ "$r90_heap_delta" -gt 100000 ]; then
   echo "[compiler-gate] FAIL: 200 regions grew the main bump heap by $r90_heap_delta B (want < 100000; ~6408 with the arena, 1644008 without) -- the arena stopped releasing" >&2
   exit 1
 fi
+
+# ADR-0090 #1262: a REFERENCE CYCLE inside a region also costs the main heap
+# nothing -- the property the ADR calls the complement to RC's permanent
+# limitation. The watermark reset reclaims it without inspecting the graph.
+#
+# Asserted on the MARGINAL cost, not the total: the fixed setup is not zero,
+# so a total bound would either be loose enough to miss a leak or tight enough
+# to break on unrelated changes. Two iteration counts, and the per-region cost
+# has to stay small.
+for r90_cyc_n in 200 800; do
+  sed -e "s/while k < 200 {/while k < $r90_cyc_n {/" \
+      -e "s/inspect(main(), \"1400\")/inspect(main(), \"$((r90_cyc_n * 7))\")/" \
+      fixtures/region_arena_cycles.vibe > "$r90dir/cycles_$r90_cyc_n.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_RC=0 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$r90dir/cycles_$r90_cyc_n.vibe" "$r90dir/cycles_$r90_cyc_n.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$r90dir/cycles_$r90_cyc_n.wasm" ]; then
+    echo "[compiler-gate] FAIL: region_arena_cycles.vibe ($r90_cyc_n) did not compile" >&2
+    cat "$r90dir/cycles_$r90_cyc_n.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/cycles_$r90_cyc_n.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: region_arena_cycles.vibe ($r90_cyc_n) got the wrong value" >&2
+    exit 1
+  fi
+done
+r90_cyc_lo="$(node scripts/region_arena_heap_delta.mjs "$r90dir/cycles_200.wasm")" || exit 1
+r90_cyc_hi="$(node scripts/region_arena_heap_delta.mjs "$r90dir/cycles_800.wasm")" || exit 1
+r90_cyc_per=$(( (r90_cyc_hi - r90_cyc_lo) / 600 ))
+if [ "$r90_cyc_per" -gt 64 ]; then
+  echo "[compiler-gate] FAIL: a reference cycle inside a region costs $r90_cyc_per B/region on the main heap (want <= 64; ~24 with the arena) -- the cycle is no longer reclaimed by the watermark reset" >&2
+  exit 1
+fi
+echo "[compiler-gate] region arena reclaims reference cycles ok ($r90_cyc_per B/region)"
 echo "[compiler-gate] region arena bulk release ok (200 regions, main heap +${r90_heap_delta} B)"
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
@@ -8778,6 +8812,44 @@ if ! grep -qF 'zero_alloc' "$za91dir/shadowed.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 rm -rf "$za91dir"
+# ADR-0091 #1262: the check and the MEASUREMENT pin each other. The two
+# fixtures above prove a clean fn compiles and a violating one is rejected;
+# neither proves the annotation is TRUE at run time -- a checker that quietly
+# stopped looking keeps both green. So state it twice, independently: the
+# check says the marked fns allocate nothing, and `__heap_ptr` says the loop
+# does not move it.
+#
+# Asserted on INVARIANCE, not on a total. The setup (`FixedArray::make`) is
+# not free, so "total == 0" is unachievable and any fixed bound is arbitrary.
+# Two iteration counts with the SAME delta means the per-iteration cost is
+# exactly zero.
+za91mdir="_build/_gate_zero_alloc91_measured"
+rm -rf "$za91mdir"; mkdir -p "$za91mdir"
+for za_n in 200 800; do
+  sed -e "s/while k < 200 {/while k < $za_n {/" \
+      -e "s/inspect(main(), \"22400\")/inspect(main(), \"$((za_n * 112))\")/" \
+      fixtures/zero_alloc_measured.vibe > "$za91mdir/measured_$za_n.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_RC=0 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$za91mdir/measured_$za_n.vibe" "$za91mdir/measured_$za_n.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$za91mdir/measured_$za_n.wasm" ]; then
+    echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) did not compile -- the @zero_alloc check rejected a fn the measurement says is clean" >&2
+    cat "$za91mdir/measured_$za_n.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$za91mdir/measured_$za_n.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) got the wrong value" >&2
+    exit 1
+  fi
+done
+za_lo="$(node scripts/region_arena_heap_delta.mjs "$za91mdir/measured_200.wasm")" || exit 1
+za_hi="$(node scripts/region_arena_heap_delta.mjs "$za91mdir/measured_800.wasm")" || exit 1
+if [ "$za_lo" -ne "$za_hi" ]; then
+  echo "[compiler-gate] FAIL: @zero_alloc fns allocated $(( (za_hi - za_lo) / 600 )) B per iteration (200 trips: $za_lo B, 800 trips: $za_hi B) -- the check says clean but the heap moved" >&2
+  exit 1
+fi
+rm -rf "$za91mdir"
+echo "[compiler-gate] @zero_alloc check and measurement agree ok (0 B/op, $za_lo B fixed setup)"
 echo "[compiler-gate] ADR-0091 @zero_alloc allocation check ok"
 
 # 77/77. ADR-0089 Decision 1, increment 1 (#1218): entry-row-Async sleep
@@ -10677,7 +10749,7 @@ done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
-echo "[compiler-gate] 98/103 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
+echo "[compiler-gate] 98/104 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through
@@ -10766,7 +10838,7 @@ echo "[compiler-gate] vibe grep typed filters ok"
 #     found by review rather than by a gate (the second twice: expression
 #     binders in #1622, PATTERN binders after that), which is what this step is
 #     for. Each case below fails DIFFERENTLY if the guard regresses.
-echo "[compiler-gate] 99/103 the inspect rewrite neither captures nor hijacks (#1571)"
+echo "[compiler-gate] 99/104 the inspect rewrite neither captures nor hijacks (#1571)"
 inspdir="_build/_gate_inspect_guard"
 rm -rf "$inspdir"; mkdir -p "$inspdir"
 
@@ -10884,7 +10956,7 @@ echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
 #      rest made `check` a strictly worse answer to the same question -- three
 #      broken statements cost three edit-and-rerun cycles. This pins the two
 #      surfaces together so they cannot drift apart again.
-echo "[compiler-gate] 100/103 check and diagnostics report the SAME parse errors (#1567)"
+echo "[compiler-gate] 100/104 check and diagnostics report the SAME parse errors (#1567)"
 chkdir="_build/_gate_check_diag_parity"
 rm -rf "$chkdir"; mkdir -p "$chkdir"
 # Three top-level statements, two independently broken, one good between them.
@@ -11015,7 +11087,87 @@ echo "[compiler-gate] vibe deps import-closure ok (#988)"
 #      predicates that disagree by accident, so this pins WHERE they differ:
 #      only on binder shadowing, and only in the one direction (strict's
 #      output is a subset of the default's).
-echo "[compiler-gate] 101/103 the two escape predicates differ only on shadowing (#1262)"
+# 104/104. ADR-0091 (#1262): `vibe allocs` -- every heap-allocating site, as
+#      `FN KIND OFFSET`. The direction is what matters and what this pins:
+#      over-report, never under-report. A site this query misses lets
+#      `@zero_alloc` certify something untrue, silently; a site it reports in
+#      error costs the reader one line and argues back through a diagnostic.
+#      So both halves are checked -- a function that allocates nothing really
+#      produces EMPTY output (otherwise "clean" is worthless), and the sites
+#      the source does not spell out (a closure's environment, a captured
+#      `let mut` becoming a heap ref cell) really appear.
+echo "[compiler-gate] 104/104 vibe allocs reports heap sites, and nothing else (ADR-0091 / #1262)"
+alcdir="_build/_gate_allocs"
+rm -rf "$alcdir"; mkdir -p "$alcdir"
+cat > "$alcdir/in.vibe" <<'ALCA'
+fn pure_sum(a: Array[Int], n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < n {
+    acc = acc + Array::get(a, i)
+    i = i + 1
+  }
+  acc
+}
+
+fn counter() -> () -> Int {
+  let mut c = 0
+  () -> Int {
+    c = c + 1
+    c
+  }
+}
+ALCA
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ALLOCS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$alcdir/in.vibe" "$alcdir/out.txt" >/dev/null 2>&1 || true
+if [ -s "$alcdir/out.txt.diag" ]; then
+  echo "[compiler-gate] FAIL: vibe allocs failed on a valid file (ADR-0091 / #1262)" >&2
+  cat "$alcdir/out.txt.diag" >&2 || true
+  exit 1
+fi
+# The reads-only function must contribute NOTHING: "empty means zero-alloc" is
+# the whole contract.
+if grep -q '^pure_sum ' "$alcdir/out.txt" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe allocs reported a site in an allocation-free function (ADR-0091 / #1262)" >&2
+  cat "$alcdir/out.txt" >&2 || true
+  exit 1
+fi
+# The two implicit sites -- neither is visible in the source text.
+for want in "counter mut-cell" "counter closure"; do
+  if ! grep -q "^$want " "$alcdir/out.txt" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe allocs missed '$want' -- an implicit allocation ADR-0091 exists to surface (#1262)" >&2
+    cat "$alcdir/out.txt" >&2 || true
+    exit 1
+  fi
+done
+# Exercise the advertised PUBLIC verb too. The adapter-only environment lane
+# above cannot catch a missing `runtime/vibe` case (the original #1792 review
+# regression): that would leave `vibe allocs` documented but unusable.
+VIBE_RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
+  VIBE_CLI_WASM="$stage2_wasm" \
+  bash "$ROOT_DIR/runtime/vibe" allocs "$alcdir/in.vibe" > "$alcdir/public.txt"
+for want in "counter mut-cell" "counter closure"; do
+  if ! grep -q "^$want " "$alcdir/public.txt" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: public 'vibe allocs' missed '$want' (#1262)" >&2
+    cat "$alcdir/public.txt" >&2 || true
+    exit 1
+  fi
+done
+# A file with no functions at all is empty output, not an error.
+printf 'enum Empty {\n  E0\n}\n' > "$alcdir/none.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ALLOCS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$alcdir/none.vibe" "$alcdir/none.txt" >/dev/null 2>&1 || true
+if [ -s "$alcdir/none.txt" ] || [ -s "$alcdir/none.txt.diag" ]; then
+  echo "[compiler-gate] FAIL: vibe allocs on a function-free file should be empty and clean (#1262)" >&2
+  cat "$alcdir/none.txt" "$alcdir/none.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$alcdir"
+echo "[compiler-gate] vibe allocs ok (ADR-0091 / #1262)"
+
+echo "[compiler-gate] 101/104 the two escape predicates differ only on shadowing (#1262)"
 escdir="_build/_gate_escapes"
 rm -rf "$escdir"; mkdir -p "$escdir"
 
