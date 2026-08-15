@@ -175,6 +175,23 @@ if [ "$walk_stopped" -ne 0 ]; then
   exit 1
 fi
 
+# 5. #1133 proper: does used_by_codegen() still describe these binaries? Same
+#    corpus, different question -- the oracle above is wasm-tools, the oracle
+#    here is the declaration in docs. Sharing the corpus is deliberate: the
+#    expensive part is compiling the fixtures, and a separate script would grow
+#    its own list that could drift from this one.
+scan="$WORK/scan.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  scripts/wasm_feature_levels.vibex "_build/validate_parity/scan.wasm" main >/dev/null 2>&1
+[ -s "$scan" ] || { echo "[validate-parity] FAIL: feature-levels scanner did not compile" >&2; exit 1; }
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+     --invoke main "_build/validate_parity/scan.wasm" --scan "$WORK"/pos/*.wasm; then
+  echo "[validate-parity] FAIL: see above -- generated wasm requires a proposal that" >&2
+  echo "[validate-parity]       scripts/wasm_feature_levels.vibex does not declare" >&2
+  exit 1
+fi
+
 if [ "$pos_total" -eq 0 ] || [ "$neg_total" -eq 0 ]; then
   echo "[validate-parity] FAIL: empty corpus (pos=$pos_total neg=$neg_total)" >&2
   exit 1

@@ -856,6 +856,20 @@ local testGcHeapAccounting = new Task {
   deps { selfhostGeneration }
 }
 
+// Two questions about this compiler's own wasm output, sharing one corpus
+// because compiling the fixtures is the expensive part:
+//   - does @vibex/wasm_parser's validator agree with `wasm-tools validate`
+//     (never rejecting what it accepts), and does it read every instruction?
+//   - does used_by_codegen() still name every proposal the output requires?
+// Skips itself when wasm-tools is absent, since it is the oracle.
+local testWasmValidateParity = new Task {
+  name = "test-wasm-validate-parity"
+  cmd = "bash scripts/test_wasm_validate_parity.sh \"$@\""
+  acceptsArgs = true
+  cache = false
+  deps { selfhostGeneration }
+}
+
 local testSelfhostCliCore = scriptTask("test-cli-core", "scripts/test_cli_core.sh")
 // `test-wasm-vibe-host-runner` retired with the MoonBit host: the test
 // compiled its fixtures with `_build/native/**/vibe.exe` before driving
@@ -1175,6 +1189,12 @@ local releaseCheck = new Task {
     vibeMdTutorialGated
     checkExamplesTypecheck
     checkPlaygroundPresets
+    // Skips itself when wasm-tools is absent (it is the oracle), so this
+    // cannot break a machine that lacks it -- but on one that has it, local
+    // sign-off catches an undeclared proposal before CI does. The enforcing
+    // copy is the gc-gate job in .github/workflows/ci.yml, which installs
+    // wasm-tools; a task that is only registered runs nowhere.
+    testWasmValidateParity
   }
 }
 
@@ -1295,6 +1315,7 @@ tasks {
   testGcSelfbuild
   testGcNativeAllocProbe
   testGcHeapAccounting
+  testWasmValidateParity
   testRcEntryResultParity
   testSelfhostCliCore
   testVibeRunSingleInvoke

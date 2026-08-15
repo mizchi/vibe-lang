@@ -80,6 +80,7 @@
 
 import @vibe/prelude { stdout_write }
 import @vibe/json { Json }
+import @vibex/wasm_parser { scan_features_checked }
 
 // ---------- small string/number utilities (workarounds for #1184/#1185 / missing Array::sort) ----------
 
@@ -253,6 +254,7 @@ let host_engine = "Wasmtime"
 // so it is unaffected by this ordering choice.
 fn used_by_codegen() -> Array[(String, String)] {
   [
+    ("bulkMemory", "linear + gc backends: memory.copy (0xFC 10) and memory.fill (0xFC 11) from emit_memory_copy/emit_memory_fill (codegen/common_extractors/common_extractors.vibe), reached from ~18 builtin bodies -- string/array copies and zero-initializing a fresh hash-index table in one instruction instead of a store loop. FOUND BY --scan, not by hand: it was emitted and undeclared"),
     ("exceptionsFinal", "linear + gc backends: try_table/tag section, emitted only when a module uses effects/throw (codegen/wasi/linked_compile.vibe, codegen/gc/backend_expr.vibe)"),
     ("gc", "gc backend: struct.new/get/set for the RC cell and non-escaping local records (#1702), array.new_default/get/set/len for the reference lane (#1329/#1541), and the struct/array type definitions they need (codegen/gc/backend_body.vibe, backend_expr.vibe)"),
     ("simd", "linear + gc backends: v128 opcodes behind specific builtins e.g. simd_skip_ws (codegen/wasm_emit/simd.vibe, codegen/expr/compile_call.vibe)"),
@@ -560,12 +562,173 @@ fn has_flag(argc: Int, name: String) -> Bool with Env {
   found
 }
 
+
+// ---------- --scan: check the DECLARATION against actual binaries ----------
+
+// #1133's actual subject. used_by_codegen() above is curated by hand, and it
+// has drifted at least once already: the gc reference lane started emitting
+// typed function signatures and nothing noticed until a binary was read by
+// hand. This reads the binaries instead.
+//
+// The comparison is deliberately asymmetric, and the asymmetry is the point:
+//
+//   emitted but NOT declared   FAILS. This is drift in the direction that
+//                              matters -- generated wasm requires a proposal
+//                              the docs do not mention, so a target chosen
+//                              from the docs can reject it.
+//   declared but NOT emitted   reported, does not fail. Some features are
+//                              emitted only by inputs the given corpus does
+//                              not contain, so absence here is not evidence
+//                              the declaration is wrong.
+//
+// A module whose walk did not finish is NOT compared at all. Its feature list
+// is a subset of the truth, and a subset compared against a declaration reads
+// as "the declaration claims too much" -- exactly backwards. Reporting nothing
+// is honest; reporting a reversed conclusion is not.
+fn scan_against_declaration(argc: Int) -> Int with Fs + Env + Stdout + Stderr {
+  let paths = scan_targets(argc)
+  if Array::length(paths) == 0 {
+    Stderr::write_stream("[wasm-feature-levels] --scan needs at least one .wasm path\n")
+    1
+  } else {
+    let declared = used_by_codegen()
+    let seen = Array::slice([""], 0, 0)
+    let mut skipped = 0
+    let mut i = 0
+    while i < Array::length(paths) {
+      let path = Array::get(paths, i)
+      let (found, complete) = scan_features_checked(Fs::read_bytes(path))
+      if !complete {
+        skipped = skipped + 1
+        stdout_write("[wasm-feature-levels] skip (incomplete walk): " + path + "\n")
+      } else {
+        let mut f = 0
+        while f < Array::length(found) {
+          let key = Array::get(found, f)
+          if !string_array_contains(seen, key) {
+            Array::push(seen, key)
+          } else {
+            ()
+          }
+          f = f + 1
+        }
+      }
+      i = i + 1
+    }
+    let undeclared = Array::slice([""], 0, 0)
+    let mut k = 0
+    while k < Array::length(seen) {
+      let key = Array::get(seen, k)
+      if !declared_contains(declared, key) {
+        Array::push(undeclared, key)
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    let mut d = 0
+    while d < Array::length(declared) {
+      let (key, _) = Array::get(declared, d)
+      if !string_array_contains(seen, key) {
+        stdout_write(
+          "[wasm-feature-levels] declared but not seen in this corpus: " + key + "\n"
+        )
+      } else {
+        ()
+      }
+      d = d + 1
+    }
+    if Array::length(undeclared) > 0 {
+      let mut u = 0
+      while u < Array::length(undeclared) {
+        Stderr::write_stream(
+          "[wasm-feature-levels] FAIL: emitted but not in used_by_codegen(): " +
+          Array::get(undeclared, u) + "\n"
+        )
+        u = u + 1
+      }
+      Stderr::write_stream(
+        "Generated wasm requires a proposal docs/wasm/feature-levels.md does not\n" +
+        "declare. Add it to used_by_codegen() with the codegen site that emits it,\n" +
+        "then re-run --update-expected.\n"
+      )
+      1
+    } else {
+      stdout_write(
+        "[wasm-feature-levels] ok: every proposal found in " +
+        Int::to_string(Array::length(paths) - skipped) + " module(s) is declared\n"
+      )
+      0
+    }
+  }
+}
+
+// Every argument after --scan that looks like a path, so the caller can pass a
+// shell glob and let the shell do the expanding.
+fn scan_targets(argc: Int) -> Array[String] with Env {
+  let paths = Array::slice([""], 0, 0)
+  let mut i = 0
+  let mut after = false
+  while i < argc {
+    let a = Env::args_get(i)
+    if a == "--scan" {
+      after = true
+    }
+    else if after && !string_starts_with(a, "--") {
+      Array::push(paths, a)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  paths
+}
+
+fn string_starts_with(s: String, prefix: String) -> Bool {
+  if String::length(s) < String::length(prefix) {
+    false
+  } else {
+    String::substring(s, 0, String::length(prefix)) == prefix
+  }
+}
+
+fn string_array_contains(xs: Array[String], want: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == want {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn declared_contains(declared: Array[(String, String)], want: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(declared) {
+    let (key, _) = Array::get(declared, i)
+    if key == want {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
 fn main with Fs + Env + Stdout + Stderr + Process {
   let matrix = load_matrix()
   let report = classify(matrix)
   let argc = Env::args_len()
 
-  let code = if has_flag(argc, "--update-expected") {
+  let code = if has_flag(argc, "--scan") {
+    scan_against_declaration(argc)
+  } else if has_flag(argc, "--update-expected") {
     Fs::write_file(expected_path(), json_pretty(report, 0) + "\n")
     stdout_write("[wasm-feature-levels] wrote " + expected_path() + "\n")
     0

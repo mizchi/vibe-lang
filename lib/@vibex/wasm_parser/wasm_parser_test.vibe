@@ -38,6 +38,7 @@ import ./wasm_parser.vibe {
   read_init_expr,
   read_version,
   scan_features,
+  scan_features_checked,
   section_name,
   validate_code_body,
   validate_magic,
@@ -4384,4 +4385,72 @@ test "parse_type_forms counts every type inside a recursive group" {
   assert(Array::length(forms) == 2)
   assert(Array::get(forms, 0) == 0x60)
   assert(Array::get(forms, 1) == 0x60)
+}
+
+test "scan_features finds tailCall from return_call_ref, not just return_call" {
+  // `return_call_ref` (0x15) is specified by function-references, but it IS a
+  // tail call and engines gate it on tail-call support. Reporting only one of
+  // the two requirements lets a module through with an undeclared proposal --
+  // which is the exact failure --scan exists to prevent.
+  //
+  // header | function(3) size=2 [1, 0] | code(10) size=6
+  //          [1, body size=4: locals=0, return_call_ref 0, end]
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    3,
+    2,
+    1,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    0x15,
+    0,
+    0x0B
+  ])
+  let fs = scan_features(m)
+  assert(features_contain(fs, "tailCall"))
+  assert(features_contain(fs, "typedFunctionReferences"))
+}
+
+test "scan_features_checked reports an incomplete walk rather than a short list" {
+  // 0xFE (atomics) is not decoded by next_instruction. The feature list from
+  // such a module is a SUBSET of the truth, and a subset compared against a
+  // declaration reads as "the declaration claims too much" -- backwards. The
+  // flag is what lets --scan decline to compare instead.
+  //
+  // header | function(3) size=2 | code(10) size=6 [1, size=4: locals=0, 0xFE .., end]
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    3,
+    2,
+    1,
+    0,
+    10,
+    6,
+    1,
+    4,
+    0,
+    0xFE,
+    0,
+    0x0B
+  ])
+  let (_, complete) = scan_features_checked(m)
+  assert(!complete)
 }

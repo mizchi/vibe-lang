@@ -53,18 +53,19 @@ compiler-host 水準は engine set を使わず、`Wasmtime` 単独行を単に�
 
 ## 現状: vibe codegen が実際に使っている proposal
 
-`scripts/wasm_feature_levels.vibex` の `used_by_codegen()` に手動でキュレーション
-（コード grep による証拠ベース、**wasm バイナリの opcode 走査による検証では
-ない** — 下記「未実装のスコープ」参照）:
+`scripts/wasm_feature_levels.vibex` の `used_by_codegen()` に宣言する
+（証拠はコード grep、**照合は生成された wasm バイナリに対して行う** —
+下記「`--scan`」参照）:
 
 | proposal | 使用箇所 | 条件 |
 |---|---|---|
+| `bulkMemory` | linear + gc backend: `memory.copy` / `memory.fill` (`codegen/common_extractors/common_extractors.vibe` の `emit_memory_copy` / `emit_memory_fill`) | builtin body 約 18 箇所 — 文字列/配列コピー、hash index table の一括ゼロ初期化 |
 | `gc` | gc backend: RC cell / non-escaping local record の `struct.new/get/set`、reference lane の `array.new_default/get/set/len`、およびそれらの struct/array 型定義 (`codegen/gc/backend_body.vibe`, `codegen/gc/backend_expr.vibe`) | wasm-gc backend 選択時のみ (release 既定は linear) |
 | `exceptionsFinal` | linear + gc backend: `try_table` + tag section (`codegen/wasi/linked_compile.vibe`, `codegen/gc/backend_expr.vibe`, #538/#721) | module が effect/throw を使うときだけ emit（純計算 module はゼロ） |
 | `simd` | linear + gc backend: v128 opcode (`codegen/wasm_emit/simd.vibe`) | `simd_skip_ws` 等、特定 builtin 経由でのみ |
 | `typedFunctionReferences` | gc backend: private callee の typed parameter/result、typed local、および reference lane join の type-index blocktype (`codegen/gc/backend_body.vibe`, `codegen/gc/backend_expr.vibe`) | wasm-gc backend で reference lane が成立するときのみ |
 
-2026-08-15 時点のスナップショットでは、この4つはいずれも `v8` /
+2026-08-15 時点のスナップショットでは、この5つはいずれも `v8` /
 `web-baseline` 両水準で **safe**（`bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex`
 の出力参照）。tail-call proposal (`return_call`) は compiler-host 側
 (viberun) のみが有効化しており、**codegen は self-tail-call を wasm
@@ -96,10 +97,45 @@ bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --update-expected
 で運用し、`USED_BY_CODEGEN` の proposal が実際に non-safe に転落した場合の
 対応フローができてから gate 化を検討する。
 
-## 未実装のスコープ (フォローアップ)
+## `--scan`: 宣言をバイナリと突き合わせる (#1133)
 
-`USED_BY_CODEGEN` は **ソースコードの grep による手動キュレーション**であり、
-実際に出力された `.wasm` バイナリの opcode を静的に走査して自動検出した
-ものではない。真の enforcement (「宣言した level を超える proposal を
-codegen が使ったら fail する」) には wasm バイナリのセクション/opcode
-パーサが要る。スコープが大きいため本パスでは見送り、追跡 issue を切った: #1133。
+`used_by_codegen()` は手で書く。手で書いたものは**ずれる** — gc の参照レーンが
+typed function signature を出し始めたとき、気づいたのはバイナリを手で読んだ
+ときでした。`--scan` はこれをバイナリ側から検査します。
+
+```bash
+vibe run scripts/wasm_feature_levels.vibex -- --scan path/to/*.wasm
+```
+
+`@vibex/wasm_parser` の `scan_features_checked` が、型セクション・セクションの
+有無・**命令列の走査**から proposal を導き、`used_by_codegen()` と照合します。
+命令は「バイト列を prefix で grep する」のではなく `next_instruction` で
+**1 命令ずつ歩いて**判定します — 素朴な走査は opcode と、たまたま同じ値を持つ
+即値を区別できないので、使っていない proposal を報告してしまう。宣言と
+突き合わせる道具としては、それは不完全であるより悪い。
+
+判定は**非対称**で、そこが要点です:
+
+| | 扱い |
+|---|---|
+| 出しているのに宣言に無い | **fail**。docs から選んだターゲットが生成 wasm を拒否しうる |
+| 宣言にあるのに出ていない | 報告のみ。その corpus に該当する入力が無いだけかもしれない |
+
+**走査が最後まで届かなかったモジュールは比較しません。** 得られた feature は
+真の部分集合なので、宣言と比べると「宣言が多すぎる」と読めてしまう —
+結論が逆になります。何も言わない方が正直です。
+
+`pkf run test-wasm-validate-parity` から
+`scripts/test_wasm_validate_parity.sh` 経由で走ります（fixture のコンパイルが
+高コストなので、validator の parity 測定と corpus を共有しています）。
+
+初回実行で **`bulkMemory` が出ているのに宣言に無い**ことを検出しました
+(`memory.copy` / `memory.fill`、builtin body 約 18 箇所)。両 engine set で
+supported なので移植性の実害はありませんでしたが、宣言がバイナリを説明して
+いなかったのは事実です。
+
+### 残っているもの
+
+- `memory64` の i64 addressing は未判定 (このコンパイラは出していない)
+- `0xFE` (atomics) は `next_instruction` が未対応なので、使い始めたら
+  「走査が届かない」側に落ちる — 黙って見落とすのではなく skip として出る
