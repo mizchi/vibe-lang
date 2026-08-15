@@ -4404,50 +4404,61 @@ echo "[compiler-gate] wasm-gc backend smoke ok (101557)"
 echo "[compiler-gate] 40h-2/40 wasm-gc closure builtin capture"
 gccapdir="_build/_gate_gc_closure_capture"
 rm -rf "$gccapdir"; mkdir -p "$gccapdir"
-for gccap_be in linear gc; do
-  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gccap_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+for gccap_lane in linear-rc0 linear-rc1 gc; do
+  case "$gccap_lane" in
+    linear-rc0) gccap_be=linear; gccap_rc=0 ;;
+    linear-rc1) gccap_be=linear; gccap_rc=1 ;;
+    gc) gccap_be=gc; gccap_rc=0 ;;
+  esac
+  env -u VIBE_FS_COMPILE VIBE_RC="$gccap_rc" VIBE_BACKEND="$gccap_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "fixtures/gc_closure_builtin_capture_test.vibe" "$gccapdir/$gccap_be.wasm" __no_entry__ >/dev/null 2>&1
-  if [ ! -s "$gccapdir/$gccap_be.wasm" ]; then
-    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe did not compile on the $gccap_be backend" >&2
-    cat "$gccapdir/$gccap_be.wasm.diag" 2>/dev/null >&2 || true
+    "fixtures/gc_closure_builtin_capture_test.vibe" "$gccapdir/$gccap_lane.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gccapdir/$gccap_lane.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe did not compile on $gccap_lane" >&2
+    cat "$gccapdir/$gccap_lane.wasm.diag" 2>/dev/null >&2 || true
     exit 1
   fi
-  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gccapdir/$gccap_be.wasm" >"$gccapdir/$gccap_be.out" 2>&1; then
-    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe failed at run time on the $gccap_be backend" >&2
-    cat "$gccapdir/$gccap_be.out" >&2
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gccapdir/$gccap_lane.wasm" >"$gccapdir/$gccap_lane.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe failed at run time on $gccap_lane" >&2
+    cat "$gccapdir/$gccap_lane.out" >&2
     exit 1
   fi
 done
 rm -rf "$gccapdir"
-echo "[compiler-gate] wasm-gc closure builtin capture ok (linear + gc)"
+echo "[compiler-gate] closure builtin capture ok (linear rc0/rc1 + gc)"
 
 # 40h-3. Same rule reached through a SOURCE ALIAS. `compile_call_gc`
 #        canonicalizes the callee before dispatching while the capture scan
 #        sees the source spelling, so sharing the direct-ABI list was not
 #        enough: `StringBuilder::build` (alias of `StringBuilder::freeze`)
 #        matched neither the func table nor the list and was still captured.
-#        GC LANE ONLY -- the linear backend emits an INVALID module for these
-#        while reporting a successful compile (#1811), so linear coverage would
-#        pin a known-broken artifact rather than prove anything.
+#        Runs on BOTH lanes. Linear used to emit an invalid module while
+#        reporting a successful compile (#1811).
 echo "[compiler-gate] 40h-3/40 wasm-gc closure builtin alias capture"
 gcaliasdir="_build/_gate_gc_closure_alias"
 rm -rf "$gcaliasdir"; mkdir -p "$gcaliasdir"
-env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "fixtures/gc_closure_builtin_alias_test.vibe" "$gcaliasdir/alias.wasm" __no_entry__ >/dev/null 2>&1
-if [ ! -s "$gcaliasdir/alias.wasm" ]; then
-  echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe did not compile on the gc backend" >&2
-  cat "$gcaliasdir/alias.wasm.diag" 2>/dev/null >&2 || true
-  exit 1
-fi
-if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcaliasdir/alias.wasm" >"$gcaliasdir/alias.out" 2>&1; then
-  echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe failed at run time on the gc backend" >&2
-  cat "$gcaliasdir/alias.out" >&2
-  exit 1
-fi
+for gcalias_lane in linear-rc0 linear-rc1 gc; do
+  case "$gcalias_lane" in
+    linear-rc0) gcalias_be=linear; gcalias_rc=0 ;;
+    linear-rc1) gcalias_be=linear; gcalias_rc=1 ;;
+    gc) gcalias_be=gc; gcalias_rc=0 ;;
+  esac
+  env -u VIBE_FS_COMPILE VIBE_RC="$gcalias_rc" VIBE_BACKEND="$gcalias_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_closure_builtin_alias_test.vibe" "$gcaliasdir/$gcalias_lane.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gcaliasdir/$gcalias_lane.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe did not compile on $gcalias_lane" >&2
+    cat "$gcaliasdir/$gcalias_lane.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcaliasdir/$gcalias_lane.wasm" >"$gcaliasdir/$gcalias_lane.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe failed at run time on $gcalias_lane" >&2
+    cat "$gcaliasdir/$gcalias_lane.out" >&2
+    exit 1
+  fi
+done
 rm -rf "$gcaliasdir"
-echo "[compiler-gate] wasm-gc closure builtin alias capture ok (gc)"
+echo "[compiler-gate] closure builtin alias capture ok (linear rc0/rc1 + gc)"
 
 # 40h-4. #1814: the gc lane must DECLARE its host ABI in the `vibe.abi` custom
 #        section. The node runner picks the decoding convention from that

@@ -1758,6 +1758,24 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       nl
     }
+    else if fname == "Double::from_i64_bits" {
+      // The linear value ABI carries Double as raw f64 bits in an i64 (boxed
+      // under RC). This builtin is therefore an inline representation
+      // conversion, not a function-table call. Keeping it inline also means a
+      // closure body cannot accidentally capture and call a nonexistent
+      // first-class builtin slot (#1805).
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+        Array::push(local_names, "__from_bits_raw")
+        Array::push(local_names, "__from_bits_box")
+        emit_box_float(buf, ctx, nl, nl + 1)
+        nl + 2
+      } else {
+        nl
+      }
+    }
     else if !prefer_bound_call && fname == "await" {
       // M1b-3b (docs/spec/wasi-p3-async.md): a `Future[T]` is the two-element
       // array `[state, payload]` (future_state_ready() = 0), so awaiting a
