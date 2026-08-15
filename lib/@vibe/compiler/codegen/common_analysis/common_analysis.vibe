@@ -3305,3 +3305,38 @@ fn count_lambda_sites_arms(arms: Array[(Pat, Expr)]) -> Int {
   }
   total
 }
+
+/// #729/#730 + #1262: the `Fs::readdir` / `sh_lines` surface, as ordinary AST.
+///
+/// The host import returns the entries "\n"-joined as ONE packed string (the
+/// same ABI as `fs_read_file` -- no host-side array building, RC/bump
+/// agnostic). Turning that into `Array[String]` is a source-level rewrite, not
+/// codegen, so BOTH lanes want the identical expression and neither should
+/// spell it out again: the linear lane had this inline, and reproducing it in
+/// the gc lane is exactly the two-copies-that-drift shape #1809 was about.
+///
+/// Two details are load-bearing:
+///
+///   - the length guard. An empty directory gives "", and `String::split("", d)`
+///     is `[""]`, not `[]` -- so the empty case has to be built separately.
+///     `Array::slice(x, 0, 0)` is how an empty array is spelled here.
+///   - `String::from_char_code(10)` rather than a `"\n"` literal. A synthesized
+///     `EString` is not in the string table (same constraint as
+///     `double_to_string_expr`), so it cannot be emitted as a constant.
+export fn packed_lines_to_array_expr(raw_call: Expr, tmp_name: String) -> Expr {
+  let newline = ECall(EIdent("String::from_char_code", -1), [
+    EInt(10)
+  ], -1)
+  ELet(tmp_name, raw_call, EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
+    EIdent(tmp_name, -1)
+  ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
+    EArray([
+      newline
+    ]),
+    EInt(0),
+    EInt(0)
+  ], -1), ECall(EIdent("String::split", -1), [
+    EIdent(tmp_name, -1),
+    newline
+  ], -1)), -1)
+}

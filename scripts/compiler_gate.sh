@@ -4523,8 +4523,10 @@ rm -rf "$gchbdir"; mkdir -p "$gchbdir"
 gchb_out=""
 for gchb_be in linear gc; do
   rm -rf _build/gc_host_builtins_probe
-  mkdir -p _build/gc_host_builtins_probe/adir
+  mkdir -p _build/gc_host_builtins_probe/adir _build/gc_host_builtins_probe/rd _build/gc_host_builtins_probe/rd_empty
   printf 'hello\n' > _build/gc_host_builtins_probe/a.txt
+  printf 'x\n' > _build/gc_host_builtins_probe/rd/f1
+  printf 'y\n' > _build/gc_host_builtins_probe/rd/f2
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gchb_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_host_builtins.vibe" "$gchbdir/$gchb_be.wasm" main >/dev/null 2>&1
@@ -4542,24 +4544,37 @@ for gchb_be in linear gc; do
   fi
 done
 # Pin the value too: agreement alone passes when BOTH lanes break the same way.
-if [ "$gchb_out" != "gc-host-builtins:10101010" ]; then
-  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want gc-host-builtins:10101010) on both lanes (#1262)" >&2
+if [ "$gchb_out" != "gc-host-builtins:10101010202" ]; then
+  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want gc-host-builtins:10101010202) on both lanes (#1262)" >&2
   exit 1
 fi
-# Fs::readdir must still fail LOUDLY on the gc lane. Wiring only its import
-# yields an empty array (it needs the call-site surface lowering the linear
-# lane has), and an empty array is the silently-wrong answer this gate exists
-# to keep out. Drop this check when that lowering lands.
-printf 'let main = () -> Int with Fs { Array::length(Fs::readdir("_build")) }\n' > "$gchbdir/readdir.vibe"
+# `Fs::readdir` inside a CLOSURE, kept as its own check rather than folded
+# into the fixture value. The surface rewrite is guarded on the name not
+# resolving to anything real, and the gc capture scan collected `Fs::readdir`
+# as a free variable -- which made that guard false and skipped the rewrite,
+# so the call died with "unknown constructor or function" one lambda deep
+# while the top-level call worked. Listing it as a direct-ABI spelling is what
+# fixes it, and this is the shape that says so.
+printf 'let main = () -> Int with Fs { let f = (p: String) -> Int { Array::length(Fs::readdir(p)) }; f("_build/gc_host_builtins_probe/rd") }\n' > "$gchbdir/rdclosure.vibe"
+rm -rf _build/gc_host_builtins_probe
+mkdir -p _build/gc_host_builtins_probe/rd
+printf 'x\n' > _build/gc_host_builtins_probe/rd/f1
+printf 'y\n' > _build/gc_host_builtins_probe/rd/f2
 env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$gchbdir/readdir.vibe" "$gchbdir/readdir.wasm" main >/dev/null 2>&1 || true
-if [ -s "$gchbdir/readdir.wasm" ]; then
-  echo "[compiler-gate] FAIL: Fs::readdir now compiles on the gc lane -- if its surface lowering landed, verify it against linear and drop this check (#1262)" >&2
+  "$gchbdir/rdclosure.vibe" "$gchbdir/rdclosure.wasm" main >/dev/null 2>&1
+if [ ! -s "$gchbdir/rdclosure.wasm" ]; then
+  echo "[compiler-gate] FAIL: Fs::readdir inside a closure did not compile on the gc lane -- is it still listed in gc_direct_abi_names()? (#1262)" >&2
+  cat "$gchbdir/rdclosure.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gchb_rd="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gchbdir/rdclosure.wasm" 2>&1 | tail -1)"
+if [ "$gchb_rd" != "2" ]; then
+  echo "[compiler-gate] FAIL: Fs::readdir inside a closure returned '$gchb_rd' (want 2) on the gc lane (#1262)" >&2
   exit 1
 fi
 rm -rf "$gchbdir" _build/gc_host_builtins_probe
-echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010; readdir still loud)"
+echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010202; readdir incl. empty dir and closure)"
 
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
