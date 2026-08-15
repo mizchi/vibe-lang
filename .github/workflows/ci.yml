@@ -486,6 +486,11 @@ jobs:
     name: coverage-suite (main only)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # contents: write for the bench-data append below (same branch the perf
+    # workflow snapshots to; different files, so the writers never conflict
+    # beyond the push race the retry loop already absorbs).
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - name: Cache seed artifact
@@ -576,6 +581,48 @@ jobs:
           name: compiler-suite-coverage
           path: _build/coverage/selfhost-suite/selfhost_suite.report.json
           if-no-files-found: ignore
+      - name: Append coverage snapshot to bench-data
+        # Store the headline union rates on the bench-data branch
+        # (coverage_latest.json + data/coverage.jsonl) so every PR's perf
+        # report can display the repo's current test coverage — this job is
+        # main-only (the suite re-runs the whole battery instrumented), so
+        # the perf report labels the numbers as "measured on main", never as
+        # the PR's own coverage. Same worktree + retry pattern as perf.yml's
+        # snapshot append; the payload is append-only/last-wins so refetch +
+        # reapply + push is always safe.
+        run: |
+          set -euo pipefail
+          report=_build/coverage/selfhost-suite/selfhost_suite.report.json
+          [ -f "$report" ] || { echo "no suite report; skipping snapshot"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            rm -rf _build/bench-data
+            if git fetch --depth 1 origin bench-data 2>/dev/null; then
+              git worktree add _build/bench-data FETCH_HEAD
+            else
+              git worktree add --detach _build/bench-data
+              (cd _build/bench-data && git checkout --orphan bench-data && git rm -rf --quiet . || true)
+            fi
+            mkdir -p _build/bench-data/data
+            node scripts/coverage_bench_snapshot.mjs "$report" \
+              _build/bench-data/coverage_latest.json > _build/coverage_snapshot.json
+            cat _build/coverage_snapshot.json | tr -d '\n' >> _build/bench-data/data/coverage.jsonl
+            echo >> _build/bench-data/data/coverage.jsonl
+            cp _build/coverage_snapshot.json _build/bench-data/coverage_latest.json
+            (
+              cd _build/bench-data
+              git add -A
+              git commit -m "coverage: snapshot ${GITHUB_SHA::9}"
+            )
+            if git -C _build/bench-data push origin HEAD:refs/heads/bench-data; then
+              break
+            fi
+            git worktree remove --force _build/bench-data || true
+            [ "$attempt" -lt 3 ] || { echo "::error::failed to push bench-data after 3 attempts"; exit 1; }
+            sleep $((attempt * 3))
+          done
+          git worktree remove --force _build/bench-data || true
 
   # WASI p3 guarantee (#821): vibe-built async components + the wasi:http p3
   # serve pipeline, plus the optional ratified wasi:cli/stdin availability

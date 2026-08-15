@@ -170,6 +170,28 @@ on stderr, one machine-readable line, fresh `.wasm` only — a `.cwasm` was
 serialized without fuel instrumentation). It composes with the existing
 `VIBE_MEM=1` report.
 
+### Test coverage in the perf report (main-only measurement)
+
+The report's "Test coverage" section shows the selfhost suite's **union**
+rates (function / branch — each source function/branch counted once, #1556)
+with a percentage-point trend vs the previous measurement. The numbers come
+from ci.yml's `coverage-suite` job, which is **main-only** (it re-runs the
+whole test battery instrumented — too expensive per PR): after the ratchet
+gate it extracts a compact snapshot (`scripts/coverage_bench_snapshot.mjs`)
+and appends it to the `bench-data` branch (`coverage_latest.json` +
+`data/coverage.jsonl`, same retry pattern as the perf snapshot). The perf
+workflow fetches `coverage_latest.json` alongside the perf baseline and
+passes it to `bench_report.mjs` as the third argument.
+
+Because the measurement is main-only, the section is labeled **"measured on
+main, not this PR"** — a PR's perf comment shows the repo's current coverage
+and its main-to-main trend, never the PR's own effect (implying otherwise
+would be silently wrong). The entry-weighted rates are deliberately not
+shown: their denominator dilutes with every added test entry, which reads as
+a regression when coverage actually grew (see the rebaseline notes in
+`scripts/coverage_suite.sh`). The blocking ratchet stays in the
+coverage-suite job itself. Tests: `pkf run test-perf-report`.
+
 ### Runner normalization (calibration) — history-only since the exec corpus
 
 > **Status:** the calibration record is still collected into every snapshot

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Render the perf-tracking markdown report from bench_metrics.sh snapshots.
 //
-//   node scripts/bench_report.mjs current.json [baseline.json]
+//   node scripts/bench_report.mjs current.json [baseline.json] [coverage.json]
 //
 // The report renders DETERMINISTIC metrics only (heap, sizes, bytes/op, exec
 // fuel/memory/parity): any change is real, >±2% gets a warning emoji. The
@@ -15,13 +15,17 @@
 // KPI heap step.
 import { readFileSync, existsSync } from "node:fs";
 
-const [curPath, basePath] = process.argv.slice(2);
+const [curPath, basePath, covPath] = process.argv.slice(2);
 if (!curPath) {
-  console.error("usage: bench_report.mjs current.json [baseline.json]");
+  console.error("usage: bench_report.mjs current.json [baseline.json] [coverage.json]");
   process.exit(2);
 }
 const cur = JSON.parse(readFileSync(curPath, "utf8"));
 const base = basePath && existsSync(basePath) ? JSON.parse(readFileSync(basePath, "utf8")) : null;
+// Coverage snapshot from the bench-data branch (scripts/coverage_bench_snapshot.mjs,
+// appended by ci.yml's main-only coverage-suite job). Optional; absent until
+// the first main run lands one.
+const cov = covPath && existsSync(covPath) ? JSON.parse(readFileSync(covPath, "utf8")) : null;
 
 // Human-readable units for table cells. Rounding here loses no signal: the Δ
 // column is computed from the raw values, so "any drift is real" still reads
@@ -144,6 +148,40 @@ if (execCur?.scenarios && Object.keys(execCur.scenarios).length) {
     lines.push(`> exec scenarios: ${execCur.status}`);
     lines.push("");
   }
+}
+
+// Test coverage — the selfhost suite's union rates, measured by ci.yml's
+// main-only coverage-suite job (the suite re-runs the whole test battery
+// instrumented, too expensive per PR). Labeled as main's coverage, never this
+// PR's: implying otherwise would be silently wrong. The Δ column is
+// percentage POINTS vs the previous main measurement (a trend, not a
+// baseline-vs-PR diff).
+if (cov?.function_union && cov?.branch_union) {
+  lines.push("#### Test coverage (selfhost suite — measured on main, not this PR)");
+  lines.push("");
+  const fmtInt = (n) => n == null ? "–" : n.toLocaleString("en-US");
+  const rate = (r) => r == null ? "–" : `${Number(r).toFixed(2)}%`;
+  const trend = (curR, prevR) => {
+    if (curR == null || prevR == null) return "–";
+    const pt = curR - prevR;
+    if (Math.abs(pt) < 0.005) return "±0";
+    const flag = pt <= -0.1 ? " ⚠️" : pt >= 0.1 ? " 🎉" : "";
+    return `${pt > 0 ? "+" : ""}${pt.toFixed(2)}pt${flag}`;
+  };
+  lines.push("| metric | hit | total | rate | Δ vs prev main |");
+  lines.push("|---|---:|---:|---:|---|");
+  lines.push(`| branch union | ${fmtInt(cov.branch_union.hit)} | ${fmtInt(cov.branch_union.total)} | ${rate(cov.branch_union.rate)} | ${trend(cov.branch_union.rate, cov.prev?.branch_union_rate)} |`);
+  lines.push(`| function union | ${fmtInt(cov.function_union.hit)} | ${fmtInt(cov.function_union.total)} | ${rate(cov.function_union.rate)} | ${trend(cov.function_union.rate, cov.prev?.function_union_rate)} |`);
+  lines.push("");
+  const caseLine = (cov.entries_passed != null && cov.entries_total != null)
+    ? `cases ${cov.entries_passed}/${cov.entries_total}` + (cov.case_rate != null ? ` (${cov.case_rate}%)` : "")
+    : null;
+  const measuredAt = `measured at \`${(cov.commit || "?").slice(0, 9)}\`` + (cov.date ? ` (${cov.date.slice(0, 10)})` : "");
+  lines.push(`> ${caseLine ? caseLine + " · " : ""}${measuredAt}`);
+  if (cov.branch_union.exact === false) {
+    lines.push("> branch union is a LOWER BOUND (some entries reported no branch mask)");
+  }
+  lines.push("");
 }
 
 if (cur.micro_status && cur.micro_status !== "ok") {

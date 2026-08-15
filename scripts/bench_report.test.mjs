@@ -145,6 +145,40 @@ test("wasmtime version drift omits fuel deltas instead of comparing across cost 
   assert.match(report, /\| demo \| 1\.00M \| – \| 800k \| – \| 0\.80× \|/);
 });
 
+// --- test-coverage section (bench-data coverage snapshot, main-only) ----------
+
+test("coverage snapshot renders as main's coverage with a pt trend, absent when no snapshot", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-bench-report-cov-"));
+  try {
+    const minimal = { commit: "x", selfcompile: {}, sizes: {}, benches: {} };
+    const currentPath = join(dir, "current.json");
+    writeFileSync(currentPath, JSON.stringify(minimal));
+    const covPath = join(dir, "coverage_latest.json");
+    writeFileSync(covPath, JSON.stringify({
+      schema: 1, commit: "covsha1234", date: "2026-08-15T12:00:00Z",
+      function_union: { hit: 12950, total: 14995, rate: 86.36 },
+      branch_union: { hit: 26442, total: 45986, rate: 57.5, exact: false },
+      entries_total: 582, entries_passed: 582, case_rate: 100,
+      prev: { commit: "old", date: "2026-08-14T00:00:00Z", function_union_rate: 86.36, branch_union_rate: 57.07 },
+    }));
+    const withCov = spawnSync(process.execPath,
+      [reportScript.pathname, currentPath, join(dir, "missing.json"), covPath], { encoding: "utf8" });
+    assert.equal(withCov.status, 0, withCov.stderr);
+    assert.match(withCov.stdout, /#### Test coverage \(selfhost suite — measured on main, not this PR\)/);
+    assert.match(withCov.stdout, /\| branch union \| 26,442 \| 45,986 \| 57\.50% \| \+0\.43pt 🎉 \|/);
+    assert.match(withCov.stdout, /\| function union \| 12,950 \| 14,995 \| 86\.36% \| ±0 \|/);
+    assert.match(withCov.stdout, /cases 582\/582 \(100%\) · measured at `covsha123` \(2026-08-15\)/);
+    assert.match(withCov.stdout, /branch union is a LOWER BOUND/);
+
+    const withoutCov = spawnSync(process.execPath,
+      [reportScript.pathname, currentPath], { encoding: "utf8" });
+    assert.equal(withoutCov.status, 0, withoutCov.stderr);
+    assert.doesNotMatch(withoutCov.stdout, /Test coverage/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a parity mismatch is rendered as a loud silent-wrong flag, a gc gap as a note", () => {
   const cur = { status: "partial", wasmtime: "47.0.2", scenarios: {
     bad: { ...okScenario, output: "parity-mismatch" },
