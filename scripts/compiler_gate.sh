@@ -9057,6 +9057,21 @@ if [ "$r90b_heap_delta" -gt 100000 ]; then
   exit 1
 fi
 echo "[compiler-gate] MutBytes arena bulk release ok (200 regions, main heap +${r90b_heap_delta} B)"
+# ADR-0090 / #1770: MutList::get / MutList::length -- the in-region reads
+# that make "accumulate AND consume inside the region, escape only the
+# reduced value" writable (the shape #1794's rejection identified as the
+# only one where the arena is pure profit). Pins a growing worklist read
+# back during iteration.
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_consume_in_region.vibe "$r90dir/consume.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/consume.wasm" ] \
+  || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/consume.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_ok_consume_in_region.vibe failed -- MutList::get/length in-region reads regressed" >&2
+  cat "$r90dir/consume.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+echo "[compiler-gate] MutList in-region reads ok (get/length)"
 # Codex #1801 P1: an outer region's buffer regrown inside a NESTED region
 # must survive the inner exit (the replacement must not land in the inner
 # region's span). Pins the saves[depth-1] guard in gen_arr_push_body /
