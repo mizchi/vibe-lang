@@ -996,6 +996,435 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_end(buf)
         nl
       }
+      // #1861: the Array HOFs below were the `gc-hof-gap` rows of
+      // scripts/builtin_parity_classification.tsv -- served by the linear
+      // callsite chain in expr/compile_call.vibe, absent here, so a gc compile
+      // of `Array::map(xs, f)` fell all the way through to the uppercase-name
+      // fallback and threw "unknown constructor or function: Array::map".
+      //
+      // There was no representation problem behind the gap. This lane already
+      // had both halves: the element loop (see Array::slice / Array::concat
+      // just below) and the closure call (emit_closure_resolve +
+      // emit_closure_call_tail, used by the generic call path at the bottom of
+      // this file). The lowerings mirror their linear twins statement for
+      // statement, with emit_call -> emit_call_resolved and the closure type
+      // index taken from ctx.closure_type_base instead of the linear lane's
+      // fixed slot.
+      // The bare-name `map` alias that the linear lane also serves is NOT added
+      // here, and its classification row stays. Linear guards that alias with
+      // `!prefer_bound_call`, which is what stops a user's own `let map = ...`
+      // from being hijacked into the 2-arg array intrinsic (#832 -- an
+      // arity-mismatched hijack read past `args` and trapped the compiler
+      // itself). This lane has no prefer_bound_call: `source_is_bound` above
+      // only picks the alias spelling, it does not skip the builtin chain. So
+      // a bare-`map` arm here would reintroduce exactly that hijack.
+      else if fname == "Array::map" {
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let arr_local = next_local
+        let fn_local = next_local + 1
+        let res_local = next_local + 2
+        let len_local = next_local + 3
+        let i_local = next_local + 4
+        let slot_local = next_local + 5
+        let env_local = next_local + 6
+        let elem_local = next_local + 7
+        Array::push(local_names, "__map_arr")
+        Array::push(local_names, "__map_fn")
+        Array::push(local_names, "__map_res")
+        Array::push(local_names, "__map_len")
+        Array::push(local_names, "__map_i")
+        Array::push(local_names, "__map_slot")
+        Array::push(local_names, "__map_env")
+        Array::push(local_names, "__map_elem")
+        let mut nl = next_local + 8
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, fn_local)
+        emit_call_resolved(buf, ctx, an_idx)
+        emit_local_set(buf, res_local)
+        emit_local_get(buf, arr_local)
+        emit_call_resolved(buf, ctx, al_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_closure_resolve(buf, fn_local, slot_local, env_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, ag_idx)
+        emit_local_set(buf, elem_local)
+        emit_local_get(buf, elem_local)
+        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+        emit_local_set(buf, elem_local)
+        emit_local_get(buf, res_local)
+        emit_local_get(buf, elem_local)
+        emit_call_resolved(buf, ctx, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
+        nl
+      }
+      else if fname == "Array::filter" {
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let arr_local = next_local
+        let fn_local = next_local + 1
+        let res_local = next_local + 2
+        let len_local = next_local + 3
+        let i_local = next_local + 4
+        let slot_local = next_local + 5
+        let env_local = next_local + 6
+        let elem_local = next_local + 7
+        Array::push(local_names, "__filter_arr")
+        Array::push(local_names, "__filter_fn")
+        Array::push(local_names, "__filter_res")
+        Array::push(local_names, "__filter_len")
+        Array::push(local_names, "__filter_i")
+        Array::push(local_names, "__filter_slot")
+        Array::push(local_names, "__filter_env")
+        Array::push(local_names, "__filter_elem")
+        let mut nl = next_local + 8
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, fn_local)
+        emit_call_resolved(buf, ctx, an_idx)
+        emit_local_set(buf, res_local)
+        emit_local_get(buf, arr_local)
+        emit_call_resolved(buf, ctx, al_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_closure_resolve(buf, fn_local, slot_local, env_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, ag_idx)
+        emit_local_set(buf, elem_local)
+        emit_local_get(buf, elem_local)
+        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, res_local)
+        emit_local_get(buf, elem_local)
+        emit_call_resolved(buf, ctx, ap_idx)
+        emit_end(buf)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
+        nl
+      }
+      else if fname == "Array::fold" {
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let arr_local = next_local
+        let acc_local = next_local + 1
+        let fn_local = next_local + 2
+        let len_local = next_local + 3
+        let i_local = next_local + 4
+        let slot_local = next_local + 5
+        let env_local = next_local + 6
+        Array::push(local_names, "__fold_arr")
+        Array::push(local_names, "__fold_acc")
+        Array::push(local_names, "__fold_fn")
+        Array::push(local_names, "__fold_len")
+        Array::push(local_names, "__fold_i")
+        Array::push(local_names, "__fold_slot")
+        Array::push(local_names, "__fold_env")
+        let mut nl = next_local + 7
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, acc_local)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+        emit_local_set(buf, fn_local)
+        emit_local_get(buf, arr_local)
+        emit_call_resolved(buf, ctx, al_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_closure_resolve(buf, fn_local, slot_local, env_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, acc_local)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, ag_idx)
+        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 2)
+        emit_local_set(buf, acc_local)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, acc_local)
+        nl
+      }
+      else if fname == "Array::reverse" {
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let arr_local = next_local
+        let res_local = next_local + 1
+        let len_local = next_local + 2
+        let i_local = next_local + 3
+        Array::push(local_names, "__rev_arr")
+        Array::push(local_names, "__rev_res")
+        Array::push(local_names, "__rev_len")
+        Array::push(local_names, "__rev_i")
+        let mut nl = next_local + 4
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        emit_call_resolved(buf, ctx, an_idx)
+        emit_local_set(buf, res_local)
+        emit_local_get(buf, arr_local)
+        emit_call_resolved(buf, ctx, al_idx)
+        emit_local_set(buf, len_local)
+        emit_local_get(buf, len_local)
+        emit_i64_const(buf, 1)
+        emit_i64_sub(buf)
+        emit_local_set(buf, i_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 0)
+        emit_i64_lt_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, res_local)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, ag_idx)
+        emit_call_resolved(buf, ctx, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_sub(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
+        nl
+      }
+      // `any` / `all` build their result from raw i64 consts. The linear twins
+      // re-tag that result under RC (a Bool there is `n << 1`); this lane has
+      // no such tagging -- gc encodes `EBool` as a plain `i64.const 0/1`
+      // (backend_expr.vibe), so the raw value already IS the representation.
+      else if fname == "Array::any" {
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let arr_local = next_local
+        let fn_local = next_local + 1
+        let len_local = next_local + 2
+        let i_local = next_local + 3
+        let slot_local = next_local + 4
+        let env_local = next_local + 5
+        let res_local = next_local + 6
+        Array::push(local_names, "__any_arr")
+        Array::push(local_names, "__any_fn")
+        Array::push(local_names, "__any_len")
+        Array::push(local_names, "__any_i")
+        Array::push(local_names, "__any_slot")
+        Array::push(local_names, "__any_env")
+        Array::push(local_names, "__any_res")
+        let mut nl = next_local + 7
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, fn_local)
+        emit_local_get(buf, arr_local)
+        emit_call_resolved(buf, ctx, al_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, res_local)
+        emit_closure_resolve(buf, fn_local, slot_local, env_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, ag_idx)
+        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_i64_const(buf, 1)
+        emit_local_set(buf, res_local)
+        emit_br(buf, 2)
+        emit_end(buf)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
+        nl
+      }
+      else if fname == "Array::all" {
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let arr_local = next_local
+        let fn_local = next_local + 1
+        let len_local = next_local + 2
+        let i_local = next_local + 3
+        let slot_local = next_local + 4
+        let env_local = next_local + 5
+        let res_local = next_local + 6
+        Array::push(local_names, "__all_arr")
+        Array::push(local_names, "__all_fn")
+        Array::push(local_names, "__all_len")
+        Array::push(local_names, "__all_i")
+        Array::push(local_names, "__all_slot")
+        Array::push(local_names, "__all_env")
+        Array::push(local_names, "__all_res")
+        let mut nl = next_local + 7
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, fn_local)
+        emit_local_get(buf, arr_local)
+        emit_call_resolved(buf, ctx, al_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_local_set(buf, res_local)
+        emit_closure_resolve(buf, fn_local, slot_local, env_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, ag_idx)
+        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+        emit_i32_wrap_i64(buf)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_eqz(buf)
+        emit_if_void(buf)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, res_local)
+        emit_br(buf, 2)
+        emit_end(buf)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
+        nl
+      }
+      // #1065 applies here too: `res` is an `Option[T]`, not a raw scalar, so
+      // "not found" must be a real `None` heap object and "found" a real
+      // `Some(elem)`. Both are built by running `ce` over synthesized ctor
+      // ASTs -- the same path a literal `Some(x)` / `None` takes -- rather than
+      // hand-rolling the object here, so this stays correct however this lane
+      // encodes ctors. `__find_elem` resolves because it was just pushed onto
+      // local_names.
+      else if fname == "Array::find" {
+        let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+        let arr_local = next_local
+        let fn_local = next_local + 1
+        let len_local = next_local + 2
+        let i_local = next_local + 3
+        let slot_local = next_local + 4
+        let env_local = next_local + 5
+        let elem_local = next_local + 6
+        let res_local = next_local + 7
+        Array::push(local_names, "__find_arr")
+        Array::push(local_names, "__find_fn")
+        Array::push(local_names, "__find_len")
+        Array::push(local_names, "__find_i")
+        Array::push(local_names, "__find_slot")
+        Array::push(local_names, "__find_env")
+        Array::push(local_names, "__find_elem")
+        Array::push(local_names, "__find_res")
+        let mut nl = next_local + 8
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, arr_local)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        emit_local_set(buf, fn_local)
+        emit_local_get(buf, arr_local)
+        emit_call_resolved(buf, ctx, al_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        nl = ce(buf, EIdent("None", -1), local_names, nl, ld)
+        emit_local_set(buf, res_local)
+        emit_closure_resolve(buf, fn_local, slot_local, env_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, arr_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, ag_idx)
+        emit_local_set(buf, elem_local)
+        emit_local_get(buf, elem_local)
+        emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        nl = ce(buf, ECall(EIdent("Some", -1), [
+          EIdent("__find_elem", -1)
+        ], -1), local_names, nl, ld)
+        emit_local_set(buf, res_local)
+        emit_br(buf, 2)
+        emit_end(buf)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
+        nl
+      }
       else if fname == "Array::slice" {
         let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
         let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")

@@ -4879,11 +4879,32 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
     fixtures/string_byte_alias_shadow_test.vibe \
     fixtures/string_byte_semantics_test.vibe \
     fixtures/struct_field_collision_test.vibe \
-    fixtures/to_string_shadow_gc_test.vibe; then
+    fixtures/to_string_shadow_gc_test.vibe \
+    fixtures/array_hof_parity_test.vibe; then
   echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
   exit 1
 fi
 echo "[compiler-gate] wasm-gc test-block runtime regression suite ok"
+
+# 40h8b. #1861: the Array HOFs (map/filter/fold/reverse/any/all/find) were the
+# `gc-hof-gap` rows of scripts/builtin_parity_classification.tsv -- served by
+# the linear callsite chain, absent from the gc one. They are now served by
+# both, so the property to hold is not "gc can do map" but "the two lanes
+# agree": a gc-only run goes green on a lowering that quietly computes
+# something else, and silently-wrong outranks a crash (docs/issue-triage.md).
+# So the same file runs on the LINEAR lane too, as the oracle.
+#
+# check_builtin_parity.sh already fails if either lane loses an arm. It reads
+# callsite arms, though, and cannot tell a correct lowering from a wrong one.
+echo "[compiler-gate] 40h8b/40 Array HOF lane parity (#1861)"
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" \
+  bash scripts/vibe_test.sh fixtures/array_hof_parity_test.vibe; then
+  echo "[compiler-gate] FAIL: Array HOF parity fixture failed on the LINEAR lane." >&2
+  echo "  It passed on gc just above, so this is the oracle disagreeing --" >&2
+  echo "  the fixture's expectations are wrong, or linear regressed." >&2
+  exit 1
+fi
+echo "[compiler-gate] Array HOF lane parity ok (gc + linear agree)"
 
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
