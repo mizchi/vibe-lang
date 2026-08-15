@@ -133,12 +133,12 @@ if (execCur?.scenarios && Object.keys(execCur.scenarios).length) {
     lines.push(`| ${name} | ${fmt(s.linear?.fuel)} | ${dLin} | ${fmt(s.gc?.fuel)} | ${dGc} | ${ratio(s.gc?.fuel, s.linear?.fuel)} |`);
   }
   lines.push("");
-  lines.push("| scenario | heap bytes | Δ | wasm bytes (linear) | Δ | wasm bytes (gc) | Δ |");
-  lines.push("|---|---:|---|---:|---|---:|---|");
+  lines.push("| scenario | heap bytes | Δ | committed bytes | Δ | wasm bytes (linear) | Δ | wasm bytes (gc) | Δ |");
+  lines.push("|---|---:|---|---:|---|---:|---|---:|---|");
   for (const [name, s] of Object.entries(execCur.scenarios)) {
     const b = execBase?.scenarios?.[name];
     const d = (c, bb) => delta(c, bb, false).replace(" | ", "");
-    lines.push(`| ${name} | ${fmt(s.linear?.heap_bytes)} | ${d(s.linear?.heap_bytes, b?.linear?.heap_bytes)} | ${fmt(s.linear?.wasm_bytes)} | ${d(s.linear?.wasm_bytes, b?.linear?.wasm_bytes)} | ${fmt(s.gc?.wasm_bytes)} | ${d(s.gc?.wasm_bytes, b?.gc?.wasm_bytes)} |`);
+    lines.push(`| ${name} | ${fmt(s.linear?.heap_bytes)} | ${d(s.linear?.heap_bytes, b?.linear?.heap_bytes)} | ${fmt(s.linear?.committed_bytes)} | ${d(s.linear?.committed_bytes, b?.linear?.committed_bytes)} | ${fmt(s.linear?.wasm_bytes)} | ${d(s.linear?.wasm_bytes, b?.linear?.wasm_bytes)} | ${fmt(s.gc?.wasm_bytes)} | ${d(s.gc?.wasm_bytes, b?.gc?.wasm_bytes)} |`);
   }
   lines.push("");
   // Correctness lines: golden (linear vs committed expected output) and

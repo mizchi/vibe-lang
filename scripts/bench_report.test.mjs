@@ -124,6 +124,7 @@ test("exec section renders fuel deltas, gc ratio, and the all-ok output line", (
   const report = renderExecReport({ curExec: cur, baseExec: base });
   assert.match(report, /Program execution \(deterministic/);
   assert.match(report, /\| demo \| 1,000,000 \| \+11\.11% ⚠️ \| 800,000 \| ±0 \| 0\.80× \|/);
+  assert.match(report, /\| demo \| 4,096 \| ±0 \| 65,536 \| ±0 \| 5,000 \| ±0 \| 6,000 \| ±0 \|/);
   assert.match(report, /output checks: 1\/1 scenarios ✅/);
 });
 
