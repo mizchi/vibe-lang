@@ -33,7 +33,7 @@ const ITERS = process.env.BENCH_ITERS || "300";
 const update = process.argv.includes("--update");
 
 // The fixture set the gate covers (must run cleanly on the linear backend).
-const FIXTURES = ["pure_bench.vibe", "alloc_bench.vibe"];
+const FIXTURES = ["pure_bench.vibe", "alloc_bench.vibe", "lexer_keyword_bench.vibe"];
 
 function runBench(file) {
   return new Promise((resolve, reject) => {
