@@ -1,0 +1,140 @@
+// #1880: an array rendered as its raw heap pointer, silently.
+//
+// `__to_string` / `"\{x}"` picked a renderer from the SYNTAX of the value, so
+// only an array written literally at the binding site rendered structurally.
+// An array that came out of a builtin callsite lowering or out of `for x in ..`
+// fell through to the pointer/scalar heuristic and printed a heap address --
+// no diagnostic, and the address moves run to run.
+//
+// The part that made it P0 rather than imprecision: writing the type did not
+// help either. `let ys: Array[Int] = Array::map(xs, f)` printed a pointer too,
+// so there was no spelling a user could reach for.
+//
+// Expectations are `inspect(value, content)` so `vibe test --update` stays the
+// single way to maintain them (Codex review on this PR).
+
+fn show_arr_make() -> Array[Int] {
+  [
+    2,
+    4,
+    6
+  ]
+}
+
+test "shapes that already worked" {
+  inspect([
+    2,
+    4,
+    6
+  ], "[2, 4, 6]")
+  let bound = [
+    2,
+    4,
+    6
+  ]
+  inspect(bound, "[2, 4, 6]")
+  inspect(show_arr_make(), "[2, 4, 6]")
+}
+
+test "an annotation is honoured whatever produced the value" {
+  // `ELet` carries no annotation, but the parser rewrites `let x: T = v` into
+  // `((__asc: T) -> __asc)(v)`, so the type is in the AST after all.
+  let m: Array[Int] = Array::map([
+    1,
+    2,
+    3
+  ], (x) -> {
+    x * 2
+  })
+  inspect(m, "[2, 4, 6]")
+  let f: Array[Int] = for x in [
+    1,
+    2,
+    3
+  ] {
+    x * 2
+  }
+  inspect(f, "[2, 4, 6]")
+  // Interpolation is the same rewrite, and the shape a user actually writes.
+  inspect("\{f}", "[2, 4, 6]")
+}
+
+test "elem-preserving builtins need no annotation" {
+  let xs = [
+    2,
+    4,
+    6
+  ]
+  inspect(Array::slice(xs, 0, 2), "[2, 4]")
+  inspect(Array::reverse(xs), "[6, 4, 2]")
+  inspect(Array::filter(xs, (x) -> {
+    x > 2
+  }), "[4, 6]")
+  inspect(Array::concat(xs, [
+    8
+  ]), "[2, 4, 6, 8]")
+  // Through a binding as well, since that is a different record.
+  let sl = Array::slice(xs, 1, 3)
+  inspect("\{sl}", "[4, 6]")
+}
+
+test "a rendered array is still the value, not a copy of the text" {
+  // Guards against a fix that renders correctly by rebuilding the array: the
+  // binding must still be the same live array.
+  let m: Array[Int] = Array::map([
+    1,
+    2,
+    3
+  ], (x) -> {
+    x * 2
+  })
+  inspect(Array::length(m), "3")
+  inspect(Array::get(m, 0), "2")
+  inspect(Array::get(m, 2), "6")
+}
+
+// The two shapes a Codex review on this PR caught, kept as regressions. Both
+// were cases where the fix rendered CONFIDENTLY AND WRONGLY -- strictly worse
+// than the pointer it replaced, because a pointer at least looks wrong.
+
+test "an Option annotation does not get rendered as an array" {
+  // `ty_to_eq_shape` speaks equality's grammar, which also has `{o:..}` /
+  // `{r:..}`. `interp_expand_shape` distinguishes only tuples and treats every
+  // other composite as an ARRAY, so an unfiltered `{o:Int}` emitted
+  // `Array::length` / `Array::get` against an Option. `interp_shape` admits
+  // only the forms the renderer can expand; these keep today's rendering.
+  // Rendered directly: the fall-through reaches the syntax path, which reads
+  // the ctor. What must NOT happen is `Array::length` against this value.
+  let o: Option[Int] = Some(1)
+  inspect(o, "Some(1)")
+  match o {
+    Some(v) => inspect(v, "1"),
+    None => assert_true(false)
+  }
+  let n: Option[Int] = None
+  inspect(n, "None")
+}
+
+test "Array::truncate returns Unit, not an array" {
+  // `declare Array::truncate(Array[T], Int) -> Unit` -- it mutates in place.
+  // Treating it as elem-preserving gave its Unit result the shape `[Int]`.
+  let xs = [
+    1,
+    2,
+    3
+  ]
+  let u = Array::truncate(xs, 1)
+  let _ = u
+  inspect(Array::length(xs), "1")
+  inspect(Array::get(xs, 0), "1")
+}
+
+test "an annotated struct binding still reaches its own to_string" {
+  // The annotation path falls THROUGH to the syntax path for a shape the
+  // renderer cannot expand, rather than recording "". Without that, an
+  // annotated binding would render WORSE than an unannotated one.
+  let n: Int = 7
+  inspect(n, "7")
+  let s: String = "hi"
+  inspect(s, "hi")
+}

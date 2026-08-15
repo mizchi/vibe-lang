@@ -2079,7 +2079,92 @@ fn mask_stale_array_elem(var_types: Array[(String, String)], name: String) -> Ar
 /// stays untracked -- recovering those needs the RHS's *expected* type
 /// flowing in from an enclosing annotation, which this bottom-up pass does
 /// not thread.
+/// #1880: a LOCAL `let x: T = v` is not annotation-free just because `ELet` has
+/// no annotation field. The parser rewrites it to `((__asc: T) -> __asc)(v)`
+/// (`ascribe_wrap` in parser_expr_dispatch.vibe), so `T` is right there in the
+/// AST -- this recognizes that exact shape and hands it back. Same recognizer
+/// the checker already runs (`ascription_lambda_ann`), kept local because this
+/// package does not import the checker.
+///
+/// The shape is precise: `__asc` is a dedicated internal name, and a real user
+/// IIFE will not have a single param literally named `__asc` whose body is
+/// exactly `EIdent("__asc", _)`.
+fn dtd_ascribed_type(val: Expr) -> Option[TypeExpr] {
+  match val {
+    ECall(callee, _args, _) => match callee {
+      EFn(tparams, _tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 {
+        match ret_ty {
+          Some(_) => None,
+          None => match effect {
+            Some(_) => None,
+            None => {
+              let (pname, pann) = Array::get(params, 0)
+              if pname == "__asc" {
+                match body {
+                  EIdent(bname, _) => if bname == "__asc" {
+                    pann
+                  } else {
+                    None
+                  },
+                  _ => None
+                }
+              } else {
+                None
+              }
+            }
+          }
+        }
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// The element type named by an `Array[T]` annotation, when T is a bare name.
+/// Same single-bare-type-arg scope as `seed_var_types`' parameter handling --
+/// a nested element type stays untracked rather than recorded imprecisely.
+fn dtd_array_elem_of_ann(ty: TypeExpr) -> Option[String] {
+  match ty {
+    TyApp(head, targs) => if head == "Array" && Array::length(targs) == 1 {
+      match Array::get(targs, 0) {
+        TyName(elem) => Some(elem),
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  // #1880: an explicit `Array[T]` annotation is the most reliable element type
+  // there is, so it is consulted before the value's shape. `array_elem_key` is
+  // the older sentinel -- `shape_bind` runs after this and its record wins for
+  // rendering -- but this one is read by call-site dict synthesis (#1199), so
+  // an annotated binding has to reach it too.
+  match dtd_array_elem_of_ann_opt(dtd_ascribed_type(val)) {
+    Some(elem) => {
+      let out = array_empty()
+      push_all_var_types(out, var_types)
+      Array::push(out, (array_elem_key(name), elem))
+      out
+    },
+    None => array_elem_bind_by_shape(var_types, name, val, struct_sets, fn_returns)
+  }
+}
+
+fn dtd_array_elem_of_ann_opt(ann: Option[TypeExpr]) -> Option[String] {
+  match ann {
+    Some(t) => dtd_array_elem_of_ann(t),
+    None => None
+  }
+}
+
+fn array_elem_bind_by_shape(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   match val {
     EArray(elems) => if Array::length(elems) > 0 {
       match infer_arg_type_name(Array::get(elems, 0), struct_sets, var_types, fn_returns) {
@@ -2322,6 +2407,88 @@ fn shape_inner(sh: String) -> String {
 /// per-element / per-tuple sentinels, so a value bound before this function
 /// existed still resolves); anything else falls back to the head type name.
 fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  // #1880: an ANNOTATION outranks anything guessed from the value's syntax.
+  //
+  // Everything below infers a shape from the shape of the expression, so only
+  // a value written literally at the binding site ever produced one. An array
+  // that came out of a builtin callsite lowering (`Array::map`, `Array::slice`)
+  // or out of `for x in ..` produced "" -- and shape_bind ALWAYS records, with
+  // "" meaning "not composite, stop". So `"\{ys}"` printed the raw heap
+  // pointer, and `let ys: Array[Int] = ..` did not help: the annotation was
+  // never consulted. No spelling a user could write produced correct output,
+  // which is what made it P0 rather than imprecision.
+  //
+  // The annotation is in the AST even for a LOCAL let -- `ELet` has no
+  // annotation field, but the parser rewrites `let x: T = v` into
+  // `((__asc: T) -> __asc)(v)` (ascribe_wrap). `ty_to_eq_shape` renders a
+  // TypeExpr into exactly the encoding this function produces (`Array[Int]` ->
+  // "[Int]", same as the literal path), so the two answers are interchangeable
+  // and everything downstream is unchanged.
+  //
+  // `interp_shape` is REQUIRED here, not decoration. `ty_to_eq_shape` speaks
+  // equality's grammar, which is a strict superset of the renderer's: it also
+  // emits `{o:..}` / `{r:..}` for Option / Result. `interp_expand_shape`
+  // distinguishes only tuples (leading `(`) and treats every other composite as
+  // an ARRAY, so letting a `{o:Int}` through would emit `Array::length` /
+  // `Array::get` against an Option -- a trap or a wrong render, i.e. a worse
+  // version of the bug being fixed. `interp_shape` admits only the tuple and
+  // array forms the renderer can expand. (Codex review on this PR.)
+  //
+  // A shape it rejects falls THROUGH to the syntax path rather than becoming
+  // "": an annotated `let p: Point = mk()` must still reach the head name that
+  // `interp_show_target` dispatches `Point::to_string` on. So this is strictly
+  // additive -- no annotated binding renders worse than it did.
+  //
+  // Option / Result annotations therefore keep today's rendering. Making those
+  // work means teaching interp_expand_shape their encodings, which is a
+  // separate change.
+  match dtd_ascribed_type(e) {
+    Some(ann) => {
+      let sh = interp_shape(ty_to_eq_shape(ann))
+      if String::length(sh) > 0 {
+        sh
+      } else {
+        infer_shape_by_syntax(e, struct_sets, var_types, fn_returns)
+      }
+    },
+    None => infer_shape_by_syntax(e, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// #1880: Array builtins that RETURN an array whose element type is their first
+/// argument's, so the shape propagates without any inference.
+///
+/// Two exclusions, both deliberate:
+///
+///   - `Array::map` -- its element type is the CALLBACK's return type, not the
+///     argument's, so reusing the argument's shape would render confidently and
+///     wrongly. Worse than saying nothing. An annotation covers it.
+///   - `Array::truncate` -- it MUTATES its first argument and returns Unit
+///     (`declare Array::truncate(Array[T], Int) -> Unit`, builtins/
+///     declarations.vibe:35). Giving it `[T]` would rewrite the render into
+///     array operations against a Unit. It was in this list until a Codex
+///     review on this PR caught it; "takes an array first" is not the
+///     predicate, "returns that array's element type" is.
+///
+/// Returns "" for "no answer", which the caller treats as fall-through. The
+/// `[` guard keeps a non-array first argument (a user binding of the same
+/// spelling that reached here, a wrong-arity call) from being reported as an
+/// array shape.
+fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "Array::reverse" || fname == "Array::concat"
+  if preserves && Array::length(cargs) >= 1 {
+    let sh = infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
+    if String::starts_with(sh, "[") {
+      sh
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+}
+
+fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match e {
     ETuple(items) => if Array::length(items) == 0 {
       ""
@@ -2369,14 +2536,23 @@ fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: 
         }
       }
     },
-    ECall(callee, _, _) => match callee {
+    ECall(callee, cargs, _) => match callee {
       EIdent(fname, _) => match lookup_var_type(var_types, eq_shape_key(fname)) {
         Some(sh) => interp_shape(sh),
         None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
           Some(sh) => interp_shape(sh),
-          None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
-            Some(t) => t,
-            None => ""
+          None => {
+            // #1880: checked AFTER the two lookups above, so a user binding
+            // with one of these names still wins.
+            let preserved = dtd_elem_preserving_shape(fname, cargs, struct_sets, var_types, fn_returns)
+            if String::length(preserved) > 0 {
+              preserved
+            } else {
+              match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+                Some(t) => t,
+                None => ""
+              }
+            }
           }
         }
       },
