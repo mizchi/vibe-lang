@@ -4090,6 +4090,140 @@ echo "[compiler-gate] region capture ok"
 #      being dropped (#706 — leaked ~84 B per call before its fix) makes it
 #      scale with N (or trap). #700 slipped precisely because no gate asserted
 #      a bounded heap.
+# #1540: the memhost-with-realloc module the async string shape needs must be a
+# VALID core module, not merely well-shaped bytes. The first cut emitted two
+# separate export sections (`emit_export_memory` and `emit_export_section` each
+# emit their own section 7, and a core module may carry only one), which every
+# byte-inspection test happily accepted and `wasm-tools validate` rejected with
+# "section out of order". Emitting and validating is the only assertion that
+# catches that class.
+if command -v wasm-tools >/dev/null 2>&1; then
+  echo "[compiler-gate] 40c3/40 memhost-with-realloc is a valid core module (#1540)"
+  mhdir="_build/_gate_memhost_realloc"
+  rm -rf "$mhdir"; mkdir -p "$mhdir"
+  cat > "$mhdir/emit.vibe" <<'MHEOF'
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_memhost_realloc_fixture
+}
+
+fn main() -> Int with Fs {
+  let m = comp_emit_memhost_realloc_fixture()
+  Fs::write_bytes("_build/_gate_memhost_realloc/memhost.wasm", m)
+  Bytes::length(m)
+}
+MHEOF
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$mhdir/emit.vibe" "$mhdir/emit.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$mhdir/emit.wasm" ]; then
+    echo "[compiler-gate] FAIL: the memhost-realloc emitter program did not compile" >&2
+    cat "$mhdir/emit.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke main "$mhdir/emit.wasm" >/dev/null 2>&1 || true
+  if [ ! -s "$mhdir/memhost.wasm" ]; then
+    echo "[compiler-gate] FAIL: the memhost-realloc emitter wrote no module" >&2
+    exit 1
+  fi
+  if ! wasm-tools validate "$mhdir/memhost.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: the emitted memhost-realloc module does not validate (#1540)" >&2
+    wasm-tools validate "$mhdir/memhost.wasm" >&2 || true
+    exit 1
+  fi
+  echo "[compiler-gate] memhost-with-realloc validates ok (#1540)"
+else
+  echo "[compiler-gate] note: wasm-tools absent, skipping the memhost-realloc validation (#1540)"
+fi
+# #1540: the whole async string component, assembled from the widened emitters
+# alone, must LOAD AND RUN -- not merely carry the right bytes.
+#
+# The unit test in component_codegen_test.vibe pins the canon byte sequences and
+# the core-func indices around them, and that is as far as byte inspection can
+# go: a component whose lift points at the wrong core func, whose data segment
+# never reaches the imported memory, or whose instantiation order is unsound
+# still contains every sequence the test looks for. Running it is the only
+# assertion that separates "emits the documented bytes" from "is the component
+# the probe is".
+#
+# The bar is the hand-written probe's: greet("bob") -> "hi", meaning the string
+# really round-trips out through task.return.
+gate_wasmtime_bin="$(bash scripts/wasmtime_bin.sh 2>/dev/null || command -v wasmtime || true)"
+if command -v wasm-tools >/dev/null 2>&1 && [ -n "$gate_wasmtime_bin" ] \
+   && "$gate_wasmtime_bin" --version >/dev/null 2>&1; then
+  echo "[compiler-gate] 40c4/40 emitted async string component runs (#1540)"
+  asdir="_build/_gate_async_string_component"
+  rm -rf "$asdir"; mkdir -p "$asdir"
+  cat > "$asdir/emit.vibe" <<'ASEOF'
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_async_string_component
+}
+
+fn repeat(piece: String, count: Int) -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < count {
+    StringBuilder::push(out, piece)
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+fn main() -> Int with Fs {
+  let m = comp_emit_async_string_component("greet", "name", "hi")
+  Fs::write_bytes("_build/_gate_async_string_component/component.wasm", m)
+  let large = comp_emit_async_string_component("greet", "name", repeat("x", 1100))
+  Fs::write_bytes("_build/_gate_async_string_component/component-large.wasm", large)
+  Bytes::length(m)
+}
+ASEOF
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$asdir/emit.vibe" "$asdir/emit.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$asdir/emit.wasm" ]; then
+    echo "[compiler-gate] FAIL: the async-string component emitter program did not compile" >&2
+    cat "$asdir/emit.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke main "$asdir/emit.wasm" >/dev/null 2>&1 || true
+  if [ ! -s "$asdir/component.wasm" ]; then
+    echo "[compiler-gate] FAIL: the async-string component emitter wrote no component" >&2
+    exit 1
+  fi
+  if ! wasm-tools validate --features all "$asdir/component.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: the emitted async string component does not validate (#1540)" >&2
+    wasm-tools validate --features all "$asdir/component.wasm" >&2 || true
+    exit 1
+  fi
+  if ! wasm-tools validate --features all "$asdir/component-large.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: the emitted large-reply component does not validate (#1540)" >&2
+    wasm-tools validate --features all "$asdir/component-large.wasm" >&2 || true
+    exit 1
+  fi
+  as_out="$("$gate_wasmtime_bin" run -W exceptions=y -W concurrency-support=y \
+    -W component-model-async=y -W component-model-async-stackful=y \
+    --invoke 'greet("bob")' "$asdir/component.wasm" 2>&1 || true)"
+  case "$as_out" in
+    *'"hi"'*) ;;
+    *)
+      echo "[compiler-gate] FAIL: emitted greet(\"bob\") returned '$as_out' (want \"hi\") (#1540)" >&2
+      exit 1
+      ;;
+  esac
+  as_large_out="$("$gate_wasmtime_bin" run -W exceptions=y -W concurrency-support=y \
+    -W component-model-async=y -W component-model-async-stackful=y \
+    --invoke 'greet("bob")' "$asdir/component-large.wasm" 2>&1 || true)"
+  as_large_payload="$(printf '%s' "$as_large_out" | tr -d '"(),[:space:]')"
+  as_large_non_x="$(printf '%s' "$as_large_payload" | tr -d 'x')"
+  if [ "${#as_large_payload}" -ne 1100 ] || [ -n "$as_large_non_x" ]; then
+    echo "[compiler-gate] FAIL: large reply was corrupted or truncated (got ${#as_large_payload} bytes) (#1540)" >&2
+    exit 1
+  fi
+  echo "[compiler-gate] emitted async string component: greet(\"bob\") -> \"hi\" (#1540)"
+else
+  echo "[compiler-gate] note: wasm-tools/wasmtime absent, skipping the async string component run (#1540)"
+fi
 # #1746 (RC lane): the raw-ABI shim dispatched on the callee NAME alone, so a
 # program defining its own top-level `fn sleep` had the shim applied to ITS
 # call -- emitting a module that failed validation, with no diagnostic. Only
