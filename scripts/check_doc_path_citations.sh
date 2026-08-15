@@ -23,15 +23,24 @@
 #      "removed", "retired", "deleted". Writing a path down precisely to say it
 #      does not exist is legitimate and self-documenting; the rule is that you
 #      have to say so.
-#   4. It is listed in scripts/doc_path_citation_allowlist.txt. Every entry
-#      there is debt: a real dangling citation nobody has resolved yet.
+#   4. The pair (document, path) is listed in
+#      scripts/doc_path_citation_allowlist.txt. Every entry there is debt: a real
+#      dangling citation nobody has resolved yet. The key is the PAIR, so
+#      allowlisting a bad path in one document does not license the same path in
+#      another -- otherwise the number of bad sites could grow without the
+#      allowlist changing, and it would not be a ratchet at all.
 #
-# Five of the compiler's files are build outputs rather than tracked sources
-# (scripts/ensure_generated.sh), so a tree exported with `git checkout-index` --
-# which is what the pre-commit hook lints -- does not contain them, and a
-# citation to one would look dangling there. Set VIBE_DOC_CITATION_RESOLVE_ROOT
-# to a real working tree to resolve against that as well as the current
-# directory; the pre-commit hook points it at the repository root.
+# Five compiler files are build outputs rather than tracked sources
+# (scripts/ensure_generated.sh), so a `git checkout-index` export -- which is
+# what the pre-commit hook lints -- does not contain them. They are exempt BY
+# NAME rather than by resolving against the working tree: a general working-tree
+# fallback would also find a file that a partial-stage commit deleted or renamed
+# in the index but left lying around unstaged, which is exactly the staged-
+# snapshot guarantee the hook exists to provide.
+#
+# VIBE_DOC_CITATION_DOCS_ROOT points the scan at a different tree (the hook sets
+# it to the staged snapshot). Resolution still happens against the real
+# repository, so a doc and the file it cites must move together.
 #
 # Usage: bash scripts/check_doc_path_citations.sh [--list]
 #   --list  print every unresolved citation including allowlisted ones, and
@@ -46,18 +55,27 @@ allowlist="scripts/doc_path_citation_allowlist.txt"
 list_mode=0
 [ "${1:-}" = "--list" ] && list_mode=1
 
-python3 - "$allowlist" "$list_mode" "${VIBE_DOC_CITATION_RESOLVE_ROOT:-}" <<'PY'
+python3 - "$allowlist" "$list_mode" "${VIBE_DOC_CITATION_DOCS_ROOT:-.}" "$repo_root" <<'PY'
 import io, os, re, sys
 
 allowlist_path, list_mode = sys.argv[1], sys.argv[2] == "1"
-resolve_root = sys.argv[3] if len(sys.argv) > 3 else ""
+docs_root, repo_root = sys.argv[3], sys.argv[4]
 
+# Entries are "<document> <path>" pairs.
 allowed = set()
 if os.path.exists(allowlist_path):
     for line in io.open(allowlist_path, encoding="utf-8"):
         line = line.split("#", 1)[0].strip()
-        if line:
-            allowed.add(line)
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            print(
+                f"{allowlist_path}: expected '<document> <path>', got: {line}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        allowed.add((parts[0], parts[1]))
 
 # Where a doc-relative path may be rooted. Compiler docs write paths relative to
 # the package they are describing.
@@ -69,7 +87,37 @@ PREFIXES = [
 # Only extensions that name a file in this repository. Bare words with dots
 # (module.member, a.b) are not paths, so a path must contain a slash.
 EXT = r"vibe|vibex|vpkg|mbt|mbti|sh|mjs|js|cjs|py|pkl|json|lean|toml|tsv|txt|wat|wit|md"
+# Three shapes count as a citation:
+# A citation is a rooted path with a directory component: `a/b.vibe`. A bare
+# dotted word with no known extension (`Array.map`, `record.field`) is not a
+# path, which is what the extension list buys.
+#
+# Two other shapes are deliberately NOT checked, because in these documents they
+# are the language being documented rather than references into the tree, and
+# the two uses are indistinguishable from the text:
+#
+#   Bare filenames. The compiler docs write "`checker.vibe` does X" about a file
+#   three directories down, and the language docs write `index.vibe` about a
+#   spelling the loader accepts -- there is not one `index.vibe` in this
+#   repository and every mention of it is correct. Measured: requiring bare names
+#   to resolve produced 22 false positives on that one word.
+#
+#   `./` and `../` paths. Every one in docs/ is an import-syntax example --
+#   `PathRef`: `./foo.vibe`, `../foo.vibe`; directory-import resolution
+#   `./dir` -> `./dir/index.vibe`; a root-escape failure on `../module/path.vibe`.
+#   Measured: checking them found 5 such examples and 0 real citations.
 CITE = re.compile(r"`([A-Za-z_][\w./@*+-]*/[\w./@*+-]+\.(?:" + EXT + r"))`")
+
+# Build outputs of scripts/ensure_generated.sh: real files in a working tree,
+# absent from a `git checkout-index` export. Exempt by name, not by falling back
+# to the working tree -- see the header.
+GENERATED = {
+    "lib/@vibe/compiler/compiler_sources_bundle.vibe",
+    "lib/@vibe/compiler/cli_adapter_bundle.vibe",
+    "lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe",
+    "lib/@vibe/compiler/_cli_adapter_module_source.vibe",
+    "lib/@vibe/compiler/cache/codegen_fingerprint.vibe",
+}
 
 GONE = re.compile(
     r"現存しない|存在しない|no longer (exists|present)|"
@@ -77,22 +125,22 @@ GONE = re.compile(
     re.IGNORECASE,
 )
 
-def resolves(target):
-    roots = ["", resolve_root] if resolve_root else [""]
-    return any(
-        os.path.exists(os.path.join(root, prefix + target))
-        for root in roots
-        for prefix in PREFIXES
-    )
+def resolves(target, doc_dir):
+    if target in GENERATED:
+        return True
+    return any(os.path.exists(os.path.join(repo_root, p + target)) for p in PREFIXES)
 
 findings = []
-for root, dirs, files in os.walk("docs"):
+scanned = set()
+for root, dirs, files in os.walk(os.path.join(docs_root, "docs")):
     dirs[:] = [d for d in dirs if d != "archive"]
     for name in sorted(files):
         if not name.endswith(".md"):
             continue
-        path = os.path.join(root, name)
-        lines = io.open(path, encoding="utf-8").read().split("\n")
+        path = os.path.relpath(os.path.join(root, name), docs_root)
+        doc_dir = os.path.join(repo_root, os.path.dirname(path))
+        scanned.add(path)
+        lines = io.open(os.path.join(docs_root, path), encoding="utf-8").read().split("\n")
         for lineno, line in enumerate(lines, 1):
             # Prose wraps, so "... was removed" often lands on the next line.
             window = "\n".join(lines[max(0, lineno - 3):lineno + 2])
@@ -104,14 +152,14 @@ for root, dirs, files in os.walk("docs"):
                 # Build outputs are not tracked; a doc may name one it produced.
                 if target.startswith("_build/") or target.startswith("dist/"):
                     continue
-                if resolves(target):
+                if resolves(target, doc_dir):
                     continue
                 # Retired MoonBit host: historical record, not navigation.
                 if target.startswith("src/") or target.endswith((".mbt", ".mbti")):
                     continue
                 if GONE.search(window):
                     continue
-                findings.append((path, lineno, target, target in allowed))
+                findings.append((path, lineno, target, (path, target) in allowed))
 
 unresolved = [f for f in findings if not f[3]]
 
@@ -138,10 +186,14 @@ if unresolved:
     print(f"  Adding it to {allowlist_path} records it as debt instead.", file=sys.stderr)
     sys.exit(1)
 
-stale = sorted(allowed - {f[2] for f in findings})
+# Only a document this run actually scanned can be judged. The pre-commit hook
+# lints a staged snapshot, and precommit_test.sh runs against a synthetic repo
+# with no docs/ at all -- neither is evidence that an entry is obsolete.
+cited = {(f[0], f[2]) for f in findings}
+stale = sorted(e for e in allowed if e[0] in scanned and e not in cited)
 if stale:
-    for target in stale:
-        print(f"{allowlist_path}: `{target}` is allowlisted but no longer cited anywhere", file=sys.stderr)
+    for doc, target in stale:
+        print(f"{allowlist_path}: {doc} no longer cites `{target}`", file=sys.stderr)
     print("", file=sys.stderr)
     print(
         "check-doc-path-citations: FAIL: the allowlist has entries that are no longer "
