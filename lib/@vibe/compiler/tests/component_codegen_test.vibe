@@ -14,10 +14,10 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_core_imports_host_future,
   comp_core_imports_host_stream,
   comp_core_imports_stdin_provider,
+  comp_emit_async_string_canon_fixture,
+  comp_emit_async_string_component,
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
-  comp_emit_async_string_canon_fixture,
-  comp_emit_memhost_realloc_fixture,
   comp_emit_component_wasm_async_concurrent_awaits,
   comp_emit_component_wasm_async_hostfuture,
   comp_emit_component_wasm_async_spawned_future,
@@ -33,6 +33,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_string_handler_stubbed,
   comp_emit_component_wasm_with_lift,
   comp_emit_component_wasm_with_string_lift,
+  comp_emit_memhost_realloc_fixture,
   comp_generate_string_trampoline,
   comp_generate_string_trampoline_packed
 }
@@ -82,6 +83,16 @@ fn component_bytes_contains(hay: Bytes, needle: String) -> Int {
     }
     found
   }
+}
+
+fn repeated_string(piece: String, count: Int) -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < count {
+    StringBuilder::push(out, piece)
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
 }
 
 fn build_test_core() -> Bytes {
@@ -551,6 +562,86 @@ test "component async: memhost-with-realloc exports memory and cabi_realloc (#15
     127,
     1,
     127
+  ]) == 1)
+}
+
+/// #1540: the assembled component -- the emitter twin of the async_string_lift
+/// probe, and the milestone the canon widening was for.
+///
+/// The three canon sequences are the same ones the fixture test above pins, so
+/// this test is not about them: it is about the INDICES around them, which the
+/// fixture cannot exercise because it emits the canons into an empty component.
+/// Aliases and canon built-ins share one core-func index space in emission
+/// order, so the realloc alias (which must precede both canons) pushes
+/// task.return to core func 1 and the guest's own export to core func 2. Get
+/// that wrong and every byte here still looks right while the component either
+/// fails to validate or lifts the wrong function.
+///
+/// `scripts/compiler_gate.sh` runs the emitted component under wasmtime; this
+/// test is the always-on half that needs no external tool.
+test "component async: the emitted string component wires the canon indices (#1540)" {
+  let comp = comp_emit_async_string_component("greet", "name", "hi")
+  // async functype: one string param named "name", string result
+  assert(bytes_contains_seq(comp, [
+    67,
+    1,
+    4,
+    110,
+    97,
+    109,
+    101,
+    115,
+    0,
+    115
+  ]) == 1)
+  // task.return: Memory(0) + UTF8, no realloc
+  assert(bytes_contains_seq(comp, [
+    9,
+    0,
+    115,
+    2,
+    3,
+    0,
+    0
+  ]) == 1)
+  // the async lift, lifting CORE FUNC 2 -- the guest alias, not the realloc
+  // alias (0) and not task.return (1)
+  assert(bytes_contains_seq(comp, [
+    0,
+    0,
+    2,
+    4,
+    6,
+    3,
+    0,
+    4,
+    0,
+    0,
+    0
+  ]) == 1)
+  // the guest imports the task-return under the name the export is called
+  assert(component_bytes_contains(comp, "[task-return]greet") == 1)
+  assert(component_bytes_contains(comp, "[export]$root") == 1)
+  // and the reply is a data segment, so it is observable to the lift
+  assert(component_bytes_contains(comp, "hi") == 1)
+}
+
+test "component async: reply data stays below the caller allocation region (#1540)" {
+  let reply = repeated_string("x", 1100)
+  let comp = comp_emit_async_string_component("greet", "name", reply)
+  // reply occupies [16, 1116), so the next 64-byte boundary is 1152. The
+  // memhost global initializer must therefore be i32.const 1152 (80 09), not
+  // the old fixed 1024 (80 08), or canonical lowering overwrites the reply.
+  assert(bytes_contains_seq(comp, [
+    6,
+    7,
+    1,
+    127,
+    1,
+    65,
+    128,
+    9,
+    11
   ]) == 1)
 }
 

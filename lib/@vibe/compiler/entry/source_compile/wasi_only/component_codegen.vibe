@@ -21,6 +21,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_br_if,
   emit_call,
   emit_code_section,
+  emit_data_section,
   emit_end,
   emit_export_memory,
   emit_export_section,
@@ -55,7 +56,8 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_loop_void,
   emit_memory_section,
   emit_name,
-  emit_return
+  emit_return,
+  string_to_data
 }
 
 //# Functions
@@ -1380,7 +1382,7 @@ fn emit_comp_async_functype_section(buf: Bytes, result_valtype: Int) -> Unit {
 /// #1540: the memhost-with-realloc module on its own, so its shape is testable
 /// before the serve-emitter merge gives it a caller.
 export fn comp_emit_memhost_realloc_fixture() -> Bytes {
-  comp_generate_memhost_realloc_module()
+  comp_generate_memhost_realloc_module(1024)
 }
 
 export fn comp_emit_async_string_canon_fixture() -> Bytes {
@@ -1940,6 +1942,147 @@ fn emit_canon_stream_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
 /// guest module itself is instantiated, breaking the "canon options need
 /// memory before the guest/memory exists" circularity documented in
 /// tools/wasip3_component_probe/stackful/README.md bug #2.
+/// #1540: guest core module for the async string shape -- the emitter twin of
+/// `tools/wasip3_component_probe/async_string_lift/component.wat`'s `$m`.
+///
+/// Imports `[export]$root`.`[task-return]<name>` and `env.memory`, and exports
+/// a `<name>` taking the flattened string param `(ptr, len)` and returning
+/// NOTHING: an async lift delivers its result through `task.return`, not
+/// through the core function's own return path. The reply bytes are a data
+/// segment written into the IMPORTED memory at instantiation, which is what
+/// makes them observable to the lift.
+///
+/// Answering a constant is the point at this stage: what has to be proved is
+/// that the emitted CANON SHAPE loads and round-trips a string, not that a
+/// handler computed something.
+fn comp_generate_async_string_guest_module(export_name: String, reply: String) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let type_sec = bytebuf_new()
+  bytebuf_push_vec_header(type_sec, 1)
+  emit_func_type_raw(type_sec, [
+    127,
+    127
+  ], array_empty())
+  bytebuf_push_section(out, 1, type_sec)
+  let import_sec = bytebuf_new()
+  leb128_encode_u32(import_sec, 2)
+  emit_name(import_sec, "[export]$root")
+  emit_name(import_sec, String::concat("[task-return]", export_name))
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "memory")
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  bytebuf_push_section(out, 2, import_sec)
+  emit_function_section(out, [
+    0
+  ])
+  emit_export_section(out, export_name, 1)
+  let body = bytebuf_new()
+  emit_i32_const(body, comp_async_string_reply_offset)
+  emit_i32_const(body, String::length(reply))
+  emit_call(body, 0)
+  emit_code_section(out, [
+    body
+  ])
+  emit_data_section(out, comp_async_string_reply_offset, string_to_data(reply))
+  bytebuf_to_bytes(out)
+}
+
+/// Where the guest module above parks its reply bytes. Above the low slots a
+/// caller might use for its own fixed areas and below the memhost realloc's
+/// bump start, so the three never overlap.
+let comp_async_string_reply_offset = 16
+
+fn comp_async_string_heap_start(reply: String) -> Int {
+  let reply_end = comp_async_string_reply_offset + String::length(reply)
+  let aligned = ((reply_end + 63) / 64) * 64
+  if aligned < 1024 {
+    1024
+  } else {
+    aligned
+  }
+}
+
+/// #1540: the whole async string component, assembled from the widened
+/// emitters -- the emitter twin of the async_string_lift probe.
+///
+/// This is the milestone the canon widening was for: every piece the
+/// serve-emitter merge needs (async functype with params, task.return carrying
+/// memory + encoding, async lift carrying memory + realloc + encoding, and a
+/// memhost that supplies both) proved to work TOGETHER, on a component that
+/// wasmtime loads and runs, before any of it is wired to real source.
+///
+/// Instance / index layout, in emission order:
+///   core module    0 = memhost+realloc, 1 = guest
+///   core instance  0 = memhost, 1 = [export]$root (task-return),
+///                  2 = env (memory), 3 = guest
+///   core memory    0 = alias(memhost, "memory")
+///   core func      0 = alias(memhost, "cabi_realloc"), 1 = task.return,
+///                  2 = alias(guest, export_name)
+///   component type 0 = the async functype; component func 0 = the lift
+///
+/// The core-func numbering is the part that is easy to get wrong: aliases and
+/// canon built-ins share ONE index space in emission order, so hoisting the
+/// realloc alias above the canons (which it must be -- `emit_alias_section`
+/// takes the memhost instance, and the canons want the realloc index) shifts
+/// task.return to 1 and the guest alias to 2.
+export fn comp_emit_async_string_component(export_name: String, param_name: String, reply: String) -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, comp_generate_memhost_realloc_module(comp_async_string_heap_start(reply)))
+  emit_core_module_section(buf, comp_generate_async_string_guest_module(export_name, reply))
+  emit_core_instance_instantiate_section(buf, 0, array_empty())
+  emit_alias_section(buf, 0, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_alias_section(buf, 0, [
+    "cabi_realloc"
+  ], [
+    core_sort_func
+  ])
+  emit_comp_async_functype_params(buf, [
+    param_name
+  ], [
+    comp_valtype_string
+  ], comp_valtype_string)
+  emit_canon_task_return_opts(buf, comp_valtype_string, 0, true)
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    String::concat("[task-return]", export_name)
+  ], [
+    1
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    0
+  ])
+  emit_core_instance_instantiate_args(buf, 1, [
+    "[export]$root",
+    "env"
+  ], [
+    1,
+    2
+  ])
+  emit_alias_section(buf, 3, [
+    export_name
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_opts(buf, 2, 0, 0, 0, true)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
 /// #1540: the memhost, plus a `cabi_realloc` the canon options can point at.
 ///
 /// The async_string_lift probe surfaced this as a structural requirement, not a
@@ -1958,7 +2101,7 @@ fn emit_canon_stream_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
 /// `comp_generate_memhost_module`: every component built today embeds that
 /// module, and adding an export would change all of their bytes for the
 /// benefit of a shape none of them use.
-fn comp_generate_memhost_realloc_module() -> Bytes {
+fn comp_generate_memhost_realloc_module(heap_start: Int) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
   let tc = bytebuf_new()
@@ -1976,9 +2119,10 @@ fn comp_generate_memhost_realloc_module() -> Bytes {
     0
   ])
   emit_memory_section(out, 1)
-  // The bump pointer starts above the low addresses the callers of this shape
-  // use for their own fixed slots (the probe's return area sits at 64).
-  emit_global_section_i32_mut(out, 1024)
+  // The caller derives this from every fixed data segment that shares the
+  // memory. A fixed 1024 silently overlapped replies longer than 1008 bytes:
+  // canonical lowering wrote its argument into the reply before task.return.
+  emit_global_section_i32_mut(out, heap_start)
   // One export section with a MIXED kind list. `emit_export_memory` and
   // `emit_export_section` each emit their own section 7, and a core module may
   // carry only one -- the first cut did both and produced "section out of

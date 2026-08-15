@@ -45,6 +45,14 @@
 ;;
 ;;   option codes  00=UTF8  03 <idx>=Memory  04 <idx>=Realloc  06=Async
 ;;
+;; STATUS: the emitters have since been widened to produce exactly this, and
+;; `comp_emit_async_string_component` (component_codegen.vibe) assembles the
+;; whole component below from them -- validated and run by
+;; `scripts/compiler_gate.sh` lane 40c4, which holds it to this probe's bar
+;; (greet("bob") -> "hi"). This file stays as the HAND-WRITTEN reference: it is
+;; what the emitter was measured against, and the byte sequences documented here
+;; are what both the gate above and component_codegen_test.vibe assert.
+;;
 ;; The structural constraint this probe also demonstrates: memory and realloc
 ;; must live OUTSIDE the guest instance. `task.return` needs them, the guest
 ;; imports `[task-return]`, so a guest-owned memory would be a cycle. That is
