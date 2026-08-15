@@ -784,6 +784,74 @@ export fn contract_impl_import_raw_paths(stmts: Array[Stmt]) -> Array[String] wi
   raws
 }
 
+/// #1840: the TYPE-FAMILY subset of a contract's transparent definitions
+/// (struct / enum / type alias). These move out of the facade into a
+/// materialized "types module" the loader writes under the build cache, so
+/// sibling impl units can IMPORT them — which is what gives enum
+/// constructors real value bindings in every lane (an enum living only in
+/// the facade left siblings failing with `unknown name: <Ctor>`, and
+/// re-defining it locally compiled into a second identity that trapped at
+/// runtime, #1879). Effects / effectsets stay in the facade: their use
+/// sites resolve through the row machinery, not through value names.
+export fn contract_type_family_defs(type_defs: Array[Stmt]) -> Array[Stmt] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(type_defs) {
+    let td = Array::get(type_defs, i)
+    match td {
+      SStruct(_, _, _, _, _, _) => Array::push(out, td),
+      SEnum(_, _, _, _, _) => Array::push(out, td),
+      STypeAlias(_, _, _, _) => Array::push(out, td),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1840: idempotency marker for the materialized types module (mirrors
+/// `contract_facade_marker` / `vpkg_shared_import_marker`).
+export let vpkg_types_module_marker: String = "// vibe: vpkg contract types module (#1840)\n"
+
+/// #1840: the materialized types module's source text — the contract's
+/// type-family definitions verbatim (they are already exported by
+/// `classify_contract_stmts`), behind the idempotency marker.
+export fn contract_types_module_text(tds: Array[Stmt]) -> String {
+  let lines = array_empty()
+  Array::push(lines, vpkg_types_module_marker)
+  let mut i = 0
+  while i < Array::length(tds) {
+    Array::push(lines, print_stmt(Array::get(tds, i)))
+    i = i + 1
+  }
+  String::concat(String::join(lines, "\n"), "\n")
+}
+
+/// #1840: the `type <Name>` item list for importing / re-exporting the
+/// materialized types module (a `type` import binds the typedef AND, for an
+/// enum, its constructors — both bare and `Enum::Ctor`-qualified).
+export fn contract_types_item_names(tds: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(tds) {
+    match Array::get(tds, i) {
+      SStruct(_, name, _, _, _, _) => Array::push(out, String::concat("type ", name)),
+      SEnum(_, name, _, _, _) => Array::push(out, String::concat("type ", name)),
+      STypeAlias(_, name, _, _) => Array::push(out, String::concat("type ", name)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1840: one source line importing (keyword `import`) or re-exporting
+/// (keyword `export`) the materialized types module.
+export fn contract_types_module_line(keyword: String, types_path: String, tds: Array[Stmt]) -> String {
+  let items = contract_types_item_names(tds)
+  String::concat(keyword, String::concat(" ", String::concat(types_path, String::concat(" { ", String::concat(String::join(items, ", "), " }\n")))))
+}
+
 /// #897 (ADR-0070 Phase 1): does every item of a qualified `import <path> as
 /// <mod> only { x, y }` import get its dot-joined "mod.x" alias (parser.vibe's
 /// `qualify_import_items`)? Real identifiers can never contain '.', so a "."
@@ -871,11 +939,37 @@ export fn contract_directory_shared_import_prefix_text(stmts: Array[Stmt]) -> St
 /// source, so everything downstream of the loader (type db, merge plan,
 /// codegen) needs no .vibei awareness — it rides the #716 re-export
 /// machinery unchanged.
-export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])]) -> String with Exception {
+export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
   let lines = array_empty()
+  // #1840: when the loader materialized a types module, the facade
+  // RE-EXPORTS the type family from it instead of defining it verbatim —
+  // the definitions must have exactly ONE site (a second identity for the
+  // same enum traps at runtime, #1879), and that site must be importable by
+  // sibling impl units (the facade is not: facade → impl would become a
+  // cycle). Effects / effectsets / anything non-type-family stay verbatim.
+  if types_path != "" {
+    Array::push(lines, contract_types_module_line("export", types_path, type_defs))
+  } else {
+    ()
+  }
   let mut tdi = 0
   while tdi < Array::length(type_defs) {
-    Array::push(lines, print_stmt(Array::get(type_defs, tdi)))
+    let td = Array::get(type_defs, tdi)
+    let in_types_module = if types_path == "" {
+      false
+    } else {
+      match td {
+        SStruct(_, _, _, _, _, _) => true,
+        SEnum(_, _, _, _, _) => true,
+        STypeAlias(_, _, _, _) => true,
+        _ => false
+      }
+    }
+    if in_types_module {
+      ()
+    } else {
+      Array::push(lines, print_stmt(td))
+    }
     tdi = tdi + 1
   }
   let allocated = array_empty()
