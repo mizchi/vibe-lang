@@ -404,93 +404,98 @@ fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
 /// form only after confirming compute_borrow_returning_names_test.vibe (or an
 /// equivalent derive(Ord) regression) still passes.
 fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
-  let worklist = [
-    e0
-  ]
-  let mut all_safe = true
-  let mut i = 0
-  while i < Array::length(worklist) {
-    match Array::get(worklist, i) {
-      ELet(_, _, b, _) => Array::push(worklist, b),
-      ELetMut(_, _, b, _) => Array::push(worklist, b),
-      ELetRec(_, _, b) => Array::push(worklist, b),
-      ESeq(_, b) => Array::push(worklist, b),
-      EAssign(_, _, b) => Array::push(worklist, b),
-      EAssignOp(_, _, _, b) => Array::push(worklist, b),
-      EIf(_, t, el) => {
-        Array::push(worklist, t)
-        Array::push(worklist, el)
-      },
-      EMatch(_, arms) => {
-        let mut ai = 0
-        while ai < Array::length(arms) {
-          let (_p, ae) = Array::get(arms, ai)
-          Array::push(worklist, ae)
-          ai = ai + 1
-        }
-      },
-      ECall(callee_e, cargs, _) =>
-      match callee_e {
-        EIdent(callee, _) =>
-        if callee == "perform" && Array::length(cargs) == 1 {
-          // #640 Stage 2: `throw(x)` now parses to `perform Exception::Throw(x)`,
-          // so the #715 throwing-tail exemption below (EThrow) must also
-          // recognize this shape — a throwing tail never produces a value, so
-          // it cannot violate the borrow-returning invariant. Without this,
-          // every `match x { Ctor(..) => field, _ => throw(..) }` accessor is
-          // again rejected as borrow-returning and the #715 same-address
-          // double-free returns. Matched step-by-step (NOT one nested
-          // ECall(EIdent(..)) pattern) per the workaround note above.
-          let mut op_is_throw = false
-          match Array::get(cargs, 0) {
-            ECall(op_e, _, _) =>
-            match op_e {
-              EIdent(op_n, _) => if is_exception_throw_operation(op_n) {
-                op_is_throw = true
-              } else {
-                ()
+  // ADR-0090 / #1770: the worklist grows while being consumed in-place and
+  // only the Bool verdict escapes, so its growth garbage goes to the region
+  // arena (MutList) instead of the main heap. Bump lane only; under RC the
+  // list degrades to a plain main-heap array with the same semantics.
+  region r {
+    let worklist = MutList::empty(r)
+    MutList::push(worklist, e0)
+    let mut all_safe = true
+    let mut i = 0
+    while i < MutList::length(worklist) {
+      match MutList::get(worklist, i) {
+        ELet(_, _, b, _) => MutList::push(worklist, b),
+        ELetMut(_, _, b, _) => MutList::push(worklist, b),
+        ELetRec(_, _, b) => MutList::push(worklist, b),
+        ESeq(_, b) => MutList::push(worklist, b),
+        EAssign(_, _, b) => MutList::push(worklist, b),
+        EAssignOp(_, _, _, b) => MutList::push(worklist, b),
+        EIf(_, t, el) => {
+          MutList::push(worklist, t)
+          MutList::push(worklist, el)
+        },
+        EMatch(_, arms) => {
+          let mut ai = 0
+          while ai < Array::length(arms) {
+            let (_p, ae) = Array::get(arms, ai)
+            MutList::push(worklist, ae)
+            ai = ai + 1
+          }
+        },
+        ECall(callee_e, cargs, _) =>
+        match callee_e {
+          EIdent(callee, _) =>
+          if callee == "perform" && Array::length(cargs) == 1 {
+            // #640 Stage 2: `throw(x)` now parses to `perform Exception::Throw(x)`,
+            // so the #715 throwing-tail exemption below (EThrow) must also
+            // recognize this shape — a throwing tail never produces a value, so
+            // it cannot violate the borrow-returning invariant. Without this,
+            // every `match x { Ctor(..) => field, _ => throw(..) }` accessor is
+            // again rejected as borrow-returning and the #715 same-address
+            // double-free returns. Matched step-by-step (NOT one nested
+            // ECall(EIdent(..)) pattern) per the workaround note above.
+            let mut op_is_throw = false
+            match Array::get(cargs, 0) {
+              ECall(op_e, _, _) =>
+              match op_e {
+                EIdent(op_n, _) => if is_exception_throw_operation(op_n) {
+                  op_is_throw = true
+                } else {
+                  ()
+                },
+                _ => ()
               },
               _ => ()
-            },
-            _ => ()
-          }
-          if op_is_throw {
-            ()
+            }
+            if op_is_throw {
+              ()
+            } else if !array_contains_str_pctx(known, callee) {
+              all_safe = false
+            } else {
+              ()
+            }
           } else if !array_contains_str_pctx(known, callee) {
             all_safe = false
           } else {
             ()
+          },
+          _ => {
+            all_safe = false
           }
-        } else if !array_contains_str_pctx(known, callee) {
-          all_safe = false
-        } else {
-          ()
         },
+        EIdent(_, _) => (),
+        // #715: a throwing tail (the ubiquitous `match x { Ctor(..) => field, _
+        // => throw("not X") }` shape used by every common_extractors.vibe
+        // accessor) never actually produces a value along that path, so it
+        // cannot violate the borrow-returning invariant -- there is nothing to
+        // mismanage. Without this, EVERY such accessor (get_efn_params,
+        // get_efn_body, get_ecall_args, ...) fell through to the catch-all
+        // below and was rejected solely because of its own error arm, even
+        // though its real (non-throwing) arm is a plain borrowed field
+        // projection. That misclassification made the caller treat the
+        // extracted field as an independently owned value while the
+        // scrutinee's own later structural drop also reclaims it -- a
+        // same-address double-free (the #715 self-hosting free-list
+        // corruption).
         _ => {
           all_safe = false
         }
-      },
-      EIdent(_, _) => (),
-      // #715: a throwing tail (the ubiquitous `match x { Ctor(..) => field, _
-      // => throw("not X") }` shape used by every common_extractors.vibe
-      // accessor) never actually produces a value along that path, so it
-      // cannot violate the borrow-returning invariant -- there is nothing to
-      // mismanage. Without this, EVERY such accessor (get_efn_params,
-      // get_efn_body, get_ecall_args, ...) fell through to the catch-all
-      // below and was rejected solely because of its own error arm, even
-      // though its real (non-throwing) arm is a plain borrowed field
-      // projection. That misclassification made the caller treat the
-      // extracted field as an independently owned value while the
-      // scrutinee's own later structural drop also reclaims it -- a
-      // same-address double-free (the #715 self-hosting free-list
-      // corruption).
-      _ => {
-        all_safe = false
       }
+      i = i + 1
     }
-    i = i + 1
+    all_safe
   }
-  all_safe
 }
 
 /// Strip let/seq/assign wrappers, same as tail_is_borrow_ret_safe, to find the
