@@ -134,11 +134,11 @@ function commitAll(repo, message, date) {
   return command(repo, ["rev-parse", "HEAD"]);
 }
 
-function makeRepository() {
+function makeRepository(initEnv = {}) {
   const outer = mkdtempSync(join(realpathSync(os.tmpdir()), "heap-policy-test-"));
   const repo = join(outer, "repo");
   mkdirSync(repo);
-  command(repo, ["init", "-q"]);
+  command(repo, ["init", "-q", "-b", "main"], initEnv);
   command(repo, ["config", "user.email", "test@example.invalid"]);
   command(repo, ["config", "user.name", "Heap Policy Test"]);
   const input = "lib/@vibe/compiler/tests/codegen_lexer_test.vibe";
@@ -150,6 +150,19 @@ function makeRepository() {
   const initial = commitAll(repo, "initial", "2026-08-01T00:00:00Z");
   return { outer, repo, input, initial };
 }
+
+test("temporary repositories force main independent of global init.defaultBranch", () => {
+  const fixture = makeRepository({
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "init.defaultBranch",
+    GIT_CONFIG_VALUE_0: "master",
+  });
+  try {
+    assert.equal(command(fixture.repo, ["branch", "--show-current"]), "main");
+  } finally {
+    rmSync(fixture.outer, { recursive: true, force: true });
+  }
+});
 
 function makeDriver(outer) {
   const path = join(outer, "driver.mjs");

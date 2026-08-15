@@ -17,11 +17,13 @@ import {
 import os from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { measureTreeInDocker } from "./selfcompile_heap_policy_docker.mjs";
 
 const POLICY_PATH = "bench/perf/selfcompile_heap_policy.json";
 const BUDGET_DIR = "bench/perf/selfcompile_heap_budgets";
 const STAT_TOKEN_MODE = "content-v1";
 const TRUSTED_RUNNER = fileURLToPath(new URL("./run_wasm_vibe_host_runner.sh", import.meta.url));
+const TRUSTED_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLICY_KEYS = [
   "budget_max_lifetime_days",
   "emergency_absolute_cap_bytes",
@@ -234,6 +236,36 @@ function archiveTree(repo, tree, destination) {
   } finally {
     rmSync(archivePath, { force: true });
   }
+}
+
+function archiveTreeToTar(repo, tree, archivePath) {
+  rmSync(archivePath, { force: true });
+  try {
+    execFileSync("git", ["-C", repo, "archive", "--format=tar", `--output=${archivePath}`, tree], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+  } catch (error) {
+    fail("archive-failed", { stderr: String(error.stderr ?? "").slice(-4000) });
+  }
+}
+
+function trustedSeedSha(baseManifest) {
+  let manifest;
+  try { manifest = JSON.parse(baseManifest.toString("utf8")); } catch { fail("malformed-seed-manifest"); }
+  const sha = manifest?.seed?.artifact?.sha256;
+  const artifact = manifest?.seed?.artifact?.path;
+  if (!/^[0-9a-f]{64}$/.test(sha ?? "") || artifact !== "bootstrap/seed/compiler.wasm") fail("malformed-seed-manifest");
+  const trustedManifest = readFileSync(join(TRUSTED_ROOT, "bootstrap", "seed.json"));
+  if (!trustedManifest.equals(baseManifest)) fail("untrusted-controller-base-mismatch");
+  let actual = "";
+  const seedPath = join(TRUSTED_ROOT, artifact);
+  try { actual = createHash("sha256").update(readFileSync(seedPath)).digest("hex"); } catch {}
+  if (actual !== sha) {
+    runChecked("bash", [join(TRUSTED_ROOT, "scripts", "ensure_seed.sh"), "--manifest", join(TRUSTED_ROOT, "bootstrap", "seed.json")], TRUSTED_ROOT, process.env, "trusted-seed-fetch-failed");
+    try { actual = createHash("sha256").update(readFileSync(seedPath)).digest("hex"); } catch {}
+  }
+  if (actual !== sha) fail("trusted-seed-missing-or-stale", { expected: sha, actual });
+  return sha;
 }
 
 function parseArgs(argv) {
@@ -634,6 +666,10 @@ async function runControllerWithLease(options, lease) {
   if (!safeInteger(prNumber, { positive: true })) fail("invalid-arguments");
   const base = resolveCommit(repo, options.base);
   const head = resolveCommit(repo, options.head);
+  if (!options.testDriver) {
+    if (!options.latestBaseRef) fail("invalid-arguments", { missing: "--latest-base-ref" });
+    if (resolveCommit(repo, options.latestBaseRef) !== base) fail("latest-base-advanced");
+  }
   const mergeTree = synthesizeMergeTree(repo, base, head);
   let currentTree = mergeTree;
   let current = null;
@@ -671,26 +707,34 @@ async function runControllerWithLease(options, lease) {
   const baseCommitTime = Number(git(repo, ["show", "-s", "--format=%ct", base]).trim()) * 1000;
   const asOfMs = options.asOf ? Date.parse(options.asOf) : Date.now();
   if (!Number.isFinite(asOfMs)) fail("invalid-arguments", { argument: "--as-of" });
-  const baseResult = await measureTree({
-    repo,
-    tree: baseTree,
-    label: "base",
-    lease,
-    inputBlob,
-    policy,
-    testDriver: options.testDriver,
-    testProcessRunner: options.testProcessRunner,
-  });
-  const currentResult = await measureTree({
-    repo,
-    tree: currentTree,
-    label: "current",
-    lease,
-    inputBlob,
-    policy,
-    testDriver: options.testDriver,
-    testProcessRunner: options.testProcessRunner,
-  });
+  let baseResult;
+  let currentResult;
+  if (options.testDriver) {
+    baseResult = await measureTree({
+      repo, tree: baseTree, label: "base", lease, inputBlob, policy,
+      testDriver: options.testDriver, testProcessRunner: options.testProcessRunner,
+    });
+    currentResult = await measureTree({
+      repo, tree: currentTree, label: "current", lease, inputBlob, policy,
+      testDriver: options.testDriver, testProcessRunner: options.testProcessRunner,
+    });
+  } else {
+    const seedManifest = readTreeFile(repo, base, "bootstrap/seed.json", "malformed-seed-manifest");
+    const seedSha = trustedSeedSha(seedManifest);
+    const baseArchive = join(lease, "base-source.tar");
+    const currentArchive = join(lease, "current-source.tar");
+    archiveTreeToTar(repo, baseTree, baseArchive);
+    archiveTreeToTar(repo, currentTree, currentArchive);
+    baseResult = measureTreeInDocker({
+      trustedRoot: TRUSTED_ROOT, lease, archivePath: baseArchive, inputBlob,
+      input: policy.input, label: "base", oid: base, tree: baseTree, seedSha,
+    });
+    currentResult = measureTreeInDocker({
+      trustedRoot: TRUSTED_ROOT, lease, archivePath: currentArchive, inputBlob,
+      input: policy.input, label: "current", oid: current ?? head, tree: currentTree, seedSha,
+    });
+    if (resolveCommit(repo, options.latestBaseRef) !== base) fail("latest-base-advanced");
+  }
   if (baseTree === currentTree) {
     if (baseResult.stage2_sha256 !== currentResult.stage2_sha256) {
       fail("nondeterministic-build", {
@@ -767,8 +811,8 @@ async function main() {
     const result = await runController(parseArgs(process.argv.slice(2)));
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    const reason = error instanceof HeapPolicyError ? error.reason : "internal-error";
-    const details = error instanceof HeapPolicyError ? error.details : { message: String(error?.stack ?? error) };
+    const reason = error instanceof HeapPolicyError || typeof error?.reason === "string" ? error.reason : "internal-error";
+    const details = error instanceof HeapPolicyError || typeof error?.reason === "string" ? error.details : { message: String(error?.stack ?? error) };
     process.stderr.write(`[heap-policy] FAIL reason=${reason}\n`);
     process.stdout.write(`${JSON.stringify({ schema: 1, decision: "fail", reason, ...details })}\n`);
     process.exitCode = 1;

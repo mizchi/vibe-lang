@@ -9,7 +9,10 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  authorizePolicyRawImport,
+  authorizePolicyRawPath,
   buildFsMetadataHashParts,
+  configurePolicyRawFs,
   configurePolicyStatToken,
   contentStatToken,
   parseArgs,
@@ -37,6 +40,31 @@ function assertToken(value) {
   assert.ok(value >= 1n << 60n && value <= (1n << 61n) - 1n);
   assert.match(value.toString(), /^[1-9][0-9]{18}$/);
 }
+
+test("policy raw Fs selector is CLI-only and requires content-v1", () => {
+  assert.throws(() => parseArgs(["--policy-raw-fs-root", "/tmp", "a.wasm"]), /requires content-v1/);
+  const args = parseArgs(["--policy-stat-token", "content-v1", "--policy-stat-root", "/tmp", "--policy-raw-fs-root", "/tmp", "a.wasm"]);
+  assert.equal(args.policyRawFsRoot, "/tmp");
+  assert.deepEqual(args.passthroughArgs, []);
+});
+
+test("policy raw Fs confines reads to root and writes to policy build", () => {
+  const f = fixture();
+  try {
+    fs.mkdirSync(path.join(f.root, "_build", "selfcompile-policy"), { recursive: true });
+    withCwd(f.root, () => {
+      const stat = configurePolicyStatToken("content-v1", f.root);
+      const raw = configurePolicyRawFs(f.root, stat);
+      assert.doesNotThrow(() => authorizePolicyRawPath(path.join(f.root, "lib.vibe"), false, raw));
+      assert.doesNotThrow(() => authorizePolicyRawPath(path.join(f.root, "_build", "selfcompile-policy", "out.wasm"), true, raw));
+      assert.throws(() => authorizePolicyRawPath("/etc/passwd", false, raw), /escapes allowed root/);
+      assert.throws(() => authorizePolicyRawPath(path.join(f.root, "lib.vibe"), true, raw), /escapes allowed root/);
+      for (const name of ["sh", "sh_lines", "sh_capture", "tcp_connect", "http_request"]) {
+        assert.throws(() => authorizePolicyRawImport(name, [], null, raw), new RegExp(`policy raw import denied: ${name}`));
+      }
+    });
+  } finally { fs.rmSync(f.outer, { recursive: true, force: true }); }
+});
 
 test("content-v1 is inode, mtime, root, alias, and path independent", () => {
   const a = fixture();

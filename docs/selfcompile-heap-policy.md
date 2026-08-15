@@ -114,14 +114,40 @@ were `4a6e2c8b…beafb2e`, and all eight runner attestations reported 6,158 call
 runner sample measured metadata/content-v1 wall medians of 2.03/2.29 seconds
 (+12.81%); this cost is confined to the unwired policy path.
 
-**Phase B remains blocked.** Deterministic tokens remove the known 16-byte
-reconstruction drift, but do not make the current harness safe for PR CI.
-Phase B must execute the complete controller, generation, host-runner, and KPI
-harness closure from immutable base authority. It must run
-base/current in disposable containers with no network, dropped capabilities
-and no-new-privileges, a read-only trusted harness/root filesystem, only
-container-local temporary writable areas, and no writable host mounts. The
-pinned seed and measurement output must also cross trusted boundaries.
+**Phase B remains unwired.** The isolation substrate uses the controller
+checkout as immutable base authority, archives revision trees on the host
+without extracting them, and executes base/current in separate native
+`linux/amd64` containers at `/workspace/repo`. The tool image is digest-pinned;
+its final execution has a read-only root, no network, UID/GID 65532, all
+capabilities dropped, no-new-privileges, seccomp restrictions, fixed memory,
+CPU, PID and file-descriptor limits, and only container-local tmpfs writable
+areas. No bind mount, Docker socket, credential, or secret enters the guest.
+A never-started staging container receives the trusted harness, verified
+base-pinned seed, benchmark blob, and source archive; its local input layer is
+then executed only through a fresh constrained container and deleted.
+
+The trusted entrypoint removes materialized project scripts before generation,
+installs only the base runner needed by hard-coded bootstrap call sites, and
+invokes base `generate_bundle.sh` / `generations.sh` from `/opt/policy`.
+Policy-only raw imports constrain reads to `/workspace/repo`, writes to
+`_build/selfcompile-policy`, and reject shell, TCP, and HTTP dispatch. The host
+sends a random result key on attached stdin; the entrypoint consumes it before
+starting Wasm and returns exactly one domain-separated HMAC-authenticated
+record. Guest stdout/stderr and guest-writable files are never parsed as the
+result channel.
+
+`scripts/selfcompile_heap_policy_docker_test.sh` is the expensive native
+acceptance lane. It checks same-tree build/heap/token identity, poisoned head
+script sentinels, wrong merge identity, reserved paths, and cleanup. The
+workflow-dispatch validation scaffold is intentionally not a PR/push trigger
+and must be removed after native validation before final review. Required CI
+remains unchanged and the existing absolute gate remains authoritative.
+
+The metric still observes the guest-exported `__heap_ptr`. HMAC authentication
+proves what the trusted runner observed, but cannot stop a deliberately
+benchmark-aware compiler from lying through that ABI. Instrumentation or
+repository governance is required before treating the KPI as adversarially
+secure.
 
 ## One-shot growth budgets
 
