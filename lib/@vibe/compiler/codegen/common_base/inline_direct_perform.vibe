@@ -435,14 +435,19 @@ fn idp_is_host_stream_named_raw(nm: String) -> Bool {
   String::starts_with(nm, "vibe_hs_get_raw$")
 }
 
+// #1875 R3: module-level memo -- this predicate runs per CALL NODE of the
+// whole merged program during the direct-perform inlining walk, and used to
+// rebuild the table (and scan it without early exit) on every probe.
+let idp_pure_builtin_names_table: Array[String] = idp_pure_builtin_names()
+
 fn idp_is_pure_builtin_call(nm: String) -> Bool {
   if idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) {
     true
   } else {
-    let names = idp_pure_builtin_names()
+    let names = idp_pure_builtin_names_table
     let mut i = 0
     let mut found = false
-    while i < Array::length(names) {
+    while i < Array::length(names) && !found {
       if Array::get(names, i) == nm {
         found = true
       } else {
@@ -1939,12 +1944,41 @@ fn edp_may_perform_fields(fields: Array[(String, Expr)], ename: String, perf_fns
 /// site is vacuous by construction and no reachability question is asked.
 fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, inert: Array[String], fn_names: Array[String]) -> Array[String] {
   let out = empty_str_array()
+  // #1875 R3: this fixpoint used to call edp_find_fn_body (an O(defs) scan
+  // allocating an Option) for every function on every round, and rebuild
+  // the read-query object per probe -- 17MB of allocation for one analyzed
+  // effect. Resolve each entry's body ONCE through its own stmt index, and
+  // track membership in a Bool array aligned with fn_defs instead of a
+  // linear name scan. Entry-order bodies are a conservative SUPERSET of the
+  // old last-wins-by-name lookup when duplicate top-level names exist (a
+  // non-last duplicate's body is now inspected instead of shadowed); a
+  // superset only keeps more handles for ordinary migration -- it can never
+  // erase a handle the old answer kept.
+  let bodies = array_empty()
+  let member = edp_empty_bool_array()
+  let mut bi = 0
+  while bi < Array::length(fn_defs) {
+    let (bidx, _, _, _, _, _) = Array::get(fn_defs, bi)
+    match Array::get(stmts, bidx) {
+      SLet(_, _, _, _, EFn(_, _, _, _, _, fnb)) => Array::push(bodies, Some(fnb)),
+      _ => Array::push(bodies, None)
+    }
+    Array::push(member, false)
+    bi = bi + 1
+  }
+  let q_perform = RQPerformsUserEffect(ename)
+  let q_opaque = RQOpaqueCall(inert, fn_names)
   let mut i = 0
   while i < Array::length(fn_defs) {
     let (_, _, _, nm, _, _) = Array::get(fn_defs, i)
-    match edp_find_fn_body(stmts, fn_defs, nm) {
-      Some(body) => if (edp_performs_user_effect_expr(body, ename) || edp_body_has_opaque_call(body, inert, fn_names)) && !edp_str_array_contains(out, nm) {
-        Array::push(out, nm)
+    match Array::get(bodies, i) {
+      Some(body) => if (edp_rq_fold(q_perform, body) > 0 || edp_rq_fold(q_opaque, body) > 0) && !Array::get(member, i) {
+        Array::set(member, i, true)
+        if edp_str_array_contains(out, nm) {
+          ()
+        } else {
+          Array::push(out, nm)
+        }
       } else {
         ()
       },
@@ -1952,6 +1986,21 @@ fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     }
     i = i + 1
   }
+  // Same-name entries share membership: sync flags so the fixpoint below
+  // never re-adds a name the seed already holds.
+  let mut si = 0
+  while si < Array::length(fn_defs) {
+    let (_, _, _, snm, _, _) = Array::get(fn_defs, si)
+    if !Array::get(member, si) && edp_str_array_contains(out, snm) {
+      Array::set(member, si, true)
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  // The query aliases `out`, so a name pushed mid-round is visible to the
+  // very next containment probe without rebuilding the query object.
+  let q_calls = RQCallsAny(out)
   let mut grew = true
   let mut rounds = 0
   while grew && rounds < Array::length(fn_defs) + 1 {
@@ -1959,13 +2008,18 @@ fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     rounds = rounds + 1
     let mut j = 0
     while j < Array::length(fn_defs) {
-      let (_, _, _, nm2, _, _) = Array::get(fn_defs, j)
-      if edp_str_array_contains(out, nm2) {
+      if Array::get(member, j) {
         ()
       } else {
-        match edp_find_fn_body(stmts, fn_defs, nm2) {
-          Some(body2) => if edp_body_calls_any(body2, out) {
-            Array::push(out, nm2)
+        match Array::get(bodies, j) {
+          Some(body2) => if edp_rq_fold(q_calls, body2) > 0 {
+            let (_, _, _, nm2, _, _) = Array::get(fn_defs, j)
+            Array::set(member, j, true)
+            if edp_str_array_contains(out, nm2) {
+              ()
+            } else {
+              Array::push(out, nm2)
+            }
             grew = true
           } else {
             ()
@@ -4587,8 +4641,16 @@ fn edp_pure_builtin_names() -> Array[String] {
   ]
 }
 
+// #1875 R3: module-level memo (initialized once -- module_let_memo_test.vibe
+// is the spec). edp_is_pure_builtin_call runs per CALL NODE inside every
+// safety scan and read query (RQOpaqueCall via edp_callee_is_resolvable,
+// edp_has_unsafe_construct_sc), so rebuilding the ~100-entry table per probe
+// was ~17MB of allocation for one analyzed effect's performing-fns fixpoint
+// alone.
+let edp_pure_builtin_names_table: Array[String] = edp_pure_builtin_names()
+
 fn edp_is_pure_builtin_call(nm: String) -> Bool {
-  idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) || edp_str_array_contains(edp_pure_builtin_names(), nm)
+  idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) || edp_str_array_contains(edp_pure_builtin_names_table, nm)
 }
 
 /// Every top-level function name whose declared effect row is
@@ -5391,8 +5453,17 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     // #1116 Codex P1: drop names that are ALSO bound to a non-evidence
     // value in some other scope — widening those program-wide would
     // rewrite an unrelated same-named call at the wrong arity.
+    // #1875 R3: the poison set exists solely to filter td_binds_raw, so
+    // with no candidate names the whole-program binder walk (every binder
+    // in the merged program, linearly deduped) has nothing to filter --
+    // skip it. The common case for a real used effect (performs + handles,
+    // no row-typed closure literals) is exactly this.
     let td_poison = empty_str_array()
-    edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison)
+    if Array::length(td_binds_raw) > 0 {
+      edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison)
+    } else {
+      ()
+    }
     let td_binds = edp_filter_unpoisoned(td_binds_raw, td_poison)
     let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
     // Handle sites are checked PER TOP-LEVEL STATEMENT (not from the flat
@@ -7301,9 +7372,14 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds_raw, td_lits0)
   // #1116 Codex P1: same shadow-poison filter as eligibility (both views
   // must agree on the widened set, or apply widens what eligibility did
-  // not vet).
+  // not vet). #1875 R3: and the same skip -- no candidates, nothing to
+  // filter, no binder walk.
   let td_poison0 = empty_str_array()
-  edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison0)
+  if Array::length(td_binds_raw) > 0 {
+    edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison0)
+  } else {
+    ()
+  }
   let td_binds = edp_filter_unpoisoned(td_binds_raw, td_poison0)
   let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits0) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
   if td_mode {
