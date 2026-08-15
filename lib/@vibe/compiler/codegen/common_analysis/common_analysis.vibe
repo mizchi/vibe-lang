@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, bytebuf_push, is_exception_throw_operation, sorted_names_of
+  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, bytebuf_push, canonical_builtin_name, is_exception_throw_operation, sorted_names_of
 }
 
 import @vibe/core {
@@ -680,7 +680,22 @@ fn is_inlined_async_builtin(name: String) -> Bool {
 /// signature mismatch" instead of the expected "unreachable" trap that the
 /// same code produces at top level.
 fn is_inlined_scalar_builtin(name: String) -> Bool {
-  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert"
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert" || name == "Double::from_i64_bits"
+}
+
+/// A namespaced source alias recognized by the builtin registry resolves
+/// globally, just like its canonical spelling. An unchanged canonical name is
+/// accepted only when an actual top-level function provides it.
+/// Namespaced spellings cannot be local binders, so this cannot hide a real
+/// capture. The exact-name lookup remains first and keeps user/global shadows
+/// authoritative.
+fn canonical_builtin_resolves_globally(name: String, fn_names: Array[String]) -> Bool {
+  if String::contains(name, "::") {
+    let canonical = canonical_builtin_name(name)
+    canonical != name || bsearch_leftmost(fn_names, canonical) >= 0
+  } else {
+    false
+  }
 }
 
 /// #1348: the SIMD intrinsics (`lib/@vibex/simd`) are inline-dispatched by
@@ -823,7 +838,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
           0
         }
       }
-    } else if skip_inlined && !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname) || is_inlined_simd_builtin(cname)) {
+    } else if skip_inlined && !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (canonical_builtin_resolves_globally(cname, fn_names) || is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname) || is_inlined_simd_builtin(cname)) {
       let mut i = 0
       while i < Array::length(args) {
         collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
