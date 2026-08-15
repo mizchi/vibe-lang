@@ -123,9 +123,11 @@ moon, not by pkfire. For the final pre-commit sweep, fall back to
 `pkf run <hook-name>` — pkfire binds a git hook to the task whose name
 matches the hook (e.g. the `pre-commit` task).
 
-This repo ships a **`pre-commit`** task that runs
-`scripts/pkfire/precommit_fmt.sh`: it `moon fmt`s the staged `.mbt` files and
-re-stages them, so every commit lands formatted. Hooks live under `.git/`
+This repo ships a **`pre-commit`** task that runs `scripts/precommit.sh`: the
+review-derived structural lint gates (architecture-debt, review-regressions,
+lock-check). The `moon fmt` staged-`.mbt` hook it used to run went with the
+MoonBit host (#594); formatting is enforced instead by the required
+`vibe-fmt-check` CI job. Hooks live under `.git/`
 (not version-controlled), so each clone must opt in once:
 
 ```bash
