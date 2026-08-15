@@ -1,0 +1,74 @@
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// First checker error message for `source`, or "" when it checks clean.
+/// (check_program throws the first collected diagnostic.)
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+//# Misc
+
+// #1858: a bounded generic whose body calls `T::m` (a method of a
+// method-bearing trait) but whose signature carries no witness for `T` used to
+// sail through `vibe check` and die in codegen with an internal compiler
+// error ("`T::default` reached code generation unresolved"). The checker now
+// mirrors the dict-passing desugar's threading capability (build_gens in
+// desugar_trait_dict.vibe) and reports an actionable diagnostic instead.
+
+test "zero-arg trait method without witness carrier is rejected at check time" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn make_default[T: Default]() -> T { T::default() }\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "make_default"))
+  assert(String::contains(msg, "T::default"))
+  assert(String::contains(msg, "cannot be dispatched"))
+  assert(String::contains(msg, "Array[T]"))
+}
+
+test "value-position reference without carrier is rejected too" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn grab[T: Default]() -> Int { let f = T::default\n  0 }\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "T::default"))
+  assert(String::contains(msg, "cannot be dispatched"))
+}
+
+test "supertrait method without carrier is rejected through the child bound" {
+  let src = "trait Base { default() -> Self }\ntrait Child: Base\nimpl Base for Int { default() -> Int { 0 } }\nfn mk[T: Child]() -> T { T::default() }\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "T::default"))
+  assert(String::contains(msg, "cannot be dispatched"))
+}
+
+test "direct T parameter carries the witness (stays accepted)" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn fresh[T: Default](witness: T) -> T { T::default() }\nfn main() -> Int { fresh(5) }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "Array[T] parameter carries the witness (stays accepted)" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn refill[T: Default](xs: Array[T]) -> Unit { Array::set(xs, 0, T::default()) }\nfn main() -> Int { let a = [1]\n  refill(a)\n  Array::get(a, 0) }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "bound without any body reference to the method stays accepted" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn tag[T: Default]() -> Int { 7 }\nfn main() -> Int { tag() }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "marker trait bound without carrier stays accepted (no methods to call)" {
+  let src = "trait Marker\nimpl Marker for Int\nfn note[T: Marker]() -> Int { 1 }\nfn main() -> Int { note() }\n"
+  assert(first_check_error(src) == "")
+}

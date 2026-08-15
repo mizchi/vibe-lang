@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children, is_exception_throw_operation, sort_perm_by_names, str_lt
+  Expr, Pat, Stmt, TypeEnv, TypeExpr, expr_children, is_exception_throw_operation, sort_perm_by_names, str_lt, trait_method_sig_binders_deep
 }
 
 import @vibe/core {
@@ -1575,6 +1575,108 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
     i = i + 1
   }
   out
+}
+
+/// #1858: definition-side witness-carrier validation, run by the CHECKER (both
+/// check_program pipelines) so `vibe check` reports what would otherwise
+/// surface as a codegen ICE ("`T::default` reached code generation
+/// unresolved").
+///
+/// A top-level generic `f = [T: Tr](params)` whose body references `T::m` (a
+/// method of the method-bearing trait `Tr`) can only be dispatched when this
+/// pass can thread a witness dictionary for `T` — and build_gens above derives
+/// that ability purely from the signature: a parameter of type `T`
+/// (find_recv_index), a parameter of type `Array[T]`
+/// (find_array_elem_recv_index, #1199), or the function being a bounded
+/// generic-impl method (collect_generic_impl_types — its dict arrives with the
+/// impl witness instead). A bounded generic with NONE of those is never
+/// registered in `gens`, its body is never rewritten, and `T::m` reaches
+/// codegen unresolved. This function is the checker-facing mirror of exactly
+/// that condition — if build_gens grows a new receiver kind, this must learn
+/// it too, which is why it lives next to build_gens rather than in the
+/// checker.
+///
+/// `env` supplies the trait method tables (trait_method_sig_binders_deep), so
+/// traits imported from another module (e.g. @vibe/core's `Default`) are
+/// covered, not just same-file declarations. Marker traits have no methods, so
+/// no `T::m` can name one and the scan stays inert for them — same reason the
+/// checker's own `resolve_trait_method_ident` never resolves through a marker
+/// bound.
+export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  let out = empty_str_array()
+  let gimpl_types = collect_generic_impl_types(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, bounds, params, _, _, fbody) => if already_threaded(params) {
+          ()
+        } else {
+          let mut bi = 0
+          while bi < Array::length(bounds) {
+            let (tp, trait_list) = Array::get(bounds, bi)
+            let has_carrier = find_recv_index(params, tp) >= 0 || find_array_elem_recv_index(params, tp) >= 0 || str_array_contains(gimpl_types, qualified_head(fname))
+            if has_carrier {
+              ()
+            } else {
+              push_undispatchable_refs(fbody, fname, tp, trait_list, env, out)
+            }
+            bi = bi + 1
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Scan one carrier-less bound's function body for `tp::member` references
+/// that name a method of one of the bound traits, pushing one actionable
+/// diagnostic per distinct reference. Values and calls are both caught — an
+/// unrewritten `T::m` is equally unresolvable either way.
+fn push_undispatchable_refs(e: Expr, fname: String, tp: String, trait_list: Array[String], env: TypeEnv, out: Array[String]) -> Unit {
+  match e {
+    EIdent(nm, _) => match split_qualified(nm) {
+      Some(parts) => {
+        let (head, member) = parts
+        if head == tp {
+          let mut ti = 0
+          let mut reported = false
+          while ti < Array::length(trait_list) {
+            let tr = Array::get(trait_list, ti)
+            if !reported && tr != "" {
+              match trait_method_sig_binders_deep(env, tr, member) {
+                Some(_) => {
+                  reported = true
+                  let msg = String::concat(fname, String::concat(": `", String::concat(nm, String::concat("` cannot be dispatched here: no parameter of `", String::concat(fname, String::concat("` carries the `[", String::concat(tp, String::concat(": ", String::concat(tr, String::concat("]` witness. Add a parameter of type `", String::concat(tp, String::concat("` (or `Array[", String::concat(tp, String::concat("]`) so call sites can supply the impl, or call `", String::concat(member, "` on a concrete type instead.")))))))))))))))
+                  if str_array_contains(out, msg) {
+                    ()
+                  } else {
+                    Array::push(out, msg)
+                  }
+                },
+                None => ()
+              }
+            }
+            ti = ti + 1
+          }
+        } else {
+          ()
+        }
+      },
+      None => ()
+    },
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut ki = 0
+  while ki < Array::length(kids) {
+    push_undispatchable_refs(Array::get(kids, ki), fname, tp, trait_list, env, out)
+    ki = ki + 1
+  }
 }
 
 fn lookup_gen(gens: Array[(String, Array[(String, String, Int)])], name: String) -> Option[Array[(String, String, Int)]] {
