@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibex/wasm_parser {
-  next_instruction
+  next_instruction, validate_structure
 }
 
 //# Values
@@ -2489,6 +2489,24 @@ export fn exec_module_with_args(wasm_bytes: Bytes, export_name: String, args: Ar
     (-1, 0)
   }
   else if (wasm_bytes[0] != 0x00) || (wasm_bytes[1] != 0x61) || (wasm_bytes[2] != 0x73) || (wasm_bytes[3] != 0x6D) {
+    (-1, 0)
+  }
+  else if validate_structure(wasm_bytes) != None::{
+    // #1745 (5). Length and magic were the only things checked here, so a
+    // module whose sections do not survive their own size field reached the
+    // executor: one corrupted length byte in a corpus of 54 killed the host
+    // PROCESS, uncatchable by this function's caller, which is a containment
+    // breach in the one place that exists to run untrusted wasm.
+    //
+    // Safe to put in front of execution because the never-reject half of
+    // validate_structure's contract is MEASURED, not assumed
+    // (scripts/test_wasm_validate_parity.sh, against wasm-tools as the
+    // oracle). A validator that guessed here would turn a containment fix
+    // into a new way to refuse legitimate modules.
+    //
+    // It still does not type the operand stack, so an ill-TYPED module gets
+    // through -- that is the other half of #1745 (5), and it needs a different
+    // machine than this one.
     (-1, 0)
   }
   else {
