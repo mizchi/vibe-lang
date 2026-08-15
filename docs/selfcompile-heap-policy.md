@@ -155,14 +155,12 @@ and guest-writable files are never parsed as the result channel.
 acceptance lane. It checks same-tree build/heap/token identity, poisoned head
 script sentinels, wrong merge identity, reserved paths, and cleanup. Native
 `linux/amd64` attestation run
-[31871671221](https://github.com/mizchi/vibe-lang/actions/runs/31871671221)
-at candidate `8662559614bc6ae110c577ccad385f4fad8753ef` passed focused tests
-35/35 and the then-current isolated Docker lane in 10m50s. Independent review
-subsequently found that generation-phase Wasm preceded the policy wrapper; the
-current wrapper and real hostile-Wasm fixtures are therefore a bounded security
-repair that requires a fresh temporary branch-only native run before final
-review. Required CI remains unchanged and the existing absolute gate remains
-authoritative.
+[31873848757](https://github.com/mizchi/vibe-lang/actions/runs/31873848757)
+at candidate `72ea4102fb175d6911fa813f72ac316aadfd009e` passed focused tests
+39/39 and the full isolated Docker lane, including the generation-phase policy
+wrapper and real hostile-Wasm fixtures, in 7m31s. The temporary branch-only
+validation workflow was removed after that run. Required CI remains unchanged
+and the existing absolute gate remains authoritative.
 
 The metric still observes the guest-exported `__heap_ptr`. HMAC authentication
 proves what the trusted runner observed, but cannot stop a deliberately
