@@ -16,6 +16,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_core_imports_stdin_provider,
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
+  comp_emit_async_string_canon_fixture,
   comp_emit_component_wasm_async_concurrent_awaits,
   comp_emit_component_wasm_async_hostfuture,
   comp_emit_component_wasm_async_spawned_future,
@@ -433,6 +434,98 @@ test "component async: emits task.return canon, async functype, async lift" {
     0
   ]) == 1)
   assert(component_bytes_contains(comp, "run") == 1)
+}
+
+/// #1540: the widened emitters must produce the encoding the probe measured
+/// against wasmtime, byte for byte.
+///
+/// The sequences below are the ones
+/// `tools/wasip3_component_probe/async_string_lift/component.wat` documents and
+/// `scripts/test_async_string_lift_probe_gate.sh` asserts against a real
+/// wasmtime run. This test is the other half: the probe proves wasmtime accepts
+/// them, this proves the emitter produces them.
+test "component async: widened canon emitters match the measured string encoding (#1540)" {
+  let bytes = comp_emit_async_string_canon_fixture()
+  // async functype, one string param named "name", string result:
+  // 43 01 04 'n' 'a' 'm' 'e' 73 00 73
+  assert(bytes_contains_seq(bytes, [
+    67,
+    1,
+    4,
+    110,
+    97,
+    109,
+    101,
+    115,
+    0,
+    115
+  ]) == 1)
+  // task.return with Memory(0) + UTF8 -- and NO realloc, which wasmtime rejects
+  // on this built-in: 09 00 73 02 03 00 00
+  assert(bytes_contains_seq(bytes, [
+    9,
+    0,
+    115,
+    2,
+    3,
+    0,
+    0
+  ]) == 1)
+  // async lift with Async + Memory(0) + Realloc(0) + UTF8:
+  // 00 00 02 04 06 03 00 04 00 00 00
+  assert(bytes_contains_seq(bytes, [
+    0,
+    0,
+    2,
+    4,
+    6,
+    3,
+    0,
+    4,
+    0,
+    0,
+    0
+  ]) == 1)
+}
+
+/// The zero-option spellings must stay byte-identical -- every existing caller
+/// goes through them, and this slice is meant to add a capability, not move any
+/// bytes.
+test "component async: the narrow spellings are unchanged by the widening (#1540)" {
+  let core = build_async_test_core()
+  let comp = comp_emit_component_wasm_async(core, "run", 120)
+  // task.return with an EMPTY option list
+  assert(bytes_contains_seq(comp, [
+    8,
+    5,
+    1,
+    9,
+    0,
+    120,
+    0
+  ]) == 1)
+  // async functype with ZERO params
+  assert(bytes_contains_seq(comp, [
+    7,
+    5,
+    1,
+    67,
+    0,
+    0,
+    120
+  ]) == 1)
+  // async lift with exactly one option (async)
+  assert(bytes_contains_seq(comp, [
+    8,
+    7,
+    1,
+    0,
+    0,
+    1,
+    1,
+    6,
+    0
+  ]) == 1)
 }
 
 test "component async: sync lift carries no async canonopt" {
