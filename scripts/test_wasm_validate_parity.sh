@@ -38,10 +38,18 @@ rm -rf "$WORK"; mkdir -p "$WORK/pos" "$WORK/neg"
 
 # 1. Positive corpus: this compiler's own output, both backends. These are the
 #    modules a false rejection would break, so they are the ones worth using.
+#
+#    Pick fixtures for the FEATURES they make the backend emit, not for
+#    variety. A corpus of three gc fixtures passed this gate while the
+#    validator rejected every module with an exception tag -- the section order
+#    is not ascending by id there (13 sits between memory and global), and
+#    nothing in the corpus had one. Codex caught it in review; the corpus
+#    should have.
 FIXTURES=(
   fixtures/gc_direct_array_abi_test.vibe
   fixtures/gc_heap_churn_test.vibe
   fixtures/gc_native_struct_local_test.vibe
+  fixtures/cheatsheet_effects_test.vibe
 )
 for f in "${FIXTURES[@]}"; do
   [ -f "$f" ] || continue

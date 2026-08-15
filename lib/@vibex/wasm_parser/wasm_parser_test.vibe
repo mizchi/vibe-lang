@@ -39,6 +39,7 @@ import ./wasm_parser.vibe {
   read_version,
   scan_features,
   section_name,
+  validate_code_body,
   validate_magic,
   validate_structure,
   valtype_name
@@ -4262,4 +4263,125 @@ test "validate_structure allows a custom section anywhere" {
     None => assert(true),
     Some(_) => assert(false)
   }
+}
+
+// The three below all pin the same lesson from PR #1800's review: a rule that
+// is right for core wasm is not automatically right for a module some proposal
+// made legal, and the HARD half of the contract has no tolerance for that.
+
+test "validate_structure accepts a tag section between memory and global" {
+  // Section order is the spec's canonical one, NOT ascending by id: tag (13)
+  // sits between memory (5) and global (6). Comparing ids rejected every module
+  // this compiler emits for a `throw` -- it puts the tag exactly there
+  // (codegen/gc/backend_body.vibe, #538).
+  //
+  // header | memory(5) size=3 [1, 0, 0] | tag(13) size=3 [1, 0, 0]
+  //        | global(6) size=1 [0]
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    5,
+    3,
+    1,
+    0,
+    0,
+    13,
+    3,
+    1,
+    0,
+    0,
+    6,
+    1,
+    0
+  ])) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "validate_structure still rejects a genuinely misordered section pair" {
+  // The rank fix must not make the order check vacuous: global (6) before
+  // memory (5) is out of order under either reading.
+  //
+  // header | global(6) size=1 [0] | memory(5) size=3 [1, 0, 0]
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    6,
+    1,
+    0,
+    5,
+    3,
+    1,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_code_body accepts throw, which is not a reserved opcode" {
+  // 0x08 is `throw` and 0x06..0x0A is exception handling, not an unassigned
+  // range. This compiler emits 0x08 directly (codegen/gc/backend_call.vibe).
+  //
+  // throw 0 | end
+  let code = make_bytes([
+    0x08,
+    0,
+    0x0B
+  ])
+  match validate_code_body(code, 0, 3) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "validate_code_body rejects a body whose blocks do not close" {
+  // block ... with no matching end. Reachable only because the walk covered
+  // the whole body, which is what makes it safe to reject on.
+  let code = make_bytes([
+    0x02,
+    0x40,
+    0x01,
+    0x0B
+  ])
+  match validate_code_body(code, 0, 4) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "parse_type_forms counts every type inside a recursive group" {
+  // 0x4E declares a group of N types; each gets its own index. Returning the
+  // group marker and stopping made the length under-count, so a function
+  // referring to the group's second type was called out of range.
+  //
+  // count=1 | rec 0x4E n=2 | (func)(func)
+  let forms = parse_type_forms(make_bytes([
+    1,
+    0x4E,
+    2,
+    0x60,
+    0,
+    0,
+    0x60,
+    0,
+    0
+  ]), 0, 9)
+  assert(Array::length(forms) == 2)
+  assert(Array::get(forms, 0) == 0x60)
+  assert(Array::get(forms, 1) == 0x60)
 }
