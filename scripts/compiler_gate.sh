@@ -4250,6 +4250,80 @@ ASEOF
 else
   echo "[compiler-gate] note: wasm-tools/wasmtime absent, skipping the async string component run (#1540)"
 fi
+# #1540 scope 3: a HostStream PARAMETER on the component surface.
+#
+# Two things had to change together for this to compile, and this lane pins
+# both because each is silently undone by the other's absence.
+#
+#   1. The Async boundary is wrapped around `entry_name`, and the component
+#      lanes compile with the `__no_entry__` sentinel -- so nothing ever
+#      matched and no boundary was built. It now falls back to the exported
+#      Async function, and ONLY when there is exactly one.
+#   2. A host stream reaches vibe code as the cell `[3, handle]`, which
+#      `host_stream_named` builds. A PARAMETER arrives as the bare handle, so
+#      the reads would have pulled state and handle out of an integer. The
+#      parameter is now shadowed by the cell at the top of the body.
+#
+# The import list is the assertion that says the stream came from the
+# PARAMETER: `vibe.host_stream_read` present, and NO `host_stream_get$<name>`,
+# which is the named-import lane #1540 ruled out as a composition cycle.
+echo "[compiler-gate] 40c5/40 HostStream parameter on the component surface (#1540)"
+hsdir="_build/_gate_hoststream_param"
+rm -rf "$hsdir"; mkdir -p "$hsdir"
+cat > "$hsdir/handler.vibe" <<'HSEOF'
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let mut total = 0
+  let mut go = true
+  while go {
+    let b = host_stream_next(body)
+    if b < 0 { go = false } else { total = total + b }
+  }
+  "200\n\nsum:\{total}"
+}
+HSEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/handler.vibe" "$hsdir/handler.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$hsdir/handler.wasm" ]; then
+  echo "[compiler-gate] FAIL: a HostStream-parameter handler did not compile (#1540)" >&2
+  cat "$hsdir/handler.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if command -v wasm-tools >/dev/null 2>&1; then
+  hs_imports="$(wasm-tools print "$hsdir/handler.wasm" 2>/dev/null | grep -c 'vibe" "host_stream_read"' || true)"
+  [ -n "$hs_imports" ] || hs_imports=0
+  if [ "$hs_imports" = "0" ]; then
+    echo "[compiler-gate] FAIL: the handler does not import vibe.host_stream_read (#1540)" >&2
+    exit 1
+  fi
+  hs_named="$(wasm-tools print "$hsdir/handler.wasm" 2>/dev/null | grep -c 'host_stream_get' || true)"
+  [ -n "$hs_named" ] || hs_named=0
+  if [ "$hs_named" != "0" ]; then
+    echo "[compiler-gate] FAIL: the stream came from a NAMED import, not the parameter (#1540)" >&2
+    exit 1
+  fi
+  echo "[compiler-gate] HostStream parameter: reads via host_stream_read, no named get (#1540)"
+fi
+# The other half: with TWO exported Async functions there is no single
+# boundary, and picking one would wrap the wrong function's suspends. That case
+# must keep failing loudly rather than guess.
+cat > "$hsdir/two.vibe" <<'HSEOF'
+export let handler = (body: HostStream) -> Int with Async {
+  host_stream_next(body)
+}
+
+export let other = (body: HostStream) -> Int with Async {
+  host_stream_next(body)
+}
+HSEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/two.vibe" "$hsdir/two.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$hsdir/two.wasm" ]; then
+  echo "[compiler-gate] FAIL: two exported Async functions silently picked a boundary (#1540)" >&2
+  exit 1
+fi
+echo "[compiler-gate] two exported Async functions still refuse to guess a boundary (#1540)"
 # #1746 (RC lane): the raw-ABI shim dispatched on the callee NAME alone, so a
 # program defining its own top-level `fn sleep` had the shim applied to ITS
 # call -- emitting a module that failed validation, with no diagnostic. Only

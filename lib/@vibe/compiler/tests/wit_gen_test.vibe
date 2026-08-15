@@ -146,6 +146,55 @@ test "validate_serve_handler: rejects a missing handler export" {
   assert(rejected)
 }
 
+/// #1540: `Async` gets its own rejection, because the generic one gives advice
+/// that cannot be followed. `Async` is not a capability and has no operations,
+/// so "discharge the effect with `handle`" sends the reader after something
+/// that does not exist -- the actual answer is that the async serve lane is
+/// not selected by the CLI yet.
+test "validate_serve_handler: an Async handler is rejected with an Async-specific reason (#1540)" {
+  let async_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("String")
+  ], TyName("String"), Some("Async"))
+  let stmts = [
+    SLet(true, false, "handler", Some(async_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "`Async` handler is not wired up yet"))
+  // The advice the generic arm gives must NOT appear here: there is nothing to
+  // handle, and following it would waste the reader's time.
+  assert(!String::contains(msg, "discharge the effect with `handle`"))
+}
+
+/// The generic arm still answers for real capability effects -- this is a new
+/// branch, not a replacement.
+test "validate_serve_handler: a capability effect keeps the discharge advice (#1540)" {
+  let fs_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("String")
+  ], TyName("String"), Some("Fs"))
+  let stmts = [
+    SLet(true, false, "handler", Some(fs_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "requires capability effect 'Fs'"))
+  assert(String::contains(msg, "discharge the effect with `handle`"))
+}
+
 test "wit_type_text: Future projects to future, ByteStream to stream<u8> (ADR-0089 D5)" {
   assert(wit_type_text(TyApp("Future", [
     TyName("Int")

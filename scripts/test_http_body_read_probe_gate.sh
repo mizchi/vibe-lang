@@ -179,72 +179,25 @@ case "$ADAPTER_DUMP" in
 esac
 echo "[body-read-probe] adapter imports handler as an async func with a stream<u8> body"
 
-GUEST="$OUT_DIR/guest.wasm"
-wasm-tools parse "$PROBE_DIR/guest.wat" -o "$GUEST"
-wasm-tools validate --features all "$GUEST"
-echo "[body-read-probe] probe guest validates"
-
-COMPOSED="$OUT_DIR/composed.wasm"
-wac plug --plug "$GUEST" "$ADAPTER" -o "$COMPOSED"
-wasm-tools validate --features all "$COMPOSED"
-
-# `wac plug` leaves an unsatisfiable edge as a promoted ROOT IMPORT rather than
-# an error (../http_body_stream/README.md), so assert the composed world, not
-# the exit code.
-COMPOSED_WIT="$(wasm-tools component wit "$COMPOSED")"
-ROOT_IMPORTS="$(printf '%s\n' "$COMPOSED_WIT" | awk '
-  /^world root \{$/ { in_world = 1; next }
-  in_world && /^}/ { exit }
-  in_world && /^[[:space:]]+import / {
-    sub(/^[[:space:]]+/, "")
-    print
-  }
-')"
-if [ "$ROOT_IMPORTS" != 'import wasi:http/types@0.3.0;' ]; then
-  echo "[body-read-probe] FAILED: composed root imports are not exactly the host-provided wasi:http/types edge" >&2
-  printf '%s\n' "$COMPOSED_WIT" | head -20 >&2
-  exit 1
-fi
-echo "[body-read-probe] composed: async handler edge connected; only host wasi:http/types remains"
-
-"$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$COMPOSED" >"$SERVE_LOG" 2>&1 &
-SERVE_PID=$!
-ready=0
-for _ in $(seq 1 40); do
-  if ! kill -0 "$SERVE_PID" 2>/dev/null; then
-    echo "[body-read-probe] FAILED: spawned wasmtime exited before accepting requests" >&2
-    cat "$SERVE_LOG" >&2 || true
-    exit 1
-  fi
-  if curl -s -m 1 -o /dev/null "http://$ADDR/" 2>/dev/null; then
-    ready=1
-    break
-  fi
-  sleep 0.25
-done
-if [ "$ready" != "1" ]; then
-  echo "[body-read-probe] FAILED: spawned wasmtime did not become ready at $ADDR" >&2
-  cat "$SERVE_LOG" >&2 || true
-  exit 1
-fi
-
-# The guest's answer is fully determined -- "200\n\n" followed by exactly the
-# bytes it read -- so assert the WHOLE response, not that the token appears
-# somewhere in it. A reader that duplicated, dropped or padded bytes around an
-# intact token would satisfy a substring check while having corrupted the body,
-# and this gate exists to say the body round-tripped.
+# One POST + one full-response assertion. The guest's answer is fully
+# determined -- "200\n\n" followed by exactly the bytes it read -- so this
+# asserts the WHOLE response rather than that the token appears somewhere in
+# it. A reader that duplicated, dropped or padded bytes around an intact token
+# would satisfy a substring check while having corrupted the body, and this
+# gate exists to say the body round-tripped.
 post_and_check() {
-  local what="$1" body="$2" response_file="$TMP_DIR/response-$1.txt" code out want
+  local label="$1" what="$2" body="$3"
+  local response_file="$TMP_DIR/response-$label-$what.txt" code out want
   code="$(curl -sS --max-time 10 -o "$response_file" -w '%{http_code}' \
     -X POST --data-binary "$body" "http://$ADDR/probe" 2>&1 || true)"
   out="$(cat "$response_file" 2>/dev/null || true)"
   if ! kill -0 "$SERVE_PID" 2>/dev/null; then
-    echo "[body-read-probe] FAILED: spawned wasmtime exited while serving the $what request" >&2
+    echo "[body-read-probe] FAILED [$label]: wasmtime exited while serving the $what request" >&2
     cat "$SERVE_LOG" >&2 || true
     exit 1
   fi
   if [ "$code" != "200" ]; then
-    echo "[body-read-probe] FAILED: $what POST returned '$code' (want 200)" >&2
+    echo "[body-read-probe] FAILED [$label]: $what POST returned '$code' (want 200)" >&2
     cat "$SERVE_LOG" >&2 || true
     exit 1
   fi
@@ -252,20 +205,20 @@ post_and_check() {
   # assumption instead of only reporting a mismatch.
   case "$out" in
     *ERR-EVENT*)
-      echo "[body-read-probe] FAILED: waitable-set.wait returned a non-STREAM_READ event" >&2; exit 1 ;;
+      echo "[body-read-probe] FAILED [$label]: waitable-set.wait returned a non-STREAM_READ event" >&2; exit 1 ;;
     *ERR-STATUS*)
-      echo "[body-read-probe] FAILED: a zero-transfer read reported a code other than the measured CLOSED=1" >&2; exit 1 ;;
+      echo "[body-read-probe] FAILED [$label]: a zero-transfer read reported a code other than the measured CLOSED=1" >&2; exit 1 ;;
     *ERR-OVERRUN*)
-      echo "[body-read-probe] FAILED: $what body overran the probe guest's 64-byte buffer" >&2; exit 1 ;;
+      echo "[body-read-probe] FAILED [$label]: $what body overran the guest's 64-byte buffer" >&2; exit 1 ;;
   esac
   # Compare the FILES, not shell strings. Command substitution drops NUL bytes
   # and trailing newlines, so a guest that returned one byte too many -- the
   # unwritten slot just past what it read -- compared EQUAL as a string while
   # the response was a byte longer than it should be. `cmp` sees it.
-  want="$TMP_DIR/want-$what.txt"
+  want="$TMP_DIR/want-$label-$what.txt"
   printf '200\n\n%s' "$body" >"$want"
   if ! cmp -s "$response_file" "$want"; then
-    echo "[body-read-probe] FAILED: $what response is not exactly '200\\n\\n' + the POSTed body" >&2
+    echo "[body-read-probe] FAILED [$label]: response is not exactly '200\\n\\n' + the POSTed body" >&2
     echo "[body-read-probe]   got  ($(wc -c <"$response_file") bytes): $(od -c "$response_file" | head -4)" >&2
     echo "[body-read-probe]   want ($(wc -c <"$want") bytes): $(od -c "$want" | head -4)" >&2
     cat "$SERVE_LOG" >&2 || true
@@ -273,8 +226,68 @@ post_and_check() {
   fi
 }
 
-post_and_check "token" "$BODY_TOKEN"
-echo "[body-read-probe] POST body came back byte for byte through the guest's stream.read loop"
+# Compose one guest with the adapter, serve it, and run every body assertion
+# against it. Both guests -- the hand-written probe and the one the emitters
+# produce -- go through this same path, so "the emitter twin works" means the
+# identical bar, not a weaker one.
+run_guest_suite() {
+  local label="$1" guest="$2"
+  local composed="$OUT_DIR/composed-$label.wasm"
+
+  wasm-tools validate --features all "$guest"
+  wac plug --plug "$guest" "$ADAPTER" -o "$composed"
+  wasm-tools validate --features all "$composed"
+
+  # `wac plug` leaves an unsatisfiable edge as a promoted ROOT IMPORT rather
+  # than an error (../http_body_stream/README.md), so assert the composed
+  # world, not the exit code.
+  local composed_wit root_imports
+  composed_wit="$(wasm-tools component wit "$composed")"
+  root_imports="$(printf '%s\n' "$composed_wit" | awk '
+    /^world root \{$/ { in_world = 1; next }
+    in_world && /^}/ { exit }
+    in_world && /^[[:space:]]+import / {
+      sub(/^[[:space:]]+/, "")
+      print
+    }
+  ')"
+  if [ "$root_imports" != 'import wasi:http/types@0.3.0;' ]; then
+    echo "[body-read-probe] FAILED [$label]: composed root imports are not exactly the host-provided wasi:http/types edge" >&2
+    printf '%s\n' "$composed_wit" | head -20 >&2
+    exit 1
+  fi
+  echo "[body-read-probe] [$label] composed: async handler edge connected; only host wasi:http/types remains"
+
+  "$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$composed" >"$SERVE_LOG" 2>&1 &
+  SERVE_PID=$!
+  local ready=0
+  for _ in $(seq 1 40); do
+    if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+      echo "[body-read-probe] FAILED [$label]: wasmtime exited before accepting requests" >&2
+      cat "$SERVE_LOG" >&2 || true
+      exit 1
+    fi
+    if curl -s -m 1 -o /dev/null "http://$ADDR/" 2>/dev/null; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [ "$ready" != "1" ]; then
+    echo "[body-read-probe] FAILED [$label]: wasmtime did not become ready at $ADDR" >&2
+    cat "$SERVE_LOG" >&2 || true
+    exit 1
+  fi
+
+  post_and_check "$label" "token" "$BODY_TOKEN"
+  echo "[body-read-probe] [$label] POST body came back byte for byte through the guest's stream.read loop"
+  post_and_check "$label" "64-byte" "$BODY_64"
+  echo "[body-read-probe] [$label] a body of exactly the guest's 64-byte capacity round-trips too"
+
+  kill "$SERVE_PID" 2>/dev/null || true
+  wait "$SERVE_PID" 2>/dev/null || true
+  SERVE_PID=""
+}
 
 # Exactly the buffer's capacity, which is the interesting boundary and not a
 # round number chosen for symmetry: whether it fits depends on WHERE the end of
@@ -289,11 +302,64 @@ if [ "${#BODY_64}" != "64" ]; then
   echo "[body-read-probe] FAILED: the boundary body is ${#BODY_64} bytes, not 64" >&2
   exit 1
 fi
-post_and_check "64-byte" "$BODY_64"
-echo "[body-read-probe] a body of exactly the guest's 64-byte capacity round-trips too"
 
-kill "$SERVE_PID" 2>/dev/null || true
-wait "$SERVE_PID" 2>/dev/null || true
-SERVE_PID=""
+HANDWRITTEN="$OUT_DIR/guest.wasm"
+wasm-tools parse "$PROBE_DIR/guest.wat" -o "$HANDWRITTEN"
+run_guest_suite "handwritten" "$HANDWRITTEN"
 
-echo "[body-read-probe] PASS: a guest can READ the wasi:http request body from its stream<u8> parameter (#1540)"
+# The emitter twin. `comp_emit_body_read_component` assembles the same
+# component from component_codegen.vibe's emitters, and it is held to THIS bar
+# rather than to a byte inspection: a component whose lift points at the wrong
+# core func, or whose stream canons are wired to the wrong instance, still
+# contains every byte a structural check looks for.
+EMITTER_COMPILER="${VIBE_BODY_READ_GATE_COMPILER:-${VIBE_SERVE_CLI_WASM:-${VIBE_ASYNC_GATE_COMPILER:-}}}"
+if [ -z "$EMITTER_COMPILER" ]; then
+  EMITTER_COMPILER="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$EMITTER_COMPILER" ] || [ ! -s "$EMITTER_COMPILER" ]; then
+  # Same rule as a missing tool: a local run may skip, a required run may not.
+  # Skipping silently here would mean the emitter half of this gate could rot
+  # while the gate still reported PASS.
+  if [ "${VIBE_P3_GATE_REQUIRE_TOOLS:-0}" = "1" ]; then
+    echo "[body-read-probe] FAILED: no stage2 compiler for the emitter twin (required mode)" >&2
+    exit 1
+  fi
+  echo "[body-read-probe] SKIP: no stage2 compiler, emitter twin not exercised"
+  echo "[body-read-probe] PASS: a guest can READ the wasi:http request body from its stream<u8> parameter (#1540)"
+  exit 0
+fi
+
+REL_OUT="${OUT_DIR#"$PROJECT_ROOT"/}"
+cat >"$OUT_DIR/emit.vibe" <<EMITEOF
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_body_read_component
+}
+
+fn main() -> Int with Fs {
+  let m = comp_emit_body_read_component("handler", [
+    "method",
+    "url",
+    "headers"
+  ], "body")
+  Fs::write_bytes("$REL_OUT/emitted-guest.wasm", m)
+  Bytes::length(m)
+}
+EMITEOF
+echo "[body-read-probe] emitting the component from component_codegen.vibe"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$EMITTER_COMPILER" "$OUT_DIR/emit.vibe" "$OUT_DIR/emit.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$OUT_DIR/emit.wasm" ]; then
+  echo "[body-read-probe] FAILED: the emitter program did not compile" >&2
+  cat "$OUT_DIR/emit.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+  --invoke main "$OUT_DIR/emit.wasm" >/dev/null 2>&1 || true
+if [ ! -s "$OUT_DIR/emitted-guest.wasm" ]; then
+  echo "[body-read-probe] FAILED: the emitter wrote no component" >&2
+  exit 1
+fi
+run_guest_suite "emitted" "$OUT_DIR/emitted-guest.wasm"
+
+echo "[body-read-probe] PASS: a guest can READ the wasi:http request body from its stream<u8> parameter, hand-written AND emitted (#1540)"
