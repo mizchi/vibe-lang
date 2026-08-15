@@ -9,8 +9,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 - `docs/vibe.md` is the broader language design/spec note for implemented
   behavior outside pure syntax (effects, imports, hashing, runtime contracts).
 - Items explicitly marked as "future", "proposal", or "draft" are non-normative.
-- Design explorations live in separate documents:
-  - `docs/module-system.md`
+- Package boundaries, visibility, and pinning are specified separately:
+  - `docs/module-system-oracle.md` (canonical)
 - Incident log for compiler/language regressions:
   - `docs/archive/compiler_language_incidents.md`
 

@@ -55,6 +55,78 @@ typing reuse が default-on、semantic module 単位へ拡張中 #1379)。**ビ�
 capability のコードを落とし、生成 wasm は要求する feature level を宣言する
 ([docs/wasm/feature-levels.md](docs/wasm/feature-levels.md))。
 
+## Language and documentation policy (English-first)
+
+The prototype phase tolerated Japanese everywhere. It no longer does: **write
+new PRs, issue titles and bodies, commit messages, code comments, and documents
+in English.** Japanese stays welcome in chat and in review discussion — the rule
+covers artifacts that live in the repository or on GitHub, because those are
+read by people and tools that do not read Japanese.
+
+This is forward-looking, not a mandate to translate the existing corpus. Do not
+open a "translate everything" PR. The unit of migration is whatever a reader
+consumes on its own:
+
+- **A short document** — translate the whole file when you edit it for another
+  reason. Half in each language is worse than either.
+- **A large living document** (this file, `docs/adr.md`, `docs/cheatsheet.md`) —
+  migrate a section at a time as sections are revised, and write **new** sections
+  and new `docs/adr.md` rows in English from the start. Each is read on its own,
+  so it does not inherit the surrounding language.
+
+### Bilingual documents: `-ja` is the translation, not the original
+
+Reader-facing documents (tutorial, language tour, install, README) may carry a
+Japanese translation alongside the English one:
+
+- `docs/tutorial/01_values_functions.vibe.md` — **canonical, English**
+- `docs/tutorial/01_values_functions-ja.vibe.md` — translation
+
+The English file is the source of truth. The `-ja` file translates prose only:
+**the code in ` ```vibe run ` blocks and the paired ` ```output ` blocks must be
+identical between the two**, because `scripts/vibe_md.sh check`
+(`pkf run vibe-md-tutorial`) executes both copies. A translation that drifts in
+the code is a broken translation, and the gate says so.
+
+Internal documents (spec, ADR, design records, reports) get **one** language —
+English — and no translation. They change too often for a second copy to stay
+true.
+
+### Documents rot; delete them
+
+`docs/` accumulated status banners: "this is not the current rule", "superseded
+by X", "the design changed after this was written". A banner is a document
+admitting it already failed at its job. Fix it at the source instead:
+
+- **The design changed mid-flight** → rewrite the document as the final state.
+  Do not narrate the path that was abandoned; say what is true now. The route
+  taken is in `git log` and the issue thread.
+- **The migration landed** → delete the migration document. What it described is
+  the implementation now, and the implementation is the honest record.
+- **The design was dropped** → delete it.
+- **Something still links to it** → repoint the links, then delete.
+
+`git log` is the archive. `docs/archive/` is only for documents still actively
+cited as history (e.g. [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md));
+it is not a place to move things you were too cautious to delete.
+
+### ADR log rules ([docs/adr.md](docs/adr.md))
+
+- **An ADR number is permanent and unique.** Numbers are cited from source
+  comments, fixtures, gate scripts, and other ADRs, so each must resolve to
+  exactly one decision. Never reuse a number, and never start a per-section
+  numbering series — the sections are a reading aid, not separate registries.
+- **`superseded` is a pointer, not an entry.** When a decision is replaced, fold
+  what still holds into the successor and delete the old row, leaving at most a
+  `(supersedes NNNN)` note in the successor. A log of dead rows is a log nobody
+  reads top to bottom.
+- **Delete an entry whose subject no longer exists in the tree.** An ADR about a
+  script, flag, or toolchain that has been removed does not become history by
+  sitting there; it becomes a false statement about the current build.
+- **`proposed` must say what would make it `accepted`.** A `proposed` entry that
+  has not moved in a release cycle is a decision nobody made — delete it and
+  keep the idea in an issue, where triage can reach it.
+
 ## vibe 言語リファレンス
 
 vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.md](docs/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。

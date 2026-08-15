@@ -56,10 +56,13 @@ git repo を `deps/` に取り込む経路、docs/install.md) であって、上
 package 境界モデルとは別レイヤ — in-repo の `lib/@scope/pkg` は
 `vibe.lock` を使わない。
 
-**歴史的記述の扱い:** [module-system.md](module-system.md) (v1 の現行仕様書)
-と [module-system-v2.md](module-system-v2.md) (v2 の設計書) は設計の経緯
-としてのみ読むこと。`index.lock` や `module {}` ブロック、`index.vibei` を
-境界とする記述はいずれも現行ではない。
+**歴史的記述の扱い:** v1 仕様書 (`module-system.md`) は 2026-08 に削除した —
+`module {}` ブロック・`vibe.deps`/`vibe.lock` を唯一の依存モデルとする記述・
+`index.vibe(i)` を境界とする記述はどれも現行ではなく、残しておくと現行の
+ビルドについての嘘になる。経緯が要るときは `git log` を引くこと。
+[module-system-v2.md](module-system-v2.md) は ADR-0063/0064 の設計本文として
+残しているが、`index.vibei` を契約ファイルとする綴りは現行 (`index.vpkg`) より
+前の世代の記述である。
 
 ## 規則
 
