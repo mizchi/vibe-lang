@@ -8,6 +8,31 @@ PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 DEFAULT_MANIFEST="$PROJECT_ROOT/bootstrap/seed.json"
 DEFAULT_OUT_ROOT="$PROJECT_ROOT/_build/selfhost/generations"
 RUNNER_SCRIPT="${VIBE_GENERATION_RUNNER_SCRIPT:-$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh}"
+SEED_ARTIFACT_OVERRIDE="${VIBE_GENERATION_SEED_ARTIFACT:-}"
+if [ -n "${VIBE_POLICY_RAW_FS_ROOT:-}" ]; then
+  [ "${VIBE_POLICY_RAW_FS_ROOT}" = "/workspace/repo" ] || {
+    echo "selfhost generations: invalid policy root" >&2
+    exit 1
+  }
+  [ "$RUNNER_SCRIPT" = "/opt/policy/scripts/run_wasm_vibe_host_runner.sh" ] || {
+    echo "selfhost generations: invalid immutable policy runner hook" >&2
+    exit 1
+  }
+  [ -f "$RUNNER_SCRIPT" ] && [ ! -L "$RUNNER_SCRIPT" ] || {
+    echo "selfhost generations: immutable policy runner hook missing or redirected" >&2
+    exit 1
+  }
+fi
+if [ -n "$SEED_ARTIFACT_OVERRIDE" ]; then
+  [ "$SEED_ARTIFACT_OVERRIDE" = "/opt/policy/bootstrap/seed/compiler.wasm" ] || {
+    echo "selfhost generations: invalid immutable policy seed hook" >&2
+    exit 1
+  }
+  [ -f "$SEED_ARTIFACT_OVERRIDE" ] && [ ! -L "$SEED_ARTIFACT_OVERRIDE" ] || {
+    echo "selfhost generations: immutable policy seed hook missing or redirected" >&2
+    exit 1
+  }
+fi
 VALIDATE_WASM="${VIBE_GENERATION_VALIDATE_WASM:-1}"
 VALIDATE_RUN="${VIBE_GENERATION_VALIDATE_RUN:-1}"
 ALLOW_UNPINNED_SEED="${VIBE_GENERATION_ALLOW_UNPINNED_SEED:-0}"
@@ -130,7 +155,11 @@ load_seed() {
     SEED_ENTRY_NAME="cli_main"
   fi
   [ -n "$SEED_ARTIFACT_REL" ] || die "seed.artifact.path is required in $MANIFEST_PATH"
-  SEED_ARTIFACT_PATH="$(abs_path "$SEED_ARTIFACT_REL")"
+  if [ -n "$SEED_ARTIFACT_OVERRIDE" ]; then
+    SEED_ARTIFACT_PATH="$SEED_ARTIFACT_OVERRIDE"
+  else
+    SEED_ARTIFACT_PATH="$(abs_path "$SEED_ARTIFACT_REL")"
+  fi
 }
 
 verify_seed_artifact() {

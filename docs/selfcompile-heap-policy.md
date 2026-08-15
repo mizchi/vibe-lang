@@ -128,13 +128,28 @@ then executed only through a fresh constrained container and deleted.
 
 The trusted entrypoint removes materialized project scripts before generation,
 installs only the base runner needed by hard-coded bootstrap call sites, and
-invokes base `generate_bundle.sh` / `generations.sh` from `/opt/policy`.
-Policy-only raw imports constrain reads to `/workspace/repo`, writes to
-`_build/selfcompile-policy`, and reject shell, TCP, and HTTP dispatch. The host
-sends a random result key on attached stdin; the entrypoint consumes it before
-starting Wasm and returns exactly one domain-separated HMAC-authenticated
-record. Guest stdout/stderr and guest-writable files are never parsed as the
-result channel.
+invokes base `generate_bundle.sh` / `generations.sh` from `/opt/policy`. Every
+seed, flatten, validation, stage, and final-measurement Wasm invocation crosses
+`/opt/policy/scripts/run_wasm_vibe_host_runner.sh`, an immutable wrapper that
+validates its `/opt/policy` runner/seed hooks, changes to `/workspace/repo`, and
+unconditionally injects content-v1 plus policy raw-Fs selectors. Defaults
+outside this explicit policy environment are unchanged.
+
+Policy-only raw imports constrain reads to `/workspace/repo` and reject shell,
+TCP, and HTTP dispatch before argument decoding. The immutable wrapper requires
+an explicit phase write root: bundle/selfhost generation may write only beneath
+the reserved physical `/workspace/repo/_build` tmpfs, while final KPI
+measurement is narrowed to `/workspace/repo/_build/selfcompile-policy`.
+Tracked archives containing `_build` are rejected before the tmpfs tree is
+created. The native acceptance lane instantiates real hostile Wasm
+for shell interpretation, shell capture, TCP/HTTP, `/etc`, `/proc`,
+`/opt/policy`, out-of-root read/write, generation temporary writes, final-phase
+sibling `_build` writes, forged result-prefix output, and an infinite-loop
+timeout; its HMAC record includes bounded positive hostile and
+stat-token attestations. The host sends a random result key on attached stdin;
+the entrypoint consumes it before starting Wasm and returns exactly one
+domain-separated HMAC-authenticated canonical-JSON record. Guest stdout/stderr
+and guest-writable files are never parsed as the result channel.
 
 `scripts/selfcompile_heap_policy_docker_test.sh` is the expensive native
 acceptance lane. It checks same-tree build/heap/token identity, poisoned head
@@ -142,10 +157,11 @@ script sentinels, wrong merge identity, reserved paths, and cleanup. Native
 `linux/amd64` attestation run
 [31871671221](https://github.com/mizchi/vibe-lang/actions/runs/31871671221)
 at candidate `8662559614bc6ae110c577ccad385f4fad8753ef` passed focused tests
-35/35 and the full isolated Docker lane (`selfcompile policy Docker validation:
-ok`). The Docker step took 9m40s and the complete job 10m50s. Its temporary
-branch-only validation workflow was removed immediately after the pass.
-Required CI remains unchanged and the existing absolute gate remains
+35/35 and the then-current isolated Docker lane in 10m50s. Independent review
+subsequently found that generation-phase Wasm preceded the policy wrapper; the
+current wrapper and real hostile-Wasm fixtures are therefore a bounded security
+repair that requires a fresh temporary branch-only native run before final
+review. Required CI remains unchanged and the existing absolute gate remains
 authoritative.
 
 The metric still observes the guest-exported `__heap_ptr`. HMAC authentication

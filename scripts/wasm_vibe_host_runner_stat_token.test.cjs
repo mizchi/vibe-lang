@@ -41,26 +41,38 @@ function assertToken(value) {
   assert.match(value.toString(), /^[1-9][0-9]{18}$/);
 }
 
-test("policy raw Fs selector is CLI-only and requires content-v1", () => {
+test("policy raw Fs selector requires explicit write authority and content-v1", () => {
   assert.throws(() => parseArgs(["--policy-raw-fs-root", "/tmp", "a.wasm"]), /requires content-v1/);
-  const args = parseArgs(["--policy-stat-token", "content-v1", "--policy-stat-root", "/tmp", "--policy-raw-fs-root", "/tmp", "a.wasm"]);
+  assert.throws(() => parseArgs(["--policy-stat-token", "content-v1", "--policy-stat-root", "/tmp", "--policy-raw-fs-root", "/tmp", "a.wasm"]), /must be supplied together/);
+  assert.throws(() => parseArgs(["--policy-stat-token", "content-v1", "--policy-stat-root", "/tmp", "--policy-raw-fs-write-root", "/tmp/_build", "a.wasm"]), /must be supplied together/);
+  const args = parseArgs(["--policy-stat-token", "content-v1", "--policy-stat-root", "/tmp", "--policy-raw-fs-root", "/tmp", "--policy-raw-fs-write-root", "/tmp/_build", "a.wasm"]);
   assert.equal(args.policyRawFsRoot, "/tmp");
+  assert.equal(args.policyRawFsWriteRoot, "/tmp/_build");
   assert.deepEqual(args.passthroughArgs, []);
 });
 
-test("policy raw Fs confines reads to root and writes to policy build", () => {
+test("policy raw Fs uses phase-specific physical write authority without changing import denials", () => {
   const f = fixture();
   try {
-    fs.mkdirSync(path.join(f.root, "_build", "selfcompile-policy"), { recursive: true });
+    const generationRoot = path.join(f.root, "_build");
+    const measurementRoot = path.join(generationRoot, "selfcompile-policy");
+    fs.mkdirSync(measurementRoot, { recursive: true });
     withCwd(f.root, () => {
       const stat = configurePolicyStatToken("content-v1", f.root);
-      const raw = configurePolicyRawFs(f.root, stat);
-      assert.doesNotThrow(() => authorizePolicyRawPath(path.join(f.root, "lib.vibe"), false, raw));
-      assert.doesNotThrow(() => authorizePolicyRawPath(path.join(f.root, "_build", "selfcompile-policy", "out.wasm"), true, raw));
-      assert.throws(() => authorizePolicyRawPath("/etc/passwd", false, raw), /escapes allowed root/);
-      assert.throws(() => authorizePolicyRawPath(path.join(f.root, "lib.vibe"), true, raw), /escapes allowed root/);
+      const generation = configurePolicyRawFs(f.root, generationRoot, stat);
+      const measurement = configurePolicyRawFs(f.root, measurementRoot, stat);
+      assert.doesNotThrow(() => authorizePolicyRawPath(path.join(generationRoot, "vibe_selfhost_vpkg_prefix_probe.txt"), true, generation));
+      assert.doesNotThrow(() => authorizePolicyRawPath(path.join(measurementRoot, "out.wasm"), true, measurement));
+      for (const target of [
+        path.join(f.root, "lib", "source.vibe"),
+        path.join(f.outer, "outside"),
+        "/opt/policy-hostile-marker",
+        "/etc/policy-hostile-marker",
+      ]) assert.throws(() => authorizePolicyRawPath(target, true, generation), /escapes allowed root/);
+      assert.throws(() => authorizePolicyRawPath(path.join(generationRoot, "sibling"), true, measurement), /escapes allowed root/);
+      assert.throws(() => authorizePolicyRawPath("/etc/passwd", false, generation), /escapes allowed root/);
       for (const name of ["sh", "sh_lines", "sh_capture", "tcp_connect", "http_request"]) {
-        assert.throws(() => authorizePolicyRawImport(name, [], null, raw), new RegExp(`policy raw import denied: ${name}`));
+        assert.throws(() => authorizePolicyRawImport(name, [], null, generation), new RegExp(`policy raw import denied: ${name}`));
       }
     });
   } finally { fs.rmSync(f.outer, { recursive: true, force: true }); }

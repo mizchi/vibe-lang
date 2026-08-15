@@ -6,12 +6,29 @@ import {
   openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { writeHostileWasmFixtures } from "./selfcompile_heap_policy_hostile_wasm.mjs";
 
 const PREFIX = "VIBE_HEAP_POLICY_RESULT_V1 ";
 const ROOT = "/workspace/repo";
 const POLICY = "/opt/policy";
 const BUILD = `${ROOT}/_build/selfcompile-policy`;
 const MAX_LOG = 8 * 1024 * 1024;
+const POLICY_RUNNER = `${POLICY}/scripts/run_wasm_vibe_host_runner.sh`;
+const POLICY_BASE_RUNNER = `${POLICY}/scripts/run_wasm_vibe_host_runner_base.sh`;
+const POLICY_SEED = `${POLICY}/bootstrap/seed/compiler.wasm`;
+
+function policyEnvironment(writeRoot, extra = {}) {
+  return {
+    VIBE_POLICY_RAW_FS_ROOT: ROOT,
+    VIBE_POLICY_RAW_FS_WRITE_ROOT: writeRoot,
+    VIBE_POLICY_BASE_RUNNER: POLICY_BASE_RUNNER,
+    VIBE_GENERATE_BUNDLE_RUNNER_SCRIPT: POLICY_RUNNER,
+    VIBE_GENERATE_BUNDLE_SEED_WASM: POLICY_SEED,
+    VIBE_GENERATION_RUNNER_SCRIPT: POLICY_RUNNER,
+    VIBE_GENERATION_SEED_ARTIFACT: POLICY_SEED,
+    ...extra,
+  };
+}
 
 function die(reason, details = {}) {
   const error = new Error(reason);
@@ -84,6 +101,7 @@ function installTrustedRuntime() {
   mkdirSync(scripts, { recursive: true });
   for (const name of [
     "run_wasm_vibe_host_runner.sh",
+    "run_wasm_vibe_host_runner_base.sh",
     "wasm_vibe_host_runner.js",
     "wasm_vibe_host_runner_http_worker.js",
     "wasm_vibe_host_runner_tcp_worker.js",
@@ -109,10 +127,7 @@ function measure(stage2, input, trial) {
   mkdirSync(`${work}/cache`, { recursive: true });
   const output = `${work}/out.wasm`;
   const result = spawnSync("bash", [
-    `${POLICY}/scripts/run_wasm_vibe_host_runner.sh`,
-    "--policy-stat-token", "content-v1",
-    "--policy-stat-root", ROOT,
-    "--policy-raw-fs-root", ROOT,
+    POLICY_RUNNER,
     "--invoke", "cli_main", stage2, input, output, "__no_entry__",
   ], {
     cwd: ROOT,
@@ -122,6 +137,7 @@ function measure(stage2, input, trial) {
       VIBE_PREOPEN_DIR: ROOT, VIBE_FS_COMPILE: "1", VIBE_IMPORT_ABI: "raw",
       VIBE_WASM_MEMORY_STATS: "1", VIBE_BUILD_CACHE_DIR: `${work}/cache`,
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE: "1",
+      ...policyEnvironment(BUILD),
     },
     encoding: "utf8", maxBuffer: MAX_LOG, timeout: 300_000,
     stdio: ["ignore", "pipe", "pipe"],
@@ -130,6 +146,71 @@ function measure(stage2, input, trial) {
   if (!existsSync(output) || !statSync(output).isFile() || statSync(output).size === 0) die("measurement-output-missing", { trial });
   const parsed = parseRunner(String(result.stderr ?? ""));
   return { ...parsed, output_sha256: createHash("sha256").update(readFileSync(output)).digest("hex") };
+}
+
+function runHostileWasmFixtures() {
+  const fixtureDir = `${BUILD}/hostile-wasm`;
+  const fixtures = writeHostileWasmFixtures(fixtureDir, ROOT);
+  let denied = 0;
+  let safe = 0;
+  let timedOut = 0;
+  let fakePrefixCaptured = 0;
+  let positiveStatCalls = 0;
+  for (const fixture of fixtures) {
+    const result = spawnSync("bash", [POLICY_RUNNER, "--invoke", "probe", fixture.path], {
+      cwd: ROOT,
+      env: {
+        PATH: "/usr/local/bin:/usr/bin:/bin", HOME: `${BUILD}/home`, TMPDIR: "/tmp",
+        LANG: "C", LC_ALL: "C", TZ: "UTC", VIBE_IMPORT_ABI: "raw",
+        VIBE_PREOPEN_DIR: ROOT, VIBE_WASM_MEMORY_STATS: "1",
+        ...policyEnvironment(fixture.authority === "measurement" ? BUILD : `${ROOT}/_build`),
+      },
+      encoding: "utf8", maxBuffer: 1024 * 1024,
+      timeout: fixture.timeout ? 500 : 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stderr = String(result.stderr ?? "");
+    const stdout = String(result.stdout ?? "");
+    if (fixture.timeout) {
+      if (result.error?.code !== "ETIMEDOUT" && result.signal !== "SIGTERM" && result.signal !== "SIGKILL") {
+        die("hostile-timeout-not-enforced", { fixture: fixture.name, status: result.status, signal: result.signal, error: result.error?.code ?? null });
+      }
+      timedOut += 1;
+    } else if (fixture.deny) {
+      if (result.status === 0 || !stderr.includes(fixture.deny)) {
+        die("hostile-import-not-denied", { fixture: fixture.name, status: result.status, stderr: stderr.slice(-1000) });
+      }
+      denied += 1;
+    } else {
+      if (result.error || result.status !== 0 || result.signal) {
+        die("hostile-safe-probe-failed", { fixture: fixture.name, status: result.status, signal: result.signal, stderr: stderr.slice(-1000) });
+      }
+      safe += 1;
+      if (fixture.created) {
+        if (!existsSync(fixture.created) || readFileSync(fixture.created, "utf8") !== "owned") die("hostile-generation-write-missing", { fixture: fixture.name });
+        rmSync(fixture.created, { force: true });
+      }
+      if (fixture.fake) {
+        if (!stdout.includes("VIBE_HEAP_POLICY_RESULT_V1 forged forged")) die("hostile-fake-prefix-not-exercised");
+        fakePrefixCaptured += 1;
+      }
+      if (fixture.name === "safe-stat") {
+        const match = stderr.match(/\[policy-stat-token\] mode=content-v1 calls=([0-9]+) unique=([0-9]+)/);
+        if (!match || Number(match[1]) <= 0 || Number(match[2]) <= 0) die("hostile-safe-attestation-missing");
+        positiveStatCalls = Number(match[1]);
+      }
+    }
+  }
+  for (const marker of [
+    "/tmp/policy-hostile-marker",
+    "/opt/policy-hostile-marker",
+    "/etc/policy-hostile-marker",
+    `${ROOT}/outside-policy-write`,
+    `${ROOT}/_build/final-policy-sibling-write`,
+  ]) {
+    if (existsSync(marker)) die("hostile-marker-created", { marker });
+  }
+  return { schema: 1, denied, safe, timed_out: timedOut, fake_prefix_captured: fakePrefixCaptured, positive_stat_calls: positiveStatCalls, markers_absent: true };
 }
 
 function main() {
@@ -141,7 +222,7 @@ function main() {
   if (!/^[0-9a-f]{64}$/.test(keyText)) die("invalid-result-key");
   const key = Buffer.from(keyText, "hex");
   const config = JSON.parse(Buffer.from(process.argv[2], "base64url").toString("utf8"));
-  if (Object.keys(config).sort().join(",") !== "input,label,oid,tree" || !/^[0-9a-f]{40}$/.test(config.oid) || !/^[0-9a-f]{40}$/.test(config.tree) || !["base", "current"].includes(config.label)) die("invalid-container-config");
+  if (Object.keys(config).sort().join(",") !== "hostile_fixtures,input,label,oid,tree" || typeof config.hostile_fixtures !== "boolean" || !/^[0-9a-f]{40}$/.test(config.oid) || !/^[0-9a-f]{40}$/.test(config.tree) || !["base", "current"].includes(config.label)) die("invalid-container-config");
 
   mkdirSync(ROOT, { recursive: true, mode: 0o700 });
   run("tar", ["--no-same-owner", "--no-same-permissions", "-xf", "/opt/input/source.tar", "-C", ROOT], { cwd: "/workspace" });
@@ -151,6 +232,7 @@ function main() {
   overwritePinnedInput(input);
   installTrustedRuntime();
   mkdirSync(`${BUILD}/home`, { recursive: true });
+  const hostileFixtureAttestation = config.hostile_fixtures ? runHostileWasmFixtures() : null;
 
   run("bash", [`${POLICY}/scripts/generate_bundle.sh`], {
     env: {
@@ -159,8 +241,8 @@ function main() {
       VIBE_ADAPTER_MODULE_SOURCE_OUT: `${ROOT}/lib/@vibe/compiler/_cli_adapter_module_source.vibe`,
       VIBE_IMPORT_ABI: "raw",
       VIBE_GENERATION_AUTO_FETCH_SEED: "0",
-      VIBE_GENERATION_RUNNER_SCRIPT: `${POLICY}/scripts/run_wasm_vibe_host_runner.sh`,
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE: "1",
+      ...policyEnvironment(`${ROOT}/_build`),
     },
   });
   const moduleSource = `${ROOT}/lib/@vibe/compiler/_cli_adapter_module_source.vibe`;
@@ -173,10 +255,10 @@ function main() {
       VIBE_PROJECT_ROOT: ROOT,
       VIBE_PREBUILT_MODULE_SOURCE: moduleSource,
       VIBE_GENERATION_AUTO_FETCH_SEED: "0",
-      VIBE_GENERATION_RUNNER_SCRIPT: `${POLICY}/scripts/run_wasm_vibe_host_runner.sh`,
       VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE: "1",
       VIBE_IMPORT_ABI: "raw",
       VIBE_RC: "0",
+      ...policyEnvironment(`${ROOT}/_build`),
     },
   });
   const stage2 = `${generation}/stage2.wasm`;
@@ -194,6 +276,7 @@ function main() {
     stage2_sha256: stage2Sha256,
     output_sha256: measurements.map(item => item.output_sha256),
     stat_token_attestations: measurements.map(item => item.attestation),
+    hostile_fixture_attestation: hostileFixtureAttestation,
   };
   const payload = Buffer.from(JSON.stringify(record)).toString("base64url");
   const mac = createHmac("sha256", key).update("vibe:selfcompile-heap-policy:result:v1\0").update(payload).digest("hex");

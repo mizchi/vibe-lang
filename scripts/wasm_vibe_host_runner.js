@@ -124,7 +124,7 @@ function toU32(value) {
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--policy-stat-token content-v1 --policy-stat-root <absolute-root> [--policy-raw-fs-root <absolute-root>]] [--daemon] [--invoke <name>]... [--invoke-batch-dir <dir>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
+    "usage: node scripts/wasm_vibe_host_runner.js [--policy-stat-token content-v1 --policy-stat-root <absolute-root> [--policy-raw-fs-root <absolute-root> --policy-raw-fs-write-root <absolute-root>]] [--daemon] [--invoke <name>]... [--invoke-batch-dir <dir>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
   );
 }
 
@@ -140,6 +140,7 @@ function parseArgs(argv) {
   let policyStatToken = null;
   let policyStatRoot = null;
   let policyRawFsRoot = null;
+  let policyRawFsWriteRoot = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--daemon") {
@@ -167,6 +168,14 @@ function parseArgs(argv) {
         throw new Error("--policy-raw-fs-root requires one pre-wasm value");
       }
       policyRawFsRoot = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--policy-raw-fs-write-root") {
+      if (wasmPath !== null || i + 1 >= argv.length || policyRawFsWriteRoot !== null) {
+        throw new Error("--policy-raw-fs-write-root requires one pre-wasm value");
+      }
+      policyRawFsWriteRoot = argv[i + 1];
       i += 1;
       continue;
     }
@@ -237,6 +246,9 @@ function parseArgs(argv) {
   if (policyRawFsRoot !== null && policyStatToken !== "content-v1") {
     throw new Error("--policy-raw-fs-root requires content-v1 policy mode");
   }
+  if ((policyRawFsRoot === null) !== (policyRawFsWriteRoot === null)) {
+    throw new Error("--policy-raw-fs-root and --policy-raw-fs-write-root must be supplied together");
+  }
   if (invokes.length === 0) {
     invokes.push("_start");
   }
@@ -252,6 +264,7 @@ function parseArgs(argv) {
     policyStatToken,
     policyStatRoot,
     policyRawFsRoot,
+    policyRawFsWriteRoot,
   };
 }
 
@@ -1083,14 +1096,20 @@ function configurePolicyStatToken(mode, root) {
   };
 }
 
-function configurePolicyRawFs(root, statConfig) {
-  if (root === null) return null;
-  if (!statConfig || typeof root !== "string" || !path.isAbsolute(root)) {
-    throw new Error("policy raw Fs requires content-v1 policy mode and an absolute root");
+function configurePolicyRawFs(root, writeRoot, statConfig) {
+  if (root === null && writeRoot === null) return null;
+  if (!statConfig || typeof root !== "string" || !path.isAbsolute(root) || typeof writeRoot !== "string" || !path.isAbsolute(writeRoot)) {
+    throw new Error("policy raw Fs requires content-v1 policy mode and absolute read/write roots");
   }
   const physical = fs.realpathSync.native(path.resolve(root));
   if (physical !== statConfig.root) throw new Error("policy raw Fs root must equal policy stat root");
-  return { root: physical, writeRoot: path.join(physical, "_build", "selfcompile-policy") };
+  const lexicalWriteRoot = path.resolve(writeRoot);
+  if (!isContainedPath(physical, lexicalWriteRoot)) throw new Error("policy raw Fs write root escapes policy root");
+  const writeInfo = fs.lstatSync(lexicalWriteRoot);
+  if (!writeInfo.isDirectory() || writeInfo.isSymbolicLink() || fs.realpathSync.native(lexicalWriteRoot) !== lexicalWriteRoot) {
+    throw new Error("policy raw Fs write root must be a physical directory");
+  }
+  return { root: physical, writeRoot: lexicalWriteRoot };
 }
 
 function authorizePolicyRawPath(filePath, write = false, config = policyRawFsConfig) {
@@ -2035,9 +2054,10 @@ async function main() {
     policyStatToken,
     policyStatRoot,
     policyRawFsRoot,
+    policyRawFsWriteRoot,
   } = parseArgs(process.argv.slice(2));
   policyStatTokenConfig = configurePolicyStatToken(policyStatToken, policyStatRoot);
-  policyRawFsConfig = configurePolicyRawFs(policyRawFsRoot, policyStatTokenConfig);
+  policyRawFsConfig = configurePolicyRawFs(policyRawFsRoot, policyRawFsWriteRoot, policyStatTokenConfig);
   let passthroughArgs = initialPassthroughArgs.slice();
   passthroughArgsGlobal = passthroughArgs;
   if (passthroughArgs.length > 0) {

@@ -32,7 +32,7 @@ docker version >"$LOG_DIR/docker-version.log" 2>&1 || fail "docker-daemon-unavai
 base="$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')"
 controller=(node "$ROOT/scripts/selfcompile_heap_policy.mjs" --repo "$ROOT" --base "$base" --latest-base-ref "$base" --head "$base" --synthesize-merge --pr-number 1798)
 
-"${controller[@]}" >"$LOG_DIR/same-tree.json" 2>"$LOG_DIR/same-tree.log" || fail "same-tree controller failed"
+VIBE_HEAP_POLICY_HOSTILE_FIXTURES=1 "${controller[@]}" >"$LOG_DIR/same-tree.json" 2>"$LOG_DIR/same-tree.log" || fail "same-tree controller failed"
 node - "$LOG_DIR/same-tree.json" <<'NODE'
 const fs = require("node:fs");
 const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -65,7 +65,7 @@ done
 git -C "$scratch/repo" add scripts
 git -C "$scratch/repo" commit --quiet -m 'hostile materialized script sentinels'
 head="$(git -C "$scratch/repo" rev-parse --verify 'HEAD^{commit}')"
-node "$ROOT/scripts/selfcompile_heap_policy.mjs" \
+VIBE_HEAP_POLICY_HOSTILE_FIXTURES=1 node "$ROOT/scripts/selfcompile_heap_policy.mjs" \
   --repo "$scratch/repo" --base "$base" --latest-base-ref "$base" \
   --head "$head" --synthesize-merge --pr-number 1798 \
   >"$LOG_DIR/hostile-scripts.json" 2>"$LOG_DIR/hostile-scripts.log" || \
