@@ -99,6 +99,68 @@ fn read_valtype(bytes: Bytes, pos: Int) -> (Int, Int) {
   }
 }
 
+/// The FORM byte of each type in the type section, in index order.
+///
+/// `parse_types` reports a struct or array type as an empty (params, results)
+/// pair, which is indistinguishable from `(func)` -- fine for its callers, but
+/// it means the type section cannot answer "does this module define gc types".
+/// Feature detection needs exactly that, so the forms are reported separately
+/// rather than by widening `parse_types`' established return shape.
+///
+/// 0x60 func, 0x5F struct, 0x5E array, 0x50 rec group, 0x4E sub.
+export fn parse_type_forms(bytes: Bytes, offset: Int, size: Int) -> Array[Int] {
+  let end_pos = offset + size
+  let forms = Array::slice([
+    0
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut t = 0
+  while (t < cnt) && (pos < end_pos) {
+    let form = bytes[pos]
+    pos = pos + 1
+    Array::push(forms, form)
+    if form == 0x60 {
+      let (param_count, pp) = read_uleb128(bytes, pos)
+      pos = pp
+      let mut p = 0
+      while (p < param_count) && (pos < end_pos) {
+        let (_, np) = read_valtype(bytes, pos)
+        pos = np
+        p = p + 1
+      }
+      let (result_count, rp) = read_uleb128(bytes, pos)
+      pos = rp
+      let mut r = 0
+      while (r < result_count) && (pos < end_pos) {
+        let (_, np) = read_valtype(bytes, pos)
+        pos = np
+        r = r + 1
+      }
+    }
+    else if form == 0x5F {
+      let (field_count, fp) = read_uleb128(bytes, pos)
+      pos = fp
+      let mut f = 0
+      while (f < field_count) && (pos < end_pos) {
+        let (_, np) = read_valtype(bytes, pos)
+        pos = np + 1
+        f = f + 1
+      }
+    }
+    else if form == 0x5E {
+      let (_, np) = read_valtype(bytes, pos)
+      pos = np + 1
+    } else {
+      // A rec group or sub type would need its own walk; stop rather than
+      // guess, so a caller never reads a form this function did not decode.
+      t = cnt
+    }
+    t = t + 1
+  }
+  forms
+}
+
 export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int], Array[Int])] {
   let end_pos = offset + size
   let result = Array::slice([
@@ -1307,4 +1369,163 @@ export fn module_summary(bytes: Bytes) -> String {
     }
     StringBuilder::freeze(out)
   }
+}
+
+/// Which wasm proposals a module's STRUCTURE requires, as feature-matrix.json
+/// keys (docs/wasm/feature-matrix.json), sorted and deduplicated.
+///
+/// #1133: `scripts/wasm_feature_levels.vibex` declares what vibe's codegen is
+/// believed to emit, curated by hand from source greps. That list drifted the
+/// moment the gc backend's reference lane started emitting typed function
+/// signatures, and nothing noticed -- the drift was found by reading a binary
+/// by hand. This answers the same question FROM the binary.
+///
+/// Deliberately structural only. Everything below is decided by the type
+/// section, a section's presence, or a declaration -- never by scanning code
+/// bytes for opcode prefixes. A naive byte scan cannot tell an opcode from an
+/// immediate that happens to share its value, and would report proposals the
+/// module does not use; being wrong in that direction is worse than being
+/// incomplete, because the whole point is to be trusted against a hand-curated
+/// list. `simd`, `tailCall` and `bulkMemory` therefore need an instruction
+/// walker and are NOT reported yet -- see the package README note.
+export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
+  let found = Array::slice([
+    ""
+  ], 0, 0)
+  if !validate_magic(wasm_bytes) {
+    found
+  } else {
+    let sections = list_sections(wasm_bytes)
+    let mut uses_gc_types = false
+    let mut uses_typed_ref = false
+    let mut uses_ref_types = false
+    let mut has_tag_section = false
+    let mut memory_count = 0
+    let mut i = 0
+    while i < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, i)
+      if sid == 1 {
+        let forms = parse_type_forms(wasm_bytes, off, sz)
+        let mut f = 0
+        while f < Array::length(forms) {
+          let form = Array::get(forms, f)
+          if (form == 0x5F) || (form == 0x5E) || (form == 0x50) || (form == 0x4E) {
+            uses_gc_types = true
+          } else {
+            ()
+          }
+          f = f + 1
+        }
+        let types = parse_types(wasm_bytes, off, sz)
+        let mut t = 0
+        while t < Array::length(types) {
+          let (params, results) = Array::get(types, t)
+          if valtypes_mention_typed_ref(params) || valtypes_mention_typed_ref(results) {
+            uses_typed_ref = true
+          } else {
+            ()
+          }
+          if valtypes_mention_ref_type(params) || valtypes_mention_ref_type(results) {
+            uses_ref_types = true
+          } else {
+            ()
+          }
+          t = t + 1
+        }
+      }
+      else if sid == 13 {
+        has_tag_section = true
+      }
+      else if sid == 5 {
+        memory_count = Array::length(parse_memories(wasm_bytes, off, sz))
+      }
+      else if sid == 10 {
+        let entries = parse_code_entries(wasm_bytes, off, sz)
+        let mut e = 0
+        while e < Array::length(entries) {
+          let (_, _, locals) = Array::get(entries, e)
+          let mut l = 0
+          while l < Array::length(locals) {
+            let (_, lt) = Array::get(locals, l)
+            if (lt == 0x63) || (lt == 0x64) {
+              uses_typed_ref = true
+            } else {
+              ()
+            }
+            if (lt == 0x70) || (lt == 0x6F) {
+              uses_ref_types = true
+            } else {
+              ()
+            }
+            l = l + 1
+          }
+          e = e + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    // Alphabetical, so the result can be compared against a sorted declaration
+    // without the caller sorting first.
+    if has_tag_section {
+      Array::push(found, "exceptionsFinal")
+    } else {
+      ()
+    }
+    if uses_gc_types {
+      Array::push(found, "gc")
+    } else {
+      ()
+    }
+    if memory_count > 1 {
+      Array::push(found, "multiMemory")
+    } else {
+      ()
+    }
+    // Only when nothing narrower already covers it: a typed reference IS a
+    // reference type, and reporting both would make the result read as two
+    // independent requirements.
+    if uses_ref_types && !uses_typed_ref {
+      Array::push(found, "referenceTypes")
+    } else {
+      ()
+    }
+    if uses_typed_ref {
+      Array::push(found, "typedFunctionReferences")
+    } else {
+      ()
+    }
+    found
+  }
+}
+
+fn valtypes_mention_typed_ref(vts: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(vts) {
+    let vt = Array::get(vts, i)
+    if (vt == 0x63) || (vt == 0x64) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn valtypes_mention_ref_type(vts: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(vts) {
+    let vt = Array::get(vts, i)
+    if (vt == 0x70) || (vt == 0x6F) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }

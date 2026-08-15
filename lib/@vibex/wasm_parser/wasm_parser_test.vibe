@@ -33,9 +33,11 @@ import ./wasm_parser.vibe {
   parse_memories,
   parse_start,
   parse_tables,
+  parse_type_forms,
   parse_types,
   read_init_expr,
   read_version,
+  scan_features,
   section_name,
   validate_magic,
   valtype_name
@@ -3979,4 +3981,124 @@ test "parse_code_entries reads a typed reference local as one declaration" {
   let (lcount, ltype) = Array::get(locals, 0)
   assert(lcount == 1)
   assert(ltype == 0x63)
+}
+
+// #1133: report proposal requirements FROM the binary.
+//
+// The hand-curated `used_by_codegen()` in scripts/wasm_feature_levels.vibex
+// drifted the moment vibe's gc backend started emitting typed function
+// signatures, and nothing noticed. These pin the structural detections that
+// answer the same question from the bytes.
+
+fn empty_module() -> Bytes {
+  make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0
+  ])
+}
+
+fn features_contain(fs: Array[String], want: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(fs) {
+    if Array::get(fs, i) == want {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+test "scan_features reports nothing for a bare module" {
+  assert(Array::length(scan_features(empty_module())) == 0)
+}
+
+test "scan_features rejects a non-module without reading further" {
+  assert(Array::length(scan_features(make_bytes([
+    1,
+    2,
+    3
+  ]))) == 0)
+}
+
+test "scan_features finds gc from a struct type definition" {
+  // type section: one `(struct (field (mut i64)))`
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    0x5F,
+    1,
+    0x7E,
+    1
+  ])
+  let fs = scan_features(m)
+  assert(features_contain(fs, "gc"))
+  // A gc TYPE alone does not imply typed function references: this backend
+  // used struct types with an all-i64 ABI before the reference lane existed.
+  assert(!features_contain(fs, "typedFunctionReferences"))
+}
+
+test "scan_features finds typedFunctionReferences from a signature" {
+  // type section: `(func (param (ref null 0)) (result i64))`
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    7,
+    1,
+    0x60,
+    1,
+    0x63,
+    0,
+    1,
+    0x7E
+  ])
+  let fs = scan_features(m)
+  assert(features_contain(fs, "typedFunctionReferences"))
+  // referenceTypes is not reported alongside it: a typed reference IS a
+  // reference type, and listing both reads as two independent requirements.
+  assert(!features_contain(fs, "referenceTypes"))
+}
+
+test "scan_features finds exceptionsFinal from the tag section" {
+  // section id 13 (tag), one entry.
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    13,
+    3,
+    1,
+    0,
+    0
+  ])
+  assert(features_contain(scan_features(m), "exceptionsFinal"))
 }
