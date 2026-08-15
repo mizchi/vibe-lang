@@ -1718,27 +1718,46 @@ StreamProducer）を相手に実測されている。production の相手 —
 | compose | `wac plug`（adapter component + guest） | 自前の core module 合成（adapter core module を同梱） |
 
 つまり body は guest に届く時点で既に String に潰れており、`stream<u8>` は
-adapter の内部で消費し終わっている。`host_stream_named("body")` が
-production で意味を持つには:
+adapter の内部で消費し終わっている。
 
-1. **full adapter が body を materialize せず export する**:
-   `world adapter` に `export body: func() -> stream<u8>;` を足し、
-   `Request::consume_body` の `StreamReader` を collect せずそのまま返す
-   （handler import 側は `body: string` 引数を落とす）。adapter は request
-   ごとの reader を持ち回る必要がある。
-2. **serve emitter が host-stream machinery を積んだ component を出す**:
-   string-handler trampoline を export しつつ `body: func() -> stream<u8>`
-   を import し、hoststream adapter core module を同梱する — 現在の2つの
-   emitter の**合流**であって、どちらかの拡張ではない。
-3. **compose が2辺になる**: `wac plug` が handler 辺に加えて body 辺も繋ぐ。
+**実測で棄却した形** (#1540 / #1796): adapter が
+`body: func() -> stream<u8>` を export し、guest がそれを import する「2辺」
+composition は、adapter→guest の `handler` 辺との**循環**になる。`wac plug`
+は接続できない `body` import を root world に押し上げたまま exit 0 となり、
+`wac compose` の字句順 DAG では相互参照自体を書けない。同一 instance の
+`body()` export を request-local slot として使う案も、並行 request の identity
+が無く不健全である。この形を実装対象にしてはならない。
 
-検証には `wasmtime serve` + curl が要る（既存の
-`test_wasi_http_p3_full_gate.sh` と同じ tooling 前提、不在時 skip）。
+**実測で成立した非循環形**: request body を既存の handler 辺の引数に乗せる。
 
-この3点は独立に着手できず、2 が 1 と 3 の両方に依存する。**「incoming-body
-provider を配線する」ではなく「serve composition と host-stream composition を
-統合する」スライスとして起票し直すのが正しい**（現状の見積もりを
-「配線」と書くと規模を誤らせる）。
+```wit
+import handler: func(method: string, url: string, headers: string, body: stream<u8>) -> string;
+```
+
+`wit-bindgen` 0.54 はこの import を生成でき、adapter は
+`Request::consume_body` の reader を collect せず渡せる。probe は componentize
+と validate、`wac plug` 後の root import が host 提供の
+`wasi:http/types@0.3.0` だけであること、`wasmtime serve` への body 付き POST
+が guest 固有応答を返すところまで検証する。再現は
+`scripts/test_http_body_stream_probe_gate.sh`。required-tools CI では
+`scripts/test_wasi_p3_guarantee_gate.sh` の http phase から実行する。
+
+ただし probe guest は stream をまだ**読まない**。残る実装スコープは:
+
+1. `stream.read` を用いる string-bearing async handler の canonical encoding
+   （async lift / `task.return` の memory・realloc・string-encoding option の
+   正確な集合）を byte-level probe で確定する。現 probe はこの option 集合を
+   実測していない。
+2. `emit_canon_lift_async_section` / `emit_canon_task_return` を、1 の実測結果に
+   沿って一般化する。既存 scalar caller の byte 列は不変に保つ。
+3. serve handler を async lift + `stream<u8>` 引数へ拡張する。
+   `validate_serve_handler` の4引数全 String 決め打ちと effect 制約も同時に扱う。
+4. nominal `HostStream` を handler 引数型として綴り、incoming stream handle を
+   guest の stream-read lowering に渡せる frontend / component ABI を定義する。
+
+したがってこれは単純な provider 差し替えではないが、serve と host-stream を
+2辺の循環 composition に合流させる作業でもない。**body stream を handler の
+request-local 引数として運ぶ1辺の async composition** が設計の基準となる。
 
 ## 4. WASI 0.3 境界マッピング
 

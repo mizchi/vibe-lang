@@ -7,8 +7,9 @@
 #
 #   phase A  async component vertical (test_async_component_gate.sh)
 #            .vibe async entry -> component-model async component -> 42
-#   phase B  wasi:http p3 world (test_wasi_http_p3_full_gate.sh)
-#            componentize -> wac plug -> wasmtime serve -> curl 200/401
+#   phase B  wasi:http p3 world (test_wasi_http_p3_full_gate.sh) plus the
+#            incoming-body stream-parameter composition probe (#1540)
+#            componentize -> wac plug -> wasmtime serve -> curl assertions
 #   phase C  wasi:cli/stdin lifecycle
 #            generated shadow adapter + checker-hidden arbitrary-core route +
 #            hand-WAT provider measurement; exact ratified import,
@@ -71,6 +72,7 @@ case ",$PHASES," in *",http,"*)
   run_http=1
   echo "[p3-guarantee] phase B: wasi:http p3 world"
   bash "$SCRIPT_DIR/test_wasi_http_p3_full_gate.sh"
+  bash "$SCRIPT_DIR/test_http_body_stream_probe_gate.sh"
   ;;
 esac
 case ",$PHASES," in *",stdin,"*)
