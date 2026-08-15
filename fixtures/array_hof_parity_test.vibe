@@ -1,0 +1,314 @@
+// #1861: the Array HOFs were served by the linear callsite chain and absent
+// from the wasm-gc one, so `Array::map(xs, f)` compiled on one backend and
+// threw "GC codegen: unknown constructor or function" on the other. They are
+// now served by both.
+//
+// The gate runs this file on BOTH backends (compiler_gate.sh 40h8). That is
+// the property worth pinning: not "gc can do map" but "the two lanes agree".
+// A gc-only run would go green on a lowering that quietly computes something
+// else, which is the failure mode that outranks a crash here.
+//
+// Empty-input cases are in on purpose -- they are where a fencepost in the
+// loop guard shows up, and they are the arms `any`/`all` return without ever
+// calling the closure (`all([]) == true`, `any([]) == false`).
+
+test "map" {
+  let ys = Array::map([
+    1,
+    2,
+    3
+  ], (x) -> {
+    x * 2
+  })
+  assert_true(Array::length(ys) == 3)
+  assert_true(Array::get(ys, 0) == 2)
+  assert_true(Array::get(ys, 1) == 4)
+  assert_true(Array::get(ys, 2) == 6)
+  assert_true(Array::length(Array::map([
+  ], (x) -> {
+    x + 1
+  })) == 0)
+}
+
+test "filter" {
+  let ys = Array::filter([
+    1,
+    2,
+    3,
+    4
+  ], (x) -> {
+    x > 2
+  })
+  assert_true(Array::length(ys) == 2)
+  assert_true(Array::get(ys, 0) == 3)
+  assert_true(Array::get(ys, 1) == 4)
+  assert_true(Array::length(Array::filter([
+    1,
+    2
+  ], (x) -> {
+    x > 99
+  })) == 0)
+  assert_true(Array::length(Array::filter([
+  ], (x) -> {
+    x > 0
+  })) == 0)
+}
+
+test "fold" {
+  assert_true(Array::fold([
+    1,
+    2,
+    3,
+    4
+  ], 0, (a, b) -> {
+    a + b
+  }) == 10)
+  assert_true(Array::fold([
+  ], 7, (a, b) -> {
+    a + b
+  }) == 7)
+  // Non-commutative on purpose: a folder applied right-to-left, or one that
+  // swaps (acc, elem), still sums to 10 above but cannot produce 123 here.
+  assert_true(Array::fold([
+    1,
+    2,
+    3
+  ], 0, (a, b) -> {
+    a * 10 + b
+  }) == 123)
+}
+
+test "reverse" {
+  let ys = Array::reverse([
+    1,
+    2,
+    3
+  ])
+  assert_true(Array::get(ys, 0) == 3)
+  assert_true(Array::get(ys, 1) == 2)
+  assert_true(Array::get(ys, 2) == 1)
+  assert_true(Array::length(Array::reverse([
+  ])) == 0)
+}
+
+test "any" {
+  assert_true(Array::any([
+    1,
+    2,
+    3
+  ], (x) -> {
+    x > 2
+  }))
+  assert_true(!Array::any([
+    1,
+    2,
+    3
+  ], (x) -> {
+    x > 9
+  }))
+  assert_true(!Array::any([
+  ], (x) -> {
+    x > 0
+  }))
+}
+
+test "all" {
+  assert_true(Array::all([
+    2,
+    4
+  ], (x) -> {
+    x > 1
+  }))
+  assert_true(!Array::all([
+    2,
+    0
+  ], (x) -> {
+    x > 1
+  }))
+  assert_true(Array::all([
+  ], (x) -> {
+    x > 1
+  }))
+}
+
+test "find returns a real Option" {
+  // #1065: the result must be a constructed None / Some(elem), not a raw 0 or
+  // a bare unwrapped element -- matching on it is what catches that.
+  match Array::find([
+    1,
+    5,
+    9
+  ], (x) -> {
+    x > 4
+  }) {
+    Some(v) => assert_true(v == 5),
+    None => assert_true(false)
+  }
+  match Array::find([
+    1,
+    2
+  ], (x) -> {
+    x > 99
+  }) {
+    Some(_) => assert_true(false),
+    None => assert_true(true)
+  }
+  match Array::find([
+  ], (x) -> {
+    x > 0
+  }) {
+    Some(_) => assert_true(false),
+    None => assert_true(true)
+  }
+}
+
+test "closures capture their environment" {
+  // A lowering that resolves the callback but drops its captured env passes
+  // every case above (all the callbacks there are closed) and fails here.
+  let k = 3
+  assert_true(Array::get(Array::map([
+    1
+  ], (x) -> {
+    x + k
+  }), 0) == 4)
+  assert_true(Array::length(Array::filter([
+    1,
+    5
+  ], (x) -> {
+    x > k
+  })) == 1)
+  assert_true(Array::fold([
+    1,
+    2
+  ], 0, (a, b) -> {
+    a + b + k
+  }) == 9)
+  assert_true(Array::any([
+    5
+  ], (x) -> {
+    x > k
+  }))
+  assert_true(Array::all([
+    5
+  ], (x) -> {
+    x > k
+  }))
+  match Array::find([
+    1,
+    5
+  ], (x) -> {
+    x > k
+  }) {
+    Some(v) => assert_true(v == 5),
+    None => assert_true(false)
+  }
+}
+
+fn hof_parity_add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+// The cases below are the ones that actually caught a bug while this landed.
+//
+// A gc arm is only half of serving a builtin by spelling. The lambda capture
+// scan needs the same name in `gc_direct_abi_names()`, or it collects the
+// builtin as a FREE VARIABLE of the enclosing lambda and codegen dies with
+// "reached code generation unresolved" (#1809 documents this exact drift, and
+// the list had drifted once before). Everything above passes with the list
+// unpatched, because none of it calls a HOF from inside a lambda body.
+//
+// Note the second case is not about nested lambdas -- `Array::fold(.., add)`
+// with a NAMED callback failed identically. What matters is where the CALL
+// sits, not what is passed to it.
+
+test "HOF called from inside a lambda body" {
+  let f = (x) -> {
+    Array::fold([
+      x,
+      x
+    ], 0, (a, b) -> {
+      a + b
+    })
+  }
+  assert_true(f(3) == 6)
+  let g = (n) -> {
+    Array::get(Array::map([
+      n
+    ], (y) -> {
+      y * 3
+    }), 0)
+  }
+  assert_true(g(2) == 6)
+  let h = (n) -> {
+    Array::length(Array::reverse(Array::filter([
+      1,
+      n
+    ], (x) -> {
+      x > 0
+    })))
+  }
+  assert_true(h(5) == 2)
+  let p = (n) -> {
+    if Array::any([
+      n
+    ], (x) -> {
+      x > 1
+    }) && Array::all([
+      n
+    ], (x) -> {
+      x > 0
+    }) {
+      1
+    } else {
+      0
+    }
+  }
+  assert_true(p(5) == 1)
+  let q = (n) -> {
+    match Array::find([
+      n
+    ], (x) -> {
+      x > 1
+    }) {
+      Some(v) => v,
+      None => 0
+    }
+  }
+  assert_true(q(5) == 5)
+}
+
+test "HOF with a named callback inside a lambda body" {
+  let f = (x) -> {
+    Array::fold([
+      x,
+      x
+    ], 0, hof_parity_add)
+  }
+  assert_true(f(3) == 6)
+}
+
+test "HOF nested in a HOF argument" {
+  let ys = Array::map(Array::filter([
+    1,
+    2,
+    3,
+    4,
+    5
+  ], (x) -> {
+    x > 2
+  }), (x) -> {
+    x * 10
+  })
+  assert_true(Array::length(ys) == 3)
+  assert_true(Array::get(ys, 0) == 30)
+  assert_true(Array::get(ys, 2) == 50)
+  assert_true(Array::fold(Array::map([
+    1,
+    2,
+    3
+  ], (x) -> {
+    x * 2
+  }), 0, (a, b) -> {
+    a + b
+  }) == 12)
+}

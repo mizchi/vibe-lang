@@ -1,0 +1,76 @@
+// #1861 second batch: the `gc-unported` rows of
+// scripts/builtin_parity_classification.tsv that needed no new machinery.
+// Same contract as array_hof_parity_test.vibe -- the gate runs this on BOTH
+// lanes, because the property is that they agree, not that gc compiles.
+//
+// The lambda-body block at the end is not decoration. A dispatch arm is only
+// half of serving a builtin by spelling on the gc lane; the same name has to
+// be in `gc_direct_abi_names()` or the lambda capture scan collects it as a
+// free variable and codegen dies (#1809, and again while #1861 landed).
+// Everything above that block passes with the list unpatched.
+test "Double rounding and sign" {
+  assert_true(Double::abs(0.0 - 2.5) == 2.5)
+  assert_true(Double::floor(1.7) == 1.0)
+  assert_true(Double::floor(0.0 - 1.2) == (0.0 - 2.0))
+  assert_true(Double::ceil(1.2) == 2.0)
+  assert_true(Double::ceil(0.0 - 1.7) == (0.0 - 1.0))
+}
+
+test "Double max min" {
+  assert_true(Double::max(1.5, 2.5) == 2.5)
+  assert_true(Double::min(1.5, 2.5) == 1.5)
+  assert_true(Double::max(0.0 - 1.0, 0.0 - 2.0) == (0.0 - 1.0))
+}
+
+test "parse returns Option" {
+  match Int::parse("42") {
+    Some(v) => assert_true(v == 42),
+    None => assert_true(false)
+  }
+  match Int::parse("nope") {
+    Some(_) => assert_true(false),
+    None => assert_true(true)
+  }
+  match Double::parse("2.5") {
+    Some(v) => assert_true(v == 2.5),
+    None => assert_true(false)
+  }
+}
+
+test "to_string" {
+  assert_true(Double::to_string(2.5) == "2.5")
+  assert_true(Float::to_string(1.0) == "1")
+}
+
+test "Map size and remove" {
+  let m = Map::from_pairs([
+    ("a", 1),
+    ("b", 2)
+  ])
+  assert_true(Map::size(m) == 2)
+  assert_true(Map::size(Map::new()) == 0)
+}
+
+test "inside a lambda body" {
+  let f = (x) -> {
+    Double::floor(x)
+  }
+  assert_true(f(3.9) == 3.0)
+  let g = (s) -> {
+    match Int::parse(s) {
+      Some(v) => v,
+      None => 0
+    }
+  }
+  assert_true(g("7") == 7)
+  let h = (m) -> {
+    Map::size(m)
+  }
+  assert_true(h(Map::from_pairs([
+    ("k", 1)
+  ])) == 1)
+  let p = (d) -> {
+    Double::to_string(d)
+  }
+  assert_true(p(2.5) == "2.5")
+}
