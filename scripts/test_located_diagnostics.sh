@@ -202,6 +202,14 @@ expect_contains "record-into-struct-annotation rejected (#1839)" \
   "expected Span, got record { start: Int, end: Int }" \
   'struct Span { end: Int; start: Int }\nexport fn main() -> Int {\n  let r: Span = record { start: 3, end: 9 }\n  r.start\n}\n'
 
+# ...a representation-specific builtin receiver check also rejects a record
+# (head_kind gives CtRecord a concrete head instead of the tolerate bucket;
+# Codex review on #1867 -- Array::get on a record used to pass and read the
+# record layout as an array)...
+expect_contains "record rejected as an Array builtin receiver (#1839)" \
+  "Array::get" \
+  'export fn main() -> Int {\n  Array::get(record { a: 1 }, 0)\n}\n'
+
 # ...while a record used AS a record stays accepted (same colliding struct in
 # scope; literal-order dot access).
 printf 'struct Span { end: Int; start: Int }\nexport fn main() -> Int {\n  let r = record { start: 3, end: 9 }\n  r.start + r.end\n}\n' > "$WORK/rec_ok.vibe"
