@@ -1,6 +1,6 @@
 //# Imports
 
-import @vibe/compiler/syntax {
+import ../lib/@vibe/parser {
   lex_with_offsets, parse_program_located, parse_program_located_with_binder_context, print_program
 }
 
@@ -39,6 +39,29 @@ test "parser binder context B2 preserves whole-program declarations and impl met
   let ordinary = print_program(parse_program_located(tokens, starts, source))
   let contextual = print_program(parse_program_located_with_binder_context(tokens, starts, source))
   inspect(ordinary == contextual, "true")
+}
+
+test "parser binder context preserves immediate binder lowering and remap families" {
+  let sources = [
+    "fn positive(x: Int) -> Int where { ensures: result > 0 } { let y: Int = x; y }\nlet (a, (b, c)) = (1, (2, 3))",
+    "struct Pair { fst: Int; snd: Int }\nfn unpack(p: Pair) -> Int { let Pair::{ fst, snd } = p; let record { x, y } = record { x: fst, y: snd }; x + y }",
+    "fn guarded(x: Int) -> Int { match x { y if y > 0 => y, _ => 0 } }",
+    "fn iterate() -> Int { loop (i = 0) { if i > 2 { break(i) } else { continue(i + 1) } } }",
+    "fn placeholders() -> Int { Array::map([1], _ + 1)[0] }",
+    "fn grouped() -> Int { taskgroup { g => 1 } }\nfn allocated() -> Int { region r { 1 } }",
+    "fn interpolated() -> String { \"value=\\{((x) -> { x })(1)}\" }"
+  ]
+  let mut same = true
+  let mut i = 0
+  while i < Array::length(sources) {
+    let source = Array::get(sources, i)
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let ordinary = print_program(parse_program_located(tokens, starts, source))
+    let contextual = print_program(parse_program_located_with_binder_context(tokens, starts, source))
+    same = same && ordinary == contextual
+    i = i + 1
+  }
+  inspect(same, "true")
 }
 
 test "parser binder context is isolated across sequential invocations" {

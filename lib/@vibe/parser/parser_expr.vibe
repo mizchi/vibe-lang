@@ -173,7 +173,7 @@ fn parse_let_annotation(tokens: Array[Token], pos: Int, context: Option[ParserBi
   }
 }
 
-fn apply_fn_annotation_params(params: Array[(String, Option[TypeExpr])], param_types: Array[TypeExpr]) -> Array[(String, Option[TypeExpr])] {
+fn apply_fn_annotation_params(params: Array[(String, Option[TypeExpr])], param_types: Array[TypeExpr], context: Option[ParserBinderContext]) -> Array[(String, Option[TypeExpr])] {
   if Array::length(params) != Array::length(param_types) {
     params
   } else {
@@ -192,10 +192,10 @@ fn apply_fn_annotation_params(params: Array[(String, Option[TypeExpr])], param_t
   }
 }
 
-fn apply_generic_fn_annotation(type_params: Array[String], type_bounds: Array[(String, Array[String])], ann: Option[TypeExpr], val: Expr, param_types: Array[TypeExpr], ret_ty: TypeExpr, effect_name: Option[String]) -> (Option[TypeExpr], Expr) {
+fn apply_generic_fn_annotation(type_params: Array[String], type_bounds: Array[(String, Array[String])], ann: Option[TypeExpr], val: Expr, param_types: Array[TypeExpr], ret_ty: TypeExpr, effect_name: Option[String], context: Option[ParserBinderContext]) -> (Option[TypeExpr], Expr) {
   match val {
     EFn(existing_type_params, existing_type_bounds, params, ret_opt, effect_opt, body) => {
-      let next_params = apply_fn_annotation_params(params, param_types)
+      let next_params = apply_fn_annotation_params(params, param_types, context)
       let next_ret = match ret_opt {
         Some(_) => ret_opt,
         None => Some(ret_ty)
@@ -219,10 +219,10 @@ fn apply_generic_fn_annotation(type_params: Array[String], type_bounds: Array[(S
   }
 }
 
-fn apply_generic_let_annotation(type_params: Array[String], type_bounds: Array[(String, Array[String])], ann: Option[TypeExpr], val: Expr) -> (Option[TypeExpr], Expr) {
+fn apply_generic_let_annotation(type_params: Array[String], type_bounds: Array[(String, Array[String])], ann: Option[TypeExpr], val: Expr, context: Option[ParserBinderContext]) -> (Option[TypeExpr], Expr) {
   match ann {
     Some(ann_ty) => match ann_ty {
-      TyFn(param_types, ret_ty, effect_name) => apply_generic_fn_annotation(type_params, type_bounds, ann, val, param_types, ret_ty, effect_name),
+      TyFn(param_types, ret_ty, effect_name) => apply_generic_fn_annotation(type_params, type_bounds, ann, val, param_types, ret_ty, effect_name, context),
       _ => (ann, val)
     },
     _ => (ann, val)
@@ -235,7 +235,7 @@ fn apply_generic_let_annotation(type_params: Array[String], type_bounds: Array[(
 /// params: the body checked with `T` as a concrete `CtNamed("T")` rather than a
 /// bound type variable. That happened to work standalone (unresolved type names
 /// are tolerated) but broke once the module was re-exported and re-checked.
-fn apply_value_bracket_type_params(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr) -> Expr {
+fn apply_value_bracket_type_params(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr, context: Option[ParserBinderContext]) -> Expr {
   if Array::length(tps) == 0 {
     val
   } else {
@@ -374,7 +374,7 @@ fn reject_pattern_let_annotation(tokens: Array[Token], pos: Int) -> Int with Exc
 /// are not recovered by `parse_pattern` — the record path is positional, the
 /// same convention the block-level `__rec_field` desugar uses — so the marker
 /// carries empty names and the expansion reads by index.
-fn record_destr_marker(p: Pat) -> Pat {
+fn record_destr_marker(p: Pat, context: Option[ParserBinderContext]) -> Pat {
   match p {
     PTuple(elems) => {
       let fields = ArrayBuilder::new()
@@ -392,7 +392,7 @@ fn record_destr_marker(p: Pat) -> Pat {
 /// `SLetPat` carries no `exported` flag, so an exported pattern `let` has
 /// nowhere to record that; point at the two-statement spelling instead of
 /// silently dropping the export.
-fn top_level_pattern_let(exported: Bool, pat: Pat, val: Expr) -> Stmt with Exception {
+fn top_level_pattern_let(exported: Bool, pat: Pat, val: Expr, context: Option[ParserBinderContext]) -> Stmt with Exception {
   if exported {
     throw("top-level 'export let <pattern> = <expr>' is not supported (#1281); write 'let <pattern> = <expr>' and export the names with a separate 'export { a, b }'")
   } else {
@@ -413,7 +413,7 @@ fn top_level_pattern_let(exported: Bool, pat: Pat, val: Expr) -> Stmt with Excep
 /// level. Struct fields project by name (`<tmp>.field`); anonymous-record
 /// fields project positionally through `__rec_field`, the same read the
 /// block-level destructure emits.
-export fn expand_top_level_pattern_lets(stmts: Array[Stmt]) -> Array[Stmt] {
+export fn expand_top_level_pattern_lets_with_binder_context(stmts: Array[Stmt], context: Option[ParserBinderContext]) -> Array[Stmt] {
   let out = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -421,7 +421,7 @@ export fn expand_top_level_pattern_lets(stmts: Array[Stmt]) -> Array[Stmt] {
       SLetPat(pat, val) => {
         let tmp = String::concat("__dst", __to_string(i))
         ArrayBuilder::push(out, SLet(false, false, tmp, None, val))
-        emit_top_level_pat_bindings(out, pat, tmp)
+        emit_top_level_pat_bindings(out, pat, tmp, context)
       },
       _ => ArrayBuilder::push(out, Array::get(stmts, i))
     }
@@ -430,15 +430,19 @@ export fn expand_top_level_pattern_lets(stmts: Array[Stmt]) -> Array[Stmt] {
   ArrayBuilder::freeze(out)
 }
 
+export fn expand_top_level_pattern_lets(stmts: Array[Stmt]) -> Array[Stmt] {
+  expand_top_level_pattern_lets_with_binder_context(stmts, None)
+}
+
 /// Bind every name in `pat` from the already-bound `src` binding.
-fn emit_top_level_pat_bindings(out: ArrayBuilder[Stmt], pat: Pat, src: String) -> Unit {
+fn emit_top_level_pat_bindings(out: ArrayBuilder[Stmt], pat: Pat, src: String, context: Option[ParserBinderContext]) -> Unit {
   match pat {
     PBind(name) => ArrayBuilder::push(out, SLet(false, false, name, None, EIdent(src, 0 - 1))),
     PWild => (),
     PTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        emit_top_level_pat_projection(out, Array::get(elems, i), EDot(EIdent(src, 0 - 1), __to_string(i), 0 - 1, 0 - 1), src, i)
+        emit_top_level_pat_projection(out, Array::get(elems, i), EDot(EIdent(src, 0 - 1), __to_string(i), 0 - 1, 0 - 1), src, i, context)
         i = i + 1
       }
     },
@@ -454,7 +458,7 @@ fn emit_top_level_pat_bindings(out: ArrayBuilder[Stmt], pat: Pat, src: String) -
         } else {
           EDot(EIdent(src, 0 - 1), fname, 0 - 1, 0 - 1)
         }
-        emit_top_level_pat_projection(out, fpat, read, src, i)
+        emit_top_level_pat_projection(out, fpat, read, src, i, context)
         i = i + 1
       }
     },
@@ -465,14 +469,14 @@ fn emit_top_level_pat_bindings(out: ArrayBuilder[Stmt], pat: Pat, src: String) -
 /// One field of a destructured value: bind it directly when the sub-pattern is
 /// a name, drop it when it is `_`, otherwise park it in a hidden binding and
 /// keep destructuring from there.
-fn emit_top_level_pat_projection(out: ArrayBuilder[Stmt], sub: Pat, read: Expr, src: String, index: Int) -> Unit {
+fn emit_top_level_pat_projection(out: ArrayBuilder[Stmt], sub: Pat, read: Expr, src: String, index: Int, context: Option[ParserBinderContext]) -> Unit {
   match sub {
     PBind(name) => ArrayBuilder::push(out, SLet(false, false, name, None, read)),
     PWild => (),
     _ => {
       let nested = String::concat(src, String::concat("_", __to_string(index)))
       ArrayBuilder::push(out, SLet(false, false, nested, None, read))
-      emit_top_level_pat_bindings(out, sub, nested)
+      emit_top_level_pat_bindings(out, sub, nested, context)
     }
   }
 }
@@ -491,8 +495,8 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
       let ep = expect_tk(tokens, eq_pos, "=")
       let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep, context)
       let val_pair = parse_impl_with_binder_context(tokens, starts, val_start_r, 0, context)
-      let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
-      let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
+      let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0, context)
+      let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp, context)
       let val_next = val_pair.1
       (SLet(exported, true, name, final_ty_opt, val), val_next)
     },
@@ -527,7 +531,7 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
       require_irrefutable_top_level_pat(pat)
       let ep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_pat), "=")
       let val_pair = parse_impl_with_binder_context(tokens, starts, ep, 0, context)
-      (top_level_pattern_let(exported, pat, val_pair.0), val_pair.1)
+      (top_level_pattern_let(exported, pat, val_pair.0, context), val_pair.1)
     },
     TIdent(_name0) => {
       // #1281 (was #830): `let record { a, b } = r` — the anonymous-record
@@ -559,11 +563,11 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
         let pep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_ppat), "=")
         let pval_pair = parse_impl_with_binder_context(tokens, starts, pep, 0, context)
         let marked = if is_top_level_record_destr {
-          record_destr_marker(ppat)
+          record_destr_marker(ppat, context)
         } else {
           ppat
         }
-        (top_level_pattern_let(exported, marked, pval_pair.0), pval_pair.1)
+        (top_level_pattern_let(exported, marked, pval_pair.0, context), pval_pair.1)
       } else {
         // `let Some(x) = e` and friends: a variant pattern reads as a binding
         // name followed by `(`, which used to surface as a bare
@@ -591,8 +595,8 @@ export fn parse_let_stmt_with_binder_context(tokens: Array[Token], starts: Array
         let ep = expect_tk(tokens, eq_pos, "=")
         let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep, context)
         let val_pair = parse_impl_with_binder_context(tokens, starts, val_start, 0, context)
-        let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
-        let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
+        let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0, context)
+        let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp, context)
         let val_next = val_pair.1
         (SLet(exported, false, name, final_ty_opt, val), val_next)
       }
@@ -767,7 +771,7 @@ export fn parse_fn_stmt_with_binder_context(tokens: Array[Token], starts: Array[
 /// strings). v0.3 slice restrictions enforced here: monomorphic, empty
 /// effect row, no where-contracts, and every param + the return type spelled
 /// literally `Int` (raw 62-bit tagged i64 at the boundary, ADR-0055).
-fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: String, tps: Array[String], tbs: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], ret_ty: TypeExpr, eff_opt: Option[String], reqs: Array[Expr], enss: Array[Expr]) -> (Stmt, Int) with Exception {
+fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: String, tps: Array[String], tbs: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], ret_ty: TypeExpr, eff_opt: Option[String], reqs: Array[Expr], enss: Array[Expr], context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   // pos is at the token AFTER `= wasm`.
   if Array::length(tps) > 0 {
     throw("inline wasm fn '\{name}' cannot take type parameters (v0.3: monomorphic only) at #\{pos}")
@@ -849,7 +853,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     _ => false
   }
   if is_wasm_body {
-    parse_fn_wasm_body(tokens, where_next + 2, exported, name, tps, tbs, params, ret_ty, eff_opt, reqs, enss)
+    parse_fn_wasm_body(tokens, where_next + 2, exported, name, tps, tbs, params, ret_ty, eff_opt, reqs, enss, context)
   } else {
     let br = expect_tk(tokens, where_next, "{")
     let (body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
@@ -874,7 +878,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
 /// (parse_stmt / parse_program*) so checker/codegen keep seeing the
 /// pre-#727 `SLet(exported, true, name, None, EFn(..))` shape; only the
 /// *_preserving entry points hand out SFnDecl.
-export fn lower_fn_decl_stmt(stmt: Stmt) -> Stmt {
+export fn lower_fn_decl_stmt_with_binder_context(stmt: Stmt, context: Option[ParserBinderContext]) -> Stmt {
   match stmt {
     SFnDecl(exported, name, fn_value, reqs, enss) => match fn_value {
       EFn(tps, tbs, params, ret_opt, eff_opt, body) => {
@@ -912,41 +916,17 @@ export fn lower_fn_decl_stmt(stmt: Stmt) -> Stmt {
   }
 }
 
+export fn lower_fn_decl_stmt(stmt: Stmt) -> Stmt {
+  lower_fn_decl_stmt_with_binder_context(stmt, None)
+}
+
 export fn lower_fn_decl_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
   for s in stmts {
-    lower_fn_decl_stmt(s)
+    lower_fn_decl_stmt_with_binder_context(s, None)
   }
 }
 
 //# Misc
-
-export {
-  collect_import_path,
-  empty_fields,
-  empty_import_items,
-  expand_top_level_pattern_lets,
-  expect_tk,
-  is_tk,
-  lower_fn_decl_stmt,
-  lower_fn_decl_stmts,
-  parse,
-  parse_effect_stmt,
-  parse_enum_stmt,
-  parse_expr,
-  parse_fn_stmt_with_binder_context,
-  parse_impl,
-  parse_impl_stmt_dispatch,
-  parse_import_item,
-  parse_let_stmt_with_binder_context,
-  parse_ok,
-  parse_struct_field,
-  parse_suberror_stmt,
-  parse_trait_stmt,
-  parse_type,
-  parse_type_alias_stmt,
-  peek,
-  tk_name
-}
 
 export {
   collect_import_path,
