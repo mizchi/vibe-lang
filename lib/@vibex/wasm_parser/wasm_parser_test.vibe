@@ -40,6 +40,7 @@ import ./wasm_parser.vibe {
   scan_features,
   section_name,
   validate_magic,
+  validate_structure,
   valtype_name
 }
 
@@ -4101,4 +4102,138 @@ test "scan_features finds exceptionsFinal from the tag section" {
     0
   ])
   assert(features_contain(scan_features(m), "exceptionsFinal"))
+}
+
+// Structural validation (#1133 / #1745 (5)).
+//
+// The contract is one-sided: never reject what `wasm-tools validate` accepts,
+// and catch as much of what it rejects as structure alone can decide. The
+// parity harness (scripts/test_wasm_validate_parity.sh) measures both halves
+// against the real tool; these pin the individual decisions.
+
+test "validate_structure accepts the empty module" {
+  // Eight bytes of header IS a valid module -- worth pinning, because a
+  // truncation mutant that happens to stop here must not be counted as a catch.
+  match validate_structure(empty_module()) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "validate_structure rejects a short module" {
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects bad magic" {
+  match validate_structure(make_bytes([
+    0,
+    0x41,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects a section running past the end" {
+  // Section id 1 claiming 0x7F bytes in a module that has three.
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0x7F,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects an unknown section id" {
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0x7A,
+    2,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects repeated non-custom sections" {
+  // Two type sections. Custom sections may repeat; the rest may not.
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    1,
+    1,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure allows a custom section anywhere" {
+  // id 0 twice, around a type section: legal, and a rule that treats every
+  // section the same would wrongly reject it.
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    1,
+    1,
+    0,
+    0,
+    1,
+    0
+  ])) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
 }

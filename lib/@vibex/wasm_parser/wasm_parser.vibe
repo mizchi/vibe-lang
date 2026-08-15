@@ -1529,3 +1529,61 @@ fn valtypes_mention_ref_type(vts: Array[Int]) -> Bool {
   }
   found
 }
+
+/// Structural validation: `None` when nothing structurally wrong was found,
+/// `Some(reason)` otherwise.
+///
+/// The contract is deliberately one-sided, and the name says "structure" for
+/// that reason. This is NOT `wasm-tools validate`: it does not type the operand
+/// stack, so it accepts modules a real validator rejects. What it promises is
+/// the other direction --
+///
+///   it must never reject a module `wasm-tools validate` accepts.
+///
+/// That is the half worth having first (#1745 (5)): the interpreter has no
+/// validation at all, so a malformed module reaches the executor and a
+/// guest-chosen byte can take the host down. Refusing obviously broken input is
+/// containment; typing the stack is correctness, and comes next.
+///
+/// Measured both ways against `wasm-tools validate` -- see the harness in
+/// scripts/test_wasm_validate_parity.sh.
+export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
+  let len = Bytes::length(wasm_bytes)
+  if len < 8 {
+    Some("module is shorter than the 8-byte header")
+  } else if !validate_magic(wasm_bytes) {
+    Some("bad magic: not a wasm module")
+  } else if read_version(wasm_bytes) != 1 {
+    Some("unsupported version")
+  } else {
+    let mut pos = 8
+    let mut err = None
+    let mut last_id = 0
+    while (pos < len) && (err == None) {
+      let sid = wasm_bytes[pos]
+      if sid > 13 {
+        err = Some("unknown section id")
+      } else {
+        let (size, np) = read_uleb128(wasm_bytes, pos + 1)
+        // The size is the section's own claim; a module can claim more than it
+        // carries, which is how a truncated file reads as a section running off
+        // the end. Checking it here is what keeps every parse_* below in range.
+        if (np + size) > len {
+          err = Some("section runs past the end of the module")
+        } else if (sid != 0) && (sid <= last_id) {
+          // Custom sections (id 0) may appear anywhere and repeat; the others
+          // must appear at most once, in ascending id order.
+          err = Some("sections out of order or repeated")
+        } else {
+          if sid != 0 {
+            last_id = sid
+          } else {
+            ()
+          }
+          pos = np + size
+        }
+      }
+    }
+    err
+  }
+}
