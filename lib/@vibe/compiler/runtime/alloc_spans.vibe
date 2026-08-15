@@ -27,14 +27,15 @@
 //# Output: one `FN KIND OFFSET` line per site, in source order within each
 //# function, functions in declaration order. KIND is one of
 //# `builtin:<name>` / `constructor:<name>` / `closure` / `array` / `tuple` /
-//# `record` / `map` / `interp` / `float` / `handler` / `mut-cell`. Empty
+//# `record` / `map` / `interp` / `float` / `handler` / `mut-cell` /
+//# `operator:<type>:<op>`. Empty
 //# output = this file allocates nothing, i.e. every function in it is already
 //# zero-alloc.
 
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, builtin_allocates, expr_children
+  Expr, Stmt, TypeExpr, builtin_allocates, expr_children
 }
 
 import @vibe/core {
@@ -46,7 +47,7 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  is_mut_captured_in
+  is_mut_captured_in, typed_operator_alloc_kind
 }
 
 //# Functions
@@ -57,6 +58,93 @@ fn alloc_empty_items() -> Array[(String, String, Int)] {
 
 fn alloc_empty_strings() -> Array[String] {
   array_empty()
+}
+
+struct AllocWalkContext {
+  ctors: Array[String];
+  names: Array[String];
+  kinds: Array[String]
+}
+
+fn alloc_annotation_kind(annotation: Option[TypeExpr]) -> String {
+  match annotation {
+    Some(TyName(name)) => if name == "Int" || name == "Double" || name == "String" || name == "Bool" {
+      name
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn alloc_context(ctors: Array[String], params: Array[(String, Option[TypeExpr])]) -> AllocWalkContext {
+  let names = alloc_empty_strings()
+  let kinds = alloc_empty_strings()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (raw_name, annotation) = Array::get(params, i)
+    let len = String::length(raw_name)
+    let name = if len > 0 && (String::char_code_at(raw_name, len - 1) == 126 || String::char_code_at(raw_name, len - 1) == 63) {
+      String::substring(raw_name, 0, len - 1)
+    } else {
+      raw_name
+    }
+    Array::push(names, name)
+    Array::push(kinds, alloc_annotation_kind(annotation))
+    i = i + 1
+  }
+  AllocWalkContext::{
+    ctors: ctors,
+    names: names,
+    kinds: kinds
+  }
+}
+
+fn alloc_name_kind(ctx: AllocWalkContext, name: String) -> String {
+  let mut i = Array::length(ctx.names) - 1
+  let mut found = ""
+  while i >= 0 && found == "" {
+    if Array::get(ctx.names, i) == name {
+      found = Array::get(ctx.kinds, i)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  found
+}
+
+fn alloc_expr_kind(expr: Expr, ctx: AllocWalkContext) -> String {
+  match expr {
+    EInt(_) => "Int",
+    EFloat(_) => "Double",
+    EString(_) => "String",
+    EBool(_) => "Bool",
+    EIdent(name, _) => alloc_name_kind(ctx, name),
+    EBinOp(op, lhs, _) => if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" || op == "&&" || op == "||" {
+      "Bool"
+    } else {
+      alloc_expr_kind(lhs, ctx)
+    },
+    EUnaryOp(op, operand) => if op == "!" {
+      "Bool"
+    } else {
+      alloc_expr_kind(operand, ctx)
+    },
+    _ => ""
+  }
+}
+
+fn alloc_context_with_binding(ctx: AllocWalkContext, name: String, value: Expr) -> AllocWalkContext {
+  let names = Array::slice(ctx.names, 0, Array::length(ctx.names))
+  let kinds = Array::slice(ctx.kinds, 0, Array::length(ctx.kinds))
+  Array::push(names, name)
+  Array::push(kinds, alloc_expr_kind(value, ctx))
+  AllocWalkContext::{
+    ctors: ctx.ctors,
+    names: names,
+    kinds: kinds
+  }
 }
 
 fn alloc_contains_name(names: Array[String], name: String) -> Bool {
@@ -122,22 +210,27 @@ fn alloc_call_kind(expr: Expr, ctors: Array[String]) -> String {
 
 /// The site kind for `expr` itself (not its children), or "" when this node
 /// allocates nothing on its own.
-fn alloc_site_kind(expr: Expr, ctors: Array[String]) -> String {
-  match expr {
-    EFloat(_) => "float",
-    EIdent(name, _) => if alloc_contains_name(ctors, name) {
-      String::concat("constructor:", name)
-    } else {
-      ""
-    },
-    EFn(_, _, _, _, _, _) => "closure",
-    EArray(_) => "array",
-    ETuple(_) => "tuple",
-    ERecord(_, _, _) => "record",
-    EMap(_) => "map",
-    EStringInterp(_) => "interp",
-    EHandle(_, _) => "handler",
-    _ => alloc_call_kind(expr, ctors)
+fn alloc_site_kind(expr: Expr, ctx: AllocWalkContext) -> String {
+  let typed_operator = typed_operator_alloc_kind(expr, ctx.names, ctx.kinds)
+  if typed_operator != "" {
+    typed_operator
+  } else {
+    match expr {
+      EFloat(_) => "float",
+      EIdent(name, _) => if alloc_contains_name(ctx.ctors, name) {
+        String::concat("constructor:", name)
+      } else {
+        ""
+      },
+      EFn(_, _, _, _, _, _) => "closure",
+      EArray(_) => "array",
+      ETuple(_) => "tuple",
+      ERecord(_, _, _) => "record",
+      EMap(_) => "map",
+      EStringInterp(_) => "interp",
+      EHandle(_, _) => "handler",
+      _ => alloc_call_kind(expr, ctx.ctors)
+    }
   }
 }
 
@@ -162,8 +255,8 @@ fn alloc_site_offset(expr: Expr, fallback: Int) -> Int {
   }
 }
 
-fn alloc_walk_expr(out: Array[(String, String, Int)], fname: String, expr: Expr, fn_off: Int, ctors: Array[String]) -> Unit {
-  let kind = alloc_site_kind(expr, ctors)
+fn alloc_walk_expr(out: Array[(String, String, Int)], fname: String, expr: Expr, fn_off: Int, ctx: AllocWalkContext) -> Unit {
+  let kind = alloc_site_kind(expr, ctx)
   if String::length(kind) > 0 {
     Array::push(out, (fname, kind, alloc_site_offset(expr, fn_off)))
   } else {
@@ -188,11 +281,28 @@ fn alloc_walk_expr(out: Array[(String, String, Int)], fname: String, expr: Expr,
     _ => ()
   }
   let here = alloc_site_offset(expr, fn_off)
-  let kids = expr_children(expr)
-  let mut i = 0
-  while i < Array::length(kids) {
-    alloc_walk_expr(out, fname, Array::get(kids, i), here, ctors)
-    i = i + 1
+  match expr {
+    ELet(name, value, rest, _) => {
+      alloc_walk_expr(out, fname, value, here, ctx)
+      alloc_walk_expr(out, fname, rest, here, alloc_context_with_binding(ctx, name, value))
+    },
+    ELetRec(name, value, rest) => {
+      let body_ctx = alloc_context_with_binding(ctx, name, value)
+      alloc_walk_expr(out, fname, value, here, body_ctx)
+      alloc_walk_expr(out, fname, rest, here, body_ctx)
+    },
+    ELetMut(name, value, rest, _) => {
+      alloc_walk_expr(out, fname, value, here, ctx)
+      alloc_walk_expr(out, fname, rest, here, alloc_context_with_binding(ctx, name, value))
+    },
+    _ => {
+      let kids = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(kids) {
+        alloc_walk_expr(out, fname, Array::get(kids, i), here, ctx)
+        i = i + 1
+      }
+    }
   }
 }
 
@@ -281,15 +391,15 @@ export fn alloc_spans(source: String) -> Array[(String, String, Int)] with Excep
     }
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) => match value {
-        EFn(_, _, _, _, _, fbody) => alloc_walk_expr(out, name, fbody, stmt_off, ctors),
+        EFn(_, _, params, _, _, fbody) => alloc_walk_expr(out, name, fbody, stmt_off, alloc_context(ctors, params)),
         _ => ()
       },
       // Tests and benches lower to real executable functions. In particular,
       // a bytes-per-op regression asks about the bench body itself, so
       // skipping SBench would turn an allocating benchmark into false-clean
       // output. Keep the owner names identical to linked_compile's lowering.
-      STest(test_name, test_body) => alloc_walk_expr(out, alloc_encode_owner(String::concat("__test_", test_name)), test_body, stmt_off, ctors),
-      SBench(bench_name, bench_body) => alloc_walk_expr(out, alloc_encode_owner(String::concat("__bench_", bench_name)), bench_body, stmt_off, ctors),
+      STest(test_name, test_body) => alloc_walk_expr(out, alloc_encode_owner(String::concat("__test_", test_name)), test_body, stmt_off, alloc_context(ctors, array_empty())),
+      SBench(bench_name, bench_body) => alloc_walk_expr(out, alloc_encode_owner(String::concat("__bench_", bench_name)), bench_body, stmt_off, alloc_context(ctors, array_empty())),
       _ => ()
     }
     i = i + 1

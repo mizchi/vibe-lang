@@ -131,14 +131,16 @@ RC default のまま `#zero_alloc` は成立する。
   両方)、tuple/array/record/map literal、string interpolation、closure
   literal、float literal(linear backend の heap-box)、effect handler、
   safe-builtin allowlist(read / in-place write 系のみ)外の builtin 呼び、
-  間接呼び出し。top-level fn 呼びは推移的に走査(visited set で再帰安全)。
+  間接呼び出し、String `+`、Double `+ - * /` / unary `-`。演算子は関数注釈と
+  ローカルのスカラー値から lexical に型を伝播し、型が確定しない算術は
+  fail-closed で拒否する(リンク後もファイル-local offset に依存しない)。
+  top-level fn 呼びは推移的に走査(visited set で再帰安全)。
   診断は `zero_alloc: fn 'X' may allocate: <site>`(経由呼び出しは
   `call to 'Y' which may allocate: ...` で連鎖)。
-- **既知ギャップ(Phase 1 で許容)**: 二項演算子は type-blind — String/
-  Double 型の**変数**への `+` 等(確保する concat / boxing に落ちる)は
-  検出できない(literal operand のみ検出)。per-fn サマリの codegen 計装
-  (ADR 本文 step 1 の「確保サイト計装」)は未着手 — 検査は AST 走査で
-  先行。module body 内の fn、wasm-gc backend、`bytes_per_op == 0` bench
+- **既知ギャップ(Phase 1 で許容)**: per-fn サマリの codegen 計装
+  (ADR 本文 step 1 の「確保サイト計装」)は未着手 — 検査は lexical 型伝播を
+  伴う AST 走査で先行。module body 内の fn、wasm-gc backend、
+  `bytes_per_op == 0` bench
   series、ADR-0092 reuse / ADR-0090 arena との合流(step 4-5)も未着手。
 - **gate**: `compiler_gate.sh` §75(positive `zero_alloc_ok.vibe` = 42 /
   negative `err_zero_alloc_ctor.vibe` needle "zero_alloc")。

@@ -9239,6 +9239,25 @@ if ! grep -qF 'zero_alloc' "$za91dir/shadowed.wasm.diag" 2>/dev/null; then
   cat "$za91dir/shadowed.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1838: typed operators can allocate even when their operands are variables.
+# Pin both allocating overloads: linear Double arithmetic boxes its result,
+# and String `+` lowers to concatenation. Int arithmetic remains covered by
+# the positive fixture above.
+for za_typed in double_operator string_operator shadowed_operator; do
+  cp "fixtures/err_zero_alloc_${za_typed}.vibe" "$za91dir/${za_typed}.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$za91dir/${za_typed}.vibe" "$za91dir/${za_typed}.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ -s "$za91dir/${za_typed}.wasm" ]; then
+    echo "[compiler-gate] FAIL: err_zero_alloc_${za_typed}.vibe compiled successfully -- typed allocating operator must be rejected" >&2
+    exit 1
+  fi
+  if ! grep -qF 'zero_alloc' "$za91dir/${za_typed}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: err_zero_alloc_${za_typed}.vibe did not produce the expected diagnostic" >&2
+    cat "$za91dir/${za_typed}.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
 rm -rf "$za91dir"
 # ADR-0091 #1262: the check and the MEASUREMENT pin each other. The two
 # fixtures above prove a clean fn compiles and a violating one is rejected;
