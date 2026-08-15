@@ -3489,3 +3489,30 @@ export fn packed_lines_to_array_expr(raw_call: Expr, tmp_name: String) -> Expr {
     newline
   ], -1)), -1)
 }
+
+/// ADR-0090 (#1262): the region copy-out exits, shared by both backends.
+///
+/// `MutList::freeze` / `MutList::to_array` must COPY, not alias. Two reasons,
+/// and the second is the one that bites: an alias would observe later pushes,
+/// and with an arena the region release would leave the escaping value
+/// dangling. `Array::slice(tmp, 0, Array::length(tmp))` allocates through the
+/// ordinary main-heap path, so the escaping array never points into region
+/// storage.
+///
+/// The value is bound to a temp first so an effectful argument is evaluated
+/// once -- `f()` in `MutList::to_array(f())` must not run twice.
+export fn region_array_value_copy(value: Expr, tmp: String) -> Expr {
+  ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Array::length", -1), [
+      EIdent(tmp, -1)
+    ], -1)
+  ], -1), -1)
+}
+
+export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
+  region_array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [
+    arg
+  ], -1), "__mutlist_exit")
+}

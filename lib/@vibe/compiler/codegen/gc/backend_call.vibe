@@ -29,7 +29,8 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
-  packed_lines_to_array_expr
+  packed_lines_to_array_expr,
+  region_mutlist_exit_copy
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -553,6 +554,62 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // `FrozenArray::from_array` compiles and runs on both lanes. Listing
       // them would instead claim a user declaration with those names is
       // unsafe, which is not what this branch means.
+      // ADR-0090 (#1262): regions on the gc lane, arena-free tier.
+      //
+      // The linear lane has two tiers: these source-level rewrites, and on top
+      // of them an arena (watermark save/restore + a segment allocator) for
+      // bulk release. Correctness lives entirely in the first tier -- the
+      // arena is the reclamation optimization -- so the gc lane gets regions
+      // that RUN CORRECTLY here, and the arena stays a separate question.
+      //
+      // `__region_run(lam)` calls the body immediately with a dummy token (0).
+      // The token exists only for the checker's skolem escape scan; it has no
+      // runtime representation, which is why passing 0 is not a placeholder
+      // but the actual lowering.
+      if !source_is_bound && fname == "__region_run" && Array::length(args) == 1 {
+        return ce(buf, ECall(Array::get(args, 0), [
+          EInt(0)
+        ], -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      // Without an arena `MutList` storage IS an ArrayBuilder -- the region
+      // token is not evaluated (by construction it is the pure binder ident
+      // the parser emitted).
+      if !source_is_bound && fname == "MutList::empty" && Array::length(args) == 1 {
+        let no_args = Array::slice([
+          EInt(0)
+        ], 0, 0)
+        return ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      // Arena-free, `MutList` storage IS an ArrayBuilder, so the mutating and
+      // reading operations are the ArrayBuilder/Array ones under another
+      // spelling. The linear lane reaches the same place by registering these
+      // as builtins whose bodies alias those; rewriting at the call site keeps
+      // the gc lane's arena-free tier in one block.
+      if !source_is_bound && fname == "MutList::push" && Array::length(args) == 2 {
+        return ce(buf, ECall(EIdent("ArrayBuilder::push", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutList::get" && Array::length(args) == 2 {
+        return ce(buf, ECall(EIdent("Array::get", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutList::length" && Array::length(args) == 1 {
+        return ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      // The sanctioned region exits COPY (see region_mutlist_exit_copy).
+      if !source_is_bound && (fname == "MutList::freeze" || fname == "MutList::to_array") && Array::length(args) == 1 {
+        return ce(buf, region_mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ld)
+      } else {
+        ()
+      }
       // #729/#730 + #1262: `Fs::readdir` surface. The host import returns the
       // entries "\n"-joined as ONE packed string, so turning it into
       // Array[String] is a source-level rewrite -- the SAME rewrite the linear

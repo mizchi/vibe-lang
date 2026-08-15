@@ -4576,6 +4576,43 @@ fi
 rm -rf "$gchbdir" _build/gc_host_builtins_probe
 echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010202; readdir incl. empty dir and closure)"
 
+# 40h-6. ADR-0090 (#1262): `region r { .. }` on the gc lane, arena-free tier.
+#        Correctness lives in the source-level rewrites; the arena is the
+#        reclamation optimization on top of them. This asserts the gc lane
+#        RUNS regions, and agrees with linear while doing it.
+#
+#        The EXPECTED VALUES live in the fixture as `inspect(..)` snapshots,
+#        not here: `vibe test --update` maintains them and running the fixture
+#        on its own says whether they hold. What this section adds is the part
+#        a snapshot cannot express -- that BOTH backends satisfy it. So it
+#        runs the fixture's own test block on each lane instead of restating
+#        the number.
+#
+#        The fixture's load-bearing shapes -- a copy-out that must not alias,
+#        and a region inside a lambda (plus a nested one, whose inner body is
+#        itself a lambda) -- are the ones that pass a top-level-only or
+#        identity-cast implementation. See the fixture header.
+echo "[compiler-gate] 40h-6/40 wasm-gc region (arena-free tier, #1262)"
+gcrgdir="_build/_gate_gc_region"
+rm -rf "$gcrgdir"; mkdir -p "$gcrgdir"
+for gcrg_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcrg_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_region_arena_free.vibe" "$gcrgdir/$gcrg_be.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gcrgdir/$gcrg_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_region_arena_free.vibe did not compile on the $gcrg_be backend (#1262)" >&2
+    cat "$gcrgdir/$gcrg_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcrgdir/$gcrg_be.wasm" >"$gcrgdir/$gcrg_be.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_region_arena_free.vibe's inspect snapshots did not hold on the $gcrg_be backend (#1262)" >&2
+    tail -20 "$gcrgdir/$gcrg_be.out" >&2
+    exit 1
+  fi
+done
+rm -rf "$gcrgdir"
+echo "[compiler-gate] wasm-gc region ok (linear + gc snapshots; copy-out, nested, in-lambda)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
