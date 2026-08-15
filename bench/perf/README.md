@@ -15,9 +15,12 @@ Driver: `scripts/selfcompile_kpi.sh <stage2.wasm> [input.vibe]`.
 
 One real compile through a selfhost stage2, reporting `wall_ms` and
 `heap_ptr_bytes` (linear backend bump-allocator high-water). With a cold
-isolated `VIBE_BUILD_CACHE_DIR` the heap number is **byte-deterministic**
-for a fixed (stage2, input) pair, so — unlike wall time — it gates CI
-without flakes.
+isolated `VIBE_BUILD_CACHE_DIR` the heap number is byte-deterministic across
+repeated trials in one materialized tree, so — unlike wall time — the current
+absolute gate can use it without flakes. It is **not yet deterministic across
+clean tree reconstructions**: the Phase A comparative smoke found a stable
+16-byte metadata-sensitive split. See the Phase B blocker in
+[`docs/selfcompile-heap-policy.md`](../../docs/selfcompile-heap-policy.md).
 
 CI wiring (`.github/workflows/ci.yml`, step "Selfcompile KPI heap gate"):
 the compiler-gate job runs the script against its freshly-built stage2 and

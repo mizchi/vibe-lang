@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -124,7 +132,7 @@ function commitAll(repo, message, date) {
 }
 
 function makeRepository() {
-  const outer = mkdtempSync(join(os.tmpdir(), "heap-policy-test-"));
+  const outer = mkdtempSync(join(realpathSync(os.tmpdir()), "heap-policy-test-"));
   const repo = join(outer, "repo");
   mkdirSync(repo);
   command(repo, ["init", "-q"]);
@@ -180,6 +188,51 @@ async function controller(options) {
     else process.env.VIBE_HEAP_POLICY_TEST_MODE = old;
   }
 }
+
+test("canonical root rejects a symlinked existing parent before recursive deletion", async () => {
+  const fixture = makeRepository();
+  const driver = makeDriver(fixture.outer);
+  const victim = join(fixture.outer, "victim");
+  const victimRoot = join(victim, "root");
+  mkdirSync(victimRoot, { recursive: true });
+  const marker = join(victimRoot, "must-survive.txt");
+  writeFileSync(marker, "untouched\n");
+  const symlinkParent = join(fixture.outer, "vibe-selfcompile-policy-attack");
+  symlinkSync(victim, symlinkParent, "dir");
+  await assert.rejects(() => controller({
+    repo: fixture.repo, base: fixture.initial, head: fixture.initial,
+    synthesizeMerge: true, prNumber: "1801",
+    canonicalRoot: join(symlinkParent, "root"), testDriver: driver,
+  }), error => error.reason === "unsafe-canonical-root");
+  assert.equal(readFileSync(marker, "utf8"), "untouched\n");
+});
+
+test("tracked escaping input symlinks fail before the pinned input write", async () => {
+  for (const symlinkAt of ["input", "ancestor"]) {
+    const fixture = makeRepository();
+    const driver = makeDriver(fixture.outer);
+    const external = join(fixture.outer, `external-${symlinkAt}`);
+    mkdirSync(external);
+    const target = join(external, "target.vibe");
+    writeFileSync(target, "must remain unchanged\n");
+    const inputPath = join(fixture.repo, fixture.input);
+    if (symlinkAt === "input") {
+      rmSync(inputPath);
+      symlinkSync(target, inputPath);
+    } else {
+      const inputParent = dirname(inputPath);
+      rmSync(inputParent, { recursive: true });
+      symlinkSync(external, inputParent, "dir");
+    }
+    const head = commitAll(fixture.repo, `escaping ${symlinkAt} symlink`, "2026-08-01T01:00:00Z");
+    const root = join(fixture.outer, "vibe-selfcompile-policy", "root");
+    await assert.rejects(() => controller({
+      repo: fixture.repo, base: fixture.initial, head, synthesizeMerge: true,
+      prNumber: "1801", canonicalRoot: root, testDriver: driver,
+    }), error => error.reason === "unsafe-pinned-input");
+    assert.equal(readFileSync(target, "utf8"), "must remain unchanged\n");
+  }
+});
 
 test("controller synthesizes latest-base merge, pins input, reuses exact paths, and isolates revisions", async () => {
   const fixture = makeRepository();

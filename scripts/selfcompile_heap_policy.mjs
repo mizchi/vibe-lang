@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync, lstatSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -227,6 +237,15 @@ function parseArgs(argv) {
   return options;
 }
 
+function lstatIfPresent(path) {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 function canonicalRootSafe(repo, root) {
   if (!isAbsolute(root)) fail("unsafe-canonical-root");
   const resolvedRepo = resolve(repo);
@@ -236,13 +255,81 @@ function canonicalRootSafe(repo, root) {
   }
   const rel = relative(resolvedRepo, resolvedRoot);
   if (rel === "" || (!rel.startsWith(".." + sep) && rel !== "..")) fail("unsafe-canonical-root");
-  try {
-    if (lstatSync(resolvedRoot).isSymbolicLink()) fail("unsafe-canonical-root");
-  } catch (error) {
-    if (error instanceof HeapPolicyError) throw error;
-    if (error.code !== "ENOENT") throw error;
+
+  const ancestry = [];
+  let cursor = resolvedRoot;
+  while (true) {
+    ancestry.push(cursor);
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
   }
+  ancestry.reverse();
+  let nearestExisting = null;
+  for (const path of ancestry) {
+    const info = lstatIfPresent(path);
+    if (!info) break;
+    if (info.isSymbolicLink()) fail("unsafe-canonical-root", { symlink: path });
+    if (!info.isDirectory()) fail("unsafe-canonical-root", { non_directory: path });
+    nearestExisting = path;
+  }
+  if (!nearestExisting) fail("unsafe-canonical-root");
+  const nearestReal = realpathSync(nearestExisting);
+  const projectedRoot = resolve(nearestReal, relative(nearestExisting, resolvedRoot));
+  const projectedRelative = relative(nearestReal, projectedRoot);
+  if (
+    projectedRoot !== resolvedRoot ||
+    projectedRelative === ".." || projectedRelative.startsWith(".." + sep) || isAbsolute(projectedRelative)
+  ) fail("unsafe-canonical-root", { canonical_root: resolvedRoot, nearest_existing_realpath: nearestReal });
   return resolvedRoot;
+}
+
+function removeCanonicalRoot(repo, root) {
+  const safeRoot = canonicalRootSafe(repo, root);
+  rmSync(safeRoot, { recursive: true, force: true });
+}
+
+function pinnedInputPathSafe(root, input) {
+  const rootReal = realpathSync(root);
+  if (rootReal !== root) fail("unsafe-pinned-input", { root, root_realpath: rootReal });
+  const inputPath = join(root, input);
+  const inputRelative = relative(root, inputPath);
+  if (inputRelative === "" || inputRelative === ".." || inputRelative.startsWith(".." + sep) || isAbsolute(inputRelative)) {
+    fail("unsafe-pinned-input", { input });
+  }
+  const parts = inputRelative.split(sep);
+  let cursor = root;
+  for (let i = 0; i < parts.length; i += 1) {
+    cursor = join(cursor, parts[i]);
+    const info = lstatIfPresent(cursor);
+    const isFinal = i === parts.length - 1;
+    if (!info) {
+      if (!isFinal) fail("unsafe-pinned-input", { missing_ancestor: cursor });
+      break;
+    }
+    if (info.isSymbolicLink()) fail("unsafe-pinned-input", { symlink: cursor });
+    if (!isFinal && !info.isDirectory()) fail("unsafe-pinned-input", { non_directory_ancestor: cursor });
+    if (isFinal && !info.isFile()) fail("unsafe-pinned-input", { non_file: cursor });
+  }
+  const parent = dirname(inputPath);
+  const parentReal = realpathSync(parent);
+  const parentRelative = relative(rootReal, parentReal);
+  if (parentRelative === ".." || parentRelative.startsWith(".." + sep) || isAbsolute(parentRelative)) {
+    fail("unsafe-pinned-input", { input_parent_realpath: parentReal });
+  }
+  return inputPath;
+}
+
+function overwritePinnedInput(inputPath, inputBlob) {
+  let fd;
+  try {
+    fd = openSync(inputPath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+    writeFileSync(fd, inputBlob);
+  } catch (error) {
+    fail("unsafe-pinned-input", { path: inputPath, code: error.code });
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function cleanEnvironment(root) {
@@ -292,11 +379,12 @@ function parseMeasurement(output) {
 }
 
 async function measureTreeOnce({ repo, tree, label, root, inputBlob, policy, testDriver }) {
-  rmSync(root, { recursive: true, force: true });
+  removeCanonicalRoot(repo, root);
   await archiveTree(repo, tree, root);
-  const inputPath = join(root, policy.input);
-  mkdirSync(dirname(inputPath), { recursive: true });
-  writeFileSync(inputPath, inputBlob);
+  // The merge tree is untrusted. Validate before writing the pinned base input
+  // or executing any extracted script; tracked symlinks must not escape root.
+  const inputPath = pinnedInputPathSafe(root, policy.input);
+  overwritePinnedInput(inputPath, inputBlob);
   const env = cleanEnvironment(root);
   const generationDir = join(root, "_build", "selfcompile-policy", "generation");
   const stage2 = join(generationDir, "stage2.wasm");
@@ -371,7 +459,7 @@ async function measureTree(args) {
   try {
     return await measureTreeOnce(args);
   } finally {
-    rmSync(args.root, { recursive: true, force: true });
+    removeCanonicalRoot(args.repo, args.root);
   }
 }
 
@@ -466,7 +554,7 @@ export async function runController(options) {
     baseCommitTimeMs: baseCommitTime,
     asOfMs,
   });
-  rmSync(root, { recursive: true, force: true });
+  removeCanonicalRoot(repo, root);
   return {
     schema: 1,
     decision: evaluation.decision,

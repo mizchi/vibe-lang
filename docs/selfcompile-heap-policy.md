@@ -29,18 +29,21 @@ after Phase B. They are never enforcement inputs to the comparative policy.
 1. resolves full base/head/current identities and synthesizes `merge-tree`;
 2. rejects a supplied current merge result whose tree is not that merge tree;
 3. reads policy and benchmark input from the base revision;
-4. archives base and current sequentially into the same canonical root;
-5. deletes that root, generated files, caches, HOME, TMPDIR, and VIBE_HOME
+4. rejects symlinks in every existing canonical-root ancestor before any
+   recursive deletion, then archives base and current sequentially there;
+5. before writing or executing extracted content, rejects a pinned input or
+   input ancestor symlink and proves its real parent remains under the root;
+6. deletes that root, generated files, caches, HOME, TMPDIR, and VIBE_HOME
    between revisions;
-6. force-generates and verifies the generated fingerprint, then builds stage2
+7. force-generates and verifies the generated fingerprint, then builds stage2
    at one fixed relative path;
-7. records the stage2 SHA-256 and runs two exact cold-cache heap trials
+8. records the stage2 SHA-256 and runs two exact cold-cache heap trials
    through `scripts/selfcompile_kpi.sh`, using `VIBE_KPI_WORK_DIR` for fixed
    output and cache paths;
-8. rejects any build or heap difference when base and current are the same
+9. rejects any build or heap difference when base and current are the same
    tree, catching stable cross-reconstruction drift as well as within-build
    trial drift;
-9. applies the base policy and emits one machine-readable JSON summary.
+10. applies the base policy and emits one machine-readable JSON summary.
 
 The controller scrubs inherited `VIBE_*`, credentials, `NODE_OPTIONS`, and
 other ambient state by constructing a small environment from scratch. The
@@ -51,18 +54,44 @@ malformed output, and nondeterminism fail closed.
 Local shape (expensive: two clean generation builds and four compiles):
 
 ```bash
+CANONICAL_TMP="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 node scripts/selfcompile_heap_policy.mjs \
   --repo . \
   --base origin/main \
   --head HEAD \
   --synthesize-merge \
   --pr-number 1801 \
-  --canonical-root /tmp/vibe-selfcompile-policy/root
+  --canonical-root "$CANONICAL_TMP/vibe-selfcompile-policy/root"
 ```
 
 CI supplies an event timestamp and the GitHub merge result with `--current`.
 The benchmark root source is always copied from base, so a PR cannot make its
-own workload easier.
+own workload easier. Every already-existing component of the canonical path
+must be a real directory, not a symlink; resolve a temporary root physically
+as above rather than passing macOS's symlinked `/tmp` spelling.
+
+## Known Phase B blocker: metadata-sensitive 16-byte drift
+
+The real identical-tree smoke is internally stable but differs across clean
+reconstructions:
+
+- base trials: `924,816,456`, `924,816,456`;
+- current trials: `924,816,440`, `924,816,440`;
+- stage2 SHA-256, benchmark bytes, and normalized paths are identical.
+
+This is source-filesystem metadata sensitivity, not ordinary trial noise.
+`scripts/wasm_vibe_host_runner.js` includes mtime and inode in `Fs::stat_token`,
+and loader cache text stringifies those tokens. Deleting and recreating the
+same bytes changes that metadata; token length/alignment can therefore move
+the guest heap by 16 bytes. For different source trees that hidden drift could
+look like an improvement or unbudgeted growth.
+
+**Phase B remains blocked.** Do not wire this controller into required CI or
+use its deltas for budget decisions until a trusted policy-only runner
+normalizes stat tokens and repeated same-tree reconstructions make all four
+readings identical. Phase B must also execute the KPI measurement harness from
+base authority (or prove its executable closure unchanged); trusting only the
+base controller is insufficient.
 
 ## One-shot growth budgets
 
