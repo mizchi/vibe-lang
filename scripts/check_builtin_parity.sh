@@ -32,6 +32,51 @@ LINKED = "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 GC_BODY = "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
 CLASSIFICATION = "scripts/builtin_parity_classification.tsv"
 
+def strip_line_comments(text):
+    """Drop `//` comments, respecting string literals.
+
+    Codex review on #1864: the scan below reads raw source, so a spelling left
+    behind in prose counted as an implemented dispatch arm. Measured: replacing
+    the `MutList::push` arm with `if false` while leaving
+    `// removed: fname == "MutList::push" used to be handled here` above it
+    kept this gate green. A parity guard that a COMMENT can satisfy is not a
+    guard.
+
+    String literals are deliberately NOT stripped -- the dispatch arms being
+    detected ARE string comparisons (`fname == "MutList::push"`), so removing
+    them would remove the signal. A name inside some other string cannot match
+    anyway: the patterns require the `fname == "` prefix immediately before it.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def callsite_names(path):
     # Two spellings reach the same place. The main dispatch chains compare a
     # canonicalized `fname`, but the ADR-0090 region rewrites in the linear
@@ -40,7 +85,7 @@ def callsite_names(path):
     # (`__region_run`, `MutList::empty/freeze/to_array`, `MutBytes::empty/
     # to_bytes`) invisible on the linear side -- so the model would call them
     # gc-only the moment the gc lane implemented them, which is backwards.
-    text = open(path).read()
+    text = strip_line_comments(open(path).read())
     # THREE spellings reach the same place, and reading only the first made
     # whole families invisible:
     #   fname == ".."                     the main dispatch chains
