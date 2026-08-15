@@ -10,7 +10,13 @@
 #     - stage2.wasm size + committed bundle/module-source sizes
 #     - compiled wasm size of each bench/binary_size sample
 #     - bytes_per_op of every tracked `bench {}` block (bump-alloc delta)
-#   ADVISORY (wall time; machine/load dependent -> loose flags, never gate):
+#     - exec corpus (bench/exec/): wasmtime FUEL (instruction-count proxy),
+#       heap/committed bytes and wasm size per scenario, on BOTH the linear
+#       and the wasm-gc backend, plus golden-output and linear-vs-gc parity
+#       checks (a mismatch = silent-wrong candidate, flagged loudly)
+#   ADVISORY (wall time; machine/load dependent — recorded in the snapshot
+#   for bench-data history/offline analysis, deliberately NOT rendered in the
+#   per-PR report; see scripts/bench_report.mjs header):
 #     - selfcompile wall_ms (median of VIBE_BENCH_KPI_RUNS, default 3)
 #     - ns_p50 of every tracked bench block
 #
@@ -117,6 +123,98 @@ else
   echo "[bench-metrics] micro benches skipped (runtime: $RUNNER_BIN)"
 fi
 
+# --- exec scenarios: fuel / memory / backend parity (deterministic) -----------
+# bench/exec/*.vibe are general user-shaped programs (NOT the selfhost
+# compiler). Each is compiled by $STAGE2 on BOTH backends and executed once
+# under viberun with wasmtime fuel metering (VIBE_FUEL=1). Fuel is charged per
+# executed instruction from a static cost table, so for these pure programs
+# the reading is byte-stable across machines — a deterministic replacement
+# for wall time (it is a function of the wasmtime version, recorded below, so
+# the report only compares snapshots taken on the same wasmtime). The linear
+# stdout is checked against the committed golden (bench/exec/expected/), and
+# the gc stdout against the linear stdout (backend parity) — a mismatch is a
+# silent-wrong candidate and gets flagged loudly in the report. gc compile/run
+# failures are recorded per scenario (visible feature gap), never fatal.
+exec_tsv="$work/exec.tsv"; : > "$exec_tsv"
+exec_status="skipped (no viberun runtime)"
+wasmtime_version="$(awk '/^name = "wasmtime"$/{f=1} f && /^version = /{gsub(/"/,""); print $3; exit}' runtime/viberun/Cargo.lock 2>/dev/null || true)"
+if [ -x "$RUNNER_BIN" ] && [ -d bench/exec ]; then
+  exec_status="ok"
+  for src in bench/exec/*.vibe; do
+    name="$(basename "$src" .vibe)"
+    lin_wasm="$work/exec_$name.wasm"
+    gc_wasm="$work/exec_$name.gc.wasm"
+    lin_status="ok"; lin_fuel=""; lin_heap=""; lin_committed=""; lin_bytes=""
+    gc_status="ok"; gc_fuel=""; gc_bytes=""; gc_detail=""
+    out_status="ok"
+
+    rm -f "$lin_wasm" "$lin_wasm.diag"
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
+      "$src" "$lin_wasm" main >/dev/null 2>&1 || true
+    if [ -s "$lin_wasm" ]; then
+      lin_bytes="$(wc -c < "$lin_wasm")"
+      if VIBE_FUEL=1 VIBE_MEM=1 timeout 120 "$RUNNER_BIN" "$lin_wasm" \
+          > "$work/exec_$name.out" 2> "$work/exec_$name.err"; then
+        lin_fuel="$(sed -n 's/^vibe::fuel consumed=\([0-9][0-9]*\)$/\1/p' "$work/exec_$name.err" | tail -1)"
+        mem_line="$(grep '^vibe::mem ' "$work/exec_$name.err" | tail -1 || true)"
+        lin_heap="$(sed -n 's/.*allocated=\([0-9][0-9]*\).*/\1/p' <<<"$mem_line")"
+        lin_committed="$(sed -n 's/.*committed=\([0-9][0-9]*\).*/\1/p' <<<"$mem_line")"
+        golden="bench/exec/expected/$name.txt"
+        if [ ! -f "$golden" ]; then
+          out_status="no-golden"
+        elif ! cmp -s "$work/exec_$name.out" "$golden"; then
+          out_status="golden-mismatch"
+        fi
+      else
+        lin_status="run-failed"
+        out_status="skipped"
+      fi
+    else
+      lin_status="compile-failed"
+      out_status="skipped"
+    fi
+
+    rm -f "$gc_wasm" "$gc_wasm.diag"
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_BACKEND=gc VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
+      "$src" "$gc_wasm" main >/dev/null 2>&1 || true
+    if [ -s "$gc_wasm" ]; then
+      gc_bytes="$(wc -c < "$gc_wasm")"
+      if VIBE_FUEL=1 timeout 120 "$RUNNER_BIN" "$gc_wasm" \
+          > "$work/exec_$name.gc.out" 2> "$work/exec_$name.gc.err"; then
+        gc_fuel="$(sed -n 's/^vibe::fuel consumed=\([0-9][0-9]*\)$/\1/p' "$work/exec_$name.gc.err" | tail -1)"
+        if [ "$lin_status" = "ok" ] && [ "$out_status" != "skipped" ] \
+            && ! cmp -s "$work/exec_$name.out" "$work/exec_$name.gc.out"; then
+          if [ "$out_status" = "ok" ]; then out_status="parity-mismatch"; else out_status="$out_status,parity-mismatch"; fi
+        fi
+      else
+        gc_status="run-failed"
+        gc_detail="$(tail -1 "$work/exec_$name.gc.err" | tr '\t' ' ' | cut -c1-160)"
+      fi
+    else
+      gc_status="compile-failed"
+      if [ -s "$gc_wasm.diag" ]; then
+        gc_detail="$(head -1 "$gc_wasm.diag" | tr '\t' ' ' | cut -c1-160)"
+      fi
+    fi
+
+    if [ "$lin_status" != "ok" ] || [ "$out_status" != "ok" ]; then
+      echo "[bench-metrics] WARN: exec scenario $name: linear=$lin_status output=$out_status" >&2
+      exec_status="partial"
+    fi
+    if [ "$gc_status" != "ok" ]; then
+      echo "[bench-metrics] note: exec scenario $name: gc=$gc_status ${gc_detail:+($gc_detail)}" >&2
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$lin_status" "$lin_fuel" "$lin_heap" "$lin_committed" "$lin_bytes" \
+      "$gc_status" "$gc_fuel" "$gc_bytes" "$out_status" "$gc_detail" >> "$exec_tsv"
+  done
+  echo "[bench-metrics] exec scenarios: $(wc -l < "$exec_tsv") cases ($exec_status, wasmtime $wasmtime_version)"
+else
+  echo "[bench-metrics] exec scenarios skipped (runtime: $RUNNER_BIN)"
+fi
+
 # --- runner-normalization calibration ------------------------------------------
 # One fixed, already-tracked series, compiled by the COMMITTED SEED instead of
 # $STAGE2 -- see the file header for why this isolates runner speed from the
@@ -169,17 +267,33 @@ BM_HEAP="$heap" BM_WALL_MEDIAN="$wall_median" BM_WALL_RUNS="${walls[*]}" \
 BM_STAGE2="$stage2_bytes" BM_ADAPTER="$adapter_bundle_bytes" \
 BM_SOURCES="$sources_bundle_bytes" BM_MODSRC="$module_source_bytes" \
 BM_MICRO_STATUS="$micro_status" \
+BM_EXEC_STATUS="$exec_status" BM_WASMTIME="$wasmtime_version" \
 BM_CALIB_NS="$calib_ns" BM_CALIB_SEED_SHA="$calib_seed_sha" \
 BM_CALIB_RUNNER_SHA="$calib_runner_sha" BM_CALIB_BENCH_SHA="$calib_bench_sha" \
 BM_CALIB_LABEL="$CALIB_KEY" \
-node - "$OUT_JSON" "$samples_tsv" "$bench_tsv" <<'NODE'
+node - "$OUT_JSON" "$samples_tsv" "$bench_tsv" "$exec_tsv" <<'NODE'
 const fs = require("fs");
-const [out, samplesTsv, benchTsv] = process.argv.slice(2);
+const [out, samplesTsv, benchTsv, execTsv] = process.argv.slice(2);
 const tsv = (p) => fs.existsSync(p)
   ? fs.readFileSync(p, "utf8").split("\n").filter(Boolean).map(l => l.split("\t"))
   : [];
 const samples = {}; for (const [k, v] of tsv(samplesTsv)) samples[k] = +v;
 const benches = {}; for (const [k, ns, b] of tsv(benchTsv)) benches[k] = { ns_p50: +ns, bytes_per_op: +b };
+// Exec scenarios (deterministic fuel/memory/parity — see the collection loop
+// above). Numeric fields are null when the lane didn't produce them (compile/
+// run failure) — consumers must treat null as "no data", not zero.
+const num = (s) => (s === "" || s == null ? null : +s);
+const execScenarios = {};
+for (const [name, linStatus, linFuel, linHeap, linCommitted, linBytes,
+             gcStatus, gcFuel, gcBytes, outStatus, gcDetail] of tsv(execTsv)) {
+  execScenarios[name] = {
+    linear: { status: linStatus, fuel: num(linFuel), heap_bytes: num(linHeap),
+              committed_bytes: num(linCommitted), wasm_bytes: num(linBytes) },
+    gc: { status: gcStatus, fuel: num(gcFuel), wasm_bytes: num(gcBytes),
+          detail: gcDetail || null },
+    output: outStatus,
+  };
+}
 const sh = (c) => require("child_process").execSync(c, { encoding: "utf8" }).trim();
 let commit = process.env.GITHUB_SHA || "";
 try { if (!commit) commit = sh("git rev-parse HEAD"); } catch {}
@@ -215,6 +329,15 @@ const doc = {
   },
   benches,
   micro_status: process.env.BM_MICRO_STATUS,
+  // Deterministic execution metrics for the general-program corpus
+  // (bench/exec/README.md). `wasmtime` records the metering engine version:
+  // fuel readings are only comparable between snapshots with the same value
+  // (the per-instruction cost table lives in wasmtime).
+  exec: {
+    status: process.env.BM_EXEC_STATUS,
+    wasmtime: process.env.BM_WASMTIME || null,
+    scenarios: execScenarios,
+  },
 };
 fs.writeFileSync(out, JSON.stringify(doc, null, 2) + "\n");
 console.log("[bench-metrics] wrote " + out);

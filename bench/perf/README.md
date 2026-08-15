@@ -110,13 +110,18 @@ it, and note old -> new (and why) in the PR.
 - `scripts/bench_metrics.sh <stage2.wasm> [out.json]` collects one snapshot:
   - **deterministic**: selfcompile `heap_ptr_bytes` (cold cache), stage2 /
     committed-bundle / flat-module-source byte sizes, compiled wasm size of
-    every `bench/binary_size/` sample, and `bytes_per_op` of every `bench {}`
-    block listed in [`tracked_benches.txt`](tracked_benches.txt),
+    every `bench/binary_size/` sample, `bytes_per_op` of every `bench {}`
+    block listed in [`tracked_benches.txt`](tracked_benches.txt), and the
+    **exec corpus** (below),
   - **advisory** (wall time, noisy on shared runners): selfcompile `wall_ms`
-    (median of 3) and `ns_p50` per tracked bench.
+    (median of 3) and `ns_p50` per tracked bench — recorded in the snapshot
+    for history, **not rendered** in the report (below).
 - `scripts/bench_report.mjs current.json [baseline.json]` renders the
-  markdown comparison — deterministic rows flag at ±2%, advisory rows only
-  at ±15%.
+  markdown comparison — **deterministic rows only**, flagged at ±2%. Advisory
+  wall times are deliberately absent: runner-speed variance swung every wall
+  row ±15-40% on unrelated PRs, which made the section noise for human and
+  LLM readers alike (the #1207/#1867 reports are the record). The readings
+  stay in the `bench-data` snapshots for offline analysis.
 - **Per-PR**: the workflow upserts a sticky "📊 Perf report" comment on the
   PR (marker `<!-- vibe-perf-report -->`), comparing against the latest
   main snapshot. Pushing new commits updates the same comment.
@@ -130,7 +135,49 @@ it, and note old -> new (and why) in the PR.
     | node -e 'process.stdin.on("data",()=>{}); ...'   # or jq
   ```
 
-### Runner normalization (calibration)
+### Exec corpus: deterministic fuel / memory / backend parity (`bench/exec/`)
+
+Wall time on shared runners kept producing perf reports where every advisory
+row swung ±15-40% on unrelated PRs (see #1207 and the calibration section
+below — sometimes the calibration factor itself lands outside the plausible
+range and the whole advisory section falls back to raw noise). The exec
+corpus replaces "how fast did this run today" with a number the runner
+cannot touch: **wasmtime fuel**, charged per executed instruction from a
+static cost table. For the pure, input-free programs in
+[`bench/exec/`](../exec/README.md) a fuel reading is byte-stable across
+machines and runs — it moves only when codegen (or the scenario source)
+changes, so the report flags it tightly (±2%) like the other deterministic
+rows. Fuel IS a function of the wasmtime version; the snapshot records it
+(`exec.wasmtime`) and the report omits fuel deltas when the two snapshots
+metered on different versions.
+
+Per scenario the snapshot records, for **both** the linear and the wasm-gc
+backend: fuel, wasm size, and (linear) bump-heap `allocated` + `committed`
+bytes — plus two correctness checks whose failure is rendered louder than
+any perf delta (silent-wrong is the worst failure class,
+`docs/issue-triage.md`): the linear stdout must equal the committed golden
+(`bench/exec/expected/`), and the gc stdout must equal the linear stdout.
+A scenario the gc backend cannot compile/run is recorded per scenario with
+the compiler's own diagnostic (e.g. `higher_order`: `GC codegen: unknown
+constructor or function: Array::map`) — the gc feature gap stays visible in
+every report instead of unmeasured. The corpus is deliberately **general
+user-shaped programs** (strings, sorting, closures, ADT interpreter, bytes /
+bit ops, tokenizing, sieve, records) rather than yet another view of the
+selfhost compiler — `parser_bench` already covers that side.
+
+The fuel meter lives in viberun (`VIBE_FUEL=1` → `vibe::fuel consumed=<n>`
+on stderr, one machine-readable line, fresh `.wasm` only — a `.cwasm` was
+serialized without fuel instrumentation). It composes with the existing
+`VIBE_MEM=1` report.
+
+### Runner normalization (calibration) — history-only since the exec corpus
+
+> **Status:** the calibration record is still collected into every snapshot
+> (it remains the honest way to diagnose "was that swing the runner or the
+> code?" when reading `bench-data` history offline), but `bench_report.mjs`
+> no longer renders advisory wall times at all, so it no longer applies the
+> runner factor to anything. The mechanism below is kept documented because
+> the snapshots still carry the fields and history spans both eras.
 
 Shared CI runners vary in raw speed from run to run — a PR's own diff has
 nothing to do with it. The #1207 investigation caught this directly: its

@@ -1110,9 +1110,29 @@ fn run(args: Vec<String>) -> Result<i32> {
     } else {
         sample_ms
     };
+    // Deterministic instruction-count proxy (perf pipeline): VIBE_FUEL=1 turns
+    // on wasmtime fuel metering and reports the fuel a run consumed. Fuel is
+    // charged per executed instruction from a static cost table, so for a
+    // deterministic program the number is byte-stable across machines and
+    // runs — unlike wall time it does not see CI runner speed at all. It IS a
+    // function of the wasmtime version (cost table) — consumers comparing two
+    // readings must pin/compare wasmtime versions (bench_metrics.sh records
+    // it in the snapshot). Same `.cwasm` caveat as sampling above: a
+    // precompiled image was serialized without fuel instrumentation and the
+    // engine config must match, so metering only works on a fresh `.wasm`.
+    let fuel_profile = std::env::var("VIBE_FUEL").as_deref() == Ok("1");
+    let fuel_profile = if fuel_profile && wasm_path.ends_with(".cwasm") {
+        eprintln!("vibe: VIBE_FUEL needs a fresh .wasm (a precompiled .cwasm has no fuel instrumentation); fuel metering disabled");
+        false
+    } else {
+        fuel_profile
+    };
     let mut cfg = engine_config();
     if sample_ms.is_some() {
         cfg.epoch_interruption(true);
+    }
+    if fuel_profile {
+        cfg.consume_fuel(true);
     }
     let engine = Engine::new(&cfg)?;
     let module = load_module(&engine, wasm_path)?;
@@ -1123,6 +1143,12 @@ fn run(args: Vec<String>) -> Result<i32> {
     state.host_fs_scope = host_fs_scope;
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.mem);
+    if fuel_profile {
+        // Start from the full u64 budget; consumed = u64::MAX - remaining at
+        // report time. No program gets anywhere near exhausting this, so
+        // metering never turns into an execution limit here.
+        store.set_fuel(u64::MAX)?;
+    }
 
     // DAP P2: if the module is a break build it carries a `vibe.dbgargs` custom
     // section publishing the two addresses of the spilled-argument region. Parse
@@ -1269,6 +1295,15 @@ fn run(args: Vec<String>) -> Result<i32> {
             .map(|m| m.data_size(&store) as u64);
         let events = std::mem::take(&mut store.data_mut().mem.events);
         report_memory(heap_base, heap_peak, committed, &events);
+    }
+
+    // Fuel report — after the run, success OR trap, mirroring the memory
+    // report model. One machine-readable line on stderr.
+    if fuel_profile {
+        if let Ok(remaining) = store.get_fuel() {
+            let consumed = u64::MAX - remaining;
+            eprintln!("vibe::fuel consumed={consumed}");
+        }
     }
 
     // tier 3 heap-sampling timeline.
