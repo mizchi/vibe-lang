@@ -29,9 +29,10 @@ after Phase B. They are never enforcement inputs to the comparative policy.
 1. resolves full base/head/current identities and synthesizes `merge-tree`;
 2. rejects a supplied current merge result whose tree is not that merge tree;
 3. reads policy and benchmark input from the base revision;
-4. atomically creates a private mode-`0700` workspace lease under a physical
-   OS temporary directory (or current-UID-owned `RUNNER_TEMP` on CI), verifies
-   its type, owner, mode, and realpath, and reuses its fixed `lease/root` path;
+4. atomically creates an exclusive, stable-name mode-`0700` workspace lease
+   under a physical OS temporary directory (or current-UID-owned `RUNNER_TEMP`
+   on CI), verifies its type, owner, mode, and realpath, and reuses its fixed
+   `lease/root` path; a concurrent or abandoned lease fails closed;
 5. rejects a tracked `_build` entry in either tree before creating that
    reserved mutation namespace;
 6. before writing or executing extracted content, rejects a pinned input or
@@ -40,13 +41,17 @@ after Phase B. They are never enforcement inputs to the comparative policy.
    caches, HOME, TMPDIR, and VIBE_HOME, never a caller-selected target;
 8. force-generates and verifies the generated fingerprint, then builds stage2
    at one fixed relative path;
-9. records the stage2 SHA-256 and runs two exact cold-cache heap trials
-   through `scripts/selfcompile_kpi.sh`, using `VIBE_KPI_WORK_DIR` for fixed
-   output and cache paths;
-10. rejects any build or heap difference when base and current are the same
+9. records the stage2 SHA-256 and runs two exact cold-cache heap trials with
+   the controller checkout's sibling Node runner (never the materialized
+   tree's KPI shell or runner), recreating fixed output/cache paths each time;
+10. selects CLI-only `content-v1` stat tokens before the wasm path, proves the
+    physical materialized root, parses exactly one runner memory line, and
+    requires a nonempty output wasm;
+11. rejects any build or heap difference when base and current are the same
    tree, catching stable cross-reconstruction drift as well as within-build
    trial drift;
-11. applies the base policy and emits one machine-readable JSON summary.
+12. applies the base policy and emits one machine-readable JSON summary with
+    `stat_token_mode: "content-v1"`.
 
 The controller scrubs inherited `VIBE_*`, credentials, `NODE_OPTIONS`, and
 other ambient state by constructing a small environment from scratch. The
@@ -66,32 +71,50 @@ node scripts/selfcompile_heap_policy.mjs \
 ```
 
 There is deliberately no `--canonical-root`: callers cannot select anything
-the controller recursively deletes. CI will supply an event timestamp and the
+the controller recursively deletes. The controller's stable lease name keeps
+absolute-path bytes identical across independent invocations; exclusive
+creation serializes runs instead of falling back to a path that would change
+the measured allocator input. CI will supply an event timestamp and the
 GitHub merge result with `--current`; the controller itself leases beneath a
 verified `RUNNER_TEMP`. The benchmark root source is always copied from base,
 so a PR cannot make its own workload easier.
 
-## Known Phase B blocker: metadata-sensitive 16-byte drift
+## Policy-only deterministic stat tokens
 
-The real identical-tree smoke is internally stable but differs across clean
-reconstructions:
+The trusted Node runner accepts `--policy-stat-token content-v1` only together
+with an absolute `--policy-stat-root`. These controller-owned arguments occur
+before the wasm path, are removed by host CLI parsing, and are absent from the
+guest argv and environment. The runner requires its physical CWD to equal the
+physical root, rejects lexical/physical escape and ancestor symlinks, returns
+`-1` for a final symlink, and fails on missing, racing, or unsupported entries.
+Default raw Node, Rust, Preview2, compiler, and cache behavior is unchanged.
 
-- base trials: `924,816,456`, `924,816,456`;
-- current trials: `924,816,440`, `924,816,440`;
-- stage2 SHA-256, benchmark bytes, and normalized paths are identical.
+For a regular file the payload is its exact bytes. For a directory it is the
+UTF-8-byte-sorted immediate `(name length, name, lstat kind)` sequence. The
+digest is:
 
-This is source-filesystem metadata sensitivity, not ordinary trial noise.
-`scripts/wasm_vibe_host_runner.js` includes mtime and inode in `Fs::stat_token`,
-and loader cache text stringifies those tokens. Deleting and recreating the
-same bytes changes that metadata; token length/alignment can therefore move
-the guest heap by 16 bytes. For different source trees that hidden drift could
-look like an improvement or unbudgeted growth.
+```text
+SHA-256("vibe:selfcompile-policy:stat-token:v1\\0" || kind || u64be(length) || payload)
+```
 
-**Phase B remains blocked.** Do not wire this controller into required CI or
-use its deltas for budget decisions until a trusted policy-only runner
-normalizes stat tokens and repeated same-tree reconstructions make all four
-readings identical. Phase B must execute the complete controller, generation,
-host-runner, and KPI harness closure from immutable base authority. It must run
+The raw token is `2^60 | (first_u64be & (2^60 - 1))`, always a positive
+19-digit Vibe `Int`; `0` is never emitted. A process-local full-digest registry
+fails closed on a 60-bit projection collision. Preview2 policy mode uses the
+first 128 digest bits. Paths are authority inputs, not digest inputs, because
+all production cache callers already key by path. Content hashing is expected
+to cost more host I/O and is intentionally confined to this policy mode.
+
+The acceptance smoke ran commit `14891ea0` twice through independent fresh
+leases. All eight heap readings were `1,092,143,664`, all four stage2 hashes
+were `4a6e2c8b…beafb2e`, and all eight runner attestations reported 6,158 calls,
+214 unique projections, and transcript `fc99ec15…a308b3`. A three-pair direct
+runner sample measured metadata/content-v1 wall medians of 2.03/2.29 seconds
+(+12.81%); this cost is confined to the unwired policy path.
+
+**Phase B remains blocked.** Deterministic tokens remove the known 16-byte
+reconstruction drift, but do not make the current harness safe for PR CI.
+Phase B must execute the complete controller, generation, host-runner, and KPI
+harness closure from immutable base authority. It must run
 base/current in disposable containers with no network, dropped capabilities
 and no-new-privileges, a read-only trusted harness/root filesystem, only
 container-local temporary writable areas, and no writable host mounts. The
@@ -138,8 +161,8 @@ of an untrusted revision is **not sandboxed**: extracted generation scripts and
 the raw compiler filesystem ABI can access the host as the current user.
 
 Phase B/PR CI is forbidden until the immutable-harness and disposable-container
-requirements above, stat-token normalization, policy-path review ownership,
-and strict latest-base governance all land. Only then may a parallel
+requirements above, policy-path review ownership, and strict latest-base
+governance all land. Only then may a parallel
 `selfcompile-heap-policy` job join `ci-required` and retire the old baseline as
 gate authority. Building base
 and current sequentially is expected to add roughly two clean stage2 builds

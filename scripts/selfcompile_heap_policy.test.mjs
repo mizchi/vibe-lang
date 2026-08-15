@@ -20,6 +20,7 @@ import {
   parseBudget,
   parsePolicy,
   runController,
+  trustedRunnerInvocation,
 } from "./selfcompile_heap_policy.mjs";
 
 const policy = parsePolicy(JSON.stringify({
@@ -223,6 +224,31 @@ test("CI lease is created under a physical runner-owned RUNNER_TEMP", async () =
   }
 });
 
+test("pre-existing stable lease fails closed and is never deleted", async () => {
+  const fixture = makeRepository();
+  const driver = makeDriver(fixture.outer);
+  const lease = join(fixture.outer, "vibe-selfcompile-policy-lease");
+  mkdirSync(lease, { mode: 0o700 });
+  const marker = join(lease, "must-survive.txt");
+  writeFileSync(marker, "untouched\n");
+  const oldActions = process.env.GITHUB_ACTIONS;
+  const oldRunnerTemp = process.env.RUNNER_TEMP;
+  process.env.GITHUB_ACTIONS = "true";
+  process.env.RUNNER_TEMP = fixture.outer;
+  try {
+    await assert.rejects(() => controller({
+      repo: fixture.repo, base: fixture.initial, head: fixture.initial,
+      synthesizeMerge: true, prNumber: "1801", testDriver: driver,
+    }), error => error.reason === "workspace-busy");
+    assert.equal(readFileSync(marker, "utf8"), "untouched\n");
+  } finally {
+    if (oldActions === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = oldActions;
+    if (oldRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = oldRunnerTemp;
+  }
+});
+
 test("caller-selected canonical roots are rejected and never deleted", async () => {
   const fixture = makeRepository();
   const victim = join(fixture.outer, "caller-selected-victim");
@@ -295,6 +321,7 @@ test("controller synthesizes latest-base merge, pins input, reuses exact paths, 
     asOf: "2026-08-02T00:00:00.000Z", testDriver: driver,
   });
   assert.equal(result.decision, "pass");
+  assert.equal(result.stat_token_mode, "content-v1");
   assert.equal(result.base_heap_bytes, 1000);
   assert.deepEqual(result.trials, { base: [1000, 1000], current: [1000, 1000] });
   const root = result.normalized_paths.canonical_root;
@@ -309,6 +336,38 @@ test("controller synthesizes latest-base merge, pins input, reuses exact paths, 
   for (const key of ["stage2", "input", "work", "home", "tmp", "vibeHome"]) {
     assert.equal(new Set(log.map(row => row[key])).size, 1, `${key} must be identical`);
   }
+});
+
+test("trusted runner selectors are controller-owned and precede wasm guest argv", () => {
+  const root = "/physical/materialized/root";
+  const stage2 = `${root}/_build/stage2.wasm`;
+  const inputPath = `${root}/input.vibe`;
+  const outputPath = `${root}/_build/out.wasm`;
+  const invocation = trustedRunnerInvocation({ root, stage2, inputPath, outputPath });
+  assert.equal(invocation.command, "bash");
+  assert.ok(invocation.args[0].endsWith("/scripts/run_wasm_vibe_host_runner.sh"));
+  assert.equal(invocation.args[0].startsWith(root), false, "materialized runner must not be selected");
+  assert.deepEqual(invocation.args.slice(1), [
+    "--policy-stat-token", "content-v1",
+    "--policy-stat-root", root,
+    "--invoke", "cli_main",
+    stage2, inputPath, outputPath, "__no_entry__",
+  ]);
+});
+
+test("materialized KPI shell and runner spoofing cannot select the trusted runner", async () => {
+  const fixture = makeRepository();
+  const driver = makeDriver(fixture.outer);
+  mkdirSync(join(fixture.repo, "scripts"));
+  writeFileSync(join(fixture.repo, "scripts/selfcompile_kpi.sh"), "#!/bin/sh\necho forged\n");
+  writeFileSync(join(fixture.repo, "scripts/wasm_vibe_host_runner.js"), "throw new Error('forged')\n");
+  const head = commitAll(fixture.repo, "spoof materialized harness", "2026-08-01T01:00:00Z");
+  const result = await controller({
+    repo: fixture.repo, base: fixture.initial, head, synthesizeMerge: true,
+    prNumber: "1801", testDriver: driver,
+  });
+  assert.equal(result.decision, "pass");
+  assert.equal(result.stat_token_mode, "content-v1");
 });
 
 test("controller consumes one new base-bound budget and ignores a permissive head policy", async () => {

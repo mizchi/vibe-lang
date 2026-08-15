@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -7,11 +7,11 @@ import {
   constants,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -20,6 +20,8 @@ import { fileURLToPath } from "node:url";
 
 const POLICY_PATH = "bench/perf/selfcompile_heap_policy.json";
 const BUDGET_DIR = "bench/perf/selfcompile_heap_budgets";
+const STAT_TOKEN_MODE = "content-v1";
+const TRUSTED_RUNNER = fileURLToPath(new URL("./run_wasm_vibe_host_runner.sh", import.meta.url));
 const POLICY_KEYS = [
   "budget_max_lifetime_days",
   "emergency_absolute_cap_bytes",
@@ -304,7 +306,16 @@ function createWorkspaceLease() {
   } else {
     tempBase = verifyPhysicalDirectory(realpathSync(os.tmpdir()), { requireOwner: false, reason: "unsafe-local-temp" });
   }
-  const lease = mkdtempSync(join(tempBase, "vibe-selfcompile-policy-"));
+  // A stable absolute root is part of the KPI input: compiler maps contain
+  // absolute source paths, and different path bytes can change persistent-map
+  // allocation even when lengths match. mkdir is the exclusive lease; a
+  // concurrent or abandoned run fails closed rather than choosing a new path.
+  const lease = join(tempBase, "vibe-selfcompile-policy-lease");
+  try {
+    mkdirSync(lease, { mode: 0o700 });
+  } catch (error) {
+    fail("workspace-busy", { lease, code: error.code });
+  }
   chmodSync(lease, 0o700);
   activeWorkspaceLeases.add(lease);
   try {
@@ -423,6 +434,80 @@ function parseMeasurement(output) {
   return value;
 }
 
+function parseRunnerMeasurement(stderr) {
+  const memoryPattern = /^\[wasm-memory\] run pages=([0-9]+) bytes=([0-9]+) heap_ptr=([0-9]+) host_alloc_ptr=([0-9]+) rss=([0-9]+)$/;
+  const attestPattern = /^\[policy-stat-token\] mode=content-v1 calls=([0-9]+) unique=([0-9]+) transcript=([0-9a-f]{64})$/;
+  const lines = stderr.split(/\r?\n/);
+  const memoryLines = lines.filter(line => line.startsWith("[wasm-memory]"));
+  const attestLines = lines.filter(line => line.startsWith("[policy-stat-token]"));
+  if (memoryLines.length !== 1 || attestLines.length !== 1) {
+    fail("malformed-kpi-output", { memory_lines: memoryLines.length, attestation_lines: attestLines.length });
+  }
+  const memory = memoryLines[0].match(memoryPattern);
+  const attestation = attestLines[0].match(attestPattern);
+  if (!memory || !attestation) fail("malformed-kpi-output");
+  const heap = Number(memory[3]);
+  const calls = Number(attestation[1]);
+  const unique = Number(attestation[2]);
+  if (!safeInteger(heap, { positive: true }) || !safeInteger(calls, { positive: true }) || !safeInteger(unique, { positive: true })) {
+    fail("malformed-kpi-output");
+  }
+  return {
+    heap,
+    attestation: { mode: STAT_TOKEN_MODE, calls, unique, transcript: attestation[3] },
+  };
+}
+
+export function trustedRunnerInvocation({ root, stage2, inputPath, outputPath }) {
+  return {
+    command: "bash",
+    args: [
+      TRUSTED_RUNNER,
+      "--policy-stat-token", STAT_TOKEN_MODE,
+      "--policy-stat-root", root,
+      "--invoke", "cli_main",
+      stage2, inputPath, outputPath, "__no_entry__",
+    ],
+  };
+}
+
+function measureWithTrustedRunner({ root, stage2, inputPath, workDir, env }) {
+  rmSync(workDir, { recursive: true, force: true });
+  const cacheDir = join(workDir, "cache");
+  const outputPath = join(workDir, "out.wasm");
+  mkdirSync(cacheDir, { recursive: true });
+  const invocation = trustedRunnerInvocation({ root, stage2, inputPath, outputPath });
+  const result = spawnSync(invocation.command, invocation.args, {
+    cwd: root,
+    env: {
+      ...env,
+      VIBE_PREOPEN_DIR: root,
+      VIBE_FS_COMPILE: "1",
+      VIBE_IMPORT_ABI: "raw",
+      VIBE_WASM_MEMORY_STATS: "1",
+      VIBE_BUILD_CACHE_DIR: cacheDir,
+    },
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error || result.status !== 0 || result.signal !== null) {
+    fail("build-failed", {
+      command: `${invocation.command} ${invocation.args.join(" ")}`,
+      status: result.status,
+      signal: result.signal,
+      stderr: String(result.stderr ?? "").slice(-4000),
+    });
+  }
+  try {
+    if (!statSync(outputPath).isFile() || statSync(outputPath).size <= 0) fail("build-failed", { missing: outputPath });
+  } catch (error) {
+    if (error instanceof HeapPolicyError) throw error;
+    fail("build-failed", { missing: outputPath });
+  }
+  return parseRunnerMeasurement(String(result.stderr ?? ""));
+}
+
 async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, testDriver }) {
   const root = resetWorkspaceRoot(lease);
   await archiveTree(repo, tree, root);
@@ -462,6 +547,7 @@ async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, te
   }
 
   const trials = [];
+  const statTokenAttestations = [];
   for (let trial = 1; trial <= 2; trial += 1) {
     let output;
     if (testDriver) {
@@ -474,19 +560,23 @@ async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, te
         POLICY_WORK_DIR: workDir,
       }, "build-failed", true);
     } else {
-      output = runChecked("bash", ["scripts/selfcompile_kpi.sh", stage2, policy.input], root, {
-        ...env,
-        VIBE_KPI_WORK_DIR: workDir,
-        VIBE_KPI_ALLOWED_WORK_ROOT: join(root, "_build"),
-      }, "build-failed", true);
+      const measurement = measureWithTrustedRunner({ root, stage2, inputPath, workDir, env });
+      trials.push(measurement.heap);
+      statTokenAttestations.push(measurement.attestation);
+      continue;
     }
     trials.push(parseMeasurement(output));
+    statTokenAttestations.push(null);
   }
   if (trials[0] !== trials[1]) fail("nondeterministic-heap", { revision: label, trials });
+  if (!testDriver && JSON.stringify(statTokenAttestations[0]) !== JSON.stringify(statTokenAttestations[1])) {
+    fail("nondeterministic-stat-token", { revision: label, stat_token_attestations: statTokenAttestations });
+  }
   return {
     heap_bytes: trials[0],
     trials,
     stage2_sha256: stage2Sha256,
+    stat_token_attestations: statTokenAttestations,
     normalized_paths: {
       canonical_root: root,
       input: policy.input,
@@ -584,6 +674,13 @@ async function runControllerWithLease(options, lease) {
         trials: [...baseResult.trials, ...currentResult.trials],
       });
     }
+    if (JSON.stringify(baseResult.stat_token_attestations) !== JSON.stringify(currentResult.stat_token_attestations)) {
+      fail("nondeterministic-stat-token", {
+        revision: "identical-tree-reconstruction",
+        base: baseResult.stat_token_attestations,
+        current: currentResult.stat_token_attestations,
+      });
+    }
   }
   const evaluation = evaluatePolicy({
     policy,
@@ -615,8 +712,13 @@ async function runControllerWithLease(options, lease) {
     budget_id: evaluation.budget_id,
     trials: { base: baseResult.trials, current: currentResult.trials },
     stage2_sha256: { base: baseResult.stage2_sha256, current: currentResult.stage2_sha256 },
+    stat_token_attestations: {
+      base: baseResult.stat_token_attestations,
+      current: currentResult.stat_token_attestations,
+    },
     normalized_paths: baseResult.normalized_paths,
     benchmark_input_source_commit: base,
+    stat_token_mode: STAT_TOKEN_MODE,
   };
 }
 

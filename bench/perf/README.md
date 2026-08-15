@@ -17,9 +17,10 @@ One real compile through a selfhost stage2, reporting `wall_ms` and
 `heap_ptr_bytes` (linear backend bump-allocator high-water). With a cold
 isolated `VIBE_BUILD_CACHE_DIR` the heap number is byte-deterministic across
 repeated trials in one materialized tree, so — unlike wall time — the current
-absolute gate can use it without flakes. It is **not yet deterministic across
-clean tree reconstructions**: the Phase A comparative smoke found a stable
-16-byte metadata-sensitive split. See the Phase B blocker in
+absolute gate can use it without flakes. The policy controller additionally
+uses CLI-only `content-v1` stat tokens to make identical clean tree
+reconstructions deterministic; this does not change the standalone/default
+metadata token behavior described here. See the remaining Phase B blockers in
 [`docs/selfcompile-heap-policy.md`](../../docs/selfcompile-heap-policy.md).
 
 CI wiring (`.github/workflows/ci.yml`, step "Selfcompile KPI heap gate"):
