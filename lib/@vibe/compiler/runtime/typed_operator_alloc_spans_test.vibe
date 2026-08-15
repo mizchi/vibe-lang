@@ -1,0 +1,55 @@
+// #1838: operators are overloaded, so their allocation behavior is a typed
+// fact rather than a property of the surface operator token alone.
+
+import ./alloc_spans.vibe {
+  alloc_spans
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  zero_alloc_check
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn has_kind(source: String, want: String) -> Bool with Exception {
+  let spans = alloc_spans(source)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(spans) {
+    let (_fn, kind, _off) = Array::get(spans, i)
+    if kind == want {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "Double arithmetic operators are typed allocation sites" {
+  let double_add = "fn add(a: Double, b: Double) -> Double {\n  let sum = a + b\n  -sum\n}\n"
+  assert(has_kind(double_add, "operator:Double:+"))
+  assert(has_kind(double_add, "operator:Double:-"))
+}
+
+test "String addition is a typed allocation site" {
+  let string_add = "fn join(a: String, b: String) -> String {\n  a + b\n}\n"
+  assert(has_kind(string_add, "operator:String:+"))
+}
+
+test "typed scalar operators that do not allocate stay clean" {
+  let int_add = "fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
+  assert_eq(Array::length(alloc_spans(int_add)), 0)
+  let double_cmp = "fn below(a: Double, b: Double) -> Bool {\n  a < b\n}\n"
+  assert_eq(Array::length(alloc_spans(double_cmp)), 0)
+}
+
+test "an unknown inner binding does not inherit a shadowed outer scalar kind" {
+  let shadowed = "fn f(x: Int, a: Double, b: Double, c: Bool) -> Double {\n  let x = if c { a } else { b }\n  x + a\n}\n"
+  assert(has_kind(shadowed, "operator:Double:+"))
+  let marked = String::concat("#zero_alloc\n", shadowed)
+  assert(String::contains(zero_alloc_check(parse_program(lex(marked))), "operator:Double:+"))
+}
