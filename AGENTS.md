@@ -91,13 +91,14 @@ enforced by `pkf run check-tutorial-translation-parity`
 fails when a chapter has no translation, a translation has no chapter, or the
 two record different output.
 
-`docs/tutorial/` is migrated. [docs/language-tour/](docs/language-tour/) is
-already English and needs no translation — what it needs is a correctness pass.
-Its ```vibe blocks are compile-checked by doctest, which is blind to prose, and
-the prose had drifted: it described `String` as UTF-16 (ADR-0098 made it a byte
-string) and `index.vibei` as the package boundary (`index.vpkg` has been, since
-ADR-0070). Both are fixed; the open question is whether a third surface next to
-the cheatsheet and the tutorial earns its upkeep at all.
+`docs/tutorial/` is migrated. `docs/language-tour/` was **deleted** and folded
+into [docs/cheatsheet.md](docs/cheatsheet.md) — it was a fourth surface next to
+the cheatsheet, the tutorial and `docs/spec/syntax.md`, and it rotted the way
+this section predicts: doctest compile-checks ` ```vibe ` blocks and is blind to
+prose, so it went on calling `String` a UTF-16 string (ADR-0098 made it a byte
+string) and `index.vibei` the package boundary (`index.vpkg` has been, since
+ADR-0070) with nothing to catch it. Its shell integration, qualified-name and
+keyword sections, and its builtin signature tables, now live in the cheatsheet.
 
 Internal documents (spec, ADR, design records, reports) get **one** language —
 English — and no translation. They change too often for a second copy to stay

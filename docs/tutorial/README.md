@@ -66,10 +66,9 @@ language shapes are tracked by
 ([#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) is
 implemented, and the block in chapter 03 is runnable now).
 
-For a more exhaustive reference see [docs/cheatsheet.md](../cheatsheet.md) and
-[docs/language-tour/](../language-tour/), bearing in mind that parts of those
-run ahead of the implementation — where they disagree, this tutorial's actual
-output is the truth.
+For a more exhaustive reference see [docs/cheatsheet.md](../cheatsheet.md),
+bearing in mind that parts of it run ahead of the implementation — where they
+disagree, this tutorial's actual output is the truth.
 
 ## Ambiguous syntax and known traps
 

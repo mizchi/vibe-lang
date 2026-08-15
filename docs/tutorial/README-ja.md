@@ -59,9 +59,9 @@ stage2 を `VIBE_MD_STAGE2` に明示し、`scripts/vibe_md.sh check` を全章�
 ([#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) は
 実装済みで、03 の該当ブロックは runnable になった)。
 
-より網羅的なリファレンスは [docs/cheatsheet.md](../cheatsheet.md) と
-[docs/language-tour/](../language-tour/)。ただし一部の記述は実装より
-先行している (差分に気づいたら本チュートリアルの実行結果が正)。
+より網羅的なリファレンスは [docs/cheatsheet.md](../cheatsheet.md)。ただし
+一部の記述は実装より先行している (差分に気づいたら本チュートリアルの
+実行結果が正)。
 
 ## 曖昧な構文・既知の落とし穴
 
