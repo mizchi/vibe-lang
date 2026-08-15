@@ -53,6 +53,19 @@ fn fn_names_of(source: String) -> Array[String] with Exception {
   out
 }
 
+fn offsets_of(source: String) -> Array[Int] with Exception {
+  let spans = alloc_spans(source)
+  let out = [
+  ]
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (_f, _kind, off) = Array::get(spans, i)
+    Array::push(out, off)
+    i = i + 1
+  }
+  out
+}
+
 //# Tests
 
 test "a function that only reads reports nothing" {
@@ -99,6 +112,48 @@ test "literals that build a value are sites" {
   assert(has_kind(src, "tuple"))
   let src2 = "fn three() -> Array[Int] {\n  [\n    1,\n    2,\n    3\n  ]\n}\n"
   assert(has_kind(src2, "array"))
+}
+
+test "a float literal is a heap-box allocation site" {
+  let src = "fn pi() -> Double {\n  3.14\n}\n"
+  assert(has_kind(src, "float"))
+}
+
+test "map literals and handlers are allocation sites" {
+  let map_src = "fn one() -> Map[String, Int] {\n  Map::from_pairs([(\"one\", 1)])\n}\n"
+  assert(has_kind(map_src, "map"))
+  let handle_src = "effect Ask { Ask() -> Int }\nfn answer() -> Int {\n  handle { perform Ask::Ask() } with Ask {\n    Ask() => resume(42)\n  }\n}\n"
+  assert(has_kind(handle_src, "handler"))
+}
+
+test "a bare enum constructor is conservatively an allocation site" {
+  let src = "enum Maybe { None; Some(Int) }\nfn empty() -> Maybe {\n  None\n}\n"
+  assert(has_kind(src, "constructor:None"))
+}
+
+test "valid cfg and deprecated directives do not make the query fail" {
+  // Directive text must be blanked, not deleted, so source offsets remain
+  // coordinates in the original file. Counting inactive cfg sites is the
+  // deliberate over-reporting side of this static query.
+  let src = "#deprecated(\"use exact_pi\")\n#cfg(experimental)\nfn pi() -> Double {\n  3.14\n}\n"
+  assert(has_kind(src, "float"))
+}
+
+test "spanless literal sites inherit their statement offset, not byte zero" {
+  let src = "fn pure() -> Int { 1 }\n\nfn later() -> Array[Int] {\n  [1, 2]\n}\n"
+  let offsets = offsets_of(src)
+  assert_eq(Array::length(offsets), 1)
+  assert_eq(Array::get(offsets, 0), String::index_of(src, "fn later"))
+}
+
+test "synthetic nodes never replace a real source fallback with offset minus one" {
+  let src = "fn wrap[T](x: T) -> (T) {\n  (x)\n}\n"
+  let offsets = offsets_of(src)
+  let mut i = 0
+  while i < Array::length(offsets) {
+    assert(Array::get(offsets, i) >= 0)
+    i = i + 1
+  }
 }
 
 test "sites are attributed to the enclosing top-level function" {

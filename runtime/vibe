@@ -57,6 +57,8 @@
 #                                         captures -- the ones codegen boxes into
 #                                         a heap ref cell instead of a wasm local
 #                                         (NAME START END per line; empty = none)
+#   vibe allocs <file.vibe>               print possible heap-allocation sites
+#                                         (FN KIND OFFSET per line; empty = none)
 #   vibe deps [--direct] <file.vibe>      print the resolved import closure, one
 #                                         path per line, dependency first (#988).
 #                                         The loader's OWN collection (what the
@@ -993,7 +995,7 @@ case "$cmd" in
       out="$(mktemp -t vibe-check-sf-XXXXXX)"
       trap 'rm -f "$out" "$out.diag"' EXIT
       env -u VIBE_FS_COMPILE -u VIBE_CHECK_ONLY -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-          -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_SYMBOLS -u VIBE_NORMALIZE \
+          -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_SYMBOLS -u VIBE_NORMALIZE \
           -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_DIAGNOSTICS=1 \
         VIBE_DIAGNOSTICS_JSON="$([ "$chk_json" = "1" ] && echo 1 || echo "")" \
@@ -1075,7 +1077,7 @@ case "$cmd" in
     if grep -aq "VIBE_CHECK_ONLY" "$cli" 2>/dev/null; then
       out="$(mktemp -t vibe-check-XXXXXX)"
       trap 'rm -f "$out" "$out.diag"' EXIT
-      env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT \
+      env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
           -u VIBE_SYMBOLS -u VIBE_NORMALIZE -u VIBE_COVERAGE -u VIBE_DEBUG \
           -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_CHECK_ONLY=1 \
@@ -1137,7 +1139,7 @@ case "$cmd" in
     # the compile path (which would emit wasm bytes instead of the type string).
     # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
     # written so the LSP degrades gracefully instead of the whole query failing.
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_TYPE_AT=1 VIBE_TYPE_LINE="$ta_line" VIBE_TYPE_COL="$ta_col" \
       VIBE_IMPORT_ABI=raw \
@@ -1163,7 +1165,7 @@ case "$cmd" in
     # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
     # written so the LSP degrades gracefully instead of the whole query failing.
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
-        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_DOC_AT=1 VIBE_TYPE_LINE="$da_line" VIBE_TYPE_COL="$da_col" \
       VIBE_IMPORT_ABI=raw \
@@ -1190,7 +1192,7 @@ case "$cmd" in
     # compile path (which would emit wasm bytes instead of the occurrence list).
     # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
     # written so the LSP degrades gracefully instead of the whole query failing.
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_BINDING_AT=1 VIBE_TYPE_LINE="$ba_line" VIBE_TYPE_COL="$ba_col" \
       VIBE_IMPORT_ABI=raw \
@@ -1216,7 +1218,7 @@ case "$cmd" in
     # Clear any inherited compile-mode envs so this query can't be diverted to the
     # compile path (which would emit wasm bytes instead of the symbol list).
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-        -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_SYMBOLS=1 \
       VIBE_IMPORT_ABI=raw \
@@ -1259,7 +1261,7 @@ case "$cmd" in
     out="$(mktemp -t vibe-escapes-XXXXXX)"
     trap 'rm -f "$out" "$out.diag"' EXIT
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_ESCAPES=1 \
       VIBE_ESCAPES_STRICT="$escapes_strict" \
@@ -1267,6 +1269,30 @@ case "$cmd" in
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     if [ -s "$out.diag" ]; then
       echo "error: $(cat "$out.diag")" >&2
+    fi
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
+  allocs)
+    # vibe allocs <file.vibe>
+    # Print every possible heap-allocation site, including implicit closure
+    # environments, boxed captured `let mut` cells, and boxed float literals.
+    # This is deliberately conservative: a false positive costs one report
+    # line, while a missed site makes an empty result silently untrue.
+    [ "$#" -eq 1 ] || die "usage: vibe allocs <file.vibe>"
+    src="$1"
+    [ -f "$src" ] || die "not found: $src"
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-allocs-XXXXXX)"
+    trap 'rm -f "$out" "$out.diag"' EXIT
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG \
+        -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE -u VIBE_CHECK_ONLY -u VIBE_DEPS \
+      VIBE_ALLOCS=1 \
+      VIBE_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out.diag" ]; then
+      echo "error: $(cat "$out.diag")" >&2
+      exit 1
     fi
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
@@ -1312,7 +1338,7 @@ case "$cmd" in
     deps_direct_env=""
     [ "$deps_direct" = "1" ] && deps_direct_env="VIBE_DEPS_DIRECT=1"
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_COVERAGE -u VIBE_DEBUG \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG \
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE -u VIBE_CHECK_ONLY \
       VIBE_DEPS=1 ${deps_direct_env} \
       VIBE_IMPORT_ABI=raw \
@@ -1364,7 +1390,7 @@ case "$cmd" in
     # failure) so the LSP treats empty as "no diagnostics" / falls back.
     diag_json_env=""
     [ "$diag_json" = "1" ] && diag_json_env=1
-    env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_NORMALIZE -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT \
+    env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_NORMALIZE -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_DIAGNOSTICS=1 \
       VIBE_DIAGNOSTICS_JSON="$diag_json_env" \
@@ -1454,7 +1480,7 @@ case "$cmd" in
       # Clear inherited adapter-mode envs so a leaked selector can't divert this
       # into compiling and emitting wasm bytes as "matches".
       env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-          -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
+          -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
           -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_GREP=1 \
         VIBE_GREP_PATTERN="$g_pattern" \
@@ -1502,7 +1528,7 @@ case "$cmd" in
     # write a hash/report as $out and the default write mode would copy it
     # OVER the user's source file.
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         -u VIBE_HASH -u VIBE_HASH_WRITE \
         -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \

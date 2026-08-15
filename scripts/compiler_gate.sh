@@ -11141,6 +11141,19 @@ for want in "counter mut-cell" "counter closure"; do
     exit 1
   fi
 done
+# Exercise the advertised PUBLIC verb too. The adapter-only environment lane
+# above cannot catch a missing `runtime/vibe` case (the original #1792 review
+# regression): that would leave `vibe allocs` documented but unusable.
+VIBE_RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
+  VIBE_CLI_WASM="$stage2_wasm" \
+  bash "$ROOT_DIR/runtime/vibe" allocs "$alcdir/in.vibe" > "$alcdir/public.txt"
+for want in "counter mut-cell" "counter closure"; do
+  if ! grep -q "^$want " "$alcdir/public.txt" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: public 'vibe allocs' missed '$want' (#1262)" >&2
+    cat "$alcdir/public.txt" >&2 || true
+    exit 1
+  fi
+done
 # A file with no functions at all is empty output, not an error.
 printf 'enum Empty {\n  E0\n}\n' > "$alcdir/none.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ALLOCS=1 VIBE_IMPORT_ABI=raw \
