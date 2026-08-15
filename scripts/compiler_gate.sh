@@ -27,6 +27,12 @@ bash scripts/check_inline_builtin_capture.sh
 # selfbuild rather than after it.
 bash scripts/check_fixture_execution.sh
 
+# B2 parser binder-context routing is intentionally semantically inert, so its
+# no-fallback proof is structural. Keep the large source-body assertion table
+# out of the Vibe unit and run the strict scanner directly under Node.
+echo "[compiler-gate] parser binder-context spine"
+node --test scripts/parser_binder_context_spine.test.mjs
+
 # Capability-only gate for the future TDRE5 immutable cache publisher. The
 # builtin remains unused by compiler source until the bootstrap seed is bumped.
 node scripts/test_immutable_publish_plumbing.js
@@ -4345,13 +4351,13 @@ echo "[compiler-gate] wasm-gc backend dead needing function filtering ok (105)"
 #       drops a needing function from consideration when its body is
 #       EXACTLY a bare same-effect `EHandle` (edp_drop_self_discharging_needing)
 #       -- its handle site is already discovered and migrated independently.
-#       fixtures/effect_effectset_expansion.vibe's `main` is exactly this
+#       fixtures/effect_effectset_expansion.vibe's `run_effectset` is exactly this
 #       shape; confirmed via direct testing that it failed under
 #       VIBE_BACKEND=gc with "only `with Error`..." before this change.
 echo "[compiler-gate] 40h4/40 wasm-gc backend: self-discharging needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
 # #1571: fixture is an inspect() test-block suite now, compiled AS-IS (no
 # `sed` strip; its import resolves from fixtures/). Its test block wraps the
-# call to the self-discharging `main` in another `handle ... with Ask`,
+# call to the self-discharging `run_effectset` in another `handle ... with Ask`,
 # which additionally locks #1595 on the gc lane: the CALL to a
 # self-discharging fn must be inert (edp_append_self_discharging_row_fns),
 # not just the fn itself dropped from `needing`.
@@ -4721,7 +4727,7 @@ echo "[compiler-gate] 40m/40 effect row operation-item grammar (ADR-0071 step 1/
 # #1571: the fixture carries its expectation as an inspect() test block now
 # (compiled AS-IS, no `sed` strip -- its `import ../lib/@vibe/core` resolves
 # from fixtures/); the test-block wrapper also locks #1595's shape (calling
-# the self-discharging `main` from under another `handle` for the same
+# the self-discharging `run_operation_row` from under another `handle` for the same
 # effect).
 a71dir="_build/_gate_effectset_row_item"
 rm -rf "$a71dir"; mkdir -p "$a71dir"
@@ -6899,6 +6905,11 @@ scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
 # `__sn_next` must not capture the retarget and shadowed Future::ready must
 # not change empty-stream layout (None fallback = 7).
 scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygiene"
+# #1723: a local pure closure shadows a top-level function whose callback
+# parameter carries the suspend effect. The prepass must leave the literal on
+# the plain convention; Done-wrapping it returns a step pointer instead of 8.
+scps_run_expect "effect_scps_param_shadow_test.vibe" "8" "localparamshadow"
+scps_run_expect "effect_scps_top_level_alias_test.vibe" "7" "toplevelalias"
 # #1536 (a) v3 (let-floating): an async-iterator `for` in statement position
 # desugars to a let-chain in SEQUENCE HEAD position; scps_split_tail floats
 # it onto the continuation spine. Two sequential loops pin repeated floats
@@ -9645,6 +9656,39 @@ fi
 rm -rf "$showdir"
 echo "[compiler-gate] interpolation Show rendering ok"
 
+# #1766: Array/tuple type arguments used to be discarded from fn_returns, so
+# interpolation of a structural function result passed check and printed its
+# raw pointer. The positive fixture covers direct and let-bound results,
+# nesting under Option, plus nominal controls. The negative fixture locks the
+# fail-closed diagnostic for a nominal result without a renderer.
+retshowdir="_build/_gate_interp_function_return"
+rm -rf "$retshowdir"; mkdir -p "$retshowdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$stage2_wasm" fixtures/interp_function_return_test.vibe "$retshowdir/show.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$retshowdir/show.wasm" ]; then
+  echo "[compiler-gate] FAIL: structural function-return interpolation fixture did not compile (#1766)" >&2
+  exit 1
+fi
+if ! retshow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$retshowdir/show.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: structural function-return interpolation rendered incorrectly (#1766)" >&2
+  printf '%s\n' "$retshow_out" >&2
+  exit 1
+fi
+set +e
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$stage2_wasm" fixtures/interp_function_return_missing_show_error.vibe "$retshowdir/missing.wasm" main >/dev/null 2>&1
+retshow_status=$?
+set -e
+if [ "$retshow_status" -eq 0 ] || [ -s "$retshowdir/missing.wasm" ] || ! grep -q 'cannot interpolate a value of type `Hidden`' "$retshowdir/missing.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: missing renderer function result was not rejected actionably (#1766)" >&2
+  cat "$retshowdir/missing.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$retshowdir"
+echo "[compiler-gate] structural function-return interpolation ok"
+
 echo "[compiler-gate] 87/87 uncaught throw reports the payload VALUE (#1374 / #1392 slice 3)"
 # ADR-0085's runtime carries one abortive tag with no kind, so the entry
 # boundary's erased `with Error` arm binds the payload at CtUnknown and can
@@ -11053,7 +11097,7 @@ echo "[compiler-gate] escape predicate two-lane split ok (#1262)"
 #      reach the SAME registry row and the SAME codegen dispatch as the legacy
 #      one in BOTH backends: a source-level alias that only the checker knows
 #      about would typecheck and then miscompile.
-echo "[compiler-gate] 102/103 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
+echo "[compiler-gate] 102/104 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
 sbdir="_build/_gate_sb_build"
 rm -rf "$sbdir"; mkdir -p "$sbdir"
 cat > "$sbdir/build.vibe" <<'SBB'
@@ -11105,7 +11149,7 @@ echo "[compiler-gate] StringBuilder::build terminal-verb alias ok (#1262)"
 #      used that same resolver, so a `#deprecated` alias published by a PACKAGE
 #      (every alias the ADR-0100 (3) collection rename shipped) was invisible
 #      and the migration warning the rename PROMISED never appeared.
-echo "[compiler-gate] 103/103 vibe check resolves @scope/pkg imports, and package deprecations warn (#1262)"
+echo "[compiler-gate] 103/104 vibe check resolves @scope/pkg imports, and package deprecations warn (#1262)"
 chkpkgdir="_build/_gate_check_scoped_pkg"
 rm -rf "$chkpkgdir"; mkdir -p "$chkpkgdir"
 cat > "$chkpkgdir/entry.vibe" <<'CHKPKG'
@@ -11163,5 +11207,34 @@ if grep -q '^warning: ' "$chkpkgdir/clean.out" 2>/dev/null; then
 fi
 rm -rf "$chkpkgdir"
 echo "[compiler-gate] scoped-package check + package deprecation warnings ok (#1262)"
+
+# 104. #1700: a generic transparent alias published by index.vpkg must keep
+#      its formal parameters and target through the importer TypeEnv
+#      projection. The committed seed predates that transport and diagnoses
+#      `Box[Int]` vs `Cell[Int]`; the fresh stage2 must accept it. The opaque
+#      control proves this is alias transparency, not a weakening that makes
+#      every applied package type interchangeable.
+echo "[compiler-gate] 104/104 generic aliases cross index.vpkg transparently (#1700)"
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/generic_alias_vpkg_test.vibe \
+  fixtures/immutmap_alias_test.vibe \
+  lib/@vibe/core/collection_alias_test.vibe >/dev/null; then
+  echo "[compiler-gate] FAIL: a generic transparent alias did not cross an index.vpkg boundary (#1700)" >&2
+  exit 1
+fi
+aliasdir="_build/_gate_generic_alias_vpkg"
+rm -rf "$aliasdir"; mkdir -p "$aliasdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/generic_opaque_vpkg_mismatch.vibe "$aliasdir/opaque.wasm" __no_entry__ \
+  >/dev/null 2>&1 || true
+if [ -s "$aliasdir/opaque.wasm" ] \
+  || ! grep -qF "expected Token[Int], got Seal[Int]" "$aliasdir/opaque.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: distinct opaque generic contract types stopped being nominal (#1700 control)" >&2
+  cat "$aliasdir/opaque.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$aliasdir"
+echo "[compiler-gate] generic transparent alias + opaque control ok (#1700)"
 
 echo "[compiler-gate] ok"

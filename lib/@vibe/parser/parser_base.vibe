@@ -4,6 +4,10 @@ import @vibe/ast {
   Expr, Pat, Stmt, TypeExpr
 }
 
+import ./parser_binder_context.vibe {
+  ParserBinderContext
+}
+
 import ./token.vibe {
   Token
 }
@@ -336,26 +340,26 @@ fn empty_params() -> Array[(String, Option[TypeExpr])] {
   ], 0, 0)
 }
 
-fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
-  let rec parse_pat_cont: (Array[Token], Int, ArrayBuilder[Pat]) -> (Array[Pat], Int) with Exception = (tokens, pos, b) -> {
+export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Pat, Int) with Exception {
+  let rec parse_pat_cont: (Array[Token], Int, ArrayBuilder[Pat], Option[ParserBinderContext]) -> (Array[Pat], Int) with Exception = (tokens, pos, b, context) -> {
     match peek(tokens, pos) {
       TComma => {
-        let (p, pn) = parse_pattern(tokens, pos + 1)
+        let (p, pn) = parse_pattern_with_binder_context(tokens, pos + 1, context)
         ArrayBuilder::push(b, p)
-        parse_pat_cont(tokens, pn, b)
+        parse_pat_cont(tokens, pn, b, context)
       },
       TRParen => (ArrayBuilder::freeze(b), pos + 1),
       _ => throw("expected ',' or ')' in pattern list")
     }
   }
-  let parse_pats_until_rparen: (Array[Token], Int) -> (Array[Pat], Int) with Exception = (tokens, pos) -> {
+  let parse_pats_until_rparen: (Array[Token], Int, Option[ParserBinderContext]) -> (Array[Pat], Int) with Exception = (tokens, pos, context) -> {
     match peek(tokens, pos) {
       TRParen => (empty_pats(), pos + 1),
       _ => {
-        let (f, fn1) = parse_pattern(tokens, pos)
+        let (f, fn1) = parse_pattern_with_binder_context(tokens, pos, context)
         let b = ArrayBuilder::new()
         ArrayBuilder::push(b, f)
-        parse_pat_cont(tokens, fn1, b)
+        parse_pat_cont(tokens, fn1, b, context)
       }
     }
   }
@@ -399,7 +403,7 @@ fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
             TIdent(fname) => {
               match peek(tokens, rp + 1) {
                 TColon => {
-                  let (fp, fnext) = parse_pattern(tokens, rp + 2)
+                  let (fp, fnext) = parse_pattern_with_binder_context(tokens, rp + 2, context)
                   ArrayBuilder::push(field_pats_b, fp)
                   rp = fnext
                 },
@@ -433,7 +437,7 @@ fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
         if fc >= 65 && fc <= 90 {
           match peek(tokens, pos + 1) {
             TLParen => {
-              let (args, end) = parse_pats_until_rparen(tokens, pos + 2);
+              let (args, end) = parse_pats_until_rparen(tokens, pos + 2, context);
               (PCtor(name, args), end)
             },
             TDoubleColon => match peek(tokens, pos + 2) {
@@ -482,7 +486,7 @@ fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
                   note_qualified_pattern_ref(name, vname)
                   match peek(tokens, pos + 3) {
                     TLParen => {
-                      let (args, end) = parse_pats_until_rparen(tokens, pos + 4);
+                      let (args, end) = parse_pats_until_rparen(tokens, pos + 4, context);
                       (PCtor(vname, args), end)
                     },
                     _ => (PCtor(vname, empty_pats()), pos + 3)
@@ -501,13 +505,13 @@ fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
     TLParen => match peek(tokens, pos + 1) {
       TRParen => (PTuple(empty_pats()), pos + 2),
       _ => {
-        let (f, n1) = parse_pattern(tokens, pos + 1)
+        let (f, n1) = parse_pattern_with_binder_context(tokens, pos + 1, context)
         match peek(tokens, n1) {
           TRParen => (f, n1 + 1),
           TComma => {
             let b = ArrayBuilder::new()
             ArrayBuilder::push(b, f)
-            let (rest, end) = parse_pat_cont(tokens, n1, b);
+            let (rest, end) = parse_pat_cont(tokens, n1, b, context);
             (PTuple(rest), end)
           },
           _ => throw("expected ')' or ',' in pattern")
@@ -521,11 +525,15 @@ fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
   }
   match peek(tokens, next) {
     TBitOr => {
-      let (right, end) = parse_pattern(tokens, next + 1);
+      let (right, end) = parse_pattern_with_binder_context(tokens, next + 1, context);
       (POr(pat, right), end)
     },
     _ => (pat, next)
   }
+}
+
+fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
+  parse_pattern_with_binder_context(tokens, pos, None)
 }
 
 fn empty_type_exprs() -> Array[TypeExpr] {
@@ -560,10 +568,9 @@ export fn skip_braced_body(tokens: Array[Token], pos: Int) -> Int {
   }
 }
 
-/// Parse `Bound + Bound2 + ...` (one type parameter's bound trait names) in a
-/// method-level `[X: Bound]` binder. Local equivalent of parser_expr's
-/// `parse_type_param_bound_names` (not visible from parser_base).
-fn parse_method_tp_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
+/// Parse `Bound + Bound2 + ...` trait references for a bounded type parameter.
+// Trait-bound names are references, not source binders.
+fn parse_trait_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
   let b = ArrayBuilder::new()
   let mut p = pos
   let mut done = false
@@ -587,11 +594,10 @@ fn parse_method_tp_bound_names(tokens: Array[Token], pos: Int) -> (Array[String]
   (ArrayBuilder::freeze(b), p)
 }
 
-/// Parse a method-level `[X: Bound, Y, ...]` binder (the first param name token
-/// is at `pos`, the `[` already consumed). Local equivalent of parser_expr's
-/// `parse_let_type_params`. Returns (type-param names, per-param bounds, next
-/// position after `]`).
-fn parse_method_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+/// Parse a `[X: Bound, Y, ...]` binder after `[`. `separator_error` preserves
+/// each caller's existing diagnostic; `allow_bounds = false` leaves `:` for
+/// that separator diagnostic instead of accepting a bound.
+fn parse_bounded_type_params_with_binder_context(tokens: Array[Token], pos: Int, allow_bounds: Bool, separator_error: String, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let names = ArrayBuilder::new()
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -605,10 +611,12 @@ fn parse_method_type_params(tokens: Array[Token], pos: Int) -> (Array[String], A
         ArrayBuilder::push(names, name)
         p = p + 1
         match peek(tokens, p) {
-          TColon => {
-            let (bound_names, next) = parse_method_tp_bound_names(tokens, p + 1)
+          TColon => if allow_bounds {
+            let (bound_names, next) = parse_trait_bound_names(tokens, p + 1)
             ArrayBuilder::push(bounds, (name, bound_names))
             p = next
+          } else {
+            ()
           },
           _ => ()
         }
@@ -620,7 +628,7 @@ fn parse_method_type_params(tokens: Array[Token], pos: Int) -> (Array[String], A
             p = p + 1
             break
           },
-          _ => throw("expected ',' or ']' in method type params")
+          _ => throw(separator_error)
         }
       },
       _ => throw("expected type parameter name or ']'")
@@ -629,7 +637,7 @@ fn parse_method_type_params(tokens: Array[Token], pos: Int) -> (Array[String], A
   (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
 }
 
-fn parse_trait_methods(tokens: Array[Token], pos: Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, Array[String], Array[(String, Array[String])])], Int) with Exception {
+fn parse_trait_methods_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, Array[String], Array[(String, Array[String])])], Int) with Exception {
   match peek(tokens, pos) {
     TLBrace => {
       let sigs_b = ArrayBuilder::new()
@@ -652,7 +660,7 @@ fn parse_trait_methods(tokens: Array[Token], pos: Int) -> (Array[(String, Array[
             // trait method only (rank-1 method generics, #684). The impl never
             // repeats it; the desugar reattaches it to the impl's free function.
             let (mtparams, mtbounds, after_binder) = match peek(tokens, after_colon) {
-              TLBracket => parse_method_type_params(tokens, after_colon + 1),
+              TLBracket => parse_bounded_type_params_with_binder_context(tokens, after_colon + 1, true, "expected ',' or ']' in method type params", context),
               _ => (_no_tp(), _no_tb(), after_colon)
             }
             let (params, after_method_params) = match peek(tokens, after_binder) {
@@ -687,7 +695,7 @@ fn parse_trait_methods(tokens: Array[Token], pos: Int) -> (Array[(String, Array[
   }
 }
 
-fn parse_trait_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+export fn parse_trait_stmt_with_binder_context(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   let empty_strings = Array::slice([
     "_"
   ], 0, 0)
@@ -696,7 +704,7 @@ fn parse_trait_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, In
       // Retain the declared bare header names while preserving the existing
       // accepting grammar: parse_tparam_names still skips non-name header
       // details such as bounds rather than giving them new semantics.
-      let (tparams, after_name) = parse_tparam_names(tokens, pos + 1)
+      let (tparams, after_name) = parse_tparam_names_with_binder_context(tokens, pos + 1, context)
       match peek(tokens, after_name) {
         TColon => {
           let supers = empty_strings
@@ -721,11 +729,11 @@ fn parse_trait_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, In
             }
           }
           let np = p
-          let (methods, method_gens, body_end) = parse_trait_methods(tokens, np)
+          let (methods, method_gens, body_end) = parse_trait_methods_with_binder_context(tokens, np, context)
           (STrait(exported, name, supers, methods, method_gens, tparams), body_end)
         },
         _ => {
-          let (methods, method_gens, body_end) = parse_trait_methods(tokens, after_name)
+          let (methods, method_gens, body_end) = parse_trait_methods_with_binder_context(tokens, after_name, context)
           (STrait(exported, name, empty_strings, methods, method_gens, tparams), body_end)
         }
       }
@@ -734,6 +742,9 @@ fn parse_trait_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, In
   }
 }
 
+fn parse_trait_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+  parse_trait_stmt_with_binder_context(tokens, pos, exported, None)
+}
 fn is_expr_end_token(tok: Token) -> Bool {
   match tok {
     TInt(_) => true,
@@ -772,7 +783,7 @@ fn is_non_pipe_infix(tok: Token) -> Bool {
   }
 }
 
-fn parse_import_item(tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int) with Exception {
+export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Option[String]), Int) with Exception {
   let parse_import_name: (Int) -> ((String, Option[String]), Int) with Exception = (name_pos) -> {
     match peek(tokens, name_pos) {
       TIdent(name) => {
@@ -803,13 +814,16 @@ fn parse_import_item(tokens: Array[Token], pos: Int) -> ((String, Option[String]
   }
 }
 
+fn parse_import_item(tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int) with Exception {
+  parse_import_item_with_binder_context(tokens, pos, None)
+}
 fn empty_import_items() -> Array[(String, Option[String])] {
   Array::slice([
     ("_", None)
   ], 0, 0)
 }
 
-fn parse_binding_name(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+export fn parse_binding_name_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (String, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TDoubleColon => match peek(tokens, pos + 2) {
@@ -822,6 +836,9 @@ fn parse_binding_name(tokens: Array[Token], pos: Int) -> (String, Int) with Exce
   }
 }
 
+fn parse_binding_name(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+  parse_binding_name_with_binder_context(tokens, pos, None)
+}
 export fn collect_import_path(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with Exception {
   match peek(tokens, pos) {
     TLBrace => (acc, pos),
@@ -891,7 +908,7 @@ fn skip_bracketed_args(tokens: Array[Token], pos: Int) -> Int {
 /// (returning ([], pos) when there is no bracket). Mirrors parse_enum_stmt's
 /// inline collector: only depth-1 identifiers in name position are kept, so a
 /// bound like `[T: Eq]` still records just `T`.
-fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) {
+export fn parse_tparam_names_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Int) {
   match peek(tokens, pos) {
     TLBracket => {
       let b = ArrayBuilder::new()
@@ -933,6 +950,10 @@ fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) {
       ""
     ], 0, 0), pos)
   }
+}
+
+fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) {
+  parse_tparam_names_with_binder_context(tokens, pos, None)
 }
 
 /// #1340 (ADR-0071): capture a generic row item's bracketed type-argument
@@ -1483,7 +1504,7 @@ fn optional_param_type(ty: TypeExpr, is_optional: Bool) -> TypeExpr {
   }
 }
 
-fn parse_one_param(tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]), Int) with Exception {
+fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Option[TypeExpr]), Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TTilde => {
@@ -1550,14 +1571,14 @@ fn parse_one_param(tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]
   }
 }
 
-fn parse_param_cont(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[TypeExpr])]) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
+fn parse_param_cont_with_binder_context(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[TypeExpr])], context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRParen => (ArrayBuilder::freeze(b), pos + 2),
       _ => {
-        let (p, pn) = parse_one_param(tokens, pos + 1)
+        let (p, pn) = parse_one_param_with_binder_context(tokens, pos + 1, context)
         ArrayBuilder::push(b, p)
-        parse_param_cont(tokens, pn, b)
+        parse_param_cont_with_binder_context(tokens, pn, b, context)
       }
     },
     TRParen => (ArrayBuilder::freeze(b), pos + 1),
@@ -1568,19 +1589,22 @@ fn parse_param_cont(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Opt
   }
 }
 
-fn parse_param_list(tokens: Array[Token], pos: Int) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
+export fn parse_param_list_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
   match peek(tokens, pos) {
     TRParen => (empty_params(), pos + 1),
     _ => {
-      let (f, fn1) = parse_one_param(tokens, pos)
+      let (f, fn1) = parse_one_param_with_binder_context(tokens, pos, context)
       let b = ArrayBuilder::new()
       ArrayBuilder::push(b, f)
-      parse_param_cont(tokens, fn1, b)
+      parse_param_cont_with_binder_context(tokens, fn1, b, context)
     }
   }
 }
 
-fn parse_struct_field(tokens: Array[Token], pos: Int) -> ((String, TypeExpr), Bool, Int) with Exception {
+fn parse_param_list(tokens: Array[Token], pos: Int) -> (Array[(String, Option[TypeExpr])], Int) with Exception {
+  parse_param_list_with_binder_context(tokens, pos, None)
+}
+export fn parse_struct_field_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, TypeExpr), Bool, Int) with Exception {
   let (is_mut, p) = match peek(tokens, pos) {
     TMut => (true, pos + 1),
     _ => (false, pos)
@@ -1595,6 +1619,9 @@ fn parse_struct_field(tokens: Array[Token], pos: Int) -> ((String, TypeExpr), Bo
   }
 }
 
+fn parse_struct_field(tokens: Array[Token], pos: Int) -> ((String, TypeExpr), Bool, Int) with Exception {
+  parse_struct_field_with_binder_context(tokens, pos, None)
+}
 fn is_lambda_start_impl(tokens: Array[Token], pos: Int, depth: Int, bdepth: Int, has_colon: Bool) -> Bool {
   match peek(tokens, pos) {
     // A colon only signals an annotated lambda param when it sits directly
@@ -1636,7 +1663,7 @@ fn parse_ctor_types_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExp
   }
 }
 
-fn parse_enum_ctor(tokens: Array[Token], pos: Int) -> ((String, Array[TypeExpr]), Int) with Exception {
+fn parse_enum_ctor_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Array[TypeExpr]), Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TLParen => match peek(tokens, pos + 2) {
@@ -1655,14 +1682,14 @@ fn parse_enum_ctor(tokens: Array[Token], pos: Int) -> ((String, Array[TypeExpr])
   }
 }
 
-fn parse_enum_ctors_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Array[TypeExpr])]) -> (Array[(String, Array[TypeExpr])], Int) with Exception {
+fn parse_enum_ctors_rest_with_binder_context(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Array[TypeExpr])], context: Option[ParserBinderContext]) -> (Array[(String, Array[TypeExpr])], Int) with Exception {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), pos + 2),
       _ => {
-        let (ctor, next) = parse_enum_ctor(tokens, pos + 1)
+        let (ctor, next) = parse_enum_ctor_with_binder_context(tokens, pos + 1, context)
         ArrayBuilder::push(b, ctor)
-        parse_enum_ctors_rest(tokens, next, b)
+        parse_enum_ctors_rest_with_binder_context(tokens, next, b, context)
       }
     },
     // 0.3.0 redundant-syntax removal: ',' is no longer a declaration-body
@@ -1674,19 +1701,19 @@ fn parse_enum_ctors_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String
   }
 }
 
-fn parse_enum_ctors(tokens: Array[Token], pos: Int) -> (Array[(String, Array[TypeExpr])], Int) with Exception {
+fn parse_enum_ctors_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Array[TypeExpr])], Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (empty_ctors(), pos + 1),
     _ => {
-      let (first, next) = parse_enum_ctor(tokens, pos)
+      let (first, next) = parse_enum_ctor_with_binder_context(tokens, pos, context)
       let b = ArrayBuilder::new()
       ArrayBuilder::push(b, first)
-      parse_enum_ctors_rest(tokens, next, b)
+      parse_enum_ctors_rest_with_binder_context(tokens, next, b, context)
     }
   }
 }
 
-fn parse_enum_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+export fn parse_enum_stmt_with_binder_context(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => {
       let (params, after_name) = match peek(tokens, pos + 1) {
@@ -1728,7 +1755,7 @@ fn parse_enum_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int
         ], 0, 0), pos + 1)
       }
       let br = expect_tk(tokens, after_name, "{")
-      let (ctors, end) = parse_enum_ctors(tokens, br);
+      let (ctors, end) = parse_enum_ctors_with_binder_context(tokens, br, context);
       let (derives, final_pos) = parse_derive_names(tokens, end)
       (SEnum(exported, name, params, ctors, derives), final_pos)
     },
@@ -1736,7 +1763,10 @@ fn parse_enum_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int
   }
 }
 
-fn parse_suberror_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+fn parse_enum_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+  parse_enum_stmt_with_binder_context(tokens, pos, exported, None)
+}
+export fn parse_suberror_stmt_with_binder_context(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TLParen => match peek(tokens, pos + 2) {
@@ -1756,7 +1786,7 @@ fn parse_suberror_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt,
         }
       },
       TLBrace => {
-        let (ctors, end) = parse_enum_ctors(tokens, pos + 2);
+        let (ctors, end) = parse_enum_ctors_with_binder_context(tokens, pos + 2, context);
         (SSuberror(exported, name, ctors), end)
       },
       _ => throw("expected '(' or '{' after suberror name")
@@ -1765,71 +1795,12 @@ fn parse_suberror_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt,
   }
 }
 
-fn parse_impl_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
-  let b = ArrayBuilder::new()
-  let mut p = pos
-  let mut done = false
-  while !done {
-    match peek(tokens, p) {
-      TIdent(name) => {
-        ArrayBuilder::push(b, name)
-        p = p + 1
-        match peek(tokens, p) {
-          TPlus => {
-            p = p + 1
-          },
-          _ => {
-            done = true
-          }
-        }
-      },
-      _ => throw("expected trait bound name")
-    }
-  }
-  (ArrayBuilder::freeze(b), p)
+fn parse_suberror_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+  parse_suberror_stmt_with_binder_context(tokens, pos, exported, None)
 }
-
-fn parse_impl_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
-  let names = ArrayBuilder::new()
-  let bounds = ArrayBuilder::new()
-  let mut p = pos
-  while true {
-    match peek(tokens, p) {
-      TRBracket => {
-        p = p + 1
-        break
-      },
-      TIdent(name) => {
-        ArrayBuilder::push(names, name)
-        p = p + 1
-        match peek(tokens, p) {
-          TColon => {
-            let (bound_names, next) = parse_impl_bound_names(tokens, p + 1)
-            ArrayBuilder::push(bounds, (name, bound_names))
-            p = next
-          },
-          _ => ()
-        }
-        match peek(tokens, p) {
-          TComma => {
-            p = p + 1
-          },
-          TRBracket => {
-            p = p + 1
-            break
-          },
-          _ => throw("expected ',' or ']' in impl type params")
-        }
-      },
-      _ => throw("expected type parameter name or ']'")
-    }
-  }
-  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
-}
-
-fn parse_impl_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exception {
+fn parse_impl_stmt_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   let (type_params, type_bounds, after_tp) = match peek(tokens, pos) {
-    TLBracket => parse_impl_type_params(tokens, pos + 1),
+    TLBracket => parse_bounded_type_params_with_binder_context(tokens, pos + 1, true, "expected ',' or ']' in impl type params", context),
     _ => (_no_tp(), _no_tb(), pos)
   }
   match peek(tokens, after_tp) {
@@ -1851,41 +1822,15 @@ fn parse_impl_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exception
   }
 }
 
-fn parse_type_params_list(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
-  let b = ArrayBuilder::new()
-  let mut p = pos
-  while true {
-    match peek(tokens, p) {
-      TRBracket => {
-        p = p + 1
-        break
-      },
-      TIdent(name) => {
-        ArrayBuilder::push(b, name)
-        p = p + 1
-        match peek(tokens, p) {
-          TComma => {
-            p = p + 1
-          },
-          TRBracket => {
-            p = p + 1
-            break
-          },
-          _ => throw("expected ',' or ']' in type params")
-        }
-      },
-      _ => throw("expected type parameter name or ']'")
-    }
-  }
-  (ArrayBuilder::freeze(b), p)
-}
-
 /// Parse effect declaration: effect Name[T] { Op(Args) -> Ret; ... }
-fn parse_effect_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+export fn parse_effect_stmt_with_binder_context(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => {
       let (type_params, after_params) = match peek(tokens, pos + 1) {
-        TLBracket => parse_type_params_list(tokens, pos + 2),
+        TLBracket => {
+          let (names, _, next) = parse_bounded_type_params_with_binder_context(tokens, pos + 2, false, "expected ',' or ']' in type params", context)
+          (names, next)
+        },
         _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos + 1)
       }
       let br = expect_tk(tokens, after_params, "{")
@@ -1929,11 +1874,17 @@ fn parse_effect_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, I
   }
 }
 
-fn parse_type_alias_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+fn parse_effect_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+  parse_effect_stmt_with_binder_context(tokens, pos, exported, None)
+}
+export fn parse_type_alias_stmt_with_binder_context(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => {
       let (params, after_name) = match peek(tokens, pos + 1) {
-        TLBracket => parse_type_params_list(tokens, pos + 2),
+        TLBracket => {
+          let (names, _, next) = parse_bounded_type_params_with_binder_context(tokens, pos + 2, false, "expected ',' or ']' in type params", context)
+          (names, next)
+        },
         _ => (Array::slice([
           ""
         ], 0, 0), pos + 1)
@@ -1946,10 +1897,16 @@ fn parse_type_alias_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stm
   }
 }
 
-fn parse_impl_stmt_dispatch(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exception {
-  parse_impl_stmt(tokens, pos)
+fn parse_type_alias_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+  parse_type_alias_stmt_with_binder_context(tokens, pos, exported, None)
+}
+export fn parse_impl_stmt_dispatch_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  parse_impl_stmt_with_binder_context(tokens, pos, context)
 }
 
+fn parse_impl_stmt_dispatch(tokens: Array[Token], pos: Int) -> (Stmt, Int) with Exception {
+  parse_impl_stmt_dispatch_with_binder_context(tokens, pos, None)
+}
 fn push_mut_name(mb: ArrayBuilder[String], field: (String, TypeExpr), is_mut: Bool) -> Unit {
   if is_mut {
     let (fname, _) = field
@@ -1959,15 +1916,15 @@ fn push_mut_name(mb: ArrayBuilder[String], field: (String, TypeExpr), is_mut: Bo
   }
 }
 
-fn parse_struct_fields_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)], mb: ArrayBuilder[String]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
+fn parse_struct_fields_rest_with_binder_context(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)], mb: ArrayBuilder[String], context: Option[ParserBinderContext]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 2),
       _ => {
-        let (field, is_mut, next) = parse_struct_field(tokens, pos + 1)
+        let (field, is_mut, next) = parse_struct_field_with_binder_context(tokens, pos + 1, context)
         ArrayBuilder::push(b, field)
         push_mut_name(mb, field, is_mut)
-        parse_struct_fields_rest(tokens, next, b, mb)
+        parse_struct_fields_rest_with_binder_context(tokens, next, b, mb, context)
       }
     },
     // 0.3.0 redundant-syntax removal: ',' is no longer a declaration-body
@@ -1978,30 +1935,30 @@ fn parse_struct_fields_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(Str
   }
 }
 
-fn parse_struct_fields(tokens: Array[Token], pos: Int) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
+fn parse_struct_fields_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (empty_fields(), Array::slice([
       ""
     ], 0, 0), pos + 1),
     _ => {
-      let (first, is_mut, next) = parse_struct_field(tokens, pos)
+      let (first, is_mut, next) = parse_struct_field_with_binder_context(tokens, pos, context)
       let b = ArrayBuilder::new()
       let mb = ArrayBuilder::new()
       ArrayBuilder::push(b, first)
       push_mut_name(mb, first, is_mut)
-      parse_struct_fields_rest(tokens, next, b, mb)
+      parse_struct_fields_rest_with_binder_context(tokens, next, b, mb, context)
     }
   }
 }
 
-fn parse_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+export fn parse_struct_stmt_with_binder_context(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => {
       // #829: keep the `[T]` type-parameter names (previously skipped and
       // discarded) so the checker can instantiate generic struct literals.
-      let (tparams, after_name) = parse_tparam_names(tokens, pos + 1)
+      let (tparams, after_name) = parse_tparam_names_with_binder_context(tokens, pos + 1, context)
       let br = expect_tk(tokens, after_name, "{")
-      let (fields, mut_names, end) = parse_struct_fields(tokens, br);
+      let (fields, mut_names, end) = parse_struct_fields_with_binder_context(tokens, br, context);
       let (derives, final_pos) = parse_derive_names(tokens, end)
       (SStruct(exported, name, fields, derives, mut_names, tparams), final_pos)
     },
@@ -2009,6 +1966,9 @@ fn parse_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, I
   }
 }
 
+fn parse_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with Exception {
+  parse_struct_stmt_with_binder_context(tokens, pos, exported, None)
+}
 //# Misc
 
 export {
@@ -2036,117 +1996,34 @@ export {
   mode_match,
   mode_while,
   parse_binding_name,
+  parse_binding_name_with_binder_context,
   parse_derive_names,
   parse_effect_row,
   parse_effect_stmt,
+  parse_effect_stmt_with_binder_context,
   parse_enum_stmt,
+  parse_enum_stmt_with_binder_context,
   parse_impl_stmt_dispatch,
+  parse_impl_stmt_dispatch_with_binder_context,
   parse_import_item,
+  parse_import_item_with_binder_context,
   parse_param_list,
+  parse_param_list_with_binder_context,
   parse_pattern,
+  parse_pattern_with_binder_context,
   parse_struct_field,
+  parse_struct_field_with_binder_context,
   parse_struct_stmt,
+  parse_struct_stmt_with_binder_context,
   parse_suberror_stmt,
+  parse_suberror_stmt_with_binder_context,
   parse_tparam_names,
+  parse_tparam_names_with_binder_context,
   parse_trait_stmt,
+  parse_trait_stmt_with_binder_context,
   parse_type,
   parse_type_alias_stmt,
-  parse_type_impl,
-  peek,
-  reject_retired_effect_label,
-  skip_derive,
-  skip_semi,
-  tk_name
-}
-
-export {
-  _no_tb,
-  _no_tp,
-  collect_effect_names,
-  collect_import_path,
-  collect_row_item_targs,
-  empty_arms,
-  empty_exprs,
-  empty_fields,
-  empty_import_items,
-  empty_params,
-  empty_pats,
-  empty_type_exprs,
-  expect_tk,
-  is_expr_end_token,
-  is_lambda_start,
-  is_non_pipe_infix,
-  is_tk,
-  mode_block,
-  mode_for_in,
-  mode_handle,
-  mode_if,
-  mode_match,
-  mode_while,
-  parse_binding_name,
-  parse_derive_names,
-  parse_effect_row,
-  parse_effect_stmt,
-  parse_enum_stmt,
-  parse_impl_stmt_dispatch,
-  parse_import_item,
-  parse_param_list,
-  parse_pattern,
-  parse_struct_field,
-  parse_struct_stmt,
-  parse_suberror_stmt,
-  parse_tparam_names,
-  parse_trait_stmt,
-  parse_type,
-  parse_type_alias_stmt,
-  parse_type_impl,
-  peek,
-  reject_retired_effect_label,
-  skip_derive,
-  skip_semi,
-  tk_name
-}
-
-export {
-  _no_tb,
-  _no_tp,
-  collect_effect_names,
-  collect_import_path,
-  collect_row_item_targs,
-  empty_arms,
-  empty_exprs,
-  empty_fields,
-  empty_import_items,
-  empty_params,
-  empty_pats,
-  empty_type_exprs,
-  expect_tk,
-  is_expr_end_token,
-  is_lambda_start,
-  is_non_pipe_infix,
-  is_tk,
-  mode_block,
-  mode_for_in,
-  mode_handle,
-  mode_if,
-  mode_match,
-  mode_while,
-  parse_binding_name,
-  parse_derive_names,
-  parse_effect_row,
-  parse_effect_stmt,
-  parse_enum_stmt,
-  parse_impl_stmt_dispatch,
-  parse_import_item,
-  parse_param_list,
-  parse_pattern,
-  parse_struct_field,
-  parse_struct_stmt,
-  parse_suberror_stmt,
-  parse_tparam_names,
-  parse_trait_stmt,
-  parse_type,
-  parse_type_alias_stmt,
+  parse_type_alias_stmt_with_binder_context,
   parse_type_impl,
   peek,
   reject_retired_effect_label,

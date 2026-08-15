@@ -14,6 +14,7 @@ import ./parser_base.vibe {
   is_lambda_start,
   parse_effect_row,
   parse_param_list,
+  parse_param_list_with_binder_context,
   parse_type_impl,
   peek,
   tk_name
@@ -21,6 +22,10 @@ import ./parser_base.vibe {
 
 import ./token.vibe {
   Token
+}
+
+import ./parser_binder_context.vibe {
+  ParserBinderContext
 }
 
 import ./lexer.vibe {
@@ -45,7 +50,7 @@ fn map_located_off(off: Int, f: (Int) -> Int) -> Int {
   }
 }
 
-fn map_expr_offsets(expr: Expr, f: (Int) -> Int) -> Expr {
+fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderContext]) -> Expr {
   {
     match expr {
       EInt(_) => expr,
@@ -54,64 +59,57 @@ fn map_expr_offsets(expr: Expr, f: (Int) -> Int) -> Expr {
       EBool(_) => expr,
       EUnit => expr,
       EIdent(name, off) => EIdent(name, map_located_off(off, f)),
-      ETuple(items) => ETuple(map_exprs(items, f)),
-      EArray(items) => EArray(map_exprs(items, f)),
-      ERecord(rn, fields, targs) => ERecord(rn, map_field_exprs(fields, f), targs),
-      EIf(c, t, e) => EIf(map_expr_offsets(c, f), map_expr_offsets(t, f), map_expr_offsets(e, f)),
-      ELet(n, v, b, soff) => ELet(n, map_expr_offsets(v, f), map_expr_offsets(b, f), map_located_off(soff, f)),
-      ELetRec(n, v, b) => ELetRec(n, map_expr_offsets(v, f), map_expr_offsets(b, f)),
-      ELetMut(n, v, b, soff) => ELetMut(n, map_expr_offsets(v, f), map_expr_offsets(b, f), map_located_off(soff, f)),
-      EAssign(n, v, b) => EAssign(n, map_expr_offsets(v, f), map_expr_offsets(b, f)),
-      EAssignOp(n, op, v, b) => EAssignOp(n, op, map_expr_offsets(v, f), map_expr_offsets(b, f)),
-      ESeq(a, b) => ESeq(map_expr_offsets(a, f), map_expr_offsets(b, f)),
-      EMatch(s, arms) => EMatch(map_expr_offsets(s, f), map_arm_exprs(arms, f)),
-      EHandle(s, arms) => EHandle(map_expr_offsets(s, f), map_arm_exprs(arms, f)),
-      EWhile(c, b) => EWhile(map_expr_offsets(c, f), map_expr_offsets(b, f)),
-      ELoop(params, b) => ELoop(map_loop_param_exprs(params, f), map_expr_offsets(b, f)),
-      EForIn(n, idx, it, b) => EForIn(n, idx, map_expr_offsets(it, f), map_expr_offsets(b, f)),
-      ECall(callee, args, off) => ECall(map_expr_offsets(callee, f), map_exprs(args, f), map_located_off(off, f)),
-      EBinOp(op, l, r) => EBinOp(op, map_expr_offsets(l, f), map_expr_offsets(r, f)),
-      EUnaryOp(op, e) => EUnaryOp(op, map_expr_offsets(e, f)),
-      EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, map_expr_offsets(body, f)),
-      EDot(e, field, off, fdoff) => EDot(map_expr_offsets(e, f), field, map_located_off(off, f), map_located_off(fdoff, f)),
-      ELabeledArg(l, n, v) => ELabeledArg(l, n, map_expr_offsets(v, f)),
-      EReturn(e) => EReturn(map_expr_offsets(e, f)),
+      ETuple(items) => ETuple(map_exprs(items, f, context)),
+      EArray(items) => EArray(map_exprs(items, f, context)),
+      ERecord(rn, fields, targs) => ERecord(rn, map_named_exprs(fields, f, context), targs),
+      EIf(c, t, e) => EIf(map_expr_offsets(c, f, context), map_expr_offsets(t, f, context), map_expr_offsets(e, f, context)),
+      ELet(n, v, b, soff) => ELet(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context), map_located_off(soff, f)),
+      ELetRec(n, v, b) => ELetRec(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context)),
+      ELetMut(n, v, b, soff) => ELetMut(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context), map_located_off(soff, f)),
+      EAssign(n, v, b) => EAssign(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context)),
+      ESeq(a, b) => ESeq(map_expr_offsets(a, f, context), map_expr_offsets(b, f, context)),
+      EMatch(s, arms) => EMatch(map_expr_offsets(s, f, context), map_arm_exprs(arms, f, context)),
+      EHandle(s, arms) => EHandle(map_expr_offsets(s, f, context), map_arm_exprs(arms, f, context)),
+      EWhile(c, b) => EWhile(map_expr_offsets(c, f, context), map_expr_offsets(b, f, context)),
+      ELoop(params, b) => ELoop(map_named_exprs(params, f, context), map_expr_offsets(b, f, context)),
+      EForIn(n, idx, it, b) => EForIn(n, idx, map_expr_offsets(it, f, context), map_expr_offsets(b, f, context)),
+      ECall(callee, args, off) => ECall(map_expr_offsets(callee, f, context), map_exprs(args, f, context), map_located_off(off, f)),
+      EBinOp(op, l, r) => EBinOp(op, map_expr_offsets(l, f, context), map_expr_offsets(r, f, context)),
+      EUnaryOp(op, e) => EUnaryOp(op, map_expr_offsets(e, f, context)),
+      EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, map_expr_offsets(body, f, context)),
+      EDot(e, field, off, fdoff) => EDot(map_expr_offsets(e, f, context), field, map_located_off(off, f), map_located_off(fdoff, f)),
+      ELabeledArg(l, n, v) => ELabeledArg(l, n, map_expr_offsets(v, f, context)),
+      EReturn(e) => EReturn(map_expr_offsets(e, f, context)),
       EBreak(opt) => match opt {
-        Some(v) => EBreak(Some(map_expr_offsets(v, f))),
+        Some(v) => EBreak(Some(map_expr_offsets(v, f, context))),
         None => expr
       },
-      EContinue(args) => EContinue(map_exprs(args, f)),
-      EMap(fields) => EMap(map_field_exprs(fields, f)),
-      ESpread(e) => ESpread(map_expr_offsets(e, f)),
+      EContinue(args) => EContinue(map_exprs(args, f, context)),
+      EMap(fields) => EMap(map_named_exprs(fields, f, context)),
+      ESpread(e) => ESpread(map_expr_offsets(e, f, context)),
       EStringInterp(_) => expr
     }
   }
 }
 
-fn map_exprs(items: Array[Expr], f: (Int) -> Int) -> Array[Expr] {
+fn map_exprs(items: Array[Expr], f: (Int) -> Int, context: Option[ParserBinderContext]) -> Array[Expr] {
   for it in items {
-    map_expr_offsets(it, f)
+    map_expr_offsets(it, f, context)
   }
 }
 
-fn map_field_exprs(fields: Array[(String, Expr)], f: (Int) -> Int) -> Array[(String, Expr)] {
+fn map_named_exprs(fields: Array[(String, Expr)], f: (Int) -> Int, context: Option[ParserBinderContext]) -> Array[(String, Expr)] {
   for fld in fields {
     let (n, v) = fld
-    (n, map_expr_offsets(v, f))
+    (n, map_expr_offsets(v, f, context))
   }
 }
 
-fn map_arm_exprs(arms: Array[(Pat, Expr)], f: (Int) -> Int) -> Array[(Pat, Expr)] {
+fn map_arm_exprs(arms: Array[(Pat, Expr)], f: (Int) -> Int, context: Option[ParserBinderContext]) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, e) = a
-    (p, map_expr_offsets(e, f))
-  }
-}
-
-fn map_loop_param_exprs(params: Array[(String, Expr)], f: (Int) -> Int) -> Array[(String, Expr)] {
-  for p in params {
-    let (n, init) = p
-    (n, map_expr_offsets(init, f))
+    (p, map_expr_offsets(e, f, context))
   }
 }
 
@@ -170,7 +168,7 @@ fn remap_frag_off(off: Int, outer_starts: Array[Int], frag_starts: Array[Int], f
 /// fragment base), so identifiers referenced inside `\{...}` carry their real
 /// file position for any fragment shape (leading spaces, multi-token
 /// expressions), not just a single token at the fragment start.
-fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Array[Int], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> Expr with Exception {
+fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Array[Int], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> Expr with Exception {
   let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
     ECall(EIdent("String::concat", -1), [
       a,
@@ -197,14 +195,14 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
       }
     } else {
       let (ftoks, fstarts, _fends) = lex_with_offsets(part)
-      let (pe0, _) = parse_recur(ftoks, 0, 0)
+      let (pe0, _) = parse_recur(ftoks, 0, 0, context)
       let frag_off = if i < Array::length(offsets) {
         Array::get(offsets, i)
       } else {
         -1
       }
       let pe = if frag_off >= 0 {
-        map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off))
+        map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off), context)
       } else {
         pe0
       }
@@ -253,10 +251,10 @@ fn join_loop_params(param_names: Array[String]) -> String {
 /// infinite loop, the same failure mode #808 fixed for match arms), and too
 /// few updated a positional PREFIX of the parameters and left the rest
 /// unchanged, which no document ever specified.
-fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr with Exception {
+fn desugar_loop_body(expr: Expr, param_names: Array[String], context: Option[ParserBinderContext]) -> Expr with Exception {
   match expr {
     EBreak(opt) => match opt {
-      Some(val) => EAssign("__loop_result", desugar_loop_body(val, param_names), EBreak(None)),
+      Some(val) => EAssign("__loop_result", desugar_loop_body(val, param_names, context), EBreak(None)),
       None => EBreak(None)
     },
     EContinue(args) => {
@@ -279,7 +277,7 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr with Except
           }
           let mut ci2 = nargs - 1
           while ci2 >= 0 {
-            result = ELet(String::concat("__lt", __to_string(ci2)), desugar_loop_body(Array::get(args, ci2), param_names), result, -1)
+            result = ELet(String::concat("__lt", __to_string(ci2)), desugar_loop_body(Array::get(args, ci2), param_names, context), result, -1)
             ci2 = ci2 - 1
           }
           result
@@ -289,11 +287,11 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr with Except
     EWhile(_, _) => expr,
     ELoop(_, _) => expr,
     EFn(_, _, _, _, _, _) => expr,
-    EIf(c, t, e) => EIf(desugar_loop_body(c, param_names), desugar_loop_body(t, param_names), desugar_loop_body(e, param_names)),
-    ELet(n, v, b, soff) => ELet(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names), soff),
-    ELetMut(n, v, b, soff) => ELetMut(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names), soff),
-    ESeq(a, b) => ESeq(desugar_loop_body(a, param_names), desugar_loop_body(b, param_names)),
-    EAssign(n, v, c) => EAssign(n, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
+    EIf(c, t, e) => EIf(desugar_loop_body(c, param_names, context), desugar_loop_body(t, param_names, context), desugar_loop_body(e, param_names, context)),
+    ELet(n, v, b, soff) => ELet(n, desugar_loop_body(v, param_names, context), desugar_loop_body(b, param_names, context), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, desugar_loop_body(v, param_names, context), desugar_loop_body(b, param_names, context), soff),
+    ESeq(a, b) => ESeq(desugar_loop_body(a, param_names, context), desugar_loop_body(b, param_names, context)),
+    EAssign(n, v, c) => EAssign(n, desugar_loop_body(v, param_names, context), desugar_loop_body(c, param_names, context)),
     // #808: recurse into match/handle arm bodies so `break v` / `continue(args)`
     // inside an arm get the loop desugar (the raw EBreak/EContinue otherwise
     // reach codegen with their payloads dropped — `continue(i + 1)` looped
@@ -301,43 +299,43 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr with Except
     // was a workaround for the retired MoonBit host (#594) crashing on
     // (Pat, Expr) tuple ops; the selfhost parser handles arm tuples fine
     // (same idiom as expand_interp.vibe). Patterns are left untouched.
-    EMatch(s, arms) => EMatch(desugar_loop_body(s, param_names), for a in arms {
+    EMatch(s, arms) => EMatch(desugar_loop_body(s, param_names, context), for a in arms {
       let (p, ex) = a
-      (p, desugar_loop_body(ex, param_names))
+      (p, desugar_loop_body(ex, param_names, context))
     }),
-    EHandle(body, arms) => EHandle(desugar_loop_body(body, param_names), for a in arms {
+    EHandle(body, arms) => EHandle(desugar_loop_body(body, param_names, context), for a in arms {
       let (p, ex) = a
-      (p, desugar_loop_body(ex, param_names))
+      (p, desugar_loop_body(ex, param_names, context))
     }),
-    EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names), desugar_loop_body(r, param_names)),
-    ECall(callee, args, off) => ECall(desugar_loop_body(callee, param_names), for arg in args {
-      desugar_loop_body(arg, param_names)
+    EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names, context), desugar_loop_body(r, param_names, context)),
+    ECall(callee, args, off) => ECall(desugar_loop_body(callee, param_names, context), for arg in args {
+      desugar_loop_body(arg, param_names, context)
     }, off),
     ETuple(items) => ETuple(for item in items {
-      desugar_loop_body(item, param_names)
+      desugar_loop_body(item, param_names, context)
     }),
     EArray(items) => EArray(for item in items {
-      desugar_loop_body(item, param_names)
+      desugar_loop_body(item, param_names, context)
     }),
     ERecord(name, fields, targs) => ERecord(name, for field in fields {
       let (field_name, value) = field
-      (field_name, desugar_loop_body(value, param_names))
+      (field_name, desugar_loop_body(value, param_names, context))
     }, targs),
     EMap(fields) => EMap(for field in fields {
       let (field_name, value) = field
-      (field_name, desugar_loop_body(value, param_names))
+      (field_name, desugar_loop_body(value, param_names, context))
     }),
-    ELabeledArg(label, name, value) => ELabeledArg(label, name, desugar_loop_body(value, param_names)),
-    ESpread(value) => ESpread(desugar_loop_body(value, param_names)),
-    ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
-    EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names)),
-    EDot(obj, field, off, fdoff) => EDot(desugar_loop_body(obj, param_names), field, off, fdoff),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
+    ELabeledArg(label, name, value) => ELabeledArg(label, name, desugar_loop_body(value, param_names, context)),
+    ESpread(value) => ESpread(desugar_loop_body(value, param_names, context)),
+    ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names, context), desugar_loop_body(b, param_names, context)),
+    EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names, context)),
+    EDot(obj, field, off, fdoff) => EDot(desugar_loop_body(obj, param_names, context), field, off, fdoff),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, desugar_loop_body(v, param_names, context), desugar_loop_body(c, param_names, context)),
     _ => expr
   }
 }
 
-fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos + 1) {
     TLParen => {
       let param_names_b = ArrayBuilder::new()
@@ -352,7 +350,7 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
           },
           TIdent(name) => {
             let eq_pos = expect_tk(tokens, cur + 1, "=")
-            let (init, next_pos) = parse_recur(tokens, eq_pos, 0)
+            let (init, next_pos) = parse_recur(tokens, eq_pos, 0, context)
             ArrayBuilder::push(param_names_b, name)
             ArrayBuilder::push(param_inits_b, init)
             match peek(tokens, next_pos) {
@@ -370,11 +368,11 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
         }
       }
       let body_pos = expect_tk(tokens, cur, "{")
-      let (body, end_pos) = parse_recur(tokens, body_pos, 20)
+      let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
       // Desugar ELoop into ELetMut + EWhile
       let pnames = ArrayBuilder::freeze(param_names_b)
       let pinits = ArrayBuilder::freeze(param_inits_b)
-      let transformed_body = desugar_loop_body(body, pnames)
+      let transformed_body = desugar_loop_body(body, pnames, context)
       let while_expr = EWhile(EBool(true), transformed_body)
       let result = ELetMut("__loop_result", EInt(0), ESeq(while_expr, EIdent("__loop_result", -1)), -1)
       let mut wrapped = result
@@ -387,19 +385,19 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
     },
     _ => {
       let body_pos = expect_tk(tokens, pos + 1, "{")
-      let (body, end_pos) = parse_recur(tokens, body_pos, 20)
+      let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
       (EWhile(EBool(true), body), end_pos)
     }
   }
 }
 
-fn parse_break_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_break_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos + 1) {
     TRBrace => (EBreak(None), pos + 1),
     TSemicolon => (EBreak(None), pos + 1),
     TEof => (EBreak(None), pos + 1),
     _ => {
-      let (expr, next_pos) = parse_recur(tokens, pos + 1, 0)
+      let (expr, next_pos) = parse_recur(tokens, pos + 1, 0, context)
       (EBreak(Some(expr)), next_pos)
     }
   }
@@ -426,9 +424,9 @@ fn parse_break_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
 /// the printer's re-sugar is the one exact comparison and it now matches both
 /// (it cannot import the predicate -- @vibe/parser must not depend on the
 /// compiler package).
-fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   let open_pos = expect_tk(tokens, pos + 1, "(")
-  let (expr, next_pos) = parse_recur(tokens, open_pos, 0)
+  let (expr, next_pos) = parse_recur(tokens, open_pos, 0, context)
   let close_pos = expect_tk(tokens, next_pos, ")")
   let off = offset_at(starts, pos)
   (ECall(EIdent("perform", off), [
@@ -438,19 +436,19 @@ fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
   ], off), close_pos)
 }
 
-fn parse_return_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_return_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos + 1) {
     TRBrace => (EReturn(EUnit), pos + 1),
     TSemicolon => (EReturn(EUnit), pos + 1),
     TEof => (EReturn(EUnit), pos + 1),
     _ => {
-      let (expr, next_pos) = parse_recur(tokens, pos + 1, 0)
+      let (expr, next_pos) = parse_recur(tokens, pos + 1, 0, context)
       (EReturn(expr), next_pos)
     }
   }
 }
 
-fn parse_perform_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_perform_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos + 1) {
     TRParen => (EIdent("perform", -1), pos + 1),
     TRBracket => (EIdent("perform", -1), pos + 1),
@@ -466,7 +464,7 @@ fn parse_perform_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
       // `perform (A::Op + perform B::Op)` (#550). min_prec 10 is above the
       // highest binop precedence (9, see binop_prec), so parse_infix_loop
       // stops before consuming any operator.
-      let (arg, next_pos) = parse_recur(tokens, pos + 1, 10)
+      let (arg, next_pos) = parse_recur(tokens, pos + 1, 10, context)
       (ECall(EIdent("perform", -1), [
         arg
       ], offset_at(starts, pos)), next_pos)
@@ -474,21 +472,21 @@ fn parse_perform_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
   }
 }
 
-fn parse_array_elems_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[Expr], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Array[Expr], Int) with Exception {
+fn parse_array_elems_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[Expr], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[Expr], Int) with Exception {
   match peek(tokens, pos) {
     TComma => {
       let next_pos = pos + 1
       match peek(tokens, next_pos) {
         TRBracket => (ArrayBuilder::freeze(b), next_pos),
         TDotDotDot => {
-          let (expr, end_pos) = parse_recur(tokens, next_pos + 1, 0)
+          let (expr, end_pos) = parse_recur(tokens, next_pos + 1, 0, context)
           ArrayBuilder::push(b, ESpread(expr))
-          parse_array_elems_rest(tokens, starts, end_pos, b, parse_recur)
+          parse_array_elems_rest(tokens, starts, end_pos, b, parse_recur, context)
         },
         _ => {
-          let (expr, end_pos) = parse_recur(tokens, next_pos, 0)
+          let (expr, end_pos) = parse_recur(tokens, next_pos, 0, context)
           ArrayBuilder::push(b, expr)
-          parse_array_elems_rest(tokens, starts, end_pos, b, parse_recur)
+          parse_array_elems_rest(tokens, starts, end_pos, b, parse_recur, context)
         }
       }
     },
@@ -496,29 +494,29 @@ fn parse_array_elems_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b:
   }
 }
 
-fn parse_array_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_array_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos + 1) {
     TRBracket => (EArray(empty_exprs()), pos + 2),
     TDotDotDot => {
       let b = ArrayBuilder::new()
-      let (first, next_pos) = parse_recur(tokens, pos + 2, 0)
+      let (first, next_pos) = parse_recur(tokens, pos + 2, 0, context)
       ArrayBuilder::push(b, ESpread(first))
-      let (items, end_pos) = parse_array_elems_rest(tokens, starts, next_pos, b, parse_recur)
+      let (items, end_pos) = parse_array_elems_rest(tokens, starts, next_pos, b, parse_recur, context)
       let close_pos = expect_tk(tokens, end_pos, "]")
       (EArray(items), close_pos)
     },
     _ => {
       let b = ArrayBuilder::new()
-      let (first, next_pos) = parse_recur(tokens, pos + 1, 0)
+      let (first, next_pos) = parse_recur(tokens, pos + 1, 0, context)
       ArrayBuilder::push(b, first)
-      let (items, end_pos) = parse_array_elems_rest(tokens, starts, next_pos, b, parse_recur)
+      let (items, end_pos) = parse_array_elems_rest(tokens, starts, next_pos, b, parse_recur, context)
       let close_pos = expect_tk(tokens, end_pos, "]")
       (EArray(items), close_pos)
     }
   }
 }
 
-fn parse_comma_exprs_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[Expr], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Array[Expr], Int) with Exception {
+fn parse_comma_exprs_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[Expr], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[Expr], Int) with Exception {
   match peek(tokens, pos) {
     TComma => {
       // Allow a trailing comma before the closing `)` in tuples and call
@@ -526,9 +524,9 @@ fn parse_comma_exprs_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b:
       match peek(tokens, pos + 1) {
         TRParen => (ArrayBuilder::freeze(b), pos + 1),
         _ => {
-          let (e, next) = parse_recur(tokens, pos + 1, 0)
+          let (e, next) = parse_recur(tokens, pos + 1, 0, context)
           ArrayBuilder::push(b, e)
-          parse_comma_exprs_rest(tokens, starts, next, b, parse_recur)
+          parse_comma_exprs_rest(tokens, starts, next, b, parse_recur, context)
         }
       }
     },
@@ -536,16 +534,16 @@ fn parse_comma_exprs_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b:
   }
 }
 
-fn parse_continue_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_continue_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos + 1) {
     TLParen => {
       let b = ArrayBuilder::new()
       match peek(tokens, pos + 2) {
         TRParen => (EContinue(empty_exprs()), pos + 3),
         _ => {
-          let (first, next_pos) = parse_recur(tokens, pos + 2, 0)
+          let (first, next_pos) = parse_recur(tokens, pos + 2, 0, context)
           ArrayBuilder::push(b, first)
-          let (args, end_pos) = parse_comma_exprs_rest(tokens, starts, next_pos, b, parse_recur)
+          let (args, end_pos) = parse_comma_exprs_rest(tokens, starts, next_pos, b, parse_recur, context)
           let close_pos = expect_tk(tokens, end_pos, ")")
           (EContinue(args), close_pos)
         }
@@ -555,23 +553,23 @@ fn parse_continue_primary(tokens: Array[Token], starts: Array[Int], pos: Int, pa
   }
 }
 
-fn parse_control_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_control_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos) {
-    TLBrace => parse_recur(tokens, pos + 1, 20),
-    TIf => parse_recur(tokens, pos + 1, 21),
-    TMatch => parse_recur(tokens, pos + 1, 22),
-    THandle => parse_recur(tokens, pos + 1, 24),
-    TWhile => parse_recur(tokens, pos + 1, 23),
-    TFor => parse_recur(tokens, pos + 1, 25),
-    TTaskGroup => parse_recur(tokens, pos + 1, 26),
-    TRegion => parse_recur(tokens, pos + 1, 27),
-    TThrow => parse_throw_primary(tokens, starts, pos, parse_recur),
-    TBreak => parse_break_primary(tokens, starts, pos, parse_recur),
-    TContinue => parse_continue_primary(tokens, starts, pos, parse_recur),
+    TLBrace => parse_recur(tokens, pos + 1, 20, context),
+    TIf => parse_recur(tokens, pos + 1, 21, context),
+    TMatch => parse_recur(tokens, pos + 1, 22, context),
+    THandle => parse_recur(tokens, pos + 1, 24, context),
+    TWhile => parse_recur(tokens, pos + 1, 23, context),
+    TFor => parse_recur(tokens, pos + 1, 25, context),
+    TTaskGroup => parse_recur(tokens, pos + 1, 26, context),
+    TRegion => parse_recur(tokens, pos + 1, 27, context),
+    TThrow => parse_throw_primary(tokens, starts, pos, parse_recur, context),
+    TBreak => parse_break_primary(tokens, starts, pos, parse_recur, context),
+    TContinue => parse_continue_primary(tokens, starts, pos, parse_recur, context),
     TRaise => throw("'raise' is deprecated, use 'throw(expr)' instead"),
-    TReturn => parse_return_primary(tokens, starts, pos, parse_recur),
+    TReturn => parse_return_primary(tokens, starts, pos, parse_recur, context),
     TDo => throw("'do' is reserved; use 'while' or 'for' instead"),
-    TLoop => parse_loop_primary(tokens, starts, pos, parse_recur),
+    TLoop => parse_loop_primary(tokens, starts, pos, parse_recur, context),
     TYield => throw("'yield' is not supported"),
     TDeclare => throw("'declare' is not supported"),
     _ => {
@@ -593,7 +591,7 @@ fn parse_control_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
 /// `Name::{ left: left, right: right }` by matching a bare identifier field to
 /// an in-scope binding of the same name. Mirrors `parse_record_literal_fields`
 /// exactly so both literal forms stay in sync.
-fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(String, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Array[(String, Expr)], Int) with Exception {
+fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(String, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[(String, Expr)], Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
@@ -602,12 +600,12 @@ fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, 
         TRBrace => (EIdent(fname, -1), pos + 1),
         _ => {
           let colon_pos = expect_tk(tokens, pos + 1, ":")
-          parse_recur(tokens, colon_pos, 0)
+          parse_recur(tokens, colon_pos, 0, context)
         }
       }
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
-        TComma => parse_ctor_record_fields(tokens, starts, next_pos + 1, b, parse_recur),
+        TComma => parse_ctor_record_fields(tokens, starts, next_pos + 1, b, parse_recur, context),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
         _ => throw("expected ',' or '}' in record literal")
       }
@@ -616,6 +614,7 @@ fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, 
   }
 }
 
+// Trait-bound names are references, not binders.
 fn parse_generic_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -643,7 +642,7 @@ fn parse_generic_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Arra
 /// Parse an expression-position `[T: Bound, U]` header. This intentionally
 /// stays private to the primary-expression parser: unlike declaration headers,
 /// it is not part of the public parser contract.
-fn parse_generic_fn_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
+fn parse_generic_fn_type_params_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Array[(String, Array[String])], Int) with Exception {
   let names = ArrayBuilder::new()
   let bounds = ArrayBuilder::new()
   let mut p = pos
@@ -681,10 +680,10 @@ fn parse_generic_fn_type_params(tokens: Array[Token], pos: Int) -> (Array[String
   (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
 }
 
-fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
-  let (type_params, type_bounds, after_header) = parse_generic_fn_type_params(tokens, pos + 1)
+fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  let (type_params, type_bounds, after_header) = parse_generic_fn_type_params_with_binder_context(tokens, pos + 1, context)
   let params_pos = expect_tk(tokens, after_header, "(")
-  let (params, after_params) = parse_param_list(tokens, params_pos)
+  let (params, after_params) = parse_param_list_with_binder_context(tokens, params_pos, context)
   match peek(tokens, after_params) {
     TThinArrow => {
       let (ret_ty, ret_pos) = parse_type_impl(tokens, after_params + 1, 0)
@@ -700,11 +699,11 @@ fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, 
       let effect = effect_pair.0
       let effect_next = effect_pair.1
       let body_pos = expect_tk(tokens, effect_next, "{")
-      let (body, end_pos) = parse_recur(tokens, body_pos, 20)
+      let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
       (EFn(type_params, type_bounds, params, Some(ret_ty), effect, body), end_pos)
     },
     TLBrace => {
-      let (body, end_pos) = parse_recur(tokens, after_params + 1, 20)
+      let (body, end_pos) = parse_recur(tokens, after_params + 1, 20, context)
       (EFn(type_params, type_bounds, params, None, None, body), end_pos)
     },
     _ => throw("expected '->' or '{' after generic function params")
@@ -740,25 +739,25 @@ fn is_generic_fn_start(tokens: Array[Token], pos: Int) -> Bool {
   }
 }
 
-fn parse_bracket_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_bracket_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   if is_generic_fn_start(tokens, pos) {
-    parse_generic_fn_primary(tokens, starts, pos, parse_recur)
+    parse_generic_fn_primary(tokens, starts, pos, parse_recur, context)
   } else {
-    parse_array_primary(tokens, starts, pos, parse_recur)
+    parse_array_primary(tokens, starts, pos, parse_recur, context)
   }
 }
 
-fn parse_paren_tuple_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_paren_tuple_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos + 1) {
     TRParen => (EUnit, pos + 2),
     _ => {
-      let (first, next_pos) = parse_recur(tokens, pos + 1, 0)
+      let (first, next_pos) = parse_recur(tokens, pos + 1, 0, context)
       match peek(tokens, next_pos) {
         TRParen => (first, next_pos + 1),
         TComma => {
           let b = ArrayBuilder::new()
           ArrayBuilder::push(b, first)
-          let (items, end_pos) = parse_comma_exprs_rest(tokens, starts, next_pos, b, parse_recur)
+          let (items, end_pos) = parse_comma_exprs_rest(tokens, starts, next_pos, b, parse_recur, context)
           let close_pos = expect_tk(tokens, end_pos, ")")
           (ETuple(items), close_pos)
         },
@@ -768,8 +767,8 @@ fn parse_paren_tuple_primary(tokens: Array[Token], starts: Array[Int], pos: Int,
   }
 }
 
-fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
-  let (params, after_params) = parse_param_list(tokens, pos + 1)
+fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  let (params, after_params) = parse_param_list_with_binder_context(tokens, pos + 1, context)
   match peek(tokens, after_params) {
     TThinArrow => {
       let after_arrow = after_params + 1
@@ -778,7 +777,7 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
           let (ty, ty_pos) = parse_type_impl(tokens, after_arrow, 0)
           match peek(tokens, ty_pos) {
             TLBrace => {
-              let (body, end) = parse_recur(tokens, ty_pos + 1, 20)
+              let (body, end) = parse_recur(tokens, ty_pos + 1, 20, context)
               (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
             },
             TWith => {
@@ -786,11 +785,11 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
               let effect_name = effect_pair.0
               let effect_next = effect_pair.1
               let body_pos = expect_tk(tokens, effect_next, "{")
-              let (body, end) = parse_recur(tokens, body_pos, 20)
+              let (body, end) = parse_recur(tokens, body_pos, 20, context)
               (EFn(_no_tp(), _no_tb(), params, Some(ty), Some(effect_name), body), end)
             },
             _ => {
-              let (body, end) = parse_recur(tokens, after_arrow, 0)
+              let (body, end) = parse_recur(tokens, after_arrow, 0, context)
               (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
             }
           }
@@ -815,7 +814,7 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
               let (ty, ty_pos) = pair
               match peek(tokens, ty_pos) {
                 TLBrace => {
-                  let (body, end) = parse_recur(tokens, ty_pos + 1, 20)
+                  let (body, end) = parse_recur(tokens, ty_pos + 1, 20, context)
                   (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
                 },
                 TWith => {
@@ -823,44 +822,44 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
                   let effect_name = effect_pair.0
                   let effect_next = effect_pair.1
                   let body_pos = expect_tk(tokens, effect_next, "{")
-                  let (body, end) = parse_recur(tokens, body_pos, 20)
+                  let (body, end) = parse_recur(tokens, body_pos, 20, context)
                   (EFn(_no_tp(), _no_tb(), params, Some(ty), Some(effect_name), body), end)
                 },
                 _ => {
-                  let (body, end) = parse_recur(tokens, after_arrow, 0)
+                  let (body, end) = parse_recur(tokens, after_arrow, 0, context)
                   (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
                 }
               }
             },
             None => {
-              let (body, end) = parse_recur(tokens, after_arrow, 0)
+              let (body, end) = parse_recur(tokens, after_arrow, 0, context)
               (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
             }
           }
         },
         _ => {
-          let (body, end) = parse_recur(tokens, after_arrow, 0)
+          let (body, end) = parse_recur(tokens, after_arrow, 0, context)
           (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
         }
       }
     },
     TLBrace => {
-      let (body, end) = parse_recur(tokens, after_params + 1, 20)
+      let (body, end) = parse_recur(tokens, after_params + 1, 20, context)
       (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
     },
     _ => throw("expected '->' or '{' after fn params")
   }
 }
 
-fn parse_paren_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_paren_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   if is_lambda_start(tokens, pos + 1) {
-    parse_paren_lambda_primary(tokens, starts, pos, parse_recur)
+    parse_paren_lambda_primary(tokens, starts, pos, parse_recur, context)
   } else {
-    parse_paren_tuple_primary(tokens, starts, pos, parse_recur)
+    parse_paren_tuple_primary(tokens, starts, pos, parse_recur, context)
   }
 }
 
-fn parse_record_literal_fields(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(String, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Array[(String, Expr)], Int) with Exception {
+fn parse_record_literal_fields(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(String, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[(String, Expr)], Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
@@ -869,12 +868,12 @@ fn parse_record_literal_fields(tokens: Array[Token], starts: Array[Int], pos: In
         TRBrace => (EIdent(fname, -1), pos + 1),
         _ => {
           let colon_pos = expect_tk(tokens, pos + 1, ":")
-          parse_recur(tokens, colon_pos, 0)
+          parse_recur(tokens, colon_pos, 0, context)
         }
       }
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
-        TComma => parse_record_literal_fields(tokens, starts, next_pos + 1, b, parse_recur),
+        TComma => parse_record_literal_fields(tokens, starts, next_pos + 1, b, parse_recur, context),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
         _ => throw("expected ',' or '}' in record literal")
       }
@@ -954,18 +953,18 @@ fn parse_struct_ctor_targs(tokens: Array[Token], pos: Int, name: String) -> (Arr
   }
 }
 
-fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name: String, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name: String, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   if name == "true" {
     (EBool(true), pos + 1)
   } else if name == "false" {
     (EBool(false), pos + 1)
   } else if name == "perform" {
-    parse_perform_primary(tokens, starts, pos, parse_recur)
+    parse_perform_primary(tokens, starts, pos, parse_recur, context)
   } else if name == "record" {
     match peek(tokens, pos + 1) {
       TLBrace => {
         let b = ArrayBuilder::new()
-        let (fields, end_pos) = parse_record_literal_fields(tokens, starts, pos + 2, b, parse_recur)
+        let (fields, end_pos) = parse_record_literal_fields(tokens, starts, pos + 2, b, parse_recur, context)
         (ERecord("", fields, empty_type_exprs()), end_pos)
       },
       _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
@@ -985,7 +984,7 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
         TIdent(member) => (EIdent(String::concat(name, String::concat("::", member)), offset_at(starts, pos)), pos + 3),
         TLBrace => {
           let b = ArrayBuilder::new()
-          let (fields, end_pos) = parse_ctor_record_fields(tokens, starts, pos + 3, b, parse_recur)
+          let (fields, end_pos) = parse_ctor_record_fields(tokens, starts, pos + 3, b, parse_recur, context)
           (ERecord(name, fields, empty_type_exprs()), end_pos)
         },
         _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
@@ -1002,7 +1001,7 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
         let dc_pos = expect_tk(tokens, after_targs, "::")
         let brace_pos = expect_tk(tokens, dc_pos, "{")
         let b = ArrayBuilder::new()
-        let (fields, end_pos) = parse_ctor_record_fields(tokens, starts, brace_pos, b, parse_recur)
+        let (fields, end_pos) = parse_ctor_record_fields(tokens, starts, brace_pos, b, parse_recur, context)
         (ERecord(name, fields, targs), end_pos)
       } else {
         (EIdent(name, offset_at(starts, pos)), pos + 1)
@@ -1012,15 +1011,20 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
   }
 }
 
-export fn parse_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+export fn parse_primary_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos) {
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
     TString(s) => (EString(s), pos + 1),
-    TStringInterp(parts, offs) => (build_interp_expr(parts, offs, starts, parse_recur), pos + 1),
-    TIdent(name) => parse_ident_primary(tokens, starts, pos, name, parse_recur),
-    TLParen => parse_paren_primary(tokens, starts, pos, parse_recur),
-    TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur),
-    _ => parse_control_primary(tokens, starts, pos, parse_recur)
+    TStringInterp(parts, offs) => (build_interp_expr(parts, offs, starts, parse_recur, context), pos + 1),
+    TIdent(name) => parse_ident_primary(tokens, starts, pos, name, parse_recur, context),
+    TLParen => parse_paren_primary(tokens, starts, pos, parse_recur, context),
+    TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur, context),
+    _ => parse_control_primary(tokens, starts, pos, parse_recur, context)
   }
+}
+
+export fn parse_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
+  let adapted = (rtoks, rpos, rmode, _context) -> parse_recur(rtoks, rpos, rmode)
+  parse_primary_with_binder_context(tokens, starts, pos, adapted, None)
 }

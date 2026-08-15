@@ -52,21 +52,15 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
                                // #1392: 補間の値に `T::to_string`
                                // (derive(Show)/derive(Hash) 生成物、または
-                               // 手書き) があればそれを呼ぶ。struct/enum/
-                               // `Option`/`Result` は関数戻り値経由でも構造
-                               // 描画される。タプル/配列はリテラル直接・
-                               // リテラル束縛の変数経由なら構造的に展開される
+                               // 手書き) があればそれを呼ぶ。`Option`/`Result`/
+                               // タプル/配列は変数・名前関数の戻り値・戻り値が
+                               // リテラルの未注釈 lambda・generic の pass-through
+                               // 経由でも構造的に展開される
                                // (`"\{Some(p)}"` -> `Some(P { .. })`,
-                               // `"\{xs}"` -> `[1, 2]`) が、**関数戻り値
-                               // 経由は黙って生ポインタの10進値になる**
-                               // (#1766: `"\{f()}"`・`let b = f()` の束縛・
-                               // `Some(f())` の内側・generic 引数、いずれも。
-                               // 戻り値型注釈があっても変わらない)。
-                               // 描画できない型 (to_string の無い集約型) は
-                               // check 時に
+                               // `"\{make_xs()}"` -> `[1, 2]`)。描画できない型
+                               // (to_string の無い集約型) は check 時に
                                // `cannot interpolate a value of type ...` で
-                               // 落ちる (#1445) が、上の経路は Array/tuple に
-                               // renderer 自体はあるためすり抜ける。
+                               // 落ちる (#1445)。
                                // ただし effect handler の
                                // pattern binder (`Throw(err) => "\{err}"`) は
                                // binder の型を補間 rewrite が回収できず、まだ
@@ -172,13 +166,11 @@ contract — this is a naming *rule*, not a per-type coincidence:
 `let m = HashMap::new_string()` は `MutMap` に推論され、`vibe check` が
 移行先を名指しする警告を1行出す (非致命、exit 0)。
 
-> **旧綴りの型注釈は動かない。** `let m: HashMap[String, Int] = ...` は
-> エラーになる。`type HashMap[K, V] = MutMap[K, V]` という別名を置いても
-> **モジュール境界を越えると展開されない** (contract 側に書いても実装側から
-> export しても同じで、別名は merge 後のソースには現れるのに checker は
-> `HashMap[Int]` と `MutMap[Int]` を別の型として扱う)。守れない約束を
-> 置くより、破れる場所を1つに絞って明示するほうを採った ——
-> 注釈は `Mut-` 名に書き換えること (穴そのものは #1700)。
+旧綴りの**型注釈**も transparent alias として残る (#1700)。たとえば
+`let m: HashMap[String, Int] = HashMap::new_string()` は `@vibe/core` の
+`index.vpkg` 境界を越えて `MutMap[String, Int]` と同じ型になる。移行先は
+引き続き `Mut-` 名で、旧関数を使えば `vibe check` が警告する。型名だけを
+旧綴りにした場合は警告されないので、新規コードでは `Mut-` を直接書く。
 
 旧綴りの**関数**を使うと `vibe check` が移行先を名指しする `warning:` 行を
 出す (非致命、exit 0)。**これは #1262 follow-up で初めて実際に効くようになった**
@@ -857,8 +849,18 @@ its declarations and `handle` expressions.
 | runtime scheduling policy | runtime itself | `Async` |
 
 The ordered default and cache-safe owners preserve their existing output.
-Checker row filtering and WIT import filtering use only the predicate-based
-entry/runtime policy; WIT mapping and handler behavior are unchanged.
+At a program entry (`main` or `_start`), the checker admits only the union of
+host-provider labels and entry/runtime-managed labels. A user effect such as
+`Ask` / `Ask::Get` must be discharged by `handle ... with Ask` before that
+boundary; adding it to `main`'s `with` row is rejected with a located diagnostic
+(#1683). Ordinary helper functions still fix a missing effect by adding it to
+their row so callers can decide where to handle it. WIT mapping and handler
+behavior are unchanged. Provider spelling alone grants no authority:
+`Fs::Custom` from `effect Fs { Custom() -> Int }` is still a user operation and
+must be handled, while the registry-owned `Fs::read_file` remains a host
+operation even if another linked module has an unrelated `effect Fs`.
+Entry rows must also be concrete; an unresolved `with e` is rejected with a
+hint to close the row rather than the invalid suggestion `handle ... with e`.
 
 ### Atomic stdin provider stream (#1539)
 
@@ -1132,6 +1134,13 @@ fn main with Stdout {
 ```
 
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
+
+Effect row の呼び出し解決も通常の値解決と同じ lexical scope に従う。局所
+closure・関数 parameter・pattern/loop binder が top-level `fn` と同名なら、
+局所 binding が優先される。したがって、純粋な局所 `take` が同名の
+`fn take(..) with Ask` を隠している間、その呼び出しに `Ask` は計上されない。
+局所 scope を抜けると top-level の row が再び有効になる。
+
 > **evidence-passing 実装 (#817, ADR-0076 追記34 V2 で replay 全廃)**:
 > handler は evidence dict への直接呼び出し (tail-resumptive) か
 > suspend CPS (first-class resume) にコンパイルされ、handle body は
