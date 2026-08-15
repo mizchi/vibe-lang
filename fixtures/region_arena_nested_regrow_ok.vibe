@@ -1,0 +1,92 @@
+// Codex #1801 P1 (ADR-0090): an OUTER region's buffer regrown while a NESTED
+// region is active must survive the inner region's exit. Before the guard,
+// the replacement buffer was bumped from the CURRENT watermark (inside the
+// inner region's span); the inner exit rewound over it, and the next arena
+// allocation silently overwrote the live data. The guard routes such regrows
+// to the main heap (a block below saves[depth-1] belongs to an outer region).
+//
+// The shape below makes the corruption OBSERVABLE, not just possible: fill
+// an outer buffer to near its inline capacity, force the regrow inside the
+// nested region, then after the inner exit allocate a "stomp" buffer in the
+// outer region and fill it -- with the bug, the stomp lands exactly where
+// the regrown data lives, and the checksum changes. Applies identically to
+// MutList (gen_arr_push_body) and MutBytes (gen_bytes_push_body); both are
+// pinned here.
+fn bytes_nested() -> Int {
+  region r1 {
+    let outer = MutBytes::empty(r1)
+    let mut i = 0
+    while i < 60 {
+      MutBytes::push(outer, i&255)
+      i = i + 1
+    }
+    let x = region r2 {
+      let inner = MutBytes::empty(r2)
+      MutBytes::push(inner, 1)
+      let mut j = 60
+      while j < 80 {
+        MutBytes::push(outer, j&255)
+        j = j + 1
+      }
+      MutBytes::length(inner)
+    }
+    let stomp = MutBytes::empty(r1)
+    let mut k = 0
+    while k < 200 {
+      MutBytes::push(stomp, 255)
+      k = k + 1
+    }
+    let out = MutBytes::to_bytes(outer)
+    let mut acc = 0
+    let mut m = 0
+    while m < Bytes::length(out) {
+      acc = acc + Bytes::get(out, m)
+      m = m + 1
+    }
+    acc + x
+  }
+}
+
+fn list_nested() -> Int {
+  region r1 {
+    let outer = MutList::empty(r1)
+    let mut i = 0
+    while i < 3 {
+      MutList::push(outer, i)
+      i = i + 1
+    }
+    let x = region r2 {
+      let inner = MutList::empty(r2)
+      MutList::push(inner, 1)
+      let mut j = 3
+      while j < 40 {
+        MutList::push(outer, j)
+        j = j + 1
+      }
+      Array::length(MutList::to_array(inner))
+    }
+    let stomp = MutList::empty(r1)
+    let mut k = 0
+    while k < 200 {
+      MutList::push(stomp, 999999)
+      k = k + 1
+    }
+    let out = MutList::to_array(outer)
+    let mut acc = 0
+    let mut m = 0
+    while m < Array::length(out) {
+      acc = acc + Array::get(out, m)
+      m = m + 1
+    }
+    acc + x
+  }
+}
+
+export let main = () -> Int {
+  bytes_nested() * 10000 + list_nested()
+}
+
+test "region arena nested regrow" {
+  // bytes: sum(0..79) + 1 = 3161; list: sum(0..39) + 1 = 781.
+  inspect(main(), "31610781")
+}

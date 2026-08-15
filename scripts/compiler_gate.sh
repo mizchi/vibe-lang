@@ -8816,6 +8816,20 @@ if [ "$r90b_heap_delta" -gt 100000 ]; then
   exit 1
 fi
 echo "[compiler-gate] MutBytes arena bulk release ok (200 regions, main heap +${r90b_heap_delta} B)"
+# Codex #1801 P1: an outer region's buffer regrown inside a NESTED region
+# must survive the inner exit (the replacement must not land in the inner
+# region's span). Pins the saves[depth-1] guard in gen_arr_push_body /
+# gen_bytes_push_body / gen_bytes_append_body for BOTH MutList and MutBytes.
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_arena_nested_regrow_ok.vibe "$r90dir/nested.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/nested.wasm" ] \
+  || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/nested.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_arena_nested_regrow_ok.vibe failed -- an outer buffer regrown inside a nested region was rewound/overwritten" >&2
+  cat "$r90dir/nested.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+echo "[compiler-gate] nested-region regrow guard ok (MutList + MutBytes)"
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList/MutBytes vertical slice ok"
 
