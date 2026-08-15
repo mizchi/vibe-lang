@@ -11097,6 +11097,7 @@ echo "[compiler-gate] vibe deps import-closure ok (#988)"
 #      the source does not spell out (a closure's environment, a captured
 #      `let mut` becoming a heap ref cell) really appear.
 echo "[compiler-gate] 104/104 vibe allocs reports heap sites, and nothing else (ADR-0091 / #1262)"
+bash "$ROOT_DIR/scripts/test_vibe_allocs_launcher.sh"
 alcdir="_build/_gate_allocs"
 rm -rf "$alcdir"; mkdir -p "$alcdir"
 cat > "$alcdir/in.vibe" <<'ALCA'

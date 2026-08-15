@@ -1284,15 +1284,37 @@ case "$cmd" in
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-allocs-XXXXXX)"
     trap 'rm -f "$out" "$out.diag"' EXIT
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG \
-        -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE -u VIBE_CHECK_ONLY -u VIBE_DEPS \
+    # The adapter is also an internal multiplexer. Do not let a compiler-mode
+    # variable inherited from the caller select an earlier branch (VIBE_HASH,
+    # for example, is checked before VIBE_ALLOCS). The public verb owns the
+    # mode selection completely.
+    allocs_status=0
+    if env -u VIBE_FS_COMPILE -u VIBE_LSP -u VIBE_HASH -u VIBE_HASH_WRITE \
+        -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \
+        -u VIBE_PUBLISH_CHECK -u VIBE_MODULE_JOB_DIR -u VIBE_PUBLISH_ENV_CACHE \
+        -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN -u VIBE_CHECK_ONLY \
+        -u VIBE_NORMALIZE -u VIBE_INSPECT_UPDATE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT \
+        -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_DEPS_DIRECT -u VIBE_GREP \
+        -u VIBE_DIAGNOSTICS -u VIBE_DIAGNOSTICS_JSON \
+        -u VIBE_EMIT_COVERAGE_DRIVER_SOURCE -u VIBE_EMIT_MERGED_SOURCE \
+        -u VIBE_EMIT_WIT -u VIBE_SERVE_COMPONENT -u VIBE_EMIT_MODULE_SOURCE \
+        -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_ARTIFACT_INPUT_TRACE_OUT -u VIBE_ARTIFACT_INPUT_TRACE_NONCE \
       VIBE_ALLOCS=1 \
       VIBE_IMPORT_ABI=raw \
-      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1; then
+      allocs_status=0
+    else
+      allocs_status=$?
+    fi
     if [ -s "$out.diag" ]; then
       echo "error: $(cat "$out.diag")" >&2
       exit 1
+    fi
+    if [ "$allocs_status" -ne 0 ]; then
+      echo "error: vibe allocs runner failed with status $allocs_status" >&2
+      exit "$allocs_status"
     fi
     if [ -s "$out" ]; then cat "$out"; fi
     ;;

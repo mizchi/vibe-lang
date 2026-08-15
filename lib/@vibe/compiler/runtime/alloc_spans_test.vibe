@@ -40,6 +40,21 @@ fn has_kind(source: String, want: String) -> Bool with Exception {
   found
 }
 
+fn count_kind(source: String, want: String) -> Int with Exception {
+  let ks = kinds_of(source)
+  let mut i = 0
+  let mut count = 0
+  while i < Array::length(ks) {
+    if Array::get(ks, i) == want {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
 fn fn_names_of(source: String) -> Array[String] with Exception {
   let spans = alloc_spans(source)
   let out = [
@@ -131,6 +146,12 @@ test "a bare enum constructor is conservatively an allocation site" {
   assert(has_kind(src, "constructor:None"))
 }
 
+test "a payload constructor is one constructor site, not an unknown builtin too" {
+  let src = "enum Maybe { None; Some(Int) }\nfn one() -> Maybe {\n  Some(1)\n}\n"
+  assert_eq(count_kind(src, "constructor:Some"), 1)
+  assert(!has_kind(src, "builtin:Some"))
+}
+
 test "valid cfg and deprecated directives do not make the query fail" {
   // Directive text must be blanked, not deleted, so source offsets remain
   // coordinates in the original file. Counting inactive cfg sites is the
@@ -162,6 +183,16 @@ test "sites are attributed to the enclosing top-level function" {
   assert_eq(Array::length(names), 2)
   assert_eq(Array::get(names, 0), "a")
   assert_eq(Array::get(names, 1), "b")
+}
+
+test "test and bench bodies use whitespace-free allocation owners" {
+  // `allocs` is also the diagnostics surface for bytes-per-op regressions;
+  // silently skipping SBench would make precisely that use case report clean.
+  let src = "test \"makes array\" {\n  let xs = [1, 2]\n  assert_eq(Array::length(xs), 2)\n}\nbench \"line\\nbreak 100%\" {\n  [3, 4]\n}\n"
+  let names = fn_names_of(src)
+  assert_eq(Array::length(names), 2)
+  assert_eq(Array::get(names, 0), "__test_makes%20array")
+  assert_eq(Array::get(names, 1), "__bench_line%0Abreak%20100%25")
 }
 
 test "an unclassified callee is reported, not skipped" {
