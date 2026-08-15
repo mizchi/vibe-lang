@@ -798,7 +798,18 @@ let w_check = {
 }
 ```
 
-> **status (#760/#839):**
+> **status (#760/#839/#1839):**
+> - **Anonymous records are structural** (#1839): a named struct that happens
+>   to share a `record { ... }` literal's field-name set no longer captures
+>   it. The literal keeps its own layout (literal field order), so dot access
+>   and same-order destructure read the written values even next to a
+>   colliding struct, and a record whose field set is a strict subset of some
+>   struct's is accepted (it used to be rejected as a construction of that
+>   struct missing fields). Struct construction is spelled `S::{ ... }` only.
+>   Caveat: the checker does not yet REJECT passing an anonymous record where
+>   a struct is expected — that program now reads wrong slots at runtime
+>   instead of being (wrongly) accepted as the struct. Don't do it; #1839
+>   tracks the checker-level rejection.
 > - **Record dot access** (`r.name` on an anonymous `record { ... }`) lowers to
 >   the positional field read the destructure uses, and now resolves in every
 >   expression position — a `let` initializer (including a top-level `let`

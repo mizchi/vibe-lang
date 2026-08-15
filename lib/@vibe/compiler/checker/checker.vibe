@@ -7295,15 +7295,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
         }
       } else {
-        // Check the field values against the matching struct's declared types.
-        let s2 = check_record_fields(defs, field_tys, s1, errors)
-        // Recover the struct identity (when unambiguous) so downstream uses — in
-        // particular `mut`-field write checking — see a concrete `CtStruct`.
-        let rec_ty = match resolve_record_struct_name(defs, field_tys) {
-          Some(sname) => CtStruct(sname),
-          None => CtUnknown
-        }
-        (rec_ty, s2, c1)
+        // #1839: an EXPLICIT `record { ... }` literal (rn == "" comes only
+        // from the `record` keyword since #810 put the parsed name on
+        // `S::{...}`) is structural — it must not be captured by a named
+        // struct that happens to share its field-name set. The field-set
+        // match that used to run here (check_record_fields +
+        // resolve_record_struct_name) silently retyped the literal as the
+        // struct (accepting `fn (s: Span)` calls the writer never meant) and
+        // rejected records whose field set was a strict subset of some
+        // struct ("missing field ... in construction of struct X"). Codegen
+        // and the anon-record dot-access desugar now keep the same rule:
+        // rn == "" always lays out in literal order with tag 0.
+        (CtUnknown, s1, c1)
       }
     },
     ETuple(items) => {

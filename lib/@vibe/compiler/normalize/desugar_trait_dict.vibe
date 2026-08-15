@@ -1125,10 +1125,16 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // call`, naming neither the struct nor the call. Declaration order looked
     // like the trigger because it decides which same-shaped struct is first.
     //
-    // Shape matching stays for the ANONYMOUS form (`ERecord("", ..)`, #839
-    // top-level anonymous records and the witness records built by
-    // make_witness_record), where there is no written name to trust.
-    ERecord(rn, fields, _) => if String::length(rn) > 0 && struct_set_has(struct_sets, rn) {
+    // #1839: the ANONYMOUS form (`ERecord("", ..)` — the explicit `record`
+    // keyword) is structural and no longer captured by a same-field-set
+    // struct anywhere (checker / codegen keep it literal-order, tag 0), so
+    // reporting a struct NAME for it here would route `==` / to_string /
+    // UFCS dispatch to that struct's methods, which would read the wrong
+    // slots. Shape matching remains only for a NAMED literal whose name the
+    // merged defs no longer contain (merge-layer private-struct rename).
+    ERecord(rn, fields, _) => if String::length(rn) == 0 {
+      None
+    } else if struct_set_has(struct_sets, rn) {
       Some(rn)
     } else {
       let names = empty_str_array()
@@ -1285,13 +1291,25 @@ fn anon_field_index(sentinel: String, field: String) -> Int {
   }
 }
 
-/// If `val` is a `record { .. }` literal whose field-set matches no declared
-/// struct, the `__anonrec:` sentinel recording its literal field order; else None.
+/// If `val` is an explicit anonymous `record { .. }` literal (rn == ""), the
+/// `__anonrec:` sentinel recording its literal field order; else None.
 /// Threaded into `var_types` at `let`/`let mut` so a later `binding.field` on the
 /// same name resolves positionally.
+///
+/// #1839: EVERY rn == "" literal gets the sentinel — it used to be withheld
+/// when the field set matched a declared struct (leaving `.field` to the EDot
+/// struct-table path), which was consistent only because codegen also
+/// reordered such literals to the struct's declared order. That capture made
+/// the parser's POSITIONAL record destructure read swapped values
+/// (`let record { start: a, end: b } = record { start: 3, end: 9 }` bound
+/// a = 9 whenever a same-field-set struct declared its fields in another
+/// order). Anonymous records now stay in literal order end-to-end, so dot
+/// access must resolve positionally against that order too.
 fn anon_record_inferred(val: Expr, struct_sets: Array[(String, Array[String])]) -> Option[String] {
   match val {
-    ERecord(_, fields, _) => {
+    ERecord(rn, fields, _) => if String::length(rn) > 0 {
+      None
+    } else {
       let names = empty_str_array()
       let mut i = 0
       while i < Array::length(fields) {
@@ -1299,22 +1317,7 @@ fn anon_record_inferred(val: Expr, struct_sets: Array[(String, Array[String])]) 
         Array::push(names, fname)
         i = i + 1
       }
-      let mut j = 0
-      let mut matched = false
-      while j < Array::length(struct_sets) {
-        let (_, sfields) = Array::get(struct_sets, j)
-        if field_sets_match(names, sfields) {
-          matched = true
-          j = Array::length(struct_sets)
-        } else {
-          j = j + 1
-        }
-      }
-      if matched {
-        None
-      } else {
-        Some(anon_record_sentinel(names))
-      }
+      Some(anon_record_sentinel(names))
     },
     _ => None
   }

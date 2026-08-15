@@ -320,7 +320,7 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         }
       }
     },
-    ERecord(_, fields, _) => {
+    ERecord(rec_rn, fields, _) => {
       let flen = Array::length(fields)
       // #722: resolve the record to a struct by exact field-name set and, on a
       // match, lay it out in the struct's DECLARED field order with the
@@ -328,7 +328,12 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
       // `S::{...}` ctor construction path (which already reorders). This is
       // what makes the tag-dispatching field access above type-correct for
       // bare-record construction (hand-built ASTs, name-dropped literals).
-      // Unmatched (anonymous) records keep the legacy literal order + tag 0.
+      // #1839: an EXPLICIT anonymous literal (rec_rn == "", the `record`
+      // keyword) is exempt from that resolution — it always keeps literal
+      // order + tag 0, matching the checker (no struct capture) and the
+      // anon-record dot-access desugar (positional reads over literal
+      // order). Reordering it to a same-field-set struct's declared order
+      // made the parser's positional record destructure read swapped values.
       let lit_names = array_empty()
       let mut lni = 0
       while lni < flen {
@@ -336,7 +341,11 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         Array::push(lit_names, lfn)
         lni = lni + 1
       }
-      let rec_si = struct_index_by_field_set(ctx.ctor_table, lit_names)
+      let rec_si = if rec_rn == "" {
+        -1
+      } else {
+        struct_index_by_field_set(ctx.ctor_table, lit_names)
+      }
       let rec_tag = if rec_si >= 0 {
         struct_tag_by_index(ctx.ctor_table, rec_si)
       } else {
