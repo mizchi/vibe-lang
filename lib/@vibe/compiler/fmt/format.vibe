@@ -1096,24 +1096,32 @@ fn lx_next(lx: LX) -> LTok {
   }
 }
 
+/// ADR-0090 dogfood (#1770 Phase 1): the token list is accumulate-only until
+/// the single exit, so its backing storage lives in a region arena and is
+/// reclaimed wholesale at the region end; `to_array` copies the final list
+/// out to the main heap. First in-compiler use of `region` -- needs the
+/// region-starts-guard-2026-08-15 seed (#1780/#1791: older seeds trap on
+/// region syntax reaching the vpkg contract member parse, which is exactly
+/// how fmt_entry.vibe compiles this file).
 fn lex_lossless(src: String) -> Array[LTok] {
   let lx = LX::{
     input: src, len: String::length(src), pos: 0
   }
-  let toks = [
-  ]
-  let mut going = true
-  while going {
-    if lx.pos >= lx.len {
-      going = false
-    } else {
-      Array::push(toks, lx_next(lx))
+  region r {
+    let toks = MutList::empty(r)
+    let mut going = true
+    while going {
+      if lx.pos >= lx.len {
+        going = false
+      } else {
+        MutList::push(toks, lx_next(lx))
+      }
     }
+    MutList::push(toks, LTok::{
+      kind: k_eof, text: ""
+    })
+    MutList::to_array(toks)
   }
-  Array::push(toks, LTok::{
-    kind: k_eof, text: ""
-  })
-  toks
 }
 
 //# Predicate helpers (kind classification)
