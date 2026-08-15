@@ -9,7 +9,7 @@ import ./parser.vibe {
 }
 
 import @vibe/ast {
-  Stmt
+  Expr, Stmt
 }
 
 //# Tests
@@ -17,6 +17,13 @@ import @vibe/ast {
 // indirectly through the compiler's syntax/ shims (tests/parser_*_test.vibe
 // in lib/@vibe/compiler). These exercise the package's own lex/parse_program
 // entry points directly, with no compiler layer in between.
+
+fn fn_generic_lanes_at(stmts: Array[Stmt], index: Int) -> (Array[String], Array[(String, Array[String])]) {
+  match Array::get(stmts, index) {
+    SLet(_, _, _, _, EFn(type_params, type_bounds, _, _, _, _)) => (type_params, type_bounds),
+    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), ArrayBuilder::freeze(ArrayBuilder::new()))
+  }
+}
 
 test "lex: simple token stream is non-empty" {
   let tokens = lex("let x = 1")
@@ -83,6 +90,18 @@ test "parse_program: function declaration" {
   let tokens = lex("fn add(a: Int, b: Int) -> Int { a + b }")
   let stmts = parse_program(tokens)
   assert(Array::length(stmts) == 1)
+}
+
+test "parse_program: empty generic lanes stay fresh per declaration" {
+  let stmts = parse_program(lex("fn first() -> Int { 1 }\nfn second() -> Int { 2 }"))
+  let (first_params, first_bounds) = fn_generic_lanes_at(stmts, 0)
+  let (second_params, second_bounds) = fn_generic_lanes_at(stmts, 1)
+  Array::push(first_params, "Injected")
+  Array::push(first_bounds, ("Injected", [
+    "Eq"
+  ]))
+  assert_eq(Array::length(second_params), 0)
+  assert_eq(Array::length(second_bounds), 0)
 }
 
 test "parse_program: taskgroup accepts the empty source-offset lane (#1780)" {

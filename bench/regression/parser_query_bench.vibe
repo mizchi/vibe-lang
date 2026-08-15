@@ -1,0 +1,45 @@
+// Ratchets the parser paths used by editor/query commands. The token arrays
+// are cached so bytes/op measures parsing, not lexing.
+import @vibe/parser {
+  Token, lex_with_offsets, parse_program_recovering, parse_program_spans
+}
+
+let source = "fn add(a: Int, b: Int) -> Int { a + b }\nlet answer = add(20, 22)\nfn classify(x: Int) -> Int { match x { 0 => 10, 1 => 20, _ => 30 } }\nfn empty() -> Array[Int] { [] }\nfn call_empty() -> Array[Int] { empty() }\n"
+let empty_tokens: Array[Token] = [
+  TEof
+]
+let empty_ints: Array[Int] = [
+  0
+]
+let token_box: Array[Array[Token]] = [
+  empty_tokens
+]
+let start_box: Array[Array[Int]] = [
+  empty_ints
+]
+let end_box: Array[Array[Int]] = [
+  empty_ints
+]
+
+fn ensure_lexed() -> (Array[Token], Array[Int], Array[Int]) with Exception {
+  if Array::length(token_box[0]) == 1 {
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    token_box[0] = tokens
+    start_box[0] = starts
+    end_box[0] = ends
+  }
+  (token_box[0], start_box[0], end_box[0])
+}
+
+bench "parser_query_paths" with Exception {
+  let (tokens, starts, ends) = ensure_lexed()
+  let mut total = 0
+  let mut i = 0
+  while i < 8 {
+    let (span_stmts, _, _) = parse_program_spans(tokens, starts, ends)
+    let (recovered_stmts, diags) = parse_program_recovering(tokens, starts, source)
+    total = total + Array::length(span_stmts) + Array::length(recovered_stmts) + Array::length(diags)
+    i = i + 1
+  }
+  let _ = total
+}
