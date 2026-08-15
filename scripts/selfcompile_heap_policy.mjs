@@ -638,6 +638,37 @@ async function measureTree(args) {
   return await measureTreeOnce(args);
 }
 
+export function verifyIdenticalTreeResults(baseResult, currentResult) {
+  if (baseResult.stage2_sha256 !== currentResult.stage2_sha256) {
+    fail("nondeterministic-build", {
+      base_stage2_sha256: baseResult.stage2_sha256,
+      current_stage2_sha256: currentResult.stage2_sha256,
+    });
+  }
+  if (baseResult.output_sha256 !== undefined || currentResult.output_sha256 !== undefined) {
+    if (!Array.isArray(baseResult.output_sha256) || !Array.isArray(currentResult.output_sha256) || JSON.stringify(baseResult.output_sha256) !== JSON.stringify(currentResult.output_sha256)) {
+      fail("nondeterministic-output", {
+        revision: "identical-tree-reconstruction",
+        base: baseResult.output_sha256 ?? null,
+        current: currentResult.output_sha256 ?? null,
+      });
+    }
+  }
+  if (baseResult.heap_bytes !== currentResult.heap_bytes) {
+    fail("nondeterministic-heap", {
+      revision: "identical-tree-reconstruction",
+      trials: [...baseResult.trials, ...currentResult.trials],
+    });
+  }
+  if (JSON.stringify(baseResult.stat_token_attestations) !== JSON.stringify(currentResult.stat_token_attestations)) {
+    fail("nondeterministic-stat-token", {
+      revision: "identical-tree-reconstruction",
+      base: baseResult.stat_token_attestations,
+      current: currentResult.stat_token_attestations,
+    });
+  }
+}
+
 function budgetChanges(repo, base, currentTree) {
   let output = "";
   try {
@@ -735,27 +766,7 @@ async function runControllerWithLease(options, lease) {
     });
     if (resolveCommit(repo, options.latestBaseRef) !== base) fail("latest-base-advanced");
   }
-  if (baseTree === currentTree) {
-    if (baseResult.stage2_sha256 !== currentResult.stage2_sha256) {
-      fail("nondeterministic-build", {
-        base_stage2_sha256: baseResult.stage2_sha256,
-        current_stage2_sha256: currentResult.stage2_sha256,
-      });
-    }
-    if (baseResult.heap_bytes !== currentResult.heap_bytes) {
-      fail("nondeterministic-heap", {
-        revision: "identical-tree-reconstruction",
-        trials: [...baseResult.trials, ...currentResult.trials],
-      });
-    }
-    if (JSON.stringify(baseResult.stat_token_attestations) !== JSON.stringify(currentResult.stat_token_attestations)) {
-      fail("nondeterministic-stat-token", {
-        revision: "identical-tree-reconstruction",
-        base: baseResult.stat_token_attestations,
-        current: currentResult.stat_token_attestations,
-      });
-    }
-  }
+  if (baseTree === currentTree) verifyIdenticalTreeResults(baseResult, currentResult);
   const evaluation = evaluatePolicy({
     policy,
     baseHeap: baseResult.heap_bytes,
@@ -786,6 +797,7 @@ async function runControllerWithLease(options, lease) {
     budget_id: evaluation.budget_id,
     trials: { base: baseResult.trials, current: currentResult.trials },
     stage2_sha256: { base: baseResult.stage2_sha256, current: currentResult.stage2_sha256 },
+    output_sha256: { base: baseResult.output_sha256 ?? null, current: currentResult.output_sha256 ?? null },
     stat_token_attestations: {
       base: baseResult.stat_token_attestations,
       current: currentResult.stat_token_attestations,

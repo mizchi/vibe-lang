@@ -38,6 +38,7 @@ const fs = require("node:fs");
 const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 if (result.decision !== "pass" || result.delta_bytes !== 0) throw new Error("same-tree decision/delta mismatch");
 if (result.stage2_sha256.base !== result.stage2_sha256.current) throw new Error("same-tree stage2 mismatch");
+if (JSON.stringify(result.output_sha256.base) !== JSON.stringify(result.output_sha256.current)) throw new Error("same-tree emitted output mismatch");
 if (JSON.stringify(result.trials.base) !== JSON.stringify(result.trials.current)) throw new Error("same-tree heap trials mismatch");
 if (JSON.stringify(result.stat_token_attestations.base) !== JSON.stringify(result.stat_token_attestations.current)) throw new Error("same-tree stat-token mismatch");
 if (result.normalized_paths.canonical_root !== "/workspace/repo") throw new Error("canonical container path mismatch");

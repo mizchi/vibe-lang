@@ -51,7 +51,7 @@ test("policy raw Fs selector requires explicit write authority and content-v1", 
   assert.deepEqual(args.passthroughArgs, []);
 });
 
-test("policy raw Fs uses phase-specific physical write authority without changing import denials", () => {
+test("policy raw Fs uses phase-specific physical write authority and denies cwd mutation", () => {
   const f = fixture();
   try {
     const generationRoot = path.join(f.root, "_build");
@@ -71,7 +71,7 @@ test("policy raw Fs uses phase-specific physical write authority without changin
       ]) assert.throws(() => authorizePolicyRawPath(target, true, generation), /escapes allowed root/);
       assert.throws(() => authorizePolicyRawPath(path.join(generationRoot, "sibling"), true, measurement), /escapes allowed root/);
       assert.throws(() => authorizePolicyRawPath("/etc/passwd", false, generation), /escapes allowed root/);
-      for (const name of ["sh", "sh_lines", "sh_capture", "tcp_connect", "http_request"]) {
+      for (const name of ["sh", "sh_lines", "sh_capture", "tcp_connect", "http_request", "fs_chdir"]) {
         assert.throws(() => authorizePolicyRawImport(name, [], null, generation), new RegExp(`policy raw import denied: ${name}`));
       }
     });

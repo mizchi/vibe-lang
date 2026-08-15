@@ -65,6 +65,7 @@ Local shape (expensive: two clean generation builds and four compiles):
 node scripts/selfcompile_heap_policy.mjs \
   --repo . \
   --base origin/main \
+  --latest-base-ref origin/main \
   --head HEAD \
   --synthesize-merge \
   --pr-number 1801
