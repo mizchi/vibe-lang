@@ -12,6 +12,10 @@ import @vibe/compiler/codegen/common_analysis {
   collect_free_vars
 }
 
+import ./backend_direct_abi_names.vibe {
+  gc_capture_resolves_globally
+}
+
 import @vibe/compiler/codegen/common_base {
   CompileCtxGc, CtorTable, FuncTable
 }
@@ -42,7 +46,29 @@ export fn collect_lambda_captures_gc(params: Array[(String, Option[TypeExpr])], 
     "__slice",
     "__rec_field"
   ])
-  let captures = collect_free_vars(fn_body, param_names_arr, globals)
+  // The `__`-prefixed desugar builtins above are only 6 of the ~60 names
+  // `compile_call_gc` dispatches by spelling, and this list had drifted from
+  // that one: a closure calling any of the others captured the builtin's own
+  // spelling as a free variable, then died in `emit_lambda_closure_gc` with
+  // "reached code generation unresolved".
+  //
+  // The rest is a POST-filter rather than more entries in `globals` because
+  // `compile_call_gc` canonicalizes the callee before dispatching, and a name
+  // list cannot express that: `StringBuilder::build` is a source alias of
+  // `StringBuilder::freeze`, so the scan sees a spelling that is in neither
+  // the func table nor the direct-ABI list. Asking the shared predicate --
+  // which canonicalizes, then re-checks BOTH the direct-ABI list and the
+  // `globals` computed above -- covers every alias, present and future.
+  let raw_captures = collect_free_vars(fn_body, param_names_arr, globals)
+  let captures = array_empty()
+  let mut ci = 0
+  while ci < Array::length(raw_captures) {
+    let cap = Array::get(raw_captures, ci)
+    if !gc_capture_resolves_globally(cap, globals) {
+      Array::push(captures, cap)
+    }
+    ci = ci + 1
+  }
   let num_captures = Array::length(captures)
   let user_params = Array::length(params)
   (captures, num_captures, user_params)

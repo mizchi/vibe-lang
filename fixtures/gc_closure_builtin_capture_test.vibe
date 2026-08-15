@@ -1,0 +1,135 @@
+// wasm-gc lane: a builtin called from INSIDE a closure must not be captured as
+// a free variable.
+//
+// `compile_call_gc` dispatches ~60 builtins by spelling before ordinary
+// func-table lookup. The lambda capture scan has to know that same set, or it
+// classifies the builtin's own spelling as a free variable of the lambda body
+// and `emit_lambda_closure_gc` dies on it:
+//
+//     internal compiler error: `Double::to_i64_bits_lo` (local, @gc_cap)
+//     reached code generation unresolved.
+//
+// The two lists had drifted: the capture scan carried 6 of the names (the
+// `__`-prefixed desugar builtins) and the dispatch chain carried all ~60. So
+// the failure was not "this builtin is unsupported" -- the SAME call compiles
+// fine at statement level and only breaks one lambda deep, which is why it
+// survived: every gc fixture called these at the top level.
+//
+// The spellings in the first group were measured broken on the pre-fix
+// compiler and those in the second were measured already working; both are in
+// on purpose. Excluding too MUCH from the capture set is the worse bug -- a
+// closure over a real local would silently lose its capture instead of
+// raising -- so the working half guards the over-exclusion direction.
+//
+// Runs on both backends: `vibe test` (linear) and VIBE_TEST_BACKEND=gc.
+
+// --- measured broken before the fix ---
+
+fn bits_lo_in_closure() -> Int {
+  let f = (x: Double) -> Int {
+    Double::to_i64_bits_lo(x)
+  }
+  f(1.5)
+}
+
+fn bits_hi_in_closure() -> Int {
+  let f = (x: Double) -> Int {
+    Double::to_i64_bits_hi(x)
+  }
+  // 1.5 as f64 is 0x3FF8000000000000: the high half is 0x3FF80000, the low
+  // half is 0. Asserting on the HIGH half matters -- a fixture that only read
+  // the low half would pass on a lane that returned a constant 0.
+  f(1.5)
+}
+
+fn int_to_string_in_closure() -> Int {
+  let f = (x: Int) -> String {
+    Int::to_string(x)
+  }
+  String::length(f(42))
+}
+
+fn map_has_key_in_closure() -> Int {
+  let m = Map::new()
+  let f = (k: String) -> Int {
+    if Map::has_key(m, k) {
+      1
+    } else {
+      0
+    }
+  }
+  f("absent")
+}
+
+// --- measured working before the fix (over-exclusion guard) ---
+
+fn array_length_in_closure() -> Int {
+  let a = [
+    1,
+    2,
+    3
+  ]
+  let f = () -> Int {
+    Array::length(a)
+  }
+  f()
+}
+
+fn array_slice_in_closure() -> Int {
+  let a = [
+    1,
+    2,
+    3,
+    4
+  ]
+  let f = (n: Int) -> Int {
+    Array::length(Array::slice(a, 0, n))
+  }
+  f(3)
+}
+
+fn fixed_array_get_in_closure() -> Int {
+  let a = FixedArray::make(4, 7)
+  let f = (i: Int) -> Int {
+    FixedArray::get(a, i)
+  }
+  f(2)
+}
+
+fn string_builder_in_closure() -> Int {
+  let f = () -> String {
+    let b = StringBuilder::new()
+    StringBuilder::push(b, "ab")
+    StringBuilder::freeze(b)
+  }
+  String::length(f())
+}
+
+// A real local captured alongside a builtin call. This is the case that breaks
+// if the capture set is widened past namespaced spellings: `n` must still ride
+// the closure environment while `Int::to_string` must not.
+fn local_and_builtin_together() -> Int {
+  let n = 7
+  let f = () -> Int {
+    String::length(Int::to_string(n)) + n
+  }
+  f()
+}
+
+test "namespaced builtins called inside a closure are not captured" {
+  inspect(bits_lo_in_closure(), "0")
+  inspect(bits_hi_in_closure(), "1073217536")
+  inspect(int_to_string_in_closure(), "2")
+  inspect(map_has_key_in_closure(), "0")
+}
+
+test "capture set stays narrow enough for the working spellings" {
+  inspect(array_length_in_closure(), "3")
+  inspect(array_slice_in_closure(), "3")
+  inspect(fixed_array_get_in_closure(), "7")
+  inspect(string_builder_in_closure(), "2")
+}
+
+test "a real local still rides the closure environment" {
+  inspect(local_and_builtin_together(), "8")
+}
