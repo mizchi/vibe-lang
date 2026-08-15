@@ -1,6 +1,6 @@
 # wasm 対応水準の分離と検証 (build levels)
 
-更新日: 2026-07-27
+更新日: 2026-08-15
 
 ## 背景
 
@@ -59,11 +59,12 @@ compiler-host 水準は engine set を使わず、`Wasmtime` 単独行を単に�
 
 | proposal | 使用箇所 | 条件 |
 |---|---|---|
-| `gc` | gc backend: `struct.new`/`struct.get`/`struct.set` (`codegen/gc/backend_body.vibe`) | wasm-gc backend 選択時のみ (release 既定は linear) |
+| `gc` | gc backend: RC cell / non-escaping local record の `struct.new/get/set`、reference lane の `array.new_default/get/set/len`、およびそれらの struct/array 型定義 (`codegen/gc/backend_body.vibe`, `codegen/gc/backend_expr.vibe`) | wasm-gc backend 選択時のみ (release 既定は linear) |
 | `exceptionsFinal` | linear + gc backend: `try_table` + tag section (`codegen/wasi/linked_compile.vibe`, `codegen/gc/backend_expr.vibe`, #538/#721) | module が effect/throw を使うときだけ emit（純計算 module はゼロ） |
 | `simd` | linear + gc backend: v128 opcode (`codegen/wasm_emit/simd.vibe`) | `simd_skip_ws` 等、特定 builtin 経由でのみ |
+| `typedFunctionReferences` | gc backend: private callee の typed parameter/result、typed local、および reference lane join の type-index blocktype (`codegen/gc/backend_body.vibe`, `codegen/gc/backend_expr.vibe`) | wasm-gc backend で reference lane が成立するときのみ |
 
-2026-07-27 時点のスナップショットでは、この3つはいずれも `v8` /
+2026-08-15 時点のスナップショットでは、この4つはいずれも `v8` /
 `web-baseline` 両水準で **safe**（`bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex`
 の出力参照）。tail-call proposal (`return_call`) は compiler-host 側
 (viberun) のみが有効化しており、**codegen は self-tail-call を wasm
