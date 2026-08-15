@@ -15,6 +15,14 @@ Methodology and case set: [`bench/binary_size/README.md`](../bench/binary_size/R
 bash scripts/bench_binary_size.sh [cli.wasm]
 ```
 
+> The numbers in this section are the **linear** backend (the default lane)
+> tracked over time. For the same case set measured across *backends* — linear
+> vs `VIBE_BACKEND=gc`, and where the two cross over — see
+> [`wasm/code-size-linear-vs-gc.md`](wasm/code-size-linear-vs-gc.md)
+> (`scripts/measure_backend_code_size.sh`). Short version: wasm-gc pays a fixed
+> ~4 KB runtime prelude to save ~6% per byte of user code, so it only comes out
+> smaller above ~35 KB of linear output.
+
 ### Measured 2026-07-25 (post-#1107 Phase 4 funcref-table minimization)
 
 The element section now registers only the table slots codegen actually
