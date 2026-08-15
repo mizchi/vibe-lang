@@ -228,6 +228,31 @@ test "lex_string_interp_nested_braces" {
   ]))
 }
 
+/// Keeps string semantics pinned across multiple SIMD-width ordinary runs.
+/// The sparse quote/backslash/control events must still be handled by the
+/// scalar state machine, including escapes and interpolation boundaries.
+test "lex_long_string_runs_preserve_sparse_events" with Exception {
+  match Array::get(lex("\"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ\\nabcdefghijklmnopqrstuvwxyz0123456789\""), 0) {
+    TString(value) => inspect(value, "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz0123456789"),
+    other => inspect(token_to_string(other), "TString")
+  }
+  match Array::get(lex("\"abcdefghijklmnopqrstuvwxyz0123456789\\{name}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\""), 0) {
+    TStringInterp(parts, _offsets) => {
+      inspect(Array::length(parts), "3")
+      inspect(Array::get(parts, 0), "abcdefghijklmnopqrstuvwxyz0123456789")
+      inspect(Array::get(parts, 1), "name")
+      inspect(Array::get(parts, 2), "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    }
+    ,
+    other => inspect(token_to_string(other), "TStringInterp")
+  }
+  match Array::get(lex("\"abcdefghijklmnopqrstuvwxyz日本語0123456789\nABCDEFGHIJKLMNOPQRSTUVWXYZ\""), 0) {
+    TString(value) => inspect(value, "abcdefghijklmnopqrstuvwxyz日本語0123456789\nABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+    other => inspect(token_to_string(other), "TString")
+  }
+  inspect(lex_err("\"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"), "unterminated string")
+}
+
 test "lex_integer" {
   assert(lex_match("42", [
     TInt(42),
