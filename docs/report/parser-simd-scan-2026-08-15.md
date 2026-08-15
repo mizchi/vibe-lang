@@ -64,6 +64,18 @@ Add specialized fused, unboxed scanners rather than exposing per-operation
 3. Teach the `#zero_alloc` call graph that these fused scalar-result builtins
    are allocation-free, using the builtin registry as the source of truth.
 
+Phase 1 of #1868 introduces the second scanner as
+`simd_scan_string_special_str`, with a scalar-oracle fixture on both linear and
+GC backends. It reports quote, backslash, or an ASCII control byte. Compiler
+source integration remains intentionally separate: it requires the next seed
+to know the builtin and must still pass the benchmark gates below.
+
+The isolated 1 KiB ordinary-run benchmark (`bench_simd_string_special.vibe`)
+measured 42 ns p50 for the fused scanner versus 2,417 ns p50 for the scalar
+byte loop on the same local Wasmtime runner, with 0 B/op in both lanes. This
+only establishes that the primitive has enough headroom: lexer integration
+still has to include dispatch/setup cost and representative-source A/B data.
+
 Do not start with a full classify/compress token tape. `Token` is still a rich
 enum and identifiers/string tokens materialize substrings, so making every
 punctuation position into a bitmap would add a second representation before

@@ -106,6 +106,7 @@ let bytes_equal_simd = (a: Bytes, off_a: Int, b: Bytes, off_b: Int, len: Int) ->
 | Phase 1 | Layer 2 mid-level パターンを vibe で実装 | `lib/@vibe/compiler/codegen/wasm_emit/simd_patterns.vibe` | ✅ done |
 | Phase 2 | V128 type を checker/codegen に追加、Layer 1 builtin 実装 | `lib/@vibe/compiler/core/types.vibe` (`CtNamed("V128", [])`)、`lib/@vibe/compiler/checker/builtins_simd.vibe` (intrinsic 署名)、`lib/@vibe/compiler/codegen/expr/compile_call.vibe` (16-byte box lowering)、`lib/@vibe/compiler/codegen/wasm_emit/simd.vibe` (0xFD emit) | ✅ done (#536/#696) |
 | Phase 3 | fused SIMD scan builtin (`simd_skip_ws`) | `compile_call.vibe` (codegen) / `builtins_simd.vibe` (checker) | ✅ builtin done; lexer 統合は**見送り**(下記) |
+| Phase 4 | String body event scan (`simd_scan_string_special_str`) | builtin registry / shared linear+gc body | ✅ builtin + scalar-oracle gate (#1868); lexer integration waits for seed bump and A/B |
 
 > Phase 2 (V128 first-class 型 + Layer 1 intrinsic の production 化) は #696 で着地。
 > `V128` は memory-boxed (16-byte heap block, ポインタ値 `|1` tag) として表現し、

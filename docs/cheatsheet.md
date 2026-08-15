@@ -1375,6 +1375,7 @@ not part of this API.
 | `simd_skip_ws(buf, pos, len) -> Int` | 空白でない最初の位置 |
 | `simd_scan_alnum(buf, pos, len) -> Int` | 識別子バイトの終端位置 |
 | `simd_scan_alnum_str(s, pos, len) -> Int` | 同上の `String` 版 |
+| `simd_scan_string_special_str(s, pos, len) -> Int` | quote / backslash / ASCII control byte の最初の位置 |
 
 > SIMD は linear memory 上でのみ成立する。`v128.load` はメモリアドレスを取る
 > 命令で、wasm-gc の配列はアドレス可能なメモリではないため、`(array i8)` から

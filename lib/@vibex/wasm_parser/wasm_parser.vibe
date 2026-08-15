@@ -1831,6 +1831,13 @@ export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
             // operand typing needed -- so they belong in this layer even though
             // "the type this function claims" sounds like a typing question.
             err = validate_function_type_indices(wasm_bytes, np, size)
+          }
+          else if sid == 7 {
+            // Export names and indices are consumed by the executor before it
+            // can return a trap tuple. Keep that parser inside this section;
+            // otherwise a guest-controlled name length reads the next section
+            // as export metadata and can trap the host process.
+            err = validate_export_section(wasm_bytes, np, size)
           } else {
             ()
           }
@@ -2264,6 +2271,53 @@ fn read_u32_leb_within(bytes: Bytes, offset: Int, end_pos: Int) -> (Int, Int, Bo
   } else {
     let (value, _) = read_uleb128(bytes, offset)
     (value, leb_end, true)
+  }
+}
+
+fn validate_export_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
+  let end_pos = offset + size
+  let (entry_count, pos0, count_ok) = read_u32_leb_within(wasm_bytes, offset, end_pos)
+  let mut pos = pos0
+  let mut i = 0
+  let mut err = if count_ok {
+    None
+  } else {
+    Some("export section has a truncated entry count")
+  }
+  while (i < entry_count) && (err == None) {
+    let (name_size, name_start, name_ok) = read_u32_leb_within(wasm_bytes, pos, end_pos)
+    if !name_ok || (name_size > (end_pos - name_start)) {
+      err = Some("export name runs outside the export section")
+    } else {
+      pos = name_start + name_size
+      if pos >= end_pos {
+        err = Some("export is missing its descriptor")
+      } else {
+        let kind = wasm_bytes[pos]
+        pos = pos + 1
+        let (_, next, index_ok) = read_u32_leb_within(wasm_bytes, pos, end_pos)
+        if kind > 4 {
+          err = Some("export has an unknown descriptor kind")
+        }
+        else if !index_ok {
+          err = Some("export has a truncated index")
+        } else {
+          pos = next
+        }
+      }
+    }
+    i = i + 1
+  }
+  if err != None {
+    err
+  }
+  else if i < entry_count {
+    Some("export section ends before all entries")
+  }
+  else if pos != end_pos {
+    Some("export section has trailing bytes")
+  } else {
+    None
   }
 }
 
