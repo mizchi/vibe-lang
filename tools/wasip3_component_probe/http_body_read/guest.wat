@@ -72,7 +72,8 @@
     (import "env" "memory" (memory 1))
 
     ;; Written into the IMPORTED (memhost) memory at instantiation.
-    ;;   64  "200\n\n" + up to 64 body bytes read from the stream
+    ;;   64  "200\n\n" + up to 64 body bytes read from the stream, plus one
+    ;;       slot past them (133) that only ever holds an OVERRUN byte
     ;;  300  diagnostics, each already carrying the status/header prefix
     ;;  512  waitable-set.wait payload[0] / [1]
     ;; The memhost's realloc bump starts at 1024, above all of these, so the
@@ -98,7 +99,16 @@
         (loop $again
           ;; One byte at a time: the shape a byte-oriented reader needs, and
           ;; the worst case for status handling.
-          (if (i32.ge_u (local.get $total) (i32.const 64))
+          ;;
+          ;; `> 64`, not `>= 64`: a 64-byte body whose end arrives as a
+          ;; SEPARATE zero-transfer completion (the buffered-producer shape
+          ;; ../host_stream_value measured) still has one read to go when
+          ;; `total` reaches 64. Erroring before it would make the documented
+          ;; 64-byte capacity actually 63, and only when the producer happens
+          ;; not to close inline -- a limit that moves with the runtime's
+          ;; buffering. The 65th byte lands at 133 and is never returned:
+          ;; reaching this branch means the body was too big for the probe.
+          (if (i32.gt_u (local.get $total) (i32.const 64))
             (then
               (call $task_return (i32.const 340) (i32.const 16))
               (return)

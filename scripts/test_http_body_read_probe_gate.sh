@@ -228,39 +228,72 @@ if [ "$ready" != "1" ]; then
   exit 1
 fi
 
-RESPONSE_FILE="$TMP_DIR/response.txt"
-CODE="$(curl -sS --max-time 10 -o "$RESPONSE_FILE" -w '%{http_code}' \
-  -X POST --data-binary "$BODY_TOKEN" "http://$ADDR/probe" 2>&1 || true)"
-OUT="$(cat "$RESPONSE_FILE" 2>/dev/null || true)"
-if ! kill -0 "$SERVE_PID" 2>/dev/null; then
-  echo "[body-read-probe] FAILED: spawned wasmtime exited while serving the probe request" >&2
-  cat "$SERVE_LOG" >&2 || true
+# The guest's answer is fully determined -- "200\n\n" followed by exactly the
+# bytes it read -- so assert the WHOLE response, not that the token appears
+# somewhere in it. A reader that duplicated, dropped or padded bytes around an
+# intact token would satisfy a substring check while having corrupted the body,
+# and this gate exists to say the body round-tripped.
+post_and_check() {
+  local what="$1" body="$2" response_file="$TMP_DIR/response-$1.txt" code out want
+  code="$(curl -sS --max-time 10 -o "$response_file" -w '%{http_code}' \
+    -X POST --data-binary "$body" "http://$ADDR/probe" 2>&1 || true)"
+  out="$(cat "$response_file" 2>/dev/null || true)"
+  if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+    echo "[body-read-probe] FAILED: spawned wasmtime exited while serving the $what request" >&2
+    cat "$SERVE_LOG" >&2 || true
+    exit 1
+  fi
+  if [ "$code" != "200" ]; then
+    echo "[body-read-probe] FAILED: $what POST returned '$code' (want 200)" >&2
+    cat "$SERVE_LOG" >&2 || true
+    exit 1
+  fi
+  # The guest returns its diagnostics as strings so a failure names the broken
+  # assumption instead of only reporting a mismatch.
+  case "$out" in
+    *ERR-EVENT*)
+      echo "[body-read-probe] FAILED: waitable-set.wait returned a non-STREAM_READ event" >&2; exit 1 ;;
+    *ERR-STATUS*)
+      echo "[body-read-probe] FAILED: a zero-transfer read reported a code other than the measured CLOSED=1" >&2; exit 1 ;;
+    *ERR-OVERRUN*)
+      echo "[body-read-probe] FAILED: $what body overran the probe guest's 64-byte buffer" >&2; exit 1 ;;
+  esac
+  # Compare the FILES, not shell strings. Command substitution drops NUL bytes
+  # and trailing newlines, so a guest that returned one byte too many -- the
+  # unwritten slot just past what it read -- compared EQUAL as a string while
+  # the response was a byte longer than it should be. `cmp` sees it.
+  want="$TMP_DIR/want-$what.txt"
+  printf '200\n\n%s' "$body" >"$want"
+  if ! cmp -s "$response_file" "$want"; then
+    echo "[body-read-probe] FAILED: $what response is not exactly '200\\n\\n' + the POSTed body" >&2
+    echo "[body-read-probe]   got  ($(wc -c <"$response_file") bytes): $(od -c "$response_file" | head -4)" >&2
+    echo "[body-read-probe]   want ($(wc -c <"$want") bytes): $(od -c "$want" | head -4)" >&2
+    cat "$SERVE_LOG" >&2 || true
+    exit 1
+  fi
+}
+
+post_and_check "token" "$BODY_TOKEN"
+echo "[body-read-probe] POST body came back byte for byte through the guest's stream.read loop"
+
+# Exactly the buffer's capacity, which is the interesting boundary and not a
+# round number chosen for symmetry: whether it fits depends on WHERE the end of
+# the stream is reported. A producer that closes inline with the final byte ends
+# the loop at `total` = 64; a buffered one reports the end as a separate
+# zero-transfer read, which only happens if the loop is still allowed to run at
+# `total` = 64. Asserting the exact echo here pins the guard at `> 64` rather
+# than `>= 64`, so the advertised capacity cannot quietly become 63 the next
+# time the runtime's buffering changes.
+BODY_64="$BODY_TOKEN$(printf 'y%.0s' $(seq 1 $((64 - ${#BODY_TOKEN}))))"
+if [ "${#BODY_64}" != "64" ]; then
+  echo "[body-read-probe] FAILED: the boundary body is ${#BODY_64} bytes, not 64" >&2
   exit 1
 fi
+post_and_check "64-byte" "$BODY_64"
+echo "[body-read-probe] a body of exactly the guest's 64-byte capacity round-trips too"
+
 kill "$SERVE_PID" 2>/dev/null || true
 wait "$SERVE_PID" 2>/dev/null || true
 SERVE_PID=""
 
-if [ "$CODE" != "200" ]; then
-  echo "[body-read-probe] FAILED: POST with a body returned '$CODE' (want 200)" >&2
-  cat "$SERVE_LOG" >&2 || true
-  exit 1
-fi
-# The guest returns its diagnostics as strings so a failure names the broken
-# assumption instead of just missing the token.
-case "$OUT" in
-  *ERR-EVENT*)
-    echo "[body-read-probe] FAILED: waitable-set.wait returned a non-STREAM_READ event" >&2; exit 1 ;;
-  *ERR-STATUS*)
-    echo "[body-read-probe] FAILED: a zero-transfer read reported a code other than the measured CLOSED=1" >&2; exit 1 ;;
-  *ERR-OVERRUN*)
-    echo "[body-read-probe] FAILED: the guest read 64 bytes without seeing end-of-stream" >&2; exit 1 ;;
-esac
-if ! printf '%s' "$OUT" | grep -qF "$BODY_TOKEN"; then
-  echo "[body-read-probe] FAILED: response body was '$OUT' (want the POSTed '$BODY_TOKEN')" >&2
-  cat "$SERVE_LOG" >&2 || true
-  exit 1
-fi
-
-echo "[body-read-probe] POST body came back through the guest's stream.read loop"
 echo "[body-read-probe] PASS: a guest can READ the wasi:http request body from its stream<u8> parameter (#1540)"

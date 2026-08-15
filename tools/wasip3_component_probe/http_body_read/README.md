@@ -71,7 +71,23 @@ The guest reads at most 64 bytes and answers `ERR-OVERRUN` past that. It is a
 probe: the point is that the bytes arrive through `stream.read`, not that this
 guest is a general reader. Diagnostics come back as recognisable strings
 (`ERR-EVENT`, `ERR-STATUS`, `ERR-OVERRUN`) so a failing gate names the broken
-assumption instead of only reporting a missing token.
+assumption instead of only reporting a mismatch.
+
+"At most 64" is exact, and the gate POSTs a 64-byte body to keep it that way.
+The boundary is not cosmetic: whether a 64-byte body fits depends on **where**
+the end of the stream is reported. A producer that closes inline with its final
+byte ends the loop at `total` = 64, but the buffered producer `host_stream_value`
+measured reports the end as a separate zero-transfer read — which only happens
+if the loop is still allowed to run at `total` = 64. Guarding with `>= 64`
+instead of `> 64` makes the real capacity 63, and only under one of the two
+producer shapes.
+
+The gate compares the whole response against `"200\n\n"` + the POSTed body, as
+**files** rather than shell strings. A substring check for a token would accept
+a reader that duplicated or padded bytes around it, and command substitution
+drops NUL bytes and trailing newlines — a guest returning one byte too many
+(the unwritten slot just past what it read) compared equal as a string and was
+caught only by `cmp`.
 
 ## Still open for #1540 scope 3/4
 
