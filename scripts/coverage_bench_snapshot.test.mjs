@@ -30,7 +30,7 @@ function run(reportDoc, prevDoc, { rawPrev } = {}) {
     }
     return spawnSync(process.execPath, args, {
       encoding: "utf8",
-      env: { ...process.env, GITHUB_SHA: "abc123def456" },
+      env: { ...process.env, GITHUB_SHA: "abc123def456", GITHUB_RUN_NUMBER: "1234" },
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -47,6 +47,9 @@ test("extracts union metrics and embeds the previous snapshot's rates as prev", 
   assert.equal(r.status, 0, r.stderr);
   const doc = JSON.parse(r.stdout);
   assert.equal(doc.commit, "abc123def456");
+  // Ordering token for ci.yml's latest-pointer guard (older overlapping runs
+  // must not clobber a newer coverage_latest.json).
+  assert.equal(doc.run_number, 1234);
   assert.deepEqual(doc.branch_union, { hit: 26442, total: 45986, rate: 57.5, exact: true });
   assert.deepEqual(doc.function_union, { hit: 12950, total: 14995, rate: 86.36 });
   assert.equal(doc.entries_passed, 582);

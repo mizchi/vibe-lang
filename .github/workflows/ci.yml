@@ -609,7 +609,27 @@ jobs:
               _build/bench-data/coverage_latest.json > _build/coverage_snapshot.json
             cat _build/coverage_snapshot.json | tr -d '\n' >> _build/bench-data/data/coverage.jsonl
             echo >> _build/bench-data/data/coverage.jsonl
-            cp _build/coverage_snapshot.json _build/bench-data/coverage_latest.json
+            # Latest-pointer guard (Codex P1): two overlapping main pushes can
+            # finish out of order — the retry loop absorbs the push race but
+            # not snapshot ordering. Replace coverage_latest.json only when
+            # this run is not OLDER than the stored one (run_number is
+            # monotonic across pushes and preserved on re-runs); a stale run
+            # still appends its history row above, it just leaves the latest
+            # pointer alone.
+            replace_latest="$(node -e '
+              const fs = require("fs");
+              const cur = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              let stored = null;
+              try { stored = JSON.parse(fs.readFileSync(process.argv[2], "utf8")); } catch {}
+              const ok = stored?.run_number == null || cur.run_number == null
+                || cur.run_number >= stored.run_number;
+              console.log(ok ? "yes" : "no");
+            ' _build/coverage_snapshot.json _build/bench-data/coverage_latest.json)"
+            if [ "$replace_latest" = "yes" ]; then
+              cp _build/coverage_snapshot.json _build/bench-data/coverage_latest.json
+            else
+              echo "::notice::coverage snapshot from an older run (${GITHUB_SHA::9}); history appended, latest pointer left at the newer snapshot"
+            fi
             (
               cd _build/bench-data
               git add -A

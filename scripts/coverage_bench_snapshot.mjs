@@ -50,6 +50,12 @@ if (prevPath && existsSync(prevPath)) {
 const doc = {
   schema: 1,
   commit: process.env.GITHUB_SHA || "",
+  // Monotonic ordering token for the latest-pointer guard in ci.yml: on push
+  // events the workflow run number increases with push order (and main only
+  // fast-forwards), while a RE-RUN of an old run keeps its original number —
+  // so "only replace coverage_latest.json when run_number >= stored" keeps an
+  // older overlapping run from clobbering a newer snapshot (Codex P1, #1883).
+  run_number: Number(process.env.GITHUB_RUN_NUMBER) || null,
   date: new Date().toISOString(),
   function_union: { hit: r.function_union.hit, total: r.function_union.total, rate: r.function_union.rate },
   branch_union: {
