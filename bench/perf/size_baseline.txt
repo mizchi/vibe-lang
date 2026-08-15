@@ -65,8 +65,42 @@
 # branch, and main is green at the old numbers, so the delta is this
 # change; if the author reads the growth as unintended, revert this entry
 # rather than widen the tolerance.
-closure_indirect 3135
-fib 780
-fizzbuzz 1358
-hello_world 816
-variant_float 5643
+#
+# 2026-08-15 rebaseline (#1666, derive-generated code now faces DCE): the
+# whole-program DCE pass moved from before `desugar_trait_dicts` to after it
+# (codegen/wasi/linked_compile.vibe), so the `T::equals` / `to_string` /
+# `compare` / `default` bodies that `desugar_derives` synthesizes per enum
+# and struct are now subject to reachability instead of being emitted
+# unconditionally. Attribution measured A/B against a stage2 built from
+# main@42156b0d8 in the same environment:
+#   sample            committed  main   this branch   this change's delta
+#   closure_indirect  3135       2456   2456          0
+#   fib               780        795    795           0
+#   fizzbuzz          1358       1384   1384          0
+#   hello_world       816        831    831           0
+#   variant_float     5643       4459   4089          -370  (-8.3%)
+# i.e. FOUR of the five moves below are MAIN'S OWN drift accumulated since
+# the previous rebaseline (already reflected in the "main" column before
+# this branch existed); only variant_float -- the one sample that declares
+# an enum -- moves from this change, and it moves DOWN. Ratcheted to the
+# measured values per the header policy so the gate protects the win.
+# Isolated control: a 5-variant enum no user code touches cost 784 B of
+# output before this change (1445 B vs 661 B for the same program without
+# it) and costs 0 B after (661 B vs 661 B).
+#
+# THIS ROW IS #1666'S REGRESSION GUARD. variant_float is the only sample that
+# declares an enum, so it is the only one whose bytes move when
+# derive-generated code stops facing DCE -- and 4459 is +9.0% over the 4089
+# below, well past this file's +2% tolerance. A compiler_gate.sh section that
+# asserted the same property directly was tried and removed: the gate compiles
+# through the raw 3-arg `cli_main` ABI under `VIBE_RC=0`, which routes to
+# `compile_wasi_module_no_dce_impl` -- the one lane `enable_late_dce = false`
+# deliberately exempts -- so it demanded pruning from the lane that contracts
+# not to prune. Measured on one stage2, varying only VIBE_RC: `VIBE_RC=0` gives
+# 1264/638 (no pruning, by design), VIBE_RC unset gives 661/661. The row below
+# tests the lane that actually ships.
+closure_indirect 2456
+fib 795
+fizzbuzz 1384
+hello_world 831
+variant_float 4089
