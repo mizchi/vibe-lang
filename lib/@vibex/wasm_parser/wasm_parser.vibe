@@ -1580,10 +1580,212 @@ export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
           } else {
             ()
           }
+          // #1745 (5): the code section is where a malformed module actually
+          // reaches the executor, so walk it here rather than leaving the
+          // section boundaries as the only thing checked.
+          if sid == 10 {
+            err = validate_code_section(wasm_bytes, np, size)
+          }
+          else if sid == 3 {
+            // Index-space bounds are decidable from the sections alone -- no
+            // operand typing needed -- so they belong in this layer even though
+            // "the type this function claims" sounds like a typing question.
+            err = validate_function_type_indices(wasm_bytes, np, size)
+          } else {
+            ()
+          }
           pos = np + size
         }
       }
     }
     err
   }
+}
+
+/// Step over one instruction: `(opcode, position after it)`.
+///
+/// A next position of -1 means "this stepper cannot say" -- either the opcode
+/// is not one it knows, or the instruction's immediates run past `end_pos`.
+/// Callers must treat -1 as "stop", never as "invalid": the prefixed families
+/// (0xFC bulk-memory, 0xFD simd, 0xFB gc) carry per-instruction immediates this
+/// does not enumerate yet, and reporting a module invalid because this function
+/// is incomplete would break the one-sided contract validate_structure keeps.
+///
+/// Immediate shapes are stated HERE rather than at each caller. The
+/// disassembler in @vibex/wasm_runtime carries its own copy today and is blind
+/// to the prefixed families as a result -- it missteps on exactly the gc
+/// instructions vibe's own backend now emits. Folding it onto this is the
+/// follow-up that removes the second copy.
+export fn next_instruction(code: Bytes, pc: Int, end_pos: Int) -> (Int, Int) {
+  if pc >= end_pos {
+    (0, 0 - 1)
+  } else {
+    let op = code[pc]
+    let p = pc + 1
+    if instruction_has_no_immediate(op) {
+      (op, p)
+    }
+    else if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) {
+      let (_, np) = read_uleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if (op == 0x02) || (op == 0x03) || (op == 0x04) {
+      // Blocktype: a negative value type, or a non-negative TYPE INDEX. Both
+      // are one signed LEB, which is why a typed-reference blocktype (the shape
+      // #1541 reserves) needs no special case here.
+      let (_, np) = read_sleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if (op == 0x41) || (op == 0x42) {
+      let (_, np) = read_sleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if op == 0x11 {
+      let (_, np) = read_uleb128(code, p)
+      let (_, np2) = read_uleb128(code, np)
+      (op, bounded(np2, end_pos))
+    }
+    else if instruction_is_memarg(op) {
+      let (_, np) = read_uleb128(code, p)
+      let (_, np2) = read_uleb128(code, np)
+      (op, bounded(np2, end_pos))
+    }
+    else if op == 0x0E {
+      // br_table: a vector of label indices, then the default.
+      let (cnt, np) = read_uleb128(code, p)
+      let mut q = np
+      let mut i = 0
+      while (i < cnt) && (q < end_pos) {
+        let (_, nq) = read_uleb128(code, q)
+        q = nq
+        i = i + 1
+      }
+      if i < cnt {
+        (op, 0 - 1)
+      } else {
+        let (_, nq) = read_uleb128(code, q)
+        (op, bounded(nq, end_pos))
+      }
+    } else {
+      (op, 0 - 1)
+    }
+  }
+}
+
+fn bounded(np: Int, end_pos: Int) -> Int {
+  if np > end_pos {
+    0 - 1
+  } else {
+    np
+  }
+}
+
+fn instruction_has_no_immediate(op: Int) -> Bool {
+  (op == 0x00) || (op == 0x01) || (op == 0x05) || (op == 0x0B) || (op == 0x0F) || (op == 0x1A) || (op == 0x1B) || ((op >= 0x45) && (op <= 0xC4))
+}
+
+fn instruction_is_memarg(op: Int) -> Bool {
+  ((op >= 0x28) && (op <= 0x3E))
+}
+
+/// Instruction-level structure of one function body: `None` when the walk found
+/// nothing wrong. Same one-sided contract as validate_structure -- an
+/// instruction this stepper cannot decode ends the walk without a verdict.
+export fn validate_code_body(code: Bytes, start: Int, end_pos: Int) -> Option[String] {
+  let mut pc = start
+  // A function body sits inside an implicit block, which its final `end`
+  // closes. Starting from zero made every valid body look like it had one
+  // `end` too many -- caught by the parity harness's false-rejection gate,
+  // which is the half that is supposed to be unforgiving.
+  let mut depth = 1
+  let mut err = None
+  let mut stop = false
+  while (pc < end_pos) && !stop && (err == None) {
+    let op = code[pc]
+    if instruction_is_reserved(op) {
+      err = Some("reserved opcode")
+    } else {
+      let (_, np) = next_instruction(code, pc, end_pos)
+      if np < 0 {
+        // Either an unknown-to-us opcode or an immediate past the end. The
+        // second IS invalid, but this stepper cannot tell them apart, so it
+        // stops rather than guess -- see next_instruction's contract.
+        stop = true
+      } else {
+        if (op == 0x02) || (op == 0x03) || (op == 0x04) {
+          depth = depth + 1
+        }
+        else if op == 0x0B {
+          depth = depth - 1
+        } else {
+          ()
+        }
+        if depth < 0 {
+          err = Some("more end opcodes than blocks")
+        } else {
+          ()
+        }
+        pc = np
+      }
+    }
+  }
+  err
+}
+
+/// Opcodes the core spec leaves unassigned. A byte landing here is invalid in
+/// any module, whatever its type, so it is safe to reject on -- unlike an
+/// opcode this stepper merely does not know.
+///
+/// Kept to the two ranges that are unassigned no matter which proposals are
+/// enabled. Everything above 0xC4 was in here at first and had to come out:
+/// 0xFB/0xFC/0xFD/0xFE are PREFIXES, and 0xD3 upward are assigned by gc and
+/// function-references (`ref.eq`, `br_on_null`, ...). Both mistakes rejected
+/// modules vibe's own backend emits, and both were caught by the parity
+/// harness's false-rejection gate rather than by reading an opcode table.
+///
+/// The narrower set catches less. That is the correct trade under a contract
+/// whose hard half is "never reject what the oracle accepts": a rule that is
+/// only right for core wasm cannot be applied to modules that are not.
+fn instruction_is_reserved(op: Int) -> Bool {
+  ((op >= 0x06) && (op <= 0x0A)) || (op == 0x27)
+}
+
+/// Every function body in a code section, stopping at the first problem.
+fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
+  let entries = parse_code_entries(wasm_bytes, offset, size)
+  let mut i = 0
+  let mut err = None
+  while (i < Array::length(entries)) && (err == None) {
+    let (body_offset, body_size, _) = Array::get(entries, i)
+    let (code_start, code_end) = get_code_body_range(wasm_bytes, body_offset, body_size)
+    if (code_start < 0) || (code_end > Bytes::length(wasm_bytes)) || (code_start > code_end) {
+      err = Some("function body runs outside the module")
+    } else {
+      err = validate_code_body(wasm_bytes, code_start, code_end)
+    }
+    i = i + 1
+  }
+  err
+}
+
+/// Every function's declared type index must name a type that exists.
+fn validate_function_type_indices(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
+  let (type_off, type_size) = find_section(wasm_bytes, 1)
+  let type_count = if type_off < 0 {
+    0
+  } else {
+    Array::length(parse_type_forms(wasm_bytes, type_off, type_size))
+  }
+  let indices = parse_functions(wasm_bytes, offset, size)
+  let mut i = 0
+  let mut err = None
+  while (i < Array::length(indices)) && (err == None) {
+    if Array::get(indices, i) >= type_count {
+      err = Some("function declares a type index that does not exist")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  err
 }
