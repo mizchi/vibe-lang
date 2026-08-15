@@ -13,7 +13,7 @@ import ../lib/@vibe/compiler/core {
 }
 
 import ../lib/@vibe/compiler/contract {
-  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_package_version, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump, contract_facade_source
+  parse_contract_program, check_contract, classify_contract_stmts, contract_hash, package_hash_from_sources, extract_package_version, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump, contract_facade_source
 }
 
 import ../lib/@vibe/core {
@@ -123,8 +123,12 @@ test "bodyless type arity is tracked and enforced (#739)" {
   assert_eq(Array::length(errs), 1)
   assert(String::contains(errs[0], "arity mismatch"))
   // surface lines carry the arity so Box -> Box[T] classifies as major
-  let l_box0 = contract_surface_lines(decls, [("Box", 0)], no_type_defs())
-  let l_box1 = contract_surface_lines(decls, [("Box", 1)], no_type_defs())
+  let l_box0 = contract_surface_lines(decls, [
+    ("Box", 0)
+  ], no_type_defs())
+  let l_box1 = contract_surface_lines(decls, [
+    ("Box", 1)
+  ], no_type_defs())
   assert(classify_contract_change(l_box0, l_box1) == "major")
 }
 
@@ -154,13 +158,21 @@ test "content-addressing hashes (#730 D-1)" {
   assert(String::starts_with(h1, "ct:sha1:"))
   let (d3, o3, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> String\nopaque type Counter\nfn get(c: Counter) -> Int"))
   assert(!(contract_hash(d3, o3, no_type_defs()) == h1))
-
   // package_hash: path-order-insensitive, content-sensitive.
-  let p1 = package_hash_from_sources([("index.vibei", "fn a() -> Int"), ("./impl.vibe", "export fn a() -> Int { 1 }")])
-  let p2 = package_hash_from_sources([("./impl.vibe", "export fn a() -> Int { 1 }"), ("index.vibei", "fn a() -> Int")])
+  let p1 = package_hash_from_sources([
+    ("index.vibei", "fn a() -> Int"),
+    ("./impl.vibe", "export fn a() -> Int { 1 }")
+  ])
+  let p2 = package_hash_from_sources([
+    ("./impl.vibe", "export fn a() -> Int { 1 }"),
+    ("index.vibei", "fn a() -> Int")
+  ])
   assert(p1 == p2)
   assert(String::starts_with(p1, "pkg:sha1:"))
-  let p3 = package_hash_from_sources([("index.vibei", "fn a() -> Int"), ("./impl.vibe", "export fn a() -> Int { 2 }")])
+  let p3 = package_hash_from_sources([
+    ("index.vibei", "fn a() -> Int"),
+    ("./impl.vibe", "export fn a() -> Int { 2 }")
+  ])
   assert(!(p3 == p1))
 }
 
@@ -174,7 +186,6 @@ test "require pin extraction and validation (#730 D-2)" {
   assert(is_package_pin("#pkg:sha1:dfd1c758bb64203416db0b64b5854882a43abc11"))
   assert(!is_package_pin("#pkg:sha1:dfd1"))
   assert(!is_package_pin("#ct:sha1:dfd1c758bb64203416db0b64b5854882a43abc11"))
-
   let src = "require @d2/pkg 1.0.0 = #pkg:sha1:dfd1c758bb64203416db0b64b5854882a43abc11\n\nimport @d2/pkg { triple }\nlet x = 1"
   let (pins, blanked) = extract_require_pins(src)
   assert_eq(Array::length(pins), 1)
@@ -202,12 +213,16 @@ test "malformed require lines are rejected (#730 D-2)" {
   let bad1 = handle {
     let _ = extract_require_pins("require @a/b 1.2 = #pkg:sha1:dfd1c758bb64203416db0b64b5854882a43abc11\n")
     false
-  } with Exception { Throw(_) => true }
+  } with Exception {
+    Throw(_) => true
+  }
   assert(bad1)
   let bad2 = handle {
     let _ = extract_require_pins("require @a/b 1.2.3 = #bad\n")
     false
-  } with Exception { Throw(_) => true }
+  } with Exception {
+    Throw(_) => true
+  }
   assert(bad2)
 }
 
@@ -235,7 +250,6 @@ test "semver bump verification (#732 Phase F)" {
   assert(semver_bump_kind("1.2.3", "2.0.0") is Some("major"))
   assert(semver_bump_kind("1.2.3", "1.4.0") is None)
   assert(semver_bump_kind("1.2.3", "1.2.3") is None)
-
   let (d1, o1, _) = parse_contract_program(lex("fn a(x: Int) -> Int"))
   let l1 = contract_surface_lines(d1, o1, no_type_defs())
   let (d2, o2, _) = parse_contract_program(lex("fn a(x: Int) -> Int\nfn b(x: Int) -> Int"))
@@ -357,14 +371,18 @@ test "re-exported symbol matching a declared opaque type is not reported (#847)"
 test "facade generation allocates a declaration satisfied only by re-export (#847)" {
   let (decls, _, _) = parse_contract_program(lex("fn helper(x: Int) -> Int"))
   let unit_stmts = parse_program(lex("export ./other.vibe { helper }"))
-  let facade = contract_facade_source(decls, no_opaques(), no_type_defs(), [("./mid.vibe", unit_stmts)], "")
+  let facade = contract_facade_source(decls, no_opaques(), no_type_defs(), [
+    ("./mid.vibe", unit_stmts)
+  ], "")
   assert(String::contains(facade, "helper"))
 }
 
 test "facade generation allocates a re-exported opaque type (#847)" {
   let (decls, opaques, _) = parse_contract_program(lex("opaque type Counter"))
   let unit_stmts = parse_program(lex("export ./other.vibe { Counter }"))
-  let facade = contract_facade_source(decls, opaques, no_type_defs(), [("./mid.vibe", unit_stmts)], "")
+  let facade = contract_facade_source(decls, opaques, no_type_defs(), [
+    ("./mid.vibe", unit_stmts)
+  ], "")
   assert(String::contains(facade, "Counter"))
 }
 
@@ -396,4 +414,36 @@ test "version directive: malformed forms are rejected (#754)" {
     Throw(msg) => msg
   }
   assert(String::contains(dup, "duplicate version directive"))
+}
+
+test "sibling re-definition of a transparent contract type is rejected (#1879)" {
+  let (decls, opaques, extra) = parse_contract_program(lex("enum Hue {\n  Crimson;\n  Teal(Int)\n}\nfn describe(h: Hue) -> Int"))
+  let (_, type_defs) = classify_contract_stmts(extra)
+  let impls = parse_program(lex("enum Hue {\n  Crimson;\n  Teal(Int)\n}\nexport fn describe(h: Hue) -> Int {\n  0\n}"))
+  let errors = check_contract(decls, opaques, impls, type_defs)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(errors) {
+    if String::contains(Array::get(errors, i), "transparent contract type 'Hue' is re-defined") {
+      found = true
+    }
+    i = i + 1
+  }
+  assert(found)
+}
+
+test "an implementation that does NOT re-define the contract type passes (#1879)" {
+  let (decls, opaques, extra) = parse_contract_program(lex("enum Hue {\n  Crimson;\n  Teal(Int)\n}\nfn describe(h: Hue) -> Int"))
+  let (_, type_defs) = classify_contract_stmts(extra)
+  let impls = parse_program(lex("export fn describe(h: Hue) -> Int {\n  0\n}"))
+  let errors = check_contract(decls, opaques, impls, type_defs)
+  assert_eq(Array::length(errors), 0)
+}
+
+test "an opaque contract type MUST be defined by a sibling and stays accepted (#1879)" {
+  let (decls, opaques, extra) = parse_contract_program(lex("opaque type Counter\nfn counter_new(n: Int) -> Counter"))
+  let (_, type_defs) = classify_contract_stmts(extra)
+  let impls = parse_program(lex("export struct Counter {\n  v: Int\n}\nexport fn counter_new(n: Int) -> Counter {\n  Counter::{ v: n }\n}"))
+  let errors = check_contract(decls, opaques, impls, type_defs)
+  assert_eq(Array::length(errors), 0)
 }
