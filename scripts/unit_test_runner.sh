@@ -57,6 +57,14 @@ EXCLUDE_PATTERNS=(
   # is that same category, not something this generic linear-backend runner
   # can be made to pass.
   '^fixtures/to_string_bool_gc_test\.vibe$'
+  # wasm-gc backend only, and for a reason that is NOT a gc gap: this fixture
+  # calls builtins through their source aliases (`StringBuilder::build`,
+  # `String::byte_at`) from inside a closure, and the LINEAR backend emits an
+  # invalid module for that while reporting a successful compile (#1811).
+  # compiler_gate.sh 40h-3 runs it on the gc lane, where it passes. Widen it
+  # back to this runner once #1811 lands -- keeping it here would pin a
+  # known-broken linear artifact instead of testing the capture scan.
+  '^fixtures/gc_closure_builtin_alias_test\.vibe$'
   # wasi p3 http client: currently failing, under active work on a separate
   # branch. Remove once that lands.
   '^fixtures/runtime/http_p3_client_test\.vibe$'
