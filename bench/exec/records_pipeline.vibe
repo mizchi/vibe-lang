@@ -1,0 +1,79 @@
+// bench/exec scenario: structs + Option pipeline — record construction,
+// field updates through rebuild, Option-returning lookups and match chains.
+// Deterministic output; see bench/exec/README.md.
+
+struct Account {
+  id: Int; balance: Int; tier: Int
+} derive (Eq)
+
+fn find(accounts: Array[Account], id: Int) -> Option[Account] {
+  let mut i = 0
+  let n = Array::length(accounts)
+  while i < n {
+    let a = Array::get(accounts, i)
+    if a.id == id {
+      return Some(a)
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn apply_tx(a: Account, amount: Int) -> Account {
+  let nb = a.balance + amount
+  let nt = if nb > 5000 {
+    2
+  } else if nb > 1000 {
+    1
+  } else {
+    0
+  }
+  Account::{
+    id: a.id, balance: nb, tier: nt
+  }
+}
+
+let main = () -> Int {
+  let accounts: Array[Account] = [
+  ]
+  let mut i = 0
+  while i < 64 {
+    Array::push(accounts, Account::{
+      id: i, balance: i * 100, tier: 0
+    })
+    i = i + 1
+  }
+  let mut seed = 99
+  let mut applied = 0
+  let mut missed = 0
+  let mut tx = 0
+  while tx < 4000 {
+    seed = (seed * 48271) % 2147483647
+    let id = seed % 80
+    match find(accounts, id) {
+      Some(a) => {
+        let updated = apply_tx(a, seed % 400 - 150)
+        Array::set(accounts, id, updated)
+        applied = applied + 1
+      },
+      None => {
+        missed = missed + 1
+      }
+    }
+    tx = tx + 1
+  }
+  let mut total = 0
+  let mut tiers = 0
+  let mut j = 0
+  while j < Array::length(accounts) {
+    let a = Array::get(accounts, j)
+    total = total + a.balance
+    tiers = tiers + a.tier
+    j = j + 1
+  }
+  println(Int::to_string(applied))
+  println(Int::to_string(missed))
+  println(Int::to_string(total))
+  println(Int::to_string(tiers))
+  0
+}
