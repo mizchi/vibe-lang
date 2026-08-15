@@ -1110,7 +1110,7 @@ function u64be(value) {
   return out;
 }
 
-function regularFilePayload(filePath) {
+function regularFilePayload(filePath, config) {
   const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
   let fd;
   try {
@@ -1118,6 +1118,11 @@ function regularFilePayload(filePath) {
     const before = fs.fstatSync(fd, { bigint: true });
     if (!before.isFile()) throw new Error(`unsupported policy stat target: ${filePath}`);
     const payload = fs.readFileSync(fd);
+    // Unit tests inject a synchronous mutation here to prove the pre/post
+    // identity check; production configurations never carry this hook.
+    if (typeof config?.testBeforeFinalFileStat === "function") {
+      config.testBeforeFinalFileStat(filePath);
+    }
     const after = fs.fstatSync(fd, { bigint: true });
     if (statIdentity(before) !== statIdentity(after) || BigInt(payload.length) !== after.size) {
       throw new Error(`unstable policy stat observation: ${filePath}`);
@@ -1164,7 +1169,7 @@ function contentStatDigest(filePath, config) {
   let payload;
   if (info.isFile()) {
     kind = 1;
-    payload = regularFilePayload(target.path);
+    payload = regularFilePayload(target.path, config);
   } else if (info.isDirectory()) {
     kind = 2;
     payload = directoryPayload(target.path);
@@ -1211,16 +1216,6 @@ function contentStatToken(filePath, config = policyStatTokenConfig, projectedOve
   }
   recordContentStatDigest(config, 1, result.digest);
   return projectContentStatDigest(result.digest, config, projectedOverride);
-}
-
-function contentStatHashParts(filePath, config = policyStatTokenConfig) {
-  const result = contentStatDigest(filePath, config);
-  if (result.finalSymlink) throw new Error("policy Preview2 metadata hash does not follow symlinks");
-  recordContentStatDigest(config, 2, result.digest);
-  return {
-    lower: result.digest.readBigUInt64BE(0),
-    upper: result.digest.readBigUInt64BE(8),
-  };
 }
 
 function policyStatAttestation(config = policyStatTokenConfig) {
@@ -1430,9 +1425,7 @@ function createPreview2FilesystemHost(projectRoot) {
           writeResultErr(retptr, 44);
           return;
         }
-        const { lower, upper } = policyStatTokenConfig
-          ? contentStatHashParts(filePath)
-          : buildFsMetadataHashParts(filePath);
+        const { lower, upper } = buildFsMetadataHashParts(filePath);
         writeU8(mem, retptr, 0);
         writeU64LE(mem, retptr + 8, lower);
         writeU64LE(mem, retptr + 16, upper);
@@ -3474,7 +3467,6 @@ module.exports = {
   buildFsMetadataHashParts,
   configurePolicyStatToken,
   contentStatDigest,
-  contentStatHashParts,
   contentStatToken,
   parseArgs,
   policyStatAttestation,

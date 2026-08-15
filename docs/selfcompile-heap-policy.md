@@ -83,8 +83,10 @@ so a PR cannot make its own workload easier.
 
 The trusted Node runner accepts `--policy-stat-token content-v1` only together
 with an absolute `--policy-stat-root`. These controller-owned arguments occur
-before the wasm path, are removed by host CLI parsing, and are absent from the
-guest argv and environment. The runner requires its physical CWD to equal the
+before the wasm path and are removed by host CLI parsing. The controller does
+not put either selector in its constructed environment, and the runner does
+not include them in passthrough guest argv. The runner requires its physical
+CWD to equal the
 physical root, rejects lexical/physical escape and ancestor symlinks, returns
 `-1` for a final symlink, and fails on missing, racing, or unsupported entries.
 Default raw Node, Rust, Preview2, compiler, and cache behavior is unchanged.
@@ -94,14 +96,15 @@ UTF-8-byte-sorted immediate `(name length, name, lstat kind)` sequence. The
 digest is:
 
 ```text
-SHA-256("vibe:selfcompile-policy:stat-token:v1\\0" || kind || u64be(length) || payload)
+SHA-256(ASCII("vibe:selfcompile-policy:stat-token:v1") || NUL || kind || u64be(length) || payload)
 ```
 
 The raw token is `2^60 | (first_u64be & (2^60 - 1))`, always a positive
 19-digit Vibe `Int`; `0` is never emitted. A process-local full-digest registry
-fails closed on a 60-bit projection collision. Preview2 policy mode uses the
-first 128 digest bits. Paths are authority inputs, not digest inputs, because
-all production cache callers already key by path. Content hashing is expected
+fails closed on a 60-bit projection collision. Preview2 remains on its existing
+metadata hash even when the raw-only policy selector is present. Paths are
+authority inputs, not digest inputs, because all production cache callers
+already key by path. Content hashing is expected
 to cost more host I/O and is intentionally confined to this policy mode.
 
 The acceptance smoke ran commit `14891ea0` twice through independent fresh

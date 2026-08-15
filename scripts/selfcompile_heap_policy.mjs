@@ -471,13 +471,14 @@ export function trustedRunnerInvocation({ root, stage2, inputPath, outputPath })
   };
 }
 
-function measureWithTrustedRunner({ root, stage2, inputPath, workDir, env }) {
+function measureWithTrustedRunner({ root, stage2, inputPath, workDir, env, testProcessRunner = null }) {
   rmSync(workDir, { recursive: true, force: true });
   const cacheDir = join(workDir, "cache");
   const outputPath = join(workDir, "out.wasm");
   mkdirSync(cacheDir, { recursive: true });
   const invocation = trustedRunnerInvocation({ root, stage2, inputPath, outputPath });
-  const result = spawnSync(invocation.command, invocation.args, {
+  const processRunner = testProcessRunner ?? spawnSync;
+  const result = processRunner(invocation.command, invocation.args, {
     cwd: root,
     env: {
       ...env,
@@ -508,7 +509,7 @@ function measureWithTrustedRunner({ root, stage2, inputPath, workDir, env }) {
   return parseRunnerMeasurement(String(result.stderr ?? ""));
 }
 
-async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, testDriver }) {
+async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, testDriver, testProcessRunner }) {
   const root = resetWorkspaceRoot(lease);
   await archiveTree(repo, tree, root);
   // The merge tree is untrusted. Validate before writing the pinned base input
@@ -520,8 +521,12 @@ async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, te
   const stage2 = join(generationDir, "stage2.wasm");
   const workDir = join(root, "_build", "selfcompile-policy", "kpi-work");
 
+  if (testProcessRunner && (process.env.VIBE_HEAP_POLICY_TEST_MODE !== "1" || !testDriver)) {
+    fail("test-driver-forbidden");
+  }
   if (testDriver) {
     if (process.env.VIBE_HEAP_POLICY_TEST_MODE !== "1") fail("test-driver-forbidden");
+    if (testProcessRunner !== undefined && typeof testProcessRunner !== "function") fail("test-driver-forbidden");
     runChecked(process.execPath, [testDriver, "build"], root, {
       ...env,
       POLICY_REVISION: label,
@@ -550,7 +555,7 @@ async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, te
   const statTokenAttestations = [];
   for (let trial = 1; trial <= 2; trial += 1) {
     let output;
-    if (testDriver) {
+    if (testDriver && !testProcessRunner) {
       output = runChecked(process.execPath, [testDriver, "measure", String(trial)], root, {
         ...env,
         POLICY_REVISION: label,
@@ -560,7 +565,14 @@ async function measureTreeOnce({ repo, tree, label, lease, inputBlob, policy, te
         POLICY_WORK_DIR: workDir,
       }, "build-failed", true);
     } else {
-      const measurement = measureWithTrustedRunner({ root, stage2, inputPath, workDir, env });
+      const measurement = measureWithTrustedRunner({
+        root,
+        stage2,
+        inputPath,
+        workDir,
+        env,
+        testProcessRunner,
+      });
       trials.push(measurement.heap);
       statTokenAttestations.push(measurement.attestation);
       continue;
@@ -659,8 +671,26 @@ async function runControllerWithLease(options, lease) {
   const baseCommitTime = Number(git(repo, ["show", "-s", "--format=%ct", base]).trim()) * 1000;
   const asOfMs = options.asOf ? Date.parse(options.asOf) : Date.now();
   if (!Number.isFinite(asOfMs)) fail("invalid-arguments", { argument: "--as-of" });
-  const baseResult = await measureTree({ repo, tree: baseTree, label: "base", lease, inputBlob, policy, testDriver: options.testDriver });
-  const currentResult = await measureTree({ repo, tree: currentTree, label: "current", lease, inputBlob, policy, testDriver: options.testDriver });
+  const baseResult = await measureTree({
+    repo,
+    tree: baseTree,
+    label: "base",
+    lease,
+    inputBlob,
+    policy,
+    testDriver: options.testDriver,
+    testProcessRunner: options.testProcessRunner,
+  });
+  const currentResult = await measureTree({
+    repo,
+    tree: currentTree,
+    label: "current",
+    lease,
+    inputBlob,
+    policy,
+    testDriver: options.testDriver,
+    testProcessRunner: options.testProcessRunner,
+  });
   if (baseTree === currentTree) {
     if (baseResult.stage2_sha256 !== currentResult.stage2_sha256) {
       fail("nondeterministic-build", {

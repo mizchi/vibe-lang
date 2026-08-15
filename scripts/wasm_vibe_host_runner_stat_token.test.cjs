@@ -4,13 +4,13 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
   buildFsMetadataHashParts,
   configurePolicyStatToken,
-  contentStatHashParts,
   contentStatToken,
   parseArgs,
   projectContentStatDigest,
@@ -79,6 +79,17 @@ test("same-size content changes invalidate even with restored mtime", () => {
   } finally { fs.rmSync(f.outer, { recursive: true, force: true }); }
 });
 
+test("pre/post fstat rejects a deterministic mutation during the read", () => {
+  const f = fixture();
+  try {
+    const file = path.join(f.root, "racy.vibe");
+    fs.writeFileSync(file, "before");
+    const c = config(f.root);
+    c.testBeforeFinalFileStat = target => fs.writeFileSync(target, "changed-during-read");
+    assert.throws(() => contentStatToken(file, c), /unstable policy stat observation/);
+  } finally { fs.rmSync(f.outer, { recursive: true, force: true }); }
+});
+
 test("directories are byte-sorted, fixed-width, and invalidate on entry changes", () => {
   const f = fixture();
   try {
@@ -129,6 +140,24 @@ test("unsupported nonregular entries fail closed", { skip: process.platform === 
   } finally { fs.rmSync(f.outer, { recursive: true, force: true }); }
 });
 
+test("Unix sockets fail closed as targets and directory entries", { skip: process.platform === "win32" }, async () => {
+  const f = fixture();
+  const socketPath = path.join(f.root, "socket");
+  const server = net.createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    const c = config(f.root);
+    assert.throws(() => contentStatToken(socketPath, c), /unsupported/);
+    assert.throws(() => contentStatToken(f.root, c), /unsupported directory entry/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(f.outer, { recursive: true, force: true });
+  }
+});
+
 test("truncation collisions fail closed", () => {
   const f = fixture();
   try {
@@ -141,7 +170,7 @@ test("truncation collisions fail closed", () => {
   } finally { fs.rmSync(f.outer, { recursive: true, force: true }); }
 });
 
-test("default metadata helper remains metadata-sensitive; Preview2 policy hash is deterministic", () => {
+test("default metadata helper remains metadata-sensitive", () => {
   const a = fixture();
   const b = fixture();
   try {
@@ -152,7 +181,6 @@ test("default metadata helper remains metadata-sensitive; Preview2 policy hash i
     fs.utimesSync(ap, new Date(1_000), new Date(1_000));
     fs.utimesSync(bp, new Date(8_000), new Date(8_000));
     assert.notDeepEqual(buildFsMetadataHashParts(ap), buildFsMetadataHashParts(bp));
-    assert.deepEqual(contentStatHashParts(ap, config(a.root)), contentStatHashParts(bp, config(b.root)));
   } finally {
     fs.rmSync(a.outer, { recursive: true, force: true });
     fs.rmSync(b.outer, { recursive: true, force: true });

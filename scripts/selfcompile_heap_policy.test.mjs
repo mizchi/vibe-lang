@@ -358,16 +358,49 @@ test("trusted runner selectors are controller-owned and precede wasm guest argv"
 test("materialized KPI shell and runner spoofing cannot select the trusted runner", async () => {
   const fixture = makeRepository();
   const driver = makeDriver(fixture.outer);
+  const forgedMarker = join(fixture.outer, "forged-runner-invoked");
   mkdirSync(join(fixture.repo, "scripts"));
-  writeFileSync(join(fixture.repo, "scripts/selfcompile_kpi.sh"), "#!/bin/sh\necho forged\n");
-  writeFileSync(join(fixture.repo, "scripts/wasm_vibe_host_runner.js"), "throw new Error('forged')\n");
+  writeFileSync(
+    join(fixture.repo, "scripts/selfcompile_kpi.sh"),
+    `#!/bin/sh\ntouch ${JSON.stringify(forgedMarker)}\nexit 91\n`,
+  );
+  writeFileSync(
+    join(fixture.repo, "scripts/wasm_vibe_host_runner.js"),
+    `require("node:fs").writeFileSync(${JSON.stringify(forgedMarker)}, "invoked")\nprocess.exit(92)\n`,
+  );
   const head = commitAll(fixture.repo, "spoof materialized harness", "2026-08-01T01:00:00Z");
+  const invocations = [];
+  const testProcessRunner = (commandName, args, options) => {
+    invocations.push({ commandName, args: [...args], cwd: options.cwd, env: { ...options.env } });
+    assert.equal(commandName, "bash");
+    assert.ok(args[0].endsWith("/scripts/run_wasm_vibe_host_runner.sh"));
+    assert.equal(args[0].startsWith(options.cwd), false, "runner must come from controller checkout");
+    assert.deepEqual(args.slice(1, 5), [
+      "--policy-stat-token", "content-v1", "--policy-stat-root", options.cwd,
+    ]);
+    assert.equal(Object.keys(options.env).some(key => key.includes("POLICY_STAT_TOKEN")), false);
+    assert.deepEqual(args.slice(-1), ["__no_entry__"]);
+    const outputPath = args.at(-2);
+    mkdirSync(dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, "mock output wasm");
+    return {
+      error: null,
+      status: 0,
+      signal: null,
+      stdout: "",
+      stderr:
+        "[policy-stat-token] mode=content-v1 calls=1 unique=1 transcript=" + "a".repeat(64) + "\n" +
+        "[wasm-memory] run pages=1 bytes=65536 heap_ptr=1000 host_alloc_ptr=0 rss=1\n",
+    };
+  };
   const result = await controller({
     repo: fixture.repo, base: fixture.initial, head, synthesizeMerge: true,
-    prNumber: "1801", testDriver: driver,
+    prNumber: "1801", testDriver: driver, testProcessRunner,
   });
   assert.equal(result.decision, "pass");
   assert.equal(result.stat_token_mode, "content-v1");
+  assert.equal(invocations.length, 4, "both trials for base/current must use measureWithTrustedRunner");
+  assert.equal(existsSync(forgedMarker), false, "materialized spoof must never execute");
 });
 
 test("controller consumes one new base-bound budget and ignores a permissive head policy", async () => {
