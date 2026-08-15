@@ -1152,15 +1152,22 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   // `edp_renamed` feed the culprit diagnostic below: only names the walk
   // actually generated may be un-mangled back to their original spelling.
   let user_edpsh = empty_str_array()
-  let edp_renamed = edp_alpha_rename_shadowed(stmts, effect_defs, fn_defs, user_edpsh)
+  // #1875 R2: every fn row parsed once (interned by spelling) -- both the
+  // alpha-rename seed and the migration planner query this table instead of
+  // re-splitting every row string per declared effect.
+  let edp_es_names = array_empty()
+  let edp_es_members_list = array_empty()
+  edp_es_collect_into(stmts, edp_es_names, edp_es_members_list)
+  let fn_row_labels = edp_fn_row_label_table(fn_defs, edp_es_names, edp_es_members_list)
+  let edp_renamed = edp_alpha_rename_shadowed(stmts, effect_defs, fn_defs, user_edpsh, fn_row_labels)
   let keep = dce_keep_flags(stmts, [
     entry_name
   ])
-  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs)
+  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels)
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
-    edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs)
+    edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels)
     pi = pi + 1
   }
   // V2 step 3: the replay frontier is gone from codegen, so any non-Error
@@ -2502,15 +2509,12 @@ fn edp_ar_expr(expr: Expr, seed: Array[String], env_names: Array[String], env_re
 /// so post-rename a prefixed name is compiler-generated iff the walk ran and
 /// the name is NOT in `user_prefixed` (Codex review, PR #1594: culprit
 /// diagnostics must not strip a prefix the user spelled themselves).
-fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], user_prefixed: Array[String]) -> Bool {
-  let es_names = array_empty()
-  let es_members_list = array_empty()
-  edp_es_collect_into(stmts, es_names, es_members_list)
+fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], user_prefixed: Array[String], row_labels: Array[Array[String]]) -> Bool {
   let seed = empty_str_array()
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, _) = Array::get(effect_defs, ei)
-    let needing = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+    let needing = edp_needing_names_tab(fn_defs, row_labels, ename)
     let mut ni = 0
     while ni < Array::length(needing) {
       let nm = Array::get(needing, ni)
@@ -3402,7 +3406,7 @@ fn edp_needing_name_reachable(name: String, fn_defs: Array[(Int, Bool, Bool, Str
 /// dead needing function can never cause a silent miscompile, only recover
 /// eligibility that a dead function's un-provable body would otherwise sink
 /// for the whole effect.
-fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String], row_labels: Array[Array[String]]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -3418,7 +3422,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
-    let needing_all = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+    let needing_all = edp_needing_names_tab(fn_defs, row_labels, ename)
     if Array::length(needing_all) == 0 && !edp_str_array_contains(plan_handle_names, ename) {
       // Unused effect (#1875): no fn carries its row and nothing handles
       // it -- there is nothing to plan, and every scan below reduces to
@@ -3443,8 +3447,8 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // so both views classify these names identically.
       let pf_inert = edp_pure_fn_names(fn_defs)
       edp_append_free_host_inert_names(stmts, pf_inert)
-      edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert)
-      edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert)
+      edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
+      edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
       let needing_full = array_empty()
       let mut pfi = 0
       while pfi < Array::length(needing_sd) {
@@ -3482,7 +3486,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       } else {
         ()
       }
-      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
+      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs, row_labels) {
         Some(plan) => if escaped == "" {
           Array::push(plans, plan)
         } else {
@@ -3507,7 +3511,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
           if Array::length(needing_live) == Array::length(needing_full) {
             ()
           } else {
-            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, fn_defs) {
+            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, fn_defs, row_labels) {
               Some(plan2) => {
                 Array::push(plans, plan2)
                 planned2 = true
@@ -3568,7 +3572,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
 /// when there is neither a needing function NOR any proven owner param
 /// (nothing to gain; matches the old behavior for every previously-planned
 /// program exactly).
-fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   // ADR-0076 追記31 Vertical C (replay 撤去): a handle site EXISTING is
   // itself worth planning for — a self-discharging dispatcher whose body
   // performs the effect directly (lsp_server.vibe's Lsp handler is the
@@ -3578,11 +3582,11 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
   // decides migration site-by-site, and zero collected sites still bails
   // (edp_all_sites_eligible returns false on an empty site list).
   let handle_sites = edp_collect_handle_sites(stmts, ename)
-  let worth = Array::length(needing) > 0 || Array::length(handle_sites) > 0 || edp_any_handle_owner_cp(stmts, ename, needing, fn_defs)
+  let worth = Array::length(needing) > 0 || Array::length(handle_sites) > 0 || edp_any_handle_owner_cp(stmts, ename, needing, fn_defs, row_labels)
   if !worth {
     None
   } else {
-    if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs) {
+    if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs, row_labels) {
       Some((ename, ops, needing, handle_sites))
     } else {
       None
@@ -3593,11 +3597,11 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
 /// Does ANY top-level function have at least one proven self-discharging-
 /// owner closure param for `ename`? Read-only pre-scan used solely to
 /// decide whether an empty-`needing` effect is still worth planning.
-fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
+fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
-  edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns)
-  edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
+  edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -3914,6 +3918,83 @@ fn edp_needing_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], 
   while i < Array::length(fn_defs) {
     let (_, _, _, name, _, row) = Array::get(fn_defs, i)
     if edp_row_is_exactly(row, ename, es_names, es_members_list) {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1875 R2: one row string parsed into its resolved effect label set --
+/// the split/trim/effectset-resolve edp_row_is_exactly performs, done once.
+/// A bare effect name resolves to itself (pass-through), so a label-set
+/// containment check answers exactly edp_row_is_exactly's question
+/// (including its `row == ename` fast path: the parsed set of "Ask" is
+/// ["Ask"]).
+fn edp_parse_row_labels(row: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[String] {
+  let out = array_empty()
+  if row == "" {
+    out
+  } else {
+    let parts = String::split(row, ",")
+    let mut i = 0
+    while i < Array::length(parts) {
+      edp_resolve_effect_names_into(String::trim(Array::get(parts, i)), es_names, es_members_list, out)
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #1875 R2: per-fn resolved row label sets, with the row STRINGS interned
+/// -- a program has thousands of fn rows but only dozens of distinct row
+/// spellings ("", "Exception", "Exception, Fs", ...), so each spelling is
+/// parsed once and every fn sharing it references the same label array.
+/// Before this table, edp_needing_names re-split and re-resolved every
+/// fn's row string PER DECLARED EFFECT (via alpha-rename and the migration
+/// planner), which measured ~9.5MB of allocation per effect declaration on
+/// the selfcompile closure.
+fn edp_fn_row_label_table(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[Array[String]] {
+  let seen_rows = empty_str_array()
+  let seen_labels = array_empty()
+  let table = array_empty()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, _, _, row) = Array::get(fn_defs, i)
+    let mut hit = 0 - 1
+    let mut si = 0
+    while si < Array::length(seen_rows) {
+      if Array::get(seen_rows, si) == row {
+        hit = si
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    if hit >= 0 {
+      Array::push(table, Array::get(seen_labels, hit))
+    } else {
+      let labels = edp_parse_row_labels(row, es_names, es_members_list)
+      Array::push(seen_rows, row)
+      Array::push(seen_labels, labels)
+      Array::push(table, labels)
+    }
+    i = i + 1
+  }
+  table
+}
+
+/// edp_needing_names over the pre-parsed label table: same answer, no
+/// re-parsing. `row_labels` must be parallel to `fn_defs`
+/// (edp_fn_row_label_table over the same array).
+fn edp_needing_names_tab(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], ename: String) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, _) = Array::get(fn_defs, i)
+    if edp_str_array_contains(Array::get(row_labels, i), ename) {
       Array::push(out, name)
     } else {
       ()
@@ -4466,11 +4547,11 @@ fn edp_fn_is_perform_free(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, S
   }
 }
 
-fn edp_append_perform_free_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String]) -> Unit {
-  let es_names = array_empty()
-  let es_members_list = array_empty()
-  edp_es_collect_into(stmts, es_names, es_members_list)
-  let candidates = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+fn edp_append_perform_free_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  // #1875 R2: candidates from the pre-parsed row label table -- this fn
+  // used to rebuild the effectset tables AND re-parse every row string on
+  // every call (once per effect, inside the migration planner's loop).
+  let candidates = edp_needing_names_tab(fn_defs, row_labels, ename)
   let mut i = 0
   while i < Array::length(candidates) {
     let nm = Array::get(candidates, i)
@@ -4544,11 +4625,11 @@ fn edp_fn_is_self_discharging_inert(stmts: Array[Stmt], fn_defs: Array[(Int, Boo
 /// kept out of `needing` too -- #1595's `main` needs exactly that to keep
 /// its entry arity). Single pass, same-order determinism argument as
 /// edp_fn_is_perform_free's doc comment.
-fn edp_append_self_discharging_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String]) -> Unit {
-  let es_names = array_empty()
-  let es_members_list = array_empty()
-  edp_es_collect_into(stmts, es_names, es_members_list)
-  let candidates = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+fn edp_append_self_discharging_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  // #1875 R2: candidates from the pre-parsed row label table -- this fn
+  // used to rebuild the effectset tables AND re-parse every row string on
+  // every call (once per effect, inside the migration planner's loop).
+  let candidates = edp_needing_names_tab(fn_defs, row_labels, ename)
   let mut i = 0
   while i < Array::length(candidates) {
     let nm = Array::get(candidates, i)
@@ -5181,7 +5262,7 @@ fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(Expr, Ar
   }
 }
 
-fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
+fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
   if Array::length(handle_sites) == 0 {
     // Nothing discharges `ename` anywhere -- by the checker's own
     // soundness a `needing` function could never actually run, so there is
@@ -5190,8 +5271,8 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
   } else {
     let pure_fns = edp_pure_fn_names(fn_defs)
     edp_append_free_host_inert_names(stmts, pure_fns)
-    edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns)
-    edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
+    edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+    edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
@@ -6974,13 +7055,13 @@ fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, di
 
 // --- applying an eligible migration.
 
-fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Unit {
   let dict_pname = edp_dict_param_name(ename)
   let dict_tyname = edp_dict_struct_name(ename)
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
-  edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns)
-  edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
+  edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
