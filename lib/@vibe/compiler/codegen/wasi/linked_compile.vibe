@@ -3583,10 +3583,68 @@ fn lc_defines_top_level(stmts: Array[Stmt], name: String) -> Bool {
   found
 }
 
-export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
+/// Preserve every named definition that existed before lowering. MVP callers
+/// have already removed unreachable source definitions, while ordinary
+/// callers still need dead source to be validated; only helpers synthesized by
+/// lowering should become newly eligible for this late DCE pass.
+fn lc_derive_helper_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = lc_fresh_string_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let type_name = match Array::get(stmts, i) {
+      SStruct(_, n, _, _, _, _) => n,
+      SEnum(_, n, _, _, _) => n,
+      _ => ""
+    }
+    if type_name != "" {
+      Array::push(names, String::concat(type_name, "::equals"))
+      Array::push(names, String::concat(type_name, "::to_string"))
+      Array::push(names, String::concat(type_name, "::hash_key"))
+      Array::push(names, String::concat(type_name, "::compare"))
+      Array::push(names, String::concat(type_name, "::default"))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+fn lc_is_derive_helper_name(derive_names: Array[String], name: String) -> Bool {
+  String::starts_with(name, "__arr_equals__") || String::starts_with(name, "__arr_to_string__") || array_contains_str(derive_names, name)
+}
+
+fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String) -> Array[String] {
+  let roots = lc_fresh_string_array()
+  let derive_names = lc_derive_helper_names(stmts)
+  Array::push(roots, entry_name)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if !lc_is_derive_helper_name(derive_names, name) {
+        Array::push(roots, name)
+      } else {
+        ()
+      },
+      SFnDecl(_, name, _, _, _) => if !lc_is_derive_helper_name(derive_names, name) {
+        Array::push(roots, name)
+      } else {
+        ()
+      },
+      SLetMut(name, _, _) => Array::push(roots, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  roots
+}
+
+export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
   // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
   // error there is exactly the throw each pass used to raise inline here.
+  let late_dce_has_entry = lc_defines_top_level(stmts, entry_name)
+  let late_dce_roots = lc_late_dce_roots(stmts, entry_name)
   let iw_names = lc_fresh_string_array()
   let iw_wats = lc_fresh_string_array()
   let prelude_errs = effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats)
@@ -3624,10 +3682,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   //     The gate pins exactly this (ADR-0069 entry hardening), and it is what
   //     caught the first version of this guard, which special-cased only the
   //     sentinel.
-  if lc_defines_top_level(stmts, entry_name) {
-    let dce_pruned = dce_stmts(stmts, [
-      entry_name
-    ])
+  if enable_late_dce && late_dce_has_entry {
+    let dce_pruned = dce_stmts(stmts, late_dce_roots)
     // `stmts` is threaded onward by reference, so the pruned program has to
     // replace its contents rather than rebind the name. `dce_stmts` builds a
     // fresh array, so this never reads what it is overwriting.
@@ -8376,13 +8432,18 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
 
 export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+}
+
+/// Preserve the post-lowering AST for the explicit `no-dce` compile mode.
+export fn compile_wasi_module_no_dce_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
 export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// #1259 step 7: compile the module twice -- once compiling every body and
@@ -8416,15 +8477,15 @@ export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: 
 ///
 /// Test/gate only; it compiles the program three times.
 export fn compile_wasi_module_sliced_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
-  let whole = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  let whole = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
   let probe = codegen_body_cache_new()
-  let _probe_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), probe, 0, 0 - 1)
+  let _probe_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), probe, 0, 0 - 1)
   let nfns = Array::length(probe.fn_indices)
   let mid = nfns / 2
   let low = codegen_body_cache_new()
   let high = codegen_body_cache_new()
-  let _low_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), low, 0, mid)
-  let _high_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), high, mid, 0 - 1)
+  let _low_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), low, 0, mid)
+  let _high_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), high, mid, 0 - 1)
   let merged = codegen_body_cache_merge(low, high)
   let nmerged = Array::length(merged.fn_indices)
   if nmerged != nfns {
@@ -8432,7 +8493,7 @@ export fn compile_wasi_module_sliced_impl(stmts: Array[Stmt], entry_name: String
   } else {
     ()
   }
-  let sliced = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), merged, codegen_body_cache_new(), 0, 0 - 1)
+  let sliced = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), merged, codegen_body_cache_new(), 0, 0 - 1)
   let wn = Bytes::length(whole)
   let sn = Bytes::length(sliced)
   if wn != sn {
@@ -8459,8 +8520,8 @@ export fn compile_wasi_module_sliced_impl(stmts: Array[Stmt], entry_name: String
 
 export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let harvest = codegen_body_cache_new()
-  let compiled = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), harvest, 0, 0 - 1)
-  let replayed = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), harvest, codegen_body_cache_new(), 0, 0 - 1)
+  let compiled = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), harvest, 0, 0 - 1)
+  let replayed = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), harvest, codegen_body_cache_new(), 0, 0 - 1)
   let ln = Bytes::length(compiled)
   let rn = Bytes::length(replayed)
   if ln != rn {
@@ -8486,26 +8547,26 @@ export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: Stri
 }
 
 export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// Coverage build (#cov): compile with function-level hit instrumentation +
 /// `vibe_cov` custom section. Same as compile_wasi_module_with_sources_impl but
 /// with coverage enabled.
 export fn compile_wasi_module_with_sources_coverage_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// Trace build (debugger / DAP P1 groundwork): compile with function-call
 /// execution-trace instrumentation + `vibe.trace` custom section. Same as
 /// compile_wasi_module_with_sources_impl but with debug_trace enabled.
 export fn compile_wasi_module_with_sources_trace_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
 /// Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
 /// instrumentation at each user function entry. Same as
 /// compile_wasi_module_with_sources_impl but with debug_break enabled.
 export fn compile_wasi_module_with_sources_break_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv) -> Bytes with Exception {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, prov, codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, true, prov, codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
