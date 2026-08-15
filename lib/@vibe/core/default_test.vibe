@@ -1,0 +1,76 @@
+//# Imports
+
+import ./default.vibe {
+  Default
+}
+
+//# Misc
+
+// NOTE: `Int::default()` etc. are NOT called directly here — an impl's free
+// functions are file-local (map_test.vibe never calls `Int::hash_key` either).
+// The public surface is the bound: generic code dispatches through the
+// witness dictionary the call site synthesizes (#684).
+
+fn fresh[T: Default](witness: T) -> T {
+  T::default()
+}
+
+// Generic dispatch through the [T: Default] bound: the call sites below
+// synthesize the witness dictionary from the concrete argument type (#684),
+// so each `T::default()` lands on that type's impl, not a shared fallback.
+test "generic dispatch via bound" {
+  assert(eq(fresh(42), 0))
+  assert(fresh("abc") == "")
+  assert(not(fresh(true)))
+}
+
+struct Pair {
+  a: Int;
+  b: String
+}
+
+impl Default for Pair {
+  default() -> Pair {
+    Pair::{
+      a: 0, b: ""
+    }
+  }
+}
+
+test "user impl satisfies the bound" {
+  let p = fresh(Pair::{
+    a: 9, b: "z"
+  })
+  assert(eq(p.a, 0))
+  assert(p.b == "")
+}
+
+fn refill[T: Default](xs: Array[T]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    Array::set(xs, i, T::default())
+    i = i + 1
+  }
+}
+
+// The #1847 shape: vacate every slot of a generic backing store without
+// holding on to a pushed element. The Array[T] parameter is the witness
+// carrier (#1199's array-element receiver), so callers pass a plain array.
+test "generic backing-store refill" {
+  let xs = [
+    7,
+    8,
+    9
+  ]
+  refill(xs)
+  assert(eq(Array::get(xs, 0), 0))
+  assert(eq(Array::get(xs, 1), 0))
+  assert(eq(Array::get(xs, 2), 0))
+  let ss = [
+    "a",
+    "b"
+  ]
+  refill(ss)
+  assert(Array::get(ss, 0) == "")
+  assert(Array::get(ss, 1) == "")
+}

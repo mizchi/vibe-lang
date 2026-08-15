@@ -650,7 +650,8 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
 // enum derive(Show) -> E::to_string(v) : String ("B(3)" / "A")
 // derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)
-// derive(Default) -> T::default()
+// derive(Default) -> T::default() + `impl Default for T` 登録 (#1847) —
+//   derive した型はそのまま `[T: Default]` bound を満たす
 // (Eq は marker: 構造的 `==` は T::equals として常に生成される)
 // #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ。prelude の
 // `to_string(v)` も同じ (body が `__to_string(x)` そのものの 1 引数 pass-through
@@ -668,6 +669,16 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 // trait: `[T: Send]` accepts primitives, tuples, Option/Result, and
 // immutable structs/enums built from Send parts; Array/Bytes, closures,
 // and `mut`-field structs are rejected. `impl Send for X` is an error.
+
+// `Default` (#1847) は builtin trait: prelude が marker + primitive impl
+// (Int/Float/Double/Bool/String) を登録するので `[T: Default]` bound は
+// どこでも満たせる。generic code から `T::default()` を呼ぶには
+// method-bearing 宣言 (`trait Default { default() -> Self }`) が要るので
+// `import @vibe/core { Default }` する — witness は Hash と同じ dict 経由。
+// derive(Default) した struct/enum も bound を満たす。呼び出し側で T の
+// 具象型が構文的に決まらない形 (例: `[T: Default]() -> T` を注釈だけで
+// 呼ぶ) は witness が組めず解決されない — T 型の引数 (または Array[T]
+// 引数) を witness carrier にすること。
 ```
 
 ### marker trait の impl は container には効かない (#1503)
