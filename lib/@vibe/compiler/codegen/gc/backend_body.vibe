@@ -175,6 +175,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_to_array_body,
   gen_eq_body,
   gen_simd_scan_alnum_body,
+  gen_arr_push_body,
   gen_region_arr_new_body,
   gen_region_bytes_new_body,
   gen_simd_scan_string_special_body,
@@ -206,10 +207,6 @@ import ./backend_builtins_array_alloc.vibe {
 
 import ./backend_builtins_array_get.vibe {
   gc_gen_arr_get_body
-}
-
-import ./backend_builtins_array_push.vibe {
-  gc_gen_arr_push_body
 }
 
 import ./backend_builtins_array_set.vibe {
@@ -1839,7 +1836,26 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   push_gc_builtin(gc_gen_arr_new_body(), 1, 0, 5)
   push_gc_builtin(gc_gen_arr_len_body(), 0, 0, 3)
   push_gc_builtin(gc_gen_arr_get_body(), 1, 0, 4)
-  push_gc_builtin(gc_gen_arr_push_body(), 6, 0, 6)
+  // ADR-0090 (#1262) tier 2: use the LINEAR lane's shared arr_push body
+  // instead of this lane's duplicate, because that one already decides the
+  // regrow lane by a runtime range check on the ARRAY's block ("is it inside
+  // the arena segment?"), which is the property that matters here.
+  //
+  // This is not cosmetic. With the gc-local body, MutList storage came from
+  // the arena but every doubling regrow buffer still went to the main heap,
+  // and the regrow buffers are the BULK of a region's cost: measured on
+  // fixtures/region_arena_bounded.vibe (200 regions x 500 elements),
+  // 1,635,208 B reclaimed nothing at all versus linear's 16,204 B. The
+  // arena was correct and inert.
+  //
+  // enable_rc=false: this lane has no RC (same reason every other shared
+  // generator here is called with false). The arena form needs one extra
+  // i32 local for the arena bump pointer, exactly as on linear.
+  push_gc_builtin(gen_arr_push_body(false, -1, false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
   push_gc_builtin(gc_gen_arr_set_body(), 1, 0, 7)
   push_gc_builtin(gc_gen_double_to_int_body(), 0, 0, 3)
   push_gc_builtin(gc_gen_int_to_double_body(), 0, 0, 3)
