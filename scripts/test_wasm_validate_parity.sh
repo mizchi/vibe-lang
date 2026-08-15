@@ -135,6 +135,38 @@ for w in "$WORK"/neg/*.wasm; do
 done
 rm -f "$ROOT_DIR/_build/val_target.wasm"
 
+# 4. Coverage, which the catch ratio does NOT measure. A stepper that bails on
+#    the first opcode it does not know still catches mutants -- the corruption
+#    is usually before the bail -- while reading almost nothing. Requiring the
+#    walk to reach the end of every body in our own output is the check that
+#    actually noticed 0xFD, and a one-byte valtype assumption that started three
+#    bodies inside their own local declarations.
+walk="$WORK/walk.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  scripts/wasm_validate/walk_probe.vibex "_build/validate_parity/walk.wasm" main >/dev/null 2>&1
+[ -s "$walk" ] || { echo "[validate-parity] FAIL: walk probe did not compile" >&2; exit 1; }
+walk_bodies=0
+walk_stopped=0
+for w in "$WORK"/pos/*.wasm; do
+  [ -e "$w" ] || continue
+  cp "$w" "$ROOT_DIR/_build/val_target.wasm"
+  read -r b s <<<"$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke main "_build/validate_parity/walk.wasm" 2>/dev/null | head -1)"
+  walk_bodies=$((walk_bodies + ${b:-0}))
+  walk_stopped=$((walk_stopped + ${s:-0}))
+done
+rm -f "$ROOT_DIR/_build/val_target.wasm"
+if [ "$walk_bodies" -eq 0 ]; then
+  echo "[validate-parity] FAIL: walk probe reported no function bodies" >&2
+  exit 1
+fi
+if [ "$walk_stopped" -ne 0 ]; then
+  echo "[validate-parity] FAIL: the stepper gave up inside $walk_stopped/$walk_bodies of our own" >&2
+  echo "[validate-parity]       function bodies, so validation does not reach past that point" >&2
+  exit 1
+fi
+
 if [ "$pos_total" -eq 0 ] || [ "$neg_total" -eq 0 ]; then
   echo "[validate-parity] FAIL: empty corpus (pos=$pos_total neg=$neg_total)" >&2
   exit 1
@@ -152,6 +184,7 @@ if [ "$caught" -lt "$floor_num" ]; then
   exit 1
 fi
 echo "[validate-parity] ok: $pos_total/$pos_total accepted (zero false rejections), $caught/$neg_total rejected"
+echo "[validate-parity]     instruction walk reached the end of $walk_bodies/$walk_bodies function bodies"
 echo "[validate-parity] note: what remains uncaught needs operand-stack typing, which this layer does"
 echo "[validate-parity]       not do (#1745 (5)). A module that is well-formed but ill-TYPED still"
 echo "[validate-parity]       passes here."

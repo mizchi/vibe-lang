@@ -664,6 +664,32 @@ test "get_code_body_range with locals" {
   assert(bytes[expr_start] == 0x41)
 }
 
+test "get_code_body_range with a typed-reference local" {
+  // Same shape, but the local's valtype is `(ref null $12)` = 0x63 0x0C --
+  // TWO bytes. Advancing by one put the code start on the type index, so the
+  // first "instruction" read was 0x0C (br). Every gc body with a typed-ref
+  // local decoded from one byte too early, and extract_code_body hands that
+  // range to the interpreter.
+  //
+  // body size=8: [local_count=1, (2, ref null 12), i32.const 0, end]
+  let bytes = make_bytes([
+    1,
+    8,
+    1,
+    2,
+    0x63,
+    0x0C,
+    0x41,
+    0,
+    0x0B,
+    0
+  ])
+  let entries = parse_code_entries(bytes, 0, 10)
+  let (off, sz, _) = Array::get(entries, 0)
+  let (expr_start, _) = get_code_body_range(bytes, off, sz)
+  assert(bytes[expr_start] == 0x41)
+}
+
 test "parse_data_segments active" {
   // mode=0, offset=i32.const 0, end, 3 bytes
   let segs = parse_data_segments(make_bytes([

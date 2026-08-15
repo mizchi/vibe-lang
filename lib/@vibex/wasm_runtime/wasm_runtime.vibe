@@ -1,3 +1,9 @@
+//# Imports
+
+import @vibex/wasm_parser {
+  next_instruction
+}
+
 //# Values
 
 //# Functions
@@ -557,65 +563,212 @@ fn int_to_string(n: Int) -> String {
   }
 }
 
-/// Disassemble code bytes into human-readable instruction strings
+/// Disassemble code bytes into human-readable instruction strings.
+///
+/// How far each instruction reaches is `@vibex/wasm_parser::next_instruction`'s
+/// answer, not this function's. It used to be both, and the copy here knew
+/// nothing about the prefixed families: on `0xFB 0x02 0x0C 0x01` (struct.get)
+/// it printed "unknown" and then decoded the type and field indices as two more
+/// instructions, yielding a listing that read as plausible wasm and described
+/// nothing in the module. Every gc body this compiler emits hit that path.
+///
+/// An instruction the stepper cannot decode ends the listing with a marker.
+/// Stopping is the only safe move -- resuming at the next byte is exactly the
+/// guess that produced the fiction.
 export fn disassemble(code: Bytes, start: Int, end_pos: Int) -> Array[String] {
   let result = Array::slice([
     ""
   ], 0, 0)
   let mut pc = start
-  while pc < end_pos {
+  let mut stop = false
+  while (pc < end_pos) && !stop {
     let op = code[pc]
-    pc = pc + 1
-    let name = opcode_name(op)
-    if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) {
-      let (v, np) = read_uleb128(code, pc)
-      pc = np
-      Array::push(result, "\{name} \{int_to_string(v)}")
-    }
-    else if op == 0x11 {
-      let (ti, np) = read_uleb128(code, pc)
-      let (tab, np2) = read_uleb128(code, np)
-      pc = np2
-      Array::push(result, "\{name} \{int_to_string(ti)} \{int_to_string(tab)}")
-    }
-    else if (op == 0x41) || (op == 0x42) {
-      let (v, np) = read_sleb128(code, pc)
-      pc = np
-      Array::push(result, "\{name} \{int_to_string(v)}")
-    }
-    else if op == 0x02 || op == 0x03 || op == 0x04 {
-      let (bt, np) = read_sleb128(code, pc)
-      pc = np
-      Array::push(result, "\{name} \{int_to_string(bt)}")
-    }
-    else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) || (op == 0x2C) || (op == 0x2E) || (op == 0x2F) || (op == 0x3B) {
-      let (align, np) = read_uleb128(code, pc)
-      let (offset, np2) = read_uleb128(code, np)
-      pc = np2
-      Array::push(result, "\{name} align=\{int_to_string(align)} offset=\{int_to_string(offset)}")
-    }
-    else if (op == 0x3F) || (op == 0x40) {
-      pc = pc + 1
-      Array::push(result, name)
-    }
-    else if op == 0x0E {
-      let (count, np) = read_uleb128(code, pc)
-      pc = np
-      let mut s = "\{name} \{int_to_string(count)}"
-      let mut j = 0
-      while j <= count {
-        let (lbl, np2) = read_uleb128(code, pc)
-        pc = np2
-        s = "\{s} \{int_to_string(lbl)}"
-        j = j + 1
-      }
-      Array::push(result, s)
-    }
-    else {
-      Array::push(result, name)
+    let (_, next_pc) = next_instruction(code, pc, end_pos)
+    if next_pc < 0 {
+      Array::push(result, "?? 0x\{int_to_string(op)} (cannot decode; listing stops here)")
+      stop = true
+    } else {
+      Array::push(result, render_instruction(code, op, pc + 1))
+      pc = next_pc
     }
   }
   result
+}
+
+/// One instruction as text, given the position just after its opcode.
+///
+/// Operand rendering is per-family and lives here; how many bytes the operands
+/// occupy is not, which is the split that matters. A family missing from this
+/// function loses its operands in the output -- it can no longer desync the
+/// stream, because the caller advances by the stepper's answer either way.
+fn render_instruction(code: Bytes, op: Int, after_op: Int) -> String {
+  let mut pc = after_op
+  let name = opcode_name(op)
+  if op == 0xFB {
+    let (sub, _) = read_uleb128(code, pc)
+    gc_opcode_name(sub)
+  }
+  else if op == 0xFC {
+    let (sub, _) = read_uleb128(code, pc)
+    misc_opcode_name(sub)
+  }
+  else if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) {
+    let (v, _) = read_uleb128(code, pc)
+    "\{name} \{int_to_string(v)}"
+  }
+  else if op == 0x11 {
+    let (ti, np) = read_uleb128(code, pc)
+    let (tab, _) = read_uleb128(code, np)
+    "\{name} \{int_to_string(ti)} \{int_to_string(tab)}"
+  }
+  else if (op == 0x41) || (op == 0x42) {
+    let (v, _) = read_sleb128(code, pc)
+    "\{name} \{int_to_string(v)}"
+  }
+  else if op == 0x02 || op == 0x03 || op == 0x04 {
+    let (bt, _) = read_sleb128(code, pc)
+    "\{name} \{int_to_string(bt)}"
+  }
+  else if (op == 0x28) || (op == 0x29) || (op == 0x36) || (op == 0x37) || (op == 0x2D) || (op == 0x3A) || (op == 0x2C) || (op == 0x2E) || (op == 0x2F) || (op == 0x3B) {
+    let (align, np) = read_uleb128(code, pc)
+    let (offset, _) = read_uleb128(code, np)
+    "\{name} align=\{int_to_string(align)} offset=\{int_to_string(offset)}"
+  }
+  else if op == 0x0E {
+    let (count, np) = read_uleb128(code, pc)
+    pc = np
+    let mut s = "\{name} \{int_to_string(count)}"
+    let mut j = 0
+    while j <= count {
+      let (lbl, np2) = read_uleb128(code, pc)
+      pc = np2
+      s = "\{s} \{int_to_string(lbl)}"
+      j = j + 1
+    }
+    s
+  } else {
+    name
+  }
+}
+
+/// Names for the `0xFB` (gc) family. vibe's gc backend emits these, so leaving
+/// them as "unknown" would make the disassembler useless on exactly the output
+/// it is most often pointed at.
+fn gc_opcode_name(sub: Int) -> String {
+  if sub == 0 {
+    "struct.new"
+  } else if sub == 1 {
+    "struct.new_default"
+  }
+  else if sub == 2 {
+    "struct.get"
+  } else if sub == 3 {
+    "struct.get_s"
+  }
+  else if sub == 4 {
+    "struct.get_u"
+  } else if sub == 5 {
+    "struct.set"
+  }
+  else if sub == 6 {
+    "array.new"
+  } else if sub == 7 {
+    "array.new_default"
+  }
+  else if sub == 8 {
+    "array.new_fixed"
+  } else if sub == 9 {
+    "array.new_data"
+  }
+  else if sub == 10 {
+    "array.new_elem"
+  } else if sub == 11 {
+    "array.get"
+  }
+  else if sub == 12 {
+    "array.get_s"
+  } else if sub == 13 {
+    "array.get_u"
+  }
+  else if sub == 14 {
+    "array.set"
+  } else if sub == 15 {
+    "array.len"
+  }
+  else if sub == 16 {
+    "array.fill"
+  } else if sub == 17 {
+    "array.copy"
+  }
+  else if sub == 18 {
+    "array.init_data"
+  } else if sub == 19 {
+    "array.init_elem"
+  }
+  else if sub == 20 {
+    "ref.test"
+  } else if sub == 21 {
+    "ref.test null"
+  }
+  else if sub == 22 {
+    "ref.cast"
+  } else if sub == 23 {
+    "ref.cast null"
+  }
+  else if sub == 24 {
+    "br_on_cast"
+  } else if sub == 25 {
+    "br_on_cast_fail"
+  }
+  else if sub == 26 {
+    "any.convert_extern"
+  } else if sub == 27 {
+    "extern.convert_any"
+  }
+  else if sub == 28 {
+    "ref.i31"
+  } else if sub == 29 {
+    "i31.get_s"
+  }
+  else if sub == 30 {
+    "i31.get_u"
+  } else {
+    "gc.unknown"
+  }
+}
+
+/// Names for the `0xFC` family: saturating truncation plus bulk memory/table.
+fn misc_opcode_name(sub: Int) -> String {
+  if sub <= 7 {
+    "i32/i64.trunc_sat"
+  } else if sub == 8 {
+    "memory.init"
+  }
+  else if sub == 9 {
+    "data.drop"
+  } else if sub == 10 {
+    "memory.copy"
+  }
+  else if sub == 11 {
+    "memory.fill"
+  } else if sub == 12 {
+    "table.init"
+  }
+  else if sub == 13 {
+    "elem.drop"
+  } else if sub == 14 {
+    "table.copy"
+  }
+  else if sub == 15 {
+    "table.grow"
+  } else if sub == 16 {
+    "table.size"
+  }
+  else if sub == 17 {
+    "table.fill"
+  } else {
+    "misc.unknown"
+  }
 }
 
 fn mem_load_i8_s(m: Bytes, a: Int) -> Int {

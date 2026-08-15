@@ -1093,6 +1093,15 @@ export fn parse_imports_full(bytes: Bytes, offset: Int, size: Int) -> Array[(Str
   result
 }
 
+/// Where a function's instructions begin, after its local declarations.
+///
+/// Each declaration is a count and a VALTYPE, and a valtype is not one byte:
+/// `(ref null $t)` is `0x63` plus a type index. Advancing by one skipped past
+/// the count but landed inside the index, so the "code" started mid-declaration
+/// -- on a gc module with typed-ref locals the first byte read as an
+/// instruction was a local count. This is the same one-byte assumption #1795
+/// removed from the type section, in the function that decides where code IS.
+/// It reaches further than parsing: extract_code_body feeds the interpreter.
 export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) -> (Int, Int) {
   let body_end = body_offset + body_size
   let (local_decl_count, pos0) = read_uleb128(bytes, body_offset)
@@ -1100,8 +1109,8 @@ export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) ->
   let mut d = 0
   while d < local_decl_count {
     let (_, np) = read_uleb128(bytes, pos)
-    pos = np
-    pos = pos + 1
+    let (_, np2) = read_valtype(bytes, np)
+    pos = np2
     d = d + 1
   }
   (pos, body_end)
@@ -1606,16 +1615,16 @@ export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
 ///
 /// A next position of -1 means "this stepper cannot say" -- either the opcode
 /// is not one it knows, or the instruction's immediates run past `end_pos`.
-/// Callers must treat -1 as "stop", never as "invalid": the prefixed families
-/// (0xFC bulk-memory, 0xFD simd, 0xFB gc) carry per-instruction immediates this
-/// does not enumerate yet, and reporting a module invalid because this function
-/// is incomplete would break the one-sided contract validate_structure keeps.
+/// Callers must treat -1 as "stop", never as "invalid": simd (0xFD) and atomics
+/// (0xFE) carry per-instruction immediates this does not enumerate, and
+/// reporting a module invalid because this function is incomplete would break
+/// the one-sided contract validate_structure keeps.
 ///
-/// Immediate shapes are stated HERE rather than at each caller. The
-/// disassembler in @vibex/wasm_runtime carries its own copy today and is blind
-/// to the prefixed families as a result -- it missteps on exactly the gc
-/// instructions vibe's own backend now emits. Folding it onto this is the
-/// follow-up that removes the second copy.
+/// Immediate shapes are stated HERE rather than at each caller, and
+/// @vibex/wasm_runtime's disassembler steps with this rather than its own copy.
+/// The second copy was blind to the prefixed families, so it misstepped on
+/// exactly the gc instructions vibe's own backend emits -- printing a plausible
+/// listing that was garbage from the first `0xFB` onward.
 export fn next_instruction(code: Bytes, pc: Int, end_pos: Int) -> (Int, Int) {
   if pc >= end_pos {
     (0, 0 - 1)
@@ -1625,9 +1634,56 @@ export fn next_instruction(code: Bytes, pc: Int, end_pos: Int) -> (Int, Int) {
     if instruction_has_no_immediate(op) {
       (op, p)
     }
-    else if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) {
+    else if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) || (op == 0x12) || (op == 0x14) || (op == 0x15) || (op == 0x25) || (op == 0x26) || (op == 0x3F) || (op == 0x40) || (op == 0xD2) || (op == 0xD5) || (op == 0xD6) {
+      // One unsigned index: label, function, local, global, table, memory --
+      // or, for 0x14/0x15 (call_ref/return_call_ref), a type.
       let (_, np) = read_uleb128(code, p)
       (op, bounded(np, end_pos))
+    }
+    else if op == 0xD0 {
+      // ref.null takes a heap type, which is a signed LEB: negative for the
+      // abstract types, non-negative for a concrete type index.
+      let (_, np) = read_sleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if op == 0x43 {
+      (op, bounded(p + 4, end_pos))
+    }
+    else if op == 0x44 {
+      (op, bounded(p + 8, end_pos))
+    }
+    else if op == 0x1C {
+      // select with an explicit result-type vector.
+      let (cnt, np) = read_uleb128(code, p)
+      let mut q = np
+      let mut i = 0
+      while (i < cnt) && (q < end_pos) {
+        let (_, nq) = read_valtype(code, q)
+        q = nq
+        i = i + 1
+      }
+      if i < cnt {
+        (op, 0 - 1)
+      } else {
+        (op, bounded(q, end_pos))
+      }
+    }
+    else if op == 0x13 {
+      let (_, np) = read_uleb128(code, p)
+      let (_, np2) = read_uleb128(code, np)
+      (op, bounded(np2, end_pos))
+    }
+    else if op == 0xFC {
+      let (sub, np) = read_uleb128(code, p)
+      (op, bounded(misc_immediate_end(code, sub, np), end_pos))
+    }
+    else if op == 0xFB {
+      let (sub, np) = read_uleb128(code, p)
+      (op, bounded(gc_immediate_end(code, sub, np), end_pos))
+    }
+    else if op == 0xFD {
+      let (sub, np) = read_uleb128(code, p)
+      (op, bounded(simd_immediate_end(code, sub, np), end_pos))
     }
     else if (op == 0x02) || (op == 0x03) || (op == 0x04) {
       // Blocktype: a negative value type, or a non-negative TYPE INDEX. Both
@@ -1681,11 +1737,129 @@ fn bounded(np: Int, end_pos: Int) -> Int {
 }
 
 fn instruction_has_no_immediate(op: Int) -> Bool {
-  (op == 0x00) || (op == 0x01) || (op == 0x05) || (op == 0x0B) || (op == 0x0F) || (op == 0x1A) || (op == 0x1B) || ((op >= 0x45) && (op <= 0xC4))
+  (op == 0x00) || (op == 0x01) || (op == 0x05) || (op == 0x0B) || (op == 0x0F) || (op == 0x1A) || (op == 0x1B) || ((op >= 0x45) && (op <= 0xC4)) || (op == 0xD1) || (op == 0xD3) || (op == 0xD4)
 }
 
 fn instruction_is_memarg(op: Int) -> Bool {
   ((op >= 0x28) && (op <= 0x3E))
+}
+
+/// End of a `0xFC`-prefixed instruction's immediates. The zero bytes after
+/// memory.init/copy/fill are the memory index, reserved to 0 today but still
+/// present in the encoding, so they are counted rather than assumed away.
+fn misc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
+  if sub <= 7 {
+    p
+  }
+  else if sub == 8 {
+    let (_, np) = read_uleb128(code, p)
+    np + 1
+  }
+  else if (sub == 9) || (sub == 13) || (sub == 15) || (sub == 16) || (sub == 17) {
+    let (_, np) = read_uleb128(code, p)
+    np
+  }
+  else if sub == 10 {
+    p + 2
+  }
+  else if sub == 11 {
+    p + 1
+  }
+  else if (sub == 12) || (sub == 14) {
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  } else {
+    0 - 1
+  }
+}
+
+/// End of a `0xFD`-prefixed (simd) instruction's immediates.
+///
+/// Worth stating why "everything else takes no immediate" is a rule and not a
+/// guess: in the simd space only the loads/stores (memarg), `v128.const`,
+/// `i8x16.shuffle`, and the lane accessors carry anything. The ~200 remaining
+/// assigned opcodes are operand-stack-only. Enumerating the carriers and
+/// defaulting the rest is therefore exact over the assigned range, which is the
+/// only range a module wasm-tools accepts can reach.
+///
+/// This matters more than it looks. Measured on this compiler's own output,
+/// 0xFD was the ONLY thing stopping the instruction walk -- 6 to 9 bodies per
+/// module, because `simd_skip_ws` and friends emit v128 opcodes. Without this
+/// the walk covered about 88% of bodies and could not see a corruption past the
+/// first vector instruction.
+fn simd_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
+  if sub <= 11 {
+    // v128.load* / v128.store: memarg.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if (sub == 12) || (sub == 13) {
+    // v128.const: 16 literal bytes. i8x16.shuffle: 16 lane indices.
+    p + 16
+  }
+  else if (sub >= 21) && (sub <= 34) {
+    // extract_lane / replace_lane: one lane index.
+    p + 1
+  }
+  else if (sub >= 84) && (sub <= 91) {
+    // v128.loadN_lane / storeN_lane: memarg AND a lane index.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2 + 1
+  }
+  else if (sub == 92) || (sub == 93) {
+    // v128.load32_zero / load64_zero: memarg.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if sub <= 275 {
+    p
+  } else {
+    0 - 1
+  }
+}
+
+/// End of a `0xFB`-prefixed (gc) instruction's immediates. This is the family
+/// vibe's own gc backend emits, so getting it wrong is not hypothetical -- it
+/// is the difference between reading this compiler's output and inventing a
+/// reading of it.
+fn gc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
+  if (sub == 0) || (sub == 1) || (sub == 6) || (sub == 7) || (sub == 11) || (sub == 12) || (sub == 13) || (sub == 14) || (sub == 16) {
+    // One type index: struct.new*, array.new*, array.get*/set, array.fill.
+    let (_, np) = read_uleb128(code, p)
+    np
+  }
+  else if (sub == 2) || (sub == 3) || (sub == 4) || (sub == 5) || (sub == 8) || (sub == 9) || (sub == 10) || (sub == 17) || (sub == 18) || (sub == 19) {
+    // Two indices: struct.get*/set take a field, array.new_fixed a length,
+    // array.copy a second type, array.new_data/init_data a segment.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if sub == 15 {
+    p
+  }
+  else if (sub >= 20) && (sub <= 23) {
+    // ref.test / ref.cast, both null and non-null forms: one heap type.
+    let (_, np) = read_sleb128(code, p)
+    np
+  }
+  else if (sub == 24) || (sub == 25) {
+    // br_on_cast{,_fail}: a flags byte, a label, then BOTH heap types.
+    let (_, np) = read_uleb128(code, p + 1)
+    let (_, np2) = read_sleb128(code, np)
+    let (_, np3) = read_sleb128(code, np2)
+    np3
+  }
+  else if (sub >= 26) && (sub <= 31) {
+    // any.convert_extern, extern.convert_any, ref.i31, i31.get_s/u.
+    p
+  } else {
+    0 - 1
+  }
 }
 
 /// Instruction-level structure of one function body: `None` when the walk found
