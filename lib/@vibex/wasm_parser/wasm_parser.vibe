@@ -1477,27 +1477,46 @@ export fn module_summary(bytes: Bytes) -> String {
 /// signatures, and nothing noticed -- the drift was found by reading a binary
 /// by hand. This answers the same question FROM the binary.
 ///
-/// Deliberately structural only. Everything below is decided by the type
-/// section, a section's presence, or a declaration -- never by scanning code
-/// bytes for opcode prefixes. A naive byte scan cannot tell an opcode from an
-/// immediate that happens to share its value, and would report proposals the
-/// module does not use; being wrong in that direction is worse than being
-/// incomplete, because the whole point is to be trusted against a hand-curated
-/// list. `simd`, `tailCall` and `bulkMemory` therefore need an instruction
-/// walker and are NOT reported yet -- see the package README note.
+/// Decided by the type section, a section's presence, a declaration, or an
+/// instruction reached by WALKING the code -- never by scanning code bytes for
+/// opcode prefixes. A scan cannot tell an opcode from an immediate that happens
+/// to share its value, and would report proposals the module does not use;
+/// being wrong in that direction is worse than being incomplete, because the
+/// whole point is to be trusted against a hand-curated list. The instruction
+/// features here (`simd`, `tailCall`, `bulkMemory`, `saturatedFloatToInt`)
+/// waited for `next_instruction` for exactly that reason.
+///
+/// A partial answer is still possible -- see `scan_features_checked`, which
+/// reports whether every body was walked. Callers comparing against a
+/// declaration should use that one: an under-report reads as "the declaration
+/// claims too much", which is the opposite of the truth.
 export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
+  let (found, _) = scan_features_checked(wasm_bytes)
+  found
+}
+
+/// `scan_features` plus whether every function body was walked to its end.
+///
+/// False means some body stopped at an instruction the stepper cannot decode,
+/// so the feature list is a SUBSET of what the module requires.
+export fn scan_features_checked(wasm_bytes: Bytes) -> (Array[String], Bool) {
   let found = Array::slice([
     ""
   ], 0, 0)
   if !validate_magic(wasm_bytes) {
-    found
+    (found, false)
   } else {
     let sections = list_sections(wasm_bytes)
     let mut uses_gc_types = false
     let mut uses_typed_ref = false
     let mut uses_ref_types = false
-    let mut has_tag_section = false
     let mut memory_count = 0
+    let mut uses_simd = false
+    let mut uses_tail_call = false
+    let mut uses_exceptions = false
+    let mut uses_bulk_memory = false
+    let mut uses_sat_float = false
+    let mut complete = true
     let mut i = 0
     while i < Array::length(sections) {
       let (sid, off, sz) = Array::get(sections, i)
@@ -1531,7 +1550,7 @@ export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
         }
       }
       else if sid == 13 {
-        has_tag_section = true
+        uses_exceptions = true
       }
       else if sid == 5 {
         memory_count = Array::length(parse_memories(wasm_bytes, off, sz))
@@ -1540,7 +1559,7 @@ export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
         let entries = parse_code_entries(wasm_bytes, off, sz)
         let mut e = 0
         while e < Array::length(entries) {
-          let (_, _, locals) = Array::get(entries, e)
+          let (body_off, body_size, locals) = Array::get(entries, e)
           let mut l = 0
           while l < Array::length(locals) {
             let (_, lt) = Array::get(locals, l)
@@ -1556,6 +1575,43 @@ export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
             }
             l = l + 1
           }
+          // Instruction-level features. This walks with next_instruction rather
+          // than scanning bytes: a scan cannot tell an opcode from an immediate
+          // that happens to share its value, and would report proposals the
+          // module does not use. A body the walk cannot finish is not guessed
+          // at -- it clears `complete`, and the caller decides what an
+          // incomplete answer is worth.
+          let (cs, ce) = get_code_body_range(wasm_bytes, body_off, body_size)
+          let mut pc = cs
+          let mut done = false
+          while (pc < ce) && !done {
+            let (op, np) = next_instruction(wasm_bytes, pc, ce)
+            if np < 0 {
+              complete = false
+              done = true
+            } else {
+              if op == 0xFD {
+                uses_simd = true
+              }
+              else if (op == 0x12) || (op == 0x13) {
+                uses_tail_call = true
+              }
+              else if op == 0x1F {
+                uses_exceptions = true
+              }
+              else if op == 0xFC {
+                let (sub, _) = read_uleb128(wasm_bytes, pc + 1)
+                if sub <= 7 {
+                  uses_sat_float = true
+                } else {
+                  uses_bulk_memory = true
+                }
+              } else {
+                ()
+              }
+              pc = np
+            }
+          }
           e = e + 1
         }
       } else {
@@ -1565,7 +1621,12 @@ export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
     }
     // Alphabetical, so the result can be compared against a sorted declaration
     // without the caller sorting first.
-    if has_tag_section {
+    if uses_bulk_memory {
+      Array::push(found, "bulkMemory")
+    } else {
+      ()
+    }
+    if uses_exceptions {
       Array::push(found, "exceptionsFinal")
     } else {
       ()
@@ -1588,12 +1649,27 @@ export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
     } else {
       ()
     }
+    if uses_sat_float {
+      Array::push(found, "saturatedFloatToInt")
+    } else {
+      ()
+    }
+    if uses_simd {
+      Array::push(found, "simd")
+    } else {
+      ()
+    }
+    if uses_tail_call {
+      Array::push(found, "tailCall")
+    } else {
+      ()
+    }
     if uses_typed_ref {
       Array::push(found, "typedFunctionReferences")
     } else {
       ()
     }
-    found
+    (found, complete)
   }
 }
 
