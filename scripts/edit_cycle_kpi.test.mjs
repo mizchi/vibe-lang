@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertDisabledIngestionStamps,
+  buildEditCycleWorkSummary,
+  editCycleModes,
+  parseEditCycleRunCount,
+  pinEditCycleModes,
   parseHostFsScopeTelemetry,
   parseIncrementalTelemetry,
   parseIngestionFingerprintTelemetry,
@@ -110,6 +115,88 @@ test("edit-cycle KPI accepts a complete host_fs_scope sidecar", () => {
   assert.deepEqual(
     parseHostFsScopeTelemetry(JSON.stringify(validHostFsScope), "run-123"),
     validHostFsScope,
+  );
+});
+
+test("edit-cycle KPI pins authority modes after ambient environment", () => {
+  const env = pinEditCycleModes({
+    KEEP: "yes",
+    VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "1",
+    VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "1",
+    VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1",
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "/tmp/ambient",
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "ambient",
+  });
+  assert.equal(env.KEEP, "yes");
+  for (const key of [
+    "VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP",
+    "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE",
+    "VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE",
+    "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT",
+    "VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE",
+  ]) assert.equal(env[key], "");
+  assert.deepEqual(editCycleModes, {
+    persistent_ingestion_stamp: "disabled",
+    typing_dependency_env_reuse: "default-on",
+    invalidation_trace: "disabled",
+    compilation: "check-only",
+  });
+});
+
+test("edit-cycle KPI parses only whole positive safe-integer run counts", () => {
+  assert.equal(parseEditCycleRunCount(undefined), 3);
+  assert.equal(parseEditCycleRunCount(""), 3);
+  assert.equal(parseEditCycleRunCount("12"), 12);
+  for (const invalid of ["1x", "1.5", "0x10", "0", "-1", "01", "9007199254740992"]) {
+    assert.throws(() => parseEditCycleRunCount(invalid), /positive decimal safe integer/, invalid);
+  }
+});
+
+test("edit-cycle KPI enforces ingestion unit and disabled-stamp invariants", () => {
+  assert.throws(
+    () => parseIngestionFingerprintTelemetry(
+      JSON.stringify({ ...validIngestionFingerprint, hash_input_string_units: 8 }),
+      "run-123",
+    ),
+    /hash_input_string_units must equal source_read_string_units/,
+  );
+  assert.doesNotThrow(() => assertDisabledIngestionStamps({
+    ...validIngestionFingerprint,
+    stamp_probes: 0,
+    stamp_hits: 0,
+    stamp_misses: 0,
+    stamp_malformed: 0,
+    stamp_text_units_read: 0,
+    stamp_publications: 0,
+  }));
+  assert.throws(
+    () => assertDisabledIngestionStamps(validIngestionFingerprint),
+    /must be 0 when ingestion stamps are disabled/,
+  );
+});
+
+test("edit-cycle KPI derives the scoped check-only work summary", () => {
+  assert.deepEqual(
+    buildEditCycleWorkSummary(
+      JSON.parse(validSidecar),
+      validIngestionFingerprint,
+      validHostFsScope,
+    ),
+    {
+      read_bytes: 18,
+      hash_calls: 2,
+      parsed_files: 1,
+      checked_modules: 1,
+      codegen_modules: 0,
+    },
+  );
+  assert.throws(
+    () => buildEditCycleWorkSummary(
+      JSON.parse(validSidecar),
+      validIngestionFingerprint,
+      { ...validHostFsScope, read_file_returned_bytes: Number.MAX_SAFE_INTEGER },
+    ),
+    /safe integer range/,
   );
 });
 

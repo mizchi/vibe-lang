@@ -38,10 +38,12 @@ is an ADR-sized decision, not a slice-sized one.
 - **mtime is a hint, never a semantic identity.** Its only job is to let the
   compiler skip *recomputing* a content identity. A stat-token match may reuse a
   previously computed source fingerprint; it may not stand in for one.
-- **Git commit/author/last-modified dates are never content identity.** For a
-  tracked clean file, the blob OID is the strong identity candidate; dirty and
-  untracked files fall back to stat + content hash. Behavior outside a Git
-  repository must be identical.
+- **Git commit/author/last-modified dates are never content identity.** A Git
+  blob OID is only an evaluation candidate, not production authority: filters,
+  line-ending conversion, racy index state, linked/split indexes, hash formats,
+  and repository availability can make it differ from the bytes actually
+  ingested by the compiler. Production continues to use current working-tree
+  bytes and behaves identically outside a Git repository.
 - Do not conflate `source_fingerprint`, `implementation_fingerprint`,
   `interface_fingerprint`, `checked_env_fingerprint`, normalized typed-IR
   identity, and artifact-input identity. They answer different questions and
@@ -170,10 +172,32 @@ The initial executable baseline is `scripts/edit_cycle_kpi.mjs`. It measures the
 one-shot `vibe check` path for cold, exact warm/no-op, comment-only, private-body,
 and public-interface edits. It requests a disabled-by-default compiler sidecar
 for deterministic `db_typecheck_fs` work counters: modules planned, rechecked,
-reused, and parse operations. It intentionally does not yet measure LSP
-residency, runnable artifacts, or complete invalidation/codegen counts. Its
-purpose is to establish whether current persistent caches produce a measurable
-user-visible effect before implementing a new artifact format.
+reused, and parse operations. The qualified outer record (`schema:
+"edit_cycle_kpi"`, `version: 1`) pins and records persistent ingestion stamps
+off, production-default typing dependency environment reuse
+on, invalidation tracing off, and check-only compilation; inherited environment
+variables cannot silently change those modes. Each record also has a scoped
+`work_summary` and matching `work_scopes`:
+
+- `read_bytes`: all bytes returned by `fs_read_file` plus `fs_read_bytes` host
+  imports, including cache and other host-FS traffic; it is not source-only;
+- `hash_calls`: `ingestion_fingerprint.hash_calls`, counting operations—not
+  proven-distinct files—at the current `fingerprint_file_fs` boundary;
+- `parsed_files`: `current_source_parse_executions`, limited to TypeDb current-
+  source parse-memo misses, excluding loader/header/import-scan parsing;
+- `checked_modules`: `checker_executions`;
+- `codegen_modules`: always zero because the endpoint is check-only.
+
+`scripts/incremental_phase_summary.mjs before.jsonl after.jsonl` emits the
+machine-readable before/after summary. It validates all nested telemetry and
+fails before computing deltas if the outer schema, benchmark, fixture, runner,
+endpoint, process mode, complete case-by-run topology, mode authority, or metric
+scopes differ. Each case has fixed `edit_kind` and `cache_state` metadata.
+Malformed/unsafe counts, ingestion read/hash unit disagreement, stamp activity
+while stamps are pinned off, nondeterministic repetitions, and nonzero codegen
+are also rejected. The KPI intentionally does not yet measure LSP residency,
+runnable artifacts, complete loader reconstruction attribution, or module
+codegen reuse.
 
 ### Initial local result (2026-08-02)
 
@@ -284,6 +308,16 @@ or a control-character nonce, or has the wrong nonce. It records the result as
 `host_fs_scope` alongside—not inside—the compiler-owned
 `incremental_typecheck` telemetry. The feature is disabled by default and does
 not change compiler source loading, persistent formats, cache keys, or reuse.
+
+Production use of Git blob OIDs for source identity is currently **NO-GO**.
+Obtaining an OID from the index does not prove equality to compiler-ingested
+working-tree bytes under attributes, clean/smudge filters, or line-ending
+conversion; racy-clean state, alternate index formats, linked worktrees,
+SHA-256 repositories, sparse state, and non-repository/sandbox execution also
+lack one trusted authority boundary. Invoking Git would add ambient process
+authority. Reconsideration requires a separately authenticated host API that
+proves both clean classification and exact equality to the byte/text stream the
+compiler consumes. No commit timestamp or author/modified date may substitute.
 
 The opt-in persistent ingestion-stamp oracle similarly uses isolated gate-off
 and gate-on cache histories for a copied package. It proves only that unchanged

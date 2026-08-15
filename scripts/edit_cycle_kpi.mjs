@@ -64,6 +64,83 @@ const ingestionFingerprintKeys = [
 ];
 const ingestionFingerprintCounterKeys = ingestionFingerprintKeys.slice(3);
 
+export const editCycleRecordSchema = "edit_cycle_kpi";
+export const editCycleRecordVersion = 1;
+export const editCycleCaseDefinitions = Object.freeze({
+  cold: Object.freeze({ edit_kind: "none", cache_state: "empty" }),
+  exact_noop: Object.freeze({ edit_kind: "none", cache_state: "preserved" }),
+  comment_edit: Object.freeze({ edit_kind: "non_semantic", cache_state: "preserved" }),
+  private_body_edit: Object.freeze({ edit_kind: "implementation", cache_state: "preserved" }),
+  public_interface_edit: Object.freeze({ edit_kind: "interface", cache_state: "preserved" }),
+});
+export const editCycleCases = Object.freeze(Object.keys(editCycleCaseDefinitions));
+export const editCycleModes = Object.freeze({
+  persistent_ingestion_stamp: "disabled",
+  typing_dependency_env_reuse: "default-on",
+  invalidation_trace: "disabled",
+  compilation: "check-only",
+});
+export const editCycleWorkScopes = Object.freeze({
+  read_bytes: "host_fs_scope.all_host_import_returned_bytes",
+  hash_calls: "ingestion_fingerprint.fingerprint_file_fs_hash_calls",
+  parsed_files: "incremental_typecheck.typedb_current_source_parse_misses",
+  checked_modules: "incremental_typecheck.checker_executions",
+  codegen_modules: "check_endpoint.none",
+});
+
+/// Apply benchmark mode authority after ambient process.env. Empty strings are
+/// deliberate: the CLI treats these optional controls as absent. Keeping this
+/// helper exported makes ambient-mode isolation directly testable.
+export function pinEditCycleModes(env) {
+  return {
+    ...env,
+    VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "",
+    VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "",
+    VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "",
+    VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "",
+  };
+}
+
+export function parseEditCycleRunCount(rawValue) {
+  const text = rawValue === undefined || rawValue === "" ? "3" : rawValue;
+  if (typeof text !== "string" || !/^[1-9][0-9]*$/u.test(text)) {
+    throw new Error(`VIBE_EDIT_CYCLE_RUNS must be a positive decimal safe integer, got ${rawValue}`);
+  }
+  const runs = Number(text);
+  if (!Number.isSafeInteger(runs)) {
+    throw new Error(`VIBE_EDIT_CYCLE_RUNS must be a positive decimal safe integer, got ${rawValue}`);
+  }
+  return runs;
+}
+
+export function assertDisabledIngestionStamps(telemetry, source = "ingestion fingerprint telemetry") {
+  for (const key of [
+    "stamp_probes",
+    "stamp_hits",
+    "stamp_misses",
+    "stamp_malformed",
+    "stamp_text_units_read",
+    "stamp_publications",
+  ]) {
+    if (telemetry[key] !== 0) throw new Error(`${source}: ${key} must be 0 when ingestion stamps are disabled`);
+  }
+}
+
+export function buildEditCycleWorkSummary(incrementalTypecheck, ingestionFingerprint, hostFsScope) {
+  const readBytes = hostFsScope.read_file_returned_bytes + hostFsScope.read_bytes_returned_bytes;
+  if (!Number.isSafeInteger(readBytes)) {
+    throw new Error("edit-cycle KPI work summary: read_bytes exceeds the safe integer range");
+  }
+  return {
+    read_bytes: readBytes,
+    hash_calls: ingestionFingerprint.hash_calls,
+    parsed_files: incrementalTypecheck.current_source_parse_executions,
+    checked_modules: incrementalTypecheck.checker_executions,
+    codegen_modules: 0,
+  };
+}
+
 /// Parse and validate the compiler-owned incremental typecheck sidecar.
 /// Kept exported so the structural contract has a focused Node regression test
 /// without needing to run a full wasm compiler invocation.
@@ -145,6 +222,9 @@ export function parseIngestionFingerprintTelemetry(text, expectedNonce, source =
   if (telemetry.hash_calls !== telemetry.source_read_calls) {
     throw new Error(`${source}: hash_calls must equal source_read_calls`);
   }
+  if (telemetry.hash_input_string_units !== telemetry.source_read_string_units) {
+    throw new Error(`${source}: hash_input_string_units must equal source_read_string_units`);
+  }
   return telemetry;
 }
 
@@ -206,9 +286,11 @@ function main() {
     }
   }
 
-  const runs = Number.parseInt(process.env.VIBE_EDIT_CYCLE_RUNS || "3", 10);
-  if (!Number.isInteger(runs) || runs < 1) {
-    console.error(`edit-cycle-kpi: VIBE_EDIT_CYCLE_RUNS must be positive, got ${process.env.VIBE_EDIT_CYCLE_RUNS}`);
+  let runs;
+  try {
+    runs = parseEditCycleRunCount(process.env.VIBE_EDIT_CYCLE_RUNS);
+  } catch (error) {
+    console.error(`edit-cycle-kpi: ${error.message}`);
     process.exit(2);
   }
 
@@ -239,7 +321,7 @@ function main() {
       cwd: project,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...pinEditCycleModes(process.env),
         VIBE_BUILD_CACHE_DIR: cache,
         VIBE_CLI_CWASM: "",
         VIBE_CLI_WASM: stage2,
@@ -278,6 +360,10 @@ function main() {
       ingestionTelemetryNonce,
       `edit-cycle-kpi: ${caseName} ingestion fingerprint telemetry`,
     );
+    assertDisabledIngestionStamps(
+      ingestionFingerprint,
+      `edit-cycle-kpi: ${caseName} ingestion fingerprint telemetry`,
+    );
     if (!existsSync(hostFsScopePath)) {
       throw new Error(`edit-cycle-kpi: ${caseName} omitted host filesystem telemetry sidecar`);
     }
@@ -287,7 +373,8 @@ function main() {
       `edit-cycle-kpi: ${caseName} host filesystem telemetry`,
     );
     records.push({
-      schema: 5,
+      schema: editCycleRecordSchema,
+      version: editCycleRecordVersion,
       benchmark: "user-edit-cycle-check",
       compiler_sha256: compilerSha,
       compiler_file: basename(stage2),
@@ -299,6 +386,9 @@ function main() {
       cache_state: cacheState,
       process_mode: "one-shot",
       endpoint: "check-command-complete",
+      modes: editCycleModes,
+      work_scopes: editCycleWorkScopes,
+      work_summary: buildEditCycleWorkSummary(telemetry, ingestionFingerprint, hostFsScope),
       incremental_typecheck: telemetry,
       ingestion_fingerprint: ingestionFingerprint,
       host_fs_scope: hostFsScope,
