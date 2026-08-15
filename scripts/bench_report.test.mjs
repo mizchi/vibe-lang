@@ -61,7 +61,7 @@ test("advisory wall-time and calibration data are never rendered", () => {
     const body = report.split("\n").filter((l) => !l.startsWith("<sub>")).join("\n");
     assert.doesNotMatch(body, /wall_ms|ns\/op|Advisory|calibration|runner factor|runner mismatch|<details>/);
     // The deterministic view of the same tracked bench still renders.
-    assert.match(report, /\| B\/op: b\.vibe::case \| 64 \| 64 \| ±0 \|/);
+    assert.match(report, /\| B\/op: b\.vibe::case \| 64 B \| 64 B \| ±0 \|/);
     // The footer says where the unrendered advisory data lives.
     assert.match(report, /wall times & runner calibration: recorded in the `bench-data` snapshots, not rendered/);
   }
@@ -84,7 +84,7 @@ test("deterministic rows keep the tight ±2% flag", () => {
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /\| selfcompile heap_ptr_bytes \| 1,030 \| 1,000 \| \+3\.00% ⚠️ \|/);
+    assert.match(result.stdout, /\| selfcompile heap_ptr_bytes \| 1\.01 KiB \| 1000 B \| \+3\.00% ⚠️ \|/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -132,8 +132,8 @@ test("exec section renders fuel deltas, gc ratio, and the all-ok output line", (
   } };
   const report = renderExecReport({ curExec: cur, baseExec: base });
   assert.match(report, /Program execution \(deterministic/);
-  assert.match(report, /\| demo \| 1,000,000 \| \+11\.11% ⚠️ \| 800,000 \| ±0 \| 0\.80× \|/);
-  assert.match(report, /\| demo \| 4,096 \| ±0 \| 65,536 \| ±0 \| 5,000 \| ±0 \| 6,000 \| ±0 \|/);
+  assert.match(report, /\| demo \| 1\.00M \| \+11\.11% ⚠️ \| 800k \| ±0 \| 0\.80× \|/);
+  assert.match(report, /\| demo \| 4\.00 KiB \| ±0 \| 64\.0 KiB \| ±0 \| 4\.88 KiB \| ±0 \| 5\.86 KiB \| ±0 \|/);
   assert.match(report, /output checks: 1\/1 scenarios ✅/);
 });
 
@@ -142,7 +142,7 @@ test("wasmtime version drift omits fuel deltas instead of comparing across cost 
   const base = { status: "ok", wasmtime: "47.0.2", scenarios: { demo: okScenario } };
   const report = renderExecReport({ curExec: cur, baseExec: base });
   assert.match(report, /fuel not comparable to baseline: wasmtime 47\.0\.2 → 48\.0\.0/);
-  assert.match(report, /\| demo \| 1,000,000 \| – \| 800,000 \| – \| 0\.80× \|/);
+  assert.match(report, /\| demo \| 1\.00M \| – \| 800k \| – \| 0\.80× \|/);
 });
 
 test("a parity mismatch is rendered as a loud silent-wrong flag, a gc gap as a note", () => {

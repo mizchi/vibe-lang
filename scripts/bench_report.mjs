@@ -23,7 +23,27 @@ if (!curPath) {
 const cur = JSON.parse(readFileSync(curPath, "utf8"));
 const base = basePath && existsSync(basePath) ? JSON.parse(readFileSync(basePath, "utf8")) : null;
 
-const fmt = (n) => n == null ? "–" : n.toLocaleString("en-US");
+// Human-readable units for table cells. Rounding here loses no signal: the Δ
+// column is computed from the raw values, so "any drift is real" still reads
+// off the percentage even when two close values render the same.
+const nice = (v) => v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+const fmtBytes = (n) => {
+  if (n == null) return "–";
+  if (n < 1024) return `${n} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${nice(v)} ${units[i]}`;
+};
+// Fuel = executed-instruction count; k/M/G are decimal. Small counts stay raw.
+const fmtCount = (n) => {
+  if (n == null) return "–";
+  if (n < 10000) return n.toLocaleString("en-US");
+  const units = ["k", "M", "G"];
+  let v = n / 1000, i = 0;
+  while (v >= 1000 && i < units.length - 1) { v /= 1000; i += 1; }
+  return `${nice(v)}${units[i]}`;
+};
 
 function delta(curV, baseV) {
   if (baseV == null || curV == null) return " | –";
@@ -53,14 +73,14 @@ const detRows = [
   ["compiler_sources_bundle bytes", cur.sizes?.compiler_sources_bundle, base?.sizes?.compiler_sources_bundle],
   ["flat module source bytes", cur.sizes?.module_source, base?.sizes?.module_source],
 ];
-for (const [name, c, b] of detRows) lines.push(`| ${name} | ${fmt(c)} | ${fmt(b)}${delta(c, b)} |`);
+for (const [name, c, b] of detRows) lines.push(`| ${name} | ${fmtBytes(c)} | ${fmtBytes(b)}${delta(c, b)} |`);
 for (const [name, c] of Object.entries(cur.sizes?.samples || {})) {
   const b = base?.sizes?.samples?.[name];
-  lines.push(`| sample wasm: ${name} | ${fmt(c)} | ${fmt(b)}${delta(c, b)} |`);
+  lines.push(`| sample wasm: ${name} | ${fmtBytes(c)} | ${fmtBytes(b)}${delta(c, b)} |`);
 }
 for (const [label, v] of Object.entries(cur.benches || {})) {
   const b = base?.benches?.[label]?.bytes_per_op;
-  lines.push(`| B/op: ${label} | ${fmt(v.bytes_per_op)} | ${fmt(b)}${delta(v.bytes_per_op, b)} |`);
+  lines.push(`| B/op: ${label} | ${fmtBytes(v.bytes_per_op)} | ${fmtBytes(b)}${delta(v.bytes_per_op, b)} |`);
 }
 lines.push("");
 
@@ -87,15 +107,15 @@ if (execCur?.scenarios && Object.keys(execCur.scenarios).length) {
     const b = execBase?.scenarios?.[name];
     const dLin = fuelComparable ? delta(s.linear?.fuel, b?.linear?.fuel).replace(" | ", "") : "–";
     const dGc = fuelComparable ? delta(s.gc?.fuel, b?.gc?.fuel).replace(" | ", "") : "–";
-    lines.push(`| ${name} | ${fmt(s.linear?.fuel)} | ${dLin} | ${fmt(s.gc?.fuel)} | ${dGc} | ${ratio(s.gc?.fuel, s.linear?.fuel)} |`);
+    lines.push(`| ${name} | ${fmtCount(s.linear?.fuel)} | ${dLin} | ${fmtCount(s.gc?.fuel)} | ${dGc} | ${ratio(s.gc?.fuel, s.linear?.fuel)} |`);
   }
   lines.push("");
-  lines.push("| scenario | heap bytes | Δ | committed bytes | Δ | wasm bytes (linear) | Δ | wasm bytes (gc) | Δ |");
+  lines.push("| scenario | heap | Δ | committed | Δ | wasm (linear) | Δ | wasm (gc) | Δ |");
   lines.push("|---|---:|---|---:|---|---:|---|---:|---|");
   for (const [name, s] of Object.entries(execCur.scenarios)) {
     const b = execBase?.scenarios?.[name];
     const d = (c, bb) => delta(c, bb).replace(" | ", "");
-    lines.push(`| ${name} | ${fmt(s.linear?.heap_bytes)} | ${d(s.linear?.heap_bytes, b?.linear?.heap_bytes)} | ${fmt(s.linear?.committed_bytes)} | ${d(s.linear?.committed_bytes, b?.linear?.committed_bytes)} | ${fmt(s.linear?.wasm_bytes)} | ${d(s.linear?.wasm_bytes, b?.linear?.wasm_bytes)} | ${fmt(s.gc?.wasm_bytes)} | ${d(s.gc?.wasm_bytes, b?.gc?.wasm_bytes)} |`);
+    lines.push(`| ${name} | ${fmtBytes(s.linear?.heap_bytes)} | ${d(s.linear?.heap_bytes, b?.linear?.heap_bytes)} | ${fmtBytes(s.linear?.committed_bytes)} | ${d(s.linear?.committed_bytes, b?.linear?.committed_bytes)} | ${fmtBytes(s.linear?.wasm_bytes)} | ${d(s.linear?.wasm_bytes, b?.linear?.wasm_bytes)} | ${fmtBytes(s.gc?.wasm_bytes)} | ${d(s.gc?.wasm_bytes, b?.gc?.wasm_bytes)} |`);
   }
   lines.push("");
   // Correctness lines: golden (linear vs committed expected output) and
