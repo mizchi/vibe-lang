@@ -36,6 +36,8 @@ import @vibe/compiler/core {
   path_set_new,
   resolve_import_path,
   resolve_import_path_candidates,
+  resolve_import_path_probe,
+  Source,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep
 }
@@ -73,37 +75,16 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
 /// to the first candidate so a genuinely missing import still reports its
 /// plain-file path.
 fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: String) -> String with Fs {
-  let candidates = resolve_import_path_candidates(base_dir, raw_path)
-  let mut i = 0
-  let mut found = ""
-  let mut fallback = ""
-  while i < Array::length(candidates) {
-    let candidate = Array::get(candidates, i)
-    // Skip a candidate that IS the importing file: `export ./codegen` inside
-    // codegen.vibe means the codegen/ directory, never a self-import (which
-    // would only recurse/cycle). Mirrors loader/header_cache.resolve_path_fs.
-    if candidate == self_path {
-      i = i + 1
-    } else if Fs::exists(candidate) {
-      found = candidate
-      i = Array::length(candidates)
-    } else {
-      if fallback == "" {
-        fallback = candidate
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-  }
-  if found == "" {
-    if fallback == "" {
-      Array::get(candidates, 0)
-    } else {
-      fallback
-    }
-  } else {
-    found
+  // #1872 pilot: probe loop unified in core (resolve_import_path_probe,
+  // `with Source`); observable behavior is unchanged (this copy broke out of
+  // the scan early on a hit and set fallback only on a miss, but `found`
+  // guards both continuations, so first-hit/first-non-self-fallback answers
+  // are identical). The wrapper only discharges Source with the builtins.
+  handle {
+    resolve_import_path_probe(base_dir, raw_path, self_path)
+  } with Source {
+    Read(p) => resume(Fs::read_file(p));
+    Exists(p) => resume(Fs::exists(p))
   }
 }
 
