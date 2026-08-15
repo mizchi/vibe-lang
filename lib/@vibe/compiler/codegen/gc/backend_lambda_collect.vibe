@@ -12,6 +12,10 @@ import @vibe/compiler/codegen/common_analysis {
   collect_free_vars
 }
 
+import ./backend_direct_abi_names.vibe {
+  gc_capture_global_builtin_names
+}
+
 import @vibe/compiler/codegen/common_base {
   CompileCtxGc, CtorTable, FuncTable
 }
@@ -42,6 +46,15 @@ export fn collect_lambda_captures_gc(params: Array[(String, Option[TypeExpr])], 
     "__slice",
     "__rec_field"
   ])
+  // The `__`-prefixed desugar builtins above are only 6 of the ~60 names
+  // `compile_call_gc` dispatches by spelling, and this list had drifted from
+  // that one: a closure calling any of the others captured the builtin's own
+  // spelling as a free variable, then died in `emit_lambda_closure_gc` with
+  // "reached code generation unresolved". Take the namespaced ones from the
+  // single list in backend_direct_abi_names.vibe instead of restating them
+  // here -- see
+  // `gc_capture_global_builtin_names` for why bare spellings are excluded.
+  globals = Array::concat(globals, gc_capture_global_builtin_names())
   let captures = collect_free_vars(fn_body, param_names_arr, globals)
   let num_captures = Array::length(captures)
   let user_params = Array::length(params)

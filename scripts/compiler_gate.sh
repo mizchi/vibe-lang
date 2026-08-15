@@ -4250,6 +4250,39 @@ fi
 rm -rf "$gcdir"
 echo "[compiler-gate] wasm-gc backend smoke ok (101557)"
 
+# 40h-2. wasm-gc lane: a builtin called from INSIDE a closure must not be
+#        collected as a free variable of that closure. `compile_call_gc`
+#        dispatches ~60 builtins by spelling and the lambda capture scan has to
+#        know the same set; the two lists had drifted (capture scan carried 6),
+#        so a lambda calling e.g. `Double::to_i64_bits_lo` died with
+#        "reached code generation unresolved" while the SAME call at statement
+#        level compiled fine. Every gc fixture called these at the top level,
+#        which is why it survived. The fixture also asserts the over-exclusion
+#        direction (a real local must still be captured) -- widening the set
+#        past namespaced spellings would drop real captures silently, which is
+#        worse than the ICE. Runs on BOTH lanes: the bug is gc-only, so linear
+#        is the control that proves the fixture is not vacuous.
+echo "[compiler-gate] 40h-2/40 wasm-gc closure builtin capture"
+gccapdir="_build/_gate_gc_closure_capture"
+rm -rf "$gccapdir"; mkdir -p "$gccapdir"
+for gccap_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gccap_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_closure_builtin_capture_test.vibe" "$gccapdir/$gccap_be.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gccapdir/$gccap_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe did not compile on the $gccap_be backend" >&2
+    cat "$gccapdir/$gccap_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gccapdir/$gccap_be.wasm" >"$gccapdir/$gccap_be.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe failed at run time on the $gccap_be backend" >&2
+    cat "$gccapdir/$gccap_be.out" >&2
+    exit 1
+  fi
+done
+rm -rf "$gccapdir"
+echo "[compiler-gate] wasm-gc closure builtin capture ok (linear + gc)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"

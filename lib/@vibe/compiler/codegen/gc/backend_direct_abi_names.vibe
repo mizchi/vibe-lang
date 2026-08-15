@@ -1,0 +1,140 @@
+//# Direct-ABI builtin names (gc lane)
+//
+// The names `compile_call_gc` intercepts by spelling before ordinary
+// func-table dispatch. TWO passes need this set and they sit on opposite sides
+// of the package's import graph:
+//
+//   - `backend_body.vibe` rejects user declarations with these spellings (a
+//     user body would otherwise describe a `(ref null array)` ABI while the
+//     call site takes the builtin path)
+//   - `backend_lambda_collect.vibe` must not collect them as free variables of
+//     a lambda -- they resolve globally, so capturing them lands in
+//     `emit_lambda_closure_gc` as "reached code generation unresolved"
+//
+// The second copy had drifted to 6 of the ~60 names, so a lambda calling e.g.
+// `Double::to_i64_bits_lo` died while the same call at statement level
+// compiled. This file exists so there is one copy: it deliberately has NO
+// imports, because `backend_body.vibe` already reaches
+// `backend_lambda_collect.vibe` transitively and putting the list in either
+// one closes an import cycle.
+//
+// Keep in sync with the `fname == ...` dispatch chain in backend_call.vibe.
+
+//# Functions
+
+fn gc_direct_abi_names() -> Array[String] {
+  [
+    "Array::length",
+    "Array::get",
+    "Array::set",
+    "Stdin::read_via_stream",
+    "StdinStream::next",
+    "StdinStream::close",
+    "StdinStream::read_chunk",
+    "__slice",
+    "__index",
+    "__set_field",
+    "__rec_field",
+    "__len",
+    "Array::slice",
+    "Array::concat",
+    "Array::truncate",
+    "Array::push_all",
+    "perform",
+    "eq",
+    "not",
+    "Double::from_i64_bits",
+    "Double::to_i64_bits_lo",
+    "Double::to_i64_bits_hi",
+    "__to_string",
+    "to_string",
+    "Int::to_string",
+    "MapBuilder::new",
+    "MapBuilder::set",
+    "MapBuilder::freeze",
+    "MapBuilder::has_key",
+    "MapBuilder::get",
+    "Map::set",
+    "Map::get",
+    "Map::has_key",
+    "map_has",
+    "Map::keys",
+    "StringBuilder::new",
+    "StringBuilder::push",
+    "StringBuilder::freeze",
+    "print",
+    "println",
+    "assert",
+    "assert_true",
+    "assert_eq",
+    "FixedArray::make",
+    "Int64Array::make",
+    "FixedArray::length",
+    "Int64Array::length",
+    "FixedArray::get",
+    "Int64Array::get",
+    "FixedArray::set",
+    "FixedArray::unsafe_set",
+    "Int64Array::set",
+    "FixedArray::blit",
+    "v128_load",
+    "v128_store",
+    "v128_splat_i8x16",
+    "v128_eq_i8x16",
+    "v128_le_u_i8x16",
+    "v128_ge_u_i8x16",
+    "v128_and",
+    "v128_or",
+    "v128_not",
+    "v128_bitmask_i8x16",
+    "v128_any_true",
+    "v128_all_true_i8x16"
+  ]
+}
+
+/// A user declaration with any of these spellings makes typed user signatures
+/// unsafe -- see the header.
+fn gc_direct_abi_name_has_spelling_lowering(name: String) -> Bool {
+  let names = gc_direct_abi_names()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The subset the lambda capture scan may treat as globals. Restricted to
+/// NAMESPACED spellings on purpose: `Foo::bar` is not a legal binding name
+/// (the parser rejects `let Array::length = ..` at the `::`), so such a name
+/// can never denote an enclosing local and dropping it from the capture set
+/// can never drop a real capture.
+///
+/// The bare names above (`print`, `eq`, `not`, `to_string`, the `v128_*`
+/// family, ...) ARE legal binding names, so excluding them unconditionally
+/// would be the worse failure: a closure over a user local named `print` would
+/// silently lose its capture instead of raising. Those need shadowing-aware
+/// resolution, not a name list.
+fn gc_capture_global_builtin_names() -> Array[String] {
+  let names = gc_direct_abi_names()
+  let out = [
+  ]
+  let mut i = 0
+  while i < Array::length(names) {
+    let n = Array::get(names, i)
+    if String::contains(n, "::") {
+      Array::push(out, n)
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# Misc
+
+export {
+  gc_capture_global_builtin_names, gc_direct_abi_name_has_spelling_lowering
+}
