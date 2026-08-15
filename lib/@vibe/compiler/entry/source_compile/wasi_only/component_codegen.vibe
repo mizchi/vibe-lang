@@ -7062,16 +7062,42 @@ fn emit_core_instance_from_exports_sorted(buf: Bytes, names: Array[String], sort
 /// index by one against the sync trampoline, which is why this is a separate
 /// generator rather than a flag on that one.
 fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_name: String) -> Bytes {
+  comp_generate_string_trampoline_packed_async_opt(string_param_count, export_name, false)
+}
+
+/// #1540 scope 3: the same trampoline, with an optional trailing STREAM
+/// parameter.
+///
+/// The canonical ABI flattens a `stream<u8>` param to ONE i32 handle after the
+/// strings' (ptr, len) pairs (measured: tools/wasip3_component_probe/
+/// http_body_read). vibe sees it as a `HostStream`, whose cell the lowering
+/// prelude builds from the bare handle -- so what the handler's core function
+/// wants in that slot is the handle as a TAGGED vibe Int.
+///
+/// Tagging is `<< 1`, because the host-stream adapter untags with `param >> 1`
+/// before using the handle. Getting it wrong hands every read a handle twice
+/// or half the real one -- a wrong answer, not a trap.
+fn comp_generate_string_trampoline_packed_async_opt(string_param_count: Int, export_name: String, stream_param: Bool) -> Bytes {
   let buf = bytebuf_new()
   emit_header(buf)
   // types: 0 = target_func (i64 x N+1) -> i64; 1 = canon_func (i32 x 2N) -> ();
   // 2 = cabi_realloc (i32,i32,i32,i32) -> i32; 3 = task.return (i32, i32) -> ()
   let type_sec = bytebuf_new()
   bytebuf_push_vec_header(type_sec, 4)
-  emit_func_type_raw(type_sec, comp_repeat_valtype(126, string_param_count + 1), [
+  let target_i64_count = if stream_param {
+    string_param_count + 2
+  } else {
+    string_param_count + 1
+  }
+  let canon_i32_count = if stream_param {
+    (string_param_count * 2) + 1
+  } else {
+    string_param_count * 2
+  }
+  emit_func_type_raw(type_sec, comp_repeat_valtype(126, target_i64_count), [
     126
   ])
-  emit_func_type_raw(type_sec, comp_repeat_valtype(127, string_param_count * 2), array_empty())
+  emit_func_type_raw(type_sec, comp_repeat_valtype(127, canon_i32_count), array_empty())
   emit_func_type_raw(type_sec, comp_repeat_valtype(127, 4), [
     127
   ])
@@ -7119,7 +7145,7 @@ fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_
   leb128_encode_u32(canon_body, 1)
   leb128_encode_u32(canon_body, 1)
   bytebuf_push(canon_body, 126)
-  let result_local = string_param_count * 2
+  let result_local = canon_i32_count
   let mut si = 0
   while si < string_param_count {
     // (extend_u(ptr) << 32) | extend_u(len)
@@ -7131,6 +7157,15 @@ fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_
     bytebuf_push(canon_body, 173)
     bytebuf_push(canon_body, 132)
     si = si + 1
+  }
+  if stream_param {
+    // The stream handle, tagged: extend_u then << 1.
+    emit_local_get(canon_body, string_param_count * 2)
+    bytebuf_push(canon_body, 173)
+    emit_i64_const(canon_body, 1)
+    bytebuf_push(canon_body, 134)
+  } else {
+    ()
   }
   // Trailing closure-env argument (0 for a top-level function).
   emit_i64_const(canon_body, 0)
@@ -7153,6 +7188,16 @@ fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_
   bytebuf_push_buf(code_sec, comp_generate_bump_realloc_body())
   bytebuf_push_section(buf, 10, code_sec)
   bytebuf_to_bytes(buf)
+}
+
+/// #1540 scope 3: byte-shape fixture for the stream-parameter trampoline.
+///
+/// Exists because the stream slot cannot be checked any other way yet: nothing
+/// assembles this trampoline into a component until the host-stream adapter is
+/// wired into the serve lane, and by then a wrong tag would be a wrong ANSWER
+/// (every read seeing half or twice the real handle) rather than a trap.
+export fn comp_emit_stream_trampoline_fixture(string_param_count: Int) -> Bytes {
+  comp_generate_string_trampoline_packed_async_opt(string_param_count, "handler", true)
 }
 
 /// #1540: `<count>` copies of one core valtype -- the shape both trampolines

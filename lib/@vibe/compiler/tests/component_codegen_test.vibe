@@ -35,6 +35,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_with_lift,
   comp_emit_component_wasm_with_string_lift,
   comp_emit_memhost_realloc_fixture,
+  comp_emit_stream_trampoline_fixture,
   comp_generate_string_trampoline,
   comp_generate_string_trampoline_packed
 }
@@ -718,6 +719,63 @@ test "component async: the emitted body-read component takes a stream param (#15
   assert(component_bytes_contains(comp, "[task-return]handler") == 1)
   // and its diagnostics are strings, so a failure can name what broke
   assert(component_bytes_contains(comp, "ERR-OVERRUN") == 1)
+}
+
+/// #1540 scope 3: the async trampoline's STREAM parameter.
+///
+/// Two things are pinned, and the second is the one that cannot fail loudly.
+///
+/// The canonical ABI flattens `stream<u8>` to ONE i32 handle after the
+/// strings' (ptr, len) pairs, so `canon_func` takes 2N+1 i32 -- shape, easy to
+/// see. The handle then reaches the handler's core function as a vibe Int,
+/// which is TAGGED: the host-stream adapter untags with `param >> 1`. A
+/// missing or doubled `<< 1` hands every read half or twice the real handle,
+/// and a wrong handle reads a different stream or none -- a wrong answer, not
+/// a trap.
+test "component async: the stream trampoline flattens and TAGS the handle (#1540)" {
+  let m = comp_emit_stream_trampoline_fixture(3)
+  // core wasm header
+  assert(Bytes::get(m, 0) == 0)
+  assert(Bytes::get(m, 1) == 97)
+  // target_func takes 3 strings + the stream + the closure env = 5 i64,
+  // returning i64: 60 05 7e 7e 7e 7e 7e 01 7e
+  assert(bytes_contains_seq(m, [
+    96,
+    5,
+    126,
+    126,
+    126,
+    126,
+    126,
+    1,
+    126
+  ]) == 1)
+  // canon_func takes 2*3 + 1 = 7 i32 and returns NOTHING (async lift):
+  // 60 07 7f x7 00
+  assert(bytes_contains_seq(m, [
+    96,
+    7,
+    127,
+    127,
+    127,
+    127,
+    127,
+    127,
+    127,
+    0
+  ]) == 1)
+  // the tagging itself: local.get 6 (the handle slot) ; i64.extend_i32_u (ad)
+  // ; i64.const 1 (42 01) ; i64.shl (86)
+  assert(bytes_contains_seq(m, [
+    32,
+    6,
+    173,
+    66,
+    1,
+    134
+  ]) == 1)
+  // and it still hands the result back through task.return, not a retptr
+  assert(component_bytes_contains(m, "[task-return]handler") == 1)
 }
 
 test "component async: sync lift carries no async canonopt" {
