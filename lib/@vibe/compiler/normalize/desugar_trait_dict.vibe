@@ -4859,9 +4859,22 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // disagree only by one being MORE conservative (an unresolved name is
         // ""), which costs a kind here and a row precision there, never
         // soundness.
-        let kind = match infer_arg_type_name(perform_throw_payload(args), struct_sets, var_types, fn_returns) {
+        // #1878 (Codex review on #1892): `infer_arg_type_name` can answer
+        // with an internal shape sentinel (`__anonrec:` for a record
+        // binding, `__anontup:` for a tuple carrying one) — inert for every
+        // dispatch consumer, but THIS site publishes the string as the
+        // user-facing exception kind, where a sentinel would render as
+        // `<__anontup:__anonrec:a;>`. Publish "" instead, the same value an
+        // unresolved payload gets (the erased sink then falls back to the
+        // safely rendered payload).
+        let kind0 = match infer_arg_type_name(perform_throw_payload(args), struct_sets, var_types, fn_returns) {
           Some(k) => k,
           None => ""
+        }
+        let kind = if String::starts_with(kind0, anon_record_prefix()) || String::starts_with(kind0, anon_tuple_prefix()) {
+          ""
+        } else {
+          kind0
         }
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
