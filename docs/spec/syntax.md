@@ -5,7 +5,7 @@ Status: implemented surface syntax reference.
 This document is the canonical index for vibe syntax. It describes accepted
 source forms, preferred style, and compatibility forms. Type-system and runtime
 semantics live in `docs/vibe.md`; tutorial material lives in
-`docs/language-tour/` and `docs/cheatsheet.md`.
+`docs/cheatsheet.md`.
 
 Implementation sources:
 
@@ -15,7 +15,7 @@ Implementation sources:
 - `fixtures/*.vibe` and `examples/*_test.vibe` for executable syntax coverage
 
 When changing grammar, update this file, parser tests/fixtures, formatter
-round-trip coverage, and any affected language-tour examples in the same
+round-trip coverage, and any affected cheatsheet examples in the same
 change.
 
 ## Notation

@@ -403,7 +403,7 @@
 - 実行基盤は `runtime/viberun`（`viberun`）を「独自ビルドの wasmtime
   runner」として配布する。runner は portable wasm を受け取り、インストール時に
   ホスト固有の `.cwasm` へ AOT コンパイルしてキャッシュする
-  （既存の `.cwasm` cache 機構 / ADR-0050・ADR-0056 を install フローに昇格）。
+  （既存の `.cwasm` cache 機構 / ADR-0103・ADR-0056 を install フローに昇格）。
 - **runner 層と compiler wasm 層を分離**する（`docs/archive/TODO.md`「Cutover work」と一致）。
   vibe コンパイラ本体は wasm artifact として runner とは独立に更新できる
   （runner を入れ替えずに `vibe` 自身を bump 可能）。

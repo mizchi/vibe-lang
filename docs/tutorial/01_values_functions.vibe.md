@@ -1,14 +1,17 @@
-# 01 — 値と関数
+# 01 — Values and functions
 
-このチャプターは `.vibe.md` そのもの — 各 ` ```vibe run ` ブロックは
-`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md`)
-で実際にコンパイル・実行され、直後の ` ```output ` ブロックは実行結果を
-そのまま埋め込んだもの (#1142)。手元で更新するときは
-`bash scripts/vibe_md.sh write docs/tutorial/01_values_functions.vibe.md`。
+This chapter *is* a `.vibe.md`: every ` ```vibe run ` block is really compiled
+and run by `pkf run vibe-md-tutorial`
+(`bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md`), and the ` ```output `
+block right after it is that run's output, pasted in (#1142). To refresh it
+locally, run
+`bash scripts/vibe_md.sh write docs/tutorial/01_values_functions.vibe.md`.
 
-## 値と基本型
+日本語版: [01_values_functions-ja.vibe.md](01_values_functions-ja.vibe.md)
 
-束縛は `let`。型注釈は省略できる (推論される)。
+## Values and primitive types
+
+`let` binds. The type annotation is optional — it is inferred.
 
 ```vibe run
 import @vibe/prelude {
@@ -17,19 +20,19 @@ import @vibe/prelude {
 
 fn main with Stdout {
   let x: Int = 42
-  // 62-bit tagged。リテラル上限 2^61-1
+  // 62-bit tagged; literals go up to 2^61-1
   let d: Double = 3.14
-  // 64-bit float (小数点リテラルの既定)
+  // 64-bit float (the default for a decimal literal)
   let b: Bool = true
   let s = "answer \{x}"
-  // 文字列補間は \{expr}
+  // string interpolation is \{expr}
   let c = 'A'
-  // char リテラルは文字コード (Int)。'A' == 65
+  // a char literal is its character code (Int); 'A' == 65
   stdout_write("x = \{x}\n")
   stdout_write("d = \{d}, to_string = \{Double::to_string(d)}\n")
-  // Double も \{expr} 補間 / Double::to_string で出せる
+  // Double interpolates with \{expr} too, or use Double::to_string
   stdout_write("d*100 as int = \{Double::to_int(d * 100.0)}\n")
-  // 整数に丸めたいときは Double::to_int
+  // Double::to_int when you want it rounded to an integer
   stdout_write("b = \{b}\n")
   stdout_write("s = \{s}\n")
   stdout_write("c = \{c}\n")
@@ -45,13 +48,13 @@ s = answer 42
 c = 65
 ```
 
-注意: 文字列の添字 `s[i]` は **文字コード (Int)** を返す。1 文字の String が
-欲しいときは `String::from_char_code(s[i])` か slice を使う。
+Watch out: indexing a string, `s[i]`, gives you the **character code (Int)**.
+For a one-character String use `String::from_char_code(s[i])` or a slice.
 
-## mut はブロックスコープ
+## `mut` is block-scoped
 
-vibe は純粋がデフォルト。ローカルな可変状態は `let mut` で、ブロックの外へは
-値として出す。
+vibe is pure by default. Local mutable state goes in a `let mut`, and leaves the
+block as a value.
 
 ```vibe run
 import @vibe/prelude {
@@ -72,24 +75,26 @@ fn main with Stdout {
 y = 2
 ```
 
-## 関数
+## Functions
 
-`fn` は予約語 ([#1280](https://github.com/mizchi/vibe-lang/issues/1280) で着地済み)。
-関数宣言の綴りは `fn` で、binding・引数の名前には使えない。`r#fn` のような
-raw identifier も escape hatch にはならない (実測: `let fn = 1` は
-`expected identifier after 'let'`、`fn f(fn: Int)` は `expected parameter name`、
-`let r#fn = 1` も同様に拒否)。既存の名前が衝突したら `fn_` などへ rename する。
+`fn` is a keyword ([#1280](https://github.com/mizchi/vibe-lang/issues/1280)
+landed it). It spells a function declaration and cannot be used as a binding or
+parameter name, and a raw identifier like `r#fn` is not an escape hatch either
+(measured: `let fn = 1` gives `expected identifier after 'let'`,
+`fn f(fn: Int)` gives `expected parameter name`, and `let r#fn = 1` is rejected
+the same way). Rename a colliding name to something like `fn_`.
 
 ```vibe skip
-// skip: 予約語 `fn` の拒否例 (どれも parse error になることを示す断片)
+// skip: how the reserved word `fn` is rejected -- every fragment here is a parse error
 let fn = 1
 // error: expected identifier after 'let'
 let r#fn = 1
-// error: raw identifier は escape hatch にしない
+// error: a raw identifier is not an escape hatch
 ```
 
-宣言形式は以下がすべて runnable。トップレベル関数は完全注釈必須、再帰に
-`rec` は不要。let 形式・ジェネリクス・ラベル付き引数も同じ意味論。
+All of the declaration forms below are runnable. A top-level function must be
+fully annotated, and recursion does not need `rec`. The `let` form, generics and
+labelled arguments all mean the same thing.
 
 ```vibe run
 import @vibe/prelude {
@@ -111,12 +116,12 @@ fn fact(n: Int) -> Int {
 fn identity[T](x: T) -> T {
   x
 }
-// ジェネリクス
+// generics
 
 let inc: (Int) -> Int = (x) -> {
   x + 1
 }
-// let 形式
+// the let form
 
 let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
@@ -128,7 +133,7 @@ fn main with Stdout {
   stdout_write("identity(7) = \{identity(7)}\n")
   stdout_write("inc(41) = \{inc(41)}\n")
   stdout_write("scaled(x=4, y=2) = \{scaled(x=4, y=2)}\n")
-  // ラベル付き呼び出し
+  // a labelled call
 }
 ```
 
@@ -140,7 +145,7 @@ inc(41) = 42
 scaled(x=4, y=2) = 42
 ```
 
-## ラムダ短縮形とプレースホルダ
+## Lambda shorthand and placeholders
 
 ```vibe run
 import @vibe/prelude {
@@ -154,7 +159,7 @@ fn main with Stdout {
     3
   ]
   let doubled = Array::map(xs, _ * 2)
-  // (v) -> v * 2 の section
+  // a section for (v) -> v * 2
   let total = Array::fold(xs, 0, _ + _)
   // (acc, v) -> acc + v
   stdout_write("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]\n")
@@ -167,4 +172,4 @@ doubled = [2, 4, 6]
 fold sum = 6
 ```
 
-次章: [02 制御フロー](02_control_flow.vibe.md)
+Next: [02 Control flow](02_control_flow.vibe.md)

@@ -134,9 +134,10 @@ help), plus a function-granularity interactive debugger
 ### Packages & dependencies
 
 Dependencies are distributed over git/URLs (Deno/Go style — no central
-registry) and pinned by content hash. See
-[docs/module-system.md](docs/module-system.md#配布とパッケージ管理-giturl-分散)
-for the full `vibe.deps` / `vibe add` / `vibe fetch` workflow.
+registry) and pinned by content hash. Package boundaries, visibility, and
+pinning are specified in
+[docs/module-system-oracle.md](docs/module-system-oracle.md); installing and
+vendoring are covered in [docs/install.md](docs/install.md).
 
 ## Docs
 
@@ -149,7 +150,7 @@ Start here:
 
 Reference index:
 - [docs/cli-commands.md](docs/cli-commands.md) — full `vibe` CLI command reference
-- [docs/module-system.md](docs/module-system.md) — module system + package distribution
+- [docs/module-system-oracle.md](docs/module-system-oracle.md) — package boundaries, visibility, pinning (canonical)
 - [docs/adding-modules.md](docs/adding-modules.md) — how to add/repair a `lib/@vibe/*` module
 - [docs/editor-and-debugging.md](docs/editor-and-debugging.md) — LSP, debugger, DAP
 - [docs/builtin_contract_table.generated.md](docs/builtin_contract_table.generated.md) — builtin function contracts

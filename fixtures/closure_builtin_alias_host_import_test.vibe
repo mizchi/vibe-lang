@@ -1,0 +1,46 @@
+// #1811 / #1348: a builtin ALIAS called from inside a closure must still
+// reserve its canonical's HOST IMPORT.
+//
+// `ca_resolves_globally` (codegen/common_analysis) suppresses an alias so the
+// capture scan stops recording it as a free variable -- without that, the
+// bogus capture put the name in `local_names`, which made
+// `compile_call_core`'s `source_is_bound` true, which suppressed the
+// canonicalization, which left the callee unresolved and produced a module
+// that will not instantiate.
+//
+// But the SAME walk is the used-builtin scan, and there the alias must be
+// KEPT: `push_free_canonical` canonicalizes whatever the walk returns to
+// decide which builtins are used, and for `Fs::Exists` that return value is
+// the only evidence `Fs::exists`'s host import has to be reserved. The
+// predicate therefore answers differently per consumer, keyed on
+// `skip_inlined` -- exactly the split the inlined-builtin skip already makes.
+// Give both consumers the same answer and this test compiles into a module
+// missing its import; that is the #1348 failure, traded for the #1811 one.
+//
+// Separate from fixtures/gc_closure_builtin_alias_test.vibe (the pure cases)
+// because this needs an `Fs` row, and that file is compiled whole by the
+// compiler gate's gc section, where the row does not resolve.
+
+fn alias_fs_exists_in_closure(path: String) -> Bool with Fs {
+  let f = (p: String) -> Bool with Fs {
+    Fs::Exists(p)
+  }
+  f(path)
+}
+
+fn canonical_fs_exists_in_closure(path: String) -> Bool with Fs {
+  let f = (p: String) -> Bool with Fs {
+    Fs::exists(p)
+  }
+  f(path)
+}
+
+test "an alias reserves its canonical host import from inside a closure" with Fs {
+  // The alias and the canonical spelling of the same program must agree, on
+  // both a present and an absent path -- a reserved-but-mislinked import would
+  // still answer one of the two.
+  inspect(alias_fs_exists_in_closure("Taskfile.pkl"), "true")
+  inspect(alias_fs_exists_in_closure("no/such/file.vibe"), "false")
+  inspect(canonical_fs_exists_in_closure("Taskfile.pkl"), "true")
+  inspect(canonical_fs_exists_in_closure("no/such/file.vibe"), "false")
+}

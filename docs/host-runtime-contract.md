@@ -7,7 +7,7 @@ Date: 2026-07-28
 Related: ADR-0010(WASM Component Model / WIT 統合 — 本 ADR が定める host
 import 契約はこの WIT 化方針の compiler-host 版)、ADR-0079(wasm proposal
 依存を compiler-host / codegen-target の2水準に分離 — `runtime/viberun` を
-実験的機能に依存してよい実行基盤として扱う既存の前例)、ADR-0050(wasmtime
+実験的機能に依存してよい実行基盤として扱う既存の前例)、ADR-0103(wasmtime
 AOT は selfhost bench の host-side accelerator であり、canonical selfhost
 artifact は WASI wasm standalone として実行可能であり続けるべき、という
 「Wasmtime を必須にしない」という本 ADR と同じ動機の既存決定)、ADR-0056(

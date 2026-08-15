@@ -68,7 +68,7 @@ vibe apply my_lib.vibe
 
 `@` で始まるパッケージ参照では `-`（ハイフン）と `/`（スラッシュ）が識別子の一部として扱われる。
 `@` なしの場合、`-` は減算演算子、`/` は除算演算子になる。
-詳細は `docs/language-tour/syntax-reference.vibe.md` の "Qualified Names" セクションを参照。
+詳細は `docs/cheatsheet.md` の "Qualified names" セクションを参照。
 
 ## 反復デバッグ
 

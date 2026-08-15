@@ -1031,7 +1031,7 @@ local doctest = new Task {
   name = "doctest"
   description = "compile-check ```vibe blocks in docs via the selfhost stage2 doctest harness"
   cmd =
-    "bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md docs/spec/*.md"
+    "bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/spec/*.md"
   // README.md is in the list because it was NOT, and its headline sample rotted
   // unnoticed: #1324 removed `Result` from the language and the sample kept
   // using bare `Ok`/`Err`, so the repo's most-read example failed to compile
@@ -1059,7 +1059,7 @@ local doctestGated = new Task {
   description =
     "doctest against a stage2 built for THIS checkout (release-check / CI form; refuses the seed)"
   cmd =
-    "DOCTEST_REQUIRE_STAGE2=1 bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md docs/spec/*.md"
+    "DOCTEST_REQUIRE_STAGE2=1 bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/spec/*.md"
   // Plain `doctest` resolves whatever stage2 happens to be lying in _build and
   // falls back to the committed seed. As a release-check dep that is unsound
   // twice over: pkfire runs sibling deps concurrently, so it could read a
@@ -1121,11 +1121,23 @@ local vibeMdTutorialGated = new Task {
   deps { selfhostGeneration }
 }
 
+local checkTutorialTranslationParity = new Task {
+  name = "check-tutorial-translation-parity"
+  description =
+    "every docs/tutorial chapter has a `-ja` translation, and each pair runs the same programs"
+  cmd = "bash scripts/check_tutorial_translation_parity.sh"
+  // vibe_md.sh proves each file on its own; this is the part it cannot see.
+  // Two files that run the same programs record the same ```output blocks, so
+  // comparing those catches code drift between a chapter and its translation
+  // without diffing sources, which legitimately differ in their comments.
+  cache = false
+}
+
 local vibeMdFmtCheck = new Task {
   name = "vibe-md-fmt-check"
   description =
     "check that ```vibe code blocks in *.vibe.md docs are a fixpoint of the selfhost CST formatter"
-  cmd = "bash scripts/vibe_md.sh fmt-check docs/tutorial/*.vibe.md docs/language-tour/*.vibe.md"
+  cmd = "bash scripts/vibe_md.sh fmt-check docs/tutorial/*.vibe.md"
   // informational, not enforced anywhere: the formatter's always-expanded-block
   // style (one import per line, every `if`/`fn` body on its own lines) fights
   // the compact, hand-tuned prose style these docs use for readability, so
@@ -1187,6 +1199,7 @@ local releaseCheck = new Task {
     checkMethodStyleNaming
     doctestGated
     vibeMdTutorialGated
+    checkTutorialTranslationParity
     checkExamplesTypecheck
     checkPlaygroundPresets
     // Skips itself when wasm-tools is absent (it is the oracle), so this
@@ -1348,6 +1361,7 @@ tasks {
   checkPlaygroundPresets
   vibeMdTutorial
   vibeMdTutorialGated
+  checkTutorialTranslationParity
   vibeMdFmtCheck
   vibeMdFmt
   releaseSelfhostGates

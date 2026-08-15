@@ -1309,8 +1309,35 @@ import . { helper }          // own directory's index (same resolution)
 // qualified access is an independent mechanism and remains.
 ```
 
-Package refs: `@json`, `@lib/path` (hyphen/slash are part of name after `@`).
-Qualified access: `Type::method`, `Module::name`.
+### Qualified names
+
+どの記号が識別子の一部になるかは文脈で決まる。
+
+| 綴り | 意味 | 例 |
+|---|---|---|
+| `@name` | package 参照 | `@json`, `@lib/path` |
+| `@` の後の `-` | package 名の一部 | `@my-pkg` |
+| `@` の後の `/` | package path の一部 | `@lib/path` |
+| `@` の無い `-` | 減算演算子 | `x - 1` |
+| `.` | field / member アクセス | `point.x`, `tuple.0` |
+| `::` | 型 / module のメンバ | `Array::length` |
+
+`@` 接頭辞は package 参照を開き、そこから先の `-` と `/` は演算子ではなく
+名前の一部になる。`.` は識別子の一部にはならず、常に member アクセス演算子
+(優先順位 1) として解釈される。`::` は型・module のメンバを指す
+(`Array::length`, `Option::Some`, `String::substring`, `MyModule::x`,
+`Point::{ x: 1, y: 2 }`)。
+
+### Keywords
+
+`let`, `rec`, `fn` (文の先頭のみ), `mut`, `if`, `else`, `match`, `do`, `while`,
+`loop`, `for`, `in`, `break`, `continue`, `yield`, `throw`, `perform`,
+`resume`, `handle`, `test`, `bench`, `enum`, `struct`, `trait`, `impl`,
+`type`, `import`, `export`, `internal`, `extern`, `as`, `true`, `false`,
+`suberror`, `derive`
+
+`record` と `map` は literal の先頭でだけキーワードになる文脈依存語で、
+`map` は予約語ではない。
 
 ## Tests and Examples
 
@@ -1403,6 +1430,179 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
 ```
 
 **Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_byte`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (符号・整数部・小数点付き小数部; 指数表記 `1e10` は非対応。linear backend のみ、gc backend は未対応)
+
+### Signature reference
+
+上の節が「何があるか」なら、こちらは「どう呼ぶか」。削除した `docs/language-tour/`
+を畳んだときに引き継いだ表で、各行は `lib/` の実体と照合済み
+(`where` / `path` / `String::from_char_codes` の 3 行は実体が無かったので落とした)。
+
+**演算子** — 直接呼ぶのではなく演算子として使う:
+
+| 演算子 | 脱糖先 | 型 |
+|---|---|---|
+| `a + b` / `a - b` / `a * b` / `a / b` / `a % b` | `__add` / `__sub` / `__mul` / `__div` / `__mod` | Int, Float, Double |
+| `-a` | `__neg(a)` | Int, Float, Double |
+| `a == b` | `__eq(a, b)` | Eq types |
+| `a < b` | `__lt(a, b)` | Ord types |
+| `a & b` / `a \| b` / `a ^ b` | `__bit_and` / `__bit_or` / `__bit_xor` | Int |
+| `a << b` / `a >> b` | `__lshift` / `__rshift` (算術シフト) | Int |
+| `a[i]` | `__index(a, i)` | Array, Map |
+
+prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
+
+**String**:
+
+| 関数 | シグネチャ |
+|---|---|
+| `String::length` | `(String) -> Int` |
+| `String::concat` | `(String, String) -> String` |
+| `String::substring` | `(String, Int, Int) -> String` (start, end) |
+| `String::char_code_at` | `(String, Int) -> Int` (別名 `String::byte_at`) |
+| `String::from_char_code` | `(Int) -> String` (別名 `String::from_byte`) |
+| `String::equals` | `(String, String) -> Bool` |
+| `String::split` / `String::join` | `(String, String) -> Array[String]` / `(Array[String], String) -> String` |
+| `String::contains` | `(String, String) -> Bool` |
+| `String::index_of` / `String::last_index_of` | `(String, String) -> Int` |
+| `String::starts_with` / `String::ends_with` | `(String, String) -> Bool` |
+| `String::trim` / `String::trim_start` / `String::trim_end` | `(String) -> String` |
+| `String::replace` / `String::replace_all` | `(String, String, String) -> String` |
+| `String::to_upper` / `String::to_lower` | `(String) -> String` |
+| `String::count` | `(String, String) -> Int` |
+
+**Array** (builtin): `length: (Array[T]) -> Int`, `get: (Array[T], Int) -> T`,
+`slice: (Array[T], Int, Int) -> Array[T]`,
+`concat: (Array[T], Array[T]) -> Array[T]`, `reverse: (Array[T]) -> Array[T]`。
+
+**Array** (prelude、コレクション先頭・関数末尾):
+
+| 関数 | シグネチャ |
+|---|---|
+| `Array::map` | `(Array[T], (T) -> U) -> Array[U]` |
+| `Array::filter` | `(Array[T], (T) -> Bool) -> Array[T]` |
+| `Array::fold` | `(Array[T], U, (U, T) -> U) -> U` |
+| `Array::foreach` | `(Array[T], (T) -> Unit) -> Unit` |
+| `Array::any` / `Array::all` | `(Array[T], (T) -> Bool) -> Bool` |
+| `Array::find` | `(Array[T], (T) -> Bool) -> Option[T]` |
+
+**Builder**: `ArrayBuilder::new() -> ArrayBuilder[T]`,
+`push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`。
+`MapBuilder::new() -> MapBuilder[K, V]`, `set(MapBuilder[K, V], K, V) -> Unit`,
+`freeze(MapBuilder[K, V]) -> Map[K, V]`。`for-in` 内包表記は内部でこの builder
+操作へ脱糖される。
+
+**Map**: `get: (Map[K, V], K) -> V` (無ければ throw),
+`set: (Map[K, V], K, V) -> Map[K, V]` (新しい map を返す),
+`get_or: (Map[K, V], K, V) -> V`, `has_key: (Map[K, V], K) -> Bool`,
+`keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`。
+
+**Record**: `record_set: (Record, String, V) -> Record`。
+
+**Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
+`Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
+`Double::floor`, `Double::ceil`。
+
+**変換**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
+`Float::to_double`, `Double::to_int`, `Double::to_float`,
+`to_string: (Any) -> String`。
+
+**I/O** (effect 必須):
+
+| 関数 | シグネチャ | effect |
+|---|---|---|
+| `sh` | `(String) -> Unit` | `Process` |
+| `sh_lines` | `(String) -> Array[String]` | `Process` |
+| `Stdout::write_stream` | `(String) -> Unit` | `Stdout` |
+| `Stdout::write_char` | `(Int) -> Unit` | `Stdout` |
+| `Stdin::read_stream` | `(Int) -> String` | `Stdin` |
+| `Stdin::read_char` | `() -> Int` | `Stdin` |
+| `Stdin::read_via_stream` | `() -> StdinStream` | `Stdin` |
+| `StdinStream::next` | `(StdinStream) -> Int` (EOF 後は `-1`) | `Async` |
+| `StdinStream::close` | `(StdinStream) -> Unit` (成功後は冪等) | `Async` |
+| `StdinStream::read_chunk` | `(StdinStream, Int) -> Option[String]` | `Async` |
+
+stdin provider の 4 つは**直接呼び出し専用**。値として渡したいときは `with` 行に
+`Stdin` / `Async` を明示した wrapper を定義する — builtin 自体への別名や
+値位置の参照は checker が拒否する。
+
+**JSON**: `Json::stringify: (Any) -> String`, `parse: (String) -> Json`,
+`type_of: (Json) -> String`, `get: (Json, String) -> Json`,
+`index: (Json, Int) -> Json`, `string` / `number` / `bool` の取り出し,
+`is_null: (Json) -> Bool`, `length: (Json) -> Int`,
+`keys: (Json) -> Array[String]`, `stringify_lines: (Array[Json]) -> String`,
+`parse_lines: (String) -> Array[Json]`。
+
+**行操作**: `Lines::parse: (String) -> Array[String]`,
+`Lines::stringify: (Array[String]) -> String`。
+
+**assertion**: `assert: (Bool) -> Unit`, `eq: (Eq, Eq) -> Bool`,
+`assert_eq: (Eq, Eq) -> Unit`。
+
+## Shell integration
+
+`sh` / `sh_lines` はどちらも `Process` effect を要求する。
+
+```vibe
+let demo: () -> Array[String] with Process = () -> {
+  // Execute command; returns the captured output (String)
+  let out = sh("echo hello")
+
+  // Execute and capture output lines
+  sh_lines("ls /tmp")
+  // => Array[String]
+}
+```
+
+```vibe
+let run: () -> Unit with Process = () -> {
+  let _ = sh("echo hello")   // sh returns String; discard it in a Unit fn
+}
+
+// In tests, effects are implicit
+test "shell" {
+  let lines = sh_lines("echo hello")
+  assert(eq(Array::length(lines), 1))
+}
+```
+
+シェルのパイプは `sh_lines()` の文字列の中でそのまま使え、vibe の `|>` は
+その結果を vibe の関数へ繋ぐ:
+
+```vibe
+let pipes: () -> Array[String] with Process = () -> {
+  let a = sh_lines("echo hello | cat")
+  let b = sh_lines("printf 'a\\nb\\nc' | sort -r")
+  sh_lines("seq 1 10 | head -3")
+}
+
+let count_txt: () -> Int with Process = () -> {
+  sh_lines("ls /tmp")
+  |> Array::filter((s) -> { String::contains(s, ".txt") })
+  |> Array::length
+}
+// Works because |> inserts value as first arg, matching collection-first order
+```
+
+### PosixMode (`vibe shell` の内部プレビュー)
+
+`vibe shell` の内部 `PosixMode` では、裸のコマンドが `sh_lines()` 呼び出しへ
+脱糖される。キーワード (`let` / `if` / `while` / `for` / `match` / `test` 等)
+と関数呼び出しは脱糖されない。
+
+```
+> ls /tmp
+note: posix-mode command-head desugar: ls -> sh_lines("ls")
+```
+
+| 入力 | 脱糖先 |
+|---|---|
+| `ls /tmp` | `sh_lines("ls /tmp")` |
+| `cat file.txt` | `sh_lines("cat file.txt")` |
+| `echo hello` | `sh_lines("echo hello")` |
+
+`{{ expr }}` は vibe の文字列補間 `\{expr}` に変換される
+(`ls {{ dir }}` → `sh_lines("ls \{dir}")`)。`$(cmd)` は POSIX 風のコマンド置換で、
+`sh_lines("cmd")` を実行して**最初の 1 行**を差し込む。
 
 ## Idioms
 
@@ -1794,4 +1994,4 @@ enforce しない (fixtures/contract_* の最小契約テストを壊さない�
 
 ---
 
-*Full reference: [docs/spec/syntax.md](spec/syntax.md) / [syntax-reference.md](language-tour/syntax-reference.md) / [language-tour/](language-tour/)*
+*Full reference: [docs/spec/syntax.md](spec/syntax.md) — canonical surface syntax*
