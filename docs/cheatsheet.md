@@ -806,10 +806,11 @@ let w_check = {
 >   colliding struct, and a record whose field set is a strict subset of some
 >   struct's is accepted (it used to be rejected as a construction of that
 >   struct missing fields). Struct construction is spelled `S::{ ... }` only.
->   Caveat: the checker does not yet REJECT passing an anonymous record where
->   a struct is expected — that program now reads wrong slots at runtime
->   instead of being (wrongly) accepted as the struct. Don't do it; #1839
->   tracks the checker-level rejection.
+>   The literal's checker type is a structural record (`record { start: Int,
+>   end: Int }` in diagnostics): passing it where a struct is expected is a
+>   located type mismatch (`expected Span, got record { start: Int, end:
+>   Int }`), and `.field` reads are typed against the record's own fields
+>   (an unknown field is a located error).
 > - **Record dot access** (`r.name` on an anonymous `record { ... }`) lowers to
 >   the positional field read the destructure uses, and now resolves in every
 >   expression position — a `let` initializer (including a top-level `let`

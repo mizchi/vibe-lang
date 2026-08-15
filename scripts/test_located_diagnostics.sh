@@ -190,6 +190,27 @@ else
   echo "FAIL: expected 1 location for a ': '-containing path, got $sep_n (in: $sep_out)" >&2; fail=$((fail + 1))
 fi
 
+# #1839: an anonymous `record { ... }` literal is CtRecord (structural), so
+# passing it where a nominal struct is expected is a LOCATED type mismatch
+# whose message prints the record's shape -- it used to typecheck (record
+# captured as the struct, then CtUnknown) and read wrong slots at runtime.
+expect_contains "record-into-struct-arg rejected with the record's shape (#1839)" \
+  "expected Span, got record { start: Int, end: Int }" \
+  'struct Span { end: Int; start: Int }\nfn span_width(s: Span) -> Int { s.end - s.start }\nexport fn main() -> Int {\n  span_width(record { start: 3, end: 9 })\n}\n'
+
+expect_contains "record-into-struct-annotation rejected (#1839)" \
+  "expected Span, got record { start: Int, end: Int }" \
+  'struct Span { end: Int; start: Int }\nexport fn main() -> Int {\n  let r: Span = record { start: 3, end: 9 }\n  r.start\n}\n'
+
+# ...while a record used AS a record stays accepted (same colliding struct in
+# scope; literal-order dot access).
+printf 'struct Span { end: Int; start: Int }\nexport fn main() -> Int {\n  let r = record { start: 3, end: 9 }\n  r.start + r.end\n}\n' > "$WORK/rec_ok.vibe"
+if "$VIBE" check "$WORK/rec_ok.vibe" >/dev/null 2>&1; then
+  echo "ok: record used structurally checks clean beside a colliding struct"; pass=$((pass + 1))
+else
+  echo "FAIL: structural record use should check clean (got: $("$VIBE" check "$WORK/rec_ok.vibe" 2>&1 | head -2))" >&2; fail=$((fail + 1))
+fi
+
 # a good program -> check passes (no error)
 printf 'export let main = () -> Int { 40 + 2 }\n' > "$WORK/ok.vibe"
 if "$VIBE" check "$WORK/ok.vibe" >/dev/null 2>&1; then
