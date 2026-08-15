@@ -2822,7 +2822,80 @@ fn lc_exprs_have_spawn_suspend(es: Array[Expr]) -> Bool {
   found
 }
 
+/// #1540 scope 3: which function the Async boundary wraps.
+///
+/// Normally that is `entry_name`. The component lanes compile with the
+/// `__no_entry__` sentinel, though -- a component's surface is its EXPORT, not
+/// an entry -- so nothing ever matched and the boundary could not be built at
+/// all: a serve handler that reads a host stream failed with "requires an
+/// Async-row entry" no matter how it was written.
+///
+/// When there is no entry, the boundary is the exported Async function, and
+/// only when there is EXACTLY ONE. Two of them have no single boundary, and
+/// picking one silently would wrap the wrong function's suspends -- so that
+/// case keeps the old behaviour (no boundary, and the same loud error) rather
+/// than guess.
+fn lc_resolve_boundary_name(stmts: Array[Stmt], entry_name: String) -> String {
+  if lc_defines_top_level(stmts, entry_name) {
+    entry_name
+  } else {
+    let mut found = ""
+    let mut count = 0
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(exported, _, name, _, EFn(_, _, _, _, eff, _)) => if exported && lc_row_has_label(eff, "Async") {
+          found = name
+          count = count + 1
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if count == 1 {
+      found
+    } else {
+      entry_name
+    }
+  }
+}
+
+/// #1540 scope 3: rebind each `HostStream` PARAMETER to the state-3 cell the
+/// read path expects.
+///
+/// A host stream reaches vibe code as `[3, handle]` -- state 3 plus the
+/// readable end's handle -- which `host_stream_named` builds in codegen. A
+/// parameter arrives as the bare handle instead, since that is what the
+/// component ABI hands over, so `host_stream_next(body)` would read state and
+/// handle out of an integer.
+///
+/// The fix is local: shadow the parameter with the cell at the top of the
+/// body, so everything below sees the same shape a named stream produces. This
+/// runs inside the codegen-side lowering prelude, after typechecking, which is
+/// why the cell can be an ordinary array literal here.
+fn lc_wrap_host_stream_params(params: Array[(String, Option[TypeExpr])], body: Expr) -> Expr {
+  let mut out = body
+  let mut i = Array::length(params)
+  while i > 0 {
+    i = i - 1
+    let (pname, pty) = Array::get(params, i)
+    match pty {
+      Some(TyName("HostStream")) => {
+        out = ELet(pname, EArray([
+          EInt(3),
+          EIdent(pname, -1)
+        ]), out, -1)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
 fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> String {
+  let boundary_name = lc_resolve_boundary_name(stmts, entry_name)
   let mut entry_has_async = false
   let mut user_defines_sleep = false
   let mut has_async_decl = false
@@ -2844,7 +2917,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, EFn(_, _, _, _, eff, fbody)) => {
-        if name == entry_name && lc_row_has_label(eff, "Async") {
+        if name == boundary_name && lc_row_has_label(eff, "Async") {
           entry_has_async = true
         } else {
           ()
@@ -3399,8 +3472,15 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let mut j = 0
       while j < Array::length(stmts) {
         match Array::get(stmts, j) {
-          SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name {
-            let wrapped = EHandle(body, [
+          SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == boundary_name {
+            // The cell rebinding goes INSIDE the handler: it is ordinary code
+            // that runs on entry, not something the boundary needs to see.
+            let with_cells = if hs_machinery {
+              lc_wrap_host_stream_params(params, body)
+            } else {
+              body
+            }
+            let wrapped = EHandle(with_cells, [
               (PCtor("Async::Suspend", [
                 PBind("__entry_slp_req")
               ]), arm)
