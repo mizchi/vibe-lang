@@ -111,3 +111,25 @@ test "a struct literal after a comparison is still spelled with ::" {
   let got = format_script(src)
   assert(contains(got, "Point::{"))
 }
+
+test "a for-in iterable keeps its block brace" {
+  // `for x in Items {` — found reviewing the #1821 fix, after the comparison
+  // operators were added. `path_governor` reports `in`, which no guard covered,
+  // so the loop body became struct-literal fields.
+  //
+  // This is where enumerating stopped being the answer: four rounds of "one
+  // more token in that slot" (#945, #1429, #1505, #1821) and the question
+  // "what can precede the name" still has no bounded answer. The entry now
+  // parses the formatter's output and discards a rewrite that breaks it, so a
+  // spelling missing from the guard costs a refusal instead of a broken file.
+  let src = "fn f() -> Int {\n  for x in Items {\n    1\n  }\n  0\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "for x in Items {"))
+  assert(!contains(got, "Items::{"))
+}
+
+test "a for-in over a real struct literal keeps its ::" {
+  let src = "fn f() -> Int {\n  for x in Items::{ a: 1 } {\n    1\n  }\n  0\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "Items::{"))
+}
