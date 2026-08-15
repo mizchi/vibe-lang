@@ -168,14 +168,13 @@ stdout/stderr and guest-writable files are never parsed as the result channel.
 acceptance lane. It checks same-tree build/heap/token identity, poisoned head
 script sentinels, wrong merge identity, reserved paths, and cleanup. Native
 `linux/amd64` attestation run
-[31873848757](https://github.com/mizchi/vibe-lang/actions/runs/31873848757)
-at candidate `72ea4102fb175d6911fa813f72ac316aadfd009e` passed focused tests
-39/39 and the full isolated Docker lane, including the generation-phase policy
-wrapper and real hostile-Wasm fixtures, in 7m31s. That attestation predates the Preview2 import gate, Docker endpoint inspection,
-and canonical-record corrections. The temporary exact-branch validation
-workflow is present for a mandatory native Linux/amd64 rerun on the new
-candidate; it remains separate from required CI. The existing absolute gate
-remains authoritative.
+[31876125211](https://github.com/mizchi/vibe-lang/actions/runs/31876125211)
+at candidate `d74be6a43f01f14b022faf0c13394fd18c4f6f4b` passed focused tests
+42/42 and the full isolated Docker lane, including the generation-phase policy
+wrapper, real raw/Preview2 hostile-Wasm fixtures, local Docker endpoint
+inspection, and canonical authenticated records, in 10m59s. The temporary
+exact-branch validation workflow was removed after that run; required CI remains
+unchanged and the existing absolute gate remains authoritative.
 
 The metric still observes the guest-exported `__heap_ptr`. HMAC authentication
 proves what the trusted runner observed, but cannot stop a deliberately
