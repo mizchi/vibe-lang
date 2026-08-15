@@ -8812,6 +8812,44 @@ if ! grep -qF 'zero_alloc' "$za91dir/shadowed.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 rm -rf "$za91dir"
+# ADR-0091 #1262: the check and the MEASUREMENT pin each other. The two
+# fixtures above prove a clean fn compiles and a violating one is rejected;
+# neither proves the annotation is TRUE at run time -- a checker that quietly
+# stopped looking keeps both green. So state it twice, independently: the
+# check says the marked fns allocate nothing, and `__heap_ptr` says the loop
+# does not move it.
+#
+# Asserted on INVARIANCE, not on a total. The setup (`FixedArray::make`) is
+# not free, so "total == 0" is unachievable and any fixed bound is arbitrary.
+# Two iteration counts with the SAME delta means the per-iteration cost is
+# exactly zero.
+za91mdir="_build/_gate_zero_alloc91_measured"
+rm -rf "$za91mdir"; mkdir -p "$za91mdir"
+for za_n in 200 800; do
+  sed -e "s/while k < 200 {/while k < $za_n {/" \
+      -e "s/inspect(main(), \"22400\")/inspect(main(), \"$((za_n * 112))\")/" \
+      fixtures/zero_alloc_measured.vibe > "$za91mdir/measured_$za_n.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_RC=0 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$za91mdir/measured_$za_n.vibe" "$za91mdir/measured_$za_n.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$za91mdir/measured_$za_n.wasm" ]; then
+    echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) did not compile -- the @zero_alloc check rejected a fn the measurement says is clean" >&2
+    cat "$za91mdir/measured_$za_n.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$za91mdir/measured_$za_n.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) got the wrong value" >&2
+    exit 1
+  fi
+done
+za_lo="$(node scripts/region_arena_heap_delta.mjs "$za91mdir/measured_200.wasm")" || exit 1
+za_hi="$(node scripts/region_arena_heap_delta.mjs "$za91mdir/measured_800.wasm")" || exit 1
+if [ "$za_lo" -ne "$za_hi" ]; then
+  echo "[compiler-gate] FAIL: @zero_alloc fns allocated $(( (za_hi - za_lo) / 600 )) B per iteration (200 trips: $za_lo B, 800 trips: $za_hi B) -- the check says clean but the heap moved" >&2
+  exit 1
+fi
+rm -rf "$za91mdir"
+echo "[compiler-gate] @zero_alloc check and measurement agree ok (0 B/op, $za_lo B fixed setup)"
 echo "[compiler-gate] ADR-0091 @zero_alloc allocation check ok"
 
 # 77/77. ADR-0089 Decision 1, increment 1 (#1218): entry-row-Async sleep

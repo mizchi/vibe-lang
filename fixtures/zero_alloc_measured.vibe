@@ -1,0 +1,66 @@
+// ADR-0091 #1262: the check and the MEASUREMENT pin each other.
+//
+// `zero_alloc_ok.vibe` proves that a `@zero_alloc` function compiles.
+// `err_zero_alloc_ctor.vibe` proves that a violating one is rejected. Neither
+// proves the annotation is TRUE at run time -- a checker that quietly stopped
+// looking would keep both of them green.
+//
+// So this file states the same property twice, independently:
+//
+//   - the CHECK says the marked functions allocate nothing (they compile at
+//     all, which under @zero_alloc means the analysis found no site)
+//   - the MEASUREMENT says `__heap_ptr` does not move per iteration
+//
+// If those two ever disagree, one of them is broken -- and the interesting
+// direction is a check that says "clean" while the heap grows, which is the
+// silently-wrong failure ADR-0091 exists to prevent.
+//
+// The bodies stay inside the region the analysis can prove: scalar
+// arithmetic, comparisons, and `FixedArray` element access. `FixedArray` is
+// ADR-0098 (4)'s optimization target precisely because a known length needs
+// no growth reallocation -- this fixture is where that claim is measured.
+
+@zero_alloc
+fn mix(a: Int, b: Int) -> Int {
+  let s = a + b
+  let t = s * 2 + (a & b)
+  t - (a ^ b)
+}
+
+@zero_alloc
+fn scan(buf: FixedArray[Int], n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < n {
+    acc = acc + FixedArray::get(buf, i)
+    i = i + 1
+  }
+  acc
+}
+
+// A marked function calling another marked function: the closure has to stay
+// clean through the call, not just inside one body.
+@zero_alloc
+fn combined(buf: FixedArray[Int], n: Int) -> Int {
+  mix(scan(buf, n), n)
+}
+
+// The allocation that DOES happen is hoisted out of the measured loop, so the
+// per-iteration delta is the thing under test. A fixture that allocated its
+// buffer inside the loop would measure the buffer, not the annotation.
+export let main = () -> Int {
+  let buf = FixedArray::make(16, 3)
+  let mut k = 0
+  let mut acc = 0
+  while k < 200 {
+    acc = acc + combined(buf, 16)
+    k = k + 1
+  }
+  acc
+}
+
+// 16 * 3 = 48; mix(48, 16) = (48+16)*2 + (48&16) - (48^16) = 128 + 16 - 32 = 112.
+// 200 * 112 = 22400.
+test "zero alloc measured" {
+  inspect(main(), "22400")
+}
