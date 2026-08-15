@@ -4283,6 +4283,33 @@ done
 rm -rf "$gccapdir"
 echo "[compiler-gate] wasm-gc closure builtin capture ok (linear + gc)"
 
+# 40h-3. Same rule reached through a SOURCE ALIAS. `compile_call_gc`
+#        canonicalizes the callee before dispatching while the capture scan
+#        sees the source spelling, so sharing the direct-ABI list was not
+#        enough: `StringBuilder::build` (alias of `StringBuilder::freeze`)
+#        matched neither the func table nor the list and was still captured.
+#        GC LANE ONLY -- the linear backend emits an INVALID module for these
+#        while reporting a successful compile (#1811), so linear coverage would
+#        pin a known-broken artifact rather than prove anything.
+echo "[compiler-gate] 40h-3/40 wasm-gc closure builtin alias capture"
+gcaliasdir="_build/_gate_gc_closure_alias"
+rm -rf "$gcaliasdir"; mkdir -p "$gcaliasdir"
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/gc_closure_builtin_alias_test.vibe" "$gcaliasdir/alias.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$gcaliasdir/alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe did not compile on the gc backend" >&2
+  cat "$gcaliasdir/alias.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcaliasdir/alias.wasm" >"$gcaliasdir/alias.out" 2>&1; then
+  echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe failed at run time on the gc backend" >&2
+  cat "$gcaliasdir/alias.out" >&2
+  exit 1
+fi
+rm -rf "$gcaliasdir"
+echo "[compiler-gate] wasm-gc closure builtin alias capture ok (gc)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"

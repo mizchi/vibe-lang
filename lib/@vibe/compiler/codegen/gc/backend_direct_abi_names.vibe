@@ -20,6 +20,16 @@
 //
 // Keep in sync with the `fname == ...` dispatch chain in backend_call.vibe.
 
+//# Imports
+
+import @vibe/compiler/core {
+  canonical_builtin_name
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
 //# Functions
 
 fn gc_direct_abi_names() -> Array[String] {
@@ -107,34 +117,42 @@ fn gc_direct_abi_name_has_spelling_lowering(name: String) -> Bool {
   found
 }
 
-/// The subset the lambda capture scan may treat as globals. Restricted to
-/// NAMESPACED spellings on purpose: `Foo::bar` is not a legal binding name
-/// (the parser rejects `let Array::length = ..` at the `::`), so such a name
-/// can never denote an enclosing local and dropping it from the capture set
-/// can never drop a real capture.
+/// Whether the lambda capture scan must treat `name` as resolving globally
+/// (so it is NOT an environment slot of the closure).
 ///
-/// The bare names above (`print`, `eq`, `not`, `to_string`, the `v128_*`
+/// Two things have to line up with `compile_call_gc`, and both were wrong
+/// before:
+///
+///  1. It canonicalizes with `canonical_builtin_name` BEFORE dispatching, so
+///     the capture scan has to canonicalize too. The scan sees the SOURCE
+///     spelling, so `StringBuilder::build` (alias of `StringBuilder::freeze`)
+///     was still captured and died in codegen even after the direct list was
+///     shared. Canonicalizing here covers every present and future alias --
+///     listing the aliases would just be a third copy to drift. The canonical
+///     form is checked against `globals` too, not only the direct-ABI list:
+///     `String::byte_at` canonicalizes to `String::char_code_at`, which the gc
+///     lane resolves through the func table rather than by spelling.
+///  2. Only NAMESPACED spellings qualify. `Foo::bar` is not a legal binding
+///     name (the parser rejects `let Array::length = ..` at the `::`), so such
+///     a name can never denote an enclosing local and dropping it can never
+///     drop a real capture.
+///
+/// The bare names in the list (`print`, `eq`, `not`, `to_string`, the `v128_*`
 /// family, ...) ARE legal binding names, so excluding them unconditionally
 /// would be the worse failure: a closure over a user local named `print` would
 /// silently lose its capture instead of raising. Those need shadowing-aware
 /// resolution, not a name list.
-fn gc_capture_global_builtin_names() -> Array[String] {
-  let names = gc_direct_abi_names()
-  let out = [
-  ]
-  let mut i = 0
-  while i < Array::length(names) {
-    let n = Array::get(names, i)
-    if String::contains(n, "::") {
-      Array::push(out, n)
-    }
-    i = i + 1
+fn gc_capture_resolves_globally(name: String, globals: Array[String]) -> Bool {
+  if String::contains(name, "::") {
+    let canonical = canonical_builtin_name(name)
+    gc_direct_abi_name_has_spelling_lowering(canonical) || array_contains_str(globals, canonical)
+  } else {
+    false
   }
-  out
 }
 
 //# Misc
 
 export {
-  gc_capture_global_builtin_names, gc_direct_abi_name_has_spelling_lowering
+  gc_capture_resolves_globally, gc_direct_abi_name_has_spelling_lowering
 }

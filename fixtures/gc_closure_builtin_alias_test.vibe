@@ -1,0 +1,62 @@
+// wasm-gc lane: a builtin reached through a SOURCE ALIAS must not be captured
+// either.
+//
+// Companion to gc_closure_builtin_capture_test.vibe. Sharing the direct-ABI
+// list between the call dispatcher and the capture scan was not enough:
+// `compile_call_gc` canonicalizes the callee with `canonical_builtin_name`
+// BEFORE dispatching, while the capture scan sees the SOURCE spelling. So
+// `StringBuilder::build` -- an alias of `StringBuilder::freeze` -- matched
+// neither the func table nor the list and was still captured, giving the same
+// "reached code generation unresolved" death one lambda deep.
+//
+// `String::byte_at` is the case that shows why canonicalizing against the
+// direct-ABI list alone is not enough: its canonical form
+// (`String::char_code_at`) is resolved through the FUNC TABLE, not by
+// spelling. The capture test therefore canonicalizes and then re-checks both
+// sets.
+//
+// GC LANE ONLY. The linear backend emits an INVALID module for every one of
+// these (`invalid signature index`) while reporting a successful compile --
+// a pre-existing bug unrelated to the capture scan, tracked as #1811. Widen
+// this to both lanes once that lands; until then linear coverage would just
+// pin a known-broken artifact.
+
+fn alias_string_builder_in_closure() -> Int {
+  let f = () -> String {
+    let b = StringBuilder::new()
+    StringBuilder::push(b, "ab")
+    StringBuilder::build(b)
+  }
+  String::length(f())
+}
+
+fn alias_byte_at_in_closure() -> Int {
+  let f = (s: String) -> Int {
+    String::byte_at(s, 0)
+  }
+  f("A")
+}
+
+fn alias_from_byte_in_closure() -> Int {
+  let f = (c: Int) -> String {
+    String::from_byte(c)
+  }
+  String::length(f(65))
+}
+
+// The alias and a real local in the same closure: `n` must still ride the
+// environment while the alias must not.
+fn alias_and_local_together() -> Int {
+  let n = 3
+  let f = (s: String) -> Int {
+    String::byte_at(s, 0) + n
+  }
+  f("A")
+}
+
+test "source aliases canonicalize before the capture decision" {
+  inspect(alias_string_builder_in_closure(), "2")
+  inspect(alias_byte_at_in_closure(), "65")
+  inspect(alias_from_byte_in_closure(), "1")
+  inspect(alias_and_local_together(), "68")
+}
