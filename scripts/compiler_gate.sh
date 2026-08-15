@@ -8714,6 +8714,40 @@ if [ "$r90_heap_delta" -gt 100000 ]; then
   echo "[compiler-gate] FAIL: 200 regions grew the main bump heap by $r90_heap_delta B (want < 100000; ~6408 with the arena, 1644008 without) -- the arena stopped releasing" >&2
   exit 1
 fi
+
+# ADR-0090 #1262: a REFERENCE CYCLE inside a region also costs the main heap
+# nothing -- the property the ADR calls the complement to RC's permanent
+# limitation. The watermark reset reclaims it without inspecting the graph.
+#
+# Asserted on the MARGINAL cost, not the total: the fixed setup is not zero,
+# so a total bound would either be loose enough to miss a leak or tight enough
+# to break on unrelated changes. Two iteration counts, and the per-region cost
+# has to stay small.
+for r90_cyc_n in 200 800; do
+  sed -e "s/while k < 200 {/while k < $r90_cyc_n {/" \
+      -e "s/inspect(main(), \"1400\")/inspect(main(), \"$((r90_cyc_n * 7))\")/" \
+      fixtures/region_arena_cycles.vibe > "$r90dir/cycles_$r90_cyc_n.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_RC=0 \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$r90dir/cycles_$r90_cyc_n.vibe" "$r90dir/cycles_$r90_cyc_n.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$r90dir/cycles_$r90_cyc_n.wasm" ]; then
+    echo "[compiler-gate] FAIL: region_arena_cycles.vibe ($r90_cyc_n) did not compile" >&2
+    cat "$r90dir/cycles_$r90_cyc_n.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/cycles_$r90_cyc_n.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: region_arena_cycles.vibe ($r90_cyc_n) got the wrong value" >&2
+    exit 1
+  fi
+done
+r90_cyc_lo="$(node scripts/region_arena_heap_delta.mjs "$r90dir/cycles_200.wasm")" || exit 1
+r90_cyc_hi="$(node scripts/region_arena_heap_delta.mjs "$r90dir/cycles_800.wasm")" || exit 1
+r90_cyc_per=$(( (r90_cyc_hi - r90_cyc_lo) / 600 ))
+if [ "$r90_cyc_per" -gt 64 ]; then
+  echo "[compiler-gate] FAIL: a reference cycle inside a region costs $r90_cyc_per B/region on the main heap (want <= 64; ~24 with the arena) -- the cycle is no longer reclaimed by the watermark reset" >&2
+  exit 1
+fi
+echo "[compiler-gate] region arena reclaims reference cycles ok ($r90_cyc_per B/region)"
 echo "[compiler-gate] region arena bulk release ok (200 regions, main heap +${r90_heap_delta} B)"
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
