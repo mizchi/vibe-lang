@@ -986,6 +986,38 @@ fn validate_index_layout_fs(path: String) -> Unit with Exception + Fs {
 /// a cycle. The path is content-keyed (package identity + text), so a
 /// contract edit that changes the type family moves the path and every
 /// dependent header invalidates naturally; the write is idempotent.
+/// #1840: process-local registry of materialized types modules —
+/// (contract path, types-module path, types-module text). Fixed-source-set
+/// merge consumers (the s5 selfbuild bundle, any lane that hands
+/// collect_merged_stmts a pre-collected list) have no FS walk to pick the
+/// materialized file up, so the merge would silently LOSE the contract's
+/// type family (the facade only re-exports it now). collect_merged_stmts
+/// re-injects from this registry, gated on "this compile's source set
+/// contains the originating contract" so a long-lived process (test daemon)
+/// never leaks another package's types into an unrelated merge.
+let vpkg_types_registry_contracts: Array[String] = [
+] let vpkg_types_registry_paths: Array[String] = [
+] let vpkg_types_registry_texts: Array[String] = [
+] fn vpkg_types_registry_note(contract_path: String, types_path: String, text: String) -> Unit {
+  let mut i = 0
+  let mut seen = false
+  while i < Array::length(vpkg_types_registry_paths) {
+    if Array::get(vpkg_types_registry_paths, i) == types_path {
+      seen = true
+      i = Array::length(vpkg_types_registry_paths)
+    } else {
+      i = i + 1
+    }
+  }
+  if seen {
+    ()
+  } else {
+    Array::push(vpkg_types_registry_contracts, contract_path)
+    Array::push(vpkg_types_registry_paths, types_path)
+    Array::push(vpkg_types_registry_texts, text)
+  }
+}
+
 /// Returns "" when the contract declares no type-family definitions, or when
 /// the package lives outside the repo-relative tree (an absolute VIBE_LIB
 /// external root — the relative import spelling below cannot reach _build
@@ -1027,6 +1059,7 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt]) -> String 
     } else {
       Fs::write_file(types_path, text)
     }
+    vpkg_types_registry_note(vpkg_path, types_path, text)
     types_path
   }
 }
@@ -2618,10 +2651,50 @@ export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(
 /// per-statement rewrite only suppresses the map inside the declaring
 /// statement), so those aliases are dropped from the map up front.
 export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] with Exception {
+  // #1840: a fixed source set that contains an ingested contract's FACADE
+  // but not its materialized types module would lose the contract's type
+  // family entirely (the facade re-exports it; this merge skips
+  // import-family statements). Re-inject each registered types module whose
+  // originating contract is in THIS set and whose own path is not already a
+  // source (the FS-walk lanes collect the file itself — no duplication).
+  let sources_all = array_empty()
+  let mut ci = 0
+  while ci < Array::length(sources) {
+    Array::push(sources_all, Array::get(sources, ci))
+    ci = ci + 1
+  }
+  let mut ri = 0
+  while ri < Array::length(vpkg_types_registry_paths) {
+    let r_contract = Array::get(vpkg_types_registry_contracts, ri)
+    let r_path = Array::get(vpkg_types_registry_paths, ri)
+    let mut has_contract = false
+    let mut has_types = false
+    let mut pi = 0
+    while pi < Array::length(sources) {
+      let (sp, _) = Array::get(sources, pi)
+      if sp == r_contract {
+        has_contract = true
+      } else {
+        ()
+      }
+      if sp == r_path {
+        has_types = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    if has_contract && !has_types {
+      Array::push(sources_all, (r_path, Array::get(vpkg_types_registry_texts, ri)))
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
   let merged = array_empty()
   let mut si = 0
-  while si < Array::length(sources) {
-    let (_, src) = Array::get(sources, si)
+  while si < Array::length(sources_all) {
+    let (_, src) = Array::get(sources_all, si)
     // Use lex+parse_program directly (skip resolve_interp_stmt to reduce heap pressure)
     let stmts = parse_program(lex(src))
     let top_level_value_names = array_empty()
