@@ -75,6 +75,180 @@ export fn parse_start(bytes: Bytes, offset: Int, size: Int) -> Int {
   }
 }
 
+/// Read one valtype and return it with the position AFTER it.
+///
+/// Most valtypes are a single byte, but a typed reference is not: `0x63`
+/// (ref null ht) and `0x64` (ref ht) are followed by a heap type, which for a
+/// concrete type is a signed LEB index. Advancing one byte past those leaves
+/// the index in the stream, where it is read as the next valtype -- and from
+/// there the whole section is off by however many bytes the indices took.
+///
+/// The struct and array branches below already did this; the function-type
+/// branch and the local declarations did not, which is why a module whose
+/// SIGNATURES carry typed references desynchronized. vibe's own gc backend
+/// emits exactly that shape (#1541 / #1722 give private callees typed
+/// parameters and results, and reserve a `(func (result (ref null $t)))` for
+/// blocktypes), so the misparse is reachable from the compiler's own output.
+fn read_valtype(bytes: Bytes, pos: Int) -> (Int, Int) {
+  let vt = bytes[pos]
+  if (vt == 0x63) || (vt == 0x64) {
+    let (_, np) = read_sleb128(bytes, pos + 1)
+    (vt, np)
+  } else {
+    (vt, pos + 1)
+  }
+}
+
+/// The FORM byte of each type in the type section, in index order.
+///
+/// `parse_types` reports a struct or array type as an empty (params, results)
+/// pair, which is indistinguishable from `(func)` -- fine for its callers, but
+/// it means the type section cannot answer "does this module define gc types".
+/// Feature detection needs exactly that, so the forms are reported separately
+/// rather than by widening `parse_types`' established return shape.
+///
+/// 0x60 func, 0x5F struct, 0x5E array, 0x4E rec group, 0x50/0x4F sub.
+///
+/// One form per TYPE INDEX, which is not one per top-level entry: a recursive
+/// group is a single entry declaring N types, and each of the N gets its own
+/// index. Returning the group marker and stopping made the array length
+/// under-count, so `validate_function_type_indices` called a legitimate
+/// reference to the group's second type out of range. Counting entries would
+/// have been the same bug in a different place.
+export fn parse_type_forms(bytes: Bytes, offset: Int, size: Int) -> Array[Int] {
+  let (forms, _) = parse_type_forms_checked(bytes, offset, size)
+  forms
+}
+
+/// `parse_type_forms` plus whether the walk reached the end of the section.
+///
+/// The flag is what separates "there are N types" from "there are at least N
+/// types": on an undecodable form the walk stops, and a caller that treats the
+/// short array as a count will reject valid modules. Only callers that need to
+/// be SURE take this variant.
+fn parse_type_forms_checked(bytes: Bytes, offset: Int, size: Int) -> (Array[Int], Bool) {
+  let end_pos = offset + size
+  let mut complete = true
+  let forms = Array::slice([
+    0
+  ], 0, 0)
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let mut t = 0
+  // A rec group's members are read by the same loop, so `remaining_in_rec`
+  // holds how many of them are still owed before the next top-level entry.
+  let mut remaining_in_rec = 0
+  while (t < cnt) && (pos < end_pos) {
+    let form = bytes[pos]
+    pos = pos + 1
+    // The form whose body still has to be walked, or -1 when this turn did not
+    // reach one. A rec group header reaches no form: its members are separate
+    // turns of this loop, and falling through to the walk would have consumed
+    // the first member's bytes as if they were the header's.
+    let mut walk_form = 0 - 1
+    if form == 0x4E {
+      // Recursive group: a count, then that many types, none of which consumes
+      // a top-level entry of its own.
+      let (n, np) = read_uleb128(bytes, pos)
+      pos = np
+      remaining_in_rec = remaining_in_rec + n
+      if n == 0 {
+        t = t + 1
+      } else {
+        ()
+      }
+    }
+    else if (form == 0x50) || (form == 0x4F) {
+      // Sub type: a vector of supertype indices, then the concrete form. The
+      // wrapper is not a type of its own, so re-read the form byte after it.
+      let (sup, np) = read_uleb128(bytes, pos)
+      pos = np
+      let mut s = 0
+      while (s < sup) && (pos < end_pos) {
+        let (_, nq) = read_uleb128(bytes, pos)
+        pos = nq
+        s = s + 1
+      }
+      if pos < end_pos {
+        walk_form = bytes[pos]
+        Array::push(forms, walk_form)
+        pos = pos + 1
+      } else {
+        // The wrapper ran to the section end with no form after it. Nothing was
+        // pushed, so there is no form to walk and no count to trust.
+        complete = false
+        t = cnt
+        remaining_in_rec = 0
+      }
+    } else {
+      walk_form = form
+      Array::push(forms, form)
+    }
+    if walk_form < 0 {
+      ()
+    }
+    else if walk_form == 0x60 {
+      let (param_count, pp) = read_uleb128(bytes, pos)
+      pos = pp
+      let mut p = 0
+      while (p < param_count) && (pos < end_pos) {
+        let (_, np) = read_valtype(bytes, pos)
+        pos = np
+        p = p + 1
+      }
+      let (result_count, rp) = read_uleb128(bytes, pos)
+      pos = rp
+      let mut r = 0
+      while (r < result_count) && (pos < end_pos) {
+        let (_, np) = read_valtype(bytes, pos)
+        pos = np
+        r = r + 1
+      }
+    }
+    else if walk_form == 0x5F {
+      let (field_count, fp) = read_uleb128(bytes, pos)
+      pos = fp
+      let mut f = 0
+      while (f < field_count) && (pos < end_pos) {
+        let (_, np) = read_valtype(bytes, pos)
+        pos = np + 1
+        f = f + 1
+      }
+    }
+    else if walk_form == 0x5E {
+      let (_, np) = read_valtype(bytes, pos)
+      pos = np + 1
+    } else {
+      // A form this function does not decode: stop rather than guess, so a
+      // caller never reads a form that was never walked. The array it gets is
+      // short, which under-reports features and -- since the length is a type
+      // COUNT to validate_function_type_indices -- must never be treated as
+      // authoritative on its own. That caller checks for a short read.
+      t = cnt
+      remaining_in_rec = 0
+      complete = false
+    }
+    // Only a turn that produced a TYPE advances the counters. A rec group
+    // header produces none -- letting it fall through here spent one of the
+    // group's own member slots on the header, so the last member was never
+    // read and the count came up one short.
+    if walk_form < 0 {
+      ()
+    }
+    else if remaining_in_rec > 0 {
+      remaining_in_rec = remaining_in_rec - 1
+      if remaining_in_rec == 0 {
+        t = t + 1
+      } else {
+        ()
+      }
+    } else {
+      t = t + 1
+    }
+  }
+  (forms, complete)
+}
+
 export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int], Array[Int])] {
   let end_pos = offset + size
   let result = Array::slice([
@@ -98,8 +272,9 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
       ], 0, 0)
       let mut p = 0
       while (p < param_count) && (pos < end_pos) {
-        Array::push(params, bytes[pos])
-        pos = pos + 1
+        let (vt, np) = read_valtype(bytes, pos)
+        Array::push(params, vt)
+        pos = np
         p = p + 1
       }
       let (result_count, rp) = read_uleb128(bytes, pos)
@@ -109,8 +284,9 @@ export fn parse_types(bytes: Bytes, offset: Int, size: Int) -> Array[(Array[Int]
       ], 0, 0)
       let mut r = 0
       while (r < result_count) && (pos < end_pos) {
-        Array::push(results, bytes[pos])
-        pos = pos + 1
+        let (vt, np) = read_valtype(bytes, pos)
+        Array::push(results, vt)
+        pos = np
         r = r + 1
       }
       Array::push(result, (params, results))
@@ -911,8 +1087,11 @@ export fn parse_code_entries(bytes: Bytes, offset: Int, size: Int) -> Array[(Int
       let (lcount, p1) = read_uleb128(bytes, lp)
       lp = p1
       if lp < body_end {
-        let ltype = bytes[lp]
-        lp = lp + 1
+        // A `(local (ref null $t))` is two-plus bytes, same as a typed
+        // reference anywhere else. Reading one byte here left the type index
+        // to be taken as the next declaration's count.
+        let (ltype, lnext) = read_valtype(bytes, lp)
+        lp = lnext
         Array::push(locals, (lcount, ltype))
       } else {
         ()
@@ -1002,6 +1181,15 @@ export fn parse_imports_full(bytes: Bytes, offset: Int, size: Int) -> Array[(Str
   result
 }
 
+/// Where a function's instructions begin, after its local declarations.
+///
+/// Each declaration is a count and a VALTYPE, and a valtype is not one byte:
+/// `(ref null $t)` is `0x63` plus a type index. Advancing by one skipped past
+/// the count but landed inside the index, so the "code" started mid-declaration
+/// -- on a gc module with typed-ref locals the first byte read as an
+/// instruction was a local count. This is the same one-byte assumption #1795
+/// removed from the type section, in the function that decides where code IS.
+/// It reaches further than parsing: extract_code_body feeds the interpreter.
 export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) -> (Int, Int) {
   let body_end = body_offset + body_size
   let (local_decl_count, pos0) = read_uleb128(bytes, body_offset)
@@ -1009,8 +1197,8 @@ export fn get_code_body_range(bytes: Bytes, body_offset: Int, body_size: Int) ->
   let mut d = 0
   while d < local_decl_count {
     let (_, np) = read_uleb128(bytes, pos)
-    pos = np
-    pos = pos + 1
+    let (_, np2) = read_valtype(bytes, np)
+    pos = np2
     d = d + 1
   }
   (pos, body_end)
@@ -1277,5 +1465,694 @@ export fn module_summary(bytes: Bytes) -> String {
       ()
     }
     StringBuilder::freeze(out)
+  }
+}
+
+/// Which wasm proposals a module's STRUCTURE requires, as feature-matrix.json
+/// keys (docs/wasm/feature-matrix.json), sorted and deduplicated.
+///
+/// #1133: `scripts/wasm_feature_levels.vibex` declares what vibe's codegen is
+/// believed to emit, curated by hand from source greps. That list drifted the
+/// moment the gc backend's reference lane started emitting typed function
+/// signatures, and nothing noticed -- the drift was found by reading a binary
+/// by hand. This answers the same question FROM the binary.
+///
+/// Deliberately structural only. Everything below is decided by the type
+/// section, a section's presence, or a declaration -- never by scanning code
+/// bytes for opcode prefixes. A naive byte scan cannot tell an opcode from an
+/// immediate that happens to share its value, and would report proposals the
+/// module does not use; being wrong in that direction is worse than being
+/// incomplete, because the whole point is to be trusted against a hand-curated
+/// list. `simd`, `tailCall` and `bulkMemory` therefore need an instruction
+/// walker and are NOT reported yet -- see the package README note.
+export fn scan_features(wasm_bytes: Bytes) -> Array[String] {
+  let found = Array::slice([
+    ""
+  ], 0, 0)
+  if !validate_magic(wasm_bytes) {
+    found
+  } else {
+    let sections = list_sections(wasm_bytes)
+    let mut uses_gc_types = false
+    let mut uses_typed_ref = false
+    let mut uses_ref_types = false
+    let mut has_tag_section = false
+    let mut memory_count = 0
+    let mut i = 0
+    while i < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, i)
+      if sid == 1 {
+        let forms = parse_type_forms(wasm_bytes, off, sz)
+        let mut f = 0
+        while f < Array::length(forms) {
+          let form = Array::get(forms, f)
+          if (form == 0x5F) || (form == 0x5E) || (form == 0x50) || (form == 0x4E) {
+            uses_gc_types = true
+          } else {
+            ()
+          }
+          f = f + 1
+        }
+        let types = parse_types(wasm_bytes, off, sz)
+        let mut t = 0
+        while t < Array::length(types) {
+          let (params, results) = Array::get(types, t)
+          if valtypes_mention_typed_ref(params) || valtypes_mention_typed_ref(results) {
+            uses_typed_ref = true
+          } else {
+            ()
+          }
+          if valtypes_mention_ref_type(params) || valtypes_mention_ref_type(results) {
+            uses_ref_types = true
+          } else {
+            ()
+          }
+          t = t + 1
+        }
+      }
+      else if sid == 13 {
+        has_tag_section = true
+      }
+      else if sid == 5 {
+        memory_count = Array::length(parse_memories(wasm_bytes, off, sz))
+      }
+      else if sid == 10 {
+        let entries = parse_code_entries(wasm_bytes, off, sz)
+        let mut e = 0
+        while e < Array::length(entries) {
+          let (_, _, locals) = Array::get(entries, e)
+          let mut l = 0
+          while l < Array::length(locals) {
+            let (_, lt) = Array::get(locals, l)
+            if (lt == 0x63) || (lt == 0x64) {
+              uses_typed_ref = true
+            } else {
+              ()
+            }
+            if (lt == 0x70) || (lt == 0x6F) {
+              uses_ref_types = true
+            } else {
+              ()
+            }
+            l = l + 1
+          }
+          e = e + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    // Alphabetical, so the result can be compared against a sorted declaration
+    // without the caller sorting first.
+    if has_tag_section {
+      Array::push(found, "exceptionsFinal")
+    } else {
+      ()
+    }
+    if uses_gc_types {
+      Array::push(found, "gc")
+    } else {
+      ()
+    }
+    if memory_count > 1 {
+      Array::push(found, "multiMemory")
+    } else {
+      ()
+    }
+    // Only when nothing narrower already covers it: a typed reference IS a
+    // reference type, and reporting both would make the result read as two
+    // independent requirements.
+    if uses_ref_types && !uses_typed_ref {
+      Array::push(found, "referenceTypes")
+    } else {
+      ()
+    }
+    if uses_typed_ref {
+      Array::push(found, "typedFunctionReferences")
+    } else {
+      ()
+    }
+    found
+  }
+}
+
+fn valtypes_mention_typed_ref(vts: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(vts) {
+    let vt = Array::get(vts, i)
+    if (vt == 0x63) || (vt == 0x64) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn valtypes_mention_ref_type(vts: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(vts) {
+    let vt = Array::get(vts, i)
+    if (vt == 0x70) || (vt == 0x6F) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Structural validation: `None` when nothing structurally wrong was found,
+/// `Some(reason)` otherwise.
+///
+/// The contract is deliberately one-sided, and the name says "structure" for
+/// that reason. This is NOT `wasm-tools validate`: it does not type the operand
+/// stack, so it accepts modules a real validator rejects. What it promises is
+/// the other direction --
+///
+///   it must never reject a module `wasm-tools validate` accepts.
+///
+/// That is the half worth having first (#1745 (5)): the interpreter has no
+/// validation at all, so a malformed module reaches the executor and a
+/// guest-chosen byte can take the host down. Refusing obviously broken input is
+/// containment; typing the stack is correctness, and comes next.
+///
+/// Measured both ways against `wasm-tools validate` -- see the harness in
+/// scripts/test_wasm_validate_parity.sh.
+export fn validate_structure(wasm_bytes: Bytes) -> Option[String] {
+  let len = Bytes::length(wasm_bytes)
+  if len < 8 {
+    Some("module is shorter than the 8-byte header")
+  } else if !validate_magic(wasm_bytes) {
+    Some("bad magic: not a wasm module")
+  } else if read_version(wasm_bytes) != 1 {
+    Some("unsupported version")
+  } else {
+    let mut pos = 8
+    let mut err = None
+    let mut last_id = 0
+    while (pos < len) && (err == None) {
+      let sid = wasm_bytes[pos]
+      if sid > 13 {
+        err = Some("unknown section id")
+      } else {
+        let (size, np) = read_uleb128(wasm_bytes, pos + 1)
+        // The size is the section's own claim; a module can claim more than it
+        // carries, which is how a truncated file reads as a section running off
+        // the end. Checking it here is what keeps every parse_* below in range.
+        if (np + size) > len {
+          err = Some("section runs past the end of the module")
+        } else if (sid != 0) && (section_rank(sid) <= last_id) {
+          // Custom sections (id 0) may appear anywhere and repeat; the others
+          // must appear at most once, in the spec's canonical order -- which is
+          // NOT ascending by id. Tag (13) sits between Memory (5) and Global
+          // (6), and DataCount (12) between Element (9) and Code (10), because
+          // both were added to a numbering that was already fixed.
+          err = Some("sections out of order or repeated")
+        } else {
+          if sid != 0 {
+            last_id = section_rank(sid)
+          } else {
+            ()
+          }
+          // #1745 (5): the code section is where a malformed module actually
+          // reaches the executor, so walk it here rather than leaving the
+          // section boundaries as the only thing checked.
+          if sid == 10 {
+            err = validate_code_section(wasm_bytes, np, size)
+          }
+          else if sid == 3 {
+            // Index-space bounds are decidable from the sections alone -- no
+            // operand typing needed -- so they belong in this layer even though
+            // "the type this function claims" sounds like a typing question.
+            err = validate_function_type_indices(wasm_bytes, np, size)
+          } else {
+            ()
+          }
+          pos = np + size
+        }
+      }
+    }
+    err
+  }
+}
+
+/// A section's position in the spec's canonical order.
+///
+/// Not the same as its id. Tag and DataCount were added after the numbering was
+/// fixed, so they carry high ids (13, 12) but sit early: the order is
+/// type, import, function, table, memory, TAG, global, export, start, element,
+/// DATACOUNT, code, data. Comparing ids instead of ranks rejects every module
+/// with an exception tag -- which this compiler emits whenever a module throws.
+fn section_rank(sid: Int) -> Int {
+  if sid == 13 {
+    6
+  }
+  else if (sid >= 6) && (sid <= 9) {
+    sid + 1
+  }
+  else if sid == 12 {
+    11
+  }
+  else if sid == 10 {
+    12
+  }
+  else if sid == 11 {
+    13
+  } else {
+    sid
+  }
+}
+
+/// Step over one instruction: `(opcode, position after it)`.
+///
+/// A next position of -1 means "this stepper cannot say" -- either the opcode
+/// is not one it knows, or the instruction's immediates run past `end_pos`.
+/// Callers must treat -1 as "stop", never as "invalid": simd (0xFD) and atomics
+/// (0xFE) carry per-instruction immediates this does not enumerate, and
+/// reporting a module invalid because this function is incomplete would break
+/// the one-sided contract validate_structure keeps.
+///
+/// Immediate shapes are stated HERE rather than at each caller, and
+/// @vibex/wasm_runtime's disassembler steps with this rather than its own copy.
+/// The second copy was blind to the prefixed families, so it misstepped on
+/// exactly the gc instructions vibe's own backend emits -- printing a plausible
+/// listing that was garbage from the first `0xFB` onward.
+export fn next_instruction(code: Bytes, pc: Int, end_pos: Int) -> (Int, Int) {
+  if pc >= end_pos {
+    (0, 0 - 1)
+  } else {
+    let op = code[pc]
+    let p = pc + 1
+    if instruction_has_no_immediate(op) {
+      (op, p)
+    }
+    else if (op == 0x0C) || (op == 0x0D) || (op == 0x10) || (op == 0x20) || (op == 0x21) || (op == 0x22) || (op == 0x23) || (op == 0x24) || (op == 0x12) || (op == 0x14) || (op == 0x15) || (op == 0x25) || (op == 0x26) || (op == 0x3F) || (op == 0x40) || (op == 0xD2) || (op == 0xD5) || (op == 0xD6) || (op == 0x08) {
+      // One unsigned index: label, function, local, global, table, memory --
+      // or, for 0x14/0x15 (call_ref/return_call_ref), a type.
+      let (_, np) = read_uleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if op == 0xD0 {
+      // ref.null takes a heap type, which is a signed LEB: negative for the
+      // abstract types, non-negative for a concrete type index.
+      let (_, np) = read_sleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if op == 0x43 {
+      (op, bounded(p + 4, end_pos))
+    }
+    else if op == 0x44 {
+      (op, bounded(p + 8, end_pos))
+    }
+    else if op == 0x1C {
+      // select with an explicit result-type vector.
+      let (cnt, np) = read_uleb128(code, p)
+      let mut q = np
+      let mut i = 0
+      while (i < cnt) && (q < end_pos) {
+        let (_, nq) = read_valtype(code, q)
+        q = nq
+        i = i + 1
+      }
+      if i < cnt {
+        (op, 0 - 1)
+      } else {
+        (op, bounded(q, end_pos))
+      }
+    }
+    else if op == 0x13 {
+      let (_, np) = read_uleb128(code, p)
+      let (_, np2) = read_uleb128(code, np)
+      (op, bounded(np2, end_pos))
+    }
+    else if op == 0x1F {
+      // try_table: a blocktype, then a vector of catch clauses. The clause kind
+      // decides whether a tag index precedes the label.
+      let (_, np) = read_sleb128(code, p)
+      let (cnt, np2) = read_uleb128(code, np)
+      let mut q = np2
+      let mut i = 0
+      let mut bad = false
+      while (i < cnt) && (q < end_pos) && !bad {
+        let kind = code[q]
+        let r = q + 1
+        if (kind == 0x00) || (kind == 0x01) {
+          let (_, nr) = read_uleb128(code, r)
+          let (_, nr2) = read_uleb128(code, nr)
+          q = nr2
+        }
+        else if (kind == 0x02) || (kind == 0x03) {
+          let (_, nr) = read_uleb128(code, r)
+          q = nr
+        } else {
+          bad = true
+        }
+        i = i + 1
+      }
+      if bad || (i < cnt) {
+        (op, 0 - 1)
+      } else {
+        (op, bounded(q, end_pos))
+      }
+    }
+    else if op == 0x06 {
+      // Legacy exception handling: `try` takes a blocktype, like block/loop/if.
+      let (_, np) = read_sleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if (op == 0x07) || (op == 0x09) || (op == 0x18) {
+      // Legacy `catch` (tag), `rethrow` (label), `delegate` (label).
+      let (_, np) = read_uleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if op == 0xFC {
+      let (sub, np) = read_uleb128(code, p)
+      (op, bounded(misc_immediate_end(code, sub, np), end_pos))
+    }
+    else if op == 0xFB {
+      let (sub, np) = read_uleb128(code, p)
+      (op, bounded(gc_immediate_end(code, sub, np), end_pos))
+    }
+    else if op == 0xFD {
+      let (sub, np) = read_uleb128(code, p)
+      (op, bounded(simd_immediate_end(code, sub, np), end_pos))
+    }
+    else if (op == 0x02) || (op == 0x03) || (op == 0x04) {
+      // Blocktype: a negative value type, or a non-negative TYPE INDEX. Both
+      // are one signed LEB, which is why a typed-reference blocktype (the shape
+      // #1541 reserves) needs no special case here.
+      let (_, np) = read_sleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if (op == 0x41) || (op == 0x42) {
+      let (_, np) = read_sleb128(code, p)
+      (op, bounded(np, end_pos))
+    }
+    else if op == 0x11 {
+      let (_, np) = read_uleb128(code, p)
+      let (_, np2) = read_uleb128(code, np)
+      (op, bounded(np2, end_pos))
+    }
+    else if instruction_is_memarg(op) {
+      let (_, np) = read_uleb128(code, p)
+      let (_, np2) = read_uleb128(code, np)
+      (op, bounded(np2, end_pos))
+    }
+    else if op == 0x0E {
+      // br_table: a vector of label indices, then the default.
+      let (cnt, np) = read_uleb128(code, p)
+      let mut q = np
+      let mut i = 0
+      while (i < cnt) && (q < end_pos) {
+        let (_, nq) = read_uleb128(code, q)
+        q = nq
+        i = i + 1
+      }
+      if i < cnt {
+        (op, 0 - 1)
+      } else {
+        let (_, nq) = read_uleb128(code, q)
+        (op, bounded(nq, end_pos))
+      }
+    } else {
+      (op, 0 - 1)
+    }
+  }
+}
+
+fn bounded(np: Int, end_pos: Int) -> Int {
+  if np > end_pos {
+    0 - 1
+  } else {
+    np
+  }
+}
+
+fn instruction_has_no_immediate(op: Int) -> Bool {
+  (op == 0x00) || (op == 0x01) || (op == 0x05) || (op == 0x0B) || (op == 0x0F) || (op == 0x1A) || (op == 0x1B) || ((op >= 0x45) && (op <= 0xC4)) || (op == 0xD1) || (op == 0xD3) || (op == 0xD4) || (op == 0x0A) || (op == 0x19)
+}
+
+fn instruction_is_memarg(op: Int) -> Bool {
+  ((op >= 0x28) && (op <= 0x3E))
+}
+
+/// End of a `0xFC`-prefixed instruction's immediates. The zero bytes after
+/// memory.init/copy/fill are the memory index, reserved to 0 today but still
+/// present in the encoding, so they are counted rather than assumed away.
+fn misc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
+  if sub <= 7 {
+    p
+  }
+  else if sub == 8 {
+    let (_, np) = read_uleb128(code, p)
+    np + 1
+  }
+  else if (sub == 9) || (sub == 13) || (sub == 15) || (sub == 16) || (sub == 17) {
+    let (_, np) = read_uleb128(code, p)
+    np
+  }
+  else if sub == 10 {
+    p + 2
+  }
+  else if sub == 11 {
+    p + 1
+  }
+  else if (sub == 12) || (sub == 14) {
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  } else {
+    0 - 1
+  }
+}
+
+/// End of a `0xFD`-prefixed (simd) instruction's immediates.
+///
+/// Worth stating why "everything else takes no immediate" is a rule and not a
+/// guess: in the simd space only the loads/stores (memarg), `v128.const`,
+/// `i8x16.shuffle`, and the lane accessors carry anything. The ~200 remaining
+/// assigned opcodes are operand-stack-only. Enumerating the carriers and
+/// defaulting the rest is therefore exact over the assigned range, which is the
+/// only range a module wasm-tools accepts can reach.
+///
+/// This matters more than it looks. Measured on this compiler's own output,
+/// 0xFD was the ONLY thing stopping the instruction walk -- 6 to 9 bodies per
+/// module, because `simd_skip_ws` and friends emit v128 opcodes. Without this
+/// the walk covered about 88% of bodies and could not see a corruption past the
+/// first vector instruction.
+fn simd_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
+  if sub <= 11 {
+    // v128.load* / v128.store: memarg.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if (sub == 12) || (sub == 13) {
+    // v128.const: 16 literal bytes. i8x16.shuffle: 16 lane indices.
+    p + 16
+  }
+  else if (sub >= 21) && (sub <= 34) {
+    // extract_lane / replace_lane: one lane index.
+    p + 1
+  }
+  else if (sub >= 84) && (sub <= 91) {
+    // v128.loadN_lane / storeN_lane: memarg AND a lane index.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2 + 1
+  }
+  else if (sub == 92) || (sub == 93) {
+    // v128.load32_zero / load64_zero: memarg.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if sub <= 275 {
+    p
+  } else {
+    0 - 1
+  }
+}
+
+/// End of a `0xFB`-prefixed (gc) instruction's immediates. This is the family
+/// vibe's own gc backend emits, so getting it wrong is not hypothetical -- it
+/// is the difference between reading this compiler's output and inventing a
+/// reading of it.
+fn gc_immediate_end(code: Bytes, sub: Int, p: Int) -> Int {
+  if (sub == 0) || (sub == 1) || (sub == 6) || (sub == 7) || (sub == 11) || (sub == 12) || (sub == 13) || (sub == 14) || (sub == 16) {
+    // One type index: struct.new*, array.new*, array.get*/set, array.fill.
+    let (_, np) = read_uleb128(code, p)
+    np
+  }
+  else if (sub == 2) || (sub == 3) || (sub == 4) || (sub == 5) || (sub == 8) || (sub == 9) || (sub == 10) || (sub == 17) || (sub == 18) || (sub == 19) {
+    // Two indices: struct.get*/set take a field, array.new_fixed a length,
+    // array.copy a second type, array.new_data/init_data a segment.
+    let (_, np) = read_uleb128(code, p)
+    let (_, np2) = read_uleb128(code, np)
+    np2
+  }
+  else if sub == 15 {
+    p
+  }
+  else if (sub >= 20) && (sub <= 23) {
+    // ref.test / ref.cast, both null and non-null forms: one heap type.
+    let (_, np) = read_sleb128(code, p)
+    np
+  }
+  else if (sub == 24) || (sub == 25) {
+    // br_on_cast{,_fail}: a flags byte, a label, then BOTH heap types.
+    let (_, np) = read_uleb128(code, p + 1)
+    let (_, np2) = read_sleb128(code, np)
+    let (_, np3) = read_sleb128(code, np2)
+    np3
+  }
+  else if (sub >= 26) && (sub <= 31) {
+    // any.convert_extern, extern.convert_any, ref.i31, i31.get_s/u.
+    p
+  } else {
+    0 - 1
+  }
+}
+
+/// Instruction-level structure of one function body: `None` when the walk found
+/// nothing wrong. Same one-sided contract as validate_structure -- an
+/// instruction this stepper cannot decode ends the walk without a verdict.
+export fn validate_code_body(code: Bytes, start: Int, end_pos: Int) -> Option[String] {
+  let mut pc = start
+  // A function body sits inside an implicit block, which its final `end`
+  // closes. Starting from zero made every valid body look like it had one
+  // `end` too many -- caught by the parity harness's false-rejection gate,
+  // which is the half that is supposed to be unforgiving.
+  let mut depth = 1
+  let mut err = None
+  let mut stop = false
+  while (pc < end_pos) && !stop && (err == None) {
+    let op = code[pc]
+    if instruction_is_reserved(op) {
+      err = Some("reserved opcode")
+    } else {
+      let (_, np) = next_instruction(code, pc, end_pos)
+      if np < 0 {
+        // Either an unknown-to-us opcode or an immediate past the end. The
+        // second IS invalid, but this stepper cannot tell them apart, so it
+        // stops rather than guess -- see next_instruction's contract.
+        stop = true
+      } else {
+        if (op == 0x02) || (op == 0x03) || (op == 0x04) || (op == 0x1F) || (op == 0x06) {
+          // try_table (0x1F) and legacy try (0x06) open a block too; missing
+          // them would make every exception body look like it had a stray end.
+          depth = depth + 1
+        }
+        else if op == 0x0B {
+          depth = depth - 1
+        } else {
+          ()
+        }
+        if depth < 0 {
+          err = Some("more end opcodes than blocks")
+        } else {
+          ()
+        }
+        pc = np
+      }
+    }
+  }
+  // Reached only when the walk covered the WHOLE body -- if it stopped early,
+  // depth says nothing. Under that condition a body whose blocks do not all
+  // close is invalid in any module, so this is safe to reject on. It is also
+  // where most of the catch power went after the reserved-opcode set had to be
+  // narrowed to a single byte: corruption inside a body usually shows up as
+  // structure that no longer balances, not as a byte no proposal has claimed.
+  if (err == None) && !stop && (depth != 0) {
+    Some("function body ends with unclosed blocks")
+  } else {
+    err
+  }
+}
+
+/// Opcodes the core spec leaves unassigned. A byte landing here is invalid in
+/// any module, whatever its type, so it is safe to reject on -- unlike an
+/// opcode this stepper merely does not know.
+///
+/// This set has now been narrowed THREE times, each time because a rule that
+/// held for core wasm did not hold for a module a proposal made legal:
+///
+///   above 0xC4   0xFB/0xFC/0xFD/0xFE are prefixes, and 0xD3 upward is gc and
+///                function-references (`ref.eq`, `br_on_null`, ...)
+///   0x06..0x0A   exception handling. 0x08 is `throw`, which this compiler
+///                emits (codegen/gc/backend_call.vibe), and 0x06/0x07/0x09 are
+///                legacy try/catch/rethrow, which the oracle accepts under
+///                `--features all`
+///
+/// What is left is 0x27 -- a hole between `table.set` and `i32.load` that no
+/// proposal has claimed. The narrower set catches less, and that is the correct
+/// trade under a contract whose hard half is "never reject what the oracle
+/// accepts": a rule that is only right for core wasm cannot be applied to
+/// modules that are not.
+fn instruction_is_reserved(op: Int) -> Bool {
+  op == 0x27
+}
+
+/// Every function body in a code section, stopping at the first problem.
+fn validate_code_section(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
+  let entries = parse_code_entries(wasm_bytes, offset, size)
+  let mut i = 0
+  let mut err = None
+  while (i < Array::length(entries)) && (err == None) {
+    let (body_offset, body_size, _) = Array::get(entries, i)
+    let (code_start, code_end) = get_code_body_range(wasm_bytes, body_offset, body_size)
+    if (code_start < 0) || (code_end > Bytes::length(wasm_bytes)) || (code_start > code_end) {
+      err = Some("function body runs outside the module")
+    } else {
+      err = validate_code_body(wasm_bytes, code_start, code_end)
+    }
+    i = i + 1
+  }
+  err
+}
+
+/// Every function's declared type index must name a type that exists.
+/// Function-section type indices against the number of types that exist.
+///
+/// `parse_type_forms` stops at a form it cannot decode, so its length is a
+/// LOWER BOUND on the type count, not the count. Rejecting on a lower bound
+/// would fail a valid module the moment the type section used something this
+/// parser has not learned yet -- the same shape of mistake as the reserved
+/// opcode range. So the check runs only when the walk consumed the whole type
+/// section, which is exactly when the count is known to be exact.
+fn validate_function_type_indices(wasm_bytes: Bytes, offset: Int, size: Int) -> Option[String] {
+  let (type_off, type_size) = find_section(wasm_bytes, 1)
+  if type_off < 0 {
+    let indices = parse_functions(wasm_bytes, offset, size)
+    if Array::length(indices) > 0 {
+      Some("function declares a type index that does not exist")
+    } else {
+      None
+    }
+  } else {
+    let (forms, complete) = parse_type_forms_checked(wasm_bytes, type_off, type_size)
+    if !complete {
+      None
+    } else {
+      let type_count = Array::length(forms)
+      let indices = parse_functions(wasm_bytes, offset, size)
+      let mut i = 0
+      let mut err = None
+      while (i < Array::length(indices)) && (err == None) {
+        if Array::get(indices, i) >= type_count {
+          err = Some("function declares a type index that does not exist")
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      err
+    }
   }
 }

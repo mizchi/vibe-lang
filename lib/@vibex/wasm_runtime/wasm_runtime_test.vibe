@@ -551,6 +551,49 @@ test "disassemble call" {
   assert(Array::get(lines, 1) == "end")
 }
 
+test "disassemble gc instructions do not desync the stream" {
+  // local.get 0 | struct.get $12 1 | ref.cast null $12 | end
+  //
+  // Before the fold onto next_instruction this produced SIX lines --
+  // "unknown", then "block 12" and "nop" decoded out of struct.get's type and
+  // field indices, then "br 11" out of ref.cast's. None of those instructions
+  // are in this body. Every gc body the compiler emits took that path, so the
+  // count is the assertion that matters here.
+  let code = make_bytes([
+    0x20,
+    0,
+    0xFB,
+    2,
+    12,
+    1,
+    0xFB,
+    23,
+    12,
+    0x0B
+  ])
+  let lines = disassemble(code, 0, 10)
+  assert(Array::length(lines) == 4)
+  assert(Array::get(lines, 0) == "local.get 0")
+  assert(Array::get(lines, 1) == "struct.get")
+  assert(Array::get(lines, 2) == "ref.cast null")
+  assert(Array::get(lines, 3) == "end")
+}
+
+test "disassemble stops rather than guess past an undecodable opcode" {
+  // 0xFD is the simd prefix, whose immediates the stepper does not enumerate.
+  // Resuming at the next byte is the guess that made the old listing fiction.
+  let code = make_bytes([
+    0x01,
+    0xFD,
+    12,
+    0x0B
+  ])
+  let lines = disassemble(code, 0, 4)
+  assert(Array::length(lines) == 2)
+  assert(Array::get(lines, 0) == "nop")
+  assert(String::contains(Array::get(lines, 1), "cannot decode"))
+}
+
 test "exec_module simple add" {
   let wasm = make_bytes([
     0x00,

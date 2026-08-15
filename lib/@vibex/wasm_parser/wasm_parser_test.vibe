@@ -33,11 +33,15 @@ import ./wasm_parser.vibe {
   parse_memories,
   parse_start,
   parse_tables,
+  parse_type_forms,
   parse_types,
   read_init_expr,
   read_version,
+  scan_features,
   section_name,
+  validate_code_body,
   validate_magic,
+  validate_structure,
   valtype_name
 }
 
@@ -658,6 +662,32 @@ test "get_code_body_range with locals" {
   // local decl: count=1, then (2, 0x7F) = 3 bytes total
   // expr starts at off + 3
   let (expr_start, expr_end) = get_code_body_range(bytes, off, sz)
+  assert(bytes[expr_start] == 0x41)
+}
+
+test "get_code_body_range with a typed-reference local" {
+  // Same shape, but the local's valtype is `(ref null $12)` = 0x63 0x0C --
+  // TWO bytes. Advancing by one put the code start on the type index, so the
+  // first "instruction" read was 0x0C (br). Every gc body with a typed-ref
+  // local decoded from one byte too early, and extract_code_body hands that
+  // range to the interpreter.
+  //
+  // body size=8: [local_count=1, (2, ref null 12), i32.const 0, end]
+  let bytes = make_bytes([
+    1,
+    8,
+    1,
+    2,
+    0x63,
+    0x0C,
+    0x41,
+    0,
+    0x0B,
+    0
+  ])
+  let entries = parse_code_entries(bytes, 0, 10)
+  let (off, sz, _) = Array::get(entries, 0)
+  let (expr_start, _) = get_code_body_range(bytes, off, sz)
   assert(bytes[expr_start] == 0x41)
 }
 
@@ -3898,4 +3928,460 @@ test "rs: big export section 20 exports" {
   assert(i0 == 0)
   let (_, _, i19) = Array::get(exports, 19)
   assert(i19 == 19)
+}
+
+// A typed reference is not one byte (#1133 investigation).
+//
+// `0x63` (ref null ht) and `0x64` (ref ht) carry a heap type, which for a
+// concrete type is a signed LEB index. The struct and array type forms already
+// consumed it; function signatures and local declarations did not, so a module
+// whose SIGNATURES use typed references desynchronized -- every later type was
+// garbage, and on a real module the scan ran past the type section and started
+// reading the import section's name bytes as valtypes.
+//
+// This is reachable from vibe's own compiler: the gc backend's reference lane
+// (#1541 / #1722) gives private callees typed parameters and results, and
+// reserves a `(func (result (ref null $t)))` for blocktypes.
+
+test "parse_types reads a typed reference parameter as one valtype" {
+  // (type (func (param (ref null 0) i64) (result i64)))
+  let ts = parse_types(make_bytes([
+    1,
+    0x60,
+    2,
+    0x63,
+    0,
+    0x7E,
+    1,
+    0x7E
+  ]), 0, 8)
+  assert(Array::length(ts) == 1)
+  let (params, results) = Array::get(ts, 0)
+  // Two parameters, not three: the heap-type index is part of the first.
+  assert(Array::length(params) == 2)
+  assert(Array::get(params, 0) == 0x63)
+  assert(Array::get(params, 1) == 0x7E)
+  assert(Array::length(results) == 1)
+  assert(Array::get(results, 0) == 0x7E)
+}
+
+test "parse_types keeps its place across a typed reference result" {
+  // Two types: `(func (result (ref null 0)))` then `(func (param i64))`.
+  // The second only parses if the first consumed the heap-type index -- this
+  // is the shape the gc backend reserves for blocktypes.
+  let ts = parse_types(make_bytes([
+    2,
+    0x60,
+    0,
+    1,
+    0x63,
+    0,
+    0x60,
+    1,
+    0x7E,
+    0
+  ]), 0, 10)
+  assert(Array::length(ts) == 2)
+  let (p0, r0) = Array::get(ts, 0)
+  assert(Array::length(p0) == 0)
+  assert(Array::length(r0) == 1)
+  assert(Array::get(r0, 0) == 0x63)
+  let (p1, r1) = Array::get(ts, 1)
+  assert(Array::length(p1) == 1)
+  assert(Array::get(p1, 0) == 0x7E)
+  assert(Array::length(r1) == 0)
+}
+
+test "parse_code_entries reads a typed reference local as one declaration" {
+  // One body: locals = [(1, (ref null 0))], code = `end`.
+  let entries = parse_code_entries(make_bytes([
+    1,
+    5,
+    1,
+    1,
+    0x63,
+    0,
+    0x0B
+  ]), 0, 7)
+  assert(Array::length(entries) == 1)
+  let (_, _, locals) = Array::get(entries, 0)
+  assert(Array::length(locals) == 1)
+  let (lcount, ltype) = Array::get(locals, 0)
+  assert(lcount == 1)
+  assert(ltype == 0x63)
+}
+
+// #1133: report proposal requirements FROM the binary.
+//
+// The hand-curated `used_by_codegen()` in scripts/wasm_feature_levels.vibex
+// drifted the moment vibe's gc backend started emitting typed function
+// signatures, and nothing noticed. These pin the structural detections that
+// answer the same question from the bytes.
+
+fn empty_module() -> Bytes {
+  make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0
+  ])
+}
+
+fn features_contain(fs: Array[String], want: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(fs) {
+    if Array::get(fs, i) == want {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+test "scan_features reports nothing for a bare module" {
+  assert(Array::length(scan_features(empty_module())) == 0)
+}
+
+test "scan_features rejects a non-module without reading further" {
+  assert(Array::length(scan_features(make_bytes([
+    1,
+    2,
+    3
+  ]))) == 0)
+}
+
+test "scan_features finds gc from a struct type definition" {
+  // type section: one `(struct (field (mut i64)))`
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    5,
+    1,
+    0x5F,
+    1,
+    0x7E,
+    1
+  ])
+  let fs = scan_features(m)
+  assert(features_contain(fs, "gc"))
+  // A gc TYPE alone does not imply typed function references: this backend
+  // used struct types with an all-i64 ABI before the reference lane existed.
+  assert(!features_contain(fs, "typedFunctionReferences"))
+}
+
+test "scan_features finds typedFunctionReferences from a signature" {
+  // type section: `(func (param (ref null 0)) (result i64))`
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    7,
+    1,
+    0x60,
+    1,
+    0x63,
+    0,
+    1,
+    0x7E
+  ])
+  let fs = scan_features(m)
+  assert(features_contain(fs, "typedFunctionReferences"))
+  // referenceTypes is not reported alongside it: a typed reference IS a
+  // reference type, and listing both reads as two independent requirements.
+  assert(!features_contain(fs, "referenceTypes"))
+}
+
+test "scan_features finds exceptionsFinal from the tag section" {
+  // section id 13 (tag), one entry.
+  let m = make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    13,
+    3,
+    1,
+    0,
+    0
+  ])
+  assert(features_contain(scan_features(m), "exceptionsFinal"))
+}
+
+// Structural validation (#1133 / #1745 (5)).
+//
+// The contract is one-sided: never reject what `wasm-tools validate` accepts,
+// and catch as much of what it rejects as structure alone can decide. The
+// parity harness (scripts/test_wasm_validate_parity.sh) measures both halves
+// against the real tool; these pin the individual decisions.
+
+test "validate_structure accepts the empty module" {
+  // Eight bytes of header IS a valid module -- worth pinning, because a
+  // truncation mutant that happens to stop here must not be counted as a catch.
+  match validate_structure(empty_module()) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "validate_structure rejects a short module" {
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects bad magic" {
+  match validate_structure(make_bytes([
+    0,
+    0x41,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects a section running past the end" {
+  // Section id 1 claiming 0x7F bytes in a module that has three.
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0x7F,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects an unknown section id" {
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0x7A,
+    2,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure rejects repeated non-custom sections" {
+  // Two type sections. Custom sections may repeat; the rest may not.
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    1,
+    1,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_structure allows a custom section anywhere" {
+  // id 0 twice, around a type section: legal, and a rule that treats every
+  // section the same would wrongly reject it.
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    1,
+    1,
+    0,
+    0,
+    1,
+    0
+  ])) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+// The three below all pin the same lesson from PR #1800's review: a rule that
+// is right for core wasm is not automatically right for a module some proposal
+// made legal, and the HARD half of the contract has no tolerance for that.
+
+test "validate_structure accepts a tag section between memory and global" {
+  // Section order is the spec's canonical one, NOT ascending by id: tag (13)
+  // sits between memory (5) and global (6). Comparing ids rejected every module
+  // this compiler emits for a `throw` -- it puts the tag exactly there
+  // (codegen/gc/backend_body.vibe, #538).
+  //
+  // header | memory(5) size=3 [1, 0, 0] | tag(13) size=3 [1, 0, 0]
+  //        | global(6) size=1 [0]
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    5,
+    3,
+    1,
+    0,
+    0,
+    13,
+    3,
+    1,
+    0,
+    0,
+    6,
+    1,
+    0
+  ])) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "validate_structure still rejects a genuinely misordered section pair" {
+  // The rank fix must not make the order check vacuous: global (6) before
+  // memory (5) is out of order under either reading.
+  //
+  // header | global(6) size=1 [0] | memory(5) size=3 [1, 0, 0]
+  match validate_structure(make_bytes([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    6,
+    1,
+    0,
+    5,
+    3,
+    1,
+    0,
+    0
+  ])) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "validate_code_body accepts throw, which is not a reserved opcode" {
+  // 0x08 is `throw` and 0x06..0x0A is exception handling, not an unassigned
+  // range. This compiler emits 0x08 directly (codegen/gc/backend_call.vibe).
+  //
+  // throw 0 | end
+  let code = make_bytes([
+    0x08,
+    0,
+    0x0B
+  ])
+  match validate_code_body(code, 0, 3) {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "validate_code_body rejects a body whose blocks do not close" {
+  // block ... with no matching end. Reachable only because the walk covered
+  // the whole body, which is what makes it safe to reject on.
+  let code = make_bytes([
+    0x02,
+    0x40,
+    0x01,
+    0x0B
+  ])
+  match validate_code_body(code, 0, 4) {
+    None => assert(false),
+    Some(_) => assert(true)
+  }
+}
+
+test "parse_type_forms counts every type inside a recursive group" {
+  // 0x4E declares a group of N types; each gets its own index. Returning the
+  // group marker and stopping made the length under-count, so a function
+  // referring to the group's second type was called out of range.
+  //
+  // count=1 | rec 0x4E n=2 | (func)(func)
+  let forms = parse_type_forms(make_bytes([
+    1,
+    0x4E,
+    2,
+    0x60,
+    0,
+    0,
+    0x60,
+    0,
+    0
+  ]), 0, 9)
+  assert(Array::length(forms) == 2)
+  assert(Array::get(forms, 0) == 0x60)
+  assert(Array::get(forms, 1) == 0x60)
 }

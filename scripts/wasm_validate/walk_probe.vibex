@@ -1,0 +1,50 @@
+// Print `<bodies> <stopped>` for the module at _build/val_target.wasm: how many
+// function bodies it has, and how many of them the instruction stepper could
+// NOT walk to the end.
+//
+// The parity harness gates on stopped == 0 over this compiler's own output.
+// That is a sharper measure than the mutant-catch ratio: a stepper that bails
+// on the first instruction it does not know still catches plenty of mutants
+// (the corruption is often before the bail), while covering almost nothing.
+// Measured this way the gap was obvious -- 0xFD stopped 6 to 9 bodies per
+// module, and a one-byte assumption in get_code_body_range started 3 more
+// inside their own local declarations.
+import @vibex/wasm_parser {
+  get_code_body_range, list_sections, next_instruction, parse_code_entries
+}
+
+fn main with Fs {
+  let bytes = Fs::read_bytes("_build/val_target.wasm")
+  let secs = list_sections(bytes)
+  let mut i = 0
+  let mut bodies = 0
+  let mut stopped = 0
+  while i < Array::length(secs) {
+    let (id, off, size) = Array::get(secs, i)
+    if id == 10 {
+      let entries = parse_code_entries(bytes, off, size)
+      let mut k = 0
+      while k < Array::length(entries) {
+        let (body_off, body_size, _) = Array::get(entries, k)
+        let (cs, ce) = get_code_body_range(bytes, body_off, body_size)
+        bodies = bodies + 1
+        let mut pc = cs
+        let mut done = false
+        while (pc < ce) && !done {
+          let (_, np) = next_instruction(bytes, pc, ce)
+          if np < 0 {
+            stopped = stopped + 1
+            done = true
+          } else {
+            pc = np
+          }
+        }
+        k = k + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  println("\{bodies} \{stopped}")
+}
