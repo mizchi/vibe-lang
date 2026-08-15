@@ -218,13 +218,15 @@ fn grep_fs_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
 
 /// `vibe grep <root>` proper. Typing runs only for files that already have a
 /// structural match: typing a file the pattern never hits would be pure cost.
-export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception + Fs {
+export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Exception + Fs {
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat, wheres, where_rows)
   let files = grep_empty_strings()
   grep_fs_collect_files(root, files)
   let typed = grep_needs_typing(wheres, where_rows, only)
+  let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()
+  let warnings = grep_empty_strings()
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
@@ -242,11 +244,24 @@ export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], whe
       } else {
         grep_untyped_context()
       }
-      grep_emit_hits(source, hits, ctx, typed, wheres, where_rows, only, json, out)
+      if has_typed_filter && ctx.type_error != "" {
+        // The typed answer for this file is untrustworthy, but the remaining
+        // files are independent. Fail closed for this file and keep sweeping.
+        Array::push(warnings, String::concat("warning: grep: skipped `", String::concat(path, String::concat("` because it could not be typed: ", ctx.type_error))))
+      } else {
+        grep_emit_hits(source, hits, ctx, typed, wheres, where_rows, only, json, out)
+      }
     } else {
       ()
     }
     i = i + 1
   }
-  grep_join_lines(out, json)
+  (grep_join_lines(out, json), grep_join_lines(warnings, false))
+}
+
+/// Library-compatible result-only wrapper. The public CLI uses
+/// `grep_scan_fs_report` so it can route per-file skips to stderr.
+export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception + Fs {
+  let (result, _) = grep_scan_fs_report(root, pattern, wheres, where_rows, only, json)
+  result
 }

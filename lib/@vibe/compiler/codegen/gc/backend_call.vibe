@@ -23,7 +23,13 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+  collect_free_vars,
+  collect_strings_stmts,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  packed_lines_to_array_expr
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -547,6 +553,18 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // `FrozenArray::from_array` compiles and runs on both lanes. Listing
       // them would instead claim a user declaration with those names is
       // unsafe, which is not what this branch means.
+      // #729/#730 + #1262: `Fs::readdir` surface. The host import returns the
+      // entries "\n"-joined as ONE packed string, so turning it into
+      // Array[String] is a source-level rewrite -- the SAME rewrite the linear
+      // lane does, taken from the shared builder rather than spelled out again
+      // here (that duplication is what drifted in #1809).
+      if !source_is_bound && fname == "Fs::readdir" && Array::length(args) == 1 {
+        return ce(buf, packed_lines_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
+          Array::get(args, 0)
+        ], -1), "__rd_names"), local_names, next_local, ld)
+      } else {
+        ()
+      }
       if !source_is_bound && Array::length(args) == 1 && (fname == "FrozenArray::from_array" || fname == "FrozenArray::to_array") {
         // review-lint: allow-gc-direct-abi-unlisted
         let ftmp = if fname == "FrozenArray::from_array" {

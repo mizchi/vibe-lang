@@ -804,7 +804,7 @@ data.seed.artifact = data.seed.artifact ?? {};
 data.seed.artifact.path = artifactPath;
 data.seed.artifact.sha256 = sha;
 data.seed.runtime = data.seed.runtime ?? {};
-data.seed.runtime.runner = data.seed.runtime.runner ?? "moonrun";
+data.seed.runtime.runner = data.seed.runtime.runner ?? "node";
 data.seed.runtime.compile_flag = data.seed.runtime.compile_flag ?? "--wasm-mvp";
 data.seed.runtime.wasmtime_flags = data.seed.runtime.wasmtime_flags ?? "unknown-imports-default=y exceptions=y";
 fs.writeFileSync(manifestPath, `${JSON.stringify(data, null, 2)}\n`);

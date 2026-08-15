@@ -4404,52 +4404,61 @@ echo "[compiler-gate] wasm-gc backend smoke ok (101557)"
 echo "[compiler-gate] 40h-2/40 wasm-gc closure builtin capture"
 gccapdir="_build/_gate_gc_closure_capture"
 rm -rf "$gccapdir"; mkdir -p "$gccapdir"
-for gccap_be in linear gc; do
-  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gccap_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+for gccap_lane in linear-rc0 linear-rc1 gc; do
+  case "$gccap_lane" in
+    linear-rc0) gccap_be=linear; gccap_rc=0 ;;
+    linear-rc1) gccap_be=linear; gccap_rc=1 ;;
+    gc) gccap_be=gc; gccap_rc=0 ;;
+  esac
+  env -u VIBE_FS_COMPILE VIBE_RC="$gccap_rc" VIBE_BACKEND="$gccap_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "fixtures/gc_closure_builtin_capture_test.vibe" "$gccapdir/$gccap_be.wasm" __no_entry__ >/dev/null 2>&1
-  if [ ! -s "$gccapdir/$gccap_be.wasm" ]; then
-    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe did not compile on the $gccap_be backend" >&2
-    cat "$gccapdir/$gccap_be.wasm.diag" 2>/dev/null >&2 || true
+    "fixtures/gc_closure_builtin_capture_test.vibe" "$gccapdir/$gccap_lane.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gccapdir/$gccap_lane.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe did not compile on $gccap_lane" >&2
+    cat "$gccapdir/$gccap_lane.wasm.diag" 2>/dev/null >&2 || true
     exit 1
   fi
-  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gccapdir/$gccap_be.wasm" >"$gccapdir/$gccap_be.out" 2>&1; then
-    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe failed at run time on the $gccap_be backend" >&2
-    cat "$gccapdir/$gccap_be.out" >&2
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gccapdir/$gccap_lane.wasm" >"$gccapdir/$gccap_lane.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_capture_test.vibe failed at run time on $gccap_lane" >&2
+    cat "$gccapdir/$gccap_lane.out" >&2
     exit 1
   fi
 done
 rm -rf "$gccapdir"
-echo "[compiler-gate] wasm-gc closure builtin capture ok (linear + gc)"
+echo "[compiler-gate] closure builtin capture ok (linear rc0/rc1 + gc)"
 
 # 40h-3. Same rule reached through a SOURCE ALIAS. `compile_call_gc`
 #        canonicalizes the callee before dispatching while the capture scan
 #        sees the source spelling, so sharing the direct-ABI list was not
 #        enough: `StringBuilder::build` (alias of `StringBuilder::freeze`)
 #        matched neither the func table nor the list and was still captured.
-#        This section is the GC-lane half. The linear lane used to emit an
-#        INVALID module for every one of these while reporting a successful
-#        compile (#1811); since that landed, the same fixture also runs under
-#        scripts/unit_test_runner.sh on the linear lane, so both lanes are
-#        covered and the exclusion that used to sit in that runner is gone.
+#        Runs on BOTH lanes. Linear used to emit an invalid module while
+#        reporting a successful compile (#1811).
 echo "[compiler-gate] 40h-3/40 wasm-gc closure builtin alias capture"
 gcaliasdir="_build/_gate_gc_closure_alias"
 rm -rf "$gcaliasdir"; mkdir -p "$gcaliasdir"
-env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "fixtures/gc_closure_builtin_alias_test.vibe" "$gcaliasdir/alias.wasm" __no_entry__ >/dev/null 2>&1
-if [ ! -s "$gcaliasdir/alias.wasm" ]; then
-  echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe did not compile on the gc backend" >&2
-  cat "$gcaliasdir/alias.wasm.diag" 2>/dev/null >&2 || true
-  exit 1
-fi
-if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcaliasdir/alias.wasm" >"$gcaliasdir/alias.out" 2>&1; then
-  echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe failed at run time on the gc backend" >&2
-  cat "$gcaliasdir/alias.out" >&2
-  exit 1
-fi
+for gcalias_lane in linear-rc0 linear-rc1 gc; do
+  case "$gcalias_lane" in
+    linear-rc0) gcalias_be=linear; gcalias_rc=0 ;;
+    linear-rc1) gcalias_be=linear; gcalias_rc=1 ;;
+    gc) gcalias_be=gc; gcalias_rc=0 ;;
+  esac
+  env -u VIBE_FS_COMPILE VIBE_RC="$gcalias_rc" VIBE_BACKEND="$gcalias_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_closure_builtin_alias_test.vibe" "$gcaliasdir/$gcalias_lane.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gcaliasdir/$gcalias_lane.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe did not compile on $gcalias_lane" >&2
+    cat "$gcaliasdir/$gcalias_lane.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcaliasdir/$gcalias_lane.wasm" >"$gcaliasdir/$gcalias_lane.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_closure_builtin_alias_test.vibe failed at run time on $gcalias_lane" >&2
+    cat "$gcaliasdir/$gcalias_lane.out" >&2
+    exit 1
+  fi
+done
 rm -rf "$gcaliasdir"
-echo "[compiler-gate] wasm-gc closure builtin alias capture ok (gc)"
+echo "[compiler-gate] closure builtin alias capture ok (linear rc0/rc1 + gc)"
 
 # 40h-4. #1814: the gc lane must DECLARE its host ABI in the `vibe.abi` custom
 #        section. The node runner picks the decoding convention from that
@@ -4514,8 +4523,10 @@ rm -rf "$gchbdir"; mkdir -p "$gchbdir"
 gchb_out=""
 for gchb_be in linear gc; do
   rm -rf _build/gc_host_builtins_probe
-  mkdir -p _build/gc_host_builtins_probe/adir
+  mkdir -p _build/gc_host_builtins_probe/adir _build/gc_host_builtins_probe/rd _build/gc_host_builtins_probe/rd_empty
   printf 'hello\n' > _build/gc_host_builtins_probe/a.txt
+  printf 'x\n' > _build/gc_host_builtins_probe/rd/f1
+  printf 'y\n' > _build/gc_host_builtins_probe/rd/f2
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gchb_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_host_builtins.vibe" "$gchbdir/$gchb_be.wasm" main >/dev/null 2>&1
@@ -4533,24 +4544,37 @@ for gchb_be in linear gc; do
   fi
 done
 # Pin the value too: agreement alone passes when BOTH lanes break the same way.
-if [ "$gchb_out" != "gc-host-builtins:10101010" ]; then
-  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want gc-host-builtins:10101010) on both lanes (#1262)" >&2
+if [ "$gchb_out" != "gc-host-builtins:10101010202" ]; then
+  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want gc-host-builtins:10101010202) on both lanes (#1262)" >&2
   exit 1
 fi
-# Fs::readdir must still fail LOUDLY on the gc lane. Wiring only its import
-# yields an empty array (it needs the call-site surface lowering the linear
-# lane has), and an empty array is the silently-wrong answer this gate exists
-# to keep out. Drop this check when that lowering lands.
-printf 'let main = () -> Int with Fs { Array::length(Fs::readdir("_build")) }\n' > "$gchbdir/readdir.vibe"
+# `Fs::readdir` inside a CLOSURE, kept as its own check rather than folded
+# into the fixture value. The surface rewrite is guarded on the name not
+# resolving to anything real, and the gc capture scan collected `Fs::readdir`
+# as a free variable -- which made that guard false and skipped the rewrite,
+# so the call died with "unknown constructor or function" one lambda deep
+# while the top-level call worked. Listing it as a direct-ABI spelling is what
+# fixes it, and this is the shape that says so.
+printf 'let main = () -> Int with Fs { let f = (p: String) -> Int { Array::length(Fs::readdir(p)) }; f("_build/gc_host_builtins_probe/rd") }\n' > "$gchbdir/rdclosure.vibe"
+rm -rf _build/gc_host_builtins_probe
+mkdir -p _build/gc_host_builtins_probe/rd
+printf 'x\n' > _build/gc_host_builtins_probe/rd/f1
+printf 'y\n' > _build/gc_host_builtins_probe/rd/f2
 env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$gchbdir/readdir.vibe" "$gchbdir/readdir.wasm" main >/dev/null 2>&1 || true
-if [ -s "$gchbdir/readdir.wasm" ]; then
-  echo "[compiler-gate] FAIL: Fs::readdir now compiles on the gc lane -- if its surface lowering landed, verify it against linear and drop this check (#1262)" >&2
+  "$gchbdir/rdclosure.vibe" "$gchbdir/rdclosure.wasm" main >/dev/null 2>&1
+if [ ! -s "$gchbdir/rdclosure.wasm" ]; then
+  echo "[compiler-gate] FAIL: Fs::readdir inside a closure did not compile on the gc lane -- is it still listed in gc_direct_abi_names()? (#1262)" >&2
+  cat "$gchbdir/rdclosure.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gchb_rd="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gchbdir/rdclosure.wasm" 2>&1 | tail -1)"
+if [ "$gchb_rd" != "2" ]; then
+  echo "[compiler-gate] FAIL: Fs::readdir inside a closure returned '$gchb_rd' (want 2) on the gc lane (#1262)" >&2
   exit 1
 fi
 rm -rf "$gchbdir" _build/gc_host_builtins_probe
-echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010; readdir still loud)"
+echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =10101010202; readdir incl. empty dir and closure)"
 
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
@@ -6079,6 +6103,32 @@ if ! edpe_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_ru
 fi
 rm -rf "$edpedir"
 echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
+# #1070 final sub-case (pure closure STORED through a by-value param,
+# outliving the callee frame): historically the 3rd stored closure corrupted
+# the RC heap (`unreachable` on a later read), and only an inline-store
+# workaround avoided it (@vibex/concurrent Nursery::spawn was the canary).
+# Now fixed; pin BOTH RC lanes -- the corruption was RC bookkeeping, so the
+# bump lane alone cannot see a regression.
+cbvsdir="_build/_gate_closure_by_value_store"
+rm -rf "$cbvsdir"; mkdir -p "$cbvsdir"
+for cbvs_rc in 1 0; do
+  VIBE_RC="$cbvs_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/closure_by_value_store_test.vibe "$cbvsdir/out.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$cbvsdir/out.wasm" ]; then
+    echo "[compiler-gate] FAIL: closure_by_value_store_test.vibe did not compile under VIBE_RC=$cbvs_rc" >&2
+    cat "$cbvsdir/out.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! cbvs_out="$(VIBE_RC="$cbvs_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cbvsdir/out.wasm" 2>&1)"; then
+    echo "[compiler-gate] FAIL: closure_by_value_store_test.vibe under VIBE_RC=$cbvs_rc got '$cbvs_out' -- #1070 stored-closure ABI regressed" >&2
+    echo "$cbvs_out" >&2
+    exit 1
+  fi
+  rm -f "$cbvsdir/out.wasm" "$cbvsdir/out.wasm.diag"
+done
+rm -rf "$cbvsdir"
+echo "[compiler-gate] stored-by-value closure ABI ok (#1070 final sub-case, RC both modes)"
 
 # 40ar. #1070 (general case, second slice -- docs/effect-evidence-passing.md
 #       追記25): a SELF-DISCHARGING owner -- a function with NO `with Ask`
@@ -7212,6 +7262,13 @@ scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygien
 # the plain convention; Done-wrapping it returns a step pointer instead of 8.
 scps_run_expect "effect_scps_param_shadow_test.vibe" "8" "localparamshadow"
 scps_run_expect "effect_scps_top_level_alias_test.vibe" "7" "toplevelalias"
+# #1723 / #1803 P2 follow-up: effect_row_local_shadow_test.vibe's "unshadowed
+# effectful call" control sits inside `handle`, where the missing-effect
+# diagnostic is suppressed (in_handle), so it cannot pin "still charged when
+# NOT shadowed" by itself. This is the un-suppressed half: with no local
+# shadow and no handler, the row lands on the caller and a row-free caller is
+# refused. The accepted twin is test 1 of effect_row_local_shadow_test.vibe.
+scps_check_reject "err_effect_unshadowed_row_charged.vibe" "effect row mismatch for 'caller': missing { Ask }" "unshadowedrow"
 # #1536 (a) v3 (let-floating): an async-iterator `for` in statement position
 # desugars to a let-chain in SEQUENCE HEAD position; scps_split_tail floats
 # it onto the continuation spine. Two sequential loops pin repeated floats
@@ -9215,6 +9272,25 @@ if ! grep -qF 'zero_alloc' "$za91dir/shadowed.wasm.diag" 2>/dev/null; then
   cat "$za91dir/shadowed.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1838: typed operators can allocate even when their operands are variables.
+# Pin both allocating overloads: linear Double arithmetic boxes its result,
+# and String `+` lowers to concatenation. Int arithmetic remains covered by
+# the positive fixture above.
+for za_typed in double_operator string_operator shadowed_operator; do
+  cp "fixtures/err_zero_alloc_${za_typed}.vibe" "$za91dir/${za_typed}.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$za91dir/${za_typed}.vibe" "$za91dir/${za_typed}.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ -s "$za91dir/${za_typed}.wasm" ]; then
+    echo "[compiler-gate] FAIL: err_zero_alloc_${za_typed}.vibe compiled successfully -- typed allocating operator must be rejected" >&2
+    exit 1
+  fi
+  if ! grep -qF 'zero_alloc' "$za91dir/${za_typed}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: err_zero_alloc_${za_typed}.vibe did not produce the expected diagnostic" >&2
+    cat "$za91dir/${za_typed}.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
 rm -rf "$za91dir"
 # ADR-0091 #1262: the check and the MEASUREMENT pin each other. The two
 # fixtures above prove a clean fn compiles and a violating one is rejected;
@@ -11190,7 +11266,7 @@ VEOF
 gv_run() {
   # $1 = output basename, $2.. = extra env assignments (name=value)
   local gv_out="$gvdir/$1"; shift
-  rm -f "$gv_out" "$gv_out.diag"
+  rm -f "$gv_out" "$gv_out.diag" "$gv_out.warn"
   env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_GREP=1 "$@" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$gvdir" "$gv_out" >/dev/null 2>&1 || true
@@ -11231,6 +11307,46 @@ gv_run bad.txt VIBE_GREP_PATTERN='f($(x:expr))'
 if [ -s "$gvdir/bad.txt" ] || ! grep -q 'unknown metavariable kind' "$gvdir/bad.txt.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: a bad grep pattern did not land on the .diag sidecar" >&2
   cat "$gvdir/bad.txt" "$gvdir/bad.txt.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# A typing failure belongs to ONE file, not to the whole repository sweep.
+# Keep the trustworthy hits on either side, drop the broken file, and report
+# that skip once on the warning sidecar. This preserves fail-closed filtering
+# without turning a work-in-progress file into a repo-wide abort (#1834).
+cat > "$gvdir/a_sweep_good.vibe" <<'VEOF'
+fn good_before() -> Int {
+  let xs = [1]
+  Array::length(xs)
+}
+VEOF
+cat > "$gvdir/b_sweep_bad.vibe" <<'VEOF'
+fn broken_between() -> Int {
+  let wrong: String = 1
+  let xs = [2]
+  Array::length(xs)
+}
+VEOF
+cat > "$gvdir/c_sweep_good.vibe" <<'VEOF'
+fn good_after() -> Int {
+  let xs = [3]
+  Array::length(xs)
+}
+VEOF
+gv_run sweep.txt VIBE_GREP_PATTERN='Array::length($(x:exp))' VIBE_GREP_WHERE='$x : Array[Int]'
+if ! grep -qF 'a_sweep_good.vibe' "$gvdir/sweep.txt" || ! grep -qF 'c_sweep_good.vibe' "$gvdir/sweep.txt"; then
+  echo "[compiler-gate] FAIL: a broken file aborted the typed grep repo sweep" >&2
+  cat "$gvdir/sweep.txt" "$gvdir/sweep.txt.diag" "$gvdir/sweep.txt.warn" 2>/dev/null >&2 || true
+  exit 1
+fi
+if grep -qF 'b_sweep_bad.vibe' "$gvdir/sweep.txt" || [ -s "$gvdir/sweep.txt.diag" ]; then
+  echo "[compiler-gate] FAIL: typed grep did not fail closed per broken file" >&2
+  cat "$gvdir/sweep.txt" "$gvdir/sweep.txt.diag" "$gvdir/sweep.txt.warn" 2>/dev/null >&2 || true
+  exit 1
+fi
+if [ "$(grep -cF 'b_sweep_bad.vibe' "$gvdir/sweep.txt.warn" 2>/dev/null || true)" -ne 1 ]; then
+  echo "[compiler-gate] FAIL: typed grep did not report the skipped file exactly once" >&2
+  cat "$gvdir/sweep.txt.warn" 2>/dev/null >&2 || true
   exit 1
 fi
 rm -rf "$gvdir"

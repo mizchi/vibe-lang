@@ -1,0 +1,127 @@
+// #1070 final sub-case, now RESOLVED: a capturing closure passed BY VALUE
+// into a callee that STORES it (the closure outlives the callee frame).
+// Pure -- no effects, so no edp_* eligibility path is involved; this is the
+// closure-value ABI itself.
+//
+// History: 2 stored closures passed, the 3rd trapped (`unreachable` on a
+// corrupted status read under the RC lane), and inlining the store into the
+// caller made the same scenario pass -- so the trigger was exactly the
+// closure crossing a function boundary before being stored. The
+// @vibex/concurrent Nursery::spawn inline-store workaround was the live
+// canary. Verified fixed on main 92c4796 under all four of
+// {VIBE_RC=1, VIBE_RC=0} x {node runner, wasmtime}.
+
+struct PRes { mut value: Int }
+
+struct PN {
+  mut runners: Array[() -> Unit];
+  mut count: Int
+}
+
+fn p_append_runner(buf: Array[() -> Unit], count: Int, v: () -> Unit) -> Array[() -> Unit] {
+  let cap = Array::length(buf)
+  if count < cap {
+    Array::set(buf, count, v)
+    buf
+  } else {
+    let b = ArrayBuilder::new()
+    let mut i = 0
+    while i < 8 {
+      ArrayBuilder::push(b, v)
+      i = i + 1
+    }
+    let nb = ArrayBuilder::freeze(b)
+    let mut j = 0
+    while j < count {
+      Array::set(nb, j, Array::get(buf, j))
+      j = j + 1
+    }
+    nb
+  }
+}
+
+fn p_new() -> PN {
+  PN::{ runners: ArrayBuilder::freeze(ArrayBuilder::new()), count: 0 }
+}
+
+fn p_spawn(n: PN, rc: PRes, k: Int) -> Unit {
+  let runner: () -> Unit = () -> {
+    rc.value = k
+  }
+  n.runners = p_append_runner(n.runners, n.count, runner)
+  n.count = n.count + 1
+}
+
+// The stored runner ALSO captures and calls a closure parameter -- the
+// variant #1070's boundary probes listed separately.
+fn p_spawn_f(n: PN, rc: PRes, k: Int, f: () -> Int) -> Unit {
+  let runner: () -> Unit = () -> {
+    rc.value = k + f()
+  }
+  n.runners = p_append_runner(n.runners, n.count, runner)
+  n.count = n.count + 1
+}
+
+fn p_run(n: PN, i: Int) -> Unit {
+  let r = Array::get(n.runners, i)
+  r()
+}
+
+fn store_three() -> Int {
+  let n = p_new()
+  let r1 = PRes::{ value: 0 }
+  let r2 = PRes::{ value: 0 }
+  let r3 = PRes::{ value: 0 }
+  p_spawn(n, r1, 1)
+  p_spawn(n, r2, 2)
+  p_spawn(n, r3, 3)
+  p_run(n, 0)
+  p_run(n, 1)
+  p_run(n, 2)
+  r1.value * 100 + r2.value * 10 + r3.value
+}
+
+fn store_five_capture_param_reused() -> Int {
+  let n = p_new()
+  let r1 = PRes::{ value: 0 }
+  let r2 = PRes::{ value: 0 }
+  let r3 = PRes::{ value: 0 }
+  let r4 = PRes::{ value: 0 }
+  let r5 = PRes::{ value: 0 }
+  p_spawn_f(n, r1, 1, () -> Int {
+    10
+  })
+  p_spawn_f(n, r2, 2, () -> Int {
+    20
+  })
+  p_spawn_f(n, r3, 3, () -> Int {
+    30
+  })
+  p_spawn_f(n, r4, 4, () -> Int {
+    40
+  })
+  p_spawn_f(n, r5, 5, () -> Int {
+    50
+  })
+  let mut i = 0
+  while i < 5 {
+    p_run(n, i)
+    i = i + 1
+  }
+  // run each a second time: the stored closure must survive its first call
+  let mut j = 0
+  while j < 5 {
+    p_run(n, j)
+    j = j + 1
+  }
+  r1.value + r2.value + r3.value + r4.value + r5.value
+}
+
+test "3+ capturing closures stored via a by-value param" {
+  // Historically 2 passed and the 3rd corrupted the heap.
+  inspect(store_three(), "123")
+}
+
+test "stored runner captures + calls a closure param, and is reusable" {
+  inspect(store_five_capture_param_reused(), "165")
+}

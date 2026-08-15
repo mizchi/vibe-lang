@@ -1,18 +1,25 @@
-//# #1505: the struct-literal `::` normalization must not fire on a `{` that
-// opens a BLOCK whose subject is written with a qualifier.
+//# The formatter used to rewrite `Point { x: 1 }` into `Point::{ x: 1 }`, and
+// that rewrite is GONE (#1821). These tests pin its absence, because the shapes
+// below are the ones it kept corrupting.
 //
-// `should_insert_struct_double_colon` rewrites `Point { x: 1 }` into the
-// canonical `Point::{ x: 1 }`, and guards that with a lookback for the
-// keywords that put a bare name directly before a block brace (`match`, `if`,
-// `while`, `is`, `trait`, `with`, ...). That lookback was a fixed TWO tokens,
-// which any qualifier defeats: in `match Color::Red {` the two-back token is
-// `::`, so every guard missed and the scrutinee became `match Color::Red::{`
-// -- source the parser then reads as struct-literal fields.
+// It decided from the token governing the name before the brace, and every
+// spelling that could sit there had to be excluded by hand:
 //
-// The lookback now skips the whole `Name (:: Name)*` run. It skips ONLY a
-// `::`-joined run, never two adjacent names, because several guards key off
-// contextual keywords that lex as plain names -- `export effect TcpSocket {`
-// regressed exactly that way while this was being written.
+//   #945    `trait Greet {`, `impl Greet for Int {`
+//   #1429   `fn f() -> T with Exception + Fs {`
+//   #1505   `match Color::Red {` -- any qualifier defeated the lookback
+//   #1821   `if x != None {`, then `for x in Items {`
+//
+// Five rounds, and "what can precede a name before a brace" still had no
+// bounded answer. What ended it was measuring what the rewrite was FOR: across
+// 948 files under lib and 727 candidates under fixtures/ and scripts/, it fired
+// exactly once, on fixtures/struct_lit_sugar.vibe -- a fixture for a sugar the
+// compiler rejects (`line 4:18: unexpected token: :`). Its entire useful domain
+// was source that does not compile, and on source that does compile it could
+// only ever misfire.
+//
+// The net that remains is at the entry (lib/@vibe/cli/fmt_entry.vibe): the
+// formatted output is parsed, and a rewrite that breaks a file is discarded.
 
 //# Imports
 
@@ -132,4 +139,14 @@ test "a for-in over a real struct literal keeps its ::" {
   let src = "fn f() -> Int {\n  for x in Items::{ a: 1 } {\n    1\n  }\n  0\n}\n"
   let got = format_script(src)
   assert(contains(got, "Items::{"))
+}
+
+test "the formatter never inserts a struct-literal ::" {
+  // The property, stated directly rather than one guarded keyword at a time.
+  // A name before a brace stays a name before a brace, whatever precedes it --
+  // including spellings no guard ever listed.
+  let src = "fn f(s: Stream) -> Int {\n  handle Reader {\n    1\n  }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "handle Reader {"))
+  assert(!contains(got, "Reader::{"))
 }

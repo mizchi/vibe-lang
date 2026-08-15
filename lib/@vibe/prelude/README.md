@@ -8,7 +8,6 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 |--------|-----------:|-------------|
 | `builtin_traits.vibe` | 8 | Trait-oriented generic API (`Eq`/`Hash`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
 | `option.vibe` | 13 | Generic Option helpers (`is_some`, `unwrap_or`, `map_opt`, `map_or`, `or_else`, `equals`) |
-| `result.vibe` | 7 | Generic Result helpers (`is_ok`, `is_err`, `map_ok`, `map_err`, `bind`, `unwrap_or`, `to_option`) |
 | `cmp.vibe` | 4 | Compare helpers (`int/float/double/string_compare`, `maximum/minimum`, `*_by`, `*_by_key`) |
 | `int.vibe` | 14 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
 | `float.vibe` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
@@ -75,20 +74,16 @@ Boundary enforcement is active in:
 - `option_*` prefixes are no longer exported.
 - `map` itself is reserved in vibe syntax, so Option map is named `map_opt`.
 
-`result.vibe` now exposes short names compatible with current vibe parser constraints:
-
-- `is_ok`, `is_err`, `ok`, `err`
-- `map_ok`, `map_err`, `map_or`, `bind`, `and_then`, `flatten`
-- `unwrap_or`, `unwrap_or_else`, `or`, `or_else`
-- `to_option`, `from_option`, `equals_by`
-- `map` itself is reserved in vibe syntax, so Result map is named `map_ok`.
+`result.vibe` was removed in #1324 (see the header comment in `index.vpkg`):
+`Result` no longer exists as a language- or prelude-provided type. A program
+wanting `Ok`/`Err` declares the enum itself like any other user enum; failure
+is carried by `Exception[E]` effect rows (ADR-0085).
 
 ### Canonical Naming / Alias Policy
 
 `vibe/prelude` では parser 予約語制約を前提に、以下を canonical API 名として扱う。
 
 - Option: `map_opt`, `flatmap`, `map_or`, `unwrap_or`, `unwrap_or_else`
-- Result: `map_ok`, `bind`, `map_or`, `unwrap_or`, `unwrap_or_else`
 - Array: `Array::map`, `flatmap`, `filter`, `fold`
 
 互換 alias 運用ルール:

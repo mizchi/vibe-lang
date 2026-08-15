@@ -104,23 +104,48 @@ function splitTopLevelChunks(source) {
   return chunks;
 }
 
+// Chunks that must be HOISTED above the generated `test` block, because vibe
+// only accepts them at the top level.
+//
+// `enum`, `struct`, `type`, `impl`, `trait` and `module` used to be classified
+// as declaration chunks, i.e. left inside the block. They do not compile there:
+// a block-local `enum` is rejected outright ("move `Color` to the top level",
+// #1525) and `trait` does not even parse. `effect` was in neither list, so it
+// fell to the expression wrapper and came out as `let _ = ( effect Console {`.
+//
+// The split is about WHERE a form is legal, so the test for it is the same
+// question: can this appear inside a block? Only bindings can.
 function isPreludeChunk(chunk) {
   const trimmed = chunk.trimStart();
-  return trimmed.startsWith("import ") || trimmed.startsWith("export ");
+  return [
+    "import ",
+    "export ",
+    "use ",
+    "declare ",
+    "enum ",
+    "struct ",
+    "type ",
+    "impl ",
+    "trait ",
+    "effect ",
+    "module ",
+  ].some((kw) => trimmed.startsWith(kw));
 }
 
+// Chunks that are legal inside the block and are NOT expressions, so they are
+// emitted as-is rather than wrapped in `let _ = ( ... )`.
 function isDeclarationChunk(chunk) {
   const trimmed = chunk.trimStart();
-  return (
-    trimmed.startsWith("let ") ||
-    trimmed.startsWith("let rec ") ||
-    trimmed.startsWith("enum ") ||
-    trimmed.startsWith("struct ") ||
-    trimmed.startsWith("type ") ||
-    trimmed.startsWith("impl ") ||
-    trimmed.startsWith("trait ") ||
-    trimmed.startsWith("module ")
-  );
+  return trimmed.startsWith("let ") || trimmed.startsWith("let rec ");
+}
+
+// A chunk with no code in it. Wrapping one as an expression produced
+// `let _ = (\n// Basic effect declaration\n)`, which is a parse error -- the
+// comment is the whole chunk, so there is nothing for the parens to hold.
+function isCommentOnlyChunk(chunk) {
+  return chunk
+    .split("\n")
+    .every((line) => line.trim() === "" || line.trim().startsWith("//"));
 }
 
 /**
@@ -208,6 +233,8 @@ function buildSingleFixtureTestContent(fixturePath) {
   const bodyChunks = [];
   for (const chunk of chunks) {
     if (isPreludeChunk(chunk)) {
+      preludeChunks.push(chunk);
+    } else if (isCommentOnlyChunk(chunk)) {
       preludeChunks.push(chunk);
     } else if (isDeclarationChunk(chunk)) {
       bodyChunks.push(chunk);

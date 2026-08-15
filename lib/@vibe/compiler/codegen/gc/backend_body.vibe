@@ -1410,7 +1410,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
   // modules stay import-free (runnable on bare wasmtime); a module touching
-  // any Env::/Fs::/Stdout:: builtin imports ALL of them at indices 1..16,
+  // any Env::/Fs::/Stdout:: builtin imports ALL of them at indices 1..17,
   // shifting every generated-body index by that count (hbo).
   //
   // `hbo` IS that count. FOUR places encode this list -- use_host, host_defs,
@@ -1418,9 +1418,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
-  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream")
+  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir")
   let hbo = if use_host {
-    16
+    17
   } else {
     0
   }
@@ -1614,7 +1614,12 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       ("Fs::rename", 2, 13, 0),
       ("Fs::is_dir", 1, 14, 1),
       ("Fs::is_file", 1, 15, 1),
-      ("Stdout::write_stream", 1, 16, 0)
+      ("Stdout::write_stream", 1, 16, 0),
+      // #1262: registered under the RAW name, not `Fs::readdir`. The surface
+      // returns Array[String] while the import returns the entries "\n"-joined
+      // as one packed string; compile_call_gc rewrites the surface onto this
+      // name (shared with the linear lane via packed_lines_to_array_expr).
+      ("vibe_fs_read_dir_raw", 1, 17, 1)
     ]
     let mut __hd = 0
     while __hd < Array::length(host_defs) {
@@ -2291,7 +2296,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     // 4=(i64,i64)->i64, 5=()->i64, 6=(i64,i64)->()) -- the linear backend's
     // raw tagged ABI.
     let imp_content = bytebuf_new()
-    bytebuf_push_vec_header(imp_content, 17)
+    bytebuf_push_vec_header(imp_content, 18)
     emit_name(imp_content, "wasi_snapshot_preview1")
     emit_name(imp_content, "fd_write")
     bytebuf_push(imp_content, 0)
@@ -2314,7 +2319,8 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       ("fs_rename", 6),
       ("fs_is_dir", 3),
       ("fs_is_file", 3),
-      ("stdout_write_stream", 1)
+      ("stdout_write_stream", 1),
+      ("fs_read_dir", 3)
     ]
     let mut __hi = 0
     while __hi < Array::length(host_imports) {

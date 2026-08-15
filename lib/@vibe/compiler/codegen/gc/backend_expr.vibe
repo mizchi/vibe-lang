@@ -1983,12 +1983,15 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         nl1 + 1
       }
     },
-    ERecord(_, fields, _) => {
+    ERecord(rec_rn, fields, _) => {
       let flen = Array::length(fields)
       // #722: resolve to a struct by exact field-name set; on a match, lay
       // out in DECLARED field order and stamp the struct's ctor tag at
       // value+0 (mirrors the linear backend and the `S::{...}` ctor path) so
       // the tag-dispatching field access above stays type-correct.
+      // #1839: an explicit anonymous literal (rec_rn == "") is exempt — it
+      // always keeps literal order + tag 0 (mirrors the linear backend's
+      // rule; see compile_expr_tail4).
       let lit_names = array_empty()
       let mut lni = 0
       while lni < flen {
@@ -1996,7 +1999,11 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         Array::push(lit_names, lfn)
         lni = lni + 1
       }
-      let rec_si = struct_index_by_field_set(ctx.gc_ctor_table, lit_names)
+      let rec_si = if rec_rn == "" {
+        -1
+      } else {
+        struct_index_by_field_set(ctx.gc_ctor_table, lit_names)
+      }
       let rec_tag = if rec_si >= 0 {
         struct_tag_by_index(ctx.gc_ctor_table, rec_si)
       } else {

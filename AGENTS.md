@@ -156,7 +156,7 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
    (ADR 番号・pass 名) で行動可能でない、型検査を通り抜けて codegen で初めて
    落ちる、条件が複数軸の相互作用で単独では説明できない。
    実例: #1511 (`handle` の適格性), #1508 (`Http` を使う test/bench が書けない),
-   #1500 (optional 引数 `x?` が未実装)
+   #1500 (optional 引数 `x?` — 起票時は未実装、現在は着地済み)
 
 ## Quick Commands
 

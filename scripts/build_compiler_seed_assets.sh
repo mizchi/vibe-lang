@@ -102,7 +102,7 @@ cat > "$OUT_DIR/.compiler-manifest-fragment.json" <<EOF
   "entry": "$seed_entry",
   "entry_name": "$seed_entry_name",
   "runtime": {
-    "runner": "moonrun",
+    "runner": "node",
     "wasmtime_flags": "unknown-imports-default=y exceptions=y"
   }
 }

@@ -25,7 +25,13 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+  collect_free_vars,
+  collect_strings_stmts,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  packed_lines_to_array_expr
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -1758,6 +1764,24 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       nl
     }
+    else if fname == "Double::from_i64_bits" {
+      // The linear value ABI carries Double as raw f64 bits in an i64 (boxed
+      // under RC). This builtin is therefore an inline representation
+      // conversion, not a function-table call. Keeping it inline also means a
+      // closure body cannot accidentally capture and call a nonexistent
+      // first-class builtin slot (#1805).
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+        Array::push(local_names, "__from_bits_raw")
+        Array::push(local_names, "__from_bits_box")
+        emit_box_float(buf, ctx, nl, nl + 1)
+        nl + 2
+      } else {
+        nl
+      }
+    }
     else if !prefer_bound_call && fname == "await" {
       // M1b-3b (docs/spec/wasi-p3-async.md): a `Future[T]` is the two-element
       // array `[state, payload]` (future_state_ready() = 0), so awaiting a
@@ -2615,24 +2639,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // the length guard. String pieces are built with String::from_char_code
       // because a synthesized EString is not in the string table (same
       // constraint as double_to_string_expr).
-      ce(buf, ELet("__rd_names", ECall(EIdent("vibe_fs_read_dir_raw", -1), [
+      // #1262: shared with the gc lane -- the rewrite is source-level, so both
+      // lanes take it from packed_lines_to_array_expr rather than each
+      // spelling it out (see that function for the empty-dir and string-table
+      // constraints).
+      ce(buf, packed_lines_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
         Array::get(args, 0)
-      ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
-        EIdent("__rd_names", -1)
-      ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
-        EArray([
-          ECall(EIdent("String::from_char_code", -1), [
-            EInt(10)
-          ], -1)
-        ]),
-        EInt(0),
-        EInt(0)
-      ], -1), ECall(EIdent("String::split", -1), [
-        EIdent("__rd_names", -1),
-        ECall(EIdent("String::from_char_code", -1), [
-          EInt(10)
-        ], -1)
-      ], -1)), -1), local_names, next_local, ctx, ld)
+      ], -1), "__rd_names"), local_names, next_local, ctx, ld)
     }
     else if fname == "sh_lines" && Array::length(args) >= 1 {
       // `sh_lines(cmd) -> Array[String]`: the host import (`vibe_sh_lines_raw`,
