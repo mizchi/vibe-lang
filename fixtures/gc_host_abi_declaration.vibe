@@ -1,0 +1,51 @@
+// #1814: the wasm-gc lane must DECLARE the host ABI it speaks.
+//
+// Both lanes talk to the node host runner over the same raw tagged-i64 ABI,
+// but the runner only knows which convention a module uses from the
+// `vibe.abi` custom section (`detectHostImportAbi`). When `VIBE_IMPORT_ABI`
+// is unset -- which is the normal way a built artifact runs -- a module
+// without that section falls back to "tagged", and every host-import result
+// is decoded under the wrong convention.
+//
+// The gc lane emitted no such section. The failure was silent and pointed the
+// wrong way: nothing traps, no diagnostic appears, the module is valid, and
+// the ANSWERS are wrong. `Fs::exists` on a missing path came back TRUE, which
+// is the worst direction for that particular question.
+//
+// Why the checks below are shaped this way:
+//
+//   - the MISSING path is checked, not just the present one. Under the
+//     mis-decode the present case happened to agree with linear, so a
+//     positive-only fixture stays green through the whole bug.
+//   - a String result is measured by LENGTH, not by equality against a
+//     literal. The mis-decode produced 65537 for a 6-byte file, so length is
+//     where the raw packed value shows up.
+//   - the result is a single Int the gate compares across both lanes: the
+//     property is "gc agrees with linear", and hard-coding an expected number
+//     for one lane would not state that.
+
+fn fs_checks() -> Int with Fs {
+  let missing = if Fs::exists("_build/gc_host_abi_probe/nope") {
+    1
+  } else {
+    0
+  }
+  let present = if Fs::exists("_build/gc_host_abi_probe/a.txt") {
+    1
+  } else {
+    0
+  }
+  let read_len = String::length(Fs::read_file("_build/gc_host_abi_probe/a.txt"))
+  // 0 * 100 + 1 * 10 + 6 = 16 when every one is decoded correctly.
+  missing * 100 + present * 10 + read_len
+}
+
+fn env_check() -> Int with Env {
+  // An unset variable is the empty string; under the mis-decode this is a
+  // packed value with a non-zero length.
+  String::length(Env::get("VIBE_GC_HOST_ABI_UNSET_XYZ"))
+}
+
+export let main = () -> Int with Fs + Env {
+  fs_checks() * 10 + env_check()
+}

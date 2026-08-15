@@ -154,6 +154,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_table_section_funcref,
   emit_type_section,
   emit_type_section_multi,
+  emit_vibe_abi_custom_section,
   string_to_data
 }
 
@@ -2251,6 +2252,16 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   }
   let out = bytebuf_new()
   emit_header(out)
+  // #1814: the gc lane speaks the SAME raw tagged-i64 host ABI as the linear
+  // lane, but it never said so. The node host runner picks its encoding from
+  // this section when `VIBE_IMPORT_ABI` is unset (`detectHostImportAbi`), and
+  // with no section it falls back to "tagged" -- so every host-import result
+  // came back decoded under the wrong convention while the module itself was
+  // fine. Measured: `Fs::exists` on a MISSING path returned true, and
+  // `String::length(Fs::read_file(f))` returned 65537 for a 6-byte file. Both
+  // agree with linear the moment this section exists (or `VIBE_IMPORT_ABI=raw`
+  // is forced), which is what identified the cause.
+  emit_vibe_abi_custom_section(out, "raw")
   bytebuf_push_section(out, 1, type_content)
   if use_host {
     // fd_write + the ten "vibe" host imports (types: 3=(i64)->i64,
