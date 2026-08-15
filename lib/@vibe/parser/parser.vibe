@@ -64,35 +64,17 @@ import ./token.vibe {
 }
 
 import ./lexer.vibe {
-  lex_with_offsets, offset_to_line_col
+  offset_to_line_col
 }
 
 import ./parser_binder_context.vibe {
   ParserBinderContext,
-  SourceBinder,
-  binder_capture_context,
   binder_capture_discard_from,
   binder_capture_eligibility_mark,
-  binder_capture_is_eligible,
   binder_capture_mark,
   binder_capture_mark_ineligible,
   binder_capture_restore_eligibility,
-  binder_capture_rows,
   binder_capture_source
-}
-
-import ./parser_binder_authority.vibe {
-  validate_program_binder_rows
-}
-
-//# Types
-
-/// Atomically produced parse result plus exhaustively validated binder rows.
-/// The representation is documentation-opaque only; nominal possession is not
-/// proof and no semantic consumer accepts this value as authority.
-export struct LocatedProgramBinderAuthority {
-  program: Array[Stmt];
-  binders: Array[SourceBinder]
 }
 
 //# Functions
@@ -1140,34 +1122,6 @@ export fn parse_program_located_with_untrusted_binder_context(tokens: Array[Toke
 /// never a source of binder authority.
 export fn parse_program_located_with_binder_context(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
   parse_program_located_with_context_impl(tokens, starts, source, None).0
-}
-
-/// Source-owning atomic entry. It alone lexes exact offset tables, creates a
-/// fresh untrusted context, parses to TEof, and publishes only after complete
-/// final-AST row validation.
-export fn parse_source_located_with_binder_authority(source: String) -> Option[LocatedProgramBinderAuthority] with Exception {
-  let (tokens, starts, ends) = lex_with_offsets(source)
-  let context = binder_capture_context(starts, ends)
-  let (program, next) = parse_program_located_with_context_impl(tokens, starts, source, Some(context))
-  let rows = binder_capture_rows(context)
-  if match peek(tokens, next) {
-    TEof => true,
-    _ => false
-  } && binder_capture_is_eligible(context) && validate_program_binder_rows(program, rows, source) {
-    Some(LocatedProgramBinderAuthority::{
-      program: program, binders: rows
-    })
-  } else None
-}
-
-/// Data accessor only. No checker/cache/reuse API accepts this aggregate.
-export fn located_program_binder_authority_program(authority: LocatedProgramBinderAuthority) -> Array[Stmt] {
-  Array::slice(authority.program, 0, Array::length(authority.program))
-}
-
-/// Data accessor only; rows remain non-semantic parser evidence.
-export fn located_program_binder_authority_rows(authority: LocatedProgramBinderAuthority) -> Array[SourceBinder] {
-  Array::slice(authority.binders, 0, Array::length(authority.binders))
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {

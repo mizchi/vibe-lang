@@ -403,12 +403,15 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
 });
 
 test("atomic binder authority is source-owned, validated, fail-closed, and bundled", () => {
-  assertBody(parserSource, "parse_source_located_with_binder_authority", [
+  assertBody(binderAuthoritySource, "parse_source_located_with_binder_authority", [
     "lex_with_offsets(source)",
     "binder_capture_context(starts, ends)",
-    "parse_program_located_with_context_impl(tokens, starts, source, Some(context))",
+    "parse_program_located_with_untrusted_binder_context(tokens, starts, source, Some(context))",
     "binder_capture_is_eligible(context)",
-    "validate_program_binder_rows(program, rows, source)",
+    "build_program_binder_authority(program, rows, source)",
+    "LocatedProgramBinderAuthority::{",
+    "binders: rows",
+    "nodes",
   ], ["tokens: Array[Token]", "context: Option[ParserBinderContext]"]);
   assertBody(binderContextSource, "binder_capture_source", [
     "Array::get(starts, first_token)",
@@ -425,17 +428,82 @@ test("atomic binder authority is source-owned, validated, fail-closed, and bundl
     "Array::truncate(c.rows, length - removed)",
     "None => ()",
   ], ["Array::slice", "SourceToken", "Synthetic"]);
-  assertBody(parserSource, "parse_source_located_with_binder_authority", [
+  assertBody(binderAuthoritySource, "parse_source_located_with_binder_authority", [
     "binder_capture_context(starts, ends)",
   ]);
   assertBody(binderAuthoritySource, "validate_program_binder_rows", [
+    "build_program_binder_authority(program, rows, source)",
+    "Some(_) => true",
+    "None => false",
+  ]);
+  assertBody(binderAuthoritySource, "build_program_binder_authority", [
     "next == Array::length(rows)",
-    "_ => (false, next)",
+    "ArrayBuilder::push(nodes, result.0)",
   ]);
   assert.match(parserContract, /opaque type LocatedProgramBinderAuthority/);
   assert.match(parserContract, /fn parse_source_located_with_binder_authority\(source: String\)/);
   assert.match(compilerManifest, /parser_binder_authority\.vibe/);
-  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only source-owning authority entry lexes source with exact offsets");
+  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 0, "ordinary parser module must not own exact-source authority lexing");
+  assert.equal((binderAuthoritySource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only source-owning authority entry lexes source with exact offsets");
+});
+
+test("trivia-aware authority inventory pairs every supported AST branch with one explicit closed node kind", () => {
+  const expected = {
+    validate_pattern: [
+      ["PWild", "AuthorityPatWild"], ["PBind", "AuthorityPatBind"],
+      ["PInt", "AuthorityPatInt"], ["PFloat", "AuthorityPatFloat"],
+      ["PString", "AuthorityPatString"], ["PBool", "AuthorityPatBool"],
+      ["PCtor", "AuthorityPatCtor"], ["PTuple", "AuthorityPatTuple"],
+      ["PStruct", "AuthorityPatStruct"],
+    ],
+    validate_expr: [
+      ["EInt", "AuthorityExprInt"], ["EFloat", "AuthorityExprFloat"],
+      ["EString", "AuthorityExprString"], ["EBool", "AuthorityExprBool"],
+      ["EIdent", "AuthorityExprIdent"], ["ETuple", "AuthorityExprTuple"],
+      ["EArray", "AuthorityExprArray"], ["ERecord", "AuthorityExprRecord"],
+      ["EIf", "AuthorityExprIf"], ["ELet", "AuthorityExprLet"],
+      ["ELetRec", "AuthorityExprLetRec"], ["ELetMut", "AuthorityExprLetMut"],
+      ["EAssign", "AuthorityExprAssign"], ["EAssignOp", "AuthorityExprAssignOp"],
+      ["ESeq", "AuthorityExprSeq"], ["EMatch", "AuthorityExprMatch"],
+      ["EHandle", "AuthorityExprHandle"], ["EWhile", "AuthorityExprWhile"],
+      ["EForIn", "AuthorityExprForIn"], ["ECall", "AuthorityExprCall"],
+      ["EBinOp", "AuthorityExprBinOp"], ["EUnaryOp", "AuthorityExprUnaryOp"],
+      ["EFn", "AuthorityExprFn"], ["EDot", "AuthorityExprDot"],
+      ["ELabeledArg", "AuthorityExprLabeledArg"], ["EReturn", "AuthorityExprReturn"],
+      ["EBreak", "AuthorityExprBreak"], ["EContinue", "AuthorityExprContinue"],
+      ["EMap", "AuthorityExprMap"], ["ESpread", "AuthorityExprSpread"],
+      ["EStringInterp", "AuthorityExprStringInterp"], ["EUnit", "AuthorityExprUnit"],
+    ],
+    validate_stmt: [
+      ["SLet", "AuthorityStmtLet"], ["SLetMut", "AuthorityStmtLetMut"],
+      ["SExternLet", "AuthorityStmtExternLet"], ["SImport", "AuthorityStmtImport"],
+      ["SAliasDecl", "AuthorityStmtAliasDecl"], ["STypeAlias", "AuthorityStmtTypeAlias"],
+      ["SEffectSet", "AuthorityStmtEffectSet"], ["SResource", "AuthorityStmtResource"],
+      ["STest", "AuthorityStmtTest"], ["SBench", "AuthorityStmtBench"],
+      ["SExample", "AuthorityStmtExample"], ["SExpr", "AuthorityStmtExpr"],
+      ["SExport", "AuthorityStmtExport"], ["SReExport", "AuthorityStmtReExport"],
+      ["SQualifiedPatternRefs", "AuthorityStmtQualifiedPatternRefs"],
+      ["STestEffectRows", "AuthorityStmtTestEffectRows"],
+    ],
+  };
+
+  const declaredKinds = vibeTokens(binderAuthoritySource.slice(
+    binderAuthoritySource.indexOf("export enum BinderAuthorityNodeKind"),
+    binderAuthoritySource.indexOf("export enum BinderSemanticRole"),
+  )).map((token) => token.text).filter((text) => text.startsWith("Authority"));
+  const expectedKinds = Object.values(expected).flat().map(([, kind]) => kind);
+  assert.deepEqual([...declaredKinds].sort(), [...expectedKinds].sort(), "closed node-kind enum must exactly match the supported constructor inventory");
+
+  for (const [fn, pairs] of Object.entries(expected)) {
+    const tokens = vibeTokens(functionBody(binderAuthoritySource, fn)).map((token) => token.text);
+    for (const [ctor, kind] of pairs) {
+      assert.ok(tokens.includes(ctor), `${fn}: missing supported AST branch ${ctor}`);
+      assert.equal(tokens.filter((token) => token === kind).length, ctor === "EBreak" ? 2 : 1, `${fn}:${ctor}: must construct exactly one explicit ${kind} per branch (EBreak has Some/None sub-branches)`);
+    }
+    assert.ok(!tokens.includes("true"), `${fn}: supported branches must not regress to bool-only validation`);
+  }
+  assert.ok(functionBody(binderAuthoritySource, "validate_pattern").includes("POr(_, _) => None"));
+  assert.ok(functionBody(binderAuthoritySource, "validate_expr").includes("ELoop(_, _) => None"));
 });
 
 test("malformed binder context failures use guarded poison and fixed append bounds", () => {
