@@ -6860,6 +6860,33 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               },
               None => CtUnknown
             },
+            // #1839: field read on an anonymous record — resolve by name in
+            // the record's own field list (literal order). An unknown field
+            // is a located error; the codegen/desugar positional read would
+            // otherwise reach an out-of-range slot.
+            CtRecord(rec_fields) => {
+              let rec find_field_r: (Int) -> Option[Type] = (i) -> {
+                if i >= Array::length(rec_fields) {
+                  None
+                } else {
+                  let (fname, ftype) = Array::get(rec_fields, i)
+                  if fname == field {
+                    Some(ftype)
+                  } else find_field_r(i + 1)
+                }
+              }
+              match find_field_r(0) {
+                Some(ft) => ft,
+                None => {
+                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on ", type_to_string(resolved)))), if field_off >= 0 {
+                    off_marker_len(field_off, String::length(field))
+                  } else {
+                    off_marker(dot_off)
+                  }))
+                  CtUnknown
+                }
+              }
+            },
             // #829: field read through an INSTANTIATED generic struct value —
             // substitute the declared type params with the receiver's type args so
             // `b.v` on `Box[Int]` is `Int` (previously the whole read was
@@ -7304,9 +7331,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // struct (accepting `fn (s: Span)` calls the writer never meant) and
         // rejected records whose field set was a strict subset of some
         // struct ("missing field ... in construction of struct X"). Codegen
-        // and the anon-record dot-access desugar now keep the same rule:
+        // and the anon-record dot-access desugar keep the same rule:
         // rn == "" always lays out in literal order with tag 0.
-        (CtUnknown, s1, c1)
+        //
+        // Slice 2: the literal now gets a real structural type. CtRecord
+        // unifies only with a same-shaped record, so passing a record where
+        // a struct is expected is a located type mismatch instead of a
+        // CtUnknown pass-through that read wrong slots at runtime.
+        (CtRecord(field_tys), s1, c1)
       }
     },
     ETuple(items) => {

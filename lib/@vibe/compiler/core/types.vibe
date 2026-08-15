@@ -35,7 +35,13 @@ export enum Type {
   CtNamed(String, Array[Type]);
   CtVar(Int);
   CtForAll(Array[Int], Array[(Int, Array[String])], Type);
-  CtUnknown
+  CtUnknown;
+  // #1839: an explicit anonymous `record { ... }` literal. Structural, field
+  // order = LITERAL order (which is also the runtime slot layout, tag 0), so
+  // equality/unification are order-sensitive. Distinct from CtStruct so a
+  // record can never silently flow into a nominal struct position — unify
+  // rejects the pair, and the diagnostic prints the record's shape.
+  CtRecord(Array[(String, Type)])
 }
 
 export enum TypeDef {
@@ -413,6 +419,20 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
     },
     CtArray(elem) => occurs_in(id, elem),
     CtOption(elem) => occurs_in(id, elem),
+    CtRecord(rfields) => {
+      let mut ri = 0
+      let mut rfound = false
+      while ri < Array::length(rfields) {
+        let (_, rft) = Array::get(rfields, ri)
+        if occurs_in(id, rft) {
+          rfound = true
+          ri = Array::length(rfields)
+        } else {
+          ri = ri + 1
+        }
+      }
+      rfound
+    },
     CtTuple(elems) => {
       let mut i = 0
       let mut found = false
@@ -1098,6 +1118,10 @@ export fn subst_apply(s: Subst, ty: Type) -> Type {
     CtTuple(elems) => CtTuple(for e in elems {
       subst_apply(s, e)
     }),
+    CtRecord(rfields) => CtRecord(for rf in rfields {
+      let (rfn, rft) = rf
+      (rfn, subst_apply(s, rft))
+    }),
     CtNamed(name, args) => CtNamed(name, for arg in args {
       subst_apply(s, arg)
     }),
@@ -1207,6 +1231,19 @@ export fn type_to_string(ty: Type) -> String {
         i = i + 1
       }
       String::concat("(", String::concat(joined, ")"))
+    },
+    CtRecord(rfields) => {
+      let mut ri = 0
+      let mut rjoined = ""
+      while ri < Array::length(rfields) {
+        let (rfn, rft) = Array::get(rfields, ri)
+        let rpart = String::concat(rfn, String::concat(": ", type_to_string(rft)))
+        rjoined = if ri > 0 {
+          String::concat(rjoined, String::concat(", ", rpart))
+        } else rpart
+        ri = ri + 1
+      }
+      String::concat("record { ", String::concat(rjoined, " }"))
     },
     CtFn(params, ret, effect_name) => {
       let parts = for p in params {
@@ -1385,6 +1422,13 @@ fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
     },
     CtArray(elem) => collect_effect_vars_walk(elem, out),
     CtOption(elem) => collect_effect_vars_walk(elem, out),
+    CtRecord(rfields) => {
+      for rf in rfields {
+        let (_, rft) = rf
+        let _ = collect_effect_vars_walk(rft, out)
+      }
+      0
+    },
     CtTuple(elems) => {
       for e in elems {
         let _ = collect_effect_vars_walk(e, out)
@@ -1440,6 +1484,16 @@ fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
         i = i + 1
       }
       CtTuple(out)
+    },
+    CtRecord(rfields) => {
+      let rout = array_empty()
+      let mut ri = 0
+      while ri < Array::length(rfields) {
+        let (rfn, rft) = Array::get(rfields, ri)
+        Array::push(rout, (rfn, rename_effect_vars(rft, pairs)))
+        ri = ri + 1
+      }
+      CtRecord(rout)
     },
     CtNamed(name, args) => {
       let out = array_empty()
@@ -1571,6 +1625,13 @@ fn collect_tvars_walk(t: Type, out: Array[Int]) -> Int {
     },
     CtArray(elem) => collect_tvars_walk(elem, out),
     CtOption(elem) => collect_tvars_walk(elem, out),
+    CtRecord(rfields) => {
+      for rf in rfields {
+        let (_, rft) = rf
+        let _ = collect_tvars_walk(rft, out)
+      }
+      0
+    },
     CtTuple(elems) => {
       for e in elems {
         let _ = collect_tvars_walk(e, out)
@@ -2009,6 +2070,36 @@ export fn types_equal(a: Type, b: Type) -> Bool {
       },
       _ => false
     },
+    // #1839: records are structural with LITERAL field order (order IS the
+    // runtime slot layout), so equality is order-sensitive: same names in the
+    // same positions with equal types.
+    CtRecord(arf) => match b {
+      CtRecord(brf) =>
+      if Array::length(arf) != Array::length(brf) {
+        false
+      } else {
+        let rql = Array::length(arf)
+        let mut rqi = 0
+        let mut rq_result = true
+        let mut rq_done = false
+        while !rq_done {
+          if rqi >= rql {
+            rq_done = true
+          } else {
+            let (afn, aft) = Array::get(arf, rqi)
+            let (bfn, bft) = Array::get(brf, rqi)
+            if afn == bfn && types_equal(aft, bft) {
+              rqi = rqi + 1
+            } else {
+              rq_result = false
+              rq_done = true
+            }
+          }
+        }
+        rq_result
+      },
+      _ => false
+    },
     CtFn(aparams, aret, aeffect) => match b {
       CtFn(bparams, bret, beffect) =>
       if Array::length(aparams) != Array::length(bparams) {
@@ -2244,6 +2335,50 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
                       }
                     }
                     ul_result2
+                  },
+                  _ => None
+                },
+                // #1839: records unify only with records of the same shape —
+                // same field names in the same order (order IS the runtime
+                // slot layout), field types unified pairwise. Against any
+                // nominal type (CtStruct/CtNamed/...) the catch-all below
+                // rejects, which is the point: an anonymous record can never
+                // silently satisfy a struct-typed position.
+                CtRecord(raf) => match tb {
+                  CtRecord(rbf) => if Array::length(raf) != Array::length(rbf) {
+                    None
+                  }
+                  else {
+                    let ur_len = Array::length(raf)
+                    let mut ur_i = 0
+                    let mut ur_acc = s
+                    let mut ur_result = Some(s)
+                    let mut ur_done = false
+                    while !ur_done {
+                      if ur_i >= ur_len {
+                        ur_result = Some(ur_acc)
+                        ur_done = true
+                      } else {
+                        let (ur_an, ur_at) = Array::get(raf, ur_i)
+                        let (ur_bn, ur_bt) = Array::get(rbf, ur_i)
+                        if ur_an != ur_bn {
+                          ur_result = None
+                          ur_done = true
+                        } else {
+                          match unify(ur_at, ur_bt, ur_acc) {
+                            Some(s2) => {
+                              ur_acc = s2
+                              ur_i = ur_i + 1
+                            },
+                            None => {
+                              ur_result = None
+                              ur_done = true
+                            }
+                          }
+                        }
+                      }
+                    }
+                    ur_result
                   },
                   _ => None
                 },

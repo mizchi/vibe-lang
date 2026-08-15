@@ -275,6 +275,31 @@ fn parse_cached_type(source: String, pos: Int) -> (Type, Int) with Exception {
         let (body, next) = parse_cached_type(source, after_bounds)
         (CtForAll(vars, bounds, body), next)
       },
+      // #1839: anonymous record — count-headed list of (name segment, type
+      // segment) pairs, literal field order preserved.
+      'K' => {
+        let (count, start) = parse_count_header(source, pos + 1, '[')
+        let rfields = array_empty()
+        let mut ki = 0
+        let mut kcursor = start
+        while ki < count {
+          let (kname, after_name) = parse_segment(source, kcursor)
+          let (kraw, after_ty) = parse_segment(source, after_name)
+          let (kty, kend) = parse_cached_type(kraw, 0)
+          if kend != String::length(kraw) {
+            throw("invalid persistent type env record field type")
+          } else {
+            Array::push(rfields, (kname, kty))
+            kcursor = after_ty
+            ki = ki + 1
+          }
+        }
+        if kcursor >= String::length(source) || String::char_code_at(source, kcursor) != ']' {
+          throw("invalid persistent type env record field list")
+        } else {
+          (CtRecord(rfields), kcursor + 1)
+        }
+      },
       _ => throw("invalid persistent type env type tag")
     }
   }
@@ -305,7 +330,24 @@ fn serialize_type(ty: Type) -> String {
       String::concat("F", String::concat(serialize_segment(effect), String::concat(serialize_type_array(params), serialize_type(ret))))
     },
     CtNamed(name, args) => String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
-    CtForAll(vars, bounds, body) => String::concat("Q", String::concat(serialize_int_array(vars), String::concat(serialize_bounds_array(bounds), serialize_type(body))))
+    CtForAll(vars, bounds, body) => String::concat("Q", String::concat(serialize_int_array(vars), String::concat(serialize_bounds_array(bounds), serialize_type(body)))),
+    // #1839: anonymous record — count-headed (name segment, type segment)
+    // pairs in literal field order (mirrors the 'K' parser above).
+    CtRecord(rfields) => {
+      let kbuf = StringBuilder::new()
+      StringBuilder::push(kbuf, "K")
+      StringBuilder::push(kbuf, __to_string(Array::length(rfields)))
+      StringBuilder::push(kbuf, "[")
+      let mut ki = 0
+      while ki < Array::length(rfields) {
+        let (kname, kty) = Array::get(rfields, ki)
+        StringBuilder::push(kbuf, serialize_segment(kname))
+        StringBuilder::push(kbuf, serialize_segment(serialize_type(kty)))
+        ki = ki + 1
+      }
+      StringBuilder::push(kbuf, "]")
+      StringBuilder::freeze(kbuf)
+    }
   }
 }
 
