@@ -45,9 +45,17 @@ entry_wasm_rel="$(bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh")"
 out_rel="_build/vibe_fmt/out.$$.vibe"
 mkdir -p "$ROOT_DIR/_build/vibe_fmt"
 trap 'rm -f "$ROOT_DIR/$out_rel"' EXIT
-VIBE_PREOPEN_DIR="$ROOT_DIR" \
+# The runner exits 0 whatever `main` returns, printing the return value as the
+# last stdout line instead. Discarding stdout therefore discarded the entry's
+# only way to say "I refused to format this" -- so a formatter that declined to
+# rewrite a file looked exactly like one that had nothing to change (#1821).
+entry_rc="$(VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-  --invoke main "$entry_wasm_rel" "$src_rel" "$out_rel" >/dev/null
+  --invoke main "$entry_wasm_rel" "$src_rel" "$out_rel" | tail -1)"
+if [ "$entry_rc" != "0" ]; then
+  echo "vibe_fmt.sh: formatter declined to rewrite $src_rel; the file is untouched" >&2
+  exit 1
+fi
 
 [ -f "$ROOT_DIR/$out_rel" ] || { echo "vibe_fmt.sh: formatter produced no output" >&2; exit 1; }
 

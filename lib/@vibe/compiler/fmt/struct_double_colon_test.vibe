@@ -71,3 +71,65 @@ test "formatting is a fixpoint for a qualified scrutinee" {
   let once = format_script(src)
   assert(format_script(once) == once)
 }
+
+//# #1821: the same false positive, reached through a COMPARISON rather than a
+// keyword. Every guard above looks at what sits two tokens before the brace and
+// expects a keyword there; in `if x != None {` that slot holds `!=` and the
+// `if` is four tokens back, out of reach. The output was `if x != None::{`.
+//
+// This one was not found by reading the guard. `pkf run fmt` rewrote source
+// that compiled into source no parser accepts, `--check` then reported the
+// wreck as correctly formatted, and it surfaced as four red CI shards pointing
+// at a brace nobody wrote.
+
+test "a comparison before a capitalized name keeps its block brace" {
+  let src = "fn f(x: Option[Int]) -> Int {\n  if x != None {\n    1\n  } else {\n    0\n  }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "if x != None {"))
+  assert(!contains(got, "None::{"))
+}
+
+test "the other comparisons are guarded too" {
+  let src = "fn f(y: Int) -> Int {\n  if y > Limit {\n    1\n  } else {\n    0\n  }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "if y > Limit {"))
+  assert(!contains(got, "Limit::{"))
+}
+
+test "a boolean operator before a capitalized name keeps its block brace" {
+  let src = "fn f(a: Option[Int], b: Int) -> Int {\n  if a == None && b < Cap {\n    1\n  } else {\n    0\n  }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "b < Cap {"))
+  assert(!contains(got, "Cap::{"))
+}
+
+test "a struct literal after a comparison is still spelled with ::" {
+  // The trade this guard makes, pinned: `a == Point { x: 1 }` no longer gets a
+  // `::` inserted for it. The canonical spelling already carries one, so
+  // nothing that was valid stops being valid.
+  let src = "fn f(a: Point) -> Bool {\n  a == Point::{ x: 1 }\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "Point::{"))
+}
+
+test "a for-in iterable keeps its block brace" {
+  // `for x in Items {` — found reviewing the #1821 fix, after the comparison
+  // operators were added. `path_governor` reports `in`, which no guard covered,
+  // so the loop body became struct-literal fields.
+  //
+  // This is where enumerating stopped being the answer: four rounds of "one
+  // more token in that slot" (#945, #1429, #1505, #1821) and the question
+  // "what can precede the name" still has no bounded answer. The entry now
+  // parses the formatter's output and discards a rewrite that breaks it, so a
+  // spelling missing from the guard costs a refusal instead of a broken file.
+  let src = "fn f() -> Int {\n  for x in Items {\n    1\n  }\n  0\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "for x in Items {"))
+  assert(!contains(got, "Items::{"))
+}
+
+test "a for-in over a real struct literal keeps its ::" {
+  let src = "fn f() -> Int {\n  for x in Items::{ a: 1 } {\n    1\n  }\n  0\n}\n"
+  let got = format_script(src)
+  assert(contains(got, "Items::{"))
+}

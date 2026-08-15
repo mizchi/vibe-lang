@@ -27,6 +27,11 @@ bash scripts/check_inline_builtin_capture.sh
 # selfbuild rather than after it.
 bash scripts/check_fixture_execution.sh
 
+# #1821 / Codex review on #1822: the token formatter may conservatively miss
+# an ambiguous `Name {` shape, but the public writer must never replace valid
+# source with a candidate that no parser accepts.
+bash scripts/vibe_fmt_parse_guard_test.sh
+
 # B2 parser binder-context routing is intentionally semantically inert, so its
 # no-fallback proof is structural. Keep the large source-body assertion table
 # out of the Vibe unit and run the strict scanner directly under Node.
