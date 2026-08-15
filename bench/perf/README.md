@@ -7,6 +7,12 @@ compiler / checker.
 
 Driver: `scripts/selfcompile_kpi.sh <stage2.wasm> [input.vibe]`.
 
+> Phase A of the merge-base delta replacement is documented in
+> [`docs/selfcompile-heap-policy.md`](../../docs/selfcompile-heap-policy.md).
+> Its controller/policy substrate is not wired into required CI yet. Until the
+> trusted-base Phase B wiring lands, the absolute gate described below remains
+> authoritative; the new policy does not relax it.
+
 One real compile through a selfhost stage2, reporting `wall_ms` and
 `heap_ptr_bytes` (linear backend bump-allocator high-water). With a cold
 isolated `VIBE_BUILD_CACHE_DIR` the heap number is **byte-deterministic**
@@ -20,9 +26,11 @@ fails when `heap_ptr_bytes` exceeds the committed baseline in
 (`VIBE_KPI_MAX_HEAP_BYTES = baseline * 110 / 100`).
 
 The baseline tracks the compiler itself: any change to
-`lib/@vibe/compiler/` (or the default input file) can move it. Rebaseline
-alongside intentional changes — in either direction; ratchet it down after
-an allocation win so the gate protects the win:
+`lib/@vibe/compiler/` (or the default input file) can move it. During the
+Phase A transition, rebaseline alongside intentional changes — in either
+direction; ratchet it down after an allocation win so the old gate protects
+the win. After Phase B this file remains investigation history only; it is not
+an authority for the comparative gate:
 
 ```bash
 bash scripts/generations.sh build --out-dir /tmp/kpi_gen
