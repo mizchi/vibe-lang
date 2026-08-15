@@ -73,18 +73,38 @@ test "marker trait bound without carrier stays accepted (no methods to call)" {
   assert(first_check_error(src) == "")
 }
 
-// Codex P1 on #1869: a USER-WRITTEN parameter that merely borrows the
-// "__dict_" prefix must not exempt the function — already_threaded now
-// verifies the exact generated name (`__dict_<Trait>_<T>` for one of the
-// fn's own bound pairs), so this carrier-less fn is rejected, not ICE'd.
-test "a user param merely prefixed __dict_ does not fake threading" {
+// Codex P1 on #1869 (both rounds): user-written parameters cannot borrow the
+// generated witness namespace. A name-only or shape-only guard always leaves
+// a spelling that fakes threading (the checker tolerates unknown annotation
+// types, so even `__dict_Default_T: DefaultDict[T]` passes the annotation
+// route), so the `__dict_` prefix is simply RESERVED at check time —
+// genuinely generated parameters never reach the checker.
+
+test "a user param merely prefixed __dict_ is rejected as reserved" {
   let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn sneaky[T: Default](__dict_dummy: Int) -> T { T::default() }\nfn main() -> Int { 0 }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "T::default"))
-  assert(String::contains(msg, "cannot be dispatched"))
+  assert(String::contains(msg, "sneaky"))
+  assert(String::contains(msg, "__dict_dummy"))
+  assert(String::contains(msg, "reserved"))
 }
 
-test "a __dict_-prefixed user param plus a real carrier stays accepted" {
-  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn odd_name[T: Default](__dict_dummy: Int, witness: T) -> T { T::default() }\nfn main() -> Int { odd_name(1, 5) }\n"
-  assert(first_check_error(src) == "")
+test "the exact generated dict name cannot fake threading" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn sneaky[T: Default](__dict_Default_T: Int) -> T { T::default() }\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "__dict_Default_T"))
+  assert(String::contains(msg, "reserved"))
+}
+
+test "the full generated dict shape (name + Dict annotation) cannot fake threading" {
+  let src = "trait Default { default() -> Self }\nimpl Default for Int { default() -> Int { 0 } }\nfn sneaky[T: Default](__dict_Default_T: DefaultDict[T]) -> T { T::default() }\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "__dict_Default_T"))
+  assert(String::contains(msg, "reserved"))
+}
+
+test "reserved prefix is rejected on unbounded functions too" {
+  let src = "fn plain(__dict_x: Int) -> Int { __dict_x }\nfn main() -> Int { plain(1) }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "__dict_x"))
+  assert(String::contains(msg, "reserved"))
 }

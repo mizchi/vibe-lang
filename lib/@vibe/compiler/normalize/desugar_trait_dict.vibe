@@ -1366,40 +1366,58 @@ fn empty_dict_binds() -> Array[(String, String, String, Array[String])] {
   array_empty()
 }
 
-/// A function already carries a threaded dict parameter (idempotency guard
-/// against desugaring the same stmts twice while bounds are still present).
-/// Whether this EFn was already transformed by a prior run of this pass.
-/// Codex P1 on #1869: a bare `starts_with(pname, "__dict_")` prefix test let a
-/// USER-WRITTEN parameter that merely borrows the prefix (`__dict_dummy: Int`
-/// is a legal identifier) exempt the whole function from threading AND from
-/// the #1858 witness-carrier validation — `vibe check` stayed clean while the
-/// body's `T::m` reached codegen unresolved. The generated shape is exact and
-/// checkable instead: `thread_dict_params` prepends `__dict_<Trait>_<Tparam>`
-/// where `(Tparam, Trait)` is one of THIS function's own bound pairs (the
-/// transform preserves `bounds`, see rewrite_stmt's SLet arm), so only that
-/// exact first-parameter name counts as "already threaded".
+/// Whether this EFn was already transformed by a prior run of this pass
+/// (idempotency guard against desugaring the same stmts twice while bounds
+/// are still present).
+///
+/// Codex P1 on #1869 (twice): a bare `starts_with(pname, "__dict_")` prefix
+/// test let a USER-WRITTEN parameter that merely borrows the prefix
+/// (`__dict_dummy: Int` is a legal identifier) exempt the whole function from
+/// threading AND from the #1858 witness-carrier validation — and a name-only
+/// exact match still left the same hole for a parameter spelled exactly
+/// `__dict_<Trait>_<Tparam>`. So the guard now demands the FULL generated
+/// shape from `thread_dict_params`: first parameter named
+/// `__dict_<Trait>_<Tparam>` AND annotated `<Trait>Dict[<Tparam>]`, for one
+/// of THIS function's own bound pairs (the transform preserves `bounds`, see
+/// rewrite_stmt's SLet arm). User source cannot pass this at check time: the
+/// `<Trait>Dict` witness struct is synthesized by this pass, which runs after
+/// checking, so a hand-written `x: DefaultDict[T]` annotation is an unknown
+/// type to the checker while the genuinely generated shape (re-checked or
+/// re-desugared downstream) matches exactly.
 fn already_threaded(bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])]) -> Bool {
   if Array::length(params) == 0 {
     false
   } else {
-    let (pname, _) = Array::get(params, 0)
-    let mut found = false
-    let mut bi = 0
-    while bi < Array::length(bounds) {
-      let (tp, trait_list) = Array::get(bounds, bi)
-      let mut ti = 0
-      while ti < Array::length(trait_list) {
-        let tr = Array::get(trait_list, ti)
-        if tr != "" && pname == dict_param_name(tr, tp) {
-          found = true
-        } else {
-          ()
+    let (pname, ann) = Array::get(params, 0)
+    match ann {
+      Some(TyApp(dname, targs)) => if Array::length(targs) == 1 {
+        let mut found = false
+        let mut bi = 0
+        while bi < Array::length(bounds) {
+          let (tp, trait_list) = Array::get(bounds, bi)
+          let elem_is_tp = match Array::get(targs, 0) {
+            TyName(tn) => tn == tp,
+            _ => false
+          }
+          let mut ti = 0
+          while ti < Array::length(trait_list) {
+            let tr = Array::get(trait_list, ti)
+            if tr != "" && elem_is_tp && pname == dict_param_name(tr, tp) && dname == dict_struct_name(tr) {
+              found = true
+              ti = Array::length(trait_list)
+              bi = Array::length(bounds) - 1
+            } else {
+              ti = ti + 1
+            }
+          }
+          bi = bi + 1
         }
-        ti = ti + 1
-      }
-      bi = bi + 1
+        found
+      } else {
+        false
+      },
+      _ => false
     }
-    found
   }
 }
 
@@ -1635,9 +1653,33 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, bounds, params, _, _, fbody) => if already_threaded(bounds, params) {
-          ()
-        } else {
+        EFn(_, bounds, params, _, _, fbody) => {
+          // Codex P1 on #1869 (round 2): the `__dict_` parameter-name prefix
+          // is RESERVED for the dict-passing desugar's generated witness
+          // parameters. Genuinely generated parameters never reach the
+          // checker (desugar_trait_dicts runs post-check, and the printed
+          // bundles carry no threaded params — verified), so at check time
+          // any such name is user-written. Rejecting it outright is what
+          // makes already_threaded's shape test sound: without this, a
+          // parameter spelled exactly `__dict_<Trait>_<T>` (any annotation —
+          // the checker tolerates unknown annotation types, measured) would
+          // fake threading, skip both build_gens and this validation, and
+          // resurrect the check-clean/codegen-ICE hole.
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pname, _) = Array::get(params, pi)
+            if String::starts_with(pname, "__dict_") {
+              let rmsg = String::concat(fname, String::concat(": parameter `", String::concat(pname, "` uses the reserved `__dict_` prefix (compiler-generated witness dictionaries) — rename the parameter.")))
+              if str_array_contains(out, rmsg) {
+                ()
+              } else {
+                Array::push(out, rmsg)
+              }
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
           let mut bi = 0
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, bi)
