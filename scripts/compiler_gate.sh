@@ -4634,6 +4634,53 @@ done
 rm -rf "$gcrgdir"
 echo "[compiler-gate] wasm-gc region ok (linear + gc snapshots; copy-out, nested, in-lambda)"
 
+# 40h-7. #1262: `Stdin::read_char` / `Stdin::read_stream` / `Int::parse` on the
+#        gc lane. The stdin pair was held back in #1823 because the harness
+#        fed neither lane any input, so both returned EOF and agreement proved
+#        nothing. The feed is VIBE_STDIN_BYTES (an env var, not piped stdin),
+#        so this section drives REAL input through both lanes and compares.
+#
+#        The fixture's own inspect snapshots carry the Int::parse expectations
+#        (they need no stdin); the stdin half needs a fed run, which a snapshot
+#        cannot express, so that part is compared lane-to-lane here.
+echo "[compiler-gate] 40h-7/40 wasm-gc stdin + Int::parse (#1262)"
+gcsidir="_build/_gate_gc_stdin"
+rm -rf "$gcsidir"; mkdir -p "$gcsidir"
+gcsi_out=""
+for gcsi_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcsi_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_stdin_int_parse.vibe" "$gcsidir/$gcsi_be.snap.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gcsidir/$gcsi_be.snap.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_stdin_int_parse.vibe did not compile on the $gcsi_be backend (#1262)" >&2
+    cat "$gcsidir/$gcsi_be.snap.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcsidir/$gcsi_be.snap.wasm" >"$gcsidir/$gcsi_be.snap.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_stdin_int_parse.vibe's inspect snapshots did not hold on the $gcsi_be backend (#1262)" >&2
+    tail -20 "$gcsidir/$gcsi_be.snap.out" >&2
+    exit 1
+  fi
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcsi_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_stdin_int_parse.vibe" "$gcsidir/$gcsi_be.wasm" main >/dev/null 2>&1
+  gcsi_got="$(VIBE_STDIN_BYTES=AB VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcsidir/$gcsi_be.wasm" 2>&1 | tail -1)"
+  if [ "$gcsi_be" = "linear" ]; then
+    gcsi_out="$gcsi_got"
+  elif [ "$gcsi_got" != "$gcsi_out" ]; then
+    echo "[compiler-gate] FAIL: gc stdin results disagree with linear: gc='$gcsi_got' linear='$gcsi_out' (#1262)" >&2
+    exit 1
+  fi
+done
+# 65,066 = two distinct bytes read in order (a cursor that never advanced
+# would give 65,065). Pinned so both lanes breaking the same way still fails.
+if [ "$gcsi_out" != "65066123452" ]; then
+  echo "[compiler-gate] FAIL: stdin probe returned '$gcsi_out' (want 65066123452) on both lanes (#1262)" >&2
+  exit 1
+fi
+rm -rf "$gcsidir"
+echo "[compiler-gate] wasm-gc stdin + Int::parse ok (linear + gc, real input via VIBE_STDIN_BYTES)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"

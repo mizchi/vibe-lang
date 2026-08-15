@@ -30,6 +30,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   packed_lines_to_array_expr,
+  region_mutbytes_exit_copy,
   region_mutlist_exit_copy
 }
 
@@ -608,6 +609,37 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       }
       if !source_is_bound && fname == "MutList::length" && Array::length(args) == 1 {
         return ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      // The Bytes half of the same tier. `MutBytes` storage IS a `Bytes`
+      // without an arena, so the operations are the Bytes ones under another
+      // spelling, and the exit copies for the same reason as MutList's.
+      if !source_is_bound && fname == "MutBytes::empty" && Array::length(args) == 1 {
+        let no_bytes_args = Array::slice([
+          EInt(0)
+        ], 0, 0)
+        return ce(buf, ECall(EIdent("Bytes::new", -1), no_bytes_args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::to_bytes" && Array::length(args) == 1 {
+        return ce(buf, region_mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::push" && Array::length(args) == 2 {
+        return ce(buf, ECall(EIdent("Bytes::push", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::append" && Array::length(args) == 2 {
+        return ce(buf, ECall(EIdent("Bytes::append", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::length" && Array::length(args) == 1 {
+        return ce(buf, ECall(EIdent("Bytes::length", -1), args, -1), local_names, next_local, ld)
       } else {
         ()
       }
