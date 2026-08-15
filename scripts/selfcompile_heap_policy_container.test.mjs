@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -41,13 +41,13 @@ test("hostile Wasm fixture modules are real and cover denied imports, paths, fak
   const dir = mkdtempSync(join(os.tmpdir(), "vibe-policy-hostile-wasm-"));
   try {
     const fixtures = writeHostileWasmFixtures(dir);
-    assert.ok(fixtures.length >= 28);
+    assert.ok(fixtures.length >= 29);
     for (const fixture of fixtures) {
       const module = new WebAssembly.Module(readFileSync(fixture.path));
       assert.equal(typeof WebAssembly.Module.exports(module).find(item => item.name === "probe"), "object", fixture.name);
     }
     for (const name of [
-      "shell", "sh-lines", "sh-capture", "tcp", "http", "read-etc", "read-proc", "read-policy",
+      "chdir-write", "shell", "sh-lines", "sh-capture", "tcp", "http", "read-etc", "read-proc", "read-policy",
       "write-tmp", "write-opt", "write-etc", "write-repo", "write-generation-temp",
       "write-measurement-sibling", "fake-result", "infinite", "preview2-open-repo-top-0.2.6",
       "preview2-open-measurement-sibling-0.3.0", "preview2-open-symlink-escape-0.2.6",
@@ -71,12 +71,21 @@ test("hostile Wasm fixture modules are real and cover denied imports, paths, fak
 test("real Wasm policy gate denies wasi: imports, allows Preview1, and leaves default Preview2 working", () => {
   const dir = realpathSync(mkdtempSync(join(os.tmpdir(), "vibe-policy-wasi-gate-")));
   try {
+    mkdirSync(join(dir, "lib"));
     const fixtures = writeHostileWasmFixtures(dir, dir);
     const run = (fixture, policy) => spawnSync(process.execPath, [
       new URL("./wasm_vibe_host_runner.js", import.meta.url).pathname,
       ...(policy ? ["--policy-stat-token", "content-v1", "--policy-stat-root", dir, "--policy-raw-fs-root", dir, "--policy-raw-fs-write-root", dir] : []),
       "--invoke", "probe", fixture.path,
     ], { cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH, VIBE_IMPORT_ABI: "raw", VIBE_PREOPEN_DIR: dir } });
+    const chdir = fixtures.find(fixture => fixture.name === "chdir-write");
+    const chdirDenied = run(chdir, true);
+    assert.notEqual(chdirDenied.status, 0);
+    assert.ok(chdirDenied.stderr.split(/\r?\n/).includes("Error: policy raw import denied: fs_chdir"));
+    assert.equal(existsSync(join(dir, "lib/_build/policy-chdir-marker")), false);
+    const chdirDefault = run(chdir, false);
+    assert.equal(chdirDefault.status, 0, chdirDefault.stderr);
+    assert.equal(readFileSync(join(dir, "lib/_build/policy-chdir-marker"), "utf8"), "owned");
     const denied = fixtures.find(fixture => fixture.name === "preview2-socket-tcp");
     const deniedResult = run(denied, true);
     assert.notEqual(deniedResult.status, 0);
@@ -194,14 +203,15 @@ test("authenticated result accepts exactly one expected canonical record", () =>
     label: "base", oid: "1".repeat(40), tree: "2".repeat(40), input: "bench/perf/selfcompile_input.vibe", hostileFixtures: false,
   });
   assert.equal(result.heap_bytes, 100);
+  assert.deepEqual(result.output_sha256, ["4".repeat(64), "4".repeat(64)]);
 });
 
 test("authenticated result requires canonical JSON and positive hostile/stat attestations", () => {
-  const hostile = { schema: 1, denied: 11, safe: 2, timed_out: 1, fake_prefix_captured: 1, positive_stat_calls: 1, markers_absent: true };
+  const hostile = { schema: 1, denied: 12, safe: 2, timed_out: 1, fake_prefix_captured: 1, positive_stat_calls: 1, markers_absent: true };
   const signed = signedRecord({ hostile_fixture_attestation: hostile });
   assert.equal(verifyRecord(signed.line, signed.key, {
     label: "base", oid: "1".repeat(40), tree: "2".repeat(40), input: "x", hostileFixtures: true,
-  }).hostile_fixture_attestation.denied, 11);
+  }).hostile_fixture_attestation.denied, 12);
   const parsed = JSON.parse(Buffer.from(signed.line.split(" ")[1], "base64url").toString("utf8"));
   const verifyHostile = candidate => verifyRecord(candidate.line, candidate.key, {
     label: "base", oid: "1".repeat(40), tree: "2".repeat(40), input: "x", hostileFixtures: true,
@@ -215,6 +225,7 @@ test("authenticated result requires canonical JSON and positive hostile/stat att
     assert.throws(() => verifyHostile(signPayload(text, signed.key)), /noncanonical-container-result/);
   }
   for (const invalidHostile of [
+    { ...hostile, denied: 11 },
     { ...hostile, denied: 11.5 },
     { ...hostile, safe: 2.5 },
     { ...hostile, denied: Number.MAX_SAFE_INTEGER + 1 },
@@ -224,6 +235,10 @@ test("authenticated result requires canonical JSON and positive hostile/stat att
   }
   const invalid = signedRecord({ stat_token_attestations: [{ mode: "content-v1", calls: 0, unique: 0, transcript: "a".repeat(64) }, { mode: "content-v1", calls: 0, unique: 0, transcript: "a".repeat(64) }] });
   assert.throws(() => verifyRecord(invalid.line, invalid.key, {
+    label: "base", oid: "1".repeat(40), tree: "2".repeat(40), input: "x", hostileFixtures: false,
+  }), /invalid-container-result/);
+  const divergentOutput = signedRecord({ output_sha256: ["4".repeat(64), "5".repeat(64)] });
+  assert.throws(() => verifyRecord(divergentOutput.line, divergentOutput.key, {
     label: "base", oid: "1".repeat(40), tree: "2".repeat(40), input: "x", hostileFixtures: false,
   }), /invalid-container-result/);
 });

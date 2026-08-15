@@ -65,6 +65,7 @@ Local shape (expensive: two clean generation builds and four compiles):
 node scripts/selfcompile_heap_policy.mjs \
   --repo . \
   --base origin/main \
+  --latest-base-ref origin/main \
   --head HEAD \
   --synthesize-merge \
   --pr-number 1801
@@ -172,9 +173,13 @@ script sentinels, wrong merge identity, reserved paths, and cleanup. Native
 at candidate `d74be6a43f01f14b022faf0c13394fd18c4f6f4b` passed focused tests
 42/42 and the full isolated Docker lane, including the generation-phase policy
 wrapper, real raw/Preview2 hostile-Wasm fixtures, local Docker endpoint
-inspection, and canonical authenticated records, in 10m59s. The temporary
-exact-branch validation workflow was removed after that run; required CI remains
-unchanged and the existing absolute gate remains authoritative.
+inspection, and canonical authenticated records, in 10m59s. Follow-up run
+[31878145188](https://github.com/mizchi/vibe-lang/actions/runs/31878145188)
+at candidate `3ebcafb063f87c7ae38b2b9c42a1caf2b2375b51` passed focused tests
+43/43 and the full isolated Docker lane in 8m55s after adding policy-only
+`fs_chdir` denial and emitted-output hash equality checks. The temporary
+exact-branch validation workflows were removed after those runs; required CI
+remains unchanged and the existing absolute gate remains authoritative.
 
 The metric still observes the guest-exported `__heap_ptr`. HMAC authentication
 proves what the trusted runner observed, but cannot stop a deliberately

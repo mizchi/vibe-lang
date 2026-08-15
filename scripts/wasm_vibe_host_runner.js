@@ -1191,10 +1191,10 @@ function authorizePolicyRawPath(filePath, write = false, config = policyRawFsCon
 
 function authorizePolicyRawImport(name, args, instanceRef, config = policyRawFsConfig) {
   if (!config) return;
-  if (name === "sh" || name === "sh_lines" || name.startsWith("sh_capture") || name.startsWith("tcp_") || name.startsWith("http_")) {
+  if (name === "sh" || name === "sh_lines" || name.startsWith("sh_capture") || name.startsWith("tcp_") || name.startsWith("http_") || name === "fs_chdir") {
     throw new Error(`policy raw import denied: ${name}`);
   }
-  const readOne = new Set(["fs_read_file", "fs_read_bytes", "fs_read_dir", "fs_readdir", "fs_exists", "fs_stat_token", "fs_is_dir", "fs_is_file", "fs_chdir"]);
+  const readOne = new Set(["fs_read_file", "fs_read_bytes", "fs_read_dir", "fs_readdir", "fs_exists", "fs_stat_token", "fs_is_dir", "fs_is_file"]);
   const writeOne = new Set(["fs_write_file", "fs_publish_immutable_text", "fs_write_bytes", "fs_mkdir", "fs_mkdir_p", "fs_remove", "fs_append", "fs_open_write"]);
   if (readOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), false, config);
   if (writeOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), true, config);

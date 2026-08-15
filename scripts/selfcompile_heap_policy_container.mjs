@@ -216,6 +216,7 @@ function runHostileWasmFixtures() {
     "/opt/policy-hostile-marker",
     "/etc/policy-hostile-marker",
     `${ROOT}/outside-policy-write`,
+    `${ROOT}/lib/_build/policy-chdir-marker`,
     `${ROOT}/preview2-repo-top-marker`,
     `${ROOT}/_build/final-policy-sibling-write`,
     `${ROOT}/_build/preview2-measurement-sibling-marker`,
@@ -278,6 +279,7 @@ function main() {
   const stage2Sha256 = createHash("sha256").update(readFileSync(stage2)).digest("hex");
   const measurements = [measure(stage2, input, 1), measure(stage2, input, 2)];
   if (measurements[0].heap !== measurements[1].heap) die("nondeterministic-heap");
+  if (measurements[0].output_sha256 !== measurements[1].output_sha256) die("nondeterministic-output");
   if (JSON.stringify(measurements[0].attestation) !== JSON.stringify(measurements[1].attestation)) die("nondeterministic-stat-token");
 
   const record = {

@@ -21,6 +21,7 @@ import {
   parsePolicy,
   runController,
   trustedRunnerInvocation,
+  verifyIdenticalTreeResults,
 } from "./selfcompile_heap_policy.mjs";
 
 const policy = parsePolicy(JSON.stringify({
@@ -461,6 +462,17 @@ test("controller rejects merge conflicts", async () => {
     repo: fixture.repo, base, head, synthesizeMerge: true,
     prNumber: "1801", testDriver: driver,
   }), error => error.reason === "merge-conflict");
+});
+
+test("identical tree output hashes must match across reconstructions", () => {
+  const attestation = [{ mode: "content-v1", calls: 1, unique: 1, transcript: "a".repeat(64) }];
+  const base = {
+    stage2_sha256: "b".repeat(64), output_sha256: ["c".repeat(64), "c".repeat(64)],
+    heap_bytes: 1000, trials: [1000, 1000], stat_token_attestations: attestation,
+  };
+  assert.doesNotThrow(() => verifyIdenticalTreeResults(base, { ...base, output_sha256: [...base.output_sha256] }));
+  reason(() => verifyIdenticalTreeResults(base, { ...base, output_sha256: ["d".repeat(64), "d".repeat(64)] }), "nondeterministic-output");
+  reason(() => verifyIdenticalTreeResults(base, { ...base, output_sha256: undefined }), "nondeterministic-output");
 });
 
 test("identical trees reject stable cross-reconstruction drift", async () => {

@@ -68,6 +68,48 @@ function importedModuleFor({ moduleName, importName, params = [], results = [], 
   return Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, ...typeSection, ...importSection, ...functionSection, ...memorySection, ...exportSection, ...codeSection, ...dataSection]);
 }
 
+function chdirWriteModule(root) {
+  const strings = [
+    { offset: 1024, text: `${root}/lib` },
+    { offset: 2048, text: "_build" },
+    { offset: 3072, text: "_build/policy-chdir-marker" },
+    { offset: 4096, text: "owned" },
+  ];
+  const typeSection = section(1, vec([
+    type([I64]),
+    type([I64, I64]),
+    type([]),
+  ]));
+  const importSection = section(2, vec([
+    [...bytes("vibe"), ...bytes("fs_chdir"), 0x00, ...uleb(0)],
+    [...bytes("vibe"), ...bytes("fs_mkdir_p"), 0x00, ...uleb(0)],
+    [...bytes("vibe"), ...bytes("fs_write_file"), 0x00, ...uleb(1)],
+  ]));
+  const functionSection = section(3, vec([[...uleb(2)]]));
+  const memorySection = section(5, vec([[0x00, ...uleb(1)]]));
+  const exportSection = section(7, vec([
+    [...bytes("memory"), 0x02, ...uleb(0)],
+    [...bytes("probe"), 0x00, ...uleb(3)],
+  ]));
+  const instructions = [];
+  for (const index of [0, 1]) {
+    instructions.push(0x42, ...sleb(packed(strings[index].offset, strings[index].text)), 0x10, ...uleb(index), 0x1a);
+  }
+  instructions.push(
+    0x42, ...sleb(packed(strings[2].offset, strings[2].text)),
+    0x42, ...sleb(packed(strings[3].offset, strings[3].text)),
+    0x10, ...uleb(2), 0x1a,
+    0x42, 0x00, 0x0b,
+  );
+  const body = [0x00, ...instructions];
+  const codeSection = section(10, vec([[...uleb(body.length), ...body]]));
+  const dataSection = section(11, vec(strings.map(item => {
+    const data = Buffer.from(item.text, "utf8");
+    return [0x00, 0x41, ...sleb(item.offset), 0x0b, ...uleb(data.length), ...data];
+  })));
+  return Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, ...typeSection, ...importSection, ...functionSection, ...memorySection, ...exportSection, ...codeSection, ...dataSection]);
+}
+
 function moduleFor({ importName = null, params = [], strings = [], infinite = false }) {
   const allTypes = importName === null ? [type([])] : [type(params), type([])];
   const typeSection = section(1, vec(allTypes));
@@ -128,7 +170,10 @@ export function writeHostileWasmFixtures(directory, root = "/workspace/repo") {
     writeFileSync(path, importedModuleFor({ moduleName, importName, params, results, arguments: callArguments }));
     return { name, path, deny: `policy raw module import denied: ${moduleName}`, exactDeny: true };
   };
+  const chdirWrite = join(directory, "chdir-write.wasm");
+  writeFileSync(chdirWrite, chdirWriteModule(root));
   const fixtures = [
+    { name: "chdir-write", path: chdirWrite, deny: "policy raw import denied: fs_chdir", exactDeny: true },
     { name: "shell", path: one("shell", "sh", "(/bin/sh -c 'sleep 1; echo escaped > /tmp/policy-hostile-marker') &"), deny: "policy raw import denied: sh" },
     { name: "sh-lines", path: one("sh-lines", "sh_lines", "cat /opt/policy/bootstrap/seed.json"), deny: "policy raw import denied: sh_lines" },
     { name: "sh-capture", path: one("sh-capture", "sh_capture", "cat /etc/passwd"), deny: "policy raw import denied: sh_capture" },
