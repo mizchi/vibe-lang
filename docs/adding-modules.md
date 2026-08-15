@@ -6,11 +6,11 @@
 > が正本。設計の経緯は [module-system-v2.md](module-system-v2.md) (ADR-0063/0064)。
 > selfhost-only 前提 ([archive/moonbit-retirement.md](archive/moonbit-retirement.md))。
 
-このリポジトリのライブラリは「テストが allowlist に載っていて、battery が
-回っている」ものだけが生きている。allowlist の外にあるコードはコンパイラで
-一度もコンパイルされず、host 時代の腐敗が溜まる (#742 で json / base64 /
-fmt から発掘された rot がその実例)。**新しいモジュールは必ずテストと
-allowlist をセットで足す。**
+このリポジトリのライブラリは「`*_test.vibe` が battery で回っている」もの
+だけが生きている。テストの無いコードはコンパイラで一度もコンパイルされず、
+host 時代の腐敗が溜まる (#742 で json / base64 / fmt から発掘された rot が
+その実例)。**新しいモジュールは必ずテストをセットで足す** — テストの登録は
+discover() が自動で拾う (旧 allowlist は #1231 で撤廃、§2 手順 3 参照)。
 
 ## 1. どこに置くか
 

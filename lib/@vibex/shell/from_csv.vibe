@@ -6,44 +6,19 @@
 // direct-value convenience wrappers in json_convenience.vibe instead.
 // #897: directory form (not `../json/index.vibe`) — json is a .vpkg
 // contract package now.
+// #1841: `String::replace_all` was reimplemented locally here to sidestep a
+// selfhost miscompile that no longer reproduces (the trigger was rewritten in
+// #1092); the prelude import is restored. See pipeline.vibe for the pinned
+// regression shape.
+import @vibe/prelude {
+  String::replace_all
+}
+
 import @vibe/json {
   Json::parse
 }
 
 //# Functions
-
-/// #777: `String::replace_all` (`../prelude/string.vibe`) is a real prelude
-/// function needing an explicit import (same class of host-era rot as
-/// #742) — but importing it into THIS file, alongside the dynamic string
-/// slices below (`_csv_parse_line`'s `line[i: i+1]` etc.), trips a real
-/// selfhost codegen bug: the imported function's `let rec` + dynamic-slice
-/// body corrupts an unrelated WASM function in this compile unit ("not
-/// enough arguments on the stack for call" at instantiation — see
-/// pipeline.vibe's `pipeline_replace_all` for the same workaround and a
-/// fuller repro note). Reimplemented locally (iteratively) to sidestep it.
-fn csv_replace_all(s: String, pattern: String, replacement: String) -> String {
-  let pat_len = String::length(pattern)
-  let s_len = String::length(s)
-  if pat_len == 0 || pat_len > s_len {
-    s
-  } else {
-    let sb = StringBuilder::new()
-    let mut i = 0
-    while i <= s_len - pat_len {
-      if s[i: i + pat_len] == pattern {
-        StringBuilder::push(sb, replacement)
-        i = i + pat_len
-      } else {
-        StringBuilder::push(sb, s[i: i + 1])
-        i = i + 1
-      }
-    }
-    if i < s_len {
-      StringBuilder::push(sb, s[i: s_len])
-    }
-    StringBuilder::freeze(sb)
-  }
-}
 
 export fn _csv_is_number(s: String) -> Bool {
   let len = String::length(s)
@@ -213,7 +188,7 @@ export fn _csv_escape_json(s: String) -> String {
 
 export fn from_csv(text: String) -> Json {
   let cr = String::from_char_code(13)
-  let cleaned = csv_replace_all(text, cr, "")
+  let cleaned = String::replace_all(text, cr, "")
   let all_lines = String::split(cleaned, "\n")
   let num_lines = Array::length(all_lines)
   if num_lines < 2 {

@@ -1,0 +1,86 @@
+// #1839: an explicit anonymous `record { ... }` literal is structural — a
+// named struct sharing its field-name set must not capture it. Before the
+// fix, the checker retyped the literal as the struct, codegen reordered its
+// slots to the struct's DECLARED field order, and the parser's positional
+// record destructure then read swapped values even when the pattern was
+// written in the literal's own order (`a` below came back 9). A record whose
+// field set was a strict SUBSET of some struct was rejected outright
+// ("missing field `source` in construction of struct StringView").
+
+// Declares its fields in the OPPOSITE order of the literals below.
+struct Span {
+  end: Int;
+  start: Int
+}
+
+// Strict superset of the two-field literals below.
+struct StringView {
+  source: String;
+  start: Int;
+  end: Int
+}
+
+fn view_start(v: StringView) -> Int {
+  v.start
+}
+
+fn span_start(s: Span) -> Int {
+  s.start
+}
+
+fn main() -> Int {
+  0
+}
+
+test "anonymous record keeps literal slot order despite a same-set struct" {
+  let r = record {
+    start: 3,
+    end: 9
+  }
+  inspect(__rec_field(r, 0), "3")
+  inspect(__rec_field(r, 1), "9")
+}
+
+test "dot access resolves against the record's own layout" {
+  let r = record {
+    start: 3,
+    end: 9
+  }
+  inspect(r.start, "3")
+  inspect(r.end, "9")
+}
+
+test "same-order destructure binds the written values" {
+  let r = record {
+    start: 3,
+    end: 9
+  }
+  let record {
+    start: a,
+    end: b
+  } = r
+  inspect(a, "3")
+  inspect(b, "9")
+}
+
+test "subset-of-a-struct field set is accepted and correct" {
+  // StringView declares {source, start, end}; this two-field record used to
+  // be rejected as a StringView construction missing `source`.
+  let r = record {
+    start: 4,
+    end: 7
+  }
+  inspect(r.start, "4")
+  inspect(r.end, "7")
+}
+
+test "the named structs still construct and read normally" {
+  let s = Span::{
+    start: 100, end: 200
+  }
+  inspect(span_start(s), "100")
+  let v = StringView::{
+    source: "s", start: 10, end: 20
+  }
+  inspect(view_start(v), "10")
+}

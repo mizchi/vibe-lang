@@ -1,7 +1,14 @@
 # Method-bearing traits — implementation plan (#641)
 
-Status: Phase 1 landed (2026-06-26). Concrete-receiver dispatch works in the
-bumped seed/CI toolchain; PR-2 (bound enforcement + dictionary passing) next.
+Status: **largely landed — the "current state" claims below are historical.**
+Phase 1 landed 2026-06-26; bound enforcement + dictionary passing have since
+landed too (`desugar_trait_dict`, #1503 trait-instance resolution closed as
+implemented). Traits are no longer marker-only: `lib/@vibe/core/map.vibe`'s
+`trait Hash { hash_key(Self) -> String }` ships method-bearing impls and
+`derive(Hash)` generates `Type::hash_key` (#694). This document is kept as
+the design record; read statements about "current" compiler behavior as
+describing 2026-06, not today. (The duplicate marker `Hash` in
+`lib/@vibe/prelude/builtin_traits.vibe` is tracked by #1844.)
 
 ## Build gotcha (read before iterating on the compiler)
 

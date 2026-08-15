@@ -27,7 +27,7 @@ cat > "$TMP_ROOT/bootstrap/seed.json" <<EOF
       "sha256": "$seed_sha"
     },
     "runtime": {
-      "runner": "moonrun",
+      "runner": "node",
       "compile_flag": "--wasm-mvp",
       "wasmtime_flags": "unknown-imports-default=y exceptions=y"
     }
