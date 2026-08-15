@@ -1,87 +1,101 @@
-# vibe チュートリアル — 実行して学ぶ言語ツアー
+# The vibe tutorial — a language tour you run
 
-各章は `*.vibe.md` — markdown そのものが実行可能ドキュメント (#1142)。
-` ```vibe run ` ブロックは実際にコンパイル・実行され、直後の
-` ```output ` ブロックはその実行結果がそのまま埋め込まれている。
-読んだらすぐ実行結果が見える、が このチュートリアルの流儀。
+Every chapter is a `*.vibe.md`: the markdown itself is an executable document
+(#1142). The ` ```vibe run ` blocks really are compiled and run, and the
+` ```output ` block right after each one holds that run's output verbatim. Read
+a paragraph, see the result — that is the style of this tutorial.
+
+日本語版: [README-ja.md](README-ja.md)
 
 ```bash
-# インストール (詳細: docs/install.md)
+# install (details: docs/install.md)
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
 . "$HOME/.vibe/env"
 
-# リポジトリを clone して検証・再生成
+# clone the repository to verify or regenerate
 git clone https://github.com/mizchi/vibe-lang && cd vibe-lang
 bash scripts/vibe_md.sh check docs/tutorial/01_values_functions.vibe.md
-bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md   # 全章を一括検証
-bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # 実行して ```output を書き直す
-pkf run vibe-md-tutorial                                # check を task 化したもの
+bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md   # verify every chapter at once
+bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # run, and rewrite the ```output blocks
+pkf run vibe-md-tutorial                                # the same check as a task
 ```
 
-| 章 | テーマ |
+| Chapter | Topic |
 | --- | --- |
-| [01 値と関数](01_values_functions.vibe.md) | let / mut / 基本型 / 文字列補間 / fn / ラムダ |
-| [02 制御フロー](02_control_flow.vibe.md) | if / while / loop / for-in / return / パイプ |
-| [03 データ](03_data.vibe.md) | tuple / array / record / struct / enum / パターンマッチ |
+| [01 Values and functions](01_values_functions.vibe.md) | let / mut / primitive types / interpolation / fn / lambdas |
+| [02 Control flow](02_control_flow.vibe.md) | if / while / loop / for-in / return / pipe |
+| [03 Data](03_data.vibe.md) | tuple / array / record / struct / enum / pattern matching |
 | [04 Option](04_option.vibe.md) | Option / `let*` / `?` |
-| [05 エフェクト](05_effects.vibe.md) | `with ...` / Exception / handle / perform / resume |
-| [06 テスト](06_tests.vibe.md) | test ブロック / assert / CLI ツーリング |
-| [07 モジュールとパッケージ](07_modules_packages.vibe.md) | import / export / @scope パッケージ / 契約 / pin |
+| [05 Effects](05_effects.vibe.md) | `with ...` / Exception / handle / perform / resume |
+| [06 Tests](06_tests.vibe.md) | test blocks / assert / CLI tooling |
+| [07 Modules and packages](07_modules_packages.vibe.md) | import / export / @scope packages / contracts / pins |
 
-各 `*.vibe.md` の ` ```vibe run ` ブロックは、**現在の**ソースコードと出力だけを
-`bash scripts/vibe_md.sh check` (`pkf run vibe-md-tutorial`) でコンパイル・実行して
-突き合わせる。この検証は prose、API 選定、学習順序の正しさまでは保証しない。
+What `bash scripts/vibe_md.sh check` (`pkf run vibe-md-tutorial`) verifies in
+each `*.vibe.md` is only that the **current** source compiles, runs, and matches
+the recorded output. It says nothing about whether the prose, the API choices,
+or the teaching order are right.
 
-## tutorial breakage の扱い
+## When a chapter breaks
 
-チュートリアルの runnable block が現行コンパイラで壊れた場合は、ユーザーが正規の
-言語ツアーを実行できない **P1 (書けない / 落ちる)** として扱い、GitHub issue に
-`tutorial-breakage` ラベルを付けて発見しやすくする。型検査を通り抜けて誤った値を
-返す場合は、通常どおり **P0 (silent-wrong)** である。このラベルは優先度を上書き
-せず、着手順は [issue triage](../issue-triage.md) の P0 / P1 と `blocker` から
-機械的に決める。修正か仕様見直しかも同じ triage とリポジトリ方針の「文法で
-詰まったとき」に従い、実装都合の制約を tutorial の暗記項目にしない。
+A runnable block that stops working under the current compiler means a user
+cannot run the canonical language tour, so it is **P1 (can't write it / it
+crashes)**, filed as a GitHub issue with the `tutorial-breakage` label to keep
+it findable. A block that type-checks and then returns a wrong value is **P0
+(silent-wrong)**, as usual. The label does not override priority: the order of
+work follows mechanically from P0 / P1 and `blocker` in
+[issue triage](../issue-triage.md). Whether the fix belongs in the compiler or
+in the spec follows that same triage and the repository's "when the grammar
+blocks you" policy — an implementation constraint must not become something the
+tutorial asks the reader to memorize.
 
-現在の全章は required な `compiler-gate` CI job で、同じ checkout から生成した
-stage2 を `VIBE_MD_STAGE2` に明示し、`scripts/vibe_md.sh check` を全章に対して
-実行する。`pkf run release-check` も同じ保証を持つ
-`vibe-md-tutorial-gated` に依存する。どちらも committed seed への silent fallback を
-許さないため、古い compiler で偶然 green にはならない。
+Every chapter currently runs in the required `compiler-gate` CI job, which
+points `VIBE_MD_STAGE2` at a stage2 built from the same checkout and runs
+`scripts/vibe_md.sh check` over all of them. `pkf run release-check` depends on
+`vibe-md-tutorial-gated`, which carries the same guarantee. Neither allows a
+silent fallback to the committed seed, so a chapter cannot go green by accident
+on an older compiler.
 
-` ```vibe skip ` は、拒否される旧構文、未実装の目標構文、実在しない例示パスなど、
-**意図的に実行できない例だけ**に使う。block の先頭コメントに skip の理由を書き、
-未実装事項には追跡 issue を添える。実行できるようになったら `vibe run` と期待
-`output` に変える。単にテストが壊れているコードを skip に移してはならない。
-目標の言語形式を示す既存 skip block は
-[#1280 reserved fn](https://github.com/mizchi/vibe-lang/issues/1280) で追跡する
-([#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) は
-実装済みで、03 の該当ブロックは runnable になった)。
+Use ` ```vibe skip ` **only for examples that are deliberately not runnable**:
+rejected legacy syntax, target syntax that is not implemented yet, illustrative
+paths that do not exist. Put the reason for the skip in a comment at the top of
+the block, and attach a tracking issue for anything unimplemented. When it
+becomes runnable, convert it to `vibe run` with the expected `output`. Never
+move merely-broken code into a skip block. The skip blocks that show intended
+language shapes are tracked by
+[#1280 reserved fn](https://github.com/mizchi/vibe-lang/issues/1280)
+([#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) is
+implemented, and the block in chapter 03 is runnable now).
 
-より網羅的なリファレンスは [docs/cheatsheet.md](../cheatsheet.md) と
-[docs/language-tour/](../language-tour/)。ただし一部の記述は実装より
-先行している (差分に気づいたら本チュートリアルの実行結果が正)。
+For a more exhaustive reference see [docs/cheatsheet.md](../cheatsheet.md) and
+[docs/language-tour/](../language-tour/), bearing in mind that parts of those
+run ahead of the implementation — where they disagree, this tutorial's actual
+output is the truth.
 
-## 曖昧な構文・既知の落とし穴
+## Ambiguous syntax and known traps
 
-本チュートリアルを見直す過程で確認・整理したもの。それぞれ本文中に
-runnable な例がある箇所は実行結果 (`vibe run`/`output`) 付きで検証済み:
+Confirmed and written down while revising this tutorial. Each item that has a
+runnable example in the text has been verified there with its real output
+(`vibe run` / `output`):
 
-- **`break(a, b)` は `continue(a, b)` と非対称**: `continue(a, b)` は
-  ループの次状態 (call のような多引数構文) だが、`break(a, b)` の丸括弧は
-  ただの式の括弧で、`break` に渡るのは**タプル 1 個** `(a, b)`。
-  構文方針は [#1284](https://github.com/mizchi/vibe-lang/issues/1284) で追跡する。
-  [02 制御フロー](02_control_flow.vibe.md#loop--パラメータ付き末尾再帰)。
+- **`break(a, b)` is not symmetric with `continue(a, b)`**: `continue(a, b)`
+  passes the loop's next state (multi-argument, like a call), whereas the
+  parentheses in `break(a, b)` are ordinary expression parentheses, so what
+  `break` receives is **one tuple** `(a, b)`. The syntax decision is tracked in
+  [#1284](https://github.com/mizchi/vibe-lang/issues/1284).
+  [02 Control flow](02_control_flow.vibe.md#loop--tail-recursion-with-parameters).
 
-以前ここに載っていた次の3件は、現在のコンパイラでは再現しないことを
-runnable な例で確認したので落とした (#1270):
+The three items below used to be listed here and have been dropped: runnable
+examples confirm they do not reproduce on the current compiler (#1270).
 
-- トップレベル関数を `f` / `g` と名付けると壊れた wasm になる
-  ([#1203](https://github.com/mizchi/vibe-lang/issues/1203)) — `compose`/`flip`
-  と同居しても正しく動く。
-- `Double` の `\{expr}` 補間 / `Double::to_string` が使えない
-  ([#1153](https://github.com/mizchi/vibe-lang/issues/1153)) — どちらも出力
-  できる。[01 値と関数](01_values_functions.vibe.md#値と基本型) で実行している。
-- `Array::push` を生 `Array` に使うと backend 依存になる
-  ([#1285](https://github.com/mizchi/vibe-lang/issues/1285)) — linear / RC /
-  wasm-gc で同一の in-place 追加であることを compiler test に固定した。
-  [03 データ](03_data.vibe.md#蓄積は-arraybuilder)。
+- Naming top-level functions `f` / `g` produced a broken wasm module
+  ([#1203](https://github.com/mizchi/vibe-lang/issues/1203)) — they work
+  correctly even alongside `compose`/`flip`.
+- `Double` could not be interpolated with `\{expr}` or printed via
+  `Double::to_string` ([#1153](https://github.com/mizchi/vibe-lang/issues/1153))
+  — both work, and chapter
+  [01 Values and functions](01_values_functions.vibe.md#values-and-primitive-types)
+  runs them.
+- `Array::push` on a raw `Array` was backend-dependent
+  ([#1285](https://github.com/mizchi/vibe-lang/issues/1285)) — the compiler
+  tests now pin it as the same in-place append on linear, RC and wasm-gc.
+  [03 Data](03_data.vibe.md#accumulate-with-arraybuilder).

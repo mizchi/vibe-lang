@@ -1,8 +1,10 @@
-# 02 — 制御フロー
+# 02 — Control flow
 
-前章: [01 値と関数](01_values_functions.vibe.md)
+Previous: [01 Values and functions](01_values_functions.vibe.md)
 
-## if は式
+日本語版: [02_control_flow-ja.vibe.md](02_control_flow-ja.vibe.md)
+
+## `if` is an expression
 
 ```vibe run
 import @vibe/prelude {
@@ -23,12 +25,13 @@ fn main with Stdout {
 v = yes
 ```
 
-## while と早期 return（現行）
+## `while` and early `return` (current)
 
-`return` は関数全体から抜ける (ループだけではない)。この構文は
-[#1283](https://github.com/mizchi/vibe-lang/issues/1283) で「維持する」と決着した —
-同じ issue で追加された、パターン束縛付きの早期脱出 `guard ... else { ... }` は
-[04 Option](04_option.vibe.md#guard--束縛するか脱出) で扱う。
+`return` leaves the whole function, not just the loop. This spelling was settled
+as "keep it" in
+[#1283](https://github.com/mizchi/vibe-lang/issues/1283) — the pattern-binding
+early exit `guard ... else { ... }` added by that same issue is covered in
+[04 Option](04_option.vibe.md#guard--bind-or-bail-out).
 
 ```vibe run
 import @vibe/prelude {
@@ -43,10 +46,11 @@ fn find_first_neg(arr: Array[Int]) -> Int {
     }
     i = i + 1
   }
-  // 早期 return (`return i`) と関数末尾の暗黙の戻り値は同じ「関数の結果」
-  // なので、ここも揃えて `return -1` と明示している (裸の `-1` を関数
-  // 本体の最後の式として置くのも動作は同じ -- while ブロックは Unit の
-  // 文として閉じるので `-1` は独立した最終式になる)。
+  // An early `return i` and the implicit value at the end of the function are
+  // the same thing -- the function's result -- so this one is spelled
+  // `return -1` to match (a bare `-1` as the last expression of the body
+  // behaves identically: the while block closes as a Unit statement, which
+  // leaves `-1` standing alone as the final expression).
   return -1
 }
 
@@ -61,10 +65,10 @@ find_first_neg([3, 1, -2, 5]) = 2
 find_first_neg([1, 2]) = -1
 ```
 
-## loop — パラメータ付き末尾再帰
+## `loop` — tail recursion with parameters
 
-`loop (引数 = 初期値, ...)` + `continue(次の値...)` + `break 結果`。
-可変変数なしで畳み込みが書ける。
+`loop (arg = initial, ...)` plus `continue(next values...)` plus
+`break result`. It writes a fold without any mutable variable.
 
 ```vibe run
 import @vibe/prelude {
@@ -86,19 +90,20 @@ fn main with Stdout {
 sum = 45
 ```
 
-`continue(...)` と `break ...` は見た目が似ているが対称ではない。**これは
-[#1284](https://github.com/mizchi/vibe-lang/issues/1284) で「そのまま維持する」と
-決着した**。2つが数えているものが違うからで、揃えようがない:
+`continue(...)` and `break ...` look alike but are not symmetric, and
+**[#1284](https://github.com/mizchi/vibe-lang/issues/1284) settled this as
+"leave it as is"**. They count different things, so there is nothing to align:
 
-- `continue(a, b)` が渡すのは**ループのパラメータ**。`loop (i = ..., acc = ...)`
-  が宣言した個数とちょうど同じ数だけ渡す。
-- `break e` が渡すのは**ループの結果**。`loop` は値を1つ持つ式なので、結果は
-  つねに1個。`break(a, b)` の丸括弧はただの式の括弧で、`(a, b)` という
-  **タプル 1 個**を渡しているだけ (`break a, b` のような「2 値の loop 結果」
-  にはならない)。
+- `continue(a, b)` passes **the loop's parameters**. You pass exactly as many as
+  `loop (i = ..., acc = ...)` declared.
+- `break e` passes **the loop's result**. A `loop` is one expression with one
+  value, so there is always exactly one result. The parentheses in
+  `break(a, b)` are ordinary expression parentheses passing **one tuple**
+  `(a, b)`; there is no `break a, b` producing a two-valued loop result.
 
-代わりに、取り違えを**コンパイルエラーで捕まえる**ようにした。`continue` の
-引数がパラメータの個数と一致しなければ、どちらの個数かを示して落ちる:
+What we did instead was make the mix-up **a compile error**. If `continue` gets
+a different number of arguments than the loop has parameters, it fails and says
+which count is which:
 
 ```
 continue: this loop declares 2 parameter(s) (i, acc), but continue was given
@@ -108,8 +113,8 @@ symmetric with this — it takes the loop's single result value, so
 `break (a, b)` is one tuple. (#1284)
 ```
 
-引数を1つも書かない `continue` は「全パラメータをそのままにもう1周」の意味で、
-これは今も有効。
+A `continue` with no arguments at all means "go round again with every parameter
+unchanged", and that still works.
 
 ```vibe run
 import @vibe/prelude {
@@ -121,11 +126,11 @@ fn main with Stdout {
     if i >= 3 {
       break (acc, i)
     }
-    // break(acc, i) は tuple (acc, i)
+    // break(acc, i) is the tuple (acc, i)
     continue (i + 1, acc + i)
   }
   stdout_write("r = (\{r.0}, \{r.1})\n")
-  // r: (Int, Int) -- break acc, i ではない
+  // r: (Int, Int) -- not `break acc, i`
 }
 ```
 
@@ -133,7 +138,7 @@ fn main with Stdout {
 r = (3, 3)
 ```
 
-## for-in は Array を返す
+## `for-in` returns an Array
 
 ```vibe run
 import @vibe/prelude {
@@ -166,18 +171,19 @@ doubled = [2, 4, 6]
 with_index = [10, 21]
 ```
 
-## パイプ演算子
+## The pipe operator
 
-`x |> f` は `f(x)`。call 内に**裸の** `_` がなければ、値は第 1 引数に入る。
-裸の `_` は pipe slot で、その位置に値を置く (`x |> f(a, _)` は `f(a, x)`)。
-同じ slot を繰り返してよく、`x |> f(_, _)` は `f(x, x)` になる。
+`x |> f` is `f(x)`. If the call contains no **bare** `_`, the value goes in as
+the first argument. A bare `_` is a pipe slot and the value lands there
+(`x |> f(a, _)` is `f(a, x)`). The same slot may repeat, so `x |> f(_, _)` is
+`f(x, x)`.
 
-`_ * 2` のように `_` を含む**複合式**は slot ではなく section ラムダ
-(`(v) -> v * 2`)。従って `xs |> Array::map(_, _ * 2)` は
-`Array::map(xs, (v) -> v * 2)` と読む。この `_` の二つの役割を混同しない。
+A **compound** expression containing `_`, like `_ * 2`, is not a slot but a
+section lambda (`(v) -> v * 2`). So read `xs |> Array::map(_, _ * 2)` as
+`Array::map(xs, (v) -> v * 2)`. Do not conflate these two roles of `_`.
 
-ユーザー定義の `Type::method` は `value.method(...)` と入力できるが、チュートリアル
-では常に `Type::method(value, ...)` を正規形として書く。
+A user-defined `Type::method` may be typed as `value.method(...)`, but this
+tutorial always writes the canonical form `Type::method(value, ...)`.
 
 ```vibe run
 import @vibe/prelude {
@@ -215,4 +221,4 @@ mapped = [2, 4, 6]
 repeated = 77
 ```
 
-次章: [03 データ](03_data.vibe.md)
+Next: [03 Data](03_data.vibe.md)

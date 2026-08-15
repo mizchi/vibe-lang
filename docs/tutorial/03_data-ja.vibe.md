@@ -1,8 +1,8 @@
-# 03 — Data and pattern matching
+# 03 — データとパターンマッチ
 
-Previous: [02 Control flow](02_control_flow.vibe.md)
+前章: [02 制御フロー](02_control_flow-ja.vibe.md)
 
-日本語版: [03_data-ja.vibe.md](03_data-ja.vibe.md)
+English version: [03_data.vibe.md](03_data.vibe.md) (canonical)
 
 ## tuple / array / record
 
@@ -26,7 +26,7 @@ fn main with Stdout {
     ver: 1
   }
   stdout_write("r.name = \{r.name}, r.ver = \{r.ver}\n")
-  // destructuring is also available for pulling several fields into local names
+  // 分配束縛も、複数の field を局所名へ取り出すときに使える
   let record {
     name: n,
     ver: v
@@ -43,11 +43,10 @@ r.name = vibe, r.ver = 1
 n = vibe, v = 1
 ```
 
-An anonymous record reads its fields the same way, `r.name`. Destructuring is an
-option when you want several fields under local names; it is not a workaround
-for a missing accessor.
+anonymous record も `r.name` のように field を読める。分配束縛は複数 field を
+局所名へ取り出す場合の選択肢であり、accessor の回避策ではない。
 
-## struct and derive
+## struct と derive
 
 ```vibe run
 import @vibe/prelude {
@@ -76,7 +75,7 @@ compare(p, {x:1,y:3}) = -1
 to_string(p) = Point { x: 1, y: 2 }
 ```
 
-## enum and match
+## enum と match
 
 ```vibe run
 import @vibe/prelude {
@@ -106,7 +105,7 @@ area(Circle(2)) = 12
 area(Rect(6, 7)) = 42
 ```
 
-## The match toolbox: guards, or-patterns, literals
+## match の道具箱: ガード / or-pattern / リテラル
 
 ```vibe run
 import @vibe/prelude {
@@ -137,18 +136,16 @@ classify(-5) = negative
 classify(99) = big
 ```
 
-## Destructuring and the `is` expression
+## 分配束縛と is 式
 
-### Irrefutable patterns at the top level
+### トップレベルの irrefutable pattern
 
-A pattern that always matches can bind at the top level too
-([#1281](https://github.com/mizchi/vibe-lang/issues/1281)). However many names
-it introduces, the right-hand side is evaluated **exactly once** and each name
-is a projection out of that. Refutable patterns — an enum variant, a literal, an
-or-pattern — can fail, so they are rejected; use `match` inside a function for
-those. Type annotations and `export let <pattern>` are also not allowed: the
-first has no single binding to annotate, and the second belongs in a separate
-`export { .. }`.
+必ず一致する pattern はトップレベルでも束縛できる ([#1281](https://github.com/mizchi/vibe-lang/issues/1281))。
+右辺は名前がいくつあっても**ちょうど1回**評価され、各名前はそこからの射影に
+なる。enum variant・literal・or-pattern のような refutable pattern は
+「失敗しうる」ので拒否される (関数の中で `match` を使う)。型注釈と
+`export let <pattern>` も書けない — 前者は注釈すべき単一の binding が無く、
+後者は `export { .. }` に分ける。
 
 ```vibe run
 import @vibe/prelude {
@@ -182,10 +179,9 @@ fn main with Stdout {
 sum = 42, vibe 0.3
 ```
 
-### Binding inside a function body
+### 関数本体での束縛
 
-The same shapes work in a function body, and combine with narrowing via the `is`
-expression.
+同じ形は関数本体でも使える (`is` 式による絞り込みと組み合わせられる)。
 
 ```vibe run
 import @vibe/prelude {
@@ -198,7 +194,7 @@ fn main with Stdout {
   let opt = Some(41)
   if opt is Some(w) {
     stdout_write("w = \{w}\n")
-    // w is bound here
+    // w が束縛される
   }
   stdout_write("opt is Some(_) = \{opt is Some(_)}\n")
   // -> Bool
@@ -211,17 +207,15 @@ w = 41
 opt is Some(_) = true
 ```
 
-## Accumulate with ArrayBuilder
+## 蓄積は ArrayBuilder
 
-`ArrayBuilder` is the accumulation type — push, then freeze — and it is the
-default when you are building something in one go. `Array::push` is available
-too: it grows a raw `Array` in place, and the growth is visible through every
-reference to that `Array` (aliases, arguments, struct fields, captures). This
-behaves identically on the linear, RC and wasm-gc backends, and is pinned in the
-compiler tests as the contract from
-[#1285](https://github.com/mizchi/vibe-lang/issues/1285). The rule of thumb:
-`ArrayBuilder` when you build once and only read afterwards, `Array::push` when
-you are growing an `Array` that already exists.
+`ArrayBuilder` は「積んでから凍らせる」蓄積用の型で、まとめて作る場面の既定。
+`Array::push` も使える — 生 `Array` をその場で伸ばす in-place 操作で、その
+`Array` を指すすべての参照 (別名・引数・struct field・キャプチャ) から
+伸びた結果が見える。linear / RC / wasm-gc のどのバックエンドでも同じ挙動で、
+[#1285](https://github.com/mizchi/vibe-lang/issues/1285) の contract として
+compiler test に固定してある。使い分けは「1回作って以後読むだけなら
+`ArrayBuilder`、既にある `Array` を伸ばすなら `Array::push`」。
 
 ```vibe run
 import @vibe/prelude {
@@ -246,4 +240,4 @@ length = 2
 arr[1] = 2
 ```
 
-Next: [04 Option](04_option.vibe.md)
+次章: [04 Option](04_option-ja.vibe.md)

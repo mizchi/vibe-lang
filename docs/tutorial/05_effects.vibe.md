@@ -1,17 +1,22 @@
-# 05 — エフェクト (vibe の核)
+# 05 — Effects (the heart of vibe)
 
-前章: [04 Option](04_option.vibe.md)
+Previous: [04 Option](04_option.vibe.md)
 
-vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect row) で
-宣言し、呼び出し側は `handle` で境界を引くまで伝播する。
+日本語版: [05_effects-ja.vibe.md](05_effects-ja.vibe.md)
 
-## Exception 境界 — perform / handle
+vibe is **pure by default**. A side effect is declared in the type's `with ...`
+row (the effect row) and propagates to the caller until a `handle` draws the
+boundary.
 
-型引数なしの `Exception` は erased な **非再開 (abortive) エフェクト**で、
-typed `Exception[E]` のどの kind とも互換である。`perform Exception::Throw` は継続を
-再開せず、handler arm で `resume` は使えない。その arm の値が `handle` の結果になる。
-erased な handler の payload は String/opaque 扱いで、handler をまたぐ型引数の保存は
-しない。typed exception との使い分けは [ADR-0085](../exception-effect.md) を参照。
+## The Exception boundary — perform / handle
+
+`Exception` without a type argument is an erased, **abortive** (non-resumable)
+effect, and it is compatible with every kind of typed `Exception[E]`.
+`perform Exception::Throw` does not resume the continuation, and `resume` is not
+available in its handler arm — that arm's value becomes the result of the
+`handle`. An erased handler treats its payload as String/opaque and does not
+preserve type arguments across the handler. For when to reach for a typed
+exception instead, see [ADR-0085](../exception-effect.md).
 
 ```vibe run
 import @vibe/prelude {
@@ -50,16 +55,18 @@ safe = -1
 fine = 25
 ```
 
-## 旧 `Error` 綴りからの移行
+## Migrating from the old `Error` spelling
 
-`Error` は effect row (`with Error`) とハンドラ名
-(`handle { ... } with Error { ... }`) のどちらでも parse error になる。旧ソースは
-`vibe fmt` で `Exception` へ書き換えられる。`throw("message")` は引き続き使える。
+`Error` is a parse error both in an effect row (`with Error`) and as a handler
+name (`handle { ... } with Error { ... }`). `vibe fmt` rewrites old sources to
+`Exception`. `throw("message")` still works.
 
-operation 修飾子の `perform Error::Throw(...)` だけは古い生成物を読む内部互換として
-受理されるが、新しいソースでは `perform Exception::Throw(...)` を使う。
+Only the operation qualifier `perform Error::Throw(...)` is still accepted, as
+internal compatibility for reading older artifacts; new source uses
+`perform Exception::Throw(...)`.
 
-拒否される旧綴りの例 (実行例ではなく、移行説明のため `skip`):
+Rejected old spellings, `skip`ped because this is a migration note rather than a
+runnable example:
 
 ```vibe skip
 // Rejected source (kept in comments so `vibe fmt` does not rewrite the example):
@@ -69,9 +76,10 @@ operation 修飾子の `perform Error::Throw(...)` だけは古い生成物を�
 // }
 ```
 
-## ユーザ定義エフェクト — perform / resume
+## User-defined effects — perform / resume
 
-エフェクトは「操作の宣言」。実装 (handler) は呼び出し側が与える。
+An effect is a *declaration of operations*. The implementation — the handler —
+is supplied by the caller.
 
 ```vibe run
 import @vibe/prelude {
@@ -87,7 +95,7 @@ fn answer_of(q: String) -> Int with Ask {
 }
 
 fn main with Stdout {
-  // handler が resume(v) で perform 地点に値を返す (one-shot tail-resumptive)
+  // the handler returns a value to the perform site via resume(v) (one-shot tail-resumptive)
   let v = handle {
     answer_of("life")
   } with Ask {
@@ -101,15 +109,16 @@ fn main with Stdout {
 v = 42
 ```
 
-ユーザー定義 effect は、実装を呼び出し側から差し替える必要がある場合の advanced な
-手段である。これは resumptive かつ one-shot/tail-resumptive という制約を持つ。通常の
-失敗は `Exception` を使い、局所的な状態はまず `let mut` を検討する。判断基準は
-[Effects vs let mut](../guide/when-to-use-effects.md) を参照。
+A user-defined effect is the advanced tool, for when the caller genuinely has to
+swap the implementation. It comes with the constraint of being resumptive and
+one-shot/tail-resumptive. For ordinary failure use `Exception`, and for local
+state consider `let mut` first. The criteria are in
+[Effects vs let mut](../guide/when-to-use-effects.md).
 
-## エフェクト多相
+## Effect polymorphism
 
-エフェクト行は変数にできる — 「渡された関数のエフェクトをそのまま持つ」
-高階関数が書ける。
+An effect row can be a variable, which is how you write a higher-order function
+that carries whatever effects the function it was handed has.
 
 ```vibe run
 import @vibe/prelude {
@@ -129,7 +138,8 @@ fn main with Stdout {
 apply_twice = 40
 ```
 
-ホスト I/O (`Fs` / `Env` / `Http` など) も同じ仕組みの組み込みエフェクト。
-handler は checker 用で、実行時は host import に直接 lower される。
+Host I/O (`Fs`, `Env`, `Http` and friends) are builtin effects on this same
+mechanism. Their handlers exist for the checker; at run time they lower
+straight to host imports.
 
-次章: [06 テスト](06_tests.vibe.md)
+Next: [06 Tests](06_tests.vibe.md)

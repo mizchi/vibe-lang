@@ -82,11 +82,18 @@ Japanese translation alongside the English one:
 - `docs/tutorial/01_values_functions.vibe.md` — **canonical, English**
 - `docs/tutorial/01_values_functions-ja.vibe.md` — translation
 
-The English file is the source of truth. The `-ja` file translates prose only:
-**the code in ` ```vibe run ` blocks and the paired ` ```output ` blocks must be
-identical between the two**, because `scripts/vibe_md.sh check`
-(`pkf run vibe-md-tutorial`) executes both copies. A translation that drifts in
-the code is a broken translation, and the gate says so.
+The English file is the source of truth. Prose and code comments translate;
+**the program in each ` ```vibe run ` block stays the same program, so the paired
+` ```output ` blocks are identical between the two files.** `scripts/vibe_md.sh
+check` (`pkf run vibe-md-tutorial`) proves each file on its own; the pair is
+enforced by `pkf run check-tutorial-translation-parity`
+(`scripts/check_tutorial_translation_parity.sh`, in `release-check`), which
+fails when a chapter has no translation, a translation has no chapter, or the
+two record different output.
+
+`docs/tutorial/` is migrated. [docs/language-tour/](docs/language-tour/) is
+still Japanese-only and is the next candidate; when it moves, extend the parity
+check to cover it.
 
 Internal documents (spec, ADR, design records, reports) get **one** language —
 English — and no translation. They change too often for a second copy to stay
