@@ -21,11 +21,20 @@ if (!curPath) {
   process.exit(2);
 }
 const cur = JSON.parse(readFileSync(curPath, "utf8"));
-const base = basePath && existsSync(basePath) ? JSON.parse(readFileSync(basePath, "utf8")) : null;
+// Optional inputs degrade to null instead of killing the report: the perf
+// workflow materializes them with `git show ... > file || true`, which leaves
+// a 0-byte file when the object doesn't exist on bench-data yet (exactly how
+// the first #1883 run died: JSON.parse("") on the not-yet-recorded coverage
+// snapshot).
+const readJsonMaybe = (p) => {
+  if (!p || !existsSync(p)) return null;
+  try { return JSON.parse(readFileSync(p, "utf8")); } catch { return null; }
+};
+const base = readJsonMaybe(basePath);
 // Coverage snapshot from the bench-data branch (scripts/coverage_bench_snapshot.mjs,
 // appended by ci.yml's main-only coverage-suite job). Optional; absent until
 // the first main run lands one.
-const cov = covPath && existsSync(covPath) ? JSON.parse(readFileSync(covPath, "utf8")) : null;
+const cov = readJsonMaybe(covPath);
 
 // Human-readable units for table cells. Rounding here loses no signal: the Δ
 // column is computed from the raw values, so "any drift is real" still reads

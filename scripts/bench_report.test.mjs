@@ -174,6 +174,19 @@ test("coverage snapshot renders as main's coverage with a pt trend, absent when 
       [reportScript.pathname, currentPath], { encoding: "utf8" });
     assert.equal(withoutCov.status, 0, withoutCov.stderr);
     assert.doesNotMatch(withoutCov.stdout, /Test coverage/);
+
+    // A 0-byte optional file (how `git show missing > file` leaves things in
+    // the perf workflow) must degrade like an absent one, not crash the
+    // report — the first #1883 CI run died exactly here.
+    const emptyBase = join(dir, "empty_base.json");
+    const emptyCov = join(dir, "empty_cov.json");
+    writeFileSync(emptyBase, "");
+    writeFileSync(emptyCov, "");
+    const withEmpty = spawnSync(process.execPath,
+      [reportScript.pathname, currentPath, emptyBase, emptyCov], { encoding: "utf8" });
+    assert.equal(withEmpty.status, 0, withEmpty.stderr);
+    assert.doesNotMatch(withEmpty.stdout, /Test coverage/);
+    assert.match(withEmpty.stdout, /baseline: _none yet_/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
