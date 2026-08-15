@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const cp = require("node:child_process");
+const crypto = require("node:crypto");
 const { Worker, MessageChannel, receiveMessageOnPort } = require("node:worker_threads");
 
 // Guest Fs::write_file / Fs::write_bytes land here. Write via a same-dir temp
@@ -123,7 +124,7 @@ function toU32(value) {
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--daemon] [--invoke <name>]... [--invoke-batch-dir <dir>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
+    "usage: node scripts/wasm_vibe_host_runner.js [--policy-stat-token content-v1 --policy-stat-root <absolute-root>] [--daemon] [--invoke <name>]... [--invoke-batch-dir <dir>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
   );
 }
 
@@ -136,10 +137,28 @@ function parseArgs(argv) {
   let benchSetup = null;
   let daemon = false;
   let invokeBatchDir = null;
+  let policyStatToken = null;
+  let policyStatRoot = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--daemon") {
       daemon = true;
+      continue;
+    }
+    if (arg === "--policy-stat-token") {
+      if (wasmPath !== null || i + 1 >= argv.length || policyStatToken !== null) {
+        throw new Error("--policy-stat-token requires one pre-wasm value");
+      }
+      policyStatToken = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--policy-stat-root") {
+      if (wasmPath !== null || i + 1 >= argv.length || policyStatRoot !== null) {
+        throw new Error("--policy-stat-root requires one pre-wasm value");
+      }
+      policyStatRoot = argv[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--invoke-batch-dir") {
@@ -200,10 +219,27 @@ function parseArgs(argv) {
   if (wasmPath === null) {
     throw new Error("missing wasm path");
   }
+  if ((policyStatToken === null) !== (policyStatRoot === null)) {
+    throw new Error("--policy-stat-token and --policy-stat-root must be supplied together");
+  }
+  if (policyStatToken !== null && policyStatToken !== "content-v1") {
+    throw new Error(`unsupported --policy-stat-token: ${policyStatToken}`);
+  }
   if (invokes.length === 0) {
     invokes.push("_start");
   }
-  return { daemon, invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup, invokeBatchDir };
+  return {
+    daemon,
+    invokes,
+    wasmPath,
+    passthroughArgs,
+    benchCount,
+    benchWarmup,
+    benchSetup,
+    invokeBatchDir,
+    policyStatToken,
+    policyStatRoot,
+  };
 }
 
 function parsePositiveIntEnv(name) {
@@ -1000,6 +1036,198 @@ function buildFsMetadataHashParts(filePath) {
   return { lower, upper };
 }
 
+const POLICY_STAT_TOKEN_DOMAIN = Buffer.from("vibe:selfcompile-policy:stat-token:v1\0", "ascii");
+const POLICY_TOKEN_HIGH_BIT = 1n << 60n;
+const POLICY_TOKEN_LOW_MASK = POLICY_TOKEN_HIGH_BIT - 1n;
+let policyStatTokenConfig = null;
+
+function isContainedPath(root, candidate) {
+  const rel = path.relative(root, candidate);
+  return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
+}
+
+function configurePolicyStatToken(mode, root) {
+  if (mode === null && root === null) return null;
+  if (mode !== "content-v1" || typeof root !== "string" || !path.isAbsolute(root)) {
+    throw new Error("policy stat-token requires content-v1 and an absolute root");
+  }
+  const lexicalRoot = path.resolve(root);
+  const rootInfo = fs.lstatSync(lexicalRoot);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error("policy stat root must be a physical directory");
+  }
+  const physicalRoot = fs.realpathSync.native(lexicalRoot);
+  if (physicalRoot !== lexicalRoot || fs.realpathSync.native(process.cwd()) !== physicalRoot) {
+    throw new Error("policy stat root must equal the physical cwd");
+  }
+  return {
+    mode,
+    root: physicalRoot,
+    tokens: new Map(),
+    transcript: crypto.createHash("sha256").update("vibe:selfcompile-policy:stat-token-transcript:v1\0", "ascii"),
+    calls: 0,
+  };
+}
+
+function statIdentity(info) {
+  const ns = (name, fallback) =>
+    typeof info[name] === "bigint" ? info[name] : BigInt(Math.round(Number(info[fallback]) * 1e6));
+  return [
+    String(info.dev),
+    String(info.ino),
+    String(info.size),
+    String(ns("mtimeNs", "mtimeMs")),
+    String(ns("ctimeNs", "ctimeMs")),
+    String(info.mode),
+  ].join(":");
+}
+
+function resolvePolicyStatTarget(filePath, config) {
+  const lexical = path.resolve(config.root, filePath);
+  if (!isContainedPath(config.root, lexical)) {
+    throw new Error(`policy stat path escapes root: ${filePath}`);
+  }
+  const rel = path.relative(config.root, lexical);
+  let cursor = config.root;
+  for (const part of rel === "" ? [] : rel.split(path.sep)) {
+    cursor = path.join(cursor, part);
+    const info = fs.lstatSync(cursor, { bigint: true });
+    if (info.isSymbolicLink()) {
+      if (cursor === lexical) return { finalSymlink: true, path: lexical };
+      throw new Error(`policy stat path has a symlink ancestor: ${filePath}`);
+    }
+  }
+  const physical = fs.realpathSync.native(lexical);
+  if (!isContainedPath(config.root, physical)) {
+    throw new Error(`policy stat physical path escapes root: ${filePath}`);
+  }
+  return { finalSymlink: false, path: physical };
+}
+
+function u64be(value) {
+  const out = Buffer.alloc(8);
+  out.writeBigUInt64BE(BigInt(value));
+  return out;
+}
+
+function regularFilePayload(filePath, config) {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let fd;
+  try {
+    fd = fs.openSync(filePath, flags);
+    const before = fs.fstatSync(fd, { bigint: true });
+    if (!before.isFile()) throw new Error(`unsupported policy stat target: ${filePath}`);
+    const payload = fs.readFileSync(fd);
+    // Unit tests inject a synchronous mutation here to prove the pre/post
+    // identity check; production configurations never carry this hook.
+    if (typeof config?.testBeforeFinalFileStat === "function") {
+      config.testBeforeFinalFileStat(filePath);
+    }
+    const after = fs.fstatSync(fd, { bigint: true });
+    if (statIdentity(before) !== statIdentity(after) || BigInt(payload.length) !== after.size) {
+      throw new Error(`unstable policy stat observation: ${filePath}`);
+    }
+    return payload;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function directoryPayload(dirPath) {
+  const before = fs.statSync(dirPath, { bigint: true });
+  if (!before.isDirectory()) throw new Error(`unsupported policy stat target: ${dirPath}`);
+  const names = fs.readdirSync(dirPath, { encoding: "buffer" });
+  names.sort(Buffer.compare);
+  const chunks = [];
+  for (const name of names) {
+    if (name.includes(0)) throw new Error(`invalid directory entry under: ${dirPath}`);
+    const decodedName = name.toString("utf8");
+    if (!Buffer.from(decodedName, "utf8").equals(name)) {
+      throw new Error(`non-UTF-8 directory entry under: ${dirPath}`);
+    }
+    const child = path.join(dirPath, decodedName);
+    const info = fs.lstatSync(child, { bigint: true });
+    let kind;
+    if (info.isFile()) kind = 1;
+    else if (info.isDirectory()) kind = 2;
+    else if (info.isSymbolicLink()) kind = 3;
+    else throw new Error(`unsupported directory entry under: ${dirPath}`);
+    chunks.push(u64be(name.length), name, Buffer.from([kind]));
+  }
+  const after = fs.statSync(dirPath, { bigint: true });
+  if (statIdentity(before) !== statIdentity(after)) {
+    throw new Error(`unstable policy stat observation: ${dirPath}`);
+  }
+  return Buffer.concat(chunks);
+}
+
+function contentStatDigest(filePath, config) {
+  const target = resolvePolicyStatTarget(filePath, config);
+  if (target.finalSymlink) return { finalSymlink: true, digest: null };
+  const info = fs.statSync(target.path, { bigint: true });
+  let kind;
+  let payload;
+  if (info.isFile()) {
+    kind = 1;
+    payload = regularFilePayload(target.path, config);
+  } else if (info.isDirectory()) {
+    kind = 2;
+    payload = directoryPayload(target.path);
+  } else {
+    throw new Error(`unsupported policy stat target: ${filePath}`);
+  }
+  const digest = crypto.createHash("sha256")
+    .update(POLICY_STAT_TOKEN_DOMAIN)
+    .update(Buffer.from([kind]))
+    .update(u64be(payload.length))
+    .update(payload)
+    .digest();
+  return { finalSymlink: false, digest };
+}
+
+function projectContentStatDigest(digest, config, projectedOverride = null) {
+  const token = projectedOverride === null
+    ? POLICY_TOKEN_HIGH_BIT | (digest.readBigUInt64BE(0) & POLICY_TOKEN_LOW_MASK)
+    : BigInt(projectedOverride);
+  if (token < POLICY_TOKEN_HIGH_BIT || token > (1n << 61n) - 1n) {
+    throw new Error("invalid policy stat-token projection");
+  }
+  const key = token.toString();
+  const full = digest.toString("hex");
+  const prior = config.tokens.get(key);
+  if (prior !== undefined && prior !== full) {
+    throw new Error(`policy stat-token collision: ${key}`);
+  }
+  config.tokens.set(key, full);
+  return token;
+}
+
+function recordContentStatDigest(config, channel, digest) {
+  config.calls += 1;
+  config.transcript.update(Buffer.from([channel])).update(digest);
+}
+
+function contentStatToken(filePath, config = policyStatTokenConfig, projectedOverride = null) {
+  if (!config || config.mode !== "content-v1") throw new Error("policy stat-token is not configured");
+  const result = contentStatDigest(filePath, config);
+  if (result.finalSymlink) {
+    recordContentStatDigest(config, 1, Buffer.alloc(32, 0xff));
+    return -1n;
+  }
+  recordContentStatDigest(config, 1, result.digest);
+  return projectContentStatDigest(result.digest, config, projectedOverride);
+}
+
+function policyStatAttestation(config = policyStatTokenConfig) {
+  if (!config) return null;
+  return {
+    mode: config.mode,
+    calls: config.calls,
+    unique: config.tokens.size,
+    transcript: config.transcript.copy().digest("hex"),
+  };
+}
+
 function createPreview2FilesystemHost(projectRoot) {
   const rootPath = path.resolve(projectRoot);
   const descriptors = new Map([[3, { kind: "dir", path: rootPath }]]);
@@ -1745,7 +1973,10 @@ async function main() {
     benchWarmup,
     benchSetup,
     invokeBatchDir,
+    policyStatToken,
+    policyStatRoot,
   } = parseArgs(process.argv.slice(2));
+  policyStatTokenConfig = configurePolicyStatToken(policyStatToken, policyStatRoot);
   let passthroughArgs = initialPassthroughArgs.slice();
   passthroughArgsGlobal = passthroughArgs;
   if (passthroughArgs.length > 0) {
@@ -2218,6 +2449,9 @@ async function main() {
       },
       fs_stat_token(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
+        if (policyStatTokenConfig) {
+          return encodeHostInt(contentStatToken(filePath));
+        }
         // Module/package loading reserves -1 as a stable non-regular-source
         // witness. lstat is required here: stat would follow the link and make
         // a symlink indistinguishable from its target.
@@ -3079,6 +3313,12 @@ async function main() {
     if (process.env.VIBE_WASM_MEMORY_STATS !== "1") {
       return;
     }
+    const statAttestation = policyStatAttestation();
+    if (statAttestation) {
+      console.error(
+        `[policy-stat-token] mode=${statAttestation.mode} calls=${statAttestation.calls} unique=${statAttestation.unique} transcript=${statAttestation.transcript}`,
+      );
+    }
     if (HOST_IMPORT_ABI !== "raw") {
       console.error(`[wasm-memory] ${label} skipped abi=${HOST_IMPORT_ABI}`);
       return;
@@ -3223,6 +3463,16 @@ async function main() {
   }
 }
 
+module.exports = {
+  buildFsMetadataHashParts,
+  configurePolicyStatToken,
+  contentStatDigest,
+  contentStatToken,
+  parseArgs,
+  policyStatAttestation,
+  projectContentStatDigest,
+};
+
 if (require.main === module) {
 main().catch((err) => {
   // #946(4): a pathologically deep expression (e.g. thousands of chained
@@ -3330,4 +3580,4 @@ main().catch((err) => {
 });
 }
 
-module.exports = { publishImmutableTextSync };
+module.exports.publishImmutableTextSync = publishImmutableTextSync;
