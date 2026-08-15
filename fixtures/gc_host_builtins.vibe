@@ -1,0 +1,98 @@
+// #1262: the wasm-gc lane's host-import surface, extended.
+//
+// These five were "unknown constructor or function" on the gc lane, so any
+// program using them was gc-uncompilable. Wiring them is three appended rows
+// (use_host / host_defs / host_imports) plus `hbo`, the count those indices
+// are relative to.
+//
+// Every check is a PAIR -- the affirmative and the negative of the same
+// question -- because that is what the failure mode demands. Under #1814's
+// mis-decoded ABI these builtins agreed with linear on the affirmative case
+// and disagreed on the negative one, so an affirmative-only fixture stayed
+// green through the entire bug. `Fs::exists` answering true for a missing
+// path is the shape to keep in mind.
+//
+// `Fs::readdir` is NOT here: it returns Array[String] and the linear lane
+// lowers that surface at the call site on top of the raw import, so wiring
+// only the import yields an empty array on the gc lane. It stays a loud
+// "unknown constructor or function" until that lowering exists -- which is
+// the right failure while it is unimplemented.
+
+fn probe_root() -> String {
+  "_build/gc_host_builtins_probe"
+}
+
+fn dir_checks() -> Int with Fs {
+  let yes = if Fs::is_dir(probe_root() + "/adir") {
+    1
+  } else {
+    0
+  }
+  let no = if Fs::is_dir(probe_root() + "/nope") {
+    1
+  } else {
+    0
+  }
+  yes * 10 + no
+}
+
+fn file_checks() -> Int with Fs {
+  let yes = if Fs::is_file(probe_root() + "/a.txt") {
+    1
+  } else {
+    0
+  }
+  // A DIRECTORY, not a missing path: is_file must distinguish the two, and a
+  // mis-decode that answers "true for anything that exists" passes a
+  // missing-path check.
+  let no = if Fs::is_file(probe_root() + "/adir") {
+    1
+  } else {
+    0
+  }
+  yes * 10 + no
+}
+
+// Observed through Fs::exists on both sides of the operation, so a builtin
+// that silently does nothing is visible. `Fs::remove` did exactly that before
+// #1814 -- the host swallows errors (`fs.rmSync(.., { force: true })`), so a
+// broken argument looks like success.
+fn remove_check() -> Int with Fs {
+  Fs::write_file(probe_root() + "/r1", "z")
+  let before = if Fs::exists(probe_root() + "/r1") {
+    1
+  } else {
+    0
+  }
+  Fs::remove(probe_root() + "/r1")
+  let after = if Fs::exists(probe_root() + "/r1") {
+    1
+  } else {
+    0
+  }
+  before * 10 + after
+}
+
+// Both ends: the destination must appear AND the source must disappear. A
+// rename lowered as a copy would pass the destination check alone.
+fn rename_check() -> Int with Fs {
+  Fs::write_file(probe_root() + "/s1", "z")
+  Fs::rename(probe_root() + "/s1", probe_root() + "/s2")
+  let dst = if Fs::exists(probe_root() + "/s2") {
+    1
+  } else {
+    0
+  }
+  let src = if Fs::exists(probe_root() + "/s1") {
+    1
+  } else {
+    0
+  }
+  dst * 10 + src
+}
+
+export let main = () -> Int with Fs + Stdout {
+  Stdout::write_stream("gc-host-builtins:")
+  // 10 10 10 10 -> 10101010 when every pair reads (affirmative=1, negative=0).
+  dir_checks() * 1000000 + file_checks() * 10000 + remove_check() * 100 + rename_check()
+}
