@@ -2249,6 +2249,15 @@ fn hostfuture_compose_rejected(core: Bytes) -> Bool {
   }
 }
 
+fn hostfuture_compose_error(core: Bytes) -> String {
+  handle {
+    let _ = comp_emit_component_wasm_async_hostfuture(core, "run")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
 test "component async hoststream: adapter follows the core value ABI (#1930)" {
   let core = build_main_i64_core_hoststream_named(false)
   // Both published modes compose. Their runtime value parity is pinned by
@@ -2264,6 +2273,19 @@ test "component async hoststream: adapter follows the core value ABI (#1930)" {
   assert(hostfuture_compose_rejected(core_with_tag_mode(core, 2)))
   assert(hostfuture_compose_rejected(core_with_tag_mode(core_with_tag_mode(core, 0), 0)))
   assert(hostfuture_compose_rejected(core_with_tag_mode(core_with_tag_mode(core, 0), 1)))
+}
+
+/// The rejections above are asserted by OUTCOME, so a message that reads
+/// `unsupported vibe.tagmode {mode}` -- the literal placeholder, because vibe
+/// interpolation is `\{...}` and a bare `{...}` is just text -- passed them
+/// while telling the reader nothing about which value was rejected. Only the
+/// value-carrying message is pinned here; the rest are fixed strings that
+/// their own outcome assertions already cover.
+test "component #1930: the unsupported-tagmode diagnostic names the value" {
+  let core = build_main_i64_core_hoststream_named(false)
+  let msg = hostfuture_compose_error(core_with_tag_mode(core, 2))
+  assert(String::contains(msg, "unsupported vibe.tagmode 2"))
+  assert(!String::contains(msg, "{mode}"))
 }
 
 test "component async hoststream: named host stream becomes a stream<u8> component import (#1218 D3)" {
