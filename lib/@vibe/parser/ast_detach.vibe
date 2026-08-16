@@ -1,0 +1,182 @@
+import @vibe/ast {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+fn detach_strings(values: Array[String]) -> Array[String] {
+  Array::slice(values, 0, Array::length(values))
+}
+
+fn detach_optional_type_expr(value: Option[TypeExpr]) -> Option[TypeExpr] {
+  match value {
+    Some(ty) => Some(detach_type_expr(ty)),
+    None => None
+  }
+}
+
+fn detach_optional_expr(value: Option[Expr]) -> Option[Expr] {
+  match value {
+    Some(expr) => Some(detach_expr(expr)),
+    None => None
+  }
+}
+
+fn detach_pat(pat: Pat) -> Pat {
+  match pat {
+    PWild => pat,
+    PBind(_) => pat,
+    PInt(_) => pat,
+    PFloat(_) => pat,
+    PString(_) => pat,
+    PBool(_) => pat,
+    PCtor(name, args) => PCtor(name, for arg in args {
+      detach_pat(arg)
+    }),
+    PTuple(items) => PTuple(for item in items {
+      detach_pat(item)
+    }),
+    POr(left, right) => POr(detach_pat(left), detach_pat(right)),
+    PStruct(name, fields) => PStruct(name, for field in fields {
+      (field.0, detach_pat(field.1))
+    })
+  }
+}
+
+fn detach_type_expr(ty: TypeExpr) -> TypeExpr {
+  match ty {
+    TyName(_) => ty,
+    TyApp(name, args) => TyApp(name, for arg in args {
+      detach_type_expr(arg)
+    }),
+    TyFn(params, result, effect) => TyFn(for param in params {
+      detach_type_expr(param)
+    }, detach_type_expr(result), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      detach_type_expr(item)
+    }),
+    TyUnit => ty
+  }
+}
+
+fn detach_expr_array(items: Array[Expr]) -> Array[Expr] {
+  for item in items {
+    detach_expr(item)
+  }
+}
+
+fn detach_named_exprs(items: Array[(String, Expr)]) -> Array[(String, Expr)] {
+  for item in items {
+    (item.0, detach_expr(item.1))
+  }
+}
+
+fn detach_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for arm in arms {
+    (detach_pat(arm.0), detach_expr(arm.1))
+  }
+}
+
+fn detach_type_expr_array(items: Array[TypeExpr]) -> Array[TypeExpr] {
+  for item in items {
+    detach_type_expr(item)
+  }
+}
+
+fn detach_bounds(bounds: Array[(String, Array[String])]) -> Array[(String, Array[String])] {
+  for bound in bounds {
+    (bound.0, detach_strings(bound.1))
+  }
+}
+
+fn detach_expr(expr: Expr) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EIdent(_, _) => expr,
+    ETuple(items) => ETuple(detach_expr_array(items)),
+    EArray(items) => EArray(detach_expr_array(items)),
+    ERecord(name, fields, type_args) => ERecord(name, detach_named_exprs(fields), detach_type_expr_array(type_args)),
+    EIf(cond, yes, no) => EIf(detach_expr(cond), detach_expr(yes), detach_expr(no)),
+    ELet(name, value, body, offset) => ELet(name, detach_expr(value), detach_expr(body), offset),
+    ELetRec(name, value, body) => ELetRec(name, detach_expr(value), detach_expr(body)),
+    ELetMut(name, value, body, offset) => ELetMut(name, detach_expr(value), detach_expr(body), offset),
+    EAssign(name, value, body) => EAssign(name, detach_expr(value), detach_expr(body)),
+    EAssignOp(name, op, value, body) => EAssignOp(name, op, detach_expr(value), detach_expr(body)),
+    ESeq(first, second) => ESeq(detach_expr(first), detach_expr(second)),
+    EMatch(value, arms) => EMatch(detach_expr(value), detach_arms(arms)),
+    EHandle(value, arms) => EHandle(detach_expr(value), detach_arms(arms)),
+    EWhile(cond, body) => EWhile(detach_expr(cond), detach_expr(body)),
+    ELoop(params, body) => ELoop(for param in params {
+      (param.0, detach_expr(param.1))
+    }, detach_expr(body)),
+    EForIn(name, index, iter, body) => EForIn(name, index, detach_expr(iter), detach_expr(body)),
+    ECall(callee, args, offset) => ECall(detach_expr(callee), detach_expr_array(args), offset),
+    EBinOp(op, left, right) => EBinOp(op, detach_expr(left), detach_expr(right)),
+    EUnaryOp(op, value) => EUnaryOp(op, detach_expr(value)),
+    EFn(type_params, bounds, params, result, effect, body) => EFn(detach_strings(type_params), detach_bounds(bounds), for param in params {
+      (param.0, detach_optional_type_expr(param.1))
+    }, detach_optional_type_expr(result), effect, detach_expr(body)),
+    EDot(value, field, offset, field_offset) => EDot(detach_expr(value), field, offset, field_offset),
+    ELabeledArg(label, name, value) => ELabeledArg(label, name, detach_expr(value)),
+    EReturn(value) => EReturn(detach_expr(value)),
+    EBreak(value) => EBreak(detach_optional_expr(value)),
+    EContinue(values) => EContinue(detach_expr_array(values)),
+    EMap(items) => EMap(detach_named_exprs(items)),
+    ESpread(value) => ESpread(detach_expr(value)),
+    EStringInterp(parts) => EStringInterp(detach_strings(parts)),
+    EUnit => expr
+  }
+}
+
+fn detach_variant_types(items: Array[(String, Array[TypeExpr])]) -> Array[(String, Array[TypeExpr])] {
+  for item in items {
+    (item.0, detach_type_expr_array(item.1))
+  }
+}
+
+fn detach_methods(items: Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[(String, Array[TypeExpr], TypeExpr)] {
+  for item in items {
+    (item.0, detach_type_expr_array(item.1), detach_type_expr(item.2))
+  }
+}
+
+fn detach_stmt(stmt: Stmt) -> Stmt {
+  match stmt {
+    SLet(exported, recursive, name, ty, value) => SLet(exported, recursive, name, detach_optional_type_expr(ty), detach_expr(value)),
+    SLetMut(name, ty, value) => SLetMut(name, detach_optional_type_expr(ty), detach_expr(value)),
+    SEnum(exported, name, params, variants, derives) => SEnum(exported, name, detach_strings(params), detach_variant_types(variants), detach_strings(derives)),
+    SSuberror(exported, name, variants) => SSuberror(exported, name, detach_variant_types(variants)),
+    SStruct(exported, name, fields, derives, mutable_fields, params) => SStruct(exported, name, for field in fields {
+      (field.0, detach_type_expr(field.1))
+    }, detach_strings(derives), detach_strings(mutable_fields), detach_strings(params)),
+    STypeAlias(exported, name, params, target) => STypeAlias(exported, name, detach_strings(params), detach_type_expr(target)),
+    STrait(exported, name, supers, methods, method_generics, params) => STrait(exported, name, detach_strings(supers), detach_methods(methods), for item in method_generics {
+      (item.0, detach_strings(item.1), detach_bounds(item.2))
+    }, detach_strings(params)),
+    SImpl(type_params, bounds, trait_name, target_name) => SImpl(detach_strings(type_params), detach_bounds(bounds), trait_name, target_name),
+    SExternLet(name, ty) => SExternLet(name, detach_type_expr(ty)),
+    SImport(path, items) => SImport(path, Array::slice(items, 0, Array::length(items))),
+    STest(name, body) => STest(name, detach_expr(body)),
+    SBench(name, body) => SBench(name, detach_expr(body)),
+    SExample(name, body) => SExample(name, detach_expr(body)),
+    SExpr(body) => SExpr(detach_expr(body)),
+    SExport(names) => SExport(detach_strings(names)),
+    SReExport(path, items) => SReExport(path, Array::slice(items, 0, Array::length(items))),
+    SAliasDecl(_, _) => stmt,
+    SQualifiedPatternRefs(items) => SQualifiedPatternRefs(Array::slice(items, 0, Array::length(items))),
+    STestEffectRows(items) => STestEffectRows(Array::slice(items, 0, Array::length(items))),
+    SLetPat(pat, value) => SLetPat(detach_pat(pat), detach_expr(value)),
+    SModule(exported, name, stmts) => SModule(exported, name, detach_stmts(stmts)),
+    SEffectDef(exported, name, params, operations) => SEffectDef(exported, name, detach_strings(params), detach_methods(operations)),
+    SEffectSet(exported, name, members) => SEffectSet(exported, name, detach_strings(members)),
+    SResource(_, _) => stmt,
+    SFnDecl(exported, name, value, requires, ensures) => SFnDecl(exported, name, detach_expr(value), detach_expr_array(requires), detach_expr_array(ensures))
+  }
+}
+
+export fn detach_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
+  for stmt in stmts {
+    detach_stmt(stmt)
+  }
+}

@@ -1,7 +1,7 @@
 //# Imports
 
 import ../lib/@vibe/ast {
-  Expr, Stmt
+  Expr, Pat, Stmt, TypeExpr
 }
 
 import ../lib/@vibe/parser {
@@ -16,7 +16,9 @@ import ../lib/@vibe/parser {
   binder_authority_node_slots,
   binder_authority_slot_binder,
   binder_authority_slot_role,
+  detach_stmts,
   located_program_binder_authority_nodes,
+  located_program_binder_authority_program,
   located_program_binder_authority_rows,
   parse_source_located_with_binder_authority,
   validate_program_binder_rows
@@ -204,6 +206,133 @@ test "forgeable sidecar nodes remain data and do not mint parser authority" {
   inspect(Array::length(binder_authority_node_slots(forged)), "1")
   inspect(Array::length(binder_authority_node_children(forged)), "0")
   // There is intentionally no resolver, AST scan, or authority-accepting API.
+}
+
+test "AST detachment traverses statement pattern type and expression families" {
+  let original: Array[Stmt] = [
+    SModule(true, "M", [
+      STypeAlias(true, "Box", [
+        "T"
+      ], TyApp("Pair", [
+        TyTuple([
+          TyName("T")
+        ])
+      ])),
+      SLetPat(PStruct("Pair", [
+        ("value", PCtor("Some", [
+          PBind("same")
+        ]))
+      ]), EFn([
+        "T"
+      ], [
+        ("T", [
+          "Bound"
+        ])
+      ], [
+        ("same", Some(TyTuple([
+          TyName("T")
+        ])))
+      ], Some(TyName("T")), None, ERecord("Pair", [
+        ("value", EMatch(EInt(1), [
+          (PBind("same"), EArray([
+            EInt(2)
+          ]))
+        ]))
+      ], [
+        TyName("T")
+      ])))
+    ])
+  ]
+  let detached = detach_stmts(original)
+  match Array::get(original, 0) {
+    SModule(_, _, stmts) => {
+      Array::truncate(stmts, 1)
+      match Array::get(stmts, 0) {
+        STypeAlias(_, _, params, TyApp(_, args)) => {
+          Array::truncate(params, 0)
+          Array::truncate(args, 0)
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    _ => inspect(false, "true")
+  }
+  Array::truncate(original, 0)
+  match Array::get(detached, 0) {
+    SModule(_, "M", stmts) => {
+      inspect(Array::length(stmts), "2")
+      match Array::get(stmts, 0) {
+        STypeAlias(_, "Box", params, TyApp("Pair", args)) => {
+          inspect(Array::length(params), "1")
+          inspect(Array::length(args), "1")
+        },
+        _ => inspect(false, "true")
+      }
+      match Array::get(stmts, 1) {
+        SLetPat(PStruct(_, fields), EFn(type_params, bounds, params, _, _, ERecord(_, expr_fields, type_args))) => {
+          inspect(Array::length(fields), "1")
+          inspect(Array::length(type_params), "1")
+          inspect(Array::length(bounds), "1")
+          inspect(Array::length(params), "1")
+          inspect(Array::length(expr_fields), "1")
+          inspect(Array::length(type_args), "1")
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    _ => inspect(false, "true")
+  }
+}
+
+test "aggregate program materialization recursively detaches params calls fields and arms" {
+  let source = "fn target(x: Int, y: Int) -> Int { 0 }\nfn main() -> Int { target(y=match 1 { same => same }, x=Pair::{ value: 1 }) }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let first = located_program_binder_authority_program(authority)
+      match Array::get(first, 0) {
+        SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => Array::set(params, 0, ("forged", None)),
+        _ => inspect(false, "true")
+      }
+      match Array::get(first, 1) {
+        SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => {
+          match Array::get(args, 0) {
+            ELabeledArg(_, _, EMatch(_, arms)) => Array::truncate(arms, 0),
+            _ => inspect(false, "true")
+          }
+          match Array::get(args, 1) {
+            ELabeledArg(_, _, ERecord(_, fields, _)) => Array::truncate(fields, 0),
+            _ => inspect(false, "true")
+          }
+          Array::set(args, 0, Array::get(args, 1))
+          Array::truncate(args, 1)
+        },
+        _ => inspect(false, "true")
+      }
+      let second = located_program_binder_authority_program(authority)
+      match Array::get(second, 0) {
+        SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => {
+          inspect(Array::get(params, 0).0, "x")
+          inspect(Array::length(params), "2")
+        },
+        _ => inspect(false, "true")
+      }
+      match Array::get(second, 1) {
+        SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => {
+          inspect(Array::length(args), "2")
+          match Array::get(args, 0) {
+            ELabeledArg("y", _, EMatch(_, arms)) => inspect(Array::length(arms), "1"),
+            _ => inspect(false, "true")
+          }
+          match Array::get(args, 1) {
+            ELabeledArg("x", _, ERecord(_, fields, _)) => inspect(Array::length(fields), "1"),
+            _ => inspect(false, "true")
+          }
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
 }
 
 test "aggregate node materialization is recursively detached across repeated access" {

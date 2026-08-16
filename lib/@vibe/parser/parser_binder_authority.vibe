@@ -4,6 +4,10 @@ import @vibe/ast {
   Expr, Pat, Stmt
 }
 
+import ./ast_detach.vibe {
+  detach_stmts
+}
+
 import ./lexer.vibe {
   lex_with_offsets
 }
@@ -118,6 +122,10 @@ export struct BinderAuthorityNode {
   children: Array[BinderAuthorityNode]
 }
 
+enum StoredLocatedProgram {
+  StoredLocatedProgramValue(Array[Stmt])
+}
+
 /// Private persistent representation retained by the validated aggregate.
 /// No mutable Array is reachable from this topology. Public forgeable nodes
 /// are materialized only as detached data copies at the accessor boundary.
@@ -131,7 +139,7 @@ enum StoredBinderAuthority {
 /// Atomically produced exact-source parse result, compatibility rows, and the
 /// sidecar built in the same exhaustive walk against that exact final AST.
 export struct LocatedProgramBinderAuthority {
-  program: Array[Stmt];
+  program: StoredLocatedProgram;
   binders: Array[SourceBinder];
   nodes: StoredBinderAuthority
 }
@@ -159,7 +167,9 @@ export fn binder_authority_slot_binder(slot: BinderAuthoritySlot) -> SourceBinde
 }
 
 export fn located_program_binder_authority_program(authority: LocatedProgramBinderAuthority) -> Array[Stmt] {
-  Array::slice(authority.program, 0, Array::length(authority.program))
+  match authority.program {
+    StoredLocatedProgramValue(program) => detach_stmts(program)
+  }
 }
 
 export fn located_program_binder_authority_rows(authority: LocatedProgramBinderAuthority) -> Array[SourceBinder] {
@@ -793,7 +803,7 @@ export fn parse_source_located_with_binder_authority(source: String) -> Option[L
   } && binder_capture_is_eligible(context) {
     match build_program_binder_authority(program, rows, source) {
       Some(nodes) => Some(LocatedProgramBinderAuthority::{
-        program,
+        program: StoredLocatedProgramValue(program),
         binders: rows,
         nodes: stored_authority_nodes(nodes, 0)
       }),
