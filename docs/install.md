@@ -109,7 +109,8 @@ vibe run     <file.vibex> [-- args]   compile the fixed `main` entry then run
 vibe compile <file.vibe> -o <out>     compile to a .wasm
 vibe build   <file.vibe> -o <out>     alias of compile
 vibe check   <file.vibe|file.vibex>   parse + typecheck (no output kept)
-vibe test    <file_test.vibe>...      compile + run test {} blocks
+vibe test    <file_test.vibe|dir>...  compile + run test {} blocks
+                                      (a directory expands to *_test.vibe)
 vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
 vibe lsp                              start the stdio LSP server (diagnostics)
 vibe context-pack [--out FILE]        emit cheatsheet + verified golden examples

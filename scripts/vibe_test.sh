@@ -280,6 +280,10 @@ vt_fail_detail() {
     }
     # First trap-reason line (backtrace frames never contain these markers;
     # strip anyhow chain numbering / runner prefixes).
+    $0 == "assert_eq failed" || $0 ~ /^  expected:/ || $0 ~ /^  actual:/ {
+      ndiag++
+      diags[ndiag] = "       " $0
+    }
     !seen_reason && /RuntimeError:|wasm trap:/ {
       seen_reason = 1
       reason = $0
@@ -305,6 +309,7 @@ vt_fail_detail() {
     }
     END {
       if (failing != "") print "       failing test: " failing
+      for (i = 1; i <= ndiag; i++) print diags[i]
       if (reason != "")  print "       trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }
@@ -378,13 +383,13 @@ vt_worker() {
   local run_err="$vt_results/$flat.err"
   if [ "$backend" = "gc" ]; then
     if timeout 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
-        --invoke _start "$ROOT_DIR/$out_rel" >/dev/null 2>"$run_err"; then
+        --invoke _start "$ROOT_DIR/$out_rel" >"$run_err" 2>&1; then
       run_ok=1
     fi
   else
     if VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-        --invoke _start "$out_rel" >/dev/null 2>"$run_err"; then
+        --invoke _start "$out_rel" >"$run_err" 2>&1; then
       run_ok=1
     fi
   fi

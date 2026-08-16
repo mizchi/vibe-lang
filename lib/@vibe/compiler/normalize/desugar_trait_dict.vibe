@@ -5365,6 +5365,93 @@ fn interp_take_repl(r: Option[Expr]) -> Expr {
   }
 }
 
+/// #1946 leftover: a two-argument `assert_eq` call. The builtin is still
+/// what the checker sees (effect-free); this pass rewrites it after check so
+/// a failure can print both sides without adding Stderr/Exception to the
+/// source row.
+fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(n, _) => n == "assert_eq" && Array::length(args) == 2,
+    _ => false
+  }
+}
+
+fn assert_eq_concat(a: Expr, b: Expr) -> Expr {
+  ECall(EIdent("String::concat", -1), [
+    a,
+    b
+  ], -1)
+}
+
+/// Render one `assert_eq` operand. Reuses the throw-site renderer
+/// (`derived_only`) so a missing Show becomes `<unprintable>` instead of a
+/// pointer decimal or a compile error.
+fn assert_eq_render(arg: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let target = interp_show_target(arg, true, struct_sets, var_types, fn_returns)
+  if target != "" {
+    ECall(EIdent(target, -1), Array::slice([
+      arg
+    ], 0, 1), -1)
+  } else {
+    let expanded = interp_expand(arg, true, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    if interp_has_repl(expanded) {
+      interp_take_repl(expanded)
+    } else {
+      match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        Some(tn) => if is_scalar_type_name(tn) {
+          ECall(EIdent("__to_string", -1), Array::slice([
+            arg
+          ], 0, 1), -1)
+        } else {
+          EString("<unprintable>")
+        },
+        None => {
+          let as_scalar = match arg {
+            EInt(_) => true,
+            EBool(_) => true,
+            EString(_) => true,
+            EFloat(_) => true,
+            _ => false
+          }
+          if as_scalar {
+            ECall(EIdent("__to_string", -1), Array::slice([
+              arg
+            ], 0, 1), -1)
+          } else {
+            EString("<unprintable>")
+          }
+        }
+      }
+    }
+  }
+}
+
+fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let a2 = rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  let b2 = rewrite_expr(Array::get(args, 1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  let an = dinsp_fresh_name("__assert_eq_actual", a2, b2)
+  let en = dinsp_fresh_name("__assert_eq_expected", a2, b2)
+  let vars1 = bind_shapes(extend_var_types(var_types, an, infer_arg_type_name(a2, struct_sets, var_types, fn_returns)), an, a2, struct_sets, fn_returns)
+  let vars2 = bind_shapes(extend_var_types(vars1, en, infer_arg_type_name(b2, struct_sets, vars1, fn_returns)), en, b2, struct_sets, fn_returns)
+  let actual = EIdent(an, -1)
+  let expected = EIdent(en, -1)
+  let actual_s = assert_eq_render(actual, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
+  let expected_s = assert_eq_render(expected, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
+  let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\n")))))
+  // println, not Stderr::write_stream: the gc lane only reserves host
+  // imports when the source already used one, and flipping that on a
+  // SIMD-only file shifts every generated-body index (gc-gate
+  // simd_skip_ws_test). `vibe test` now keeps stdout on FAIL so the
+  // diagnostic still reaches vt_fail_detail.
+  let fail = ESeq(ECall(EIdent("println", -1), [
+    msg
+  ], -1), ECall(EIdent("assert_true", -1), [
+    EBool(false)
+  ], -1))
+  let cmp = rewrite_expr(EBinOp("==", actual, expected), gens, traits, struct_sets, dict_binds, vars2, fn_returns)
+  ELet(an, a2, ELet(en, b2, EIf(cmp, EUnit, fail), -1), -1)
+}
+
 /// The core rewriter. `dict_binds` is non-empty only inside a transformed
 /// generic's body (so `T::method` resolves to a dict field); call-site dict
 /// threading applies everywhere a transformed generic is called. `var_types`
@@ -5472,6 +5559,8 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       } else if interp_has_repl(interp_repl) {
         // #1392: the interpolation of a value this pass can render.
         interp_take_repl(interp_repl)
+      } else if is_assert_eq_call(callee, args) {
+        lower_assert_eq(args, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       } else if !exn_kind_suppressed() && is_exception_kind_read(callee, args) {
         // #1374: `__exn_kind()` is a checker-only intrinsic (typed
         // `() -> String` in checker/builtins_misc.vibe, no wasm body) -- it

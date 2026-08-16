@@ -98,6 +98,48 @@ error while executing at wasm backtrace:
 EOF
 echo "[vibe-test-smoke] ok (guest __test_ prefix is not the failing-test name)"
 
+# #1946 leftover: vt_fail_detail must surface the assert_eq diagnostic that
+# the guest writes to stderr (vibe test discards stdout).
+assert_canned_assert_eq_diag() {
+  local errf="$WORK/canned_assert_eq.err" out
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 2
+  actual:   1
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "assert_eq failed"; then
+    echo "[vibe-test-smoke] FAIL: canned assert_eq missing 'assert_eq failed'" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "expected: 2"; then
+    echo "[vibe-test-smoke] FAIL: canned assert_eq missing expected value" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "actual:   1"; then
+    echo "[vibe-test-smoke] FAIL: canned assert_eq missing actual value" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_canned_assert_eq_diag
+echo "[vibe-test-smoke] ok (assert_eq expected/actual surfaced on FAIL)"
+
+# Directory input: scripts/vibe_test.sh already expands *_test.vibe; lock it.
+mkdir -p "$WORK/dir_in"
+printf 'test "in dir" {\n  assert_eq(1, 1)\n}\n' > "$WORK/dir_in/foo_test.vibe"
+if ! VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/dir_in" >/dev/null 2>&1; then
+  echo "[vibe-test-smoke] FAIL: vibe_test.sh did not accept a directory" >&2
+  exit 1
+fi
+echo "[vibe-test-smoke] ok (directory input expands *_test.vibe)"
+
 # The seed-compiler notice. A green run through the committed seed says nothing
 # about a compiler change in this checkout, and the two are indistinguishable
 # from the result -- so the run has to say which compiler answered whenever the

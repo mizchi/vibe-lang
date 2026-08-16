@@ -1,0 +1,98 @@
+//# Imports
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+//# Helpers
+
+fn bytes_contains(hay: Bytes, needle: String) -> Bool {
+  let nlen = String::length(needle)
+  let hlen = Bytes::length(hay)
+  if nlen == 0 {
+    true
+  } else if nlen > hlen {
+    false
+  } else {
+    let mut found = false
+    let mut i = 0
+    while i + nlen <= hlen && !found {
+      let mut ok = true
+      let mut j = 0
+      while j < nlen && ok {
+        ok = Bytes::get(hay, i + j) == String::char_code_at(needle, j)
+        j = j + 1
+      }
+      if ok {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+fn compile_assert_eq_main(body: String) -> Bytes with Exception {
+  compile_source_wasi(String::concat("let main: () -> Int = () -> {\n  ", String::concat(body, "\n  0\n}")), "main")
+}
+
+fn assert_compiled_eq_diag(bytes: Bytes) -> Unit {
+  assert(bytes_contains(bytes, "assert_eq failed"))
+  assert(bytes_contains(bytes, "expected:"))
+  assert(bytes_contains(bytes, "actual:"))
+}
+
+fn capture_failing_assert_eq(body: String) -> String with Exception + Fs + Process {
+  let bytes = compile_assert_eq_main(body)
+  Fs::write_bytes("_build/vibe_test/assert_eq_fail_probe.wasm", bytes)
+  let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh _build/vibe_test/assert_eq_fail_probe.wasm >_build/vibe_test/assert_eq_fail_probe.err 2>&1 || true'")
+  Fs::read_file("_build/vibe_test/assert_eq_fail_probe.err")
+}
+
+//# Tests
+
+/// Drive the shipped compile path (`compile_source_wasi` ->
+/// `desugar_trait_dicts` -> both backends' ordinary calls), not a
+/// reimplementation of the diagnostic. A failing `assert_eq` must emit
+/// both sides as data-section text so the runner can print them.
+test "assert_eq failure compiles expected and actual for a scalar" {
+  assert_compiled_eq_diag(compile_assert_eq_main("assert_eq(1, 2)"))
+}
+
+test "assert_eq failure compiles expected and actual for a String" {
+  assert_compiled_eq_diag(compile_assert_eq_main("assert_eq(\"aa\", \"bb\")"))
+}
+
+test "assert_eq failure compiles expected and actual for a tuple" {
+  assert_compiled_eq_diag(compile_assert_eq_main("assert_eq((1, 2), (1, 3))"))
+}
+
+test "assert_eq failure compiles expected and actual for a Show struct" {
+  let bytes = compile_source_wasi("struct Point { x: Int; y: Int } derive(Eq, Show)\nlet main: () -> Int = () -> {\n  assert_eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 9 })\n  0\n}", "main")
+  assert_compiled_eq_diag(bytes)
+}
+
+test "assert_eq failure compiles a fallback for an unrenderable value" {
+  let bytes = compile_source_wasi("struct Opaque { n: Int } derive(Eq)\nlet main: () -> Int = () -> {\n  assert_eq(Opaque::{ n: 1 }, Opaque::{ n: 2 })\n  0\n}", "main")
+  assert(bytes_contains(bytes, "assert_eq failed"))
+  assert(bytes_contains(bytes, "<unprintable>"))
+}
+
+/// Same lowering, then execute it. `vibe test` keeps stderr and discards
+/// stdout, so the diagnostic has to land on stderr for `vt_fail_detail`.
+test "assert_eq lowering still compiles on the gc lane" {
+  let bytes = compile_source_gc_only("let main: () -> Int = () -> {\n  assert_eq(1, 1)\n  0\n}", "main")
+  assert(Bytes::length(bytes) > 8)
+}
+
+test "assert_eq failure prints expected and actual on stderr" {
+  let err = capture_failing_assert_eq("assert_eq(1, 2)")
+  inspect(String::contains(err, "assert_eq failed"), "true")
+  inspect(String::contains(err, "expected: 2"), "true")
+  inspect(String::contains(err, "actual:   1"), "true")
+}

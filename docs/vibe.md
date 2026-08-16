@@ -919,7 +919,7 @@ CLI:
   `pkf run run -- <args>`.
 - `vibe run <file>` executes a script (ignores `test {}`).
 - Interactive evaluation lives under `vibe shell` / `vibe shell-stdin`.
-- `vibe test <file...>` runs test blocks and prints a report.
+- `vibe test <file|dir...>` runs test blocks and prints a report. A directory expands to every `*_test.vibe` under it.
 - `vibe compile [--wasm | --wasm-js-string | --wasm-mvp | --component | --wit | --wit-component] [-o out] <file>`
   emits IR (default) or wasm bytes.
   - `--wasm` = linear-memory backend (production default). `--wasm-gc` is not yet
