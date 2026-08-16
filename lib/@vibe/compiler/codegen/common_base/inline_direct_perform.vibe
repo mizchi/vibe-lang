@@ -14619,3 +14619,199 @@ fn awp_rewrite_arms(arms: Array[(Pat, Expr)], ctr: Array[Int]) -> Array[(Pat, Ex
     (p, awp_tail(ex, ctr))
   }
 }
+
+/// --- #1916: discard-position `for` normalization ------------------------
+///
+/// A statement-position `for` still compiles as a comprehension: the linear
+/// lowering materializes a result array per execution, and the discarded
+/// array never gets a drop, so every whole-program walk written with
+/// statement `for` loops pays permanent bump-heap growth per node (the
+/// #1875 R4 measurement: ~2.1MB per used effect in one such walk alone).
+///
+/// The codegen fix lives in compile_expr_tail.vibe's ESeq head (a `for`
+/// whose value is dropped right after compiles via compile_forin_loop's
+/// no-collect form). This pass funnels every OTHER syntactic discard
+/// position into that one shape by wrapping the loop as
+/// `ESeq(for .., EUnit)`: statement roots (SExpr / test / bench bodies),
+/// sequence heads recursively, while bodies, let/assign continuations,
+/// if/match tails under a discarded context, and the body tail of a
+/// function whose declared return type is Unit. The wrap changes the
+/// loop's VALUE from the collected array to `()` -- legal exactly because
+/// the context provably discards it (for declared-Unit bodies the checker
+/// has already forced the value to Unit).
+///
+/// Runs at the END of effect_lowering_prelude, after every effect pass:
+/// the trait-iterator / pull / HostStream `for` shapes are already
+/// rewritten to Unit-valued whiles by then (#1679), so any surviving
+/// EForIn is the residual builtin lowering this optimization targets.
+/// EHandle stays untouched (conservative -- its arms/body feed the Error
+/// handler codegen).
+fn fdp_has_forin(e: Expr) -> Bool {
+  match e {
+    EForIn(_, _, _, _) => true,
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut found = false
+      while !found && i < Array::length(kids) {
+        found = fdp_has_forin(Array::get(kids, i))
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn fdp_ret_is_unit(ret: Option[TypeExpr]) -> Bool {
+  match ret {
+    Some(TyUnit) => true,
+    Some(TyName(n)) => n == "Unit",
+    _ => false
+  }
+}
+
+fn fdp_expr(e: Expr, discard: Bool) -> Expr {
+  match e {
+    EForIn(nm, idx, it, b) => {
+      let it2 = fdp_expr(it, false)
+      if discard {
+        // The no-collect form drops the body value each iteration, so the
+        // body tail is itself a discard position.
+        ESeq(EForIn(nm, idx, it2, fdp_expr(b, true)), EUnit)
+      } else {
+        EForIn(nm, idx, it2, fdp_expr(b, false))
+      }
+    },
+    ESeq(a, b) => ESeq(fdp_expr(a, true), fdp_expr(b, discard)),
+    ELet(n, v, b, off) => ELet(n, fdp_expr(v, false), fdp_expr(b, discard), off),
+    ELetRec(n, v, b) => ELetRec(n, fdp_expr(v, false), fdp_expr(b, discard)),
+    ELetMut(n, v, b, off) => ELetMut(n, fdp_expr(v, false), fdp_expr(b, discard), off),
+    EAssign(n, v, b) => EAssign(n, fdp_expr(v, false), fdp_expr(b, discard)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, fdp_expr(v, false), fdp_expr(b, discard)),
+    EIf(c, t, el) => EIf(fdp_expr(c, false), fdp_expr(t, discard), fdp_expr(el, discard)),
+    EMatch(s, arms) => {
+      let arms2: Array[(Pat, Expr)] = []
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        Array::push(arms2, (p, fdp_expr(ex, discard)))
+        i = i + 1
+      }
+      EMatch(fdp_expr(s, false), arms2)
+    },
+    EWhile(c, b) => EWhile(fdp_expr(c, false), fdp_expr(b, true)),
+    ELoop(pairs, b) => {
+      let pairs2: Array[(String, Expr)] = []
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (n, v) = Array::get(pairs, i)
+        Array::push(pairs2, (n, fdp_expr(v, false)))
+        i = i + 1
+      }
+      ELoop(pairs2, fdp_expr(b, false))
+    },
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, fdp_expr(b, fdp_ret_is_unit(ret))),
+    ECall(callee, args, off) => {
+      let args2: Array[Expr] = []
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(args2, fdp_expr(Array::get(args, i), false))
+        i = i + 1
+      }
+      ECall(fdp_expr(callee, false), args2, off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, fdp_expr(l, false), fdp_expr(r, false)),
+    EUnaryOp(op, x) => EUnaryOp(op, fdp_expr(x, false)),
+    EDot(o, f, a, b2) => EDot(fdp_expr(o, false), f, a, b2),
+    ELabeledArg(k, n, v) => ELabeledArg(k, n, fdp_expr(v, false)),
+    EReturn(x) => EReturn(fdp_expr(x, false)),
+    EBreak(opt) => match opt {
+      Some(x) => EBreak(Some(fdp_expr(x, false))),
+      None => e
+    },
+    EContinue(args) => {
+      let args2: Array[Expr] = []
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(args2, fdp_expr(Array::get(args, i), false))
+        i = i + 1
+      }
+      EContinue(args2)
+    },
+    ETuple(items) => {
+      let items2: Array[Expr] = []
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(items2, fdp_expr(Array::get(items, i), false))
+        i = i + 1
+      }
+      ETuple(items2)
+    },
+    EArray(items) => {
+      let items2: Array[Expr] = []
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(items2, fdp_expr(Array::get(items, i), false))
+        i = i + 1
+      }
+      EArray(items2)
+    },
+    ERecord(nm, fields, targs) => {
+      let fields2: Array[(String, Expr)] = []
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (n, v) = Array::get(fields, i)
+        Array::push(fields2, (n, fdp_expr(v, false)))
+        i = i + 1
+      }
+      ERecord(nm, fields2, targs)
+    },
+    EMap(fields) => {
+      let fields2: Array[(String, Expr)] = []
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (n, v) = Array::get(fields, i)
+        Array::push(fields2, (n, fdp_expr(v, false)))
+        i = i + 1
+      }
+      EMap(fields2)
+    },
+    ESpread(x) => ESpread(fdp_expr(x, false)),
+    _ => e
+  }
+}
+
+export fn forin_discard_pass(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(ex, isrec, nm, ty, expr) => if fdp_has_forin(expr) {
+        Array::set(stmts, i, SLet(ex, isrec, nm, ty, fdp_expr(expr, false)))
+      } else {
+        ()
+      },
+      SLetMut(nm, ty, expr) => if fdp_has_forin(expr) {
+        Array::set(stmts, i, SLetMut(nm, ty, fdp_expr(expr, false)))
+      } else {
+        ()
+      },
+      SExpr(expr) => if fdp_has_forin(expr) {
+        Array::set(stmts, i, SExpr(fdp_expr(expr, true)))
+      } else {
+        ()
+      },
+      STest(tn, expr) => if fdp_has_forin(expr) {
+        Array::set(stmts, i, STest(tn, fdp_expr(expr, true)))
+      } else {
+        ()
+      },
+      SBench(bn, expr) => if fdp_has_forin(expr) {
+        Array::set(stmts, i, SBench(bn, fdp_expr(expr, true)))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}

@@ -456,6 +456,21 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
       nl
     }
   } else if __tag == 18 {
+    compile_forin_loop(buf, expr, local_names, next_local, ctx, ld, compile_expr, true)
+  } else {
+    compile_expr_tail3(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+  }
+}
+
+/// #1916: the EForIn lowering, shared by the value form (collect=true --
+/// the comprehension result array) and the discard form (collect=false --
+/// statement position via forin_discard_pass, where the result array was
+/// pure allocation churn AND a leak: the discarded array never got a drop).
+/// collect=false keeps the identical local/block layout (so break/continue
+/// depths and slot numbering match) and differs only in: no result array is
+/// allocated (the slot holds i64 0), the body value is dropped instead of
+/// pushed, and the loop's value is that 0.
+export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, collect: Bool) -> Int with Exception {
     let names_len_at_forin = Array::length(local_names)
     let var_name = get_eforin_name(expr)
     let iter_expr = get_eforin_iter(expr)
@@ -486,7 +501,11 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
     Array::push(local_names, "__forin_res")
     Array::push(local_names, "__forin_arr")
     Array::push(local_names, "__forin_i")
-    emit_call(buf, arr_new_fi)
+    if collect {
+      emit_call(buf, arr_new_fi)
+    } else {
+      emit_i64_const(buf, 0)
+    }
     emit_local_set(buf, result_local)
     let nl1pre = compile_expr(buf, iter_expr, local_names, next_local + 3, ctx, ld)
     emit_local_set(buf, arr_local)
@@ -624,10 +643,17 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
     let nl3 = compile_expr(buf, body, local_names, nl2, ctx, 0)
     let body_val = nl3
     Array::push(local_names, "__forin_val")
-    emit_local_set(buf, body_val)
-    emit_local_get(buf, result_local)
-    emit_local_get(buf, body_val)
-    emit_call(buf, arr_push_fi)
+    if collect {
+      emit_local_set(buf, body_val)
+      emit_local_get(buf, result_local)
+      emit_local_get(buf, body_val)
+      emit_call(buf, arr_push_fi)
+    } else {
+      // Discard form: the body value is not collected. A plain stack drop
+      // matches what ESeq does with a discarded head today (no rc release
+      // -- releasing here could double-free a borrowed body value).
+      emit_drop(buf)
+    }
     emit_local_get(buf, i_local)
     emit_i64_const(buf, 1)
     emit_i64_add(buf)
@@ -649,7 +675,5 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
       Array::push(local_names, "")
     }
     final_nl
-  } else {
-    compile_expr_tail3(buf, expr, local_names, next_local, ctx, ld, compile_expr)
-  }
 }
+
