@@ -484,7 +484,11 @@ fn spine_ident_returns_owned(known: Array[String], names: Array[String], vals: A
   let mut hops = 0
   let mut owned = false
   let mut done = false
-  while !done && hops < 8 {
+  // The ident chain visits a fresh spine binding per hop (a repeated name
+  // would have landed in `excluded` at collection), so the binding count
+  // bounds the walk -- no fixed cap that could silently truncate a long
+  // alias chain back into the safe (leaking) fallback.
+  while !done && hops <= Array::length(names) {
     hops = hops + 1
     if array_contains_str_pctx(excluded, nm) {
       done = true
@@ -727,8 +731,13 @@ fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
 }
 
 export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
+  // Seed with the same builtin set is_borrow_ret_fname hardcodes -- omitting
+  // one (MutList::get was missing until #1932 review) makes both the inline
+  // branch-tail check and the #1915 spine-binding resolution classify that
+  // builtin's result as owned, and RC callers then drop an interior view.
   let known: Array[String] = [
     "Array::get",
+    "MutList::get",
     "Map::get",
     "__index",
     "__rec_field"
