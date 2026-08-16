@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
 #
 # Obtains a vibe-lang source tree (a shallow git clone unless it is already
-# running inside a checkout) and delegates to scripts/install.sh, which lays
+# running inside a checkout) and delegates to install/install.sh, which lays
 # down the rustup-style toolchain layout under ~/.vibe:
 #
 #   ~/.vibe/bin/vibe                    dispatcher (put this dir -- or the
@@ -56,7 +56,7 @@ command -v git >/dev/null 2>&1 || die "git is required"
 # When already inside a vibe-lang checkout (developer flow), install from it
 # directly. The pipe flow (`curl | bash`) has no checkout -- clone one.
 SRC_DIR=""
-if [ -f "scripts/install.sh" ] && [ -f "bootstrap/seed/compiler.wasm" ]; then
+if [ -f "install/install.sh" ] && [ -f "bootstrap/seed/compiler.wasm" ]; then
   SRC_DIR="$(pwd)"
   say "installing from the current checkout: $SRC_DIR (ref flags ignored)"
 else
@@ -73,4 +73,4 @@ fi
 TOOLCHAIN="$(printf '%s' "$REF" | tr '/' '-')"
 
 say "installing toolchain '$TOOLCHAIN'..."
-bash "$SRC_DIR/scripts/install.sh" --toolchain "$TOOLCHAIN" ${passthrough[@]+"${passthrough[@]}"}
+bash "$SRC_DIR/install/install.sh" --toolchain "$TOOLCHAIN" ${passthrough[@]+"${passthrough[@]}"}

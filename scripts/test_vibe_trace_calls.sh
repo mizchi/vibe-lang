@@ -39,7 +39,7 @@ export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
 echo "[test] installing fresh CLI into $VIBE_HOME"
-bash scripts/install.sh --cli-wasm "$cli" >/dev/null 2>&1
+bash install/install.sh --cli-wasm "$cli" >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 

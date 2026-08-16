@@ -35,7 +35,7 @@ the `vibe lsp` command. It provides:
 | **Signature help** | Parameter info at call sites. |
 
 Diagnostics rely on a *fresh* compiler wasm built at install time (the seed
-fallback has no diagnostics path). `scripts/install.sh` builds that fresh
+fallback has no diagnostics path). `install/install.sh` builds that fresh
 compiler by default; if you only have the committed seed, hover/diagnostics
 degrade gracefully to empty rather than erroring.
 

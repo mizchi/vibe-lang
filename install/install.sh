@@ -36,7 +36,7 @@
 # VIBE_BIN_DIR (used by the test harness).
 #
 # Usage:
-#   bash scripts/install.sh [--prefix DIR] [--runner PATH] [--cli-wasm PATH]
+#   bash install/install.sh [--prefix DIR] [--runner PATH] [--cli-wasm PATH]
 #                           [--bin-dir DIR] [--no-link] [--no-modify-path]
 #                           [--toolchain NAME] [--set-default] [--no-stdlib]
 #

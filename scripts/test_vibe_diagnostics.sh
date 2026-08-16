@@ -8,7 +8,7 @@
 # file yields empty output.
 #
 # The committed seed predates this feature, so this test builds a FRESH compiler
-# via scripts/install.sh (default, no --cli-wasm seed override) into a throwaway
+# via install/install.sh (default, no --cli-wasm seed override) into a throwaway
 # VIBE_HOME/VIBE_BIN_DIR so it never touches a real install.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
 # Fresh compiler (NOT the seed): the seed predates `vibe diagnostics`.
-bash scripts/install.sh >/dev/null 2>&1
+bash install/install.sh >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 

@@ -36,7 +36,7 @@ run_number() {
 echo "[test] installing into $VIBE_HOME"
 # Use the committed seed for speed/determinism; the launcher/runner path is what
 # we are testing, not a fresh compiler build.
-bash scripts/install.sh \
+bash install/install.sh \
   --cli-wasm "$ROOT_DIR/bootstrap/seed/compiler.wasm" \
   >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"

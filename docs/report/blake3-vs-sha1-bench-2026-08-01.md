@@ -148,7 +148,7 @@ vibe bench (net of baseline、同一 wasmtime):
 
 ```bash
 bash scripts/build_cli_wasm.sh            # dist/cli/vibe-cli.wasm
-bash scripts/install.sh --cli-wasm dist/cli/vibe-cli.wasm
+bash install/install.sh --cli-wasm dist/cli/vibe-cli.wasm
 vibe test  lib/@vibex/blake3/blake3_test.vibe
 vibe bench lib/@vibex/blake3/blake3_bench.vibe
 vibe bench lib/@vibe/core/sha1_bench.vibe

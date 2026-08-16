@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/insta
 ```
 
 This shallow-clones the repo (override with `VIBE_INSTALL_REPO` /
-`VIBE_INSTALL_REF`) and delegates to `scripts/install.sh`. Requirements:
+`VIBE_INSTALL_REF`) and delegates to `install/install.sh`. Requirements:
 `git`, `bash`, `cargo` (the wasmtime runner builds from source); `node` is
 optional (used to self-build the newest compiler — without it the committed
 seed compiler is installed, which is always functional).
@@ -21,7 +21,7 @@ seed compiler is installed, which is always functional).
 ## Quick install (from a checkout)
 
 ```bash
-bash scripts/install.sh
+bash install/install.sh
 ```
 
 This will:
@@ -83,7 +83,7 @@ dir is opt-in via `--bin-dir` / `VIBE_BIN_DIR` (used by the test harness).
 ## Installer options
 
 ```
-bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
+bash install/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
                         [--runner PATH]      # use a prebuilt viberun
                         [--cli-wasm PATH]    # use a specific compiler wasm
                         [--toolchain NAME]   # toolchain name (default: main)
@@ -97,7 +97,7 @@ bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
 To install a released compiler instead of the seed, pass the release artifact:
 
 ```bash
-bash scripts/install.sh --cli-wasm vibe-compiler-<tag>.wasm
+bash install/install.sh --cli-wasm vibe-compiler-<tag>.wasm
 ```
 
 ## Commands

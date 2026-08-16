@@ -9,7 +9,7 @@
 # with the trapping statement's actual line (not just the function's
 # declaration line).
 #
-# Builds a FRESH compiler+runner via scripts/install.sh into a throwaway
+# Builds a FRESH compiler+runner via install/install.sh into a throwaway
 # VIBE_HOME/VIBE_BIN_DIR (the committed seed predates #644).
 set -euo pipefail
 
@@ -23,7 +23,7 @@ export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE VIBE_RUNNER_BACKTRACE || true
 
 install_log="$WORK/install.log"
-bash scripts/install.sh >"$install_log" 2>&1 || true
+bash install/install.sh >"$install_log" 2>&1 || true
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 # Fresh-build detection (see test_vibe_break_interior.sh): without a

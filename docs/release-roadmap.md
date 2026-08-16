@@ -162,7 +162,7 @@
 
 - **テーマ1 (install) ほぼ完了** — `viberun` に compiler CLI 用 raw-ABI host
   import を実装、`vibe` launcher（run/compile/build/check/test/fetch/version/
-  self-update/help）、`scripts/install.sh`（install 時 `.cwasm` AOT）、
+  self-update/help）、`install/install.sh`（install 時 `.cwasm` AOT）、
   `scripts/build_cli_wasm.sh`、`docs/install.md`、CI（`cli-install.yml`）。
 - **診断表面化 (UX/LSP 基盤)** — コンパイルエラーを `<output>.diag` に書き
   launcher が `error: <file>: <message>` 表示（trap/backtrace を置換）。
@@ -419,13 +419,13 @@
       raw-ABI host import (`vibe::env-get`/`args-get`/`fs_*`) を実装し、runner が
       compiler wasm を実行基盤として動かせるようにした。compiler wasm は
       差し替え可能 artifact として分離（`runtime/viberun/src/main.rs`）。
-- [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
+- [x] **1-2 install-time `.cwasm` ビルド** — `install/install.sh` が runner 取得後に
       `viberun --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
       launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。
 - [x] **1-3 マルチプラットフォーム CI** — `.github/workflows/cli-install.yml` が
       ubuntu/macos で runner build + `scripts/test_vibe_cli_install.sh` smoke test。
       （Windows は launcher が bash 依存のため対象外。残: arch matrix 拡張）
-- [x] **1-4 ワンライナー installer** — `scripts/install.sh` が runner build +
+- [x] **1-4 ワンライナー installer** — `install/install.sh` が runner build +
       compiler wasm 配置 + `.cwasm` 生成 + `vibe` launcher 配置 + PATH link。
       `--prefix`/`--runner`/`--cli-wasm`/`--bin-dir`/`--no-link` 対応。
 - [x] **1-5 compiler-only update 導線** — `vibe self update --cli-wasm <path>` が

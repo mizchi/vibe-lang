@@ -8,7 +8,7 @@
 # Usage: gen_context_pack.sh <repo_root>   (writes to stdout)
 #
 # Two callers:
-#   - scripts/install.sh runs this ONCE at install time and ships the
+#   - install/install.sh runs this ONCE at install time and ships the
 #     output as $TC_DIR/lib/context-pack.md (the source docs/eval tree
 #     itself is not shipped with the installed toolchain).
 #   - runtime/vibe's `context-pack` case falls back to running this
