@@ -1281,6 +1281,64 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
   (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends), ArrayBuilder::freeze(err_offsets), ArrayBuilder::freeze(err_msgs))
 }
 
+/// Source of the parse that supplied `starts`. Located/recovering entries
+/// set this so `format_unexpected_token` can turn a token index into
+/// `line:col`. `lex` must not write it: a later lex of B must not relocate
+/// a parse of A's tokens (#1862).
+let last_parse_source_cell: Array[String] = Array::slice([
+  ""
+], 0, 0)
+
+/// Failing token index for the last `format_unexpected_token`. Recovery
+/// used to decode `at #N` from the message; the user-facing form no longer
+/// carries that index, so the pos lives here instead of in the string.
+let last_unexpected_token_pos_cell: Array[Int] = Array::slice([
+  0
+], 0, 0)
+
+export fn remember_parse_source(source: String) -> Unit {
+  Array::truncate(last_parse_source_cell, 0)
+  Array::push(last_parse_source_cell, source)
+}
+
+fn last_parse_source() -> String {
+  if Array::length(last_parse_source_cell) > 0 {
+    Array::get(last_parse_source_cell, 0)
+  } else {
+    ""
+  }
+}
+
+export fn last_unexpected_token_pos() -> Int {
+  if Array::length(last_unexpected_token_pos_cell) > 0 {
+    Array::get(last_unexpected_token_pos_cell, 0)
+  } else {
+    -1
+  }
+}
+
+fn remember_unexpected_token_pos(pos: Int) -> Unit {
+  Array::truncate(last_unexpected_token_pos_cell, 0)
+  Array::push(last_unexpected_token_pos_cell, pos)
+}
+
+/// User-facing unexpected-token diagnostic (#1862). Never encodes a token
+/// index or lexer `(prev=..., next=...)` debris. Emits `line L:col C:` only
+/// when `starts` contains the failing token and this parse remembered its
+/// source; tokens-only `parse_program` has empty `starts` and must not
+/// invent a location from a leftover source.
+export fn format_unexpected_token(starts: Array[Int], pos: Int, actual: String) -> String {
+  remember_unexpected_token_pos(pos)
+  let source = last_parse_source()
+  if pos >= 0 && pos < Array::length(starts) && String::length(source) > 0 {
+    let off = Array::get(starts, pos)
+    let (line, col) = offset_to_line_col(source, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": unexpected token: ", actual)))))
+  } else {
+    String::concat("unexpected token: ", actual)
+  }
+}
+
 /// Convert a 0-based char offset (from lex_with_offsets) to 1-based (line, col).
 /// Source-span foundation: lets diagnostics report a real `line:col`.
 export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
