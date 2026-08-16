@@ -67,6 +67,13 @@ import @vibe/compiler/codegen {
   compile_inline_wat
 }
 
+// #1948: the same Show-interpolation contract `vibe check` runs via
+// `expand_interp_stmts` after typecheck. `--single-file` used to stop at
+// `check_program` and certify `"\{no_show}"` as clean.
+import @vibe/compiler/entry/source_compile/wasi_only {
+  expand_interp_stmts
+}
+
 import @vibe/compiler/loader {
   ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
 }
@@ -5003,6 +5010,10 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Exceptio
     } else {
       handle {
         let _env = check_program(stmts)
+        // #1948: full `vibe check` rejects a missing Show renderer here via
+        // check_linked_file -> expand_interp_stmts. The single-file lane
+        // must run the same pass or it reports clean for the same source.
+        expand_interp_stmts(stmts)
         // #946(4): the type checker never touches inline-wasm bodies (they're
         // opaque `%wasm(...)` marker calls until codegen extracts them — see
         // collect_inline_wasm_fns above), so a clean typecheck says nothing

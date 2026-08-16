@@ -1,0 +1,36 @@
+//# Imports
+
+// #1948: `vibe check --single-file` must reject interpolation of a declared
+// aggregate with no Show renderer, same contract as full `vibe check`.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+fn diags(src: String) -> Array[String] with Exception {
+  collect_all_diagnostics(src)
+}
+
+fn joined(src: String) -> String with Exception {
+  String::join(diags(src), "\n")
+}
+
+//# Tests
+
+fn interp_of(name: String) -> String {
+  // `"\{name}"` without writing an interpolation in THIS file.
+  String::concat("\"", String::concat("\\", String::concat("{", String::concat(name, "}\""))))
+}
+
+test "single-file diagnostics reject interpolating a type with no Show renderer" {
+  let src = String::concat("enum Hidden {\n  A\n}\nfn show_it() -> String {\n  let h = Hidden::A\n  ", String::concat(interp_of("h"), "\n}\n"))
+  let text = joined(src)
+  assert(String::contains(text, "cannot interpolate a value of type `Hidden`"))
+  assert(String::contains(text, "derive(Show)"))
+}
+
+test "single-file diagnostics accept interpolating a type with derive(Show)" {
+  let src = String::concat("enum Shown {\n  A\n} derive (Show)\nfn show_it() -> String {\n  let h = Shown::A\n  ", String::concat(interp_of("h"), "\n}\n"))
+  assert(Array::length(diags(src)) == 0)
+}
