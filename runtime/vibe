@@ -1700,6 +1700,22 @@ case "$cmd" in
       return 1
     }
 
+    # VIBE_TEST_BACKEND=gc was documented as switching `vibe test` to the
+    # wasm-gc backend, but only scripts/vibe_test.sh read it -- this branch
+    # compiled with compile_to's default and ran LINEAR while reporting a
+    # pass. That is the exact shape #1701 fixed for `vibe bench`: you ask for
+    # gc, you silently get linear, and the green result says nothing about
+    # which lane produced it. An unrecognized value is rejected rather than
+    # quietly meaning linear, because a typo has the same failure mode.
+    #
+    # The pass cache needs no backend key: it is sha256 of the compiled wasm,
+    # and the two backends do not emit the same bytes.
+    test_backend="${VIBE_TEST_BACKEND:-linear}"
+    case "$test_backend" in
+      linear|gc) ;;
+      *) die "VIBE_TEST_BACKEND must be 'linear' or 'gc', got: $test_backend" ;;
+    esac
+
     _test_run_one() {
       src="$1"
       warm_jobs="$2"
@@ -1735,7 +1751,7 @@ case "$cmd" in
         else
           unset VIBE_TESTMETA_OUT
         fi
-        if ! compile_to "$src" "$out" "__no_entry__"; then
+        if ! compile_to "$src" "$out" "__no_entry__" "" "" "" "$test_backend"; then
           unset VIBE_TESTMETA_OUT
           echo "FAIL (compile): $src"; rm -f "$out" "$meta"; return 1
         fi

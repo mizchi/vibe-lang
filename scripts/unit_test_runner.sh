@@ -101,9 +101,21 @@ is_excluded() {
   return 1
 }
 
+# Generated runtime fixture tests come from `$RUNTIME_FIXTURE_GENERATED_DIR`
+# above, which this script rebuilds from scratch on every run -- that is the
+# only copy the corpus should contain.
+#
+# The prune covers the generator's OWN default output path, which is still
+# `lib/@vibe/compiler/_generated_runtime_fixtures/` (gitignored) for anyone who
+# invokes scripts/generate_runtime_fixture_tests.mjs directly rather than
+# through the wrapper above. Because it lands under lib/, such a copy silently
+# JOINED the gated corpus -- twice, each time surfacing as "N active unit-test
+# file(s) regressed" for fixtures the generator is still being taught to wrap
+# (#1855). CI never sees it (fresh clone), which is exactly what makes it a
+# trap: it only ever fails for the person who ran the generator.
 discover() {
   find examples lib fixtures "$RUNTIME_FIXTURE_GENERATED_DIR" \
-    -name '*_test.vibe' 2>/dev/null \
+    -name '*_test.vibe' -not -path '*/_generated_runtime_fixtures/*' 2>/dev/null \
     | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort
 }
 

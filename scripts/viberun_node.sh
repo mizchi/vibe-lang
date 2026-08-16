@@ -10,18 +10,43 @@
 # rule it carries guarded nothing. See #1870.
 #
 # The repository already ships a runner that works anywhere node does
-# (`scripts/run_wasm_vibe_host_runner.sh`), and `viberun`'s calling convention
-# for the CLI is just `<wasm> <args...>` against the `cli_main` export. So this
-# is the whole adapter:
+# (`scripts/run_wasm_vibe_host_runner.sh`), so this is the whole adapter:
 #
 #   VIBE_RUNNER=scripts/viberun_node.sh \
 #   VIBE_CLI_WASM=<a stage2.wasm> \
 #     runtime/vibe grep --pattern '...' lib
 #
-# Scope note: this covers the `cli_main` ABI, which is what the query
-# subcommands (grep / check / symbols / type-at / ...) use. A subcommand that
-# invokes a different export needs its own handling; none of the lint's does.
+# `runtime/vibe` calls the runner in TWO shapes and they need different
+# exports:
+#
+#   "$RUNNER" "$cli" "$src" "$out" "$entry"   -- drive the compiler: cli_main
+#   "$RUNNER" "$out"                          -- run a compiled program: _start
+#
+# Invoking `cli_main` unconditionally makes the second shape fail with
+# "missing export: cli_main" for every test/run/bench the program lane uses, so
+# the export is chosen from whether the wasm being run IS the compiler.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$@"
+
+# First non-flag argument is the wasm module (`--bench` and friends precede it).
+module=""
+for arg in "$@"; do
+  case "$arg" in
+    -*) ;;
+    *) module="$arg"; break ;;
+  esac
+done
+
+is_cli=0
+if [ -n "${VIBE_CLI_WASM:-}" ] && [ -n "$module" ] && [ "$module" = "$VIBE_CLI_WASM" ]; then
+  is_cli=1
+fi
+case "$module" in
+  */vibe-cli.wasm|*/stage0.wasm|*/stage1.wasm|*/stage2.wasm) is_cli=1 ;;
+esac
+
+if [ "$is_cli" -eq 1 ]; then
+  exec bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$@"
+fi
+exec bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" "$@"

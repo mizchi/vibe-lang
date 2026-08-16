@@ -493,15 +493,16 @@ completion / signature help を提供する。詳細は
   だけの恒久的な例外。新規に allowlist エントリが増える場合は debt として
   扱い、`bash scripts/vibe_fmt.sh <file>` で整形してから追加を検討する。
 
-### `vibe test` / `vibe bench` backend 切り替え
+### Selecting the backend for `vibe test` / `vibe bench`
 
-`vibe test` / `vibe bench` は既定で linear-memory backend を使う
-(`vibe build --release` と同じ codegen path)。
+`vibe test` and `vibe bench` use the linear-memory backend by default (the same
+codegen path as `vibe build --release`).
 
-**`VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` を設定すると wasm-gc
-backend に切り替わる** — HTTP/FS host imports を必要としない pure な
-test/bench に限る。wasm-gc 専用機能 (ADR-0052 の `mut` struct field 等)
-を test/bench レベルで踏みたいときに使う。
+**`VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` switch to the wasm-gc
+backend** — for pure tests and benches only, ones that need no HTTP/FS host
+imports. Use it when you want to exercise a wasm-gc-only feature (ADR-0052's
+`mut` struct fields, say) at test/bench level. Both lower to `VIBE_BACKEND=gc`,
+which callers can also set directly.
 
 ```bash
 vibe test foo_test.vibe                        # default: linear
@@ -511,37 +512,45 @@ vibe bench foo_bench.vibe                       # default: linear
 VIBE_BENCH_BACKEND=gc vibe bench foo_bench.vibe # opt-in: wasm-gc
 ```
 
-**gc レーンは1ファイルを自己完結として compile する** — これが「gc で通らない
-test」の圧倒的多数の理由。落ちるのは import した名前を**実際に使ったとき**で、
-import 文があること自体ではない:
+**The gc lane compiles one file as self-contained.** That is the reason behind
+the overwhelming majority of "this test does not pass on gc". It fails when an
+imported name is **actually used**, not merely because an `import` is present:
 
 ```console
 $ VIBE_TEST_BACKEND=gc vibe test lib/@vibe/core/sha1_test.vibe
-internal compiler error: `sha1` (local, @gc_call) reached code generation unresolved.
+error: `sha1` is imported, and the wasm-gc backend compiles one file at a time -- an imported name cannot be reached from it.
+  Run this file on the default (linear) backend instead: drop whichever gc selector got you here -- VIBE_TEST_BACKEND=gc (`vibe test`), VIBE_BENCH_BACKEND=gc (`vibe bench`), or VIBE_BACKEND=gc.
+  (An import is only a problem when the name is USED; an unused import is fine.)
 ```
 
-`sha1_test.vibe` は `import ./sha1.vibe { sha1 }` を持ち、それを呼ぶ。`sha1` 自体
-には何も問題がない。最小例で境界まで確認できる (実測、2026-08-16):
+`sha1_test.vibe` has `import ./sha1.vibe { sha1 }` and calls it. Nothing is
+wrong with `sha1` itself. The boundary, measured on a minimal example
+(2026-08-16):
 
 | | gc | linear |
 |---|---|---|
-| import した関数を**呼ぶ** | **落ちる** (`@gc_call` unresolved) | ok |
-| import はあるが**使わない** | ok | ok |
-| 同一ファイル内の関数を呼ぶ | ok | ok |
+| **calls** an imported function | **fails** | ok |
+| imports it but does **not use** it | ok | ok |
+| calls a function in the same file | ok | ok |
 
-診断は「compiler のバグなので報告してほしい」と言うが、**メッセージ中の名前が
-自分で import したものなら**、これはレーンの仕様であってバグではない。名前が
-import 由来でないなら本物の internal error なので、そのまま報告してよい。
+Until #1976 this shape answered with the codegen internal error — "this is a
+bug in the compiler and not in your program -- please report the source that
+triggers it". All three claims were false, and while that message hid the
+cause, three separate wrong explanations for it reached the docs (corrected in
+#1929). The rewrite is narrow on purpose: it fires only when the unresolved
+name is one **this file imports**. An unresolved name that is not import-derived
+still gets the internal error, and that one is genuine — report it.
 
-`bench` ブロックは gc レーンでは**まだ動かない** — gc backend は
-`__bench_<name>` の entry point を出さない (#1701)。`runtime/vibe` の bench 分岐が
-それを検出して明示的に落とす。bench cache はモードに backend を含めるので、
-`linear → gc` の切り替えでは自動的に再コンパイルされる。
+**`bench` blocks do not work on the gc lane yet** — the gc backend emits no
+`__bench_<name>` entry point (#1701), and `runtime/vibe`'s bench branch detects
+that and fails explicitly. The bench cache keys on the backend, so switching
+`linear → gc` recompiles automatically.
 
-builtin レベルの両レーン差は `scripts/builtin_parity_classification.tsv` に
-1行ずつあり、`check_builtin_parity.sh` が gate で強制する。**「gc に無い」と
-書かれた行が本当に穴なのはごく一部**で、残りは host import・意図的な非移植・
-分類上の artifact。数えるならそのファイルを見ること (#1861)。
+Builtin-level divergences between the two lanes have one row each in
+`scripts/builtin_parity_classification.tsv`, enforced at the gate by
+`check_builtin_parity.sh`. **Only a small fraction of the rows saying "absent on
+gc" are real gaps** — the rest are host imports, deliberate non-ports, and
+classification artifacts. Read that file if you want to count them (#1861).
 
 ## Task Management
 
