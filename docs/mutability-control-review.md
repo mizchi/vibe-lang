@@ -12,7 +12,7 @@
 > vibe の現状(Perceus RC・`let mut`・TaskGroup region 機構)と突き合わせて
 > 評価し、方向性が固まった項目から ADR に切り出す前提の検討記録。
 > Related: ADR-0021(superseded 経緯), ADR-0052(mut field), ADR-0055(RC
-> cutover), ADR-0060(`Write[r]`、proposed 停滞), ADR-0068(TaskGroup/Send),
+> cutover), ADR-0060(`Write[r]`、ADR-0090 が supersede), ADR-0068(TaskGroup/Send),
 > ADR-0082(コレクション命名), ADR-0088/0089, #418, #629, #1081。
 
 ## 評価対象(外部設計の要点)

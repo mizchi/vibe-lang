@@ -466,7 +466,7 @@ Phase 3 でも再利用できる。
 3. **ADR-0060 (`Write[r]` region モデル) との順序依存はない**。evidence
    passing は「今日 handle されている任意の effect」の実行戦略であり、
    `let mut` を effect として統一するかどうかという型システム側の設計
-   (ADR-0060、proposed のまま未実装) とは独立である。`Write[r]` が
+   (ADR-0060 — `let mut` への retrofit は撤回され ADR-0090 が supersede) とは独立である。`Write[r]` が
    将来実装されても、それは evidence passing が既に扱える「もう一つの
    handled effect」になるだけで、本 ADR 側の変更を要求しない。ADR-0060
    実装の先後を待つ理由はない。
