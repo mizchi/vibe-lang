@@ -1796,6 +1796,13 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       emit_call(buf, arr_get_idx)
       emit_local_set(buf, var_local)
       Array::push(local_names, var_name)
+      // #1967: step the index before the body. `continue` is `br` to this
+      // loop header (`ld = 0`). If the increment stayed after the body, an
+      // even-element `continue` retried the same `i` forever.
+      emit_local_get(buf, i_local)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_local)
       let nl3 = var_local + 1
       // Same innermost-loop ld reset as EWhile.
       let nl4 = ce(buf, body, local_names, nl3, 0)
@@ -1810,10 +1817,6 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         ()
       }
       emit_call(buf, arr_push_idx)
-      emit_local_get(buf, i_local)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_local_set(buf, i_local)
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)

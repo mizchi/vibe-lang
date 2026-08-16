@@ -638,6 +638,13 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   } else {
     ()
   }
+  // #1967: step the index before the body. `continue` is `br` to this
+  // loop header (`ld = 0`). If the increment stayed after the body, an
+  // even-element `continue` retried the same `i` forever.
+  emit_local_get(buf, i_local)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, i_local)
   let nl2 = var_local + 1
   // Same innermost-loop ld reset as EWhile (see compile_expr_tail3).
   let nl3 = compile_expr(buf, body, local_names, nl2, ctx, 0)
@@ -654,10 +661,6 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
     // -- releasing here could double-free a borrowed body value).
     emit_drop(buf)
   }
-  emit_local_get(buf, i_local)
-  emit_i64_const(buf, 1)
-  emit_i64_add(buf)
-  emit_local_set(buf, i_local)
   emit_br(buf, 0)
   emit_end(buf)
   emit_end(buf)
