@@ -29,14 +29,14 @@ set -euo pipefail
 #   isolation   two requests in flight at once each get their own body back.
 #
 # WHAT THIS GATE DOES NOT COVER, and why the line is here rather than in an
-# assertion (#1913): every request above delivers its body BUFFERED, so each
+# assertion (#1924): every request above delivers its body BUFFERED, so each
 # `stream.read` completes eagerly and the adapter's BLOCKED branch never runs.
 # A chunked upload that makes reads actually park, and a handler that stops
 # reading before end of stream, both trap in the guest today --
 # `uninitialized element` inside the injected `__hs_next`, which is main's CPS
 # lowering and not this adapter (the adapter has no tables). Both reproduce
 # against the committed emitter, so they are a pre-existing gap in the lane,
-# not something this gate can assert green. #1913 has the two reproductions.
+# not something this gate can assert green. #1924 has the two reproductions.
 #
 # Skips cleanly when cargo / wasm-tools / wac / wasmtime / curl are missing,
 # and fails instead under VIBE_P3_GATE_REQUIRE_TOOLS=1, matching the other P3
@@ -247,7 +247,7 @@ echo "[serve-body] an empty body ends the stream on the first read"
 # in-flight requests apart; it does NOT prove the adapter's per-handle bands,
 # because buffered reads complete eagerly and the two requests are never parked
 # at the same time. The version of this check that DOES exercise that -- two
-# slow chunked uploads -- is blocked on #1913.
+# slow chunked uploads -- is blocked on #1924.
 printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' >"$OUT_DIR/conc-a.bin"
 printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >"$OUT_DIR/conc-b.bin"
 conc_pids=()
@@ -281,7 +281,7 @@ stop_server
 # so before the adapter exported both halves, a handler that stops reading
 # early could not be composed at all. Emitting the component and plugging it is
 # what proves that edge is satisfied; actually SERVING such a handler is
-# blocked on #1913, which is why this stops at the plug.
+# blocked on #1924, which is why this stops at the plug.
 CLOSE_SRC="$OUT_DIR/close_handler.vibe"
 cat >"$CLOSE_SRC" <<'HEOF'
 export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {

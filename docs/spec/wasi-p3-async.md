@@ -1565,7 +1565,7 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
   whose import is `handler(.., body: stream<u8>)`. There is no
   `.collect().await` anywhere in it; the reader goes straight through.
 
-> **Known gap (#1913): reads in this lane must complete EAGERLY today.** Every
+> **Known gap (#1924): reads in this lane must complete EAGERLY today.** Every
 > body the gate serves arrives buffered, so each `stream.read` returns a byte
 > without blocking. Two shapes trap in the guest with `uninitialized element`
 > inside the injected `__hs_next` — a chunked upload slow enough that a read
