@@ -1,0 +1,247 @@
+//# Typed-local scan (gc lane)
+//
+// Decides where a sibling control-flow scope -- an `else` arm, a match arm --
+// starts numbering its locals (#1985).
+//
+// The gc lane cannot do what the linear lane does, which is start every arm at
+// the same slot and take the max (compile_expr.vibe's `EIf`): a slot has ONE
+// declared wasm type, so an arm that binds `(ref null $native_i64_array)`
+// (#1541) or `(ref null $native_struct_N)` (#1702) at slot N makes N unusable
+// as an i64 by its sibling. It used to assume every arm might, and started
+// each one above its sibling's high-water mark. A frame's local count then
+// grew as 2^nesting-depth: 509 locals against linear's 15 at depth 7, on code
+// that had no typed local anywhere in it.
+//
+// What actually has to hold is narrower: an arm may reuse its siblings' slots
+// as long as IT binds nothing typed, and starts above whatever typed slots
+// they already claimed. So the answer is per-scope, not per-frame, and one
+// array literal no longer costs a 2000-local function every unrelated branch
+// in it.
+//
+// This is a LEAF file on purpose. Its consumers, backend_expr.vibe and
+// backend_match.vibe, sit inside a cluster that backend_expr.vibe already
+// reaches transitively, so putting the scan in either one closes an import
+// cycle. Same reasoning as backend_direct_abi_names.vibe.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, expr_children
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtxGc
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+//# Functions
+
+/// The slot number a sibling scope should start numbering its locals at.
+///
+/// `base` is where the linear lane would start it (the first slot free at the
+/// branch), `stacked` the high-water mark of everything compiled before it in
+/// this construct. Returns `stacked` when `scope` may bind a typed local, and
+/// otherwise the lowest slot that clears every typed slot already claimed --
+/// which is `base` itself unless a sibling claimed one.
+///
+/// Conservative in one direction only. Over-reporting a scope costs the old,
+/// wasteful numbering. UNDER-reporting one emits a body whose instructions
+/// disagree with its own local declaration, which wasm validation rejects --
+/// loudly, never silently.
+fn gc_sibling_scope_start(ctx: CompileCtxGc, local_names: Array[String], scope: Expr, base: Int, stacked: Int) -> Int {
+  if gc_scope_binds_typed_local(scope, ctx, gc_native_local_names(ctx, local_names)) {
+    stacked
+  } else {
+    let ceiling = gc_frame_typed_slot_ceiling(ctx)
+    if ceiling > base {
+      ceiling
+    } else {
+      base
+    }
+  }
+}
+
+/// One past the highest slot this frame has already declared as a typed local,
+/// or 0 when it has none. Both lanes contribute: the array-reference list
+/// (slots, appended) and the struct-reference map (slot-indexed, -1 for
+/// unset). Both are the DECLARATION rows -- never pruned at a scope boundary
+/// -- which is what makes this a floor a later sibling can safely start above.
+fn gc_frame_typed_slot_ceiling(ctx: CompileCtxGc) -> Int {
+  let mut ceiling = 0
+  let mut i = 0
+  while i < Array::length(ctx.gc_native_array_local_types) {
+    let slot = Array::get(ctx.gc_native_array_local_types, i)
+    if slot + 1 > ceiling {
+      ceiling = slot + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut si = 0
+  while si < Array::length(ctx.gc_native_struct_decl) {
+    if Array::get(ctx.gc_native_struct_decl, si) >= 0 && si + 1 > ceiling {
+      ceiling = si + 1
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  ceiling
+}
+
+/// Names of the native array locals currently in scope. `gc_native_array_locals`
+/// tracks SLOTS and is pruned at scope boundaries, so this is the live set --
+/// which is what `let ys = xs` needs to bind a second one.
+fn gc_native_local_names(ctx: CompileCtxGc, local_names: Array[String]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(ctx.gc_native_array_locals) {
+    let slot = Array::get(ctx.gc_native_array_locals, i)
+    if slot >= 0 && slot < Array::length(local_names) {
+      Array::push(names, Array::get(local_names, slot))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+/// Whether compiling `scope` can claim a local slot for a TYPED wasm-gc value
+/// rather than the ordinary i64.
+///
+/// The shapes checked below are the whole allocation surface:
+///
+///   - an `ELet` whose value is an array literal (#1541), a record literal
+///     that lowers into a wasm-gc struct (#1702), a direct-ABI call whose
+///     result is a reference, or an identifier already bound to a native array.
+///     `ELet` is the ONLY binder that opens either lane, so a literal anywhere
+///     else -- returned, in a tuple, in an argument consumed as a tagged value
+///     -- binds nothing.
+///   - an array literal in a CALL ARGUMENT, which
+///     `gc_compile_native_array_ref` materializes into a slot when the callee
+///     takes that parameter on the reference lane. `EArray` is the only one of
+///     its arms that allocates; the rest forward to a value already on the
+///     lane. It recurses through `if` arms, so this looks through them too --
+///     and only through them, which is what keeps `f(g([1, 2]))` from being
+///     charged to the outer call (the inner one is a node of its own and gets
+///     asked separately).
+///
+/// `native_names` may over-report through shadowing (an inner binding of the
+/// same name), which only ever answers `true` where `false` would have done.
+///
+/// Descends into `EFn` bodies too, even though a lambda compiles into its own
+/// frame with its own slot numbering. Over-reporting is the safe direction,
+/// and it keeps this free of any assumption about which expressions open a
+/// new frame.
+fn gc_scope_binds_typed_local(scope: Expr, ctx: CompileCtxGc, native_names: Array[String]) -> Bool {
+  if gc_expr_binds_typed_local_here(scope, ctx, native_names) {
+    true
+  } else {
+    let kids = expr_children(scope)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(kids) {
+      if !found && gc_scope_binds_typed_local(Array::get(kids, i), ctx, native_names) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// The per-node half of gc_scope_binds_typed_local; see that function for why
+/// these shapes are the complete set.
+fn gc_expr_binds_typed_local_here(expr: Expr, ctx: CompileCtxGc, native_names: Array[String]) -> Bool {
+  match expr {
+    ELet(_, value, _, _) => match value {
+      EArray(_) => ctx.gc_native_array_type_idx >= 0,
+      ERecord(_, _, _) => ctx.gc_native_struct_type_base >= 0,
+      EIdent(source, _) => array_contains_str(native_names, source),
+      _ => gc_direct_abi_result_is_native(value, ctx)
+    },
+    ECall(_, args, _) => if ctx.gc_native_array_type_idx >= 0 {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if !found && gc_ref_lane_expr_allocates(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// Whether lowering `expr` on the reference lane materializes a fresh slot --
+/// the `EArray` arm of `gc_compile_native_array_ref`, reachable through that
+/// function's own `if` recursion and nothing else.
+fn gc_ref_lane_expr_allocates(expr: Expr) -> Bool {
+  match expr {
+    EArray(_) => true,
+    EIf(_, then_e, else_e) => gc_ref_lane_expr_allocates(then_e) || gc_ref_lane_expr_allocates(else_e),
+    _ => false
+  }
+}
+
+/// Index of `name` in the direct-ABI evidence table, or -1.
+fn gc_direct_abi_name_slot(abi_names: Array[String], name: String) -> Int {
+  let exact = gc_direct_abi_name_slot_exact(abi_names, name)
+  if exact >= 0 {
+    exact
+  } else {
+    gc_direct_abi_name_slot_exact(abi_names, String::concat(name, "$ref"))
+  }
+}
+
+fn gc_direct_abi_name_slot_exact(abi_names: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(abi_names) {
+    if found < 0 && Array::get(abi_names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn gc_direct_abi_result_is_native(expr: Expr, ctx: CompileCtxGc) -> Bool {
+  match expr {
+    // Delegates rather than scanning `gc_direct_abi_names` itself: this asks
+    // "is this CALLEE on the lane", so it has to answer exactly as the escape
+    // gate and acceptance do -- #1722's ref-twin fallback included. A private
+    // copy of the scan silently omitted that fallback, so a `let` bound to a
+    // twin call was given an i64 local while the call returned a reference.
+    ECall(EIdent(name, _), _, _) => {
+      let idx = gc_direct_abi_name_slot(ctx.gc_direct_abi_names, name)
+      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
+    },
+    _ => false
+  }
+}
+
+//# Misc
+
+export {
+  gc_direct_abi_name_slot, gc_direct_abi_result_is_native, gc_sibling_scope_start
+}

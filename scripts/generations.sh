@@ -462,12 +462,11 @@ run_selfbuild_compile() {
   # row, which is load-bearing for its other callers (see the doc comment on
   # selfbuild_compile_stage2_gc in lib/@vibe/compiler/compiler.vibe).
   #
-  # This path does NOT yet succeed -- it reaches codegen and stops at the
-  # `vibe_process_exit_raw` host import. It exists so that stopping point is
-  # reproducible from the supported build path instead of from an ad-hoc
-  # invocation, which is how it previously got measured wrong: at node's
-  # DEFAULT stack size both lanes die in the type checker first, so a probe
-  # run without --stack-size cannot see any codegen-stage blocker at all.
+  # Run it through THIS path, never an ad-hoc invocation: at node's DEFAULT
+  # stack size both lanes die in the type checker long before codegen, so a
+  # probe without --stack-size cannot see the gc lane's real state at all. It
+  # is how the lane previously got reported as far behind when it in fact
+  # reaches the self-compile fixpoint (scripts/test_gc_selfbuild.sh).
   local selfbuild_export="selfbuild_compile_stage2"
   if [ "${VIBE_BACKEND:-}" = "gc" ]; then
     selfbuild_export="selfbuild_compile_stage2_gc"

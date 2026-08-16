@@ -1,0 +1,206 @@
+// #1985: sibling control-flow scopes share local slot numbers on the gc lane
+// only when the scope binds no TYPED local (a wasm-gc array/struct reference).
+// Every function here is a case the decision has to get right, and every one
+// of them is a case where getting it wrong produces a module that fails wasm
+// VALIDATION rather than a wrong answer -- so running this fixture at all is
+// most of the test.
+//
+// The depth-5 counterpart that measures the local COUNT is
+// fixtures/gc_nested_branch_locals.vibe.
+
+// Sibling nesting with no typed local anywhere: the shape that used to grow
+// 2^depth locals. Both arms bind at the same lexical depth, so a slot really
+// is reused.
+fn nested_no_typed(n: Int) -> Int {
+  if n > 6 {
+    let a = n + 1
+    let b = a * 2
+    if n > 7 {
+      let c = a + b
+      c
+    } else {
+      let d = b - a
+      d
+    }
+  } else {
+    let e = n - 1
+    let f = e * 3
+    if n > 2 {
+      let g = e + f
+      if n > 1 {
+        let h = g + 1
+        h
+      } else {
+        let i = g - 1
+        i
+      }
+    } else {
+      let j = f - e
+      if n > 0 {
+        let k = j + 2
+        k
+      } else {
+        let l = j - 2
+        l
+      }
+    }
+  }
+}
+
+// A native array literal in the THEN arm, an ordinary i64 binding in the ELSE
+// arm at the same depth. Reusing the slot here would declare it i64 and set an
+// array reference into it.
+fn native_in_then(n: Int) -> Int {
+  if n > 3 {
+    let xs = [10, 20, 30]
+    Array::get(xs, 1)
+  } else {
+    let y = 42
+    y
+  }
+}
+
+// The mirror image, and the direction that rules out deciding from the THEN
+// arm alone: nothing is known about the else arm until it is compiled.
+fn native_in_else(n: Int) -> Int {
+  if n > 300 {
+    let y = 42
+    y
+  } else {
+    let xs = [10, 20, 30]
+    Array::get(xs, 1)
+  }
+}
+
+// Nesting AND a typed local in the same frame. The arms that bind an array
+// stack; the ones that do not still share slots, and both have to land in the
+// same declaration.
+fn nested_with_typed(n: Int) -> Int {
+  if n > 6 {
+    let a = n + 1
+    if n > 7 {
+      let b = a + 1
+      b
+    } else {
+      let c = a - 1
+      c
+    }
+  } else {
+    let xs = [7, 8, 9]
+    if n > 1 {
+      Array::get(xs, 0)
+    } else {
+      Array::get(xs, 2)
+    }
+  }
+}
+
+// `let ys = xs` binds a SECOND native local off an existing one. It is the
+// binding site the scan does not look for directly, so it is covered by asking
+// whether a native local is in scope -- which it is, here, in the sibling arm.
+fn native_alias_in_sibling(n: Int) -> Int {
+  let xs = [4, 5, 6]
+  if n > 3 {
+    let ys = xs
+    Array::get(ys, 2)
+  } else {
+    let z = 11
+    z
+  }
+}
+
+enum Shape {
+  Dot;
+  Line(Int);
+  Box(Int, Int)
+}
+
+// Match arms are the same question with N siblings instead of 2.
+fn match_no_typed(s: Shape) -> Int {
+  match s {
+    Dot => {
+      let a = 1
+      a
+    }
+    Line(w) => {
+      let b = w * 2
+      b
+    }
+    Box(w, h) => {
+      let c = w + h
+      let d = c * 2
+      d
+    }
+  }
+}
+
+// One arm binds a native array; its siblings bind i64 at the same depth.
+fn match_with_typed(s: Shape) -> Int {
+  match s {
+    Dot => {
+      let a = 1
+      a
+    }
+    Line(w) => {
+      let xs = [w, w * 2, w * 3]
+      Array::get(xs, 2)
+    }
+    Box(w, h) => {
+      let c = w + h
+      c
+    }
+  }
+}
+
+// A lambda compiles into its OWN frame: this one may share slots even though
+// the enclosing function binds a native array.
+fn lambda_frames(n: Int) -> Int {
+  let xs = [1, 2, 3]
+  let f = (m: Int) -> Int {
+    if m > 2 {
+      let a = m + 1
+      if m > 3 {
+        let b = a + 1
+        b
+      } else {
+        let c = a - 1
+        c
+      }
+    } else {
+      let d = m - 1
+      if m > 0 {
+        let e = d + 1
+        e
+      } else {
+        let g = d - 1
+        g
+      }
+    }
+  }
+  f(n) + Array::get(xs, 0)
+}
+
+test "sibling slot reuse keeps both lanes answering the same" {
+  inspect(nested_no_typed(8), "27")
+  inspect(nested_no_typed(7), "8")
+  inspect(nested_no_typed(5), "17")
+  inspect(nested_no_typed(1), "2")
+  inspect(native_in_then(5), "20")
+  inspect(native_in_else(5), "20")
+  inspect(nested_with_typed(8), "10")
+  inspect(nested_with_typed(2), "7")
+  inspect(native_alias_in_sibling(5), "6")
+  inspect(native_alias_in_sibling(1), "11")
+  inspect(match_no_typed(Dot), "1")
+  inspect(match_no_typed(Line(5)), "10")
+  inspect(match_no_typed(Box(3, 4)), "14")
+  inspect(match_with_typed(Dot), "1")
+  inspect(match_with_typed(Line(5)), "15")
+  inspect(match_with_typed(Box(3, 4)), "7")
+  inspect(lambda_frames(4), "7")
+  inspect(lambda_frames(1), "2")
+}
+
+export let main = () -> Int {
+  nested_no_typed(8) + native_in_then(5) + native_in_else(5) + nested_with_typed(8) + native_alias_in_sibling(5) + match_with_typed(Line(5)) + lambda_frames(4)
+}

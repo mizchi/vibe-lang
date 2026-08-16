@@ -15,6 +15,10 @@ import @vibe/compiler/core {
   leb128_encode_u32
 }
 
+import ./backend_typed_local_scan.vibe {
+  gc_sibling_scope_start
+}
+
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
 }
@@ -561,18 +565,21 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
   let catchall_idx = find_catchall_idx(arms)
   let num_cond_arms = catchall_idx
   let mut max_nl = nl1
-  // Match arms are sibling control-flow scopes. Their locals may have
-  // different Wasm value types (notably native array refs versus i64), so
-  // allocate each arm after the previous arm's high-water mark rather than
-  // reusing the same lexical slots.
-  let mut next_arm_local = Array::length(local_names)
+  // Match arms are sibling control-flow scopes, and each one starts numbering
+  // where gc_sibling_scope_start puts it: reusing its siblings' slots when it
+  // binds nothing typed, above their high-water mark when it might (#1985).
+  // Stacking every arm unconditionally is worse here than at an `if` -- N arms
+  // stack N deep, so a match of matches multiplied a frame's local count by
+  // the arm count per level.
+  let arm_base_local = Array::length(local_names)
   let mut ai = 0
   while ai < num_cond_arms {
+    let (p, arm_body) = Array::get(arms, ai)
+    let next_arm_local = gc_sibling_scope_start(ctx, local_names, arm_body, arm_base_local, max_nl)
     while Array::length(local_names) < next_arm_local {
       Array::push(local_names, "")
     }
     let names_len_at_arm = Array::length(local_names)
-    let (p, arm_body) = Array::get(arms, ai)
     let ld_arm = if ld >= 0 {
       ld + ai + 1
     } else {
@@ -590,7 +597,6 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
     if Array::length(local_names) > max_nl {
       max_nl = Array::length(local_names)
     }
-    next_arm_local = max_nl
     emit_else(buf)
     Array::truncate(local_names, names_len_at_arm)
     agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_arm)
@@ -605,12 +611,12 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
   } else {
     -1
   }
-  while Array::length(local_names) < next_arm_local {
-    Array::push(local_names, "")
-  }
-  let _names_len_at_catch = Array::length(local_names)
   if catchall_idx < num_arms {
     let (cp, cbody) = Array::get(arms, catchall_idx)
+    let catch_start = gc_sibling_scope_start(ctx, local_names, cbody, arm_base_local, max_nl)
+    while Array::length(local_names) < catch_start {
+      Array::push(local_names, "")
+    }
     // Catch-all arm: recursive binds handle PBind / PCtor / PTuple / PStruct
     // uniformly, including nested payload binds (and fix the old tuple-bind
     // offset bug: tuples have no header, elements sit at i*8).
