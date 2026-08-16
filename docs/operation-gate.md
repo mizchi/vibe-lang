@@ -2,23 +2,24 @@
 
 Status: accepted from 2026-06-12.
 
-この文書は、vibe compiler を運用するための gate と判断基準を固定する。
-長期方針と bootstrap bump の詳細は [bootstrap.md](bootstrap.md) に従う。
+This document pins the gates and decision criteria for operating the vibe
+compiler. Long-term policy and bootstrap-bump details follow
+[bootstrap.md](bootstrap.md).
 
 ## Cutover Baseline
 
-採用した基準:
+Adopted baseline:
 
 - source commit: `39eab0519952ca72599b0b7064d00e3fbd2ac302`
 - seed tag: `selfhost-cutover-base-2026-06-12`
 - seed artifact: `bootstrap/seed/compiler.wasm`
 - seed sha256: `f9da8e285fe0c71c33670a2b9a13a49088dee3ec9a46d2175e975968c6b4b26b`
 - source of truth: `lib/@vibe/compiler/` and `lib/@vibe/cli/`
-- MoonBit `src/`: (cutover 当時) legacy bootstrap / fallback / host-runner 層。
-  その後 #594 (2026-06-23) で撤去済み — recovery point は tag
+- MoonBit `src/`: at cutover, the legacy bootstrap / fallback / host-runner
+  layer. Removed later in #594 (2026-06-23) — recovery point is tag
   `moonbit-host-final-2026-06-23` (`59ef040`)
 
-2026-06-12 の local cutover sign-off:
+Local cutover sign-off on 2026-06-12:
 
 | gate | value |
 | --- | ---: |
@@ -34,99 +35,124 @@ Status: accepted from 2026-06-12.
 
 ## Development Mode
 
-compiler/checker/codegen の挙動変更は `lib/@vibe/compiler/` に入れる。CLI の
-コマンド挙動、adapter、bundle、component entry は `lib/@vibe/cli/` と
-`lib/@vibe/compiler/` 側を source of truth とする。旧 MoonBit `src/` は #594 で
-撤去済みで、現在の bootstrap 境界は committed seed (`bootstrap/seed/`) のみ。
+Put compiler / checker / codegen behavior changes in `lib/@vibe/compiler/`.
+CLI command behavior, adapters, the bundle, and the component entry use
+`lib/@vibe/cli/` and `lib/@vibe/compiler/` as the source of truth. The old
+MoonBit `src/` tree was removed in #594; the current bootstrap boundary is
+only the committed seed (`bootstrap/seed/`).
 
-通常の feature / bugfix は次の順で進める。
+A normal feature or bugfix proceeds in this order:
 
-1. `lib/@vibe/compiler/` 側に test を追加して Red を確認する。
-2. `lib/@vibe/compiler/` または `lib/@vibe/cli/` の実装を直して Green にする。
-3. 必要なら `scripts/generate_bundle.sh` で bundle を同期する。
-4. `pkf run full-gate` を通す。
-5. 互換や配布 artifact に影響する変更だけ `pkf run release-check` も通す。
+1. Add a test under `lib/@vibe/compiler/` and confirm Red.
+2. Fix the implementation in `lib/@vibe/compiler/` or `lib/@vibe/cli/` and
+   make it Green.
+3. If needed, sync the bundle with `scripts/generate_bundle.sh`.
+4. Pass `pkf run full-gate`.
+5. Also pass `pkf run release-check` only when the change affects
+   compatibility or shipped artifacts.
 
-コンパイラが自分をコンパイルできない等 bootstrap 側の問題に見える場合は、
-原因を `lib/@vibe/compiler/` / `lib/@vibe/cli/` / bootstrap scripts / seed 管理へ
-切り分ける。旧 MoonBit host (`src/`) はもう存在しないため、break-glass 先は
-tag `moonbit-host-final-2026-06-23` の checkout になる — 使う場合は通常
-feature commit とは分け、明示的な方針確認を行う。
+If the problem looks like a bootstrap-side failure (the compiler cannot
+compile itself, and so on), isolate the cause to `lib/@vibe/compiler/`,
+`lib/@vibe/cli/`, the bootstrap scripts, or seed management. The old MoonBit
+host (`src/`) no longer exists, so the break-glass path is a checkout of tag
+`moonbit-host-final-2026-06-23` — if you use it, keep that work separate from
+ordinary feature commits and confirm the policy explicitly.
 
-bootstrap bump は通常の feature commit と分ける。新 syntax を compiler source
-自身で使い始める場合は、先にその syntax を理解する seed を作ってから source を
-移行する。
+Keep a bootstrap bump separate from ordinary feature commits. If compiler
+source itself starts using new syntax, first produce a seed that understands
+that syntax, then migrate the source.
+
+### Perceus / RC codegen
+
+`pkf run test` (`compiler_gate.sh`) is the pre-commit main check, but it is
+not the full RC net. Step 40d measures leaks; step 40f runs `VIBE_RC=shadow`
+on the #715 shape corpus; step 40f2 smokes three checked-artifact tests.
+A dup/drop *under*-provision (the first cut of #1964) still reproduced the
+compiler byte-identically and stayed green on the previously existing steps
+40d and 40f — only `scripts/unit_test_runner.sh` trapped, when compiled
+tests ran `check_program` over nontrivial input.
+
+Changes under `lib/@vibe/compiler/perceus/` or RC-relevant codegen require
+a full `scripts/unit_test_runner.sh` run before push, not just the gate.
 
 ## Operation Gate
 
-compiler の継続運用判断には以下を使う。
+Use the following for ongoing compiler operation decisions.
 
 ```bash
 pkf run full-gate
 ```
 
-旧 `pkf run selfhost-trial-gate` 互換 alias は #850 Phase B で削除した
-(生存中の呼び出し元がなかったため)。
+The old `pkf run selfhost-trial-gate` compatibility alias was removed in
+#850 Phase B (it had no remaining callers).
 
-この task は次をまとめて確認する。
+That task checks the following together:
 
 - `generation-gate`: fixed seed -> stage1 -> stage2 -> stage3
 - `post-generation-gate` (`scripts/gate.sh --post-generation` -> `trial_gate.sh`):
-  sign-off一式
+  the full sign-off set
 
-旧 host 比較系 (`test-selfhost-corpus-gate` / `perf-kpi` / `rss-kpi` /
-component parity) は MoonBit host 退役 (#594) でスクリプトごと退役済み。
-対応する task は Taskfile から削除した (dead-task cleanup)。
+The old host-comparison lanes (`test-selfhost-corpus-gate` / `perf-kpi` /
+`rss-kpi` / component parity) were retired with their scripts when the
+MoonBit host was retired (#594). The matching tasks were deleted from the
+Taskfile (dead-task cleanup).
 
-stage generation は gate の先頭で固定している。post-generation 系を先に実行したあとに generation を走らせると、host runner
-側の Node/Wasm 実行が segfault することがあるため、Taskfile では
-`generation-gate` -> `post-generation-gate` の依存チェーンにしている。
+Stage generation is pinned at the front of the gate. Running a
+post-generation lane first and then generation can segfault the host
+runner's Node/Wasm execution, so the Taskfile uses a
+`generation-gate` -> `post-generation-gate` dependency chain.
 
-短い調査ループでは、必要な部分だけを単独で走らせてよい。
+In a short investigation loop, it is fine to run only the pieces you need,
+on their own.
 
 ```bash
 pkf run release-gates   # = scripts/compiler_gate.sh
 pkf run generation-gate
 ```
 
-### Fixture は列挙しない — glob で拾う (#1587)
+### Do not enumerate fixtures — pick them up with a glob (#1587)
 
-テストブロックを持つ fixture の実行は**手書きの列挙で管理しない**。
-`compiler_gate.sh` にはかつて同じループの写しが 3 箇所あり、それぞれが
-`for fx in \` + バックスラッシュ継続のリストを持っていた。この形は 2 つの
-壊れ方をする。
+Do not manage execution of fixtures that contain test blocks with a
+hand-written list. `compiler_gate.sh` once had three copies of the same
+loop, each with a `for fx in \` plus backslash-continued list. That shape
+breaks in two ways.
 
-1. fixture を足す PR が**必ずリスト末尾の同じ行を取り合う**
-2. fixture をコミットして gate への追記を忘れると、**どこでも実行されない
-   まま「カバレッジがあるように見える」** ——「黙って誤る」の隣接系
+1. A PR that adds a fixture **always contends for the same last line of the
+   list**.
+2. Committing a fixture and forgetting to add it to the gate leaves it
+   **never executed while still looking like coverage** — adjacent to
+   "silently wrong".
 
-今は `run_test_block_fixtures <label> <glob>` に一本化してあり、呼び出し側は
-必ず glob を渡す (`fixtures/derive_*_test.vibe` など)。規約に乗った fixture は
-置いた瞬間から走る。glob が 1 件も match しなければ gate は落ちる (無言で
-0 件を回すのが最悪なので)。
+This is now unified on `run_test_block_fixtures <label> <glob>`, and callers
+must pass a glob (`fixtures/derive_*_test.vibe` and so on). A fixture that
+follows the convention starts running the moment it is added. If the glob
+matches nothing, the gate fails (the worst outcome is silently running zero
+files).
 
-3 つ目の状態 —— どの lane にも拾われない fixture —— は
-`scripts/check_fixture_execution.sh` が塞ぐ。`fixtures/**/*.vibe` のうち
-`test` ブロックを持つものは、次のいずれかでなければならない:
+A third state — a fixture that no lane picks up — is closed by
+`scripts/check_fixture_execution.sh`. Among `fixtures/**/*.vibe`, every file
+that contains a `test` block must satisfy one of:
 
-- `scripts/unit_test_runner.sh --list` に載る (= `*_test.vibe` 命名規約。
-  **これが最も安い**)
-- `fixtures/typecheck/expected.tsv` に verdict 行がある (この lane は行ごとに
-  期待判定を持つので glob では代替できない。代わりに**網羅性**を検査する)
-- `scripts/` / `lib/` / `examples/` / `.github/` のどこかが名前で参照している
-  (= 個別の期待値を持つ bespoke check)
-- `scripts/fixture_execution_exceptions.txt` に**理由付きで**載っている
+- it appears in `scripts/unit_test_runner.sh --list` (the `*_test.vibe`
+  naming convention; **this is the cheapest**)
+- it has a verdict row in `fixtures/typecheck/expected.tsv` (this lane has
+  a per-row expected verdict, so a glob cannot replace it; instead we check
+  **completeness**)
+- something under `scripts/` / `lib/` / `examples/` / `.github/` refers to
+  it by name (a bespoke check with its own expected value)
+- it is listed in `scripts/fixture_execution_exceptions.txt` **with a
+  reason**
 
-どれでもなければ gate が落ち、直し方 4 択を出す。純 shell で ~2s なので
-`compiler_gate.sh` の**先頭**、selfbuild の前で走る。単独では
-`pkf run check-fixture-execution`。
+If none of those hold, the gate fails and prints four ways to fix it. It is
+pure shell and takes ~2s, so it runs at the **front** of `compiler_gate.sh`,
+before selfbuild. Standalone: `pkf run check-fixture-execution`.
 
-> この検査を入れた時点で 10 件が「どの lane にも拾われない」状態だった
-> (#641 Phase 1 の受け入れ fixture 1 件と、`fixtures/runtime/` の struct
-> fixture 9 件)。後者は `__DATA__` マーカーの**後ろ**に test ブロックが
-> 置かれていて、ソースとしてすら成立していなかった
-> (`line 13:1: top-level expressions are not allowed`)。いずれも
-> `*_test.vibe` へ改名して unit lane に載せてある。
+> When this check landed, 10 files were in the "no lane picks this up"
+> state (one #641 Phase 1 acceptance fixture and nine struct fixtures under
+> `fixtures/runtime/`). The latter had test blocks **after** the `__DATA__`
+> marker, so they were not even valid source
+> (`line 13:1: top-level expressions are not allowed`). All of them were
+> renamed to `*_test.vibe` and placed on the unit lane.
 
 ## Cold FS Compile Memory Observation (#1553)
 
@@ -162,11 +188,14 @@ boundaries, not claims about separately unobservable normalize or link work.
 
 ## Stop Criteria
 
-次のどれかが起きたら、compiler の運用は一時停止して原因を切り分ける。
+If any of the following happens, pause compiler operation and isolate the
+cause.
 
-- fixed seed から stage2 が再現できない。
-- corpus REAL gap が増える。
-- TOTAL compile > 2.5x、TOTAL check > 1.33x、peak RSS > 2.0x が再現する。
-- runner 層の wasmtime/cwasm 依存が portable wasm correctness と乖離する。
-- 新機能または CLI 変更の実装が selfhost source (`lib/@vibe/compiler/` /
-  `lib/@vibe/cli/`) だけで完結できず、退役済み MoonBit host の復活が必要になる。
+- stage2 cannot be reproduced from the fixed seed.
+- the corpus REAL gap grows.
+- TOTAL compile > 2.5x, TOTAL check > 1.33x, or peak RSS > 2.0x reproduces.
+- the runner-layer wasmtime/cwasm dependency diverges from portable wasm
+  correctness.
+- implementing a new feature or CLI change cannot be completed in the
+  selfhost source alone (`lib/@vibe/compiler/` / `lib/@vibe/cli/`) and
+  would require reviving the retired MoonBit host.

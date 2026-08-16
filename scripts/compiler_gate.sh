@@ -4480,6 +4480,8 @@ echo "[compiler-gate] V128 SIMD intrinsics under RC ok"
 #      accounting traps HERE, deterministically, at the faulting operation,
 #      instead of corrupting the free list and crashing later at an
 #      unrelated, binary-layout-dependent location ("moving target").
+#      This is the shape corpus only. Branch-heavy checker paths (the first
+#      cut of #1964) need the 40f2 checked-artifact smoke.
 echo "[compiler-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
 shdir="_build/_gate_rc_shadow"
 rm -rf "$shdir"; mkdir -p "$shdir"
@@ -4498,6 +4500,47 @@ if [ "$sh_out" != "25297489" ]; then
 fi
 rm -rf "$shdir"
 echo "[compiler-gate] RC shadow-liveness regression guard ok (25297489)"
+
+# 40f2. Shadow-RC checked-artifact smoke (#1986).
+#      40f covers the #715 shape corpus. That is not enough: the first cut of
+#      #1964 (`460e8421c`) double-freed inside railway_rw when the compiled
+#      program ran check_program over nontrivial input, and the gate (40d leak
+#      guard, 40f shapes, RC parity, selfbuild fixpoint) stayed green. The
+#      miscompiled compiler still reproduced itself byte-identically; only
+#      the CI unit shards trapped. These three tests are the cheap empirical
+#      detectors. Compile them with the just-built stage2 under VIBE_RC=shadow
+#      (the same __no_entry__ / _start harness as unit_test_runner) and run
+#      them. A trap here is either a failed test assertion or an RC
+#      dup/drop under-provision -- `_start` traps the same way for both.
+#      This list is closed on purpose -- it is a bounded smoke, not a fixture
+#      inventory. Perceus / RC codegen still needs the full unit_test_runner
+#      before push (see docs/operation-gate.md).
+echo "[compiler-gate] 40f2/40 RC shadow checked-artifact smoke (#1986)"
+cadir="_build/_gate_rc_shadow_checked"
+rm -rf "$cadir"; mkdir -p "$cadir"
+for ca in \
+  lib/@vibe/compiler/tests/checked_effective_effect_row_artifact_test.vibe \
+  lib/@vibe/compiler/tests/checked_statement_root_type_artifact_test.vibe \
+  lib/@vibe/compiler/tests/checked_typed_occurrence_expression_path_observation_test.vibe
+do
+  [ -f "$ca" ] || { echo "[compiler-gate] FAIL: missing $ca (#1986)" >&2; exit 1; }
+  ca_base="$(basename "$ca" .vibe)"
+  VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$ca" "$cadir/$ca_base.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$cadir/$ca_base.wasm" ]; then
+    echo "[compiler-gate] FAIL: $ca did not compile under VIBE_RC=shadow (#1986)" >&2
+    cat "$cadir/$ca_base.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$cadir/$ca_base.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: $ca trapped under VIBE_RC=shadow (#1986). A trap here is either a failed assert in the artifact test or an RC dup/drop accounting bug in the compiled program -- 40f's shape corpus stayed green on the first cut of #1964; these tests run check_program over nontrivial input." >&2
+    exit 1
+  fi
+done
+rm -rf "$cadir"
+echo "[compiler-gate] RC shadow checked-artifact smoke ok (#1986)"
 
 # 40g. #cfg conditional-compilation guard: the flag-off build must strip the
 #      guarded statements entirely (compiles, dev symbols absent -> different
