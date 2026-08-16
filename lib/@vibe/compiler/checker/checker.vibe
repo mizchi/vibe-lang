@@ -2453,6 +2453,7 @@ fn add_param_capture_dependency(ty: Type, index: Int) -> Type {
     CtNamed(name, args) => CtNamed(name, for arg in args {
       add_param_capture_dependency(arg, index)
     }),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, add_param_capture_dependency(body, index)),
     _ => ty
   }
 }
@@ -2491,6 +2492,7 @@ fn collect_internal_provenance(ty: Type, out: Array[String]) -> Unit {
         collect_internal_provenance(arg, out)
       }
     },
+    CtForAll(_, _, body) => collect_internal_provenance(body, out),
     _ => ()
   }
 }
@@ -4143,29 +4145,49 @@ fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Ar
   }
 }
 
-/// Mutable container operations are assignments with a non-syntactic target.
-/// Check their stored argument against the same region lifetime rule as
-/// `EAssign`; operations that only store scalar bytes/indices need no entry.
-fn retaining_write_value_index(name: String) -> Int {
-  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "MutList::push" || name == "Deque::push_back" || name == "Deque::push_front" {
+/// Argument positions retained by a mutable operation, encoded as a two-bit
+/// mask for positions 1 and 2. This is the single checker-owned inventory for
+/// shipped primitives and standard-library mutable wrappers; aliases are listed
+/// beside their canonical spelling.
+fn retaining_write_argument_mask(source_name: String) -> Int {
+  let name = canonical_builtin_name(source_name)
+  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "MutList::push" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
     1
-  } else if name == "Array::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "MapBuilder::set" || name == "MutMap::set" || name == "__set_field" {
+  } else if name == "Array::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "__set_field" {
     2
+  } else if name == "MapBuilder::set" || name == "MutMap::set" || name == "HashMap::set" || name == "MutSortedMap::set" || name == "SortedMap::set" {
+    3
   } else {
-    0 - 1
+    0
   }
 }
 
+/// Mutable container operations are assignments with a non-syntactic target.
+/// Check every stored argument against the same region lifetime rule as
+/// `EAssign`; skip the duplicate type walk entirely outside a region.
 fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
-  let value_index = retaining_write_value_index(name)
-  if value_index >= 0 && Array::length(args) > value_index {
-    let throwaway = array_empty()
-    let throwtab = array_empty()
-    let (val_ty, s1, _) = ce(Array::get(args, value_index), env, defs, s, c, throwaway, throwtab)
-    if container_write_crosses_region(Array::get(args, 0), subst_apply(s1, val_ty), env) {
-      Array::push(errors, String::concat("region escapes its scope: a container write stores a value that captures this region into an outer binding", off_marker(tail_expr_off(Array::get(args, value_index)))))
-    } else {
-      ()
+  if env_has_active_region(env) && Array::length(args) > 0 {
+    let retained = retaining_write_argument_mask(name)
+    let mut value_index = 1
+    while value_index <= 2 {
+      let is_retained = if value_index == 1 {
+        retained == 1 || retained == 3
+      } else {
+        retained == 2 || retained == 3
+      }
+      if is_retained && value_index < Array::length(args) {
+        let throwaway = array_empty()
+        let throwtab = array_empty()
+        let (val_ty, s1, _) = ce(Array::get(args, value_index), env, defs, s, c, throwaway, throwtab)
+        if container_write_crosses_region(Array::get(args, 0), subst_apply(s1, val_ty), env) {
+          Array::push(errors, String::concat("region escapes its scope: a container write stores a value that captures this region into an outer binding", off_marker(tail_expr_off(Array::get(args, value_index)))))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      value_index = value_index + 1
     }
   } else {
     ()
@@ -4175,6 +4197,68 @@ fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, d
 /// Nominal struct identity intentionally omits field types. Reconstruct only
 /// the tail record literal's local let environment so a region-return check can
 /// inspect the actual field values without changing the public nominal type.
+fn named_record_provenance_key(name: String) -> String {
+  String::concat("__region_named_record__", name)
+}
+
+/// Bind the structural field types of a nominal record initializer under a
+/// checker-private key. Nominal identity remains `CtStruct`; only the region
+/// tail check reads this detached provenance view. Bare aliases copy the view.
+fn bind_named_record_provenance(name: String, val: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> TypeEnv {
+  match val {
+    ERecord(record_name, fields, _) => if record_name != "" {
+      let field_types = array_empty()
+      for field in fields {
+        let (field_name, value) = field
+        let throwaway = array_empty()
+        let throwtab = array_empty()
+        let (field_ty, field_s, _) = ce(value, env, defs, s, c, throwaway, throwtab)
+        Array::push(field_types, (field_name, subst_apply(field_s, field_ty)))
+      }
+      env_bind(env, named_record_provenance_key(name), CtRecord(field_types))
+    } else {
+      env
+    },
+    EIdent(alias, _) => match env_lookup(env, named_record_provenance_key(alias)) {
+      Some(provenance) => env_bind(env, named_record_provenance_key(name), provenance),
+      None => env
+    },
+    _ => env
+  }
+}
+
+fn named_record_tail_mentions_region(expr: Expr, env: TypeEnv, region_name: String) -> Bool {
+  match expr {
+    EIdent(name, _) => match env_lookup(env, named_record_provenance_key(name)) {
+      Some(provenance) => type_mentions_named(provenance, region_name),
+      None => false
+    },
+    EDot(obj, field, _, _) => match obj {
+      EIdent(name, _) => match env_lookup(env, named_record_provenance_key(name)) {
+        Some(CtRecord(fields)) => {
+          let mut found = false
+          for entry in fields {
+            let (field_name, field_ty) = entry
+            if field_name == field && type_mentions_named(field_ty, region_name) {
+              found = true
+            } else {
+              ()
+            }
+          }
+          found
+        },
+        _ => false
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// Nominal struct identity intentionally omits field types. Preserve a private
+/// structural view through local bindings and aliases so whole-value and field
+/// tails cannot erase region provenance.
+
 fn tail_returns_binding(expr: Expr, name: String) -> Bool {
   match expr {
     EIdent(found, _) => found == name,
@@ -4193,13 +4277,15 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
       let throwaway = array_empty()
       let throwtab = array_empty()
       let (val_ty, s1, c1) = ce(val, env, defs, s, c, throwaway, throwtab)
-      (tail_returns_binding(body, name) && tail_named_record_mentions_region(val, env, defs, s, c, region_name, ce)) || tail_named_record_mentions_region(body, env_bind(env, name, val_ty), defs, s1, c1, region_name, ce)
+      let next_env = bind_named_record_provenance(name, val, env_bind(env, name, val_ty), defs, s1, c1, ce)
+      (tail_returns_binding(body, name) && tail_named_record_mentions_region(val, env, defs, s, c, region_name, ce)) || tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
     },
     ELetMut(name, val, body, _) => {
       let throwaway = array_empty()
       let throwtab = array_empty()
       let (val_ty, s1, c1) = ce(val, env, defs, s, c, throwaway, throwtab)
-      tail_named_record_mentions_region(body, env_bind_mut(env, name, val_ty, false), defs, s1, c1, region_name, ce)
+      let next_env = bind_named_record_provenance(name, val, env_bind_mut(env, name, val_ty, false), defs, s1, c1, ce)
+      tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
     },
     ESeq(left, right) => {
       let throwaway = array_empty()
@@ -4323,7 +4409,7 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
       let throwaway = array_empty()
       let throwtab = array_empty()
       let (expr_ty, next_s, _) = ce(expr, env, defs, s, c, throwaway, throwtab)
-      type_mentions_named(subst_apply(next_s, expr_ty), region_name)
+      named_record_tail_mentions_region(expr, env, region_name) || type_mentions_named(subst_apply(next_s, expr_ty), region_name)
     }
   }
 }
@@ -8047,12 +8133,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             (tv, s1, nc2)
           }
         }
-        let marked_pt = match pt {
-          CtFn(_, _, _) => add_param_capture_dependency(pt, nc),
-          CtArray(_) => add_param_capture_dependency(pt, nc),
-          CtOption(_) => add_param_capture_dependency(pt, nc),
-          _ => pt
-        }
+        let marked_pt = add_param_capture_dependency(pt, nc)
         let marked_nc = nc + 1
         fn_env = env_bind(fn_env, name, marked_pt)
         fn_env = env_bind(fn_env, String::concat("__param_marker__", name), CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [

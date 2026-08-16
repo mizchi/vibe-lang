@@ -9485,20 +9485,72 @@ fi
 # #1938: capture provenance is part of the checked function type, not a
 # terminal-lambda syntax check. Pin every laundering shape that the old
 # stopgap missed (plus a deep alias witness).
-for r90_escape in outer_assignment container helper global_helper multiple_regions nested_closure alias_chain monomorphic_callback array_write field_write record generic_defer named_struct mutlist_write array_alias_write local_callee callback_defer named_projection call_alias_write inline_projection inline_call_alias_write aggregate_struct callback_return bound_struct mutmap_write deque_write deque_dot_write option_aggregate enum_aggregate result_aggregate; do
+for r90_fixture in \
+  fixtures/err_region_escape_outer_assignment.vibe \
+  fixtures/err_region_escape_container.vibe \
+  fixtures/err_region_escape_helper.vibe \
+  fixtures/err_region_escape_global_helper.vibe \
+  fixtures/err_region_escape_multiple_regions.vibe \
+  fixtures/err_region_escape_nested_closure.vibe \
+  fixtures/err_region_escape_alias_chain.vibe \
+  fixtures/err_region_escape_monomorphic_callback.vibe \
+  fixtures/err_region_escape_array_write.vibe \
+  fixtures/err_region_escape_field_write.vibe \
+  fixtures/err_region_escape_record.vibe \
+  fixtures/err_region_escape_generic_defer.vibe \
+  fixtures/err_region_escape_named_struct.vibe \
+  fixtures/err_region_escape_mutlist_write.vibe \
+  fixtures/err_region_escape_array_alias_write.vibe \
+  fixtures/err_region_escape_local_callee.vibe \
+  fixtures/err_region_escape_callback_defer.vibe \
+  fixtures/err_region_escape_named_projection.vibe \
+  fixtures/err_region_escape_call_alias_write.vibe \
+  fixtures/err_region_escape_inline_projection.vibe \
+  fixtures/err_region_escape_inline_call_alias_write.vibe \
+  fixtures/err_region_escape_aggregate_struct.vibe \
+  fixtures/err_region_escape_callback_return.vibe \
+  fixtures/err_region_escape_bound_struct.vibe \
+  fixtures/err_region_escape_mutmap_write.vibe \
+  fixtures/err_region_escape_deque_write.vibe \
+  fixtures/err_region_escape_option_aggregate.vibe \
+  fixtures/err_region_escape_result_aggregate.vibe \
+  fixtures/err_region_escape_enum_aggregate.vibe \
+  fixtures/err_region_escape_deque_dot_write.vibe \
+  fixtures/err_region_escape_param_forwarding.vibe \
+  fixtures/err_region_escape_nested_tuple_param.vibe \
+  fixtures/err_region_escape_nested_record_param.vibe \
+  fixtures/err_region_escape_nested_nominal_param.vibe \
+  fixtures/err_region_escape_named_struct_bound.vibe \
+  fixtures/err_region_escape_named_struct_field_alias.vibe \
+  fixtures/err_region_escape_mutmap_key_write.vibe \
+  fixtures/err_region_escape_mutmap_value_write.vibe \
+  fixtures/err_region_escape_mutset_write.vibe \
+  fixtures/err_region_escape_sortedmap_key_write.vibe \
+  fixtures/err_region_escape_sortedmap_value_write.vibe \
+  fixtures/err_region_escape_sortedset_write.vibe \
+  fixtures/err_region_escape_priority_queue_write.vibe \
+  fixtures/err_region_escape_deque_back_write.vibe \
+  fixtures/err_region_escape_deque_front_write.vibe \
+  fixtures/err_region_escape_hashmap_alias_write.vibe \
+  fixtures/err_region_escape_hashset_alias_write.vibe \
+  fixtures/err_region_escape_sortedmap_alias_write.vibe \
+  fixtures/err_region_escape_sortedset_alias_write.vibe; do
+  r90_escape="${r90_fixture#fixtures/err_region_escape_}"
+  r90_escape="${r90_escape%.vibe}"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "fixtures/err_region_escape_${r90_escape}.vibe" "$r90dir/${r90_escape}.wasm" __no_entry__ >/dev/null 2>&1 || true
+    "$r90_fixture" "$r90dir/${r90_escape}.wasm" __no_entry__ >/dev/null 2>&1 || true
   if [ -s "$r90dir/${r90_escape}.wasm" ]; then
-    echo "[compiler-gate] FAIL: err_region_escape_${r90_escape}.vibe compiled successfully -- region capture provenance was lost (#1938)" >&2
+    echo "[compiler-gate] FAIL: $r90_fixture compiled successfully -- region capture provenance was lost (#1938)" >&2
     exit 1
   fi
   if ! grep -qF 'region escapes its scope' "$r90dir/${r90_escape}.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: err_region_escape_${r90_escape}.vibe did not produce the expected diagnostic (#1938)" >&2
+    echo "[compiler-gate] FAIL: $r90_fixture did not produce the expected diagnostic (#1938)" >&2
     cat "$r90dir/${r90_escape}.wasm.diag" 2>/dev/null >&2 || true
     exit 1
   fi
 done
+
 # The false-positive guard: a closure that captures a region value but stays
 # inside the region is valid, and the body still exits via freeze. It also
 # covers shadowing and an initialiser that merely touches the token while
