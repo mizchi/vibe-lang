@@ -1286,6 +1286,7 @@ fn container_write_crosses_region(target: Expr, ty: Type, env: TypeEnv) -> Bool 
     } else {
       false
     },
+    ECall(_, _, _) => expression_aliases_outer_binding(target, env) && type_mentions_active_region(ty, env),
     _ => false
   }
 }
@@ -1527,24 +1528,32 @@ fn is_enum_ctor_name(name: String, defs: Array[TypeDef]) -> Bool {
   found
 }
 
-fn direct_result_enum_payload_param_index(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef]) -> Option[Int] {
+fn direct_result_enum_payload_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef]) -> Array[Int] {
+  let found = array_empty()
   match body {
     ECall(EIdent(ctor_name, _), args, _) => if is_enum_ctor_name(ctor_name, defs) {
-      let mut found = None
       for call_arg in args {
         match direct_result_param_index(call_arg, params) {
           Some(index) => {
-            found = Some(index)
+            let mut seen = false
+            for existing in found {
+              if existing == index {
+                seen = true
+              }
+            }
+            if !seen {
+              Array::push(found, index)
+            }
           },
           None => ()
         }
       }
-      found
     } else {
-      None
+      ()
     },
-    _ => None
+    _ => ()
   }
+  found
 }
 
 export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: Expr) -> TypeEnv {
@@ -4646,6 +4655,12 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
               found = true
             }
             i = i + 1
+          }
+          match alias_result_param_index(callee_ty) {
+            Some(index) => if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+              found = true
+            },
+            None => ()
           }
           match callee_effect {
             Some(row) => for raw in String::split(row, ",") {
@@ -8563,17 +8578,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else {
           checked_effect
         },
-        None => match direct_result_enum_payload_param_index(body, params, defs) {
-          Some(index) => if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
-            subst_apply(s3, Array::get(param_types, index))
-          } else {
-            CtUnit
-          }) {
-            merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
-          } else {
-            checked_effect
-          },
-          None => checked_effect
+        None => {
+          let mut enum_dependency_effect = checked_effect
+          for index in direct_result_enum_payload_param_indices(body, params, defs) {
+            if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
+              subst_apply(s3, Array::get(param_types, index))
+            } else {
+              CtUnit
+            }) {
+              enum_dependency_effect = merge_provenance_row(enum_dependency_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
+            }
+          }
+          enum_dependency_effect
         }
       }
       (CtFn(param_types, final_ret, dependency_effect), s3, c2)
