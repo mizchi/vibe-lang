@@ -57,6 +57,19 @@ bootstrap bump は通常の feature commit と分ける。新 syntax を compile
 自身で使い始める場合は、先にその syntax を理解する seed を作ってから source を
 移行する。
 
+### Perceus / RC codegen
+
+`pkf run test` (`compiler_gate.sh`) is the pre-commit main check, but it is
+not the full RC net. Step 40d measures leaks; steps 40f / 40f2 run
+`VIBE_RC=shadow` on the #715 shape corpus and three checked-artifact tests.
+A dup/drop *under*-provision (the first cut of #1964) still reproduced the
+compiler byte-identically and stayed green on those steps — only
+`scripts/unit_test_runner.sh` trapped, when compiled tests ran
+`check_program` over nontrivial input.
+
+Changes under `lib/@vibe/compiler/perceus/` or RC-relevant codegen require
+a full `scripts/unit_test_runner.sh` run before push, not just the gate.
+
 ## Operation Gate
 
 compiler の継続運用判断には以下を使う。
