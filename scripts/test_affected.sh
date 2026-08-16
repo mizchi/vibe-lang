@@ -39,7 +39,12 @@ selected="$(mktemp -t vibe-affected-XXXXXX)"
 trap 'rm -f "$selected"' EXIT
 
 set +e
-node scripts/affected_tests.mjs "${sel_args[@]}" > "$selected"
+# Bash 3.2 + `set -u`: empty "${arr[@]}" is unbound (#1970).
+if [ "${#sel_args[@]}" -gt 0 ]; then
+  node scripts/affected_tests.mjs "${sel_args[@]}" > "$selected"
+else
+  node scripts/affected_tests.mjs > "$selected"
+fi
 sel_rc=$?
 set -e
 
