@@ -9820,7 +9820,14 @@ fn local_fn_tbl_replace(name: String, v: Expr, shadows: Array[String]) -> Unit {
       }
     }
     if !found {
-      local_fn_tbl_push(name, v, innermost)
+      // #1994: a disagreeing `let mut` is intentionally unregistered. Pushing
+      // here from the assignment would give later labeled calls the RHS
+      // names and silence the diagnostic.
+      if unstable_mut_tbl_lookup(name, shadows) {
+        ()
+      } else {
+        local_fn_tbl_push(name, v, innermost)
+      }
     } else {
       ()
     }
@@ -10760,6 +10767,10 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
 fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt {
   match stmt {
     SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, relabel_expr(body, tbl, empty_str_array())),
+    // `fn name(..) { .. }` is SFnDecl, not SLet. Skipping it left every
+    // labeled call inside a `fn` body un-reordered, including the #1994
+    // `let mut` cases the diagnostic test writes as `fn main()`.
+    SFnDecl(ex, name, body, reqs, enss) => SFnDecl(ex, name, relabel_expr(body, tbl, empty_str_array()), reqs, enss),
     SLetMut(name, ty, body) => SLetMut(name, ty, relabel_expr(body, tbl, empty_str_array())),
     STest(name, body) => STest(name, relabel_expr(body, tbl, empty_str_array())),
     SBench(name, body) => SBench(name, relabel_expr(body, tbl, empty_str_array())),
@@ -11248,6 +11259,7 @@ fn relabel_stmt_paired(stmt: Stmt, tbl: Array[(String, Array[String])], node: Bi
 fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, body) => dinsp_scan(body, 3, ""),
+    SFnDecl(_, _, body, _, _) => dinsp_scan(body, 3, ""),
     SLetMut(_, _, body) => dinsp_scan(body, 3, ""),
     STest(_, body) => dinsp_scan(body, 3, ""),
     SBench(_, body) => dinsp_scan(body, 3, ""),
