@@ -1,0 +1,87 @@
+// #1973: pin current compile-debt diagnostics for fixtures that are no
+// longer executable. The generated unit lane cannot run these as `__DATA__`
+// programs; this file snapshots the rejection instead.
+
+import ./checker_parity_test_support.vibe {
+  check_source_error_message
+}
+
+fn try_question_mark_src() -> String {
+  "fn safe_div(a: Int, b: Int) -> Int with Exception {\n  if b == 0 { throw(\"division by zero\") }\n  a / b\n}\nfn compute(x: Int) -> Int with Exception {\n  let a = safe_div(x, 2)?\n  a + 1\n}\n"
+}
+
+fn effect_defunc_bitwise_src() -> String {
+  "effect Yield { Yield(Int) -> Unit }\nlet result = handle {\n  perform Yield::Yield(1)\n  0\n} { Yield::Yield(v, k) => v | k(0) }\n"
+}
+
+fn effect_infer_basic_src() -> String {
+  "effect Greet { Hello -> String }\nlet result = handle {\n  let msg = perform Greet::Hello\n  String::length(msg)\n} { Greet::Hello => resume(\"world\") }\n"
+}
+
+fn effect_generic_option_src() -> String {
+  "effect Lookup {\n  FindInt(String) -> Int;\n  FindStr(String) -> String\n}\nlet found = handle {\n  let v = perform Lookup::FindInt(\"key\")\n  v + 1\n} { Lookup::FindInt(_k) => resume(100), Lookup::FindStr(_k) => resume(\"\") }\n"
+}
+
+fn effect_defunc_general_src() -> String {
+  "effect Yield { Yield(Int) -> Unit }\nlet sum = handle {\n  perform Yield::Yield(10)\n  0\n} { Yield::Yield(v, k) => v + k(0) }\n"
+}
+
+fn effect_defunc_subtract_src() -> String {
+  "effect Yield { Yield(Int) -> Unit }\nlet result = handle {\n  perform Yield::Yield(100)\n  0\n} { Yield::Yield(v, k) => v - k(0) }\n"
+}
+
+fn effect_generic_reader_src() -> String {
+  "effect Reader[T] {\n  Ask -> T\n}\nlet get_int = handle {\n  let x = perform Reader::Ask\n  x + 10\n} { Reader::Ask => resume(42) }\n"
+}
+
+fn effect_generic_writer_src() -> String {
+  "effect IntWriter {\n  Tell(Int) -> Unit\n}\nlet int_sum = handle {\n  perform IntWriter::Tell(10)\n  0\n} { IntWriter::Tell(v, k) => v + k(0) }\n"
+}
+
+fn effect_infer_multi_src() -> String {
+  "effect Log { Info(String) -> Unit }\neffect Db { Query(String) -> String }\nlet result = handle {\n  handle {\n    perform Log::Info(\"start\")\n    let data = perform Db::Query(\"SELECT 1\")\n    String::length(data)\n  } { Db::Query(_sql) => resume(\"result\") }\n} { Log::Info(_msg) => resume(0) }\n"
+}
+
+fn effect_multishot_src() -> String {
+  "effect Amb {\n  Choose -> Bool\n}\nlet a = handle {\n  let x = perform Amb::Choose\n  if x { 10 } else { 20 }\n} { Amb::Choose => resume(true) }\n"
+}
+
+test "try_question_mark: ? on Int with Exception is rejected" {
+  inspect(check_source_error_message(try_question_mark_src()), "`?` unwraps an Option; this expression is Int — handle it with `match`, or only use `?` on an Option value")
+}
+
+test "effect_defunc_bitwise: two-binder handler without with is rejected" {
+  inspect(check_source_error_message(effect_defunc_bitwise_src()), "expected with but got { at #24")
+}
+
+test "effect_infer_basic: handler without with is rejected" {
+  inspect(check_source_error_message(effect_infer_basic_src()), "expected with but got { at #26")
+}
+
+test "effect_generic_option: handler without with is rejected" {
+  inspect(check_source_error_message(effect_generic_option_src()), "expected with but got { at #36")
+}
+
+test "effect_defunc_general: two-binder handler without with is rejected" {
+  inspect(check_source_error_message(effect_defunc_general_src()), "expected with but got { at #24")
+}
+
+test "effect_defunc_subtract: two-binder handler without with is rejected" {
+  inspect(check_source_error_message(effect_defunc_subtract_src()), "expected with but got { at #24")
+}
+
+test "effect_generic_reader: handler without with is rejected" {
+  inspect(check_source_error_message(effect_generic_reader_src()), "expected with but got { at #26")
+}
+
+test "effect_generic_writer: two-binder handler without with is rejected" {
+  inspect(check_source_error_message(effect_generic_writer_src()), "expected with but got { at #24")
+}
+
+test "effect_infer_multi: nested handler without with is rejected" {
+  inspect(check_source_error_message(effect_infer_multi_src()), "expected with but got { at #51")
+}
+
+test "effect_multishot: handler without with is rejected" {
+  inspect(check_source_error_message(effect_multishot_src()), "expected with but got { at #29")
+}
