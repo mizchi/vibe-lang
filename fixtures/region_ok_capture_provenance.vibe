@@ -123,3 +123,27 @@ fn local_callee_shadow_is_clean() -> Int {
 test "region capture provenance positives" {
   inspect(scalar_helper() + copied_closure() + shadowed_capture() + region_local_assignment() + region_local_container_writes() + ignored_capture_is_clean() + parameter_shadow_is_clean() + local_callee_shadow_is_clean(), "60")
 }
+
+enum Slot[T] {
+  Of(T)
+}
+
+/// #1938 follow-up: a carrier with a type parameter records what it holds, so
+/// it is not erasure and stays legal -- consumed inside the region here. The
+/// parameterless spelling of the same thing is refused at construction.
+fn parameterized_carrier_is_clean() -> Int {
+  region r {
+    let values = MutList::empty(r)
+    MutList::push(values, 4)
+    let slot = Slot::Of(() -> Array[Int] {
+      MutList::to_array(values)
+    })
+    match slot {
+      Slot::Of(read) => Array::get(read(), 0)
+    }
+  }
+}
+
+test "region parameterized carrier positive" {
+  inspect(parameterized_carrier_is_clean(), "4")
+}

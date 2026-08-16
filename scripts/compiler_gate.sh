@@ -9485,7 +9485,15 @@ fi
 # #1938: capture provenance is part of the checked function type, not a
 # terminal-lambda syntax check. Pin every laundering shape that the old
 # stopgap missed (plus a deep alias witness).
-for r90_fixture in \
+# The fixtures are listed by FULL PATH, not assembled from a stem: several of
+# them carry `test` blocks, and check_fixture_execution.sh (#1587) accounts for
+# a fixture by grepping scripts/ for its basename. A name built by shell
+# interpolation is invisible to that scan, so a stem list left every one of
+# these reported as "has test blocks but no lane runs it" -- while this loop
+# was running them all along.
+# named_struct is not here: the follow-up erasure check rejects it at
+# construction with a different diagnostic (see r90_erasure_fixture below).
+for r90_escape_fixture in \
   fixtures/err_region_escape_outer_assignment.vibe \
   fixtures/err_region_escape_container.vibe \
   fixtures/err_region_escape_helper.vibe \
@@ -9498,7 +9506,6 @@ for r90_fixture in \
   fixtures/err_region_escape_field_write.vibe \
   fixtures/err_region_escape_record.vibe \
   fixtures/err_region_escape_generic_defer.vibe \
-  fixtures/err_region_escape_named_struct.vibe \
   fixtures/err_region_escape_mutlist_write.vibe \
   fixtures/err_region_escape_array_alias_write.vibe \
   fixtures/err_region_escape_local_callee.vibe \
@@ -9538,22 +9545,54 @@ for r90_fixture in \
   fixtures/err_region_escape_hashset_alias_write.vibe \
   fixtures/err_region_escape_sortedmap_alias_write.vibe \
   fixtures/err_region_escape_sortedset_alias_write.vibe; do
-  r90_escape="${r90_fixture#fixtures/err_region_escape_}"
-  r90_escape="${r90_escape%.vibe}"
+  r90_escape="$(basename "$r90_escape_fixture" .vibe)"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$r90_fixture" "$r90dir/${r90_escape}.wasm" __no_entry__ >/dev/null 2>&1 || true
+    "$r90_escape_fixture" "$r90dir/${r90_escape}.wasm" __no_entry__ >/dev/null 2>&1 || true
   if [ -s "$r90dir/${r90_escape}.wasm" ]; then
-    echo "[compiler-gate] FAIL: $r90_fixture compiled successfully -- region capture provenance was lost (#1938)" >&2
+    echo "[compiler-gate] FAIL: ${r90_escape_fixture} compiled successfully -- region capture provenance was lost (#1938)" >&2
     exit 1
   fi
   if ! grep -qF 'region escapes its scope' "$r90dir/${r90_escape}.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $r90_fixture did not produce the expected diagnostic (#1938)" >&2
+    echo "[compiler-gate] FAIL: ${r90_escape_fixture} did not produce the expected diagnostic (#1938)" >&2
     cat "$r90dir/${r90_escape}.wasm.diag" 2>/dev/null >&2 || true
     exit 1
   fi
 done
-
+# #1938 follow-up: a carrier declared without type parameters cannot record the
+# region its payload depends on, so the CONSTRUCTION is refused rather than the
+# escape -- once the payload type is gone there is nothing left for the
+# type-level check to follow, and alias / container / outer-assignment routes
+# are all invisible (measured: each of these compiled clean before this check).
+# The diagnostic is deliberately not the "region escapes its scope" family: the
+# value has not escaped yet, and what the writer must change is the carrier.
+for r90_erasure_fixture in \
+  fixtures/err_region_escape_enum_payload.vibe \
+  fixtures/err_region_escape_named_struct.vibe \
+  fixtures/err_region_escape_enum_alias.vibe \
+  fixtures/err_region_escape_enum_container.vibe \
+  fixtures/err_region_escape_enum_outer_assignment.vibe \
+  fixtures/err_region_escape_struct_alias.vibe \
+  fixtures/err_region_escape_struct_container.vibe; do
+  r90_erasure="$(basename "$r90_erasure_fixture" .vibe)"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$r90_erasure_fixture" "$r90dir/${r90_erasure}.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ -s "$r90dir/${r90_erasure}.wasm" ]; then
+    echo "[compiler-gate] FAIL: ${r90_erasure_fixture} compiled successfully -- a parameterless carrier erased region provenance (#1938)" >&2
+    exit 1
+  fi
+  if ! grep -qF 'has no type parameter to record the region' "$r90dir/${r90_erasure}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: ${r90_erasure_fixture} did not produce the erasure diagnostic (#1938)" >&2
+    cat "$r90dir/${r90_erasure}.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! grep -qE 'line [0-9]+:[0-9]+' "$r90dir/${r90_erasure}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: ${r90_erasure_fixture} diagnostic has no line:col (#1567)" >&2
+    cat "$r90dir/${r90_erasure}.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
 # The false-positive guard: a closure that captures a region value but stays
 # inside the region is valid, and the body still exits via freeze. It also
 # covers shadowing and an initialiser that merely touches the token while
