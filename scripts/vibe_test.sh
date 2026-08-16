@@ -260,18 +260,22 @@ vt_fail_detail() {
         close(fmfile)
       }
     }
-    # First __test_<name> frame = the failing test. Quoted names keep
-    # spaces and Unicode in the wasm name section; cut at the frame
-    # delimiter (` (wasm:` on Node/V8, EOL on wasmtime), not at the
-    # first non-[A-Za-z0-9_] character (#1946).
-    !seen_test && match($0, /__test_/) {
-      rest = substr($0, RSTART + 7)
+    # First __test_<name> stack frame = the failing test. Quoted names
+    # keep spaces and Unicode in the wasm name section; cut at the
+    # frame delimiter (` (wasm:` on Node/V8, EOL on wasmtime), not at
+    # the first non-[A-Za-z0-9_] character (#1946). Guest stderr can
+    # contain `__test_` (e.g. `__test_!!!`); only Node `at ... (wasm:`
+    # and wasmtime `<unknown>!` frames count.
+    !seen_test && match($0, /at __test_/) {
+      rest = substr($0, RSTART + length("at __test_"))
       if (match(rest, / \(wasm:/)) {
         failing = substr(rest, 1, RSTART - 1)
-      } else {
-        failing = rest
-        sub(/[[:space:]]+$/, "", failing)
+        if (failing != "") seen_test = 1
       }
+    }
+    !seen_test && match($0, /<unknown>!__test_/) {
+      failing = substr($0, RSTART + length("<unknown>!__test_"))
+      sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
     # First trap-reason line (backtrace frames never contain these markers;

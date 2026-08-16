@@ -50,6 +50,54 @@ assert_full_failing_name "$WORK/space_name_test.vibe" "has a space"
 assert_full_failing_name "$WORK/unicode_name_test.vibe" "café 日本語"
 echo "[vibe-test-smoke] ok (quoted test names preserved on FAIL)"
 
+# Guest stderr that happens to contain `__test_!!!` must not become the
+# reported name. The unanchored `__test_` match used to consume that
+# line first and print `failing test: !!!` instead of the later frame.
+printf 'test "real name" {\n  Stderr::write_stream("__test_!!!\\n")\n  assert(false)\n}\n' \
+  > "$WORK/guest_prefix_test.vibe"
+assert_full_failing_name "$WORK/guest_prefix_test.vibe" "real name"
+if rg -q --fixed-strings "failing test: !!!" "$WORK/name_guest_prefix_test.out"; then
+  echo "[vibe-test-smoke] FAIL: guest stderr __test_!!! was reported as the failing test" >&2
+  cat "$WORK/name_guest_prefix_test.out" >&2
+  exit 1
+fi
+
+# Same contract on canned Node / wasmtime dumps, so wasmtime is pinned
+# without a second backend compile. Drive vt_fail_detail directly —
+# vibe_test.sh is not sourceable (it runs tests on load).
+eval "$(sed -n '/^vt_fail_detail() {/,/^export -f vt_fail_detail$/p' \
+  "$ROOT_DIR/scripts/vibe_test.sh")"
+assert_canned_failing_name() {
+  local label="$1" want="$2" errf out
+  errf="$WORK/canned_${label}.err"
+  cat > "$errf"
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "failing test: $want"; then
+    echo "[vibe-test-smoke] FAIL: canned $label expected 'failing test: $want'" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | rg -q --fixed-strings "failing test: !!!"; then
+    echo "[vibe-test-smoke] FAIL: canned $label reported guest stderr as the name" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_canned_failing_name node "real name" <<'EOF'
+__test_!!!
+RuntimeError: unreachable
+    at __test_real name (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+assert_canned_failing_name wasmtime "real name" <<'EOF'
+__test_!!!
+error while executing at wasm backtrace:
+    0: 0x42 - <unknown>!__test_real name
+    1: 0x10 - <unknown>!_start
+   wasm trap: wasm `unreachable` instruction executed
+EOF
+echo "[vibe-test-smoke] ok (guest __test_ prefix is not the failing-test name)"
+
 # The seed-compiler notice. A green run through the committed seed says nothing
 # about a compiler change in this checkout, and the two are indistinguishable
 # from the result -- so the run has to say which compiler answered whenever the
