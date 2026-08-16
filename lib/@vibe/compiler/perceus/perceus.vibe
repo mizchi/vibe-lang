@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, is_exception_throw_operation
+  Expr, Pat, Stmt, TypeExpr, borrow_ret_builtin_names, bsearch_leftmost, is_borrow_ret_builtin, is_exception_throw_operation
 }
 
 //# Types
@@ -414,7 +414,7 @@ fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
 /// pctx_names, so the names sit here unprefixed and a miss costs only the
 /// fixed set.
 fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
-  fname == "Array::get" || fname == "MutList::get" || fname == "Map::get" || fname == "__index" || fname == "__rec_field" || bsearch_leftmost(ctx.pctx_names, fname) >= 0
+  is_borrow_ret_builtin(fname) || bsearch_leftmost(ctx.pctx_names, fname) >= 0
 }
 
 /// #707: fixed-point closure over top-level function definitions, starting
@@ -785,17 +785,12 @@ fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
 }
 
 export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
-  // Seed with the same builtin set is_borrow_ret_fname hardcodes -- omitting
-  // one (MutList::get was missing until #1932 review) makes both the inline
-  // branch-tail check and the #1915 spine-binding resolution classify that
-  // builtin's result as owned, and RC callers then drop an interior view.
-  let known: Array[String] = [
-    "Array::get",
-    "MutList::get",
-    "Map::get",
-    "__index",
-    "__rec_field"
-  ]
+  // Seeded from the shared single-source-of-truth list (#1979) -- a seed that
+  // drifts from is_borrow_ret_builtin (MutList::get was missing until #1932
+  // review) makes both the inline branch-tail check and the #1915
+  // spine-binding resolution classify that builtin's result as owned, and RC
+  // callers then drop an interior view.
+  let known: Array[String] = borrow_ret_builtin_names()
   let mut changed = true
   while changed {
     changed = false

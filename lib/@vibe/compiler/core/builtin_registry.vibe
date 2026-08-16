@@ -675,6 +675,37 @@ export fn builtin_allocates(name: String) -> Bool {
   !builtin_is_non_allocating(name)
 }
 
+/// The borrow-RETURNING builtins: their result is an interior view sharing a
+/// call argument's refcount (an element read in place), never a fresh owned
+/// reference. Callers must not plan an independent drop for a binding of such
+/// a result, and functions whose tails reduce to these are themselves
+/// borrow-returning (#707).
+///
+/// SINGLE SOURCE OF TRUTH (#1979): the perceus classifiers
+/// (is_borrow_ret_fname, compute_borrow_returning_names' seed) and every
+/// codegen call-shape check (compile_call / compile_match /
+/// compile_expr_tail / common_analysis) consume THIS predicate or list. The
+/// set used to live as five hardcoded copies, and two of them drifted when
+/// MutList::get landed — a wrapper of the missing builtin then classifies as
+/// owned-returning and RC callers drop an interior view: silent double-free,
+/// caught only by review (#1932). Add new borrow-returning builtins HERE and
+/// nowhere else.
+export fn is_borrow_ret_builtin(name: String) -> Bool {
+  name == "Array::get" || name == "MutList::get" || name == "Map::get" || name == "__index" || name == "__rec_field"
+}
+
+/// The same set as a fresh array, for seeding compute_borrow_returning_names'
+/// fixed-point worklist (which pushes discovered user functions into it).
+export fn borrow_ret_builtin_names() -> Array[String] {
+  [
+    "Array::get",
+    "MutList::get",
+    "Map::get",
+    "__index",
+    "__rec_field"
+  ]
+}
+
 /// The enumerated non-allocating set. Grouped by why they are free.
 fn builtin_is_non_allocating(name: String) -> Bool {
   // Pure scalar reads and predicates over an existing value.
