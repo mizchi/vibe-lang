@@ -74,7 +74,10 @@ rm -f "$compiler_fragment"
 
 (
   cd "$OUT_DIR"
-  if command -v sha256sum >/dev/null 2>&1; then
+  # Probe by RUNNING it, not by `command -v`: a nix-shim `sha256sum` that is on
+  # PATH but dies on a glibc mismatch passes an existence check and then fails
+  # every call, so the fallback never engages and the caller dies instead.
+  if sha256sum </dev/null >/dev/null 2>&1; then
     sha256sum "$WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$MANIFEST_NAME" \
       > "$CHECKSUM_NAME"
   else

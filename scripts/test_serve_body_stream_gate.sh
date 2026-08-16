@@ -123,6 +123,64 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
 }
 HEOF
 
+# Adapter selection is signature-driven, not use-driven. An unused body must
+# still publish the plain-i64 core ABI required by the stream composer.
+UNUSED_BODY_SRC="$OUT_DIR/unused_body_handler.vibe"
+cat >"$UNUSED_BODY_SRC" <<'HEOF'
+export let helper = () -> Unit with Async {
+  ()
+}
+
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  "204\n\n"
+}
+HEOF
+UNUSED_BODY_COMPONENT="$OUT_DIR/unused_body.component.wasm"
+rm -f "$UNUSED_BODY_COMPONENT" "$UNUSED_BODY_COMPONENT.diag"
+env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+  "${UNUSED_BODY_SRC#"$PROJECT_ROOT"/}" "${UNUSED_BODY_COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+if [ ! -s "$UNUSED_BODY_COMPONENT" ]; then
+  echo "[serve-body] FAILED: a signature-selected stream handler with an unused body did not componentize" >&2
+  cat "$UNUSED_BODY_COMPONENT.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+wasm-tools validate --features all "$UNUSED_BODY_COMPONENT" >/dev/null
+UNUSED_BODY_WIT="$(wasm-tools component wit "$UNUSED_BODY_COMPONENT")"
+case "$UNUSED_BODY_WIT" in
+  *'export handler: async func('*'stream<u8>'*) ;;
+  *)
+    echo "[serve-body] FAILED: the unused-body handler did not select the stream composer" >&2
+    printf '%s\n' "$UNUSED_BODY_WIT" | head -20 >&2
+    exit 1 ;;
+esac
+echo "[serve-body] an unused HostStream body still selects and satisfies the stream composer"
+
+# A HostStream-typed export is not by itself a serve boundary. Keep ordinary
+# no-entry/library cores byte-neutral unless the named validated handler above
+# selects the stream composer.
+ORDINARY_STREAM_SRC="$OUT_DIR/ordinary_stream_export.vibe"
+cat >"$ORDINARY_STREAM_SRC" <<'HEOF'
+export let consume = (body: HostStream) -> Int with Async {
+  host_stream_next(body)
+}
+HEOF
+ORDINARY_STREAM_CORE="$OUT_DIR/ordinary_stream_export.wasm"
+rm -f "$ORDINARY_STREAM_CORE" "$ORDINARY_STREAM_CORE.diag"
+env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+  "${ORDINARY_STREAM_SRC#"$PROJECT_ROOT"/}" "${ORDINARY_STREAM_CORE#"$PROJECT_ROOT"/}" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$ORDINARY_STREAM_CORE" ]; then
+  echo "[serve-body] FAILED: the ordinary HostStream export did not compile" >&2
+  cat "$ORDINARY_STREAM_CORE.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if LC_ALL=C grep -a -q 'vibe.tagmode' "$ORDINARY_STREAM_CORE"; then
+  echo "[serve-body] FAILED: an ordinary HostStream export received serve-only tagmode metadata" >&2
+  exit 1
+fi
+echo "[serve-body] ordinary HostStream exports remain free of serve-only metadata"
+
 # Componentize a handler through the CLI's own serve path, compose it, and
 # start serving it. Sets ADDR/SERVE_PID for the checks that follow.
 serve_handler() {

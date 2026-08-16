@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fixture execution coverage check (#1587).
 #
-# THE INVARIANT: a fixture that carries `test` blocks either runs somewhere, or
-# is listed with a reason. There is no third state.
+# THE INVARIANT: a fixture that carries `test` blocks or a runtime
+# `__DATA__.last` expectation either runs somewhere, or is listed with a
+# reason. There is no third state.
 #
 # The third state is what this exists to kill. Gates used to enumerate their
 # test-block fixtures by hand (`for fx in \` + a backslash-continued list), so
@@ -74,6 +75,24 @@ TEST_BLOCK_RE='^[[:space:]]*test([[:space:]]+"|[[:space:]]*\{|[[:space:]]+with[[
 
 # --- the accounted-for sets -------------------------------------------------
 unit_list="$(bash scripts/unit_test_runner.sh --list)"
+
+# #1855: the generator owns the exhaustive classification of runtime
+# expectations. Default list mode returns active tests; INCLUDE_DEBT returns
+# the complete candidate set and, in both modes, validates every debt row
+# (format, uniqueness, and non-staleness). New fixtures are active by default.
+runtime_fixture_active="$(VIBE_RUNTIME_FIXTURE_LIST_ONLY=1 \
+  VIBE_RUNTIME_FIXTURE_INVENTORY=active \
+  VIBE_RUNTIME_FIXTURE_INCLUDE_DEBT=0 \
+  VIBE_RUNTIME_FIXTURE_LIMIT=0 \
+  node scripts/generate_runtime_fixture_tests.mjs)"
+runtime_fixture_all="$(VIBE_RUNTIME_FIXTURE_LIST_ONLY=1 \
+  VIBE_RUNTIME_FIXTURE_INVENTORY=all \
+  VIBE_RUNTIME_FIXTURE_INCLUDE_DEBT=1 \
+  VIBE_RUNTIME_FIXTURE_LIMIT=0 \
+  node scripts/generate_runtime_fixture_tests.mjs)"
+runtime_active_count="$(printf '%s\n' "$runtime_fixture_active" | grep -c . || true)"
+runtime_all_count="$(printf '%s\n' "$runtime_fixture_all" | grep -c . || true)"
+runtime_debt_count=$((runtime_all_count - runtime_active_count))
 
 exceptions=""
 if [ -f "$EXCEPTIONS_FILE" ]; then
@@ -192,4 +211,4 @@ if [ "$violations" -gt 0 ]; then
   echo "[fixture-execution] $violations violation(s)" >&2
   exit 1
 fi
-echo "[fixture-execution] ok ($accounted test-block fixtures, all accounted for)"
+echo "[fixture-execution] ok ($accounted test-block fixtures; $runtime_active_count runtime expectations active, $runtime_debt_count reasoned debt; all accounted for)"

@@ -104,9 +104,9 @@ echo "[named-hostfutures-component-gate] compiler: $COMPILER"
 echo "[named-hostfutures-component-gate] runner: $RUNNER"
 
 compile_fixture() {
-  local src="$1" out="$2"
+  local src="$1" out="$2" rc_mode="${3:-1}"
   rm -f "$out" "$out.diag"
-  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw VIBE_RC="$rc_mode" \
     bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
     "$COMPILER" "$src" "$out" run >/dev/null \
     || { echo "named hostfutures component gate FAILED: $src did not compile: $(cat "$out.diag" 2>/dev/null)" >&2; exit 1; }
@@ -127,7 +127,9 @@ let run: () -> Int with Async = () -> {
 EOF
 
 COMPONENT="$OUT_DIR/named_await.component.wasm"
-compile_fixture "$SRC" "$COMPONENT"
+compile_fixture "$SRC" "$COMPONENT" 1
+RC0_COMPONENT="$OUT_DIR/named_await.rc0.component.wasm"
+compile_fixture "$SRC" "$RC0_COMPONENT" 0
 
 # Must be a COMPONENT (layer 1 header), not a bare core module.
 if ! od -A n -t x1 -N 8 "$COMPONENT" | tr -d ' \n' | grep -q '^0061736d0d000100$'; then
@@ -137,6 +139,8 @@ fi
 
 wasm-tools validate --features all "$COMPONENT" \
   || { echo "named hostfutures component gate FAILED: component failed validation" >&2; exit 1; }
+wasm-tools validate --features all "$RC0_COMPONENT" \
+  || { echo "named hostfutures component gate FAILED: RC=0 component failed validation" >&2; exit 1; }
 
 WIT="$OUT_DIR/named_await.wit"
 wasm-tools component wit "$COMPONENT" >"$WIT" 2>/dev/null \
@@ -162,6 +166,14 @@ if ! VIBE_ASYNC_FUTURES="price=40:1,qty=2:1" timeout 60 "$RUNNER" "$COMPONENT" >
 fi
 [ "$(cat "$WARM_LOG")" = "42" ] \
   || { echo "named hostfutures component gate FAILED: warmup expected 42, got: $(cat "$WARM_LOG")" >&2; exit 1; }
+RC0_WARM_LOG="$OUT_DIR/run.rc0.warmup.log"
+if ! VIBE_ASYNC_FUTURES="price=40:1,qty=2:1" timeout 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_WARM_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: RC=0 warmup run did not exit 0" >&2
+  cat "$RC0_WARM_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$RC0_WARM_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: RC=0 warmup expected 42, got: $(cat "$RC0_WARM_LOG")" >&2; exit 1; }
 
 RESULT_LOG="$OUT_DIR/run.blocked.log"
 START_NS=$(date +%s%N)
@@ -175,6 +187,14 @@ ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
 GOT="$(cat "$RESULT_LOG")"
 [ "$GOT" = "42" ] \
   || { echo "named hostfutures component gate FAILED: expected 42 (40 from price + 2 from qty), got: $GOT" >&2; exit 1; }
+RC0_RESULT_LOG="$OUT_DIR/run.rc0.blocked.log"
+if ! VIBE_ASYNC_FUTURES="$FUTURES" timeout 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_RESULT_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: RC=0 blocked run did not exit 0" >&2
+  cat "$RC0_RESULT_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$RC0_RESULT_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: RC=0 blocked run expected 42, got: $(cat "$RC0_RESULT_LOG")" >&2; exit 1; }
 
 MIN_MS=$(( LONG_MS * 8 / 10 ))
 MAX_MS=$(( LONG_MS * 14 / 10 ))
@@ -186,7 +206,7 @@ if [ "$ELAPSED_MS" -ge "$MAX_MS" ]; then
   echo "named hostfutures component gate FAILED: took ${ELAPSED_MS}ms, at or beyond the ${MAX_MS}ms overlap bound -- sequential waits would take ${LONG_MS} + ${SHORT_MS}ms, so the two host futures did not overlap" >&2
   exit 1
 fi
-echo "[named-hostfutures-component-gate] concurrent path: 42 in ${ELAPSED_MS}ms (>= ${MIN_MS}, < ${MAX_MS}: both futures in flight)"
+echo "[named-hostfutures-component-gate] concurrent path: RC=1/0 both returned 42; RC=1 took ${ELAPSED_MS}ms (>= ${MIN_MS}, < ${MAX_MS}: both futures in flight)"
 
 # --- regression: the call NESTED in a record literal (#1337 Codex P2) ---------
 # The name collector must be TOTAL over expression containers: compile_call

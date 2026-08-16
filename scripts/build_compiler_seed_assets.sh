@@ -26,9 +26,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
+  # Probe by RUNNING it, not by `command -v`: a nix-shim `sha256sum` that is on
+  # PATH but dies on a glibc mismatch passes an existence check and then fails
+  # every call, so the fallback never engages and the caller dies instead.
+  if sha256sum </dev/null >/dev/null 2>&1; then
     sha256sum "$1" | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then
+  elif shasum -a 256 </dev/null >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'
   else
     echo "build-compiler-seed-assets: sha256sum or shasum is required" >&2

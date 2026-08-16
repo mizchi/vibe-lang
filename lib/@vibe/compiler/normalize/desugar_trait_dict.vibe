@@ -560,7 +560,8 @@ fn annotate_params_from_sig(params: Array[(String, Option[TypeExpr])], ptypes: A
 /// `[X: Bound]` binder, re-attach the binder to the EFn and annotate its params
 /// with the trait method's declared types. Idempotent: an EFn that already
 /// carries type_params was injected on a prior run and is skipped.
-fn inject_method_generics(stmts: Array[Stmt], impl_map: Array[(String, String)], gen_table: Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+fn inject_method_generics_reporting_change(stmts: Array[Stmt], impl_map: Array[(String, String)], gen_table: Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Bool {
+  let mut changed = false
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -575,6 +576,7 @@ fn inject_method_generics(stmts: Array[Stmt], impl_map: Array[(String, String)],
                   let new_params = annotate_params_from_sig(params, ptypes)
                   let new_efn = EFn(mtparams, mtbounds, new_params, ret, eff, fbody)
                   Array::set(stmts, i, SLet(exp, isrec, qname, ann, new_efn))
+                  changed = true
                 },
                 None => ()
               }
@@ -590,6 +592,7 @@ fn inject_method_generics(stmts: Array[Stmt], impl_map: Array[(String, String)],
     }
     i = i + 1
   }
+  changed
 }
 
 /// Re-attach trait-method `[X: Bound]` binders to impl free functions, given a
@@ -597,23 +600,33 @@ fn inject_method_generics(stmts: Array[Stmt], impl_map: Array[(String, String)],
 /// idempotent. Shared by `desugar_trait_dicts` (pre-codegen) and `check_program`
 /// (so the FS-compile path, which type-checks before the desugar runs, also sees
 /// the binder and can resolve `X::method`).
-fn inject_trait_method_generics_with(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Bool {
   let method_gen_table = collect_trait_method_gens(stmts)
   if Array::length(method_gen_table) > 0 {
     let impl_map = collect_impl_trait_map(stmts)
-    inject_method_generics(stmts, impl_map, method_gen_table, traits)
+    inject_method_generics_reporting_change(stmts, impl_map, method_gen_table, traits)
   } else {
-    ()
+    false
   }
+}
+
+fn inject_trait_method_generics_with(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  let _changed = inject_trait_method_generics_with_reporting_change(stmts, traits)
+  ()
 }
 
 /// Self-contained entry for callers that have not flattened the trait table
 /// (the checker). Builds its own (flattened) method-trait table from `stmts`.
-export fn inject_trait_method_generics(stmts: Array[Stmt]) -> Unit {
+export fn inject_trait_method_generics_reporting_change(stmts: Array[Stmt]) -> Bool {
   let traits_raw = collect_method_traits(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
-  inject_trait_method_generics_with(stmts, traits)
+  inject_trait_method_generics_with_reporting_change(stmts, traits)
+}
+
+export fn inject_trait_method_generics(stmts: Array[Stmt]) -> Unit {
+  let _changed = inject_trait_method_generics_reporting_change(stmts)
+  ()
 }
 
 // #1324 removed the #760(2) `inject_prelude_result` pass (and its
@@ -4210,16 +4223,24 @@ fn lower_try_op(val: Expr) -> Expr {
 /// NOT run) and — idempotently — the codegen `desugar_trait_dicts`. It is inert
 /// for programs that use no `let*`/`?` (no sentinels present). `var_types` tracks
 /// locals so `let* x = some_opt` then `let* y = uses(x)` resolves x's type.
-fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
+fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], changed: Option[Array[Bool]]) -> Expr {
   match expr {
     ECall(callee, args, off) => {
       let k = try_sentinel(callee, args)
       if k == 0 {
+        match changed {
+          Some(cell) => {
+            Array::set(cell, 0, true)
+          },
+          None => {
+            ()
+          }
+        }
         let val = Array::get(args, 0)
         match Array::get(args, 1) {
           EFn(_, _, ps, _, _, rest) => {
             let (name, _) = Array::get(ps, 0)
-            let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
+            let rwval = railway_rw(val, struct_sets, var_types, fn_returns, changed)
             // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
             // field), never to a value of `inferred`'s own type (the
             // wrapper "Option"/"Result" of `val`) -- recording name ->
@@ -4237,22 +4258,40 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
             // untracked, falling through infer_arg_type_name to `None`,
             // which keeps the plain scalar `==`/`!=` codegen path.
             let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
-            let rwrest = railway_rw(rest, struct_sets, body_vars, fn_returns)
+            let rwrest = railway_rw(rest, struct_sets, body_vars, fn_returns, changed)
             lower_try_bind(rwval, name, rwrest)
           },
           _ => EUnit
         }
       } else if k == 1 {
+        match changed {
+          Some(cell) => {
+            Array::set(cell, 0, true)
+          },
+          None => {
+            ()
+          }
+        }
         let val = Array::get(args, 0)
-        let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
+        let rwval = railway_rw(val, struct_sets, var_types, fn_returns, changed)
         lower_try_op(rwval)
       } else {
         let rwargs = for a in args {
-          railway_rw(a, struct_sets, var_types, fn_returns)
+          railway_rw(a, struct_sets, var_types, fn_returns, changed)
         }
         match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns) {
-          Some(map_get) => map_get,
-          None => ECall(railway_rw(callee, struct_sets, var_types, fn_returns), rwargs, off)
+          Some(map_get) => {
+            match changed {
+              Some(cell) => {
+                Array::set(cell, 0, true)
+              },
+              None => {
+                ()
+              }
+            }
+            map_get
+          },
+          None => ECall(railway_rw(callee, struct_sets, var_types, fn_returns, changed), rwargs, off)
         }
       }
     },
@@ -4261,21 +4300,21 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
     EString(_) => expr,
     EBool(_) => expr,
     EUnit => expr,
-    ESpread(e) => ESpread(railway_rw(e, struct_sets, var_types, fn_returns)),
+    ESpread(e) => ESpread(railway_rw(e, struct_sets, var_types, fn_returns, changed)),
     EStringInterp(_) => expr,
     EIdent(_, _) => expr,
     ETuple(elems) => ETuple(for e in elems {
-      railway_rw(e, struct_sets, var_types, fn_returns)
+      railway_rw(e, struct_sets, var_types, fn_returns, changed)
     }),
     EArray(elems) => EArray(for e in elems {
-      railway_rw(e, struct_sets, var_types, fn_returns)
+      railway_rw(e, struct_sets, var_types, fn_returns, changed)
     }),
     ERecord(rn, fields, targs) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fields) {
         let (fname, fval) = Array::get(fields, i)
-        Array::push(out, (fname, railway_rw(fval, struct_sets, var_types, fn_returns)))
+        Array::push(out, (fname, railway_rw(fval, struct_sets, var_types, fn_returns, changed)))
         i = i + 1
       }
       ERecord(rn, out, targs)
@@ -4285,26 +4324,26 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
       let mut i = 0
       while i < Array::length(fields) {
         let (k, v) = Array::get(fields, i)
-        Array::push(out, (k, railway_rw(v, struct_sets, var_types, fn_returns)))
+        Array::push(out, (k, railway_rw(v, struct_sets, var_types, fn_returns, changed)))
         i = i + 1
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(t, struct_sets, var_types, fn_returns), railway_rw(e, struct_sets, var_types, fn_returns)),
+    EIf(c, t, e) => EIf(railway_rw(c, struct_sets, var_types, fn_returns, changed), railway_rw(t, struct_sets, var_types, fn_returns, changed), railway_rw(e, struct_sets, var_types, fn_returns, changed)),
     ELet(name, val, body, soff) => {
-      let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
+      let new_val = railway_rw(val, struct_sets, var_types, fn_returns, changed)
       let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns), soff)
+      ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns, changed), soff)
     },
-    ELetRec(name, val, body) => ELetRec(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
+    ELetRec(name, val, body) => ELetRec(name, railway_rw(val, struct_sets, var_types, fn_returns, changed), railway_rw(body, struct_sets, var_types, fn_returns, changed)),
     ELetMut(name, val, body, soff) => {
-      let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
+      let new_val = railway_rw(val, struct_sets, var_types, fn_returns, changed)
       let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns), soff)
+      ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns, changed), soff)
     },
-    EAssign(name, val, cont) => EAssign(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
-    EAssignOp(name, op, val, cont) => EAssignOp(name, op, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
-    ESeq(a, b) => ESeq(railway_rw(a, struct_sets, var_types, fn_returns), railway_rw(b, struct_sets, var_types, fn_returns)),
+    EAssign(name, val, cont) => EAssign(name, railway_rw(val, struct_sets, var_types, fn_returns, changed), railway_rw(cont, struct_sets, var_types, fn_returns, changed)),
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, railway_rw(val, struct_sets, var_types, fn_returns, changed), railway_rw(cont, struct_sets, var_types, fn_returns, changed)),
+    ESeq(a, b) => ESeq(railway_rw(a, struct_sets, var_types, fn_returns, changed), railway_rw(b, struct_sets, var_types, fn_returns, changed)),
     EMatch(scrut, arms) => {
       let out = array_empty()
       let mut i = 0
@@ -4315,45 +4354,55 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
         // checker, so the arm body's `binding.field` reads rewrite to
         // positional `__rec_field` here too.
         let arm_vars = arm_binder_var_types(scrut, p, var_types)
-        Array::push(out, (p, railway_rw(b, struct_sets, arm_vars, fn_returns)))
+        Array::push(out, (p, railway_rw(b, struct_sets, arm_vars, fn_returns, changed)))
         i = i + 1
       }
-      EMatch(railway_rw(scrut, struct_sets, var_types, fn_returns), out)
+      EMatch(railway_rw(scrut, struct_sets, var_types, fn_returns, changed), out)
     },
     EHandle(scrut, arms) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, railway_rw(b, struct_sets, var_types, fn_returns)))
+        Array::push(out, (p, railway_rw(b, struct_sets, var_types, fn_returns, changed)))
         i = i + 1
       }
-      EHandle(railway_rw(scrut, struct_sets, var_types, fn_returns), out)
+      EHandle(railway_rw(scrut, struct_sets, var_types, fn_returns, changed), out)
     },
-    EWhile(c, b) => EWhile(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(b, struct_sets, var_types, fn_returns)),
+    EWhile(c, b) => EWhile(railway_rw(c, struct_sets, var_types, fn_returns, changed), railway_rw(b, struct_sets, var_types, fn_returns, changed)),
     ELoop(params, body) => ELoop(for param in params {
       let (name, init) = param
-      (name, railway_rw(init, struct_sets, var_types, fn_returns))
-    }, railway_rw(body, struct_sets, var_types, fn_returns)),
-    EForIn(name, idx, iter, body) => EForIn(name, idx, railway_rw(iter, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
-    EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns), railway_rw(r, struct_sets, var_types, fn_returns)),
-    EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns)),
-    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns)),
+      (name, railway_rw(init, struct_sets, var_types, fn_returns, changed))
+    }, railway_rw(body, struct_sets, var_types, fn_returns, changed)),
+    EForIn(name, idx, iter, body) => EForIn(name, idx, railway_rw(iter, struct_sets, var_types, fn_returns, changed), railway_rw(body, struct_sets, var_types, fn_returns, changed)),
+    EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns, changed), railway_rw(r, struct_sets, var_types, fn_returns, changed)),
+    EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns, changed)),
+    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns, changed)),
     EDot(obj, field, off, fdoff) => {
-      let robj = railway_rw(obj, struct_sets, var_types, fn_returns)
+      let robj = railway_rw(obj, struct_sets, var_types, fn_returns, changed)
       match anon_dot_rewrite(obj, field, off, robj, var_types) {
-        Some(rw) => rw,
+        Some(rw) => {
+          match changed {
+            Some(cell) => {
+              Array::set(cell, 0, true)
+            },
+            None => {
+              ()
+            }
+          }
+          rw
+        },
         None => EDot(robj, field, off, fdoff)
       }
     },
-    ELabeledArg(label, name, body) => ELabeledArg(label, name, railway_rw(body, struct_sets, var_types, fn_returns)),
-    EReturn(e) => EReturn(railway_rw(e, struct_sets, var_types, fn_returns)),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, railway_rw(body, struct_sets, var_types, fn_returns, changed)),
+    EReturn(e) => EReturn(railway_rw(e, struct_sets, var_types, fn_returns, changed)),
     EBreak(opt) => match opt {
-      Some(e) => EBreak(Some(railway_rw(e, struct_sets, var_types, fn_returns))),
+      Some(e) => EBreak(Some(railway_rw(e, struct_sets, var_types, fn_returns, changed))),
       None => expr
     },
     EContinue(exprs) => EContinue(for e in exprs {
-      railway_rw(e, struct_sets, var_types, fn_returns)
+      railway_rw(e, struct_sets, var_types, fn_returns, changed)
     })
   }
 }
@@ -4396,29 +4445,41 @@ fn collect_toplevel_anon_records(stmts: Array[Stmt], struct_sets: Array[(String,
 /// `collect_toplevel_anon_records` — so `EFn`/`ELet`'s existing var_types
 /// threading (which already covers a SINGLE statement's own nested scopes)
 /// extends across top-level statement boundaries too.
-fn railway_rw_stmt(s: Stmt, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)]) -> Stmt {
+fn railway_rw_stmt(s: Stmt, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)], changed: Option[Array[Bool]]) -> Stmt {
   match s {
-    SLet(exp, isrec, fname, ann, body) => SLet(exp, isrec, fname, ann, railway_rw(body, struct_sets, toplevel_vars, fn_returns)),
-    SLetMut(name, ty, e) => SLetMut(name, ty, railway_rw(e, struct_sets, toplevel_vars, fn_returns)),
-    STest(name, body) => STest(name, railway_rw(body, struct_sets, toplevel_vars, fn_returns)),
-    SBench(name, body) => SBench(name, railway_rw(body, struct_sets, toplevel_vars, fn_returns)),
-    SExpr(e) => SExpr(railway_rw(e, struct_sets, toplevel_vars, fn_returns)),
+    SLet(exp, isrec, fname, ann, body) => SLet(exp, isrec, fname, ann, railway_rw(body, struct_sets, toplevel_vars, fn_returns, changed)),
+    SLetMut(name, ty, e) => SLetMut(name, ty, railway_rw(e, struct_sets, toplevel_vars, fn_returns, changed)),
+    STest(name, body) => STest(name, railway_rw(body, struct_sets, toplevel_vars, fn_returns, changed)),
+    SBench(name, body) => SBench(name, railway_rw(body, struct_sets, toplevel_vars, fn_returns, changed)),
+    SExpr(e) => SExpr(railway_rw(e, struct_sets, toplevel_vars, fn_returns, changed)),
     SModule(exp, name, body) => SModule(exp, name, for inner in body {
-      railway_rw_stmt(inner, struct_sets, fn_returns, toplevel_vars)
+      railway_rw_stmt(inner, struct_sets, fn_returns, toplevel_vars, changed)
     }),
     _ => s
   }
 }
 
-export fn desugar_railway_binds(stmts: Array[Stmt]) -> Unit {
+fn desugar_railway_binds_impl(stmts: Array[Stmt], changed: Option[Array[Bool]]) -> Unit {
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
   let toplevel_vars = collect_toplevel_anon_records(stmts, struct_sets)
   let mut i = 0
   while i < Array::length(stmts) {
-    Array::set(stmts, i, railway_rw_stmt(Array::get(stmts, i), struct_sets, fn_returns, toplevel_vars))
+    Array::set(stmts, i, railway_rw_stmt(Array::get(stmts, i), struct_sets, fn_returns, toplevel_vars, changed))
     i = i + 1
   }
+}
+
+export fn desugar_railway_binds_reporting_change(stmts: Array[Stmt]) -> Bool {
+  let changed = [
+    false
+  ]
+  desugar_railway_binds_impl(stmts, Some(changed))
+  Array::get(changed, 0)
+}
+
+export fn desugar_railway_binds(stmts: Array[Stmt]) -> Unit {
+  desugar_railway_binds_impl(stmts, None)
 }
 
 // ---- #1392: string interpolation renders a derive(Show) value structurally ----
@@ -10867,7 +10928,8 @@ fn dinsp_mentions_binder(expr: Expr) -> Bool {
 ///
 /// Only statements that actually contain an `inspect(..)` call are rebuilt --
 /// see dinsp_uses for why that guard is load-bearing rather than cosmetic.
-export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
+export fn desugar_inspect_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
+  let mut changed = false
   if dinsp_binds_inspect(stmts) {
     ()
   } else {
@@ -10876,12 +10938,19 @@ export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
       let stmt = Array::get(stmts, i)
       if dinsp_stmt_uses(stmt) {
         Array::set(stmts, i, dinsp_stmt(stmt))
+        changed = true
       } else {
         ()
       }
       i = i + 1
     }
   }
+  changed
+}
+
+export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
+  let _changed = desugar_inspect_calls_reporting_change(stmts)
+  ()
 }
 
 /// In-place labeled-argument reordering over a whole program. Rebuilds only the

@@ -72,6 +72,76 @@ if [ ! -f "$cli_wasm" ]; then
   fi
   exit 2
 fi
+
+# Say, up front, which compiler answered -- and whether that compiler is older
+# than the compiler sources in this checkout.
+#
+# The seed default is right for testing library code and wrong for testing a
+# change to the compiler, and the two are indistinguishable from the result.
+# There is already a note for this below, but it fires only when a file FAILS
+# to compile. The dangerous case is the opposite one: the file compiles, the
+# tests run, and the seed returns a confident answer about a compiler that does
+# not contain your change. Measured instance, one file, `x - y` through a
+# labeled-argument lambda: the seed says 0 (a bug fixed in #1925) and a stage2
+# built from the same checkout says -7 (#1899). Neither run reports an error.
+# Nothing in the output distinguished them, so the wrong one was believed --
+# and the same mistake had already been made twice in that session.
+#
+# `[ensure-seed] ... bootstrap/seed/compiler.wasm` is printed above and is not
+# enough: it names the file without saying that the file is behind.
+if [ -z "${VIBE_TEST_CLI_WASM:-}" ] && [ "${VIBE_TEST_QUIET_COMPILER_NOTE:-0}" != "1" ]; then
+  seed_src_commit="$(python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1]))["seed"].get("source_commit", ""))
+except Exception:
+    print("")' "$ROOT_DIR/bootstrap/seed.json" 2>/dev/null || true)"
+  # Over-approximate the compiler's inputs, for the reason
+  # scripts/ensure_generated.sh:117 already gives about its own fingerprint:
+  # the flatten walks cli_adapter.vibe's entire import closure, which reaches
+  # well past lib/@vibe/compiler. compiler_sources_manifest.tsv lists
+  # @vibe/ast, parser, core, cache, graph, json and lsp as compiler sources,
+  # so a change confined to lib/@vibe/parser/lexer.vibe is a compiler change
+  # that lib/@vibe/compiler|cli cannot see. Over-approximating costs an
+  # occasional notice on a library-only edit; under-approximating stays silent
+  # for exactly the case this notice exists to catch.
+  #
+  # No exclusion list. ensure_generated.sh needs one because it hashes the
+  # working tree directly; git does not, and the two things that would have
+  # been on it are already handled:
+  #
+  #   - the five build outputs are gitignored (.gitignore:57-61), so they
+  #     cannot show up as uncommitted;
+  #   - tests and benches would only ever inflate the commit count, and the
+  #     notice reports "you are ahead", not a precise figure.
+  #
+  # Measured over the current seed window, excluding them changes 44 to 44 --
+  # while narrowing to lib/@vibe/compiler|cli changes it to 42, which is the
+  # under-approximation this notice exists to avoid.
+  compiler_paths=(lib/@vibe lib/@vibex)
+  behind=""
+  if [ -n "$seed_src_commit" ] && \
+    git -C "$ROOT_DIR" cat-file -e "$seed_src_commit^{commit}" 2>/dev/null; then
+    behind="$(git -C "$ROOT_DIR" rev-list --count "$seed_src_commit"..HEAD \
+      -- "${compiler_paths[@]}" 2>/dev/null || true)"
+  fi
+  # Uncommitted edits count too, and are the case where the gap is likeliest to
+  # be the thing under test.
+  dirty="$(git -C "$ROOT_DIR" status --porcelain -- "${compiler_paths[@]}" 2>/dev/null \
+    | wc -l | tr -d ' ')"
+  if [ "${behind:-0}" != "0" ] || [ "${dirty:-0}" != "0" ]; then
+    gap=""
+    [ "${behind:-0}" != "0" ] && gap="$behind commit(s)"
+    if [ "${dirty:-0}" != "0" ]; then
+      [ -n "$gap" ] && gap="$gap and "
+      gap="$gap$dirty uncommitted file(s)"
+    fi
+    echo "[vibe-test] compiler: the committed seed -- $gap ahead of it under lib/@vibe|@vibex." >&2
+    echo "[vibe-test]   This run CANNOT observe those changes; a green result here says nothing about them." >&2
+    echo "[vibe-test]   To test this checkout's compiler:" >&2
+    echo "[vibe-test]     VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_\$(git rev-parse --short HEAD)/stage2.wasm" >&2
+  fi
+fi
+
 covdir="$outdir/coverage"
 if [ "$coverage" = "1" ]; then
   mkdir -p "$covdir"
