@@ -55,6 +55,22 @@ fn count_kind(source: String, want: String) -> Int with Exception {
   count
 }
 
+fn has_owner_kind(source: String, owner: String, want: String) -> Bool with Exception {
+  let spans = alloc_spans(source)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(spans) {
+    let (actual_owner, kind, _off) = Array::get(spans, i)
+    if actual_owner == owner && kind == want {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn fn_names_of(source: String) -> Array[String] with Exception {
   let spans = alloc_spans(source)
   let out = [
@@ -107,6 +123,38 @@ test "a closure literal allocates its environment" {
   // allocations ADR-0091 exists to surface.
   let src = "fn mk(n: Int) -> () -> Int {\n  () -> Int {\n    n\n  }\n}\n"
   assert(has_kind(src, "closure"))
+}
+
+test "a capture-free lambda is an immediate function value, not a closure allocation" {
+  let src = "fn mk() -> () -> Int {\n  () -> Int {\n    1\n  }\n}\n"
+  assert(!has_kind(src, "closure"))
+}
+
+test "a top-level function reference does not make a lambda capture" {
+  let src = "fn helper(n: Int) -> Int { n + 1 }\nfn mk() -> (Int) -> Int {\n  (n: Int) -> Int {\n    helper(n)\n  }\n}\n"
+  assert(!has_kind(src, "closure"))
+}
+
+test "a shadowed builtin function value still makes a lambda capture" {
+  let src = "fn mk(not: (Int) -> Int) -> () -> Int {\n  () -> Int {\n    not(1)\n  }\n}\n"
+  assert(has_kind(src, "closure"))
+}
+
+test "allocations inside a named local lambda belong to that lambda" {
+  let src = "fn mk() -> () -> Array[Int] {\n  let build = () -> Array[Int] {\n    [1, 2]\n  }\n  build\n}\n"
+  assert(!has_owner_kind(src, "mk", "array"))
+  assert(has_owner_kind(src, "mk::build@0", "array"))
+}
+
+test "a pattern binder shadows a same-named global for capture classification" {
+  let src = "enum Box { Box(Int) }\nfn helper(n: Int) -> Int { n + 1 }\nfn mk(x: Box) -> () -> Int {\n  match x {\n    Box(helper) => () -> Int { helper }\n  }\n}\n"
+  assert(has_kind(src, "closure"))
+}
+
+test "same-named lambdas in sibling scopes have distinct owners" {
+  let src = "fn mk(c: Bool) -> () -> Array[Int] {\n  if c {\n    let build = () -> Array[Int] { [1] }\n    build\n  } else {\n    let build = () -> Array[Int] { [2] }\n    build\n  }\n}\n"
+  assert(has_owner_kind(src, "mk::build@0", "array"))
+  assert(has_owner_kind(src, "mk::build@1", "array"))
 }
 
 test "a captured let mut is a heap ref cell, so the BINDING is a site" {
