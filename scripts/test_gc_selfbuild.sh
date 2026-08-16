@@ -28,6 +28,21 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
+# The compiler is a deeply-recursive program, and node's DEFAULT stack is not
+# enough to type-check the flat bundle -- on it BOTH lanes die with
+# "expression too deeply nested (stack overflow while type-checking)" long
+# before codegen runs. scripts/generations.sh (the real build) therefore uses
+# --stack-size=131072, and this script must use the same one.
+#
+# Without it this script does not merely fail: it MISREPORTS THE FRONTIER,
+# which is its entire job. It reports a host stack limit as if it were the gc
+# lane's limit, and it does so PESSIMISTICALLY -- "not even type-checking
+# works" reads as far-behind when the lane in fact reaches the self-compile
+# fixpoint. Anyone acting on that goes hunting for problems that are already
+# solved (#1262: it happened).
+: "${VIBE_NODE_WASM_FLAGS:=--experimental-wasm-exnref --stack-size=${VIBE_GC_SELFBUILD_NODE_STACK_SIZE:-131072}}"
+export VIBE_NODE_WASM_FLAGS
+
 CLI_WASM="${1:-${VIBE_GC_SELFBUILD_CLI_WASM:-}}"
 if [ -z "$CLI_WASM" ]; then
   CLI_WASM="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
