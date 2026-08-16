@@ -43,8 +43,8 @@ import @vibe/compiler/codegen/common_base {
   agg_expr_lookup,
   agg_ret_lookup,
   agg_slot_lookup,
-  emit_arith_wrap62,
-  emit_arith_wrap62,
+  emit_arith_wrap_int,
+  emit_arith_wrap_int,
   emit_binop_op,
   emit_heap_grow_after_heap_set,
   emit_i32_eq,
@@ -249,14 +249,23 @@ import ./compile_match.vibe {
 //# Functions
 
 /// ADR-0055 tag repair for compound assignment: under RC both operands are
-/// tagged (n<<1), so `+`, `-`, `%` preserve the tag for free, but `*` yields
-/// ab<<2 (shift right once) and `/` yields a/b untagged (shift left once).
-/// The raw emit_assignop_op alone silently doubled `x *= 2` results under RC.
-fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
+/// tagged (n<<1), so `+`, `-`, `%` preserve the tag for free; `/` yields
+/// a/b untagged (shift left once, applied by the POST fix below). `*` is
+/// repaired BEFORE the multiply instead (#1877): untagging the loaded LHS
+/// first ((t>>1)*u = tagged(a*b)) makes the product overflow i64 exactly at
+/// the payload's 63-bit boundary, where every other RC op already wraps —
+/// the old post-multiply `>>1` pre-wrapped the intermediate one bit early.
+fn emit_assignop_rc_mul_pre(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
   if enable_rc && op == "*" {
     emit_i64_const(buf, 1)
     emit_i64_shr_s(buf)
-  } else if enable_rc && op == "/" {
+  } else {
+    ()
+  }
+}
+
+fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
+  if enable_rc && op == "/" {
     emit_i64_const(buf, 1)
     emit_i64_shl(buf)
   } else {
@@ -1752,18 +1761,20 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       emit_local_get(buf, idx)
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, 0)
+      emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
       let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
       emit_assignop_op(buf, op)
       emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
-      emit_arith_wrap62(buf, ctx.enable_rc, op)
+      emit_arith_wrap_int(buf, ctx.enable_rc, op)
       emit_i64_store(buf, 3, 0)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     } else {
       emit_local_get(buf, idx)
+      emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
       let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
       emit_assignop_op(buf, op)
       emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
-      emit_arith_wrap62(buf, ctx.enable_rc, op)
+      emit_arith_wrap_int(buf, ctx.enable_rc, op)
       emit_local_set(buf, idx)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     }

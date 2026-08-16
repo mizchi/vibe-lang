@@ -387,10 +387,11 @@ export fn gen_generic_rel_diff_body(enable_rc: Bool, str_lex_diff_idx: Int) -> B
 /// `str_concat_idx` (whose result is already the correctly-shaped packed
 /// representation for its return type -- no extra tagging needed here),
 /// non-string operands take the exact `emit_i64_add` the monomorphic Int path
-/// already uses, followed by the same #1877 62-bit renormalization that path
-/// now carries (sign-extend from the payload sign bit: shift by 1 under RC's
-/// tagged `n<<1`, by 2 untagged) — without it, `max + 1` through an erased
-/// `[T: Add]` parameter escaped the wrap contract the monomorphic `+` keeps.
+/// already uses. Under RC the tagged sum wraps at the payload's 63-bit
+/// boundary for free (doubling is linear), matching the monomorphic RC `+`;
+/// untagged lanes append the same #1877 renormalization the monomorphic path
+/// carries (sign-extend from bit 62) — without it, `max + 1` through an
+/// erased `[T: Add]` parameter escaped the wrap contract.
 export fn gen_generic_add_body(enable_rc: Bool, str_concat_idx: Int) -> Bytes {
   let b = bytebuf_new()
   emit_looks_like_string_strict(b, 0)
@@ -404,15 +405,14 @@ export fn gen_generic_add_body(enable_rc: Bool, str_concat_idx: Int) -> Bytes {
   emit_local_get(b, 0)
   emit_local_get(b, 1)
   emit_i64_add(b)
-  let wrap_shift = if enable_rc {
-    1
+  if enable_rc {
+    ()
   } else {
-    2
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
   }
-  emit_i64_const(b, wrap_shift)
-  emit_i64_shl(b)
-  emit_i64_const(b, wrap_shift)
-  emit_i64_shr_s(b)
   emit_end(b)
   b
 }
