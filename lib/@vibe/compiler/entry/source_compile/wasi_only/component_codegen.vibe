@@ -5255,6 +5255,73 @@ fn comp_core_imports_host_stream_close(core_wasm: Bytes) -> Bool {
   found
 }
 
+/// #1930: the Int value convention the core module DECLARES, read back from
+/// the `vibe.tagmode` custom section linked_compile writes: 1 = 1-bit tagged
+/// (`value << 1`, the RC build), 0 = plain untagged i64 (the bump build),
+/// -1 = the core declares nothing.
+///
+/// The adapters below hand Ints across `vibe.host_stream_read` and its
+/// siblings, and that one import name has TWO representations depending on
+/// how the core was compiled. Getting it wrong does not trap -- it doubles (or
+/// halves) every value and returns a plausible number, which is why the
+/// adapter reads the answer off the core instead of assuming a lane.
+export fn comp_core_tag_mode(core_wasm: Bytes) -> Int {
+  let len = Bytes::length(core_wasm)
+  if len < 8 {
+    0 - 1
+  }
+  else {
+    let mut i = 8
+    let mut found = 0 - 1
+    while i < len {
+      let sec_id = Bytes::get(core_wasm, i)
+      i = i + 1
+      let (sec_size, next_i) = read_uleb(core_wasm, i)
+      i = next_i
+      let sec_end = i + sec_size
+      if sec_end > len {
+        i = len
+      }
+      else {
+        if sec_id == 0 {
+          let sec_name = read_name_string(core_wasm, i)
+          let payload = skip_name(core_wasm, i)
+          if (sec_name == "vibe.tagmode") && ((payload + 4) <= sec_end) {
+            found = Bytes::get(core_wasm, payload)|(Bytes::get(core_wasm, payload + 1)<<8)|(Bytes::get(core_wasm, payload + 2)<<16)|(Bytes::get(core_wasm, payload + 3)<<24)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = sec_end
+      }
+    }
+    found
+  }
+}
+
+/// #1930: tag an i64 the adapter is about to hand the guest -- `value << 1`
+/// when the core is the tagged build, nothing at all when it is not.
+fn emit_tag_i64(body: Bytes, tag_mode: Int) -> Unit {
+  if tag_mode == 1 {
+    emit_i64_const(body, 1)
+    emit_i64_shl(body)
+  } else {
+    ()
+  }
+}
+
+/// #1930: the inverse -- untag an i64 the guest just handed the adapter.
+fn emit_untag_i64(body: Bytes, tag_mode: Int) -> Unit {
+  if tag_mode == 1 {
+    emit_i64_const(body, 1)
+    emit_i64_shr_s(body)
+  } else {
+    ()
+  }
+}
+
 /// ADR-0089 Decision 3 (#1218): every host-stream GET core import name the
 /// module declares, in DECLARATION ORDER (linked_compile emits them
 /// sorted). Same single-source-of-truth role as
@@ -5388,12 +5455,16 @@ fn comp_hostfuture_import_label(core_name: String) -> String {
 /// fixed-shape comp_generate_host_future_value_guest_core_module and
 /// re-targeted at a REAL compiled core module).
 ///
-/// Values are value-passed (i64) in the guest's TAGGED convention
-/// (internal Int = value << 1, the generic vibe.* call path): the adapter
-/// shifts on entry/exit, so no compile_call shim is needed and the raw ABI
-/// stays pointer-free -- which is what makes this composition acyclic
-/// (buffers live in the memhost memory, never the guest's; the vfs
-/// shim/fixup dance is not needed).
+/// Values are value-passed (i64) in the CORE'S OWN Int convention, which
+/// `tag_mode` names: 1 = tagged (internal Int = value << 1, the RC build's
+/// generic vibe.* call path, where the adapter shifts on entry/exit), 0 =
+/// plain i64 (the bump build, where it must not). The core declares which in
+/// its `vibe.tagmode` custom section and the composer passes it here -- the
+/// adapter never assumes a lane, because assuming the wrong one does not
+/// trap, it doubles every value (#1930). Either way the raw ABI stays
+/// pointer-free, so no compile_call shim is needed -- which is what makes
+/// this composition acyclic (buffers live in the memhost memory, never the
+/// guest's; the vfs shim/fixup dance is not needed).
 ///
 /// ADR-0089 (c) (#1218): generalized to N host futures. `core_names` is
 /// comp_core_host_future_names' list; with K = its length, import func
@@ -5424,7 +5495,7 @@ fn comp_hostfuture_import_label(core_name: String) -> String {
 /// handle with no started read, non-FUTURE_READ wake) trap with
 /// `unreachable`: the adapter runs inside the lifted task, so the
 /// fixed-shape's task.return diagnostic bands are not available here.
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool) -> Bytes {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, tag_mode: Int) -> Bytes {
   // ADR-0089 Decision 3 (#1218): generalized again -- K host futures AND L
   // host streams (K + L >= 1, either may be 0). The future half is
   // byte-identical for L = 0 (every stream-specific type/import/func is
@@ -5699,18 +5770,18 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(get_body, 1)
     emit_i32_add(get_body)
     emit_i32_store(get_body, 2, 0)
-    // return the handle, tagged (i64.extend_i32_u = 0xad, << 1)
+    // return the handle in the core's convention (i64.extend_i32_u = 0xad,
+    // then `<< 1` only when the core is the tagged build -- #1930)
     emit_local_get(get_body, 1)
     bytebuf_push(get_body, 173)
-    emit_i64_const(get_body, 1)
-    emit_i64_shl(get_body)
+    emit_tag_i64(get_body, tag_mode)
     bytebuf_push(get_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(get_body))
     bytebuf_push_buf(code_sec, get_body)
     get_i = get_i + 1
   }
-  // func K+6+K: host_future_wait. param 0 = tagged handle (i64); locals
-  // (i32): 1=fut, 2=st, 3=ws, 4=ev, 5=addr.
+  // func K+6+K: host_future_wait. param 0 = the handle in the core's
+  // convention (i64); locals (i32): 1=fut, 2=st, 3=ws, 4=ev, 5=addr.
   //
   // The read is already in flight (the getter issued it), so this only
   // settles: read the recorded state, park if it was BLOCKED, then take the
@@ -5720,10 +5791,9 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   leb128_encode_u32(wait_body, 1)
   leb128_encode_u32(wait_body, 5)
   bytebuf_push(wait_body, 127)
-  // fut = wrap(param >> 1); addr = HF_VALUE_BASE + fut * 4
+  // fut = wrap(untag(param)); addr = HF_VALUE_BASE + fut * 4
   emit_local_get(wait_body, 0)
-  emit_i64_const(wait_body, 1)
-  emit_i64_shr_s(wait_body)
+  emit_untag_i64(wait_body, tag_mode)
   emit_i32_wrap_i64(wait_body)
   emit_local_set(wait_body, 1)
   emit_local_get(wait_body, 1)
@@ -5785,12 +5855,12 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_i32_add(wait_body)
   emit_i32_const(wait_body, 0)
   emit_i32_store(wait_body, 2, 0)
-  // return the value that landed in THIS handle's read buffer, tagged
+  // return the value that landed in THIS handle's read buffer, in the core's
+  // convention
   emit_local_get(wait_body, 5)
   emit_i32_load(wait_body, 2, 0)
   bytebuf_push(wait_body, 173)
-  emit_i64_const(wait_body, 1)
-  emit_i64_shl(wait_body)
+  emit_tag_i64(wait_body, tag_mode)
   bytebuf_push(wait_body, 11)
   if nnames > 0 {
     leb128_encode_u32(code_sec, Bytes::length(wait_body))
@@ -5798,7 +5868,8 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
-  // Stream getter bodies: obtain the readable end and hand it back tagged.
+  // Stream getter bodies: obtain the readable end and hand it back in the
+  // core's convention.
   // No eager read (see the header comment) and no per-handle state record
   // -- host_stream_read is self-contained per call. locals (i32):
   // 0=packed, 1=str.
@@ -5837,7 +5908,8 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     // cleared when the readable end is dropped, so a fresh handle should
     // never see a stale one -- but the handle-table reuse discipline is the
     // runtime's, not ours, and a stale latch would silently truncate the
-    // new stream to zero bytes), then return the handle, tagged.
+    // new stream to zero bytes), then return the handle in the core's
+    // convention.
     emit_local_get(sget_body, 1)
     emit_i32_const(sget_body, 2)
     emit_i32_shl(sget_body)
@@ -5847,14 +5919,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_store(sget_body, 2, 0)
     emit_local_get(sget_body, 1)
     bytebuf_push(sget_body, 173)
-    emit_i64_const(sget_body, 1)
-    emit_i64_shl(sget_body)
+    emit_tag_i64(sget_body, tag_mode)
     bytebuf_push(sget_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(sget_body))
     bytebuf_push_buf(code_sec, sget_body)
     sget_i = sget_i + 1
   }
-  // host_stream_read: one byte per call. param 0 = tagged handle (i64);
+  // host_stream_read: one byte per call. param 0 = the handle in the core's
+  // convention (i64);
   // locals (i32): 1=str, 2=st, 3=ws, 4=ev, 5=addr. Settle a pending CLOSED
   // latch first; else issue the read; when it BLOCKS, park in
   // waitable-set.wait (the canonical ABI suspends the whole task), unjoin,
@@ -5870,12 +5942,11 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     leb128_encode_u32(sread_body, 1)
     leb128_encode_u32(sread_body, 5)
     bytebuf_push(sread_body, 127)
-    // str = wrap(param >> 1); cap; addr = HS_VALUE_BASE + str * 4 (the
+    // str = wrap(untag(param)); cap; addr = HS_VALUE_BASE + str * 4 (the
     // stream band -- disjoint from the futures' value/state bands, see
     // comp_hs_value_base)
     emit_local_get(sread_body, 0)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shr_s(sread_body)
+    emit_untag_i64(sread_body, tag_mode)
     emit_i32_wrap_i64(sread_body)
     emit_local_set(sread_body, 1)
     emit_local_get(sread_body, 1)
@@ -5912,8 +5983,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(sread_body, 1)
     emit_call(sread_body, sdrop_idx)
     emit_i64_const(sread_body, 0 - 1)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shl(sread_body)
+    emit_tag_i64(sread_body, tag_mode)
     emit_return(sread_body)
     emit_end(sread_body)
     // st = stream.read(str, addr, 1)
@@ -5977,15 +6047,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(sread_body, 1)
     emit_call(sread_body, sdrop_idx)
     emit_i64_const(sread_body, 0 - 1)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shl(sread_body)
+    emit_tag_i64(sread_body, tag_mode)
     emit_return(sread_body)
     emit_end(sread_body)
     // a byte landed at THIS handle's slot. If it arrived with the CLOSED
     // code (the INLINE terminal shape -- a per-item producer hands over its
     // last byte and drops in one completion), latch the closed flag but do
     // NOT drop the readable end yet: the next read settles the latch (see
-    // comp_hs_closed_base). Then return the byte, tagged.
+    // comp_hs_closed_base). Then return the byte in the core's convention.
     emit_local_get(sread_body, 2)
     emit_i32_const(sread_body, 15)
     emit_i32_and(sread_body)
@@ -6003,8 +6072,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(sread_body, 5)
     emit_i32_load8_u(sread_body, 0, 0)
     bytebuf_push(sread_body, 173)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shl(sread_body)
+    emit_tag_i64(sread_body, tag_mode)
     bytebuf_push(sread_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(sread_body))
     bytebuf_push_buf(code_sec, sread_body)
@@ -6012,10 +6080,11 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     ()
   }
   // ADR-0089 Decision 3 follow-up (#1218): host_stream_close -- release the
-  // readable end of a stream the guest stopped reading. param 0 = tagged
-  // handle (i64); locals (i32): 1 = str. Clear this handle's CLOSED latch
-  // (an inline-terminal read may have set it, and the drop below is exactly
-  // the settle that latch was waiting for) and drop the readable end.
+  // readable end of a stream the guest stopped reading. param 0 = the
+  // core-convention handle (i64); locals (i32): 1 = str. Clear this
+  // handle's CLOSED latch (an inline-terminal read may have set it, and the
+  // drop below is exactly the settle that latch was waiting for) and drop
+  // the readable end.
   //
   // No `stream.read` and no park: dropping is synchronous. The guest cell's
   // state word gates the ONE call -- `__hs_close` drops only from state 3
@@ -6023,17 +6092,17 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // twice for one handle, which matters because a second
   // `stream.drop-readable` on a dropped end traps host-side.
   //
-  // Returns tagged 0: the surface is `-> Unit`, but the raw ABI is
-  // uniformly `(i64) -> i64` (the same shape as host_stream_read), so the
-  // adapter hands back a value the injected wrapper discards.
+  // Returns 0 (the same in either convention): the surface is `-> Unit`,
+  // but the raw ABI is uniformly `(i64) -> i64` (the same shape as
+  // host_stream_read), so the adapter hands back a value the injected
+  // wrapper discards.
   if nstreams > 0 && want_stream_close {
     let sclose_body = bytebuf_new()
     leb128_encode_u32(sclose_body, 1)
     leb128_encode_u32(sclose_body, 1)
     bytebuf_push(sclose_body, 127)
     emit_local_get(sclose_body, 0)
-    emit_i64_const(sclose_body, 1)
-    emit_i64_shr_s(sclose_body)
+    emit_untag_i64(sclose_body, tag_mode)
     emit_i32_wrap_i64(sclose_body)
     emit_local_set(sclose_body, 1)
     emit_local_get(sclose_body, 1)
@@ -6506,6 +6575,22 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
+  // #1930: the adapter's Ints must be in the SAME representation as the core
+  // it is composed with, and only the core knows which it is -- so read it,
+  // and refuse a core that does not say. Guessing is what this whole section
+  // exists to prevent: the wrong guess does not trap, it silently doubles
+  // every byte a host stream delivers.
+  let tag_mode = comp_core_tag_mode(main_core_wasm)
+  if tag_mode < 0 {
+    throw("component(async-hostfuture): core module declares no `vibe.tagmode` custom section, so its Int representation (tagged vs plain i64) is unknown -- compile it through compile_wasi_module_linked_impl, which publishes the mode alongside the vibe.host_* imports")
+  } else {
+    ()
+  }
+  if tag_mode > 1 {
+    throw(String::concat("component(async-hostfuture): core module declares an unknown `vibe.tagmode` value ", String::concat(__to_string(tag_mode), " (expected 0 = plain i64 or 1 = tagged)")))
+  } else {
+    ()
+  }
   let buf = bytebuf_new()
   emit_component_header(buf)
   // Component type indices, in emission order: the future pair (value type
@@ -6551,7 +6636,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, tag_mode))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   let memhost_inst = 0
@@ -7641,13 +7726,18 @@ let comp_ss_closed_base = 12288
 /// is why there is a latch: reading again after an inline close traps, so the
 /// close is recorded and settled on the NEXT call.
 ///
-/// Values cross as PLAIN i64 -- no tag shift on either side, unlike the named
-/// adapter's half. Both are right for their own lane: an Int's representation
-/// is `enable_rc`'s (linked_compile's tag_mode), the named lane's core comes
-/// from the CLI's RC compile (`value << 1`), and this lane's comes from
-/// `compile_wasi_module_no_dce_impl` with enable_rc = false (plain i64).
-/// Mixing them is the whole failure mode this convention exists to avoid: it
-/// does not trap, it silently doubles every byte the handler reads.
+/// Values cross as PLAIN i64 -- no tag shift on either side. An Int's
+/// representation is `enable_rc`'s (linked_compile's tag_mode) and this lane's
+/// core comes from `compile_wasi_module_no_dce_impl` with enable_rc = false,
+/// so plain is right here. Mixing the two is the whole failure mode this
+/// convention exists to avoid: it does not trap, it silently doubles every
+/// byte the handler reads -- which is exactly what the named lane did until
+/// #1930. That is why this stays a hard-coded convention only in company with
+/// a check: `comp_emit_component_wasm_stream_handler` reads the core's
+/// declared `vibe.tagmode` and refuses a tagged one rather than composing it
+/// with this adapter. (The named lane went the other way and made its adapter
+/// follow the declaration; unifying the two is worth doing before a third
+/// lane needs one.)
 ///
 /// So: the handle arrives untagged from the trampoline, the byte goes back
 /// untagged, and end of stream is a plain `-1` -- the value the injected
@@ -7937,6 +8027,18 @@ fn comp_generate_serve_stream_adapter_module() -> Bytes {
 export fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
   let string_param_count = Array::length(param_names) - 1
   comp_check_stream_handler_target(core_wasm, target_func_name, string_param_count)
+  // #1930: this lane's adapter is untagged-ONLY (see
+  // comp_generate_serve_stream_adapter_module), which is correct exactly
+  // while the serve core keeps coming from a non-RC compile. That is an
+  // assumption about a caller, and the named lane's version of the same
+  // assumption silently doubled every byte it read. So check it: the core now
+  // declares its convention, and a tagged one belongs to a different adapter.
+  let serve_tag_mode = comp_core_tag_mode(core_wasm)
+  if serve_tag_mode > 0 {
+    throw("component(serve-stream): core module declares tagged Ints (`vibe.tagmode` 1) but this lane's stream adapter passes plain i64 -- compile the serve core without RC, or give this lane a tag-mode-aware adapter (#1930)")
+  } else {
+    ()
+  }
   let buf = bytebuf_new()
   emit_component_header(buf)
   emit_core_module_section(buf, core_wasm)

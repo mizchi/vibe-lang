@@ -14,6 +14,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_core_imports_host_future,
   comp_core_imports_host_stream,
   comp_core_imports_stdin_provider,
+  comp_core_tag_mode,
   comp_emit_async_string_canon_fixture,
   comp_emit_async_string_component,
   comp_emit_body_read_component,
@@ -1626,9 +1627,34 @@ test "component host-future-value: rejects a non-u32 result valtype" {
 // linked_compile emits for such a program. `with_run` false drops the run
 // export (the composer must reject); `extra_import` adds a vibe.sh import
 // (outside the composition's allowlist, must also reject).
+/// #1930: the `vibe.tagmode` custom section a compiled core carries next to
+/// its async host imports -- 1 = tagged Ints (`value << 1`, the RC build),
+/// 0 = plain i64 (bump). These hand-built cores stand in for compiled ones,
+/// so they declare it too: the composer refuses a core that does not say,
+/// because the adapter's shifts have to match the core's and a wrong guess
+/// returns a plausible doubled number instead of trapping.
+///
+/// A NEGATIVE `tag_mode` emits no section at all -- the "declares nothing"
+/// core the composer has to refuse.
+fn emit_test_tag_mode_section(out: Bytes, tag_mode: Int) -> Unit {
+  if tag_mode < 0 {
+    return ()
+  } else {
+    ()
+  }
+  let tm = bytebuf_new()
+  emit_name(tm, "vibe.tagmode")
+  bytebuf_push(tm, tag_mode&255)
+  bytebuf_push(tm, (tag_mode>>8)&255)
+  bytebuf_push(tm, (tag_mode>>16)&255)
+  bytebuf_push(tm, (tag_mode>>24)&255)
+  bytebuf_push_section(out, 0, tm)
+}
+
 fn build_main_i64_core_hostfuture(with_run: Bool, extra_import: Bool) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
+  emit_test_tag_mode_section(out, 1)
   let tc = bytebuf_new()
   bytebuf_push_vec_header(tc, 3)
   emit_func_type_raw(tc, [
@@ -1769,6 +1795,7 @@ test "component async hostfuture: adapter-backed composition of a real-shaped co
 fn build_main_i64_core_hostfuture_named() -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
+  emit_test_tag_mode_section(out, 1)
   let tc = bytebuf_new()
   bytebuf_push_vec_header(tc, 3)
   emit_func_type_raw(tc, [
@@ -1985,9 +2012,15 @@ fn build_main_i64_core_stdin_provider(module_name: String, include_acquire: Bool
   bytebuf_to_bytes(out)
 }
 
+/// The stream core as the CLI's default (RC) build produces it: tagged Ints.
 fn build_main_i64_core_hoststream_named(with_future: Bool) -> Bytes {
+  build_main_i64_core_hoststream_named_tagged(with_future, 1)
+}
+
+fn build_main_i64_core_hoststream_named_tagged(with_future: Bool, tag_mode: Int) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
+  emit_test_tag_mode_section(out, tag_mode)
   let tc = bytebuf_new()
   bytebuf_push_vec_header(tc, 3)
   emit_func_type_raw(tc, [
@@ -2232,6 +2265,67 @@ test "component async hoststream: future + stream share one composition (#1218 D
   assert(component_bytes_contains(comp, "host_future_wait") == 1)
   assert(component_bytes_contains(comp, "host_stream_get$body") == 1)
   assert(component_bytes_contains(comp, "host_stream_read") == 1)
+}
+
+// #1930: `vibe.host_stream_read` has ONE import name and TWO value
+// representations -- an Int is `value << 1` in an RC build and a plain i64 in
+// a bump (VIBE_RC=0) build. The adapter used to tag unconditionally, which is
+// right for exactly one of them and silently DOUBLES every delivered byte for
+// the other: no trap, just a plausible number (measured 20 for a 10 byte, 84
+// for a 42 sum). So the core declares its convention and the adapter follows.
+test "component async hoststream: the adapter's tagging follows the core (#1930)" {
+  let tagged_core = build_main_i64_core_hoststream_named_tagged(false, 1)
+  let plain_core = build_main_i64_core_hoststream_named_tagged(false, 0)
+  assert(comp_core_tag_mode(tagged_core) == 1)
+  assert(comp_core_tag_mode(plain_core) == 0)
+  // A core that declares nothing (the p1 shape predates the section) reads
+  // back as "unknown", never as a default.
+  assert(comp_core_tag_mode(build_main_i64_core_p1()) == 0 - 1)
+  let tagged_comp = comp_emit_component_wasm_async_hostfuture(tagged_core, "run")
+  let plain_comp = comp_emit_component_wasm_async_hostfuture(plain_core, "run")
+  // Same core shape, same imports, same canon set -- only the adapter's
+  // shifts differ, so the two compositions must NOT be the same bytes.
+  assert(component_bytes_contains(plain_comp, "host_stream_get$body") == 1)
+  assert(component_bytes_contains(plain_comp, "host_stream_read") == 1)
+  assert(Bytes::length(plain_comp) < Bytes::length(tagged_comp))
+  // `i64.const 1; i64.shl` (0x42 0x01 0x86) is the tag itself: present in the
+  // tagged adapter, gone from the plain one.
+  assert(bytes_contains_seq(tagged_comp, [
+    66,
+    1,
+    134
+  ]) == 1)
+  assert(bytes_contains_seq(plain_comp, [
+    66,
+    1,
+    134
+  ]) == 0)
+}
+
+// The other half of #1930: a core that does not declare its convention is
+// REFUSED, not composed with a guess. An undeclared core reaching this
+// composer means a lane built it some other way, and the composer cannot see
+// which -- exactly the state that made the doubling invisible.
+test "component async hostfuture: rejects a core that declares no tag mode (#1930)" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_async_hostfuture(build_main_i64_core_hoststream_named_tagged(false, 0 - 1), "run")
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+// ... and a core that declares a mode this composer has no adapter for is
+// refused too, rather than falling back to one of the two it does know.
+test "component async hostfuture: rejects an unknown tag mode (#1930)" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_async_hostfuture(build_main_i64_core_hoststream_named_tagged(false, 7), "run")
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  assert(rejected)
 }
 
 test "component async hostfuture: rejects a core without a run export" {

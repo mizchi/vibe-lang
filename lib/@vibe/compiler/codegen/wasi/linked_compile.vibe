@@ -7425,6 +7425,46 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     ()
   }
+  // #1930: publish this core's Int value convention as a `vibe.tagmode` custom
+  // section, so the component composer emits an adapter that MATCHES the core
+  // instead of assuming one mode.
+  //
+  // The async host imports below (`vibe.host_future_get[$name]`,
+  // `vibe.host_future_wait`, `vibe.host_stream_get$name`,
+  // `vibe.host_stream_read`, `vibe.host_stream_close`) carry Ints in whatever
+  // representation THIS build chose: `value << 1` when enable_rc is on, a plain
+  // i64 on bump. One import name with two representations is what silently
+  // doubled every byte a named host stream delivered under VIBE_RC=0 -- it does
+  // not trap, it returns a plausible number. The adapter cannot guess, so the
+  // core says.
+  //
+  // Payload: i32 LE tag_mode, the same encoding and the same meaning
+  // `vibe.dbgargs` already publishes for the debugger (0 = untagged i64,
+  // 1 = 1-bit tagged). Emitted only when the module imports that surface, so
+  // every other build stays byte-identical.
+  let tm_needed = hf_get_import_idx >= 0 || hf_wait_import_idx >= 0 || hs_read_import_idx >= 0 || hs_close_import_idx >= 0 || Array::length(hf_named_names) > 0 || Array::length(hs_named_names) > 0
+  if tm_needed {
+    let tm_content = bytebuf_new()
+    let tm_name = "vibe.tagmode"
+    leb128_encode_u32(tm_content, String::length(tm_name))
+    let mut tmni = 0
+    while tmni < String::length(tm_name) {
+      bytebuf_push(tm_content, String::char_code_at(tm_name, tmni))
+      tmni = tmni + 1
+    }
+    let tm_mode = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(tm_content, tm_mode&255)
+    bytebuf_push(tm_content, (tm_mode>>8)&255)
+    bytebuf_push(tm_content, (tm_mode>>16)&255)
+    bytebuf_push(tm_content, (tm_mode>>24)&255)
+    bytebuf_push_section(out, 0, tm_content)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, type_content)
   let import_content = bytebuf_new()
   bytebuf_push_vec_header(import_content, num_imported_funcs)
@@ -7539,8 +7579,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // ADR-0089 step 4: `vibe.host_future_get () -> i64` (type 5) and
   // `vibe.host_future_wait (i64) -> i64` (type 3) — after stdin_read_char,
   // matching allocation order. Component-adapter-provided imports (spec
-  // §3.13/§3.14); i64 values are guest-tagged on the wire (the adapter
-  // shifts), like every generic-path vibe.* Int.
+  // §3.13/§3.14); i64 values cross in THIS build's Int convention -- tagged
+  // (`value << 1`, the adapter shifts) when enable_rc is on, plain i64 when
+  // it is not, which is what the `vibe.tagmode` section above publishes so
+  // the adapter can match it (#1930).
   if hf_get_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "host_future_get")

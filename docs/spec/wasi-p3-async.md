@@ -1076,7 +1076,11 @@ let run: () -> Int with Async = () -> {
 4. **host imports**: `vibe.host_future_get () -> i64` /
    `vibe.host_future_wait (i64) -> i64`（builtin_registry の
    `vibe_hf_get_raw`/`vibe_hf_wait_raw`、checker_visible=false)。i64 は
-   guest-tagged（内部 Int = value << 1、generic vibe.* call path の規約）。
+   **その core をコンパイルしたモードの Int 表現**で渡る — RC build なら
+   guest-tagged（内部 Int = value << 1、generic vibe.* call path の規約）、
+   `VIBE_RC=0` の bump build なら素の i64。core が `vibe.tagmode` custom
+   section で宣言し、adapter がそれに合わせて shift する（#1930、§3.18.4 の
+   pitfall）。
    **component の adapter module だけが実装を提供する** — plain-wasm host
    に waitable 機構は無いので、`vibe run`（core lane）ではこの program は
    unknown-import で instantiate に失敗する（仕様）。
@@ -1575,16 +1579,27 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
 > lane's delayed path parks correctly under the same compiler, so this is
 > specific to the serve lane rather than to parking in general.
 
-> **Pitfall (measured 2026-08-16): the `vibe.*` Int ABI is NOT "always tagged".**
-> §3.13/§3.18 say "i64 values are guest-tagged on the wire (the adapter
-> shifts)". That holds for THAT lane, whose core comes from the CLI's **RC
-> compile** (`enable_rc` on, `linked_compile`'s tag_mode 1 = `value << 1`).
-> `vibe serve`'s core comes from `compile_wasi_module_no_dce_impl`, which
-> passes `enable_rc` **off**, so an Int there is a plain i64. **One import
-> name, `vibe.host_stream_read`, with two value representations decided by the
-> compile mode.** Mixing them does not trap: every byte the handler reads is
-> silently doubled, which is how "abc" came back as `sum=588` instead of 294.
-> The serve lane's trampoline and adapter are both untagged.
+> **The `vibe.*` Int ABI is NOT "always tagged" — the core declares which it
+> is.** §3.13/§3.18 used to say "i64 values are guest-tagged on the wire (the
+> adapter shifts)" as if it were a property of the import. It is a property of
+> the **compile mode**: an Int is `value << 1` under RC (`enable_rc` on,
+> `linked_compile`'s tag_mode 1) and a plain i64 without it — and
+> `vibe.host_stream_read` is **one import name serving both**. Mixing them does
+> not trap: every byte the handler reads is silently doubled, which is how
+> "abc" came back as `sum=588` instead of 294 in the serve lane (#1540), and
+> how a named host stream returned 84 for a 42-byte sum under `VIBE_RC=0`
+> (#1930).
+>
+> So a core that imports this surface **publishes its convention** in a
+> `vibe.tagmode` custom section (i32 LE: 0 = plain i64, 1 = tagged), next to
+> the imports it applies to. The named lane's adapter
+> (`comp_generate_hostfuture_adapter_core_module`) emits its shifts from that
+> declaration and **refuses a core that declares nothing**, rather than
+> assuming a lane. The serve lane's trampoline and adapter stay untagged —
+> correct for its non-RC core — and `comp_emit_component_wasm_stream_handler`
+> checks the declaration and refuses a tagged core instead of composing one.
+> Gates: `test_named_hoststreams_component_gate.sh` runs the same stream
+> program under both `VIBE_RC=1` and `VIBE_RC=0` and requires the same 42.
 
 ### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
 

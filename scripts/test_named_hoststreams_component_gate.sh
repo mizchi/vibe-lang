@@ -99,10 +99,12 @@ fi
 echo "[named-hoststreams-component-gate] compiler: $COMPILER"
 echo "[named-hoststreams-component-gate] runner: $RUNNER"
 
+# $3, when given, is the VIBE_RC value to compile under. Unset = the CLI
+# default (RC on), which is what every lane below uses except the #1930 one.
 compile_fixture() {
-  local src="$1" out="$2"
+  local src="$1" out="$2" rc="${3:-}"
   rm -f "$out" "$out.diag"
-  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  env VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw ${rc:+VIBE_RC="$rc"} \
     bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
     "$COMPILER" "$src" "$out" run >/dev/null \
     || { echo "named hoststreams component gate FAILED: $src did not compile: $(cat "$out.diag" 2>/dev/null)" >&2; exit 1; }
@@ -163,6 +165,27 @@ GOT="$(cat "$RESULT_LOG")"
 [ "$GOT" = "42" ] \
   || { echo "named hoststreams component gate FAILED: expected 42 (10+15+17 to end of stream), got: $GOT" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream path: 42 (all bytes delivered, end of stream recognized)"
+
+# --- the same program on the OTHER value convention (#1930) -------------------
+# Every lane above compiles with the CLI default (RC on), where an Int is
+# `value << 1`. Under VIBE_RC=0 an Int is a plain i64 -- and `vibe.host_stream_read`
+# is ONE import name serving both. The adapter used to tag unconditionally, so
+# this exact program returned 84: every byte doubled, no trap, a plausible
+# number. The adapter now reads the core's `vibe.tagmode` declaration and
+# shifts (or does not) to match, so both conventions must produce the SAME 42.
+BUMP_COMPONENT="$OUT_DIR/stream_sum.bump.component.wasm"
+compile_fixture "$SRC" "$BUMP_COMPONENT" 0
+check_component_header "$BUMP_COMPONENT"
+BUMP_LOG="$OUT_DIR/run.stream.bump.log"
+if ! VIBE_ASYNC_STREAMS="body=10|15|17" timeout 60 "$RUNNER" "$BUMP_COMPONENT" >"$BUMP_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: the VIBE_RC=0 build did not exit 0" >&2
+  cat "$BUMP_LOG" >&2
+  exit 1
+fi
+BUMP_GOT="$(cat "$BUMP_LOG")"
+[ "$BUMP_GOT" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: VIBE_RC=0 expected the same 42 as the RC build, got: $BUMP_GOT (84 = every byte doubled by an adapter tagging an untagged core, #1930)" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] bump path: 42 (VIBE_RC=0 core, untagged adapter -- same answer as RC)"
 
 # --- the `for` surface (#1341) ------------------------------------------------
 # ADR-0089 D3's first connection item: `for b in <host stream>` instead of the
