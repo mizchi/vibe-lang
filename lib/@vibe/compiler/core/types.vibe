@@ -1075,12 +1075,17 @@ fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
           match subst_lookup(s, id) {
             Some(bound_ty) => {
               let resolved_ty = subst_apply(s, bound_ty)
-              match first_region_skolem(resolved_ty) {
-                Some(region_name) => Array::push(resolved, region_name),
-                None => match resolved_ty {
+              let region_names = array_empty()
+              collect_region_skolems_in_type(resolved_ty, region_names)
+              if Array::length(region_names) > 0 {
+                for region_name in region_names {
+                  if !string_array_contains(resolved, region_name) {
+                    Array::push(resolved, region_name)
+                  }
+                }
+              } else match resolved_ty {
                   CtVar(new_id) => Array::push(resolved, String::concat("#capture[", String::concat(__to_string(new_id), "]"))),
                   _ => ()
-                }
               }
             },
             None => Array::push(resolved, label)
@@ -1105,69 +1110,59 @@ fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
 /// containers. `#capture[n]` is dependent on inference variable n and becomes
 /// the concrete `#region_n` label when that variable is unified with a
 /// region-tagged type.
-fn first_region_skolem(ty: Type) -> Option[String] {
+fn string_array_contains(items: Array[String], wanted: String) -> Bool {
+  let mut found = false
+  for item in items {
+    if item == wanted {
+      found = true
+    }
+  }
+  found
+}
+
+fn collect_region_skolems_in_type(ty: Type, out: Array[String]) -> Unit {
   match ty {
     CtNamed(name, args) => if String::starts_with(name, "#region_") {
-      Some(name)
-    } else {
-      let mut out = None
-      let mut i = 0
-      while i < Array::length(args) && out is None {
-        out = first_region_skolem(Array::get(args, i))
-        i = i + 1
+      if !string_array_contains(out, name) {
+        Array::push(out, name)
       }
-      out
+    } else {
+      for arg in args {
+        collect_region_skolems_in_type(arg, out)
+      }
     },
     CtFn(params, ret, eff) => {
-      let mut out = match eff {
+      match eff {
         Some(row) => {
-          let labels = String::split(row, ",")
-          let mut found = None
-          let mut i = 0
-          while i < Array::length(labels) && found is None {
-            let label = String::trim(Array::get(labels, i))
-            if String::starts_with(label, "#region_") {
-              found = Some(label)
+          for raw in String::split(row, ",") {
+            let label = String::trim(raw)
+            if String::starts_with(label, "#region_") && !string_array_contains(out, label) {
+              Array::push(out, label)
             }
-            i = i + 1
           }
-          found
         },
-        None => None
+        None => ()
       }
-      let mut i = 0
-      while i < Array::length(params) && out is None {
-        out = first_region_skolem(Array::get(params, i))
-        i = i + 1
+      for param in params {
+        collect_region_skolems_in_type(param, out)
       }
-      match out {
-        Some(_) => out,
-        None => first_region_skolem(ret)
-      }
+      collect_region_skolems_in_type(ret, out)
     },
-    CtArray(elem) => first_region_skolem(elem),
-    CtOption(elem) => first_region_skolem(elem),
+    CtArray(elem) => collect_region_skolems_in_type(elem, out),
+    CtOption(elem) => collect_region_skolems_in_type(elem, out),
     CtTuple(items) => {
-      let mut out = None
-      let mut i = 0
-      while i < Array::length(items) && out is None {
-        out = first_region_skolem(Array::get(items, i))
-        i = i + 1
+      for item in items {
+        collect_region_skolems_in_type(item, out)
       }
-      out
     },
     CtRecord(fields) => {
-      let mut out = None
-      let mut i = 0
-      while i < Array::length(fields) && out is None {
-        let (_, field_ty) = Array::get(fields, i)
-        out = first_region_skolem(field_ty)
-        i = i + 1
+      for field in fields {
+        let (_, field_ty) = field
+        collect_region_skolems_in_type(field_ty, out)
       }
-      out
     },
-    CtForAll(_, _, body) => first_region_skolem(body),
-    _ => None
+    CtForAll(_, _, body) => collect_region_skolems_in_type(body, out),
+    _ => ()
   }
 }
 
@@ -1370,7 +1365,7 @@ export fn type_to_string(ty: Type) -> String {
       }
       let ret_text = type_to_string(ret)
       let base = String::concat("(", String::concat(joined, String::concat(") -> ", ret_text)))
-      match effect_name {
+      match semantic_effect_opt(effect_name) {
         // #1429: this text lands in type-mismatch messages, so it has to be
         // the spelling the reader would type. Rows are stored comma-joined;
         // the syntax is `+`-separated.

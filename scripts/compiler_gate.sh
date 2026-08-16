@@ -9592,7 +9592,7 @@ fi
 # #1938: capture provenance is part of the checked function type, not a
 # terminal-lambda syntax check. Pin every laundering shape that the old
 # stopgap missed (plus a deep alias witness).
-for r90_escape in outer_assignment container helper nested_closure alias_chain; do
+for r90_escape in outer_assignment container helper global_helper multiple_regions nested_closure alias_chain; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/err_region_escape_${r90_escape}.vibe" "$r90dir/${r90_escape}.wasm" __no_entry__ >/dev/null 2>&1 || true

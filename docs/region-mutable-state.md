@@ -235,19 +235,6 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
   (`fixtures/region_arena_ok.vibe`、42)と negative
   (`fixtures/err_region_escape_return_value.vibe`、needle
   "region escapes its scope")を固定。
-- **Closure capture provenance (#1725, #1938)**: a checked function row carries
-  an internal, source-unforgeable region provenance label. A direct capture is
-  `#region_n`; a capture through an inference variable is `#capture[v]` and
-  resolves when ordinary type substitution binds `v`. These labels are not
-  runtime effects and are excluded from effect-set compatibility, but they
-  survive generalization, explicit return annotations, helper calls and
-  containers. The region boundary therefore uses the same zonked-type scan for
-  direct values and closures. Assignment into an outer cell is rejected while
-  the active-region marker is present in `TypeEnv`. Capture itself remains
-  legal: a closure consumed inside the region, a copied-out value, and a
-  shadowing binding carry no escaping provenance. Gate 75 pins the five escape
-  witnesses (outer assignment, container, helper, nested closure, alias chain)
-  and their positive counterparts.
 - **既知ギャップ(Phase 1 で許容、ADR 本文の設計は不変)**: effect row 統合
   (§3)は未着手 — 別 pass の effect 検査は lambda wrapper を見るため、
   region body 内の effect は enclosing fn に帰属しない。outer-binding scan は
