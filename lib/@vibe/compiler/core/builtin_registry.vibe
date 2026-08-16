@@ -684,18 +684,17 @@ export fn builtin_allocates(name: String) -> Bool {
 /// SINGLE SOURCE OF TRUTH (#1979): the perceus classifiers
 /// (is_borrow_ret_fname, compute_borrow_returning_names' seed) and every
 /// codegen call-shape check (compile_call / compile_match /
-/// compile_expr_tail / common_analysis) consume THIS predicate or list. The
-/// set used to live as five hardcoded copies, and two of them drifted when
-/// MutList::get landed — a wrapper of the missing builtin then classifies as
-/// owned-returning and RC callers drop an interior view: silent double-free,
-/// caught only by review (#1932). Add new borrow-returning builtins HERE and
-/// nowhere else.
-export fn is_borrow_ret_builtin(name: String) -> Bool {
-  name == "Array::get" || name == "MutList::get" || name == "Map::get" || name == "__index" || name == "__rec_field"
-}
-
-/// The same set as a fresh array, for seeding compute_borrow_returning_names'
-/// fixed-point worklist (which pushes discovered user functions into it).
+/// compile_expr_tail / common_analysis) reach the set through this function or
+/// the predicate below, which SCANS it -- there is one spelling of the names,
+/// not two that must be kept equal. The set used to live as five hardcoded
+/// copies, and two of them drifted when MutList::get landed: a wrapper of the
+/// missing builtin then classifies as owned-returning and RC callers drop an
+/// interior view, a silent double-free caught only by review (#1932). Add new
+/// borrow-returning builtins HERE and nowhere else.
+///
+/// Returns a fresh array on each call because
+/// compute_borrow_returning_names' fixed-point worklist pushes discovered user
+/// functions into the one it is given.
 export fn borrow_ret_builtin_names() -> Array[String] {
   [
     "Array::get",
@@ -704,6 +703,28 @@ export fn borrow_ret_builtin_names() -> Array[String] {
     "__index",
     "__rec_field"
   ]
+}
+
+/// Membership in `borrow_ret_builtin_names`, for the direct-call classifiers.
+///
+/// A linear scan rather than the `||` chain this replaced: the chain was a
+/// second spelling of the list above, so adding a builtin to one and not the
+/// other silently reintroduced exactly the drift this consolidation exists to
+/// remove -- and the two partial updates fail in opposite directions (miss it
+/// in the list and wrappers of it classify as owned; miss it in the predicate
+/// and direct calls do). Five string compares over a five-element array is the
+/// same work the chain did, plus the array.
+export fn is_borrow_ret_builtin(name: String) -> Bool {
+  let names = borrow_ret_builtin_names()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// The enumerated non-allocating set. Grouped by why they are free.

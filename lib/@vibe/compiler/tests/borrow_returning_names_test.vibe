@@ -16,6 +16,10 @@ import @vibe/compiler/perceus {
   compute_borrow_returning_names
 }
 
+import @vibe/compiler/core {
+  borrow_ret_builtin_names, is_borrow_ret_builtin
+}
+
 fn borrow_set_of(src: String) -> Array[String] with Exception {
   compute_borrow_returning_names(parse_program(lex(src)))
 }
@@ -70,4 +74,33 @@ test "MutList::get binding returned through if branches stays borrow-returning" 
   // classify this binding owned and make RC callers drop an interior view.
   let src = "fn head(l: Array[Array[Int]], i: Int) -> Array[Int] {\n  let v = MutList::get(l, i)\n  if i >= 0 {\n    v\n  } else {\n    v\n  }\n}\n"
   inspect(contains(borrow_set_of(src), "head"), "true")
+}
+
+//# #1979 review: the two exported APIs must not be two spellings of the set.
+//#
+//# `is_borrow_ret_builtin` classifies DIRECT calls; `borrow_ret_builtin_names`
+//# seeds the wrapper fixed point. When they were an independent `||` chain and
+//# an independent array literal, a builtin added to one and not the other
+//# silently reintroduced the drift the consolidation removed -- and the two
+//# partial updates fail in OPPOSITE directions, so neither is the safe one to
+//# forget. The predicate now scans the list, and this pins that: an entry the
+//# classifiers cannot see is the shape whose failure mode is an RC double-free
+//# of an interior view.
+test "every borrow-returning builtin name is recognized by the predicate" {
+  let names = borrow_ret_builtin_names()
+  let mut i = 0
+  let mut all = true
+  while i < Array::length(names) {
+    if !is_borrow_ret_builtin(Array::get(names, i)) {
+      all = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(all, "true")
+  // A non-member must not be recognized -- otherwise `all` above would hold
+  // for a predicate that simply returns true.
+  inspect(is_borrow_ret_builtin("Array::push"), "false")
+  inspect(Array::length(names) > 0, "true")
 }
