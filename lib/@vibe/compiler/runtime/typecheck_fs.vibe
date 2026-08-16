@@ -235,11 +235,28 @@ fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String
 fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)]) -> TypeEnv {
   let qual_prefix = String::concat(enum_name, "::")
   let mut out = acc
+  // #1908: the dep's flat bindings can carry a name twice — the authoritative
+  // generalized scheme first, then a stale shadowed duplicate from the dep's
+  // own checking (e.g. the pre-generalization recursion binding of an `fn
+  // T::method`, still an unresolved var). `env_lookup_flat` answers with the
+  // FIRST entry, so an explicit `import { T::method }` transported the real
+  // scheme — but this loop bound every occurrence, and binds shadow earlier
+  // binds, so the LAST (stale, var-typed) duplicate won. The importing
+  // checker then typed `T::method(...)` as `?`, which silently disabled
+  // method-style dispatch on the result (`T::of(..) |> length` reported
+  // `unknown name: length`) and indexed-for classification. Bind each
+  // companion once, from its first flat entry, matching env_lookup_flat.
+  let seen = array_empty()
   let mut i = 0
   while i < Array::length(dep_bindings) {
     let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
     if candidate_name != enum_name && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, enum_name) || String::starts_with(candidate_name, qual_prefix)) {
-      out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), BindingOriginModuleExport(resolved, candidate_name))
+      if contains_str(seen, candidate_name) {
+        ()
+      } else {
+        Array::push(seen, candidate_name)
+        out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), BindingOriginModuleExport(resolved, candidate_name))
+      }
     }
     i = i + 1
   }
