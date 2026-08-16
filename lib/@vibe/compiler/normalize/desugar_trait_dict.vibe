@@ -8,7 +8,174 @@ import @vibe/core {
   array_empty
 }
 
+import @vibe/parser {
+  BinderAuthorityNode,
+  BinderAuthorityNodeKind,
+  BinderAuthoritySlot,
+  BinderSemanticRole,
+  LocatedProgramBinderAuthority,
+  SourceBinder,
+  binder_authority_node_children,
+  binder_authority_node_kind,
+  binder_authority_node_slots,
+  binder_authority_slot_binder,
+  binder_authority_slot_role,
+  detach_stmts,
+  located_program_binder_authority_nodes,
+  located_program_binder_authority_program
+}
+
 //# Functions
+
+enum StoredNormalizedBinderAuthority {
+  StoredNormalizedAuthorityNil;
+  StoredNormalizedAuthoritySlot(BinderAuthoritySlot, StoredNormalizedBinderAuthority);
+  StoredNormalizedAuthorityNode(BinderAuthorityNodeKind, StoredNormalizedBinderAuthority, StoredNormalizedBinderAuthority);
+  StoredNormalizedAuthorityChild(StoredNormalizedBinderAuthority, StoredNormalizedBinderAuthority)
+}
+
+export struct NormalizedProgramBinderAuthority {
+  nodes: StoredNormalizedBinderAuthority
+}
+
+enum StoredLabeledArgBinderAuthorityNormalization {
+  StoredLabeledArgBinderAuthorityNormalizationValue(Array[Stmt], Option[NormalizedProgramBinderAuthority])
+}
+
+export struct LabeledArgBinderAuthorityNormalization {
+  stored: StoredLabeledArgBinderAuthorityNormalization
+}
+
+fn paired_poison(poisoned: Array[Bool]) -> Unit {
+  Array::set(poisoned, 0, true)
+}
+
+fn paired_child_or_self(node: BinderAuthorityNode, index: Int, poisoned: Array[Bool]) -> BinderAuthorityNode {
+  let children = binder_authority_node_children(node)
+  if index < 0 || index >= Array::length(children) {
+    paired_poison(poisoned)
+    node
+  } else {
+    Array::get(children, index)
+  }
+}
+
+fn paired_expect_node(node: BinderAuthorityNode, kind: BinderAuthorityNodeKind, slots: Int, children: Int, poisoned: Array[Bool]) -> Unit {
+  let actual_slots = binder_authority_node_slots(node)
+  let actual_children = binder_authority_node_children(node)
+  if binder_authority_node_kind(node) != kind || Array::length(actual_slots) != slots || Array::length(actual_children) != children {
+    paired_poison(poisoned)
+  } else {
+    ()
+  }
+  for slot in actual_slots {
+    match binder_authority_slot_binder(slot) {
+      Synthetic(_, _) => paired_poison(poisoned),
+      SourceToken(_, _, _) => ()
+    }
+  }
+  ()
+}
+
+fn paired_expect_slot(node: BinderAuthorityNode, index: Int, role: BinderSemanticRole, name: String, poisoned: Array[Bool]) -> Unit {
+  let slots = binder_authority_node_slots(node)
+  if index < 0 || index >= Array::length(slots) {
+    paired_poison(poisoned)
+  } else {
+    let slot = Array::get(slots, index)
+    let actual_name = match binder_authority_slot_binder(slot) {
+      SourceToken(n, _, _) => n,
+      Synthetic(n, _) => {
+        paired_poison(poisoned)
+        n
+      }
+    }
+    if binder_authority_slot_role(slot) != role || actual_name != name {
+      paired_poison(poisoned)
+    } else {
+      ()
+    }
+  }
+}
+
+fn stored_normalized_authority_slots(slots: Array[BinderAuthoritySlot], at: Int) -> StoredNormalizedBinderAuthority {
+  if at >= Array::length(slots) {
+    StoredNormalizedAuthorityNil
+  } else {
+    StoredNormalizedAuthoritySlot(Array::get(slots, at), stored_normalized_authority_slots(slots, at + 1))
+  }
+}
+
+fn stored_normalized_authority_node(node: BinderAuthorityNode) -> StoredNormalizedBinderAuthority {
+  StoredNormalizedAuthorityNode(binder_authority_node_kind(node), stored_normalized_authority_slots(binder_authority_node_slots(node), 0), stored_normalized_authority_nodes(binder_authority_node_children(node), 0))
+}
+
+fn stored_normalized_authority_nodes(nodes: Array[BinderAuthorityNode], at: Int) -> StoredNormalizedBinderAuthority {
+  if at >= Array::length(nodes) {
+    StoredNormalizedAuthorityNil
+  } else {
+    StoredNormalizedAuthorityChild(stored_normalized_authority_node(Array::get(nodes, at)), stored_normalized_authority_nodes(nodes, at + 1))
+  }
+}
+
+fn append_normalized_materialized_slots(stored: StoredNormalizedBinderAuthority, out: ArrayBuilder[BinderAuthoritySlot]) -> Unit {
+  match stored {
+    StoredNormalizedAuthoritySlot(slot, rest) => {
+      ArrayBuilder::push(out, slot)
+      append_normalized_materialized_slots(rest, out)
+    },
+    _ => ()
+  }
+}
+
+fn normalized_materialize_authority_node(stored: StoredNormalizedBinderAuthority) -> BinderAuthorityNode {
+  match stored {
+    StoredNormalizedAuthorityNode(kind, slots, children) => {
+      let slot_out = ArrayBuilder::new()
+      append_normalized_materialized_slots(slots, slot_out)
+      let child_out = ArrayBuilder::new()
+      append_normalized_materialized_nodes(children, child_out)
+      BinderAuthorityNode::{
+        kind,
+        slots: ArrayBuilder::freeze(slot_out),
+        children: ArrayBuilder::freeze(child_out)
+      }
+    },
+    _ => BinderAuthorityNode::{
+      kind: AuthorityExprUnit,
+      slots: ArrayBuilder::freeze(ArrayBuilder::new()),
+      children: ArrayBuilder::freeze(ArrayBuilder::new())
+    }
+  }
+}
+
+fn append_normalized_materialized_nodes(stored: StoredNormalizedBinderAuthority, out: ArrayBuilder[BinderAuthorityNode]) -> Unit {
+  match stored {
+    StoredNormalizedAuthorityChild(node, rest) => {
+      ArrayBuilder::push(out, normalized_materialize_authority_node(node))
+      append_normalized_materialized_nodes(rest, out)
+    },
+    _ => ()
+  }
+}
+
+export fn labeled_arg_binder_authority_normalization_program(result: LabeledArgBinderAuthorityNormalization) -> Array[Stmt] {
+  match result.stored {
+    StoredLabeledArgBinderAuthorityNormalizationValue(program, _) => detach_stmts(program)
+  }
+}
+
+export fn labeled_arg_binder_authority_normalization_authority(result: LabeledArgBinderAuthorityNormalization) -> Option[NormalizedProgramBinderAuthority] {
+  match result.stored {
+    StoredLabeledArgBinderAuthorityNormalizationValue(_, authority) => authority
+  }
+}
+
+export fn normalized_program_binder_authority_nodes(authority: NormalizedProgramBinderAuthority) -> Array[BinderAuthorityNode] {
+  let out = ArrayBuilder::new()
+  append_normalized_materialized_nodes(authority.nodes, out)
+  ArrayBuilder::freeze(out)
+}
 
 // Dictionary-passing desugaring for method-bearing traits (#641 PR-3
 // components 3+4). Runs pre-check, after string-interpolation expansion. It is
@@ -9144,7 +9311,6 @@ fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr] {
   }
 }
 
-///|
 fn lookup_param_labels(tbl: Array[(String, Array[String])], fname: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -9160,84 +9326,74 @@ fn lookup_param_labels(tbl: Array[(String, Array[String])], fname: String) -> Op
   found
 }
 
-///|
-/// Reorder a fully-labeled arg list into `param_labels` order. None when the call
-/// is not a candidate (arity mismatch, some arg not labeled, or a label matches no
-/// parameter) — the caller then leaves the args untouched.
-fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Option[Array[Expr]] {
+fn labeled_reorder_candidate(args: Array[Expr], param_labels: Array[String]) -> Bool {
   if Array::length(args) != Array::length(param_labels) {
-    None
+    false
   } else {
     let mut all_labeled = true
     let mut i = 0
     while i < Array::length(args) {
-      let is_lbl = match Array::get(args, i) {
-        ELabeledArg(_, _, _) => true,
-        _ => false
-      }
-      if is_lbl {
-        ()
-      } else {
-        all_labeled = false
+      match Array::get(args, i) {
+        ELabeledArg(_, _, _) => (),
+        _ => {
+          all_labeled = false
+        }
       }
       i = i + 1
     }
-    if !all_labeled {
-      None
-    } else {
-      let out = empty_expr_array()
-      let mut ok = true
-      let mut pj = 0
-      while pj < Array::length(param_labels) {
-        let want = Array::get(param_labels, pj)
-        let mut fk = -1
-        let mut k = 0
-        while k < Array::length(args) {
-          match Array::get(args, k) {
-            ELabeledArg(lbl, _, _) => if lbl == want && fk < 0 {
-              fk = k
-            } else {
-              ()
-            },
-            _ => ()
-          }
-          k = k + 1
-        }
-        if fk < 0 {
-          ok = false
-          pj = Array::length(param_labels)
-        } else {
-          Array::push(out, Array::get(args, fk))
-          pj = pj + 1
-        }
-      }
-      if ok {
-        Some(out)
+    all_labeled
+  }
+}
+
+fn labeled_source_index(args: Array[Expr], wanted: String) -> Int {
+  let mut found = -1
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, i) {
+      ELabeledArg(label, _, _) => if label == wanted && found < 0 {
+        found = i
       } else {
-        None
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn label_matches_position(arg: Expr, labels: Array[String], index: Int) -> Bool {
+  match arg {
+    ELabeledArg(label, _, _) => index < Array::length(labels) && Array::get(labels, index) == label,
+    _ => false
+  }
+}
+
+fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Option[Array[Expr]] {
+  if !labeled_reorder_candidate(args, param_labels) {
+    None
+  } else {
+    let out = empty_expr_array()
+    let mut ok = true
+    let mut pj = 0
+    while pj < Array::length(param_labels) {
+      let fk = labeled_source_index(args, Array::get(param_labels, pj))
+      if fk < 0 {
+        ok = false
+        pj = Array::length(param_labels)
+      } else {
+        Array::push(out, Array::get(args, fk))
+        pj = pj + 1
       }
+    }
+    if ok {
+      Some(out)
+    } else {
+      None
     }
   }
 }
 
-///|
-/// #986 (Codex P2-2 on #993): is `name` lexically shadowed at this point? The
-/// table indexes TOP-LEVEL functions only, so a local binding of the same name
-/// (`let f = (y) -> ..` / a fn param / a pattern bind) must suppress both the
-/// reorder and the label-name validation — the call resolves to the local
-/// value, whose parameter names the table knows nothing about.
-
-///|
-/// Strip the ELabeledArg wrappers off a VALIDATED arg list (labels confirmed to
-/// match their positions — either via a successful full reorder, or
-/// individually below). Codegen binds positionally and ignores labels, so this
-/// is semantically neutral there; for the checker it is the RESOLUTION MARKER:
-/// a stripped arg participates in strict positional unification, while a
-/// surviving ELabeledArg means "label correspondence unknown here" and types
-/// tolerantly (see check_expr's ELabeledArg arm) — the erroneous local shapes
-/// are reported by name (check_labeled_arg_names_stmts), and import-resolved
-/// callees (whose param names this module cannot see, Codex P2-1 on #993) are
-/// no longer falsely rejected by position.
 fn strip_labeled_wrappers(args: Array[Expr]) -> Array[Expr] {
   let out = empty_expr_array()
   let mut i = 0
@@ -9251,19 +9407,13 @@ fn strip_labeled_wrappers(args: Array[Expr]) -> Array[Expr] {
   out
 }
 
-///|
-/// For a call that could NOT be fully reordered (partial labeling, or some
-/// label mismatched): strip only the labeled args whose label already matches
-/// the parameter at their own position — those are positionally correct
-/// decorative labels and must stay strictly type-checked. Mismatched ones are
-/// kept for the name-validation walk to report.
 fn strip_in_position_labels(args: Array[Expr], labels: Array[String]) -> Array[Expr] {
   let out = empty_expr_array()
   let mut i = 0
   while i < Array::length(args) {
     let arg = Array::get(args, i)
     match arg {
-      ELabeledArg(lbl, m, v) => if i < Array::length(labels) && Array::get(labels, i) == lbl {
+      ELabeledArg(lbl, m, v) => if label_matches_position(arg, labels, i) {
         Array::push(out, v)
       } else {
         Array::push(out, ELabeledArg(lbl, m, v))
@@ -9275,7 +9425,146 @@ fn strip_in_position_labels(args: Array[Expr], labels: Array[String]) -> Array[E
   out
 }
 
-///|
+fn paired_expect_pat(pat: Pat, node: BinderAuthorityNode, poisoned: Array[Bool]) -> Unit {
+  match pat {
+    PBind(name) => {
+      paired_expect_node(node, AuthorityPatBind, 1, 0, poisoned)
+      paired_expect_slot(node, 0, PatternBinder, name, poisoned)
+    },
+    PCtor(_, pats) => {
+      paired_expect_node(node, AuthorityPatCtor, 0, Array::length(pats), poisoned)
+      let mut i = 0
+      while i < Array::length(pats) {
+        paired_expect_pat(Array::get(pats, i), paired_child_or_self(node, i, poisoned), poisoned)
+        i = i + 1
+      }
+    },
+    PTuple(pats) => {
+      paired_expect_node(node, AuthorityPatTuple, 0, Array::length(pats), poisoned)
+      let mut i = 0
+      while i < Array::length(pats) {
+        paired_expect_pat(Array::get(pats, i), paired_child_or_self(node, i, poisoned), poisoned)
+        i = i + 1
+      }
+    },
+    PStruct(_, fields) => {
+      paired_expect_node(node, AuthorityPatStruct, 0, Array::length(fields), poisoned)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, child) = Array::get(fields, i)
+        paired_expect_pat(child, paired_child_or_self(node, i, poisoned), poisoned)
+        i = i + 1
+      }
+    },
+    POr(_, _) => paired_poison(poisoned),
+    PWild => paired_expect_node(node, AuthorityPatWild, 0, 0, poisoned),
+    PInt(_) => paired_expect_node(node, AuthorityPatInt, 0, 0, poisoned),
+    PFloat(_) => paired_expect_node(node, AuthorityPatFloat, 0, 0, poisoned),
+    PString(_) => paired_expect_node(node, AuthorityPatString, 0, 0, poisoned),
+    PBool(_) => paired_expect_node(node, AuthorityPatBool, 0, 0, poisoned)
+  }
+}
+
+fn paired_promote_wrapper(parent: BinderAuthorityNode, index: Int, poisoned: Array[Bool]) -> Unit {
+  let wrapper = paired_child_or_self(parent, index, poisoned)
+  paired_expect_node(wrapper, AuthorityExprLabeledArg, 0, 1, poisoned)
+  let children = binder_authority_node_children(wrapper)
+  if binder_authority_node_kind(wrapper) == AuthorityExprLabeledArg && Array::length(binder_authority_node_slots(wrapper)) == 0 && Array::length(children) == 1 {
+    Array::set(parent.children, index, Array::get(children, 0))
+  } else {
+    paired_poison(poisoned)
+  }
+}
+
+fn strip_labeled_wrappers_paired(args: Array[Expr], node: BinderAuthorityNode, poisoned: Array[Bool]) -> Array[Expr] {
+  let out = empty_expr_array()
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, i) {
+      ELabeledArg(_, _, value) => {
+        paired_promote_wrapper(node, i + 1, poisoned)
+        Array::push(out, value)
+      },
+      other => Array::push(out, other)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn strip_in_position_labels_paired(args: Array[Expr], labels: Array[String], node: BinderAuthorityNode, poisoned: Array[Bool]) -> Array[Expr] {
+  let out = empty_expr_array()
+  let mut i = 0
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    match arg {
+      ELabeledArg(label, marker, value) => if label_matches_position(arg, labels, i) {
+        paired_promote_wrapper(node, i + 1, poisoned)
+        Array::push(out, value)
+      } else {
+        Array::push(out, ELabeledArg(label, marker, value))
+      },
+      other => Array::push(out, other)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn paired_poison_surviving_labels(args: Array[Expr], poisoned: Array[Bool]) -> Unit {
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, i) {
+      ELabeledArg(_, _, _) => paired_poison(poisoned),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn optional_fill_args_paired(args: Array[Expr], flags: Array[Bool], poisoned: Array[Bool]) -> Array[Expr] {
+  let np = Array::length(flags)
+  let na = Array::length(args)
+  if na > np {
+    args
+  } else {
+    let mut fillable = true
+    let mut k = na
+    while k < np {
+      if !Array::get(flags, k) {
+        fillable = false
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    if !fillable {
+      args
+    } else {
+      let out = empty_expr_array()
+      let mut i = 0
+      while i < np {
+        if i < na {
+          let arg = Array::get(args, i)
+          if Array::get(flags, i) && !opt_arg_already_option(arg) {
+            paired_poison(poisoned)
+            Array::push(out, ECall(EIdent("Some", 0 - 1), [
+              arg
+            ], 0 - 1))
+          } else {
+            Array::push(out, arg)
+          }
+        } else {
+          paired_poison(poisoned)
+          Array::push(out, EIdent("None", 0 - 1))
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
 fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[String]) -> Expr {
   match expr {
     ECall(callee, args, off) => {
@@ -9283,10 +9572,6 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
         relabel_expr(a, tbl, shadows)
       }
       let rcallee = relabel_expr(callee, tbl, shadows)
-      // #986: `tbl` now holds EVERY top-level function (not just `~`-labeled
-      // ones), so gate the linear table scan on the call actually carrying a
-      // labeled argument — labeled calls are rare, plain calls are the entire
-      // program.
       let mut any_labeled_arg = false
       let mut la_i = 0
       while la_i < Array::length(rargs) {
@@ -9316,8 +9601,6 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       } else {
         rargs
       }
-      // #1500: fill / wrap optional parameters AFTER label reordering, so the
-      // flags line up with declared parameter order.
       let opt_args = match callee {
         EIdent(fname, _) => if str_array_contains(shadows, fname) {
           final_args
@@ -9471,7 +9754,6 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
   }
 }
 
-///|
 fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt {
   match stmt {
     SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, relabel_expr(body, tbl, empty_str_array())),
@@ -9484,6 +9766,430 @@ fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt {
       relabel_stmt(s, tbl)
     }),
     _ => stmt
+  }
+}
+
+fn relabel_expr_paired_child(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], node: BinderAuthorityNode, index: Int, poisoned: Array[Bool]) -> Expr {
+  relabel_expr_paired(expr, tbl, shadows, paired_child_or_self(node, index, poisoned), poisoned)
+}
+
+fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], node: BinderAuthorityNode, poisoned: Array[Bool]) -> Expr {
+  match expr {
+    ECall(callee, args, off) => {
+      paired_expect_node(node, AuthorityExprCall, 0, Array::length(args) + 1, poisoned)
+      let original_children = binder_authority_node_children(node)
+      let mut ai = 0
+      let rargs = for arg in args {
+        let child = paired_child_or_self(node, ai + 1, poisoned)
+        ai = ai + 1
+        relabel_expr_paired(arg, tbl, shadows, child, poisoned)
+      }
+      let rcallee = relabel_expr_paired_child(callee, tbl, shadows, node, 0, poisoned)
+      let mut any_labeled = false
+      let mut li = 0
+      while li < Array::length(rargs) {
+        match Array::get(rargs, li) {
+          ELabeledArg(_, _, _) => {
+            any_labeled = true
+          },
+          _ => ()
+        }
+        li = li + 1
+      }
+      let resolved = if any_labeled {
+        match callee {
+          EIdent(fname, _) => if str_array_contains(shadows, fname) {
+            rargs
+          } else {
+            match lookup_param_labels(tbl, fname) {
+              Some(labels) => if labeled_reorder_candidate(rargs, labels) {
+                let reordered = empty_expr_array()
+                let used = for _ in rargs {
+                  false
+                }
+                let mut ok = true
+                let mut pi = 0
+                while pi < Array::length(labels) {
+                  let source = labeled_source_index(rargs, Array::get(labels, pi))
+                  if source < 0 {
+                    paired_poison(poisoned)
+                    ok = false
+                    pi = Array::length(labels)
+                  } else {
+                    Array::push(reordered, Array::get(rargs, source))
+                    if Array::get(used, source) || source + 1 >= Array::length(original_children) {
+                      paired_poison(poisoned)
+                    } else {
+                      Array::set(used, source, true)
+                      Array::set(node.children, pi + 1, Array::get(original_children, source + 1))
+                    }
+                    pi = pi + 1
+                  }
+                }
+                if ok {
+                  strip_labeled_wrappers_paired(reordered, node, poisoned)
+                } else {
+                  strip_in_position_labels_paired(rargs, labels, node, poisoned)
+                }
+              } else {
+                paired_poison(poisoned)
+                strip_in_position_labels_paired(rargs, labels, node, poisoned)
+              },
+              None => rargs
+            }
+          },
+          _ => rargs
+        }
+      } else {
+        rargs
+      }
+      let final_args = match callee {
+        EIdent(fname, _) => if str_array_contains(shadows, fname) {
+          resolved
+        } else {
+          match optional_param_flags(fname) {
+            Some(flags) => optional_fill_args_paired(resolved, flags, poisoned),
+            None => resolved
+          }
+        },
+        _ => resolved
+      }
+      paired_poison_surviving_labels(final_args, poisoned)
+      ECall(rcallee, final_args, off)
+    },
+    EBinOp(op, left, right) => {
+      paired_expect_node(node, AuthorityExprBinOp, 0, 2, poisoned)
+      EBinOp(op, relabel_expr_paired_child(left, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(right, tbl, shadows, node, 1, poisoned))
+    },
+    EUnaryOp(op, value) => {
+      paired_expect_node(node, AuthorityExprUnaryOp, 0, 1, poisoned)
+      EUnaryOp(op, relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned))
+    },
+    ETuple(items) => {
+      paired_expect_node(node, AuthorityExprTuple, 0, Array::length(items), poisoned)
+      let mut i = 0
+      ETuple(for item in items {
+        let child = paired_child_or_self(node, i, poisoned)
+        i = i + 1
+        relabel_expr_paired(item, tbl, shadows, child, poisoned)
+      })
+    },
+    EArray(items) => {
+      paired_expect_node(node, AuthorityExprArray, 0, Array::length(items), poisoned)
+      let mut i = 0
+      EArray(for item in items {
+        let child = paired_child_or_self(node, i, poisoned)
+        i = i + 1
+        relabel_expr_paired(item, tbl, shadows, child, poisoned)
+      })
+    },
+    ESpread(value) => {
+      paired_expect_node(node, AuthorityExprSpread, 0, 1, poisoned)
+      ESpread(relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned))
+    },
+    ERecord(name, fields, types) => {
+      paired_expect_node(node, AuthorityExprRecord, 0, Array::length(fields), poisoned)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (field, value) = Array::get(fields, i)
+        Array::push(out, (field, relabel_expr_paired_child(value, tbl, shadows, node, i, poisoned)))
+        i = i + 1
+      }
+      ERecord(name, out, types)
+    },
+    EMap(fields) => {
+      paired_expect_node(node, AuthorityExprMap, 0, Array::length(fields), poisoned)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (key, value) = Array::get(fields, i)
+        Array::push(out, (key, relabel_expr_paired_child(value, tbl, shadows, node, i, poisoned)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(cond, yes, no) => {
+      paired_expect_node(node, AuthorityExprIf, 0, 3, poisoned)
+      EIf(relabel_expr_paired_child(cond, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(yes, tbl, shadows, node, 1, poisoned), relabel_expr_paired_child(no, tbl, shadows, node, 2, poisoned))
+    },
+    ELet(name, value, body, offset) => {
+      paired_expect_node(node, AuthorityExprLet, 1, 2, poisoned)
+      paired_expect_slot(node, 0, ExpressionLetBinder, name, poisoned)
+      let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
+      Array::truncate(shadows, mark)
+      ELet(name, rvalue, rbody, offset)
+    },
+    ELetRec(name, value, body) => {
+      paired_expect_node(node, AuthorityExprLetRec, 1, 2, poisoned)
+      paired_expect_slot(node, 0, ExpressionLetRecBinder, name, poisoned)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
+      let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
+      Array::truncate(shadows, mark)
+      ELetRec(name, rvalue, rbody)
+    },
+    ELetMut(name, value, body, offset) => {
+      paired_expect_node(node, AuthorityExprLetMut, 1, 2, poisoned)
+      paired_expect_slot(node, 0, ExpressionLetMutBinder, name, poisoned)
+      let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
+      Array::truncate(shadows, mark)
+      ELetMut(name, rvalue, rbody, offset)
+    },
+    EAssign(name, value, cont) => {
+      paired_expect_node(node, AuthorityExprAssign, 0, 2, poisoned)
+      EAssign(name, relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(cont, tbl, shadows, node, 1, poisoned))
+    },
+    EAssignOp(name, op, value, cont) => {
+      paired_expect_node(node, AuthorityExprAssignOp, 0, 2, poisoned)
+      EAssignOp(name, op, relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(cont, tbl, shadows, node, 1, poisoned))
+    },
+    ESeq(first, second) => {
+      paired_expect_node(node, AuthorityExprSeq, 0, 2, poisoned)
+      ESeq(relabel_expr_paired_child(first, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(second, tbl, shadows, node, 1, poisoned))
+    },
+    EMatch(scrutinee, arms) => {
+      paired_expect_node(node, AuthorityExprMatch, 0, 1 + Array::length(arms) * 2, poisoned)
+      let rscrutinee = relabel_expr_paired_child(scrutinee, tbl, shadows, node, 0, poisoned)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        paired_expect_pat(pat, paired_child_or_self(node, 1 + i * 2, poisoned), poisoned)
+        let mark = Array::length(shadows)
+        collect_pat_binders(pat, shadows)
+        Array::push(out, (pat, relabel_expr_paired_child(body, tbl, shadows, node, 2 + i * 2, poisoned)))
+        Array::truncate(shadows, mark)
+        i = i + 1
+      }
+      EMatch(rscrutinee, out)
+    },
+    EHandle(scrutinee, arms) => {
+      paired_expect_node(node, AuthorityExprHandle, 0, 1 + Array::length(arms) * 2, poisoned)
+      let rscrutinee = relabel_expr_paired_child(scrutinee, tbl, shadows, node, 0, poisoned)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        paired_expect_pat(pat, paired_child_or_self(node, 1 + i * 2, poisoned), poisoned)
+        let mark = Array::length(shadows)
+        collect_pat_binders(pat, shadows)
+        Array::push(out, (pat, relabel_expr_paired_child(body, tbl, shadows, node, 2 + i * 2, poisoned)))
+        Array::truncate(shadows, mark)
+        i = i + 1
+      }
+      EHandle(rscrutinee, out)
+    },
+    EWhile(cond, body) => {
+      paired_expect_node(node, AuthorityExprWhile, 0, 2, poisoned)
+      EWhile(relabel_expr_paired_child(cond, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned))
+    },
+    ELoop(_, _) => {
+      paired_poison(poisoned)
+      relabel_expr(expr, tbl, shadows)
+    },
+    EForIn(name, index, iterable, body) => {
+      let slot_count = match index {
+        Some(_) => 2,
+        None => 1
+      }
+      paired_expect_node(node, AuthorityExprForIn, slot_count, 2, poisoned)
+      paired_expect_slot(node, 0, ExpressionForValueBinder, name, poisoned)
+      match index {
+        Some(index_name) => paired_expect_slot(node, 1, ExpressionForIndexBinder, index_name, poisoned),
+        None => ()
+      }
+      let riterable = relabel_expr_paired_child(iterable, tbl, shadows, node, 0, poisoned)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      match index {
+        Some(index_name) => Array::push(shadows, index_name),
+        None => ()
+      }
+      let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
+      Array::truncate(shadows, mark)
+      EForIn(name, index, riterable, rbody)
+    },
+    EFn(type_params, bounds, params, ret, effects, body) => {
+      paired_expect_node(node, AuthorityExprFn, Array::length(type_params) + Array::length(params), 1, poisoned)
+      let mut ti = 0
+      while ti < Array::length(type_params) {
+        paired_expect_slot(node, ti, ExpressionFunctionTypeParameterBinder, Array::get(type_params, ti), poisoned)
+        ti = ti + 1
+      }
+      let mark = Array::length(shadows)
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (name, _) = Array::get(params, pi)
+        paired_expect_slot(node, Array::length(type_params) + pi, ExpressionFunctionParameterBinder, name, poisoned)
+        Array::push(shadows, strip_label_tilde(name))
+        pi = pi + 1
+      }
+      let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 0, poisoned)
+      Array::truncate(shadows, mark)
+      EFn(type_params, bounds, params, ret, effects, rbody)
+    },
+    EDot(object, field, offset, field_offset) => {
+      paired_expect_node(node, AuthorityExprDot, 0, 1, poisoned)
+      EDot(relabel_expr_paired_child(object, tbl, shadows, node, 0, poisoned), field, offset, field_offset)
+    },
+    ELabeledArg(label, marker, value) => {
+      paired_expect_node(node, AuthorityExprLabeledArg, 0, 1, poisoned)
+      ELabeledArg(label, marker, relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned))
+    },
+    EReturn(value) => {
+      paired_expect_node(node, AuthorityExprReturn, 0, 1, poisoned)
+      EReturn(relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned))
+    },
+    EBreak(value) => match value {
+      Some(inner) => {
+        paired_expect_node(node, AuthorityExprBreak, 0, 1, poisoned)
+        EBreak(Some(relabel_expr_paired_child(inner, tbl, shadows, node, 0, poisoned)))
+      },
+      None => {
+        paired_expect_node(node, AuthorityExprBreak, 0, 0, poisoned)
+        expr
+      }
+    },
+    EContinue(values) => {
+      paired_expect_node(node, AuthorityExprContinue, 0, Array::length(values), poisoned)
+      let mut i = 0
+      EContinue(for value in values {
+        let child = paired_child_or_self(node, i, poisoned)
+        i = i + 1
+        relabel_expr_paired(value, tbl, shadows, child, poisoned)
+      })
+    },
+    EInt(_) => {
+      paired_expect_node(node, AuthorityExprInt, 0, 0, poisoned)
+      expr
+    },
+    EFloat(_) => {
+      paired_expect_node(node, AuthorityExprFloat, 0, 0, poisoned)
+      expr
+    },
+    EString(_) => {
+      paired_expect_node(node, AuthorityExprString, 0, 0, poisoned)
+      expr
+    },
+    EBool(_) => {
+      paired_expect_node(node, AuthorityExprBool, 0, 0, poisoned)
+      expr
+    },
+    EIdent(_, _) => {
+      paired_expect_node(node, AuthorityExprIdent, 0, 0, poisoned)
+      expr
+    },
+    EStringInterp(_) => {
+      paired_expect_node(node, AuthorityExprStringInterp, 0, 0, poisoned)
+      expr
+    },
+    EUnit => {
+      paired_expect_node(node, AuthorityExprUnit, 0, 0, poisoned)
+      expr
+    }
+  }
+}
+
+fn relabel_stmt_paired(stmt: Stmt, tbl: Array[(String, Array[String])], node: BinderAuthorityNode, poisoned: Array[Bool]) -> Stmt {
+  match stmt {
+    SLet(exported, recursive, name, ty, body) => {
+      paired_expect_node(node, AuthorityStmtLet, 1, 1, poisoned)
+      paired_expect_slot(node, 0, StatementLetBinder, name, poisoned)
+      SLet(exported, recursive, name, ty, relabel_expr_paired_child(body, tbl, empty_str_array(), node, 0, poisoned))
+    },
+    SLetMut(name, ty, body) => {
+      paired_expect_node(node, AuthorityStmtLetMut, 1, 1, poisoned)
+      paired_expect_slot(node, 0, StatementLetMutBinder, name, poisoned)
+      SLetMut(name, ty, relabel_expr_paired_child(body, tbl, empty_str_array(), node, 0, poisoned))
+    },
+    STest(name, body) => {
+      paired_expect_node(node, AuthorityStmtTest, 0, 1, poisoned)
+      STest(name, relabel_expr_paired_child(body, tbl, empty_str_array(), node, 0, poisoned))
+    },
+    SBench(name, body) => {
+      paired_expect_node(node, AuthorityStmtBench, 0, 1, poisoned)
+      SBench(name, relabel_expr_paired_child(body, tbl, empty_str_array(), node, 0, poisoned))
+    },
+    SExample(name, body) => {
+      paired_expect_node(node, AuthorityStmtExample, 0, 1, poisoned)
+      SExample(name, relabel_expr_paired_child(body, tbl, empty_str_array(), node, 0, poisoned))
+    },
+    SExpr(body) => {
+      paired_expect_node(node, AuthorityStmtExpr, 0, 1, poisoned)
+      SExpr(relabel_expr_paired_child(body, tbl, empty_str_array(), node, 0, poisoned))
+    },
+    SExternLet(name, _) => {
+      paired_expect_node(node, AuthorityStmtExternLet, 1, 0, poisoned)
+      paired_expect_slot(node, 0, StatementExternBinder, name, poisoned)
+      stmt
+    },
+    SImport(_, items) => {
+      paired_expect_node(node, AuthorityStmtImport, Array::length(items), 0, poisoned)
+      let mut i = 0
+      while i < Array::length(items) {
+        let item = Array::get(items, i)
+        let local = match item.1 {
+          Some(alias) => alias,
+          None => item.0
+        }
+        paired_expect_slot(node, i, StatementImportBinder, local, poisoned)
+        i = i + 1
+      }
+      stmt
+    },
+    SAliasDecl(name, _) => {
+      paired_expect_node(node, AuthorityStmtAliasDecl, 1, 0, poisoned)
+      paired_expect_slot(node, 0, StatementAliasBinder, name, poisoned)
+      stmt
+    },
+    STypeAlias(_, name, params, _) => {
+      paired_expect_node(node, AuthorityStmtTypeAlias, 1 + Array::length(params), 0, poisoned)
+      paired_expect_slot(node, 0, StatementTypeBinder, name, poisoned)
+      let mut i = 0
+      while i < Array::length(params) {
+        paired_expect_slot(node, i + 1, StatementTypeParameterBinder, Array::get(params, i), poisoned)
+        i = i + 1
+      }
+      stmt
+    },
+    SEffectSet(_, name, _) => {
+      paired_expect_node(node, AuthorityStmtEffectSet, 1, 0, poisoned)
+      paired_expect_slot(node, 0, StatementEffectSetBinder, name, poisoned)
+      stmt
+    },
+    SResource(name, _) => {
+      paired_expect_node(node, AuthorityStmtResource, 1, 0, poisoned)
+      paired_expect_slot(node, 0, StatementResourceBinder, name, poisoned)
+      stmt
+    },
+    SExport(_) => {
+      paired_expect_node(node, AuthorityStmtExport, 0, 0, poisoned)
+      stmt
+    },
+    SReExport(_, _) => {
+      paired_expect_node(node, AuthorityStmtReExport, 0, 0, poisoned)
+      stmt
+    },
+    SQualifiedPatternRefs(_) => {
+      paired_expect_node(node, AuthorityStmtQualifiedPatternRefs, 0, 0, poisoned)
+      stmt
+    },
+    STestEffectRows(_) => {
+      paired_expect_node(node, AuthorityStmtTestEffectRows, 0, 0, poisoned)
+      stmt
+    },
+    _ => {
+      paired_poison(poisoned)
+      relabel_stmt(stmt, tbl)
+    }
   }
 }
 
@@ -10095,6 +10801,54 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
     }
   }
   optional_param_tbl_set(array_empty())
+}
+
+fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityNode], poisoned: Array[Bool]) -> Unit {
+  let tbl = collect_fn_param_labels(stmts)
+  let opt_tbl = collect_optional_param_fns(stmts)
+  optional_param_tbl_set(opt_tbl)
+  if Array::length(roots) != Array::length(stmts) {
+    paired_poison(poisoned)
+  } else {
+    ()
+  }
+  let sentinel = BinderAuthorityNode::{
+    kind: AuthorityExprUnit,
+    slots: [
+    ],
+    children: [
+    ]
+  }
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let root = if i < Array::length(roots) {
+      Array::get(roots, i)
+    } else {
+      sentinel
+    }
+    Array::set(stmts, i, relabel_stmt_paired(Array::get(stmts, i), tbl, root, poisoned))
+    i = i + 1
+  }
+  optional_param_tbl_set(array_empty())
+}
+
+export fn normalize_labeled_args_with_binder_authority(source: LocatedProgramBinderAuthority) -> LabeledArgBinderAuthorityNormalization {
+  let program = located_program_binder_authority_program(source)
+  let roots = located_program_binder_authority_nodes(source)
+  let poisoned = [
+    false
+  ]
+  desugar_labeled_args_paired(program, roots, poisoned)
+  let normalized = if Array::get(poisoned, 0) {
+    None
+  } else {
+    Some(NormalizedProgramBinderAuthority::{
+      nodes: stored_normalized_authority_nodes(roots, 0)
+    })
+  }
+  LabeledArgBinderAuthorityNormalization::{
+    stored: StoredLabeledArgBinderAuthorityNormalizationValue(program, normalized)
+  }
 }
 
 ///|

@@ -1,0 +1,258 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/normalize {
+  LabeledArgBinderAuthorityNormalization,
+  NormalizedProgramBinderAuthority,
+  desugar_labeled_args,
+  labeled_arg_binder_authority_normalization_authority,
+  labeled_arg_binder_authority_normalization_program,
+  normalize_labeled_args_with_binder_authority,
+  normalized_program_binder_authority_nodes
+}
+
+import @vibe/parser {
+  BinderAuthorityNode,
+  BinderAuthorityNodeKind,
+  BinderAuthoritySlot,
+  BinderSemanticRole,
+  SourceBinder,
+  binder_authority_node_children,
+  binder_authority_node_kind,
+  binder_authority_node_slots,
+  binder_authority_slot_binder,
+  located_program_binder_authority_nodes,
+  located_program_binder_authority_program,
+  parse_source_located_with_binder_authority
+}
+
+//# Helpers
+
+fn normalize_source(source: String) -> Option[LabeledArgBinderAuthorityNormalization] with Exception {
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => Some(normalize_labeled_args_with_binder_authority(authority)),
+    None => None
+  }
+}
+
+fn normalized_authority(source: String) -> Option[NormalizedProgramBinderAuthority] with Exception {
+  match normalize_source(source) {
+    Some(result) => labeled_arg_binder_authority_normalization_authority(result),
+    None => None
+  }
+}
+
+fn expect_no_authority(source: String) -> Unit with Exception {
+  match normalize_source(source) {
+    Some(result) => match labeled_arg_binder_authority_normalization_authority(result) {
+      Some(_) => inspect(false, "true"),
+      None => inspect(true, "true")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+fn expect_ordinary_parity(source: String) -> Unit with Exception {
+  match (parse_source_located_with_binder_authority(source), parse_source_located_with_binder_authority(source)) {
+    (Some(ordinary_source), Some(paired_source)) => {
+      let ordinary = located_program_binder_authority_program(ordinary_source)
+      desugar_labeled_args(ordinary)
+      let paired = normalize_labeled_args_with_binder_authority(paired_source)
+      inspect(ordinary == labeled_arg_binder_authority_normalization_program(paired), "true")
+    },
+    _ => inspect(false, "true")
+  }
+}
+
+fn node_tag(node: BinderAuthorityNode) -> Int {
+  match binder_authority_node_kind(node) {
+    AuthorityStmtLet => 1,
+    AuthorityStmtExample => 2,
+    AuthorityExprFn => 3,
+    AuthorityStmtTest => 8,
+    AuthorityExprCall => 4,
+    AuthorityExprIdent => 5,
+    AuthorityExprInt => 6,
+    AuthorityExprLet => 7,
+    _ => 99
+  }
+}
+
+fn slot_start(node: BinderAuthorityNode, index: Int) -> Int {
+  match binder_authority_slot_binder(Array::get(binder_authority_node_slots(node), index)) {
+    SourceToken(_, start, _) => start,
+    _ => -1
+  }
+}
+
+fn call_from_root(roots: Array[BinderAuthorityNode], root: Int) -> BinderAuthorityNode {
+  let stmt = Array::get(roots, root)
+  let body = Array::get(binder_authority_node_children(stmt), 0)
+  Array::get(binder_authority_node_children(body), 0)
+}
+
+//# Tests
+
+test "same source index moves AST and authority while wrappers promote" {
+  let source = "fn target(x: Int, y: Int) -> Int { x }\nfn main() -> Int { target(y={ let nested = 2; nested }, x=1) }"
+  match normalize_source(source) {
+    Some(result) => {
+      match Array::get(labeled_arg_binder_authority_normalization_program(result), 1) {
+        SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => {
+          match Array::get(args, 0) {
+            EInt(1) => inspect(true, "true"),
+            _ => inspect(false, "true")
+          }
+          match Array::get(args, 1) {
+            ELet("nested", EInt(2), _, _) => inspect(true, "true"),
+            _ => inspect(false, "true")
+          }
+        },
+        _ => inspect(false, "true")
+      }
+      match labeled_arg_binder_authority_normalization_authority(result) {
+        Some(authority) => {
+          let call = call_from_root(normalized_program_binder_authority_nodes(authority), 1)
+          let children = binder_authority_node_children(call)
+          inspect(node_tag(call), "4")
+          inspect(node_tag(Array::get(children, 0)), "5")
+          inspect(node_tag(Array::get(children, 1)), "6")
+          inspect(node_tag(Array::get(children, 2)), "7")
+        },
+        None => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "example source keeps paired body authority through its production STest lowering" {
+  let source = "fn target(x: Int, y: Int) -> Int { x }\nexample \"labels\" { target(y=2, x=1) }"
+  match normalize_source(source) {
+    Some(result) => {
+      match Array::get(labeled_arg_binder_authority_normalization_program(result), 1) {
+        STest("labels", ECall(_, args, _)) => match (Array::get(args, 0), Array::get(args, 1)) {
+          (EInt(1), EInt(2)) => inspect(true, "true"),
+          _ => inspect(false, "true")
+        },
+        _ => inspect(false, "true")
+      }
+      match labeled_arg_binder_authority_normalization_authority(result) {
+        Some(authority) => {
+          let roots = normalized_program_binder_authority_nodes(authority)
+          inspect(node_tag(Array::get(roots, 1)), "8")
+          let call = Array::get(binder_authority_node_children(Array::get(roots, 1)), 0)
+          inspect(node_tag(call), "4")
+          inspect(node_tag(Array::get(binder_authority_node_children(call), 1)), "6")
+        },
+        None => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "positional topology remains callee first" {
+  match normalized_authority("fn target(x: Int, y: Int) -> Int { x }\nfn main() -> Int { target(1, 2) }") {
+    Some(authority) => {
+      let children = binder_authority_node_children(call_from_root(normalized_program_binder_authority_nodes(authority), 1))
+      inspect(node_tag(Array::get(children, 0)), "5")
+      inspect(node_tag(Array::get(children, 1)), "6")
+      inspect(node_tag(Array::get(children, 2)), "6")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "poison matrix is complete or none and ordinary output stays identical" {
+  let valid = "fn f(x: Int, y: Int) -> Int { x }\nfn main() -> Int { f(y=2, x=1) }"
+  expect_ordinary_parity(valid)
+  expect_ordinary_parity("fn f(x?: Int) -> Int { 0 }\nfn main() -> Int { f() }")
+  expect_no_authority("fn f(x?: Int) -> Int { 0 }\nfn main() -> Int { f(1) }")
+  expect_no_authority("fn f(x?: Int) -> Int { 0 }\nfn main() -> Int { f() }")
+  expect_no_authority("fn f(x: Int, y: Int) -> Int { x }\nfn main() -> Int { f(x=1, x=2) }")
+  expect_no_authority("fn f(x: Int, y: Int) -> Int { x }\nfn main() -> Int { f(x=1) }")
+  expect_no_authority("fn f(x: Int, y: Int) -> Int { x }\nfn main() -> Int { f(z=1, y=2) }")
+  expect_no_authority("fn f(x: Int, y: Int) -> Int { x }\nfn main() -> Int { f(x=1, 2) }")
+  // Parser represents this annotated local binding with a Synthetic slot.
+  expect_no_authority("let f = () -> { let x: Int = 1; x }")
+}
+
+test "lexical shadowing suppresses top-level resolution in every scoped lane" {
+  expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { let f = (y: Int) -> Int { y }; f(y=1) }")
+  expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { match 1 { f => f(x=1) } }")
+  expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { for f in [1] { f(x=1) }; 0 }")
+}
+
+test "source and normalized programs are recursively detached" {
+  let source = "fn target(x: (Int) -> Int, y: (Int) -> Int) -> Int { 0 }\nfn main() -> Int { target(y=(same: Int) -> Int { 0 }, x=(same: Int) -> Int { 0 }) }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(source_authority) => {
+      let public_program = located_program_binder_authority_program(source_authority)
+      match Array::get(public_program, 1) {
+        SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => {
+          let first = Array::get(args, 0)
+          Array::set(args, 0, Array::get(args, 1))
+          Array::set(args, 1, first)
+          Array::truncate(args, 1)
+        },
+        _ => inspect(false, "true")
+      }
+      let public_nodes = located_program_binder_authority_nodes(source_authority)
+      Array::truncate(public_nodes, 1)
+      let result = normalize_labeled_args_with_binder_authority(source_authority)
+      match labeled_arg_binder_authority_normalization_authority(result) {
+        Some(authority) => {
+          let call = call_from_root(normalized_program_binder_authority_nodes(authority), 1)
+          let children = binder_authority_node_children(call)
+          inspect(Array::length(children), "3")
+          inspect(slot_start(Array::get(children, 1), 0) > slot_start(Array::get(children, 2), 0), "true")
+          let first_view = labeled_arg_binder_authority_normalization_program(result)
+          match Array::get(first_view, 1) {
+            SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => Array::truncate(args, 0),
+            _ => inspect(false, "true")
+          }
+          let second_view = labeled_arg_binder_authority_normalization_program(result)
+          match Array::get(second_view, 1) {
+            SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => inspect(Array::length(args), "2"),
+            _ => inspect(false, "true")
+          }
+        },
+        None => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "authority inspection mutation cannot alter private retained topology" {
+  match normalized_authority("fn target(x: Int, y: Int) -> Int { x }\nfn main() -> Int { target(y=2, x=1) }") {
+    Some(authority) => {
+      let first = normalized_program_binder_authority_nodes(authority)
+      let call = call_from_root(first, 1)
+      let forged = BinderAuthorityNode::{
+        kind: AuthorityExprUnit,
+        slots: [
+          BinderAuthoritySlot::{
+            role: PatternBinder,
+            binder: SourceToken("forged", 0, 6)
+          }
+        ],
+        children: [
+        ]
+      }
+      Array::set(call.children, 0, forged)
+      Array::truncate(call.children, 1)
+      Array::truncate(first, 1)
+      let second = normalized_program_binder_authority_nodes(authority)
+      let call_again = call_from_root(second, 1)
+      inspect(node_tag(call_again), "4")
+      inspect(Array::length(call_again.children), "3")
+      inspect(node_tag(Array::get(call_again.children, 0)), "5")
+    },
+    None => inspect(false, "true")
+  }
+}
