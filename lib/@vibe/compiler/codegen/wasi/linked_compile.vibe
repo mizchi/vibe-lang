@@ -169,10 +169,7 @@ import @vibe/compiler/codegen/common_base {
   emit_rc_dup_guarded,
   emit_str_ref,
   empty_dbg_prov,
-  ensure_exn_kind_cell,
   evidence_dict_pass,
-  exn_kind_read_expr,
-  exn_msg_read_expr,
   expr_tag,
   fn_type_param_types,
   forin_discard_pass,
@@ -208,7 +205,8 @@ import @vibe/compiler/codegen/common_base {
   resolve_func,
   resolve_local,
   rewrite_self_tail_calls,
-  suspend_cps_pass
+  suspend_cps_pass,
+  wrap_entry_exception_boundary
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -762,13 +760,6 @@ fn lc_row_has_label(eff: Option[String], label: String) -> Bool {
   }
 }
 
-/// #1461: the requested label is the canonical erased spelling. The comparison
-/// inside lc_row_has_label is exception_effect_labels_equal, so a row still
-/// spelled `Error` matches this just as it did before the flip.
-fn lc_row_has_error(eff: Option[String]) -> Bool {
-  lc_row_has_label(eff, "Exception")
-}
-
 fn lc_is_stdin_provider_surface(name: String) -> Bool {
   name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
 }
@@ -954,122 +945,6 @@ fn lc_entry_declares_async(stmts: Array[Stmt], entry_name: String) -> Bool {
     i = i + 1
   }
   found
-}
-
-/// #944 (ADR-0073 stage C): the runtime outermost Error handler. When the
-/// ENTRY function's own declared row carries `Error` (`fn main with
-/// { Error }` is allowed under checked-Error), an escaping `Exception::Throw`
-/// must become a diagnosed, unsuccessful process outcome -- not a raw
-/// `WebAssembly.Exception` leaking past the entry into the host. Rewrites
-/// the entry function's body, post-check/pre-codegen, into
-///
-///   handle { <body> } with Exception {
-///     Throw(msg) => { Stderr::...(diagnostic); 1 }
-///   }
-///
-/// so the existing (well-exercised) `with Exception` handle lowering does all
-/// the work -- no new codegen. The arm never resumes (Error is
-/// non-resumable, #640), so replay semantics are irrelevant here. Entries
-/// with no `Error` in their row are untouched: under default-on checked
-/// Error (stage B) they cannot leak a Throw in the first place. The
-/// `__no_entry__` test-runner lane never matches an SLet by this name, so
-/// test `_start` synthesis (whose trap-on-assert semantics the unit-test
-/// runner depends on) is untouched.
-fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit {
-  let mut i = 0
-  let mut wrapped_any = false
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name && lc_row_has_error(eff) {
-        // #1372 review (Codex P1): the bound payload is NOT necessarily a
-        // String. ADR-0085's runtime carries a single abortive tag with no
-        // kind, so this erased `Exception::Throw` arm also catches every typed
-        // `Exception[E]` -- including the `TaskError` that #1324's
-        // `TaskGroup::run` throws. Writing that enum pointer straight to
-        // `Stderr::write_stream` decoded it as a packed `(ptr<<32)|len`
-        // string and dumped the whole data segment.
-        //
-        // #1374: the throw site now records the payload's static type name in
-        // the exception-kind cell, so this arm can tell the cases apart:
-        //
-        //   String / Int   `__to_string` is FAITHFUL -- ADR-0058's int/string
-        //                  discrimination (`64 <= ptr && ptr + len <=
-        //                  memory_size`) is the identity on a real string and
-        //                  renders an int as its decimal. Unchanged output.
-        //   ""             the throw site could not resolve a type name, so
-        //                  the payload might be either. Keep #1375's
-        //                  conservative `__to_string`: bounded, never a read
-        //                  of arbitrary memory.
-        //   anything else  a value whose bytes are NOT text (an enum, a
-        //                  struct). Print the KIND, not a decimal that reads
-        //                  like a message.
-        //
-        // #1392 slice 3: the throw site now ALSO renders the payload, where its
-        // static type is still known, so the "anything else" case prints the
-        // VALUE (`Failed("io")`) rather than just its type. The kind branch
-        // survives as the fallback for a rendered string the throw site could
-        // not produce -- a payload whose type resolved to a declared type with
-        // no `T::to_string` renders through the pointer heuristic, and printing
-        // `<Kind>` is still better than a decimal there.
-        let kind_ident = EIdent("__entry_err_kind", -1)
-        let msg_ident = EIdent("__entry_err_rendered", -1)
-        let printable = EBinOp("||", ECall(EIdent("String::equals", -1), [
-          kind_ident,
-          EString("")
-        ], -1), EBinOp("||", ECall(EIdent("String::equals", -1), [
-          kind_ident,
-          EString("String")
-        ], -1), ECall(EIdent("String::equals", -1), [
-          kind_ident,
-          EString("Int")
-        ], -1)))
-        // A non-empty slot means the throw site found a STRUCTURAL renderer --
-        // it writes nothing when all it could produce was the pointer
-        // heuristic's own output, precisely so this test can be a plain
-        // emptiness check rather than an impossible "is this decimal real"
-        // one.
-        let rendered_ok = EBinOp("!=", ECall(EIdent("String::length", -1), [
-          msg_ident
-        ], -1), EInt(0))
-        let text = EIf(printable, ECall(EIdent("__to_string", -1), [
-          EIdent("__entry_err_msg", -1)
-        ], -1), EIf(rendered_ok, msg_ident, ECall(EIdent("String::concat", -1), [
-          EString("<"),
-          ECall(EIdent("String::concat", -1), [
-            kind_ident,
-            EString(">")
-          ], -1)
-        ], -1)))
-        let diag = ELet("__entry_err_kind", exn_kind_read_expr(), ELet("__entry_err_rendered", exn_msg_read_expr(), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
-          EString("vibe: uncaught error: ")
-        ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
-          text
-        ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
-          EString("\n")
-        ], -1), EInt(1)))), -1), -1)
-        let wrapped = EHandle(body, [
-          (PCtor("Exception::Throw", [
-            PBind("__entry_err_msg")
-          ]), diag)
-        ])
-        Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
-        wrapped_any = true
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  // #1374: this pass runs AFTER desugar_trait_dicts, so the cell it just
-  // synthesized a reader for is only guaranteed to exist for a program that
-  // itself throws. An entry whose `Error` row comes from an imported module's
-  // throw is exactly the case where it would not.
-  if wrapped_any {
-    ensure_exn_kind_cell(stmts)
-  } else {
-    ()
-  }
 }
 
 /// ADR-0089 Decision 1, increment 1 (#1218): make `sleep` a real
@@ -3582,11 +3457,11 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, linked_imports))
     rewrite_self_tail_calls(stmts)
     // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
-    // lc_wrap_entry_error_boundary's doc comment. Runs BEFORE the effect
+    // wrap_entry_exception_boundary's doc comment. Runs BEFORE the effect
     // passes below so the synthesized handle is visible to them like any
     // hand-written one, and before collect_used_builtin_names so the
     // diagnostic's Stderr host import is collected.
-    lc_wrap_entry_error_boundary(stmts, entry_name)
+    wrap_entry_exception_boundary(stmts, entry_name)
     let async_sleep_boundary_err = lc_inject_async_sleep_boundary(stmts, entry_name)
     if async_sleep_boundary_err != "" {
       Array::push(errs, async_sleep_boundary_err)

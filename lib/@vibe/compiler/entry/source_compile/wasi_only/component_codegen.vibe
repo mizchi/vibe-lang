@@ -1631,17 +1631,44 @@ fn comp_generate_wasi_fd_write_stub() -> Bytes {
 /// core instances: 0=wasi-stub, 1=main(+wasi), 2=cm(task-return), 3=env(run),
 /// 4=trampoline. core funcs: 0=task.return, 1=main.run, 2=trampoline.run.
 export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes {
+  let needs_stderr = comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream")
   let buf = bytebuf_new()
   emit_component_header(buf)
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
-  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  if needs_stderr {
+    // The exception boundary only needs this import on its failing path. A
+    // local trapping stub keeps the self-contained component valid and
+    // preserves the same non-zero outcome as core launchers; components that
+    // do not carry the boundary retain their exact pre-existing bytes.
+    emit_core_module_section(buf, comp_generate_host_stub_module([
+      "stderr_write_stream"
+    ], [
+      [
+        1,
+        126,
+        0
+      ]
+    ]))
+  } else {
+    emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  }
   emit_core_instance_instantiate_section(buf, 2, array_empty())
-  emit_core_instance_instantiate_args(buf, 0, [
-    "wasi_snapshot_preview1"
-  ], [
-    0
-  ])
+  if needs_stderr {
+    emit_core_instance_instantiate_args(buf, 0, [
+      "wasi_snapshot_preview1",
+      "vibe"
+    ], [
+      0,
+      0
+    ])
+  } else {
+    emit_core_instance_instantiate_args(buf, 0, [
+      "wasi_snapshot_preview1"
+    ], [
+      0
+    ])
+  }
   emit_canon_task_return(buf, comp_result_valtype)
   emit_core_instance_from_exports(buf, 1, [
     1
@@ -1678,6 +1705,23 @@ export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, e
   emit_canon_lift_async_section(buf, 2, 0)
   emit_comp_export_section(buf, export_name, 0)
   bytebuf_to_bytes(buf)
+}
+
+fn comp_core_imports_func(core_wasm: Bytes, module_name: String, func_name: String) -> Bool {
+  let modules = array_empty()
+  let names = array_empty()
+  let type_indices = new_int_array()
+  let type_sigs = array_empty()
+  let count = parse_core_imports(core_wasm, modules, names, type_indices, type_sigs)
+  let mut found = false
+  let mut i = 0
+  while i < count {
+    if Array::get(modules, i) == module_name && Array::get(names, i) == func_name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// #1230 M1b-3c-1b: component valtype for u32, matching the

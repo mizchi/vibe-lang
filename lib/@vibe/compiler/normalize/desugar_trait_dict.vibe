@@ -1,7 +1,17 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeEnv, TypeExpr, expr_children, is_exception_throw_operation, sort_perm_by_names, str_lt, trait_method_sig_binders_deep
+  Expr,
+  Pat,
+  Stmt,
+  TypeEnv,
+  TypeExpr,
+  expr_children,
+  is_exception_effect_name,
+  is_exception_throw_operation,
+  sort_perm_by_names,
+  str_lt,
+  trait_method_sig_binders_deep
 }
 
 import @vibe/core {
@@ -673,7 +683,7 @@ fn exn_kind_cell_stmt() -> Stmt {
 }
 
 /// What `__exn_kind()` lowers to. Exported because the compiler-synthesized
-/// entry boundary (lc_wrap_entry_error_boundary) is built AFTER this pass and
+/// entry boundary (`wrap_entry_exception_boundary`) is built AFTER this pass and
 /// so has to spell the lowered form itself.
 export fn exn_kind_read_expr() -> Expr {
   ECall(EIdent("Array::get", -1), [
@@ -715,6 +725,107 @@ export fn ensure_exn_kind_cell(stmts: Array[Stmt]) -> Unit {
     ()
   } else {
     Array::push(stmts, exn_kind_cell_stmt())
+  }
+}
+
+/// Install the process boundary for an entry whose declared row carries
+/// `Exception` (including the legacy `Error` alias and typed exceptions).
+///
+/// An escaping throw is not an ordinary return value. The old boundary
+/// diagnosed it and returned `1`, which worked only for hosts that invoked the
+/// entry export directly. Hosts that execute the conventional result-less
+/// `_start` dropped that value and reported success. Trap after emitting the
+/// diagnostic instead: every core/component launcher already maps a wasm trap
+/// to a non-zero process status, while an inner handler still prevents this
+/// boundary from running.
+export fn wrap_entry_exception_boundary(stmts: Array[Stmt], entry_name: String) -> Unit {
+  let mut i = 0
+  let mut wrapped_any = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name && entry_row_has_exception(eff) {
+        let payload_name = dinsp_fresh_name("__entry_err_msg", body, body)
+        let kind_name = dinsp_fresh_name("__entry_err_kind", body, body)
+        let rendered_name = dinsp_fresh_name("__entry_err_rendered", body, body)
+        let kind_ident = EIdent(kind_name, -1)
+        let msg_ident = EIdent(rendered_name, -1)
+        let printable = EBinOp("||", ECall(EIdent("String::equals", -1), [
+          kind_ident,
+          EString("")
+        ], -1), EBinOp("||", ECall(EIdent("String::equals", -1), [
+          kind_ident,
+          EString("String")
+        ], -1), ECall(EIdent("String::equals", -1), [
+          kind_ident,
+          EString("Int")
+        ], -1)))
+        let rendered_ok = EBinOp("!=", ECall(EIdent("String::length", -1), [
+          msg_ident
+        ], -1), EInt(0))
+        let text = EIf(printable, ECall(EIdent("__to_string", -1), [
+          EIdent(payload_name, -1)
+        ], -1), EIf(rendered_ok, msg_ident, ECall(EIdent("String::concat", -1), [
+          EString("<"),
+          ECall(EIdent("String::concat", -1), [
+            kind_ident,
+            EString(">")
+          ], -1)
+        ], -1)))
+        let fail = ECall(EIdent("assert_true", -1), [
+          EBool(false)
+        ], -1)
+        let diag = ELet(kind_name, exn_kind_read_expr(), ELet(rendered_name, exn_msg_read_expr(), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+          EString("vibe: uncaught error: ")
+        ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+          text
+        ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+          EString("\n")
+        ], -1), fail))), -1), -1)
+        let wrapped = EHandle(body, [
+          (PCtor("Exception::Throw", [
+            PBind(payload_name)
+          ]), diag)
+        ])
+        Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+        wrapped_any = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if wrapped_any {
+    ensure_exn_kind_cell(stmts)
+  } else {
+    ()
+  }
+}
+
+fn entry_row_has_exception(eff: Option[String]) -> Bool {
+  match eff {
+    Some(row) => {
+      let mut found = false
+      let mut start = 0
+      let n = String::length(row)
+      let mut i = 0
+      while i <= n {
+        let at_sep = if i == n {
+          true
+        } else {
+          String::char_code_at(row, i) == 44
+        }
+        if at_sep {
+          if is_exception_effect_name(String::trim(String::substring(row, start, i))) {
+            found = true
+          }
+          start = i + 1
+        }
+        i = i + 1
+      }
+      found
+    },
+    None => false
   }
 }
 
