@@ -15,7 +15,7 @@
 #
 # Installs a FRESH CLI wasm (the committed seed predates the funcmap sidecar) into
 # a throwaway VIBE_HOME/VIBE_BIN_DIR so it never touches a real install. Mirrors
-# scripts/test_vibe_cli_install.sh's install pattern.
+# tests/integration/install/install_test.sh's install pattern.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
