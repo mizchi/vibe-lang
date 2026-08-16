@@ -1,0 +1,227 @@
+//# Imports
+
+import ../type_db.vibe {
+  db_check_env, db_new, db_set_source, db_typecheck_fs
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint,
+  persistent_dep_list_cache_path,
+  persistent_leaf_fingerprint_cache_path,
+  persistent_module_header_cache_path,
+  persistent_type_env_cache_path
+}
+
+import @vibe/compiler/core {
+  env_lookup
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs, ingest_source_text_fs
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn build_test_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
+  let mut acc = compact_string_fingerprint(String::concat("typing-semantics:unchecked|source:", source))
+  let mut i = 0
+  while i < Array::length(dep_fps) {
+    let (dep_path, dep_fp) = Array::get(dep_fps, i)
+    acc = compact_string_fingerprint(String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))))
+    i = i + 1
+  }
+  acc
+}
+
+fn remove_typecheck_fs_cache(path: String, source: String, fingerprint: String) -> Unit with Fs {
+  let source_fp = compact_string_fingerprint(source)
+  remove_file_if_exists(persistent_dep_list_cache_path(path, source_fp))
+  remove_file_if_exists(persistent_module_header_cache_path(path, source_fp))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path, source_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(fingerprint))
+}
+
+fn vpkg_types_stub_path_from_text(text: String) -> String {
+  let marker = "_build/vibe_vpkg_types/"
+  let idx = String::index_of(text, marker)
+  if idx < 0 {
+    ""
+  } else {
+    let rest = text[idx: String::length(text)]
+    let end = String::index_of(rest, ".vibe")
+    if end < 0 {
+      ""
+    } else {
+      rest[0: end + 5]
+    }
+  }
+}
+
+fn grouped_source_paths_joined(groups: Array[(String, Array[(String, String)])]) -> String {
+  let out = array_empty()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, _) = Array::get(sources, si)
+      Array::push(out, path)
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  String::join(out, "\n")
+}
+
+fn write_probe_package(dir: String, extra_export: Bool) -> (String, String, String, String, String) with Fs {
+  let pkg_dir = String::concat(dir, "/pkg")
+  let vpkg_path = String::concat(pkg_dir, "/index.vpkg")
+  let impl_path = String::concat(pkg_dir, "/impl.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let extra_decl = if extra_export {
+    "\nfn probe_one_more_fn() -> Int\n"
+  } else {
+    ""
+  }
+  let extra_impl = if extra_export {
+    "\nexport fn probe_one_more_fn() -> Int {\n  2\n}\n"
+  } else {
+    ""
+  }
+  let vpkg_src = String::concat("enum Hue {\n  Crimson;\n  Teal(Int)\n}\n\nfn paint() -> Int\n", extra_decl)
+  let impl_src = String::concat("export fn paint() -> Int {\n  1\n}\n", extra_impl)
+  let main_src = "import ./pkg { type Hue, paint }\nexport let n = paint()\n"
+  Fs::mkdir_p(pkg_dir)
+  Fs::write_bytes(vpkg_path, string_to_bytes(vpkg_src))
+  Fs::write_bytes(impl_path, string_to_bytes(impl_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  (vpkg_path, impl_path, main_path, vpkg_src, impl_src)
+}
+
+fn seed_package_without_types_stub(vpkg_path: String, impl_path: String, main_path: String) -> (String, String) with Exception + Fs {
+  let vpkg_ingested = ingest_source_text_fs(vpkg_path, Fs::read_file(vpkg_path))
+  let impl_ingested = ingest_source_text_fs(impl_path, Fs::read_file(impl_path))
+  let main_ingested = ingest_source_text_fs(main_path, Fs::read_file(main_path))
+  let stub_path = vpkg_types_stub_path_from_text(vpkg_ingested)
+  assert(stub_path != "")
+  assert(Fs::exists(stub_path))
+  remove_typecheck_fs_cache(vpkg_path, vpkg_ingested, build_test_fingerprint(vpkg_ingested, array_empty()))
+  remove_typecheck_fs_cache(impl_path, impl_ingested, build_test_fingerprint(impl_ingested, array_empty()))
+  remove_typecheck_fs_cache(main_path, main_ingested, build_test_fingerprint(main_ingested, array_empty()))
+  remove_typecheck_fs_cache(stub_path, Fs::read_file(stub_path), build_test_fingerprint(Fs::read_file(stub_path), array_empty()))
+  (vpkg_ingested, stub_path)
+}
+
+fn typecheck_seeded_without_stub(vpkg_path: String, vpkg_ingested: String, impl_path: String, main_path: String) -> String with Fs {
+  handle {
+    let impl_ingested = ingest_source_text_fs(impl_path, Fs::read_file(impl_path))
+    let main_ingested = ingest_source_text_fs(main_path, Fs::read_file(main_path))
+    let db = db_set_source(db_set_source(db_set_source(db_new(), vpkg_path, vpkg_ingested), impl_path, impl_ingested), main_path, main_ingested)
+    let checked = db_typecheck_fs(db, main_path)
+    match db_check_env(checked, main_path) {
+      Some(env) =>
+      match env_lookup(env, "n") {
+        Some(_) => "",
+        None => "missing binding: n"
+      },
+      None => "missing checked environment"
+    }
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+//# Tests
+
+/// #1921: the coordinator plans a materialized vpkg types stub as a resolved
+/// dep, but a source set that only contains the contract/impl/importer never
+/// inserts that stub into the env cache. Adding any export to a sibling
+/// package (common_base in the wild) is just the trigger that forces a cold
+/// recheck through this hole.
+test "db_typecheck_fs: types stub missing from the seeded set is still inserted (#1921)" {
+  let dir = "_build/vibe_1921_typedb_stub_seed"
+  let (vpkg_path, impl_path, main_path, _, _) = write_probe_package(dir, false)
+  let (vpkg_ingested, stub_path) = seed_package_without_types_stub(vpkg_path, impl_path, main_path)
+  let err = typecheck_seeded_without_stub(vpkg_path, vpkg_ingested, impl_path, main_path)
+  assert(!String::contains(err, "type_db: missing resolved dependency environment"))
+  assert(err == "")
+  assert(String::starts_with(stub_path, "_build/vibe_vpkg_types/"))
+}
+
+test "db_typecheck_fs: adding an extra vpkg export still inserts the types stub (#1921)" {
+  let dir = "_build/vibe_1921_typedb_stub_export"
+  let (vpkg_path, impl_path, main_path, _, _) = write_probe_package(dir, false)
+  let (vpkg_ingested, _) = seed_package_without_types_stub(vpkg_path, impl_path, main_path)
+  assert(typecheck_seeded_without_stub(vpkg_path, vpkg_ingested, impl_path, main_path) == "")
+  let (vpkg_path2, impl_path2, main_path2, _, _) = write_probe_package(dir, true)
+  let (vpkg_ingested2, stub_path2) = seed_package_without_types_stub(vpkg_path2, impl_path2, main_path2)
+  let err = typecheck_seeded_without_stub(vpkg_path2, vpkg_ingested2, impl_path2, main_path2)
+  assert(!String::contains(err, "type_db: missing resolved dependency environment"))
+  assert(err == "")
+  assert(Fs::exists(stub_path2))
+}
+
+/// compiler_sources_manifest.tsv is a fixed source set: it lists the
+/// contract and its impls, never the generated `_build/vibe_vpkg_types/`
+/// stub. That is the vibe-check hole for any compiler file whose closure
+/// reaches `@vibe/compiler/core`.
+test "collect_source_groups_fs: manifest collection injects the types stub (#1921)" {
+  let dir = "_build/vibe_1921_typedb_stub_manifest"
+  let (vpkg_path, impl_path, main_path, _, _) = write_probe_package(dir, true)
+  let manifest_path = String::concat(dir, "/compiler_sources_manifest.tsv")
+  Fs::write_bytes(manifest_path, string_to_bytes("# group\tpath\npkg\tpkg/index.vpkg\npkg\tpkg/impl.vibe\nentry\tmain.vibe\n"))
+  let _ = ingest_source_text_fs(vpkg_path, Fs::read_file(vpkg_path))
+  let groups = collect_source_groups_fs(main_path)
+  let paths = grouped_source_paths_joined(groups)
+  assert(String::contains(paths, vpkg_path))
+  assert(String::contains(paths, impl_path))
+  assert(String::contains(paths, main_path))
+  assert(String::contains(paths, "_build/vibe_vpkg_types/"))
+  handle {
+    let mut db = db_new()
+    let mut gi = 0
+    while gi < Array::length(groups) {
+      let (_, sources) = Array::get(groups, gi)
+      let mut si = 0
+      while si < Array::length(sources) {
+        let (path, source) = Array::get(sources, si)
+        db = db_set_source(db, path, source)
+        si = si + 1
+      }
+      gi = gi + 1
+    }
+    let checked = db_typecheck_fs(db, main_path)
+    match db_check_env(checked, main_path) {
+      Some(_) => (),
+      None => assert(false)
+    }
+  } with Exception {
+    Throw(msg) => {
+      assert(!String::contains(msg, "type_db: missing resolved dependency environment"))
+      assert(false)
+    }
+  }
+}

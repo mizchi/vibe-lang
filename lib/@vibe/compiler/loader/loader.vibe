@@ -1141,6 +1141,14 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
         } else {
           let cached_types_path = rest[0: nl]
           if cached_types_path == "" || Fs::exists(cached_types_path) {
+            // Same registry note as the facade-cache hit: a warm prefix
+            // used to skip ensure_vpkg_types_module_fs, so collect_merged
+            // and the typecheck source set never saw the stub (#1921).
+            if cached_types_path == "" {
+              ()
+            } else {
+              vpkg_types_registry_note(vpkg_path, cached_types_path, Fs::read_file(cached_types_path))
+            }
             rest[nl + 1: String::length(rest)]
           } else {
             ""
@@ -1211,6 +1219,48 @@ export fn ingest_source_text_fs(path: String, raw: String) -> String with Except
 /// @vibe/core import never rewrote). Ingest every collected source once here,
 /// the single point all collection branches (manifest, caches, recursive walk)
 /// flow through.
+fn grouped_sources_group_for_path(groups: Array[(String, Array[(String, String)])], path: String) -> String {
+  let mut found = ""
+  let mut gi = 0
+  while gi < Array::length(groups) && found == "" {
+    let (gname, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) && found == "" {
+      let (sp, _) = Array::get(sources, si)
+      if sp == path {
+        found = gname
+      } else {
+        si = si + 1
+      }
+    }
+    gi = gi + 1
+  }
+  found
+}
+
+/// #1840/#1921: collect_merged_stmts already re-injects materialized vpkg
+/// types modules into a fixed source set. The typecheck walk seeds only
+/// what collect_source_groups_fs returns, so a compiler_sources_manifest
+/// that lists the contract but not `_build/vibe_vpkg_types/` left the stub
+/// in header deps and missing from the coordinator env cache.
+/// Attach the stub to the contract's existing group so manifest group order
+/// (entry last) stays intact.
+fn append_registered_vpkg_types_sources(groups: Array[(String, Array[(String, String)])]) -> Unit {
+  let mut ri = 0
+  while ri < Array::length(vpkg_types_registry_paths) {
+    let r_contract = Array::get(vpkg_types_registry_contracts, ri)
+    let r_path = Array::get(vpkg_types_registry_paths, ri)
+    let contract_group = grouped_sources_group_for_path(groups, r_contract)
+    let types_group = grouped_sources_group_for_path(groups, r_path)
+    if contract_group != "" && types_group == "" {
+      push_grouped_source(groups, contract_group, r_path, Array::get(vpkg_types_registry_texts, ri))
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+}
+
 fn ingest_grouped_sources_fs(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] with Exception + Fs {
   let out = empty_grouped_sources()
   let mut gi = 0
@@ -1224,6 +1274,7 @@ fn ingest_grouped_sources_fs(groups: Array[(String, Array[(String, String)])]) -
     }
     gi = gi + 1
   }
+  append_registered_vpkg_types_sources(out)
   out
 }
 

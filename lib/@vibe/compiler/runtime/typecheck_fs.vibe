@@ -79,7 +79,7 @@ import @vibe/compiler/loader {
 }
 
 import @vibe/graph {
-  RippleDb, plan_module_order, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval
+  RippleDb, plan_module_order, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval, ripple_set_source
 }
 
 import @vibe/compiler/syntax {
@@ -1229,6 +1229,27 @@ fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
     i = i + 1
   }
   cache
+}
+
+fn is_vpkg_types_stub_path(path: String) -> Bool {
+  String::index_of(path, "vibe_vpkg_types/") >= 0
+}
+
+/// A materialized #1840 types stub can appear in a module's resolved deps
+/// without ever being seeded (manifest collect lists the contract, not the
+/// generated `_build/vibe_vpkg_types/` file). Load it from disk so the
+/// walk can check it instead of projecting a missing env row (#1921).
+fn load_planned_module_source(rdb: RippleDb, path: String) -> (RippleDb, Option[String]) with Exception + Fs {
+  match ripple_get_source(rdb, path) {
+    Some(source) => (rdb, Some(source)),
+    None =>
+    if is_vpkg_types_stub_path(path) && Fs::exists(path) {
+      let source = ingest_source_text_fs(path, Fs::read_file(path))
+      (ripple_set_source(rdb, path, source), Some(source))
+    } else {
+      (rdb, None)
+    }
+  }
 }
 
 /// Project the coordinator's accumulated environment cache onto exactly the
@@ -4317,11 +4338,12 @@ fn dep_source_cache_is_current(dep_source_cache: Array[(String, String)], path: 
 /// RippleDb), so siblings could not be dispatched independently no matter
 /// what the host could do.
 fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
-  match ripple_get_source(rdb, path) {
-    None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
+  let (rdb_loaded, loaded_source) = load_planned_module_source(rdb, path)
+  match loaded_source {
+    None => (String::concat("missing:", path), rdb_loaded, env_cache, dep_source_cache, parse_count),
     Some(source) => {
       let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
-        match ripple_get_fingerprint(rdb, path) {
+        match ripple_get_fingerprint(rdb_loaded, path) {
           Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
             Some(_) => Some(fingerprint),
             None => None
@@ -4350,23 +4372,25 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
             ()
           }
           incremental_typecheck_telemetry_add(7, 1)
-          (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count)
+          (cached_fingerprint, rdb_loaded, env_cache, dep_source_cache, parse_count)
         }
         None =>
         match lookup_string_pair(plan_leaf_fps, path) {
           Some(leaf_fingerprint) =>
-          commit_leaf_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
+          commit_leaf_fingerprint_fs(rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
           None =>
           match plan_deps_of(plan_edges, path) {
             Some(planned_deps) =>
-            commit_with_deps_fs(fps, rdb, env_cache, upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps),
-            // Unreachable: every path in the schedule was either given an
-            // edge entry by the plan or interned as some planned module's
-            // dependency, and the three short-circuits above are the plan's
-            // own. A module that reaches here has no dependency fingerprints
-            // to fold, so there is nothing to fall back TO now that the walk
-            // does not recurse -- say so instead of inventing one.
-            None => throw(String::concat("type_db: module missing from the import plan: ", path))
+            commit_with_deps_fs(fps, rdb_loaded, env_cache, upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps),
+            // Types stubs interned only as someone else's dep have no plan
+            // edge: plan_import_graph_fs skipped them because they were not
+            // in the ripple db. They are leaves (type-family defs only).
+            None =>
+            if is_vpkg_types_stub_path(path) {
+              commit_with_deps_fs(fps, rdb_loaded, env_cache, upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, empty_stack())
+            } else {
+              throw(String::concat("type_db: module missing from the import plan: ", path))
+            }
           }
         }
       }
