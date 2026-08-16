@@ -1,0 +1,23 @@
+// #1262: `vibe_process_exit_raw` on the wasm-gc lane.
+//
+// This was the gc self-build's stopping point. Every builtin LOWERING was
+// already in place by then; what was missing was the host import itself, so
+// codegen reached an unresolved name. The flat compiler source hits it because
+// cli_adapter.vibe ends `main` with it.
+//
+// The exit code is the observable, and it has to be checked as a PROCESS
+// EXIT STATUS rather than a returned value: a lowering that evaluated the
+// argument and fell through would let the program run to completion and exit
+// 0, which is exactly the silently-wrong shape. So the gate runs this and
+// asserts the status, and picks a code that no other failure produces.
+//
+// 7 is chosen for that reason: a trap exits 134, an uncaught throw exits 1,
+// and a clean fallthrough exits 0. None of those can be mistaken for it.
+
+export let main = () -> Int with Process {
+  let side = 1 + 1
+  vibe_process_exit_raw(7)
+  // Unreachable. If the exit lowering is a no-op this returns 0 and the
+  // process exits cleanly -- the failure this fixture exists to catch.
+  side - 2
+}

@@ -1478,9 +1478,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
-  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream")
+  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream") || stmts_use_builtin(stmts, fn_names_list, "vibe_process_exit_raw")
   let hbo = if use_host {
-    19
+    20
   } else {
     0
   }
@@ -1707,7 +1707,13 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       // `VIBE_STDIN_BYTES` (an env var, not piped stdin) -- with it these are
       // verifiable against linear on real input, so they land here now.
       ("Stdin::read_char", 0, 18, 1),
-      ("Stdin::read_stream", 1, 19, 1)
+      ("Stdin::read_stream", 1, 19, 1),
+      // #1262: `vibe.process_exit (i64) -> ()` -- void, same shape as
+      // Fs::remove / Stdout::write_stream. This was the gc self-build's
+      // stopping point: the flat compiler source calls it (cli_adapter.vibe
+      // ends `main` with it), so codegen hit an unresolved name here while
+      // every builtin LOWERING was already in place.
+      ("vibe_process_exit_raw", 1, 20, 0)
     ]
     let mut __hd = 0
     while __hd < Array::length(host_defs) {
@@ -2441,7 +2447,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     // 4=(i64,i64)->i64, 5=()->i64, 6=(i64,i64)->()) -- the linear backend's
     // raw tagged ABI.
     let imp_content = bytebuf_new()
-    bytebuf_push_vec_header(imp_content, 20)
+    bytebuf_push_vec_header(imp_content, 21)
     emit_name(imp_content, "wasi_snapshot_preview1")
     emit_name(imp_content, "fd_write")
     bytebuf_push(imp_content, 0)
@@ -2467,7 +2473,8 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       ("stdout_write_stream", 1),
       ("fs_read_dir", 3),
       ("stdin_read_char", 5),
-      ("stdin_read_stream", 3)
+      ("stdin_read_stream", 3),
+      ("process_exit", 1)
     ]
     let mut __hi = 0
     while __hi < Array::length(host_imports) {

@@ -4875,6 +4875,44 @@ fi
 rm -rf "$gcsidir"
 echo "[compiler-gate] wasm-gc stdin + Int::parse ok (linear + gc, real input via VIBE_STDIN_BYTES)"
 
+# 40h-9. #1262: `vibe_process_exit_raw` on the gc lane -- the gc self-build's
+#        stopping point. Every builtin LOWERING was already in place; the host
+#        import itself was missing, so codegen reached an unresolved name.
+#
+#        Checked as a PROCESS EXIT STATUS, not a returned value. A lowering
+#        that evaluated its argument and fell through would run the program to
+#        completion and exit 0, and no value assertion downstream of the call
+#        can see that -- the call is supposed to be the last thing that
+#        happens. 7 is picked because nothing else produces it: a trap exits
+#        134, an uncaught throw exits 1, a clean fallthrough exits 0.
+echo "[compiler-gate] 40h-9/40 wasm-gc process exit (#1262)"
+gcpedir="_build/_gate_gc_process_exit"
+rm -rf "$gcpedir"; mkdir -p "$gcpedir"
+for gcpe_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcpe_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_process_exit.vibe" "$gcpedir/$gcpe_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$gcpedir/$gcpe_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_process_exit.vibe did not compile on the $gcpe_be backend (#1262)" >&2
+    cat "$gcpedir/$gcpe_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  # `if` guard, not a bare call: this script runs under `set -euo pipefail`,
+  # and the SUCCESS case here is a NON-ZERO status (7). A bare call would kill
+  # the gate exactly when the fixture behaves correctly -- and, worse, a
+  # regression that made the exit a no-op would return 0 and sail past. The
+  # detector was inverted: it passed only when broken. The condition part of
+  # `if` is exempt from errexit, so the status reaches the assertion.
+  gcpe_rc=0
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcpedir/$gcpe_be.wasm" >/dev/null 2>&1 || gcpe_rc=$?
+  if [ "$gcpe_rc" -ne 7 ]; then
+    echo "[compiler-gate] FAIL: gc_process_exit.vibe exited $gcpe_rc on the $gcpe_be backend (want 7; 0 = the exit lowering is a no-op and the program fell through) (#1262)" >&2
+    exit 1
+  fi
+done
+rm -rf "$gcpedir"
+echo "[compiler-gate] wasm-gc process exit ok (linear + gc, exit status 7)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
