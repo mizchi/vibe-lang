@@ -1242,6 +1242,53 @@ fn anon_record_prefix() -> String {
   "__anonrec:"
 }
 
+/// #1878: compound sentinel for a TUPLE whose elements include anonymous
+/// records — `__anontup:` + ';'-joined element entries, each either a full
+/// `__anonrec:` sentinel or "" (untracked element). Record sentinels join
+/// fields with ',', so ';' is unambiguous. One level only: a tuple nested
+/// inside a tuple stays untracked, same scope as the parser's positional
+/// sub-tuple destructure support.
+fn anon_tuple_prefix() -> String {
+  "__anontup:"
+}
+
+/// The `__anontup:` sentinel for a tuple literal's elements, or None when no
+/// element is an anonymous record (nothing to track).
+fn tuple_sentinel_from_exprs(items: Array[Expr]) -> Option[String] {
+  let parts = empty_str_array()
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(items) {
+    match Array::get(items, i) {
+      ERecord(rn, fields, _) => if String::length(rn) == 0 {
+        let names = empty_str_array()
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, _) = Array::get(fields, fi)
+          Array::push(names, fname)
+          fi = fi + 1
+        }
+        Array::push(parts, anon_record_sentinel(names))
+        any = true
+      } else {
+        Array::push(parts, "")
+      },
+      _ => Array::push(parts, "")
+    }
+    i = i + 1
+  }
+  if any {
+    Some(String::concat(anon_tuple_prefix(), String::join(parts, ";")))
+  } else {
+    None
+  }
+}
+
+/// Split a `__anontup:` sentinel back into its per-element entries.
+fn anon_tuple_elems(sentinel: String) -> Array[String] {
+  String::split(sentinel[String::length(anon_tuple_prefix()): String::length(sentinel)], ";")
+}
+
 /// Encode an ordered field-name list as a `var_types` sentinel value.
 fn anon_record_sentinel(names: Array[String]) -> String {
   let mut s = anon_record_prefix()
@@ -1319,6 +1366,12 @@ fn anon_record_inferred(val: Expr, struct_sets: Array[(String, Array[String])]) 
       }
       Some(anon_record_sentinel(names))
     },
+    // #1878: a tuple literal carrying anonymous records gets the compound
+    // `__anontup:` sentinel, so a later tuple destructure of the binding
+    // (`let (r, n) = t` — an EMatch with a PTuple pattern) can hand each
+    // element's record sentinel to its binder. Sentinel entries are inert
+    // for every other var_types consumer (no struct name ever matches).
+    ETuple(items) => tuple_sentinel_from_exprs(items),
     _ => None
   }
 }
@@ -2657,6 +2710,54 @@ fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, st
 /// for, not more sentinels. Everything not matched here behaves exactly as
 /// before.
 fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  // #1878: a PTuple arm over a tuple that carries anonymous records — either
+  // a NAME whose var_types entry is the compound `__anontup:` sentinel, or a
+  // literal tuple scrutinee — hands each element's `__anonrec:` sentinel to
+  // its positional binder, so `let (r, n) = t` followed by `r.a` lowers to
+  // the positional `__rec_field` read instead of dying in codegen's
+  // struct-table EDot path ("unknown struct field", no location).
+  match p {
+    PTuple(tup_pats) => {
+      let tup_sent = match scrut {
+        EIdent(tsn, _) => match lookup_var_type(var_types, tsn) {
+          Some(ts) => ts,
+          None => ""
+        },
+        ETuple(titems) => match tuple_sentinel_from_exprs(titems) {
+          Some(ts) => ts,
+          None => ""
+        },
+        _ => ""
+      }
+      if String::starts_with(tup_sent, anon_tuple_prefix()) {
+        let elems = anon_tuple_elems(tup_sent)
+        let mut tacc = var_types
+        let mut tpi = 0
+        while tpi < Array::length(tup_pats) {
+          if tpi < Array::length(elems) {
+            match Array::get(tup_pats, tpi) {
+              PBind(tv) => {
+                let esent = Array::get(elems, tpi)
+                if String::starts_with(esent, anon_record_prefix()) {
+                  tacc = extend_var_types(tacc, tv, Some(esent))
+                } else {
+                  ()
+                }
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          tpi = tpi + 1
+        }
+        return tacc
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
   match scrut {
     EIdent(sname, _) => match p {
       PCtor(cn, sub) => {
@@ -3778,7 +3879,12 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, railway_rw(b, struct_sets, var_types, fn_returns)))
+        // #1878: tuple-destructure arms hand record sentinels to their
+        // binders (see arm_binder_var_types) — this walk runs BEFORE the
+        // checker, so the arm body's `binding.field` reads rewrite to
+        // positional `__rec_field` here too.
+        let arm_vars = arm_binder_var_types(scrut, p, var_types)
+        Array::push(out, (p, railway_rw(b, struct_sets, arm_vars, fn_returns)))
         i = i + 1
       }
       EMatch(railway_rw(scrut, struct_sets, var_types, fn_returns), out)
@@ -4753,9 +4859,22 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // disagree only by one being MORE conservative (an unresolved name is
         // ""), which costs a kind here and a row precision there, never
         // soundness.
-        let kind = match infer_arg_type_name(perform_throw_payload(args), struct_sets, var_types, fn_returns) {
+        // #1878 (Codex review on #1892): `infer_arg_type_name` can answer
+        // with an internal shape sentinel (`__anonrec:` for a record
+        // binding, `__anontup:` for a tuple carrying one) — inert for every
+        // dispatch consumer, but THIS site publishes the string as the
+        // user-facing exception kind, where a sentinel would render as
+        // `<__anontup:__anonrec:a;>`. Publish "" instead, the same value an
+        // unresolved payload gets (the erased sink then falls back to the
+        // safely rendered payload).
+        let kind0 = match infer_arg_type_name(perform_throw_payload(args), struct_sets, var_types, fn_returns) {
           Some(k) => k,
           None => ""
+        }
+        let kind = if String::starts_with(kind0, anon_record_prefix()) || String::starts_with(kind0, anon_tuple_prefix()) {
+          ""
+        } else {
+          kind0
         }
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)

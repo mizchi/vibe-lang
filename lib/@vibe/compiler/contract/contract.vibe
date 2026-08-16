@@ -732,6 +732,42 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     }
     rxi = rxi + 1
   }
+  // #1879: a TRANSPARENT contract type (struct / enum / type alias) must not
+  // be re-defined by an implementation file. The contract definition is the
+  // single definition site (#1840's materialized types module); a sibling
+  // re-definition compiles into a SECOND type identity whose enum ctor tags
+  // disagree with the contract's, so matches fall through to a runtime trap
+  // -- or silently take the wrong arm when tags happen to coincide -- with
+  // no diagnostic anywhere. Reject it here, where both surfaces are in hand.
+  // (An OPAQUE contract type is the inverse contract -- declared here,
+  // defined by a sibling -- and stays untouched: contract_type_defs carries
+  // only the transparent definitions.)
+  let impl_type_defs = collect_impl_type_defs(impl_stmts)
+  let tf_defs = contract_type_family_defs(contract_type_defs)
+  let mut tfi = 0
+  while tfi < Array::length(tf_defs) {
+    let tf_name = match Array::get(tf_defs, tfi) {
+      SStruct(_, sname, _, _, _, _) => sname,
+      SEnum(_, ename, _, _, _) => ename,
+      STypeAlias(_, aname, _, _) => aname,
+      _ => ""
+    }
+    if tf_name == "" {
+      ()
+    } else {
+      let mut iti = 0
+      while iti < Array::length(impl_type_defs) {
+        let (itname, _, _) = Array::get(impl_type_defs, iti)
+        if itname == tf_name {
+          Array::push(errors, "transparent contract type '\{tf_name}' is re-defined by an implementation file -- the contract definition is the single definition site; remove the local definition (a re-definition is a second runtime type identity, #1879)")
+          iti = Array::length(impl_type_defs)
+        } else {
+          iti = iti + 1
+        }
+      }
+    }
+    tfi = tfi + 1
+  }
   errors
 }
 
