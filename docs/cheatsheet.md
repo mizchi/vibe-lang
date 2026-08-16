@@ -768,24 +768,28 @@ let arr2 = {
   ArrayBuilder::freeze(b)     // -> Array[Int]
 }
 
-// 汎用コンテナは @vibe/core — MutMap/MutSet (open addressing) と
-// MutSortedMap/MutSortedSet (AVL、keys/to_array 昇順、range(lo, hi) 両端 inclusive)。
-// 比較/ハッシュは関数を渡す explicit-dict 方式 + Int/String key 特化
-// (MutMap::new_int() / MutSortedSet::new_string() 等)。
-// 永続 (immutable) コレクションは @vibex/immut — 更新は常に新版を返し旧版不変
-// (構造共有、0.4.0 並行モデルの sendable データ):
+// General-purpose containers live in @vibe/core — MutMap/MutSet (open
+// addressing) and MutSortedMap/MutSortedSet (AVL; keys/to_array ascending,
+// range(lo, hi) inclusive on both ends). Comparison/hashing is
+// explicit-dict style (functions passed as arguments) plus Int/String key
+// specializations (MutMap::new_int() / MutSortedSet::new_string() etc).
+// Persistent (immutable) collections are @vibex/immut — updates always
+// return a new version, the old one stays intact (structural sharing;
+// sendable data for the 0.4.0 concurrency model):
 //   MapHamt[V] (HAMT, String key): empty/set/get/delete/size/keys/has_key
-//     旧名 ImmutMap は #deprecated エイリアス (ADR-0100 (3), #1262)
+//     the old name ImmutMap is a #deprecated alias (ADR-0100 (3), #1262)
 //   ImmutArray[T] (persistent vector): empty/push/get/set/length/from_array/to_array
 
-// **persistent map が要るなら `MapHamt`。builtin `Map` は小さい固定表向け** ——
-// `Map` は flat assoc list なので構築も参照も O(n²) に落ちる。n=1000 の実測で
-// `MapHamt` が 27.7× 速く 22× 確保が少ない (ADR-0100 (3) /
-// bench/bench_map_vs_immutmap.vibe)。同じ性質はコンパイラ内部でも踏んでいる (#799)。
+// **Need a persistent map? Use `MapHamt`. The builtin `Map` is for small
+// fixed tables** — `Map` is a flat assoc list, so both construction and
+// lookup degrade to O(n²). Measured at n=1000, `MapHamt` is 27.7× faster
+// with 22× fewer allocations (ADR-0100 (3) /
+// bench/bench_map_vs_immutmap.vibe). The compiler itself has hit the same
+// trap internally (#799).
 
-// 両端キュー / 優先度付きキューは @vibe/core (#1842 で @vibex から昇格):
-//   Deque::new/push_back/pop_front (ring buffer、両端 O(1))
-//   PriorityQueue::new_int_min / new(cmp) (binary heap、cmp < 0 が先頭)
+// Deques / priority queues are @vibe/core (#1842, promoted from @vibex):
+//   Deque::new/push_back/pop_front (ring buffer, O(1) at both ends)
+//   PriorityQueue::new_int_min / new(cmp) (binary heap; cmp < 0 dequeues first)
 
 // Bytes — growable byte buffer
 let bytes_len = {

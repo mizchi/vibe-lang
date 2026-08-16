@@ -4,6 +4,23 @@
 compiler 運用を固定する。目的は、HEAD の compiler source が常に「直前の安定
 compiler から再構築できる」状態を保ちつつ、新しい言語機能へ段階的に移行すること。
 
+## Build gotcha (read before iterating on the compiler)
+
+`scripts/generations.sh build` and `generate_bundle.sh` reuse the existing
+generated flat module source
+(`lib/@vibe/compiler/_cli_adapter_module_source.vibe`, non-tracked) by
+default (`build_adapter_module_source`, gated on
+`VIBE_REGEN_MODULE_SOURCE`). Editing compiler source files therefore has
+**no effect** on a build until the flat module source is regenerated.
+Always build with:
+
+```bash
+VIBE_REGEN_MODULE_SOURCE=1 bash scripts/generations.sh build
+```
+
+`scripts/compiler_gate.sh` regenerates and checks sync, so it catches a
+stale module source — but a plain `build` will silently use the old one.
+
 ## 背景
 
 compiler は、自分自身をビルドできるようになった後も、更新の起点に
