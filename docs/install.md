@@ -12,9 +12,10 @@ rationale behind this split.
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 ```
 
-The installer shallow-clones the repo when it is run outside a checkout
-(override with `VIBE_INSTALL_REPO` / `VIBE_INSTALL_REF`) and then safely
-reinvokes the matching `install/install.sh` from that checkout. Requirements:
+Outside a checkout, the installer initializes a temporary repository and
+shallow-fetches the exact branch, tag, or reachable commit selected by
+`VIBE_INSTALL_REF` from `VIBE_INSTALL_REPO`, then safely reinvokes the matching
+`install/install.sh` from the detached checkout. Requirements:
 `git`, `bash`, `cargo` (the wasmtime runner builds from source); `node` is
 optional (used to self-build the newest compiler — without it the committed
 seed compiler is installed, which is always functional).
