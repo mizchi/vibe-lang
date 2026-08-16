@@ -58,6 +58,8 @@ import @vibe/compiler/codegen/common_base {
   gc_slot_map_get,
   inline_direct_performs,
   lookup_ctor,
+  region_max_depth,
+  region_saves_base_of,
   resolve_func,
   resolve_local,
   rewrite_self_tail_calls
@@ -159,6 +161,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import @vibe/compiler/codegen/builtin_bodies {
+  gen_arr_push_body,
   gen_array_value_copy_body,
   gen_bytes_append_body,
   gen_bytes_blit_body,
@@ -172,6 +175,8 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_slice_body,
   gen_bytes_to_array_body,
   gen_eq_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
   gen_simd_scan_alnum_body,
   gen_simd_scan_string_special_body,
   gen_simd_skip_ws_body,
@@ -202,10 +207,6 @@ import ./backend_builtins_array_alloc.vibe {
 
 import ./backend_builtins_array_get.vibe {
   gc_gen_arr_get_body
-}
-
-import ./backend_builtins_array_push.vibe {
-  gc_gen_arr_push_body
 }
 
 import ./backend_builtins_array_set.vibe {
@@ -1407,11 +1408,69 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
-  let num_generated = 47
+  // ADR-0090 (#1262) tier 2 on this lane: the region arena.
+  //
+  // Worth doing here even though this is the GC lane, and that is not the
+  // obvious call. `MutList` / `MutBytes` storage on this backend is NOT a
+  // wasm-gc object -- gc_gen_arr_new_body bumps GLOBAL 0, the same
+  // linear-memory heap the linear backend uses, and this lane never frees it
+  // (no RC: see the Map::size comment in backend_call.vibe). That is exactly
+  // the condition that makes the arena pure win on linear's bump lane, so the
+  // collector does not subsume it.
+  //
+  // Layout and control words are the shared ones (region_saves_base_of /
+  // region_max_depth in common_base) so the two lanes cannot drift:
+  // `[bump ptr @+0][depth @+4][saved bump ptrs @+8, 64 levels][data]`.
+  // Simpler than linear's base, which carves out effect / coverage / trace /
+  // rc-bin reserves first; this lane has none of those, so the arena sits
+  // directly at heap_start and the ordinary heap starts above it.
+  //
+  // Unconditional when the module has a region: linear gates on `!enable_rc`
+  // because an RC block would reach a free list that the bulk release
+  // invalidates, and this lane has no RC lane to guard against.
+  let need_region_arena = stmts_use_builtin(stmts, fn_names_list, "__region_run")
+  let region_ctl_base = heap_start
+  let region_saves_base = region_saves_base_of(region_ctl_base)
+  let region_data_base = ((region_saves_base + region_max_depth() * 4 + 7) / 8) * 8
+  // 256 KiB, same as linear. Overflow is not an error: the arena bodies fall
+  // back to the main bump heap, which is this lane's current behavior, so a
+  // region that outgrows the segment gets no reclamation rather than wrong
+  // answers.
+  let region_arena_bytes = 262144
+  let region_limit = region_data_base + region_arena_bytes
+  let region_ptr_addr = if need_region_arena {
+    region_ctl_base
+  } else {
+    -1
+  }
+  // The ordinary bump heap starts ABOVE the segment when there is one.
+  let gc_heap_start = if need_region_arena {
+    region_limit
+  } else {
+    heap_start
+  }
+  // The control words are written by plain i32.store with no grow check (that
+  // is the point -- the save/restore needs no locals at the call site), so the
+  // memory must already cover them. emit_heap_memory_grow_check only guards
+  // the bump allocations above.
+  let mem_min_pages = if need_region_arena {
+    (region_limit + 65535) / 65536 + 1
+  } else {
+    1
+  }
+  // The two arena allocators are appended only when the module has a region
+  // (see the push site near the end of the builtin table). They go LAST so
+  // every `hbo + N` ordinal above keeps its meaning in both shapes.
+  let num_generated = if need_region_arena {
+    49
+  } else {
+    47
+  }
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
   // modules stay import-free (runnable on bare wasmtime); a module touching
-  // any Env::/Fs::/Stdout:: builtin imports ALL of them at indices 1..17,
+  // any Env::/Fs::/Stdin::/Stdout:: builtin imports ALL of them at indices
+  // 1..19,
   // shifting every generated-body index by that count (hbo).
   //
   // `hbo` IS that count. FOUR places encode this list -- use_host, host_defs,
@@ -1419,13 +1478,34 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
-  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir")
+  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream")
   let hbo = if use_host {
-    17
+    19
   } else {
     0
   }
   let func_offset = 1 + hbo + num_generated
+  // ADR-0090 (#1262): generated body ordinals are ONE-BASED -- host imports
+  // occupy indices 1..hbo, so the first pushed body sits at `hbo + 1` and the
+  // last at `hbo + num_generated` (the body match table above ends with
+  // `"simd_scan_string_special_str" => 47`, which was the last body back when
+  // num_generated was 47). The two arena allocators are the last two pushes.
+  //
+  // Getting this off by one does not fail loudly at codegen: it produces a
+  // module that fails wasm VALIDATION with "not enough arguments on the stack
+  // for call", which is the same symptom the hbo comment above describes.
+  // Derived from num_generated rather than written as literals so appending
+  // another body cannot silently point these at someone else's code.
+  let region_arr_new_idx = if need_region_arena {
+    hbo + num_generated - 1
+  } else {
+    -1
+  }
+  let region_bytes_new_idx = if need_region_arena {
+    hbo + num_generated
+  } else {
+    -1
+  }
   // #415 B-1: the central registry DRIVES the gc lane's registration too.
   // (name, params, returns) come from builtin_registry() rows with in_gc =
   // true; only the gc GENERATED-BODY INDEX is lane-local, resolved by the
@@ -1621,7 +1701,13 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       // returns Array[String] while the import returns the entries "\n"-joined
       // as one packed string; compile_call_gc rewrites the surface onto this
       // name (shared with the linear lane via packed_lines_to_array_expr).
-      ("vibe_fs_read_dir_raw", 1, 17, 1)
+      ("vibe_fs_read_dir_raw", 1, 17, 1),
+      // #1262: held back in #1823 because the harness fed neither lane any
+      // stdin, so both returned EOF and agreement proved nothing. The feed is
+      // `VIBE_STDIN_BYTES` (an env var, not piped stdin) -- with it these are
+      // verifiable against linear on real input, so they land here now.
+      ("Stdin::read_char", 0, 18, 1),
+      ("Stdin::read_stream", 1, 19, 1)
     ]
     let mut __hd = 0
     while __hd < Array::length(host_defs) {
@@ -1750,7 +1836,26 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   push_gc_builtin(gc_gen_arr_new_body(), 1, 0, 5)
   push_gc_builtin(gc_gen_arr_len_body(), 0, 0, 3)
   push_gc_builtin(gc_gen_arr_get_body(), 1, 0, 4)
-  push_gc_builtin(gc_gen_arr_push_body(), 6, 0, 6)
+  // ADR-0090 (#1262) tier 2: use the LINEAR lane's shared arr_push body
+  // instead of this lane's duplicate, because that one already decides the
+  // regrow lane by a runtime range check on the ARRAY's block ("is it inside
+  // the arena segment?"), which is the property that matters here.
+  //
+  // This is not cosmetic. With the gc-local body, MutList storage came from
+  // the arena but every doubling regrow buffer still went to the main heap,
+  // and the regrow buffers are the BULK of a region's cost: measured on
+  // fixtures/region_arena_bounded.vibe (200 regions x 500 elements),
+  // 1,635,208 B reclaimed nothing at all versus linear's 16,204 B. The
+  // arena was correct and inert.
+  //
+  // enable_rc=false: this lane has no RC (same reason every other shared
+  // generator here is called with false). The arena form needs one extra
+  // i32 local for the arena bump pointer, exactly as on linear.
+  push_gc_builtin(gen_arr_push_body(false, -1, false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
   push_gc_builtin(gc_gen_arr_set_body(), 1, 0, 7)
   push_gc_builtin(gc_gen_double_to_int_body(), 0, 0, 3)
   push_gc_builtin(gc_gen_int_to_double_body(), 0, 0, 3)
@@ -1764,8 +1869,27 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   push_gc_builtin(gen_bytes_new_body(), 1, 0, 5)
   push_gc_builtin(gen_bytes_get_body(false), 1, 0, 4)
   push_gc_builtin(gen_bytes_set_body(false), 1, 0, 7)
-  push_gc_builtin(gen_bytes_push_body(false, -1, 0, 0), 6, 0, 6)
-  push_gc_builtin(gen_bytes_append_body(-1, 0, 0), 8, 0, 6)
+  // ADR-0090 (#1262) tier 2: the Bytes half of the regrow lane. Same shape
+  // and same reason as arr_push above -- the replacement buffer must follow
+  // the BUFFER'S OWN block, so MutBytes and ordinary Bytes share one body
+  // and the decision is a runtime range check, not a call-site property.
+  //
+  // Passing -1 here (which compiles the arena branch out) is exactly the bug
+  // the Array side had: MutBytes headers came from the segment while every
+  // replacement buffer past the initial 64 bytes came from the main bump
+  // heap and survived the watermark restore. Measured on
+  // fixtures/region_bytes_arena_bounded.vibe: 182,408 B with -1 against
+  // linear's 8,008 B. The arena form needs one extra i32 local, as on linear.
+  push_gc_builtin(gen_bytes_push_body(false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
+  push_gc_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    9
+  } else {
+    8
+  }, 0, 6)
   push_gc_builtin(gen_bytes_concat_body(hbo + 18, hbo + 22), 0, 1, 4)
   push_gc_builtin(gen_bytes_slice_body(false, hbo + 18, hbo + 19, hbo + 21), 2, 1, 8)
   push_gc_builtin(gen_bytes_from_array_body(false, hbo + 7, hbo + 8, hbo + 18, hbo + 21), 2, 1, 3)
@@ -1806,6 +1930,18 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // ordinals. Array::length is body 7 and Array::slice is body 38.
   push_gc_builtin(gen_array_value_copy_body(hbo + 7, hbo + 38), 0, 0, 3)
   push_gc_builtin(gen_simd_scan_string_special_body(false), 1, 3, 8)
+  // ADR-0090 (#1262) tier 2: the arena allocators, appended LAST and only
+  // when the module has a region -- `num_generated` above counts them the
+  // same way, so ordinals 0..46 (every `hbo + N` reference above) are
+  // untouched either way. The generators are the linear lane's, unchanged:
+  // they take the layout as parameters, so the two lanes cannot drift on the
+  // segment's shape.
+  if need_region_arena {
+    push_gc_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+    push_gc_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+  } else {
+    ()
+  }
   // #1109 gc parity (linear twin: linked_compile.vibe's table_slots_used):
   // module-wide recorder of funcref-table slots codegen actually
   // materializes as closure values. Created once here -- every CompileCtxGc
@@ -1952,7 +2088,10 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             gc_agg_local_slots: gc_agg_slots_f,
             gc_agg_ret_names: gc_agg_ret_names_l,
             gc_agg_ret_infos: gc_agg_ret_infos_l,
-            table_slots_used: table_slots_used
+            table_slots_used: table_slots_used,
+            gc_region_ptr_addr: region_ptr_addr,
+            gc_region_arr_new_func_idx: region_arr_new_idx,
+            gc_region_bytes_new_func_idx: region_bytes_new_idx
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -2053,7 +2192,10 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       gc_agg_local_slots: array_empty(),
       gc_agg_ret_names: gc_agg_ret_names_l,
       gc_agg_ret_infos: gc_agg_ret_infos_l,
-      table_slots_used: table_slots_used
+      table_slots_used: table_slots_used,
+      gc_region_ptr_addr: region_ptr_addr,
+      gc_region_arr_new_func_idx: region_arr_new_idx,
+      gc_region_bytes_new_func_idx: region_bytes_new_idx
     }
     let init_locals = array_empty()
     let mut ginit = 0
@@ -2299,7 +2441,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     // 4=(i64,i64)->i64, 5=()->i64, 6=(i64,i64)->()) -- the linear backend's
     // raw tagged ABI.
     let imp_content = bytebuf_new()
-    bytebuf_push_vec_header(imp_content, 18)
+    bytebuf_push_vec_header(imp_content, 20)
     emit_name(imp_content, "wasi_snapshot_preview1")
     emit_name(imp_content, "fd_write")
     bytebuf_push(imp_content, 0)
@@ -2323,7 +2465,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       ("fs_is_dir", 3),
       ("fs_is_file", 3),
       ("stdout_write_stream", 1),
-      ("fs_read_dir", 3)
+      ("fs_read_dir", 3),
+      ("stdin_read_char", 5),
+      ("stdin_read_stream", 3)
     ]
     let mut __hi = 0
     while __hi < Array::length(host_imports) {
@@ -2374,7 +2518,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, 1)
+  emit_memory_section(out, mem_min_pages)
   // #538: exception tag (id 13 section sits between memory and global).
   // #721-style gating: throw-free modules stay tag-free and run on engines
   // without the exceptions proposal.
@@ -2388,14 +2532,14 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     ()
   }
   if Array::length(gc_global_names_l) == 0 {
-    emit_global_section_i32_mut(out, heap_start)
+    emit_global_section_i32_mut(out, gc_heap_start)
   } else {
     // global 0: i32 mut heap pointer; globals 1..N: i64 mut computed values.
     let g_content = bytebuf_new()
     bytebuf_push_vec_header(g_content, 1 + Array::length(gc_global_names_l))
     bytebuf_push(g_content, 127)
     bytebuf_push(g_content, 1)
-    emit_i32_const(g_content, heap_start)
+    emit_i32_const(g_content, gc_heap_start)
     emit_end(g_content)
     let mut ggi = 0
     while ggi < Array::length(gc_global_names_l) {

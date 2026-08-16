@@ -68,7 +68,13 @@ import ./lexer.vibe {
 }
 
 import ./parser_binder_context.vibe {
-  ParserBinderContext
+  ParserBinderContext,
+  binder_capture_discard_from,
+  binder_capture_eligibility_mark,
+  binder_capture_mark,
+  binder_capture_mark_ineligible,
+  binder_capture_restore_eligibility,
+  binder_capture_source
 }
 
 //# Functions
@@ -219,6 +225,7 @@ fn qualify_import_items(mod_name: String, items: Array[(String, Option[String])]
 }
 
 fn parse_qualified_import_tail(tokens: Array[Token], pos: Int, path: String, mod_name: String, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  binder_capture_mark_ineligible(context)
   match peek(tokens, pos) {
     TIdent(only_kw) => if only_kw == "only" {
       let br = expect_tk(tokens, pos + 1, "{")
@@ -255,6 +262,7 @@ fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String, context: 
     },
     TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
       let alias_str = String::substring(alias_name, 1, String::length(alias_name))
+      binder_capture_source(context, alias_str, bp, bp)
       (SAliasDecl(alias_str, path), bp + 1)
     } else {
       let br = expect_tk(tokens, bp, "{")
@@ -329,8 +337,10 @@ fn parse_toplevel_struct_fields(tokens: Array[Token], pos: Int, context: Option[
 }
 
 fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  binder_capture_mark_ineligible(context)
   match peek(tokens, pos) {
     TIdent(name) => {
+      binder_capture_source(context, name, pos, pos)
       // Optional type-parameter header `struct Foo[T] { ... }`. #829: the
       // param NAMES are kept on the SStruct (they used to be discarded) so
       // the checker can instantiate generic struct literals; representation
@@ -395,7 +405,10 @@ fn is_resource_decl_head(tokens: Array[Token], pos: Int) -> Bool {
 /// as belonging to some provider (`S3::Bucket`, `Process::Root`).
 fn parse_resource_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   let name = match peek(tokens, pos) {
-    TIdent(n) => n,
+    TIdent(n) => {
+      binder_capture_source(context, n, pos, pos)
+      n
+    },
     _ => throw("expected a resource name after 'resource'")
   }
   match peek(tokens, pos + 1) {
@@ -450,7 +463,9 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context
       let (path, bp) = collect_import_path(tokens, pos, "")
       reject_executable_import_path(path)
       let br = expect_tk(tokens, bp, "{")
-      let (items, end) = parse_import_items(tokens, br, context);
+      // Re-export items name the dependency's public surface; unlike import
+      // items, neither their source names nor aliases bind locals here.
+      let (items, end) = parse_import_items(tokens, br, None);
       (SReExport(path, items), end)
     },
     // #769: `export ../foo/index.vibe { .. }` (a re-export that climbs OUT of
@@ -462,7 +477,9 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context
       let (path, bp) = collect_import_path(tokens, pos, "")
       reject_executable_import_path(path)
       let br = expect_tk(tokens, bp, "{")
-      let (items, end) = parse_import_items(tokens, br, context);
+      // Re-export items name the dependency's public surface; unlike import
+      // items, neither their source names nor aliases bind locals here.
+      let (items, end) = parse_import_items(tokens, br, None);
       (SReExport(path, items), end)
     },
     _ => {
@@ -475,7 +492,11 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context
 fn parse_percent_symbol_name(tokens: Array[Token], pos: Int, label: String, context: Option[ParserBinderContext]) -> (String, Int) with Exception {
   let pp = expect_tk(tokens, pos, "%")
   match peek(tokens, pp) {
-    TIdent(name) => ("%\{name}", pp + 1),
+    TIdent(name) => {
+      let full_name = "%\{name}"
+      binder_capture_source(context, full_name, pos, pp)
+      (full_name, pp + 1)
+    },
     _ => throw("expected \{label} after '%'")
   }
 }
@@ -984,6 +1005,8 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
         } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
           pos = dnext
         } else {
+          let capture_mark = binder_capture_mark(context)
+          let eligibility_mark = binder_capture_eligibility_mark(context)
           match peek(tokens, dnext) {
             TImpl => {
               let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
@@ -995,6 +1018,8 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
               pos = dn
             }
           }
+          binder_capture_discard_from(context, capture_mark)
+          binder_capture_restore_eligibility(context, eligibility_mark)
         }
       },
       _ => {
@@ -1002,6 +1027,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
         let (stmts, next) = handle {
           match peek(tokens, pos) {
             TImpl => {
+              binder_capture_mark_ineligible(context)
               let (simpl, hp) = parse_impl_stmt_dispatch_with_binder_context(tokens, pos + 1, context)
               parse_impl_methods(tokens, hp, simpl, context)
             },
@@ -1092,13 +1118,10 @@ export fn parse_program_located_with_untrusted_binder_context(tokens: Array[Toke
   parse_program_located_with_context_impl(tokens, starts, source, context)
 }
 
-/// Opt-in high-level parser-context infrastructure. It deliberately mints its
-/// own invocation-local plumbing context instead of trusting caller input. This
-/// phase publishes no authority rows and does not change the parsed program.
+/// Compatibility API retained authority-free: caller-provided token arrays are
+/// never a source of binder authority.
 export fn parse_program_located_with_binder_context(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
-  parse_program_located_with_context_impl(tokens, starts, source, Some(ParserBinderContext::{
-    nonce: 0
-  })).0
+  parse_program_located_with_context_impl(tokens, starts, source, None).0
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {

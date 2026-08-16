@@ -1,0 +1,51 @@
+// #1262: `Stdin::read_char` / `Stdin::read_stream` / `Int::parse` on the
+// wasm-gc lane.
+//
+// The stdin pair was deliberately held back in #1823: the harness fed neither
+// lane any input, so both returned EOF and agreement proved nothing. Shipping
+// wiring that is only EOF-verified is how a silently-wrong builtin gets in.
+// The feed turns out to be `VIBE_STDIN_BYTES` -- an env var, not piped stdin
+// -- so they can now be checked against linear on REAL input, which is why
+// they land.
+//
+// That history is why the checks below are not just "it returns something":
+//
+//   - a real byte AND the EOF sentinel, because a stub that always returns
+//     -1 passes an EOF-only test
+//   - a SECOND read, because a cursor that never advances passes a single one
+//   - a short read (asking for more than is available), because clamping to
+//     what is there is the part a length-only check misses
+//
+// `Int::parse` is here because it is the other non-host builtin the gc lane
+// was missing, and its failure mode is the same shape: `None` for garbage has
+// to be distinguishable from `Some(0)`.
+
+fn read_two_chars() -> Int with Stdin {
+  let a = Stdin::read_char()
+  let b = Stdin::read_char()
+  a * 1000 + b
+}
+
+fn parse_or(s: String, fallback: Int) -> Int {
+  match Int::parse(s) {
+    Some(v) => v,
+    None => fallback
+  }
+}
+
+fn int_parse_checks() -> Int {
+  // 123, -45, and two rejections that must NOT come back as 0.
+  parse_or("123", -1) * 1000 + (0 - parse_or("-45", -1)) * 10 + (0 - parse_or("nope", -1)) + (0 - parse_or("", -1))
+}
+
+export let main = () -> Int with Stdin {
+  read_two_chars() * 1000000 + int_parse_checks()
+}
+
+test "Int::parse agrees on both backends" {
+  inspect(parse_or("123", -1), "123")
+  inspect(parse_or("-45", -1), "-45")
+  inspect(parse_or("nope", -1), "-1")
+  inspect(parse_or("", -1), "-1")
+  inspect(int_parse_checks(), "123452")
+}

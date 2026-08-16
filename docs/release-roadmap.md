@@ -455,7 +455,7 @@
 ### 現状（想定より進んでいる）
 
 - 相対パス import/export（`import ./lib.vibe { f }`、`export use`）は実装済み
-  （`docs/module-system.md`, `lib/@vibe/compiler/module_*.vibe`）。
+  （当時の `docs/module-system.md` — 2026-08 に削除、`lib/@vibe/compiler/module_*.vibe`）。
 - **lock workflow 実装済み**（`docs/spec/decisions.md`）:
   `vibe fetch` / `vibe update-lock` が `index.lock`
   （`path`/`version`/`symbol`/`module`/`annotation` マップ）を維持。
@@ -527,7 +527,7 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       lock へ再帰）。git dep の tree digest は vendor 物の `deps/`・lock を除外し、
       ネストした dep は各自の lock で別途検証。署名は将来課題。
       検証済み（`scripts/test_vibe_cli_install.sh` verify clean/tamper/transitive）。
-- [x] **2-5 docs** — `docs/module-system.md` に「配布とパッケージ管理（git/URL
+- [x] **2-5 docs** — 当時の `docs/module-system.md` (2026-08 に削除) に「配布とパッケージ管理（git/URL
       分散）」節を追加（`vibe.deps`/`fetch`/`--frozen`/`add`/`verify`/lock 形式/
       import 規約/publish=git push+tag）。
 

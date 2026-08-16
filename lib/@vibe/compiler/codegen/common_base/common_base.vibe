@@ -951,7 +951,15 @@ export struct CompileCtxGc {
   // closure-header scheme as linear (backend_lambda_emit.vibe), so the same
   // "record used slots, rebuild the element section from exactly that set"
   // approach applies unchanged.
-  table_slots_used: Array[Int]
+  table_slots_used: Array[Int];
+  // ADR-0090 (#1262) tier 2: gc twins of CompileCtx's region arena fields.
+  // Same meaning and same `-1 == no arena in this module` convention, so the
+  // two lanes' `__region_run` / `MutList::empty` / `MutBytes::empty` arms read
+  // identically. See the layout note in gc/backend_body.vibe for why this
+  // lane wants an arena at all despite being the GC lane.
+  gc_region_ptr_addr: Int;
+  gc_region_arr_new_func_idx: Int;
+  gc_region_bytes_new_func_idx: Int
 }
 
 //# Functions
@@ -2094,6 +2102,79 @@ export fn region_saves_base_of(region_ptr_addr: Int) -> Int {
 /// (correct, just unreclaimed) instead of scribbling past the table.
 export fn region_max_depth() -> Int {
   64
+}
+
+/// ADR-0090 (#1262) arena bracket, SHARED by both backends. These lived as
+/// private fns in expr/compile_call.vibe while only the linear lane had an
+/// arena; the gc lane now brackets its own `__region_run` with the same two,
+/// so a change to the save/restore protocol cannot reach one lane only.
+/// Push the arena's saved-bump-pointer stack (ADR-0090, #1262). Emitted
+/// around the region body call, using only linear-memory control words so it
+/// needs no wasm local at the call site -- a synthesized local here would have
+/// to be declared in the enclosing function's local vector, which this
+/// rewrite has no way to reach.
+///
+/// Deeper than `region_max_depth()` the save is skipped, and the matching
+/// restore is skipped by the same test, so an over-deep region keeps
+/// allocating from the arena without reclaiming it. That is the same
+/// degradation as arena exhaustion: less reclamation, never a wrong answer.
+export fn emit_region_enter(buf: Bytes, region_ptr_addr: Int) -> Unit {
+  let depth_addr = region_depth_addr_of(region_ptr_addr)
+  let saves_base = region_saves_base_of(region_ptr_addr)
+  emit_i32_const(buf, region_max_depth())
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_gt_u(buf)
+  emit_if_void(buf)
+  emit_i32_const(buf, saves_base)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_const(buf, region_ptr_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+/// The bulk release: reset the arena bump pointer to the watermark this
+/// region entered at. Emitted with the body's RESULT already on the stack --
+/// every instruction below consumes only its own operands, so the result
+/// rides through untouched. Sound because the sanctioned exits copied out of
+/// the segment before we get here (see `mutlist_exit_copy`), and because
+/// ordinary heap values built in the body live on the MAIN bump heap, which
+/// this does not touch.
+export fn emit_region_exit(buf: Bytes, region_ptr_addr: Int) -> Unit {
+  let depth_addr = region_depth_addr_of(region_ptr_addr)
+  let saves_base = region_saves_base_of(region_ptr_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_sub(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_i32_const(buf, region_max_depth())
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_gt_u(buf)
+  emit_if_void(buf)
+  emit_i32_const(buf, region_ptr_addr)
+  emit_i32_const(buf, saves_base)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
 }
 
 export fn rc_shadow_base() -> Int {

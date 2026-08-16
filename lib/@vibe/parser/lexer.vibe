@@ -730,7 +730,16 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
   let mut out_tok = TEof
   let mut out_next = -1
   let mut done = false
+  let mut ordinary_run = 0
   while !done {
+    // Ordinary string bytes dominate long literals. Skip complete 16-byte
+    // chunks in the fused runtime scanner, then keep quote, escape,
+    // interpolation, and control-byte semantics in this scalar state machine.
+    // Confirm one full ordinary chunk scalarly first. This keeps short
+    // literals on the old path even when a large source tail follows them.
+    if ordinary_run >= 16 && len - current_idx >= 16 {
+      current_idx = simd_scan_string_special_str(s, current_idx, len)
+    }
     if current_idx >= len {
       throw("unterminated string")
     }
@@ -748,6 +757,7 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
       }
       done = true
     } else if c == '\\' {
+      ordinary_run = 0
       let chunk = s[current_start: current_idx]
       let next = current_idx + 1
       if next >= len {
@@ -814,6 +824,11 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
       }
     } else {
       current_idx = current_idx + 1
+      if c < 32 {
+        ordinary_run = 0
+      } else {
+        ordinary_run = ordinary_run + 1
+      }
     }
   }
   (out_tok, out_next)
