@@ -431,9 +431,11 @@ Phase 3 でも再利用できる。
 - M2 の再現ケースが Phase 3 完了後に正しい値・正しい副作用回数を返す
 - tail-resumptive のみの handler は Phase 2 完了時点で値・副作用回数が
   正しくなる (replay 由来の重複実行が起きない)
-- multi-shot resume (`fixtures/effect_multishot.vibe` — 現状「未対応」を
-  記録しているだけの fixture) が Phase 3 完了後に複数回 resume できる
-  ことを検証する形へ更新される
+- multi-shot resume (`fixtures/effect_multishot.vibe` — removed; it only
+  recorded the limitation. The stale `handle { ... } { Amb::Choose => ... }`
+  shape is snapshotted in
+  `lib/@vibe/compiler/tests/runtime_fixture_debt_diagnostics_test.vibe`)
+  should be rewritten to exercise multiple resumes after Phase 3
 - `~16K` perform を超えるケース (tail-resumptive の場合) が Phase 2
   以降オーバーフローしない
 - 既存 75 本の `fixtures/effect_*.vibe` と gate 26/27 が全 Phase を通じて
