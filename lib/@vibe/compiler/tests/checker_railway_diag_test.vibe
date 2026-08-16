@@ -8,6 +8,10 @@ import @vibe/compiler/checker {
   check_program
 }
 
+import @vibe/compiler/core {
+  Expr, Stmt, expr_children
+}
+
 import @vibe/compiler/syntax {
   lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
 }
@@ -217,6 +221,54 @@ test "unlocated user-written Some/None match is not reported as let*" {
   assert(msg != "")
   assert(!(String::contains(msg, "`let*`")))
   assert(!(String::contains(msg, "__try_")))
+}
+
+fn expr_contains_ident(expr: Expr, expected: String) -> Bool {
+  let direct = match expr {
+    EIdent(name, _) => name == expected,
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let mut found = false
+    for child in expr_children(expr) {
+      if expr_contains_ident(child, expected) {
+        found = true
+      }
+    }
+    found
+  }
+}
+
+fn program_contains_ident(stmts: Array[Stmt], expected: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      SLetMut(_, _, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      STest(_, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      SExpr(value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+test "check_program erases the let-star origin marker before codegen" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  let* v = find(x)\n  Some(v + 1)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
+  let stmts = parse_program(lex(src))
+  let _ = check_program(stmts)
+  assert(!(program_contains_ident(stmts, "__try_none")))
+  assert(program_contains_ident(stmts, "None"))
 }
 
 test "let* whose success path is not an Option asks to wrap in Some" {

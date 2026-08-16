@@ -13,6 +13,8 @@ import @vibe/compiler/normalize {
   desugar_inspect_calls_reporting_change,
   desugar_railway_binds,
   desugar_railway_binds_reporting_change,
+  erase_railway_origin_markers,
+  erase_railway_origin_markers_reporting_change,
   inject_trait_method_generics,
   inject_trait_method_generics_reporting_change
 }
@@ -91,6 +93,43 @@ fn program_contains_call(stmts: Array[Stmt], expected: String) -> Bool {
   found
 }
 
+fn expr_contains_ident(expr: Expr, expected: String) -> Bool {
+  let direct = match expr {
+    EIdent(name, _) => name == expected,
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let mut found = false
+    for child in expr_children(expr) {
+      if expr_contains_ident(child, expected) {
+        found = true
+      }
+    }
+    found
+  }
+}
+
+fn program_contains_ident(stmts: Array[Stmt], expected: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      SLetMut(_, _, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      SExpr(value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
 fn program_contains_match(stmts: Array[Stmt]) -> Bool {
   let mut found = false
   for stmt in stmts {
@@ -124,7 +163,18 @@ test "railway bind status changes only on the exact rewrite invocation" {
   inspect(desugar_railway_binds_reporting_change(stmts), "true")
   inspect(program_contains_call(stmts, "__try_bind"), "false")
   inspect(program_contains_match(stmts), "true")
+  inspect(program_contains_ident(stmts, "__try_none"), "true")
   inspect(desugar_railway_binds_reporting_change(stmts), "false")
+}
+
+test "erase_railway_origin_markers rewrites __try_none back to None" {
+  let stmts = parse("let main = () -> { let* x = Some(1); x }")
+  inspect(desugar_railway_binds_reporting_change(stmts), "true")
+  inspect(program_contains_ident(stmts, "__try_none"), "true")
+  inspect(erase_railway_origin_markers_reporting_change(stmts), "true")
+  inspect(program_contains_ident(stmts, "__try_none"), "false")
+  inspect(program_contains_ident(stmts, "None"), "true")
+  inspect(erase_railway_origin_markers_reporting_change(stmts), "false")
 }
 
 test "railway try-op reports the exact production rewrite" {
