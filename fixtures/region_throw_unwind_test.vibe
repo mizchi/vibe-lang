@@ -1,0 +1,120 @@
+// #1937: an exception that punches through `region` must still run the
+// arena exit (watermark restore + depth decrement). 64 skipped exits fill
+// the save table and later regions stop reclaiming. Values were already
+// correct (#2027); these tests pin the shapes and a 70-punch loop that
+// exceeds the 64-slot table, then a fresh region that must still return.
+
+fn punch() -> Int {
+  handle {
+    region r {
+      let _l = MutList::empty(r)
+      throw("x")
+      0
+    }
+  } with Exception {
+    Throw(_) => 0
+  }
+}
+
+fn punch_alloc(n: Int) -> Int {
+  handle {
+    region r {
+      let l = MutList::empty(r)
+      let mut i = 0
+      while i < n {
+        MutList::push(l, i)
+        i = i + 1
+      }
+      throw("x")
+      0
+    }
+  } with Exception {
+    Throw(_) => 0
+  }
+}
+
+export let main = () -> Int {
+  let mut k = 0
+  while k < 70 {
+    punch_alloc(500)
+    k = k + 1
+  }
+  region r {
+    MutList::empty(r)
+    1
+  }
+}
+
+test "exception through region is handled outside" {
+  let result = handle {
+    region r {
+      throw("x")
+      1
+    }
+  } with Exception {
+    Throw(_) => 7
+  }
+  inspect(result, "7")
+}
+
+test "handled inside region still returns" {
+  let result = region r {
+    handle {
+      throw("x")
+      0
+    } with Exception {
+      Throw(_) => 3
+    }
+  }
+  inspect(result, "3")
+}
+
+// Nested-handle rethrow. Linear catches this. The gc lane's EHandle does
+// not see a throw from an inner handler (pre-existing, region-free too).
+test "rethrow through region is handled outside" {
+  let result = handle {
+    handle {
+      region r {
+        throw("x")
+        0
+      }
+    } with Exception {
+      Throw(_) => throw("y")
+    }
+  } with Exception {
+    Throw(_) => 5
+  }
+  inspect(result, "5")
+}
+
+test "nested region throw is handled outside" {
+  let result = handle {
+    region outer {
+      region inner {
+        MutList::empty(inner)
+        throw("x")
+        0
+      }
+    }
+  } with Exception {
+    Throw(_) => 9
+  }
+  inspect(result, "9")
+}
+
+test "throw through region 70 times then a fresh region still works" {
+  let mut k = 0
+  while k < 70 {
+    punch()
+    k = k + 1
+  }
+  let after = region r {
+    MutList::empty(r)
+    1
+  }
+  inspect(after, "1")
+}
+
+test "70 allocating unwinds then a fresh region still returns" {
+  inspect(main(), "1")
+}

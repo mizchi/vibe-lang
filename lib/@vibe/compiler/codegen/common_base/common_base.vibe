@@ -9,6 +9,8 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_br,
   emit_call,
   emit_call_indirect,
   emit_else,
@@ -463,6 +465,10 @@ export struct CompileCtx {
   region_ptr_addr: Int;
   region_arr_new_func_idx: Int;
   region_bytes_new_func_idx: Int;
+  // #1937: Exception tag to catch around `__region_run`, or -1 when this
+  // module has no exception machinery. try_table is omitted then so a
+  // throw-free region program stays off the #721 exnref path.
+  region_exn_tag: Int;
   // Linear-memory backend: wasm function index of `vibe_heap_grow_check`, or -1
   // when the surrounding module does not define the helper. Bump allocations
   // call it after updating global 0 so low initial memory can grow on demand.
@@ -961,7 +967,9 @@ export struct CompileCtxGc {
   // lane wants an arena at all despite being the GC lane.
   gc_region_ptr_addr: Int;
   gc_region_arr_new_func_idx: Int;
-  gc_region_bytes_new_func_idx: Int
+  gc_region_bytes_new_func_idx: Int;
+  // #1937: gc twin of CompileCtx.region_exn_tag (0 on this lane, or -1).
+  gc_region_exn_tag: Int
 }
 
 //# Functions
@@ -2214,6 +2222,60 @@ export fn emit_region_exit(buf: Bytes, region_ptr_addr: Int) -> Unit {
   emit_i32_load(buf, 2, 0)
   emit_i32_store(buf, 2, 0)
   emit_end(buf)
+}
+
+/// Exception throw tag on the linear backend (`throw` / EThrow /
+/// `perform Exception::Throw`). Same index EHandle catches in
+/// compile_expr_tail6.vibe.
+export fn region_exn_tag_linear() -> Int {
+  2
+}
+
+/// Exception throw tag on the gc backend. Same index EHandle / EThrow use
+/// in backend_expr.vibe.
+export fn region_exn_tag_gc() -> Int {
+  0
+}
+
+/// Label depth the region body sees inside the #1937 try_table wrap
+/// (outer block + catch block + try_table). `-1` stays "not tracking".
+export fn region_try_body_ld(ld: Int) -> Int {
+  if ld >= 0 {
+    ld + 3
+  } else {
+    -1
+  }
+}
+
+/// Open the #1937 unwind bracket. Caller compiles the body with
+/// `region_try_body_ld(ld)`, then `emit_region_try_epilogue`.
+///
+///   block (result i64)            ;; B_outer: body result
+///     block (result i64)          ;; B_catch: thrown payload
+///       try_table (result i64) [catch tag -> label 0]
+export fn emit_region_try_prologue(buf: Bytes, catch_tag: Int) -> Unit {
+  emit_block_i64(buf)
+  emit_block_i64(buf)
+  bytebuf_push(buf, 31)
+  bytebuf_push(buf, 126)
+  leb128_encode_u32(buf, 1)
+  bytebuf_push(buf, 0)
+  leb128_encode_u32(buf, catch_tag)
+  leb128_encode_u32(buf, 0)
+}
+
+/// Close the #1937 unwind bracket. Success: end try_table, skip the catch,
+/// then `emit_region_exit` (result rides). Catch: payload rides through
+/// `emit_region_exit` (memory only) and is rethrown on the same tag.
+export fn emit_region_try_epilogue(buf: Bytes, region_ptr_addr: Int, catch_tag: Int) -> Unit {
+  emit_end(buf)
+  emit_br(buf, 1)
+  emit_end(buf)
+  emit_region_exit(buf, region_ptr_addr)
+  bytebuf_push(buf, 8)
+  leb128_encode_u32(buf, catch_tag)
+  emit_end(buf)
+  emit_region_exit(buf, region_ptr_addr)
 }
 
 export fn rc_shadow_base() -> Int {

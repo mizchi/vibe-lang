@@ -59,6 +59,7 @@ import @vibe/compiler/codegen/common_base {
   gc_slot_map_get,
   inline_direct_performs,
   lookup_ctor,
+  region_exn_tag_gc,
   region_max_depth,
   region_saves_base_of,
   resolve_func,
@@ -1512,6 +1513,11 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   // because an RC block would reach a free list that the bulk release
   // invalidates, and this lane has no RC lane to guard against.
   let need_region_arena = stmts_use_builtin(stmts, fn_names_list, "__region_run")
+  let region_exn_tag = if stmts_contain_exceptions(stmts) {
+    region_exn_tag_gc()
+  } else {
+    -1
+  }
   let region_ctl_base = heap_start
   let region_saves_base = region_saves_base_of(region_ctl_base)
   let region_data_base = ((region_saves_base + region_max_depth() * 4 + 7) / 8) * 8
@@ -2186,7 +2192,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
             table_slots_used: table_slots_used,
             gc_region_ptr_addr: region_ptr_addr,
             gc_region_arr_new_func_idx: region_arr_new_idx,
-            gc_region_bytes_new_func_idx: region_bytes_new_idx
+            gc_region_bytes_new_func_idx: region_bytes_new_idx,
+            gc_region_exn_tag: region_exn_tag
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -2290,7 +2297,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
       table_slots_used: table_slots_used,
       gc_region_ptr_addr: region_ptr_addr,
       gc_region_arr_new_func_idx: region_arr_new_idx,
-      gc_region_bytes_new_func_idx: region_bytes_new_idx
+      gc_region_bytes_new_func_idx: region_bytes_new_idx,
+      gc_region_exn_tag: region_exn_tag
     }
     let init_locals = array_empty()
     let mut ginit = 0
