@@ -499,10 +499,13 @@ fn tail_expr_off(e: Expr) -> Int {
 
 /// #1947: classify a two-arm match as a lowered railway. The pre-check
 /// desugar (`lower_try_op` / `lower_try_bind`) is the only producer of
-/// these shapes; `__try_v` is the origin marker for postfix `?`.
+/// these shapes. Origin markers, not source shape: `__try_v` is postfix
+/// `?`, `__try_none` is `let*`. A user-written
+/// `match o { Some(v) => ..., None => None }` is never a railway, even
+/// when `compile_source` used `parse_program` and every offset is -1.
 ///   0 = not a railway desugar
 ///   1 = postfix `?`  (`Some(__try_v) => __try_v, None => return None`)
-///   2 = `let*`       (`Some(name) => rest, None => None`)
+///   2 = `let*`       (`Some(name) => rest, None => __try_none`)
 fn railway_pat_none(p: Pat) -> Bool {
   match p {
     PCtor(n, args) => n == "None" && Array::length(args) == 0,
@@ -537,6 +540,17 @@ fn railway_is_ident(e: Expr, want: String) -> Bool {
   }
 }
 
+/// `let*` lowers the failure arm to `__try_none` (see `lower_try_bind`).
+/// Type it as the prelude `None` constructor; the name itself is only an
+/// origin marker.
+fn railway_ident_lookup_name(name: String) -> String {
+  if name == "__try_none" {
+    "None"
+  } else {
+    name
+  }
+}
+
 fn railway_is_return_none(e: Expr) -> Bool {
   match e {
     EReturn(inner) => railway_is_ident(inner, "None"),
@@ -554,21 +568,8 @@ fn railway_kind_from_match(scrutinee: Expr, arms: Array[(Pat, Expr)]) -> Int {
       0
     } else if railway_pat_is_some_try_v(p0) && railway_is_ident(b0, "__try_v") && railway_is_return_none(b1) {
       1
-    } else if railway_pat_is_some_bind(p0) && railway_is_ident(b1, "None") {
-      // `let*` copies the operand offset onto the synthetic `None`.
-      // A user-written `None` sits at a different source offset; leave
-      // those matches on the ordinary path. Unlocated trees (both -1)
-      // MUST stay ordinary too: `compile_source` uses `parse_program`,
-      // and treating that shape as `let*` mis-diagnoses every
-      // `match opt { Some(v) => ..., None => None }` — including the
-      // compiler's own source — as a railway in the wrong context.
-      let n_off = railway_expr_off(b1)
-      let s_off = railway_expr_off(scrutinee)
-      if n_off >= 0 && s_off >= 0 && n_off == s_off {
-        2
-      } else {
-        0
-      }
+    } else if railway_pat_is_some_bind(p0) && railway_is_ident(b1, "__try_none") {
+      2
     } else {
       0
     }
@@ -4375,7 +4376,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EString(_) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name, ident_off) => match env_lookup(env, name) {
+    EIdent(name, ident_off) => match env_lookup(env, railway_ident_lookup_name(name)) {
       Some(t) => {
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
@@ -4398,7 +4399,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         (ti, s1, c1)
       },
-      None => match lookup_builtin(name) {
+      None => match lookup_builtin(railway_ident_lookup_name(name)) {
         Some(t) => {
           if ident_off >= 0 {
             tab_identifier_ty(tytab, ident_off, t, capture, lane)
