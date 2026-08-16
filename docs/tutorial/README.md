@@ -9,7 +9,7 @@ a paragraph, see the result — that is the style of this tutorial.
 
 ```bash
 # install (details: docs/install.md)
-curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 . "$HOME/.vibe/env"
 
 # clone the repository to verify or regenerate

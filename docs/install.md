@@ -9,11 +9,12 @@ rationale behind this split.
 ## Quick install (curl)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 ```
 
-This shallow-clones the repo (override with `VIBE_INSTALL_REPO` /
-`VIBE_INSTALL_REF`) and delegates to `install/install.sh`. Requirements:
+The installer shallow-clones the repo when it is run outside a checkout
+(override with `VIBE_INSTALL_REPO` / `VIBE_INSTALL_REF`) and then safely
+reinvokes the matching `install/install.sh` from that checkout. Requirements:
 `git`, `bash`, `cargo` (the wasmtime runner builds from source); `node` is
 optional (used to self-build the newest compiler — without it the committed
 seed compiler is installed, which is always functional).
@@ -69,8 +70,8 @@ $VIBE_HOME/                 (default: ~/.vibe)
 
 Toolchains hold the versioned artifacts; packages and caches are shared and
 content-addressed. A future `vibe toolchain` selector (rustup-style) only has
-to rewrite `$VIBE_HOME/toolchain` — `scripts/installer.sh` already names
-toolchains after the installed ref so several can coexist.
+to rewrite `$VIBE_HOME/toolchain` — `install/install.sh` names toolchains
+after the installed ref so several can coexist.
 
 PATH policy: **`~/.vibe/bin` is the PATH entry** (the dispatcher lives
 there). The installer writes a sourceable `~/.vibe/env` (rustup's

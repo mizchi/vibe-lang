@@ -104,7 +104,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `monitor_wasm_bundle_size.sh`, `repro_715_rc_free_list_corruption.sh`
 
 ## Install / release
-- `installer.sh` (curl entry) → `install.sh` (checkout install; toolchain layout)
+- The public curl and checkout installer is owned by `install/install.sh`, outside this internal scripts directory.
 - `install_wasmtime_release.sh`
 - `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`, `precompile.sh`
 
