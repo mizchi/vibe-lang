@@ -64,7 +64,7 @@ import ./token.vibe {
 }
 
 import ./lexer.vibe {
-  offset_to_line_col
+  offset_to_line_col, remember_parse_source
 }
 
 import ./parser_binder_context.vibe {
@@ -978,7 +978,33 @@ fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
   }
 }
 
+/// Prefix `line L:col C:` when the throw site has not already located the
+/// message. Throw sites converted in #1862 emit the final form themselves so
+/// tokens-only lanes stay readable; re-prefixing those would double the
+/// location (`line 3:1: line 2:32: ...`).
+fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source: String) -> String {
+  if String::index_of(msg, "line ") == 0 {
+    msg
+  } else {
+    let (err_pos, cleaned_msg) = extract_err_token_pos(msg, fallback_pos)
+    let anchor_pos = if err_pos < Array::length(starts) {
+      err_pos
+    } else {
+      fallback_pos
+    }
+    let off = if anchor_pos < Array::length(starts) {
+      Array::get(starts, anchor_pos)
+    } else {
+      0
+    }
+    let (line, col) = offset_to_line_col(source, off)
+    let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+    String::concat(loc, cleaned_msg)
+  }
+}
+
 fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  remember_parse_source(source)
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -1040,20 +1066,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
           }
         } with Exception {
           Throw(msg) => {
-            let (err_pos, cleaned_msg) = extract_err_token_pos(msg, start_pos)
-            let anchor_pos = if err_pos < Array::length(starts) {
-              err_pos
-            } else {
-              start_pos
-            }
-            let off = if anchor_pos < Array::length(starts) {
-              Array::get(starts, anchor_pos)
-            } else {
-              0
-            }
-            let (line, col) = offset_to_line_col(source, off)
-            let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-            throw(String::concat(loc, cleaned_msg))
+            throw(locate_parse_error(msg, start_pos, starts, source))
           }
         }
         let mut ii = 0
@@ -1125,6 +1138,7 @@ export fn parse_program_located_with_binder_context(tokens: Array[Token], starts
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
+  remember_parse_source(source)
   let cfg_active = handle {
     cfg_scan_enabled(tokens)
   } with Exception {
@@ -1204,20 +1218,13 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           Some((stmts, next))
         } with Exception {
           Throw(msg) => {
-            let (err_pos, cleaned_msg) = extract_err_token_pos(msg, start_pos)
+            let err_pos = extract_err_token_pos(msg, start_pos).0
             let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
               err_pos
             } else {
               start_pos
             }
-            let off = if anchor_pos < Array::length(starts) {
-              Array::get(starts, anchor_pos)
-            } else {
-              0
-            }
-            let (line, col) = offset_to_line_col(source, off)
-            let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-            ArrayBuilder::push(diags, String::concat(loc, cleaned_msg))
+            ArrayBuilder::push(diags, locate_parse_error(msg, start_pos, starts, source))
             // #946: resynchronize from the ERROR ANCHOR, not the statement
             // start. Every token before the anchor was already consumed as
             // part of this failed statement, so restarting the parse at each

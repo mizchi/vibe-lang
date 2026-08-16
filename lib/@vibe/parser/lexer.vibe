@@ -1281,6 +1281,58 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
   (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends), ArrayBuilder::freeze(err_offsets), ArrayBuilder::freeze(err_msgs))
 }
 
+/// Last source text seen by `lex` / `remember_parse_source`. Tokens-only
+/// entries (`parse_program(lex(src))`) have no source argument, so the
+/// unexpected-token throw site reads this to emit `line L:col C:` instead
+/// of encoding a token index for a later decoder (#1862).
+let last_parse_source_cell: Array[String] = Array::slice([
+  ""
+], 0, 0)
+
+export fn remember_parse_source(source: String) -> Unit {
+  Array::truncate(last_parse_source_cell, 0)
+  Array::push(last_parse_source_cell, source)
+}
+
+fn last_parse_source() -> String {
+  if Array::length(last_parse_source_cell) > 0 {
+    Array::get(last_parse_source_cell, 0)
+  } else {
+    ""
+  }
+}
+
+fn token_offset_for_error(starts: Array[Int], pos: Int, source: String) -> Int {
+  if pos >= 0 && pos < Array::length(starts) {
+    Array::get(starts, pos)
+  } else {
+    let recovered = handle {
+      lex_with_offsets(source).1
+    } with Exception {
+      Throw(_) => ArrayBuilder::freeze(ArrayBuilder::new())
+    }
+    if pos >= 0 && pos < Array::length(recovered) {
+      Array::get(recovered, pos)
+    } else {
+      0
+    }
+  }
+}
+
+/// User-facing unexpected-token diagnostic (#1862). Located at the throw
+/// site so lanes that skip `extract_err_token_pos` still get `line L:col C:`
+/// and never see a token index or lexer `(prev=..., next=...)` debris.
+export fn format_unexpected_token(starts: Array[Int], pos: Int, actual: String) -> String {
+  let source = last_parse_source()
+  if String::length(source) == 0 {
+    String::concat("unexpected token: ", actual)
+  } else {
+    let off = token_offset_for_error(starts, pos, source)
+    let (line, col) = offset_to_line_col(source, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": unexpected token: ", actual)))))
+  }
+}
+
 /// Convert a 0-based char offset (from lex_with_offsets) to 1-based (line, col).
 /// Source-span foundation: lets diagnostics report a real `line:col`.
 export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
@@ -1306,6 +1358,7 @@ export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
 }
 
 export fn lex(source: String) -> Array[Token] with Exception {
+  remember_parse_source(source)
   let len = String::length(source)
   {
     let b = ArrayBuilder::new()

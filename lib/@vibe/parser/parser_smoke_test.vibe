@@ -1,11 +1,11 @@
 //# Imports
 
 import ./lexer.vibe {
-  lex, lex_ok
+  lex, lex_ok, lex_with_offsets
 }
 
 import ./parser.vibe {
-  parse_program
+  parse_program, parse_program_located
 }
 
 import @vibe/ast {
@@ -266,4 +266,51 @@ test "parse_program: `perform Error::Throw` stays legal (operation qualifier)" {
   let tokens = lex("fn f() -> Int with Exception { perform Error::Throw(\"x\") }")
   let stmts = parse_program(tokens)
   assert(Array::length(stmts) == 1)
+}
+
+fn unexpected_token_probe_source() -> String {
+  "test \"p\" {\n  let ys = Array::map([1,2,3], fn(x) { x * 2 })\n}\n"
+}
+
+fn assert_unexpected_token_located(result: String) -> Unit {
+  assert(String::contains(result, "line "))
+  assert(String::contains(result, "unexpected token: fn"))
+  assert(!String::contains(result, " at #"))
+  assert(!String::contains(result, "prev="))
+  assert(!String::contains(result, "next="))
+}
+
+test "#1862: raw parse_program unexpected-token is located" {
+  // gc / tokens-only lanes call parse_program(lex(src)) and never run
+  // extract_err_token_pos, so the throw site itself must emit line:col
+  // and must not leak the token index or lexer (prev/next) debris.
+  let result = handle {
+    let _ = parse_program(lex("let x = fn"))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert_eq(result, "line 1:9: unexpected token: fn")
+  let probe = handle {
+    let _ = parse_program(lex(unexpected_token_probe_source()))
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert_unexpected_token_located(probe)
+}
+
+test "#1862: parse_program_located unexpected-token stays single-located" {
+  let src = unexpected_token_probe_source()
+  let result = handle {
+    let (tokens, starts, _) = lex_with_offsets(src)
+    let _ = parse_program_located(tokens, starts, src)
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert_unexpected_token_located(result)
+  assert(String::starts_with(result, "line "))
+  let rest = String::substring(result, 5, String::length(result))
+  assert(String::index_of(rest, "line ") < 0)
 }
