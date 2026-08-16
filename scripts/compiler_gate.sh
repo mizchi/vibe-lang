@@ -4897,8 +4897,14 @@ for gcpe_be in linear gc; do
     cat "$gcpedir/$gcpe_be.wasm.diag" 2>/dev/null >&2 || true
     exit 1
   fi
-  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcpedir/$gcpe_be.wasm" >/dev/null 2>&1
-  gcpe_rc=$?
+  # `if` guard, not a bare call: this script runs under `set -euo pipefail`,
+  # and the SUCCESS case here is a NON-ZERO status (7). A bare call would kill
+  # the gate exactly when the fixture behaves correctly -- and, worse, a
+  # regression that made the exit a no-op would return 0 and sail past. The
+  # detector was inverted: it passed only when broken. The condition part of
+  # `if` is exempt from errexit, so the status reaches the assertion.
+  gcpe_rc=0
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcpedir/$gcpe_be.wasm" >/dev/null 2>&1 || gcpe_rc=$?
   if [ "$gcpe_rc" -ne 7 ]; then
     echo "[compiler-gate] FAIL: gc_process_exit.vibe exited $gcpe_rc on the $gcpe_be backend (want 7; 0 = the exit lowering is a no-op and the program fell through) (#1262)" >&2
     exit 1
