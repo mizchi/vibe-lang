@@ -75,9 +75,21 @@ elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN"; then
     export VIBE_RUNNER="$TOOL_ROOT/scripts/viberun_node.sh"
     export VIBE_CLI_WASM="$stage2_for_grep"
     export VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$PROJECT_ROOT}"
-    if "$GREP_BIN" --version >/dev/null 2>&1; then
+    # Probe with the operation that will actually be performed, not with a
+    # cheaper one that happens to be nearby. `$GREP_BIN --version` answers
+    # "does the dispatcher start", which is not the question: the scan also
+    # goes through $RUNNER and the .vibex bootstrap, and those have their own
+    # ways to fail. Measured -- under `pkf run`, ensure_seed.sh's `sha256sum`
+    # is a broken nix shim, so --version passed, the scan died, and every
+    # commit reported "the AST scan did not run" as though the diff had broken
+    # something. Running the real entry point against an empty root costs one
+    # bootstrap and answers the actual question.
+    probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vibe_review_probe.XXXXXX")"
+    if (cd "$TOOL_ROOT" && bash "$RUNNER" scripts/review_lint.vibex -- \
+          --root "$probe_root" --vibe "$GREP_BIN" >/dev/null 2>&1); then
       grep_available=1
     fi
+    rm -rf "$probe_root"
   fi
 fi
 
