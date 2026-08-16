@@ -1,0 +1,60 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/normalize {
+  desugar_inspect_calls_reporting_change,
+  desugar_railway_binds_reporting_change,
+  inject_trait_method_generics_reporting_change
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Helpers
+
+fn parse(source: String) -> Array[Stmt] with Exception {
+  parse_program(lex(source))
+}
+
+//# Tests
+
+test "transform status is false when every transform is inert" {
+  let stmts = parse("let main = () -> { 1 }")
+  inspect(inject_trait_method_generics_reporting_change(stmts), "false")
+  inspect(desugar_railway_binds_reporting_change(stmts), "false")
+  inspect(desugar_inspect_calls_reporting_change(stmts), "false")
+}
+
+test "railway status changes only on the exact rewrite invocation" {
+  let stmts = parse("let main = () -> { let* x = Some(1); x }")
+  inspect(desugar_railway_binds_reporting_change(stmts), "true")
+  inspect(desugar_railway_binds_reporting_change(stmts), "false")
+}
+
+test "anonymous record projection reports the exact railway rewrite" {
+  let stmts = parse("let main = () -> { let r = record { name: \"vibe\" }; r.name }")
+  inspect(desugar_railway_binds_reporting_change(stmts), "true")
+  inspect(desugar_railway_binds_reporting_change(stmts), "false")
+}
+
+test "inspect status changes only when inspect lowering writes a statement" {
+  let stmts = parse("let main = () -> { inspect(1, \"1\") }")
+  inspect(desugar_inspect_calls_reporting_change(stmts), "true")
+  inspect(desugar_inspect_calls_reporting_change(stmts), "false")
+}
+
+test "bound inspect remains inert and reports unchanged" {
+  let stmts = parse("let inspect = (x, expected) -> { x }; let main = () -> { inspect(1, \"1\") }")
+  inspect(desugar_inspect_calls_reporting_change(stmts), "false")
+}
+
+test "trait generic injection reports its exact write and then idempotence" {
+  let source = "trait Show { show(Self) -> String }\ntrait Logger { write_object: [X: Show](Self, X) -> String }\nstruct Box { value: Int }\nimpl Logger for Box { write_object(self, x) -> String { X::show(x) } }"
+  let stmts = parse(source)
+  inspect(inject_trait_method_generics_reporting_change(stmts), "true")
+  inspect(inject_trait_method_generics_reporting_change(stmts), "false")
+}
