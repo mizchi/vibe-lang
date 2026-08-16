@@ -2,7 +2,7 @@
 # #1633: compiler-owned exact-path coverage-driver exposure.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "$ROOT"
 SEED="${VIBE_COV_SEED:-bootstrap/seed/compiler.wasm}"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"

@@ -4,7 +4,8 @@ import json
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).parents[1] / "check_host_runtime_contract.py"
+ROOT = Path(__file__).parents[4]
+SCRIPT = ROOT / "scripts/check_host_runtime_contract.py"
 spec = importlib.util.spec_from_file_location("host_contract", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader
@@ -71,7 +72,7 @@ leb128_encode_u32(import_content, 3)'''
         self.assertEqual(module.node_imports(node), {"env-get", "fs_exists"})
 
     def test_manifest_is_valid_json(self):
-        manifest = Path(__file__).parents[2] / "docs/wasm/host-runtime-contract.json"
+        manifest = ROOT / "docs/wasm/host-runtime-contract.json"
         self.assertEqual(json.loads(manifest.read_text())["schema"], 1)
 
 
