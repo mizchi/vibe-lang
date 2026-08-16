@@ -8,6 +8,10 @@ import @vibe/compiler/checker {
   check_program
 }
 
+import @vibe/compiler/core {
+  Expr, Stmt, expr_children
+}
+
 import @vibe/compiler/syntax {
   lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
 }
@@ -109,9 +113,9 @@ test "question-mark in a non-Option function names ? and the effective edit" {
 
 test "let-star in a non-Option function names let* and the effective edit" {
   let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
-  // Origin is the copied operand offset; the unlocated parse cannot tell
-  // a desugared `let*` from a user `match`. Use the located path.
-  let msg = first_located_error(src)
+  // Unlocated on purpose: compile_source uses parse_program. The
+  // `__try_none` origin marker, not an offset, is what names `let*`.
+  let msg = first_check_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`"))
   assert(String::contains(msg, "Option-returning"))
@@ -170,7 +174,7 @@ test "mixed let* and ? in an Option-returning function checks clean" {
 
 test "mixed let* and ? in a non-Option function stay source-level" {
   let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  let w = find(v + 1)?\n  w + 1\n}\nfn main() -> Int { g(1) }\n")
-  let msg = first_located_error(src)
+  let msg = first_check_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`") || String::contains(msg, "`?`"))
   assert(String::contains(msg, "Option-returning") || String::contains(msg, "unwraps an Option"))
@@ -192,7 +196,7 @@ test "? on a non-Option operand names ? not the lowered match" {
 
 test "let* on a non-Option operand names let* not the lowered match" {
   let src = "fn g(x: Int) -> Option[Int] {\n  let* v = x\n  Some(v)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n"
-  let msg = first_located_error(src)
+  let msg = first_check_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`"))
   assert(String::contains(msg, "unwraps an Option"))
@@ -208,9 +212,10 @@ test "located user-written Some/None match is not reported as let*" {
 }
 
 test "unlocated user-written Some/None match is not reported as let*" {
-  // `compile_source` uses parse_program (no offsets). The same shape as
-  // lowered `let*` must stay an ordinary match, or the compiler cannot
-  // compile itself (Codex review on #1999).
+  // `compile_source` uses parse_program (no offsets). Shape alone used to
+  // classify this as `let*` and suggest `match` for a match the user
+  // already wrote. The origin marker is `__try_none`, not the Some/None
+  // layout.
   let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  match find(x) {\n    Some(v) => v + 1,\n    None => None\n  }\n}\nfn main() -> Int { g(1) }\n")
   let msg = first_check_error(src)
   assert(msg != "")
@@ -218,9 +223,57 @@ test "unlocated user-written Some/None match is not reported as let*" {
   assert(!(String::contains(msg, "__try_")))
 }
 
+fn expr_contains_ident(expr: Expr, expected: String) -> Bool {
+  let direct = match expr {
+    EIdent(name, _) => name == expected,
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let mut found = false
+    for child in expr_children(expr) {
+      if expr_contains_ident(child, expected) {
+        found = true
+      }
+    }
+    found
+  }
+}
+
+fn program_contains_ident(stmts: Array[Stmt], expected: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      SLetMut(_, _, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      STest(_, value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      SExpr(value) => if expr_contains_ident(value, expected) {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+test "check_program erases the let-star origin marker before codegen" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  let* v = find(x)\n  Some(v + 1)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
+  let stmts = parse_program(lex(src))
+  let _ = check_program(stmts)
+  assert(!(program_contains_ident(stmts, "__try_none")))
+  assert(program_contains_ident(stmts, "None"))
+}
+
 test "let* whose success path is not an Option asks to wrap in Some" {
   let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
-  let msg = first_located_error(src)
+  let msg = first_check_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`"))
   assert(String::contains(msg, "Some"))

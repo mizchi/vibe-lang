@@ -4194,11 +4194,17 @@ fn railway_val_off(e: Expr) -> Int {
 /// is reported by the checker's ordinary unification against these arms.
 fn lower_try_bind(val: Expr, name: String, rest: Expr) -> Expr {
   let voff = railway_val_off(val)
+  // `__try_none` is the origin marker, the same role `__try_v` plays for
+  // postfix `?`. A user-written `None => None` is `EIdent("None")` and
+  // must not be classified as `let*` — especially on the unlocated
+  // `parse_program` path, where every offset is -1. Check remaps the
+  // name for typing; `erase_railway_origin_markers` turns it back into
+  // `None` after a clean check so codegen does not see a synthetic ident.
   EMatch(val, [
     (PCtor("Some", [
       PBind(name)
     ]), rest),
-    (PCtor("None", array_empty()), EIdent("None", voff))
+    (PCtor("None", array_empty()), EIdent("__try_none", voff))
   ])
 }
 
@@ -4480,6 +4486,147 @@ export fn desugar_railway_binds_reporting_change(stmts: Array[Stmt]) -> Bool {
 
 export fn desugar_railway_binds(stmts: Array[Stmt]) -> Unit {
   desugar_railway_binds_impl(stmts, None)
+}
+
+/// After check has classified lowered `let*` via `__try_none`, rewrite that
+/// origin marker back to the prelude `None` constructor so codegen does not
+/// see an unresolved name. Must not run before check — the marker is what
+/// distinguishes `let*` from a user-written `None => None` on the unlocated
+/// `parse_program` path (every offset is -1).
+fn erase_try_none_expr(expr: Expr, changed: Option[Array[Bool]]) -> Expr {
+  match expr {
+    EIdent(name, off) => {
+      if name == "__try_none" {
+        match changed {
+          Some(cell) => {
+            Array::set(cell, 0, true)
+          },
+          None => {
+            ()
+          }
+        }
+        EIdent("None", off)
+      } else {
+        expr
+      }
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ESpread(e) => ESpread(erase_try_none_expr(e, changed)),
+    ETuple(elems) => ETuple(for e in elems {
+      erase_try_none_expr(e, changed)
+    }),
+    EArray(elems) => EArray(for e in elems {
+      erase_try_none_expr(e, changed)
+    }),
+    ERecord(rn, fields, targs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fval) = Array::get(fields, i)
+        Array::push(out, (fname, erase_try_none_expr(fval, changed)))
+        i = i + 1
+      }
+      ERecord(rn, out, targs)
+    },
+    EMap(fields) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (k, v) = Array::get(fields, i)
+        Array::push(out, (k, erase_try_none_expr(v, changed)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(erase_try_none_expr(c, changed), erase_try_none_expr(t, changed), erase_try_none_expr(e, changed)),
+    ELet(name, val, body, soff) => ELet(name, erase_try_none_expr(val, changed), erase_try_none_expr(body, changed), soff),
+    ELetRec(name, val, body) => ELetRec(name, erase_try_none_expr(val, changed), erase_try_none_expr(body, changed)),
+    ELetMut(name, val, body, soff) => ELetMut(name, erase_try_none_expr(val, changed), erase_try_none_expr(body, changed), soff),
+    EAssign(name, val, cont) => EAssign(name, erase_try_none_expr(val, changed), erase_try_none_expr(cont, changed)),
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, erase_try_none_expr(val, changed), erase_try_none_expr(cont, changed)),
+    ESeq(a, b) => ESeq(erase_try_none_expr(a, changed), erase_try_none_expr(b, changed)),
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, erase_try_none_expr(b, changed)))
+        i = i + 1
+      }
+      EMatch(erase_try_none_expr(scrut, changed), out)
+    },
+    EHandle(scrut, arms) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, erase_try_none_expr(b, changed)))
+        i = i + 1
+      }
+      EHandle(erase_try_none_expr(scrut, changed), out)
+    },
+    EWhile(c, b) => EWhile(erase_try_none_expr(c, changed), erase_try_none_expr(b, changed)),
+    ELoop(params, body) => ELoop(for param in params {
+      let (name, init) = param
+      (name, erase_try_none_expr(init, changed))
+    }, erase_try_none_expr(body, changed)),
+    EForIn(name, idx, iter, body) => EForIn(name, idx, erase_try_none_expr(iter, changed), erase_try_none_expr(body, changed)),
+    ECall(callee, args, off) => ECall(erase_try_none_expr(callee, changed), for a in args {
+      erase_try_none_expr(a, changed)
+    }, off),
+    EBinOp(op, l, r) => EBinOp(op, erase_try_none_expr(l, changed), erase_try_none_expr(r, changed)),
+    EUnaryOp(op, e) => EUnaryOp(op, erase_try_none_expr(e, changed)),
+    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, erase_try_none_expr(body, changed)),
+    EDot(obj, field, off, fdoff) => EDot(erase_try_none_expr(obj, changed), field, off, fdoff),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, erase_try_none_expr(body, changed)),
+    EReturn(e) => EReturn(erase_try_none_expr(e, changed)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(erase_try_none_expr(e, changed))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs {
+      erase_try_none_expr(e, changed)
+    })
+  }
+}
+
+fn erase_try_none_stmt(s: Stmt, changed: Option[Array[Bool]]) -> Stmt {
+  match s {
+    SLet(exp, isrec, fname, ann, body) => SLet(exp, isrec, fname, ann, erase_try_none_expr(body, changed)),
+    SLetMut(name, ty, e) => SLetMut(name, ty, erase_try_none_expr(e, changed)),
+    STest(name, body) => STest(name, erase_try_none_expr(body, changed)),
+    SBench(name, body) => SBench(name, erase_try_none_expr(body, changed)),
+    SExpr(e) => SExpr(erase_try_none_expr(e, changed)),
+    SModule(exp, name, body) => SModule(exp, name, for inner in body {
+      erase_try_none_stmt(inner, changed)
+    }),
+    _ => s
+  }
+}
+
+fn erase_railway_origin_markers_impl(stmts: Array[Stmt], changed: Option[Array[Bool]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, erase_try_none_stmt(Array::get(stmts, i), changed))
+    i = i + 1
+  }
+}
+
+export fn erase_railway_origin_markers_reporting_change(stmts: Array[Stmt]) -> Bool {
+  let changed = [
+    false
+  ]
+  erase_railway_origin_markers_impl(stmts, Some(changed))
+  Array::get(changed, 0)
+}
+
+export fn erase_railway_origin_markers(stmts: Array[Stmt]) -> Unit {
+  erase_railway_origin_markers_impl(stmts, None)
 }
 
 // ---- #1392: string interpolation renders a derive(Show) value structurally ----
