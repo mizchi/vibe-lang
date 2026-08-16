@@ -5305,6 +5305,45 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" \
 fi
 echo "[compiler-gate] builtin lane parity ok (gc + linear agree)"
 
+# 40h8c. #1976: the wasm-gc lane's single-file limitation must SAY SO.
+#
+# Referencing an imported name cannot work on this backend, and for a long time
+# it answered with the codegen internal error -- "this is a bug in the compiler
+# and not in your program -- please report the source that triggers it". That is
+# false for this shape, and it hid the cause well enough that three separate
+# wrong explanations for it reached the docs (#1929, corrected there).
+#
+# Pinned in both directions: the message must name the imported binding and the
+# lane, and must NOT be the report-a-compiler-bug text. The second half matters
+# most -- the rewrite is narrow on purpose, and a future change that widened it
+# would swallow the genuine unresolved-name class (#1502/#1510/#1521) that
+# message exists for.
+echo "[compiler-gate] 40h8c/40 wasm-gc import diagnostic (#1976)"
+gcimpdir="_build/_gate_gc_import_diag"
+rm -rf "$gcimpdir"; mkdir -p "$gcimpdir"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/gc_import_diag_use.vibe "$gcimpdir/out.wasm" main >/dev/null 2>&1 || true
+gcimp_diag="$(cat "$gcimpdir/out.wasm.diag" 2>/dev/null || true)"
+if [ -s "$gcimpdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: fixtures/gc_import_diag_use.vibe COMPILED on the gc lane." >&2
+  echo "  If the lane gained cross-file resolution, delete this step and the two" >&2
+  echo "  fixtures -- but update #1976 and AGENTS.md's gc section first." >&2
+  exit 1
+fi
+if ! printf '%s' "$gcimp_diag" | grep -q 'gc_import_diag_helper` is imported'; then
+  echo "[compiler-gate] FAIL: the gc import diagnostic no longer names the imported binding (#1976)" >&2
+  echo "  got: $gcimp_diag" >&2
+  exit 1
+fi
+if printf '%s' "$gcimp_diag" | grep -q 'please report the source that triggers it'; then
+  echo "[compiler-gate] FAIL: the gc import diagnostic reverted to the report-a-compiler-bug text (#1976)" >&2
+  echo "  got: $gcimp_diag" >&2
+  exit 1
+fi
+rm -rf "$gcimpdir"
+echo "[compiler-gate] wasm-gc import diagnostic ok (names the binding, not an internal error)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):

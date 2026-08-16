@@ -41,6 +41,7 @@ import @vibe/compiler/codegen/common_base {
   LambdaTable,
   StrTable,
   agg_info_of_type_expr,
+  codegen_unresolved_name_prefix,
   compute_agg_returning,
   ctor_sorted_index,
   emit_binop_op,
@@ -954,7 +955,80 @@ fn gc_direct_abi_name_is_exported(stmts: Array[Stmt], name: String) -> Bool {
   found
 }
 
+/// #1976: the names this file IMPORTS, as they are spelled here (the alias when
+/// there is one). Collected from the statement list rather than tracked through
+/// the pipeline: this is only read on the failure path.
+fn gc_imported_spellings(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (orig, alias_opt) = Array::get(items, j)
+          match alias_opt {
+            Some(alias) => Array::push(out, alias),
+            None => Array::push(out, orig)
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1976: the codegen "unresolved name" internal error tells the reader that
+/// the compiler is at fault and asks them to report it. For ONE shape that is
+/// false and misleading: this lane compiles a single file, so a name the file
+/// imported was never going to reach codegen. That is the lane's behaviour,
+/// not a bug, and it is the most common way to hit this backend.
+///
+/// The rewrite is deliberately narrow. It fires only when the message is the
+/// unresolved-name error AND the name in it is one this file imports; anything
+/// else passes through untouched, because the genuine class this message exists
+/// for (#1502 / #1510 / #1491 / #1521 / #1529) is worth keeping visible.
+///
+/// Measured before writing this: an UNUSED import compiles fine here, and an
+/// imported struct or enum fails in the checker with its own (already clear)
+/// message. Only an imported function reaches this diagnostic.
+fn gc_unresolved_import_message(err: String, stmts: Array[Stmt]) -> Option[String] {
+  if !String::starts_with(err, codegen_unresolved_name_prefix()) {
+    None
+  } else {
+    let names = gc_imported_spellings(stmts)
+    let mut i = 0
+    let mut hit = ""
+    while i < Array::length(names) {
+      let n = Array::get(names, i)
+      if String::length(hit) == 0 && String::contains(err, String::concat("`", String::concat(n, "` (local, @gc"))) {
+        hit = n
+      }
+      i = i + 1
+    }
+    if String::length(hit) == 0 {
+      None
+    } else {
+      Some(String::concat("`", String::concat(hit, "` is imported, and the wasm-gc backend compiles one file at a time -- an imported name cannot be reached from it.\n  Run this file on the default (linear) backend instead: unset VIBE_TEST_BACKEND=gc.\n  (An import is only a problem when the name is USED; an unused import is fine.)")))
+    }
+  }
+}
+
 export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
+  handle {
+    compile_wasi_module_gc_impl(stmts, entry_name, gc_to_string_is_wrapper, direct_abi_generic_names)
+  } with Exception {
+    Throw(err) => match gc_unresolved_import_message(err, stmts) {
+      Some(better) => throw(better),
+      None => throw(err)
+    }
+  }
+}
+
+fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   gc_add_ref_twins(stmts)
