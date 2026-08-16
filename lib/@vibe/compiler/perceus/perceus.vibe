@@ -383,6 +383,19 @@ fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
 /// non-heap-tagged values), never corrupt -- the failure mode this whole fix
 /// targets is a double-free from treating a genuinely-borrowed value as owned,
 /// not a leak from treating a small/rare owned value as borrowed.
+/// #1915 refinement: that fallback's reach was wrong. A bare ident branch tail
+/// is also the most common OWNED-return shape (`let out: Array[T] = []; ...
+/// if c { out } else { out }` builders), and "leak one small sentinel" became
+/// "leak one builder array per call, in every caller". So an ident tail is now
+/// RESOLVED through the wrapper-spine `let` bindings (spine_names/spine_vals,
+/// collected by collect_spine_let_vals): a binding provably holding an owned
+/// heap value (container literal, or a call to a non-borrow-returning name --
+/// the same verdicts an INLINE branch tail of that shape already gets from
+/// this walk) rejects the function, while a view binding, a parameter, a
+/// `let mut`, a shadowed name, or anything unresolvable keeps today's safe
+/// fallback. Resolution can only flip leak -> reclaim, never view -> owned:
+/// the owned verdicts mirror what the value expression would classify as if
+/// written inline in tail position.
 /// Iterative (NOT self-recursive) worklist walk over child expressions, rather
 /// than a `let rec` recursive-descent function. Also: the `ECall` case matches
 /// its callee via a NESTED constructor pattern one step at a time (`ECall(e,
@@ -403,7 +416,165 @@ fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
 /// True root cause not isolated; swap either workaround for the "more natural"
 /// form only after confirming compute_borrow_returning_names_test.vibe (or an
 /// equivalent derive(Ord) regression) still passes.
-fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
+/// #1915: collect the wrapper-spine `let` bindings (name -> value) of a
+/// function body so tail_is_borrow_ret_safe can resolve a bare ident branch
+/// tail to the value it names. Only immutable, once-bound spine lets are
+/// trusted; `let mut` / `let rec` targets, assignment targets, and re-bound
+/// (shadowed) names go to `excluded` -- resolution must never flip a genuine
+/// view to owned (the double-free direction), so anything ambiguous stays
+/// unresolvable. Iterative spine walk, mirroring strip_wrappers_for_borrow_ret.
+fn collect_spine_let_vals(e0: Expr, names: Array[String], vals: Array[Expr], excluded: Array[String]) -> Int {
+  let mut e = e0
+  let mut looping = true
+  while looping {
+    looping = false
+    match e {
+      ELet(n, v, b, _) => {
+        if array_contains_str_pctx(names, n) || array_contains_str_pctx(excluded, n) {
+          Array::push(excluded, n)
+        } else {
+          Array::push(names, n)
+          Array::push(vals, v)
+        }
+        e = b
+        looping = true
+      },
+      ELetMut(n, _, b, _) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      ELetRec(n, _, b) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      ESeq(_, b) => {
+        e = b
+        looping = true
+      },
+      EAssign(n, _, b) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      EAssignOp(n, _, _, b) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      _ => ()
+    }
+  }
+  0
+}
+
+/// #1915: does the spine binding named `nm0` provably hold an OWNED heap
+/// value? Owned verdicts mirror what the same value expression would get as
+/// an INLINE branch tail in tail_is_borrow_ret_safe (container literal, call
+/// to a non-borrow-returning name); anything else -- excluded/absent names,
+/// view calls, `perform`, ident chains that leave the spine -- resolves to
+/// false, keeping the pre-#1915 safe fallback. The local-let ascription
+/// wrapper `((__asc: T) -> __asc)(v)` (ascribe_wrap, parser_expr_dispatch)
+/// is peeled first so an annotated binding classifies as its value. Callee
+/// matching is one step at a time, and both loops are iterative -- see the
+/// shape workarounds documented on tail_is_borrow_ret_safe.
+fn spine_ident_returns_owned(known: Array[String], names: Array[String], vals: Array[Expr], excluded: Array[String], nm0: String) -> Bool {
+  let mut nm = nm0
+  let mut hops = 0
+  let mut owned = false
+  let mut done = false
+  // The ident chain visits a fresh spine binding per hop (a repeated name
+  // would have landed in `excluded` at collection), so the binding count
+  // bounds the walk -- no fixed cap that could silently truncate a long
+  // alias chain back into the safe (leaking) fallback.
+  while !done && hops <= Array::length(names) {
+    hops = hops + 1
+    if array_contains_str_pctx(excluded, nm) {
+      done = true
+    } else {
+      let mut idx = 0 - 1
+      let mut i = 0
+      while i < Array::length(names) {
+        if Array::get(names, i) == nm {
+          idx = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if idx < 0 {
+        done = true
+      } else {
+        let mut v = Array::get(vals, idx)
+        let mut unwrapping = true
+        while unwrapping {
+          unwrapping = false
+          match v {
+            ECall(wc, wargs, _) =>
+            match wc {
+              EFn(_, _, wfps, _, _, wbody) => if Array::length(wfps) == 1 && Array::length(wargs) == 1 {
+                let (wpn, _) = Array::get(wfps, 0)
+                match wbody {
+                  EIdent(bn, _) => if bn == wpn {
+                    v = Array::get(wargs, 0)
+                    unwrapping = true
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              },
+              _ => ()
+            },
+            _ => ()
+          }
+        }
+        match v {
+          EArray(_) => {
+            owned = true
+            done = true
+          },
+          ETuple(_) => {
+            owned = true
+            done = true
+          },
+          ERecord(_, _, _) => {
+            owned = true
+            done = true
+          },
+          EMap(_) => {
+            owned = true
+            done = true
+          },
+          ECall(c2, _, _) =>
+          match c2 {
+            EIdent(f, _) => if f == "perform" || array_contains_str_pctx(known, f) {
+              done = true
+            } else {
+              owned = true
+              done = true
+            },
+            _ => {
+              done = true
+            }
+          },
+          EIdent(next_nm, _) => {
+            nm = next_nm
+          },
+          _ => {
+            done = true
+          }
+        }
+      }
+    }
+  }
+  owned
+}
+
+fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr, spine_names: Array[String], spine_vals: Array[Expr], spine_excluded: Array[String]) -> Bool {
   // ADR-0090 / #1770: the worklist grows while being consumed in-place and
   // only the Bool verdict escapes, so its growth garbage goes to the region
   // arena (MutList) instead of the main heap. Bump lane only; under RC the
@@ -415,9 +586,34 @@ fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
     let mut i = 0
     while i < MutList::length(worklist) {
       match MutList::get(worklist, i) {
-        ELet(_, _, b, _) => MutList::push(worklist, b),
-        ELetMut(_, _, b, _) => MutList::push(worklist, b),
-        ELetRec(_, _, b) => MutList::push(worklist, b),
+        // #1915: an inner binding that reuses a spine name shadows it for any
+        // ident tail walked after this point -- resolution through the spine
+        // map would read the WRONG value, so retire the name (over-excluding
+        // across sibling branches only ever restores the safe fallback).
+        ELet(n, _, b, _) => {
+          if array_contains_str_pctx(spine_names, n) {
+            Array::push(spine_excluded, n)
+          } else {
+            ()
+          }
+          MutList::push(worklist, b)
+        },
+        ELetMut(n, _, b, _) => {
+          if array_contains_str_pctx(spine_names, n) {
+            Array::push(spine_excluded, n)
+          } else {
+            ()
+          }
+          MutList::push(worklist, b)
+        },
+        ELetRec(n, _, b) => {
+          if array_contains_str_pctx(spine_names, n) {
+            Array::push(spine_excluded, n)
+          } else {
+            ()
+          }
+          MutList::push(worklist, b)
+        },
         ESeq(_, b) => MutList::push(worklist, b),
         EAssign(_, _, b) => MutList::push(worklist, b),
         EAssignOp(_, _, _, b) => MutList::push(worklist, b),
@@ -428,7 +624,21 @@ fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
         EMatch(_, arms) => {
           let mut ai = 0
           while ai < Array::length(arms) {
-            let (_p, ae) = Array::get(arms, ai)
+            let (p, ae) = Array::get(arms, ai)
+            // #1915: pattern bindings shadow spine names the same way inner
+            // lets do (see the ELet case above).
+            let pnames: Array[String] = [
+            ]
+            pat_names(p, pnames)
+            let mut pi = 0
+            while pi < Array::length(pnames) {
+              if array_contains_str_pctx(spine_names, Array::get(pnames, pi)) {
+                Array::push(spine_excluded, Array::get(pnames, pi))
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
             MutList::push(worklist, ae)
             ai = ai + 1
           }
@@ -474,7 +684,15 @@ fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
             all_safe = false
           }
         },
-        EIdent(_, _) => (),
+        // #1915: a bare ident tail resolving to a spine binding that provably
+        // holds an owned heap value (builder/literal/owned call) rejects the
+        // function -- callers must keep their scope-end drop. Sentinels,
+        // params, views, and unresolvable names keep the safe fallback.
+        EIdent(nm, _) => if spine_ident_returns_owned(known, spine_names, spine_vals, spine_excluded, nm) {
+          all_safe = false
+        } else {
+          ()
+        },
         // #715: a throwing tail (the ubiquitous `match x { Ctor(..) => field, _
         // => throw("not X") }` shape used by every common_extractors.vibe
         // accessor) never actually produces a value along that path, so it
@@ -513,8 +731,13 @@ fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
 }
 
 export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
+  // Seed with the same builtin set is_borrow_ret_fname hardcodes -- omitting
+  // one (MutList::get was missing until #1932 review) makes both the inline
+  // branch-tail check and the #1915 spine-binding resolution classify that
+  // builtin's result as owned, and RC callers then drop an interior view.
   let known: Array[String] = [
     "Array::get",
+    "MutList::get",
     "Map::get",
     "__index",
     "__rec_field"
@@ -545,9 +768,22 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
                 EMatch(_, _) => true,
                 _ => false
               }
-              if eligible_shape && tail_is_borrow_ret_safe(known, top) {
-                Array::push(known, name)
-                changed = true
+              if eligible_shape {
+                // #1915: the spine bindings resolve bare ident branch tails
+                // to the values they name (see tail_is_borrow_ret_safe).
+                let sp_names: Array[String] = [
+                ]
+                let sp_vals: Array[Expr] = [
+                ]
+                let sp_excluded: Array[String] = [
+                ]
+                let _ = collect_spine_let_vals(body, sp_names, sp_vals, sp_excluded)
+                if tail_is_borrow_ret_safe(known, top, sp_names, sp_vals, sp_excluded) {
+                  Array::push(known, name)
+                  changed = true
+                } else {
+                  ()
+                }
               } else {
                 ()
               }

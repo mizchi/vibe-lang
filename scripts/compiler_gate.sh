@@ -4417,7 +4417,7 @@ if [ "$sh_out" != "42" ]; then
   exit 1
 fi
 echo "[compiler-gate] RC user-shadowed builtin name ok (#1746)"
-echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
+echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume+builder-return)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
 VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -4434,8 +4434,8 @@ lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
   echo "[compiler-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
-if [ "$lk_result" != "3200280000" ]; then
-  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200280000)" >&2; exit 1
+if [ "$lk_result" != "3200340000" ]; then
+  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200340000)" >&2; exit 1
 fi
 if [ "$lk_used" -ge 2000 ]; then
   echo "[compiler-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
