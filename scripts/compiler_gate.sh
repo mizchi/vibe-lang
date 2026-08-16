@@ -7854,10 +7854,8 @@ scps_run_expect "effect_closure_param_inert_transitive.vibe" "5" "inertdeleg"
 # CPS evaluates a resume-value Async handler. The fixture also pins its
 # Array-backed ready Future[Option[T]] result and one evaluation (Some(41)+1).
 scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
-# Fresh synthetic target and direct [ready, payload] cell: a user
-# `__sn_next` must not capture the retarget and shadowed Future::ready must
-# not change empty-stream layout (None fallback = 7).
-scps_run_expect "effect_stream_next_retarget_hygiene.vibe" "7" "streamnexthygiene"
+# Hygiene pin (user `__sn_next` + shadowed Future::ready, empty layout = 7)
+# now lives in fixtures/effect_stream_next_retarget_hygiene_test.vibe (#1973).
 # #1723: a local pure closure shadows a top-level function whose callback
 # parameter carries the suspend effect. The prepass must leave the literal on
 # the plain convention; Done-wrapping it returns a step pointer instead of 8.

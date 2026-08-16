@@ -2754,7 +2754,7 @@ retarget であり、`host_stream_next`、row-variable callee、literal-param fl
 この slice の範囲外のまま。
 
 fixtures: `effect_stream_next_suspend_retarget.vibe` (want 42; `Some(41)` と
-argument の一回評価を pin)、`effect_stream_next_retarget_hygiene.vibe`
+argument の一回評価を pin)、`effect_stream_next_retarget_hygiene_test.vibe`
 (`__sn_next` collision、shadowed `Future::ready`、empty layout を pin)。
 
 ### 追記42 (2026-08-09): sequence HEAD の let 連鎖を継続 spine へ float する (#1536 (a) v3)
