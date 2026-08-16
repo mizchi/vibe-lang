@@ -1,89 +1,92 @@
-# 生成コードサイズ: linear backend vs wasm-gc backend
+# Generated code size: linear backend vs wasm-gc backend
 
-測定日: 2026-08-16 (結論を全面改訂) / 2026-08-15 (合成ベンチ部分)
+Measured: 2026-08-16 (conclusion rewritten) / 2026-08-15 (synthetic benches)
 
-再現:
+Reproduce:
 
 ```bash
-# 合成ベンチ (下の scaled* / fixture 規模の表)
+# Synthetic benches (the scaled* / fixture-sized table below)
 bash scripts/measure_backend_code_size.sh
 
-# 実アプリ規模 (結論の表) -- コンパイラ自身を両レーンでコンパイルして比べる
-bash scripts/test_gc_selfbuild.sh          # gc 側の bundle_gc.wasm を作る
+# Real application scale (the conclusion table) -- compile the compiler itself on both lanes
+bash scripts/test_gc_selfbuild.sh          # produces bundle_gc.wasm on the gc side
 node scripts/wasm_section_sizes.mjs \
   _build/gc_selfbuild/bundle_gc.wasm \
   "$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
 ```
 
-関連: [gc-value-abi.md](./gc-value-abi.md) (#1331), [feature-levels.md](./feature-levels.md),
-[../BENCHMARKS.md](../BENCHMARKS.md) (linear レーンの時間方向の回帰シグナル)
+Related: [gc-value-abi.md](./gc-value-abi.md) (#1331), [feature-levels.md](./feature-levels.md),
+[../BENCHMARKS.md](../BENCHMARKS.md) (time-axis regression signal on the linear lane)
 
-## 結論
+## Conclusion
 
-**wasm-gc の方が大きい。小さいプログラムでも、実アプリ規模でも。**
+**wasm-gc is larger. On small programs, and at real application scale.**
 
-実測できる最大の実プログラム — コンパイラ自身 (flat bundle、ソース 5.1 MB) を
-同一ソースから両レーンでコンパイルした結果:
+The largest real program we can measure — the compiler itself (a flat bundle, 5.1 MB of source) —
+compiled from the same source on both lanes:
 
 | | linear | wasm-gc | Δ |
 |---|---:|---:|---:|
-| 総サイズ | 2,220,575 | 3,051,650 | **+37.4%** |
-| code セクション | 2,109,773 | 2,940,289 | **+39.4%** |
-| 関数の数 | 4,454 | 4,519 | +1.5% |
-| **関数あたり平均** | **474** | **651** | **+37.3%** |
+| total size | 2,220,575 | 3,051,650 | **+37.4%** |
+| code section | 2,109,773 | 2,940,289 | **+39.4%** |
+| function count | 4,454 | 4,519 | +1.5% |
+| **mean bytes per function** | **474** | **651** | **+37.3%** |
 
-差の **99.9% が code セクション**で、型メタデータ (type セクション +915 B) は
-誤差。関数の数もスタブ数もほぼ同じなので、**同じ関数を gc がより多くのバイトで
-生成している**。最大関数で比べると 64,921 → 119,372 B (1.84 倍)。
+**99.9% of the gap is the code section.** Type metadata (type section +915 B) is noise.
+Function count and stub count are almost the same, so **gc is emitting more bytes for the
+same functions**. The largest function goes 64,921 → 119,372 B (1.84×).
 
-> **#1985 (兄弟分岐のローカルスロット再利用) を入れた後の数字。** それ以前は
-> 3,086,780 B (+39.0%) で、gc レーンは分岐の各アームに兄弟の high-water mark
-> より上からスロットを割り当てていた — ネスト深さに対して 2^d で増える。
-> 修正でモジュール全体の宣言ローカルは 92,071 → 53,280 スロット (**−42%**)、
-> 最大の関数で 2,651 → 1,986 になったが、**サイズは 35 KB (1.1%) しか減って
-> いない**。ローカル宣言は 1 スロット 2〜3 B なので、ここは差の主因では
-> なかった。残る +37% は下の「関数あたりのコード密度」である。
+> **These numbers are after #1985 (sibling-branch local-slot reuse).** Before that the
+> gc module was 3,086,780 B (+39.0%): the gc lane assigned each arm slots above its
+> siblings' high-water mark, which grew as 2^d in nesting depth. The fix dropped
+> declared locals across the module from 92,071 → 53,280 slots (**−42%**), and the
+> largest function from 2,651 → 1,986, but **size only fell 35 KB (1.1%)**. A local
+> declaration is 2–3 B per slot, so this was never the main driver of the gap. The
+> remaining +37% is the "bytes per function" density below.
 
-> **この節は 2026-08-16 に書き換えた。以前ここには「交点は約 35 KB、それ以降は
-> gc が数 % 小さい」と書いてあったが、実アプリ規模でそうならない。** 下の
-> 合成ベンチ (`scaled*`、最大 71 KB) の外挿が実コードを代表していなかった。
-> 合成ソースは「struct + 射影 + 配列ループ + 文字列構築」を N コピーしたもので、
-> 分岐も match も浅い。実コンパイラのように match と深い分岐とローカルが多い
-> コードでは、gc の値表現の出し入れがコード密度をむしろ悪化させる。
-> **合成スケーリングで測った傾きを、質の違うコードへ外挿してはいけない** —
-> 下の傾き (gc = linear の 94.2%) はあの形のコードに限った数字である。
+> **This section was rewritten on 2026-08-16.** It used to say "the crossover is about
+> 35 KB, and past that gc is a few percent smaller." That does not hold at real
+> application scale. Extrapolating the synthetic benches (`scaled*`, up to 71 KB)
+> did not represent real code. The synthetic source is N copies of
+> "struct + projection + array loop + string build" with shallow branches and
+> matches. On code like the real compiler — lots of matches, deep branches, and
+> locals — gc's value-representation traffic makes code density worse.
+> **Do not extrapolate a slope measured on synthetic scaling onto a
+> different kind of code** — the slope below (gc = 94.2% of linear) is a number
+> for that shape of code only.
 
-「wasm-gc にすればビルドサイズが減る」は**成り立たない**。サイズを理由に
-gc レーンを選ぶ根拠は現時点で存在しない。
+"Switch to wasm-gc and the build gets smaller" **does not hold**. There is currently
+no size-based reason to pick the gc lane.
 
-## 実測
+## Measurements
 
-同一ソースを両バックエンドでコンパイルした `.wasm` のバイト数。ケースセットは
-`bench/binary_size/` (#1056) をそのまま使っており、[../BENCHMARKS.md](../BENCHMARKS.md)
-の linear 側の数字と同じ土俵に乗る。`result` 列は両レーンの実行結果で、これが
-一致しない行はサイズ比較としても無効 (壊れた wasm は小さくて当たり前なので、
-サイズと必ず一緒に見る)。
+Byte sizes of `.wasm` compiled from the same source on both backends. The case set
+is `bench/binary_size/` (#1056) as-is, so it is comparable to the linear
+numbers in [../BENCHMARKS.md](../BENCHMARKS.md). The `result` column is the
+execution result on both lanes; a row where those disagree is invalid as a size
+comparison too (a broken wasm is naturally small, so always read size next to the result).
 
-| プログラム | 主に効く形 | linear | wasm-gc | Δ | 実行結果 |
+| program | dominant shape | linear | wasm-gc | Δ | result |
 |---|---|---:|---:|---:|---:|
-| `empty` | `() -> 0` (固定費の対照) | 742 | 4,831 | +551.1% | 0 |
-| `hello_world` | 単一 `println` | 831 | 4,877 | +486.9% | 0 |
-| `fib` | 再帰呼び出し | 795 | 4,875 | +513.2% | 6765 |
-| `fizzbuzz` | ループ + 条件分岐 | 1,384 | 5,008 | +261.8% | 0 |
-| `closure_indirect` | 高階関数 / 間接呼び出し | 2,456 | 5,095 | +107.5% | 31 |
-| `variant_float` | 代数型 match + 浮動小数 | 4,459 | 5,743 | +28.8% | 31 |
-| `scaled10` | 合成 ×10 | 7,154 | 8,821 | +23.3% | 105 |
-| `scaled40` | 合成 ×40 | 19,949 | 20,699 | +3.8% | 255 |
-| `scaled80` | 合成 ×80 | 37,084 | 36,595 | **−1.3%** | 455 |
-| `scaled160` | 合成 ×160 | 71,324 | 69,238 | **−2.9%** | 855 |
+| `empty` | `() -> 0` (fixed-cost control) | 742 | 4,831 | +551.1% | 0 |
+| `hello_world` | single `println` | 831 | 4,877 | +486.9% | 0 |
+| `fib` | recursive calls | 795 | 4,875 | +513.2% | 6765 |
+| `fizzbuzz` | loop + branches | 1,384 | 5,008 | +261.8% | 0 |
+| `closure_indirect` | higher-order / indirect call | 2,456 | 5,095 | +107.5% | 31 |
+| `variant_float` | algebraic match + floats | 4,459 | 5,743 | +28.8% | 31 |
+| `scaled10` | synthetic ×10 | 7,154 | 8,821 | +23.3% | 105 |
+| `scaled40` | synthetic ×40 | 19,949 | 20,699 | +3.8% | 255 |
+| `scaled80` | synthetic ×80 | 37,084 | 36,595 | **−1.3%** | 455 |
+| `scaled160` | synthetic ×160 | 71,324 | 69,238 | **−2.9%** | 855 |
 
-`empty` は既存ケースセットに無いので測定スクリプト側で生成している —
-最小の `hello_world` ですら `println` を呼ぶので、「何も使わないプログラム」を
-別に置かないと固定費そのものが取れない。
+`empty` is generated by the measurement script, not the existing case set —
+even the smallest `hello_world` calls `println`, so you cannot read the fixed
+cost itself unless you keep a "program that uses nothing" on the side.
 
-`scaledN` は「struct 定義 + 射影 + 配列確保ループ + 文字列構築」を 1 セットと
-して N コピー並べた合成ソース。既存ケースセットは固定サイズなので傾きが取れず、
-交点 (この測定の主結論) はこちらでしか出せない。
+`scaledN` is N copies of one set: struct definition + projection + array-alloc
+loop + string build. The existing case set is fixed-size, so it cannot give a
+slope; the crossover (the original headline of this measurement) can only come
+from here.
 
 ```
 slope:     linear 427.8 B/copy, wasm-gc 402.8 B/copy (gc = 94.2% of linear)
@@ -92,82 +95,88 @@ residual:  max 421 B off the fitted line (0.6% of the largest point)
 crossover: 77 copies == 34.8 KB of linear output
 ```
 
-残差 0.6% なので、この範囲では線形近似そのものは妥当。
+Residual 0.6%, so a linear fit is reasonable inside this range.
 
-> **fitted intercept は空プログラムのサイズではない。** 直線の切片 (2,876 /
-> 4,793) は `empty` の実測 (742 / 4,831) と一致しない。合成ソースは 1 コピー目
-> から `ArrayBuilder` / `StringBuilder` を使うので、linear 側は「使ったときだけ
-> 出る」ヘルパを切片に含んでいる一方、gc 側は元から全部出しているので増えない。
-> 両者を混ぜて引き算しないこと — **固定費の実測は `empty` の行、傾きは
-> `scaled*` の行**で、切片は交点を出すための中間量でしかない。
+> **The fitted intercept is not the empty-program size.** The line intercepts
+> (2,876 / 4,793) do not match the measured `empty` (742 / 4,831). The synthetic
+> source uses `ArrayBuilder` / `StringBuilder` from copy 1, so the linear side
+> folds "helpers that appear only when used" into the intercept, while the gc
+> side already emitted all of them and does not grow. Do not subtract one from
+> the other — **the measured fixed cost is the `empty` row, the slope is the
+> `scaled*` rows**, and the intercept is only an intermediate used to compute
+> the crossover.
 
-## なぜこうなるのか
+## Why it looks like this
 
-セクション単位・関数単位に分解すると理由は 1 つに絞れる
-(`node scripts/wasm_section_sizes.mjs <file.wasm>`)。
+Breaking it down by section and by function leaves one cause
+(`node scripts/wasm_section_sizes.mjs <file.wasm>`).
 
 | | `empty` linear | `empty` gc | `closure_indirect` linear | `closure_indirect` gc |
 |---|---:|---:|---:|---:|
-| code セクション | 428 | 4,577 | 2,116 | 4,815 |
-| type セクション | 54 | 76 | 67 | 89 |
-| func セクション | 66 | 49 | 69 | 52 |
-| 関数の数 | 65 | 48 | 68 | 51 |
-| うち本体 4 B 以下のスタブ | **61** | 2 | **54** | 1 |
-| 本体を持つ関数 | 4 | **46** | 14 | **50** |
+| code section | 428 | 4,577 | 2,116 | 4,815 |
+| type section | 54 | 76 | 67 | 89 |
+| func section | 66 | 49 | 69 | 52 |
+| function count | 65 | 48 | 68 | 51 |
+| stubs whose body is ≤ 4 B | **61** | 2 | **54** | 1 |
+| functions with a real body | 4 | **46** | 14 | **50** |
 
-**gc レーンは 200〜313 B のランタイムヘルパを、使う使わないに関係なく無条件に
-吐く。** `empty` と `closure_indirect` の gc 側で上位関数サイズの並び
-(313, 302, 236, 236, 216, 207, 205, 199, …) が完全に一致することがその証拠で、
-プログラムが何をしようと同じ本体が入っている。48 本中スタブは 1〜2 本しかない。
+**The gc lane emits 200–313 B runtime helpers unconditionally, used or not.**
+The evidence is that the top function sizes on the gc side of `empty` and
+`closure_indirect` are an identical sequence
+(313, 302, 236, 236, 216, 207, 205, 199, …) — the same bodies land no matter
+what the program does. Only 1–2 of the 48 functions are stubs.
 
-**linear レーンは同じスロットを持ちながら、使われた本体だけを埋める。**
-空プログラムでは 65 関数のうち 61 本が 4 B 以下のスタブで、コードセクション
-全体が 428 B しかない。間接呼び出しを使った途端に 7 本のスタブが実体に変わり
-(646 / 285 / 214 / 207 B …)、ユーザ関数 3 本と合わせて本体を持つ関数が 4 → 14 本、
-コードは 2,116 B に膨らむ。
+**The linear lane keeps the same slots but fills in a body only when it is
+used.** On an empty program 61 of 65 functions are ≤ 4 B stubs and the whole
+code section is 428 B. The moment you use an indirect call, 7 stubs become
+real (646 / 285 / 214 / 207 B …), and together with 3 user functions the
+count of functions with a body goes 4 → 14 and the code grows to 2,116 B.
 
-つまり **linear は必要になるまで払わない / gc は先に全部払う**。空プログラムでの
-gc の固定費 +4,089 B はこれである。
+So **linear does not pay until it must / gc pays everything up front**. That is
+the +4,089 B gc fixed cost on an empty program.
 
-分母 (傾きの差) の方はずっと小さい。`scaled160` で見ると:
+The denominator (the slope gap) is much smaller. On `scaled160`:
 
-- code セクション: linear 70,183 → gc 66,393 B (**−5.4%**)
-- type セクション: linear 67 → gc 1,050 B (nominal struct 型を型セクションに宣言する分)
-- func セクション: linear 868 → gc 1,653 B (型インデックスが増えて LEB が伸びる)
+- code section: linear 70,183 → gc 66,393 B (**−5.4%**)
+- type section: linear 67 → gc 1,050 B (declaring nominal struct types in the type section)
+- func section: linear 868 → gc 1,653 B (more type indices, longer LEBs)
 
-コード本体では gc が勝つが、その利得の一部を型メタデータで返している。差し引き
-1 コピーあたり **25 B** (427.8 − 402.8) しか稼げない。
+gc wins on the function bodies, then gives some of that back as type metadata.
+Net it only earns **25 B** per copy (427.8 − 402.8).
 
-### 償却すべき額は 4,089 B ではない
+### The amount to amortize is not 4,089 B
 
-ここで **+4,089 B を 25 B/copy で割ってはいけない** (それは 164 コピーになり、
-実測の交点 77 コピーと合わない)。4,089 B は「linear がヘルパを **1 本も**
-出さない場合」の差であって、実際の workload はそうならないからである。
+Do **not** divide +4,089 B by 25 B/copy (that would be 164 copies, which does
+not match the measured crossover of 77). 4,089 B is the gap when linear emits
+**no** helpers at all, and a real workload is not that.
 
-`scaled*` は 1 コピー目から `ArrayBuilder` / `StringBuilder` を使うので、
-**linear もその分を後から払う**。fitted intercept がその額を教えてくれる:
+`scaled*` uses `ArrayBuilder` / `StringBuilder` from copy 1, so **linear pays
+that later too**. The fitted intercept tells you how much:
 
-| | 空プログラム | scaled の fitted intercept | 差 |
+| | empty program | scaled fitted intercept | delta |
 |---|---:|---:|---:|
-| linear | 742 | 2,876 | **+2,134** (オンデマンドで出たヘルパ) |
-| wasm-gc | 4,831 | 4,793 | −38 (元から全部出しているので増えない) |
+| linear | 742 | 2,876 | **+2,134** (helpers emitted on demand) |
+| wasm-gc | 4,831 | 4,793 | −38 (already emitted everything, so no growth) |
 | gc − linear | **4,089** | **1,917** | |
 
-つまり gc が最初に払った 4,089 B のうち 2,134 B 分は、この workload では
-linear も結局払う。**償却すべき正味の差は 1,917 B** (= 4,089 − 2,134 − 38) で、
-これを 25 B/copy で割って 77 コピー = 約 35 KB になる。スクリプトが交点に
-fitted intercept を使うのはこのためである。
+So of the 4,089 B gc paid up front, 2,134 B is something linear eventually
+pays on this workload too. **The net gap to amortize is 1,917 B**
+(= 4,089 − 2,134 − 38); divide by 25 B/copy and you get 77 copies ≈ 35 KB.
+That is why the script uses the fitted intercept for the crossover.
 
-**したがって交点は普遍定数ではなく workload 依存**で、次の範囲に収まる:
+**The crossover is therefore workload-dependent, not a universal constant**,
+and it sits in this range:
 
-- **使う builtin が多いほど早い** — linear が後から払う額が増えて正味の差が縮む
-- **上限は 4,089 / 25 ≈ 164 コピー** — 純粋な算術だけで linear がヘルパを 1 本も
-  出さない極限。この場合 gc は固定費を丸ごと自分で償却することになる
+- **Earlier when more builtins are used** — linear's later bill grows and the
+  net gap shrinks
+- **Upper bound 4,089 / 25 ≈ 164 copies** — the limit where the program is
+  pure arithmetic and linear emits not a single helper. gc then has to
+  amortize the whole fixed cost itself
 
-35 KB は「ArrayBuilder と StringBuilder と struct を使う程度のコード」での値で、
-桁の目安として読むべき数字である。
+35 KB is the value for "code that uses ArrayBuilder and StringBuilder and a
+struct, roughly," and should be read as an order-of-magnitude guide.
 
-## 測定方法と落とし穴
+## How to measure, and the pitfalls
 
 ```bash
 bash scripts/measure_backend_code_size.sh [stage2.wasm]
@@ -175,43 +184,47 @@ MEASURE_SCALES="10 20 40 80" bash scripts/measure_backend_code_size.sh
 node scripts/wasm_section_sizes.mjs _build/backend_code_size/empty.gc.wasm
 ```
 
-再測定するときに踏みやすいものが 2 つある。どちらも**黙って誤った数字を出す**
-種類の失敗なので、結果の形で気づけるようにしておくこと。
+Two things are easy to step on when remeasuring. Both **silently produce a
+wrong number**, so keep them recognizable from the shape of the result.
 
-**1. `VIBE_FS_COMPILE=1` を付けると gc レーンは無効になる。** gc backend は
-direct source compile 専用で、FS-import モードと特殊な instrumentation モードは
-linear 固定である (`cli_adapter` のコメント)。両方に付けて測ると
-**両レーンがバイト単位で一致する** — これは「差が無い」ではなく「両方 linear を
-測った」なので、一致を見たらまずこれを疑う。この制約の帰結として、**ここで
-測れるのは import を持たない単一ファイルだけ**であり、実アプリの実測ではなく
-傾きの推定である。
+**1. `VIBE_FS_COMPILE=1` disables the gc lane.** The gc backend is
+direct-source-compile only; FS-import mode and the special instrumentation
+modes are linear-only (`cli_adapter` comments). Measure both with that set
+and **the two lanes match byte-for-byte** — that is not "no difference," it
+is "you measured linear twice." If you see a match, suspect this first.
+A consequence: **this measurement only covers single files with no imports**,
+so it is a slope estimate, not a measurement of a real application.
 
-**2. entry 名は `main` にする。** doctest 等が使う `__no_entry__` sentinel は
-linear では通るが gc では `entry function not found: __no_entry__` で落ちる。
-gc 側だけ 0 バイトになるので気づける形ではあるが、`|| true` で握り潰すと
-「gc は 0 B」という無意味な勝利になる。スクリプトは 0 バイトをサイズ表に混ぜず
-COMPILE FAILED として報告する。正しい呼び出し形は `scripts/compiler_gate.sh` の
-40h (wasm-gc backend smoke) と `scripts/bench_binary_size.sh` と同じ。
+**2. The entry name must be `main`.** The `__no_entry__` sentinel that
+doctests use works on linear and fails on gc with
+`entry function not found: __no_entry__`. The gc side coming out 0 bytes is
+noticeable, but swallowing it with `|| true` turns into a meaningless "gc
+is 0 B" win. The script keeps 0-byte outputs out of the size table and
+reports COMPILE FAILED. The correct invocation is the same as
+`scripts/compiler_gate.sh` 40h (wasm-gc backend smoke) and
+`scripts/bench_binary_size.sh`.
 
-## この数字をどう使うか
+## How to use these numbers
 
-- **gc レーンをサイズ目的で選ぶ理由は無い。** 選ぶ理由は
-  [gc-value-abi.md](./gc-value-abi.md) にある表現の方 (ネイティブ参照、循環構造の
-  回収、RC の除去) であって、サイズは副作用ですらない。
-- **P5 (size reduction) で削るべきは固定費ではなく、関数あたりのコード密度。**
-  固定費 4 KB は 3 MB の成果物では 0.1% にすぎず、実際の差 +866 KB のほぼ全部が
-  関数本体である。「スロットは置くが使われた本体だけ埋める」機構 (linear が
-  持っているもの) を gc に入れても、小さいプログラムの見え方が変わるだけで
-  実アプリ規模はほぼ動かない。**まず「なぜ 1 関数が 1.4 倍になるのか」を
-  関数単位で特定すること** — 現状ここは未調査で、`wasm_section_sizes.mjs` は
-  サイズしか出せない (成果物は name section を strip 済みなので、関数 index と
-  ソースの対応付けが要る)。
-- **ローカルスロットの数はもう主因ではない (#1985 で確認済み)。** 宣言ローカル
-  を 42% 削っても総サイズは 1.1% しか動かなかった。`node
-  scripts/wasm_local_counts.mjs <file.wasm>` が本体ごとのスロット数を出すので、
-  次に何かを疑うときはまずこれで「そもそもサイズに効く量か」を確かめること。
-  残っている頭打ちは 45,937 スロット (兄弟再利用を無条件に有効化した場合の
-  上限、linear は 41,953) で、そこまで詰めても得られるのはあと 20 KB 程度。
-- **サイズ回帰を見張るなら linear 側で見る。** gc は小さいプログラムでは固定費が
-  支配的で、ユーザコードの増減が数字にほとんど出ない (`closure_indirect` は
-  linear で +1,714 B、gc では +264 B)。回帰検出器としては鈍い。
+- **There is no size reason to pick the gc lane.** The reason to pick it is
+  the representation in [gc-value-abi.md](./gc-value-abi.md) (native
+  references, collecting cyclic structure, dropping RC). Size is not even a
+  side effect of that.
+- **What P5 (size reduction) should cut is bytes per function, not the fixed
+  cost.** 4 KB of fixed cost is 0.1% of a 3 MB artifact; almost all of the
+  actual +866 KB gap is function bodies. Putting linear's "keep the slot,
+  fill the body only when used" mechanism into gc would change how small
+  programs look and barely move real application scale. **First pin down, per
+  function, why one function becomes 1.4×** — that is uninvestigated today,
+  and `wasm_section_sizes.mjs` only reports sizes (artifacts have the name
+  section stripped, so you need a function-index-to-source map).
+- **Local-slot count is no longer the main driver (confirmed in #1985).**
+  Cutting declared locals 42% moved total size only 1.1%.
+  `node scripts/wasm_local_counts.mjs <file.wasm>` reports slots per body, so
+  when you next suspect something, check "is this even a size-shaped amount"
+  there first. The remaining ceiling is 45,937 slots (the cap if sibling
+  reuse is enabled unconditionally; linear is 41,953), and packing that far
+  would buy about another 20 KB.
+- **Watch size regressions on the linear side.** On small programs gc's fixed
+  cost dominates, so user-code growth barely shows up (`closure_indirect` is
+  +1,714 B on linear and +264 B on gc). As a regression detector it is dull.

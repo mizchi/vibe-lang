@@ -576,8 +576,21 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
   while ai < num_cond_arms {
     let (p, arm_body) = Array::get(arms, ai)
     let next_arm_local = gc_sibling_scope_start(ctx, local_names, arm_body, arm_base_local, max_nl)
-    while Array::length(local_names) < next_arm_local {
-      Array::push(local_names, "")
+    // Grow-only padding leaves a conservatively-typed arm's max_nl pad in
+    // place after that arm falls back to i64. Truncate that stale pad when
+    // this start is lower so the next untyped arm can reuse the slots -- but
+    // never below the computed start, which is already the typed-slot ceiling.
+    if Array::length(local_names) > next_arm_local {
+      Array::truncate(local_names, next_arm_local)
+      agg_log_reset_above(ctx.gc_agg_local_slots, next_arm_local)
+      gc_slot_log_reset_above(ctx.gc_bool_locals, next_arm_local)
+      gc_slot_log_reset_above(ctx.gc_float_locals, next_arm_local)
+      gc_slot_log_reset_above(ctx.gc_native_array_locals, next_arm_local)
+      gc_slot_map_reset_above(ctx.gc_native_struct_scope, next_arm_local)
+    } else {
+      while Array::length(local_names) < next_arm_local {
+        Array::push(local_names, "")
+      }
     }
     let names_len_at_arm = Array::length(local_names)
     let ld_arm = if ld >= 0 {
@@ -614,8 +627,17 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
   if catchall_idx < num_arms {
     let (cp, cbody) = Array::get(arms, catchall_idx)
     let catch_start = gc_sibling_scope_start(ctx, local_names, cbody, arm_base_local, max_nl)
-    while Array::length(local_names) < catch_start {
-      Array::push(local_names, "")
+    if Array::length(local_names) > catch_start {
+      Array::truncate(local_names, catch_start)
+      agg_log_reset_above(ctx.gc_agg_local_slots, catch_start)
+      gc_slot_log_reset_above(ctx.gc_bool_locals, catch_start)
+      gc_slot_log_reset_above(ctx.gc_float_locals, catch_start)
+      gc_slot_log_reset_above(ctx.gc_native_array_locals, catch_start)
+      gc_slot_map_reset_above(ctx.gc_native_struct_scope, catch_start)
+    } else {
+      while Array::length(local_names) < catch_start {
+        Array::push(local_names, "")
+      }
     }
     // Catch-all arm: recursive binds handle PBind / PCtor / PTuple / PStruct
     // uniformly, including nested payload binds (and fix the old tuple-bind
