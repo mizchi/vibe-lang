@@ -64,6 +64,7 @@ bash scripts/check_inline_builtin_capture.sh
 # #1587: a fixture with `test` blocks that no lane runs is coverage that does
 # not exist. Pure shell + grep (~2s), so it runs before the multi-minute
 # selfbuild rather than after it.
+node scripts/generate_runtime_fixture_tests.test.mjs
 bash scripts/check_fixture_execution.sh
 
 # #1821 / Codex review on #1822: the token formatter may conservatively miss
