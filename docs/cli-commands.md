@@ -99,6 +99,35 @@ returning `"STATUS\n<Header: value lines>\n\n<body>"`. Internally the handler
 may use algebraic effects (`perform` / `handle`, e.g. `lib/@vibe/wasi/p3/`), as
 long as they are discharged inside the file.
 
+The last parameter may instead be a `HostStream` — the request body as it
+arrives, rather than collected into a `String` first (#1540):
+
+```vibe skip
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let mut out = ""
+  let mut go = true
+  while go {
+    let b = host_stream_next(body)
+    if b < 0 { go = false } else { out = String::concat(out, String::from_char_code(b)) }
+  }
+  "200\n\n\{out}"
+}
+```
+
+`host_stream_next` suspends, so this form carries `with Async` — and the two
+go together in both directions: `with Async` without a `HostStream` body has
+nothing to await, and a `HostStream` body without `Async` could never be read.
+`vibe serve` rejects either half on its own with that reason.
+
+The stream form needs the **stream-body adapter**, whose `handler` import takes
+`body: stream<u8>`; the launcher picks it by reading the WIT sidecar, so the
+only manual step is building it:
+
+```
+VIBE_HTTP_ADAPTER_BODY_STREAM=1 scripts/build_wasi_http_p3_full_adapter.sh \
+  _build/http_adapter/vibe_http_p3_body_stream_adapter.component.wasm
+```
+
 - Artifact generation lives in the compiler (`VIBE_SERVE_COMPONENT=1`); adapter
   resolution, composition, and serving live in the launcher — the compiled
   `<handler>.component.wasm` + `<handler>.wit` are reusable on their own.
@@ -106,7 +135,9 @@ long as they are discharged inside the file.
   `wasmtime` (v45+). The P3 adapter component is built once by
   `scripts/build_wasi_http_p3_full_adapter.sh` (cargo + wasm-tools) or passed
   via `--adapter` / `VIBE_HTTP_ADAPTER`.
-- E2E gate: `scripts/test_wasi_http_p3_full_gate.sh`.
+- E2E gates: `scripts/test_wasi_http_p3_full_gate.sh` (String body),
+  `scripts/test_serve_async_lift_gate.sh` (async lift, same String contract),
+  `scripts/test_serve_body_stream_gate.sh` (`HostStream` body, byte-exact echo).
 
 ### precompile
 

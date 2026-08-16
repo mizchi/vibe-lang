@@ -1,7 +1,8 @@
 //# Imports
 
 import ../wit_gen.vibe {
-  serve_handler_param_names, validate_serve_handler, wit_from_program, wit_kebab_ident, wit_type_text
+  serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler,
+  wit_from_program, wit_kebab_ident, wit_type_text
 }
 
 import @vibe/core {
@@ -149,9 +150,10 @@ test "validate_serve_handler: rejects a missing handler export" {
 /// #1540: `Async` gets its own rejection, because the generic one gives advice
 /// that cannot be followed. `Async` is not a capability and has no operations,
 /// so "discharge the effect with `handle`" sends the reader after something
-/// that does not exist -- the actual answer is that the async serve lane is
-/// not selected by the CLI yet.
-test "validate_serve_handler: an Async handler is rejected with an Async-specific reason (#1540)" {
+/// that does not exist. Since #1540 scope 4 the lane DOES exist, so the answer
+/// changed from "not wired up yet" to what actually unlocks it: the body
+/// parameter the suspension is for.
+test "validate_serve_handler: an all-String Async handler is told what Async is for (#1540)" {
   let async_ann = TyFn([
     TyName("String"),
     TyName("String"),
@@ -167,10 +169,65 @@ test "validate_serve_handler: an Async handler is rejected with an Async-specifi
   } with Exception {
     Throw(m) => m
   }
-  assert(String::contains(msg, "`Async` handler is not wired up yet"))
+  assert(String::contains(msg, "needs a `body: HostStream` parameter"))
   // The advice the generic arm gives must NOT appear here: there is nothing to
   // handle, and following it would waste the reader's time.
   assert(!String::contains(msg, "discharge the effect with `handle`"))
+}
+
+/// #1540 scope 4: the shape the whole issue was for. A last parameter typed
+/// `HostStream` plus `with Async` is the stream serve lane's contract, and it
+/// must pass -- every earlier revision of this function rejected it.
+test "validate_serve_handler: accepts a HostStream body with Async (#1540)" {
+  let stream_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("HostStream")
+  ], TyName("String"), Some("Async"))
+  let stmts = [
+    SLet(true, false, "handler", Some(stream_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  validate_serve_handler(stmts)
+  assert(serve_handler_takes_body_stream(stmts))
+}
+
+/// The converse. `host_stream_next` suspends, so a `HostStream` body with no
+/// `Async` in the row is a parameter the handler can never read -- reject at
+/// the boundary rather than serve a handler that silently sees no body.
+test "validate_serve_handler: a HostStream body without Async is rejected (#1540)" {
+  let stream_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("HostStream")
+  ], TyName("String"), None)
+  let stmts = [
+    SLet(true, false, "handler", Some(stream_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "needs `with Async`"))
+}
+
+/// The lane selector is what `vibe serve` branches on, so it must answer NO
+/// for the String contract -- picking the stream lane there would emit a
+/// component whose export takes a `stream<u8>` the adapter never supplies.
+test "serve_handler_takes_body_stream: false for the all-String contract (#1540)" {
+  let ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("String")
+  ], TyName("String"), None)
+  let stmts = [
+    SLet(true, false, "handler", Some(ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  assert(!serve_handler_takes_body_stream(stmts))
 }
 
 /// The generic arm still answers for real capability effects -- this is a new
@@ -203,6 +260,8 @@ test "wit_type_text: Future projects to future, ByteStream to stream<u8> (ADR-00
     TyName("String")
   ])) == "future<string>")
   assert(wit_type_text(TyName("ByteStream")) == "stream<u8>")
+  // #1540 scope 4: the parameter-side sibling, same projection.
+  assert(wit_type_text(TyName("HostStream")) == "stream<u8>")
 }
 
 test "wit_type_text: eager Stream stays unmapped (boundary rule, spec §3.3)" {

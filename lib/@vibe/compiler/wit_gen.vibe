@@ -33,9 +33,10 @@ import @vibe/core {
 // String -> string, Char -> char, Unit -> (no result), Bytes -> list<u8>,
 // Array[T] -> list<T>, Option[T] -> option<T>, Result[T, E] -> result<T, E>,
 // Map[K, V] -> list<tuple<K, V>>, tuples -> tuple<...>,
-// Future[T] -> future<T'>, ByteStream -> stream<u8> (ADR-0089 Decision 5;
-// the eager `Stream[T]` builtin deliberately has NO mapping — only nominal
-// host-owned boundary streams may cross, spec §3.3). Anything else
+// Future[T] -> future<T'>, ByteStream / HostStream -> stream<u8> (ADR-0089
+// Decision 5 and #1540 scope 4; the eager `Stream[T]` builtin deliberately has
+// NO mapping — only nominal host-owned boundary streams may cross, spec §3.3).
+// Anything else
 // (named user types, function types) is rejected with a clear error — the
 // golden output never silently mis-declares a boundary type.
 //
@@ -113,8 +114,15 @@ export fn wit_type_text(ty: TypeExpr) -> String with Exception {
         // (docs/spec/wasi-p3-async.md §2.4/§3.3; Decision 3's AsyncIter
         // unification keeps general guest streams out of the boundary).
         "stream<u8>"
+      } else if name == "HostStream" {
+        // #1540 scope 4: the other nominal boundary-stream handle. Same WIT
+        // projection as `ByteStream` and for the same reason -- a byte stream
+        // whose producer end the host owns -- but arriving as a PARAMETER
+        // rather than from a named import, which is what lets `vibe serve`
+        // hand a handler the request body.
+        "stream<u8>"
       } else {
-        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, tuples, Future[T], ByteStream)")
+        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, tuples, Future[T], ByteStream, HostStream)")
       }
     },
     TyApp(head, args) => {
@@ -330,6 +338,16 @@ export fn serve_handler_param_names() -> Array[String] {
   ]
 }
 
+/// #1540 scope 4: the request body's type on the serve boundary. Nominal on
+/// purpose (#1538): the eager `Stream[T]` is a different thing and must not
+/// satisfy this.
+fn wit_type_is_host_stream(ty: TypeExpr) -> Bool {
+  match ty {
+    TyName(name) => name == "HostStream",
+    _ => false
+  }
+}
+
 fn wit_type_is_string(ty: TypeExpr) -> Bool {
   match ty {
     TyName(name) => name == "String",
@@ -348,8 +366,18 @@ export fn validate_serve_handler(entry_stmts: Array[Stmt]) -> Unit with Exceptio
       if Array::length(sig_param_types) != 4 {
         throw(String::concat(contract, " (found \{Array::length(sig_param_types)} params)"))
       }
+      // #1540 scope 4: the LAST param may be a `HostStream` -- the request
+      // body, handed over as a component `stream<u8>` and read without ever
+      // being materialized. Every other param stays String: the contract is a
+      // shape, not a free-form signature.
+      let last_is_stream = wit_type_is_host_stream(Array::get(sig_param_types, Array::length(sig_param_types) - 1))
+      let string_param_limit = if last_is_stream {
+        Array::length(sig_param_types) - 1
+      } else {
+        Array::length(sig_param_types)
+      }
       let mut pi = 0
-      while pi < Array::length(sig_param_types) {
+      while pi < string_param_limit {
         if !wit_type_is_string(Array::get(sig_param_types, pi)) {
           throw(String::concat(contract, " (param \{pi} is not String)"))
         }
@@ -364,18 +392,69 @@ export fn validate_serve_handler(entry_stmts: Array[Stmt]) -> Unit with Exceptio
         if !is_exception_effect_name(ename) {
           // `Async` is not a capability and cannot be discharged with
           // `handle`, so it gets its own answer: telling someone to handle it
-          // sends them after an effect that has no operations to handle. What
-          // it actually needs is the async serve lane
-          // (comp_emit_component_wasm_string_handler_async, #1540), which the
-          // CLI does not select yet -- say THAT rather than misname the
-          // effect. #1540 scope 3/4 is the work that removes this arm.
+          // sends them after an effect that has no operations to handle. Since
+          // #1540 scope 4 the async lane IS selected by the CLI -- but only
+          // for the shape it exists for, a handler reading the request body as
+          // a stream. So the answer names that shape.
           if ename == "Async" {
-            throw("serve: an `Async` handler is not wired up yet -- the async serve lane exists (async lift + task.return) but `vibe serve` still emits the sync one, so the handler cannot suspend (#1540). Drop `with Async` for now; a handler that awaits is the next slice, not something `handle` can discharge here")
+            // #1540 scope 4: `Async` is what reading the body REQUIRES -- the
+            // read suspends -- so it is allowed exactly when the handler takes
+            // the body as a stream. Without that param there is nothing to
+            // await and no lane that can carry the suspend, and `handle` is
+            // still the wrong advice (Async has no operations to handle), so
+            // that case gets its own reason too.
+            if !last_is_stream {
+              throw("serve: `with Async` needs a `body: HostStream` parameter -- the async serve lane exists for reading the request body, and a handler that only takes Strings has nothing to await (#1540). Either take the body as `HostStream` or drop `with Async`; this is not something `handle` can discharge")
+            } else {
+              ()
+            }
           } else {
             throw("serve: handler requires capability effect '\{ename}'; a serve handler must be a pure function of its request params (discharge the effect with `handle` inside the file)")
           }
         }
         ei = ei + 1
+      }
+      // The converse of the arm above. A `HostStream` body can only be read by
+      // `host_stream_next`, which suspends, so a row without `Async` cannot
+      // read it -- the parameter would be inert. Rejecting says that at the
+      // boundary instead of leaving a handler that silently sees no body.
+      if last_is_stream && !serve_effects_have_async(sig_effects) {
+        throw("serve: a `body: HostStream` parameter needs `with Async` -- reading it suspends, so a row without `Async` can never call `host_stream_next` on it (#1540). Add `with Async`, or take the body as `String` to have it collected for you")
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+fn serve_effects_have_async(effects: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(effects) {
+    if Array::get(effects, i) == "Async" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1540 scope 4: does this entry file's `handler` take the request body as a
+/// stream? `vibe serve` reads this to pick the lane -- the stream component
+/// (async lift + a `stream<u8>` param) or the String one. Answers only for a
+/// handler that already passed `validate_serve_handler`; anything else is
+/// false, which lands on the lane whose diagnostics are the older ones.
+export fn serve_handler_takes_body_stream(entry_stmts: Array[Stmt]) -> Bool {
+  match wit_boundary_signature(entry_stmts, "handler") {
+    None => false,
+    Some(sig) => {
+      let (_sname, _spnames, sig_param_types, _sig_ret, _sig_effects) = sig
+      if Array::length(sig_param_types) == 0 {
+        false
+      } else {
+        wit_type_is_host_stream(Array::get(sig_param_types, Array::length(sig_param_types) - 1))
       }
     }
   }

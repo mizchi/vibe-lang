@@ -4,6 +4,7 @@
 // these used to be two separate leaf imports (preprocess.vibe,
 // merge_sources.vibe), now merged into one.
 import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_stream_handler,
   comp_emit_component_wasm_string_handler,
   compile_source_wasi_only,
   compile_source_wasi_only_coverage,
@@ -86,7 +87,7 @@ import ./inspect_update.vibe {
 }
 
 import ./wit_gen.vibe {
-  serve_handler_param_names, validate_serve_handler, wit_from_program
+  serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler, wit_from_program
 }
 
 import @vibe/compiler/syntax {
@@ -579,7 +580,15 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     // is the explicit sentinel — any other unknown entry name is a compile
     // error since ADR-0069.
     let core = compile_file_fs_mode(input_path, "__no_entry__", "no-dce")
-    let component = comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+    // #1540 scope 4: a `body: HostStream` handler goes down the stream lane
+    // (async lift + a component `stream<u8>` param) so it can read the body
+    // as it arrives; everything else keeps the sync lift and the collected
+    // String. validate_serve_handler has already rejected every other shape.
+    let component = if serve_handler_takes_body_stream(entry_stmts) {
+      comp_emit_component_wasm_stream_handler(core, "handler", "handler", serve_handler_param_names())
+    } else {
+      comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+    }
     Fs::write_bytes(output_path, component)
     let wit_out = Env::get("VIBE_SERVE_WIT_OUT")
     if wit_out != "" {

@@ -866,6 +866,11 @@ case "$cmd" in
     # Handler contract (scripts/build_wasi_http_p3_full_adapter.sh):
     #   export let handler = (method: String, url: String, headers: String, body: String) -> String
     # returning "STATUS\n<Header: value lines>\n\n<body>".
+    #
+    # #1540 scope 4: the last parameter may instead be a `HostStream`, read
+    # with `host_stream_next` -- the body as it arrives rather than collected
+    # first. That form suspends, so it also carries `with Async`, and it needs
+    # the stream-body adapter selected below.
     [ "$#" -ge 1 ] || die "usage: vibe serve <handler.vibe> [--addr host:port] [--port N] [-o out.component.wasm] [--adapter adapter.component.wasm] [--no-run]"
     src=""; out=""; addr="127.0.0.1:8080"; adapter="${VIBE_HTTP_ADAPTER:-}"; no_run=0
     while [ "$#" -gt 0 ]; do
@@ -897,13 +902,37 @@ case "$cmd" in
     echo "component $src -> $out"
     [ "$no_run" = "1" ] && exit 0
     # 2. P3 HTTP adapter (imports `handler`, exports wasi:http/handler@0.3)
-    if [ -z "$adapter" ]; then
-      for cand in "$TOOLCHAIN_DIR/lib/vibe_http_p3_full_adapter.component.wasm" \
-                  "$PWD/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm"; do
-        [ -f "$cand" ] && { adapter="$cand"; break; }
-      done
+    #
+    # #1540 scope 4: TWO adapters, because there are two handler contracts. A
+    # `body: HostStream` handler exports `handler(.., body: stream<u8>)` and
+    # only plugs into the adapter built with VIBE_HTTP_ADAPTER_BODY_STREAM=1;
+    # the String handler needs the default one. Read the lane off the WIT
+    # sidecar the compiler just wrote -- it is the same signature the component
+    # exports, and grepping it costs no extra tool (`wasm-tools` is not a
+    # prerequisite of this step). Picking the wrong adapter does NOT fail at
+    # composition: `wac plug` promotes the unsatisfiable edge to a root import
+    # (#1796), so the mistake would surface as a mysterious runtime failure.
+    wit_sidecar="${out%.component.wasm}.wit"
+    body_stream=0
+    if [ -f "$wit_sidecar" ] && grep -q 'body: stream<u8>' "$wit_sidecar"; then
+      body_stream=1
     fi
-    [ -n "$adapter" ] && [ -f "$adapter" ] || die "serve: P3 HTTP adapter not found; build it with scripts/build_wasi_http_p3_full_adapter.sh (needs cargo + wasm-tools) or pass --adapter / set VIBE_HTTP_ADAPTER"
+    if [ -z "$adapter" ]; then
+      if [ "$body_stream" = "1" ]; then
+        for cand in "$TOOLCHAIN_DIR/lib/vibe_http_p3_body_stream_adapter.component.wasm" \
+                    "$PWD/_build/http_adapter/vibe_http_p3_body_stream_adapter.component.wasm"; do
+          [ -f "$cand" ] && { adapter="$cand"; break; }
+        done
+        [ -n "$adapter" ] && [ -f "$adapter" ] || die "serve: this handler takes the body as a stream, which needs the stream-body P3 adapter; build it with 'VIBE_HTTP_ADAPTER_BODY_STREAM=1 scripts/build_wasi_http_p3_full_adapter.sh _build/http_adapter/vibe_http_p3_body_stream_adapter.component.wasm' (needs cargo + wasm-tools) or pass --adapter / set VIBE_HTTP_ADAPTER"
+      else
+        for cand in "$TOOLCHAIN_DIR/lib/vibe_http_p3_full_adapter.component.wasm" \
+                    "$PWD/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm"; do
+          [ -f "$cand" ] && { adapter="$cand"; break; }
+        done
+        [ -n "$adapter" ] && [ -f "$adapter" ] || die "serve: P3 HTTP adapter not found; build it with scripts/build_wasi_http_p3_full_adapter.sh (needs cargo + wasm-tools) or pass --adapter / set VIBE_HTTP_ADAPTER"
+      fi
+    fi
+    [ -f "$adapter" ] || die "serve: adapter not found: $adapter"
     # 3. compose: plug the handler component's export into the adapter's import
     command -v wac >/dev/null 2>&1 || die "serve: 'wac' not found (cargo install wac-cli)"
     composed="${out%.component.wasm}.serve.wasm"

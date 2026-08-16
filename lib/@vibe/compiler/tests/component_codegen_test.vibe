@@ -29,6 +29,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_future_value,
   comp_emit_component_wasm_host_future_value,
   comp_emit_component_wasm_stdin_provider_shadow,
+  comp_emit_component_wasm_stream_handler,
   comp_emit_component_wasm_stream_value,
   comp_emit_component_wasm_string_handler,
   comp_emit_component_wasm_string_handler_stubbed,
@@ -721,18 +722,22 @@ test "component async: the emitted body-read component takes a stream param (#15
   assert(component_bytes_contains(comp, "ERR-OVERRUN") == 1)
 }
 
-/// #1540 scope 3: the async trampoline's STREAM parameter.
+/// #1540 scope 3/4: the async trampoline's STREAM parameter.
 ///
 /// Two things are pinned, and the second is the one that cannot fail loudly.
 ///
 /// The canonical ABI flattens `stream<u8>` to ONE i32 handle after the
 /// strings' (ptr, len) pairs, so `canon_func` takes 2N+1 i32 -- shape, easy to
-/// see. The handle then reaches the handler's core function as a vibe Int,
-/// which is TAGGED: the host-stream adapter untags with `param >> 1`. A
-/// missing or doubled `<< 1` hands every read half or twice the real handle,
-/// and a wrong handle reads a different stream or none -- a wrong answer, not
-/// a trap.
-test "component async: the stream trampoline flattens and TAGS the handle (#1540)" {
+/// see. The handle then reaches the handler's core function as a vibe Int, and
+/// an Int's REPRESENTATION is the compile mode's: `enable_rc` on means
+/// `value << 1`, off means a plain i64 (linked_compile's tag_mode). This lane's
+/// core comes from `vibe serve`'s `compile_wasi_module_no_dce_impl`, which
+/// passes enable_rc = false -- so the handle crosses UNTAGGED, zero-extended
+/// and nothing else, matching what comp_generate_serve_stream_adapter_module
+/// reads back. Getting this wrong does not trap: a tag the guest does not
+/// expect just doubles the handle, and a doubled handle reads a different
+/// stream or silently reads none.
+test "component async: the stream trampoline flattens the handle UNTAGGED (#1540)" {
   let m = comp_emit_stream_trampoline_fixture(3)
   // core wasm header
   assert(Bytes::get(m, 0) == 0)
@@ -764,8 +769,18 @@ test "component async: the stream trampoline flattens and TAGS the handle (#1540
     127,
     0
   ]) == 1)
-  // the tagging itself: local.get 6 (the handle slot) ; i64.extend_i32_u (ad)
-  // ; i64.const 1 (42 01) ; i64.shl (86)
+  // local.get 6 (the handle slot) ; i64.extend_i32_u (ad) ; then straight to
+  // the closure-env argument (i64.const 0 = 42 00) and the call (10 00).
+  assert(bytes_contains_seq(m, [
+    32,
+    6,
+    173,
+    66,
+    0,
+    16,
+    0
+  ]) == 1)
+  // the tag that must NOT be there: i64.extend_i32_u ; i64.const 1 ; i64.shl
   assert(bytes_contains_seq(m, [
     32,
     6,
@@ -773,7 +788,7 @@ test "component async: the stream trampoline flattens and TAGS the handle (#1540
     66,
     1,
     134
-  ]) == 1)
+  ]) == 0)
   // and it still hands the result back through task.return, not a retptr
   assert(component_bytes_contains(m, "[task-return]handler") == 1)
 }
@@ -981,6 +996,66 @@ test "component #537: string handler rejects a wrong signature" {
 /// reaches them. Same shape as build_test_core_packed_handler, plus an import
 /// section with vibe.env-get / vibe.fs_read_file ((i64) -> i64). The handler
 /// becomes core func index 2 (after the two imports).
+fn build_test_core_stream_handler() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 2)
+  // handler: 3 strings + the stream handle + the closure env, all i64
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    126,
+    126,
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(type_content, [
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, type_content)
+  let import_content = bytebuf_new()
+  bytebuf_push_vec_header(import_content, 1)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "host_stream_read")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 1)
+  bytebuf_push_section(out, 2, import_content)
+  emit_function_section(out, [
+    0
+  ])
+  emit_memory_section(out, 1)
+  let global_content = bytebuf_new()
+  leb128_encode_u32(global_content, 1)
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  bytebuf_push(global_content, 65)
+  bytebuf_push(global_content, 8)
+  bytebuf_push(global_content, 11)
+  bytebuf_push_section(out, 6, global_content)
+  let export_content = bytebuf_new()
+  bytebuf_push_vec_header(export_content, 3)
+  emit_name(export_content, "handler")
+  bytebuf_push(export_content, 0)
+  leb128_encode_u32(export_content, 1)
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "__heap_ptr")
+  bytebuf_push(export_content, 3)
+  leb128_encode_u32(export_content, 0)
+  bytebuf_push_section(out, 7, export_content)
+  let h_body = bytebuf_new()
+  emit_local_get(h_body, 0)
+  emit_code_section(out, [
+    h_body
+  ])
+  bytebuf_to_bytes(out)
+}
+
 fn build_test_core_packed_handler_with_vibe_imports() -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
@@ -1042,6 +1117,83 @@ fn build_test_core_packed_handler_with_vibe_imports() -> Bytes {
     h_body
   ])
   bytebuf_to_bytes(out)
+}
+
+/// #1540 scope 4: the serve component for a `body: HostStream` handler --
+/// the shape `vibe serve` now emits when the handler's last parameter is a
+/// stream, and the join of every earlier slice in the issue.
+///
+/// What is asserted is the WIRING, because that is what silently misbehaves.
+/// The stream canons live in a memhost page while `task.return` and the lift
+/// keep the MAIN memory (a canon writing fixed addresses into the vibe heap
+/// would corrupt whatever the program had there), and the adapter that turns
+/// `vibe.host_stream_read` into those canons is a fourth core module the main
+/// instance is given. An emitter that dropped the adapter would still produce
+/// a component that VALIDATES -- `wac plug` promotes the unsatisfied edge to a
+/// root import (#1796) -- and only fail when a request arrives.
+test "component #1540: the stream serve lane wires main to the stream canons" {
+  let core = build_test_core_stream_handler()
+  let comp = comp_emit_component_wasm_stream_handler(core, "handler", "handler", [
+    "method",
+    "url",
+    "headers",
+    "body"
+  ])
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // the adapter satisfies the guest's read half under its own name
+  assert(component_bytes_contains(comp, "host_stream_read") == 1)
+  // and it does so through the real canons, not a stub
+  assert(component_bytes_contains(comp, "[async-lower][stream-read-0]body") == 1)
+  assert(component_bytes_contains(comp, "[stream-drop-readable-0]body") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  // the result still leaves through task.return: the lift is async, so the
+  // core function has no return path to carry it
+  assert(component_bytes_contains(comp, "[task-return]handler") == 1)
+}
+
+/// The arity guard, and the thing it CANNOT do.
+///
+/// A stream handler's core function takes 3 strings + the handle + the closure
+/// env; a String handler's takes 4 strings + the closure env. Both are five
+/// i64. Measured, not assumed -- the `build_test_core_packed_handler_with_vibe_imports`
+/// core passes the stream lane's check unchanged. So the core carries NO
+/// evidence of which lane it belongs to, and the guard can only catch a core
+/// of the wrong SIZE.
+///
+/// That is why the lane is chosen from the handler's source signature
+/// (`serve_handler_takes_body_stream`) and never sniffed from the compiled
+/// core: there is nothing there to sniff.
+test "component #1540: the stream lane's guard catches a wrong-arity core" {
+  let core = build_test_core()
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_stream_handler(core, "run", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  assert(rejected)
+  // and the arity a String handler's core has is INDISTINGUISHABLE from the
+  // stream one's -- both five i64 -- so this guard accepts it. Pinning that
+  // here keeps the fact from being rediscovered as a silent mis-lane.
+  let string_core = build_test_core_packed_handler_with_vibe_imports()
+  let accepted = handle {
+    let _ = comp_emit_component_wasm_stream_handler(string_core, "handler", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    true
+  } with Exception {
+    Throw(_) => false
+  }
+  assert(accepted)
 }
 
 test "component #1107: strict string handler rejects vibe.* imports" {

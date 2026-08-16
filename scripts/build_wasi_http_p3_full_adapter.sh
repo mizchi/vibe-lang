@@ -28,7 +28,20 @@ OUT_PATH="${1:-$PROJECT_ROOT/_build/http_adapter/vibe_http_p3_full_adapter.compo
 # makes an async-lifted handler unpluggable
 # (tools/wasip3_component_probe/http_body_read/README.md).
 ASYNC_HANDLER="${VIBE_HTTP_ADAPTER_ASYNC_HANDLER:-0}"
-if [ "$ASYNC_HANDLER" = "1" ]; then
+# #1540 scope 4: with VIBE_HTTP_ADAPTER_BODY_STREAM=1 the body is handed to the
+# handler as a `stream<u8>` instead of being collected into a String first --
+# the whole point of the issue: the handler sees the first byte before the last
+# one has arrived. Implies the async import (reading the stream suspends).
+BODY_STREAM="${VIBE_HTTP_ADAPTER_BODY_STREAM:-0}"
+if [ "$BODY_STREAM" = "1" ]; then
+  ASYNC_HANDLER=1
+  HANDLER_IMPORT_DECL="import handler: async func(method: string, url: string, headers: string, body: stream<u8>) -> string;"
+  # `req_body_rx` goes straight through -- no .collect().await anywhere.
+  HANDLER_CALL="handler(method, url, req_headers, req_body_rx).await"
+  # The collected body binding is unused in this mode, and Rust warns; bind it
+  # to the reader instead so there is exactly one place the body can come from.
+  BODY_BINDING="let req_body_rx = { let (rx, _trailers_rx) = Request::consume_body(request, result_rx); rx };"
+elif [ "$ASYNC_HANDLER" = "1" ]; then
   HANDLER_IMPORT_DECL="import handler: async func(method: string, url: string, headers: string, body: string) -> string;"
   # An async import owns its string params (String, not &str) and returns a
   # future.
@@ -36,6 +49,10 @@ if [ "$ASYNC_HANDLER" = "1" ]; then
 else
   HANDLER_IMPORT_DECL="import handler: func(method: string, url: string, headers: string, body: string) -> string;"
   HANDLER_CALL="handler(&method, &url, &req_headers, &req_body)"
+fi
+if [ "$BODY_STREAM" != "1" ]; then
+  BODY_BINDING="let (req_body_rx, _trailers_rx) = Request::consume_body(request, result_rx);
+        let req_body = String::from_utf8_lossy(&req_body_rx.collect().await).into_owned();"
 fi
 TMP_DIR="$(mktemp -d /tmp/vibe_http_p3_full_adapter.XXXXXX)"
 
@@ -133,8 +150,7 @@ impl Guest for Component {
             .join("\n");
 
         let (_, result_rx) = wit_future::new::<Result<(), ErrorCode>>(|| Ok(()));
-        let (req_body_rx, _trailers_rx) = Request::consume_body(request, result_rx);
-        let req_body = String::from_utf8_lossy(&req_body_rx.collect().await).into_owned();
+        $BODY_BINDING
 
         // The vibe handler returns "STATUS\n<headers>\n\n<body>" (headers optional).
         let raw = $HANDLER_CALL;

@@ -1516,6 +1516,59 @@ gate lane = `test_named_hoststreams_component_gate.sh` の close lane
 かつ drain-only component に close import が無いこと + closing component に
 guest import と adapter export が両方あることを .wat で確認）。
 
+#### 3.18.4 `HostStream` を**パラメータ**で受ける — serve lane の request body（done, #1540）
+
+§3.18 の `HostStream` は `host_stream_named("body")` で **名前**から取っていた。
+`vibe serve` の handler はそれでは足りない: body は component の呼び出し
+引数として渡ってくるもので、名前で取りに行くものではない。#1540 scope 3/4 で
+`HostStream` は**関数パラメータとして**受け取れるようになった。
+
+```vibe skip
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let mut out = ""
+  let mut go = true
+  while go {
+    let b = host_stream_next(body)
+    if b < 0 { go = false } else { out = String::concat(out, String::from_char_code(b)) }
+  }
+  "200\n\n\{out}"
+}
+```
+
+- **boundary**: `lc_wrap_host_stream_params` が handler の入口で `HostStream`
+  型注釈の付いたパラメータを 2 語セル `[3, handle]` に包み直す。以降は §3.18 と
+  同一の read 経路（`__hs_next` → stream 帯 `handle + 2048` の Suspend →
+  `__entry_settle` → `vibe_hs_read_raw`）。名前つき getter は生えないので、
+  compile された core は `vibe.host_stream_read` **だけ**を import する
+- **trampoline**: canonical ABI は `stream<u8>` を strings の (ptr, len) 対の
+  後ろに i32 handle 1 本として flatten し、async lift なので core func は
+  何も返さない（結果は `task.return`）
+- **adapter**: `comp_generate_serve_stream_adapter_module` — §3.18 の read
+  ループと同じ実測（BLOCKED / STREAM_READ = 2 / unjoin してから set drop /
+  終端2形状 + closed latch）を、**名前を1つも持たずに**実装したもの。
+  `comp_generate_hostfuture_adapter_core_module` を流用しないのは、あちらの
+  index 配置が named future/stream 数から導出されていて「名前ゼロ、それでも
+  reader」を足すと他 4 lane の index が全部動くから。ダミー名を与えるのは
+  #1796 が composition cycle として退けた `[async-lower]<label>` component
+  import を戻すことになる
+- **CLI**: `serve_handler_takes_body_stream` が lane を選ぶ。`with Async` と
+  `body: HostStream` は**両方向に必須** — 片方だけはどちらも診断で落ちる
+  （Async 単独は await するものが無い、HostStream 単独は read が suspend
+  なので永久に読めない）
+- **adapter (Rust)**: `VIBE_HTTP_ADAPTER_BODY_STREAM=1` で
+  `handler(.., body: stream<u8>)` を import する版が出る。`.collect().await`
+  はどこにも無く、reader がそのまま渡る
+
+> **落とし穴（実測 2026-08-16）: `vibe.*` の Int ABI は「常に tagged」ではない。**
+> §3.13/§3.18 が「i64 値は guest-tagged on the wire（adapter が shift する）」と
+> 書いているのは、あの lane の core が **CLI の RC compile**（`enable_rc` on、
+> `linked_compile` の tag_mode 1 = `value << 1`）で出ているから。`vibe serve` の
+> core は `compile_wasi_module_no_dce_impl`（`enable_rc` **off**）なので、
+> Int は素の i64 である。**同じ `vibe.host_stream_read` という import 名に、
+> compile mode 由来の2つの値表現がある。** 混同しても trap しない — 読んだ
+> byte が黙って 2 倍になるだけで、`sum=588` が `294` の代わりに返る（これが
+> 実際に起きた形）。serve lane の trampoline と adapter は両方 untagged。
+
 ### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
 
 `tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the
