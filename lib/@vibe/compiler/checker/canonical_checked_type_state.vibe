@@ -113,7 +113,7 @@ fn canonical_effect_labels(text: String) -> Array[String] {
       depth = depth - 1
     } else if c == 44 && depth == 0 {
       let label = String::trim(String::substring(text, start, i))
-      if String::length(label) > 0 {
+      if String::length(label) > 0 && !canonical_is_provenance_label(label) {
         Array::push(raw, canonical_exception_effect_name(label))
       }
       start = i + 1
@@ -121,10 +121,14 @@ fn canonical_effect_labels(text: String) -> Array[String] {
     i = i + 1
   }
   let last = String::trim(String::substring(text, start, String::length(text)))
-  if String::length(last) > 0 {
+  if String::length(last) > 0 && !canonical_is_provenance_label(last) {
     Array::push(raw, canonical_exception_effect_name(last))
   }
   sorted_unique_strings(raw)
+}
+
+fn canonical_is_provenance_label(label: String) -> Bool {
+  String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[")
 }
 
 fn canonical_is_effect_var(name: String) -> Bool {
@@ -190,10 +194,13 @@ fn canonical_effect(s: Subst, effect: Option[String]) -> String {
         Some(name)
       }
       match resolved {
-        Some(text) => if String::length(text) == 0 {
-          canonical_node("EP", array_empty())
-        } else {
-          canonical_node("ER", canonical_effect_labels(text))
+        Some(text) => {
+          let labels = canonical_effect_labels(text)
+          if String::length(text) == 0 || Array::length(labels) == 0 {
+            canonical_node("EP", array_empty())
+          } else {
+            canonical_node("ER", labels)
+          }
         },
         None => canonical_node("EV", [
           name
@@ -895,17 +902,19 @@ fn canonical_effect_with_params(s: Subst, effect: Option[String], params: Array[
         Some(name)
       }
       match resolved {
-        Some(text) => if String::length(text) == 0 {
-          canonical_node("EP", array_empty())
-        } else {
+        Some(text) => {
           let labels = canonical_effect_labels(text)
-          let normalized = array_empty()
-          let mut i = 0
-          while i < Array::length(labels) {
-            Array::push(normalized, canonical_effect_label_with_params(Array::get(labels, i), params))
-            i = i + 1
+          if String::length(text) == 0 || Array::length(labels) == 0 {
+            canonical_node("EP", array_empty())
+          } else {
+            let normalized = array_empty()
+            let mut i = 0
+            while i < Array::length(labels) {
+              Array::push(normalized, canonical_effect_label_with_params(Array::get(labels, i), params))
+              i = i + 1
+            }
+            canonical_node("ER", sorted_unique_strings(normalized))
           }
-          canonical_node("ER", sorted_unique_strings(normalized))
         },
         None => canonical_node("EV", [
           canonical_effect_label_with_params(name, params)
