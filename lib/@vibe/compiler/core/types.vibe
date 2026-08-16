@@ -1045,18 +1045,126 @@ fn subst_eff_lookup(s: Subst, name: String) -> Option[String] {
 fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
   match eff {
     None => None,
-    Some(name) => if is_effect_var_name(name) {
-      match subst_eff_lookup(s, name) {
-        Some(val) => if String::length(val) == 0 {
-          None
-        } else {
-          Some(val)
-        },
-        None => eff
+    Some(row) => if String::index_of(row, ",") < 0 && String::trim(row) == row && !is_effect_var_name(row) && !String::starts_with(row, "#capture[") {
+      Some(row)
+    } else {
+      let labels = String::split(row, ",")
+      let resolved = array_empty()
+      let mut i = 0
+      while i < Array::length(labels) {
+        let label = String::trim(Array::get(labels, i))
+        if is_effect_var_name(label) {
+          match subst_eff_lookup(s, label) {
+            Some(bound) => if String::length(bound) > 0 {
+              for part in String::split(bound, ",") {
+                let trimmed = String::trim(part)
+                if String::length(trimmed) > 0 {
+                  Array::push(resolved, trimmed)
+                }
+              }
+              ()
+            },
+            None => Array::push(resolved, label)
+          }
+        } else if String::starts_with(label, "#capture[") {
+          let close = String::index_of(label, "]")
+          let mut id = 0
+          let mut p = 9
+          while p < close {
+            id = id * 10 + (String::char_code_at(label, p) - 48)
+            p = p + 1
+          }
+          match subst_lookup(s, id) {
+            Some(bound_ty) => {
+              let resolved_ty = subst_apply(s, bound_ty)
+              let region_names = array_empty()
+              collect_region_skolems_in_type(resolved_ty, region_names)
+              if Array::length(region_names) > 0 {
+                for region_name in region_names {
+                  if !string_array_contains(resolved, region_name) {
+                    Array::push(resolved, region_name)
+                  }
+                }
+              } else match resolved_ty {
+                CtVar(new_id) => Array::push(resolved, String::concat("#capture[", String::concat(__to_string(new_id), "]"))),
+                _ => ()
+              }
+            },
+            None => Array::push(resolved, label)
+          }
+        } else if String::length(label) > 0 {
+          Array::push(resolved, label)
+        }
+        i = i + 1
+      }
+      if Array::length(resolved) == 0 {
+        None
+      } else {
+        Some(String::join(resolved, ", "))
+      }
+    }
+  }
+}
+
+/// Region provenance is carried in a function's checked row as an internal
+/// unforgeable label. It is not a runtime effect: the row is simply the one
+/// structured slot already preserved by substitution, generalization and
+/// containers. `#capture[n]` is dependent on inference variable n and becomes
+/// the concrete `#region_n` label when that variable is unified with a
+/// region-tagged type.
+fn string_array_contains(items: Array[String], wanted: String) -> Bool {
+  let mut found = false
+  for item in items {
+    if item == wanted {
+      found = true
+    }
+  }
+  found
+}
+
+fn collect_region_skolems_in_type(ty: Type, out: Array[String]) -> Unit {
+  match ty {
+    CtNamed(name, args) => if String::starts_with(name, "#region_") {
+      if !string_array_contains(out, name) {
+        Array::push(out, name)
       }
     } else {
-      eff
-    }
+      for arg in args {
+        collect_region_skolems_in_type(arg, out)
+      }
+    },
+    CtFn(params, ret, eff) => {
+      match eff {
+        Some(row) => {
+          for raw in String::split(row, ",") {
+            let label = String::trim(raw)
+            if String::starts_with(label, "#region_") && !string_array_contains(out, label) {
+              Array::push(out, label)
+            }
+          }
+        },
+        None => ()
+      }
+      for param in params {
+        collect_region_skolems_in_type(param, out)
+      }
+      collect_region_skolems_in_type(ret, out)
+    },
+    CtArray(elem) => collect_region_skolems_in_type(elem, out),
+    CtOption(elem) => collect_region_skolems_in_type(elem, out),
+    CtTuple(items) => {
+      for item in items {
+        collect_region_skolems_in_type(item, out)
+      }
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, field_ty) = field
+        collect_region_skolems_in_type(field_ty, out)
+      }
+    },
+    CtForAll(_, _, body) => collect_region_skolems_in_type(body, out),
+    _ => ()
   }
 }
 
@@ -1259,7 +1367,7 @@ export fn type_to_string(ty: Type) -> String {
       }
       let ret_text = type_to_string(ret)
       let base = String::concat("(", String::concat(joined, String::concat(") -> ", ret_text)))
-      match effect_name {
+      match semantic_effect_opt(effect_name) {
         // #1429: this text lands in type-mismatch messages, so it has to be
         // the spelling the reader would type. Rows are stored comma-joined;
         // the syntax is `+`-separated.
@@ -1400,17 +1508,22 @@ fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
   match t {
     CtFn(params, ret, eff) => {
       match eff {
-        Some(name) => if is_effect_var_name(name) {
-          let mut seen = false
-          let mut k = 0
-          while k < Array::length(out) {
-            if Array::get(out, k) == name {
-              seen = true
+        Some(row) => {
+          for raw in String::split(row, ",") {
+            let name = String::trim(raw)
+            if is_effect_var_name(name) {
+              let mut seen = false
+              let mut k = 0
+              while k < Array::length(out) {
+                if Array::get(out, k) == name {
+                  seen = true
+                }
+                k = k + 1
+              }
+              if !seen {
+                Array::push(out, name)
+              }
             }
-            k = k + 1
-          }
-          if !seen {
-            Array::push(out, name)
           }
         },
         None => ()
@@ -1459,6 +1572,14 @@ fn rename_eff_name(name: String, pairs: Array[(String, String)]) -> String {
   out
 }
 
+fn rename_effect_row(row: String, pairs: Array[(String, String)]) -> String {
+  let labels = array_empty()
+  for raw in String::split(row, ",") {
+    Array::push(labels, rename_eff_name(String::trim(raw), pairs))
+  }
+  String::join(labels, ", ")
+}
+
 fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
   match t {
     CtFn(params, ret, eff) => {
@@ -1469,7 +1590,7 @@ fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
         i = i + 1
       }
       let new_eff = match eff {
-        Some(name) => Some(rename_eff_name(name, pairs)),
+        Some(row) => Some(rename_effect_row(row, pairs)),
         None => None
       }
       CtFn(new_params, rename_effect_vars(ret, pairs), new_eff)
@@ -1839,7 +1960,9 @@ fn effect_label_base_set(labels: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(labels) {
-    let base = effect_label_base_name(Array::get(labels, i))
+    let raw = Array::get(labels, i)
+    let provenance = String::starts_with(raw, "#region_") || String::starts_with(raw, "#capture[") || String::starts_with(raw, "#param[") || String::starts_with(raw, "#aliasparam[") || String::starts_with(raw, "#fieldparam[")
+    let base = effect_label_base_name(raw)
     let mut seen = false
     let mut j = 0
     while j < Array::length(out) {
@@ -1848,7 +1971,7 @@ fn effect_label_base_set(labels: Array[String]) -> Array[String] {
       }
       j = j + 1
     }
-    if !seen {
+    if !seen && !provenance {
       Array::push(out, base)
     }
     i = i + 1
@@ -1884,9 +2007,37 @@ fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool 
 }
 
 fn effect_opt_is_var(eff: Option[String]) -> Bool {
+  let labels = effect_label_list(eff)
+  let mut count = 0
+  let mut variable = false
+  for label in labels {
+    if !String::starts_with(label, "#region_") && !String::starts_with(label, "#capture[") && !String::starts_with(label, "#param[") && !String::starts_with(label, "#aliasparam[") && !String::starts_with(label, "#fieldparam[") {
+      count = count + 1
+      variable = is_effect_var_name(label)
+    }
+  }
+  count == 1 && variable
+}
+
+fn semantic_effect_opt(eff: Option[String]) -> Option[String] {
   match eff {
-    Some(name) => is_effect_var_name(name),
-    None => false
+    None => None,
+    Some(row) => if String::index_of(row, ",") < 0 && String::trim(row) == row && !String::starts_with(row, "#") {
+      Some(row)
+    } else {
+      let labels = effect_label_list(eff)
+      let semantic = array_empty()
+      for label in labels {
+        if !String::starts_with(label, "#region_") && !String::starts_with(label, "#capture[") && !String::starts_with(label, "#param[") && !String::starts_with(label, "#aliasparam[") && !String::starts_with(label, "#fieldparam[") {
+          Array::push(semantic, label)
+        }
+      }
+      if Array::length(semantic) == 0 {
+        None
+      } else {
+        Some(String::join(semantic, ", "))
+      }
+    }
   }
 }
 
@@ -1915,8 +2066,8 @@ fn effect_names_compatible(left: Option[String], right: Option[String]) -> Bool 
 /// (#626 criterion 4 — no longer an unconditional wildcard). Returns the extended
 /// substitution, or None on a genuine effect-set conflict.
 fn unify_effects(ea: Option[String], eb: Option[String], s: Subst) -> Option[Subst] {
-  let ra = resolve_effect_opt(s, ea)
-  let rb = resolve_effect_opt(s, eb)
+  let ra = semantic_effect_opt(resolve_effect_opt(s, ea))
+  let rb = semantic_effect_opt(resolve_effect_opt(s, eb))
   let a_is_var = match ra {
     Some(n) => is_effect_var_name(n),
     None => false

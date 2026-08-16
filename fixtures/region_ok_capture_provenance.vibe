@@ -1,0 +1,161 @@
+// #1938 positive witnesses: provenance follows values, not syntax. A generic
+// helper instantiated with a scalar is clean; an explicit copy-out is clean;
+// and a shadowing binder does not inherit the hidden region value.
+fn scalar_helper() -> Int {
+  let f = region r {
+    let capture = (value) -> () -> Int {
+      () -> Int {
+        value
+      }
+    }
+    let _ = MutList::empty(r)
+    capture(9)
+  }
+  f()
+}
+
+fn copied_closure() -> Int {
+  let f = region r {
+    let values = MutList::empty(r)
+    MutList::push(values, 7)
+    let copied = MutList::to_array(values)
+    () -> Int {
+      Array::get(copied, 0)
+    }
+  }
+  f()
+}
+
+fn shadowed_capture() -> Int {
+  let f = region r {
+    let value = MutList::empty(r)
+    let value = 5
+    () -> Int {
+      value
+    }
+  }
+  f()
+}
+
+fn region_local_assignment() -> Int {
+  region r {
+    let values = MutList::empty(r)
+    MutList::push(values, 8)
+    let mut local = () -> Int {
+      0
+    }
+    local = () -> Int {
+      Array::get(MutList::to_array(values), 0)
+    }
+    let observed = local
+    observed()
+  }
+}
+
+struct LocalSlot {
+  mut callback: () -> Int
+}
+
+fn region_local_container_writes() -> Int {
+  region r {
+    let values = MutList::empty(r)
+    MutList::push(values, 13)
+    let local_array: Array[() -> Int] = [
+    ]
+    Array::push(local_array, () -> Int {
+      Array::get(MutList::to_array(values), 0)
+    })
+    let local_slot = LocalSlot::{
+      callback: () -> Int {
+        0
+      }
+    }
+    local_slot.callback = () -> Int {
+      Array::get(MutList::to_array(values), 0)
+    }
+    Array::get(local_array, 0)() + local_slot.callback()
+  }
+}
+
+fn local_identity[T](value: T) -> T {
+  value
+}
+
+fn region_local_call_alias_write() -> Int {
+  region r {
+    let values = MutList::empty(r)
+    MutList::push(values, 17)
+    let local_array: Array[() -> Int] = [
+    ]
+    Array::push(local_identity(local_array), () -> Int {
+      Array::get(MutList::to_array(values), 0)
+    })
+    Array::get(local_array, 0)()
+  }
+}
+
+enum LocalCarrier {
+  LocalHold(() -> Array[Int])
+}
+
+fn parameterless_local_carrier_assignment() -> Int {
+  region r {
+    let values = MutList::empty(r)
+    MutList::push(values, 19)
+    let mut local = LocalCarrier::LocalHold(() -> Array[Int] {
+      []
+    })
+    local = LocalCarrier::LocalHold(() -> Array[Int] {
+      MutList::to_array(values)
+    })
+    let LocalHold(callback) = local
+    Array::get(callback(), 0)
+  }
+}
+
+fn ignore_callback(f: () -> Array[Int]) -> () -> Array[Int] {
+  () -> Array[Int] {
+    [
+    ]
+  }
+}
+
+fn ignored_capture_is_clean() -> Int {
+  let clean = region r {
+    let values = MutList::empty(r)
+    ignore_callback(() -> Array[Int] {
+      MutList::to_array(values)
+    })
+  }
+  Array::length(clean())
+}
+
+fn parameter_shadow_is_clean() -> Int {
+  let clean = region r {
+    let value = MutList::empty(r)
+    (value: Int) -> Int {
+      value
+    }
+  }
+  clean(4)
+}
+
+fn local_callee_shadow_is_clean() -> Int {
+  let clean = region r {
+    let values = MutList::empty(r)
+    let read = () -> Array[Int] {
+      MutList::to_array(values)
+    }
+    () -> Int {
+      let read = () -> Int {
+        1
+      }
+      read()
+    }
+  }
+  clean()
+}
+
+test "region capture provenance positives" {
+  inspect(scalar_helper() + copied_closure() + shadowed_capture() + region_local_assignment() + region_local_container_writes() + region_local_call_alias_write() + parameterless_local_carrier_assignment() + ignored_capture_is_clean() + parameter_shadow_is_clean() + local_callee_shadow_is_clean(), "96")
+}

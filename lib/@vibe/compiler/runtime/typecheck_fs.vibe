@@ -1702,7 +1702,7 @@ fn interface_sorted_unique(items: Array[String]) -> Array[String] {
   unique
 }
 
-fn interface_effect_set(effect_name: Option[String]) -> String {
+fn interface_effect_set_with_vars(effect_name: Option[String], ids: Array[Int], names: Array[String]) -> String {
   match effect_name {
     None => "[]",
     Some(raw) => {
@@ -1711,7 +1711,27 @@ fn interface_effect_set(effect_name: Option[String]) -> String {
       let mut i = 0
       while i < Array::length(pieces) {
         let label = String::trim(Array::get(pieces, i))
-        if String::length(label) > 0 {
+        if String::starts_with(label, "#capture[") {
+          let close = String::index_of(label, "]")
+          let mut capture_id = 0
+          let mut p = 9
+          while p < close {
+            capture_id = capture_id * 10 + (String::char_code_at(label, p) - 48)
+            p = p + 1
+          }
+          let mut found = false
+          let mut vi = 0
+          while vi < Array::length(ids) && !found {
+            if Array::get(ids, vi) == capture_id {
+              Array::push(labels, String::concat("#capture[", String::concat(Array::get(names, vi), "]")))
+              found = true
+            } else {
+              vi = vi + 1
+            }
+          }
+        } else if String::starts_with(label, "#region_") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[") {
+          ()
+        } else if String::length(label) > 0 {
           Array::push(labels, label)
         } else {
           ()
@@ -1721,6 +1741,16 @@ fn interface_effect_set(effect_name: Option[String]) -> String {
       String::concat("[", String::concat(String::join(interface_sorted_unique(labels), ","), "]"))
     }
   }
+}
+
+fn interface_effect_set(effect_name: Option[String]) -> String {
+  interface_effect_set_with_vars(effect_name, array_empty(), array_empty())
+}
+
+/// Test-only seam for the public interface row projection. Checker provenance
+/// must remain in checked types without perturbing public API fingerprints.
+export fn incremental_interface_effect_set_for_test(effect_name: Option[String], ids: Array[Int], names: Array[String]) -> String {
+  interface_effect_set_with_vars(effect_name, ids, names)
 }
 
 fn interface_lookup_var(ids: Array[Int], names: Array[String], id: Int) -> String {
@@ -1777,7 +1807,7 @@ fn interface_canonical_type(ty: Type, ids: Array[Int], names: Array[String]) -> 
       kacc
     },
     CtNamed(name, args) => String::concat("named:", String::concat(interface_segment(name), types(args, ids, names))),
-    CtFn(params, ret, effects) => String::concat("fn:", String::concat(types(params, ids, names), String::concat(interface_segment(interface_canonical_type(ret, ids, names)), interface_effect_set(effects)))),
+    CtFn(params, ret, effects) => String::concat("fn:", String::concat(types(params, ids, names), String::concat(interface_segment(interface_canonical_type(ret, ids, names)), interface_effect_set_with_vars(effects, ids, names)))),
     CtForAll(vars, bounds, body) => {
       let all_ids = Array::slice(ids, 0, Array::length(ids))
       let all_names = Array::slice(names, 0, Array::length(names))
