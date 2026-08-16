@@ -76,7 +76,13 @@ import @vibe/graph {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, lex_with_offsets_recovering, offset_to_line_col, parse_program_located, parse_program_recovering, token_to_string
+  lex_with_offsets,
+  lex_with_offsets_recovering,
+  offset_to_line_col,
+  parse_program_located,
+  parse_program_recovering,
+  print_type_expr,
+  token_to_string
 }
 
 import @vibe/compiler/runtime/eval_loader {
@@ -340,11 +346,11 @@ fn trait_projection_add_mapping(mappings: Array[(String, String)], canonical: St
 /// Keep these claims across every import in a module: otherwise two unrelated
 /// traits imported as the same local name would leave one definition and the
 /// other's impls/methods in the TypeEnv, depending on import order.
-fn trait_projection_claim_local(claims: Array[(String, String, Bool)], canonical: String) -> Option[String] {
+fn trait_projection_claim_local(claims: Array[(String, String, Bool, String)], canonical: String) -> Option[String] {
   let mut i = 0
   let mut found = None
   while i < Array::length(claims) && found == None {
-    let (candidate_canonical, local_name, _) = Array::get(claims, i)
+    let (candidate_canonical, local_name, _, _) = Array::get(claims, i)
     if candidate_canonical == canonical {
       found = Some(local_name)
     } else {
@@ -354,13 +360,13 @@ fn trait_projection_claim_local(claims: Array[(String, String, Bool)], canonical
   found
 }
 
-fn trait_projection_claim_owner(claims: Array[(String, String, Bool)], local_name: String) -> Option[(String, Bool)] {
+fn trait_projection_claim_owner(claims: Array[(String, String, Bool, String)], local_name: String) -> Option[(String, Bool, String)] {
   let mut i = 0
   let mut found = None
   while i < Array::length(claims) && found == None {
-    let (canonical, candidate_local, explicit_alias) = Array::get(claims, i)
+    let (canonical, candidate_local, explicit_alias, fingerprint) = Array::get(claims, i)
     if candidate_local == local_name {
-      found = Some((canonical, explicit_alias))
+      found = Some((canonical, explicit_alias, fingerprint))
     } else {
       i = i + 1
     }
@@ -368,28 +374,109 @@ fn trait_projection_claim_owner(claims: Array[(String, String, Bool)], local_nam
   found
 }
 
-fn trait_projection_claim_mappings(claims: Array[(String, String, Bool)], resolved: String, mappings: Array[(String, String)], unresolved: Array[String]) -> Unit {
+/// Serialize a trait's definition shape (auto marker, params, supers, method
+/// signatures, per-method generic bounds) so two same-named traits imported
+/// from different modules can be compared for identity. Equal fingerprints
+/// mean one definition seen through re-export paths; differing fingerprints
+/// mean two distinct traits sharing a spelling (#1910), which must not be
+/// resolved silently by import order.
+fn trait_projection_def_fingerprint(env: TypeEnv, name: String) -> String {
+  match env {
+    EnvEmpty => "",
+    EnvBind(_, _, rest) => trait_projection_def_fingerprint(rest, name),
+    EnvTraitDef(candidate, supers, is_auto, methods, rest, params, method_gens) => if candidate == name {
+      let mut out = if is_auto {
+        "auto"
+      } else {
+        "trait"
+      }
+      let mut i = 0
+      while i < Array::length(params) {
+        out = String::concat(out, String::concat(";param=", Array::get(params, i)))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(supers) {
+        out = String::concat(out, String::concat(";super=", Array::get(supers, i)))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(methods) {
+        let (mname, args, ret) = Array::get(methods, i)
+        out = String::concat(out, String::concat(";method=", mname))
+        let mut j = 0
+        while j < Array::length(args) {
+          out = String::concat(out, String::concat(":", print_type_expr(Array::get(args, j))))
+          j = j + 1
+        }
+        out = String::concat(out, String::concat("->", print_type_expr(ret)))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(method_gens) {
+        let (mname, gparams, bounds) = Array::get(method_gens, i)
+        out = String::concat(out, String::concat(";gen=", mname))
+        let mut j = 0
+        while j < Array::length(gparams) {
+          out = String::concat(out, String::concat(":", Array::get(gparams, j)))
+          j = j + 1
+        }
+        j = 0
+        while j < Array::length(bounds) {
+          let (bparam, labels) = Array::get(bounds, j)
+          out = String::concat(out, String::concat(";bound=", bparam))
+          let mut k = 0
+          while k < Array::length(labels) {
+            out = String::concat(out, String::concat(":", Array::get(labels, k)))
+            k = k + 1
+          }
+          j = j + 1
+        }
+        i = i + 1
+      }
+      out
+    } else {
+      trait_projection_def_fingerprint(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => trait_projection_def_fingerprint(rest, name),
+    EnvMutCell(_, _, rest) => trait_projection_def_fingerprint(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_projection_def_fingerprint(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_projection_def_fingerprint(rest, name),
+    EnvFlat(_) => "",
+    EnvCached(_, _, rest) => trait_projection_def_fingerprint(rest, name)
+  }
+}
+
+fn trait_projection_claim_mappings(claims: Array[(String, String, Bool, String)], resolved: String, dep_env: TypeEnv, mappings: Array[(String, String)], unresolved: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(mappings) {
     let (source_name, local_name) = Array::get(mappings, i)
     let canonical = String::concat(String::concat(resolved, "::"), source_name)
     let explicit_alias = source_name != local_name
+    let fingerprint = trait_projection_def_fingerprint(dep_env, source_name)
     match (trait_projection_claim_local(claims, canonical), trait_projection_claim_owner(claims, local_name)) {
       (Some(existing), _) => if existing != local_name {
         Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import '", canonical), "': aliases '"), String::concat(existing, String::concat("' and '", String::concat(local_name, "'")))))
       } else {
         ()
       },
-      (None, Some((owner, owner_explicit))) => if owner != canonical && (owner_explicit || explicit_alias) {
+      (None, Some((owner, owner_explicit, owner_fingerprint))) => if owner != canonical && (owner_explicit || explicit_alias) {
         // Same-spelled, unaliased traits retain the language's historical
         // name-based identity across re-export modules. An explicit alias is
         // different: merging two canonical names through it would silently
         // mix their impl and method authority.
         Array::push(unresolved, String::concat(String::concat(String::concat("ambiguous trait import alias '", local_name), "': used for '"), String::concat(owner, String::concat("' and '", String::concat(canonical, "'")))))
       } else {
-        Array::push(claims, (canonical, local_name, explicit_alias))
+        if owner != canonical && owner_fingerprint != fingerprint {
+          // #1910: unaliased name-based identity is only safe when both
+          // spellings are the same definition. Two packages defining a
+          // same-named trait differently must not be merged by import order.
+          Array::push(unresolved, String::concat(String::concat(String::concat("trait '", local_name), "' has two different definitions: '"), String::concat(owner, String::concat("' and '", String::concat(canonical, String::concat("' — alias one with 'trait ", String::concat(local_name, " as <NewName>' or import only one")))))))
+        } else {
+          Array::push(claims, (canonical, local_name, explicit_alias, fingerprint))
+        }
       },
-      (None, None) => Array::push(claims, (canonical, local_name, explicit_alias))
+      (None, None) => Array::push(claims, (canonical, local_name, explicit_alias, fingerprint))
     }
     i = i + 1
   }
@@ -948,7 +1035,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
   out
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool)]) -> TypeEnv {
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -959,7 +1046,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
   let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, unresolved)
-  trait_projection_claim_mappings(trait_claims, resolved, trait_mappings, unresolved)
+  trait_projection_claim_mappings(trait_claims, resolved, dep_env, trait_mappings, unresolved)
   // Whether the dependency was CHECKED, not whether it happens to bind any
   // values. A module that exports only types or only traits is checked and
   // cached, and its flat value environment is legitimately empty -- deriving

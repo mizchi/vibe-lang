@@ -644,6 +644,91 @@ test "db_typecheck_fs: duplicate trait aliases are rejected as ambiguous" {
   assert(String::contains(error, "ambiguous trait import 'Marker'"))
 }
 
+test "db_typecheck_fs: same-named traits with different definitions from two packages are rejected" {
+  let first_path = "/tmp/vibe_compiler_trait_dup_def_first.vibe"
+  let second_path = "/tmp/vibe_compiler_trait_dup_def_second.vibe"
+  let main_path = "/tmp/vibe_compiler_trait_dup_def_main.vibe"
+  let first_src = "export trait Hash { hash(Self) -> Int }\nimpl Hash for Int { hash(self) -> Int { self } }"
+  let second_src = "export trait Hash"
+  let main_src = "import ./vibe_compiler_trait_dup_def_first.vibe { trait Hash }\nimport ./vibe_compiler_trait_dup_def_second.vibe { trait Hash }"
+  Fs::write_bytes(first_path, string_to_bytes(first_src))
+  Fs::write_bytes(second_path, string_to_bytes(second_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let first_fp = build_test_fingerprint(first_src, array_empty())
+  let second_fp = build_test_fingerprint(second_src, array_empty())
+  remove_typecheck_fs_cache(first_path, first_src, first_fp)
+  remove_typecheck_fs_cache(second_path, second_src, second_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (first_path, first_fp),
+    (second_path, second_fp)
+  ]))
+  let error = handle {
+    let db = db_set_source(db_set_source(db_set_source(db_new(), first_path, first_src), second_path, second_src), main_path, main_src)
+    let _ = db_typecheck_fs(db, main_path)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(error, "trait 'Hash' has two different definitions"))
+}
+
+test "db_typecheck_fs: differing traits selected through value bounds are rejected" {
+  // The #1844 drift shape: neither trait is imported explicitly -- both are
+  // pulled in implicitly because imported values carry `[T: Hash]` bounds.
+  let first_path = "/tmp/vibe_compiler_trait_dup_bound_first.vibe"
+  let second_path = "/tmp/vibe_compiler_trait_dup_bound_second.vibe"
+  let main_path = "/tmp/vibe_compiler_trait_dup_bound_main.vibe"
+  let first_src = "export trait Hash { hash(Self) -> Int }\nimpl Hash for Int { hash(self) -> Int { self } }\nexport fn by_hash[T: Hash](x: T) -> Int { let _ = x; 1 }"
+  let second_src = "export trait Hash\nimpl Hash for Int\nexport fn also_hash[T: Hash](x: T) -> Int { let _ = x; 2 }"
+  let main_src = "import ./vibe_compiler_trait_dup_bound_first.vibe { by_hash }\nimport ./vibe_compiler_trait_dup_bound_second.vibe { also_hash }"
+  Fs::write_bytes(first_path, string_to_bytes(first_src))
+  Fs::write_bytes(second_path, string_to_bytes(second_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let first_fp = build_test_fingerprint(first_src, array_empty())
+  let second_fp = build_test_fingerprint(second_src, array_empty())
+  remove_typecheck_fs_cache(first_path, first_src, first_fp)
+  remove_typecheck_fs_cache(second_path, second_src, second_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (first_path, first_fp),
+    (second_path, second_fp)
+  ]))
+  let error = handle {
+    let db = db_set_source(db_set_source(db_set_source(db_new(), first_path, first_src), second_path, second_src), main_path, main_src)
+    let _ = db_typecheck_fs(db, main_path)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(error, "trait 'Hash' has two different definitions"))
+}
+
+test "db_typecheck_fs: one trait reached through a re-export module is not a conflict" {
+  let base_path = "/tmp/vibe_compiler_trait_reexport_base.vibe"
+  let facade_path = "/tmp/vibe_compiler_trait_reexport_facade.vibe"
+  let main_path = "/tmp/vibe_compiler_trait_reexport_main.vibe"
+  let base_src = "export trait Marker { tag(Self) -> Int }\nimpl Marker for Int { tag(self) -> Int { 1 } }"
+  let facade_src = "import ./vibe_compiler_trait_reexport_base.vibe { trait Marker }\nexport { Marker }"
+  let main_src = "import ./vibe_compiler_trait_reexport_base.vibe { trait Marker }\nimport ./vibe_compiler_trait_reexport_facade.vibe { trait Marker }\nexport fn use_it[T: Marker](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(1)"
+  Fs::write_bytes(base_path, string_to_bytes(base_src))
+  Fs::write_bytes(facade_path, string_to_bytes(facade_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let base_fp = build_test_fingerprint(base_src, array_empty())
+  let facade_fp = build_test_fingerprint(facade_src, [
+    (base_path, base_fp)
+  ])
+  remove_typecheck_fs_cache(base_path, base_src, base_fp)
+  remove_typecheck_fs_cache(facade_path, facade_src, facade_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (base_path, base_fp),
+    (facade_path, facade_fp)
+  ]))
+  let checked = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), base_path, base_src), facade_path, facade_src), main_path, main_src), main_path)
+  match db_check_env(checked, main_path) {
+    Some(env) => assert(trait_defined(env, "Marker")),
+    None => assert(false)
+  }
+}
+
 test "db_typecheck_fs: source update bypasses current-run cache" {
   let path = "/tmp/vibe_compiler_type_db_fs_source_update.vibe"
   let source1 = "export let value = 1"
