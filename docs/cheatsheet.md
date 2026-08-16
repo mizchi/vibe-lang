@@ -1314,6 +1314,18 @@ import . { helper }          // own directory's index (same resolution)
 // qualified access is an independent mechanism and remains.
 ```
 
+### Same-named traits from two packages are rejected (#1910)
+
+When one compile unit can see two **different** `trait` definitions with the
+same name — imported explicitly, or pulled in implicitly because an imported
+value carries a `[T: Trait]` bound — the checker reports
+`trait 'Hash' has two different definitions: '<site1>' and '<site2>'` instead
+of letting import order pick one silently. The fix is in the message: alias
+one side (`import ./a.vibe { trait Hash as TheirHash }`) or import only one.
+The *same* definition reached through re-export paths is not a conflict, and
+two different traits forced onto one local name via explicit aliases is the
+separate `ambiguous trait import alias` error.
+
 ### Qualified names
 
 どの記号が識別子の一部になるかは文脈で決まる。
