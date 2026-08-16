@@ -15,11 +15,23 @@
 // still rendered, just in the wrong place.
 //
 // These are snapshots of the real wire output, not hand-written JSON.
+//
+// #1941 next knife after #2024: `locate_type_error` already emits
+// `line L:C-E:` from `[@off=N:M]`, but the JSON/LSP encoder used to treat
+// `C-E` as a non-numeric column and collapse to `0..1`. The quux test
+// below requires the encoder to slice the same token #2024 locked.
+// Leftover on #1941: grep `line:0`, synthetic `0:0` instead of an
+// unavailable marker, type-at on binders/callees. Return-type mismatches
+// still take the no-position fallback (the snapshot below).
 
 //# Imports
 
 import .{
   lsp_diagnostics_json_string
+}
+
+import @vibe/json {
+  Json
 }
 
 //# Tests
@@ -39,10 +51,11 @@ test "lsp diagnostics: a parse error carries its position and error severity" {
 }
 
 test "lsp diagnostics: a message with no position falls back to the file start" {
-  // Type errors still carry no `line L:C:` prefix (#1567's remaining half), so
-  // they take the fallback path and land on 0:0. Pinned as CURRENT behaviour,
-  // not as desired behaviour -- when #1567 gives type errors a position this
-  // snapshot changes, which is the point of having it.
+  // Type errors without `[@off=]` still carry no `line L:C:` prefix
+  // (#1567 leftover / #1941 synthetic 0:0). Unknown names like `quux`
+  // are located; this snapshot is the no-position fallback. Pinned as
+  // CURRENT behaviour, not as desired -- when those messages get a
+  // position this snapshot changes.
   inspect(lsp_diagnostics_json_string("fn f() -> Int { \"s\" }"), "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
 }
 
@@ -60,4 +73,34 @@ test "lsp diagnostics: an ASCII line is unaffected by the UTF-16 conversion" {
   // The conversion must be identity when there is nothing multibyte to convert
   // -- a fix that shifted ASCII columns would be worse than the bug.
   inspect(lsp_diagnostics_json_string("let a = 1\nfn f( -> Int { 1 }"), "[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name token=->\",\"data\":null}]",)
+}
+
+/// Identifier `quux` is the #2024 / #1941 range-agreement token.
+/// `vibe check --single-file --json` and LSP publishDiagnostics share
+/// `lsp_diagnostics_json_string`. The range must slice `quux`, not collapse
+/// to 0-width or the `0..1` fallback.
+test "json diagnostics slice the same unknown identifier quux (#1941)" {
+  let src = "let x = quux\n"
+  let token = "quux"
+  let start = String::index_of(src, token)
+  let endo = start + String::length(token)
+  assert(start >= 0)
+  assert(String::substring(src, start, endo) == token)
+  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  assert(Json::length(parsed) == 1)
+  let range = Json::field(Json::index(parsed, 0), "range")
+  let rs = Json::field(range, "start")
+  let re = Json::field(range, "end")
+  let sl = Double::to_int(Json::number(Json::field(rs, "line")))
+  let sc = Double::to_int(Json::number(Json::field(rs, "character")))
+  let el = Double::to_int(Json::number(Json::field(re, "line")))
+  let ec = Double::to_int(Json::number(Json::field(re, "character")))
+  assert(el > sl || ec > sc)
+  assert(!(sl == 0 && sc == 0 && el == 0 && ec <= 1))
+  assert(sl == 0)
+  assert(el == 0)
+  assert(sc == start)
+  assert(ec == endo)
+  assert(String::substring(src, sc, ec) == token)
+  assert(Json::string(Json::field(Json::index(parsed, 0), "message")) == "unknown name: quux")
 }
