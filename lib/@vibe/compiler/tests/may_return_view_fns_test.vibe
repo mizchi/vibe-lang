@@ -1,0 +1,63 @@
+//# #1915 regression: compute_may_return_view_fns vs the local-let ascription
+//# wrapper. A local `let x: T = e` parses to the identity application
+//# `((__asc: T) -> __asc)(e)` (ascribe_wrap, parser_expr_dispatch.vibe).
+//# mrv_fresh used to treat the non-ident callee as untrackable, so every
+//# function tail-returning an ANNOTATED fresh binding -- the standard builder
+//# shape `let out: Array[Int] = []; ...; out` -- was classified
+//# may-return-view, and every caller then suppressed the scope-end drop of an
+//# OWNED result (one leaked object per call; the single largest contributor
+//# found while attributing the #1875 self-compile heap high-water).
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  compute_may_return_view_fns
+}
+
+fn view_set_of(src: String) -> Array[String] {
+  compute_may_return_view_fns(parse_program(lex(src)))
+}
+
+fn contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "annotated builder returned by name is not view" {
+  let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(out, i)\n    i = i + 1\n  }\n  out\n}\n"
+  assert_true(!contains(view_set_of(src), "make"))
+}
+
+test "annotated literal returned by name is not view" {
+  let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = [1, 2, 3]\n  out\n}\n"
+  assert_true(!contains(view_set_of(src), "make"))
+}
+
+test "annotated borrow-returning binding stays view" {
+  // The ascription see-through must delegate to the ARGUMENT's freshness,
+  // not blanket-trust the wrapper: an annotated binding of a borrowed view
+  // (`Array::get`) is still a view when returned.
+  let src = "fn head(a: Array[Array[Int]]) -> Array[Int] {\n  let v: Array[Int] = Array::get(a, 0)\n  v\n}\n"
+  assert_true(contains(view_set_of(src), "head"))
+}
+
+test "unannotated view binding stays view" {
+  let src = "fn head(a: Array[Array[Int]]) -> Array[Int] {\n  let v = Array::get(a, 0)\n  v\n}\n"
+  assert_true(contains(view_set_of(src), "head"))
+}
+
+test "param passthrough stays view" {
+  let src = "fn id_arr(a: Array[Int]) -> Array[Int] {\n  let v: Array[Int] = a\n  v\n}\n"
+  assert_true(contains(view_set_of(src), "id_arr"))
+}

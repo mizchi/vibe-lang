@@ -3210,9 +3210,15 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
       true
     },
     ECall(callee, args, _) => {
+      let mut arg0_fresh = false
       let mut i = 0
       while i < Array::length(args) {
-        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let af = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        if i == 0 {
+          arg0_fresh = af
+        } else {
+          ()
+        }
         i = i + 1
       }
       match callee {
@@ -3228,6 +3234,34 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
           // uppercase, but a non-view builtin returns fresh too, so the
           // distinction does not matter here.)
           true
+        },
+        EFn(_, _, wfps, _, _, wbody) => {
+          // #1915: `let x: T = e` parses to the identity application
+          // `((__asc: T) -> __asc)(e)` (ascribe_wrap, parser_expr_dispatch.vibe)
+          // -- a checker-only ascription device, so the call's freshness is the
+          // argument's. Treating the non-ident callee as untrackable here put
+          // every function tail-returning an annotated fresh binding (`let out:
+          // Array[Int] = []; ...; out` -- the standard builder shape) into the
+          // may-return-view set, and every caller then leaked the owned result
+          // (view-call scope-end drop suppression, one object per call).
+          // Recognized structurally (single param returned unchanged), not by
+          // the `__asc` name, so a hand-written identity lambda gets the same
+          // precision; anything else stays untrackable as before.
+          let ident_ret = if Array::length(wfps) == 1 && Array::length(args) == 1 {
+            let (wpn, _) = Array::get(wfps, 0)
+            match wbody {
+              EIdent(bn, _) => bn == wpn,
+              _ => false
+            }
+          } else {
+            false
+          }
+          if ident_ret {
+            arg0_fresh
+          } else {
+            let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+            false
+          }
         },
         _ => {
           let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
