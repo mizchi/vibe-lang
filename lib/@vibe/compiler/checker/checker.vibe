@@ -1418,7 +1418,7 @@ fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr]
   }
 }
 
-fn direct_result_field_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
+fn result_field_param_index(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int]) -> Option[Int] {
   match body {
     EDot(EIdent(name, _), _, _, _) => {
       let mut found = None
@@ -1431,6 +1431,117 @@ fn direct_result_field_param_index(body: Expr, params: Array[(String, Option[Typ
         i = i + 1
       }
       found
+    },
+    EIdent(name, _) => {
+      let mut found = None
+      let mut i = 0
+      while i < Array::length(alias_names) {
+        if Array::get(alias_names, i) == name {
+          found = Some(Array::get(alias_indices, i))
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(name, value, rest, _) => {
+      let next_names = for alias in alias_names {
+        alias
+      }
+      let next_indices = for index in alias_indices {
+        index
+      }
+      match result_field_param_index(value, params, alias_names, alias_indices) {
+        Some(index) => {
+          Array::push(next_names, name)
+          Array::push(next_indices, index)
+        },
+        None => ()
+      }
+      result_field_param_index(rest, params, next_names, next_indices)
+    },
+    ESeq(_, right) => result_field_param_index(right, params, alias_names, alias_indices),
+    EIf(_, then_expr, else_expr) => match result_field_param_index(then_expr, params, alias_names, alias_indices) {
+      Some(index) => Some(index),
+      None => result_field_param_index(else_expr, params, alias_names, alias_indices)
+    },
+    _ => None
+  }
+}
+
+fn direct_result_field_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
+  result_field_param_index(body, params, array_empty(), array_empty())
+}
+
+fn collect_explicit_return_types(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, out: Array[Type], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+  match expr {
+    EFn(_, _, _, _, _, _) => (),
+    EReturn(value) => {
+      let throwaway = array_empty()
+      let throwtab = array_empty()
+      let (value_ty, next_s, _) = ce(value, env, defs, s, c, throwaway, throwtab)
+      Array::push(out, subst_apply(next_s, value_ty))
+    },
+    ELet(name, value, body, _) => {
+      let throwaway = array_empty()
+      let throwtab = array_empty()
+      let (value_ty, next_s, next_c) = ce(value, env, defs, s, c, throwaway, throwtab)
+      collect_explicit_return_types(body, env_bind(env, name, value_ty), defs, next_s, next_c, out, ce)
+    },
+    ELetMut(name, value, body, _) => {
+      let throwaway = array_empty()
+      let throwtab = array_empty()
+      let (value_ty, next_s, next_c) = ce(value, env, defs, s, c, throwaway, throwtab)
+      collect_explicit_return_types(body, env_bind_mut(env, name, value_ty, false), defs, next_s, next_c, out, ce)
+    },
+    _ => {
+      for child in expr_children(expr) {
+        collect_explicit_return_types(child, env, defs, s, c, out, ce)
+      }
+      ()
+    }
+  }
+}
+
+fn is_enum_ctor_name(name: String, defs: Array[TypeDef]) -> Bool {
+  let separator = String::last_index_of(name, "::")
+  let member = if separator >= 0 {
+    String::substring(name, separator + 2, String::length(name))
+  } else {
+    name
+  }
+  let mut found = name == "Some"
+  for type_def in defs {
+    match type_def {
+      TDEnum(_, _, variants) => {
+        for variant in variants {
+          let (variant_name, _) = variant
+          if variant_name == member {
+            found = true
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+fn direct_result_enum_payload_param_index(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef]) -> Option[Int] {
+  match body {
+    ECall(EIdent(ctor_name, _), args, _) => if is_enum_ctor_name(ctor_name, defs) {
+      let mut found = None
+      for call_arg in args {
+        match direct_result_param_index(call_arg, params) {
+          Some(index) => {
+            found = Some(index)
+          },
+          None => ()
+        }
+      }
+      found
+    } else {
+      None
     },
     _ => None
   }
@@ -8368,7 +8479,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
       let (bt, s2, c2) = check_expr_capture(body, body_env, defs, s1, c1, errors, tytab, capture, lane)
-      let (final_ret, s3) = match ret_ty {
+      let explicit_return_types = array_empty()
+      collect_explicit_return_types(body, body_env, defs, s2, c2, explicit_return_types, check_expr)
+      let (base_ret, s3) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr_shadowed(te, defs, tparams)
           let resolved_ret = resolve_tparams_in(resolved, fn_env)
@@ -8399,6 +8512,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         },
         None => (subst_apply(s2, bt), s2)
       }
+      let mut final_ret = base_ret
+      for explicit_ret in explicit_return_types {
+        final_ret = merge_capture_provenance(final_ret, subst_apply(s3, explicit_ret))
+      }
       let capture_effect = closure_capture_row(effect, body, params, fn_env, s3)
       let checked_effect = match direct_result_param_index(body, params) {
         Some(index) => merge_provenance_row(capture_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]")))),
@@ -8406,7 +8523,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let dependency_effect = match direct_result_field_param_index(body, params) {
         Some(index) => merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]")))),
-        None => checked_effect
+        None => match direct_result_enum_payload_param_index(body, params, defs) {
+          Some(index) => merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]")))),
+          None => checked_effect
+        }
       }
       (CtFn(param_types, final_ret, dependency_effect), s3, c2)
     },
