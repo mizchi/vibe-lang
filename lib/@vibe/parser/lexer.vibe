@@ -1281,12 +1281,19 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
   (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends), ArrayBuilder::freeze(err_offsets), ArrayBuilder::freeze(err_msgs))
 }
 
-/// Last source text seen by `lex` / `remember_parse_source`. Tokens-only
-/// entries (`parse_program(lex(src))`) have no source argument, so the
-/// unexpected-token throw site reads this to emit `line L:col C:` instead
-/// of encoding a token index for a later decoder (#1862).
+/// Source of the parse that supplied `starts`. Located/recovering entries
+/// set this so `format_unexpected_token` can turn a token index into
+/// `line:col`. `lex` must not write it: a later lex of B must not relocate
+/// a parse of A's tokens (#1862).
 let last_parse_source_cell: Array[String] = Array::slice([
   ""
+], 0, 0)
+
+/// Failing token index for the last `format_unexpected_token`. Recovery
+/// used to decode `at #N` from the message; the user-facing form no longer
+/// carries that index, so the pos lives here instead of in the string.
+let last_unexpected_token_pos_cell: Array[Int] = Array::slice([
+  0
 ], 0, 0)
 
 export fn remember_parse_source(source: String) -> Unit {
@@ -1302,34 +1309,33 @@ fn last_parse_source() -> String {
   }
 }
 
-fn token_offset_for_error(starts: Array[Int], pos: Int, source: String) -> Int {
-  if pos >= 0 && pos < Array::length(starts) {
-    Array::get(starts, pos)
+export fn last_unexpected_token_pos() -> Int {
+  if Array::length(last_unexpected_token_pos_cell) > 0 {
+    Array::get(last_unexpected_token_pos_cell, 0)
   } else {
-    let recovered = handle {
-      lex_with_offsets(source).1
-    } with Exception {
-      Throw(_) => ArrayBuilder::freeze(ArrayBuilder::new())
-    }
-    if pos >= 0 && pos < Array::length(recovered) {
-      Array::get(recovered, pos)
-    } else {
-      0
-    }
+    -1
   }
 }
 
-/// User-facing unexpected-token diagnostic (#1862). Located at the throw
-/// site so lanes that skip `extract_err_token_pos` still get `line L:col C:`
-/// and never see a token index or lexer `(prev=..., next=...)` debris.
+fn remember_unexpected_token_pos(pos: Int) -> Unit {
+  Array::truncate(last_unexpected_token_pos_cell, 0)
+  Array::push(last_unexpected_token_pos_cell, pos)
+}
+
+/// User-facing unexpected-token diagnostic (#1862). Never encodes a token
+/// index or lexer `(prev=..., next=...)` debris. Emits `line L:col C:` only
+/// when `starts` contains the failing token and this parse remembered its
+/// source; tokens-only `parse_program` has empty `starts` and must not
+/// invent a location from a leftover source.
 export fn format_unexpected_token(starts: Array[Int], pos: Int, actual: String) -> String {
+  remember_unexpected_token_pos(pos)
   let source = last_parse_source()
-  if String::length(source) == 0 {
-    String::concat("unexpected token: ", actual)
-  } else {
-    let off = token_offset_for_error(starts, pos, source)
+  if pos >= 0 && pos < Array::length(starts) && String::length(source) > 0 {
+    let off = Array::get(starts, pos)
     let (line, col) = offset_to_line_col(source, off)
     String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": unexpected token: ", actual)))))
+  } else {
+    String::concat("unexpected token: ", actual)
   }
 }
 
@@ -1358,7 +1364,6 @@ export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
 }
 
 export fn lex(source: String) -> Array[Token] with Exception {
-  remember_parse_source(source)
   let len = String::length(source)
   {
     let b = ArrayBuilder::new()

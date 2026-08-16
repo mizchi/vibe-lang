@@ -5,7 +5,7 @@ import ./lexer.vibe {
 }
 
 import ./parser.vibe {
-  parse_program, parse_program_located
+  parse_program, parse_program_located, parse_program_recovering
 }
 
 import @vibe/ast {
@@ -272,45 +272,88 @@ fn unexpected_token_probe_source() -> String {
   "test \"p\" {\n  let ys = Array::map([1,2,3], fn(x) { x * 2 })\n}\n"
 }
 
-fn assert_unexpected_token_located(result: String) -> Unit {
-  assert(String::contains(result, "line "))
+fn assert_unexpected_token_clean(result: String) -> Unit {
   assert(String::contains(result, "unexpected token: fn"))
   assert(!String::contains(result, " at #"))
   assert(!String::contains(result, "prev="))
   assert(!String::contains(result, "next="))
 }
 
-test "#1862: raw parse_program unexpected-token is located" {
-  // gc / tokens-only lanes call parse_program(lex(src)) and never run
-  // extract_err_token_pos, so the throw site itself must emit line:col
-  // and must not leak the token index or lexer (prev/next) debris.
+fn recovered_let_named(stmts: Array[Stmt], want: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => {
+        found = name == want
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "#1862: raw parse_program unexpected-token has no token-index debris" {
+  // tokens-only parse_program has empty starts, so it cannot honestly
+  // locate. It must still drop the token index and lexer (prev/next)
+  // debris instead of inventing a line:col from a leftover source.
   let result = handle {
     let _ = parse_program(lex("let x = fn"))
     "OK"
   } with Exception {
     Throw(e) => e
   }
-  assert_eq(result, "line 1:9: unexpected token: fn")
+  assert_eq(result, "unexpected token: fn")
   let probe = handle {
     let _ = parse_program(lex(unexpected_token_probe_source()))
     "OK"
   } with Exception {
     Throw(e) => e
   }
-  assert_unexpected_token_located(probe)
+  assert_unexpected_token_clean(probe)
+  assert(!String::contains(probe, "line "))
+}
+
+test "#1862: tokens-only parse does not claim a location from a later lex" {
+  let tokens_a = lex("let x = fn")
+  let _ = lex("\n\n\n\n\nlet y = fn")
+  let result = handle {
+    let _ = parse_program(tokens_a)
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert_eq(result, "unexpected token: fn")
+  assert(!String::contains(result, "line "))
 }
 
 test "#1862: parse_program_located unexpected-token stays single-located" {
   let src = unexpected_token_probe_source()
   let result = handle {
     let (tokens, starts, _) = lex_with_offsets(src)
+    let _ = lex("\n\n\n\n\nlet y = fn")
     let _ = parse_program_located(tokens, starts, src)
     "OK"
   } with Exception {
     Throw(e) => e
   }
-  assert_unexpected_token_located(result)
+  assert_unexpected_token_clean(result)
   assert(String::starts_with(result, "line "))
   let rest = String::substring(result, 5, String::length(result))
   assert(String::index_of(rest, "line ") < 0)
+}
+
+test "#1862: recovering unexpected-token resyncs at the failing token" {
+  // Inner `let` looks like a recovery point. Resyncing from the statement
+  // start (the old `at #N` extract now returns start_pos) re-parses that
+  // `let` and duplicates the diagnostic. The throw site keeps the failing
+  // token index aside so recovery skips to `let ok`.
+  let src = "test \"p\" {\n  let ys = Array::map([1,2,3], fn(x) { x * 2 })\n}\nlet ok = 1\n"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let (stmts, diags) = parse_program_recovering(tokens, starts, src)
+  assert_eq(Array::length(diags), 1)
+  assert_unexpected_token_clean(Array::get(diags, 0))
+  assert(String::starts_with(Array::get(diags, 0), "line "))
+  assert(recovered_let_named(stmts, "ok"))
 }

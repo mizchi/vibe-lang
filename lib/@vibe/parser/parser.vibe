@@ -64,7 +64,7 @@ import ./token.vibe {
 }
 
 import ./lexer.vibe {
-  offset_to_line_col, remember_parse_source
+  last_unexpected_token_pos, offset_to_line_col, remember_parse_source
 }
 
 import ./parser_binder_context.vibe {
@@ -931,16 +931,24 @@ export fn parse_program(tokens: Array[Token]) -> Array[Stmt] with Exception {
 /// Per-statement wrapping keeps the change local. Build the prefix with
 /// String::concat (not `+` or interpolation) to avoid selfhost string-concat
 /// NUL fragility. Source-span foundation: located parse diagnostics.
-/// #816: in-body parse errors carry the failing TOKEN index as "at #N"
-/// (expect_tk and the primary-dispatch "unexpected token" throw). Decode it so
-/// the located wrapper anchors the diagnostic at the OFFENDING token instead
-/// of the enclosing statement's start (an error on line 6 used to report
-/// "line 2:1"), and strip the index + the lexer-internal "(prev=..., next=...)"
-/// debris from the user-facing message.
+/// #816: in-body parse errors still carry the failing TOKEN index as "at #N"
+/// (expect_tk and the remaining encode sites). Decode it so recovery and the
+/// located wrapper anchor at the OFFENDING token instead of the enclosing
+/// statement's start. Converted unexpected-token throws keep that index in
+/// `last_unexpected_token_pos` rather than the user-facing message.
 fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
   let mi = String::index_of(msg, " at #")
   if mi < 0 {
-    (fallback_pos, msg)
+    if String::index_of(msg, "unexpected token") >= 0 {
+      let remembered = last_unexpected_token_pos()
+      if remembered >= 0 {
+        (remembered, msg)
+      } else {
+        (fallback_pos, msg)
+      }
+    } else {
+      (fallback_pos, msg)
+    }
   } else {
     let mlen = String::length(msg)
     let mut di = mi + 5
@@ -979,9 +987,8 @@ fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
 }
 
 /// Prefix `line L:col C:` when the throw site has not already located the
-/// message. Throw sites converted in #1862 emit the final form themselves so
-/// tokens-only lanes stay readable; re-prefixing those would double the
-/// location (`line 3:1: line 2:32: ...`).
+/// message. Located unexpected-token throws emit the final form themselves;
+/// re-prefixing those would double the location (`line 3:1: line 2:32: ...`).
 fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source: String) -> String {
   if String::index_of(msg, "line ") == 0 {
     msg
