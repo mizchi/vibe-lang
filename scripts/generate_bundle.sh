@@ -91,7 +91,10 @@ CODEGEN_FP_FILE="$COMPILER_DIR/cache/codegen_fingerprint.vibe"
 # `shasum`). Both print the hash first, so `cut -c1-16` yields the same 16 hex
 # chars on either — the fingerprint value is unchanged.
 sha256_stdin() {
-  if command -v sha256sum >/dev/null 2>&1; then
+  # Probe by RUNNING it, not by `command -v`: a nix-shim `sha256sum` that is on
+  # PATH but dies on a glibc mismatch passes an existence check and then fails
+  # every call, so the fallback never engages and the caller dies instead.
+  if sha256sum </dev/null >/dev/null 2>&1; then
     sha256sum
   else
     shasum -a 256
