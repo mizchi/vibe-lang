@@ -467,3 +467,71 @@ test "perceus: multi-alias dups all but the last (elision does not fire when use
   assert(count_drops(plan, "b") == 1)
   assert(count_drops(plan, "t") == 0)
 }
+
+/// #1915 mechanism 3: exclusive if-branches each mentioning an outer binding
+/// must budget the per-binding MAX across branches, not the sum. With the
+/// #706 borrow-retention bump active (the leading borrow keeps remaining > 1
+/// at branch entry) each branch's use used to push its own dup, and codegen
+/// realizes every planned dup unconditionally at the binding site while only
+/// one branch executes -- one leaked object per call for the
+/// `builder loop + if/else tail` shape.
+test "perceus: exclusive if-branch mentions merge to one dup" {
+  // let out = (1, 2); match out { _ => 0 }; if true { out } else { out }
+  let borrow_use = EMatch(EIdent("out", -1), [
+    (PWild, EInt(0))
+  ])
+  let tail = EIf(EBool(true), EIdent("out", -1), EIdent("out", -1))
+  let body = ELet("out", ETuple([
+    EInt(1),
+    EInt(2)
+  ]), ESeq(borrow_use, tail), -1)
+  let plan = build_perceus_plan(body)
+  inspect(count_dups(plan, "out"), "1")
+  inspect(count_drops(plan, "out"), "1")
+}
+
+/// #1915 mechanism 3, match form: the same merge applies across match arms.
+test "perceus: exclusive match-arm mentions merge to one dup" {
+  // let out = (1, 2); match out { _ => 0 }; match 1 { p => out, _ => out }
+  let borrow_use = EMatch(EIdent("out", -1), [
+    (PWild, EInt(0))
+  ])
+  let tail = EMatch(EInt(1), [
+    (PBind("p"), EIdent("out", -1)),
+    (PWild, EIdent("out", -1))
+  ])
+  let body = ELet("out", ETuple([
+    EInt(1),
+    EInt(2)
+  ]), ESeq(borrow_use, tail), -1)
+  let plan = build_perceus_plan(body)
+  inspect(count_dups(plan, "out"), "1")
+  inspect(count_drops(plan, "out"), "1")
+}
+
+/// #1915 mechanism 3 guard: the merge keys on binding IDs, so a branch-local
+/// shadow of the outer name keeps its own dup budget, and the outer binding
+/// keeps its else-branch dup.
+test "perceus: branch-local shadow keeps its dups through the merge" {
+  // let out = (1, 2); match out { _ => 0 };
+  // if true { let out = (3, 4); (out, out) } else { out }
+  let borrow_use = EMatch(EIdent("out", -1), [
+    (PWild, EInt(0))
+  ])
+  let shadow_body = ETuple([
+    EIdent("out", -1),
+    EIdent("out", -1)
+  ])
+  let then_e = ELet("out", ETuple([
+    EInt(3),
+    EInt(4)
+  ]), shadow_body, -1)
+  let tail = EIf(EBool(true), then_e, EIdent("out", -1))
+  let body = ELet("out", ETuple([
+    EInt(1),
+    EInt(2)
+  ]), ESeq(borrow_use, tail), -1)
+  let plan = build_perceus_plan(body)
+  // One dup for the shadow's double use + one for the outer else mention.
+  inspect(count_dups(plan, "out"), "2")
+}
