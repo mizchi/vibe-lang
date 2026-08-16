@@ -70,7 +70,14 @@ is_excluded() {
   return 1
 }
 
-discover() { find examples lib fixtures -name '*_test.vibe' 2>/dev/null | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort; }
+# `_generated_runtime_fixtures/` is build output, not source: it is written by
+# scripts/generate_runtime_fixture_tests.mjs, gitignored, and regenerated on
+# demand. It lands under lib/, so a stale copy left by a local run silently
+# JOINED the gated corpus -- twice, each time reported as "N active unit-test
+# file(s) regressed" for fixtures the generator is still being taught to wrap
+# (#1855). CI never sees it (fresh clone), which is exactly what makes it a
+# trap: it only ever fails for the person who ran the generator.
+discover() { find examples lib fixtures -name '*_test.vibe' -not -path '*/_generated_runtime_fixtures/*' 2>/dev/null | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort; }
 
 mode="run"
 case "${1:-}" in
