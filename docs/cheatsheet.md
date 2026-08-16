@@ -778,7 +778,7 @@ let arr2 = {
 // `MapHamt` が 27.7× 速く 22× 確保が少ない (ADR-0100 (3) /
 // bench/bench_map_vs_immutmap.vibe)。同じ性質はコンパイラ内部でも踏んでいる (#799)。
 
-// 両端キュー / 優先度付きキューは @vibex/deque / @vibex/pqueue:
+// 両端キュー / 優先度付きキューは @vibe/core (#1842 で @vibex から昇格):
 //   Deque::new/push_back/pop_front (ring buffer、両端 O(1))
 //   PriorityQueue::new_int_min / new(cmp) (binary heap、cmp < 0 が先頭)
 
