@@ -14,6 +14,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
+# --- exit-status helpers -----------------------------------------------------
+#
+# This script runs under `set -euo pipefail`, so a command whose non-zero exit
+# is DATA rather than a failure must never be called bare. Written bare, the
+# script dies at that line and the carefully-worded FAIL branch below it is
+# unreachable -- the gate reports nothing about why it stopped.
+#
+# Two real instances of this were in the tree (#1262):
+#
+#   - the `vibe check @scope/pkg` section, whose FAIL branch exists precisely
+#     to avoid "a diagnostic-free failure", was itself made diagnostic-free;
+#   - the process-exit section, where SUCCESS is a non-zero status (7), was
+#     fully INVERTED: it died when the fixture was correct and sailed past when
+#     the lowering had regressed to a no-op. It passed only when broken.
+#
+# Use `gate_status` whenever the exit code is something you want to READ.
+# Use plain `cmd` when a non-zero status genuinely means "abort the gate".
+# `|| true` remains fine where the status is deliberately ignored and a later
+# check (output file exists, content matches) is what decides.
+
+# gate_status <var> <cmd...> -- run cmd, assign its exit status to <var>.
+# Never aborts, so the caller's own assertion is always reached.
+gate_status() {
+  local __var="$1"; shift
+  local __rc=0
+  "$@" >/dev/null 2>&1 || __rc=$?
+  printf -v "$__var" '%s' "$__rc"
+}
+
+# gate_status_out <var> <outfile> <cmd...> -- same, but keep stdout+stderr in
+# <outfile> so a FAIL branch can show what actually happened.
+gate_status_out() {
+  local __var="$1"; local __out="$2"; shift 2
+  local __rc=0
+  "$@" >"$__out" 2>&1 || __rc=$?
+  printf -v "$__var" '%s' "$__rc"
+}
+# -----------------------------------------------------------------------------
+
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
 
@@ -4918,14 +4957,9 @@ for gcpe_be in linear gc; do
     cat "$gcpedir/$gcpe_be.wasm.diag" 2>/dev/null >&2 || true
     exit 1
   fi
-  # `if` guard, not a bare call: this script runs under `set -euo pipefail`,
-  # and the SUCCESS case here is a NON-ZERO status (7). A bare call would kill
-  # the gate exactly when the fixture behaves correctly -- and, worse, a
-  # regression that made the exit a no-op would return 0 and sail past. The
-  # detector was inverted: it passed only when broken. The condition part of
-  # `if` is exempt from errexit, so the status reaches the assertion.
-  gcpe_rc=0
-  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcpedir/$gcpe_be.wasm" >/dev/null 2>&1 || gcpe_rc=$?
+  # SUCCESS here is a NON-ZERO status (7), so the exit code is DATA -- read it
+  # with gate_status (see the helper's header for what a bare call did).
+  gate_status gcpe_rc env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcpedir/$gcpe_be.wasm"
   if [ "$gcpe_rc" -ne 7 ]; then
     echo "[compiler-gate] FAIL: gc_process_exit.vibe exited $gcpe_rc on the $gcpe_be backend (want 7; 0 = the exit lowering is a no-op and the program fell through) (#1262)" >&2
     exit 1
@@ -12223,10 +12257,13 @@ fn main() -> Int {
   MutMap::size(m)
 }
 CHKPKG
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+# Read the status rather than calling bare: the FAIL branch below exists to
+# keep this surface from producing "a diagnostic-free failure", and under
+# errexit a bare call made that branch unreachable -- the exact thing it
+# guards against.
+gate_status chk_rc env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$chkpkgdir/entry.vibe" "$chkpkgdir/check.out" main >/dev/null 2>&1
-chk_rc=$?
+  "$chkpkgdir/entry.vibe" "$chkpkgdir/check.out" main
 # (a) it must SUCCEED. A crash here used to produce exit 1 with an empty
 # output AND an empty .diag -- indistinguishable from a diagnostic-free
 # failure, which is the one thing this surface must never be.
