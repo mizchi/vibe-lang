@@ -25,7 +25,7 @@ trap cleanup EXIT INT TERM
 
 export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
-bash scripts/install.sh --cli-wasm "$cli" >/dev/null
+bash install/install.sh --cli-wasm "$cli" >/dev/null
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "bench-http: launcher not installed" >&2; exit 1; }
 

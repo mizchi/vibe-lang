@@ -6,7 +6,7 @@
 # each ELet/ELetMut/ESeq boundary, and the runner pauses when that line is in the
 # break-set or on a step. v1-scoped to single-file entry programs.
 #
-# Builds a FRESH compiler+runner via scripts/install.sh into a throwaway
+# Builds a FRESH compiler+runner via install/install.sh into a throwaway
 # VIBE_HOME/VIBE_BIN_DIR (the committed seed predates dbg_line).
 set -euo pipefail
 
@@ -20,7 +20,7 @@ export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
 install_log="$WORK/install.log"
-bash scripts/install.sh >"$install_log" 2>&1 || true
+bash install/install.sh >"$install_log" 2>&1 || true
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 # Fresh-build detection: without a standalone wasmtime, install.sh falls back

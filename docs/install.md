@@ -9,19 +9,21 @@ rationale behind this split.
 ## Quick install (curl)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 ```
 
-This shallow-clones the repo (override with `VIBE_INSTALL_REPO` /
-`VIBE_INSTALL_REF`) and delegates to `scripts/install.sh`. Requirements:
-`git`, `bash`, `cargo` (the wasmtime runner builds from source); `node` is
-optional (used to self-build the newest compiler — without it the committed
-seed compiler is installed, which is always functional).
+Outside a checkout, the installer initializes a temporary repository and
+shallow-fetches the exact branch, tag, or reachable commit selected by
+`VIBE_INSTALL_REF` from `VIBE_INSTALL_REPO`, then safely reinvokes the matching
+`install/install.sh` from the detached checkout. Requirements: `git`, `bash`,
+`cargo` (unless `--runner` supplies a prebuilt runner), and Node.js for the
+default compiler seed acquisition/build path. Node.js is optional only when
+`--cli-wasm PATH` supplies an existing compiler wasm.
 
 ## Quick install (from a checkout)
 
 ```bash
-bash scripts/install.sh
+bash install/install.sh
 ```
 
 This will:
@@ -69,8 +71,8 @@ $VIBE_HOME/                 (default: ~/.vibe)
 
 Toolchains hold the versioned artifacts; packages and caches are shared and
 content-addressed. A future `vibe toolchain` selector (rustup-style) only has
-to rewrite `$VIBE_HOME/toolchain` — `scripts/installer.sh` already names
-toolchains after the installed ref so several can coexist.
+to rewrite `$VIBE_HOME/toolchain` — `install/install.sh` names toolchains
+after the installed ref so several can coexist.
 
 PATH policy: **`~/.vibe/bin` is the PATH entry** (the dispatcher lives
 there). The installer writes a sourceable `~/.vibe/env` (rustup's
@@ -83,7 +85,7 @@ dir is opt-in via `--bin-dir` / `VIBE_BIN_DIR` (used by the test harness).
 ## Installer options
 
 ```
-bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
+bash install/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
                         [--runner PATH]      # use a prebuilt viberun
                         [--cli-wasm PATH]    # use a specific compiler wasm
                         [--toolchain NAME]   # toolchain name (default: main)
@@ -97,7 +99,7 @@ bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
 To install a released compiler instead of the seed, pass the release artifact:
 
 ```bash
-bash scripts/install.sh --cli-wasm vibe-compiler-<tag>.wasm
+bash install/install.sh --cli-wasm vibe-compiler-<tag>.wasm
 ```
 
 ## Commands

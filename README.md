@@ -15,7 +15,7 @@ Building the runner from source needs `git`, `bash`, and `cargo`; pass
 [docs/install.md](docs/install.md) for the full prerequisite list.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 . "$HOME/.vibe/env"   # or restart the shell — ~/.vibe/bin is the PATH entry
 vibe version
 echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex

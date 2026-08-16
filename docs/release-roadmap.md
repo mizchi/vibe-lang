@@ -158,11 +158,11 @@
 > wasm-EH のバグではない。`cli-install.yml` に wasmtime 導入 step を追加して解消。
 > 詳細 `docs/known-issues.md`。
 
-完了・検証済み（compiler gate green、`scripts/test_vibe_cli_install.sh` 34/34）:
+完了・検証済み（compiler gate green、`tests/integration/install/install_test.sh` 34/34）:
 
 - **テーマ1 (install) ほぼ完了** — `viberun` に compiler CLI 用 raw-ABI host
   import を実装、`vibe` launcher（run/compile/build/check/test/fetch/version/
-  self-update/help）、`scripts/install.sh`（install 時 `.cwasm` AOT）、
+  self-update/help）、`install/install.sh`（install 時 `.cwasm` AOT）、
   `scripts/build_cli_wasm.sh`、`docs/install.md`、CI（`cli-install.yml`）。
 - **診断表面化 (UX/LSP 基盤)** — コンパイルエラーを `<output>.diag` に書き
   launcher が `error: <file>: <message>` 表示（trap/backtrace を置換）。
@@ -419,13 +419,13 @@
       raw-ABI host import (`vibe::env-get`/`args-get`/`fs_*`) を実装し、runner が
       compiler wasm を実行基盤として動かせるようにした。compiler wasm は
       差し替え可能 artifact として分離（`runtime/viberun/src/main.rs`）。
-- [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
+- [x] **1-2 install-time `.cwasm` ビルド** — `install/install.sh` が runner 取得後に
       `viberun --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
       launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。
 - [x] **1-3 マルチプラットフォーム CI** — `.github/workflows/cli-install.yml` が
-      ubuntu/macos で runner build + `scripts/test_vibe_cli_install.sh` smoke test。
+      ubuntu/macos で runner build + `tests/integration/install/install_test.sh` smoke test。
       （Windows は launcher が bash 依存のため対象外。残: arch matrix 拡張）
-- [x] **1-4 ワンライナー installer** — `scripts/install.sh` が runner build +
+- [x] **1-4 ワンライナー installer** — `install/install.sh` が runner build +
       compiler wasm 配置 + `.cwasm` 生成 + `vibe` launcher 配置 + PATH link。
       `--prefix`/`--runner`/`--cli-wasm`/`--bin-dir`/`--no-link` 対応。
 - [x] **1-5 compiler-only update 導線** — `vibe self update --cli-wasm <path>` が
@@ -500,7 +500,7 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
         cache + `./deps/<name>.vibe`、lock に `sha256:<hash>`。
       - **git（`git+<remote>[#<ref>]`）** → clone + ref checkout → `./deps/<name>/`
         ディレクトリに vendor、lock に解決した commit `git:<sha>` を固定。
-      検証済み（`scripts/test_vibe_cli_install.sh`、git+/transitive/frozen 含め 28/28）。
+      検証済み（`tests/integration/install/install_test.sh`、git+/transitive/frozen 含め 28/28）。
 - [ ] **2-1b seamless `import "<url>"` 構文** — string-literal import を parser で
       受け、resolver で `.vibe/deps/` ミラーに写像する案を試作したが、
       **compiler codegen の既知の脆さ**（`collect_import_path` の string 補間 /
@@ -517,7 +517,7 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       **semver バージョン制約解決** — git ref が `^1.2`/`~1.2.3`/`>=1.0`/`1.x`/`*`
       等なら、リモートの tag 一覧から最高の満たすものを解決して clone・lock する
       （完全な `1.2.3`・branch・commit・`v` tag は literal 扱い）。
-      検証済み（`scripts/test_vibe_cli_install.sh` transitive/frozen/semver ケース、
+      検証済み（`tests/integration/install/install_test.sh` transitive/frozen/semver ケース、
       semver comparator の unit 検証含む）。
 - [ ] **2-3 `vibe add` / `vibe publish`（または equivalent）** — 依存追加と
       公開の CLI 導線。2-0 の選択次第で publish は「git push + tag」かもしれない。
@@ -526,7 +526,7 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       **`vibe verify`** で vendored 物を lock に照合（改竄/欠落を検出、transitive
       lock へ再帰）。git dep の tree digest は vendor 物の `deps/`・lock を除外し、
       ネストした dep は各自の lock で別途検証。署名は将来課題。
-      検証済み（`scripts/test_vibe_cli_install.sh` verify clean/tamper/transitive）。
+      検証済み（`tests/integration/install/install_test.sh` verify clean/tamper/transitive）。
 - [x] **2-5 docs** — 当時の `docs/module-system.md` (2026-08 に削除) に「配布とパッケージ管理（git/URL
       分散）」節を追加（`vibe.deps`/`fetch`/`--frozen`/`add`/`verify`/lock 形式/
       import 規約/publish=git push+tag）。

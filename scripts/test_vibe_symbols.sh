@@ -7,7 +7,7 @@
 # never reports a name that only appears inside a comment.
 #
 # The committed seed predates this feature, so this test builds a FRESH compiler
-# via scripts/install.sh into a throwaway VIBE_HOME/VIBE_BIN_DIR.
+# via install/install.sh into a throwaway VIBE_HOME/VIBE_BIN_DIR.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,7 +19,7 @@ export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
-bash scripts/install.sh >/dev/null 2>&1
+bash install/install.sh >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 

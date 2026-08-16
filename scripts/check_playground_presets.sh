@@ -53,7 +53,7 @@ python3 scripts/extract_playground_presets.py "$SRC" "$WORK" > "$MANIFEST"
 
 export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
-bash scripts/install.sh --cli-wasm "$(cd "$(dirname "$stage2")" && pwd)/$(basename "$stage2")" >/dev/null 2>&1
+bash install/install.sh --cli-wasm "$(cd "$(dirname "$stage2")" && pwd)/$(basename "$stage2")" >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "[playground-presets] install failed: no launcher at $VIBE" >&2; exit 2; }
 

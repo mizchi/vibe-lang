@@ -14,7 +14,7 @@ export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
-bash scripts/install.sh >/dev/null 2>&1
+bash install/install.sh >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 
 pass=0; fail=0

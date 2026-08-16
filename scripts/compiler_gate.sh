@@ -12095,7 +12095,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
   "$chkdir/multi.vibe" "$chkdir/diag.out" main >/dev/null 2>&1 || true
 # check reports through the .diag sidecar, diagnostics through the output file.
 # That is a COMPILER-side transport difference; the launcher normalizes both to
-# stdout (#1567 slice 2, pinned in scripts/test_vibe_cli_install.sh, which is
+# stdout (#1567 slice 2, pinned in tests/integration/install/install_test.sh, which is
 # the layer that owns the user-facing contract). This step stays at the
 # compiler layer and only pins the counts.
 chk_n="$(grep -c '^line ' "$chkdir/check.out.diag" 2>/dev/null || true)"

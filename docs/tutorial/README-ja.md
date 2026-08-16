@@ -9,7 +9,7 @@ English version: [README.md](README.md) (canonical)
 
 ```bash
 # インストール (詳細: docs/install.md)
-curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 . "$HOME/.vibe/env"
 
 # リポジトリを clone して検証・再生成
