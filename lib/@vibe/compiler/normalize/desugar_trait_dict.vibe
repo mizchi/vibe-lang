@@ -9525,7 +9525,7 @@ let local_fn_tbl_cell: Array[(String, Array[String], Array[Bool], Int)] = array_
 /// Record a `let`-bound lambda's parameter shape. Non-lambda bindings are
 /// deliberately not recorded: they have no labels, and their presence in
 /// `shadows` is what masks any outer entry.
-fn local_fn_tbl_push(name: String, v: Expr, at: Int) -> Unit {
+fn local_fn_tbl_shape(v: Expr) -> Option[(Array[String], Array[Bool])] {
   match v {
     EFn(_, _, params, _, _, _) => {
       let labels = empty_str_array()
@@ -9540,9 +9540,54 @@ fn local_fn_tbl_push(name: String, v: Expr, at: Int) -> Unit {
         Array::push(flags, pl > 0 && __slice(pn, pl - 1, pl) == "?")
         i = i + 1
       }
-      Array::push(local_fn_tbl_cell, (name, labels, flags, at))
+      Some((labels, flags))
     },
-    _ => ()
+    _ => None
+  }
+}
+
+fn local_fn_tbl_push(name: String, v: Expr, at: Int) -> Unit {
+  match local_fn_tbl_shape(v) {
+    Some((labels, flags)) => Array::push(local_fn_tbl_cell, (name, labels, flags, at)),
+    None => ()
+  }
+}
+
+/// #1994: sequential `g = (y~, x~) -> ...` updates the entry for the
+/// innermost `g`. A non-lambda RHS invalidates it. Assignment inside a
+/// branch still only reaches that branch's continuation.
+fn local_fn_tbl_replace(name: String, v: Expr, shadows: Array[String]) -> Unit {
+  let mut innermost = 0 - 1
+  let mut i = 0
+  while i < Array::length(shadows) {
+    if Array::get(shadows, i) == name {
+      innermost = i
+    }
+    i = i + 1
+  }
+  if innermost < 0 {
+    ()
+  } else {
+    let mut j = Array::length(local_fn_tbl_cell) - 1
+    let mut found = false
+    while j >= 0 {
+      let (n, _, _, at) = Array::get(local_fn_tbl_cell, j)
+      if n == name && at == innermost {
+        match local_fn_tbl_shape(v) {
+          Some((labels, flags)) => Array::set(local_fn_tbl_cell, j, (name, labels, flags, at)),
+          None => Array::set(local_fn_tbl_cell, j, (name, empty_str_array(), array_empty(), at))
+        }
+        found = true
+        j = 0 - 1
+      } else {
+        j = j - 1
+      }
+    }
+    if !found {
+      local_fn_tbl_push(name, v, innermost)
+    } else {
+      ()
+    }
   }
 }
 
@@ -10067,30 +10112,30 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
     ELetMut(name, v, b, soff) => {
       let rv = relabel_expr(v, tbl, shadows)
       let mark = Array::length(shadows)
+      let lmark = Array::length(local_fn_tbl_cell)
       let local_mark = optional_local_enter(name, v)
       Array::push(shadows, name)
-      // Deliberately NOT registered. A `let mut` can be reassigned to another
-      // type-compatible lambda whose parameter NAMES differ, and this table
-      // would still describe the initializer -- reordering a later call by
-      // stale names, or filling an omitted optional the new lambda does not
-      // have. Invalidating on EAssign does not fix it either: an assignment
-      // inside a branch or a loop only reaches its own continuation, so a call
-      // after the `if` would still read the stale entry. Without a flow
-      // analysis the honest answer is to leave a mutable binding unresolved,
-      // which is what happened before #1899 and is never wrong -- only
-      // unhelpful.
+      // #1994: register the initializer, then `local_fn_tbl_replace` on
+      // sequential assign. A call after an assignment that sits in a
+      // sibling branch is still unresolved — that needs flow analysis.
+      local_fn_tbl_push(name, v, mark)
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
+      local_fn_tbl_truncate(lmark)
       optional_local_leave(local_mark)
       ELetMut(name, rv, rb, soff)
     },
     EAssign(name, v, c) => {
       optional_local_replace(name, v)
-      EAssign(name, relabel_expr(v, tbl, shadows), relabel_expr(c, tbl, shadows))
+      let rv = relabel_expr(v, tbl, shadows)
+      local_fn_tbl_replace(name, v, shadows)
+      EAssign(name, rv, relabel_expr(c, tbl, shadows))
     },
     EAssignOp(name, op, v, c) => {
       optional_local_replace(name, v)
-      EAssignOp(name, op, relabel_expr(v, tbl, shadows), relabel_expr(c, tbl, shadows))
+      let rv = relabel_expr(v, tbl, shadows)
+      local_fn_tbl_replace(name, v, shadows)
+      EAssignOp(name, op, rv, relabel_expr(c, tbl, shadows))
     },
     ESeq(a, b) => ESeq(relabel_expr(a, tbl, shadows), relabel_expr(b, tbl, shadows)),
     EMatch(scrut, arms) => {
@@ -10394,23 +10439,29 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       paired_expect_slot(node, 0, ExpressionLetMutBinder, name, poisoned)
       let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
       let mark = Array::length(shadows)
+      let lmark = Array::length(local_fn_tbl_cell)
       let local_mark = optional_local_enter(name, value)
       Array::push(shadows, name)
-      // Not registered -- see the ELetMut arm of relabel_expr.
+      local_fn_tbl_push(name, value, mark)
       let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
       Array::truncate(shadows, mark)
+      local_fn_tbl_truncate(lmark)
       optional_local_leave(local_mark)
       ELetMut(name, rvalue, rbody, offset)
     },
     EAssign(name, value, cont) => {
       paired_expect_node(node, AuthorityExprAssign, 0, 2, poisoned)
       optional_local_replace(name, value)
-      EAssign(name, relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(cont, tbl, shadows, node, 1, poisoned))
+      let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
+      local_fn_tbl_replace(name, value, shadows)
+      EAssign(name, rvalue, relabel_expr_paired_child(cont, tbl, shadows, node, 1, poisoned))
     },
     EAssignOp(name, op, value, cont) => {
       paired_expect_node(node, AuthorityExprAssignOp, 0, 2, poisoned)
       optional_local_replace(name, value)
-      EAssignOp(name, op, relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(cont, tbl, shadows, node, 1, poisoned))
+      let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
+      local_fn_tbl_replace(name, value, shadows)
+      EAssignOp(name, op, rvalue, relabel_expr_paired_child(cont, tbl, shadows, node, 1, poisoned))
     },
     ESeq(first, second) => {
       paired_expect_node(node, AuthorityExprSeq, 0, 2, poisoned)

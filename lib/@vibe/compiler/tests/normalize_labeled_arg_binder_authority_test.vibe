@@ -203,6 +203,17 @@ test "lexical shadowing suppresses top-level resolution in every scoped lane" {
   expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { for f in [1] { f(x=1) }; 0 }")
 }
 
+test "a let-mut lambda uses its own labels and updates them on assign" {
+  // #1994: `let mut` used to stay unregistered so a later labeled call was
+  // left in written order (silent-wrong: (x~, y~) called as y=3, x=10 gave
+  // -7). Sequential assignment can update the table: the continuation of
+  // EAssign is the only place the new value is visible without flow analysis.
+  expect_authority("fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; g(y=3, x=10) }")
+  expect_authority("fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; g = (y~: Int, x~: Int) -> Int { x - y }; g(y=3, x=10) }")
+  expect_ordinary_parity("fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; g(y=3, x=10) }")
+  expect_ordinary_parity("fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; g = (y~: Int, x~: Int) -> Int { x - y }; g(y=3, x=10) }")
+}
+
 test "a shadowing local lambda resolves against its OWN parameter names" {
   // #1899: a shadowed callee used to get no parameter table at all, so this
   // produced no authority even though the local binding declares `y`.
