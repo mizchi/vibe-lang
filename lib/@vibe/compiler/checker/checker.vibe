@@ -298,7 +298,7 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
             if Array::length(payloads) == 0 {
               Some(CtEnum(ename))
             } else {
-              Some(CtFn(payloads, CtEnum(ename), None))
+              Some(CtFn(payloads, CtEnum(ename), constructor_dependency_row(Array::length(payloads))))
             }
           } else {
             // The imported bare constructor is the checked `CtForAll` scheme.
@@ -685,6 +685,23 @@ fn merge_provenance_row(expected: Option[String], actual: Option[String]) -> Opt
       }
     },
     None => array_empty()
+  }
+  if Array::length(labels) == 0 {
+    None
+  } else {
+    Some(String::join(labels, ", "))
+  }
+}
+
+/// Constructor results retain every payload. Record that dependency in the
+/// same checker-only row used by field-projection helpers, so direct,
+/// qualified, imported, and first-class enum constructors share one contract.
+export fn constructor_dependency_row(arity: Int) -> Option[String] {
+  let labels = array_empty()
+  let mut i = 0
+  while i < arity {
+    Array::push(labels, String::concat("#fieldparam[", String::concat(__to_string(i), "]")))
+    i = i + 1
   }
   if Array::length(labels) == 0 {
     None
@@ -2421,9 +2438,21 @@ fn param_marker_index(label: String) -> Option[Int] {
 
 fn add_param_capture_dependency(ty: Type, index: Int) -> Type {
   match ty {
-    CtFn(params, ret, effect) => CtFn(params, ret, merge_provenance_row(effect, Some(String::concat("#param[", String::concat(__to_string(index), "]"))))),
+    CtFn(params, ret, effect) => CtFn(for param in params {
+      add_param_capture_dependency(param, index)
+    }, add_param_capture_dependency(ret, index), merge_provenance_row(effect, Some(String::concat("#param[", String::concat(__to_string(index), "]"))))),
     CtArray(elem) => CtArray(add_param_capture_dependency(elem, index)),
     CtOption(elem) => CtOption(add_param_capture_dependency(elem, index)),
+    CtTuple(items) => CtTuple(for item in items {
+      add_param_capture_dependency(item, index)
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, field_ty) = field
+      (name, add_param_capture_dependency(field_ty, index))
+    }),
+    CtNamed(name, args) => CtNamed(name, for arg in args {
+      add_param_capture_dependency(arg, index)
+    }),
     _ => ty
   }
 }
@@ -4117,14 +4146,18 @@ fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Ar
 /// Mutable container operations are assignments with a non-syntactic target.
 /// Check their stored argument against the same region lifetime rule as
 /// `EAssign`; operations that only store scalar bytes/indices need no entry.
-fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
-  let value_index = if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "MutList::push" {
+fn retaining_write_value_index(name: String) -> Int {
+  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "MutList::push" || name == "Deque::push_back" || name == "Deque::push_front" {
     1
-  } else if name == "Array::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "MapBuilder::set" || name == "__set_field" {
+  } else if name == "Array::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "MapBuilder::set" || name == "MutMap::set" || name == "__set_field" {
     2
   } else {
     0 - 1
   }
+}
+
+fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+  let value_index = retaining_write_value_index(name)
   if value_index >= 0 && Array::length(args) > value_index {
     let throwaway = array_empty()
     let throwtab = array_empty()
@@ -4142,13 +4175,25 @@ fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, d
 /// Nominal struct identity intentionally omits field types. Reconstruct only
 /// the tail record literal's local let environment so a region-return check can
 /// inspect the actual field values without changing the public nominal type.
+fn tail_returns_binding(expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(found, _) => found == name,
+    ELet(_, _, body, _) => tail_returns_binding(body, name),
+    ELetMut(_, _, body, _) => tail_returns_binding(body, name),
+    ELetRec(_, _, body) => tail_returns_binding(body, name),
+    ESeq(_, right) => tail_returns_binding(right, name),
+    EIf(_, then_expr, else_expr) => tail_returns_binding(then_expr, name) || tail_returns_binding(else_expr, name),
+    _ => false
+  }
+}
+
 fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_name: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
   match expr {
     ELet(name, val, body, _) => {
       let throwaway = array_empty()
       let throwtab = array_empty()
       let (val_ty, s1, c1) = ce(val, env, defs, s, c, throwaway, throwtab)
-      tail_named_record_mentions_region(body, env_bind(env, name, val_ty), defs, s1, c1, region_name, ce)
+      (tail_returns_binding(body, name) && tail_named_record_mentions_region(val, env, defs, s, c, region_name, ce)) || tail_named_record_mentions_region(body, env_bind(env, name, val_ty), defs, s1, c1, region_name, ce)
     },
     ELetMut(name, val, body, _) => {
       let throwaway = array_empty()
@@ -4166,6 +4211,15 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
       let throwaway = array_empty()
       let throwtab = array_empty()
       let (callee_ty, s1, c1) = ce(callee, env, defs, s, c, throwaway, throwtab)
+      let mut builtin_constructor_found = false
+      match callee {
+        EIdent("Some", _) => for arg in args {
+          if tail_named_record_mentions_region(arg, env, defs, s1, c1, region_name, ce) {
+            builtin_constructor_found = true
+          }
+        },
+        _ => ()
+      }
       match subst_apply(s1, callee_ty) {
         CtFn(param_tys, ret_ty, callee_effect) => {
           let resolved_ret = subst_apply(s1, ret_ty)
@@ -4221,9 +4275,9 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
             },
             _ => ()
           }
-          found
+          found || builtin_constructor_found
         },
-        _ => false
+        _ => builtin_constructor_found
       }
     },
     ERecord(name, fields, _) => if name != "" {
@@ -4246,6 +4300,24 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
       found
     } else {
       false
+    },
+    EArray(items) => {
+      let mut found = false
+      for item in items {
+        if tail_named_record_mentions_region(item, env, defs, s, c, region_name, ce) {
+          found = true
+        }
+      }
+      found
+    },
+    ETuple(items) => {
+      let mut found = false
+      for item in items {
+        if tail_named_record_mentions_region(item, env, defs, s, c, region_name, ce) {
+          found = true
+        }
+      }
+      found
     },
     _ => {
       let throwaway = array_empty()
@@ -6665,6 +6737,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
               let (mt, s2, c2) = method_ty
               let all_args = prepend_expr(obj, args)
+              retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_expr)
               let alen = Array::length(all_args)
               let arg_tys = array_empty()
               Array::push(arg_tys, obj_ty)
