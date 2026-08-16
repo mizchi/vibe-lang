@@ -1,0 +1,37 @@
+// #1902: fused String-native SIMD scan for a line-comment terminator.
+// The builtin returns the LF byte offset, or len when the suffix has no LF.
+
+fn scalar_scan(s: String, pos: Int, len: Int) -> Int {
+  let mut i = pos
+  while i < len && String::char_code_at(s, i) != 10 {
+    i = i + 1
+  }
+  i
+}
+
+#zero_alloc
+fn line_end_scan(s: String, pos: Int, len: Int) -> Int {
+  simd_scan_line_end_str(s, pos, len)
+}
+
+fn same_as_scalar(s: String, pos: Int) -> Bool {
+  let len = String::length(s)
+  line_end_scan(s, pos, len) == scalar_scan(s, pos, len)
+}
+
+test "short tails and EOF match scalar scan" {
+  assert(same_as_scalar("short comment", 0))
+  assert(same_as_scalar("abc\nrest", 0))
+  assert(same_as_scalar("prefix\nrest", 3))
+}
+
+test "full SIMD chunks find LF boundaries" {
+  assert(same_as_scalar("abcdefghijklmnop\nrest", 0))
+  assert(same_as_scalar("abcdefghijklmnopqrstuvwxyzABCDE\nrest", 0))
+  assert(same_as_scalar("0123456789abcdef0123456789abcdefplain", 0))
+}
+
+test "UTF-8 byte offsets and non-zero starts match scalar scan" {
+  assert(same_as_scalar("日本語の長いコメントabcdefghijklmnop\nrest", 0))
+  assert(same_as_scalar("prefix: abcdefghijklmnopqrstuvwxyz\nrest", 8))
+}
