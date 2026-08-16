@@ -29,6 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # #1870: the review-regressions lint step below diffs a RANGE
+          # (base...HEAD), which needs both sides and their merge base. The
+          # default shallow clone has neither.
+          fetch-depth: 0
       - name: Cache seed artifact
         uses: actions/cache@v4
         with:
@@ -78,6 +83,35 @@ jobs:
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Compiler gate
         run: bash scripts/compiler_gate.sh
+      - name: Install ripgrep
+        # The lint step below probes and filters with `rg`. Only structural-lint
+        # installed it before, so the first run of this step failed with
+        # `rg: command not found` -> probe fails -> AST tier skipped ->
+        # REQUIRE_AST=1 -> red. That was the fail-closed path doing its job;
+        # the missing tool is the actual fix.
+        run: command -v rg >/dev/null || sudo apt-get install -y ripgrep
+      - name: Review-regressions lint (PR range)
+        # #1870. This lint used to run in exactly one place -- the pre-commit
+        # hook -- and structural-lint deliberately ran only its SELF-TEST,
+        # because the lint reads `git diff --cached` and CI stages nothing.
+        # That left its rules with no enforcement point that a `--no-verify`
+        # could not skip, and the hook itself silently dropped its AST tier on
+        # any checkout without a built runner, still printing "ok". A real
+        # drift reached main that way (#1809's rule, re-broken in #1861).
+        #
+        # Vacuity was a property of `--cached`, not of CI: given a range, the
+        # same lint has a real diff to read. It runs HERE rather than in
+        # structural-lint because the AST tier needs a stage2, which the gate
+        # above has just built -- so this costs seconds, not another build.
+        #
+        # REQUIRE_AST=1 makes a tier that cannot run a failure instead of a
+        # quiet pass. That is the whole point: a gate that reports success
+        # having checked nothing is worse than no gate.
+        if: github.event_name == 'pull_request'
+        env:
+          VIBE_REVIEW_LINT_RANGE: ${{ github.event.pull_request.base.sha }}...HEAD
+          VIBE_REVIEW_LINT_REQUIRE_AST: "1"
+        run: bash scripts/lint_review_regressions.sh
       - name: Upload incremental shadow decision diff (#1548)
         # compiler_gate.sh step 3aa writes the shadow planner vs current
         # compiler decision diff (only after a successful oracle run).

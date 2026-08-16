@@ -1126,6 +1126,97 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_end(buf)
         nl
       }
+      // #1861 third batch. These three are guarded with `!source_is_bound`,
+      // the same shape `__region_run` / `MutList::*` above already use, and the
+      // gc equivalent of the linear arms' `!prefer_bound_call`: a real binding
+      // of the name wins over the builtin spelling. That guard is why they can
+      // be ported at all -- without it a user's own `Path::to_string` would be
+      // hijacked, which is the reason the bare-name rows stay unported.
+      //
+      // All three emit nothing themselves; they rewrite the call into an AST
+      // the ordinary compiler already handles, so the two lanes cannot drift on
+      // what they mean.
+      else if !source_is_bound && fname == "Path::to_string" && Array::length(args) == 1 {
+        // #762: PathRef / DynamicPath wrap a raw String; to_string is identity.
+        ce(buf, Array::get(args, 0), local_names, next_local, ld)
+      }
+      else if !source_is_bound && fname == "Path::is_absolute" && Array::length(args) == 1 {
+        // #762: absolute iff the path begins with '/'. `eq(char_code_at(x, 0),
+        // 47)` avoids synthesizing a "/" string, which would not be in the
+        // string table.
+        ce(buf, ECall(EIdent("eq", -1), [
+          ECall(EIdent("String::char_code_at", -1), [
+            Array::get(args, 0),
+            EInt(0)
+          ], -1),
+          EInt(47)
+        ], -1), local_names, next_local, ld)
+      }
+      // Materialise the string's bytes into the Array backing a Stream[Int].
+      // `String::char_code_at` reads one byte (i32.load8_u), so this is
+      // byte-accurate.
+      //
+      // The linear twin builds this as SOURCE and lowers it through `ce`. That
+      // shape does not transfer, for two independent reasons, and both point
+      // the same way:
+      //
+      //   - it calls the bare builtins `lt` and `add`, which this lane does not
+      //     serve. They are the `gc-hijack-risk` rows, unported on purpose:
+      //     there is no `prefer_bound_call` here to stop a bare name capturing
+      //     a user's own binding (#832). Copying it verbatim died with
+      //     "`lt` (local, @gc_call) reached code generation unresolved".
+      //   - its binder names are FIXED (`__tb_s`, `__tb_arr`, `__tb_i`), which
+      //     the review-regressions lint rejects for exactly the reason the rule
+      //     exists: a literal synthetic binder can capture a user-authored name
+      //     of the same spelling.
+      //
+      // Emitting the loop directly avoids both. It also matches every other
+      // array-building arm in this file (Array::slice / concat / map): numbered
+      // locals, no synthesized names, nothing to collide with.
+      else if !source_is_bound && fname == "String::to_bytes" {
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+        let (sc_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+        let str_local = next_local
+        let res_local = next_local + 1
+        let len_local = next_local + 2
+        let i_local = next_local + 3
+        Array::push(local_names, "__tb_str")
+        Array::push(local_names, "__tb_res")
+        Array::push(local_names, "__tb_len")
+        Array::push(local_names, "__tb_idx")
+        let mut nl = next_local + 4
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, str_local)
+        emit_call_resolved(buf, ctx, an_idx)
+        emit_local_set(buf, res_local)
+        emit_local_get(buf, str_local)
+        emit_call_resolved(buf, ctx, sl_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, res_local)
+        emit_local_get(buf, str_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, sc_idx)
+        emit_call_resolved(buf, ctx, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
+        nl
+      }
       // #1861 second batch: the `gc-unported` rows that needed no new
       // machinery. Double::abs/floor/ceil/max/min are plain f64 instructions,
       // and this lane is SIMPLER than its linear twin: there is no RC boxing
@@ -2698,7 +2789,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_end(buf)
         nl + 4
       }
-      else if fname == "Map::has_key" || fname == "map_has" {
+      // #1861: `Map::has` is the same operation under a second spelling -- the
+      // linear arm is literally `fname == "Map::has_key" || fname == "Map::has"`.
+      // It was a `gc-unported` row only because this alias was missing here,
+      // not because anything was unimplemented.
+      else if fname == "Map::has_key" || fname == "map_has" || fname == "Map::has" {
         let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
         let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
