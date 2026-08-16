@@ -1132,7 +1132,7 @@ fn build_test_core_packed_handler_with_vibe_imports() -> Bytes {
 /// a component that VALIDATES -- `wac plug` promotes the unsatisfied edge to a
 /// root import (#1796) -- and only fail when a request arrives.
 test "component #1540: the stream serve lane wires main to the stream canons" {
-  let core = build_test_core_stream_handler()
+  let core = core_with_tag_mode(build_test_core_stream_handler(), 0)
   let comp = comp_emit_component_wasm_stream_handler(core, "handler", "handler", [
     "method",
     "url",
@@ -1165,7 +1165,7 @@ test "component #1540: the stream serve lane wires main to the stream canons" {
 /// (`serve_handler_takes_body_stream`) and never sniffed from the compiled
 /// core: there is nothing there to sniff.
 test "component #1540: the stream lane's guard catches a wrong-arity core" {
-  let core = build_test_core()
+  let core = core_with_tag_mode(build_test_core(), 0)
   let rejected = handle {
     let _ = comp_emit_component_wasm_stream_handler(core, "run", "handler", [
       "method",
@@ -1181,7 +1181,7 @@ test "component #1540: the stream lane's guard catches a wrong-arity core" {
   // and the arity a String handler's core has is INDISTINGUISHABLE from the
   // stream one's -- both five i64 -- so this guard accepts it. Pinning that
   // here keeps the fact from being rediscovered as a silent mis-lane.
-  let string_core = build_test_core_packed_handler_with_vibe_imports()
+  let string_core = core_with_tag_mode(build_test_core_packed_handler_with_vibe_imports(), 0)
   let accepted = handle {
     let _ = comp_emit_component_wasm_stream_handler(string_core, "handler", "handler", [
       "method",
@@ -1194,6 +1194,46 @@ test "component #1540: the stream lane's guard catches a wrong-arity core" {
     Throw(_) => false
   }
   assert(accepted)
+}
+
+test "component #1930: the serve stream lane requires explicit plain-i64 metadata" {
+  let core = build_test_core_stream_handler()
+  let missing_rejected = handle {
+    let _ = comp_emit_component_wasm_stream_handler(core, "handler", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  assert(missing_rejected)
+  let tagged_rejected = handle {
+    let _ = comp_emit_component_wasm_stream_handler(core_with_tag_mode(core, 1), "handler", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  assert(tagged_rejected)
+  let plain_accepted = handle {
+    let _ = comp_emit_component_wasm_stream_handler(core_with_tag_mode(core, 0), "handler", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    true
+  } with Exception {
+    Throw(_) => false
+  }
+  assert(plain_accepted)
 }
 
 test "component #1107: strict string handler rejects vibe.* imports" {
@@ -1706,7 +1746,7 @@ test "component async hostfuture: adapter-backed composition of a real-shaped co
   assert(comp_core_imports_host_future(core) == true)
   // The p1 test core (fd_write only) must NOT sniff as host-future.
   assert(comp_core_imports_host_future(build_main_i64_core_p1()) == false)
-  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  let comp = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 1), "run")
   assert(Bytes::get(comp, 0) == 0)
   assert(Bytes::get(comp, 4) == 13)
   // component type (future u32): 07 04 01 65 01 79
@@ -1832,7 +1872,7 @@ test "component async hostfuture: two named host futures become two component im
   assert(Array::length(names) == 2)
   assert(Array::get(names, 0) == "host_future_get$price")
   assert(Array::get(names, 1) == "host_future_get$qty")
-  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  let comp = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 1), "run")
   assert(Bytes::get(comp, 0) == 0)
   assert(Bytes::get(comp, 4) == 13)
   // No anonymous `get-future`: this program never asked for one, and an
@@ -2156,6 +2196,76 @@ test "component stdin provider: named stream mixing is rejected (#1539)" {
 // the measured amount-0/code-1 status -> -1). Runtime proof (42 = summed
 // bytes to end of stream through a real compiled program) lives in
 // scripts/test_named_hoststreams_component_gate.sh.
+fn core_with_tag_mode(core: Bytes, mode: Int) -> Bytes {
+  let out = bytebuf_new()
+  let mut i = 0
+  while i < Bytes::length(core) {
+    bytebuf_push(out, Bytes::get(core, i))
+    i = i + 1
+  }
+  let content = bytebuf_new()
+  emit_name(content, "vibe.tagmode")
+  bytebuf_push(content, mode&255)
+  bytebuf_push(content, (mode>>8)&255)
+  bytebuf_push(content, (mode>>16)&255)
+  bytebuf_push(content, (mode>>24)&255)
+  bytebuf_push_section(out, 0, content)
+  bytebuf_to_bytes(out)
+}
+
+fn core_with_short_tag_mode(core: Bytes) -> Bytes {
+  let out = bytebuf_new()
+  let mut i = 0
+  while i < Bytes::length(core) {
+    bytebuf_push(out, Bytes::get(core, i))
+    i = i + 1
+  }
+  let content = bytebuf_new()
+  emit_name(content, "vibe.tagmode")
+  bytebuf_push(content, 0)
+  bytebuf_push_section(out, 0, content)
+  bytebuf_to_bytes(out)
+}
+
+fn core_with_truncated_tag_mode(core: Bytes) -> Bytes {
+  let out = bytebuf_new()
+  let mut i = 0
+  while i < Bytes::length(core) {
+    bytebuf_push(out, Bytes::get(core, i))
+    i = i + 1
+  }
+  // Custom section id + declared payload length, with the payload absent.
+  bytebuf_push(out, 0)
+  leb128_encode_u32(out, 20)
+  bytebuf_to_bytes(out)
+}
+
+fn hostfuture_compose_rejected(core: Bytes) -> Bool {
+  handle {
+    let _ = comp_emit_component_wasm_async_hostfuture(core, "run")
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+}
+
+test "component async hoststream: adapter follows the core value ABI (#1930)" {
+  let core = build_main_i64_core_hoststream_named(false)
+  // Both published modes compose. Their runtime value parity is pinned by
+  // test_named_hoststreams_component_gate.sh; this unit test keeps metadata
+  // parsing and validation in the ordinary compiler test battery.
+  let tagged = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 1), "run")
+  let plain = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 0), "run")
+  assert(Bytes::get(tagged, 4) == 13)
+  assert(Bytes::get(plain, 4) == 13)
+  assert(hostfuture_compose_rejected(core))
+  assert(hostfuture_compose_rejected(core_with_short_tag_mode(core)))
+  assert(hostfuture_compose_rejected(core_with_truncated_tag_mode(core)))
+  assert(hostfuture_compose_rejected(core_with_tag_mode(core, 2)))
+  assert(hostfuture_compose_rejected(core_with_tag_mode(core_with_tag_mode(core, 0), 0)))
+  assert(hostfuture_compose_rejected(core_with_tag_mode(core_with_tag_mode(core, 0), 1)))
+}
+
 test "component async hoststream: named host stream becomes a stream<u8> component import (#1218 D3)" {
   let core = build_main_i64_core_hoststream_named(false)
   assert(comp_core_imports_host_stream(core) == true)
@@ -2164,7 +2274,7 @@ test "component async hoststream: named host stream becomes a stream<u8> compone
   let names = comp_core_host_stream_names(core)
   assert(Array::length(names) == 1)
   assert(Array::get(names, 0) == "host_stream_get$body")
-  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  let comp = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 1), "run")
   assert(Bytes::get(comp, 0) == 0)
   assert(Bytes::get(comp, 4) == 13)
   // component type (stream u8): 07 04 01 66 01 7d
@@ -2203,7 +2313,7 @@ test "component async hoststream: future + stream share one composition (#1218 D
   let core = build_main_i64_core_hoststream_named(true)
   assert(comp_core_imports_host_future(core) == true)
   assert(comp_core_imports_host_stream(core) == true)
-  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  let comp = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 1), "run")
   assert(Bytes::get(comp, 0) == 0)
   assert(Bytes::get(comp, 4) == 13)
   // both value types: (future u32) 07 04 01 65 01 79 and (stream u8)
@@ -2236,7 +2346,7 @@ test "component async hoststream: future + stream share one composition (#1218 D
 
 test "component async hostfuture: rejects a core without a run export" {
   let rejected = handle {
-    let _ = comp_emit_component_wasm_async_hostfuture(build_main_i64_core_hostfuture(false, false), "run")
+    let _ = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(build_main_i64_core_hostfuture(false, false), 1), "run")
     false
   } with Exception {
     Throw(_) => true
@@ -2246,7 +2356,7 @@ test "component async hostfuture: rejects a core without a run export" {
 
 test "component async hostfuture: rejects a core with an unsatisfiable host import" {
   let rejected = handle {
-    let _ = comp_emit_component_wasm_async_hostfuture(build_main_i64_core_hostfuture(true, true), "run")
+    let _ = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(build_main_i64_core_hostfuture(true, true), 1), "run")
     false
   } with Exception {
     Throw(_) => true

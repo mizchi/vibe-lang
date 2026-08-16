@@ -2772,6 +2772,76 @@ fn lc_wrap_host_stream_params(params: Array[(String, Option[TypeExpr])], body: E
   out
 }
 
+fn lc_type_is_named(ty: TypeExpr, expected: String) -> Bool {
+  match ty {
+    TyName(name) => name == expected,
+    _ => false
+  }
+}
+
+fn lc_serve_stream_signature(param_types: Array[TypeExpr], ret: TypeExpr, eff: Option[String]) -> Bool {
+  Array::length(param_types) == 4 && lc_type_is_named(Array::get(param_types, 0), "String") && lc_type_is_named(Array::get(param_types, 1), "String") && lc_type_is_named(Array::get(param_types, 2), "String") && lc_type_is_named(Array::get(param_types, 3), "HostStream") && lc_type_is_named(ret, "String") && match eff {
+    Some(row) => lc_row_has_label(Some(row), "Async"),
+    None => false
+  }
+}
+
+/// Mirror `vibe serve`'s signature-selected stream lane. The CLI names the
+/// exported `handler` directly after validation; it does not ask the generic
+/// `__no_entry__` Async-boundary resolver, which may be ambiguous when the
+/// file exports another Async helper. Conversely an ordinary explicit entry
+/// with a HostStream parameter is not a serve adapter boundary.
+fn lc_serve_handler_takes_host_stream(stmts: Array[Stmt], entry_name: String) -> Bool {
+  if entry_name != "__no_entry__" {
+    return false
+  }
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, "handler", ann, body) => if exported {
+        match ann {
+          Some(TyFn(param_types, ret, eff)) => {
+            found = lc_serve_stream_signature(param_types, ret, eff)
+          },
+          Some(_) => (),
+          None => match body {
+            EFn(_, _, params, ret_opt, eff, _) => {
+              let param_types = array_empty()
+              let mut complete = true
+              let mut pi = 0
+              while pi < Array::length(params) {
+                let (_, pty) = Array::get(params, pi)
+                match pty {
+                  Some(ty) => Array::push(param_types, ty),
+                  None => {
+                    complete = false
+                  }
+                }
+                pi = pi + 1
+              }
+              match ret_opt {
+                Some(ret) => if complete {
+                  found = lc_serve_stream_signature(param_types, ret, eff)
+                } else {
+                  ()
+                },
+                None => ()
+              }
+            },
+            _ => ()
+          }
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> String {
   let boundary_name = lc_resolve_boundary_name(stmts, entry_name)
   let mut entry_has_async = false
@@ -4316,6 +4386,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // used-name collect, so the raw name also lands in used_builtin_names.
   let hs_named_names = lc_collect_host_stream_names(stmts)
   let need_host_stream_read_builtin = Map::has_key(used_builtin_names, "vibe_hs_read_raw") || Array::length(hs_named_names) > 0
+  let serve_handler_has_host_stream = lc_serve_handler_takes_host_stream(stmts, entry_name)
   // ADR-0089 Decision 3 follow-up (#1218): the shared CLOSE half. Gated on
   // ACTUAL use (unlike the read half, which every named stream implies) so
   // a program that always drains to EOS reserves no extra import and its
@@ -7143,6 +7214,33 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       trni2 = trni2 + 1
     }
     bytebuf_push_section(out, 0, tr_content)
+  } else {
+    ()
+  }
+  // Value ABI metadata consumed by the host-future/host-stream component
+  // adapter. A future/stream getter OR the validated serve handler signature
+  // selects that composer. A raw stream read alone does not: ordinary/library
+  // code may read a HostStream without being componentized. Ordinary core wasm
+  // therefore remains byte-identical. Payload: i32 LE tag_mode.
+  if need_host_future_builtin || serve_handler_has_host_stream || Array::length(hf_named_names) > 0 || Array::length(hs_named_names) > 0 {
+    let tm_content = bytebuf_new()
+    let tm_name = "vibe.tagmode"
+    leb128_encode_u32(tm_content, String::length(tm_name))
+    let mut tmni = 0
+    while tmni < String::length(tm_name) {
+      bytebuf_push(tm_content, String::char_code_at(tm_name, tmni))
+      tmni = tmni + 1
+    }
+    let tm_value = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(tm_content, tm_value)
+    bytebuf_push(tm_content, 0)
+    bytebuf_push(tm_content, 0)
+    bytebuf_push(tm_content, 0)
+    bytebuf_push_section(out, 0, tm_content)
   } else {
     ()
   }
