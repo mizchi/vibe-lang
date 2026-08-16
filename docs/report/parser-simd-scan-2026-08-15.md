@@ -98,6 +98,18 @@ changing the short-input path. Line-comment scanning remains a separate
 experiment: its larger byte census does not justify coupling a second lexer
 change to the validated string slice.
 
+Issue #1902 starts that separate experiment with
+`simd_scan_line_end_str(String, Int, Int) -> Int`. Its linear and GC bodies
+share one generator and are pinned against a scalar LF oracle before any lexer
+integration. As with the string scanner, the primitive benchmark is evidence
+for headroom only; adopting it in `skip_until_newline` requires a new seed and
+representative comment-heavy A/B data.
+
+The isolated 1 KiB LF benchmark measured 42 ns p50 for the fused scanner and
+1,709 ns p50 for the scalar loop on the same local runner, with 0 B/op in both
+lanes. This roughly 41x primitive headroom is sufficient to proceed to the
+seed/integration phase; it is not yet a lexer-level result.
+
 Do not start with a full classify/compress token tape. `Token` is still a rich
 enum and identifiers/string tokens materialize substrings, so making every
 punctuation position into a bitmap would add a second representation before

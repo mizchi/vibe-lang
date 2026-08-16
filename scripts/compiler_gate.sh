@@ -4078,6 +4078,27 @@ fi
 rm -rf "$sssdir"
 echo "[compiler-gate] fused SIMD string-special scan ok"
 
+# 40b3. String-native fused LF scan (#1902 Phase 1). The scalar oracle pins
+# short tails, exact chunk boundaries, UTF-8 byte offsets, non-zero starts,
+# LF, and EOF before the lexer adopts the builtin.
+echo "[compiler-gate] 40b3/40 fused SIMD line-end scan"
+sledir="_build/_gate_simd_line_end"
+rm -rf "$sledir"; mkdir -p "$sledir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/simd_scan_line_end_test.vibe" "$sledir/sle.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$sledir/sle.wasm" ]; then
+  echo "[compiler-gate] FAIL: SIMD line-end test did not compile" >&2
+  cat "$sledir/sle.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$sledir/sle.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: SIMD line-end test trapped" >&2; exit 1
+fi
+rm -rf "$sledir"
+echo "[compiler-gate] fused SIMD line-end scan ok"
+
 # 40c. Region capture (#629 step 2): a `let mut` captured by a closure inside a
 #      struct/record literal, projection, handler, loop, labeled arg, map literal
 #      or spread must still be heap-boxed (by-reference capture), not snapshotted.
