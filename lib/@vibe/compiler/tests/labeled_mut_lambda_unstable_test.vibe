@@ -84,6 +84,43 @@ fn shadowed_later_src() -> String {
   main_fn(body)
 }
 
+/// A BRANCH assigns the other parameter order; the call is after the branch.
+/// The branch is walked, not executed, so nothing after it knows which lambda
+/// `g` holds.
+fn changing_branch_src() -> String {
+  let yes = brace(String::concat("\n    g = ", String::concat(yx_lambda(), "\n  ")))
+  let branch = String::concat("\n  if flip ", String::concat(yes, String::concat(" else ", brace(" () "))))
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat(branch, "\n  g(y = 3, x = 10)\n")))
+  String::concat("fn main(flip: Bool) -> Int ", String::concat(brace(body), "\n"))
+}
+
+/// The same branch, called POSITIONALLY. Nothing resolves by name, so nothing
+/// can be misresolved.
+fn changing_branch_positional_src() -> String {
+  let yes = brace(String::concat("\n    g = ", String::concat(yx_lambda(), "\n  ")))
+  let branch = String::concat("\n  if flip ", String::concat(yes, String::concat(" else ", brace(" () "))))
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat(branch, "\n  g(3, 10)\n")))
+  String::concat("fn main(flip: Bool) -> Int ", String::concat(brace(body), "\n"))
+}
+
+/// A branch that re-binds the SAME parameter names changes nothing a label can
+/// observe, so it must not cost the binding its labels.
+fn same_names_branch_src() -> String {
+  let yes = brace(String::concat("\n    g = ", String::concat(xy_lambda(), "\n  ")))
+  let branch = String::concat("\n  if flip ", String::concat(yes, String::concat(" else ", brace(" () "))))
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat(branch, "\n  g(y = 3, x = 10)\n")))
+  String::concat("fn main(flip: Bool) -> Int ", String::concat(brace(body), "\n"))
+}
+
+/// The call sits BEFORE the changing branch, where the initializer is still the
+/// only lambda the binding can hold. Reporting it would be a false rejection.
+fn call_before_branch_src() -> String {
+  let yes = brace(String::concat("\n    g = ", String::concat(yx_lambda(), "\n  ")))
+  let branch = String::concat("\n  if flip ", String::concat(yes, String::concat(" else ", brace(" () "))))
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat("\n  let answer = g(y = 3, x = 10)", String::concat(branch, "\n  answer\n"))))
+  String::concat("fn main(flip: Bool) -> Int ", String::concat(brace(body), "\n"))
+}
+
 fn joined(src: String) -> String with Exception {
   String::join(diags(src), "\n")
 }
@@ -111,4 +148,26 @@ test "a scope that agrees on the labels is not reported" {
   assert(Array::length(diags(agreeing_labeled_src())) == 0)
   assert(Array::length(diags(never_reassigned_src())) == 0)
   assert(Array::length(diags(shadowed_later_src())) == 0)
+}
+
+test "a labeled call after a branch that re-labels the binding is reported" {
+  let text = joined(changing_branch_src())
+  assert(String::contains(text, "cannot resolve labeled arguments for g"))
+  // The message has to say what to write instead, not name a pass.
+  assert(String::contains(text, "call g positionally"))
+  // ...and where: the call is on the source's sixth line. Without the location
+  // the report cannot be jumped to.
+  assert(String::contains(text, "line 6:3"))
+}
+
+test "a positional call after that branch is not reported" {
+  assert(Array::length(diags(changing_branch_positional_src())) == 0)
+}
+
+test "a branch that keeps the parameter names is not reported" {
+  assert(Array::length(diags(same_names_branch_src())) == 0)
+}
+
+test "a call the branch has not reached yet is not reported" {
+  assert(Array::length(diags(call_before_branch_src())) == 0)
 }

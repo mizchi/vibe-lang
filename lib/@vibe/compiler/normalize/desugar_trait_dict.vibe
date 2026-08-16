@@ -9793,25 +9793,30 @@ fn local_fn_tbl_push(name: String, v: Expr, at: Int) -> Unit {
 /// innermost `g`. A non-lambda RHS invalidates it. Assignment inside a
 /// branch still only reaches that branch's continuation.
 fn local_fn_tbl_replace(name: String, v: Expr, shadows: Array[String]) -> Unit {
-  let mut innermost = 0 - 1
-  let mut i = 0
-  while i < Array::length(shadows) {
-    if Array::get(shadows, i) == name {
-      innermost = i
-    }
-    i = i + 1
-  }
+  let innermost = innermost_shadow_index(name, shadows)
   if innermost < 0 {
+    ()
+  } else if unstable_mut_tbl_lookup(name, shadows) {
+    // Already unresolvable (a branch, loop or closure re-labelled it). Putting
+    // an entry back would hand a labeled call the labels of whichever
+    // assignment the WALK reached last.
     ()
   } else {
     let mut j = Array::length(local_fn_tbl_cell) - 1
     let mut found = false
+    let mut changed = false
     while j >= 0 {
-      let (n, _, _, at) = Array::get(local_fn_tbl_cell, j)
+      let (n, old_labels, _, at) = Array::get(local_fn_tbl_cell, j)
       if n == name && at == innermost {
         match local_fn_tbl_shape(v) {
-          Some((labels, flags)) => Array::set(local_fn_tbl_cell, j, (name, labels, flags, at)),
-          None => Array::set(local_fn_tbl_cell, j, (name, empty_str_array(), array_empty(), at))
+          Some((labels, flags)) => {
+            changed = !labels_equal(labels, old_labels)
+            Array::set(local_fn_tbl_cell, j, (name, labels, flags, at))
+          },
+          None => {
+            changed = Array::length(old_labels) > 0
+            Array::set(local_fn_tbl_cell, j, (name, empty_str_array(), array_empty(), at))
+          }
         }
         found = true
         j = 0 - 1
@@ -9821,6 +9826,14 @@ fn local_fn_tbl_replace(name: String, v: Expr, shadows: Array[String]) -> Unit {
     }
     if !found {
       local_fn_tbl_push(name, v, innermost)
+      // Whatever labels the binding has now came from here, so a subtree that
+      // does not dominate the rest must not keep them either.
+      changed = true
+    } else {
+      ()
+    }
+    if changed {
+      Array::push(relabel_assigned_cell, (name, innermost))
     } else {
       ()
     }
@@ -10030,6 +10043,91 @@ fn mut_binding_labels_broken(e: Expr, name: String, labels: Array[String]) -> Bo
 /// no resolution at all, so it must be reported rather than left to bind in
 /// written order, which is right only by luck.
 let unstable_mut_tbl_cell: Array[(String, Int)] = array_empty()
+
+///|
+/// Every assignment that CHANGED a binding's labels, as (name, index in
+/// `shadows`). A subtree whose walk does not dominate what follows notes the
+/// length on entry and hands what its walk appended to
+/// `poison_branch_assignments` on the way out. An assignment that re-binds the
+/// same parameter names is not recorded: it changes nothing a labeled call can
+/// observe, so it must not cost the binding its labels.
+let relabel_assigned_cell: Array[(String, Int)] = array_empty()
+
+///|
+fn innermost_shadow_index(name: String, shadows: Array[String]) -> Int {
+  let mut innermost = 0 - 1
+  let mut i = 0
+  while i < Array::length(shadows) {
+    if Array::get(shadows, i) == name {
+      innermost = i
+    }
+    i = i + 1
+  }
+  innermost
+}
+
+///|
+fn labels_equal(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(a) {
+      if Array::get(a, i) != Array::get(b, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+///|
+fn local_fn_tbl_remove(name: String, at: Int) -> Unit {
+  let kept = array_empty()
+  let mut i = 0
+  while i < Array::length(local_fn_tbl_cell) {
+    let entry = Array::get(local_fn_tbl_cell, i)
+    let (n, _, _, a) = entry
+    if n == name && a == at {
+      ()
+    } else {
+      Array::push(kept, entry)
+    }
+    i = i + 1
+  }
+  Array::truncate(local_fn_tbl_cell, 0)
+  let mut j = 0
+  while j < Array::length(kept) {
+    Array::push(local_fn_tbl_cell, Array::get(kept, j))
+    j = j + 1
+  }
+}
+
+///|
+/// Leaving a subtree whose walk does not dominate what follows -- an `if` arm,
+/// a loop body, a closure body. Every binding it re-labelled and did not itself
+/// introduce (`at < mark`, the length of `shadows` on entry) loses its entry,
+/// because from here on nothing knows which lambda the binding holds. The
+/// continuation-only update `local_fn_tbl_replace` performs is exact while the
+/// assignment dominates what follows; this is where that stops being true.
+fn poison_branch_assignments(from: Int, mark: Int) -> Unit {
+  let mut i = from
+  while i < Array::length(relabel_assigned_cell) {
+    let (n, at) = Array::get(relabel_assigned_cell, i)
+    if at < mark {
+      local_fn_tbl_remove(n, at)
+      unstable_mut_tbl_push(n, at)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(relabel_assigned_cell, from)
+}
 
 ///|
 fn unstable_mut_tbl_push(name: String, at: Int) -> Unit {
@@ -10583,7 +10681,16 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(relabel_expr(c, tbl, shadows), relabel_expr(t, tbl, shadows), relabel_expr(e, tbl, shadows)),
+    EIf(c, t, e) => {
+      let rc = relabel_expr(c, tbl, shadows)
+      // #1994: the arms are WALKED, not executed. Whatever they re-label must
+      // not go on describing the binding after the `if`.
+      let amark = Array::length(relabel_assigned_cell)
+      let rt = relabel_expr(t, tbl, shadows)
+      let re = relabel_expr(e, tbl, shadows)
+      poison_branch_assignments(amark, Array::length(shadows))
+      EIf(rc, rt, re)
+    },
     // The three binding arms keep local_fn_tbl_cell in step with `shadows`
     // (#1899/#1952): push the lambda's parameter shape at the index `name`
     // takes in `shadows`, and drop it again on the same scope exit.
@@ -10648,6 +10755,9 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
     ESeq(a, b) => ESeq(relabel_expr(a, tbl, shadows), relabel_expr(b, tbl, shadows)),
     EMatch(scrut, arms) => {
       let rscrut = relabel_expr(scrut, tbl, shadows)
+      // #1994: one arm runs; every arm is walked. See the EIf arm.
+      let amark = Array::length(relabel_assigned_cell)
+      let arms_mark = Array::length(shadows)
       let out = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
@@ -10661,10 +10771,14 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
         optional_local_leave(local_mark)
         i = i + 1
       }
+      poison_branch_assignments(amark, arms_mark)
       EMatch(rscrut, out)
     },
     EHandle(scrut, arms) => {
       let rscrut = relabel_expr(scrut, tbl, shadows)
+      // #1994: a handler arm runs only when its operation is performed.
+      let amark = Array::length(relabel_assigned_cell)
+      let arms_mark = Array::length(shadows)
       let out = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
@@ -10678,9 +10792,18 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
         optional_local_leave(local_mark)
         i = i + 1
       }
+      poison_branch_assignments(amark, arms_mark)
       EHandle(rscrut, out)
     },
-    EWhile(c, b) => EWhile(relabel_expr(c, tbl, shadows), relabel_expr(b, tbl, shadows)),
+    EWhile(c, b) => {
+      // #1994: the body runs zero or more times, so an assignment inside it
+      // describes the binding neither after the loop nor on the next round.
+      let amark = Array::length(relabel_assigned_cell)
+      let rc = relabel_expr(c, tbl, shadows)
+      let rb = relabel_expr(b, tbl, shadows)
+      poison_branch_assignments(amark, Array::length(shadows))
+      EWhile(rc, rb)
+    },
     ELoop(params, b) => {
       let rinits = for param in params {
         let (name, init) = param
@@ -10688,6 +10811,8 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       }
       let mark = Array::length(shadows)
       let local_mark = Array::length(optional_param_local_cell)
+      // #1994: see the EWhile arm.
+      let amark = Array::length(relabel_assigned_cell)
       let mut pi = 0
       while pi < Array::length(params) {
         let (pname, _) = Array::get(params, pi)
@@ -10698,12 +10823,15 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
       optional_local_leave(local_mark)
+      poison_branch_assignments(amark, mark)
       ELoop(rinits, rb)
     },
     EForIn(name, idx, iter, b) => {
       let riter = relabel_expr(iter, tbl, shadows)
       let mark = Array::length(shadows)
       let local_mark = Array::length(optional_param_local_cell)
+      // #1994: see the EWhile arm.
+      let amark = Array::length(relabel_assigned_cell)
       Array::push(shadows, name)
       match idx {
         Some(ix) => Array::push(shadows, ix),
@@ -10713,11 +10841,14 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
       optional_local_leave(local_mark)
+      poison_branch_assignments(amark, mark)
       EForIn(name, idx, riter, rb)
     },
     EFn(tp, bnds, params, rt, eff, b) => {
       let mark = Array::length(shadows)
       let local_mark = Array::length(optional_param_local_cell)
+      // #1994: a closure body is walked here and runs somewhere else, if ever.
+      let amark = Array::length(relabel_assigned_cell)
       let mut pi = 0
       while pi < Array::length(params) {
         let (pn, _) = Array::get(params, pi)
@@ -10728,6 +10859,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
       optional_local_leave(local_mark)
+      poison_branch_assignments(amark, mark)
       EFn(tp, bnds, params, rt, eff, rb)
     },
     EDot(obj, field, off, fdoff) => EDot(relabel_expr(obj, tbl, shadows), field, off, fdoff),
@@ -10915,7 +11047,13 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
     },
     EIf(cond, yes, no) => {
       paired_expect_node(node, AuthorityExprIf, 0, 3, poisoned)
-      EIf(relabel_expr_paired_child(cond, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(yes, tbl, shadows, node, 1, poisoned), relabel_expr_paired_child(no, tbl, shadows, node, 2, poisoned))
+      let rcond = relabel_expr_paired_child(cond, tbl, shadows, node, 0, poisoned)
+      // #1994: kept in step with relabel_expr's EIf arm.
+      let amark = Array::length(relabel_assigned_cell)
+      let ryes = relabel_expr_paired_child(yes, tbl, shadows, node, 1, poisoned)
+      let rno = relabel_expr_paired_child(no, tbl, shadows, node, 2, poisoned)
+      poison_branch_assignments(amark, Array::length(shadows))
+      EIf(rcond, ryes, rno)
     },
     // Kept in step with relabel_expr's binding arms (#1899/#1952): the two
     // lanes must agree about which local lambdas are in scope.
@@ -10985,6 +11123,9 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
     EMatch(scrutinee, arms) => {
       paired_expect_node(node, AuthorityExprMatch, 0, 1 + Array::length(arms) * 2, poisoned)
       let rscrutinee = relabel_expr_paired_child(scrutinee, tbl, shadows, node, 0, poisoned)
+      // #1994: kept in step with relabel_expr's EMatch arm.
+      let amark = Array::length(relabel_assigned_cell)
+      let arms_mark = Array::length(shadows)
       let out = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
@@ -10996,11 +11137,15 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         Array::truncate(shadows, mark)
         i = i + 1
       }
+      poison_branch_assignments(amark, arms_mark)
       EMatch(rscrutinee, out)
     },
     EHandle(scrutinee, arms) => {
       paired_expect_node(node, AuthorityExprHandle, 0, 1 + Array::length(arms) * 2, poisoned)
       let rscrutinee = relabel_expr_paired_child(scrutinee, tbl, shadows, node, 0, poisoned)
+      // #1994: kept in step with relabel_expr's EHandle arm.
+      let amark = Array::length(relabel_assigned_cell)
+      let arms_mark = Array::length(shadows)
       let out = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
@@ -11012,11 +11157,17 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         Array::truncate(shadows, mark)
         i = i + 1
       }
+      poison_branch_assignments(amark, arms_mark)
       EHandle(rscrutinee, out)
     },
     EWhile(cond, body) => {
       paired_expect_node(node, AuthorityExprWhile, 0, 2, poisoned)
-      EWhile(relabel_expr_paired_child(cond, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned))
+      // #1994: kept in step with relabel_expr's EWhile arm.
+      let amark = Array::length(relabel_assigned_cell)
+      let rcond = relabel_expr_paired_child(cond, tbl, shadows, node, 0, poisoned)
+      let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
+      poison_branch_assignments(amark, Array::length(shadows))
+      EWhile(rcond, rbody)
     },
     ELoop(_, _) => {
       paired_poison(poisoned)
@@ -11035,6 +11186,8 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       }
       let riterable = relabel_expr_paired_child(iterable, tbl, shadows, node, 0, poisoned)
       let mark = Array::length(shadows)
+      // #1994: kept in step with relabel_expr's EForIn arm.
+      let amark = Array::length(relabel_assigned_cell)
       Array::push(shadows, name)
       match index {
         Some(index_name) => Array::push(shadows, index_name),
@@ -11042,6 +11195,7 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       }
       let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
       Array::truncate(shadows, mark)
+      poison_branch_assignments(amark, mark)
       EForIn(name, index, riterable, rbody)
     },
     EFn(type_params, bounds, params, ret, effects, body) => {
@@ -11052,6 +11206,8 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         ti = ti + 1
       }
       let mark = Array::length(shadows)
+      // #1994: kept in step with relabel_expr's EFn arm.
+      let amark = Array::length(relabel_assigned_cell)
       let mut pi = 0
       while pi < Array::length(params) {
         let (name, _) = Array::get(params, pi)
@@ -11061,6 +11217,7 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       }
       let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 0, poisoned)
       Array::truncate(shadows, mark)
+      poison_branch_assignments(amark, mark)
       EFn(type_params, bounds, params, ret, effects, rbody)
     },
     EDot(object, field, offset, field_offset) => {
@@ -11841,6 +11998,7 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
   Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(relabel_assigned_cell, 0)
   Array::truncate(unresolved_mut_labeled_cell, 0)
   let tbl = collect_fn_param_labels(stmts)
   // #1500: optional-parameter call sites are rewritten by the same walk (see
@@ -11873,12 +12031,14 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
   Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(relabel_assigned_cell, 0)
 }
 
 fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityNode], poisoned: Array[Bool]) -> Unit {
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
   Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(relabel_assigned_cell, 0)
   Array::truncate(unresolved_mut_labeled_cell, 0)
   let tbl = collect_fn_param_labels(stmts)
   let opt_tbl = collect_optional_param_fns(stmts)
@@ -11909,6 +12069,7 @@ fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityN
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
   Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(relabel_assigned_cell, 0)
 }
 
 export fn normalize_labeled_args_with_binder_authority(source: LocatedProgramBinderAuthority) -> LabeledArgBinderAuthorityNormalization {

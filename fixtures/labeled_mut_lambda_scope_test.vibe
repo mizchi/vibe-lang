@@ -1,51 +1,27 @@
-// #1994: a lambda bound by `let mut` got no parameter table, so a labeled call
-// to it was never reordered -- the arguments bound in WRITTEN order, with no
-// diagnostic. `let mut g = (x~: Int, y~: Int) -> Int { x - y }` called as
-// `g(y = 3, x = 10)` returned -7.
+// #1994, second half. Registering a `let mut` lambda from its initializer and
+// replacing the entry on assignment (the first half) is exact while the
+// assignment DOMINATES what follows -- straight-line code. It is exact nowhere
+// else: the walk goes through an `if` arm once, execution may go through it
+// never; a loop body may run any number of times; a closure body runs
+// somewhere else entirely. The entry such a subtree leaves behind then
+// describes a lambda the binding may not hold, and the labeled call after it
+// was reordered by those stale names, with no diagnostic.
 //
-// #1899/#1952 gave block-local `let` bindings a table of their own but left the
-// mutable case out on purpose: a `let mut` can be reassigned to another
-// type-compatible lambda whose parameter NAMES differ (labels are not part of a
-// function's type), and a table built from the initializer would then reorder a
-// later call by stale names.
+// Leaving one of those subtrees now drops the entry again, so the binding goes
+// back to unresolved -- and a labeled call to an unresolved binding is
+// reported rather than compiled (labeled_mut_lambda_unstable_test.vibe).
 //
-// The rule now is flow-insensitive and needs no analysis: register the
-// initializer's labels when the whole scope AGREES on them -- every assignment
-// to the name binds a lambda declaring the same parameter names in the same
-// order -- so reassignment is invisible to reordering. A scope that disagrees
-// stays unregistered and its labeled calls are rejected instead of compiled
-// (see labeled_mut_lambda_unstable_test.vibe).
+// What still resolves is everything whose labels no assignment CHANGED, plus
+// every call an assignment has not reached yet. That is what this file pins.
 //
 // Everything here subtracts on purpose. `x + y` gives the right answer whether
 // or not the arguments were reordered, which is how the first half of #1899
 // survived a "fix verified" claim.
 
-// The core case: never reassigned, so the initializer describes every value the
-// binding can hold. This is the one that returned -7.
-fn mut_labels_no_reassign() -> Int {
-  let mut g = (x~: Int, y~: Int) -> Int {
-    x - y
-  }
-  g(y = 3, x = 10)
-}
-
-// Reassigned to a lambda declaring the SAME parameter names: the labels are
-// still the labels, so the call reorders and the second lambda runs.
-fn mut_reassigned_same_names() -> Int {
-  let mut g = (x~: Int, y~: Int) -> Int {
-    100 + x - y
-  }
-  g = (x~: Int, y~: Int) -> Int {
-    x - y
-  }
-  g(y = 3, x = 10)
-}
-
-// The assignment sits inside a branch, which is exactly the shape that makes
-// "invalidate the table when you walk an EAssign" unsound -- the walk reaches
-// the assignment whether or not the branch runs. Both answers here are only
-// reachable if the arguments were reordered (written order gives -7 / -8).
-fn mut_reassigned_in_branch(flip: Bool) -> Int {
+// An assignment in a branch that re-binds the SAME parameter names changes
+// nothing a label can observe, so it must not cost the binding its labels.
+// Written order gives -7 / -8 here; both answers below need the reorder.
+fn same_names_in_branch(flip: Bool) -> Int {
   let mut g = (x~: Int, y~: Int) -> Int {
     x - y
   }
@@ -59,61 +35,77 @@ fn mut_reassigned_in_branch(flip: Bool) -> Int {
   g(y = 3, x = 10)
 }
 
-// A positional call never depended on any of this, and must not start to.
-fn mut_positional() -> Int {
+// Same, from a loop body.
+fn same_names_in_loop() -> Int {
   let mut g = (x~: Int, y~: Int) -> Int {
-    100 + x - y
+    x - y + 1
   }
-  g = (y~: Int, x~: Int) -> Int {
-    x - y
+  let mut i = 0
+  while i < 1 {
+    g = (x~: Int, y~: Int) -> Int {
+      x - y
+    }
+    i = i + 1
   }
-  g(3, 10)
+  g(y = 3, x = 10)
 }
 
-// An inner binding that takes the name over is NOT a reassignment: the scan
-// skips its scope rather than giving up on the whole `let mut`, so the call
-// before it still resolves.
-fn later_let_does_not_poison() -> Int {
+// Same, from a closure body (#2012 made this shape runnable at all).
+fn same_names_in_closure() -> Int {
+  let mut g = (x~: Int, y~: Int) -> Int {
+    x - y + 1
+  }
+  let bump = () -> Unit {
+    g = (x~: Int, y~: Int) -> Int {
+      x - y
+    }
+  }
+  bump()
+  g(y = 3, x = 10)
+}
+
+// A call BEFORE a branch that changes the labels still resolves: at that point
+// the initializer is the only lambda the binding can hold. Only what follows
+// the branch is unresolved, so this must not become a false rejection.
+fn call_before_a_changing_branch(flip: Bool) -> Int {
   let mut g = (x~: Int, y~: Int) -> Int {
     x - y
   }
   let answer = g(y = 3, x = 10)
-  let g = 5
-  answer - g + 5
+  if flip {
+    g = (y~: Int, x~: Int) -> Int {
+      x - y
+    }
+  } else {
+    ()
+  }
+  answer
 }
 
-// ...and inside that inner scope the INNER labels win. With the outer entry
-// leaking, this returns -7.
-fn inner_let_masks_mut() -> Int {
+// A positional call never depended on any of this, and must not start to. The
+// two answers differ because the two lambdas take their parameters in
+// different orders -- which is exactly why the labeled form has no answer.
+fn positional_after_changing_branch(flip: Bool) -> Int {
   let mut g = (x~: Int, y~: Int) -> Int {
     x - y
   }
-  let _warm = g(y = 3, x = 10)
-  let g = (y~: Int, x~: Int) -> Int {
-    x - y
+  if flip {
+    g = (y~: Int, x~: Int) -> Int {
+      x - y
+    }
+  } else {
+    ()
   }
-  g(y = 3, x = 10)
+  g(10, 3)
 }
 
-// Optional omitted args on `let mut` still fail on the committed seed
-// (`expected 2 args, got 1`). Keep them off this fixture so the labeled
-// reorder cases can run in the seed unit lane.
-
-// The immutable case from #1899/#1952, unchanged.
-fn immutable_control() -> Int {
-  let g = (x~: Int, y~: Int) -> Int {
-    x - y
-  }
-  g(y = 3, x = 10)
-}
-
-test "labeled arguments on a `let mut` lambda" {
-  inspect(mut_labels_no_reassign(), "7")
-  inspect(mut_reassigned_same_names(), "7")
-  inspect(mut_reassigned_in_branch(false), "7")
-  inspect(mut_reassigned_in_branch(true), "6")
-  inspect(mut_positional(), "7")
-  inspect(later_let_does_not_poison(), "7")
-  inspect(inner_let_masks_mut(), "7")
-  inspect(immutable_control(), "7")
+test "labeled arguments on a `let mut` lambda a branch reassigns" {
+  inspect(same_names_in_branch(false), "7")
+  inspect(same_names_in_branch(true), "6")
+  inspect(same_names_in_loop(), "7")
+  inspect(same_names_in_closure(), "7")
+  inspect(call_before_a_changing_branch(false), "7")
+  inspect(call_before_a_changing_branch(true), "7")
+  inspect(positional_after_changing_branch(false), "7")
+  inspect(positional_after_changing_branch(true), "-7")
 }
