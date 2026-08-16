@@ -1,0 +1,39 @@
+// #1973: pin current compile-debt diagnostics for fixtures that are no
+// longer executable. The generated unit lane cannot run these as `__DATA__`
+// programs; this file snapshots the rejection instead.
+
+import ./checker_parity_test_support.vibe {
+  check_source_error_message
+}
+
+fn try_question_mark_src() -> String {
+  "fn safe_div(a: Int, b: Int) -> Int with Exception {\n  if b == 0 { throw(\"division by zero\") }\n  a / b\n}\nfn compute(x: Int) -> Int with Exception {\n  let a = safe_div(x, 2)?\n  a + 1\n}\n"
+}
+
+fn effect_defunc_bitwise_src() -> String {
+  "effect Yield { Yield(Int) -> Unit }\nlet result = handle {\n  perform Yield::Yield(1)\n  0\n} { Yield::Yield(v, k) => v | k(0) }\n"
+}
+
+fn effect_infer_basic_src() -> String {
+  "effect Greet { Hello -> String }\nlet result = handle {\n  let msg = perform Greet::Hello\n  String::length(msg)\n} { Greet::Hello => resume(\"world\") }\n"
+}
+
+fn effect_generic_option_src() -> String {
+  "effect Lookup {\n  FindInt(String) -> Int;\n  FindStr(String) -> String\n}\nlet found = handle {\n  let v = perform Lookup::FindInt(\"key\")\n  v + 1\n} { Lookup::FindInt(_k) => resume(100), Lookup::FindStr(_k) => resume(\"\") }\n"
+}
+
+test "try_question_mark: ? on Int with Exception is rejected" {
+  inspect(check_source_error_message(try_question_mark_src()), "`?` unwraps an Option; this expression is Int — handle it with `match`, or only use `?` on an Option value")
+}
+
+test "effect_defunc_bitwise: two-binder handler without with is rejected" {
+  inspect(check_source_error_message(effect_defunc_bitwise_src()), "expected with but got { at #24")
+}
+
+test "effect_infer_basic: handler without with is rejected" {
+  inspect(check_source_error_message(effect_infer_basic_src()), "expected with but got { at #26")
+}
+
+test "effect_generic_option: handler without with is rejected" {
+  inspect(check_source_error_message(effect_generic_option_src()), "expected with but got { at #36")
+}
