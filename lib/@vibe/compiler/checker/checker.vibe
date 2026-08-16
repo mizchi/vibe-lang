@@ -881,15 +881,21 @@ fn merge_provenance_row(expected: Option[String], actual: Option[String]) -> Opt
 /// same checker-only row used by field-projection helpers, so direct,
 /// qualified, imported, and first-class enum constructors share one contract.
 export fn constructor_dependency_row(arity: Int) -> Option[String] {
-  let labels = array_empty()
-  let mut i = 0
-  while i < arity {
-    Array::push(labels, String::concat("#fieldparam[", String::concat(__to_string(i), "]")))
-    i = i + 1
-  }
-  if Array::length(labels) == 0 {
+  if arity <= 0 {
     None
+  } else if arity == 1 {
+    Some("#fieldparam[0]")
+  } else if arity == 2 {
+    Some("#fieldparam[0], #fieldparam[1]")
+  } else if arity == 3 {
+    Some("#fieldparam[0], #fieldparam[1], #fieldparam[2]")
   } else {
+    let labels = array_empty()
+    let mut i = 0
+    while i < arity {
+      Array::push(labels, String::concat("#fieldparam[", String::concat(__to_string(i), "]")))
+      i = i + 1
+    }
     Some(String::join(labels, ", "))
   }
 }
@@ -1176,10 +1182,6 @@ fn closure_capture_row(effect: Option[String], body: Expr, params: Array[(String
     }
     i = i + 1
   }
-  // A bare callee is omitted by the ordinary free-name walk so top-level
-  // calls do not make every closure capture the global environment. Two
-  // callee classes still carry value provenance: a callback parameter, and a
-  // concrete region-backed local closure while checking a region body.
   for callee in closure_bare_callee_names(body) {
     let mut is_param = false
     for param in params {
@@ -1330,37 +1332,37 @@ fn push_unique_dependency_index(out: Array[Int], index: Int) -> Unit {
   }
 }
 
-fn alias_result_param_indices(ty: Type) -> Array[Int] {
-  let found = array_empty()
+fn alias_result_reaches_outer_binding(ty: Type, args: Array[Expr], env: TypeEnv) -> Bool {
   match ty {
-    CtForAll(_, _, body) => {
-      for index in alias_result_param_indices(body) {
-        push_unique_dependency_index(found, index)
-      }
-      ()
-    },
+    CtForAll(_, _, body) => alias_result_reaches_outer_binding(body, args, env),
     CtFn(_, _, effect) => match effect {
-      Some(row) => {
+      Some(row) => if String::contains(row, "#aliasparam[") {
+        let mut found = false
         for raw in String::split(row, ",") {
-          let label = String::trim(raw)
-          if String::starts_with(label, "#aliasparam[") {
-            let close = String::index_of(label, "]")
-            let mut id = 0
-            let mut p = 12
-            while p < close {
-              id = id * 10 + (String::char_code_at(label, p) - 48)
-              p = p + 1
+          if !found {
+            let label = String::trim(raw)
+            if String::starts_with(label, "#aliasparam[") {
+              let close = String::index_of(label, "]")
+              let mut id = 0
+              let mut p = 12
+              while p < close {
+                id = id * 10 + (String::char_code_at(label, p) - 48)
+                p = p + 1
+              }
+              if id >= 0 && id < Array::length(args) && expression_aliases_outer_binding(Array::get(args, id), env) {
+                found = true
+              }
             }
-            push_unique_dependency_index(found, id)
           }
         }
-        ()
+        found
+      } else {
+        false
       },
-      None => ()
+      None => false
     },
-    _ => ()
+    _ => false
   }
-  found
 }
 
 fn decimal_index(text: String) -> Int {
@@ -1391,10 +1393,8 @@ fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
           },
           _ => ()
         }
-        for index in alias_result_param_indices(callee_ty) {
-          if index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(Array::get(args, index), env) {
-            found = true
-          }
+        if !found && alias_result_reaches_outer_binding(callee_ty, args, env) {
+          found = true
         }
         found
       },
@@ -1413,8 +1413,7 @@ fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
   }
 }
 
-fn result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int]) -> Array[Int] {
-  let found = array_empty()
+fn collect_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int], found: Array[Int]) -> Unit {
   match body {
     EIdent(name, _) => {
       let mut i = 0
@@ -1441,43 +1440,33 @@ fn result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], a
       }
     },
     ELet(name, value, rest, _) => {
-      let next_names = for alias in alias_names {
-        alias
+      let found_mark = Array::length(found)
+      let alias_mark = Array::length(alias_names)
+      collect_result_param_indices(value, params, alias_names, alias_indices, found)
+      let mut i = found_mark
+      while i < Array::length(found) {
+        Array::push(alias_names, name)
+        Array::push(alias_indices, Array::get(found, i))
+        i = i + 1
       }
-      let next_indices = for index in alias_indices {
-        index
-      }
-      for index in result_param_indices(value, params, alias_names, alias_indices) {
-        Array::push(next_names, name)
-        Array::push(next_indices, index)
-      }
-      for index in result_param_indices(rest, params, next_names, next_indices) {
-        push_unique_dependency_index(found, index)
-      }
-      ()
+      Array::truncate(found, found_mark)
+      collect_result_param_indices(rest, params, alias_names, alias_indices, found)
+      Array::truncate(alias_names, alias_mark)
+      Array::truncate(alias_indices, alias_mark)
     },
-    ESeq(_, right) => {
-      for index in result_param_indices(right, params, alias_names, alias_indices) {
-        push_unique_dependency_index(found, index)
-      }
-      ()
-    },
+    ESeq(_, right) => collect_result_param_indices(right, params, alias_names, alias_indices, found),
     EIf(_, then_expr, else_expr) => {
-      for index in result_param_indices(then_expr, params, alias_names, alias_indices) {
-        push_unique_dependency_index(found, index)
-      }
-      for index in result_param_indices(else_expr, params, alias_names, alias_indices) {
-        push_unique_dependency_index(found, index)
-      }
-      ()
+      collect_result_param_indices(then_expr, params, alias_names, alias_indices, found)
+      collect_result_param_indices(else_expr, params, alias_names, alias_indices, found)
     },
     _ => ()
   }
-  found
 }
 
 fn direct_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int] {
-  result_param_indices(body, params, array_empty(), array_empty())
+  let found = array_empty()
+  collect_result_param_indices(body, params, array_empty(), array_empty(), found)
+  found
 }
 
 fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
@@ -1515,20 +1504,18 @@ fn result_field_param_index(body: Expr, params: Array[(String, Option[TypeExpr])
       found
     },
     ELet(name, value, rest, _) => {
-      let next_names = for alias in alias_names {
-        alias
-      }
-      let next_indices = for index in alias_indices {
-        index
-      }
+      let mark = Array::length(alias_names)
       match result_field_param_index(value, params, alias_names, alias_indices) {
         Some(index) => {
-          Array::push(next_names, name)
-          Array::push(next_indices, index)
+          Array::push(alias_names, name)
+          Array::push(alias_indices, index)
         },
         None => ()
       }
-      result_field_param_index(rest, params, next_names, next_indices)
+      let found = result_field_param_index(rest, params, alias_names, alias_indices)
+      Array::truncate(alias_names, mark)
+      Array::truncate(alias_indices, mark)
+      found
     },
     ESeq(_, right) => result_field_param_index(right, params, alias_names, alias_indices),
     EIf(_, then_expr, else_expr) => match result_field_param_index(then_expr, params, alias_names, alias_indices) {
@@ -1543,34 +1530,20 @@ fn direct_result_field_param_index(body: Expr, params: Array[(String, Option[Typ
   result_field_param_index(body, params, array_empty(), array_empty())
 }
 
-fn collect_explicit_return_types(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, out: Array[Type], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
-  match expr {
-    EFn(_, _, _, _, _, _) => (),
-    EReturn(value) => {
-      let throwaway = array_empty()
-      let throwtab = array_empty()
-      let (value_ty, next_s, _) = ce(value, env, defs, s, c, throwaway, throwtab)
-      Array::push(out, subst_apply(next_s, value_ty))
-    },
-    ELet(name, value, body, _) => {
-      let throwaway = array_empty()
-      let throwtab = array_empty()
-      let (value_ty, next_s, next_c) = ce(value, env, defs, s, c, throwaway, throwtab)
-      collect_explicit_return_types(body, env_bind(env, name, value_ty), defs, next_s, next_c, out, ce)
-    },
-    ELetMut(name, value, body, _) => {
-      let throwaway = array_empty()
-      let throwtab = array_empty()
-      let (value_ty, next_s, next_c) = ce(value, env, defs, s, c, throwaway, throwtab)
-      collect_explicit_return_types(body, env_bind_mut(env, name, value_ty, false), defs, next_s, next_c, out, ce)
-    },
-    _ => {
-      for child in expr_children(expr) {
-        collect_explicit_return_types(child, env, defs, s, c, out, ce)
-      }
-      ()
+fn return_provenance_key(id: Int) -> Int {
+  0 - id - 1000000000
+}
+
+fn return_provenance_was_written(tytab: Array[(Int, Type)], id: Int) -> Bool {
+  let wanted = return_provenance_key(id)
+  let mut found = false
+  for entry in tytab {
+    let (off, _) = entry
+    if off == wanted {
+      found = true
     }
   }
+  found
 }
 
 fn is_enum_ctor_name(name: String, defs: Array[TypeDef]) -> Bool {
@@ -1601,15 +1574,15 @@ fn is_enum_ctor_name(name: String, defs: Array[TypeDef]) -> Bool {
 fn direct_result_enum_payload_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef]) -> Array[Int] {
   let found = array_empty()
   match body {
-    ECall(EIdent(ctor_name, _), args, _) => if is_enum_ctor_name(ctor_name, defs) {
+    ECall(EIdent(ctor_name, _), args, _) => {
+      let alias_names = array_empty()
+      let alias_indices = array_empty()
       for call_arg in args {
-        for index in direct_result_param_indices(call_arg, params) {
-          push_unique_dependency_index(found, index)
-        }
+        collect_result_param_indices(call_arg, params, alias_names, alias_indices, found)
       }
-      ()
-    } else {
-      ()
+      if Array::length(found) > 0 && !is_enum_ctor_name(ctor_name, defs) {
+        Array::truncate(found, 0)
+      }
     },
     _ => ()
   }
@@ -2990,13 +2963,19 @@ fn resolve_param_provenance(ty: Type, param_tys: Array[Type], arg_tys: Array[Typ
 }
 
 fn call_result_with_provenance(ret: Type, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Type {
-  let resolved_params = for param in param_tys {
-    subst_apply(s, param)
+  let resolved_ret = subst_apply(s, ret)
+  match resolved_ret {
+    CtFn(_, _, _)|CtArray(_)|CtOption(_)|CtTuple(_)|CtRecord(_)|CtNamed(_, _) => {
+      let resolved_params = for param in param_tys {
+        subst_apply(s, param)
+      }
+      let resolved_args = for arg in arg_tys {
+        subst_apply(s, arg)
+      }
+      resolve_param_provenance(resolved_ret, resolved_params, resolved_args)
+    },
+    _ => resolved_ret
   }
-  let resolved_args = for arg in arg_tys {
-    subst_apply(s, arg)
-  }
-  resolve_param_provenance(subst_apply(s, ret), resolved_params, resolved_args)
 }
 
 /// #844: recognize the EXACT synthetic call shape `parser_expr_dispatch.vibe`'s
@@ -4716,10 +4695,27 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
             }
             i = i + 1
           }
-          for index in alias_result_param_indices(callee_ty) {
-            if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
-              found = true
-            }
+          match callee_effect {
+            Some(row) => if String::contains(row, "#aliasparam[") {
+              for raw in String::split(row, ",") {
+                let label = String::trim(raw)
+                if String::starts_with(label, "#aliasparam[") {
+                  let close = String::index_of(label, "]")
+                  let mut index = 0
+                  let mut p = 12
+                  while p < close {
+                    index = index * 10 + (String::char_code_at(label, p) - 48)
+                    p = p + 1
+                  }
+                  if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                    found = true
+                  }
+                }
+              }
+            } else {
+              ()
+            },
+            None => ()
           }
           match callee_effect {
             Some(row) => for raw in String::split(row, ",") {
@@ -8594,13 +8590,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // to the LAMBDA — checking it against the OUTER annotation wrongly
       // rejected it once the #941 railway-conflict report landed. CtUnknown
       // unifies with anything, so the EReturn check is inert for it.
-      let body_env = match ret_ty {
+      let annotated_body_env = match ret_ty {
         Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env)),
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
-      let (bt, s2, c2) = check_expr_capture(body, body_env, defs, s1, c1, errors, tytab, capture, lane)
-      let explicit_return_types = array_empty()
-      collect_explicit_return_types(body, body_env, defs, s2, c2, explicit_return_types, check_expr)
+      let (return_provenance, return_c) = fresh_var(c1)
+      let body_env = env_bind(annotated_body_env, "__return_provenance__", return_provenance)
+      let (bt, s2, c2) = check_expr_capture(body, body_env, defs, s1, return_c, errors, tytab, capture, lane)
       let (base_ret, s3) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr_shadowed(te, defs, tparams)
@@ -8633,8 +8629,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         None => (subst_apply(s2, bt), s2)
       }
       let mut final_ret = base_ret
-      for explicit_ret in explicit_return_types {
-        final_ret = merge_capture_provenance(final_ret, subst_apply(s3, explicit_ret))
+      match return_provenance {
+        CtVar(return_id) => if return_provenance_was_written(tytab, return_id) {
+          final_ret = merge_capture_provenance(final_ret, subst_apply(s3, return_provenance))
+        },
+        _ => ()
       }
       let capture_effect = closure_capture_row(effect, body, params, fn_env, s3)
       let mut checked_effect = capture_effect
@@ -8999,13 +8998,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         },
         None => ()
       }
+      let s2 = match env_lookup(env, "__return_provenance__") {
+        Some(CtVar(id)) => {
+          Array::push(tytab, (return_provenance_key(id), CtUnit))
+          let previous = subst_apply(s1, CtVar(id))
+          let merged = match previous {
+            CtVar(_) => subst_apply(s1, et),
+            _ => merge_capture_provenance(previous, subst_apply(s1, et))
+          }
+          SubstBind(id, merged, s1)
+        },
+        _ => s1
+      }
       // The expression value of `return e` is `e`'s type, not CtUnknown. A lambda
       // whose body is a bare `return e` (`(n) -> { return n }`) otherwise inferred
       // a CtUnknown return type, so when its type came from OUTER unification
       // (`let g: (Int) -> String = (n) -> { return n }`) the return/result
       // mismatch was hidden — the no-`return` form `(n) -> { n }` is rejected, so
       // the `return` form must be too. Propagating `et` makes them identical.
-      (et, s1, c1)
+      (et, s2, c1)
     },
     EMap(mpairs) => {
       // #938: map literals were entirely untyped (fell through to CtUnknown),

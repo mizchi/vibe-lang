@@ -356,10 +356,103 @@ export fn closure_free_names(body: Expr, params: Array[(String, Option[TypeExpr]
   sp_collect_free_vars(body, bound)
 }
 
+fn sp_collect_bare_callees(expr: Expr, bound: Array[String], out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if !sp_array_contains_str(bound, name) {
+          sp_add_unique(out, name)
+        } else {
+          ()
+        },
+        _ => sp_collect_bare_callees(callee, bound, out)
+      }
+      for arg in args {
+        sp_collect_bare_callees(arg, bound, out)
+      }
+    },
+    ELet(name, val, body, _) => {
+      sp_collect_bare_callees(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      sp_collect_bare_callees(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    ELetMut(name, val, body, _) => {
+      sp_collect_bare_callees(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      sp_collect_bare_callees(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    ELetRec(name, val, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      sp_collect_bare_callees(val, bound, out)
+      sp_collect_bare_callees(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mark = Array::length(bound)
+      for param in params {
+        let (name, _) = param
+        Array::push(bound, name)
+      }
+      sp_collect_bare_callees(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    ELoop(params, body) => {
+      let mark = Array::length(bound)
+      for param in params {
+        let (name, init) = param
+        sp_collect_bare_callees(init, bound, out)
+        Array::push(bound, name)
+      }
+      sp_collect_bare_callees(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EForIn(name, index_name, iter, body) => {
+      sp_collect_bare_callees(iter, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      match index_name {
+        Some(index) => Array::push(bound, index),
+        None => ()
+      }
+      sp_collect_bare_callees(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EMatch(scrutinee, arms) => {
+      sp_collect_bare_callees(scrutinee, bound, out)
+      for arm in arms {
+        let (pat, body) = arm
+        let mark = Array::length(bound)
+        sp_collect_pat_bindings(pat, bound)
+        sp_collect_bare_callees(body, bound, out)
+        Array::truncate(bound, mark)
+      }
+    },
+    EHandle(scrutinee, arms) => {
+      sp_collect_bare_callees(scrutinee, bound, out)
+      for arm in arms {
+        let (pat, body) = arm
+        let mark = Array::length(bound)
+        sp_collect_pat_bindings(pat, bound)
+        sp_collect_bare_callees(body, bound, out)
+        Array::truncate(bound, mark)
+      }
+    },
+    _ => for child in expr_children(expr) {
+      sp_collect_bare_callees(child, bound, out)
+    }
+  }
+  ()
+}
+
 export fn closure_bare_callee_names(body: Expr) -> Array[String] {
-  sp_collect_free_vars(body, [
-    "__include_bare_callees__"
-  ])
+  let out = sp_empty_strings()
+  sp_collect_bare_callees(body, sp_empty_strings(), out)
+  out
 }
 
 /// A same-region endpoint. Two shapes both count: both sides are the SAME
