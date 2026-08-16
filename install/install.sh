@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 #
-# With no checkout, this script clones VIBE_INSTALL_REPO at VIBE_INSTALL_REF
+# With no checkout, this script fetches VIBE_INSTALL_REPO at VIBE_INSTALL_REF
 # into a temporary directory and safely reinvokes the matching installer from
 # that checkout. When run from a checkout, it installs that checkout directly.
 #
@@ -95,20 +95,38 @@ else
     SRC_DIR="$PWD"
   fi
 
+  case "$REF" in
+    ""|-*) bootstrap_die "invalid ref '$REF'" ;;
+  esac
+
   work=""
   if [ -n "$SRC_DIR" ]; then
     bootstrap_say "installing from the current checkout: $SRC_DIR (ref selection ignored)"
   else
     command -v git >/dev/null 2>&1 || bootstrap_die "git is required"
     work="$(mktemp -d "${TMPDIR:-/tmp}/vibe-install-XXXXXX")"
-    trap 'rm -rf "$work"' EXIT HUP INT TERM
-    bootstrap_say "cloning $REPO @ $REF..."
-    git clone -q --depth 1 --branch "$REF" "$REPO" "$work/src" \
-      || bootstrap_die "clone failed: $REPO @ $REF"
+    cleanup_bootstrap() { rm -rf -- "$work"; }
+    trap cleanup_bootstrap EXIT
+    trap 'exit 130' HUP INT TERM
+    bootstrap_say "fetching $REPO @ $REF..."
+    git init -q "$work/src" || bootstrap_die "cannot initialize temporary checkout"
+    git -C "$work/src" remote add origin "$REPO" \
+      || bootstrap_die "cannot configure source repository: $REPO"
+    # Fetch the exact requested object instead of using clone --branch. Besides
+    # branches and tags, this supports a reachable commit SHA without checking
+    # out a moving branch tip.
+    git -C "$work/src" fetch -q --depth 1 origin "$REF" \
+      || bootstrap_die "fetch failed: $REPO @ $REF"
+    git -C "$work/src" checkout -q --detach FETCH_HEAD \
+      || bootstrap_die "checkout failed: $REPO @ $REF"
     SRC_DIR="$work/src"
   fi
 
-  TOOLCHAIN="$(printf '%s' "$REF" | tr '/' '-')"
+  # A ref can contain path separators and other punctuation that cannot be
+  # used as a toolchain directory name. Preserve readable ASCII components and
+  # map every other byte to '-'; the install half validates the result again.
+  TOOLCHAIN="$(printf '%s' "$REF" | sed 's/[^A-Za-z0-9._-]/-/g')"
+  [ -n "$TOOLCHAIN" ] || TOOLCHAIN="ref"
   bootstrap_say "installing toolchain '$TOOLCHAIN'..."
   bash "$SRC_DIR/install/install.sh" --__vibe-install-root "$SRC_DIR" \
     --toolchain "$TOOLCHAIN" "${passthrough[@]}"
@@ -152,6 +170,15 @@ CLI_WASM_EXPLICIT=0
 say() { echo "[install] $*"; }
 die() { echo "[install] error: $*" >&2; exit 1; }
 
+validate_toolchain_name() {
+  case "$1" in
+    ""|.|..|*[!A-Za-z0-9._-]*)
+      die "invalid toolchain name '$1'; use one nonempty ASCII component containing only letters, digits, '.', '_', or '-'"
+      ;;
+  esac
+}
+
+validate_toolchain_name "$TOOLCHAIN"
 TC_DIR="$VIBE_HOME/toolchains/$TOOLCHAIN"
 mkdir -p "$TC_DIR/bin" "$TC_DIR/lib" "$VIBE_HOME/bin" "$VIBE_HOME/lib"
 
@@ -281,6 +308,12 @@ if [ -z "$tc" ]; then
     exit 1
   fi
 fi
+case "$tc" in
+  ""|.|..|*[!A-Za-z0-9._-]*)
+    echo "vibe: invalid toolchain name '$tc'" >&2
+    exit 1
+    ;;
+esac
 launcher="$VIBE_HOME/toolchains/$tc/bin/vibe"
 [ -x "$launcher" ] || { echo "vibe: toolchain '$tc' is not installed ($launcher)" >&2; exit 1; }
 export VIBE_HOME
@@ -338,16 +371,32 @@ fi
 # file (rustup's ~/.cargo/env pattern) and -- for a default-prefix install
 # only -- wire it into the shell rc files. A custom --prefix (tests, throwaway
 # installs) never touches the user's rc files.
-cat > "$VIBE_HOME/env" <<ENVEOF
+# Emit one POSIX-shell single-quoted word. Prefixes may contain whitespace,
+# quotes, command substitutions, or newlines; sourcing the generated file must
+# always treat those bytes as path data rather than shell syntax.
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+{
+  cat <<'ENV_HEAD'
 #!/bin/sh
 # vibe shell setup: prepends the vibe dispatcher dir to PATH.
-# Wired into your shell rc by the installer; load manually with
-#   . "$VIBE_HOME/env"
-case ":\${PATH}:" in
-  *:"$VIBE_HOME/bin":*) ;;
-  *) export PATH="$VIBE_HOME/bin:\$PATH" ;;
+# Wired into your shell rc by the installer.
+_vibe_bin=
+ENV_HEAD
+  printf '_vibe_bin='
+  shell_quote "$VIBE_HOME/bin"
+  printf '\n'
+  cat <<'ENV_TAIL'
+case ":${PATH}:" in
+  *:"${_vibe_bin}":*) ;;
+  *) PATH="${_vibe_bin}:${PATH}"; export PATH ;;
 esac
-ENVEOF
+unset _vibe_bin
+ENV_TAIL
+} > "$VIBE_HOME/env"
 chmod 0644 "$VIBE_HOME/env"
 say "env file -> $VIBE_HOME/env"
 

@@ -17,12 +17,14 @@ curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/insta
   | VIBE_INSTALL_REF=v1.0.0 bash
 ```
 
-The bootstrap requires Bash and Git. Outside a checkout it shallow-clones
-`VIBE_INSTALL_REPO` (default `https://github.com/mizchi/vibe-lang`) at
-`VIBE_INSTALL_REF` (default `main`), then reinvokes the installer from that
-checkout. The temporary checkout is removed on success, failure, or a handled
-signal. The selected ref becomes the default toolchain name unless
-`--toolchain` overrides it.
+The bootstrap requires Bash and Git. Outside a checkout it shallow-fetches the
+exact `VIBE_INSTALL_REF` (default `main`) from `VIBE_INSTALL_REPO` (default
+`https://github.com/mizchi/vibe-lang`), then reinvokes the installer from that
+detached checkout. Branches, tags, and reachable commit IDs are supported. The
+temporary checkout is removed on success, failure, or a handled signal. A safe
+form of the selected ref becomes the default toolchain name unless `--toolchain`
+overrides it; explicit toolchain names must contain only ASCII letters, digits,
+`.`, `_`, or `-`.
 
 Installer options can be passed after `bash -s --`:
 
