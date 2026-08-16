@@ -38,10 +38,14 @@ echo "[vibe-test-smoke] ok (pass-file=0, fail-file!=0)"
 #
 # So the probe lives in lib/@vibe/parser on purpose: it is the case the
 # narrower predicate missed.
-PROBE="$ROOT_DIR/lib/@vibe/parser/_seed_gap_probe.vibe"
+PROBE="$ROOT_DIR/lib/@vibe/parser/_seed_gap_probe.tmp"
 cleanup_probe() { rm -f "$PROBE"; }
 trap 'cleanup_probe; rm -rf "$WORK"' EXIT
-printf '// transient: scripts/vibe_test_smoke.sh seed-gap probe\n' > "$PROBE"
+# Deliberately NOT a .vibe file. The pathspec filters by directory, not by
+# extension, so a .tmp exercises the same predicate -- while staying invisible
+# to every *.vibe glob in the tree (vibe-fmt-check lints lib/**/*.vibe), so a
+# task running beside this one cannot trip over it.
+printf 'transient: scripts/vibe_test_smoke.sh seed-gap probe\n' > "$PROBE"
 
 notice_err="$WORK/notice.stderr"
 if ! bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/pass_test.vibe" >/dev/null 2>"$notice_err"; then
