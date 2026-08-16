@@ -5012,6 +5012,70 @@ done
 rm -rf "$gcpedir"
 echo "[compiler-gate] wasm-gc process exit ok (linear + gc, exit status 7)"
 
+# 40h-10. #1985: sibling control-flow scopes share local slot numbers on the gc
+#         lane, the way the linear lane always has -- except where an arm binds
+#         a TYPED wasm-gc local (an array or struct reference), which a sibling
+#         cannot then use as an i64 because a slot has one declared type.
+#
+#         Two halves, and they pull in opposite directions, which is why both
+#         are here:
+#
+#           (a) mixed fixture, both lanes, same answer. RUNNING it is most of
+#               the test -- a slot declared i64 and set from an array reference
+#               (or the reverse) is caught at instantiation by wasm
+#               validation, not by the value. Compiling alone would prove
+#               nothing.
+#           (b) local COUNT bounded by the linear lane's on a deeply nested
+#               fixture that binds nothing typed. This is the regression the
+#               issue is about: allocating per-path instead of per-level grows
+#               as 2^depth (509 locals against linear's 15 at depth 7), and it
+#               is invisible in a size comparison because the two lanes'
+#               fixed preludes differ by more than the regression does.
+echo "[compiler-gate] 40h-10/40 wasm-gc sibling slot reuse (#1985)"
+gcssdir="_build/_gate_gc_slot_reuse"
+rm -rf "$gcssdir"; mkdir -p "$gcssdir"
+for gcss_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcss_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_sibling_slot_reuse.vibe" "$gcssdir/mixed.$gcss_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$gcssdir/mixed.$gcss_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_sibling_slot_reuse.vibe did not compile on the $gcss_be backend (#1985)" >&2
+    cat "$gcssdir/mixed.$gcss_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  gcss_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcssdir/mixed.$gcss_be.wasm" 2>&1 | tail -1)"
+  if [ "$gcss_out" != "105" ]; then
+    echo "[compiler-gate] FAIL: gc_sibling_slot_reuse.vibe got '$gcss_out' on the $gcss_be backend (want 105; a wasm validation error here means an arm reused a slot another arm declared as a reference) (#1985)" >&2
+    exit 1
+  fi
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcss_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_nested_branch_locals.vibe" "$gcssdir/nested.$gcss_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$gcssdir/nested.$gcss_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_nested_branch_locals.vibe did not compile on the $gcss_be backend (#1985)" >&2
+    cat "$gcssdir/nested.$gcss_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  gcss_nested_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcssdir/nested.$gcss_be.wasm" 2>&1 | tail -1)"
+  if [ "$gcss_nested_out" != "546" ]; then
+    echo "[compiler-gate] FAIL: gc_nested_branch_locals.vibe got '$gcss_nested_out' on the $gcss_be backend (want 546) (#1985)" >&2
+    exit 1
+  fi
+done
+gcss_lin_locals="$(node scripts/wasm_local_counts.mjs --max "$gcssdir/nested.linear.wasm")"
+gcss_gc_locals="$(node scripts/wasm_local_counts.mjs --max "$gcssdir/nested.gc.wasm")"
+# The gc lane needs a few more scratch slots than linear for the same code, so
+# the bound is a small ABSOLUTE margin rather than equality. It is nowhere near
+# the failure it guards against: the pre-#1985 numbering produced 125 locals
+# here against linear's 11.
+gcss_budget=$((gcss_lin_locals + 4))
+if [ "$gcss_gc_locals" -gt "$gcss_budget" ]; then
+  echo "[compiler-gate] FAIL: gc lane declared $gcss_gc_locals locals for the depth-5 nested fixture, linear $gcss_lin_locals (budget $gcss_budget). Sibling arms are allocating per PATH again instead of per level (#1985)" >&2
+  exit 1
+fi
+rm -rf "$gcssdir"
+echo "[compiler-gate] wasm-gc sibling slot reuse ok (mixed fixture 105 on both lanes; nested locals gc=$gcss_gc_locals linear=$gcss_lin_locals)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"

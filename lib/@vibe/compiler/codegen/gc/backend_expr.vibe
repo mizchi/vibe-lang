@@ -199,6 +199,10 @@ import ./backend_lambda_body.vibe {
   compile_lambda_gc
 }
 
+import ./backend_typed_local_scan.vibe {
+  gc_direct_abi_name_slot, gc_direct_abi_result_is_native, gc_sibling_scope_start
+}
+
 import ./backend_match.vibe {
   compile_match_gc
 }
@@ -888,45 +892,6 @@ fn gc_native_array_join_arg_is_safe(arg: Expr, name: String, abi_names: Array[St
   }
 }
 
-/// Index of `name` in the direct-ABI evidence table, or -1.
-fn gc_direct_abi_name_slot(abi_names: Array[String], name: String) -> Int {
-  let exact = gc_direct_abi_name_slot_exact(abi_names, name)
-  if exact >= 0 {
-    exact
-  } else {
-    gc_direct_abi_name_slot_exact(abi_names, String::concat(name, "$ref"))
-  }
-}
-
-fn gc_direct_abi_name_slot_exact(abi_names: Array[String], name: String) -> Int {
-  let mut i = 0
-  let mut found = -1
-  while i < Array::length(abi_names) {
-    if found < 0 && Array::get(abi_names, i) == name {
-      found = i
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-fn gc_direct_abi_result_is_native(expr: Expr, ctx: CompileCtxGc) -> Bool {
-  match expr {
-    // Delegates rather than scanning `gc_direct_abi_names` itself: this asks
-    // "is this CALLEE on the lane", so it has to answer exactly as the escape
-    // gate and acceptance do -- #1722's ref-twin fallback included. A private
-    // copy of the scan silently omitted that fallback, so a `let` bound to a
-    // twin call was given an i64 local while the call returned a reference.
-    ECall(EIdent(name, _), _, _) => {
-      let idx = gc_direct_abi_name_slot(ctx.gc_direct_abi_names, name)
-      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
-    },
-    _ => false
-  }
-}
-
 /// i64 fallback for an ELet after its name has already been pushed into
 /// `local_names`. Keeping it separate makes the native-literal branch above
 /// unable to accidentally feed a reference to the legacy local.set path.
@@ -1401,15 +1366,16 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
       gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
-      // A native local is a typed `(ref null $native_i64_array)`, unlike the
-      // normal i64 local lane. Never reuse a branch's slots for its sibling:
-      // the sibling can legally bind an ordinary i64 at the same lexical
-      // depth. Start it after every slot allocated by the then branch so the
-      // function-local declaration remains monotonic and type-correct.
-      while Array::length(local_names) < nl_then {
+      // #1985: the else arm reuses the then arm's slots -- the linear lane's
+      // numbering -- unless it may bind a TYPED local of its own, in which
+      // case it starts above everything the then arm allocated. Stacking the
+      // arms unconditionally grew a frame's local count as 2^nesting-depth on
+      // code that never had a typed local to protect.
+      let else_start = gc_sibling_scope_start(ctx, local_names, else_e, nl1, nl_then)
+      while Array::length(local_names) < else_start {
         Array::push(local_names, "")
       }
-      let nl_else = ce(buf, else_e, local_names, nl_then, ld_inner)
+      let nl_else = ce(buf, else_e, local_names, else_start, ld_inner)
       emit_end(buf)
       Array::truncate(local_names, names_len_before)
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
@@ -1417,8 +1383,13 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
       gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
-      // `nl_else` starts at `nl_then`, so it is already the high-water mark.
-      let max_nl = nl_else
+      // `nl_else` is the high-water mark on its own only while the arms are
+      // stacked; once they share slots (#1985) either arm can be the taller.
+      let max_nl = if nl_else > nl_then {
+        nl_else
+      } else {
+        nl_then
+      }
       while Array::length(local_names) < max_nl {
         Array::push(local_names, "")
       }
