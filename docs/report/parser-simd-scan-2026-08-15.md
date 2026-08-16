@@ -110,6 +110,13 @@ The isolated 1 KiB LF benchmark measured 42 ns p50 for the fused scanner and
 lanes. This roughly 41x primitive headroom is sufficient to proceed to the
 seed/integration phase; it is not yet a lexer-level result.
 
+After the seed bump, `skip_until_newline` keeps the first 16 comment bytes on
+the scalar path and hands longer runs to the fused scanner. A comment-heavy
+lexer workload improved from 252,708 ns to 189,584 ns p50 (about 25%) while
+remaining at 75,456 B/op. A short-comment control measured 66,792 ns on the
+scalar implementation and 65,917 ns after integration, with 30,464 B/op in
+both lanes, so the scalar prefix avoids a short-input regression.
+
 Do not start with a full classify/compress token tape. `Token` is still a rich
 enum and identifiers/string tokens materialize substrings, so making every
 punctuation position into a bitmap would add a second representation before

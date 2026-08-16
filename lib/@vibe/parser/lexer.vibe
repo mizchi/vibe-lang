@@ -639,7 +639,9 @@ fn join_doc_lines(lines: Array[String]) -> String {
 fn skip_until_newline(s: String, len: Int, i: Int) -> Int {
   let mut out = i
   let mut done = false
-  while out < len && !done {
+  // Most source comments are short. Keep one SIMD chunk scalar so they avoid
+  // the builtin-call/setup cost; long ordinary runs hand off at byte 16.
+  while out < len && out - i < 16 && !done {
     if String::char_code_at(s, out) == '\n' {
       out = out + 1
       done = true
@@ -647,7 +649,16 @@ fn skip_until_newline(s: String, len: Int, i: Int) -> Int {
       out = out + 1
     }
   }
-  out
+  if done || out >= len {
+    out
+  } else {
+    let line_end = simd_scan_line_end_str(s, out, len)
+    if line_end < len {
+      line_end + 1
+    } else {
+      len
+    }
+  }
 }
 
 /// Pack `(next_offset, saw_newline)` into one tagged Int. This is on every
