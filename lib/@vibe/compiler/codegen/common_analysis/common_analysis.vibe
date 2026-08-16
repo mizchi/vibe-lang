@@ -7,6 +7,7 @@ import @vibe/compiler/core {
   TypeExpr,
   bsearch_leftmost,
   builtin_allocates,
+  builtin_registry,
   bytebuf_push,
   canonical_builtin_name,
   is_exception_throw_operation,
@@ -1142,6 +1143,21 @@ export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String],
   }
 }
 
+/// True exactly when codegen's lambda lowering needs a heap environment.
+/// Keep allocation queries on this API instead of reimplementing capture
+/// rules: globals, let-rec self references, and enclosing-name shadowing are
+/// deliberately the same inputs compile_lambda uses.
+export fn lambda_has_captures(body: Expr, params: Array[(String, Option[TypeExpr])], fn_name_index: Array[String], self_name: String, encl: Array[String]) -> Bool {
+  let param_names = common_analysis_fresh_string_array()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    Array::push(param_names, name)
+    i = i + 1
+  }
+  Array::length(collect_free_vars_indexed_self(body, param_names, fn_name_index, self_name, encl)) > 0
+}
+
 /// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
 /// "" if `e` is not a projection. (ADR-0055 Stage 4: shared with compile_expr_tail
 /// so function-tail param drops can detect an escaping projection of a param.)
@@ -2072,6 +2088,23 @@ fn typed_alloc_copy_strings(items: Array[String]) -> Array[String] {
   Array::slice(items, 0, Array::length(items))
 }
 
+fn za_lambda_global_index(fn_names: Array[String], ctors: Array[String]) -> Array[String] {
+  let names = typed_alloc_copy_strings(fn_names)
+  let mut ci = 0
+  while ci < Array::length(ctors) {
+    Array::push(names, Array::get(ctors, ci))
+    ci = ci + 1
+  }
+  let registry = builtin_registry()
+  let mut bi = 0
+  while bi < Array::length(registry) {
+    let (name, _, _, _, _) = Array::get(registry, bi)
+    Array::push(names, name)
+    bi = bi + 1
+  }
+  sorted_names_of(names)
+}
+
 /// Classify source operators whose statically evident overload allocates on
 /// the linear backend. Lexical type facts survive package linking without
 /// relying on file-local offsets. Unknown arithmetic is conservatively
@@ -2142,7 +2175,11 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
     ERecord(_, _, _) => "record/struct literal",
     EMap(_) => "map literal",
     EStringInterp(_) => "string interpolation",
-    EFn(_, _, _, _, _, _) => "closure literal (allocates its environment)",
+    EFn(_, _, params, _, _, body) => if lambda_has_captures(body, params, za_lambda_global_index(fn_names, ctors), "", bound) {
+      "closure literal (allocates its environment)"
+    } else {
+      ""
+    },
     EIf(zc, zt, zf) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_first(za_walk(zt, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zf, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst))),
     ELet(zl_name, zv, zb, _) => {
       let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
