@@ -9621,7 +9621,14 @@ for r90_fixture in \
   fixtures/err_region_escape_generalized_local_callee.vibe \
   fixtures/err_region_escape_direct_call_alias_write.vibe \
   fixtures/err_region_escape_alias_result.vibe \
+  fixtures/err_region_escape_conditional_alias_result.vibe \
   fixtures/err_region_escape_multi_payload_constructor.vibe \
+  fixtures/err_region_escape_enum_alias.vibe \
+  fixtures/err_region_escape_enum_container.vibe \
+  fixtures/err_region_escape_enum_outer_assignment.vibe \
+  fixtures/err_region_escape_enum_payload.vibe \
+  fixtures/err_region_escape_struct_alias.vibe \
+  fixtures/err_region_escape_struct_container.vibe \
   fixtures/err_region_escape_constructor_helper.vibe \
   fixtures/err_region_escape_bound_struct.vibe \
   fixtures/err_region_escape_mutmap_write.vibe \

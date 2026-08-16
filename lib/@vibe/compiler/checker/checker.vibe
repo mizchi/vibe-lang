@@ -1318,12 +1318,29 @@ fn binding_predates_active_region(name: String, env: TypeEnv) -> Bool {
   }
 }
 
-fn alias_result_param_index(ty: Type) -> Option[Int] {
+fn push_unique_dependency_index(out: Array[Int], index: Int) -> Unit {
+  let mut found = false
+  for existing in out {
+    if existing == index {
+      found = true
+    }
+  }
+  if !found {
+    Array::push(out, index)
+  }
+}
+
+fn alias_result_param_indices(ty: Type) -> Array[Int] {
+  let found = array_empty()
   match ty {
-    CtForAll(_, _, body) => alias_result_param_index(body),
+    CtForAll(_, _, body) => {
+      for index in alias_result_param_indices(body) {
+        push_unique_dependency_index(found, index)
+      }
+      ()
+    },
     CtFn(_, _, effect) => match effect {
       Some(row) => {
-        let mut found = None
         for raw in String::split(row, ",") {
           let label = String::trim(raw)
           if String::starts_with(label, "#aliasparam[") {
@@ -1334,15 +1351,16 @@ fn alias_result_param_index(ty: Type) -> Option[Int] {
               id = id * 10 + (String::char_code_at(label, p) - 48)
               p = p + 1
             }
-            found = Some(id)
+            push_unique_dependency_index(found, id)
           }
         }
-        found
+        ()
       },
-      None => None
+      None => ()
     },
-    _ => None
+    _ => ()
   }
+  found
 }
 
 fn decimal_index(text: String) -> Int {
@@ -1362,42 +1380,43 @@ fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
       None => false
     },
     ECall(EIdent(callee, _), args, _) => match env_lookup(env, callee) {
-      Some(callee_ty) => match env_lookup(env, String::concat("__alias_contract__", callee)) {
-        Some(CtNamed(index_text, _)) => {
-          let index = decimal_index(index_text)
-          if index >= 0 && index < Array::length(args) {
-            expression_aliases_outer_binding(Array::get(args, index), env)
-          } else {
-            false
-          }
-        },
-        _ => match alias_result_param_index(callee_ty) {
-          Some(index) => if index >= 0 && index < Array::length(args) {
-            expression_aliases_outer_binding(Array::get(args, index), env)
-          } else {
-            false
+      Some(callee_ty) => {
+        let mut found = false
+        match env_lookup(env, String::concat("__alias_contract__", callee)) {
+          Some(CtNamed(index_text, _)) => {
+            let index = decimal_index(index_text)
+            if index >= 0 && index < Array::length(args) {
+              found = expression_aliases_outer_binding(Array::get(args, index), env)
+            }
           },
-          None => false
+          _ => ()
         }
+        for index in alias_result_param_indices(callee_ty) {
+          if index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(Array::get(args, index), env) {
+            found = true
+          }
+        }
+        found
       },
       None => false
     },
-    ECall(EFn(_, _, params, _, _, body), args, _) => match direct_result_param_index(body, params) {
-      Some(index) => if index >= 0 && index < Array::length(args) {
-        expression_aliases_outer_binding(Array::get(args, index), env)
-      } else {
-        false
-      },
-      None => false
+    ECall(EFn(_, _, params, _, _, body), args, _) => {
+      let mut found = false
+      for index in direct_result_param_indices(body, params) {
+        if index >= 0 && index < Array::length(args) && expression_aliases_outer_binding(Array::get(args, index), env) {
+          found = true
+        }
+      }
+      found
     },
     _ => false
   }
 }
 
-fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
+fn result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], alias_names: Array[String], alias_indices: Array[Int]) -> Array[Int] {
+  let found = array_empty()
   match body {
     EIdent(name, _) => {
-      let mut found = None
       let mut i = 0
       while i < Array::length(params) {
         let (raw_name, _) = Array::get(params, i)
@@ -1409,13 +1428,64 @@ fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr]
           } else raw_name
         } else raw_name
         if name == param_name {
-          found = Some(i)
+          push_unique_dependency_index(found, i)
         }
         i = i + 1
       }
-      found
+      let mut alias_i = 0
+      while alias_i < Array::length(alias_names) {
+        if name == Array::get(alias_names, alias_i) {
+          push_unique_dependency_index(found, Array::get(alias_indices, alias_i))
+        }
+        alias_i = alias_i + 1
+      }
     },
-    _ => None
+    ELet(name, value, rest, _) => {
+      let next_names = for alias in alias_names {
+        alias
+      }
+      let next_indices = for index in alias_indices {
+        index
+      }
+      for index in result_param_indices(value, params, alias_names, alias_indices) {
+        Array::push(next_names, name)
+        Array::push(next_indices, index)
+      }
+      for index in result_param_indices(rest, params, next_names, next_indices) {
+        push_unique_dependency_index(found, index)
+      }
+      ()
+    },
+    ESeq(_, right) => {
+      for index in result_param_indices(right, params, alias_names, alias_indices) {
+        push_unique_dependency_index(found, index)
+      }
+      ()
+    },
+    EIf(_, then_expr, else_expr) => {
+      for index in result_param_indices(then_expr, params, alias_names, alias_indices) {
+        push_unique_dependency_index(found, index)
+      }
+      for index in result_param_indices(else_expr, params, alias_names, alias_indices) {
+        push_unique_dependency_index(found, index)
+      }
+      ()
+    },
+    _ => ()
+  }
+  found
+}
+
+fn direct_result_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Int] {
+  result_param_indices(body, params, array_empty(), array_empty())
+}
+
+fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
+  let indices = direct_result_param_indices(body, params)
+  if Array::length(indices) > 0 {
+    Some(Array::get(indices, 0))
+  } else {
+    None
   }
 }
 
@@ -1533,21 +1603,11 @@ fn direct_result_enum_payload_param_indices(body: Expr, params: Array[(String, O
   match body {
     ECall(EIdent(ctor_name, _), args, _) => if is_enum_ctor_name(ctor_name, defs) {
       for call_arg in args {
-        match direct_result_param_index(call_arg, params) {
-          Some(index) => {
-            let mut seen = false
-            for existing in found {
-              if existing == index {
-                seen = true
-              }
-            }
-            if !seen {
-              Array::push(found, index)
-            }
-          },
-          None => ()
+        for index in direct_result_param_indices(call_arg, params) {
+          push_unique_dependency_index(found, index)
         }
       }
+      ()
     } else {
       ()
     },
@@ -4656,11 +4716,10 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
             }
             i = i + 1
           }
-          match alias_result_param_index(callee_ty) {
-            Some(index) => if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+          for index in alias_result_param_indices(callee_ty) {
+            if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
               found = true
-            },
-            None => ()
+            }
           }
           match callee_effect {
             Some(row) => for raw in String::split(row, ",") {
@@ -4743,6 +4802,31 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
       named_record_tail_mentions_region(expr, env, region_name) || type_mentions_named(subst_apply(next_s, expr_ty), region_name)
     }
   }
+}
+
+fn expression_mentions_active_region_scan(expr: Expr, cur: TypeEnv, full: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
+  match cur {
+    EnvEmpty => false,
+    EnvBind(name, binding, rest) => if name == "__active_region__" {
+      match binding.ty {
+        CtNamed(region_name, _) => tail_named_record_mentions_region(expr, full, defs, s, c, region_name, ce) || expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+        _ => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
+      }
+    } else {
+      expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
+    },
+    EnvMutCell(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTraitDef(_, _, _, _, rest, _, _) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTraitImpl(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTraitImplGen(_, _, _, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTypeDefs(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvCached(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvFlat(_) => false
+  }
+}
+
+fn expression_mentions_active_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
+  expression_mentions_active_region_scan(expr, env, env, defs, s, c, ce)
 }
 
 /// `obj[i]` desugars to `__index(obj, i)`, typed fully polymorphically, so
@@ -7494,7 +7578,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     },
     EAssign(name, val, body) => {
       let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
-      if assignment_crosses_region(name, subst_apply(s1, vt), env) {
+      if assignment_crosses_region(name, subst_apply(s1, vt), env) || (binding_predates_active_region(name, env) && expression_mentions_active_region(val, env, defs, s1, c1, check_expr)) {
         Array::push(errors, String::concat("region escapes its scope: an assignment stores a value that captures this region into an outer binding", off_marker(tail_expr_off(val))))
       }
       // The assigned value must be assignable to the variable's type
@@ -8553,20 +8637,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         final_ret = merge_capture_provenance(final_ret, subst_apply(s3, explicit_ret))
       }
       let capture_effect = closure_capture_row(effect, body, params, fn_env, s3)
-      let checked_effect = match direct_result_param_index(body, params) {
-        Some(index) => {
-          let pty = if index >= 0 && index < Array::length(param_types) {
-            subst_apply(s3, Array::get(param_types, index))
-          } else {
-            CtUnit
-          }
-          if type_can_carry_region(pty) {
-            merge_provenance_row(capture_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]"))))
-          } else {
-            capture_effect
-          }
-        },
-        None => capture_effect
+      let mut checked_effect = capture_effect
+      for index in direct_result_param_indices(body, params) {
+        let pty = if index >= 0 && index < Array::length(param_types) {
+          subst_apply(s3, Array::get(param_types, index))
+        } else {
+          CtUnit
+        }
+        if type_can_carry_region(pty) {
+          checked_effect = merge_provenance_row(checked_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]"))))
+        }
       }
       let dependency_effect = match direct_result_field_param_index(body, params) {
         Some(index) => if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
