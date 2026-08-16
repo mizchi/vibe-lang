@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+node "$SCRIPT_DIR/generate_runtime_fixture_tests.test.mjs"
 CHECK_SCRIPT="$SCRIPT_DIR/precommit.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_precommit_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT

@@ -15,34 +15,46 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 const ROOT = process.cwd();
-const GENERATED_DIR = path.join(
+const GENERATED_DIR = path.resolve(
   ROOT,
-  "lib/@vibe/compiler/_generated_runtime_fixtures",
+  process.env.VIBE_RUNTIME_FIXTURE_OUTPUT_DIR ||
+    "lib/@vibe/compiler/_generated_runtime_fixtures",
 );
+const DEBT_FILE = path.join(ROOT, "scripts/runtime_fixture_debt.tsv");
 
 // ---------------------------------------------------------------------------
 // Fixture discovery
 // ---------------------------------------------------------------------------
 
-/** Parse the __DATA__ JSON from a fixture file. Returns null if invalid. */
-function parseFixtureData(content) {
-  const idx = content.indexOf("__DATA__");
-  if (idx < 0) return null;
-  const dataStr = content.substring(idx + "__DATA__".length).trim();
+/** Find an exact __DATA__ marker line, independently of parsing its payload. */
+function fixtureDataMarker(content) {
+  const match = /^__DATA__[ \t]*\r?$/m.exec(content);
+  if (match === null) return null;
+  return { start: match.index, end: match.index + match[0].length };
+}
+
+/** Parse the __DATA__ JSON from a fixture file. Malformed payloads are fatal. */
+function parseFixtureData(content, filePath) {
+  const marker = fixtureDataMarker(content);
+  if (marker === null) return null;
+  const dataStr = content.substring(marker.end).trim();
   try {
     return JSON.parse(dataStr);
-  } catch {
-    return null;
+  } catch (error) {
+    throw new Error(
+      `${filePath}: __DATA__ marker must be followed by valid JSON: ${error.message}`,
+    );
   }
 }
 
 /** Return the source portion of a fixture (before __DATA__). */
 function fixtureSource(content) {
-  const idx = content.indexOf("__DATA__");
-  if (idx < 0) return content;
-  return content.substring(0, idx).trimEnd();
+  const marker = fixtureDataMarker(content);
+  if (marker === null) return content;
+  return content.substring(0, marker.start).trimEnd();
 }
 
 function splitTopLevelChunks(source) {
@@ -215,6 +227,20 @@ function isDeclarationChunk(chunk) {
   return trimmed.startsWith("let ") || trimmed.startsWith("let rec ");
 }
 
+// A fixture may end in a binding rather than a bare expression. The old
+// top-level evaluator still reported the value of that binding, so preserving
+// the declaration without reading it only proves that the fixture runs; it
+// does not prove its `__DATA__.last` expectation. Keep this deliberately
+// narrow: simple identifier bindings are safe to read after the declaration.
+// Anything more involved must be classified as debt instead of being silently
+// activated without an assertion.
+function simpleBindingName(chunk) {
+  const match = chunk
+    .trimStart()
+    .match(/^let\s+(?:rec\s+)?(?:mut\s+)?([a-z_][A-Za-z0-9_]*)\b/);
+  return match?.[1] ?? null;
+}
+
 // A chunk with no code in it. Wrapping one as an expression produced
 // `let _ = (\n// Basic effect declaration\n)`, which is a parse error -- the
 // comment is the whole chunk, so there is nothing for the parens to hold.
@@ -228,8 +254,6 @@ function isCommentOnlyChunk(chunk) {
  * A fixture is a runtime candidate when:
  *  - It has __DATA__ with a "last" key (expected runtime result)
  *  - It does NOT have "compile_error" or "error_contains"
- *  - The source does not use `perform ` (effect system not in selfhost WASM)
- *  - The source does not use `handle ` (effect handling)
  */
 function isRuntimeCandidate(filePath) {
   let content;
@@ -238,43 +262,72 @@ function isRuntimeCandidate(filePath) {
   } catch {
     return false;
   }
-  const data = parseFixtureData(content);
+  const data = parseFixtureData(content, path.relative(ROOT, filePath));
   if (!data || typeof data !== "object") return false;
   if (!("last" in data)) return false;
+  if (typeof data.last !== "string") {
+    throw new Error(
+      `${path.relative(ROOT, filePath)}: __DATA__.last must be a string`,
+    );
+  }
   if ("compile_error" in data || "error_contains" in data) return false;
-
-  const source = fixtureSource(content);
-  if (source.includes("perform ")) return false;
-  if (source.includes("handle ")) return false;
 
   return true;
 }
 
 function discoverCandidates() {
-  const dirs = [
-    { dir: path.join(ROOT, "fixtures"), prefix: "fixtures/" },
-    { dir: path.join(ROOT, "fixtures/runtime"), prefix: "fixtures/runtime/" },
-  ];
+  const fixturesDir = path.join(ROOT, "fixtures");
   const results = [];
-  for (const { dir, prefix } of dirs) {
-    if (!fs.existsSync(dir)) continue;
-    const entries = fs.readdirSync(dir).sort();
+  function visit(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (!entry.endsWith(".vibe")) continue;
-      const absPath = path.join(dir, entry);
-      // Skip subdirectories (e.g. fixtures/runtime is a subdir of fixtures)
-      try {
-        if (fs.statSync(absPath).isDirectory()) continue;
-      } catch {
-        continue;
-      }
-      if (isRuntimeCandidate(absPath)) {
-        results.push(prefix + entry);
+      const absPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(absPath);
+      } else if (entry.isFile() && entry.name.endsWith(".vibe")) {
+        // isRuntimeCandidate also audits any __DATA__ marker it encounters.
+        // A malformed payload must fail discovery even when it would not have
+        // contained a runtime `last` expectation.
+        if (isRuntimeCandidate(absPath)) {
+          results.push(path.relative(ROOT, absPath));
+        }
       }
     }
   }
+  if (fs.existsSync(fixturesDir)) visit(fixturesDir);
   results.sort();
   return results;
+}
+
+function readDebtPaths(allCandidates) {
+  if (!fs.existsSync(DEBT_FILE)) return new Set();
+  const candidates = new Set(allCandidates);
+  const debts = new Set();
+  const lines = fs.readFileSync(DEBT_FILE, "utf8").split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const tab = line.indexOf("\t");
+    if (tab < 0 || !line.substring(tab + 1).trim()) {
+      throw new Error(
+        `${path.relative(ROOT, DEBT_FILE)}:${i + 1}: expected <fixture>\\t<reason>`,
+      );
+    }
+    const fixturePath = line.substring(0, tab).trim();
+    if (debts.has(fixturePath)) {
+      throw new Error(
+        `${path.relative(ROOT, DEBT_FILE)}:${i + 1}: duplicate fixture ${fixturePath}`,
+      );
+    }
+    if (!candidates.has(fixturePath)) {
+      throw new Error(
+        `${path.relative(ROOT, DEBT_FILE)}:${i + 1}: stale debt entry ${fixturePath}`,
+      );
+    }
+    debts.add(fixturePath);
+  }
+  return debts;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +355,7 @@ function buildSingleFixtureTestContent(fixturePath) {
   }
 
   const source = fixtureSource(content);
-  const data = parseFixtureData(content);
+  const data = parseFixtureData(content, fixturePath);
   const expectedLast = data?.last ?? null;
   const chunks = splitTopLevelChunks(source);
   const preludeChunks = [];
@@ -328,13 +381,20 @@ function buildSingleFixtureTestContent(fixturePath) {
   // passed when the fixture COMPILED AND RAN, whatever it computed -- a fixture
   // declaring "ok" and returning "ng" was green.
   //
-  // Only the last expression is the program's value; earlier ones are still
-  // evaluated for their effects and discarded.
+  // Only the last body chunk is the program's value; earlier expressions are
+  // still evaluated for their effects and discarded. Searching backwards for
+  // any expression is wrong when the fixture ends in a binding: it would
+  // assert an earlier value and silently ignore the final binding.
   let lastExprIdx = -1;
-  for (let i = bodyChunks.length - 1; i >= 0; i--) {
-    if (bodyChunks[i].kind === "expr") {
-      lastExprIdx = i;
-      break;
+  const finalBodyIdx = bodyChunks.length - 1;
+  if (finalBodyIdx >= 0 && bodyChunks[finalBodyIdx].kind === "expr") {
+    lastExprIdx = finalBodyIdx;
+  }
+  let finalBindingName = null;
+  if (lastExprIdx < 0 && finalBodyIdx >= 0) {
+    const finalChunk = bodyChunks[finalBodyIdx];
+    if (finalChunk.kind === "decl") {
+      finalBindingName = simpleBindingName(finalChunk.text);
     }
   }
   const renderedBody = bodyChunks.map((c, i) => {
@@ -344,6 +404,16 @@ function buildSingleFixtureTestContent(fixturePath) {
     }
     return `let _ = (\n${c.text}\n)`;
   });
+  if (expectedLast !== null && lastExprIdx < 0) {
+    if (finalBindingName === null) {
+      throw new Error(
+        `${fixturePath}: cannot assert __DATA__.last; end the fixture with an expression or a simple identifier binding, or add reasoned debt`,
+      );
+    }
+    renderedBody.push(
+      `assert_true(__to_string(${finalBindingName}) == ${vibeStringLiteral(displayForm(expectedLast))})`,
+    );
+  }
 
   const parts = [];
   if (preludeChunks.length > 0) {
@@ -376,15 +446,27 @@ function buildSingleFixtureTestContent(fixturePath) {
  * between fixture preludes. This function returns an array of
  * { fileName, content } objects.
  */
-function buildShardTestFiles(fixturePaths, shardStartIndex) {
+function stableTestFileName(fixturePath) {
+  const stem = path
+    .basename(fixturePath, path.extname(fixturePath))
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48) || "fixture";
+  const pathHash = createHash("sha256").update(fixturePath).digest("hex").slice(0, 12);
+  return `runtime_fixture_${stem}_${pathHash}_test.vibe`;
+}
+
+function buildShardTestFiles(fixturePaths) {
   // Each fixture needs its own file to avoid top-level name conflicts
   // between different fixture preludes.
   const files = [];
-  for (let j = 0; j < fixturePaths.length; j++) {
-    const fixturePath = fixturePaths[j];
-    const fileIndex = shardStartIndex + j + 1;
-    const shardNum = String(fileIndex).padStart(2, "0");
-    const fileName = `runtime_fixture_success_${shardNum}_test.vibe`;
+  const fileNames = new Set();
+  for (const fixturePath of fixturePaths) {
+    const fileName = stableTestFileName(fixturePath);
+    if (fileNames.has(fileName)) {
+      throw new Error(`generated runtime fixture filename collision: ${fileName}`);
+    }
+    fileNames.add(fileName);
     const content = buildSingleFixtureTestContent(fixturePath);
     files.push({ fileName, content });
   }
@@ -397,12 +479,28 @@ function buildShardTestFiles(fixturePaths, shardStartIndex) {
 
 function main() {
   const listOnly = process.env.VIBE_RUNTIME_FIXTURE_LIST_ONLY === "1";
-  const limit = Number(
+  let limit = Number(
     process.env.VIBE_RUNTIME_FIXTURE_LIMIT || "0",
   );
+  const inventoryMode = process.env.VIBE_RUNTIME_FIXTURE_INVENTORY || "";
+  if (inventoryMode && inventoryMode !== "active" && inventoryMode !== "all") {
+    throw new Error("VIBE_RUNTIME_FIXTURE_INVENTORY must be active or all");
+  }
 
   if (listOnly) {
     let candidates = discoverCandidates();
+    const includeDebt = inventoryMode
+      ? inventoryMode === "all"
+      : process.env.VIBE_RUNTIME_FIXTURE_INCLUDE_DEBT === "1";
+    if (inventoryMode) limit = 0;
+    if (!includeDebt) {
+      const debtPaths = readDebtPaths(candidates);
+      candidates = candidates.filter((candidate) => !debtPaths.has(candidate));
+    } else {
+      // Audit the manifest in all-candidate mode too. A removed or migrated
+      // fixture must retire its debt row in the same change.
+      readDebtPaths(candidates);
+    }
     if (limit > 0) {
       candidates = candidates.slice(0, limit);
     }
@@ -434,7 +532,7 @@ function main() {
   // Generate one file per fixture to avoid top-level name conflicts.
   fs.mkdirSync(GENERATED_DIR, { recursive: true });
 
-  const files = buildShardTestFiles(fixturePaths, 0);
+  const files = buildShardTestFiles(fixturePaths);
   for (const { fileName, content } of files) {
     const filePath = path.join(GENERATED_DIR, fileName);
     fs.writeFileSync(filePath, content);
