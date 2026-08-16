@@ -445,14 +445,10 @@ fn arm_body_diverges(body: Expr) -> Bool {
 // is no longer a language- or prelude-provided type, so `?`/`let*` lower only
 // to `Option` and there is no second built-in monad to conflict with.
 //
-// The mismatch #941 was written for is still reported, just by the ordinary
-// path: a `?` on an `Option` inside a function annotated with a DECLARED
-// two-track enum is caught by `check_assignable` at the desugar's
-// `return None` (measured on `fixtures/try_question_option_test.vibe`:
-// "return type mismatch: expected Result[Int, String], got Option[?]").
-// #941 existed because the PRELUDE-INJECTED `Result` surfaced as a bare
-// `CtNamed` head that `check_assignable` tolerates; with the injection gone
-// the enum is an ordinary declared type and the ordinary gate fires.
+// The mismatch #941 was written for is still reported: a `?` / `let*`
+// inside a function that does not return Option is caught by the #1947
+// railway-origin hook (source-level `?` / `let*` message), not by the
+// generic `return None` / `Option[?]` debris of the desugar.
 
 /// Best-effort source anchor for a (possibly desugar-generated) expr — the
 /// first real char offset found walking into the value position, or -1. The
@@ -498,6 +494,190 @@ fn tail_expr_off(e: Expr) -> Int {
     ELetRec(_, _, rest) => tail_expr_off(rest),
     ELetMut(_, _, rest, _) => tail_expr_off(rest),
     _ => railway_expr_off(e)
+  }
+}
+
+/// #1947: classify a two-arm match as a lowered railway. The pre-check
+/// desugar (`lower_try_op` / `lower_try_bind`) is the only producer of
+/// these shapes; `__try_v` is the origin marker for postfix `?`.
+///   0 = not a railway desugar
+///   1 = postfix `?`  (`Some(__try_v) => __try_v, None => return None`)
+///   2 = `let*`       (`Some(name) => rest, None => None`)
+fn railway_pat_none(p: Pat) -> Bool {
+  match p {
+    PCtor(n, args) => n == "None" && Array::length(args) == 0,
+    _ => false
+  }
+}
+
+fn railway_pat_is_some_try_v(p: Pat) -> Bool {
+  match p {
+    PCtor(n, args) => n == "Some" && Array::length(args) == 1 && match Array::get(args, 0) {
+      PBind(name) => name == "__try_v",
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn railway_pat_is_some_bind(p: Pat) -> Bool {
+  match p {
+    PCtor(n, args) => n == "Some" && Array::length(args) == 1 && match Array::get(args, 0) {
+      PBind(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn railway_is_ident(e: Expr, want: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == want,
+    _ => false
+  }
+}
+
+fn railway_is_return_none(e: Expr) -> Bool {
+  match e {
+    EReturn(inner) => railway_is_ident(inner, "None"),
+    _ => false
+  }
+}
+
+fn railway_kind_from_match(scrutinee: Expr, arms: Array[(Pat, Expr)]) -> Int {
+  if Array::length(arms) != 2 {
+    0
+  } else {
+    let (p0, b0) = Array::get(arms, 0)
+    let (p1, b1) = Array::get(arms, 1)
+    if !railway_pat_none(p1) {
+      0
+    } else if railway_pat_is_some_try_v(p0) && railway_is_ident(b0, "__try_v") && railway_is_return_none(b1) {
+      1
+    } else if railway_pat_is_some_bind(p0) && railway_is_ident(b1, "None") {
+      // `let*` copies the operand offset onto the synthetic `None`.
+      // A user-written `None` sits at a different source offset; leave
+      // those matches on the ordinary path. Unlocated trees (both -1)
+      // keep the shape classification so no-offset tests still fire.
+      let n_off = railway_expr_off(b1)
+      let s_off = railway_expr_off(scrutinee)
+      if n_off < 0 || s_off < 0 || n_off == s_off {
+        2
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+  }
+}
+
+fn railway_none_off_from_arms(arms: Array[(Pat, Expr)]) -> Int {
+  if Array::length(arms) < 2 {
+    0 - 1
+  } else {
+    let (_, b1) = Array::get(arms, 1)
+    match b1 {
+      EReturn(inner) => railway_expr_off(inner),
+      _ => railway_expr_off(b1)
+    }
+  }
+}
+
+fn type_is_option_head(t: Type) -> Bool {
+  match t {
+    CtOption(_) => true,
+    CtNamed(n, _) => n == "Option",
+    _ => false
+  }
+}
+
+fn type_is_concrete_non_option(t: Type) -> Bool {
+  if type_is_option_head(t) {
+    false
+  } else {
+    match t {
+      CtUnknown => false,
+      CtVar(_) => false,
+      CtNamed(_, _) => type_fully_concrete(t),
+      _ => true
+    }
+  }
+}
+
+fn railway_origin_env(env: TypeEnv, kind: Int) -> TypeEnv {
+  if kind == 1 {
+    env_bind(env, "__railway_q__", CtUnit)
+  } else if kind == 2 {
+    env_bind(env, "__railway_star__", CtUnit)
+  } else {
+    env
+  }
+}
+
+fn railway_op_spelling(kind: Int) -> String {
+  if kind == 1 {
+    "?"
+  } else {
+    "let*"
+  }
+}
+
+fn railway_anchor_off(arms: Array[(Pat, Expr)], scrutinee: Expr) -> Int {
+  let none_off = railway_none_off_from_arms(arms)
+  if none_off >= 0 {
+    none_off
+  } else {
+    railway_expr_off(scrutinee)
+  }
+}
+
+fn railway_wrong_context_msg(kind: Int, off: Int) -> String {
+  let op = railway_op_spelling(kind)
+  let head = String::concat("`", String::concat(op, "` requires an Option-returning function; change the return type to Option[...], or handle the Option with `match` instead of `"))
+  String::concat(head, String::concat(op, String::concat("`", off_marker(off))))
+}
+
+fn railway_not_option_msg(kind: Int, got: String, off: Int) -> String {
+  let op = railway_op_spelling(kind)
+  let head = String::concat("`", String::concat(op, "` unwraps an Option; this expression is "))
+  let mid = String::concat(got, " — handle it with `match`, or only use `")
+  let tail = String::concat(op, String::concat("` on an Option value", off_marker(off)))
+  String::concat(head, String::concat(mid, tail))
+}
+
+fn railway_wrap_some_msg(off: Int) -> String {
+  String::concat("`let*` short-circuits with None, so the rest of the block must also produce an Option — wrap the result in Some(...)", off_marker(off))
+}
+
+fn report_railway_after_arms(kind: Int, env: TypeEnv, s: Subst, result_ty: Type, arms: Array[(Pat, Expr)], scrutinee: Expr, errors: Array[String]) -> Unit {
+  let off = railway_anchor_off(arms, scrutinee)
+  if kind == 1 {
+    match env_lookup(env, "__return__") {
+      Some(rt) => if type_is_concrete_non_option(subst_apply(s, rt)) {
+        Array::push(errors, railway_wrong_context_msg(1, off))
+      } else {
+        ()
+      },
+      None => ()
+    }
+  } else if kind == 2 {
+    match env_lookup(env, "__return__") {
+      Some(rt) => if type_is_concrete_non_option(subst_apply(s, rt)) {
+        Array::push(errors, railway_wrong_context_msg(2, off))
+      } else if type_is_concrete_non_option(subst_apply(s, result_ty)) {
+        Array::push(errors, railway_wrap_some_msg(off))
+      } else {
+        ()
+      },
+      None => if type_is_concrete_non_option(subst_apply(s, result_ty)) {
+        Array::push(errors, railway_wrap_some_msg(off))
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
   }
 }
 
@@ -4256,7 +4436,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               (ti, s1, c1)
             },
             None => {
-              Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
+              if name == "__try_v" {
+                Array::push(errors, String::concat("`?` could not unwrap this value (the lowered binder is not in scope)", off_marker(ident_off)))
+              } else {
+                Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
+              }
               (CtUnknown, s, c)
             }
           }
@@ -6120,6 +6304,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // type / flat exhaustiveness errors all suppress it — an ill-typed
         // matrix would only yield a garbage witness on top of the real error).
         let exh_base = Array::length(errors)
+        // #1947: identify `let*` / `?` after lowering so diagnostics name
+        // the written operator instead of the synthetic match / `return None`.
+        let rk = railway_kind_from_match(scrutinee, arms)
+        let rail_env = railway_origin_env(env, rk)
+        if rk != 0 {
+          let zonked_scr = subst_apply(s1, scr_ty)
+          if type_is_concrete_non_option(zonked_scr) {
+            Array::push(errors, railway_not_option_msg(rk, type_to_string(zonked_scr), railway_anchor_off(arms, scrutinee)))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
         let mut result_ty = CtUnknown
         // Whether to cross-check arm types. Enabled only when the first arm's
         // type resolves to a SIMPLE scalar (Int/Double/Bool/String/Char) — that
@@ -6161,7 +6359,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             ()
           }
-          let arm_env = check_pattern(pat, scr_ty, env, defs, errors)
+          let arm_env = check_pattern(pat, scr_ty, rail_env, defs, errors)
           let (arm_ty, ns, nc) = check_expr_capture(body, arm_env, defs, si, ci, errors, tytab, capture, lane)
           si = ns
           ci = nc
@@ -6190,7 +6388,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               } else {
                 match r2 {
                   CtUnit => si,
-                  _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
+                  _ => if rk != 0 {
+                    si
+                  } else {
+                    check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
+                  }
                 }
               }
             } else {
@@ -6199,6 +6401,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           ai = ai + 1
         }
+        report_railway_after_arms(rk, env, si, result_ty, arms, scrutinee, errors)
         // Exhaustiveness: when the scrutinee is a concrete user enum, the arms
         // must either include a catch-all (`_` / bind) or cover EVERY variant —
         // otherwise an unhandled variant traps at runtime. Conservative: only a
@@ -7415,10 +7618,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         Some(rt) => {
           let rte = subst_apply(s1, rt)
           let ate = subst_apply(s1, et)
-          // Explicit `return e`: anchor on `e` itself, so this spelling locates
-          // the same way the implicit tail-expression return does above.
-          let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", railway_expr_off(e))
-          ()
+          // #1947: `?` lowers to `return None`. The EMatch railway hook
+          // reports that in source-level terms; do not also emit
+          // `got Option[?]` against the synthetic None.
+          let skip_railway_none = match env_lookup(env, "__railway_q__") {
+            Some(_) => railway_is_ident(e, "None"),
+            None => false
+          }
+          if skip_railway_none {
+            ()
+          } else {
+            // Explicit `return e`: anchor on `e` itself, so this spelling locates
+            // the same way the implicit tail-expression return does above.
+            let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", railway_expr_off(e))
+            ()
+          }
         },
         None => ()
       }

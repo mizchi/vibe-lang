@@ -1,0 +1,214 @@
+//# Imports
+
+// #1947: `let*` / postfix `?` type errors must be explained in source-level
+// terms (the written operator, the Option-returning context) rather than the
+// lowered match / `return None` / `__try_*` internals.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
+}
+
+//# Functions
+
+/// First checker error for `source` via the no-offset parser, or "" when clean.
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+/// First checker error via the offset-aware parse, same path `vibe check` uses
+/// before `locate_type_error` rewrites ` [@off=N]` into `line L:C:`.
+fn first_located_error(source: String) -> String {
+  handle {
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let _ = check_program(parse_program_located(tokens, starts, source))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+fn marker_offset(msg: String) -> Int {
+  let key = " [@off="
+  let mi = String::index_of(msg, key)
+  if mi < 0 {
+    0 - 1
+  } else {
+    let rest = String::substring(msg, mi + String::length(key), String::length(msg))
+    let end = String::index_of(rest, "]")
+    if end < 0 {
+      0 - 1
+    } else {
+      let inner = String::substring(rest, 0, end)
+      let colon = String::index_of(inner, ":")
+      let digits = if colon < 0 {
+        inner
+      } else {
+        String::substring(inner, 0, colon)
+      }
+      let mut n = 0
+      let mut i = 0
+      let len = String::length(digits)
+      let mut ok = len > 0
+      while ok && i < len {
+        let c = String::char_code_at(digits, i)
+        if c >= 48 && c <= 57 {
+          n = n * 10 + (c - 48)
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        n
+      } else {
+        0 - 1
+      }
+    }
+  }
+}
+
+fn located_line(source: String, msg: String) -> Int {
+  let off = marker_offset(msg)
+  if off < 0 {
+    0
+  } else {
+    let (line, _) = offset_to_line_col(source, off)
+    line
+  }
+}
+
+fn find_src() -> String {
+  "fn find(x: Int) -> Option[Int] { if x < 0 { None } else { Some(x) } }\n"
+}
+
+fn assert_source_level(msg: String) -> Unit {
+  assert(msg != "")
+  assert(!(String::contains(msg, "__try_")))
+  assert(!(String::contains(msg, "Option[?]")))
+}
+
+//# Misc
+
+test "question-mark in a non-Option function names ? and the effective edit" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let v = find(x)?\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_check_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "`?`"))
+  assert(String::contains(msg, "Option-returning"))
+  assert(String::contains(msg, "match"))
+}
+
+test "let-star in a non-Option function names let* and the effective edit" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_check_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "`let*`"))
+  assert(String::contains(msg, "Option-returning"))
+  assert(String::contains(msg, "match"))
+}
+
+test "question-mark diagnostic is located on the operand line" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let v = find(x)?\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_located_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "[@off="))
+  assert(eq(located_line(src, msg), 3))
+}
+
+test "let-star diagnostic is located on the operand line" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_located_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "[@off="))
+  assert(eq(located_line(src, msg), 3))
+}
+
+test "located text and JSON share the same @off origin for ?" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let v = find(x)?\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_located_error(src)
+  assert_source_level(msg)
+  let off = marker_offset(msg)
+  assert(off >= 0)
+  let (line, col) = offset_to_line_col(src, off)
+  assert(eq(line, 3))
+  assert(col > 0)
+  assert(String::contains(msg, "`?`"))
+}
+
+test "located text and JSON share the same @off origin for let*" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_located_error(src)
+  assert_source_level(msg)
+  let off = marker_offset(msg)
+  assert(off >= 0)
+  let (line, col) = offset_to_line_col(src, off)
+  assert(eq(line, 3))
+  assert(col > 0)
+  assert(String::contains(msg, "`let*`"))
+}
+
+test "nested let* in an Option-returning function checks clean" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  let* v = find(x)\n  let* w = find(v + 1)\n  Some(w + 1)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
+  assert(first_check_error(src) == "")
+}
+
+test "mixed let* and ? in an Option-returning function checks clean" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  let* v = find(x)\n  let w = find(v + 1)?\n  Some(w + 1)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
+  assert(first_check_error(src) == "")
+}
+
+test "mixed let* and ? in a non-Option function stay source-level" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  let w = find(v + 1)?\n  w + 1\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_check_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "`let*`") || String::contains(msg, "`?`"))
+  assert(String::contains(msg, "Option-returning") || String::contains(msg, "unwraps an Option"))
+}
+
+test "user-written Option match in an Option-returning function checks clean" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  match find(x) {\n    Some(v) => Some(v + 1),\n    None => None\n  }\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
+  assert(first_check_error(src) == "")
+}
+
+test "? on a non-Option operand names ? not the lowered match" {
+  let src = "fn g(x: Int) -> Option[Int] {\n  let v = x?\n  Some(v)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n"
+  let msg = first_check_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "`?`"))
+  assert(String::contains(msg, "unwraps an Option"))
+  assert(!(String::contains(msg, "constructor pattern")))
+}
+
+test "let* on a non-Option operand names let* not the lowered match" {
+  let src = "fn g(x: Int) -> Option[Int] {\n  let* v = x\n  Some(v)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n"
+  let msg = first_check_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "`let*`"))
+  assert(String::contains(msg, "unwraps an Option"))
+  assert(!(String::contains(msg, "constructor pattern")))
+}
+
+test "located user-written Some/None match is not reported as let*" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  match find(x) {\n    Some(v) => v + 1,\n    None => None\n  }\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_located_error(src)
+  assert(msg != "")
+  assert(!(String::contains(msg, "`let*`")))
+  assert(!(String::contains(msg, "__try_")))
+}
+
+test "let* whose success path is not an Option asks to wrap in Some" {
+  let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
+  let msg = first_check_error(src)
+  assert_source_level(msg)
+  assert(String::contains(msg, "`let*`"))
+  assert(String::contains(msg, "Some"))
+}
