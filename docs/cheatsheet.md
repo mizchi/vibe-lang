@@ -1395,21 +1395,22 @@ not part of this API.
 > `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
 > するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
 
-**SIMD スキャン** (`Bytes` / `String` 上を 16 バイト単位で走査。linear / gc 両対応):
+**SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
+the linear and GC backends):
 
-| 関数 | 意味 |
+| Function | Meaning |
 |---|---|
-| `simd_skip_ws(buf, pos, len) -> Int` | 空白でない最初の位置 |
-| `simd_scan_alnum(buf, pos, len) -> Int` | 識別子バイトの終端位置 |
-| `simd_scan_alnum_str(s, pos, len) -> Int` | 同上の `String` 版 |
-| `simd_scan_string_special_str(s, pos, len) -> Int` | quote / backslash / ASCII control byte の最初の位置 |
-| `simd_scan_line_end_str(s, pos, len) -> Int` | LF (`0x0a`) の最初のバイト位置。見つからなければ `len` |
+| `simd_skip_ws(buf, pos, len) -> Int` | First position that is not whitespace |
+| `simd_scan_alnum(buf, pos, len) -> Int` | End of an identifier-byte run |
+| `simd_scan_alnum_str(s, pos, len) -> Int` | `String` version of the identifier scan |
+| `simd_scan_string_special_str(s, pos, len) -> Int` | First quote, backslash, or ASCII control byte |
+| `simd_scan_line_end_str(s, pos, len) -> Int` | First LF (`0x0a`) byte, or `len` if no LF exists |
 
-> SIMD は linear memory 上でのみ成立する。`v128.load` はメモリアドレスを取る
-> 命令で、wasm-gc の配列はアドレス可能なメモリではないため、`(array i8)` から
-> v128 へ一括ロードする命令が存在しない。**バイト処理を速くしたいデータは
-> linear memory (= `Bytes`) に置くこと。** `Bytes` は gc backend でも linear
-> memory 上にあるので、これらは両レーンで同じように使える。
+> SIMD requires linear memory: `v128.load` takes a memory address, while a
+> wasm-gc array is not addressable memory and has no bulk load from `(array
+> i8)` into a v128. **Keep byte-oriented hot data in linear memory (`Bytes`).**
+> `Bytes` remains linear-memory-backed on the GC backend, so these functions
+> behave the same in both lanes.
 
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->
