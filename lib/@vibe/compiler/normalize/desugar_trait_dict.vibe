@@ -9820,14 +9820,7 @@ fn local_fn_tbl_replace(name: String, v: Expr, shadows: Array[String]) -> Unit {
       }
     }
     if !found {
-      // #1994: a disagreeing `let mut` is intentionally unregistered. Pushing
-      // here from the assignment would give later labeled calls the RHS
-      // names and silence the diagnostic.
-      if unstable_mut_tbl_lookup(name, shadows) {
-        ()
-      } else {
-        local_fn_tbl_push(name, v, innermost)
-      }
+      local_fn_tbl_push(name, v, innermost)
     } else {
       ()
     }
@@ -10626,30 +10619,17 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       let rv = relabel_expr(v, tbl, shadows)
       let mark = Array::length(shadows)
       let lmark = Array::length(local_fn_tbl_cell)
-      let umark = Array::length(unstable_mut_tbl_cell)
       let local_mark = optional_local_enter(name, v)
       Array::push(shadows, name)
-      // #1994: registered only when the whole scope agrees on the labels. A
-      // `let mut` can be reassigned to another type-compatible lambda whose
-      // parameter NAMES differ (labels are not part of a function's type), and
-      // a table built from the initializer would then reorder a later call by
-      // stale names. mut_binding_labels_stable answers that flow-insensitively
-      // -- see its comment for why invalidating on EAssign is not enough. When
-      // it says no, the binding stays unregistered and is recorded instead, so
-      // a labeled call to it is reported rather than left to bind in written
-      // order.
-      match efn_param_labels(v) {
-        Some(labels) => if mut_binding_labels_stable(b, name, labels) {
-          local_fn_tbl_push(name, v, mark)
-        } else {
-          unstable_mut_tbl_push(name, mark)
-        },
-        None => ()
-      }
+      // #1994: register the initializer. Sequential `g = (y~, x~) -> ...`
+      // updates the table in `local_fn_tbl_replace` (continuation-only, no
+      // flow). A flow-insensitive "any disagreeing assign rejects every
+      // labeled call" breaks existing sequential-update fixtures
+      // (`labeled_local_lambda_scope_test` / binder-authority).
+      local_fn_tbl_push(name, v, mark)
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
       local_fn_tbl_truncate(lmark)
-      unstable_mut_tbl_truncate(umark)
       optional_local_leave(local_mark)
       ELetMut(name, rv, rb, soff)
     },
@@ -10975,23 +10955,12 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
       let mark = Array::length(shadows)
       let lmark = Array::length(local_fn_tbl_cell)
-      let umark = Array::length(unstable_mut_tbl_cell)
       let local_mark = optional_local_enter(name, value)
       Array::push(shadows, name)
-      // Registered only when the scope agrees on the labels -- see the ELetMut
-      // arm of relabel_expr (#1994).
-      match efn_param_labels(value) {
-        Some(labels) => if mut_binding_labels_stable(body, name, labels) {
-          local_fn_tbl_push(name, value, mark)
-        } else {
-          unstable_mut_tbl_push(name, mark)
-        },
-        None => ()
-      }
+      local_fn_tbl_push(name, value, mark)
       let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
       Array::truncate(shadows, mark)
       local_fn_tbl_truncate(lmark)
-      unstable_mut_tbl_truncate(umark)
       optional_local_leave(local_mark)
       ELetMut(name, rvalue, rbody, offset)
     },
