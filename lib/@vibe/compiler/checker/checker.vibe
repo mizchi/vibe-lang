@@ -59,7 +59,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_spawnable.vibe {
-  check_spawnable_captures
+  check_spawnable_captures, closure_free_names
 }
 
 import ./checker_escape.vibe {
@@ -845,6 +845,55 @@ fn collect_region_skolems(ty: Type, out: Array[String]) -> Unit {
   }
 }
 
+/// Region-backed handles can erase the captured region from a closure's
+/// result through operations such as `to_array`. Recognize that nominal shape
+/// even when a helper is checked before a region-tagged call site exists.
+fn type_has_region_handle_shape(ty: Type) -> Bool {
+  match ty {
+    CtNamed(name, args) => {
+      let mut found = name == "MutList" || name == "MutBytes"
+      for arg in args {
+        if type_has_region_handle_shape(arg) {
+          found = true
+        }
+      }
+      found
+    },
+    CtFn(params, ret, _) => {
+      let mut found = type_has_region_handle_shape(ret)
+      for param in params {
+        if type_has_region_handle_shape(param) {
+          found = true
+        }
+      }
+      found
+    },
+    CtArray(elem) => type_has_region_handle_shape(elem),
+    CtOption(elem) => type_has_region_handle_shape(elem),
+    CtTuple(items) => {
+      let mut found = false
+      for item in items {
+        if type_has_region_handle_shape(item) {
+          found = true
+        }
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, field_ty) = field
+        if type_has_region_handle_shape(field_ty) {
+          found = true
+        }
+      }
+      found
+    },
+    CtForAll(_, _, body) => type_has_region_handle_shape(body),
+    _ => false
+  }
+}
+
 fn append_row_label(labels: Array[String], label: String) -> Unit {
   if !string_array_has(labels, label) {
     Array::push(labels, label)
@@ -865,26 +914,22 @@ fn closure_capture_row(effect: Option[String], body: Expr, env: TypeEnv, s: Subs
     },
     None => array_empty()
   }
-  let bindings = array_empty()
-  collect_env_bindings(env, bindings)
+  let active_region = env_has_active_region(env)
+  let captured_names = closure_free_names(body)
   let seen_names = array_empty()
   let mut i = 0
-  while i < Array::length(bindings) {
-    let (name, raw_ty) = Array::get(bindings, i)
+  while i < Array::length(captured_names) {
+    let name = Array::get(captured_names, i)
     if !string_array_has(seen_names, name) {
       Array::push(seen_names, name)
-      let ty = subst_apply(s, raw_ty)
-      match ty {
-        CtForAll(_, _, _) => (),
-        _ => {
+      match env_lookup(env, name) {
+        Some(raw_ty) => {
+          let ty = subst_apply(s, raw_ty)
           let regions = array_empty()
           collect_region_skolems(ty, regions)
           let vars = collect_tvars(ty)
-          // Almost every visible binding in the compiler is concrete. Check
-          // the cheap type predicate BEFORE walking the closure body; doing
-          // one full free-variable traversal per imported binding makes
-          // self-compilation quadratic.
-          if (Array::length(regions) > 0 || Array::length(vars) > 0) && expr_free_in(body, name) {
+          let region_relevant = Array::length(regions) > 0 || (Array::length(vars) > 0 && (active_region || type_has_region_handle_shape(ty)))
+          if region_relevant {
             for region_name in regions {
               append_row_label(labels, region_name)
             }
@@ -892,7 +937,8 @@ fn closure_capture_row(effect: Option[String], body: Expr, env: TypeEnv, s: Subs
               append_row_label(labels, String::concat("#capture[", String::concat(__to_string(var_id), "]")))
             }
           }
-        }
+        },
+        None => ()
       }
     }
     i = i + 1
@@ -921,6 +967,35 @@ fn type_mentions_active_region(ty: Type, env: TypeEnv) -> Bool {
     EnvTraitImplGen(_, _, _, _, rest) => type_mentions_active_region(ty, rest),
     EnvTypeDefs(_, _, rest) => type_mentions_active_region(ty, rest),
     EnvCached(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvFlat(_) => false
+  }
+}
+
+/// A target declared before the relevant active-region marker can outlive the
+/// region; a target found first in the environment chain is region-local.
+fn assignment_crosses_region(name: String, ty: Type, env: TypeEnv) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(n, binding, rest) => if n == name {
+      false
+    } else if n == "__active_region__" {
+      match binding.ty {
+        CtNamed(region_name, _) => type_mentions_named(ty, region_name) || assignment_crosses_region(name, ty, rest),
+        _ => assignment_crosses_region(name, ty, rest)
+      }
+    } else {
+      assignment_crosses_region(name, ty, rest)
+    },
+    EnvMutCell(n, _, rest) => if n == name {
+      false
+    } else {
+      assignment_crosses_region(name, ty, rest)
+    },
+    EnvTraitDef(_, _, _, _, rest, _, _) => assignment_crosses_region(name, ty, rest),
+    EnvTraitImpl(_, _, rest) => assignment_crosses_region(name, ty, rest),
+    EnvTraitImplGen(_, _, _, _, rest) => assignment_crosses_region(name, ty, rest),
+    EnvTypeDefs(_, _, rest) => assignment_crosses_region(name, ty, rest),
+    EnvCached(_, _, rest) => assignment_crosses_region(name, ty, rest),
     EnvFlat(_) => false
   }
 }
@@ -6336,7 +6411,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     },
     EAssign(name, val, body) => {
       let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
-      if type_mentions_active_region(subst_apply(s1, vt), env) {
+      if assignment_crosses_region(name, subst_apply(s1, vt), env) {
         Array::push(errors, String::concat("region escapes its scope: an assignment stores a value that captures this region into an outer binding", off_marker(tail_expr_off(val))))
       }
       // The assigned value must be assignable to the variable's type
@@ -7355,11 +7430,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         },
         None => (subst_apply(s2, bt), s2)
       }
-      let checked_effect = if env_has_active_region(env) {
-        closure_capture_row(effect, body, env, s3)
-      } else {
-        effect
-      }
+      let checked_effect = closure_capture_row(effect, body, env, s3)
       (CtFn(param_types, final_ret, checked_effect), s3, c2)
     },
     EBreak(opt) => {
