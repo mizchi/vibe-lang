@@ -59,7 +59,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_spawnable.vibe {
-  check_spawnable_captures, closure_free_names
+  check_spawnable_captures, closure_bare_callee_names, closure_free_names
 }
 
 import ./checker_escape.vibe {
@@ -942,7 +942,7 @@ fn append_row_label(labels: Array[String], label: String) -> Unit {
 /// `#capture[v]` resolves to `#region_n` only if call-site unification binds v
 /// to a region-tagged type. This is what makes helper functions structural
 /// rather than another literal-name pattern.
-fn closure_capture_row(effect: Option[String], body: Expr, env: TypeEnv, s: Subst) -> Option[String] {
+fn closure_capture_row(effect: Option[String], body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Option[String] {
   let labels = match effect {
     Some(row) => for raw in String::split(row, ",") {
       String::trim(raw)
@@ -950,7 +950,7 @@ fn closure_capture_row(effect: Option[String], body: Expr, env: TypeEnv, s: Subs
     None => array_empty()
   }
   let active_region = env_has_active_region(env)
-  let captured_names = closure_free_names(body)
+  let captured_names = closure_free_names(body, params)
   let seen_names = array_empty()
   let mut i = 0
   while i < Array::length(captured_names) {
@@ -960,23 +960,58 @@ fn closure_capture_row(effect: Option[String], body: Expr, env: TypeEnv, s: Subs
       match env_lookup(env, name) {
         Some(raw_ty) => {
           let ty = subst_apply(s, raw_ty)
-          let regions = array_empty()
-          collect_region_skolems(ty, regions)
+          let provenance = array_empty()
+          collect_internal_provenance(ty, provenance)
           let vars = collect_tvars(ty)
-          let region_relevant = Array::length(regions) > 0 || Array::length(vars) > 0
-          if region_relevant {
-            for region_name in regions {
-              append_row_label(labels, region_name)
-            }
-            for var_id in vars {
-              append_row_label(labels, String::concat("#capture[", String::concat(__to_string(var_id), "]")))
-            }
+          for label in provenance {
+            append_row_label(labels, label)
+          }
+          for var_id in vars {
+            append_row_label(labels, String::concat("#capture[", String::concat(__to_string(var_id), "]")))
           }
         },
         None => ()
       }
     }
     i = i + 1
+  }
+  // A bare callee is omitted by the ordinary free-name walk so top-level
+  // calls do not make every closure capture the global environment. Two
+  // callee classes still carry value provenance: a callback parameter, and a
+  // concrete region-backed local closure while checking a region body.
+  for callee in closure_bare_callee_names(body) {
+    let mut is_param = false
+    for param in params {
+      let (raw_name, _) = param
+      let nlen = String::length(raw_name)
+      let param_name = if nlen > 0 {
+        let last = String::char_code_at(raw_name, nlen - 1)
+        if last == '~' || last == '?' {
+          raw_name[0: nlen - 1]
+        } else raw_name
+      } else raw_name
+      if callee == param_name {
+        is_param = true
+      }
+    }
+    match env_lookup(env, callee) {
+      Some(raw_ty) => {
+        let ty = subst_apply(s, raw_ty)
+        let provenance = array_empty()
+        collect_internal_provenance(ty, provenance)
+        for label in provenance {
+          if String::starts_with(label, "#param[") || (active_region && String::starts_with(label, "#region_")) {
+            append_row_label(labels, label)
+          }
+        }
+        if is_param {
+          for var_id in collect_tvars(ty) {
+            append_row_label(labels, String::concat("#capture[", String::concat(__to_string(var_id), "]")))
+          }
+        }
+      },
+      None => ()
+    }
   }
   if Array::length(labels) == 0 {
     None
@@ -1081,13 +1116,132 @@ fn binding_predates_active_region(name: String, env: TypeEnv) -> Bool {
   }
 }
 
+fn alias_result_param_index(ty: Type) -> Option[Int] {
+  match ty {
+    CtForAll(_, _, body) => alias_result_param_index(body),
+    CtFn(_, _, effect) => match effect {
+      Some(row) => {
+        let mut found = None
+        for raw in String::split(row, ",") {
+          let label = String::trim(raw)
+          if String::starts_with(label, "#aliasparam[") {
+            let close = String::index_of(label, "]")
+            let mut id = 0
+            let mut p = 12
+            while p < close {
+              id = id * 10 + (String::char_code_at(label, p) - 48)
+              p = p + 1
+            }
+            found = Some(id)
+          }
+        }
+        found
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn decimal_index(text: String) -> Int {
+  let mut out = 0
+  let mut i = 0
+  while i < String::length(text) {
+    out = out * 10 + (String::char_code_at(text, i) - 48)
+    i = i + 1
+  }
+  out
+}
+
 fn expression_aliases_outer_binding(expr: Expr, env: TypeEnv) -> Bool {
   match expr {
     EIdent(name, _) => binding_predates_active_region(name, env) || match env_lookup(env, String::concat("__region_outer_alias__", name)) {
       Some(_) => true,
       None => false
     },
+    ECall(EIdent(callee, _), args, _) => match env_lookup(env, callee) {
+      Some(callee_ty) => match env_lookup(env, String::concat("__alias_contract__", callee)) {
+        Some(CtNamed(index_text, _)) => {
+          let index = decimal_index(index_text)
+          if index >= 0 && index < Array::length(args) {
+            expression_aliases_outer_binding(Array::get(args, index), env)
+          } else {
+            false
+          }
+        },
+        _ => match alias_result_param_index(callee_ty) {
+          Some(index) => if index >= 0 && index < Array::length(args) {
+            expression_aliases_outer_binding(Array::get(args, index), env)
+          } else {
+            false
+          },
+          None => false
+        }
+      },
+      None => false
+    },
     _ => false
+  }
+}
+
+fn direct_result_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
+  match body {
+    EIdent(name, _) => {
+      let mut found = None
+      let mut i = 0
+      while i < Array::length(params) {
+        let (raw_name, _) = Array::get(params, i)
+        let nlen = String::length(raw_name)
+        let param_name = if nlen > 0 {
+          let last = String::char_code_at(raw_name, nlen - 1)
+          if last == '~' || last == '?' {
+            raw_name[0: nlen - 1]
+          } else raw_name
+        } else raw_name
+        if name == param_name {
+          found = Some(i)
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => None
+  }
+}
+
+fn direct_result_field_param_index(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Option[Int] {
+  match body {
+    EDot(EIdent(name, _), _, _, _) => {
+      let mut found = None
+      let mut i = 0
+      while i < Array::length(params) {
+        let (raw_name, _) = Array::get(params, i)
+        if name == raw_name {
+          found = Some(i)
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => None
+  }
+}
+
+export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: Expr) -> TypeEnv {
+  match value {
+    EFn(_, _, params, _, _, body) => {
+      let with_alias = match direct_result_param_index(body, params) {
+        Some(index) => env_bind(env, String::concat("__alias_contract__", name), CtNamed(__to_string(index), [
+        ])),
+        None => env
+      }
+      match direct_result_field_param_index(body, params) {
+        Some(index) => env_bind(with_alias, String::concat("__field_contract__", name), CtNamed(__to_string(index), [
+        ])),
+        None => with_alias
+      }
+    },
+    _ => env
   }
 }
 
@@ -2272,7 +2426,7 @@ fn collect_internal_provenance(ty: Type, out: Array[String]) -> Unit {
       match effect {
         Some(row) => for raw in String::split(row, ",") {
           let label = String::trim(raw)
-          if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[")) && !string_array_has(out, label) {
+          if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[")) && !string_array_has(out, label) {
             Array::push(out, label)
           }
         },
@@ -2292,14 +2446,83 @@ fn collect_internal_provenance(ty: Type, out: Array[String]) -> Unit {
       let (_, field_ty) = field
       collect_internal_provenance(field_ty, out)
     },
-    CtNamed(_, args) => for arg in args {
-      collect_internal_provenance(arg, out)
+    CtNamed(name, args) => {
+      if String::starts_with(name, "#region_") && !string_array_has(out, name) {
+        Array::push(out, name)
+      }
+      for arg in args {
+        collect_internal_provenance(arg, out)
+      }
     },
     _ => ()
   }
 }
 
-fn resolve_param_provenance(ty: Type, arg_tys: Array[Type]) -> Type {
+fn type_has_param_marker(ty: Type, marker: Int) -> Bool {
+  let wanted = String::concat("#param[", String::concat(__to_string(marker), "]"))
+  match ty {
+    CtFn(params, ret, effect) => {
+      let mut found = match effect {
+        Some(row) => string_array_has(for raw in String::split(row, ",") {
+          String::trim(raw)
+        }, wanted),
+        None => false
+      }
+      for param in params {
+        if type_has_param_marker(param, marker) {
+          found = true
+        }
+      }
+      found || type_has_param_marker(ret, marker)
+    },
+    CtArray(elem) => type_has_param_marker(elem, marker),
+    CtOption(elem) => type_has_param_marker(elem, marker),
+    CtTuple(items) => {
+      let mut found = false
+      for item in items {
+        if type_has_param_marker(item, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, field_ty) = field
+        if type_has_param_marker(field_ty, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    CtNamed(_, args) => {
+      let mut found = false
+      for arg in args {
+        if type_has_param_marker(arg, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn param_marker_argument(marker: Int, param_tys: Array[Type], arg_tys: Array[Type]) -> Option[Type] {
+  let len = min_int(Array::length(param_tys), Array::length(arg_tys))
+  let mut i = 0
+  let mut found = None
+  while i < len {
+    if type_has_param_marker(Array::get(param_tys, i), marker) {
+      found = Some(Array::get(arg_tys, i))
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn resolve_param_provenance(ty: Type, param_tys: Array[Type], arg_tys: Array[Type]) -> Type {
   match ty {
     CtFn(params, ret, effect) => {
       let labels = array_empty()
@@ -2307,10 +2530,9 @@ fn resolve_param_provenance(ty: Type, arg_tys: Array[Type]) -> Type {
         Some(row) => for raw in String::split(row, ",") {
           let label = String::trim(raw)
           match param_marker_index(label) {
-            Some(index) => if index < Array::length(arg_tys) {
-              collect_internal_provenance(Array::get(arg_tys, index), labels)
-            } else {
-              ()
+            Some(marker) => match param_marker_argument(marker, param_tys, arg_tys) {
+              Some(arg_ty) => collect_internal_provenance(arg_ty, labels),
+              None => Array::push(labels, label)
             },
             None => Array::push(labels, label)
           }
@@ -2318,36 +2540,39 @@ fn resolve_param_provenance(ty: Type, arg_tys: Array[Type]) -> Type {
         None => ()
       }
       let mapped_params = for param in params {
-        resolve_param_provenance(param, arg_tys)
+        resolve_param_provenance(param, param_tys, arg_tys)
       }
       let resolved_effect = if Array::length(labels) == 0 {
         None
       } else {
         Some(String::join(labels, ", "))
       }
-      CtFn(mapped_params, resolve_param_provenance(ret, arg_tys), resolved_effect)
+      CtFn(mapped_params, resolve_param_provenance(ret, param_tys, arg_tys), resolved_effect)
     },
-    CtArray(elem) => CtArray(resolve_param_provenance(elem, arg_tys)),
-    CtOption(elem) => CtOption(resolve_param_provenance(elem, arg_tys)),
+    CtArray(elem) => CtArray(resolve_param_provenance(elem, param_tys, arg_tys)),
+    CtOption(elem) => CtOption(resolve_param_provenance(elem, param_tys, arg_tys)),
     CtTuple(items) => CtTuple(for item in items {
-      resolve_param_provenance(item, arg_tys)
+      resolve_param_provenance(item, param_tys, arg_tys)
     }),
     CtRecord(fields) => CtRecord(for field in fields {
       let (name, field_ty) = field
-      (name, resolve_param_provenance(field_ty, arg_tys))
+      (name, resolve_param_provenance(field_ty, param_tys, arg_tys))
     }),
     CtNamed(name, args) => CtNamed(name, for arg in args {
-      resolve_param_provenance(arg, arg_tys)
+      resolve_param_provenance(arg, param_tys, arg_tys)
     }),
     _ => ty
   }
 }
 
-fn call_result_with_provenance(ret: Type, _param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Type {
+fn call_result_with_provenance(ret: Type, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Type {
+  let resolved_params = for param in param_tys {
+    subst_apply(s, param)
+  }
   let resolved_args = for arg in arg_tys {
     subst_apply(s, arg)
   }
-  resolve_param_provenance(subst_apply(s, ret), resolved_args)
+  resolve_param_provenance(subst_apply(s, ret), resolved_params, resolved_args)
 }
 
 /// #844: recognize the EXACT synthetic call shape `parser_expr_dispatch.vibe`'s
@@ -3731,6 +3956,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         }
         let aliases_outer = expression_aliases_outer_binding(val, cenv)
         cenv = env_bind(cenv, name, gen)
+        cenv = bind_function_dependency_contracts(cenv, name, val)
         if aliases_outer {
           cenv = env_bind(cenv, String::concat("__region_outer_alias__", name), CtUnit)
         } else {
@@ -3778,6 +4004,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         }
         let gen = generalize(s2, tv)
         cenv = env_bind(cenv, name, gen)
+        cenv = bind_function_dependency_contracts(cenv, name, val)
         s1 = s2
         c1 = nc
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -3927,6 +4154,70 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
       let (_, s1, c1) = ce(left, env, defs, s, c, throwaway, throwtab)
       tail_named_record_mentions_region(right, env, defs, s1, c1, region_name, ce)
     },
+    ECall(callee, args, _) => {
+      let throwaway = array_empty()
+      let throwtab = array_empty()
+      let (callee_ty, s1, c1) = ce(callee, env, defs, s, c, throwaway, throwtab)
+      match subst_apply(s1, callee_ty) {
+        CtFn(param_tys, ret_ty, callee_effect) => {
+          let resolved_ret = subst_apply(s1, ret_ty)
+          let mut found = false
+          let limit = min_int(Array::length(param_tys), Array::length(args))
+          let mut i = 0
+          while i < limit {
+            let markers = array_empty()
+            collect_internal_provenance(Array::get(param_tys, i), markers)
+            let mut depends = false
+            for marker_label in markers {
+              match param_marker_index(marker_label) {
+                Some(marker) => if type_has_param_marker(resolved_ret, marker) {
+                  depends = true
+                } else {
+                  ()
+                },
+                None => ()
+              }
+            }
+            if depends && tail_named_record_mentions_region(Array::get(args, i), env, defs, s1, c1, region_name, ce) {
+              found = true
+            }
+            i = i + 1
+          }
+          match callee_effect {
+            Some(row) => for raw in String::split(row, ",") {
+              let label = String::trim(raw)
+              if String::starts_with(label, "#fieldparam[") {
+                let close = String::index_of(label, "]")
+                let mut index = 0
+                let mut p = 12
+                while p < close {
+                  index = index * 10 + (String::char_code_at(label, p) - 48)
+                  p = p + 1
+                }
+                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                  found = true
+                }
+              }
+            },
+            None => ()
+          }
+          match callee {
+            EIdent(callee_name, _) => match env_lookup(env, String::concat("__field_contract__", callee_name)) {
+              Some(CtNamed(index_text, _)) => {
+                let index = decimal_index(index_text)
+                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                  found = true
+                }
+              },
+              _ => ()
+            },
+            _ => ()
+          }
+          found
+        },
+        _ => false
+      }
+    },
     ERecord(name, fields, _) => if name != "" {
       let mut found = false
       let mut s1 = s
@@ -3948,7 +4239,12 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
     } else {
       false
     },
-    _ => false
+    _ => {
+      let throwaway = array_empty()
+      let throwtab = array_empty()
+      let (expr_ty, next_s, _) = ce(expr, env, defs, s, c, throwaway, throwtab)
+      type_mentions_named(subst_apply(next_s, expr_ty), region_name)
+    }
   }
 }
 
@@ -5957,7 +6253,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let (binder_name, _) = Array::get(fn_params, 0)
               let region_ty = CtNamed(skolem_name, [
               ])
-              let env_body = env_bind(env_bind(env, binder_name, region_ty), "__active_region__", region_ty)
+              let env_body = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "__active_region__", region_ty)
               // The specialized region path checks the literal lambda body
               // directly. Preserve both structural edges from the outer call:
               // argument child 1, then EFn body child 0.
@@ -7585,17 +7881,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // Synthetic accesses (dot_off < 0) are skipped. #645: the field token's
           // own offset gets the same entry, so hovering the field NAME (not just
           // the base) resolves the projection type.
+          let dependent_field_ty = match obj {
+            EIdent(base_name, _) => match env_lookup(env, String::concat("__param_marker__", base_name)) {
+              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(field_ty, match param_marker_index(marker_label) {
+                Some(marker) => marker,
+                None => 0 - 1
+              }),
+              _ => field_ty
+            },
+            _ => field_ty
+          }
           if dot_off >= 0 {
-            tab_dot_projection_ty(tytab, dot_off, field_ty, capture, lane)
+            tab_dot_projection_ty(tytab, dot_off, dependent_field_ty, capture, lane)
           } else {
             ()
           }
           if field_off >= 0 && field_off != dot_off {
-            tab_dot_field_name_ty(tytab, field_off, field_ty, capture, lane)
+            tab_dot_field_name_ty(tytab, field_off, dependent_field_ty, capture, lane)
           } else {
             ()
           }
-          (field_ty, s1, c1)
+          (dependent_field_ty, s1, c1)
         }
       }
     },
@@ -7633,7 +7939,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         tpi = tpi + 1
       }
       let plen = Array::length(params)
-      let mut fn_env = tp_env
+      let mut fn_env = env_bind(tp_env, "__capture_boundary__", CtUnit)
       let mut s1 = s0
       let mut c1 = c0
       let param_types = array_empty()
@@ -7661,15 +7967,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
         }
         let marked_pt = match pt {
-          CtFn(_, _, _) => add_param_capture_dependency(pt, pi),
-          CtArray(_) => add_param_capture_dependency(pt, pi),
-          CtOption(_) => add_param_capture_dependency(pt, pi),
+          CtFn(_, _, _) => add_param_capture_dependency(pt, nc),
+          CtArray(_) => add_param_capture_dependency(pt, nc),
+          CtOption(_) => add_param_capture_dependency(pt, nc),
           _ => pt
         }
+        let marked_nc = nc + 1
         fn_env = env_bind(fn_env, name, marked_pt)
+        fn_env = env_bind(fn_env, String::concat("__param_marker__", name), CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [
+        ]))
         Array::push(param_types, marked_pt)
         s1 = ns
-        c1 = nc
+        c1 = marked_nc
         pi = pi + 1
       }
       // Bind the function's annotated return type under a sentinel so an
@@ -7721,8 +8030,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         },
         None => (subst_apply(s2, bt), s2)
       }
-      let checked_effect = closure_capture_row(effect, body, env, s3)
-      (CtFn(param_types, final_ret, checked_effect), s3, c2)
+      let capture_effect = closure_capture_row(effect, body, params, fn_env, s3)
+      let checked_effect = match direct_result_param_index(body, params) {
+        Some(index) => merge_provenance_row(capture_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]")))),
+        None => capture_effect
+      }
+      let dependency_effect = match direct_result_field_param_index(body, params) {
+        Some(index) => merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]")))),
+        None => checked_effect
+      }
+      (CtFn(param_types, final_ret, dependency_effect), s3, c2)
     },
     EBreak(opt) => {
       // `break` is only meaningful inside a loop. Loop bodies bind the

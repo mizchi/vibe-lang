@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Subst, Type, TypeDef, TypeEnv, env_lookup, env_mut_escape, subst_apply, type_to_string
+  Expr, Pat, Subst, Type, TypeDef, TypeEnv, TypeExpr, env_lookup, env_mut_escape, expr_children, subst_apply, type_to_string
 }
 
 import @vibe/core {
@@ -110,19 +110,10 @@ fn sp_collect_pat_bindings(pat: Pat, out: Array[String]) -> Unit {
 }
 
 /// Free variables of `expr`, given the names already `bound` by enclosing
-/// closure params / lets / match arms. A call's CALLEE, when it is a bare
-/// identifier, is NOT counted as a capture: it is either a compiler
-/// builtin (`Array::set`), a top-level function (`helper()`), or a
-/// constructor (`Some(x)`) -- none of these need an environment slot
-/// captured at runtime. This intentionally also excludes a directly-called
-/// LOCAL closure variable (`let cb = ...; TaskGroup::spawn(n, () -> {
-/// cb() })`) from capture analysis -- a documented, accepted gap (this
-/// checker has no indirect-call capture analysis yet), matching the
-/// project's existing precedent for this class of limitation (see
-/// TaskGroup::run's alias-bypass gap, checker.vibe). A callee that is NOT a
-/// bare identifier (`EDot` receiver, `ECall` result, ...) is walked
-/// normally -- `sender.send_wait(v)` still captures `sender` via the EDot
-/// arm below.
+/// closure params / lets / match arms. Call callees are ordinary value uses:
+/// a directly-called local closure occupies an environment slot just like a
+/// closure passed as an argument. Builtins and top-level functions disappear
+/// later because they have no region-bearing local binding.
 fn sp_collect_free_vars(expr: Expr, bound: Array[String]) -> Array[String] {
   let result = sp_empty_strings()
   match expr {
@@ -341,8 +332,41 @@ fn sp_collect_free_vars(expr: Expr, bound: Array[String]) -> Array[String] {
 /// Free value names captured by a closure body. Capture provenance uses this
 /// once per closure and then performs direct TypeEnv lookups, avoiding an
 /// O(all visible bindings x body size) scan during self-compilation.
-export fn closure_free_names(body: Expr) -> Array[String] {
-  sp_collect_free_vars(body, sp_empty_strings())
+export fn closure_free_names(body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let bound = sp_empty_strings()
+  for param in params {
+    let (raw_name, _) = param
+    let len = String::length(raw_name)
+    let name = if len > 0 {
+      let last = String::char_code_at(raw_name, len - 1)
+      if last == 126 || last == 63 {
+        String::substring(raw_name, 0, len - 1)
+      } else {
+        raw_name
+      }
+    } else {
+      raw_name
+    }
+    Array::push(bound, name)
+  }
+  sp_collect_free_vars(body, bound)
+}
+
+fn sp_collect_bare_callees(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ECall(EIdent(name, _), _, _) => sp_add_unique(out, name),
+    _ => ()
+  }
+  for child in expr_children(expr) {
+    sp_collect_bare_callees(child, out)
+  }
+  ()
+}
+
+export fn closure_bare_callee_names(body: Expr) -> Array[String] {
+  let out = sp_empty_strings()
+  sp_collect_bare_callees(body, out)
+  out
 }
 
 /// A same-region endpoint. Two shapes both count: both sides are the SAME
