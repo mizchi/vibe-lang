@@ -74,6 +74,21 @@ die() {
   exit 1
 }
 
+# A failed compile says why in `<out>.diag`, not on stderr: the compiler writes
+# diagnostics to that sidecar and the runner prints only its exit status. So a
+# bare `die` here would report that the build stopped without reporting what the
+# compiler objected to, and the .diag would then be overwritten by the next run.
+die_compile() {
+  local label="$1"
+  local out="$2"
+  shift 2
+  if [ -s "$out.diag" ]; then
+    echo "selfhost generations: $label diagnostics ($out.diag):" >&2
+    cat "$out.diag" >&2
+  fi
+  die "$label $*"
+}
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | cut -d' ' -f1
@@ -298,6 +313,19 @@ run_cli_compile() {
   fi
   mkdir -p "$(dirname "$out")"
   echo "[selfhost-gen] $label (invoke cli_main)"
+  # Delete the previous artifact before compiling, and check the compile's exit
+  # status explicitly rather than inferring success from the artifact existing
+  # (#1890). Both are needed, and neither is redundant with `set -e`:
+  #
+  # run_generation_compile invokes this function in a `... || rc=$?` list, and
+  # bash disables `set -e` for the whole dynamic extent of a function called
+  # that way. So a failing subshell below does NOT abort the script -- control
+  # reaches the check underneath it. That check used to be `[ -s "$out" ]`
+  # alone, which a stale .wasm left by an earlier build into the same
+  # generation directory satisfies. The build then reported success while the
+  # artifact it "produced" predated the source it was supposed to compile.
+  rm -f "$out" "$out.diag"
+  local compile_rc=0
   (
     cd "$PROJECT_ROOT"
     VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
@@ -312,8 +340,9 @@ run_cli_compile() {
         "$(rel_path "$entry")" \
         "$(rel_path "$out")" \
         "$compile_entry_name"
-  )
-  [ -s "$out" ] || die "$label did not produce output: $out"
+  ) || compile_rc=$?
+  [ "$compile_rc" -eq 0 ] || die_compile "$label" "$out" "compile failed (exit $compile_rc)"
+  [ -s "$out" ] || die_compile "$label" "$out" "did not produce output: $out"
 }
 
 use_selfbuild_invoke() {
@@ -442,7 +471,8 @@ run_selfbuild_compile() {
   fi
   mkdir -p "$(dirname "$out")" "$(dirname "$SELFBUILD_OUT")"
   echo "[selfhost-gen] $label (invoke $selfbuild_export)"
-  rm -f "$SELFBUILD_OUT"
+  rm -f "$SELFBUILD_OUT" "$SELFBUILD_OUT.diag" "$out"
+  local compile_rc=0
   (
     cd "$PROJECT_ROOT"
     VIBE_IMPORT_ABI="$import_abi" \
@@ -450,10 +480,13 @@ run_selfbuild_compile() {
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_NODE_WASM_FLAGS="$node_flags" \
       bash "$RUNNER_SCRIPT" --invoke "$selfbuild_export" "$compiler"
-  )
-  [ -s "$SELFBUILD_OUT" ] || die "$label did not produce recursive output: $SELFBUILD_OUT"
+  ) || compile_rc=$?
+  [ "$compile_rc" -eq 0 ] || \
+    die_compile "$label" "$SELFBUILD_OUT" "compile failed (exit $compile_rc)"
+  [ -s "$SELFBUILD_OUT" ] || \
+    die_compile "$label" "$SELFBUILD_OUT" "did not produce recursive output: $SELFBUILD_OUT"
   cp "$SELFBUILD_OUT" "$out"
-  [ -s "$out" ] || die "$label did not produce output: $out"
+  [ -s "$out" ] || die_compile "$label" "$out" "did not produce output: $out"
 }
 
 # Each stage hop is one span (docs/tracing-design.md step 0). This is the

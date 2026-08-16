@@ -236,3 +236,84 @@ if ! rg -q "split CLI generation requires a bootstrap bump" "$CLI_ROOT/split.std
 fi
 
 echo "selfhost generations split-cli-entry guard self-test: ok"
+
+# #1890: a failed compile must fail the build, even when an earlier build left
+# an artifact at the same path. The runner reports failure by exit status and
+# writes the diagnostics to `<out>.diag`, so a build that only asks "does the
+# output file exist?" reports success for a stale artifact -- and the stage2 it
+# then hands to the gate predates the source it was supposed to compile.
+FAIL_ROOT="$TMP_ROOT/failing_compile"
+mkdir -p "$FAIL_ROOT/bootstrap" "$FAIL_ROOT/_build/selfhost/seed" \
+  "$FAIL_ROOT/lib/@vibe/compiler" "$FAIL_ROOT/out"
+printf 'export let main = () -> Int { 0 }\n' > "$FAIL_ROOT/lib/@vibe/compiler/index.vibe"
+printf 'seed-compiler\n' > "$FAIL_ROOT/_build/selfhost/seed/selfhost_compiler.wasm"
+fail_seed_sha="$(shasum -a 256 "$FAIL_ROOT/_build/selfhost/seed/selfhost_compiler.wasm" | awk '{print $1}')"
+
+cat > "$FAIL_ROOT/bootstrap/seed.json" <<EOF
+{
+  "schema": 1,
+  "policy": "rust-style-stage0-stage1-stage2",
+  "seed": {
+    "name": "fail-seed",
+    "tag": "fail-seed-tag",
+    "source_commit": "abc123",
+    "entry": "lib/@vibe/compiler/index.vibe",
+    "entry_name": "cli_main",
+    "artifact": {
+      "path": "_build/selfhost/seed/selfhost_compiler.wasm",
+      "sha256": "$fail_seed_sha"
+    }
+  }
+}
+EOF
+
+# Exactly what the real runner does on a compile error: non-zero exit, the
+# reason in the .diag sidecar, and no .wasm.
+cat > "$FAIL_ROOT/fail_runner.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+out="$5"
+mkdir -p "$(dirname "$out")"
+printf 'synthetic compile error for the #1890 regression test\n' > "$out.diag"
+exit 1
+EOF
+chmod +x "$FAIL_ROOT/fail_runner.sh"
+
+# The artifacts from "the previous build", which is what made the failure
+# invisible: the generation directory is named after the commit, so a rebuild at
+# the same commit (different backend, different flags) lands on top of a
+# complete set of stage outputs. Every stage has to be stale for the build to
+# report success, which is exactly what a repeat build gives it.
+printf 'stale-wasm-from-an-earlier-build\n' > "$FAIL_ROOT/out/stage1.wasm"
+printf 'stale-wasm-from-an-earlier-build\n' > "$FAIL_ROOT/out/stage2.wasm"
+
+set +e
+VIBE_PROJECT_ROOT="$FAIL_ROOT" \
+VIBE_GENERATION_RUNNER_SCRIPT="$FAIL_ROOT/fail_runner.sh" \
+VIBE_GENERATION_VALIDATE_WASM=0 \
+VIBE_GENERATION_VALIDATE_RUN=0 \
+  bash "$SCRIPT" build --manifest "$FAIL_ROOT/bootstrap/seed.json" \
+    --out-dir "$FAIL_ROOT/out" >"$FAIL_ROOT/fail.stdout" 2>"$FAIL_ROOT/fail.stderr"
+fail_status=$?
+set -e
+if [ "$fail_status" -eq 0 ]; then
+  echo "expected a failing compile to fail the build (#1890)" >&2
+  exit 1
+fi
+if ! rg -q "compile failed \(exit 1\)" "$FAIL_ROOT/fail.stderr"; then
+  echo "expected the compile's exit status to be reported" >&2
+  cat "$FAIL_ROOT/fail.stderr" >&2
+  exit 1
+fi
+# Without this the terminal shows only that the build stopped, never why.
+if ! rg -q "synthetic compile error" "$FAIL_ROOT/fail.stderr"; then
+  echo "expected the .diag contents on stderr" >&2
+  cat "$FAIL_ROOT/fail.stderr" >&2
+  exit 1
+fi
+if [ -e "$FAIL_ROOT/out/stage1.wasm" ]; then
+  echo "expected the stale artifact to be removed before compiling" >&2
+  exit 1
+fi
+
+echo "selfhost generations failed-compile self-test: ok"
