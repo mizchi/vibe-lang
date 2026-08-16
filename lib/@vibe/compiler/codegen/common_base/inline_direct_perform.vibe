@@ -5328,6 +5328,23 @@ fn edp_split_qualified(name: String) -> (Option[String], String) {
   }
 }
 
+fn edp_collect_handle_sites_exprs(es: Array[Expr], ename: String, out: Array[(Expr, Array[(Pat, Expr)])]) -> Unit {
+  let mut i = 0
+  while i < Array::length(es) {
+    edp_collect_handle_sites_expr(Array::get(es, i), ename, out)
+    i = i + 1
+  }
+}
+
+fn edp_collect_handle_sites_pairs(pairs: Array[(String, Expr)], ename: String, out: Array[(Expr, Array[(Pat, Expr)])]) -> Unit {
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    edp_collect_handle_sites_expr(v, ename, out)
+    i = i + 1
+  }
+}
+
 fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(Expr, Array[(Pat, Expr)])]) -> Unit {
   match expr {
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
@@ -5359,9 +5376,14 @@ fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(Expr, Ar
     },
     EMatch(s, arms) => {
       edp_collect_handle_sites_expr(s, ename, out)
-      for a in arms {
-        let (_, ex) = a
+      // #1875 R4: while-index instead of `for` in this walk (and below) --
+      // a statement-position `for` collects a discarded result array per
+      // execution, which a whole-program per-effect walk pays per node.
+      let mut mi = 0
+      while mi < Array::length(arms) {
+        let (_, ex) = Array::get(arms, mi)
         edp_collect_handle_sites_expr(ex, ename, out)
+        mi = mi + 1
       }
     },
     EWhile(c, b) => {
@@ -5374,8 +5396,10 @@ fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(Expr, Ar
     },
     ECall(callee, args, _) => {
       edp_collect_handle_sites_expr(callee, ename, out)
-      for a in args {
-        edp_collect_handle_sites_expr(a, ename, out)
+      let mut ai = 0
+      while ai < Array::length(args) {
+        edp_collect_handle_sites_expr(Array::get(args, ai), ename, out)
+        ai = ai + 1
       }
     },
     EBinOp(_, l, r) => {
@@ -5398,29 +5422,14 @@ fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(Expr, Ar
       Some(e2) => edp_collect_handle_sites_expr(e2, ename, out),
       None => ()
     },
-    EContinue(args) => for a in args {
-      edp_collect_handle_sites_expr(a, ename, out)
-    },
-    ETuple(elems) => for a in elems {
-      edp_collect_handle_sites_expr(a, ename, out)
-    },
-    EArray(elems) => for a in elems {
-      edp_collect_handle_sites_expr(a, ename, out)
-    },
-    ERecord(_, fields, _) => for f in fields {
-      let (_, v) = f
-      edp_collect_handle_sites_expr(v, ename, out)
-    },
-    EMap(fields) => for f in fields {
-      let (_, v) = f
-      edp_collect_handle_sites_expr(v, ename, out)
-    },
+    EContinue(args) => edp_collect_handle_sites_exprs(args, ename, out),
+    ETuple(elems) => edp_collect_handle_sites_exprs(elems, ename, out),
+    EArray(elems) => edp_collect_handle_sites_exprs(elems, ename, out),
+    ERecord(_, fields, _) => edp_collect_handle_sites_pairs(fields, ename, out),
+    EMap(fields) => edp_collect_handle_sites_pairs(fields, ename, out),
     ESpread(e2) => edp_collect_handle_sites_expr(e2, ename, out),
     ELoop(pairs, b) => {
-      for p in pairs {
-        let (_, v) = p
-        edp_collect_handle_sites_expr(v, ename, out)
-      }
+      edp_collect_handle_sites_pairs(pairs, ename, out)
       edp_collect_handle_sites_expr(b, ename, out)
     },
     _ => ()
