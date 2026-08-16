@@ -9370,6 +9370,86 @@ fn optional_param_flags(fname: String) -> Option[Array[Bool]] {
   }
 }
 
+// #1952: block-local `let o = (a, b?) -> ...` is in `shadows`, so the
+// top-level table must not apply — but the local function still needs fill.
+// Innermost binding wins; leave pops with the matching `shadows` mark.
+let optional_param_local_cell: Array[(String, Array[Bool])] = array_empty()
+
+fn efn_optional_flags(e: Expr) -> Option[Array[Bool]] {
+  match e {
+    EFn(_, _, params, _, _, _) => {
+      let flags = array_empty()
+      let mut any = false
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pn, _) = Array::get(params, pi)
+        let pl = String::length(pn)
+        let is_opt = pl > 0 && pn[pl - 1: pl] == "?"
+        if is_opt {
+          any = true
+        } else {
+          ()
+        }
+        Array::push(flags, is_opt)
+        pi = pi + 1
+      }
+      if any {
+        Some(flags)
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+fn optional_local_enter(name: String, v: Expr) -> Int {
+  let mark = Array::length(optional_param_local_cell)
+  match efn_optional_flags(v) {
+    Some(flags) => Array::push(optional_param_local_cell, (name, flags)),
+    None => ()
+  }
+  mark
+}
+
+fn optional_local_leave(mark: Int) -> Unit {
+  Array::truncate(optional_param_local_cell, mark)
+}
+
+fn optional_local_flags(fname: String) -> Option[Array[Bool]] {
+  let mut i = Array::length(optional_param_local_cell)
+  let mut found = None
+  while i > 0 {
+    i = i - 1
+    let (n, flags) = Array::get(optional_param_local_cell, i)
+    if n == fname {
+      found = Some(flags)
+      i = 0
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn optional_flags_for_call(fname: String, shadows: Array[String]) -> Option[Array[Bool]] {
+  match optional_local_flags(fname) {
+    Some(flags) => Some(flags),
+    None => if str_array_contains(shadows, fname) {
+      None
+    } else {
+      optional_param_flags(fname)
+    }
+  }
+}
+
+fn stmts_have_optional_fn(_stmts: Array[Stmt]) -> Bool {
+  // Nested `let o = (a, b?) ->` leaves no top-level table entry. Walking
+  // every statement is cheap next to typecheck and is what makes #1952
+  // work in a file that has no top-level optional fn.
+  true
+}
+
 ///|
 /// Every top-level function that declares at least one optional (`z?`)
 /// parameter, with one flag per parameter. Functions with no optional
@@ -9774,13 +9854,9 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
         rargs
       }
       let opt_args = match callee {
-        EIdent(fname, _) => if str_array_contains(shadows, fname) {
-          final_args
-        } else {
-          match optional_param_flags(fname) {
-            Some(flags) => optional_fill_args(final_args, flags),
-            None => final_args
-          }
+        EIdent(fname, _) => match optional_flags_for_call(fname, shadows) {
+          Some(flags) => optional_fill_args(final_args, flags),
+          None => final_args
         },
         _ => final_args
       }
@@ -9819,25 +9895,31 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
     ELet(name, v, b, soff) => {
       let rv = relabel_expr(v, tbl, shadows)
       let mark = Array::length(shadows)
+      let local_mark = optional_local_enter(name, v)
       Array::push(shadows, name)
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
+      optional_local_leave(local_mark)
       ELet(name, rv, rb, soff)
     },
     ELetRec(name, v, b) => {
       let mark = Array::length(shadows)
+      let local_mark = optional_local_enter(name, v)
       Array::push(shadows, name)
       let rv = relabel_expr(v, tbl, shadows)
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
+      optional_local_leave(local_mark)
       ELetRec(name, rv, rb)
     },
     ELetMut(name, v, b, soff) => {
       let rv = relabel_expr(v, tbl, shadows)
       let mark = Array::length(shadows)
+      let local_mark = optional_local_enter(name, v)
       Array::push(shadows, name)
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
+      optional_local_leave(local_mark)
       ELetMut(name, rv, rb, soff)
     },
     EAssign(name, v, c) => EAssign(name, relabel_expr(v, tbl, shadows), relabel_expr(c, tbl, shadows)),
@@ -10016,13 +10098,9 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
         rargs
       }
       let final_args = match callee {
-        EIdent(fname, _) => if str_array_contains(shadows, fname) {
-          resolved
-        } else {
-          match optional_param_flags(fname) {
-            Some(flags) => optional_fill_args_paired(resolved, flags, poisoned),
-            None => resolved
-          }
+        EIdent(fname, _) => match optional_flags_for_call(fname, shadows) {
+          Some(flags) => optional_fill_args_paired(resolved, flags, poisoned),
+          None => resolved
         },
         _ => resolved
       }
@@ -10090,19 +10168,23 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       paired_expect_slot(node, 0, ExpressionLetBinder, name, poisoned)
       let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
       let mark = Array::length(shadows)
+      let local_mark = optional_local_enter(name, value)
       Array::push(shadows, name)
       let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
       Array::truncate(shadows, mark)
+      optional_local_leave(local_mark)
       ELet(name, rvalue, rbody, offset)
     },
     ELetRec(name, value, body) => {
       paired_expect_node(node, AuthorityExprLetRec, 1, 2, poisoned)
       paired_expect_slot(node, 0, ExpressionLetRecBinder, name, poisoned)
       let mark = Array::length(shadows)
+      let local_mark = optional_local_enter(name, value)
       Array::push(shadows, name)
       let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
       let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
       Array::truncate(shadows, mark)
+      optional_local_leave(local_mark)
       ELetRec(name, rvalue, rbody)
     },
     ELetMut(name, value, body, offset) => {
@@ -10110,9 +10192,11 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       paired_expect_slot(node, 0, ExpressionLetMutBinder, name, poisoned)
       let rvalue = relabel_expr_paired_child(value, tbl, shadows, node, 0, poisoned)
       let mark = Array::length(shadows)
+      let local_mark = optional_local_enter(name, value)
       Array::push(shadows, name)
       let rbody = relabel_expr_paired_child(body, tbl, shadows, node, 1, poisoned)
       Array::truncate(shadows, mark)
+      optional_local_leave(local_mark)
       ELetMut(name, rvalue, rbody, offset)
     },
     EAssign(name, value, cont) => {
@@ -10966,8 +11050,8 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   // stmt_has_labeled_arg finds.
   let opt_tbl = collect_optional_param_fns(stmts)
   optional_param_tbl_set(opt_tbl)
-  let walk_all = Array::length(opt_tbl) > 0
-  if Array::length(tbl) == 0 {
+  let walk_all = Array::length(opt_tbl) > 0 || stmts_have_optional_fn(stmts)
+  if Array::length(tbl) == 0 && !walk_all {
     ()
   } else {
     let mut i = 0
@@ -10981,6 +11065,7 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
     }
   }
   optional_param_tbl_set(array_empty())
+  Array::truncate(optional_param_local_cell, 0)
 }
 
 fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityNode], poisoned: Array[Bool]) -> Unit {
@@ -11010,6 +11095,7 @@ fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityN
     i = i + 1
   }
   optional_param_tbl_set(array_empty())
+  Array::truncate(optional_param_local_cell, 0)
 }
 
 export fn normalize_labeled_args_with_binder_authority(source: LocatedProgramBinderAuthority) -> LabeledArgBinderAuthorityNormalization {
