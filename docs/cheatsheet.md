@@ -120,7 +120,7 @@ covers your scope:
 | Growable buffer (bytes / chars) | `Bytes` / `String` | immutable binding, mutable interior |
 | Growable array | `ArrayBuilder` → `Array::from_array_builder` | build-then-freeze; `Array::push` also works for growing an existing `Array` in place (#1285) |
 | Mutable cursor in a struct | `struct S { mut field: T }` + `r.field = v` | ADR-0052; same responsibility model as `Array[T]` field |
-| Cross-call / handler-mediated state | `effect Mut { ... } + handle ... with Mut` | ADR-0021; tail-resumptive is zero-cost |
+| Cross-call / handler-mediated state | declare your own effect, then `handle ... with <YourEffect>` | ADR-0050/0021; there is no builtin `Mut` effect. Tail-resumptive arms are inline-eliminated, so this shape is zero-cost |
 
 `Array::push(arr, v)` appends **in place**, and every reference to `arr`
 (alias, parameter, struct field, closure capture) observes the growth — the
