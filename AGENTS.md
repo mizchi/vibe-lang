@@ -495,23 +495,26 @@ VIBE_BENCH_BACKEND=gc vibe bench foo_bench.vibe # opt-in: wasm-gc
 ```
 
 **gc レーンは1ファイルを自己完結として compile する** — これが「gc で通らない
-test」の圧倒的多数の理由。import を1つでも持つファイルは落ちる:
+test」の圧倒的多数の理由。落ちるのは import した名前を**実際に使ったとき**で、
+import 文があること自体ではない:
 
 ```console
 $ VIBE_TEST_BACKEND=gc vibe test lib/@vibe/core/sha1_test.vibe
 internal compiler error: `sha1` (local, @gc_call) reached code generation unresolved.
 ```
 
-`sha1_test.vibe` は `import ./sha1.vibe { sha1 }` を持つだけで、`sha1` 自体には
-何も問題がない。同じ形の最小例で確認できる (実測、2026-08-16):
+`sha1_test.vibe` は `import ./sha1.vibe { sha1 }` を持ち、それを呼ぶ。`sha1` 自体
+には何も問題がない。最小例で境界まで確認できる (実測、2026-08-16):
 
 | | gc | linear |
 |---|---|---|
-| import した関数を呼ぶ | **落ちる** (`@gc_call` unresolved) | ok |
+| import した関数を**呼ぶ** | **落ちる** (`@gc_call` unresolved) | ok |
+| import はあるが**使わない** | ok | ok |
 | 同一ファイル内の関数を呼ぶ | ok | ok |
 
-**診断は「compiler のバグなので報告してほしい」と言うが、この形についてはレーンの
-仕様**。報告する前に、そのファイルが import を持つかを見ること。
+診断は「compiler のバグなので報告してほしい」と言うが、**メッセージ中の名前が
+自分で import したものなら**、これはレーンの仕様であってバグではない。名前が
+import 由来でないなら本物の internal error なので、そのまま報告してよい。
 
 `bench` ブロックは gc レーンでは**まだ動かない** — gc backend は
 `__bench_<name>` の entry point を出さない (#1701)。`runtime/vibe` の bench 分岐が

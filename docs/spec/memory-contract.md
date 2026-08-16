@@ -21,7 +21,7 @@ only behavior.**
 | reclamation | **none (leaks linearly)** | Perceus dup/drop (analysis complete; drop **codegen Phase 3 WIP**) | **none for current user-value allocations**; Wasmtime tracing GC has no user allocations to reclaim yet |
 | object lifetime | n/a | deterministic, eager (once Phase 3 lands) | current user values live to instance teardown; future Wasm-GC values will be non-deterministic/lazy |
 | cycles | n/a | **leak (RC limitation)** | current bump allocations are retained; future Wasm-GC cycles are intended to be collected |
-| known gaps | — | uniform object header only partly landed (tuples done, arrays/enums/closures pending); no drop emission yet; no wasmtime RC e2e gate | single-file only (an import fails with `@gc_call ... unresolved`); `bench` blocks unsupported (#1701); builtin parity tracked in `scripts/builtin_parity_classification.tsv`; not CLI-reachable |
+| known gaps | — | uniform object header only partly landed (tuples done, arrays/enums/closures pending); no drop emission yet; no wasmtime RC e2e gate | single-file only (referencing an imported name fails with `@gc_call ... unresolved`; an unused import is fine); `bench` blocks unsupported (#1701); builtin parity tracked in `scripts/builtin_parity_classification.tsv`; not CLI-reachable |
 | intended status | production default | future linear default (opt-out leak) | long-term primary target |
 
 The defaults above are exercised by the gate
