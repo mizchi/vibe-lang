@@ -55,7 +55,7 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
    で命名すること** — この命名が discover() に載る唯一の条件で、外れると
    どの lane も回さない。それを黙って通さないよう
    `scripts/check_fixture_execution.sh` が gate 冒頭で検査する
-   ([docs/operation-gate.md](operation-gate.md) の「Fixture は列挙しない」)
+   ([docs/operation-gate.md](operation-gate.md), "Do not enumerate fixtures")
 4. **compiler から消費する場合のみ**: `lib/@vibe/compiler/compiler_sources_manifest.tsv`
    に `vibe_core` group で `../../../lib/@vibe/<pkg>/...` の行を足す。bundle
    への inline / codegen fingerprint への波及は generate_bundle.sh

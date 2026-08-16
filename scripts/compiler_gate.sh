@@ -4510,7 +4510,8 @@ echo "[compiler-gate] RC shadow-liveness regression guard ok (25297489)"
 #      the CI unit shards trapped. These three tests are the cheap empirical
 #      detectors. Compile them with the just-built stage2 under VIBE_RC=shadow
 #      (the same __no_entry__ / _start harness as unit_test_runner) and run
-#      them. A trap is an RC dup/drop under-provision, not a test assertion.
+#      them. A trap here is either a failed test assertion or an RC
+#      dup/drop under-provision -- `_start` traps the same way for both.
 #      This list is closed on purpose -- it is a bounded smoke, not a fixture
 #      inventory. Perceus / RC codegen still needs the full unit_test_runner
 #      before push (see docs/operation-gate.md).
@@ -4534,7 +4535,7 @@ do
   fi
   if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
       --invoke _start "$cadir/$ca_base.wasm" >/dev/null 2>&1; then
-    echo "[compiler-gate] FAIL: $ca trapped under VIBE_RC=shadow (#1986). A trap here is an RC dup/drop accounting bug in the compiled program -- 40f's shape corpus stayed green on the first cut of #1964; these tests run check_program over nontrivial input." >&2
+    echo "[compiler-gate] FAIL: $ca trapped under VIBE_RC=shadow (#1986). A trap here is either a failed assert in the artifact test or an RC dup/drop accounting bug in the compiled program -- 40f's shape corpus stayed green on the first cut of #1964; these tests run check_program over nontrivial input." >&2
     exit 1
   fi
 done
