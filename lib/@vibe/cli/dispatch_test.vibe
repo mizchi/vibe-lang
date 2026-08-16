@@ -674,3 +674,45 @@ test "selfhost cli check command writes profile tsv" {
   assert(String::contains(profile, "type\t0\t0"))
   assert(String::contains(profile, "total\t0\t0"))
 }
+
+/// #1888: check throws a String payload (`Throw(e) => e` is String, same as
+/// the other dispatch_test handlers). `run_cli_main_with_args` is the
+/// production wrapper that used to drop that payload and exit 1 silently.
+test "cli_main nesting: check usage throw is a printable String and exits 1" {
+  let thrown = handle {
+    let _ = selfhost_cli_check_args([
+      "check"
+    ])
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(thrown == "check: expected <file...>")
+  let status = run_cli_main_with_args([
+    "check"
+  ])
+  assert(status == 1)
+}
+
+/// #1888: the reported hole — type error through the production check path.
+test "cli_main nesting: check type error throws a diagnostic and exits 1" {
+  let main_path = "/tmp/vibe_selfhost_cli_check_type_error.vibe"
+  let source = "fn f() -> Int {\n  \"s\"\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let thrown = handle {
+    let _ = selfhost_cli_check_args([
+      "check",
+      main_path
+    ])
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(thrown != "OK")
+  assert(String::length(thrown) > 0)
+  let status = run_cli_main_with_args([
+    "check",
+    main_path
+  ])
+  assert(status == 1)
+}
