@@ -426,7 +426,9 @@ completion / signature help を提供する。詳細は
   sign-extending from bit 62 (`max + 1 == min`) — the SAME values on every
   backend. The width is the tagged representation's natural one, so the RC
   (production default) lane wraps for free; only the untagged lanes
-  (bump, wasm-gc) pay a 2-instruction renormalization. Each lane previously
+  (bump, wasm-gc) pay a 2-instruction renormalization, elided chain-interior
+  (a result feeding another wrapping op skips it; only the chain's
+  outermost renorm runs, values unchanged). Each lane previously
   wrapped at its own 62/63/64-bit boundary and silently disagreed. Test:
   `lib/@vibe/compiler/tests/int_overflow_wrap_test.vibe`; per-PR parity
   guard: `bench/exec/int_wrap.vibe`. NOTE until the next bootstrap bump:

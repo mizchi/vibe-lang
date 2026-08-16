@@ -776,6 +776,79 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
   }
 }
 
+//# Chain-interior renorm elision (#1877). On the untagged lane every Int
+//# `+`/`-`/`*`/`/`/`<<`/unary-minus renormalizes its result (sign-extend from
+//# bit 62, emit_wrap63_untagged). When such a result is consumed by ANOTHER
+//# wrapping op, the interior renorm is redundant: the renorm rewrites only
+//# bit 63, and `+`/`-`/`*`/`<<`(lhs)/unary-minus derive bits 0..62 of their
+//# result from bits 0..62 of their operands alone (carries/borrows/partial
+//# products only propagate upward). So only the chain's OUTERMOST renorm is
+//# emitted, and the observed value of every op stays byte-identical to the
+//# renorm-per-op spec. Everything that observes the true value — `/`/`%`/`>>`
+//# operands, comparisons, bitops, shift amounts, call arguments, stores —
+//# compiles through plain compile_expr and always receives a normalized value.
+
+/// True iff `e` compiles through the untagged Int-arith path AND ends with a
+/// renorm — i.e. the exact exprs whose trailing renorm a wrapping consumer may
+/// elide. Mirrors the EBinop/EUnaryOp dispatch below: `&&`/`||`/`==`/`!=` are
+/// diverted before the arith fallthrough, floatish operands take the f64 path.
+fn is_untagged_wrap_arith(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let t = expr_tag(e)
+  if t == 5 {
+    let op = get_ebinop_op(e)
+    if op == "+" || op == "-" || op == "*" || op == "/" || op == "<<" {
+      !expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) && !expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if t == 6 {
+    if get_eunaryop_op(e) == "-" {
+      !expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+/// Compile one operand of the Int op `op`. When the consumer op wraps —
+/// `+`/`-`/`*`, or the shifted side of `<<` — and the operand is itself a
+/// wrapping arith expr on the untagged lane, compile it WITHOUT its trailing
+/// renorm (the consumer's own renorm re-derives bit 63). Every other case is
+/// plain compile_expr. `is_lhs` distinguishes `<<`'s shifted side (wrapping)
+/// from its shift amount (observed as-is).
+fn compile_int_operand(buf: Bytes, op: String, is_lhs: Bool, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int) -> Int with Exception {
+  let tolerant = op == "+" || op == "-" || op == "*" || (op == "<<" && is_lhs)
+  if tolerant && !ctx.enable_rc && is_untagged_wrap_arith(e, local_names, ctx) {
+    compile_wrap_arith_loose(buf, e, local_names, next_local, ctx, ld)
+  } else {
+    compile_expr(buf, e, local_names, next_local, ctx, ld)
+  }
+}
+
+/// Compile a wrap-arith expr (is_untagged_wrap_arith == true, untagged lane)
+/// with its trailing renorm ELIDED: bits 0..62 of the emitted value are exact,
+/// bit 63 is unspecified. Only reachable as the operand of a wrapping consumer
+/// whose own renorm (or an ancestor's, inductively) runs before any observer.
+/// Operands of an interior `/` still normalize (tolerant is false for `/`),
+/// so division always sees true values; only its RESULT renorm is deferred.
+fn compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int) -> Int with Exception {
+  let t = expr_tag(e)
+  if t == 5 {
+    let op = get_ebinop_op(e)
+    let nl1 = compile_int_operand(buf, op, true, get_ebinop_lhs(e), local_names, next_local, ctx, ld)
+    let nl2 = compile_int_operand(buf, op, false, get_ebinop_rhs(e), local_names, nl1, ctx, ld)
+    emit_binop_op(buf, op)
+    nl2
+  } else {
+    emit_i64_const(buf, 0)
+    let nl = compile_int_operand(buf, "-", false, get_eunaryop_expr(e), local_names, next_local, ctx, ld)
+    emit_i64_sub(buf)
+    nl
+  }
+}
+
 export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int) -> Int with Exception {
   let __tag = expr_tag(expr)
   if __tag == 0 {
@@ -1104,8 +1177,10 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         nl2
       }
     } else {
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+      // Wrapping consumers elide the operand's own trailing renorm (see
+      // compile_int_operand above); this op's renorm re-derives bit 63.
+      let nl1 = compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
+      let nl2 = compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
       emit_binop_op(buf, op)
       emit_arith_wrap_int(buf, false, op)
       nl2
@@ -1136,7 +1211,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         }
       } else {
         emit_i64_const(buf, 0)
-        let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
+        let nl = compile_int_operand(buf, "-", false, operand, local_names, next_local, ctx, ld)
         emit_i64_sub(buf)
         // #1877: -MIN (2^62) is the one in-range operand whose negation
         // leaves the 63-bit range — untagged lanes renormalize like binop

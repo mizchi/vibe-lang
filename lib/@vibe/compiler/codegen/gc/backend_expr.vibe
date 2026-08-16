@@ -995,6 +995,64 @@ fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[St
   ce(buf, body, local_names, nl, ld)
 }
 
+//# Chain-interior renorm elision (#1877), gc-lane mirror of the linear lane's
+//# compile_int_operand (compile_expr.vibe): the 63-bit renorm rewrites only
+//# bit 63, and `+`/`-`/`*`/`<<`(lhs)/unary-minus derive bits 0..62 of their
+//# result from bits 0..62 of their operands alone, so an arith result that
+//# feeds another wrapping op skips its own renorm — the chain's outermost one
+//# re-derives bit 63 before any observer, and per-op wrap values are unchanged.
+
+/// True iff `e` compiles through the gc Int-arith fallthrough AND ends with a
+/// renorm. Mirrors the EBinOp/EUnaryOp dispatch below: `&&`/`||`/`==`/`!=`
+/// divert earlier; the float paths only claim `+`/`-`/`*`/`/` and compares,
+/// so `<<` always lands on the Int fallthrough.
+fn gc_is_untagged_wrap_arith(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match e {
+    EBinOp(op, lhs, rhs) => if op == "<<" {
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      !gc_expr_is_floatish(lhs, local_names, ctx) && !gc_expr_is_floatish(rhs, local_names, ctx)
+    } else {
+      false
+    },
+    EUnaryOp(op, operand) => op == "-" && !gc_expr_is_floatish(operand, local_names, ctx),
+    _ => false
+  }
+}
+
+/// Compile one operand of the Int op `op`; wrapping consumers (`+`/`-`/`*`,
+/// the shifted side of `<<`) elide a wrap-arith operand's trailing renorm.
+fn gc_compile_int_operand(buf: Bytes, op: String, is_lhs: Bool, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
+  let tolerant = op == "+" || op == "-" || op == "*" || (op == "<<" && is_lhs)
+  if tolerant && gc_is_untagged_wrap_arith(e, local_names, ctx) {
+    gc_compile_wrap_arith_loose(buf, e, local_names, next_local, ctx, ld)
+  } else {
+    compile_expr_gc(buf, e, local_names, next_local, ctx, ld)
+  }
+}
+
+/// Compile a wrap-arith expr with its trailing renorm ELIDED: bits 0..62
+/// exact, bit 63 unspecified. Only reachable as the operand of a wrapping
+/// consumer whose own renorm (or an ancestor's) runs before any observer.
+/// Operands of an interior `/` still normalize; only its RESULT renorm defers.
+fn gc_compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
+  match e {
+    EBinOp(op, lhs, rhs) => {
+      let nl1 = gc_compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
+      let nl2 = gc_compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
+      emit_binop_op(buf, op)
+      nl2
+    },
+    EUnaryOp(_, operand) => {
+      emit_i64_const(buf, 0)
+      let nl = gc_compile_int_operand(buf, "-", false, operand, local_names, next_local, ctx, ld)
+      emit_i64_sub(buf)
+      nl
+    },
+    _ => throw("gc wrap-arith loose compile reached a non-arith expr")
+  }
+}
+
 fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
   let ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception = (b, e, ln, nl, d) -> {
     compile_expr_gc(b, e, ln, nl, ctx, d)
@@ -1220,12 +1278,13 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       emit_i64_extend_i32_s(buf)
       nl2
     } else {
-      let nl1 = ce(buf, lhs, local_names, next_local, ld)
-      let nl2 = ce(buf, rhs, local_names, nl1, ld)
+      // #1877: renormalize Int arithmetic to the 63-bit range (gc holds
+      // untagged i64s, which otherwise wrap at 64 bits — diverging from the
+      // linear lane with no diagnostic). Wrapping consumers elide the
+      // operand's own trailing renorm (gc_compile_int_operand above).
+      let nl1 = gc_compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
+      let nl2 = gc_compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
       emit_binop_op(buf, op)
-      // #1877: pin Int arithmetic to the 62-bit range (gc holds untagged
-      // i64s, which otherwise wrap at 64 bits — diverging from the linear
-      // lane with no diagnostic).
       emit_arith_wrap_int(buf, false, op)
       nl2
     },
@@ -1238,7 +1297,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       nl
     } else if op == "-" {
       emit_i64_const(buf, 0)
-      let nl = ce(buf, operand, local_names, next_local, ld)
+      let nl = gc_compile_int_operand(buf, "-", false, operand, local_names, next_local, ctx, ld)
       emit_i64_sub(buf)
       emit_arith_wrap_int(buf, false, "-")
       nl
