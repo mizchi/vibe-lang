@@ -47,6 +47,7 @@ import @vibe/compiler/codegen/common_base {
   double_to_string_expr,
   effect_name_to_tag,
   effect_op_index,
+  emit_arith_wrap_int,
   emit_binop_op,
   emit_box_float,
   emit_heap_grow_after_heap_set,
@@ -1958,29 +1959,30 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_add(buf)
+      emit_arith_wrap_int(buf, ctx.enable_rc, "+")
       nl
     }
     else if !prefer_bound_call && fname == "sub" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_sub(buf)
+      emit_arith_wrap_int(buf, ctx.enable_rc, "-")
       nl
     }
     else if !prefer_bound_call && fname == "mul" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      emit_i64_mul(buf)
-      // Under RC, Int values are tagged `(n << 1)`. Multiplying two tagged
-      // operands raw gives `(a*b) << 2` (an extra factor of 2 vs. the `<< 1`
-      // every other Int carries) -- shift right once to correct back, exactly
-      // like the `*` EBinOp path does (compile_expr.vibe `op == "*"`) that
-      // this builtin fast path duplicates but had not mirrored.
+      // Under RC, untag the first tagged operand BEFORE the multiply so the
+      // product is tagged(a*b) and wraps at the payload's 63-bit boundary,
+      // exactly like the `*` EBinOp path (#1877).
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shr_s(buf)
       } else {
         ()
       }
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_mul(buf)
+      emit_arith_wrap_int(buf, ctx.enable_rc, "*")
       nl
     }
     else if !prefer_bound_call && fname == "lt" {

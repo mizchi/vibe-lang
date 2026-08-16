@@ -1,0 +1,115 @@
+// #1877: Int arithmetic overflow wraps at the language's 63-bit range
+// (-2^62 .. 2^62-1) with two's-complement semantics — the SAME values on
+// every backend (bump / RC / wasm-gc). The width follows the actual runtime
+// representation: the RC lane's tagged `n<<1` holds exactly 63 payload bits
+// and wraps there for free; the untagged lanes renormalize (they would
+// otherwise wrap at i64's 64 bits and silently disagree, and the RC lane's
+// old post-multiply untag made `*` alone wrap one bit early at 62).
+//
+// `opaque` launders operands through a call so constant folding cannot
+// pre-compute a result with the compiler's own (also-wrapping) arithmetic —
+// these tests pin the RUNTIME op semantics. MAX (2^62-1) is spelled by
+// arithmetic because the committed seed's lexer still enforces the old
+// 2^61-1 literal bound and seed-driven tooling (vibe fmt) lexes this file;
+// collapse to plain literals after the next bootstrap bump.
+
+fn opaque(x: Int) -> Int {
+  x + 0
+}
+
+fn int_max() -> Int {
+  opaque((2305843009213693951<<1)|1)
+}
+
+fn int_min() -> Int {
+  0 - int_max() - 1
+}
+
+test "add wraps at the 63-bit boundary" {
+  let b61 = opaque(2305843009213693951) + 1
+  let max = int_max()
+  assert(b61 + b61 == int_min())
+  assert(max + max == 0 - 2)
+  assert(max + opaque(1) == int_min())
+  assert(max + opaque(2) == int_min() + 1)
+}
+
+test "mul wraps at the 63-bit boundary" {
+  let b61 = opaque(2305843009213693951) + 1
+  let b60 = opaque(1152921504606846976)
+  assert(b61 * opaque(2) == int_min())
+  assert(b60 * opaque(4) == int_min())
+  assert(b61 * opaque(4) == 0)
+  // The full product of two large odd values now fits the 63-bit range and
+  // is the same on every lane; one more factor wraps deep.
+  assert(opaque(1103515245) * opaque(2147483647) == 2369780942852698515)
+  assert(opaque(1103515245) * opaque(2147483647) * opaque(7) == 0 - 1858277473740662011)
+}
+
+test "sub and unary minus wrap below the minimum" {
+  let max = int_max()
+  assert(0 - max - max == 2)
+  assert(0 - int_min() == int_min())
+  assert(int_min() - opaque(1) == max)
+}
+
+test "shl wraps like repeated doubling" {
+  let max = int_max()
+  assert((max<<opaque(1)) == 0 - 2)
+  assert((opaque(1)<<opaque(62)) == int_min())
+  assert((opaque(1)<<opaque(63)) == 0)
+}
+
+test "compound assignment ops wrap identically" {
+  let mut x = int_max()
+  x += opaque(2)
+  assert(x == int_min() + 1)
+  let mut y = opaque(2305843009213693951) + 1
+  y *= opaque(2)
+  assert(y == int_min())
+  let mut z = int_min()
+  z -= opaque(1)
+  assert(z == int_max())
+}
+
+trait Add
+
+impl Add for Int
+
+fn generic_add[T: Add](a: T, b: T) -> T {
+  a + b
+}
+
+test "erased-generic + wraps like monomorphic + (__generic_add, #1894 review)" {
+  assert(generic_add(int_max(), opaque(1)) == int_min())
+  assert(generic_add(int_max(), int_max()) == 0 - 2)
+  assert(generic_add(opaque(1), opaque(2)) == 3)
+}
+
+test "chained arith equals the renorm-per-op reference (interior elision)" {
+  // The untagged lanes elide a chain-INTERIOR renorm when a wrapping op
+  // feeds another wrapping op; every op's observed value must still equal
+  // the renorm-per-op spec (the elided renorm only rewrote bit 63, which
+  // the outermost renorm re-derives). Goldens are the per-op 63-bit wrap
+  // reference, spelled relative to MAX to stay under the seed lexer bound.
+  let max = int_max()
+  assert((max + max) + (max + max) == 0 - 4)
+  assert((max * opaque(3) - opaque(1)) * opaque(5) == max - 19)
+  assert(-(max * opaque(7)) + (max<<opaque(3)) == max)
+  assert(((max + opaque(1)) * opaque(2)) / opaque(3) == 0)
+  assert((max + max) / opaque(2) + opaque(1) == 0)
+  assert((max * max) % opaque(1000) == 1)
+  assert((int_min() - opaque(1)) - opaque(1) == max - 1)
+  assert((((max<<opaque(5)) + (max<<opaque(5)))>>opaque(4)) == 0 - 4)
+}
+
+test "in-range arithmetic is untouched" {
+  assert(opaque(21) * opaque(2) == 42)
+  assert(opaque(1)<<opaque(61) == 2305843009213693951 + 1)
+  assert(0 - int_max() == 0 - int_max())
+  assert(int_max() % opaque(1000) == 903)
+  assert((int_max()>>opaque(1)) == 2305843009213693951)
+  // The old 62-bit boundary sits strictly inside the range now.
+  assert(opaque(2305843009213693951) + opaque(1) > 0)
+  assert(opaque(1152921504606846976) * opaque(2) > 0)
+}

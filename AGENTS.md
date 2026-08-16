@@ -416,8 +416,25 @@ completion / signature help を提供する。詳細は
 
 ## vibe 言語の Int 型制約
 
-- **リテラル上限**: 2305843009213693951 (2^61-1)。それ以上は `IntLiteralOverflow`
-- **ランタイム**: 62-bit tagged (i64 の 2-bit タグ付き)。範囲: -2^61 〜 2^61-1
+- **Literal bound**: 4611686018427387903 (2^62-1); anything above raises
+  `IntLiteralOverflow`. (#1877 widened this from the historic 2^61-1 —
+  ADR-0006 reserved 2 tag bits, the shipped RC representation uses 1.)
+- **Runtime**: 63-bit, tagged `n<<1` on the RC lane (1-bit tag on i64).
+  Range: -2^62 .. 2^62-1
+- **Arithmetic overflow wraps as 63-bit two's complement** (#1877): `+` `-`
+  `*` `/` `<<` and unary `-` fold an out-of-range result back by
+  sign-extending from bit 62 (`max + 1 == min`) — the SAME values on every
+  backend. The width is the tagged representation's natural one, so the RC
+  (production default) lane wraps for free; only the untagged lanes
+  (bump, wasm-gc) pay a 2-instruction renormalization, elided chain-interior
+  (a result feeding another wrapping op skips it; only the chain's
+  outermost renorm runs, values unchanged). Each lane previously
+  wrapped at its own 62/63/64-bit boundary and silently disagreed. Test:
+  `lib/@vibe/compiler/tests/int_overflow_wrap_test.vibe`; per-PR parity
+  guard: `bench/exec/int_wrap.vibe`. NOTE until the next bootstrap bump:
+  the committed seed still enforces the old 2^61-1 literal bound and
+  seed-driven tooling (vibe fmt) lexes all of `lib/**`, so spell large
+  constants there by arithmetic (`(2305843009213693951 << 1) | 1`)
 - **hex リテラル**: `0xFF`, `0X1A2B` (prefix・digits ともに大文字小文字可)
 - **`>>` は算術シフト（符号拡張あり）**: 符号なし右シフトには `(x >> n) & ((1 << (32 - n)) - 1)` を使う
 - **`~` (bit_not) 非対応**: `x ^ mask` で代用

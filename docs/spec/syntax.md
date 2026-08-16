@@ -102,8 +102,9 @@ false
 Rules:
 
 - `Int` literals are 62-bit tagged integers. Accepted range is
-  `-2305843009213693952` through `2305843009213693951`; positive literal
-  tokens above `2305843009213693951` are rejected.
+  `-4611686018427387904` through `4611686018427387903` (#1877: the 63-bit
+  representation range); positive literal tokens above `4611686018427387903`
+  are rejected.
 - Hex literals use `0x` or `0X`.
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
   `Float`.

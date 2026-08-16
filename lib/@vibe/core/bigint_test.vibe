@@ -33,7 +33,9 @@ test "from_int / to_int roundtrip" {
     -1073741824,
     1152921504606846975,
     2305843009213693951,
-    -2305843009213693951
+    -2305843009213693951,
+    (2305843009213693951<<1)|1,
+    0 - ((2305843009213693951<<1)|1)
   ]
   let mut i = 0
   while i < Array::length(cases) {
@@ -47,7 +49,8 @@ test "from_int / to_int roundtrip" {
 }
 
 test "from_int / to_int roundtrip at Int::min" {
-  let min_val = -2305843009213693951 - 1
+  // #1877: 63-bit Int min, seed-safe spelling (see prelude/int.vibe).
+  let min_val = 0 - ((2305843009213693951<<1)|1) - 1
   match BigInt::to_int(BigInt::from_int(min_val)) {
     Some(v) => assert(v == min_val),
     None => assert(false)
@@ -55,13 +58,22 @@ test "from_int / to_int roundtrip at Int::min" {
 }
 
 test "to_int rejects out-of-range values" {
-  // 2^61 (Int::max + 1) and -(2^61 + 1) (Int::min - 1) do not fit.
-  match BigInt::parse("2305843009213693952") {
+  // 2^62 (Int::max + 1) and -(2^62 + 1) (Int::min - 1) do not fit (#1877:
+  // the Int range is 63-bit, -2^62 .. 2^62-1).
+  match BigInt::parse("4611686018427387904") {
     Some(a) => assert(BigInt::to_int(a) is None),
     None => assert(false)
   }
-  match BigInt::parse("-2305843009213693953") {
+  match BigInt::parse("-4611686018427387905") {
     Some(a) => assert(BigInt::to_int(a) is None),
+    None => assert(false)
+  }
+  // The old 62-bit boundary values now fit.
+  match BigInt::parse("2305843009213693952") {
+    Some(a) => match BigInt::to_int(a) {
+      Some(v) => assert(v == 2305843009213693951 + 1),
+      None => assert(false)
+    },
     None => assert(false)
   }
 }
@@ -75,7 +87,7 @@ test "parse / to_string roundtrip" {
     "1073741824",
     "1152921504606846976",
     "2305843009213693952",
-    "-2305843009213693952",
+    "-4611686018427387904",
     "12345678901234567890123456789",
     "-12345678901234567890123456789",
     "1000000000000000000000000000000"
@@ -306,11 +318,20 @@ test "pow edge cases" {
   assert(BigInt::is_zero(BigInt::pow(BigInt::from_int(2), -3)))
   assert(BigInt::equals(BigInt::pow(BigInt::from_int(10), 9), BigInt::from_int(1000000000)))
   assert(BigInt::to_string(BigInt::pow(BigInt::from_int(3), 50)) == "717897987691852588770249")
-  // (-2)^61 is representable only as BigInt-negative of 2^61
+  // (-2)^61 is now an interior value of the 63-bit range (#1877), and
+  // Int::min (-2^62) itself round-trips via parse; (+2)^62 stays out of range.
   let m = BigInt::pow(BigInt::from_int(-2), 61)
   assert(BigInt::to_string(m) == "-2305843009213693952")
   match BigInt::to_int(m) {
-    Some(v) => assert(v == -2305843009213693951 - 1),
+    Some(v) => assert(v == 0 - 2305843009213693951 - 1),
     None => assert(false)
   }
+  match BigInt::parse("-4611686018427387904") {
+    Some(mn) => match BigInt::to_int(mn) {
+      Some(v) => assert(v == 0 - ((2305843009213693951<<1)|1) - 1),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+  assert(BigInt::to_int(BigInt::pow(BigInt::from_int(2), 62)) is None)
 }

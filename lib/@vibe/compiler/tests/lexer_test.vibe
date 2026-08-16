@@ -581,18 +581,19 @@ test "lex_zero" {
 
 test "lex_large_int" {
   assert(lex_ok("2305843009213693951"))
+  assert(lex_ok("4611686018427387903"))
 }
 
-/// #997: Int is 62-bit tagged (max 2^61-1 == 2305843009213693951). A literal
-/// one past that boundary used to be silently accepted and its digit-run
-/// accumulator (itself a plain vibe Int) wrapped into a bogus in-range
-/// value instead of raising `IntLiteralOverflow` -- this was true on BOTH
-/// the decimal and hex literal paths (the hex path had never had any
-/// overflow check at all).
+/// #997: a literal one past the Int boundary used to be silently accepted
+/// and its digit-run accumulator (itself a plain vibe Int) wrapped into a
+/// bogus in-range value instead of raising `IntLiteralOverflow` -- this was
+/// true on BOTH the decimal and hex literal paths (the hex path had never
+/// had any overflow check at all). #1877 moved the boundary to the 63-bit
+/// representation range (max 2^62-1 == 4611686018427387903).
 test "lex_decimal_int_overflow_rejected" {
-  assert(lex_ok("2305843009213693951"))
-  assert(!lex_ok("2305843009213693952"))
-  assert(String::contains(lex_err("2305843009213693952"), "IntLiteralOverflow"))
+  assert(lex_ok("4611686018427387903"))
+  assert(!lex_ok("4611686018427387904"))
+  assert(String::contains(lex_err("4611686018427387904"), "IntLiteralOverflow"))
   // Nowhere near the boundary: a much larger decimal run must also be
   // rejected, not silently wrap into some other in-range value.
   assert(!lex_ok("99999999999999999999999999"))
@@ -600,11 +601,11 @@ test "lex_decimal_int_overflow_rejected" {
 }
 
 test "lex_hex_int_overflow_rejected" {
-  // 0x1FFFFFFFFFFFFFFF == 2305843009213693951 == Int::max_value: still ok.
-  assert(lex_ok("0x1FFFFFFFFFFFFFFF"))
-  // 0x2000000000000000 == 2305843009213693952 == max_value + 1: rejected.
-  assert(!lex_ok("0x2000000000000000"))
-  assert(String::contains(lex_err("0x2000000000000000"), "IntLiteralOverflow"))
+  // 0x3FFFFFFFFFFFFFFF == 4611686018427387903 == Int::max_value: still ok.
+  assert(lex_ok("0x3FFFFFFFFFFFFFFF"))
+  // 0x4000000000000000 == 4611686018427387904 == max_value + 1: rejected.
+  assert(!lex_ok("0x4000000000000000"))
+  assert(String::contains(lex_err("0x4000000000000000"), "IntLiteralOverflow"))
   // Far beyond even a 64-bit range: must still be rejected, not silently
   // wrap into `-1` (this literal's actual pre-fix behavior).
   assert(!lex_ok("0xFFFFFFFFFFFFFFFF"))

@@ -45,7 +45,12 @@ clean を意味し、メッセージは内部用語ではなく「何を書き�
 ## Values & Types
 
 ```vibe
-let x: Int = 42                // 62-bit tagged, max 2^61-1
+let x: Int = 42                // 63-bit (RC lane: 1-bit-tagged i64),
+                               // max 2^62-1; arithmetic overflow wraps as
+                               // 63-bit two's complement, same values on
+                               // every backend (#1877): max + 1 == min;
+                               // out-of-range literals are rejected with
+                               // IntLiteralOverflow
 let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
