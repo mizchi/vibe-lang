@@ -494,11 +494,34 @@ vibe bench foo_bench.vibe                       # default: linear
 VIBE_BENCH_BACKEND=gc vibe bench foo_bench.vibe # opt-in: wasm-gc
 ```
 
-wasm-gc には HOF / Iterator 系の codegen ギャップ (`src/tests/vibe_wasm_gc_e2e_test.mbt`
-冒頭コメント参照) があるため、すべての test/bench が gc で通るわけでは
-ない点に注意 (例: sha1 bench は `read_word` 未対応で fail、zlib inflate の
-LZ77 backreference 経路は trap)。bench cache はモードに backend を
-含めるので、`linear → gc` の切り替えで自動的に再コンパイルされる。
+**gc レーンは1ファイルを自己完結として compile する** — これが「gc で通らない
+test」の圧倒的多数の理由。import を1つでも持つファイルは落ちる:
+
+```console
+$ VIBE_TEST_BACKEND=gc vibe test lib/@vibe/core/sha1_test.vibe
+internal compiler error: `sha1` (local, @gc_call) reached code generation unresolved.
+```
+
+`sha1_test.vibe` は `import ./sha1.vibe { sha1 }` を持つだけで、`sha1` 自体には
+何も問題がない。同じ形の最小例で確認できる (実測、2026-08-16):
+
+| | gc | linear |
+|---|---|---|
+| import した関数を呼ぶ | **落ちる** (`@gc_call` unresolved) | ok |
+| 同一ファイル内の関数を呼ぶ | ok | ok |
+
+**診断は「compiler のバグなので報告してほしい」と言うが、この形についてはレーンの
+仕様**。報告する前に、そのファイルが import を持つかを見ること。
+
+`bench` ブロックは gc レーンでは**まだ動かない** — gc backend は
+`__bench_<name>` の entry point を出さない (#1701)。`runtime/vibe` の bench 分岐が
+それを検出して明示的に落とす。bench cache はモードに backend を含めるので、
+`linear → gc` の切り替えでは自動的に再コンパイルされる。
+
+builtin レベルの両レーン差は `scripts/builtin_parity_classification.tsv` に
+1行ずつあり、`check_builtin_parity.sh` が gate で強制する。**「gc に無い」と
+書かれた行が本当に穴なのはごく一部**で、残りは host import・意図的な非移植・
+分類上の artifact。数えるならそのファイルを見ること (#1861)。
 
 ## Task Management
 
