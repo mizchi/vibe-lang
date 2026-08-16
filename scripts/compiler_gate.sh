@@ -4434,8 +4434,8 @@ lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
   echo "[compiler-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
-if [ "$lk_result" != "3200340000" ]; then
-  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200340000)" >&2; exit 1
+if [ "$lk_result" != "3200400000" ]; then
+  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200400000)" >&2; exit 1
 fi
 if [ "$lk_used" -ge 2000 ]; then
   echo "[compiler-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1

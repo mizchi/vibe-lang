@@ -62,7 +62,13 @@ struct PCtx {
   // interior view. With the borrow set empty this is never set, so the fix
   // is inert while lc_borrow_arg0_enabled is off.
   view_call_let: Array[Bool];
-  actions: Array[PerceusAction]
+  actions: Array[PerceusAction];
+  // Aligned with `actions`: the binding id each PaDup/PaDrop belongs to (-1
+  // for actions with no single binding id, e.g. PaAliasDup). Internal to the
+  // emission pass -- pe_merge_exclusive_branch_dups (#1915 mechanism 3) keys
+  // its per-branch dup merge on ids, not names, so a branch-local shadow of
+  // an outer name can never swallow the outer binding's dup budget.
+  action_ids: Array[Int]
 }
 
 struct HeapInferCtx {
@@ -106,9 +112,17 @@ fn name_in(arr: Array[String], s: String) -> Bool {
 }
 
 fn pe_push(ctx: PCtx, kind: PerceusActionKind, name: String) -> Int {
+  pe_push_for(ctx, kind, name, 0 - 1)
+}
+
+/// pe_push with the owning binding id recorded in `action_ids` (see the PCtx
+/// field comment). Callers that know the id (pe_use, pe_scope_end) use this
+/// so pe_merge_exclusive_branch_dups can key on ids instead of names.
+fn pe_push_for(ctx: PCtx, kind: PerceusActionKind, name: String, id: Int) -> Int {
   Array::push(ctx.actions, PerceusAction::{
     kind: kind, name: name
   })
+  Array::push(ctx.action_ids, id)
   0
 }
 
@@ -122,7 +136,7 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
     // ref" transfer would consume a reference the binding never acquired.
     let last_view_use = rem == 1 && Array::get(ctx.view_call_let, id)
     if (rem > 1 || last_view_use) && !Array::get(ctx.scalar, id) {
-      pe_push(ctx, PaDup, name)
+      pe_push_for(ctx, PaDup, name, id)
     } else {
       0
     }
@@ -160,6 +174,8 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     view_call_let: [
     ],
     actions: [
+    ],
+    action_ids: [
     ],
   }
 }
@@ -290,11 +306,128 @@ fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
     if Array::get(ctx.view_call_let, id) {
       ()
     } else {
-      pe_push(ctx, PaDrop, name)
+      pe_push_for(ctx, PaDrop, name, id)
     }
     Array::set(ctx.remaining, id, 0)
   }
   0
+}
+
+/// #1915 mechanism 3: exclusive branches each push their own PaDup for the
+/// same OUTER binding (the pe pass restores `remaining` per branch, so with
+/// remaining > 1 at branch entry -- e.g. after the #706 borrow-retention bump
+/// for a loop borrow-use -- EVERY branch's use dups), and codegen realizes
+/// every planned dup for a name unconditionally at the binding's declaration
+/// site (compile_expr_tail's rc_dup_names occurrence count). Only one branch
+/// executes at runtime, so the summed budget over-provisions references
+/// nothing ever spends -- one leaked object per call for the
+/// `builder loop + if/else tail` shape.
+///
+/// Merge the branch segments' dups for PRE-BRANCH bindings (id < outer_ids)
+/// down to the per-binding MAX across segments. The executed branch's own
+/// dups are always covered (max >= that branch's count), so the merge can
+/// only remove references no path spends: leak -> reclaim, never a new
+/// under-provision. Branch-LOCAL bindings (declared inside a segment) keep
+/// every action -- their declaration sites sit inside the branch body and are
+/// already conditional at runtime. Keying on ids (action_ids), not names,
+/// keeps a branch-local shadow of an outer name from swallowing the outer
+/// binding's budget.
+///
+/// `seg_starts` holds each branch segment's start index into `ctx.actions`
+/// (the k-th segment ends where segment k+1 starts; the last ends at the
+/// current actions length). Compaction preserves action order and truncates
+/// `actions`/`action_ids` in step.
+fn pe_merge_exclusive_branch_dups(ctx: PCtx, outer_ids: Int, seg_starts: Array[Int]) -> Int {
+  let total = Array::length(ctx.actions)
+  let nsegs = Array::length(seg_starts)
+  if nsegs < 2 {
+    0
+  } else {
+    let a0 = Array::get(seg_starts, 0)
+    // Fast path: no outer-binding dup in the whole region means nothing to
+    // merge (the common case -- avoids the two per-id arrays below).
+    let mut any = false
+    let mut scan = a0
+    while scan < total {
+      let sid = Array::get(ctx.action_ids, scan)
+      if sid >= 0 && sid < outer_ids && pa_is_dup(Array::get(ctx.actions, scan)) {
+        any = true
+      } else {
+        ()
+      }
+      scan = scan + 1
+    }
+    if !any {
+      0
+    } else {
+      let maxc = zeros(outer_ids)
+      let cur = zeros(outer_ids)
+      let mut k = 0
+      while k < nsegs {
+        let seg_from = Array::get(seg_starts, k)
+        let seg_to = if k + 1 < nsegs {
+          Array::get(seg_starts, k + 1)
+        } else {
+          total
+        }
+        let mut z = 0
+        while z < outer_ids {
+          Array::set(cur, z, 0)
+          z = z + 1
+        }
+        let mut i = seg_from
+        while i < seg_to {
+          let sid = Array::get(ctx.action_ids, i)
+          if sid >= 0 && sid < outer_ids && pa_is_dup(Array::get(ctx.actions, i)) {
+            Array::set(cur, sid, Array::get(cur, sid) + 1)
+            if Array::get(cur, sid) > Array::get(maxc, sid) {
+              Array::set(maxc, sid, Array::get(cur, sid))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        k = k + 1
+      }
+      // Compact: keep the first max[id] outer-binding dups region-wide (the
+      // consumer counts occurrences per name, so position within the region
+      // is immaterial); every other action is kept as-is.
+      let mut z2 = 0
+      while z2 < outer_ids {
+        Array::set(cur, z2, 0)
+        z2 = z2 + 1
+      }
+      let mut r = a0
+      let mut w = a0
+      while r < total {
+        let sid = Array::get(ctx.action_ids, r)
+        let keep = if sid >= 0 && sid < outer_ids && pa_is_dup(Array::get(ctx.actions, r)) {
+          Array::set(cur, sid, Array::get(cur, sid) + 1)
+          Array::get(cur, sid) <= Array::get(maxc, sid)
+        } else {
+          true
+        }
+        if keep {
+          if w < r {
+            Array::set(ctx.actions, w, Array::get(ctx.actions, r))
+            Array::set(ctx.action_ids, w, Array::get(ctx.action_ids, r))
+          } else {
+            ()
+          }
+          w = w + 1
+        } else {
+          ()
+        }
+        r = r + 1
+      }
+      Array::truncate(ctx.actions, w)
+      Array::truncate(ctx.action_ids, w)
+      0
+    }
+  }
 }
 
 fn next_seq_name(ctx: PCtx) -> String {
@@ -1733,6 +1866,13 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EIf(cond, then_e, else_e) => {
       pc_emit(ctx, scope, cond)
       let snap = copy_ints(ctx.remaining)
+      // #1915 mechanism 3: record the pre-branch id/action watermarks so the
+      // two branches' dups for OUTER bindings can be merged to a per-binding
+      // max afterwards (see pe_merge_exclusive_branch_dups).
+      let bd_outer = ctx.next_id
+      let bd_starts = [
+        Array::length(ctx.actions)
+      ]
       pc_emit(ctx, scope, then_e)
       // #1100 alloc cut: swap the prefix instead of taking a SECOND copy —
       // one pass both restores `remaining` to the pre-branch values (what
@@ -1748,6 +1888,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         Array::set(snap, sw, then_v)
         sw = sw + 1
       }
+      Array::push(bd_starts, Array::length(ctx.actions))
       pc_emit(ctx, scope, else_e)
       // #705: leave the MIN remaining over both branches. A binding consumed in
       // one branch (e.g. a param threaded into a ctor in the `then`) but not the
@@ -1766,7 +1907,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         }
         i = i + 1
       }
-      0
+      pe_merge_exclusive_branch_dups(ctx, bd_outer, bd_starts)
     },
     EWhile(cond, body) => {
       pc_emit(ctx, scope, cond)
@@ -1867,9 +2008,16 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         // at a lower remaining; leaving the LAST arm's (higher) value made the
         // scope-end drop double-free that binding on the arm that consumed it.
         let minrem = copy_ints(snap)
+        // #1915 mechanism 3: same exclusive-branch dup merge as EIf. Arm
+        // pattern bindings are declared inside their segment (id >= bd_outer)
+        // and keep every action.
+        let bd_outer = ctx.next_id
+        let bd_starts: Array[Int] = [
+        ]
         let mut a = 0
         while a < Array::length(arms) {
           let arm = Array::get(arms, a)
+          Array::push(bd_starts, Array::length(ctx.actions))
           restore_prefix(ctx.remaining, snap)
           let pnames: Array[String] = [
           ]
@@ -1903,7 +2051,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
           a = a + 1
         }
         restore_prefix(ctx.remaining, minrem)
-        0
+        pe_merge_exclusive_branch_dups(ctx, bd_outer, bd_starts)
       }
     },
     EHandle(hbody, arms) => {
