@@ -299,14 +299,19 @@ if ! cmp -s "$OUT_DIR/want-slow.bin" "$OUT_DIR/got-slow.bin"; then
 fi
 echo "[serve-body] a chunked body whose reads park echoes byte-for-byte"
 
-# Request-string length parity. Sweeping the URL length covers every residue
-# mod 8 of what `cabi_realloc` leaves in `__heap_ptr`; before #1924 was
-# understood, the odd ones trapped and the even ones passed.
+# Request-string length parity: ONE string varies, by ONE byte per iteration.
+#
+# That is the whole design of this loop, and it is easy to get wrong. Padding
+# the URL and a header together advances the total by two each time, which
+# holds the parity FIXED and turns a sweep that looks like it covers eight
+# residues into one that covers four of the same parity -- it would pass, or
+# fail, uniformly against the pre-#1924 allocator instead of showing both.
+# Only the URL grows here, one byte at a time, so the lifted-string total takes
+# every residue mod 8 of what `cabi_realloc` leaves in `__heap_ptr`.
 for pad in 0 1 2 3 4 5 6 7; do
   path="echo"
   [ "$pad" = "0" ] || path="echo$(printf 'a%.0s' $(seq 1 "$pad"))"
   code="$(curl -sS --max-time 20 -o "$OUT_DIR/got-pad$pad.bin" -w '%{http_code}' -X POST \
-    -H "x-pad: $(printf 'z%.0s' $(seq 0 "$pad"))" \
     --data-binary 'abc' "http://$ADDR/$path" 2>&1 || true)"
   if [ "$code" != "200" ]; then
     echo "[serve-body] FAILED: url pad $pad returned '$code' (want 200) -- request-string length must not change the answer (#1924)" >&2
