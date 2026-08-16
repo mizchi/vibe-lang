@@ -7733,9 +7733,9 @@ let comp_ss_closed_base = 12288
 /// convention exists to avoid: it does not trap, it silently doubles every
 /// byte the handler reads -- which is exactly what the named lane did until
 /// #1930. That is why this stays a hard-coded convention only in company with
-/// a check: `comp_emit_component_wasm_stream_handler` reads the core's
-/// declared `vibe.tagmode` and refuses a tagged one rather than composing it
-/// with this adapter. (The named lane went the other way and made its adapter
+/// a check: `comp_emit_component_wasm_stream_handler` requires the core's
+/// `vibe.tagmode` to SAY plain, and refuses both a tagged core and a core that
+/// declares nothing. (The named lane went the other way and made its adapter
 /// follow the declaration; unifying the two is worth doing before a third
 /// lane needs one.)
 ///
@@ -8031,13 +8031,18 @@ export fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_
   // comp_generate_serve_stream_adapter_module), which is correct exactly
   // while the serve core keeps coming from a non-RC compile. That is an
   // assumption about a caller, and the named lane's version of the same
-  // assumption silently doubled every byte it read. So check it: the core now
-  // declares its convention, and a tagged one belongs to a different adapter.
+  // assumption silently doubled every byte it read. So require the core to
+  // SAY plain, the same way the named lane requires it to say anything at
+  // all: an undeclared core is not evidence of plain, it is a core this
+  // composer cannot check -- and "probably untagged" is exactly the guess
+  // that produced the bug.
   let serve_tag_mode = comp_core_tag_mode(core_wasm)
-  if serve_tag_mode > 0 {
-    throw("component(serve-stream): core module declares tagged Ints (`vibe.tagmode` 1) but this lane's stream adapter passes plain i64 -- compile the serve core without RC, or give this lane a tag-mode-aware adapter (#1930)")
-  } else {
+  if serve_tag_mode == 0 {
     ()
+  } else if serve_tag_mode < 0 {
+    throw("component(serve-stream): core module does not declare its Int convention (no `vibe.tagmode` custom section) -- this lane's stream adapter passes plain i64 and cannot confirm the core agrees, so it refuses to compose rather than silently double every byte the handler reads (#1930)")
+  } else {
+    throw("component(serve-stream): core module declares tagged Ints (`vibe.tagmode` 1) but this lane's stream adapter passes plain i64 -- compile the serve core without RC, or give this lane a tag-mode-aware adapter (#1930)")
   }
   let buf = bytebuf_new()
   emit_component_header(buf)

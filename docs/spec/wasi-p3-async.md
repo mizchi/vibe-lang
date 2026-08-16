@@ -1597,7 +1597,8 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
 > declaration and **refuses a core that declares nothing**, rather than
 > assuming a lane. The serve lane's trampoline and adapter stay untagged —
 > correct for its non-RC core — and `comp_emit_component_wasm_stream_handler`
-> checks the declaration and refuses a tagged core instead of composing one.
+> requires the declaration to say plain, refusing a tagged core and an
+> undeclared one alike rather than composing either.
 > Gates: `test_named_hoststreams_component_gate.sh` runs the same stream
 > program under both `VIBE_RC=1` and `VIBE_RC=0` and requires the same 42.
 

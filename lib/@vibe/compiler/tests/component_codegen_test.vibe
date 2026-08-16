@@ -998,8 +998,18 @@ test "component #537: string handler rejects a wrong signature" {
 /// section with vibe.env-get / vibe.fs_read_file ((i64) -> i64). The handler
 /// becomes core func index 2 (after the two imports).
 fn build_test_core_stream_handler() -> Bytes {
+  // #1930: stands in for a serve-lane core, which compiles without RC --
+  // so it declares plain i64, and the serve composer requires it to say so.
+  build_test_core_stream_handler_tagged(0)
+}
+
+/// #1930: the same core with its declared Int convention as a parameter, so
+/// the serve lane's refusals (a tagged core, and a core that says nothing --
+/// pass a negative) can be pinned against the shape it really composes.
+fn build_test_core_stream_handler_tagged(tag_mode: Int) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
+  emit_test_tag_mode_section(out, tag_mode)
   let type_content = bytebuf_new()
   bytebuf_push_vec_header(type_content, 2)
   // handler: 3 strings + the stream handle + the closure env, all i64
@@ -1060,6 +1070,9 @@ fn build_test_core_stream_handler() -> Bytes {
 fn build_test_core_packed_handler_with_vibe_imports() -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
+  // #1930: stands in for a serve-lane core, which compiles without RC --
+  // so it declares plain i64, and the serve composer requires it to say so.
+  emit_test_tag_mode_section(out, 0)
   let type_content = bytebuf_new()
   bytebuf_push_vec_header(type_content, 2)
   emit_func_type_raw(type_content, [
@@ -1195,6 +1208,31 @@ test "component #1540: the stream lane's guard catches a wrong-arity core" {
     Throw(_) => false
   }
   assert(accepted)
+}
+
+/// #1930: the serve lane's adapter passes plain i64, so it composes only with
+/// a core that DECLARES plain. Both other answers are refusals, and the one
+/// that matters most is "declares nothing": that is the shape every core built
+/// before the declaration existed has, and treating it as plain would be the
+/// same guess that doubled every byte on the named lane.
+test "component #1930: the serve lane composes only with a core that declares plain Ints" {
+  let refuses = (core: Bytes) -> handle {
+    let _ = comp_emit_component_wasm_stream_handler(core, "handler", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  // declares plain (0) -- the compiled serve core's own answer
+  assert(refuses(build_test_core_stream_handler_tagged(0)) == false)
+  // declares tagged (1) -- belongs to a tag-mode-aware adapter, not this one
+  assert(refuses(build_test_core_stream_handler_tagged(1)))
+  // declares nothing -- unknowable, so refused rather than assumed plain
+  assert(refuses(build_test_core_stream_handler_tagged(0 - 1)))
 }
 
 test "component #1107: strict string handler rejects vibe.* imports" {
