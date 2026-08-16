@@ -1,0 +1,70 @@
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  compute_borrow_param_user_fns
+}
+
+fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([
+  ], [
+  ], [
+    (param, None)
+  ], None, None, body))
+}
+
+fn mask_for(names: Array[String], masks: Array[Int], name: String) -> Int {
+  let mut i = 0
+  let mut found = 0
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = Array::get(masks, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "one transitive wrapper layer inherits a borrowed parameter" {
+  let leaf = one_param_fn("leaf", "xs", ECall(EIdent("Array::length", -1), [
+    EIdent("xs", -1)
+  ], -1))
+  let wrapper = one_param_fn("wrapper", "xs", ECall(EIdent("leaf", -1), [
+    EIdent("xs", -1)
+  ], -1))
+  let masks: Array[Int] = [
+  ]
+  let names = compute_borrow_param_user_fns([
+    leaf,
+    wrapper
+  ], [
+  ], masks)
+  assert_eq(mask_for(names, masks, "leaf"), 1)
+  assert_eq(mask_for(names, masks, "wrapper"), 1)
+}
+
+test "a local callee shadow does not inherit the top-level borrow ABI" {
+  let reader = one_param_fn("reader", "xs", ECall(EIdent("Array::length", -1), [
+    EIdent("xs", -1)
+  ], -1))
+  let local_reader = EFn([
+  ], [
+  ], [
+    ("value", None)
+  ], None, None, EIdent("value", -1))
+  let shadowed = one_param_fn("shadowed", "xs", ELet("reader", local_reader, ECall(EIdent("reader", -1), [
+    EIdent("xs", -1)
+  ], -1), -1))
+  let masks: Array[Int] = [
+  ]
+  let names = compute_borrow_param_user_fns([
+    reader,
+    shadowed
+  ], [
+  ], masks)
+  assert_eq(mask_for(names, masks, "reader"), 1)
+  assert_eq(mask_for(names, masks, "shadowed"), 0)
+}
