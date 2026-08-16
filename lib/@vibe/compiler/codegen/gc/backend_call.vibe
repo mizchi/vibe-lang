@@ -56,6 +56,8 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_store,
   emit_region_enter,
   emit_region_exit,
+  emit_region_try_epilogue,
+  emit_region_try_prologue,
   emit_str_ref,
   expr_tag,
   find_func_stmt,
@@ -68,6 +70,7 @@ import @vibe/compiler/codegen/common_base {
   gc_slot_map_reset_above,
   int_parse_expr,
   is_eident,
+  region_try_body_ld,
   resolve_func,
   resolve_local,
   struct_field_candidates,
@@ -582,25 +585,30 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // bracketed by the arena watermark save/restore -- the SAME two
       // emitters the linear lane uses, now shared from common_base so the
       // save/restore protocol cannot change on one lane only.
+      // #1937: the body sits in try_table catch (tag 0, same as EHandle);
+      // a throw runs exit then rethrows so depth cannot fill the save table.
       if !source_is_bound && fname == "__region_run" && Array::length(args) == 1 {
         if ctx.gc_region_ptr_addr >= 0 {
           emit_region_enter(buf, ctx.gc_region_ptr_addr)
+          if ctx.gc_region_exn_tag >= 0 {
+            emit_region_try_prologue(buf, ctx.gc_region_exn_tag)
+            let region_r = ce(buf, ECall(Array::get(args, 0), [
+              EInt(0)
+            ], -1), local_names, next_local, region_try_body_ld(ld))
+            emit_region_try_epilogue(buf, ctx.gc_region_ptr_addr, ctx.gc_region_exn_tag)
+            return region_r
+          } else {
+            let region_r = ce(buf, ECall(Array::get(args, 0), [
+              EInt(0)
+            ], -1), local_names, next_local, ld)
+            emit_region_exit(buf, ctx.gc_region_ptr_addr)
+            return region_r
+          }
         } else {
-          ()
+          return ce(buf, ECall(Array::get(args, 0), [
+            EInt(0)
+          ], -1), local_names, next_local, ld)
         }
-        let region_r = ce(buf, ECall(Array::get(args, 0), [
-          EInt(0)
-        ], -1), local_names, next_local, ld)
-        // #1937: success-path exit only. A throw from the body skips it.
-        // Emitted with the body's result already on the stack: every
-        // instruction in the exit consumes only its own operands, so the
-        // result rides through untouched.
-        if ctx.gc_region_ptr_addr >= 0 {
-          emit_region_exit(buf, ctx.gc_region_ptr_addr)
-        } else {
-          ()
-        }
-        return region_r
       } else {
         ()
       }

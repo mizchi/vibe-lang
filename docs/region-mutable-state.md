@@ -181,14 +181,13 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
   - **degradation は常に「回収しない」側**: セグメント枯渇時は main heap に
     fallback、ネストが 64 段を超えたら save も restore もしない。どちらも
     「回収が減る」だけで、誤った答えにはならない。
-  - **既知ギャップ: region body を例外が貫くと release を飛ばす**。
-    `__region_run` の exit 列は body の直後に置かれた素の命令列なので、
-    `throw` が region を越えて外へ抜けると実行されない。結果、その region
-    の arena は解放されず、depth カウンタも戻らない。**壊れ方は「回収が
-    減る」側**で誤答にはならないが、region を貫く例外が 64 回起きると
-    depth が save 表を超えてそれ以降どの region も解放しなくなる。
-    正しくは exit 列を `try_table` の unwind 経路にも置く必要があり、
-    Phase 1 では入れていない。
+  - **Exception unwind also runs the exit (#1937)**: `__region_run` wraps
+    the body in `try_table` catch (Exception tag: 2 on linear, 0 on gc —
+    same tags `EHandle` uses). The catch path runs `emit_region_exit` and
+    rethrows; the success path still exits once. Without that wrap, 64
+    punches filled the save table and later regions stopped reclaiming.
+    Algebraic-effect tags that are not Exception are still success-path
+    only. RC keeps the #1738 not-planned stance (no arena).
   - **bump レーン限定**: RC では region ブロックが RC ヘッダを持ち free list に
     載りうるので、一括解放が free list を壊す。Perceus 免除が入るまで RC
     レーンは従来どおり (MutList == ArrayBuilder on main heap)。bump レーンは

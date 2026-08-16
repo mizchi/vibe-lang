@@ -66,6 +66,8 @@ import @vibe/compiler/codegen/common_base {
   emit_rc_word_inc_saturating,
   emit_region_enter,
   emit_region_exit,
+  emit_region_try_epilogue,
+  emit_region_try_prologue,
   emit_str_ref,
   emit_unbox_float,
   expr_tag,
@@ -98,6 +100,7 @@ import @vibe/compiler/codegen/common_base {
   region_depth_addr_of,
   region_max_depth,
   region_saves_base_of,
+  region_try_body_ld,
   resolve_func,
   resolve_local,
   struct_field_candidates,
@@ -1264,7 +1267,8 @@ fn frozen_array_conversion_copy(name: String) -> String {
 ///   token only exists for the checker's skolem escape scan; it has no
 ///   runtime representation. When the module has an arena
 ///   (`ctx.region_ptr_addr >= 0`), the call is bracketed by the arena
-///   watermark save/restore.
+///   watermark save/restore, including the #1937 try_table catch so a
+///   throw still runs exit then rethrows.
 /// - `MutList::empty(r)` allocates a fresh growable array, ignoring the
 ///   region token argument. The token is not evaluated: by construction it
 ///   is the pure region binder ident the parser emitted. With an arena it
@@ -1280,21 +1284,25 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     if ctx.region_ptr_addr >= 0 {
       emit_region_enter(buf, ctx.region_ptr_addr)
+      if ctx.region_exn_tag >= 0 {
+        emit_region_try_prologue(buf, ctx.region_exn_tag)
+        let r = ce(buf, ECall(Array::get(args, 0), [
+          EInt(0)
+        ], -1), local_names, next_local, ctx, region_try_body_ld(ld))
+        emit_region_try_epilogue(buf, ctx.region_ptr_addr, ctx.region_exn_tag)
+        r
+      } else {
+        let r = ce(buf, ECall(Array::get(args, 0), [
+          EInt(0)
+        ], -1), local_names, next_local, ctx, ld)
+        emit_region_exit(buf, ctx.region_ptr_addr)
+        r
+      }
     } else {
-      ()
+      ce(buf, ECall(Array::get(args, 0), [
+        EInt(0)
+      ], -1), local_names, next_local, ctx, ld)
     }
-    let r = ce(buf, ECall(Array::get(args, 0), [
-      EInt(0)
-    ], -1), local_names, next_local, ctx, ld)
-    // #1937: this exit is the success path only. A throw from the body
-    // skips it, so watermark/depth are not restored. Needs try_table
-    // catch -> exit -> rethrow (same protocol as EHandle).
-    if ctx.region_ptr_addr >= 0 {
-      emit_region_exit(buf, ctx.region_ptr_addr)
-    } else {
-      ()
-    }
-    r
   } else if is_eident(callee) && get_eident_name(callee) == "MutList::empty" && Array::length(args) == 1 {
     if ctx.region_arr_new_func_idx >= 0 {
       emit_call(buf, ctx.region_arr_new_func_idx)

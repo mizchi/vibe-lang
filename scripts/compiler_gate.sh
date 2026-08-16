@@ -4885,6 +4885,42 @@ fi
 rm -rf "$gcardir"
 echo "[compiler-gate] wasm-gc region arena ok (reclamation measured: Array ${gcar_delta} B, Bytes ${gcarb_delta} B over 200 regions)"
 
+# 40h-6c. #1937: exception unwind through a region must restore depth.
+#         70 punches exceed the 64-slot save table. Values stay correct
+#         either way; only the heap delta sees a skipped exit. Seed
+#         without the wrap leaked 574708 B; with it the residual is the
+#         per-call region-lambda closure on the main heap.
+echo "[compiler-gate] 40h-6c/40 wasm-gc region exception-unwind restore (#1937)"
+gcarudir="_build/_gate_gc_arena_unwind"
+rm -rf "$gcarudir"; mkdir -p "$gcarudir"
+# Entry is `main`, not `__no_entry__`: this file also pins nested-handle
+# rethrow, and that shape is a pre-existing gc EHandle hole (handler throw
+# is not seen by an outer handle, with or without a region). `main` is the
+# 70-punch loop the heap delta observes.
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_throw_unwind_test.vibe" "$gcarudir/unwind.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcarudir/unwind.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_throw_unwind_test.vibe did not compile on the gc backend (#1937)" >&2
+  cat "$gcarudir/unwind.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! gcaru_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcarudir/unwind.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_throw_unwind_test.vibe main got the wrong value on the gc backend (#1937)" >&2
+  echo "$gcaru_out" >&2
+  exit 1
+fi
+gcaru_delta="$(node --experimental-wasm-exnref scripts/region_arena_heap_delta.mjs "$gcarudir/unwind.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from the gc region_throw_unwind_test.wasm (#1937)" >&2
+  exit 1
+}
+if [ "$gcaru_delta" -gt 150000 ]; then
+  echo "[compiler-gate] FAIL: 70 gc throw-through regions grew the main bump heap by $gcaru_delta B (want < 150000; seed without the wrap leaked 574708) -- region exit skipped on unwind (#1937)" >&2
+  exit 1
+fi
+rm -rf "$gcarudir"
+echo "[compiler-gate] wasm-gc region exception-unwind ok (reclamation measured: ${gcaru_delta} B over 70 punches)"
+
 # 40h-8. #1262: `Map::delete` on the gc lane.
 #
 #        Unlike the region / MutList / MutBytes lowerings, this one is not a
@@ -9767,6 +9803,33 @@ if [ "$r90_heap_delta" -gt 100000 ]; then
   echo "[compiler-gate] FAIL: 200 regions grew the main bump heap by $r90_heap_delta B (want < 100000; ~6408 with the arena, 1644008 without) -- the arena stopped releasing" >&2
   exit 1
 fi
+
+# #1937: exception unwind through a region must restore depth. 70 punches
+# exceed the 64-slot save table. The value assertion cannot see a skipped
+# exit; only the heap delta can. Seed without the wrap leaked 574708 B.
+echo "[compiler-gate] ADR-0090 #1937 exception-unwind region restore"
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_throw_unwind_test.vibe "$r90dir/unwind.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/unwind.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_throw_unwind_test.vibe did not compile" >&2
+  cat "$r90dir/unwind.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! r90_unwind_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/unwind.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_throw_unwind_test.vibe got the wrong value" >&2
+  echo "$r90_unwind_out" >&2
+  exit 1
+fi
+r90_unwind_delta="$(node --experimental-wasm-exnref scripts/region_arena_heap_delta.mjs "$r90dir/unwind.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from region_throw_unwind_test.wasm" >&2
+  exit 1
+}
+if [ "$r90_unwind_delta" -gt 150000 ]; then
+  echo "[compiler-gate] FAIL: 70 throw-through regions grew the main bump heap by $r90_unwind_delta B (want < 150000; seed without the wrap leaked 574708) -- region exit skipped on unwind (#1937)" >&2
+  exit 1
+fi
+echo "[compiler-gate] region exception-unwind restore ok (70 punches, main heap +${r90_unwind_delta} B)"
 
 # ADR-0090 #1262: a REFERENCE CYCLE inside a region also costs the main heap
 # nothing -- the property the ADR calls the complement to RC's permanent
