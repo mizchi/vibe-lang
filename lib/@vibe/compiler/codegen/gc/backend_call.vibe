@@ -1136,6 +1136,75 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // All three emit nothing themselves; they rewrite the call into an AST
       // the ordinary compiler already handles, so the two lanes cannot drift on
       // what they mean.
+      // #1861 final two.
+      //
+      // `Float::to_int` is an ALIAS: the linear arm is
+      // `fname == "Double::to_int" || fname == "Float::to_int"`, and this lane
+      // already serves `Double::to_int` -- builtin_registry.vibe registers it
+      // in BOTH func tables and `gc_gen_double_to_int_body` is its body here.
+      // Only the second spelling was missing, so this delegates to the first
+      // rather than restating the lowering. That lowering is not trivial (it
+      // hand-saturates NaN and out-of-range instead of trunc'ing, #997/#1050),
+      // and a copy of it here would be a second place to get that wrong.
+      else if fname == "Float::to_int" && Array::length(args) == 1 {
+        ce(buf, ECall(EIdent("Double::to_int", -1), [
+          Array::get(args, 0)
+        ], -1), local_names, next_local, ld)
+      }
+      // `Map::values` is `Map::keys` reading the other half of each entry:
+      // same 16-byte stride, offset 16 instead of 8. Mirrors the gc Map::keys
+      // arm below rather than the linear Map::values arm, because the two
+      // differ (linear untags the receiver with `& -2` first; this lane's
+      // Map::keys does not) and the one that is known to work HERE is the
+      // right model.
+      else if fname == "Map::values" {
+        let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        let map_l = nl
+        let res_l = nl + 1
+        let cnt_l = nl + 2
+        let i_l = nl + 3
+        Array::push(local_names, "__values_map")
+        Array::push(local_names, "__values_res")
+        Array::push(local_names, "__values_cnt")
+        Array::push(local_names, "__values_i")
+        emit_local_set(buf, map_l)
+        emit_call_resolved(buf, ctx, arr_new_fi)
+        emit_local_set(buf, res_l)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, cnt_l)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_l)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_l)
+        emit_local_get(buf, cnt_l)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, res_l)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, i_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        emit_call_resolved(buf, ctx, arr_push_fi)
+        emit_local_get(buf, i_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_l)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_l)
+        nl + 4
+      }
       else if !source_is_bound && fname == "Path::to_string" && Array::length(args) == 1 {
         // #762: PathRef / DynamicPath wrap a raw String; to_string is identity.
         ce(buf, Array::get(args, 0), local_names, next_local, ld)

@@ -5240,7 +5240,8 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
     fixtures/to_string_shadow_gc_test.vibe \
     fixtures/array_hof_parity_test.vibe \
     fixtures/gc_builtin_parity_batch2_test.vibe \
-    fixtures/gc_builtin_parity_batch3_test.vibe; then
+    fixtures/gc_builtin_parity_batch3_test.vibe \
+    fixtures/gc_builtin_parity_batch4_test.vibe; then
   echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
   exit 1
 fi
@@ -5261,7 +5262,8 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" \
   bash scripts/vibe_test.sh \
     fixtures/array_hof_parity_test.vibe \
     fixtures/gc_builtin_parity_batch2_test.vibe \
-    fixtures/gc_builtin_parity_batch3_test.vibe; then
+    fixtures/gc_builtin_parity_batch3_test.vibe \
+    fixtures/gc_builtin_parity_batch4_test.vibe; then
   echo "[compiler-gate] FAIL: a builtin parity fixture failed on the LINEAR lane." >&2
   echo "  It passed on gc just above, so this is the oracle disagreeing --" >&2
   echo "  the fixture's expectations are wrong, or linear regressed." >&2
