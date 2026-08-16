@@ -7854,65 +7854,12 @@ fn dlh_with(arr: Array[String], name: String) -> Array[String] {
 }
 
 ///|
-/// Local membership test — avoids depending on `array_contains_str` (defined in
-/// other compiler modules and NOT imported here; it resolves in the concatenated
-/// sources bundle but is `unknown name` in the strict per-module module_source
-/// merge that the FS-compile lane type-checks).
-fn dlh_contains(arr: Array[String], name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(arr) {
-    if Array::get(arr, i) == name {
-      found = true
-      i = Array::length(arr)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-///|
 fn dlh_strip_tilde(n: String) -> String {
   let ln = String::length(n)
   if ln > 0 && n[ln - 1: ln] == "~" {
     n[0: ln - 1]
   } else {
     n
-  }
-}
-
-///|
-fn dlh_pat_binds(p: Pat, out: Array[String]) -> Unit {
-  match p {
-    PBind(n) => Array::push(out, n),
-    PCtor(_, args) => {
-      let mut i = 0
-      while i < Array::length(args) {
-        dlh_pat_binds(Array::get(args, i), out)
-        i = i + 1
-      }
-    },
-    PTuple(ps) => {
-      let mut i = 0
-      while i < Array::length(ps) {
-        dlh_pat_binds(Array::get(ps, i), out)
-        i = i + 1
-      }
-    },
-    POr(a, b) => {
-      dlh_pat_binds(a, out)
-      dlh_pat_binds(b, out)
-    },
-    PStruct(_, fields) => {
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        dlh_pat_binds(fp, out)
-        i = i + 1
-      }
-    },
-    _ => ()
   }
 }
 
@@ -8031,7 +7978,7 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
               Some((h, _)) => h,
               None => qn
             }
-            if dlh_contains(out, ename) {
+            if str_array_contains(out, ename) {
               ()
             } else {
               Array::push(out, ename)
@@ -8150,7 +8097,7 @@ fn dlh_has_perform_arms(arms: Array[(Pat, Expr)]) -> Bool {
 /// non-top-level name (capture or bare-helper call) and must not be hoisted.
 fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
   match expr {
-    EIdent(n, _) => if dlh_name_ok(n) || dlh_contains(bound, n) {
+    EIdent(n, _) => if dlh_name_ok(n) || str_array_contains(bound, n) {
       ()
     } else {
       Array::push(bad, n)
@@ -8225,7 +8172,7 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
       dlh_scan_free(b, dlh_with(bound, name), bad)
     },
     EAssign(name, v, c) => {
-      if dlh_name_ok(name) || dlh_contains(bound, name) {
+      if dlh_name_ok(name) || str_array_contains(bound, name) {
         ()
       } else {
         Array::push(bad, name)
@@ -8234,7 +8181,7 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
       dlh_scan_free(c, bound, bad)
     },
     EAssignOp(name, _, v, c) => {
-      if dlh_name_ok(name) || dlh_contains(bound, name) {
+      if dlh_name_ok(name) || str_array_contains(bound, name) {
         ()
       } else {
         Array::push(bad, name)
@@ -8306,7 +8253,7 @@ fn dlh_scan_arms(arms: Array[(Pat, Expr)], bound: Array[String], bad: Array[Stri
     let (p, b) = Array::get(arms, i)
     let mut ab = bound
     let pb = empty_str_array()
-    dlh_pat_binds(p, pb)
+    collect_pat_binders(p, pb)
     let mut j = 0
     while j < Array::length(pb) {
       ab = dlh_with(ab, Array::get(pb, j))
@@ -8451,8 +8398,8 @@ fn dlh_subst_arms(arms: Array[(Pat, Expr)], from: String, to: String) -> Array[(
   while i < Array::length(arms) {
     let (p, b) = Array::get(arms, i)
     let pb = empty_str_array()
-    dlh_pat_binds(p, pb)
-    let shadow = dlh_contains(pb, from)
+    collect_pat_binders(p, pb)
+    let shadow = str_array_contains(pb, from)
     Array::push(out, (p, if shadow {
       b
     } else {
@@ -8482,162 +8429,9 @@ fn dlh_subst_arms(arms: Array[(Pat, Expr)], from: String, to: String) -> Array[(
 /// deliberately simple, non-shadow-aware walk -- safe, because a fresh
 /// unique marker can never collide with an unrelated binding the way
 /// `name` itself could.
-fn dlh_mocd_scan(expr: Expr, marker: String, bad: Array[Bool]) -> Unit {
-  match expr {
-    EIdent(n, _) => if n == marker {
-      Array::set(bad, 0, true)
-    } else {
-      ()
-    },
-    ECall(callee, args, _) => {
-      match callee {
-        EIdent(n, _) => if n == marker {
-          ()
-        } else {
-          dlh_mocd_scan(callee, marker, bad)
-        },
-        _ => dlh_mocd_scan(callee, marker, bad)
-      }
-      let mut i = 0
-      while i < Array::length(args) {
-        dlh_mocd_scan(Array::get(args, i), marker, bad)
-        i = i + 1
-      }
-    },
-    EBinOp(_, l, r) => {
-      dlh_mocd_scan(l, marker, bad)
-      dlh_mocd_scan(r, marker, bad)
-    },
-    EUnaryOp(_, e) => dlh_mocd_scan(e, marker, bad),
-    ETuple(es) => {
-      let mut i = 0
-      while i < Array::length(es) {
-        dlh_mocd_scan(Array::get(es, i), marker, bad)
-        i = i + 1
-      }
-    },
-    EArray(es) => {
-      let mut i = 0
-      while i < Array::length(es) {
-        dlh_mocd_scan(Array::get(es, i), marker, bad)
-        i = i + 1
-      }
-    },
-    ESpread(e) => dlh_mocd_scan(e, marker, bad),
-    EContinue(es) => {
-      let mut i = 0
-      while i < Array::length(es) {
-        dlh_mocd_scan(Array::get(es, i), marker, bad)
-        i = i + 1
-      }
-    },
-    ERecord(_, fs, _) => {
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (_, v) = Array::get(fs, i)
-        dlh_mocd_scan(v, marker, bad)
-        i = i + 1
-      }
-    },
-    EMap(fs) => {
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (_, v) = Array::get(fs, i)
-        dlh_mocd_scan(v, marker, bad)
-        i = i + 1
-      }
-    },
-    EIf(c, t, e) => {
-      dlh_mocd_scan(c, marker, bad)
-      dlh_mocd_scan(t, marker, bad)
-      dlh_mocd_scan(e, marker, bad)
-    },
-    ELet(_, v, b, _) => {
-      dlh_mocd_scan(v, marker, bad)
-      dlh_mocd_scan(b, marker, bad)
-    },
-    ELetRec(_, v, b) => {
-      dlh_mocd_scan(v, marker, bad)
-      dlh_mocd_scan(b, marker, bad)
-    },
-    ELetMut(_, v, b, _) => {
-      dlh_mocd_scan(v, marker, bad)
-      dlh_mocd_scan(b, marker, bad)
-    },
-    EAssign(n, v, c) => {
-      if n == marker {
-        Array::set(bad, 0, true)
-      } else {
-        ()
-      }
-      dlh_mocd_scan(v, marker, bad)
-      dlh_mocd_scan(c, marker, bad)
-    },
-    EAssignOp(n, _, v, c) => {
-      if n == marker {
-        Array::set(bad, 0, true)
-      } else {
-        ()
-      }
-      dlh_mocd_scan(v, marker, bad)
-      dlh_mocd_scan(c, marker, bad)
-    },
-    ESeq(a, b) => {
-      dlh_mocd_scan(a, marker, bad)
-      dlh_mocd_scan(b, marker, bad)
-    },
-    EWhile(c, b) => {
-      dlh_mocd_scan(c, marker, bad)
-      dlh_mocd_scan(b, marker, bad)
-    },
-    EForIn(_, _, it, b) => {
-      dlh_mocd_scan(it, marker, bad)
-      dlh_mocd_scan(b, marker, bad)
-    },
-    EDot(o, _, _, _) => dlh_mocd_scan(o, marker, bad),
-    ELabeledArg(_, _, e) => dlh_mocd_scan(e, marker, bad),
-    EReturn(e) => dlh_mocd_scan(e, marker, bad),
-    EBreak(opt) => match opt {
-      Some(e) => dlh_mocd_scan(e, marker, bad),
-      None => ()
-    },
-    EFn(_, _, _, _, _, body) => dlh_mocd_scan(body, marker, bad),
-    EMatch(s, arms) => {
-      dlh_mocd_scan(s, marker, bad)
-      dlh_mocd_scan_arms(arms, marker, bad)
-    },
-    EHandle(s, arms) => {
-      dlh_mocd_scan(s, marker, bad)
-      dlh_mocd_scan_arms(arms, marker, bad)
-    },
-    ELoop(params, b) => {
-      let mut i = 0
-      while i < Array::length(params) {
-        let (_, init) = Array::get(params, i)
-        dlh_mocd_scan(init, marker, bad)
-        i = i + 1
-      }
-      dlh_mocd_scan(b, marker, bad)
-    },
-    _ => ()
-  }
-}
-
-fn dlh_mocd_scan_arms(arms: Array[(Pat, Expr)], marker: String, bad: Array[Bool]) -> Unit {
-  let mut i = 0
-  while i < Array::length(arms) {
-    let (_, b) = Array::get(arms, i)
-    dlh_mocd_scan(b, marker, bad)
-    i = i + 1
-  }
-}
 
 fn dlh_marker_only_called_directly(expr: Expr, marker: String) -> Bool {
-  let bad = [
-    false
-  ]
-  dlh_mocd_scan(expr, marker, bad)
-  !Array::get(bad, 0)
+  !dinsp_scan(expr, 4, marker)
 }
 
 /// Rewrite every `ECall(EIdent(marker), args, off)` into `ECall(EIdent(fresh),
@@ -8737,7 +8531,7 @@ fn dlh_dedup_names(names: Array[String]) -> Array[String] {
   let mut i = 0
   while i < Array::length(names) {
     let n = Array::get(names, i)
-    if dlh_contains(out, n) {
+    if str_array_contains(out, n) {
       ()
     } else {
       Array::push(out, n)
@@ -8763,149 +8557,13 @@ fn dlh_dedup_names(names: Array[String]) -> Array[String] {
 /// diverging means pass-by-value and capture-by-reference are behaviorally
 /// identical for this specific program, whatever the declaration said.
 fn dlh_names_ever_assigned(expr: Expr, names: Array[String]) -> Bool {
-  let bad = [
-    false
-  ]
-  dlh_naa_scan(expr, names, bad)
-  Array::get(bad, 0)
-}
-
-fn dlh_naa_scan(expr: Expr, names: Array[String], bad: Array[Bool]) -> Unit {
-  match expr {
-    EAssign(n, v, c) => {
-      if dlh_contains(names, n) {
-        Array::set(bad, 0, true)
-      } else {
-        ()
-      }
-      dlh_naa_scan(v, names, bad)
-      dlh_naa_scan(c, names, bad)
-    },
-    EAssignOp(n, _, v, c) => {
-      if dlh_contains(names, n) {
-        Array::set(bad, 0, true)
-      } else {
-        ()
-      }
-      dlh_naa_scan(v, names, bad)
-      dlh_naa_scan(c, names, bad)
-    },
-    ECall(callee, args, _) => {
-      dlh_naa_scan(callee, names, bad)
-      let mut i = 0
-      while i < Array::length(args) {
-        dlh_naa_scan(Array::get(args, i), names, bad)
-        i = i + 1
-      }
-    },
-    EBinOp(_, l, r) => {
-      dlh_naa_scan(l, names, bad)
-      dlh_naa_scan(r, names, bad)
-    },
-    EUnaryOp(_, e) => dlh_naa_scan(e, names, bad),
-    ETuple(es) => {
-      let mut i = 0
-      while i < Array::length(es) {
-        dlh_naa_scan(Array::get(es, i), names, bad)
-        i = i + 1
-      }
-    },
-    EArray(es) => {
-      let mut i = 0
-      while i < Array::length(es) {
-        dlh_naa_scan(Array::get(es, i), names, bad)
-        i = i + 1
-      }
-    },
-    ESpread(e) => dlh_naa_scan(e, names, bad),
-    EContinue(es) => {
-      let mut i = 0
-      while i < Array::length(es) {
-        dlh_naa_scan(Array::get(es, i), names, bad)
-        i = i + 1
-      }
-    },
-    ERecord(_, fs, _) => {
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (_, v) = Array::get(fs, i)
-        dlh_naa_scan(v, names, bad)
-        i = i + 1
-      }
-    },
-    EMap(fs) => {
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (_, v) = Array::get(fs, i)
-        dlh_naa_scan(v, names, bad)
-        i = i + 1
-      }
-    },
-    EIf(c, t, e) => {
-      dlh_naa_scan(c, names, bad)
-      dlh_naa_scan(t, names, bad)
-      dlh_naa_scan(e, names, bad)
-    },
-    ELet(_, v, b, _) => {
-      dlh_naa_scan(v, names, bad)
-      dlh_naa_scan(b, names, bad)
-    },
-    ELetRec(_, v, b) => {
-      dlh_naa_scan(v, names, bad)
-      dlh_naa_scan(b, names, bad)
-    },
-    ELetMut(_, v, b, _) => {
-      dlh_naa_scan(v, names, bad)
-      dlh_naa_scan(b, names, bad)
-    },
-    ESeq(a, b) => {
-      dlh_naa_scan(a, names, bad)
-      dlh_naa_scan(b, names, bad)
-    },
-    EWhile(c, b) => {
-      dlh_naa_scan(c, names, bad)
-      dlh_naa_scan(b, names, bad)
-    },
-    EForIn(_, _, it, b) => {
-      dlh_naa_scan(it, names, bad)
-      dlh_naa_scan(b, names, bad)
-    },
-    EDot(o, _, _, _) => dlh_naa_scan(o, names, bad),
-    ELabeledArg(_, _, e) => dlh_naa_scan(e, names, bad),
-    EReturn(e) => dlh_naa_scan(e, names, bad),
-    EBreak(opt) => match opt {
-      Some(e) => dlh_naa_scan(e, names, bad),
-      None => ()
-    },
-    EFn(_, _, _, _, _, body) => dlh_naa_scan(body, names, bad),
-    EMatch(s, arms) => {
-      dlh_naa_scan(s, names, bad)
-      dlh_naa_scan_arms(arms, names, bad)
-    },
-    EHandle(s, arms) => {
-      dlh_naa_scan(s, names, bad)
-      dlh_naa_scan_arms(arms, names, bad)
-    },
-    ELoop(params, b) => {
-      let mut i = 0
-      while i < Array::length(params) {
-        let (_, init) = Array::get(params, i)
-        dlh_naa_scan(init, names, bad)
-        i = i + 1
-      }
-      dlh_naa_scan(b, names, bad)
-    },
-    _ => ()
-  }
-}
-
-fn dlh_naa_scan_arms(arms: Array[(Pat, Expr)], names: Array[String], bad: Array[Bool]) -> Unit {
   let mut i = 0
-  while i < Array::length(arms) {
-    let (_, b) = Array::get(arms, i)
-    dlh_naa_scan(b, names, bad)
+  let mut found = false
+  while !found && i < Array::length(names) {
+    found = dinsp_scan(expr, 5, Array::get(names, i))
     i = i + 1
   }
+  found
 }
 
 /// A closure literal's DECLARED effect row is non-empty.
@@ -9568,53 +9226,6 @@ fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Optio
 /// (`let f = (y) -> ..` / a fn param / a pattern bind) must suppress both the
 /// reorder and the label-name validation — the call resolves to the local
 /// value, whose parameter names the table knows nothing about.
-fn relabel_shadowed(shadows: Array[String], name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(shadows) {
-    if Array::get(shadows, i) == name {
-      found = true
-      i = Array::length(shadows)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-///|
-fn relabel_pat_binds(pat: Pat, shadows: Array[String]) -> Unit {
-  match pat {
-    PBind(n) => Array::push(shadows, n),
-    PCtor(_, ps) => {
-      let mut i = 0
-      while i < Array::length(ps) {
-        relabel_pat_binds(Array::get(ps, i), shadows)
-        i = i + 1
-      }
-    },
-    PTuple(ps) => {
-      let mut i = 0
-      while i < Array::length(ps) {
-        relabel_pat_binds(Array::get(ps, i), shadows)
-        i = i + 1
-      }
-    },
-    POr(a, b) => {
-      relabel_pat_binds(a, shadows)
-      relabel_pat_binds(b, shadows)
-    },
-    PStruct(_, fields) => {
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        relabel_pat_binds(fp, shadows)
-        i = i + 1
-      }
-    },
-    _ => ()
-  }
-}
 
 ///|
 /// Strip the ELabeledArg wrappers off a VALIDATED arg list (labels confirmed to
@@ -9689,7 +9300,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       }
       let final_args = if any_labeled_arg {
         match callee {
-          EIdent(fname, _) => if relabel_shadowed(shadows, fname) {
+          EIdent(fname, _) => if str_array_contains(shadows, fname) {
             rargs
           } else {
             match lookup_param_labels(tbl, fname) {
@@ -9708,7 +9319,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       // #1500: fill / wrap optional parameters AFTER label reordering, so the
       // flags line up with declared parameter order.
       let opt_args = match callee {
-        EIdent(fname, _) => if relabel_shadowed(shadows, fname) {
+        EIdent(fname, _) => if str_array_contains(shadows, fname) {
           final_args
         } else {
           match optional_param_flags(fname) {
@@ -9784,7 +9395,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
         let mark = Array::length(shadows)
-        relabel_pat_binds(p, shadows)
+        collect_pat_binders(p, shadows)
         Array::push(out, (p, relabel_expr(b, tbl, shadows)))
         Array::truncate(shadows, mark)
         i = i + 1
@@ -9798,7 +9409,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
         let mark = Array::length(shadows)
-        relabel_pat_binds(p, shadows)
+        collect_pat_binders(p, shadows)
         Array::push(out, (p, relabel_expr(b, tbl, shadows)))
         Array::truncate(shadows, mark)
         i = i + 1
@@ -9877,113 +9488,18 @@ fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt {
 }
 
 ///|
-/// #986: read-only containment scan — does this expr contain any ELabeledArg?
-/// Used to gate the (allocating) relabel_stmt rebuild per top-level statement,
+/// #986: allocation-free containment scan used to gate the allocating
+/// relabel_stmt rebuild per top-level statement,
 /// since collect_fn_param_labels now indexes EVERY top-level function and the
 /// old `tbl empty -> skip` fast path no longer fires for ordinary programs.
-fn expr_has_labeled_arg(expr: Expr) -> Bool {
-  match expr {
-    ELabeledArg(_, _, _) => true,
-    ECall(callee, args, _) => {
-      let mut found = expr_has_labeled_arg(callee)
-      let mut i = 0
-      while i < Array::length(args) {
-        if found {
-          i = Array::length(args)
-        } else {
-          found = expr_has_labeled_arg(Array::get(args, i))
-          i = i + 1
-        }
-      }
-      found
-    },
-    EBinOp(_, l, r) => expr_has_labeled_arg(l) || expr_has_labeled_arg(r),
-    EUnaryOp(_, e) => expr_has_labeled_arg(e),
-    ETuple(elems) => arr_has_labeled_arg(elems),
-    EArray(elems) => arr_has_labeled_arg(elems),
-    ESpread(e) => expr_has_labeled_arg(e),
-    ERecord(_, fields, _) => pairs_have_labeled_arg(fields),
-    EMap(fields) => pairs_have_labeled_arg(fields),
-    EIf(c, t, e) => expr_has_labeled_arg(c) || expr_has_labeled_arg(t) || expr_has_labeled_arg(e),
-    ELet(_, v, b, _) => expr_has_labeled_arg(v) || expr_has_labeled_arg(b),
-    ELetRec(_, v, b) => expr_has_labeled_arg(v) || expr_has_labeled_arg(b),
-    ELetMut(_, v, b, _) => expr_has_labeled_arg(v) || expr_has_labeled_arg(b),
-    EAssign(_, v, k) => expr_has_labeled_arg(v) || expr_has_labeled_arg(k),
-    EAssignOp(_, _, v, k) => expr_has_labeled_arg(v) || expr_has_labeled_arg(k),
-    ESeq(a, b) => expr_has_labeled_arg(a) || expr_has_labeled_arg(b),
-    EMatch(scrut, arms) => expr_has_labeled_arg(scrut) || arms_have_labeled_arg(arms),
-    EHandle(scrut, arms) => expr_has_labeled_arg(scrut) || arms_have_labeled_arg(arms),
-    EWhile(c, b) => expr_has_labeled_arg(c) || expr_has_labeled_arg(b),
-    ELoop(inits, b) => pairs_have_labeled_arg(inits) || expr_has_labeled_arg(b),
-    EForIn(_, _, iter, b) => expr_has_labeled_arg(iter) || expr_has_labeled_arg(b),
-    EFn(_, _, _, _, _, b) => expr_has_labeled_arg(b),
-    EDot(obj, _, _, _) => expr_has_labeled_arg(obj),
-    EReturn(e) => expr_has_labeled_arg(e),
-    EBreak(opt) => match opt {
-      Some(e) => expr_has_labeled_arg(e),
-      None => false
-    },
-    EContinue(exprs) => arr_has_labeled_arg(exprs),
-    _ => false
-  }
-}
-
-///|
-fn arr_has_labeled_arg(exprs: Array[Expr]) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(exprs) {
-    if found {
-      i = Array::length(exprs)
-    } else {
-      found = expr_has_labeled_arg(Array::get(exprs, i))
-      i = i + 1
-    }
-  }
-  found
-}
-
-///|
-fn pairs_have_labeled_arg(pairs: Array[(String, Expr)]) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(pairs) {
-    if found {
-      i = Array::length(pairs)
-    } else {
-      let (_, v) = Array::get(pairs, i)
-      found = expr_has_labeled_arg(v)
-      i = i + 1
-    }
-  }
-  found
-}
-
-///|
-fn arms_have_labeled_arg(arms: Array[(Pat, Expr)]) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(arms) {
-    if found {
-      i = Array::length(arms)
-    } else {
-      let (_, b) = Array::get(arms, i)
-      found = expr_has_labeled_arg(b)
-      i = i + 1
-    }
-  }
-  found
-}
-
-///|
 fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   match stmt {
-    SLet(_, _, _, _, body) => expr_has_labeled_arg(body),
-    SLetMut(_, _, body) => expr_has_labeled_arg(body),
-    STest(_, body) => expr_has_labeled_arg(body),
-    SBench(_, body) => expr_has_labeled_arg(body),
-    SExpr(e) => expr_has_labeled_arg(e),
-    SLetPat(_, e) => expr_has_labeled_arg(e),
+    SLet(_, _, _, _, body) => dinsp_scan(body, 3, ""),
+    SLetMut(_, _, body) => dinsp_scan(body, 3, ""),
+    STest(_, body) => dinsp_scan(body, 3, ""),
+    SBench(_, body) => dinsp_scan(body, 3, ""),
+    SExpr(e) => dinsp_scan(e, 3, ""),
+    SLetPat(_, e) => dinsp_scan(e, 3, ""),
     SModule(_, _, ms) => {
       let mut found = false
       let mut i = 0
@@ -10001,10 +9517,13 @@ fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   }
 }
 
-/// Read-only scan for one of three questions, in ONE explicit-variant walk:
+/// Read-only scan for one of six questions, in ONE explicit-variant walk:
 ///   mode 0 -- does this contain a two-argument `inspect(..)` call?
 ///   mode 1 -- does this BIND the name `inspect` (a let / for / fn parameter)?
 ///   mode 2 -- does this mention `name` at all, as a reference or a binder?
+///   mode 3 -- does this contain a labeled-argument wrapper?
+///   mode 4 -- is `name` used anywhere except as a direct call callee?
+///   mode 5 -- is `name` targeted by an assignment or assignment-op?
 ///
 /// The variants are enumerated by hand rather than recursed through
 /// `expr_children`, and that is the whole point: `expr_children` ALLOCATES a
@@ -10035,7 +9554,7 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EHandle(_, arms) => dinsp_arms_bind(arms, "inspect"),
       _ => false
     }
-  } else {
+  } else if mode == 2 {
     match expr {
       EIdent(n, _) => n == name,
       ELet(n, _, _, _) => n == name,
@@ -10047,6 +9566,24 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),
       EMatch(_, arms) => dinsp_arms_bind(arms, name),
       EHandle(_, arms) => dinsp_arms_bind(arms, name),
+      _ => false
+    }
+  } else if mode == 3 {
+    match expr {
+      ELabeledArg(_, _, _) => true,
+      _ => false
+    }
+  } else if mode == 4 {
+    match expr {
+      EIdent(n, _) => n == name,
+      EAssign(n, _, _) => n == name,
+      EAssignOp(n, _, _, _) => n == name,
+      _ => false
+    }
+  } else {
+    match expr {
+      EAssign(n, _, _) => n == name,
+      EAssignOp(n, _, _, _) => n == name,
       _ => false
     }
   }
@@ -10077,7 +9614,18 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EWhile(c, b) => dinsp_scan(c, mode, name) || dinsp_scan(b, mode, name),
       ELoop(params, b) => dinsp_scan_fields(params, mode, name) || dinsp_scan(b, mode, name),
       EForIn(_, _, it, b) => dinsp_scan(it, mode, name) || dinsp_scan(b, mode, name),
-      ECall(callee, args, _) => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name),
+      ECall(callee, args, _) => if mode == 4 {
+        match callee {
+          EIdent(n, _) => if n == name {
+            dinsp_scan_list(args, mode, name)
+          } else {
+            dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name)
+          },
+          _ => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name)
+        }
+      } else {
+        dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name)
+      },
       EBinOp(_, l, r) => dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name),
       EUnaryOp(_, v) => dinsp_scan(v, mode, name),
       EFn(_, _, _, _, _, body) => dinsp_scan(body, mode, name),
@@ -10520,8 +10068,8 @@ export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
 }
 
 /// In-place labeled-argument reordering over a whole program. Rebuilds only the
-/// top-level statements that actually contain a labeled argument (see
-/// expr_has_labeled_arg).
+/// top-level statements that the allocation-free scalar scan finds contain a
+/// labeled argument.
 export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   let tbl = collect_fn_param_labels(stmts)
   // #1500: optional-parameter call sites are rewritten by the same walk (see
@@ -10779,8 +10327,8 @@ fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
       while i < Array::length(arms) && !found {
         let (p, b) = Array::get(arms, i)
         let bound = array_empty()
-        dlh_pat_binds(p, bound)
-        if dlh_contains(bound, name) || dtpw_expr_binds_name(b, name) {
+        collect_pat_binders(p, bound)
+        if str_array_contains(bound, name) || dtpw_expr_binds_name(b, name) {
           found = true
         } else {
           ()
@@ -10795,8 +10343,8 @@ fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
       while i < Array::length(arms) && !found {
         let (p, b) = Array::get(arms, i)
         let bound = array_empty()
-        dlh_pat_binds(p, bound)
-        if dlh_contains(bound, name) || dtpw_expr_binds_name(b, name) {
+        collect_pat_binders(p, bound)
+        if str_array_contains(bound, name) || dtpw_expr_binds_name(b, name) {
           found = true
         } else {
           ()
@@ -10941,7 +10489,7 @@ fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
 fn dtpw_inline_expr(expr: Expr, wrappers: Array[String]) -> Expr {
   match expr {
     ECall(callee, args, off) => match callee {
-      EIdent(wn, _) => if dlh_contains(wrappers, wn) && Array::length(args) == 1 {
+      EIdent(wn, _) => if str_array_contains(wrappers, wn) && Array::length(args) == 1 {
         ECall(dtpw_inline_expr(Array::get(args, 0), wrappers), array_empty(), off)
       } else {
         ECall(dtpw_inline_expr(callee, wrappers), for a in args {
