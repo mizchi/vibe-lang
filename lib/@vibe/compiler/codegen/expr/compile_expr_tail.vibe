@@ -233,7 +233,7 @@ import ./compile_call.vibe {
 }
 
 import ./compile_expr_tail2.vibe {
-  compile_expr_tail2
+  compile_expr_tail2, compile_forin_loop
 }
 
 import ./compile_lambda.vibe {
@@ -1789,7 +1789,14 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let first = get_eseq_first(expr)
     let second = get_eseq_second(expr)
     emit_dbg_line_for(buf, first, ctx)
-    let nl = compile_expr(buf, first, local_names, next_local, ctx, ld)
+    // #1916: a `for` at the head of a sequence is statement-shaped (same
+    // classification the checker uses, #1679) -- its comprehension result is
+    // discarded right here by the emit_drop below, so compile it in the
+    // no-collect form instead of materializing an array nobody reads.
+    let nl = match first {
+      EForIn(_, _, _, _) => compile_forin_loop(buf, first, local_names, next_local, ctx, ld, compile_expr, false),
+      _ => compile_expr(buf, first, local_names, next_local, ctx, ld)
+    }
     emit_drop(buf)
     compile_expr(buf, second, local_names, nl, ctx, ld)
   } else {
