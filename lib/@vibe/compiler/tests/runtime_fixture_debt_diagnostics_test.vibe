@@ -46,6 +46,38 @@ fn effect_multishot_src() -> String {
   "effect Amb {\n  Choose -> Bool\n}\nlet a = handle {\n  let x = perform Amb::Choose\n  if x { 10 } else { 20 }\n} { Amb::Choose => resume(true) }\n"
 }
 
+fn effect_cps_accumulate_src() -> String {
+  "effect Yield { Yield(Int) -> Unit }\nlet result = handle {\n  perform Yield::Yield(1)\n  0\n} with Yield {\n  Yield(v, k) => v + k(0)\n}\n"
+}
+
+fn effect_cps_collect_array_src() -> String {
+  "effect Yield { Yield(Int) -> Unit }\nlet result = handle {\n  perform Yield::Yield(10)\n  0\n} with Yield {\n  Yield(v, k) => v + k(0)\n}\n"
+}
+
+fn effect_cps_mut_adr021_src() -> String {
+  "effect Emit { Emit(Int) -> Unit }\nlet count = handle {\n  perform Emit::Emit(10)\n  0\n} with Emit {\n  Emit(v, k) => v + k(0)\n}\n"
+}
+
+fn effect_cps_product_src() -> String {
+  "effect Yield { Yield(Int) -> Unit }\nlet product = handle {\n  perform Yield::Yield(2)\n  1\n} with Yield {\n  Yield(v, k) => v * k(0)\n}\n"
+}
+
+fn effect_handle_resume_in_block_src() -> String {
+  "effect Ask { Question(String) -> String }\nlet result = handle {\n  perform Ask::Question(\"name?\")\n} with Ask {\n  Question(q, k) => {\n    resume(q)\n  }\n}\n"
+}
+
+fn effect_handle_resume_in_if_block_src() -> String {
+  "effect Gate { Check(Int) -> String }\nlet result = handle {\n  perform Gate::Check(10)\n} with Gate {\n  Check(n, k) => {\n    if n > 5 { resume(\"big\") } else { resume(\"small\") }\n  }\n}\n"
+}
+
+fn effect_row_chain_src() -> String {
+  "effect Auth { Verify(String) -> Bool }\neffect Log { Info(String) -> Unit }\nlet result = handle {\n  handle {\n    perform Log::Info(\"start\")\n    perform Auth::Verify(\"token\")\n  } { Auth::Verify(_token) => resume(true) }\n} { Log::Info(_msg) => resume(0) }\n"
+}
+
+fn effect_row_open_src() -> String {
+  "effect Log { Info(String) -> Unit }\nlet with_log = [A](f: () -> A with Log | e) -> A with e {\n  handle { f() } with Log {\n    Info(_msg) => resume(0)\n  }\n}\n"
+}
+
 test "try_question_mark: ? on Int with Exception is rejected" {
   inspect(check_source_error_message(try_question_mark_src()), "`?` unwraps an Option; this expression is Int — handle it with `match`, or only use `?` on an Option value")
 }
@@ -84,4 +116,36 @@ test "effect_infer_multi: nested handler without with is rejected" {
 
 test "effect_multishot: handler without with is rejected" {
   inspect(check_source_error_message(effect_multishot_src()), "expected with but got { at #29")
+}
+
+test "effect_cps_accumulate: two-binder continuation arm is rejected" {
+  inspect(check_source_error_message(effect_cps_accumulate_src()), "handler arm Yield::Yield expects 1 payload binding(s), got 2 — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")
+}
+
+test "effect_cps_collect_array: two-binder continuation arm is rejected" {
+  inspect(check_source_error_message(effect_cps_collect_array_src()), "handler arm Yield::Yield expects 1 payload binding(s), got 2 — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")
+}
+
+test "effect_cps_mut_adr021: two-binder continuation arm is rejected" {
+  inspect(check_source_error_message(effect_cps_mut_adr021_src()), "handler arm Emit::Emit expects 1 payload binding(s), got 2 — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")
+}
+
+test "effect_cps_product: two-binder continuation arm is rejected" {
+  inspect(check_source_error_message(effect_cps_product_src()), "handler arm Yield::Yield expects 1 payload binding(s), got 2 — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")
+}
+
+test "effect_handle_resume_in_block: two-binder continuation arm is rejected" {
+  inspect(check_source_error_message(effect_handle_resume_in_block_src()), "handler arm Ask::Question expects 1 payload binding(s), got 2 — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")
+}
+
+test "effect_handle_resume_in_if_block: two-binder continuation arm is rejected" {
+  inspect(check_source_error_message(effect_handle_resume_in_if_block_src()), "handler arm Gate::Check expects 1 payload binding(s), got 2 — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")
+}
+
+test "effect_row_chain: nested handler without with is rejected" {
+  inspect(check_source_error_message(effect_row_chain_src()), "expected with but got { at #42")
+}
+
+test "effect_row_open: open-row pipe syntax is rejected" {
+  inspect(check_source_error_message(effect_row_open_src()), "expected ',' or ')' in param list at #25 token=|")
 }
