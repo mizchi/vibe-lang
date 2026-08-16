@@ -63,7 +63,8 @@ import @vibe/compiler/codegen/common_base {
   region_saves_base_of,
   resolve_func,
   resolve_local,
-  rewrite_self_tail_calls
+  rewrite_self_tail_calls,
+  wrap_entry_exception_boundary
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -1041,6 +1042,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   // EFn def so calls do not route through a 0-param thunk registration
   // (invalid wasm for any call arity). See import_alias_rewrite.vibe.
   rewrite_top_level_fn_alias_refs(stmts)
+  wrap_entry_exception_boundary(stmts, entry_name)
   // #tco: see codegen/common_base/self_tail_call.vibe's doc comment (same
   // rewrite as the linear backend's call site in codegen/wasi/linked_compile.vibe).
   rewrite_self_tail_calls(stmts)
@@ -1553,9 +1555,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
-  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream") || stmts_use_builtin(stmts, fn_names_list, "vibe_process_exit_raw")
+  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream") || stmts_use_builtin(stmts, fn_names_list, "vibe_process_exit_raw") || stmts_use_builtin(stmts, fn_names_list, "Stderr::write_stream")
   let hbo = if use_host {
-    20
+    21
   } else {
     0
   }
@@ -1789,7 +1791,11 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
       // stopping point: the flat compiler source calls it (cli_adapter.vibe
       // ends `main` with it), so codegen hit an unresolved name here while
       // every builtin LOWERING was already in place.
-      ("vibe_process_exit_raw", 1, 20, 0)
+      ("vibe_process_exit_raw", 1, 20, 0),
+      // The shared uncaught-exception boundary diagnoses on stderr before
+      // trapping. Keep this append-only so every older absolute import index
+      // remains stable.
+      ("Stderr::write_stream", 1, 21, 0)
     ]
     let mut __hd = 0
     while __hd < Array::length(host_defs) {
@@ -2524,7 +2530,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     // 4=(i64,i64)->i64, 5=()->i64, 6=(i64,i64)->()) -- the linear backend's
     // raw tagged ABI.
     let imp_content = bytebuf_new()
-    bytebuf_push_vec_header(imp_content, 21)
+    bytebuf_push_vec_header(imp_content, 22)
     emit_name(imp_content, "wasi_snapshot_preview1")
     emit_name(imp_content, "fd_write")
     bytebuf_push(imp_content, 0)
@@ -2551,7 +2557,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
       ("fs_read_dir", 3),
       ("stdin_read_char", 5),
       ("stdin_read_stream", 3),
-      ("process_exit", 1)
+      ("process_exit", 1),
+      ("stderr_write_stream", 1)
     ]
     let mut __hi = 0
     while __hi < Array::length(host_imports) {

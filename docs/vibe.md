@@ -74,7 +74,7 @@ Exception-rowed callback parameter all require the caller to declare or
 `handle` it.
 An entry declared `with Exception` gets a runtime boundary handler: an
 escaping Throw becomes `vibe: uncaught error: <msg>` on stderr and an
-unsuccessful (1) entry result. Remaining #944 tail: the builtin-call exception
+unsuccessful process outcome. Remaining #944 tail: the builtin-call exception
 carve-out (sub-decision) and the temporary `VIBE_CHECK_ERROR_ROW=0` opt-out.
 
 ```

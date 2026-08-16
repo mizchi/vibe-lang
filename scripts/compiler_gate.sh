@@ -7176,13 +7176,13 @@ rm -rf "$g944dir"
 echo "[compiler-gate] opt-in checked-Error row discipline ok (#944 stage A)"
 
 # 44c. #944 (ADR-0073 stage C, "entry boundary A"): an entry declared
-#      `with Error` whose Throw escapes must produce the stderr
-#      diagnostic and evaluate to 1 (unsuccessful outcome) instead of
-#      leaking a raw WebAssembly.Exception out of the entry.
+#      `with Error` whose Throw escapes must produce the stderr diagnostic and
+#      a non-zero shell status, including through the result-less `_start`
+#      launcher ABI.
 echo "[compiler-gate] 44c/44 entry-boundary Error handler (#944 stage C)"
 g944cdir="_build/_gate_944c"
 rm -rf "$g944cdir"; mkdir -p "$g944cdir"
-# #1571: the entry-boundary behaviour (stderr diagnostic + entry value) is
+# #1571: the entry-boundary behaviour (stderr diagnostic + process status) is
 # asserted below, so the fixture carries no `__DATA__` tail any more and is
 # compiled AS-IS -- no `sed` strip, no temp copy.
 rm -f "$g944cdir/out.wasm"
@@ -7194,9 +7194,8 @@ if [ ! -s "$g944cdir/out.wasm" ]; then
   cat "$g944cdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-g944c_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944cdir/out.wasm" 2>"$g944cdir/stderr.txt" | tail -1)"
-if [ "$g944c_out" != "1" ]; then
-  echo "[compiler-gate] FAIL: entry_error_boundary got '$g944c_out' (want 1) -- boundary handler value regressed (#944 stage C)" >&2
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g944cdir/out.wasm" >"$g944cdir/stdout.txt" 2>"$g944cdir/stderr.txt"; then
+  echo "[compiler-gate] FAIL: entry_error_boundary exited 0 through _start (#1945)" >&2
   exit 1
 fi
 if ! grep -q "vibe: uncaught error: boom" "$g944cdir/stderr.txt"; then
@@ -7230,12 +7229,11 @@ if [ ! -s "$g944cdir/typed.wasm" ]; then
   cat "$g944cdir/typed.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-g944c_typed_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944cdir/typed.wasm" 2>"$g944cdir/typed_stderr.txt" | tail -1)"
-if [ "$g944c_typed_out" != "1" ]; then
-  echo "[compiler-gate] FAIL: typed-payload entry boundary got '$g944c_typed_out' (want 1)" >&2
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g944cdir/typed.wasm" >"$g944cdir/typed_stdout.txt" 2>"$g944cdir/typed_stderr.txt"; then
+  echo "[compiler-gate] FAIL: typed-payload entry boundary exited 0 (#1945)" >&2
   exit 1
 fi
-if ! grep -qxF 'vibe: uncaught error: <Boom>' "$g944cdir/typed_stderr.txt"; then
+if [ "$(head -n 1 "$g944cdir/typed_stderr.txt")" != 'vibe: uncaught error: <Boom>' ]; then
   echo "[compiler-gate] FAIL: a TYPED exception escaping the entry did not name its kind -- the boundary is reading the payload as a string, or the #1374 kind side channel is not reaching it" >&2
   head -c 400 "$g944cdir/typed_stderr.txt" >&2 || true
   exit 1
@@ -7251,18 +7249,18 @@ if [ ! -s "$g944cdir/strp.wasm" ]; then
   cat "$g944cdir/strp.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-g944c_strp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944cdir/strp.wasm" 2>"$g944cdir/strp_stderr.txt" | tail -1)"
-if [ "$g944c_strp_out" != "1" ]; then
-  echo "[compiler-gate] FAIL: String-payload entry boundary got '$g944c_strp_out' (want 1)" >&2
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g944cdir/strp.wasm" >"$g944cdir/strp_stdout.txt" 2>"$g944cdir/strp_stderr.txt"; then
+  echo "[compiler-gate] FAIL: String-payload entry boundary exited 0 (#1945)" >&2
   exit 1
 fi
-if ! grep -qxF 'vibe: uncaught error: plain boom' "$g944cdir/strp_stderr.txt"; then
+if [ "$(head -n 1 "$g944cdir/strp_stderr.txt")" != 'vibe: uncaught error: plain boom' ]; then
   echo "[compiler-gate] FAIL: a String exception escaping the entry no longer prints verbatim -- #1374's kind dispatch changed the common case (want 'vibe: uncaught error: plain boom')" >&2
   head -c 400 "$g944cdir/strp_stderr.txt" >&2 || true
   exit 1
 fi
 rm -rf "$g944cdir"
 echo "[compiler-gate] entry-boundary Error handler ok (#944 stage C, typed payload #1372, kind channel #1374)"
+bash scripts/test_uncaught_exception_exit.sh "$stage2_wasm"
 
 # 44d. #1087: a NON-tail `throw` inline in a `handle .. with Error` body
 #      must abort the body -- the arm's value (1) is the handle's result,
@@ -10746,7 +10744,11 @@ exn_msg_expect() {
     exit 1
   fi
   local got
-  got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/$name.wasm" 2>&1 | grep "uncaught error" | head -1)"
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/$name.wasm" >"$exnmsgdir/$name.stdout" 2>"$exnmsgdir/$name.stderr"; then
+    echo "[compiler-gate] FAIL: $name uncaught exception exited 0 (#1945)" >&2
+    exit 1
+  fi
+  got="$(grep "uncaught error" "$exnmsgdir/$name.stderr" | head -1)"
   if [ "$got" != "vibe: uncaught error: $want" ]; then
     echo "[compiler-gate] FAIL: $name got '$got' (want 'vibe: uncaught error: $want') (#1392 slice 3)" >&2
     exit 1
