@@ -22,11 +22,30 @@ fi
 # grep` scans an exact materialization of the index, so unstaged working-tree
 # edits cannot hide or invent a finding. A truly reserved ABI binding may opt
 # out on the call's first source line with the marker below.
+# #1870: the hook is not the only place this should run. `--cached` is what
+# made CI skip it ("with nothing staged it would pass vacuously"), so CI ran
+# only the self-test and the rule never met a real diff -- while the hook, the
+# sole enforcement point against one, is bypassable with `--no-verify` and
+# silently skipped its AST tier wherever the runner could not run. Both holes
+# close by letting the same lint read a RANGE, which CI has and the hook does
+# not.
+#
+# Range mode materializes from HEAD rather than the index: in CI, HEAD is the
+# PR head, which is the range's right-hand side.
+RANGE="${VIBE_REVIEW_LINT_RANGE:-}"
+if [ -n "$RANGE" ]; then
+  DIFF_SELECTOR=("$RANGE")
+  SHOW_REF="HEAD"
+else
+  DIFF_SELECTOR=(--cached)
+  SHOW_REF=""
+fi
+
 diff="$({
-  git -C "$PROJECT_ROOT" diff --cached --no-ext-diff --no-textconv --unified=0 --diff-filter=ACMR
+  git -C "$PROJECT_ROOT" diff "${DIFF_SELECTOR[@]}" --no-ext-diff --no-textconv --unified=0 --diff-filter=ACMR
 } || true)"
 
-staged_paths="$(git -C "$PROJECT_ROOT" diff --cached --name-only --diff-filter=ACMR \
+staged_paths="$(git -C "$PROJECT_ROOT" diff "${DIFF_SELECTOR[@]}" --name-only --diff-filter=ACMR \
   | awk '/^lib\/@vibe\/compiler\/.*\.vibe$/')"
 
 # `runtime/vibe` is a dispatcher script, so "executable and mentions a grep
@@ -42,8 +61,44 @@ elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN" \
   && "$GREP_BIN" --version >/dev/null 2>&1; then
   grep_available=1
 elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN"; then
-  echo "review-regressions lint: AST tier skipped -- $GREP_BIN cannot run here" >&2
-  echo "  (build the runner, or point VIBE_REVIEW_LINT_GREP_BIN at a working one)" >&2
+  # #1870: `runtime/vibe` is here but its Rust runner (`bin/viberun`) is not,
+  # which is the state of every checkout that has not built one. That is not
+  # the same as "this machine cannot run vibe": the repository ships a node
+  # runner, and `viberun`'s convention for the CLI is `<wasm> <args...>`
+  # against `cli_main`. Adapt to it instead of skipping -- measured, the AST
+  # tier then runs here and catches the #1809 drift it exists for.
+  #
+  # It needs a compiler wasm, and a stage2 built for this checkout is the
+  # right one; the pinned seed predates `vibe grep` (#1572).
+  stage2_for_grep="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+  if [ -n "$stage2_for_grep" ] && [ -x "$TOOL_ROOT/scripts/viberun_node.sh" ]; then
+    export VIBE_RUNNER="$TOOL_ROOT/scripts/viberun_node.sh"
+    export VIBE_CLI_WASM="$stage2_for_grep"
+    export VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$PROJECT_ROOT}"
+    if "$GREP_BIN" --version >/dev/null 2>&1; then
+      grep_available=1
+    fi
+  fi
+fi
+
+# Keyed to the OUTCOME, not to one branch of the probe. Setting it inside the
+# "runtime/vibe exists but cannot run" branch missed the plainer failure -- no
+# runtime/vibe at all -- which fell out of the chain untouched and reported a
+# clean `ok`. That is the same silence #1870 is about, one level up.
+ast_skipped=0
+if [ "$grep_available" -eq 0 ]; then
+  ast_skipped=1
+  echo "review-regressions lint: AST tier skipped -- no usable \`vibe grep\` ($GREP_BIN)" >&2
+  echo "  (build a stage2, or point VIBE_REVIEW_LINT_GREP_BIN at a working one)" >&2
+fi
+
+# A skipped tier and a clean tier used to end in the same `ok`, so the one
+# place this lint met a real diff could report success having checked nothing
+# -- which is how the drift it guards reached main. Callers that must not
+# accept that (CI) set VIBE_REVIEW_LINT_REQUIRE_AST=1.
+if [ "$ast_skipped" -eq 1 ] && [ "${VIBE_REVIEW_LINT_REQUIRE_AST:-0}" = "1" ]; then
+  echo "review-regressions lint: FAIL -- the AST tier is required here and did not run" >&2
+  exit 1
 fi
 
 violations=""
@@ -75,7 +130,7 @@ if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     mkdir -p "$tmp_root/$(dirname "$path")"
-    git -C "$PROJECT_ROOT" show ":$path" > "$tmp_root/$path"
+    git -C "$PROJECT_ROOT" show "$SHOW_REF:$path" > "$tmp_root/$path"
   done <<< "$staged_paths"
 
   set +e
@@ -164,4 +219,10 @@ if [ -n "$violations" ] || [ "$ast_tool_error" -eq 1 ]; then
   exit 1
 fi
 
-echo "review-regressions lint: ok"
+# Say which tiers ran. `ok` alone could not distinguish a clean scan from a
+# scan that never happened.
+if [ "$ast_skipped" -eq 1 ]; then
+  echo "review-regressions lint: ok (AST tier SKIPPED -- text tier only)"
+else
+  echo "review-regressions lint: ok"
+fi

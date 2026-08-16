@@ -336,4 +336,55 @@ if ! rg -q 'the AST scan did not run' "$TMP_ROOT/scan-error.out"; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# #1870: a skipped tier must be VISIBLE, and refusable.
+#
+# The three checks below are the ones whose absence let a real drift through.
+# The lint's only enforcement point against a real diff was the pre-commit
+# hook; where the runner could not run, the hook dropped its AST tier and
+# still printed a bare "ok", so "checked and clean" and "did not check" were
+# the same line.
+
+# 1. The skip has to say so in the SUMMARY, not only on stderr. A caller that
+#    reads the last line (a human scanning hook output, a script) otherwise
+#    cannot tell the two apart.
+if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/skip-summary.out" 2>&1; then
+  echo "review-regressions lint self-test: an unrunnable grep must still exit 0 by default" >&2
+  exit 1
+fi
+if ! rg -q 'ok \(AST tier SKIPPED' "$TMP_ROOT/skip-summary.out"; then
+  echo "review-regressions lint self-test: a skipped AST tier reported a bare 'ok'" >&2
+  cat "$TMP_ROOT/skip-summary.out" >&2
+  exit 1
+fi
+
+# 2. VIBE_REVIEW_LINT_REQUIRE_AST=1 turns that skip into a failure. This is
+#    what CI sets, so a gate cannot report success having checked nothing.
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_REQUIRE_AST=1 \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/require-ast.out" 2>&1; then
+  echo "review-regressions lint self-test: REQUIRE_AST=1 accepted a skipped AST tier" >&2
+  cat "$TMP_ROOT/require-ast.out" >&2
+  exit 1
+fi
+if ! rg -q 'the AST tier is required here and did not run' "$TMP_ROOT/require-ast.out"; then
+  echo "review-regressions lint self-test: REQUIRE_AST failure did not say why" >&2
+  cat "$TMP_ROOT/require-ast.out" >&2
+  exit 1
+fi
+
+# 3. The skip flag is keyed to the OUTCOME, not to one branch of the probe.
+#    Keyed to "runtime/vibe exists but cannot run", the plainer failure -- no
+#    runtime/vibe at all -- fell out of the chain untouched and reported a
+#    clean "ok" even under REQUIRE_AST. Measured during #1870; this pins it.
+rm -f "$TMP_ROOT/runtime/vibe"
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_REQUIRE_AST=1 \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/no-bin.out" 2>&1; then
+  echo "review-regressions lint self-test: REQUIRE_AST passed with no grep binary at all" >&2
+  cat "$TMP_ROOT/no-bin.out" >&2
+  exit 1
+fi
+
 echo "review-regressions lint self-test: ok"
