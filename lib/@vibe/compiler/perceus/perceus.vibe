@@ -297,6 +297,60 @@ fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
   0
 }
 
+/// #1915 mechanism 3 (see the EIf arm of pc_emit): both branches are the
+/// SAME bare identifier, so whichever branch executes performs the same
+/// single owned use — the emission pass walks it once instead of budgeting
+/// one dup per branch.
+fn eif_same_ident_branches(then_e: Expr, else_e: Expr) -> Bool {
+  match then_e {
+    EIdent(tn, _) =>
+    match else_e {
+      EIdent(en, _) => tn == en,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// #1915 mechanism 3, match form: every arm body is the SAME bare identifier
+/// and no arm pattern rebinds that name (a rebinding arm would resolve the
+/// mention to its own payload, so the arms would not share one use). Such a
+/// match performs exactly one owned use of that ident at runtime.
+fn ematch_same_ident_arms(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut nm = ""
+  let mut ok = Array::length(arms) > 1
+  let mut i = 0
+  while ok && i < Array::length(arms) {
+    let (p, body) = Array::get(arms, i)
+    match body {
+      EIdent(bn, _) => {
+        if nm == "" {
+          nm = bn
+        } else {
+          ()
+        }
+        if bn != nm {
+          ok = false
+        } else {
+          let pnames: Array[String] = [
+          ]
+          pat_names(p, pnames)
+          if array_contains_str_pctx(pnames, nm) {
+            ok = false
+          } else {
+            ()
+          }
+        }
+      },
+      _ => {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  ok && nm != ""
+}
+
 fn next_seq_name(ctx: PCtx) -> String {
   let nm = "__seq" + __to_string(ctx.seq_id)
   ctx.seq_id = ctx.seq_id + 1
@@ -1732,41 +1786,57 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     },
     EIf(cond, then_e, else_e) => {
       pc_emit(ctx, scope, cond)
-      let snap = copy_ints(ctx.remaining)
-      pc_emit(ctx, scope, then_e)
-      // #1100 alloc cut: swap the prefix instead of taking a SECOND copy —
-      // one pass both restores `remaining` to the pre-branch values (what
-      // restore_prefix did) and captures the then-branch's values into
-      // `snap`'s buffer (what the `then_rem` copy was for). Same values in
-      // the same places, one allocation instead of two per `if`; the
-      // branch-snapshot copies were the plan's largest allocation source
-      // on a full-closure compile.
-      let mut sw = 0
-      while sw < Array::length(snap) {
-        let then_v = Array::get(ctx.remaining, sw)
-        Array::set(ctx.remaining, sw, Array::get(snap, sw))
-        Array::set(snap, sw, then_v)
-        sw = sw + 1
-      }
-      pc_emit(ctx, scope, else_e)
-      // #705: leave the MIN remaining over both branches. A binding consumed in
-      // one branch (e.g. a param threaded into a ctor in the `then`) but not the
-      // other was previously left at the `else` branch's (higher) remaining, so
-      // the scope-end drop fired on a value the taken branch already moved out —
-      // a double free. Min means a binding consumed on ANY path is not
-      // re-dropped (the non-consuming path leaks one ref, which is safe) instead
-      // of the consuming path double-freeing (crash). Prefix-only (outer ids).
-      // (`snap` holds the THEN branch's values after the swap above.)
-      let mut i = 0
-      while i < Array::length(snap) {
-        if Array::get(snap, i) < Array::get(ctx.remaining, i) {
-          Array::set(ctx.remaining, i, Array::get(snap, i))
-        } else {
-          ()
+      // #1915 mechanism 3: `if c { out } else { out }` — every branch the
+      // SAME bare ident — is ONE owned use at runtime, whichever branch
+      // executes. Walking both branches pushed one PaDup per branch whenever
+      // remaining > 1 at branch entry (exactly what the #706 borrow-retention
+      // bump produces for a loop borrow-use), and codegen realizes every
+      // planned dup unconditionally at the binding's declaration site
+      // (rc_dup_names occurrence count) — the summed budget leaked one owned
+      // object per call for the standard `builder loop + if/else tail`
+      // shape. Walk the use once instead: the final `remaining` is identical
+      // to the old snap/min dance (each branch decremented by exactly one),
+      // only the duplicate sibling dup disappears. Anything but this exact
+      // shape keeps the general per-branch walk below unchanged.
+      if eif_same_ident_branches(then_e, else_e) {
+        pc_emit(ctx, scope, then_e)
+      } else {
+        let snap = copy_ints(ctx.remaining)
+        pc_emit(ctx, scope, then_e)
+        // #1100 alloc cut: swap the prefix instead of taking a SECOND copy —
+        // one pass both restores `remaining` to the pre-branch values (what
+        // restore_prefix did) and captures the then-branch's values into
+        // `snap`'s buffer (what the `then_rem` copy was for). Same values in
+        // the same places, one allocation instead of two per `if`; the
+        // branch-snapshot copies were the plan's largest allocation source
+        // on a full-closure compile.
+        let mut sw = 0
+        while sw < Array::length(snap) {
+          let then_v = Array::get(ctx.remaining, sw)
+          Array::set(ctx.remaining, sw, Array::get(snap, sw))
+          Array::set(snap, sw, then_v)
+          sw = sw + 1
         }
-        i = i + 1
+        pc_emit(ctx, scope, else_e)
+        // #705: leave the MIN remaining over both branches. A binding consumed in
+        // one branch (e.g. a param threaded into a ctor in the `then`) but not the
+        // other was previously left at the `else` branch's (higher) remaining, so
+        // the scope-end drop fired on a value the taken branch already moved out —
+        // a double free. Min means a binding consumed on ANY path is not
+        // re-dropped (the non-consuming path leaks one ref, which is safe) instead
+        // of the consuming path double-freeing (crash). Prefix-only (outer ids).
+        // (`snap` holds the THEN branch's values after the swap above.)
+        let mut i = 0
+        while i < Array::length(snap) {
+          if Array::get(snap, i) < Array::get(ctx.remaining, i) {
+            Array::set(ctx.remaining, i, Array::get(snap, i))
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        0
       }
-      0
     },
     EWhile(cond, body) => {
       pc_emit(ctx, scope, cond)
@@ -1858,6 +1928,43 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         while j < Array::length(pids) {
           pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
           j = j + 1
+        }
+        0
+      } else if ematch_same_ident_arms(arms) {
+        // #1915 mechanism 3 (see the EIf arm above): every arm body is the
+        // same bare ident, so the match performs exactly one owned use at
+        // runtime — walk the use once (first arm) instead of budgeting one
+        // dup per arm. Pattern bindings are still declared per arm in the
+        // same order as the counting pass (id alignment is load-bearing) and
+        // still get their scope-end handling.
+        let mut a = 0
+        while a < Array::length(arms) {
+          let arm = Array::get(arms, a)
+          let pnames: Array[String] = [
+          ]
+          pat_names(arm.0, pnames)
+          let mut s = scope
+          let pids: Array[Int] = [
+          ]
+          let mut k = 0
+          while k < Array::length(pnames) {
+            let nm = Array::get(pnames, k)
+            let pid = pe_declare(ctx, nm)
+            s = Map::set(s, nm, pid)
+            Array::push(pids, pid)
+            k = k + 1
+          }
+          if a == 0 {
+            pc_emit(ctx, s, arm.1)
+          } else {
+            ()
+          }
+          let mut j = 0
+          while j < Array::length(pids) {
+            pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+            j = j + 1
+          }
+          a = a + 1
         }
         0
       } else {

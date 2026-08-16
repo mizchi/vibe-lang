@@ -83,6 +83,27 @@ let build_arr = (n: Int) -> Array[Int] {
   out
 }
 
+// #1915 mechanism 3 leak guard: same builder, returned through an if/else
+// tail. The loop borrow-use keeps the binding's remaining > 1 at branch
+// entry, so each exclusive branch used to budget its OWN dup — both emitted
+// unconditionally at the binding site while only one branch executes, one
+// leaked array per call. pe_merge_exclusive_branch_dups folds the branch
+// budgets to a per-binding max.
+let build_arr_if = (n: Int) -> Array[Int] {
+  let out: Array[Int] = [
+  ]
+  let mut j = 0
+  while j < n {
+    Array::push(out, j)
+    j = j + 1
+  }
+  if n >= 0 {
+    out
+  } else {
+    out
+  }
+}
+
 let main = () -> Int {
   let mut total = 0
   let mut i = 0
@@ -138,7 +159,10 @@ let main = () -> Int {
     // #1915 leak guard (see build_arr above): the returned builder array is
     // owned by `built` and must be reclaimed at scope end each iteration.
     let built = build_arr(3)
-    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built)
+    // #1915 mechanism 3 (see build_arr_if above): the if/else-tail builder's
+    // result must also be reclaimed each iteration.
+    let built_if = build_arr_if(3)
+    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if)
     i = i + 1
   }
   total
