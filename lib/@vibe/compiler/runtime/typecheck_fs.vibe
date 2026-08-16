@@ -381,10 +381,46 @@ fn trait_projection_claim_owner(claims: Array[(String, String, Bool, String)], l
 /// mean two distinct traits sharing a spelling (#1910), which must not be
 /// resolved silently by import order.
 fn trait_projection_def_fingerprint(env: TypeEnv, name: String) -> String {
-  match env {
+  trait_projection_def_fingerprint_scan(env, env, name, array_empty())
+}
+
+/// Referenced trait labels (supers, method-generic bounds) are compared by
+/// their own definition shape, not by spelling: a facade that re-exports
+/// `Child` while aliasing its supertrait publishes `Child: P`, and that
+/// spelling difference must not read as two different `Child` definitions.
+/// A label already on the traversal path is emitted as `rec@<position>` so
+/// repeated references stay position-stable; a label with no definition in
+/// the environment keeps its spelling (`?<label>`), which is canonical
+/// exactly because it cannot be projected under an alias.
+fn trait_projection_ref_fingerprint(full: TypeEnv, label: String, visited: Array[String]) -> String {
+  let mut idx = 0
+  let mut found = -1
+  while idx < Array::length(visited) {
+    if Array::get(visited, idx) == label {
+      found = idx
+      idx = Array::length(visited)
+    } else {
+      idx = idx + 1
+    }
+  }
+  if found >= 0 {
+    String::concat("rec@", __to_string(found))
+  } else {
+    let sub = trait_projection_def_fingerprint_scan(full, full, label, visited)
+    if sub == "" {
+      String::concat("?", label)
+    } else {
+      String::concat("(", String::concat(sub, ")"))
+    }
+  }
+}
+
+fn trait_projection_def_fingerprint_scan(cur: TypeEnv, full: TypeEnv, name: String, visited: Array[String]) -> String {
+  match cur {
     EnvEmpty => "",
-    EnvBind(_, _, rest) => trait_projection_def_fingerprint(rest, name),
+    EnvBind(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
     EnvTraitDef(candidate, supers, is_auto, methods, rest, params, method_gens) => if candidate == name {
+      Array::push(visited, name)
       let mut out = if is_auto {
         "auto"
       } else {
@@ -397,7 +433,7 @@ fn trait_projection_def_fingerprint(env: TypeEnv, name: String) -> String {
       }
       i = 0
       while i < Array::length(supers) {
-        out = String::concat(out, String::concat(";super=", Array::get(supers, i)))
+        out = String::concat(out, String::concat(";super=", trait_projection_ref_fingerprint(full, Array::get(supers, i), visited)))
         i = i + 1
       }
       i = 0
@@ -427,7 +463,7 @@ fn trait_projection_def_fingerprint(env: TypeEnv, name: String) -> String {
           out = String::concat(out, String::concat(";bound=", bparam))
           let mut k = 0
           while k < Array::length(labels) {
-            out = String::concat(out, String::concat(":", Array::get(labels, k)))
+            out = String::concat(out, String::concat(":", trait_projection_ref_fingerprint(full, Array::get(labels, k), visited)))
             k = k + 1
           }
           j = j + 1
@@ -436,14 +472,14 @@ fn trait_projection_def_fingerprint(env: TypeEnv, name: String) -> String {
       }
       out
     } else {
-      trait_projection_def_fingerprint(rest, name)
+      trait_projection_def_fingerprint_scan(rest, full, name, visited)
     },
-    EnvTraitImpl(_, _, rest) => trait_projection_def_fingerprint(rest, name),
-    EnvMutCell(_, _, rest) => trait_projection_def_fingerprint(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_projection_def_fingerprint(rest, name),
-    EnvTypeDefs(_, _, rest) => trait_projection_def_fingerprint(rest, name),
+    EnvTraitImpl(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
+    EnvMutCell(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
+    EnvTypeDefs(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
     EnvFlat(_) => "",
-    EnvCached(_, _, rest) => trait_projection_def_fingerprint(rest, name)
+    EnvCached(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited)
   }
 }
 

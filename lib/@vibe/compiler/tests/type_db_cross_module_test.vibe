@@ -729,6 +729,37 @@ test "db_typecheck_fs: one trait reached through a re-export module is not a con
   }
 }
 
+test "db_typecheck_fs: a re-export that aliases the supertrait is still the same trait" {
+  // Codex review on PR #1965: the facade publishes `Child: P` after
+  // `trait Parent as P`, so comparing supers by spelling would misread the
+  // re-exported `Child` as a second, different definition. References are
+  // compared by their own definition shape instead.
+  let base_path = "/tmp/vibe_compiler_trait_reexport_super_alias_base.vibe"
+  let facade_path = "/tmp/vibe_compiler_trait_reexport_super_alias_facade.vibe"
+  let main_path = "/tmp/vibe_compiler_trait_reexport_super_alias_main.vibe"
+  let base_src = "export trait Parent { pa(Self) -> Int }\nexport trait Child: Parent { ch(Self) -> Int }\nimpl Parent for Int { pa(self) -> Int { 1 } }\nimpl Child for Int { ch(self) -> Int { 2 } }"
+  let facade_src = "import ./vibe_compiler_trait_reexport_super_alias_base.vibe { trait Parent as P, trait Child }\nexport { Child }"
+  let main_src = "import ./vibe_compiler_trait_reexport_super_alias_base.vibe { trait Child }\nimport ./vibe_compiler_trait_reexport_super_alias_facade.vibe { trait Child }\nexport fn use_it[T: Child](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(1)"
+  Fs::write_bytes(base_path, string_to_bytes(base_src))
+  Fs::write_bytes(facade_path, string_to_bytes(facade_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let base_fp = build_test_fingerprint(base_src, array_empty())
+  let facade_fp = build_test_fingerprint(facade_src, [
+    (base_path, base_fp)
+  ])
+  remove_typecheck_fs_cache(base_path, base_src, base_fp)
+  remove_typecheck_fs_cache(facade_path, facade_src, facade_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (base_path, base_fp),
+    (facade_path, facade_fp)
+  ]))
+  let checked = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), base_path, base_src), facade_path, facade_src), main_path, main_src), main_path)
+  match db_check_env(checked, main_path) {
+    Some(env) => assert(trait_defined(env, "Child")),
+    None => assert(false)
+  }
+}
+
 test "db_typecheck_fs: source update bypasses current-run cache" {
   let path = "/tmp/vibe_compiler_type_db_fs_source_update.vibe"
   let source1 = "export let value = 1"
