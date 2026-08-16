@@ -1045,18 +1045,129 @@ fn subst_eff_lookup(s: Subst, name: String) -> Option[String] {
 fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
   match eff {
     None => None,
-    Some(name) => if is_effect_var_name(name) {
-      match subst_eff_lookup(s, name) {
-        Some(val) => if String::length(val) == 0 {
-          None
-        } else {
-          Some(val)
-        },
-        None => eff
+    Some(row) => {
+      let labels = String::split(row, ",")
+      let resolved = array_empty()
+      let mut i = 0
+      while i < Array::length(labels) {
+        let label = String::trim(Array::get(labels, i))
+        if is_effect_var_name(label) {
+          match subst_eff_lookup(s, label) {
+            Some(bound) => if String::length(bound) > 0 {
+              for part in String::split(bound, ",") {
+                let trimmed = String::trim(part)
+                if String::length(trimmed) > 0 {
+                  Array::push(resolved, trimmed)
+                }
+              }
+              ()
+            },
+            None => Array::push(resolved, label)
+          }
+        } else if String::starts_with(label, "#capture[") {
+          let close = String::index_of(label, "]")
+          let mut id = 0
+          let mut p = 9
+          while p < close {
+            id = id * 10 + (String::char_code_at(label, p) - 48)
+            p = p + 1
+          }
+          match subst_lookup(s, id) {
+            Some(bound_ty) => {
+              let resolved_ty = subst_apply(s, bound_ty)
+              match first_region_skolem(resolved_ty) {
+                Some(region_name) => Array::push(resolved, region_name),
+                None => match resolved_ty {
+                  CtVar(new_id) => Array::push(resolved, String::concat("#capture[", String::concat(__to_string(new_id), "]"))),
+                  _ => ()
+                }
+              }
+            },
+            None => Array::push(resolved, label)
+          }
+        } else if String::length(label) > 0 {
+          Array::push(resolved, label)
+        }
+        i = i + 1
       }
-    } else {
-      eff
+      if Array::length(resolved) == 0 {
+        None
+      } else {
+        Some(String::join(resolved, ", "))
+      }
     }
+  }
+}
+
+/// Region provenance is carried in a function's checked row as an internal
+/// unforgeable label. It is not a runtime effect: the row is simply the one
+/// structured slot already preserved by substitution, generalization and
+/// containers. `#capture[n]` is dependent on inference variable n and becomes
+/// the concrete `#region_n` label when that variable is unified with a
+/// region-tagged type.
+fn first_region_skolem(ty: Type) -> Option[String] {
+  match ty {
+    CtNamed(name, args) => if String::starts_with(name, "#region_") {
+      Some(name)
+    } else {
+      let mut out = None
+      let mut i = 0
+      while i < Array::length(args) && out is None {
+        out = first_region_skolem(Array::get(args, i))
+        i = i + 1
+      }
+      out
+    },
+    CtFn(params, ret, eff) => {
+      let mut out = match eff {
+        Some(row) => {
+          let labels = String::split(row, ",")
+          let mut found = None
+          let mut i = 0
+          while i < Array::length(labels) && found is None {
+            let label = String::trim(Array::get(labels, i))
+            if String::starts_with(label, "#region_") {
+              found = Some(label)
+            }
+            i = i + 1
+          }
+          found
+        },
+        None => None
+      }
+      let mut i = 0
+      while i < Array::length(params) && out is None {
+        out = first_region_skolem(Array::get(params, i))
+        i = i + 1
+      }
+      match out {
+        Some(_) => out,
+        None => first_region_skolem(ret)
+      }
+    },
+    CtArray(elem) => first_region_skolem(elem),
+    CtOption(elem) => first_region_skolem(elem),
+    CtTuple(items) => {
+      let mut out = None
+      let mut i = 0
+      while i < Array::length(items) && out is None {
+        out = first_region_skolem(Array::get(items, i))
+        i = i + 1
+      }
+      out
+    },
+    CtRecord(fields) => {
+      let mut out = None
+      let mut i = 0
+      while i < Array::length(fields) && out is None {
+        let (_, field_ty) = Array::get(fields, i)
+        out = first_region_skolem(field_ty)
+        i = i + 1
+      }
+      out
+    },
+    CtForAll(_, _, body) => first_region_skolem(body),
+    _ => None
   }
 }
 
@@ -1839,7 +1950,9 @@ fn effect_label_base_set(labels: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(labels) {
-    let base = effect_label_base_name(Array::get(labels, i))
+    let raw = Array::get(labels, i)
+    let provenance = String::starts_with(raw, "#region_") || String::starts_with(raw, "#capture[")
+    let base = effect_label_base_name(raw)
     let mut seen = false
     let mut j = 0
     while j < Array::length(out) {
@@ -1848,7 +1961,7 @@ fn effect_label_base_set(labels: Array[String]) -> Array[String] {
       }
       j = j + 1
     }
-    if !seen {
+    if !seen && !provenance {
       Array::push(out, base)
     }
     i = i + 1
@@ -1884,9 +1997,30 @@ fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool 
 }
 
 fn effect_opt_is_var(eff: Option[String]) -> Bool {
-  match eff {
-    Some(name) => is_effect_var_name(name),
-    None => false
+  let labels = effect_label_list(eff)
+  let mut count = 0
+  let mut variable = false
+  for label in labels {
+    if !String::starts_with(label, "#region_") && !String::starts_with(label, "#capture[") {
+      count = count + 1
+      variable = is_effect_var_name(label)
+    }
+  }
+  count == 1 && variable
+}
+
+fn semantic_effect_opt(eff: Option[String]) -> Option[String] {
+  let labels = effect_label_list(eff)
+  let semantic = array_empty()
+  for label in labels {
+    if !String::starts_with(label, "#region_") && !String::starts_with(label, "#capture[") {
+      Array::push(semantic, label)
+    }
+  }
+  if Array::length(semantic) == 0 {
+    None
+  } else {
+    Some(String::join(semantic, ", "))
   }
 }
 
@@ -1915,8 +2049,8 @@ fn effect_names_compatible(left: Option[String], right: Option[String]) -> Bool 
 /// (#626 criterion 4 — no longer an unconditional wildcard). Returns the extended
 /// substitution, or None on a genuine effect-set conflict.
 fn unify_effects(ea: Option[String], eb: Option[String], s: Subst) -> Option[Subst] {
-  let ra = resolve_effect_opt(s, ea)
-  let rb = resolve_effect_opt(s, eb)
+  let ra = semantic_effect_opt(resolve_effect_opt(s, ea))
+  let rb = semantic_effect_opt(resolve_effect_opt(s, eb))
   let a_is_var = match ra {
     Some(n) => is_effect_var_name(n),
     None => false

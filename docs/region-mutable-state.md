@@ -235,22 +235,19 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
   (`fixtures/region_arena_ok.vibe`、42)と negative
   (`fixtures/err_region_escape_return_value.vibe`、needle
   "region escapes its scope")を固定。
-- **closure capture (#1725、2026-08-14)**: §4 の「捕獲した closure が region
-  型に感染する」は **row 統合前提なので Phase 1 では働かない** —— 型は捕獲を
-  記録しないので、`region r { let l = MutList::empty(r); () -> Array[Int] {
-  MutList::to_array(l) } }` の結果型は `() -> Array[Int]` で skolem 走査から
-  見えず、region 値が closure の環境に隠れて脱出できた。arena が入れば
-  use-after-free なので stopgap を入れてある:
-  `checker/checker_escape.vibe :: region_token_escapes_in_closure` が
-  「region body の**結果そのもの**が closure literal で、region token から
-  直に束縛された名前(とその別名)を捕獲している」形だけを reject する。
-  **capture 自体は正当**(region 内で完結する closure は普通に書く)なので
-  過剰approx にしないことが要件で、汚染は「token に言及する初期化式」と
-  「汚染名の裸の別名」に限り、shadowing は最後の束縛が勝つ。取りこぼし:
-  outer binding / container 経由、helper 関数経由。gate 75 が両方向
-  (`fixtures/err_region_escape_closure_capture.vibe` /
-  `fixtures/region_ok_closure_local.vibe`)を pin。**正しい規則は §4 の
-  row 感染**で、arena スライスの前提はそちら。
+- **Closure capture provenance (#1725, #1938)**: a checked function row carries
+  an internal, source-unforgeable region provenance label. A direct capture is
+  `#region_n`; a capture through an inference variable is `#capture[v]` and
+  resolves when ordinary type substitution binds `v`. These labels are not
+  runtime effects and are excluded from effect-set compatibility, but they
+  survive generalization, explicit return annotations, helper calls and
+  containers. The region boundary therefore uses the same zonked-type scan for
+  direct values and closures. Assignment into an outer cell is rejected while
+  the active-region marker is present in `TypeEnv`. Capture itself remains
+  legal: a closure consumed inside the region, a copied-out value, and a
+  shadowing binding carry no escaping provenance. Gate 75 pins the five escape
+  witnesses (outer assignment, container, helper, nested closure, alias chain)
+  and their positive counterparts.
 - **既知ギャップ(Phase 1 で許容、ADR 本文の設計は不変)**: effect row 統合
   (§3)は未着手 — 別 pass の effect 検査は lambda wrapper を見るため、
   region body 内の effect は enclosing fn に帰属しない。outer-binding scan は

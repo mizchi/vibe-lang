@@ -9482,6 +9482,23 @@ if ! grep -qF 'region escapes its scope' "$r90dir/tok.wasm.diag" 2>/dev/null; th
   cat "$r90dir/tok.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1938: capture provenance is part of the checked function type, not a
+# terminal-lambda syntax check. Pin every laundering shape that the old
+# stopgap missed (plus a deep alias witness).
+for r90_escape in outer_assignment container helper nested_closure alias_chain; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/err_region_escape_${r90_escape}.vibe" "$r90dir/${r90_escape}.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ -s "$r90dir/${r90_escape}.wasm" ]; then
+    echo "[compiler-gate] FAIL: err_region_escape_${r90_escape}.vibe compiled successfully -- region capture provenance was lost (#1938)" >&2
+    exit 1
+  fi
+  if ! grep -qF 'region escapes its scope' "$r90dir/${r90_escape}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: err_region_escape_${r90_escape}.vibe did not produce the expected diagnostic (#1938)" >&2
+    cat "$r90dir/${r90_escape}.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
 # The false-positive guard: a closure that captures a region value but stays
 # inside the region is valid, and the body still exits via freeze. It also
 # covers shadowing and an initialiser that merely touches the token while
@@ -9496,6 +9513,18 @@ if [ ! -s "$r90dir/caplocal.wasm" ]; then
 fi
 if ! r90_cap_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/caplocal.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_closure_local.vibe got '$r90_cap_out' (want 55)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_capture_provenance.vibe "$r90dir/provenance_ok.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/provenance_ok.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_capture_provenance.vibe did not compile -- capture provenance over-approximated (#1938)" >&2
+  cat "$r90dir/provenance_ok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/provenance_ok.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: region_ok_capture_provenance.vibe snapshots failed (#1938)" >&2
   exit 1
 fi
 # ADR-0090's sanctioned exits COPY. The rest of the FrozenArray surface is
